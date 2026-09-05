@@ -247,6 +247,53 @@ def _tenants_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
     return TenantRepository(db).get_by_id(entity_id) is not None
 
 
+def _document_types_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
+    from app.services.document_service import DocumentService
+
+    DocumentService(db).delete_type(tenant_id, entity_id)
+
+
+def _document_types_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.repositories.document_repository import DocumentRepository
+
+    return DocumentRepository(db).get_type(tenant_id, entity_id) is not None
+
+
+def _jobs_abort(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
+    from app.storage_migration.service import StorageMigrationService
+
+    StorageMigrationService(db).abort(tenant_id, entity_id)
+
+
+def _jobs_complete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
+    from app.storage_migration.service import StorageMigrationService
+
+    StorageMigrationService(db).complete(tenant_id, entity_id)
+
+
+def _jobs_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.jobs.service import JobService
+
+    return JobService(db).get(tenant_id, entity_id) is not None
+
+
+def _email_outbox_cancel(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
+    from app.services.email_log_service import EmailLogService
+
+    EmailLogService(db).cancel(entity_id, tenant_id)
+
+
+def _email_outbox_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.models.email_outbox import EmailOutbox
+
+    return (
+        db.query(EmailOutbox.id)
+        .filter(EmailOutbox.id == entity_id, EmailOutbox.tenant_id == tenant_id)
+        .first()
+        is not None
+    )
+
+
 USERS_TRASH = DeferredActionDef(
     key="users.trash",
     entity_type="user",
@@ -395,6 +442,43 @@ TENANTS_REACTIVATE = DeferredActionDef(
     platform=True,
 )
 
+DOCUMENT_TYPES_DELETE = DeferredActionDef(
+    key="document_types.delete",
+    entity_type="document_type",
+    permission="documents.configure",
+    window="destructive",
+    label="Delete",
+    execute=_document_types_delete,
+    exists=_document_types_exists,
+)
+JOBS_ABORT = DeferredActionDef(
+    key="jobs.abort",
+    entity_type="background_job",
+    permission="integrations.migrate_storage",
+    window="reversible",  # "You can retry later" - the copy names its own undo
+    label="Abort",
+    execute=_jobs_abort,
+    exists=_jobs_exists,
+)
+JOBS_COMPLETE = DeferredActionDef(
+    key="jobs.complete",
+    entity_type="background_job",
+    permission="integrations.migrate_storage",
+    window="destructive",  # "This cannot be undone"
+    label="Complete anyway",
+    execute=_jobs_complete,
+    exists=_jobs_exists,
+)
+EMAIL_OUTBOX_CANCEL = DeferredActionDef(
+    key="email_outbox.cancel",
+    entity_type="email_outbox",
+    permission="emails.manage",
+    window="reversible",  # a cancelled email is retryable (D14)
+    label="Cancel",
+    execute=_email_outbox_cancel,
+    exists=_email_outbox_exists,
+)
+
 _ALL = (
     USERS_TRASH,
     ROLES_DELETE,
@@ -412,6 +496,10 @@ _ALL = (
     TENANTS_ARCHIVE,
     TENANTS_SUSPEND,
     TENANTS_REACTIVATE,
+    DOCUMENT_TYPES_DELETE,
+    JOBS_ABORT,
+    JOBS_COMPLETE,
+    EMAIL_OUTBOX_CANCEL,
 )
 
 

@@ -27,17 +27,10 @@ export function useJobActions(): ResourceAction<Job>[] {
         surfaces: { row: true, form: true },
         isVisible: (rows) =>
           rows.length === 1 && ['pending', 'running'].includes(rows[0].status),
-        confirm: {
-          title: 'Abort this migration?',
-          description:
-            'Copying stops and no references are switched over. New uploads keep landing on the new bucket; existing assets keep serving. You can retry later.',
-          confirmLabel: 'Abort',
-        },
-        run: async ([job], rt) => {
-          await jobsService.abortJob(job.id);
-          toast.success('Migration aborted.');
-          rt.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `jobs.abort` handler
+        // commits it server-side).
+        deferred: { actionKey: 'jobs.abort', entityType: 'background_job' },
       },
       {
         id: 'retry',
@@ -60,17 +53,9 @@ export function useJobActions(): ResourceAction<Job>[] {
         permission: MIGRATE_PERM,
         surfaces: { row: true, form: true },
         isVisible: (rows) => rows.length === 1 && rows[0].status === 'needs_review',
-        confirm: {
-          title: 'Complete with failures?',
-          description:
-            'Successfully-copied assets are switched to the new bucket; failed ones keep serving from the old bucket. This cannot be undone.',
-          confirmLabel: 'Complete',
-        },
-        run: async ([job], rt) => {
-          await jobsService.completeJob(job.id);
-          toast.success('Migration completed.');
-          rt.reload();
-        },
+        // Grace-window deferred action - no confirm, no `run` (the
+        // registered `jobs.complete` handler commits it server-side).
+        deferred: { actionKey: 'jobs.complete', entityType: 'background_job' },
       },
     ],
     [],

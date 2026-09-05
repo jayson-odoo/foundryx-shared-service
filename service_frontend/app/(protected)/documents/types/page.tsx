@@ -65,15 +65,10 @@ export default function DocumentTypesPage() {
         tone: 'destructive',
         surfaces: { row: true, bulk: true },
         permission: 'documents.configure',
-        confirm: {
-          title: 'Delete type?',
-          description: 'Files keep their bytes; they just lose this category.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows, runtime) => {
-          await Promise.all(rows.map((r) => documentService.deleteType(r.id)));
-          runtime.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `document_types.delete`
+        // handler commits it server-side).
+        deferred: { actionKey: 'document_types.delete', entityType: 'document_type' },
       },
     ],
     [openEditor],

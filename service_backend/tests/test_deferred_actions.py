@@ -628,4 +628,57 @@ def test_users_trash_handler_fails_when_the_user_is_gone(db, session_factory):
     result = svc.commit_one(row)
     assert result.status == PENDING_ACTION_FAILED
     assert result.error_text and "no longer exists" in result.error_text
-    db.close()
+
+
+# ── item 15: email_outbox.cancel (core - Settings > Email log) ─────────────
+
+
+def _seed_outbox_row(db, tenant_id, status):
+    from app.models.email_outbox import EmailOutbox
+
+    row = EmailOutbox(
+        tenant_id=tenant_id,
+        to_email="user@example.com",
+        subject="Subject",
+        html_body="<html><body>hi</body></html>",
+        text_body="hi",
+        template_key="auth.invite",
+        status=status,
+        attempts=0,
+        next_attempt_at=_now(),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def test_email_outbox_cancel_registered_and_commits(db):
+    assert deferred_action_for("email_outbox.cancel").window == "reversible"
+    assert deferred_action_for("email_outbox.cancel").permission == "emails.manage"
+
+    admin = _admin(db)
+    row = _seed_outbox_row(db, DEFAULT_TENANT_ID, "pending")
+    svc = PendingActionService(db)
+    pa = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key="email_outbox.cancel", entity_type="email_outbox", entity_id=row.id,
+    )
+    stored = db.get(PendingAction, pa.id)
+    stored.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+
+    result = svc.commit_one(pa)
+    assert result.status == PENDING_ACTION_COMMITTED
+    db.refresh(row)
+    assert row.status == "cancelled"
+
+
+def test_email_outbox_cancel_missing_target_404_at_park(client):
+    h = _login(client)
+    res = client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "email_outbox.cancel", "entityType": "email_outbox", "entityId": "no-such-email"},
+        headers=h,
+    )
+    assert res.status_code == 404
