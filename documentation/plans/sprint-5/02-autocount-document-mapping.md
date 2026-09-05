@@ -155,4 +155,6 @@ documents.py` (fixed-convention tests → persisted rows), `test_autocount_entit
   deleted/cancelled. Document the sequence (masters → SO/PO/SPO, reconcile off until first full
   load) + a dry-run report listing adopted / unmatched lines before go-live.
 - **BL-SS-051** Overlap check as a hard activation gate (today: warning).
+- **BL-SS-052** Refuse a watermark column inside `keyColumns` (proof finding: composite key ->
+  refs carry the watermark -> document lines never hit the ref rung on Sorento).
 - **BL-SS-045** → Closed by this plan.
