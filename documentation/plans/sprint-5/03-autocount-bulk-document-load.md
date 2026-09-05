@@ -481,6 +481,15 @@ mapping` ignores them (no mapping row). The pack documents them under §1/§3 wi
 `fromDate` in the presets stays `2026-01-01` (a preset is a starting point); the real company's
 tasks are saved with `2023-09-01` during live verification.
 
+A preset SQL change (like the `ItemCode IS NOT NULL` fix above) does NOT reach an already-
+configured live task on its own - `presets.py` only seeds a NEW task's `source_config`. An
+operator with an existing task must re-apply "Use preset" (or hand-edit `query`/`lineQuery`) per
+task to pick it up; either path is a population-defining edit, which clears every row's stored
+hash (BL-SS-063) and so defers the fresh baseline to the NEXT reconcile pass rather than the
+current run - a forced reconcile should follow the edit, not be assumed automatic. Tonight's
+instance: the real company's SO/PO/SPO `lineQuery` were hand-edited to the same
+`ItemCode IS NOT NULL AND Qty IS NOT NULL` filter and a reconcile pass driven for each.
+
 ### 2.6 Wire (`schemas.py`, `etl_service._task_view`, FE label)
 
 - `EtlTaskResponse.initialLoad: Optional[{complete: bool, pagesDone: int, lastMark: str|null,

@@ -1686,16 +1686,19 @@ class SqlDbSource:
 
         Deliberately checks only the ALL-OR-NOTHING case (``expected > 0``
         and ``fetched == 0``), never a PARTIAL mismatch (``fetched`` some
-        smaller positive number than ``expected``): the preset's own
-        ``LineCount`` aggregate is computed with an ``ItemCode IS NOT
-        NULL`` filter (dropping description-only/sub-total display lines),
-        while ``lineQuery`` is not - a header with, say, 2 description
-        lines and 3 real ones legitimately reports ``LineCount=3`` but
-        fetches 5 rows, and the reverse skew is just as possible depending
-        on how an operator wrote their OWN ``lineQuery``. Zero fetched is
-        the one shape no such skew can ever produce when the fingerprint
-        says lines exist, which is what makes it - and only it - a safe,
-        unambiguous signal of a genuinely broken join.
+        smaller positive number than ``expected``): the SHIPPED presets
+        apply the SAME ``ItemCode IS NOT NULL AND Qty IS NOT NULL`` cut on
+        both the header's ``LineCount`` aggregate and ``lineQuery`` itself
+        (plan sprint-5/03, fixed alongside c434a1d), so for them the two
+        counts agree. An OPERATOR-authored ``lineQuery`` is under no such
+        obligation, though - it can apply a narrower, wider, or differently
+        shaped filter than the aggregate, so a header with, say, 2
+        description lines and 3 real ones can legitimately report
+        ``LineCount=3`` while fetching 5 rows, and the reverse skew is just
+        as possible. Zero fetched is the one shape no such skew can ever
+        produce when the fingerprint says lines exist, which is what makes
+        it - and only it - a safe, unambiguous signal of a genuinely broken
+        join.
         """
         if LINE_COUNT_FINGERPRINT_COLUMN not in header:
             return None
