@@ -161,20 +161,32 @@ export function QueryTab({
   // change on every update, so it can never also be a key column (a
   // reconcile would mint a "new" ref for the same real-world record every
   // time). Withhold the chosen watermark from the key-columns picker...
+  // SF3 (final reviewer pass): only an UNSELECTED value is ever excluded -
+  // a LEGACY config saved before this guard existed can have the watermark
+  // column sitting INSIDE keyColumns already; filtering that value out of
+  // the options entirely would silently hide the already-selected pill/
+  // label (both derive from `options`, not `value`), leaving the operator
+  // unable to even see what's wrong, let alone fix it by deselecting.
   const keyColumnOptions = useMemo(
-    () => columnOptions.filter((o) => o.value !== config.watermarkColumn),
-    [columnOptions, config.watermarkColumn],
+    () =>
+      columnOptions.filter(
+        (o) => o.value !== config.watermarkColumn || config.keyColumns.includes(o.value),
+      ),
+    [columnOptions, config.keyColumns, config.watermarkColumn],
   );
   const watermarkOptions = useMemo(() => {
     // ...and withhold the chosen key columns from the watermark picker,
-    // the same rule from the other picker's side.
-    const base = columnOptions.filter((o) => !config.keyColumns.includes(o.value));
+    // the same rule (and the same legacy-value exception) from the other
+    // picker's side.
+    const base = columnOptions.filter(
+      (o) => !config.keyColumns.includes(o.value) || o.value === config.watermarkColumn,
+    );
     // A document task REQUIRES a watermark column (AutoCount stamps a
     // header's LastModified on any line edit - the S5 line-change-detection
     // decision), so "None" is never a valid choice for one (foolproof-UI -
     // only offer options that can actually work).
     return isDocument ? base : [{ label: 'None', value: NO_WATERMARK }, ...base];
-  }, [columnOptions, config.keyColumns, isDocument]);
+  }, [columnOptions, config.keyColumns, config.watermarkColumn, isDocument]);
   const pickersEnabled = editing && columnOptions.length > 0;
 
   const canTest = Boolean(config.connectionId) && config.query.trim().length > 0 &&
