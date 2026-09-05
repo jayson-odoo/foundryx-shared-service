@@ -84,6 +84,7 @@ payloads, `_users_by_id`-style lookups (polymorphic stored-id rule).
 | D12 | `uninstall_tenant` must also delete the core `statuses` / `status_transitions` rows for `omnichannel_contact_lifecycle` | The generic loop only wipes `OmniBase` tables; without this the tenant would keep orphan graphs |
 | D13 | `update_tenant` 0.1.0 → 0.2.0 backfill runs inline (materialize per workspace + one UPDATE per workspace for contacts) | Bounded by workspace count; idempotent by "scope has statuses" check |
 | D14 | Contact panel = right pane ≥ 1280 / Sheet below; hidden in compact + embed modes | Embed consumers get their own panel later (backlog); keeps the embed contract untouched |
+| D15 | Workflow `entity.update` on `omnichannel_contact` routes through `ConversationService.patch_thread`, which commits mid-run and announces (realtime + `contact.updated` webhook) immediately - including on a no-op re-set of the same value | Accepted trade-off, consistent with `WorkflowEntity.apply_update`'s documented "may commit" contract; a run-scoped deferral would need per-entity transaction plumbing the executor doesn't have today. Follow-up backlogged: suppress no-op fan-out / consider run-scoped deferral |
 
 ## 4. Slices (build order)
 
