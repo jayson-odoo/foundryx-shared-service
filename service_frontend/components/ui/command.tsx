@@ -5,8 +5,7 @@ import { cn } from '@/lib/utils';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { type DialogProps } from '@radix-ui/react-dialog';
 import { Command as CommandPrimitive } from 'cmdk';
-import { Check, LoaderCircleIcon, LucideIcon, Search } from 'lucide-react';
-import { useDebounce } from '@/hooks/use-debounce';
+import { Check, LucideIcon, Search } from 'lucide-react';
 
 function Command({ className, ...props }: React.ComponentProps<typeof CommandPrimitive>) {
   return (
@@ -48,23 +47,15 @@ const CommandDialog = ({ children, className, motion = false, ...props }: Comman
 };
 
 function CommandInput({ className, ...props }: React.ComponentProps<typeof CommandPrimitive.Input>) {
-  // AC-DLA-54 - the same leading-icon settling indicator `ListSearchInput`
-  // shows, applied here so `SearchSelect`/`MultiSelect` (built on `Command`)
-  // get it too, without swapping out cmdk's own `Input` (that would drop
-  // its keyboard-navigation wiring). Only meaningful when the caller
-  // controls `value` (both do); uncontrolled usage just keeps the plain
-  // search icon (debouncing `undefined` is a no-op).
-  const controlledValue = typeof props.value === 'string' ? props.value : '';
-  const debounced = useDebounce(controlledValue, 200);
-  const settling = typeof props.value === 'string' && controlledValue !== debounced;
-
+  // T6 fix round 1 item 8: cmdk filters its option list SYNCHRONOUSLY (it's
+  // an already-loaded in-memory list, unlike ResourceList's server fetch),
+  // so a settling-spinner swap here was pure flash with nothing behind it
+  // to wait for - removed. `SearchSelect`/`MultiSelect` still debounce their
+  // own `value` for the actual filter/query, just without a leading-icon
+  // indicator (AC-DLA-54's leading icon stays `ListSearchInput`-only).
   return (
     <div className="flex items-center border-border border-b px-3" cmdk-input-wrapper="" data-slot="command-input">
-      {settling ? (
-        <LoaderCircleIcon className="me-2 h-4 w-4 shrink-0 animate-spin opacity-50" data-testid="command-input-settling" />
-      ) : (
-        <Search className="me-2 h-4 w-4 shrink-0 opacity-50" />
-      )}
+      <Search className="me-2 h-4 w-4 shrink-0 opacity-50" />
       <CommandPrimitive.Input
         className={cn(
           'flex h-11 w-full rounded-md bg-transparent py-3 text-sm outline-hidden text-foreground placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50',

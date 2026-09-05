@@ -30,11 +30,11 @@ export interface ListSearchInputProps {
 }
 
 /**
- * AC-DLA-54 - the one search box for `ResourceList` and the palette search
- * (`SearchSelect`/`MultiSelect` get the same debounce+settling signal
- * applied to their own `CommandInput` leading icon instead, since their
- * filtering happens over an already-loaded option list and swapping out
- * cmdk's own `Input` would drop its keyboard-navigation wiring).
+ * AC-DLA-54 - the one search box for `ResourceList` and the palette search.
+ * `SearchSelect`/`MultiSelect` (built on `CommandInput`) filter an already
+ * loaded, in-memory option list SYNCHRONOUSLY - no fetch to wait on - so
+ * their leading icon never shows a settling indicator at all (T6 fix
+ * round 1 item 8; `components/ui/command.tsx`).
  *
  * The leading icon swaps to a settling spinner while the debounced value
  * still trails the typed value - `useDebounce` at 200ms (not the 300ms

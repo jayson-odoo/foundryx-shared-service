@@ -1,9 +1,11 @@
 /**
  * AC-DLA-54 - `list-search-input.tsx` is adopted by `ResourceList` and the
  * palette search; `SearchSelect`/`MultiSelect` (built on the shared
- * `Command`/`CommandInput` primitive) get the equivalent settling behaviour
- * applied to `CommandInput` itself instead (`command.test.tsx` covers
- * that). Zero hand-rolled search `setTimeout` debounce remains anywhere.
+ * `Command`/`CommandInput` primitive) stay on `useDebounce`/`value` for
+ * their own filtering, with no leading-icon settling indicator on
+ * `CommandInput` (T6 fix round 1 item 8 - cmdk filters synchronously, so
+ * there is nothing to indicate; `command.test.tsx` covers the static icon).
+ * Zero hand-rolled search `setTimeout` debounce remains anywhere.
  */
 import fs from 'node:fs';
 import path from 'node:path';
