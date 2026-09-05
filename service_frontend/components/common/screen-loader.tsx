@@ -13,7 +13,7 @@ export function ScreenLoader() {
     <div
       role="status"
       aria-label="Loading"
-      className="flex flex-col items-center gap-3 justify-center fixed inset-0 z-50 transition-opacity ease-(--ease-standard) duration-(--duration-slow)"
+      className="flex flex-col items-center gap-3 justify-center fixed inset-0 z-50"
     >
       <img
         className="h-[30px] max-w-none"
