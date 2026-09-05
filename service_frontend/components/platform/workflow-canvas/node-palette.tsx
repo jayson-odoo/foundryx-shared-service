@@ -6,14 +6,18 @@
  * the growing catalog stays compact) with a search box that filters across all
  * sections and auto-expands matches. Each item is a dnd-kit draggable AND a
  * click-to-add button - click is the E2E path (dnd-kit pointer sensors aren't
- * drivable by Playwright's dragTo - template-engine lesson); drag is the
- * nicety. A trigger is disabled once one exists (one trigger per workflow, D2).
+ * drivable by scripted mouse-event drag automation - template-engine
+ * lesson); drag is the nicety. Not asserted in jsdom; the drag/drop-onto-
+ * canvas behaviour needs a recorded agent-browser check in any slice that
+ * touches it. A trigger is disabled once one exists (one trigger per
+ * workflow, D2).
  */
 import { useMemo, useState } from 'react';
 import { useDraggable } from '@dnd-kit/core';
 import { ChevronDown, Search, Zap } from 'lucide-react';
 import { ACTION_CATALOG, IF_CATALOG, TRIGGER_CATALOG } from '@/lib/workflow-catalog';
 import { cn } from '@/lib/utils';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { Input } from '@/components/ui/input';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useInstalledModules } from '@/hooks/use-app-store';
@@ -53,6 +57,7 @@ function PaletteItem({ entry, disabled, onAdd }: PaletteItemProps) {
       disabled={disabled}
       onClick={() => !disabled && onAdd(entry.type)}
       className={cn(
+        PRESSED_CLASS,
         'flex w-full items-center gap-2.5 rounded-lg border border-input bg-background p-2.5 text-left transition-colors',
         disabled ? 'cursor-not-allowed opacity-50' : 'cursor-grab hover:border-primary',
         isDragging && 'opacity-40',
@@ -65,7 +70,7 @@ function PaletteItem({ entry, disabled, onAdd }: PaletteItemProps) {
       </span>
       <span className="min-w-0">
         <span className="block text-xs font-medium text-foreground">{entry.label}</span>
-        <ClampedText text={entry.description} lines={2} className="text-[11px] leading-tight text-muted-foreground" />
+        <ClampedText text={entry.description} lines={2} className="text-2xs leading-tight text-muted-foreground" />
       </span>
     </button>
   );
@@ -137,7 +142,7 @@ export function NodePalette({ hasTrigger, disabled, onAdd, canCode = true }: Nod
               type="button"
               data-testid={`palette-section-${section.title.toLowerCase()}`}
               onClick={() => setOpen((s) => ({ ...s, [section.title]: !s[section.title] }))}
-              className="flex items-center justify-between rounded-md px-0.5 py-1 text-left"
+              className={cn(PRESSED_CLASS, 'flex items-center justify-between rounded-md px-0.5 py-1 text-left')}
               aria-expanded={Boolean(expanded)}
             >
               <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">

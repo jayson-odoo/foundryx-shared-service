@@ -58,8 +58,8 @@ row, plus four new module permission keys (`contacts.manage`,
 Workflow `entity.update` on `omnichannel_contact` routes through the
 `WorkflowEntity.apply_update` hook into the same `ConversationService.
 patch_thread` the internal PATCH and the public gateway PATCH use (plan 25 D15,
-closes BL-SS-047 for this entity) - so a node writing `countryCode`/`priority`/
+closes BL-SS-064 for this entity) - so a node writing `countryCode`/`priority`/
 `language` gets the same validation and casing as the human-facing paths. The
 trade-off: `patch_thread` commits mid-run and announces (realtime + `contact.
 updated` webhook) immediately, even on a no-op re-set or before a later node in
-the same run fails - see plan 25 §3 D15 and backlog `BL-SS-050`.
+the same run fails - see plan 25 §3 D15 and backlog `BL-SS-067`.

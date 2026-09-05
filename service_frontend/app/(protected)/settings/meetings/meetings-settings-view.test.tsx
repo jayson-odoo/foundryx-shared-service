@@ -143,7 +143,7 @@ describe('Settings → Meetings', () => {
     const botName = await screen.findByLabelText('Notetaker display name');
     await user.clear(botName);
     await user.type(botName, 'Minutes bot');
-    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await user.click(screen.getByRole('button', { name: 'Save meeting settings' }));
 
     await waitFor(() =>
       expect(saveSettings).toHaveBeenCalledWith({

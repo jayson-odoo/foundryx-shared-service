@@ -7,7 +7,7 @@
  */
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { ApiError } from '@/lib/api-client';
@@ -19,7 +19,7 @@ vi.mock('@/hooks/use-can', () => ({
   useCan: () => ({ can: (key: string) => can(key) }),
 }));
 
-vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
+vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 let moves: LifecycleMove[] = [];
 const lifecycleMoves = vi.fn<(contactId: string) => Promise<LifecycleMove[]>>(async () => moves);

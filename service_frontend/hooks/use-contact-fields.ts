@@ -8,7 +8,7 @@
  * newly-added field without a full page reload.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
 import { contactFieldService } from '@/services/contact-field-service';
 import type { ContactField, CreateContactFieldInput, UpdateContactFieldInput } from '@/types/omnichannel';

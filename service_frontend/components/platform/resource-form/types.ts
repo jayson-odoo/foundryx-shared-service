@@ -35,6 +35,17 @@ export interface ResourceFormConfig<T> {
   backHref: string;
   backLabel?: string;
   title: string;
+  /**
+   * Override for the "Save <noun>"/"Create <noun>" primary-button noun
+   * (AC-DLA-35 fix round 1). Without it, `ResourceForm` derives the noun from
+   * the SIDEBAR ancestor for the current route - correct for a page whose
+   * URL sits directly under its own list entry, but a form embedded on a
+   * FOREIGN parent's route (the AutoCount task editor lives under a company
+   * detail page, the mapping editor under a connection's own route) resolved
+   * to that ancestor's noun instead ("Save company"). Set this when the
+   * form's route isn't its own list's route.
+   */
+  entityNoun?: string;
   /** Sub-identifier under the title. Accepts a node so it can carry a link
    * (e.g. a clickable trace id) - a bare string is still valid (string ⊂ node). */
   subtitle?: ReactNode;
@@ -47,6 +58,12 @@ export interface ResourceFormConfig<T> {
   actions: ResourceAction<T>[];
   /** The record, wrapped for action runtime ([] when creating). */
   actionRows: T[];
+  /**
+   * A `deferred` form action's park/current/cancel entity id (T5 fix round
+   * 2, S2) - defaults to `row.id`, which a record with no `id` field (e.g.
+   * `StoreModule`, keyed by `name`) doesn't have.
+   */
+  getEntityId?: (row: T) => string;
   /**
    * Refresh the loaded record after a mutating form-surface action (e.g. a
    * Test that flips status). Without it, `runtime.reload` is a no-op on the

@@ -43,8 +43,8 @@ The plugin was written for a different repo. Two standing overrides:
   coder/tester brief MUST embed PRINCIPLES.md's Design mandates + DoD gate +
   hard-fail rules** (CLAUDE.md "Agents-team orchestration").
 - **`tester` agent**: test authoring/running when split from the coder, and the
-  Playwright E2E pass. Asserts against UAC ids; produces the Test Execution
-  Report (`AI_Agent_Orchestration_Guide.md` §6).
+  agent-browser evidence pass. Asserts against UAC ids; produces the Test
+  Execution Report (`AI_Agent_Orchestration_Guide.md` §6).
 - **`reviewer` agent + `/code-review`**: review phase. Optionally follow with
   `/codex-review` (this repo's ported skill - OpenAI model family, second
   opinion) on risky or large diffs.
@@ -103,10 +103,10 @@ expected API contract at the top of the service file (backend phase must match
 it exactly). Follow the Resource shell contract for any list/form
 (PRINCIPLES.md "Resource shell for every list/form").
 
-Verify in a real browser via Playwright MCP or the `webapp-testing` skill,
-navigating by **sidebar/UI clicks** - never a deep URL, real users don't know
-URLs. Check console messages. Screenshot the golden path and edge cases at
-**375px AND 1280px** (responsive mandate). Close the browser session when done.
+Verify in a real browser via the `agent-browser` CLI, navigating by
+**sidebar/UI clicks** - never a deep URL, real users don't know URLs. Check
+console messages. Screenshot the golden path and edge cases at **375px AND
+1280px** (responsive mandate). Close the browser session when done.
 
 ### Step 6 - Phase 2: backend wiring, test-FIRST
 
@@ -124,9 +124,12 @@ numbers are written as failing tests first.
 
 Tests land here, never deferred: pytest + httpx (backend, **Postgres only, never
 sqlite** - CLAUDE.md "DB = Postgres everywhere"), Vitest + RTL (frontend), one
-Playwright E2E per user flow (real clicks, FE→BE→DB). Re-verify live against the
-running stack - `rm -rf .next && npm run build` before any live check
-(PRINCIPLES.md "Ops quick-reference"; a stale `.next` renders the old build).
+recorded `agent-browser` run per user flow (real clicks from the sidebar, never
+a typed URL, 375 AND 1280, evidence under
+`documentation/plans/sprint-<N>/<NN>-evidence/<slice>/` with a README run log).
+Re-verify live against the running stack - `rm -rf .next && npm run build`
+before any live check (PRINCIPLES.md "Ops quick-reference"; a stale `.next`
+renders the old build).
 
 If something breaks and the fix isn't obvious, use
 `mattpocock-skills:diagnosing-bugs` before guessing.
@@ -144,9 +147,11 @@ full:
 
 ### Step 8 - Review
 
-`code-review` (this session's built-in skill - the repo's own diff review) is
-the primary pass; `mattpocock-skills:code-review` (parallel Standards + Spec
-review) is a useful second lens for a large or ambiguous diff. Then
+The `reviewer` agent (Opus, `.claude/agents/reviewer.md`) is the primary pass:
+brief it with the branch, the diff range, the plan + UAC paths and the hard-fail
+list. NEVER the built-in `code-review` skill: it forks on the main session's model
+(Fable) and spawns 20+ Fable verifiers. `mattpocock-skills:code-review` is a
+second lens only if it is run as a Sonnet/Opus agent, not a fork. Then
 `/codex-review` (this repo's ported skill) for a cross-model second opinion on
 risky or large diffs. Apply findings via `simplify` or `--fix`.
 
@@ -177,16 +182,34 @@ active plan.
 | 2 UAC + plan | manual - files are the contract | main session (plan mode) |
 | 2b design options | `mattpocock-skills:prototype` (throwaway) | main session |
 | 3 plan review | `lavish` then `mattpocock-skills:grilling` | main session (user in loop) |
-| 5 Phase 1 FE mock | `webapp-testing` / Playwright MCP to verify | `coder` agent (worktree if concurrent) |
+| 5 Phase 1 FE mock | `agent-browser` CLI to verify | `coder` agent (worktree if concurrent) |
 | 6 Phase 2 TDD | `mattpocock-skills:tdd` (scoped to backend phase) | `coder` agent; tests may split to `tester` |
 | 6 hard bugs | `mattpocock-skills:diagnosing-bugs` | main session or `coder` agent |
-| 8 review | `code-review` (built-in), then `mattpocock-skills:code-review`, then `/codex-review` | `reviewer` agent + main session |
+| 8 review | `reviewer` agent on Opus (never the built-in `code-review` fork), then `/codex-review` | `reviewer` agent + main session |
 | periodic | `mattpocock-skills:codebase-design` | main session |
 | context capture | `mattpocock-skills:research` | main session or background agent |
+
+## Design-skill slots (plan 23, `docs/reference/design-language.md` section 8)
+
+Where the installed animation/design skills plug into the pipeline above - a slot fires
+whenever the feature touches UI, not on every feature:
+
+| Step | Skill | Mode |
+| ---- | ----- | ---- |
+| 1 grill | `animation-vocabulary` | Naming only |
+| 2 UAC | `find-animation-opportunities` | Read-only; capped output becomes ACs or an explicit no-motion list |
+| 5 Phase 1 FE mock | `animate` | Decision gate for any new motion added in Phase 1 |
+| 8 review | `emil-design-eng` | Before/After/Why table on every UI diff |
+| 8 review | `review-animations` | Only when the diff touches motion. Runs as ONE `general-purpose` agent on Opus - **never** the built-in `/code-review` fork, and never delegated to the `reviewer` agent's own pass (they check different things: `reviewer` = correctness + hard-fails, `review-animations` = feel) |
+| Any new FE dependency | `pick-ui-library` | First - repo picks already made: `motion`, `sonner`, `vaul`, `@dnd-kit` |
+| Periodic | `improve-animations` | - |
+
+Not used here: `animate-expo`, `write-swift`, `webapp-testing` (idle for this stack, D15).
 
 ## Related
 
 - `PRINCIPLES.md` - the binding contract this skill executes (governs on conflict)
+- `docs/reference/design-language.md` - tokens, motion, primitives roster, decisions D1-D16
 - `CLAUDE.md` - the detailed per-engine reference, conventions, lessons learned
 - `documentation/development_process/AI_Agent_Orchestration_Guide.md` §6 - Test
   Execution Report format

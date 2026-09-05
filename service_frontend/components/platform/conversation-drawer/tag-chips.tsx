@@ -8,7 +8,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { X } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { SearchSelect } from '@/components/platform/search-select';
 import { ApiError } from '@/lib/api-client';

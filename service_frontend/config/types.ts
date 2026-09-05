@@ -38,21 +38,5 @@ export interface Settings {
       sidebarCollapse: boolean;
       sidebarTheme: 'light' | 'dark';
     };
-    demo2: {
-      headerSticky: boolean;
-      headerStickyOffset: number;
-    };
-    demo5: {
-      headerSticky: boolean;
-      headerStickyOffset: number;
-    };
-    demo7: {
-      headerSticky: boolean;
-      headerStickyOffset: number;
-    };
-    demo9: {
-      headerSticky: boolean;
-      headerStickyOffset: number;
-    };
   };
 }

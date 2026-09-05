@@ -46,7 +46,7 @@ function DataGridColumnHeader<TData, TValue>({
   filter,
   visibility = false,
 }: DataGridColumnHeaderProps<TData, TValue>) {
-  const { isLoading, table, props, recordCount } = useDataGrid();
+  const { table, props, recordCount, isPlaceholderData } = useDataGrid();
 
   const moveColumn = (direction: 'left' | 'right') => {
     const currentOrder = [...table.getState().columnOrder]; // Get current column order
@@ -101,7 +101,7 @@ function DataGridColumnHeader<TData, TValue>({
           'text-secondary-foreground rounded-md font-normal -ms-2 px-2 h-7 hover:bg-secondary data-[state=open]:bg-secondary hover:text-foreground data-[state=open]:text-foreground',
           className,
         )}
-        disabled={isLoading || recordCount === 0}
+        disabled={recordCount === 0 && !isPlaceholderData}
         onClick={() => {
           const isSorted = column.getIsSorted();
           if (isSorted === 'asc') {

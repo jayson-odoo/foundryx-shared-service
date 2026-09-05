@@ -39,11 +39,16 @@
   --foundryx-primary-soft: #fff2e9;
   --foundryx-primary-transparent: rgba(255, 90, 0, 0.2);
 
-  --foundryx-success: #1f9d54;
+  /* success/info/warning (T1 fix round 3, findings 1+2): darkened from the raw
+     Tokens Studio export so the primitive ITSELF (not a -active/-accent stand-in)
+     clears WCAG 4.5:1 both as ink on --background (white in light) and against a
+     white foreground - see the Layer 2 comment below for the full rationale. Old ->
+     new hex + measured ratios are in the T1 test report ("fix round 3"). */
+  --foundryx-success: #1b8648;
   --foundryx-success-active: #197f44;
   --foundryx-success-accent: #115c31;
   --foundryx-success-soft: #e3f5e9;
-  --foundryx-success-transparent: rgba(31, 157, 84, 0.2);
+  --foundryx-success-transparent: rgba(27, 134, 72, 0.2);
 
   --foundryx-danger: #d93420;
   --foundryx-danger-active: #b62a1a;
@@ -51,17 +56,22 @@
   --foundryx-danger-soft: #fce5df;
   --foundryx-danger-transparent: rgba(217, 52, 32, 0.2);
 
-  --foundryx-info: #2c7ff7;
+  --foundryx-info: #0f6ef6;
   --foundryx-info-active: #1a63d4;
   --foundryx-info-accent: #14499c;
   --foundryx-info-soft: #e3efff;
-  --foundryx-info-transparent: rgba(44, 127, 247, 0.2);
+  --foundryx-info-transparent: rgba(15, 110, 246, 0.2);
 
-  --foundryx-warning: #e8a318;
-  --foundryx-warning-active: #c2860d;
-  --foundryx-warning-accent: #8f6107;
+  /* warning's raw hue (#e8a318) cannot reach 4.5:1 against white while staying
+     lighter than the original -active/-accent steps (any base dark enough to pass
+     is darker than the old -active), so -active/-accent are darkened too, in the
+     same proportion success/info's base-to-active-to-accent steps use - the whole
+     amber scale moves down together rather than crossing over itself. */
+  --foundryx-warning: #9b6d0f;
+  --foundryx-warning-active: #7e5708;
+  --foundryx-warning-accent: #5b3e04;
   --foundryx-warning-soft: #fcf0db;
-  --foundryx-warning-transparent: rgba(232, 163, 24, 0.2);
+  --foundryx-warning-transparent: rgba(155, 109, 15, 0.2);
 }
 
 /* ───────────────── Layer 1 - Primitives (Dark theme) ───────────────────── */
@@ -147,6 +157,30 @@
   --destructive: var(--foundryx-danger);
   --destructive-foreground: var(--foundryx-white);
 
+  /* success/info/warning (AC-DLA-07, css/design-tokens.test.ts): --success etc is the
+     INK role (solid-fill text, "text-success" body ink, an alert's light-appearance
+     icon) - it must clear 4.5:1 (a) against its own foreground AND (b) as ink directly
+     on --background. --success/--info/--warning are a PLAIN pass-through to the raw
+     --foundryx-* primitive (T1 fix round 3, finding 1+2) - NOT a stand-in for
+     -active/-accent, because the Branding editor (lib/branding-tokens.ts,
+     providers/branding-provider.tsx) writes a tenant's override straight onto
+     --foundryx-success/-info/-warning; aliasing the semantic var to -active/-accent
+     would leave a tenant's picked "Success"/"Info"/"Warning" color invisible
+     everywhere these vars are read. So the FIX lives one layer down: the
+     --foundryx-success/-info/-warning primitives themselves (css/foundryx-tokens.css
+     Layer 1, and their Branding defaults in lib/branding-tokens.ts +
+     app/branding/token_whitelist.py) are darkened in :root/light until the raw hue
+     itself clears 4.5:1 against white - which covers (a) and (b) at once, since
+     --background is white in light. .dark needs no change: the existing dark
+     primitives already clear 4.5:1 against both a black foreground and the near-black
+     --background (dark). -foreground stays white in light / flips black in dark
+     below (a true black/white constant, not a flipping primitive - dark theme's
+     BRIGHT ink needs a dark foreground, the mirror of light theme's need for a
+     bright one). warning's raw hue cannot pass at 4.5:1 while staying lighter than
+     its own original -active/-accent, so those two are darkened in proportion too
+     (see the Layer 1 comment) - -soft is untouched throughout; alert.tsx's light
+     appearance reads its icon off --success-accent directly (not -foreground) since
+     -foreground is white/black (fill ink), not a tint-safe hue. */
   --success: var(--foundryx-success);
   --success-foreground: var(--foundryx-white);
   --success-active: var(--foundryx-success-active);
@@ -201,6 +235,15 @@
 
   --destructive: var(--foundryx-danger);
   --destructive-foreground: var(--foundryx-white);
+
+  /* --success/--info/--warning need no override here - they resolve to
+     --foundryx-success/-info/-warning, which already carry their OWN (unmodified,
+     already-passing) .dark values above, so the ink auto-brightens under .dark
+     without a second declaration. Only the foreground (a true white/black constant,
+     not a flipping primitive) needs one. */
+  --success-foreground: var(--foundryx-black);
+  --info-foreground: var(--foundryx-black);
+  --warning-foreground: var(--foundryx-black);
 
   --border: var(--foundryx-grey-200);
   --input: var(--foundryx-grey-200);

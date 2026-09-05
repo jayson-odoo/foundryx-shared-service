@@ -100,4 +100,34 @@ describe('MappingSimulator (AC-16-30/31)', () => {
     fireEvent.click(screen.getByRole('button', { name: /run simulation/i }));
     expect(onSimulate).not.toHaveBeenCalled();
   });
+
+  it('AC-DLA-56 (T7): the field-results grid is a DataGrid, one row per header + line field', async () => {
+    const onSimulate = vi.fn().mockResolvedValue({
+      ...rejectedResult(),
+      lineFields: [
+        [
+          {
+            scope: 'line',
+            sourcePath: 'Qty',
+            canonicalField: 'quantity',
+            present: true,
+            ok: true,
+            value: 3,
+            error: null,
+          },
+        ],
+      ],
+    });
+    render(<MappingSimulator open onOpenChange={vi.fn()} rows={ROWS} onSimulate={onSimulate} />);
+    fireEvent.click(screen.getByRole('button', { name: /run simulation/i }));
+
+    await waitFor(() => expect(screen.getByTestId('field-results')).toBeInTheDocument());
+    const grid = screen.getByTestId('field-results');
+    expect(grid.querySelector('table')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Sorento field' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Source' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Value' })).toBeInTheDocument();
+    // header field (Code) + header field (Credit limit, failed) + line field (Qty).
+    expect(screen.getAllByRole('row')).toHaveLength(4); // 1 header row + 3 data rows.
+  });
 });

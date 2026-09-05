@@ -48,7 +48,7 @@ import {
   Undo2,
   Wand2,
 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type {
   WorkflowDefinition,
   WorkflowMetadata,
@@ -77,6 +77,8 @@ import {
 } from '@/lib/workflow-doc';
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import {
   FlowCanvas,
@@ -625,7 +627,7 @@ export function WorkflowCanvas({
                     <button
                       type="button"
                       data-testid="context-replace"
-                      className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-sm hover:bg-accent"
+                      className={cn(PRESSED_CLASS, 'flex w-full items-center justify-between px-2.5 py-1.5 text-left text-sm hover:bg-accent')}
                       onClick={() => setMenuView('replace')}
                     >
                       <span className="flex items-center gap-2">
@@ -639,7 +641,7 @@ export function WorkflowCanvas({
                 <button
                   type="button"
                   data-testid="context-delete"
-                  className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm text-destructive hover:bg-accent"
+                  className={cn(PRESSED_CLASS, 'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm text-destructive hover:bg-accent')}
                   onClick={() => {
                     handleDelete(contextNode.id);
                     setContextMenu(null);
@@ -652,7 +654,7 @@ export function WorkflowCanvas({
               <>
                 <button
                   type="button"
-                  className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-xs font-semibold text-muted-foreground hover:bg-accent"
+                  className={cn(PRESSED_CLASS, 'flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-xs font-semibold text-muted-foreground hover:bg-accent')}
                   onClick={() => setMenuView('main')}
                 >
                   <ChevronLeft className="size-3.5" /> Replace with
@@ -680,7 +682,7 @@ export function WorkflowCanvas({
                       <button
                         key={entry.type}
                         type="button"
-                        className="flex w-full items-center px-2.5 py-1.5 text-left text-sm hover:bg-accent"
+                        className={cn(PRESSED_CLASS, 'flex w-full items-center px-2.5 py-1.5 text-left text-sm hover:bg-accent')}
                         onClick={() => {
                           handleReplace(contextNode.id, entry.type);
                           setContextMenu(null);

@@ -269,3 +269,20 @@ describe('column source mode (plan 22 S2, AC-22-09)', () => {
     expect(screen.getByRole('combobox', { name: 'AutoCount source for row 1' })).toBeInTheDocument();
   });
 });
+
+describe('AC-DLA-56 (T7): migrated off the raw <table> onto DataGrid', () => {
+  it('renders as a DataGrid (table role + column headers), not a bare <table>', () => {
+    renderTable(true);
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'AutoCount field' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Transform' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Sorento field' })).toBeInTheDocument();
+    // 2 data rows + the header row.
+    expect(screen.getAllByRole('row')).toHaveLength(3);
+  });
+
+  it('shows the "no rows" message via the DataGrid empty state', () => {
+    renderTable(true, { rows: [] });
+    expect(screen.getByText('No deliverable fields mapped yet.')).toBeInTheDocument();
+  });
+});

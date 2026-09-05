@@ -136,7 +136,7 @@ export function OffsetEdge({
               pointerEvents: 'all',
             }}
             className={cn(
-              'nodrag nopan cursor-pointer rounded-md border bg-background px-1.5 py-0.5 text-[11px] font-medium shadow-xs',
+              'nodrag nopan cursor-pointer rounded-md border bg-background px-1.5 py-0.5 text-2xs font-medium shadow-xs',
               selected ? 'border-primary text-primary' : 'border-border text-foreground',
             )}
             onClick={handleLabelClick}

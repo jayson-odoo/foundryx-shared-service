@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft, Loader2, Save, Send, Code2, LoaderCircleIcon } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
 import {
@@ -203,15 +203,15 @@ export function TemplateBuilderView({ channelId, templateId }: TemplateBuilderVi
             {canSubmit && (
               <Button size="sm" onClick={onSubmit} disabled={saving || submitting}>
                 {submitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-                Submit
+                Submit template
               </Button>
             )}
           </div>
         </div>
 
-        <h1 className="font-heading text-xl font-semibold">
+        <h2 className="font-heading text-xl font-semibold">
           {templateId ? doc.name || 'Template' : 'New template'}
-        </h1>
+        </h2>
 
         <div className="flex flex-col gap-4 lg:flex-row">
           <Card className="lg:flex-1">

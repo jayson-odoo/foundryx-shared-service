@@ -2,14 +2,13 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { usePathname } from 'next/navigation';
 import { CircleCheck, HardDriveDownload, Pencil, PlugZap, Unplug } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { integrationService } from '@/services/integration-service';
 import { useJobsActivity } from '@/providers/jobs-activity-provider';
 import type { Connection } from '@/types/integration';
-import { connectionFormHref, integrationsListPath } from './paths';
+import { connectionFormHref } from './paths';
 
 /**
  * The Connection action registry - surfaced in the row "…" menu, the bulk
@@ -18,7 +17,6 @@ import { connectionFormHref, integrationsListPath } from './paths';
  */
 export function useConnectionActions(): ResourceAction<Connection>[] {
   const router = useRouter();
-  const pathname = usePathname();
   const { openMigration } = useJobsActivity();
 
   // Providers that offer NO test declare it with an empty `testLabel` (the
@@ -76,18 +74,10 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
         // Making it active retires the others; new uploads land here.
         isVisible: (rows) =>
           rows.length === 1 && rows[0].type === 'storage' && !rows[0].isActive,
-        confirm: {
-          title: 'Make this the active storage bucket?',
-          description:
-            'New uploads will be written here. Files already stored on the current bucket keep resolving from it. Only one storage connection can be active at a time.',
-          confirmLabel: 'Set as active',
-        },
-        run: async ([connection], rt) => {
-          if (!connection) return;
-          await integrationService.activate(connection.id);
-          toast.success(`${connection.name} is now the active storage bucket.`);
-          rt.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm.
+        // No `run`: the registered `connections.activate` handler commits it
+        // server-side (fix round 1 item 12 - a `deferred` action has no `run`).
+        deferred: { actionKey: 'connections.activate', entityType: 'connection' },
       },
       {
         id: 'migrate-storage',
@@ -107,27 +97,11 @@ export function useConnectionActions(): ResourceAction<Connection>[] {
         tone: 'destructive',
         permission: 'integrations.manage',
         surfaces: { row: true, bulk: true, form: true },
-        confirm: {
-          title: 'Disconnect this integration?',
-          description:
-            'The connection and its stored credentials will be removed. Features using it fall back to the platform default until you reconnect.',
-          confirmLabel: 'Disconnect',
-        },
-        run: async (rows, rt) => {
-          for (const row of rows) {
-            await integrationService.remove(row.id);
-          }
-          toast.success(
-            rows.length === 1
-              ? `${rows[0].name} disconnected.`
-              : `${rows.length} connections disconnected.`,
-          );
-          // From the form surface the record is gone - return to the list.
-          if (pathname !== integrationsListPath) router.push(integrationsListPath);
-          else rt.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm,
+        // no `run` (the registered `connections.delete` handler commits it).
+        deferred: { actionKey: 'connections.delete', entityType: 'connection' },
       },
     ],
-    [router, pathname, openMigration, noTestProviders],
+    [router, openMigration, noTestProviders],
   );
 }

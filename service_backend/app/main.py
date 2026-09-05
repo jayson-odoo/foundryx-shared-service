@@ -26,6 +26,7 @@ from app.api.v1 import (
     platform_tenant_modules,
     platform_tenants,
     numbering,
+    pending_actions,
     reviews,
     roles,
     rules,
@@ -57,6 +58,11 @@ async def lifespan(_: FastAPI):
     ensure_core_locations()
     # Storage migration is the first background-job type (sprint-4/10 Slice 2).
     register_storage_migration_handler()
+    # Deferred actions - the grace-window engine (sprint-4/23, T5). Idempotent;
+    # module-provided deferred actions register at their own boot hook.
+    from app.deferred_actions.handlers import register_deferred_actions
+
+    register_deferred_actions()
     # Email outbox dispatcher (plan 09 §5) - daemon thread, gated by an
     # explicit settings flag (conftest turns it off; tests drive
     # dispatch_pending() directly against their own session).
@@ -174,6 +180,10 @@ app.include_router(
     platform_tenant_branding.router, prefix="/platform/tenants", tags=["platform"]
 )
 app.include_router(health.router, tags=["health"])
+# Deferred actions - the grace-window engine (sprint-4/23, T5).
+app.include_router(
+    pending_actions.router, prefix="/api/v1/pending-actions", tags=["pending-actions"]
+)
 
 # Installed App-Store modules (omnichannel, …) hook in via the loader.
 load_modules(app)

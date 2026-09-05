@@ -7,6 +7,7 @@ import { LucideIcon } from 'lucide-react';
 import { useSession } from 'next-auth/react';
 import { MENU_MEGA_MOBILE } from '@/config/menu.config';
 import { filterMenu } from '@/lib/menu-filter';
+import { collectMenuPaths, matchesMenuPath } from '@/lib/menu-path-match';
 import { cn } from '@/lib/utils';
 import { useCan } from '@/hooks/use-can';
 import { useInstalledModules } from '@/hooks/use-app-store';
@@ -59,11 +60,14 @@ export function MegaMenuMobile() {
     [can, installed.isActive, installed.ready, showPlatform],
   );
 
-  // Memoize matchPath to prevent unnecessary re-renders
+  // AC-DLA-72 same-class defect (fix round 1 item 4) - segment-boundary +
+  // most-specific-wins against the VISIBLE menu (`lib/menu-path-match.ts`),
+  // same discipline as sidebar-menu.tsx: a naive `startsWith` lit `/scm` up
+  // on `/scm-archive` and kept a section root lit beside its active child.
+  const menuPaths = useMemo(() => collectMenuPaths(visibleMenu), [visibleMenu]);
   const matchPath = useCallback(
-    (path: string): boolean =>
-      path === pathname || (path.length > 1 && pathname.startsWith(path)),
-    [pathname],
+    (path: string): boolean => matchesMenuPath(path, pathname, menuPaths),
+    [pathname, menuPaths],
   );
 
   // Global classNames for consistent styling
@@ -167,7 +171,7 @@ export function MegaMenuMobile() {
           key={index}
           value={item.path || `child-${level}-${index}`}
         >
-          <AccordionMenuSubTrigger className="text-[13px]">
+          <AccordionMenuSubTrigger className="text-2sm">
             {item.icon && <item.icon data-slot="accordion-menu-icon" />}
             {item.collapse ? (
               <span className="text-muted-foreground">
@@ -207,7 +211,7 @@ export function MegaMenuMobile() {
         <AccordionMenuItem
           key={index}
           value={item.path || ''}
-          className="text-[13px]"
+          className="text-2sm"
         >
           <Link href={item.path || '#'}>
             {item.icon && <item.icon data-slot="accordion-menu-icon" />}

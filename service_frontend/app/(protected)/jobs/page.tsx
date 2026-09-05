@@ -1,12 +1,6 @@
 'use client';
 
 import { Fragment } from 'react';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { Container } from '@/components/common/container';
 import { ResourceList } from '@/components/platform/resource-list';
 import { useJobsListConfig } from './use-jobs-list-config';
@@ -22,14 +16,6 @@ export default function JobsPage() {
 
   return (
     <Fragment>
-      <Container width="fluid">
-        <Toolbar>
-          <ToolbarHeading>
-            <ToolbarPageTitle text="Jobs" />
-            <ToolbarDescription>Background jobs across your workspace.</ToolbarDescription>
-          </ToolbarHeading>
-        </Toolbar>
-      </Container>
       <Container width="fluid">
         <ResourceList config={config} />
       </Container>

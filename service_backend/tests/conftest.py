@@ -66,6 +66,18 @@ def _register_storage_locations():
     yield
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _register_deferred_actions():
+    """Populate the deferred-actions registry once (sprint-4/23, T5) - the app's
+    own lifespan does this too (``TestClient(app)`` triggers it), but a test
+    that drives ``PendingActionService`` directly against a bare ``db`` session
+    (no HTTP client) needs the registry populated regardless."""
+    from app.deferred_actions.handlers import register_deferred_actions
+
+    register_deferred_actions()
+    yield
+
+
 @pytest.fixture
 def session_factory():
     # The omnichannel module uses the `app_omnichannel` schema. SQLite has no
