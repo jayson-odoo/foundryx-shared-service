@@ -169,8 +169,30 @@ export function useDeferredAction(
     // the whole batch is still counting down.
     const results = await Promise.all(parked.entities.map((e) => checkCurrent(e)));
     if (results.some((r) => r === null)) return;
-    const stillPending = results.some((r) => r!.pending);
-    if (stillPending) return;
+    const stillCountingDown = results.some((r) => r!.pending && r!.pending.status !== 'committing');
+    if (stillCountingDown) return;
+    // Fix round 2, B1: at least one row was CLAIMED (beat sweep, or a
+    // racing `current` poll from another tab) but hasn't settled yet - the
+    // handler may still be running, and may still fail. Report `committing`
+    // (non-terminal: no toast, no navigation) and keep polling; NEVER read
+    // this as a settled outcome (previously `current()` surfaced the claimed
+    // row as a `lastOutcome` that wasn't cancelled/failed, which this hook
+    // read as `done` mid-commit - and even if the commit then failed).
+    const stillCommitting = results.some((r) => r!.pending?.status === 'committing');
+    if (stillCommitting) {
+      setState({ status: 'committing', count: parked.entities.length });
+      return;
+    }
+    // Defensive: a `lastOutcome.status` of `'committing'` should never reach
+    // here (the backend's `current()` never returns it there), but treat it
+    // as still in-flight rather than settled if it ever does.
+    const stillCommittingOutcome = results.some(
+      (r) => r!.lastOutcome?.status === 'committing',
+    );
+    if (stillCommittingOutcome) {
+      setState({ status: 'committing', count: parked.entities.length });
+      return;
+    }
     // Fix round 1 item 2: a CANCELLED outcome (this hook's own `cancel()`
     // already short-circuits before ever polling again - this is a
     // teammate cancelling from ANOTHER tab/session) must return to `idle`
@@ -208,13 +230,20 @@ export function useDeferredAction(
           const result = await checkCurrent(watch);
           if (result?.pending) {
             parkedRef.current = { ids: [result.pending.id], entities: [watch] };
-            setState({
-              status: 'pending',
-              actionKey: result.pending.actionKey,
-              commitAt: result.pending.commitAt,
-              windowSeconds: result.pending.windowSeconds,
-              count: 1,
-            });
+            // B1: found already mid-commit (the beat sweep claimed it just
+            // before this focus-poll) - report `committing`, not a
+            // countdown against an already-past `commitAt`.
+            setState(
+              result.pending.status === 'committing'
+                ? { status: 'committing', count: 1 }
+                : {
+                    status: 'pending',
+                    actionKey: result.pending.actionKey,
+                    commitAt: result.pending.commitAt,
+                    windowSeconds: result.pending.windowSeconds,
+                    count: 1,
+                  },
+            );
             startPolling();
           }
         })();
@@ -233,13 +262,17 @@ export function useDeferredAction(
       const result = await checkCurrent(watch);
       if (cancelled || !result?.pending) return;
       parkedRef.current = { ids: [result.pending.id], entities: [watch] };
-      setState({
-        status: 'pending',
-        actionKey: result.pending.actionKey,
-        commitAt: result.pending.commitAt,
-        windowSeconds: result.pending.windowSeconds,
-        count: 1,
-      });
+      setState(
+        result.pending.status === 'committing'
+          ? { status: 'committing', count: 1 }
+          : {
+              status: 'pending',
+              actionKey: result.pending.actionKey,
+              commitAt: result.pending.commitAt,
+              windowSeconds: result.pending.windowSeconds,
+              count: 1,
+            },
+      );
       startPolling();
     })();
     return () => {

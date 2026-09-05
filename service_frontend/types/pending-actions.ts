@@ -9,6 +9,15 @@
 
 export type DeferredActionWindow = 'destructive' | 'reversible';
 
+/**
+ * T5 fix round 2, B1: a row's countdown is `'pending'`; once the beat sweep
+ * (or a racing `current` poll from another tab) CLAIMS it, it flips to
+ * `'committing'` - still surfaced via `PendingActionCurrent.pending` (the
+ * smallest wire change), never as a settled `lastOutcome` (anything short
+ * of cancelled/failed there used to read as success).
+ */
+export type PendingActionRowStatus = 'pending' | 'committing';
+
 export interface PendingAction {
   id: string;
   actionKey: string;
@@ -18,9 +27,10 @@ export interface PendingAction {
   windowSeconds: number;
   requestedById: string | null;
   requestedByName: string | null;
+  status: PendingActionRowStatus;
 }
 
-export type PendingActionOutcomeStatus = 'committed' | 'cancelled' | 'failed';
+export type PendingActionOutcomeStatus = 'committed' | 'cancelled' | 'failed' | 'committing';
 
 export interface PendingActionOutcome {
   id: string;

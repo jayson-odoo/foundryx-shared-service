@@ -23,6 +23,7 @@ from app.models import DEFAULT_TENANT_ID, Role, User, UserStatus
 from app.models.pending_action import (
     PENDING_ACTION_CANCELLED,
     PENDING_ACTION_COMMITTED,
+    PENDING_ACTION_COMMITTING,
     PENDING_ACTION_FAILED,
     PENDING_ACTION_PENDING,
     PendingAction,
@@ -291,6 +292,57 @@ def test_current_lazily_commits_an_overdue_row(client, db):
     assert body["pending"] is None
     assert body["lastOutcome"]["status"] == PENDING_ACTION_COMMITTED
     assert _WIDGET_STATE["w8"]["deleted"] is True
+
+
+# ── T5 fix round 2, B1: `current` must never surface a `committing` row as
+# a settled `lastOutcome` - a beat-driven commit (another process/session)
+# claims the row before the handler runs, and the frontend treats anything
+# but cancelled/failed as success (toast + navigate away mid-commit, and
+# even if the commit then fails). ──────────────────────────────────────────
+
+
+def test_current_never_reports_a_committing_row_as_settled(client, db):
+    h = _login(client)
+    row = client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "widget.delete", "entityType": TEST_ENTITY, "entityId": "w-mid-commit"},
+        headers=h,
+    ).json()
+    pa = db.get(PendingAction, row["id"])
+    pa.status = PENDING_ACTION_COMMITTING
+    db.commit()
+
+    res = client.get(
+        "/api/v1/pending-actions/current",
+        params={"entityType": TEST_ENTITY, "entityId": "w-mid-commit"},
+        headers=h,
+    )
+    body = res.json()
+    # Never reported as a settled outcome (the frontend would toast success).
+    assert body["lastOutcome"] is None
+    # The client must keep polling - `pending` carries the row, distinguished
+    # by `status`, so the frontend can tell "counting down" from "committing".
+    assert body["pending"] is not None
+    assert body["pending"]["status"] == PENDING_ACTION_COMMITTING
+    # `current` itself never runs the handler on a row it didn't claim.
+    assert "w-mid-commit" not in _WIDGET_STATE
+
+
+def test_current_service_never_returns_committing_as_last_outcome(db):
+    admin = _admin(db)
+    svc = PendingActionService(db)
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key="widget.delete", entity_type=TEST_ENTITY, entity_id="w-mid-commit-2",
+    )
+    pa = db.get(PendingAction, row.id)
+    pa.status = PENDING_ACTION_COMMITTING
+    db.commit()
+
+    result = svc.current(DEFAULT_TENANT_ID, TEST_ENTITY, "w-mid-commit-2", admin)
+    assert result["last_outcome"] is None
+    assert result["pending"] is not None
+    assert result["pending"].status == PENDING_ACTION_COMMITTING
 
 
 def test_current_with_nothing_parked(client):

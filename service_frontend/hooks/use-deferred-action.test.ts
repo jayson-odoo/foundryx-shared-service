@@ -254,6 +254,97 @@ describe('useDeferredAction', () => {
     expect(onCommitted).toHaveBeenCalledTimes(1);
   });
 
+  // ── T5 fix round 2, B1: a `committing` `current()` response (the beat
+  // sweep, or a racing poll from another tab, already CLAIMED the row - the
+  // handler may still be running) must stay non-terminal: no toast, no
+  // navigation, keep polling - until a genuinely terminal response arrives.
+
+  it('a `committing` current() response stays non-terminal, then settles on the next terminal response', async () => {
+    const onCommitted = vi.fn();
+    const onFailed = vi.fn();
+    const { result } = renderHook(() => useDeferredAction({ onCommitted, onFailed }));
+    await act(async () => {
+      await result.current.start('users.trash', { entityType: 'user', entityId: 'cm1' });
+    });
+    expect(result.current.state.status).toBe('pending');
+
+    const currentSpy = vi.spyOn(mockPendingActionsService, 'current');
+    currentSpy.mockResolvedValueOnce({
+      pending: {
+        id: 'pa-mid-commit',
+        actionKey: 'users.trash',
+        entityType: 'user',
+        entityId: 'cm1',
+        commitAt: new Date(Date.now() - 1000).toISOString(),
+        windowSeconds: 10,
+        requestedById: null,
+        requestedByName: null,
+        status: 'committing',
+      },
+      lastOutcome: null,
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    // Still in flight - never reported done/failed off a `committing` row.
+    expect(result.current.state.status).toBe('committing');
+    expect(onCommitted).not.toHaveBeenCalled();
+    expect(onFailed).not.toHaveBeenCalled();
+
+    currentSpy.mockResolvedValueOnce({
+      pending: null,
+      lastOutcome: {
+        id: 'pa-mid-commit',
+        actionKey: 'users.trash',
+        status: 'committed',
+        errorText: null,
+        endedAt: new Date().toISOString(),
+      },
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(result.current.state.status).toBe('done');
+    expect(onCommitted).toHaveBeenCalledTimes(1);
+
+    currentSpy.mockRestore();
+  });
+
+  // ── N2: `onFailed` fires on a `failed` outcome - never a success toast ────
+
+  it('a `failed` outcome calls onFailed, not onCommitted', async () => {
+    const onCommitted = vi.fn();
+    const onFailed = vi.fn();
+    const { result } = renderHook(() => useDeferredAction({ onCommitted, onFailed }));
+    await act(async () => {
+      await result.current.start('users.trash', { entityType: 'user', entityId: 'fl1' });
+    });
+
+    const currentSpy = vi.spyOn(mockPendingActionsService, 'current').mockResolvedValueOnce({
+      pending: null,
+      lastOutcome: {
+        id: 'pa-fail',
+        actionKey: 'users.trash',
+        status: 'failed',
+        errorText: 'widget no longer exists',
+        endedAt: new Date().toISOString(),
+      },
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    expect(result.current.state.status).toBe('failed');
+    expect(onFailed).toHaveBeenCalledTimes(1);
+    expect(onFailed).toHaveBeenCalledWith('widget no longer exists');
+    expect(onCommitted).not.toHaveBeenCalled();
+
+    currentSpy.mockRestore();
+  });
+
   it('reset() clears back to idle without touching the server', async () => {
     const { result } = renderHook(() => useDeferredAction());
     await act(async () => {

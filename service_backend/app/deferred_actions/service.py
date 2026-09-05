@@ -104,15 +104,40 @@ class PendingActionService:
     def _last_outcome(
         self, tenant_id: str, entity_type: str, entity_id: str
     ) -> Optional[PendingAction]:
+        # Fix round 2, B1: only a TERMINAL row (committed/cancelled/failed)
+        # is a settled outcome - `committing` is mid-flight (the beat sweep
+        # claimed it and the handler may still be running, or may still
+        # fail). A `committing` row must never surface here: the frontend
+        # treats anything but cancelled/failed as success and would toast +
+        # navigate away before the handler even finishes.
         return (
             self.db.query(PendingAction)
             .filter(
                 PendingAction.tenant_id == tenant_id,
                 PendingAction.entity_type == entity_type,
                 PendingAction.entity_id == entity_id,
-                PendingAction.status != PENDING_ACTION_PENDING,
+                PendingAction.status.notin_(
+                    [PENDING_ACTION_PENDING, PENDING_ACTION_COMMITTING]
+                ),
             )
             .order_by(PendingAction.ended_at.desc().nullslast(), PendingAction.created_at.desc())
+            .first()
+        )
+
+    def _committing_for(
+        self, tenant_id: str, entity_type: str, entity_id: str
+    ) -> Optional[PendingAction]:
+        """A row another caller (beat sweep, or a racing `current` poll) has
+        already CLAIMED but not yet settled - fix round 2, B1."""
+        return (
+            self.db.query(PendingAction)
+            .filter(
+                PendingAction.tenant_id == tenant_id,
+                PendingAction.entity_type == entity_type,
+                PendingAction.entity_id == entity_id,
+                PendingAction.status == PENDING_ACTION_COMMITTING,
+            )
+            .order_by(PendingAction.created_at.desc())
             .first()
         )
 
@@ -138,7 +163,16 @@ class PendingActionService:
     def current(self, tenant_id: str, entity_type: str, entity_id: str, actor: User) -> dict:
         row = self._commit_if_due(self._pending_for(tenant_id, entity_type, entity_id))
         pending = row if (row is not None and row.status == PENDING_ACTION_PENDING) else None
-        last_outcome = self._last_outcome(tenant_id, entity_type, entity_id)
+        # Fix round 2, B1: a row another caller (beat sweep, or a racing
+        # `current` poll from another tab) already claimed is mid-commit -
+        # surfaced via the SAME `pending` slot (distinguished by
+        # `status='committing'`, the smaller wire change vs a new field) so
+        # the client keeps polling instead of reading a bogus settled
+        # outcome. Never both `pending` and a committing row at once (the
+        # partial unique index only covers `status='pending'`, but a park
+        # can't happen while one is already committing on this record).
+        committing = self._committing_for(tenant_id, entity_type, entity_id) if pending is None else None
+        last_outcome = None if committing is not None else self._last_outcome(tenant_id, entity_type, entity_id)
 
         # Fix round 1 item 1: `current` is gated by the SAME permission the
         # parked action itself requires (resolved fresh from the actor's
@@ -146,12 +180,18 @@ class PendingActionService:
         # cannot observe its countdown either. Uniform empty response (never
         # a distinct error shape) so a caller lacking the permission cannot
         # distinguish "nothing pending" from "pending, but not yours to see".
-        relevant_key = pending.action_key if pending else (last_outcome.action_key if last_outcome else None)
+        relevant_key = (
+            pending.action_key
+            if pending
+            else committing.action_key
+            if committing
+            else (last_outcome.action_key if last_outcome else None)
+        )
         if relevant_key is not None and not self._may_act_on(actor, relevant_key):
             raise ActionNotFound("Pending action not found.")
 
         return {
-            "pending": pending,
+            "pending": pending if pending is not None else committing,
             "last_outcome": last_outcome,
         }
 

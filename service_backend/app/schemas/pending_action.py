@@ -26,6 +26,11 @@ class PendingActionOut(ApiModel):
     windowSeconds: int = Field(validation_alias="window_seconds")
     requestedById: Optional[str] = Field(default=None, validation_alias="requested_by_id")
     requestedByName: Optional[str] = None
+    # T5 fix round 2, B1: 'pending' (still counting down) or 'committing'
+    # (claimed by the beat sweep / a racing poll, handler may still be
+    # running) - the smallest wire change that lets the client tell the two
+    # apart without inventing a new `current` response field.
+    status: str = "pending"
 
 
 class PendingActionOutcomeOut(ApiModel):

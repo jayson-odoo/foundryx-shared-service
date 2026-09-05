@@ -99,6 +99,7 @@ export const mockPendingActionsService: PendingActionsService = {
       windowSeconds,
       requestedById: 'u-mock',
       requestedByName: 'You',
+      status: 'pending',
     };
     _pending.set(k, row);
     const result: PendingActionCreateResult = {
