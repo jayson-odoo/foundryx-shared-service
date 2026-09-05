@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { Download, RotateCcw, Upload } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { BrandingTokens, ThemeName } from '@/types/branding';
 import {
   buildTemplate,

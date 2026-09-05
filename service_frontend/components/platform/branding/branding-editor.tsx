@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { LoaderCircleIcon } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { BrandingFooter, BrandingSocials, BrandingTokens } from '@/types/branding';
 import { isValidColor } from '@/lib/branding-tokens';
 import { useBrandingAdmin } from '@/hooks/use-branding';
