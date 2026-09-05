@@ -801,6 +801,66 @@ class RowHashRepository:
             .count()
         )
 
+    def touch_seen(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+        *,
+        seen_at: datetime,
+    ) -> int:
+        """Bump ``last_seen_at`` for every given ref WITHOUT touching
+        ``row_hash`` (plan sprint-5/03 S3, AC-03-15) - the primitive an
+        UNCHANGED row on a paged pass needs: it is not restaged, so
+        ``upsert_many`` never runs for it, but a completed reconcile's delete
+        diff (``stale_refs`` below) must still see it as seen THIS pass.
+        A single ``UPDATE ... WHERE ref IN (...)``, chunked like every other
+        ``IN`` list here. Does not commit; the caller owns the transaction."""
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        touched = 0
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            touched += (
+                self.db.query(AcRowHash)
+                .filter(
+                    AcRowHash.tenant_id == tenant_id,
+                    AcRowHash.company_id == company_id,
+                    AcRowHash.entity_type == entity_type,
+                    AcRowHash.source_ref.in_(chunk),
+                )
+                .update({"last_seen_at": seen_at}, synchronize_session=False)
+            )
+        self.db.flush()
+        return touched
+
+    def stale_refs(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        *,
+        before: datetime,
+    ) -> List[str]:
+        """Refs whose ``last_seen_at`` predates ``before`` (plan sprint-5/03
+        S3, AC-03-16/17) - a completed reconcile pass's delete candidates. A
+        pass may span several runs (D3), so this is DB-persisted rather than
+        an in-memory set (D6): every fetched ref (changed or not) gets
+        ``touch_seen``/``upsert_many`` on the page it was read, so a ref that
+        genuinely vanished at source is the only one whose stamp still
+        predates the pass start once the whole population has been walked."""
+        rows = (
+            self.db.query(AcRowHash.source_ref)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+                AcRowHash.entity_type == entity_type,
+                AcRowHash.last_seen_at < before,
+            )
+            .all()
+        )
+        return [ref for (ref,) in rows]
+
     def all_hashes(
         self, tenant_id: str, company_id: str, entity_type: str
     ) -> dict[str, str]:

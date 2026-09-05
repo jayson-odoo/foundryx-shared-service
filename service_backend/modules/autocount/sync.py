@@ -29,10 +29,11 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.jobs.registry import JobHandlerDef, register_job_handler
 from app.jobs.service import JobService
 from app.models.background_job import (
@@ -75,13 +76,16 @@ from .models import (
     RUN_ABORTED,
     RUN_FAILED,
     RUN_MODE_MANUAL,
+    RUN_MODE_RECONCILE,
     RUN_SUCCESS,
     SOURCE_IMPL_SQL_DB,
     STAGED,
     STAGED_FAILED,
     STAGED_OP_DELETE,
+    AcEntityConfig,
     AcStagedRecord,
     AcSyncRun,
+    AcWatermark,
 )
 from .repositories import (
     CompanyRepository,
@@ -112,7 +116,13 @@ from .sql_source.errors import (
 # services, the Celery worker through its explicit import. A process that had
 # the handler but not the factory would fail every DB run with "no source
 # implementation registered", which reads like a config fault and is not one.
-from .sql_source.source import register_sql_db_source
+from .sql_source.source import (
+    DELETE_GUARD_MIN_ABSOLUTE,
+    DELETE_GUARD_RATIO,
+    PageCursor,
+    _decode_mark,
+    register_sql_db_source,
+)
 
 register_sql_db_source()
 
@@ -313,6 +323,18 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         )
     except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
         _fail(db, service, job, run, watermark_row, str(exc), started, config=config)
+        return
+
+    #     !!  A WATERMARKED ``sql_db`` TASK RUNS THE PAGED LOOP (plan
+    #         sprint-5/03 S1/S2/S3) - EVERYTHING ELSE (the vendor/API path,
+    #         a no-watermark master) STAYS ON THE OLDER, UNCHANGED PATH
+    #         BELOW.  !!
+    if config.source_impl == SOURCE_IMPL_SQL_DB and getattr(source, "watermark_column", None):
+        _run_paged_sql_db(
+            db, service, job, run, watermark_row, config, companies, source,
+            tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
+            mode=mode, started=started, trace_id=trace_id, company=company,
+        )
         return
 
     try:
@@ -576,7 +598,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         # is what stops company B's ``AutoKey=1`` overwriting company A's.
         database_name=company.database_name,
     )
-    staged_count, failed_count = _stage_documents(
+    staged_count, failed_count, _failed_refs = _stage_documents(
         db,
         service,
         job,
@@ -765,18 +787,34 @@ def _stage_documents(
     tenant_id: str,
     company_id: str,
     entity_type: str,
-) -> Tuple[int, int]:
-    """Map + persist each document independently. Returns (staged, failed).
+    ref_fn: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
+    check_abort: bool = True,
+) -> Tuple[int, int, List[str]]:
+    """Map + persist each document independently. Returns
+    ``(staged, failed, failed_refs)``.
 
     Per-document commit + abort checkpoint: one document's failure can never
     contaminate a sibling, and an abort stops at the next document boundary
     rather than after the whole batch.
+
+    ``ref_fn`` (plan sprint-5/03 S2, AC-03-11/12) - the SAME identity
+    function a paged ``sql_db`` run's ``fetch_page`` used to key
+    ``ac_row_hash`` (``SqlDbSource._source_ref``), so the caller can drop a
+    failed row's hash and let the next full pass retry it fresh (D1: a
+    failed row keeps NO hash). ``None`` for every other caller - a failed
+    document's ref is meaningless there (the API path stores no hashes).
+
+    ``check_abort=False`` (plan sprint-5/03 S1, AC-03-08) - a PAGED run
+    already fetched this whole page's rows before an abort could possibly
+    land; the page in flight finishes staging regardless, and the run loop
+    itself is the one that checks for an abort BETWEEN pages, never mid-page.
     """
     staged_repo = StagedRecordRepository(db)
     staged = failed = 0
+    failed_refs: List[str] = []
 
     for position, source_record in enumerate(records, start=1):
-        if _aborted(db, job.id):
+        if check_abort and _aborted(db, job.id):
             break
 
         mapped: MappedDocument = engine.map_document(source_record.raw)
@@ -812,6 +850,10 @@ def _stage_documents(
                 )
             )
             failed += 1
+            if ref_fn is not None:
+                ref = ref_fn(source_record.raw)
+                if ref is not None:
+                    failed_refs.append(ref)
             service.advance(job, failed=1)
             db.commit()
             continue
@@ -846,7 +888,379 @@ def _stage_documents(
         service.advance(job, done=1)
         db.commit()
 
-    return staged, failed
+    return staged, failed, failed_refs
+
+
+def _run_paged_sql_db(
+    db: Session,
+    service: JobService,
+    job: BackgroundJob,
+    run: AcSyncRun,
+    watermark_row: AcWatermark,
+    config: AcEntityConfig,
+    companies: "CompanyService",
+    source,
+    *,
+    tenant_id: str,
+    company_id: str,
+    entity_type: str,
+    mode: str,
+    started: float,
+    trace_id: str,
+    company,
+) -> None:
+    """The paged run loop for a WATERMARKED ``sql_db`` task (plan sprint-5/03
+    S1/S2/S3): paged extraction with a per-run time budget and continuation,
+    change-only staging, the watermark advancing independent of mapping
+    failures (D1), seen stamps, and deletes computed only when a reconcile
+    pass completes. The vendor/API path and a no-watermark master stay on
+    the OLDER ``fetch_changes``-based branch in ``run_autocount_sync`` above
+    (unchanged - D18's "watermark holds on any failed document" rule still
+    governs there).
+    """
+    mapping_rows = build_mapping_rows_for_run(
+        entity_type,
+        companies.mapping_rows(tenant_id, company_id, entity_type),
+        is_sql_db_source=True,
+        source_config=config.source_config,
+    )
+    engine = MappingEngine(
+        mapping_rows,
+        detail_key=VENDOR_DETAIL_KEYS.get(entity_type),
+        entity_type=entity_type,
+        profile=flat_profile(
+            entity_type, (config.source_config or {}).get("keyColumns") or []
+        ),
+        database_name=company.database_name,
+    )
+    hashes_repo = RowHashRepository(db)
+
+    def _clear_pass() -> None:
+        # JSON columns need a FRESH dict on every write (SQLAlchemy misses
+        # in-place mutation) - never just `del cursor["pass"]` on the ORM's
+        # own live dict.
+        watermark_row.cursor_json = {**(watermark_row.cursor_json or {}), "pass": None}
+
+    cursor = PageCursor.from_watermark_row(
+        watermark_row, mode, watermark_column=source.watermark_column
+    )
+    pass_started_at = cursor.pass_started_at or datetime.now(timezone.utc)
+    deadline = time.monotonic() + float(settings.autocount_run_time_budget_seconds)
+
+    total_rows_scanned = total_added = total_updated = total_staged = total_failed = 0
+    truncated = False
+    pages_done = cursor.pages_done
+    max_mark: Any = cursor.mark
+    aborted_flag = False
+    page = None
+
+    try:
+        while True:
+            try:
+                page = source.fetch_page(cursor)
+            except SqlDeleteGuardExceeded as exc:
+                # AC-03-19: a guard trip mid-pass must leave hashes/stamps
+                # consistent AND clear the in-progress pass, so the NEXT
+                # reconcile starts fresh rather than resuming a bad one.
+                logger.warning(
+                    "autocount delete guard tripped for job %s: %s", job.id, exc.message
+                )
+                _clear_pass()
+                record_client_calls(
+                    db, source, tenant_id=tenant_id, trace_id=trace_id,
+                    external_ref=company.database_name,
+                )
+                _fail(
+                    db, service, job, run, watermark_row, exc.message, started,
+                    config=config, error_code="DELETE_GUARD",
+                )
+                return
+            except SqlDocumentCapExceeded as exc:
+                logger.warning(
+                    "autocount document cap tripped for job %s: %s", job.id, exc.message
+                )
+                record_client_calls(
+                    db, source, tenant_id=tenant_id, trace_id=trace_id,
+                    external_ref=company.database_name,
+                )
+                _fail(
+                    db, service, job, run, watermark_row, exc.message, started,
+                    config=config, error_code="DOCUMENT_CAP",
+                )
+                return
+            except SqlFilterFormulaError as exc:
+                logger.warning(
+                    "autocount filter formula failed for job %s: %s", job.id, exc.message
+                )
+                record_client_calls(
+                    db, source, tenant_id=tenant_id, trace_id=trace_id,
+                    external_ref=company.database_name,
+                )
+                _fail(
+                    db, service, job, run, watermark_row, exc.message, started,
+                    config=config, error_code="FILTER_FORMULA",
+                )
+                return
+            except AutoCountError as exc:
+                record_client_calls(
+                    db, source, tenant_id=tenant_id, trace_id=trace_id,
+                    external_ref=company.database_name,
+                )
+                _fail(db, service, job, run, watermark_row, exc.message, started, config=config)
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("autocount paged sync fetch failed for job %s", job.id)
+                record_client_calls(
+                    db, source, tenant_id=tenant_id, trace_id=trace_id,
+                    external_ref=company.database_name,
+                )
+                _fail(
+                    db, service, job, run, watermark_row, f"Fetch failed: {exc}", started,
+                    config=config,
+                )
+                return
+
+            staged, failed, failed_refs = _stage_documents(
+                db, service, job, page.records, engine=engine,
+                tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
+                ref_fn=source._source_ref, check_abort=False,
+            )
+            failed_ref_set = set(failed_refs)
+            now = datetime.now(timezone.utc)
+            # A row's hash is written only when it CHANGED and did not fail
+            # to map (D1: a failed row keeps NO hash, so the next full pass
+            # retries it fresh); an unchanged row's stamp is merely TOUCHED
+            # (AC-03-15) - `upsert_many` never runs for it.
+            changed_hashes = {
+                ref: value
+                for ref, value in page.hashes.items()
+                if ref not in page.unchanged_refs and ref not in failed_ref_set
+            }
+            if changed_hashes:
+                hashes_repo.upsert_many(
+                    tenant_id, company_id, entity_type, changed_hashes, seen_at=now
+                )
+            if page.unchanged_refs:
+                hashes_repo.touch_seen(
+                    tenant_id, company_id, entity_type, page.unchanged_refs, seen_at=now
+                )
+            if failed_refs:
+                hashes_repo.delete_many(tenant_id, company_id, entity_type, failed_refs)
+
+            record_client_calls(
+                db, source, tenant_id=tenant_id, trace_id=trace_id,
+                external_ref=company.database_name,
+            )
+
+            pages_done += 1
+            total_rows_scanned += page.rows_scanned
+            total_added += page.added
+            total_updated += page.updated
+            total_staged += staged
+            total_failed += failed
+            if page.last_mark is not None:
+                max_mark = page.last_mark
+
+            service.log(
+                job,
+                f"Page {pages_done}: scanned {page.rows_scanned}, changed "
+                f"{page.added + page.updated} ({page.added} new, {page.updated} "
+                f"updated), {len(page.unchanged_refs)} unchanged, skipped, "
+                f"{failed} failed.",
+            )
+
+            watermark_row.cursor_json = {
+                "column": source.watermark_column,
+                "mark": max_mark,
+                "tieRefs": list(page.tie_refs),
+                "pass": {
+                    "kind": mode,
+                    "startedAt": pass_started_at.isoformat(),
+                    "pagesDone": pages_done,
+                    "complete": page.complete,
+                    # Scoped to THIS pass (plan sprint-5/03 §2.6, AC-03-21) -
+                    # deliberately separate from the top-level ``mark`` above
+                    # (which a DIFFERENT-kind pass, e.g. a plain incremental
+                    # tick, also reads/writes to resume its OWN position):
+                    # the wire's ``initialLoad.lastMark`` must show progress
+                    # for the pass currently open, never a stale mark left
+                    # behind by an unrelated, already-finished one.
+                    "mark": max_mark,
+                },
+            }
+            run.rows_scanned = total_rows_scanned
+            run.added_count = total_added
+            run.updated_count = total_updated
+            run.staged_count = total_staged
+            run.failed_count = total_failed
+            db.commit()
+
+            if _aborted(db, job.id):
+                aborted_flag = True
+                break
+            if page.complete:
+                break
+            if time.monotonic() >= deadline:
+                truncated = True
+                break
+
+            cursor = PageCursor(
+                mark=page.last_mark, tie_refs=page.tie_refs, pass_kind=mode,
+                pass_started_at=pass_started_at, pages_done=pages_done,
+            )
+    finally:
+        source.close()
+
+    if aborted_flag:
+        _abort(db, service, run, started)
+        return
+
+    # ── deletes, ONLY when a RECONCILE pass just completed (D6) ─────────────
+    delete_staged = 0
+    if page is not None and page.complete:
+        if mode == RUN_MODE_RECONCILE:
+            known_count = hashes_repo.count(tenant_id, company_id, entity_type)
+            stale = hashes_repo.stale_refs(
+                tenant_id, company_id, entity_type, before=pass_started_at
+            )
+            threshold = max(DELETE_GUARD_RATIO * known_count, DELETE_GUARD_MIN_ABSOLUTE)
+            if stale and len(stale) > threshold:
+                message = (
+                    f"This reconcile would delete {len(stale)} of {known_count} "
+                    f"previously-known row(s) - over the safety threshold "
+                    f"({threshold:.0f}). Nothing was staged or pushed. Check the "
+                    f"query and the connection, then re-run reconcile."
+                )
+                logger.warning(
+                    "autocount delete guard tripped for job %s: %s", job.id, message
+                )
+                _clear_pass()
+                _fail(
+                    db, service, job, run, watermark_row, message, started,
+                    config=config, error_code="DELETE_GUARD",
+                )
+                return
+            delete_staged = _stage_deletes(
+                db, job, stale, tenant_id=tenant_id, company_id=company_id,
+                entity_type=entity_type, current_refs=[],
+            )
+        # A completed pass's ``pass`` dict is LEFT AS-IS (``complete: true``
+        # already written per-page above) - plan sprint-5/03 §2.2: only a
+        # GUARD FAILURE clears it outright (``_clear_pass`` above). A later
+        # run of the SAME mode naturally starts a fresh pass anyway
+        # (``PageCursor.from_watermark_row`` only resumes an INCOMPLETE
+        # pass), and ``EtlService._initial_load`` reads ``initialLoad`` as
+        # ``None`` once ``complete`` is true (AC-03-21) - two different
+        # readers of the one flag, not two sources of truth.
+
+    run.fetched_count = total_staged + total_failed
+    run.rows_scanned = total_rows_scanned
+    run.added_count = total_added
+    run.updated_count = total_updated
+    run.staged_count = total_staged + delete_staged
+    run.failed_count = total_failed
+    service.set_total(job, total_rows_scanned)
+    db.commit()
+
+    #     !!  D1 REVERSAL: THE WATERMARK ADVANCES REGARDLESS OF MAPPING
+    #         FAILURES (plan sprint-5/03 S2, AC-03-11) - a permanently bad
+    #         document must never force a full re-extract every run.  !!
+    decoded_max = _decode_mark(max_mark) if max_mark is not None else None
+    if isinstance(decoded_max, datetime):
+        watermark_row.last_modified_at = decoded_max.astimezone(timezone.utc)
+    watermark_row.cursor_json = {
+        **(watermark_row.cursor_json or {}),
+        "column": source.watermark_column,
+        "mark": max_mark,
+    }
+    watermark_row.consecutive_failures = 0
+    watermark_row.last_success_at = datetime.now(timezone.utc)
+    watermark_row.last_error = (
+        f"{total_failed} record(s) failed to map; see staged records"
+        if total_failed
+        else None
+    )
+
+    # ── auto-push (plan 22 §2.6, unchanged contract) ─────────────────────────
+    pushed_count = 0
+    push_summary: Optional[Dict[str, Any]] = None
+    if config.etl_status == ETL_STATUS_ACTIVE:
+        from .services.sync_service import SyncService
+
+        push_summary = SyncService(db).auto_push(
+            tenant_id, company_id, entity_type, job_id=job.id
+        )
+        pushed_count = int(push_summary.get("pushed") or 0)
+        run.pushed_count = pushed_count
+        config.last_run_error = push_summary.get("error")
+        config.last_run_error_code = push_summary.get("errorCode")
+        quarantined_count = int(push_summary.get("quarantined") or 0)
+        if quarantined_count:
+            run.failed_count = (run.failed_count or 0) + quarantined_count
+        run.deleted_count = int(push_summary.get("deletedHandled") or 0)
+        delete_failed_count = len(push_summary.get("deleteFailures") or [])
+        if delete_failed_count:
+            run.failed_count = (run.failed_count or 0) + delete_failed_count
+    else:
+        config.last_run_error = None
+        config.last_run_error_code = None
+    config.last_run_at = datetime.now(timezone.utc)
+
+    run.outcome = RUN_SUCCESS
+    run.truncated = truncated
+    run.watermark_advanced_to = watermark_row.last_modified_at
+    run.finished_at = datetime.now(timezone.utc)
+    run.duration_ms = int((time.monotonic() - started) * 1000)
+    if truncated:
+        run.error = f"Budget reached after page {pages_done}; continues on the next tick."
+        # The initial (or continuing) pass resumes on the VERY NEXT sweep
+        # tick, not after a full `incrementalMinutes` wait (D3 - 148k SO
+        # headers must finish in hours unattended, not overnight-per-page).
+        config.next_incremental_at = datetime.now(timezone.utc)
+    else:
+        run.error = None
+
+    summary = {
+        "companyId": company_id,
+        "entityType": entity_type,
+        "staged": total_staged,
+        "failed": total_failed,
+        "rowsScanned": total_rows_scanned,
+        "added": total_added,
+        "updated": total_updated,
+        "truncated": truncated,
+        "mode": mode,
+        "watermarkAdvancedTo": (
+            watermark_row.last_modified_at.isoformat()
+            if watermark_row.last_modified_at
+            else None
+        ),
+        "awaitingApproval": False,
+    }
+    if push_summary is not None:
+        summary.update(push_summary)
+        summary["awaitingApproval"] = False
+    service.log(
+        job,
+        f"Staged {total_staged} document(s), {total_failed} failed."
+        + (
+            f" Pushed {pushed_count} record(s) automatically (the task is active)."
+            if push_summary is not None
+            else " Awaiting approval - nothing has been pushed."
+        )
+        + (
+            f" Budget reached after page {pages_done}; continues on the next tick."
+            if truncated
+            else ""
+        ),
+    )
+    holds_for_review = total_staged > 0 and push_summary is None
+    service.finish(
+        job,
+        status=JOB_NEEDS_REVIEW if holds_for_review else JOB_DONE,
+        result=summary,
+    )
+    db.commit()
 
 
 def _stage_deletes(

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass, field
 from datetime import date, datetime, time as dt_time, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -96,10 +97,13 @@ from .runtime import (
 logger = logging.getLogger("foundryx.autocount")
 
 __all__ = [
+    "PageCursor",
+    "PageResult",
     "SqlDbSource",
     "SqlTaskNotConfigured",
     "build_document_header_wrap",
     "build_incremental_wrap",
+    "build_paged_wrap",
     "register_sql_db_source",
 ]
 
@@ -108,19 +112,25 @@ __all__ = [
 # rather than taking the worker out with a MemoryError. Raising it is a
 # deliberate act, not a silent degradation (the house line on the record cap).
 STREAM_BATCH = 1000
+# Guards an UNPAGED read (a no-watermark master, the API path's own record cap
+# is separate) and a SINGLE PAGE (plan sprint-5/03 S1) - a page is already
+# bounded by ``AUTOCOUNT_PAGE_SIZE``, so this only ever fires on a tie group
+# vastly larger than any sane page size.
 MAX_EXTRACT_ROWS = 200_000
 
-# ── document line-fan-out caps (S5 review SHOULD-FIX 3) ──────────────────────
+# ── document line-fan-out cap (S5 review SHOULD-FIX 3) ───────────────────────
 # A document task runs ONE bound ``lineQuery`` PER CHANGED HEADER, in the same
 # read-only session - an N+1 by design (§2.8: the operator authors a scalar
 # ``WHERE ... = :doc_key``, so rewriting it into a batched ``IN`` is fragile
 # string surgery and was rejected; the batched-``IN`` approach is a backlog
-# item instead). Two hard, NAMED caps stand in for it: too many changed
-# headers in one pass, and one header carrying an unreasonable number of
-# lines (a WHERE clause matching more than its own header, most likely). Both
-# fail the WHOLE run - same fail-safe contract as the delete guard above:
-# nothing is staged or pushed, and the run's error names which cap tripped.
-MAX_DOCUMENT_HEADERS_PER_RUN = 2000
+# item instead). One header carrying an unreasonable number of lines (a WHERE
+# clause matching more than its own header, most likely) fails the WHOLE run -
+# same fail-safe contract as the delete guard above: nothing is staged or
+# pushed, and the run's error names the cap. The sibling "too many changed
+# headers in one pass" cap (``MAX_DOCUMENT_HEADERS_PER_RUN``) is REMOVED (plan
+# sprint-5/03 S1, AC-03-01): paging is now the bound on how many headers a
+# single read can return, so a fixed count-of-documents ceiling on top of it
+# would only ever fire below a pass that paging already keeps safe.
 MAX_DOCUMENT_LINES_PER_HEADER = 5000
 
 # ── delete guard (plan 22 §2.5, AC-22-22) ────────────────────────────────────
@@ -273,6 +283,153 @@ def build_document_header_wrap(
         f"WHERE t.{quoted_watermark} > :mark AND {date_predicate} "
         f"ORDER BY t.{quoted_watermark}"
     )
+
+
+def build_paged_wrap(
+    query: str,
+    quoted_watermark: str,
+    quoted_date_column: Optional[str],
+    mark: Any,
+    *,
+    dialect: str,
+    page_size: int,
+) -> str:
+    """The PAGED statement shape (plan sprint-5/03 S1, AC-03-07) - the SAME
+    derived-table wrap as ``build_incremental_wrap``/``build_document_header_
+    wrap``, plus a bounded page.
+
+    Two differences from the older wraps, both deliberate:
+
+    * The predicate on the mark is ``>=`` (not ``>``) - a page boundary
+      landing inside a group of rows that share one watermark value must
+      lose nothing; the CALLER (``SqlDbSource.fetch_page``) drops the refs
+      already taken at exactly that mark from the raw result, in Python,
+      after the read (AC-03-02).
+    * ``page_size`` rides as the bound parameter ``:page_size`` - NEVER
+      spliced into the text - so a huge page size can never widen the SQL
+      shape itself, only the bound value.
+
+    ``quoted_date_column is None`` = a paged MASTER (no from-date floor);
+    given = a document task's permanent ``fromDate`` scope boundary, ANDed
+    with the mark predicate exactly like ``build_document_header_wrap``.
+    ``mark is None`` = the first page of a pass - no mark predicate at all.
+    """
+    inner = _strip_trailing_order_by(query).replace(":", r"\:")
+    predicates: List[str] = []
+    if quoted_date_column is not None:
+        predicates.append(f"t.{quoted_date_column} >= :from_date")
+    if mark is not None:
+        predicates.append(f"t.{quoted_watermark} >= :mark")
+    where = f" WHERE {' AND '.join(predicates)}" if predicates else ""
+    if dialect == "mssql":
+        return (
+            f"SELECT TOP (:page_size) * FROM ({inner}) AS t{where} "
+            f"ORDER BY t.{quoted_watermark}"
+        )
+    return (
+        f"SELECT * FROM ({inner}) AS t{where} "
+        f"ORDER BY t.{quoted_watermark} LIMIT :page_size"
+    )
+
+
+@dataclass
+class PageCursor:
+    """Where a paged pass resumes from (plan sprint-5/03 S1/S2, AC-03-01..04).
+
+    No schema change (D7): ``sync.py`` reads/writes this shape straight to
+    ``AcWatermark.cursor_json`` (``from_watermark_row``/its inverse in the
+    run loop) - this dataclass is only the in-memory carrier ``fetch_page``
+    takes and returns pieces of.
+
+    ``PageCursor()`` (every field default) IS the first page of a fresh
+    pass: no mark, nothing excluded, nothing done yet.
+    """
+
+    mark: Any = None
+    # Refs already taken at EXACTLY ``mark`` (a tie group straddling the
+    # previous page boundary, AC-03-02) - the source drops these from the
+    # next page's raw read so a shared watermark value loses/duplicates
+    # nothing, however large the tie group grows relative to the page size.
+    tie_refs: Sequence[str] = field(default_factory=tuple)
+    pass_kind: str = RUN_MODE_MANUAL
+    pass_started_at: Optional[datetime] = None
+    pages_done: int = 0
+
+    @classmethod
+    def from_watermark_row(
+        cls, watermark_row: Any, mode: str, *, watermark_column: str
+    ) -> "PageCursor":
+        """Resume an UNFINISHED pass matching ``mode``, or start a fresh one.
+
+        A reconcile tick firing while an initial/incremental pass is still
+        open continues THAT pass first (its ``kind`` will not match
+        ``reconcile``) - the reconcile is simply re-armed by
+        ``next_run_times`` and fires again once the open pass completes.
+        """
+        cursor = watermark_row.cursor_json if isinstance(watermark_row.cursor_json, dict) else {}
+        pass_state = cursor.get("pass") if isinstance(cursor.get("pass"), dict) else None
+        now = datetime.now(timezone.utc)
+        if (
+            pass_state is not None
+            and pass_state.get("kind") == mode
+            and not pass_state.get("complete", False)
+        ):
+            started_raw = pass_state.get("startedAt")
+            started = _decode_mark(started_raw) if started_raw else now
+            if not isinstance(started, datetime):
+                started = now
+            return cls(
+                mark=cursor.get("mark"),
+                tie_refs=tuple(cursor.get("tieRefs") or ()),
+                pass_kind=mode,
+                pass_started_at=started,
+                pages_done=int(pass_state.get("pagesDone") or 0),
+            )
+        # A brand new pass. A RECONCILE always restarts extraction from
+        # scratch regardless of any stored incremental mark (D2/plan §2.5
+        # "full <query> extract, ignore watermark"); an incremental/manual
+        # pass resumes from the STORED watermark mark, when it was left by
+        # THIS SAME watermark column (a reconfigured column's stored mark
+        # belongs to a different comparison and must never be reused).
+        start_mark = None
+        start_tie_refs: Sequence[str] = ()
+        if mode != RUN_MODE_RECONCILE and cursor.get("column") == watermark_column:
+            start_mark = cursor.get("mark")
+            # The refs already taken at EXACTLY ``start_mark`` (from the
+            # pass that left it) must travel with it - otherwise the very
+            # row that PRODUCED the mark is re-included by the ``>=``
+            # predicate and mis-reads as a freshly "scanned" row every tick.
+            start_tie_refs = tuple(cursor.get("tieRefs") or ())
+        return cls(
+            mark=start_mark,
+            tie_refs=start_tie_refs,
+            pass_kind=mode,
+            pass_started_at=now,
+            pages_done=0,
+        )
+
+
+@dataclass
+class PageResult:
+    """One page's worth of extraction (plan sprint-5/03 S1/S2, AC-03-01/09).
+
+    ``records`` carries ONLY changed/new rows (change-only staging, D2) -
+    lines fetched for a document only among these. ``unchanged_refs`` and
+    ``hashes`` (every fetched ref, changed or not) are what ``sync.py``'s
+    run loop needs to keep ``ac_row_hash`` truthful without restaging
+    anything: an upsert for the changed ones, a seen-stamp touch for the
+    rest.
+    """
+
+    records: List["SourceRecord"] = field(default_factory=list)
+    unchanged_refs: List[str] = field(default_factory=list)
+    hashes: Dict[str, str] = field(default_factory=dict)
+    last_mark: Any = None
+    tie_refs: List[str] = field(default_factory=list)
+    rows_scanned: int = 0
+    added: int = 0
+    updated: int = 0
+    complete: bool = False
 
 
 class SqlDbSource:
@@ -748,6 +905,244 @@ class SqlDbSource:
             skipped_by_filter=self._last_skipped_by_filter,
         )
 
+    def fetch_page(self, cursor: "PageCursor") -> "PageResult":
+        """One page of a paged pass (plan sprint-5/03 S1/S2, AC-03-01..04/09).
+
+        ``fetch_changes`` stays the thin, unpaged, whole-population read for
+        a non-watermarked master and the API path; a WATERMARKED task's run
+        loop (``sync.py``) calls this instead, once per page, threading
+        ``cursor`` through so a pass can span several runs (D3) without ever
+        re-reading a page already staged. Requires a watermark column - the
+        caller only reaches this method for a task that has one.
+        """
+        from app.config import settings as _settings  # read at CALL time, D-note
+
+        page_size = int(getattr(_settings, "autocount_page_size", 2000) or 2000)
+        exclude_refs: set[str] = set(cursor.tie_refs or ()) if cursor.mark is not None else set()
+        bind_limit = page_size + len(exclude_refs)
+
+        wm_column = self._quoted_watermark()
+        date_column = self._quoted_doc_date_column() if self.is_document else None
+        dialect = self._engine.dialect.name
+        sql = build_paged_wrap(
+            self.query, wm_column, date_column, cursor.mark,
+            dialect=dialect, page_size=bind_limit,
+        )
+        params: Dict[str, Any] = {"page_size": bind_limit}
+        if self.is_document:
+            params["from_date"] = self.from_date
+        if cursor.mark is not None:
+            #     !!  BIND A NAIVE INSTANT, NOT AN OFFSET-DECORATED ONE.  !!
+            # The predicate is INCLUSIVE (``>=``, AC-03-02 - a page boundary
+            # inside a tie group must lose nothing), so it must match a row
+            # sharing the EXACT same instant. A driver that stores a plain
+            # datetime column (no offset in its own text/native form) and is
+            # handed an aware ``+00:00``-suffixed value can render it as a
+            # DIFFERENT, textually-later string than an equal, naive one -
+            # turning an exact tie into "just missed it". ``_decode_mark``'s
+            # tzinfo attachment is correct for comparing INSTANTS in a real
+            # DATETIME/TIMESTAMP column (Postgres/MSSQL numeric compare); it
+            # is normalised back to naive-UTC here purely for the bind, so
+            # the wall-clock instant is unchanged either way.
+            decoded_mark = _decode_mark(cursor.mark)
+            if isinstance(decoded_mark, datetime) and decoded_mark.tzinfo is not None:
+                decoded_mark = decoded_mark.astimezone(timezone.utc).replace(tzinfo=None)
+            params["mark"] = decoded_mark
+        executable = sa.text(sql)
+
+        started = time.monotonic()
+        raw_rows: List[Dict[str, Any]] = []
+        full_extract = self.mode == RUN_MODE_RECONCILE
+        try:
+            with open_readonly(
+                self._engine, timeout_s=self.timeout_s, secrets=self._secrets
+            ) as conn:
+                streaming = conn.execution_options(
+                    stream_results=True, max_row_buffer=STREAM_BATCH
+                )
+                result = streaming.execute(executable, params)
+                for partition in result.partitions(STREAM_BATCH):
+                    for row in partition:
+                        raw_rows.append(dict(row._mapping))
+                if len(raw_rows) > self.row_limit:
+                    raise SqlSourceError(
+                        f"The extract passed {self.row_limit:,} rows without "
+                        f"finishing, so it was stopped and nothing was "
+                        f"accepted. Narrow the query or set a watermark "
+                        f"column so runs stay incremental."
+                    )
+
+                #     !!  A ZERO-ROW PAGE OF A FULL EXTRACT IS NEVER A GENUINE
+                #         TOTAL WIPE (AC-03-19).  !!
+                # Mirrors the same-named guard ``fetch_changes`` runs for a
+                # non-paged full extract. Applies to EVERY page, not only the
+                # first: the ``>=`` predicate always re-includes whatever row
+                # produced the previous page's mark, so a normal winding-down
+                # page's RAW read is never actually empty (it re-fetches at
+                # least the boundary row before the Python-side exclude drops
+                # it) - only a genuinely vanished remainder (a fresh pass over
+                # an empty table, or the boundary rows themselves gone since
+                # the previous page) reads as zero raw rows here.
+                if full_extract and not raw_rows:
+                    known_count = RowHashRepository(self._ctx.db).count(
+                        self._ctx.tenant_id, self._ctx.company.id, self.entity_type
+                    )
+                    if known_count:
+                        raise SqlDeleteGuardExceeded(
+                            f"This run returned 0 rows while {known_count} "
+                            f"previously-known row(s) exist for this entity - "
+                            f"nothing was staged or pushed. This looks like a "
+                            f"broken query or connection, not a genuine full "
+                            f"deletion. Check the query and the connection, "
+                            f"then re-run reconcile."
+                        )
+
+                # ── drop refs already taken at this exact mark (AC-03-02) ──
+                kept_raw: List[Dict[str, Any]] = []
+                for raw in raw_rows:
+                    ref = self._source_ref(raw)
+                    if cursor.mark is not None and ref is not None and ref in exclude_refs:
+                        continue
+                    kept_raw.append(raw)
+
+                # ── the frontier for the NEXT cursor ────────────────────────
+                last_mark = cursor.mark
+                tie_refs: List[str] = list(cursor.tie_refs or ())
+                if raw_rows:
+                    tail_value = raw_rows[-1].get(self.watermark_column)
+                    if tail_value is not None:
+                        new_mark = _encode_mark(tail_value)
+                        same_group = new_mark == cursor.mark
+                        group_refs = {
+                            ref
+                            for ref in (
+                                self._source_ref(row)
+                                for row in raw_rows
+                                if _encode_mark(row.get(self.watermark_column)) == new_mark
+                            )
+                            if ref is not None
+                        }
+                        tie_refs = sorted(
+                            (exclude_refs | group_refs) if same_group else group_refs
+                        )
+                        last_mark = new_mark
+
+                rows_scanned = len(kept_raw)
+                complete = rows_scanned < page_size
+
+                # ── document row-set filter, BEFORE the hash diff (AC-02-11) ─
+                candidates = kept_raw
+                filtered_this_page: List[Dict[str, Any]] = []
+                if self.is_document and self.filter_formula:
+                    keep_rows = []
+                    for header in kept_raw:
+                        try:
+                            if evaluate_row_filter(self.filter_formula, header):
+                                keep_rows.append(header)
+                            else:
+                                filtered_this_page.append(header)
+                        except FormulaError as exc:
+                            raise SqlFilterFormulaError(
+                                f"The filter could not be evaluated: {exc}. "
+                                f"Nothing was staged or pushed."
+                            ) from exc
+                    candidates = keep_rows
+
+                # ── hash diff BEFORE lines (plan §2.1) ──────────────────────
+                known = self._prior_hashes(candidates)
+                hashes: Dict[str, str] = {}
+                unchanged_refs: List[str] = []
+                changed_headers: List[Dict[str, Any]] = []
+                records: List[SourceRecord] = []
+                added = updated = 0
+                key_column = self.key_columns[0] if self.is_document else None
+
+                for header in candidates:
+                    ref = self._source_ref(header)
+                    stamp = (
+                        _as_utc(header.get(self.watermark_column))
+                        if self.watermark_column
+                        else None
+                    )
+                    if ref is None:
+                        # A blank key is a per-RECORD identity fault the
+                        # mapping engine will name; it has no ref to hash on,
+                        # so it always counts as "changed" and is staged
+                        # FAILED downstream rather than silently vanishing.
+                        records.append(SourceRecord(raw=json_safe(header), last_modified=stamp))
+                        continue
+                    value_hash = row_hash(header, self.compared_columns)
+                    hashes[ref] = value_hash
+                    if known.get(ref) == value_hash:
+                        unchanged_refs.append(ref)
+                        continue
+                    if ref in known:
+                        updated += 1
+                    else:
+                        added += 1
+                    changed_headers.append(header)
+                    records.append(SourceRecord(raw=json_safe(header), last_modified=stamp))
+
+                #     !!  LINES ONLY FOR CHANGED/NEW HEADERS (plan §2.1).  !!
+                if self.is_document and changed_headers:
+                    for header in changed_headers:
+                        doc_key_value = header.get(key_column)
+                        header[SQL_DOC_LINES_KEY] = self._read_lines(conn, doc_key_value)
+
+                #     !!  A FILTERED-OUT HEADER'S STALE HASH IS DROPPED HERE
+                #         (AC-03-18) - the ONLY write ``fetch_page`` itself
+                #         performs; the per-row hash upsert / seen-touch for
+                #         everything else is the CALLER's job (``sync.py``'s
+                #         run loop), which alone knows which refs a mapping
+                #         failure disqualifies from a hash write.  !!
+                if self.persist_hashes and filtered_this_page:
+                    filtered_refs = [
+                        ref
+                        for ref in (self._source_ref(h) for h in filtered_this_page)
+                        if ref is not None
+                    ]
+                    if filtered_refs:
+                        filtered_known = RowHashRepository(self._ctx.db).hashes_for(
+                            self._ctx.tenant_id, self._ctx.company.id, self.entity_type,
+                            filtered_refs,
+                        )
+                        stale_filtered = [ref for ref in filtered_refs if ref in filtered_known]
+                        if stale_filtered:
+                            RowHashRepository(self._ctx.db).delete_many(
+                                self._ctx.tenant_id, self._ctx.company.id, self.entity_type,
+                                stale_filtered,
+                            )
+                            self._ctx.db.commit()
+        except SqlSourceError as exc:
+            self._record_call(
+                started, rows=len(raw_rows), incremental=cursor.mark is not None,
+                error=exc.message,
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 - every driver has its own class
+            from .runtime import sanitize_error
+
+            message = sanitize_error(exc, secrets=self._secrets)
+            self._record_call(
+                started, rows=len(raw_rows), incremental=cursor.mark is not None,
+                error=message,
+            )
+            raise SqlQueryError(message) from exc
+
+        self._record_call(started, rows=len(raw_rows), incremental=cursor.mark is not None)
+
+        return PageResult(
+            records=records,
+            unchanged_refs=unchanged_refs,
+            hashes=hashes,
+            last_mark=last_mark,
+            tie_refs=tie_refs,
+            rows_scanned=rows_scanned,
+            added=added,
+            updated=updated,
+            complete=complete,
+        )
+
     def _read(self, mark: Any) -> List[Dict[str, Any]]:
         executable, params = self._statement(mark)
         rows: List[Dict[str, Any]] = []
@@ -827,18 +1222,14 @@ class SqlDbSource:
                             f"was staged or pushed."
                         ) from exc
                     rows = kept
-                #     !!  CAP THE FAN-OUT (S5 review SHOULD-FIX 3).  !!
-                # This is an N+1 by design (module doc) - a run with an
-                # unbounded number of changed headers would hold that many
-                # extra round trips open in one pass. Fails the WHOLE run
-                # (nothing staged/pushed), same as the delete guard.
-                if len(rows) > MAX_DOCUMENT_HEADERS_PER_RUN:
-                    raise SqlDocumentCapExceeded(
-                        f"This run would fetch lines for {len(rows):,} documents in "
-                        f"one pass - over the safety cap "
-                        f"({MAX_DOCUMENT_HEADERS_PER_RUN:,}). Nothing was staged or "
-                        f"pushed. Narrow the from-date window and re-run."
-                    )
+                #     !!  NO PER-RUN HEADER-COUNT CAP HERE ANY MORE.  !!
+                # (plan sprint-5/03 S1, AC-03-01.) A document task ALWAYS
+                # carries a watermark column (construction-time guard above),
+                # so every real document run now goes through ``fetch_page``
+                # (``AUTOCOUNT_PAGE_SIZE`` bounds each read); this unpaged
+                # ``_read``/``fetch_changes`` path only remains reachable for
+                # the initial-load preview probe, which caps rows a different
+                # way (``MAX_EXTRACT_ROWS``, still enforced above).
                 key_column = self.key_columns[0]
                 for header in rows:
                     doc_key_value = header.get(key_column)

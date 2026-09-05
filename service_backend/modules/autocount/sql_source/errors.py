@@ -37,11 +37,12 @@ class SqlDeleteGuardExceeded(SqlSourceError):
 
 
 class SqlDocumentCapExceeded(SqlSourceError):
-    """A document task's per-header ``lineQuery`` fan-out exceeded one of its
-    two safety caps (S5 review SHOULD-FIX 3) - either too many changed
-    headers in a single run, or one header's own line count. Raised from
-    ``SqlDbSource._read`` BEFORE any hash write, same fail-safe contract as
-    ``SqlDeleteGuardExceeded``: nothing is staged or pushed."""
+    """A document task's per-header ``lineQuery`` fan-out exceeded its safety
+    cap - one header's own line count (S5 review SHOULD-FIX 3). Raised from
+    ``SqlDbSource._read_lines`` BEFORE any hash write, same fail-safe
+    contract as ``SqlDeleteGuardExceeded``: nothing is staged or pushed. The
+    sibling per-run "too many changed headers" cap is gone (plan sprint-5/03
+    S1, AC-03-01) - paging is the bound now."""
 
 
 class SqlFilterFormulaError(SqlSourceError):

@@ -287,5 +287,35 @@ class Settings(BaseSettings):
     # than this is swept to Expired (frees the buyer to re-pay, AC-07-33).
     payment_checkout_ttl_minutes: int = 60
 
+    # ── AutoCount bulk document load (plan sprint-5/03) ─────────────────────
+    # Paged extraction: `sync.py`'s run loop reads these AT CALL TIME (never
+    # cached at import time), so an operator can retune a running deployment
+    # without a restart and a test can monkeypatch the shared singleton. A
+    # page is `AUTOCOUNT_PAGE_SIZE` header rows in one statement; a run stops
+    # starting new pages once `AUTOCOUNT_RUN_TIME_BUDGET_SECONDS` has elapsed
+    # and finishes the page in flight (AC-03-06). Refused BELOW the floor at
+    # startup - never silently clamped, which would look like a working
+    # config while quietly extracting the whole 306k-header table per page.
+    autocount_page_size: int = 2000
+    autocount_run_time_budget_seconds: int = 600
+
+    @field_validator("autocount_page_size")
+    @classmethod
+    def _autocount_page_size_floor(cls, v: int) -> int:
+        if v < 100:
+            raise ValueError(
+                "autocount_page_size must be at least 100 rows."
+            )
+        return v
+
+    @field_validator("autocount_run_time_budget_seconds")
+    @classmethod
+    def _autocount_run_time_budget_floor(cls, v: int) -> int:
+        if v < 30:
+            raise ValueError(
+                "autocount_run_time_budget_seconds must be at least 30 seconds."
+            )
+        return v
+
 
 settings = Settings()
