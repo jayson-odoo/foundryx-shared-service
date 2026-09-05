@@ -59,6 +59,7 @@ export function useAccountForm(): UseAccountFormResult {
   const roles = useMemo(() => user?.roles ?? [], [user?.roles]);
 
   const form = useForm<AccountFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(accountFormSchema),
     defaultValues: { name: displayName ?? '' },
   });

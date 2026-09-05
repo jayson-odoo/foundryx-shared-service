@@ -64,7 +64,7 @@ export function LogDetailView({ logId }: { logId: string }) {
   const [isLoading, setIsLoading] = useState(true);
   const { formatDateTime } = useDatetime();
   const router = useRouter();
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
 
   // Clickable trace id → in-page switch to the Trace tab. `initialTabId` only
   // applies on mount, so a nonce-keyed remount re-forces it on every click.

@@ -47,6 +47,7 @@ export function useConnectionForm(
   const [notFound, setNotFound] = useState(false);
 
   const form = useForm<ConnectionFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(connectionFormSchema),
     defaultValues: BLANK,
   });

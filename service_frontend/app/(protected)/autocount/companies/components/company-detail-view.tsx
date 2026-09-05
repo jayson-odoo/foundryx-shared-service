@@ -65,7 +65,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const { can } = useCan();
   const { formatDateTime } = useDatetime();
   const router = useRouter();
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
   const runsConfig = useAutocountRunsListConfig(companyId);
   const [syncing, setSyncing] = useState<string | null>(null);
   const [runsKey, setRunsKey] = useState(0);

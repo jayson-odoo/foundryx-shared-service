@@ -39,6 +39,7 @@ export default function Page() {
   if (!signupEnabled) notFound();
 
   const form = useForm<SignupSchemaType>({
+    mode: 'onTouched',
     resolver: zodResolver(getSignupSchema()),
     defaultValues: {
       name: '',

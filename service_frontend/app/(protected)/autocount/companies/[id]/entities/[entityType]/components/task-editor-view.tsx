@@ -74,7 +74,7 @@ export interface TaskEditorViewProps {
  * would be dead-ends), Runs is always there (empty until the task runs).
  */
 export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: TaskEditorViewProps) {
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
   const { can } = useCan();
   const { detail } = useAutocountCompany(companyId);
   const { task, isLoading, notFound, saveError, fieldErrors, save, apply } = useAutocountEtlTask(

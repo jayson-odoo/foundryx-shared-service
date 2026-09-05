@@ -62,6 +62,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
   const [notFound, setNotFound] = useState(false);
 
   const form = useForm<IdeaFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(ideaFormSchema),
     defaultValues: toFormValues(null),
   });
