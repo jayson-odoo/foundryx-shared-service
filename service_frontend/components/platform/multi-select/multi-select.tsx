@@ -5,6 +5,7 @@ import { Check, ChevronDown, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import {
   Command,
   CommandEmpty,
@@ -121,7 +122,7 @@ export function MultiSelect({
             </span>
             <button
               type="button"
-              className="text-xs font-medium text-primary hover:underline"
+              className={cn(PRESSED_CLASS, 'text-xs font-medium text-primary hover:underline')}
               onClick={() =>
                 onChange(allSelected ? [] : options.map((o) => o.value))
               }

@@ -9,6 +9,8 @@ import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
 import { Form } from '@/components/ui/form';
 import { Label } from '@/components/ui/label';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import { ResourceForm, type ResourceFormConfig } from '@/components/platform/resource-form';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { ClampedText } from '@/components/platform/clamped-text';
@@ -32,7 +34,7 @@ function TraceLink({ label, onClick }: { label: string; onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="text-primary hover:underline font-mono text-xs"
+      className={cn(PRESSED_CLASS, 'text-primary hover:underline font-mono text-xs')}
     >
       {label}
     </button>

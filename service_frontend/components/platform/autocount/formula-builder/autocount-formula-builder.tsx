@@ -30,6 +30,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SearchSelect } from '@/components/platform/search-select';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import {
   FUNCTION_CATALOG,
   OPERATOR_CATALOG,
@@ -218,7 +219,10 @@ export function AutocountFormulaBuilder({
               <div className="flex flex-wrap gap-1.5">
                 <button
                   type="button"
-                  className="h-8 rounded-md border border-border bg-primary/10 px-2.5 font-mono text-xs text-primary hover:bg-primary/20"
+                  className={cn(
+                    PRESSED_CLASS,
+                    'h-8 rounded-md border border-border bg-primary/10 px-2.5 font-mono text-xs text-primary hover:bg-primary/20',
+                  )}
                   onClick={() => insert('value')}
                 >
                   value
@@ -228,7 +232,10 @@ export function AutocountFormulaBuilder({
                     key={op.symbol}
                     type="button"
                     title={op.description}
-                    className="h-8 min-w-8 rounded-md border border-border bg-muted/40 px-2 font-mono text-xs hover:bg-accent"
+                    className={cn(
+                      PRESSED_CLASS,
+                      'h-8 min-w-8 rounded-md border border-border bg-muted/40 px-2 font-mono text-xs hover:bg-accent',
+                    )}
                     onClick={() => insert(` ${op.symbol} `)}
                   >
                     {op.symbol}
@@ -237,7 +244,10 @@ export function AutocountFormulaBuilder({
                 <button
                   type="button"
                   aria-label="Backspace"
-                  className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-muted/40 hover:bg-accent"
+                  className={cn(
+                    PRESSED_CLASS,
+                    'flex h-8 w-8 items-center justify-center rounded-md border border-border bg-muted/40 hover:bg-accent',
+                  )}
                   onClick={backspace}
                 >
                   <Delete className="size-4" />
@@ -278,6 +288,7 @@ export function AutocountFormulaBuilder({
                           key={fn.name}
                           type="button"
                           className={cn(
+                            PRESSED_CLASS,
                             'flex w-full items-center justify-between gap-2 px-3 py-1.5 text-start hover:bg-accent',
                             selected?.name === fn.name && 'bg-accent',
                           )}

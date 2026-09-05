@@ -9,6 +9,8 @@
 import { useRef } from 'react';
 import { Braces } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import {
   Popover,
@@ -130,7 +132,7 @@ export function DynamicContentField({
                       type="button"
                       data-testid={`dynamic-content-${item.key}`}
                       onClick={() => insertAtCaret(ref.current, value, item.key, onChange)}
-                      className="flex w-full flex-col items-start rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
+                      className={cn(PRESSED_CLASS, 'flex w-full flex-col items-start rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent')}
                     >
                       <span className="text-foreground">{item.label}</span>
                       <span className="font-mono text-2xs text-muted-foreground">

@@ -32,6 +32,7 @@ import { useViewPreferences } from '@/hooks/use-view-preferences';
 import { useImportActivity } from '@/providers/import-activity-provider';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import {
   Card,
   CardFooter,
@@ -82,7 +83,7 @@ function RowDragGrip({ rowId }: { rowId: string }) {
       ref={setActivatorNodeRef}
       aria-label="Drag to reorder"
       onClick={(e) => e.stopPropagation()}
-      className="flex cursor-grab touch-none items-center text-muted-foreground/60 hover:text-foreground active:cursor-grabbing"
+      className={cn(PRESSED_CLASS, 'flex cursor-grab touch-none items-center text-muted-foreground/60 hover:text-foreground active:cursor-grabbing')}
       {...attributes}
       {...listeners}
     >

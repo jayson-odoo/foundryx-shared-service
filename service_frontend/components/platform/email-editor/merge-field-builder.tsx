@@ -22,6 +22,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import type { TemplateContextFact } from '@/types/templates';
@@ -127,7 +129,7 @@ export function MergeFieldBuilder({
                     type="button"
                     data-testid={`merge-chip-${field.key}`}
                     title={`{{${field.key}}}`}
-                    className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-start text-sm hover:bg-accent"
+                    className={cn(PRESSED_CLASS, 'flex w-full items-center justify-between gap-2 px-3 py-1.5 text-start text-sm hover:bg-accent')}
                     onClick={() => insert(field.key)}
                   >
                     <span className="truncate">{field.label}</span>

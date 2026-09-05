@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils';
 import { useDatetime } from '@/hooks/use-datetime';
 import { workflowService } from '@/services/workflow-service';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { Skeleton } from '@/components/ui/skeleton';
 import { SearchSelect } from '@/components/platform/search-select';
 import { RunReplay } from './run-replay';
@@ -134,6 +135,7 @@ export function WorkflowRuns({
               data-testid={`run-row-${run.id}`}
               onClick={() => openRun(run.id)}
               className={cn(
+                PRESSED_CLASS,
                 'flex flex-col gap-1 rounded-md border px-2.5 py-2 text-left transition-colors',
                 selectedRunId === run.id
                   ? 'border-primary bg-accent'

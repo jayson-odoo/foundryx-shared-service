@@ -1,16 +1,23 @@
 /**
- * AC-DLA-58 - every raw `<button` under `app/(protected)` and
- * `components/platform` either imports the shared `Button` primitive (which
- * already carries `PRESSED_CLASS` unconditionally, `button.tsx`) or the file
- * itself imports `PRESSED_CLASS` from `primitive-classes` and threads it into
- * the tag's own className. Checked at file granularity (not per-tag): a file
- * mixing `Button` with a couple of hand-rolled `<button>`s for a bespoke
- * shape still needs `PRESSED_CLASS` imported for those, since importing
- * `Button` alone proves nothing about a SEPARATE raw tag in the same file.
+ * AC-DLA-58 - every raw `<button` element under `app/(protected)` and
+ * `components/platform` either IS a `Button` (which already carries
+ * `PRESSED_CLASS` unconditionally, `button.tsx`) or carries the shared
+ * `PRESSED_CLASS` string (from `primitive-classes`) somewhere in its own
+ * className expression, threaded via `cn(...)`.
  *
- * Baseline (T7 sweep, before fixes): 17 files. All fixed this slice - the
- * allowlist starts and stays empty; a future genuine exception needs a named
- * reason here, not a silent add.
+ * Checked PER ELEMENT (T7 fix round 1 - the original file-level check only
+ * proved a file imported `Button` SOMEWHERE, which let a raw `<button>` sit
+ * unpressed in a file that also happened to use `Button` for something
+ * else; 60 such elements across 25 files were found and fixed this round).
+ * The element's opening tag is extracted brace/quote-depth aware (mirrors
+ * `a11y-guardrails.inventory.test.ts`'s `findButtons`, adapted to lowercase
+ * `<button`), so a multi-line `className={cn(...)}` expression is captured
+ * whole.
+ *
+ * Baseline (T7 sweep): 17 files fixed at file granularity, then a further 25
+ * files / 60 elements fixed at element granularity (fix round 1). The
+ * allowlist starts and stays empty; a future genuine exception needs a
+ * named reason here, not a silent add.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -38,17 +45,59 @@ function sourceFiles(): string[] {
   return out;
 }
 
-describe('AC-DLA-58 raw <button carries pressed feedback', () => {
-  it('every file with a raw <button imports Button or PRESSED_CLASS (allowlist empty)', () => {
+/**
+ * The opening tag of every raw `<button ...>` in `src`, brace/quote depth
+ * tracked so a multi-line `className={cn('a', x && 'b')}` does not end the
+ * tag early. Excludes `<Button`/`<ButtonGroup` etc (capital B, a different
+ * component) via the negative lookahead on the next char after `button`.
+ */
+function findRawButtonTags(src: string): string[] {
+  const out: string[] = [];
+  const opener = /<button(?![A-Za-z0-9_-])/g;
+  let m: RegExpExecArray | null;
+  while ((m = opener.exec(src))) {
+    let i = m.index;
+    let depth = 0;
+    let quote: string | null = null;
+    let tagEnd = -1;
+    while (i < src.length) {
+      const c = src[i];
+      if (quote) {
+        if (c === '\\') i += 1;
+        else if (c === quote) quote = null;
+      } else if (c === '"' || c === "'" || c === '`') {
+        quote = c;
+      } else if (c === '{') {
+        depth += 1;
+      } else if (c === '}') {
+        depth -= 1;
+      } else if (c === '>' && depth === 0) {
+        tagEnd = i + 1;
+        break;
+      }
+      i += 1;
+    }
+    if (tagEnd === -1) continue;
+    out.push(src.slice(m.index, tagEnd));
+  }
+  return out;
+}
+
+describe('AC-DLA-58 every raw <button element carries pressed feedback', () => {
+  it('every raw <button element carries PRESSED_CLASS in its className (allowlist empty)', () => {
     const allowed = new Set(ALLOWLIST.map((f) => path.join(repoRoot, f)));
-    const offenders = sourceFiles().filter((f) => {
-      if (allowed.has(f)) return false;
-      const src = fs.readFileSync(f, 'utf8');
-      if (!/<button(\s|>)/.test(src)) return false;
-      const hasButtonImport = /from ['"]@\/components\/ui\/button['"]/.test(src);
-      const hasPressedClass = /PRESSED_CLASS/.test(src);
-      return !hasButtonImport && !hasPressedClass;
-    });
-    expect(offenders.map((f) => f.replace(repoRoot + path.sep, ''))).toEqual([]);
+    const offenders: string[] = [];
+    for (const file of sourceFiles()) {
+      if (allowed.has(file)) continue;
+      const src = fs.readFileSync(file, 'utf8');
+      if (!src.includes('<button')) continue;
+      const rel = file.replace(repoRoot + path.sep, '');
+      for (const tag of findRawButtonTags(src)) {
+        if (!tag.includes('PRESSED_CLASS')) {
+          offenders.push(`${rel}: ${tag.slice(0, 140).replace(/\s+/g, ' ')}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

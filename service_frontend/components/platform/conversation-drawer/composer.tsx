@@ -58,7 +58,9 @@ import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { SearchSelect } from '@/components/platform/search-select';
 import { Textarea } from '@/components/ui/textarea';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { EMOJI_GROUPS } from '@/lib/emoji';
+import { cn } from '@/lib/utils';
 import {
   ContactsBuilderDialog,
   InteractiveBuilderDialog,
@@ -642,7 +644,7 @@ export function Composer({
                           <button
                             key={`${group.label}-${i}`}
                             type="button"
-                            className="rounded p-1 text-lg hover:bg-muted"
+                            className={cn(PRESSED_CLASS, 'rounded p-1 text-lg hover:bg-muted')}
                             onClick={() => setBody((prev) => prev + emoji)}
                             data-testid="emoji-item"
                           >
