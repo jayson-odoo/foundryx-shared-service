@@ -150,9 +150,19 @@
        `animation-name`/`animation-duration` pair - a plain `transition-duration`
        reset (T3 fix round 1 BLOCKER 3) never reaches a CSS ANIMATION, so the
        285px nav drawer still slid at full speed for a reduced-motion reader
-       until `animation-duration` is reset too. */
+       until `animation-duration` is reset too.
+
+       T6 fix round 1 item 9: sonner (toast notifications) is the SAME shape
+       of external library - its own injected `dist/styles.css` slides/fades
+       `[data-sonner-toast]` via a plain `transition` (transform/opacity/
+       height, 400ms) and mounts `[data-sonner-toaster]` via a
+       `sonner-fade-in` CSS `animation` (300ms), both outside the tw-animate
+       vars this block resets above - so toasts were the one motion surface
+       in the app that never obeyed the reduced-motion preference. */
     [data-vaul-drawer],
-    [data-vaul-overlay] {
+    [data-vaul-overlay],
+    [data-sonner-toast],
+    [data-sonner-toaster] {
       transition-duration: 1ms !important;
       animation-duration: 1ms !important;
     }

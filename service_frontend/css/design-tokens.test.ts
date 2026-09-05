@@ -437,7 +437,7 @@ describe('AC-DLA-05 accessibility preference blocks', () => {
     expect(reduced).not.toContain('.animate-spin');
   });
 
-  it('stops the demo1 shell CSS transitions and collapses vaul/arbitrary transitions to 1ms', () => {
+  it('stops the demo1 shell CSS transitions and collapses vaul/sonner/arbitrary transitions to 1ms', () => {
     const reduced = reducedMotion();
     expect(reduced).toMatch(/\.demo1 \.sidebar,\s*\n?\s*\.demo1 \.wrapper,\s*\n?\s*\.demo1 \.header/);
     expect(reduced).toMatch(/\.demo1[\s\S]*\{\s*transition:\s*none\s*!important/);
@@ -445,9 +445,12 @@ describe('AC-DLA-05 accessibility preference blocks', () => {
     // ANIMATION, not a transition - both `[data-vaul-drawer]` AND
     // `[data-vaul-overlay]` need `animation-duration` reset alongside
     // `transition-duration`, or a reduced-motion reader still gets the full
-    // 500ms slide.
+    // 500ms slide. T6 fix round 1 item 9: sonner toasts are the same shape
+    // of library-injected CSS animation/transition (400ms transform slide +
+    // a 300ms `sonner-fade-in` mount animation) and join the SAME selector
+    // group.
     expect(reduced).toMatch(
-      /\[data-vaul-drawer\],\s*\n?\s*\[data-vaul-overlay\]\s*\{\s*transition-duration:\s*1ms\s*!important;\s*\n?\s*animation-duration:\s*1ms\s*!important/,
+      /\[data-vaul-drawer\],\s*\n?\s*\[data-vaul-overlay\],\s*\n?\s*\[data-sonner-toast\],\s*\n?\s*\[data-sonner-toaster\]\s*\{\s*transition-duration:\s*1ms\s*!important;\s*\n?\s*animation-duration:\s*1ms\s*!important/,
     );
     expect(reduced).toMatch(/\[class\*='transition-\['\]\s*\{\s*transition-duration:\s*1ms\s*!important/);
   });
