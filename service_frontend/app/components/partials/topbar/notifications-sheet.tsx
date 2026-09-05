@@ -53,7 +53,7 @@ export function NotificationsSheet({ trigger }: { trigger: ReactNode }) {
           </SheetTitle>
         </SheetHeader>
         <SheetBody className="p-0">
-          <ScrollArea className="h-[calc(100vh-10.5rem)]">
+          <ScrollArea className="h-[calc(100dvh-10.5rem)]">
             <Tabs defaultValue="all" className="w-full relative">
               <TabsList variant="line" className="w-full px-5 mb-5">
                 <TabsTrigger value="all">All</TabsTrigger>

@@ -8,9 +8,9 @@
  * panels, a few `SearchSelect` placeholders).
  *
  * A single `git grep` over TRACKED files - gitignored build output never
- * decides the verdict (same rationale as `no-playwright.guard.test.ts`).
- * This file and its own test doc/comments necessarily discuss the banned
- * string, so it excludes itself.
+ * decides the verdict (same rationale as this repo's other retirement-
+ * guard test). This file and its own test doc/comments necessarily discuss
+ * the banned string, so it excludes itself.
  */
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
