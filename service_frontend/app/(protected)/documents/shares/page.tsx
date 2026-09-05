@@ -48,13 +48,10 @@ export default function DocumentSharesPage() {
         surfaces: { row: true, bulk: true },
         permission: 'documents.share',
         // Grace-window deferred action (sprint-4/23, T5, D2/D13) - no confirm
-        // dialog, a countdown with Cancel; a bulk revoke parks ONE row per
-        // link behind a single countdown naming the count.
-        deferred: { actionKey: 'document_shares.revoke', entityType: 'document_share', window: 'destructive' },
-        run: async (rows, runtime) => {
-          await documentService.revokeShares(rows.map((r) => r.id));
-          runtime.reload();
-        },
+        // dialog, no `run` (the registered `document_shares.revoke` handler
+        // commits it server-side); a bulk revoke parks ONE row per link
+        // behind a single countdown naming the count.
+        deferred: { actionKey: 'document_shares.revoke', entityType: 'document_share' },
       },
     ],
     [],

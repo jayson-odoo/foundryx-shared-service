@@ -56,13 +56,9 @@ export function useTemplateActions(): ResourceAction<TemplateListItem>[] {
         permission: 'templates.manage',
         // Only forked system templates have a platform default to reset to.
         isVisible: (rows) => rows.every((t) => t.isSystem && t.tier === 'customized'),
-        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm.
-        deferred: { actionKey: 'templates.reset', entityType: 'template', window: 'destructive' },
-        run: async ([template], runtime) => {
-          await templateEngineService.resetTemplate(template.id);
-          toast.success(`"${template.name}" reset to the platform default.`);
-          runtime.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm,
+        // no `run` (the registered `templates.reset` handler commits it).
+        deferred: { actionKey: 'templates.reset', entityType: 'template' },
       },
       {
         id: 'delete',
@@ -73,15 +69,9 @@ export function useTemplateActions(): ResourceAction<TemplateListItem>[] {
         permission: 'templates.manage',
         // System templates are delete-blocked (D6) - reset instead.
         isVisible: (rows) => rows.every((t) => !t.isSystem),
-        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm.
-        deferred: { actionKey: 'templates.delete', entityType: 'template', window: 'destructive' },
-        run: async (rows, runtime) => {
-          for (const template of rows) {
-            await templateEngineService.deleteTemplate(template.id);
-          }
-          toast.success(`Deleted ${rows.length} template(s).`);
-          runtime.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm,
+        // no `run` (the registered `templates.delete` handler commits it).
+        deferred: { actionKey: 'templates.delete', entityType: 'template' },
       },
     ],
     [router],

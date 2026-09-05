@@ -102,13 +102,9 @@ export function useFormActions(): ResourceAction<FormRow>[] {
         // Hard delete only from the Archived view (two-step safety) - drops
         // versions, submissions AND the form's scoped status graph (D4).
         isVisible: (rows) => rows.length > 0 && rows.every((f) => f.isTrashed),
-        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm.
-        deferred: { actionKey: 'forms.delete', entityType: 'form', window: 'destructive' },
-        run: async (rows, runtime) => {
-          for (const f of rows) await formService.remove(f.id);
-          toast.success(`Deleted ${rows.length} form${rows.length === 1 ? '' : 's'}.`);
-          runtime.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm,
+        // no `run` (the registered `forms.delete` handler commits it).
+        deferred: { actionKey: 'forms.delete', entityType: 'form' },
       },
     ],
     [router],

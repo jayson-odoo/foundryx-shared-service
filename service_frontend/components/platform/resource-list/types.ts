@@ -45,11 +45,8 @@ export interface ResourceActionRuntime {
   reload: () => void;
 }
 
-/**
- * One entry in an entity's action registry. The SAME action can surface in the
- * row `...` menu, the bulk toolbar, and the form `...` menu (plan 02 §3c).
- */
-export interface ResourceAction<T> {
+/** Fields every action shares, regardless of how it runs. */
+interface ResourceActionCommon<T> {
   id: string;
   /**
    * Menu label. A function receives the target rows so the label can be derived
@@ -66,43 +63,62 @@ export interface ResourceAction<T> {
   isVisible?: (rows: T[]) => boolean;
   /** Show but disable (e.g. "Send invitation" only for INVITED users). */
   isDisabled?: (rows: T[]) => boolean;
-  /**
-   * When set, a confirm dialog gates the action - RESERVED for the two
-   * typed-confirmation carve-outs (module uninstall, tenant purge, D2/D13):
-   * every other destructive/reversible action uses `deferred` instead (the
-   * grace-window engine, sprint-4/23 T5). `confirm` and `deferred` are
-   * mutually exclusive.
-   */
-  confirm?: {
-    title: string;
-    description?: string;
-    confirmLabel?: string;
-    /**
-     * Typed confirmation (sprint-2/02 - module-uninstall UX): the confirm
-     * button stays disabled until the user types `expected(rows)` exactly.
-     * For irreversible actions (hard delete).
-     */
-    input?: { expected: (rows: T[]) => string; hint?: (rows: T[]) => string };
-  };
-  /**
-   * Deferred (grace-window) action (sprint-4/23 T5, D2/AC-DLA-43): no confirm
-   * dialog - the action parks on the server for `window`'s countdown (10s
-   * destructive / 5s reversible, tenant-configurable) and applies when it
-   * lapses. `actionKey` is the backend registry key (`<entity>.<verb>`,
-   * `app/deferred_actions/registry.py`). When set, `run` is NOT called by
-   * the shell - the shell drives `useDeferredAction` itself. `entityType`
-   * (the deferred-actions registry's entity type, e.g. `"user"`) is
-   * co-located here rather than threaded as a new prop through every
-   * ActionMenu/BulkActions/ResourceForm call site (AC-DLA-43's shape omits
-   * it - a deliberate, disclosed addition; see the T5 report).
-   */
-  deferred?: {
-    actionKey: string;
-    entityType: string;
-    window: 'destructive' | 'reversible';
-  };
-  run: (rows: T[], runtime: ResourceActionRuntime) => void | Promise<void>;
 }
+
+/**
+ * One entry in an entity's action registry. The SAME action can surface in the
+ * row `...` menu, the bulk toolbar, and the form `...` menu (plan 02 §3c).
+ *
+ * A discriminated union (fix round 1, T5, item 12) - `confirm`/`run` and
+ * `deferred` cannot coexist on one action. Before this, `run` was required on
+ * EVERY action, so a migrated `confirm:` -> `deferred:` action kept a `run:`
+ * body the shell never calls (`ActionMenu`/`BulkActions` branch on
+ * `action.deferred` and return before reaching `run`) - dead code that reads
+ * as live. TypeScript now rejects supplying both.
+ */
+export type ResourceAction<T> =
+  | (ResourceActionCommon<T> & {
+      /**
+       * When set, a confirm dialog gates the action - RESERVED for the two
+       * typed-confirmation carve-outs (module uninstall, tenant purge,
+       * D2/D13): every other destructive/reversible action uses `deferred`
+       * instead (the grace-window engine, sprint-4/23 T5).
+       */
+      confirm?: {
+        title: string;
+        description?: string;
+        confirmLabel?: string;
+        /**
+         * Typed confirmation (sprint-2/02 - module-uninstall UX): the confirm
+         * button stays disabled until the user types `expected(rows)`
+         * exactly. For irreversible actions (hard delete).
+         */
+        input?: { expected: (rows: T[]) => string; hint?: (rows: T[]) => string };
+      };
+      deferred?: undefined;
+      run: (rows: T[], runtime: ResourceActionRuntime) => void | Promise<void>;
+    })
+  | (ResourceActionCommon<T> & {
+      confirm?: undefined;
+      /**
+       * Deferred (grace-window) action (sprint-4/23 T5, D2/AC-DLA-43): no
+       * confirm dialog - the action parks on the server for the tenant-
+       * configured window (10s destructive / 5s reversible, read from
+       * `tenant_settings` - never authored here, so no `window` field: fix
+       * round 1 item 12 removed the field this type used to carry, which no
+       * caller ever read) and applies when it lapses. `actionKey` is the
+       * backend registry key (`<entity>.<verb>`,
+       * `app/deferred_actions/registry.py`). `run` is NOT called by the
+       * shell - the shell drives `useDeferredAction` itself, so a
+       * `deferred` action has no `run`. `entityType` (the deferred-actions
+       * registry's entity type, e.g. `"user"`) is co-located here rather
+       * than threaded as a new prop through every
+       * ActionMenu/BulkActions/ResourceForm call site (AC-DLA-43's shape
+       * omits it - a deliberate, disclosed addition; see the T5 report).
+       */
+      deferred: { actionKey: string; entityType: string };
+      run?: undefined;
+    });
 
 export interface ExportColumn {
   id: string;

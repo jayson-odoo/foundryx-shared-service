@@ -112,13 +112,10 @@ export function useUserActions(): ResourceAction<User>[] {
         surfaces: { row: true, bulk: true, form: true },
         isVisible: (rows) => rows.length > 0 && rows.every((r) => !r.isTrashed),
         // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm
-        // dialog; a bulk trash parks ONE row per user behind one countdown.
-        deferred: { actionKey: 'users.trash', entityType: 'user', window: 'destructive' },
-        run: async (rows, rt) => {
-          await userService.trash(ids(rows));
-          toast.success(`Moved ${rows.length} user(s) to trash.`);
-          rt.reload();
-        },
+        // dialog, no `run` (the registered `users.trash` handler commits it
+        // server-side); a bulk trash parks ONE row per user behind one
+        // countdown.
+        deferred: { actionKey: 'users.trash', entityType: 'user' },
       },
       {
         id: 'restore',

@@ -116,27 +116,36 @@ export function useTenantActions(): ResourceAction<TenantListItem>[] {
     ): ResourceAction<TenantListItem> => {
       const target = statusById.get(edges[0].toStatusId);
       const deferredActionKey = target ? DEFERRED_KEY_FOR_TARGET[target.key] : undefined;
-      return {
+      const common = {
         id: `transition-${edges[0].id}`,
         label,
         icon: edgeIcon(target),
-        tone: target?.isArchived ? 'destructive' : undefined,
+        tone: target?.isArchived ? ('destructive' as const) : undefined,
         // Legacy privilege boundary by TARGET flags (mirrors the backend):
         // archive-like → tenants.archive, everything else → tenants.suspend.
         permission: target?.isArchived ? 'tenants.archive' : 'tenants.suspend',
         surfaces: { row: true, bulk: true },
-        isVisible: (rows) =>
+        isVisible: (rows: TenantListItem[]) =>
           rows.length > 0 &&
           rows.every((t) => !t.isPlatform && Boolean(edgeForRow(edges, t))),
-        ...(deferredActionKey
-          ? { deferred: { actionKey: deferredActionKey, entityType: 'tenant', window: 'reversible' as const } }
-          : {
-              confirm: {
-                title: `${label} this tenant?`,
-                description: edgeDescription(target),
-                confirmLabel: `${label} tenant`,
-              },
-            }),
+      };
+      // Fix round 1 item 12: a `deferred` action has no `run` - the server's
+      // registered handler (`tenants.archive/suspend/reactivate`) commits it,
+      // never this frontend function. Built as two FULLY separate branches
+      // (rather than spreading `deferred`/`confirm` onto one object that
+      // always carried `run`) so the dead-when-deferred `run` body can't
+      // exist at all, and the type (a discriminated union) rejects supplying
+      // both.
+      if (deferredActionKey) {
+        return { ...common, deferred: { actionKey: deferredActionKey, entityType: 'tenant' } };
+      }
+      return {
+        ...common,
+        confirm: {
+          title: `${label} this tenant?`,
+          description: edgeDescription(target),
+          confirmLabel: `${label} tenant`,
+        },
         run: async (rows, rt) => {
           // Count what actually FIRED (code-review fix): a row whose edge
           // vanished between the visibility check and run (concurrent rule/

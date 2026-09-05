@@ -55,7 +55,6 @@ describe('useProductsListConfig', () => {
     expect(del?.deferred).toEqual({
       actionKey: 'products.delete',
       entityType: 'product',
-      window: 'destructive',
     });
   });
 
@@ -68,12 +67,10 @@ describe('useProductsListConfig', () => {
     expect(h.onEdit).toHaveBeenCalledWith(row);
   });
 
-  it('Delete action calls the onDelete handler for each row', async () => {
-    const h = handlers();
-    const { result } = renderHook(() => useProductsListConfig(h));
+  it('Delete action has no `run` - a deferred action commits via the registered server handler, not a frontend callback (fix round 1 item 12)', () => {
+    const { result } = renderHook(() => useProductsListConfig(handlers()));
     const del = result.current.actions.find((a) => a.id === 'delete')!;
-    await del.run([aProduct({ id: 'a' }), aProduct({ id: 'b' })], { reload: () => {} });
-    expect(h.onDelete).toHaveBeenCalledTimes(2);
+    expect(del.run).toBeUndefined();
   });
 
   it('fetcher delegates to productService.listProducts - data state', async () => {

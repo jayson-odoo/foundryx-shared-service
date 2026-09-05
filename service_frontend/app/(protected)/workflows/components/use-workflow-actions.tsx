@@ -142,15 +142,9 @@ export function useWorkflowActions(): ResourceAction<WorkflowListItem>[] {
         permission: 'workflows.manage',
         // Hard delete only from the Archived view (two-step safety).
         isVisible: (rows) => rows.length > 0 && rows.every((w) => w.isTrashed),
-        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm.
-        deferred: { actionKey: 'workflows.delete', entityType: 'workflow', window: 'destructive' },
-        run: async (rows, runtime) => {
-          for (const w of rows) await workflowService.remove(w.id);
-          toast.success(
-            `Deleted ${rows.length} workflow${rows.length === 1 ? '' : 's'}.`,
-          );
-          runtime.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm,
+        // no `run` (the registered `workflows.delete` handler commits it).
+        deferred: { actionKey: 'workflows.delete', entityType: 'workflow' },
       },
     ],
     [canCode, router],

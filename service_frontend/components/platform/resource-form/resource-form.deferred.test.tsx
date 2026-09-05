@@ -83,8 +83,7 @@ const trashAction: ResourceAction<Rec> = {
   label: 'Trash',
   tone: 'destructive',
   surfaces: { form: true },
-  deferred: { actionKey: 'users.trash', entityType: 'user', window: 'destructive' },
-  run: vi.fn(),
+  deferred: { actionKey: 'users.trash', entityType: 'user' },
 };
 
 describe('AC-DLA-44 ResourceForm deferred (grace-window) form-surface action', () => {

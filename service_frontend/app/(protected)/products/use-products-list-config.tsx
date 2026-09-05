@@ -41,9 +41,16 @@ function formatPrice(row: Product): string {
 export function useProductsListConfig(handlers: {
   onCreate: () => void;
   onEdit: (product: Product) => void;
+  /**
+   * No longer called by this config (fix round 1 item 12 - Delete is
+   * `deferred`, so the registered `products.delete` handler commits it
+   * server-side, not a frontend `run`). Kept in the signature so the caller
+   * (`page.tsx`) needs no change; a future trashed-view/bulk-restore surface
+   * may still want it.
+   */
   onDelete: (product: Product) => Promise<void>;
 }): ResourceListConfig<Product> {
-  const { onCreate, onEdit, onDelete } = handlers;
+  const { onCreate, onEdit } = handlers;
 
   return useMemo<ResourceListConfig<Product>>(() => {
     const actions: ResourceAction<Product>[] = [
@@ -64,11 +71,9 @@ export function useProductsListConfig(handlers: {
         tone: 'destructive',
         permission: 'products.delete',
         surfaces: { row: true, form: true, bulk: true },
-        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm.
-        deferred: { actionKey: 'products.delete', entityType: 'product', window: 'destructive' },
-        run: async (rows) => {
-          for (const r of rows) await onDelete(r);
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm,
+        // no `run` (the registered `products.delete` handler commits it).
+        deferred: { actionKey: 'products.delete', entityType: 'product' },
       },
     ];
 
@@ -208,5 +213,5 @@ export function useProductsListConfig(handlers: {
       createPermission: 'products.create',
       onCreate,
     };
-  }, [onCreate, onEdit, onDelete]);
+  }, [onCreate, onEdit]);
 }
