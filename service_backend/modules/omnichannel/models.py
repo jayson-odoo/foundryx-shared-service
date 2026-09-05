@@ -147,6 +147,13 @@ class Contact(OmniBase):
     last_name = Column(String, nullable=True)
     email = Column(String, nullable=True)
     phone = Column(String, nullable=True, index=True)
+    # Normalized digits-only mirror of `phone` (plan 26 S1, D-A2-9) - maintained
+    # on every write path that sets `phone` (see `phone.py digits_only`), backed
+    # by an index so the within-workspace phone stitch/lookup no longer scans
+    # every contact. Deliberately NO unique constraint - phone uniqueness per
+    # workspace is service-enforced (S2); a pre-existing tenant may already
+    # carry duplicates (a unique index would fail the backfill migration).
+    phone_digits = Column(String, nullable=True, index=True)
     avatar_url = Column(String, nullable=True)
     # `none_as_null=True` (house rule) - without it a Python `None` assignment
     # stores a JSON `null` scalar instead of a SQL NULL, which then breaks
@@ -259,6 +266,33 @@ class ContactTagLink(OmniBase):
 
     __table_args__ = (
         UniqueConstraint("contact_id", "tag_id", name="uq_contact_tag_link"),
+    )
+
+
+class ContactSegment(OmniBase):
+    """A saved, named filter tree per workspace (plan 26 S1, D-A2-3). Stores
+    the EXACT `FilterGroup` shape the Resource shell's filter builder emits
+    (`filter_json`, `JSON(none_as_null=True)` per the house rule) - validated
+    at save by a dry-run `translate_filter` against
+    `services/contact_filters.py`'s whitelisted column map, and applied in SQL
+    through the SAME translator at list time (never evaluated in Python over
+    fetched rows). Name uniqueness (per workspace, case-insensitive) is a DB
+    functional unique index - this is a brand-new table, so (unlike
+    `contact_fields`/`contact_tags`) there is no pre-existing-duplicate
+    auto-heal to run first."""
+
+    __tablename__ = "contact_segments"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    filter_json = Column(JSON(none_as_null=True), nullable=True)
+    created_by_user_id = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
 

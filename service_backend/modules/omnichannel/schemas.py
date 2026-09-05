@@ -405,6 +405,55 @@ class ThreadListResponse(ApiModel):
     total: int
 
 
+# ── Contacts module (plan 26 S1) ─────────────────────────────────────────────
+class ContactChannelRef(ApiModel):
+    """One channel a contact has an identity on (AC-CTM-19) - resolved
+    tenant-scoped from `contact_channel_identities`, batched for a whole page.
+    Never defaulted: a contact with no identity yields `channels: []`."""
+
+    channelId: str
+    channelType: str
+    name: str
+
+
+class ContactListItem(ThreadItem):
+    """`ThreadItem` (plan 25) + `channels[]` (D-A2-11) - the Contacts-module
+    list/detail shape. No new fields beyond `channels` - everything else is
+    inherited so the module never forks a second contact representation."""
+
+    channels: List[ContactChannelRef] = []
+
+
+class ContactListResponse(ApiModel):
+    data: List[ContactListItem]
+    total: int
+    page: int
+
+
+class ContactSegmentItem(ApiModel):
+    id: str
+    workspaceId: str
+    name: str
+    description: Optional[str] = None
+    filter: Optional[FilterGroup] = None
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class ContactSegmentCreate(ApiModel):
+    name: str
+    description: Optional[str] = None
+    filter: Optional[FilterGroup] = None
+
+
+class ContactSegmentUpdate(ApiModel):
+    """Partial update (`model_fields_set` drives which fields apply)."""
+
+    name: Optional[str] = None
+    description: Optional[str] = None
+    filter: Optional[FilterGroup] = None
+
+
 class ThreadPatch(ApiModel):
     """PATCH /contacts/{id}. assignedUserId: explicit null = unassign (the
     handler distinguishes omitted vs null via model_fields_set). System-field +
