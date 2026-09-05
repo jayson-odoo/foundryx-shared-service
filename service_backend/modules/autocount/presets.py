@@ -342,6 +342,8 @@ def seed_document_mapping(
     *,
     header_columns: Optional[Dict[str, str]],
     line_columns: Optional[Dict[str, str]],
+    seed_header: bool = True,
+    seed_line: bool = True,
 ) -> int:
     """Seed the entity's preset header+line mapping rows. Returns the count
     created (0 when no preset is registered for ``entity_type``, e.g. a
@@ -360,13 +362,22 @@ def seed_document_mapping(
     preset = DOCUMENT_PRESETS.get(entity_type)
     if preset is None:
         return 0
-    created = _seed_rows(
-        db, tenant_id, company_id, entity_type, SCOPE_HEADER, preset.header, header_columns,
-    )
-    created += _seed_rows(
-        db, tenant_id, company_id, entity_type, SCOPE_LINE, preset.line, line_columns,
-        sort_start=len(preset.header),
-    )
+    # Per-scope (sprint-5/02 hotfix): the caller passes which scopes are still
+    # empty. Migration 0010 backfilled LINE rows onto every existing document
+    # task, so "the mapping is empty" was never true again for those tasks and
+    # a header that was never mapped could not be seeded - the operator saw an
+    # empty header section with no formula to edit.
+    created = 0
+    if seed_header:
+        created += _seed_rows(
+            db, tenant_id, company_id, entity_type, SCOPE_HEADER, preset.header,
+            header_columns,
+        )
+    if seed_line:
+        created += _seed_rows(
+            db, tenant_id, company_id, entity_type, SCOPE_LINE, preset.line, line_columns,
+            sort_start=len(preset.header),
+        )
     db.flush()
     return created
 

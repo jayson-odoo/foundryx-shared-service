@@ -3095,3 +3095,83 @@ def test_every_document_entity_has_a_prerequisites_entry():
         f"DOCUMENT_PREREQUISITES is missing an entry for: {missing} - that "
         f"document's rows would never warn on a missing/inactive master."
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Group H (cont.) - post-merge live finding on the real Sorento company: header
+# mapping empty and un-seedable because migration 0010 backfilled LINE rows;
+# Mapping tab offered no header source columns.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _task_payload(conn_id: str) -> Dict[str, object]:
+    return {
+        "connectionId": conn_id, "query": HEADER_QUERY, "lineQuery": LINE_QUERY,
+        "keyColumns": ["doc_key"], "watermarkColumn": "last_modified",
+        "comparedColumns": [], "fromDate": "2026-01-01", "docDateColumn": "doc_date",
+        "incrementalMinutes": 15, "reconcileMode": "dailyAt", "reconcileAt": "02:00",
+    }
+
+
+def test_preset_seed_is_per_scope_when_line_rows_were_backfilled(session_factory):
+    """A document task whose LINE rows already exist (migration 0010 backfill)
+    but whose HEADER was never mapped must still get its header preset on the
+    next clean save - and the existing line rows must not be duplicated."""
+    import datetime as dt
+
+    header_rows = [
+        ("D001", "SO-001", "open", "F", dt.date(2026, 8, 1), dt.datetime(2026, 8, 1, 9, 0, 0))
+    ]
+    lines = {"D001": [("D001-1", "ITEM-A", "10", "0", 1)]}
+    db = session_factory()
+    engine = _source_engine_typed(header_rows, lines)
+    conn = _sql_connection(db, engine, database="AED_SCOPESEED", name="src")
+    company = _company(db, conn.id, database="AED_SCOPESEED", name="Scope Seed Co")
+    # Simulate the 0010 backfill: line rows exist, header rows do not.
+    for order, (src, canon, transform) in enumerate(
+        [("dtl_key", "source_ref", "string"), ("item_code", "product_ref", "ref_product")]
+    ):
+        db.add(
+            AcFieldMapping(
+                tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+                entity_type=ENTITY_SALES_ORDER, scope="line", source_path=src,
+                canonical_field=canon, transform=transform, is_required=True,
+                is_enabled=True, sort_order=order,
+            )
+        )
+    db.commit()
+
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, _task_payload(conn.id)
+    )
+    rows = CompanyService(db).mapping_rows(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER)
+    header = [r for r in rows if r.scope == "header"]
+    line = [r for r in rows if r.scope == "line"]
+    assert header, "the header preset must be seeded even though line rows already existed"
+    assert {r.canonical_field for r in header} >= {"so_number", "status"}
+    assert len(line) == 2, "existing line rows must be left alone, never duplicated"
+    db.close()
+
+
+def test_mapping_view_header_source_columns_come_from_the_last_preview(session_factory):
+    """The Mapping tab's header source-column list for a SQL-database task is
+    the task's last preview (`result_columns`), not the API-path static
+    catalog (which has no entry for documents and rendered an empty picker)."""
+    import datetime as dt
+
+    header_rows = [
+        ("D001", "SO-001", "open", "F", dt.date(2026, 8, 1), dt.datetime(2026, 8, 1, 9, 0, 0))
+    ]
+    lines = {"D001": [("D001-1", "ITEM-A", "10", "0", 1)]}
+    db = session_factory()
+    engine = _source_engine_typed(header_rows, lines)
+    conn = _sql_connection(db, engine, database="AED_ACFIELDS", name="src")
+    company = _company(db, conn.id, database="AED_ACFIELDS", name="AcFields Co")
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, _task_payload(conn.id)
+    )
+    view = CompanyService(db).mapping_view(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER)
+    assert set(view.ac_fields) >= {"doc_key", "doc_no", "status", "cancelled", "doc_date"}, (
+        f"header ac_fields must be the previewed result columns - got {view.ac_fields}"
+    )
+    db.close()

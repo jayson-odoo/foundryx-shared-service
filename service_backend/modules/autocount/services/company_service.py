@@ -1176,16 +1176,26 @@ class CompanyService:
         ]
         line_sorento_fields: List[SorentoFieldDef] = []
         line_ac_fields: List[str] = []
+        # Header source columns: a SQL-database task's LAST PREVIEW
+        # (`result_columns`) is the truth about what the header query returns;
+        # the static catalog is the API-path fallback only. Without this a
+        # document task's Mapping tab offered NO header columns (the static
+        # catalog has none for documents), so no header row and no formula
+        # could be authored there - found on the live Sorento company after
+        # the sprint-5/02 merge.
+        config = self.configs.get(tenant_id, company_id, entity_type)
+        header_ac_fields: List[str] = list(ac_source_fields(entity_type))
+        if config is not None and config.result_columns:
+            header_ac_fields = [str(c) for c in config.result_columns]
         if is_document_entity(entity_type):
             line_sorento_fields = list(line_accepted_fields(entity_type))
-            config = self.configs.get(tenant_id, company_id, entity_type)
             if config is not None:
                 line_ac_fields = [str(c) for c in (config.line_result_columns or [])]
         return MappingView(
             entity_type=entity_type,
             rows=rows,
             sorento_fields=list(accepted_fields(entity_type)),
-            ac_fields=list(ac_source_fields(entity_type)),
+            ac_fields=header_ac_fields,
             line_sorento_fields=line_sorento_fields,
             line_ac_fields=line_ac_fields,
         )

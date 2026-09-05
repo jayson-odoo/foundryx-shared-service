@@ -364,16 +364,20 @@ class FieldMappingRepository:
             .all()
         )
 
-    def count(self, tenant_id: str, company_id: str, entity_type: str) -> int:
-        return (
-            self.db.query(AcFieldMapping)
-            .filter(
-                AcFieldMapping.tenant_id == tenant_id,
-                AcFieldMapping.company_id == company_id,
-                AcFieldMapping.entity_type == entity_type,
-            )
-            .count()
+    def count(
+        self, tenant_id: str, company_id: str, entity_type: str, scope: Optional[str] = None
+    ) -> int:
+        query = self.db.query(AcFieldMapping).filter(
+            AcFieldMapping.tenant_id == tenant_id,
+            AcFieldMapping.company_id == company_id,
+            AcFieldMapping.entity_type == entity_type,
         )
+        # ``scope`` (sprint-5/02 hotfix): the document preset seed is per SCOPE -
+        # a task whose LINE rows were backfilled by migration 0010 but whose
+        # header was never mapped must still get its header preset.
+        if scope is not None:
+            query = query.filter(AcFieldMapping.scope == scope)
+        return query.count()
 
     def delete_by_canonical(
         self,

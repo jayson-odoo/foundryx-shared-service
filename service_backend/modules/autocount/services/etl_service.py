@@ -93,6 +93,7 @@ from .company_service import (
     EntityConfigNotFound,
 )
 from ..presets import seed_document_mapping
+from ..mapping import SCOPE_HEADER, SCOPE_LINE
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -978,16 +979,25 @@ class EtlService:
         # of truth, same rule `seed_company_defaults` already follows for
         # masters). A row whose source column the query does not (yet) return
         # is seeded `is_enabled=False` rather than omitted.
-        if (
-            is_document_entity(entity_type)
-            and columns is not None
-            and self.companies.mappings.count(tenant_id, company_id, entity_type) == 0
-        ):
-            seed_document_mapping(
-                self.db, tenant_id, company_id, entity_type,
-                header_columns=columns,
-                line_columns=line_columns,
+        if is_document_entity(entity_type) and columns is not None:
+            mappings = self.companies.mappings
+            header_empty = (
+                mappings.count(tenant_id, company_id, entity_type, scope=SCOPE_HEADER) == 0
             )
+            line_empty = (
+                mappings.count(tenant_id, company_id, entity_type, scope=SCOPE_LINE) == 0
+            )
+            # Per SCOPE, not "whole mapping empty" (hotfix after the live proof):
+            # migration 0010 backfilled line rows onto existing document tasks,
+            # which left their never-mapped HEADER un-seedable forever.
+            if header_empty or line_empty:
+                seed_document_mapping(
+                    self.db, tenant_id, company_id, entity_type,
+                    header_columns=columns,
+                    line_columns=line_columns,
+                    seed_header=header_empty,
+                    seed_line=line_empty,
+                )
         self.db.commit()
         self.db.refresh(config)
         return self._task_view(company_id, entity_type, config)
