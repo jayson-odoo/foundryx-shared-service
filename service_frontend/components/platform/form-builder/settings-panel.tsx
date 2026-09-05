@@ -311,7 +311,7 @@ function SortableShell({ id, children }: { id: string; children: (handle: React.
     <button
       type="button"
       aria-label="Drag to reorder"
-      className={cn(PRESSED_CLASS, 'cursor-grab px-0.5 text-muted-foreground/60 hover:text-foreground')}
+      className={cn('cursor-grab px-0.5 text-muted-foreground/60 hover:text-foreground')}
       {...listeners}
       {...attributes}
     >
@@ -619,7 +619,7 @@ function TableColumnEditor({ col, index, earlierNumeric, onUpdate, onRemove }: T
         <button
           type="button"
           aria-label={`Drag column ${index + 1}`}
-          className={cn(PRESSED_CLASS, 'cursor-grab px-0.5 text-muted-foreground/60 hover:text-foreground')}
+          className={cn('cursor-grab px-0.5 text-muted-foreground/60 hover:text-foreground')}
           {...listeners}
           {...attributes}
         >

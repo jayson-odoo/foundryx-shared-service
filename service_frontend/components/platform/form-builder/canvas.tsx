@@ -26,7 +26,6 @@ import {
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import type { FormDocument, FormField, FormPage, FormSection } from '@/types/forms';
 import { FieldPreview } from './field-preview';
 import type { BuilderSelection } from './selection';
@@ -92,7 +91,7 @@ function FieldRow({
         <button
           type="button"
           aria-label="Drag to reorder"
-          className={cn(PRESSED_CLASS, 'mt-0.5 cursor-grab text-muted-foreground/60 hover:text-foreground')}
+          className={cn('mt-0.5 cursor-grab text-muted-foreground/60 hover:text-foreground')}
           {...listeners}
           {...attributes}
         >
@@ -209,7 +208,7 @@ function SectionCard({
           <button
             type="button"
             aria-label="Drag section"
-            className={cn(PRESSED_CLASS, 'cursor-grab text-muted-foreground/60 hover:text-foreground')}
+            className={cn('cursor-grab text-muted-foreground/60 hover:text-foreground')}
             {...listeners}
             {...attributes}
           >
@@ -331,7 +330,7 @@ function PageCard({
           <button
             type="button"
             aria-label="Drag page"
-            className={cn(PRESSED_CLASS, 'cursor-grab text-muted-foreground/60 hover:text-foreground')}
+            className={cn('cursor-grab text-muted-foreground/60 hover:text-foreground')}
             {...listeners}
             {...attributes}
           >

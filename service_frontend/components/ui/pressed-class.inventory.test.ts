@@ -18,6 +18,15 @@
  * files / 60 elements fixed at element granularity (fix round 1). The
  * allowlist starts and stays empty; a future genuine exception needs a
  * named reason here, not a silent add.
+ *
+ * T8 (AC-DLA-67 animation review item 3) - a `cursor-grab` element is a
+ * DRAG HANDLE, not a press target: a drag is a HOLD (dnd-kit's own drag
+ * transform runs for the whole gesture), so `PRESSED_CLASS`'s
+ * `active:scale-[0.97]` would sit scaled down for the entire hold and
+ * compound with dnd-kit's transform. Exempted by CLASS CONTENT
+ * (`cursor-grab` in the element's own className), not a per-file allowlist
+ * - the second `it` below proves the exemption actually matches real drag
+ * handles rather than being a silent no-op.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -84,7 +93,7 @@ function findRawButtonTags(src: string): string[] {
 }
 
 describe('AC-DLA-58 every raw <button element carries pressed feedback', () => {
-  it('every raw <button element carries PRESSED_CLASS in its className (allowlist empty)', () => {
+  it('every raw <button element carries PRESSED_CLASS in its className, or is a cursor-grab drag handle (allowlist empty)', () => {
     const allowed = new Set(ALLOWLIST.map((f) => path.join(repoRoot, f)));
     const offenders: string[] = [];
     for (const file of sourceFiles()) {
@@ -93,7 +102,47 @@ describe('AC-DLA-58 every raw <button element carries pressed feedback', () => {
       if (!src.includes('<button')) continue;
       const rel = file.replace(repoRoot + path.sep, '');
       for (const tag of findRawButtonTags(src)) {
+        if (tag.includes('cursor-grab')) continue; // a hold, not a press - see file doc comment
         if (!tag.includes('PRESSED_CLASS')) {
+          offenders.push(`${rel}: ${tag.slice(0, 140).replace(/\s+/g, ' ')}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('the cursor-grab drag-handle exemption matches real elements, not a silent no-op', () => {
+    let dragHandleCount = 0;
+    for (const file of sourceFiles()) {
+      const src = fs.readFileSync(file, 'utf8');
+      if (!src.includes('<button')) continue;
+      for (const tag of findRawButtonTags(src)) {
+        if (tag.includes('cursor-grab')) dragHandleCount += 1;
+      }
+    }
+    expect(dragHandleCount).toBeGreaterThan(0);
+  });
+
+  it('the reorder-only drag handles (no click affordance) carry no PRESSED_CLASS', () => {
+    // A pure reorder handle (aria-label "Drag ...", no onClick that performs
+    // an action of its own) must not compound dnd-kit's live drag transform
+    // with PRESSED_CLASS's active:scale for the whole hold. A palette item
+    // (click-to-add AND drag-to-add, e.g. email-editor/palette.tsx) is a
+    // real press target too and legitimately keeps PRESSED_CLASS - this
+    // check is scoped to the named reorder-handle files, not every
+    // cursor-grab element in the app.
+    const REORDER_HANDLE_FILES = [
+      'components/platform/resource-list/resource-list.tsx',
+      'components/platform/form-builder/canvas.tsx',
+      'components/platform/form-builder/settings-panel.tsx',
+      'components/platform/email-editor/canvas.tsx',
+    ];
+    const offenders: string[] = [];
+    for (const rel of REORDER_HANDLE_FILES) {
+      const full = path.join(repoRoot, rel);
+      const src = fs.readFileSync(full, 'utf8');
+      for (const tag of findRawButtonTags(src)) {
+        if (tag.includes('cursor-grab') && tag.includes('PRESSED_CLASS')) {
           offenders.push(`${rel}: ${tag.slice(0, 140).replace(/\s+/g, ' ')}`);
         }
       }
