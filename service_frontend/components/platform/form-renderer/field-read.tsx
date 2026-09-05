@@ -10,6 +10,8 @@
  */
 import { formatDate, formatDateTime } from '@/lib/datetime';
 import { Badge } from '@/components/ui/badge';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import {
   Table,
   TableBody,
@@ -261,7 +263,7 @@ function FileChip({ fieldKey, index, label }: { fieldKey: string; index: number;
       type="button"
       onClick={open}
       disabled={loading}
-      className="inline-flex items-center gap-1 rounded-md border border-border bg-secondary/40 px-2 py-1 text-xs text-foreground transition-colors hover:bg-accent disabled:opacity-50"
+      className={cn(PRESSED_CLASS, 'inline-flex items-center gap-1 rounded-md border border-border bg-secondary/40 px-2 py-1 text-xs text-foreground transition-colors hover:bg-accent disabled:opacity-50')}
     >
       <Download className="size-3" /> {label}
     </button>

@@ -17,6 +17,7 @@ import { useDraggable } from '@dnd-kit/core';
 import { ChevronDown, Search, Zap } from 'lucide-react';
 import { ACTION_CATALOG, IF_CATALOG, TRIGGER_CATALOG } from '@/lib/workflow-catalog';
 import { cn } from '@/lib/utils';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { Input } from '@/components/ui/input';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useInstalledModules } from '@/hooks/use-app-store';
@@ -56,6 +57,7 @@ function PaletteItem({ entry, disabled, onAdd }: PaletteItemProps) {
       disabled={disabled}
       onClick={() => !disabled && onAdd(entry.type)}
       className={cn(
+        PRESSED_CLASS,
         'flex w-full items-center gap-2.5 rounded-lg border border-input bg-background p-2.5 text-left transition-colors',
         disabled ? 'cursor-not-allowed opacity-50' : 'cursor-grab hover:border-primary',
         isDragging && 'opacity-40',
@@ -140,7 +142,7 @@ export function NodePalette({ hasTrigger, disabled, onAdd, canCode = true }: Nod
               type="button"
               data-testid={`palette-section-${section.title.toLowerCase()}`}
               onClick={() => setOpen((s) => ({ ...s, [section.title]: !s[section.title] }))}
-              className="flex items-center justify-between rounded-md px-0.5 py-1 text-left"
+              className={cn(PRESSED_CLASS, 'flex items-center justify-between rounded-md px-0.5 py-1 text-left')}
               aria-expanded={Boolean(expanded)}
             >
               <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">

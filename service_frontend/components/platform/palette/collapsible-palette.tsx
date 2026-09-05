@@ -10,6 +10,8 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { ListSearchInput } from '@/components/platform/list-search-input';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 
 export interface PaletteCategory<T extends string> {
   id: string;
@@ -68,7 +70,7 @@ export function CollapsiblePalette<T extends string>({
                 type="button"
                 data-testid={`palette-category-${category.id}`}
                 onClick={() => toggle(category.id)}
-                className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                className={cn(PRESSED_CLASS, 'flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground')}
               >
                 {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
                 <span className="flex-1 text-start">{category.label}</span>

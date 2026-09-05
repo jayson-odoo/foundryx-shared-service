@@ -8,6 +8,8 @@
  */
 import { File as FileIcon, Folder, Users } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import type { SharedWithMeItem } from '@/types/documents';
 
 export function SharedWithMeGrid({
@@ -47,7 +49,7 @@ export function SharedWithMeGrid({
           key={item.token}
           type="button"
           onClick={() => onOpen(item.token)}
-          className="flex flex-col gap-2 rounded-lg border bg-card p-3 text-left hover:bg-muted/50"
+          className={cn(PRESSED_CLASS, 'flex flex-col gap-2 rounded-lg border bg-card p-3 text-left hover:bg-muted/50')}
           data-testid="shared-with-me-item"
         >
           <div className="flex min-w-0 items-center gap-2">

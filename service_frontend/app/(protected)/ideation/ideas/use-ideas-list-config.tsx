@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/data-grid-table';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import type {
   ResourceAction,
   ResourceListConfig,
@@ -36,6 +37,7 @@ function VoteCell({ idea, onVote }: { idea: Idea; onVote: (idea: Idea, dir: 'up'
         aria-pressed={idea.myVote === 'up'}
         onClick={() => onVote(idea, 'up')}
         className={cn(
+          PRESSED_CLASS,
           'inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-sm transition-colors',
           idea.myVote === 'up'
             ? 'bg-emerald-50 font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400'
@@ -51,6 +53,7 @@ function VoteCell({ idea, onVote }: { idea: Idea; onVote: (idea: Idea, dir: 'up'
         aria-pressed={idea.myVote === 'down'}
         onClick={() => onVote(idea, 'down')}
         className={cn(
+          PRESSED_CLASS,
           'inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-sm transition-colors',
           idea.myVote === 'down'
             ? 'bg-rose-50 font-medium text-rose-700 dark:bg-rose-950/40 dark:text-rose-400'

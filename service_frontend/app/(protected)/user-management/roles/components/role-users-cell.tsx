@@ -4,6 +4,8 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { Loader2, Users as UsersIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { roleService } from '@/services/role-service';
 import type { RoleUser } from '@/types/role';
@@ -60,7 +62,7 @@ export function RoleUsersCell({ roleId, count }: { roleId: string; count: number
         <button
           type="button"
           onClick={stop}
-          className="flex items-center gap-1.5 text-sm text-foreground hover:text-primary hover:underline"
+          className={cn(PRESSED_CLASS, 'flex items-center gap-1.5 text-sm text-foreground hover:text-primary hover:underline')}
         >
           <UsersIcon className="size-3.5" />
           {count}
