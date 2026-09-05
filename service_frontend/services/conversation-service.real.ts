@@ -14,6 +14,8 @@ import type {
   ConversationMessage,
   ConversationSocketEvent,
   ConversationThread,
+  LifecycleMove,
+  PatchContactInput,
   QuickReply,
   ReactionResult,
   SendContactsInput,
@@ -199,6 +201,26 @@ export const realConversationService: ConversationService = {
 
   async listQuickReplies(workspaceId) {
     return apiFetch<QuickReply[]>(`/omnichannel/workspaces/${workspaceId}/quick-replies`);
+  },
+
+  // Plan 25 - not yet backed (routes land in S1-S2); written against the
+  // §5.1 contract so the S0->S4 swap is the one-line export change.
+  async patchContact(contactId, patch: PatchContactInput) {
+    return apiFetch<ConversationThread>(`/omnichannel/contacts/${contactId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  async moveLifecycle(contactId, toStatusId) {
+    return apiFetch<ConversationThread>(`/omnichannel/contacts/${contactId}/lifecycle`, {
+      method: 'POST',
+      body: JSON.stringify({ toStatusId }),
+    });
+  },
+
+  async lifecycleMoves(contactId) {
+    return apiFetch<LifecycleMove[]>(`/omnichannel/contacts/${contactId}/lifecycle-moves`);
   },
 
   subscribe(workspaceId, handler: (event: ConversationSocketEvent) => void) {

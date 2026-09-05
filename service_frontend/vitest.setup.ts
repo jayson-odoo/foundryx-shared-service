@@ -21,6 +21,21 @@ if (!Element.prototype.hasPointerCapture) {
 if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
+// jsdom doesn't implement matchMedia (useIsMobile, useMediaQuery). Default to
+// "no match" (desktop) - tests that care about a specific breakpoint override
+// window.matchMedia per-test.
+if (!window.matchMedia) {
+  window.matchMedia = (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  }) as MediaQueryList;
+}
 
 // next/navigation router stub (overridable per-test via vi.mocked)
 const push = vi.fn();

@@ -13,6 +13,7 @@ import type {
   ConversationMessage,
   ConversationSocketEvent,
   ConversationThread,
+  PatchContactInput,
   SendContactsInput,
   SendInteractiveInput,
   SendLocationInput,
@@ -48,6 +49,12 @@ export interface UseMessagesResult {
   assignToMe: () => Promise<void>;
   setStatus: (status: ThreadStatus) => Promise<void>;
   setPriority: (priority: ThreadPriority) => Promise<void>;
+  /** Plan 25 - system fields + typed custom fields + tag replace-set. Throws
+   *  (ApiError, 422 fieldErrors) on failure - the Details form maps errors. */
+  patchContact: (patch: PatchContactInput) => Promise<ConversationThread>;
+  /** Plan 25 - move the lifecycle stage. Throws (ApiError, 409) on a
+   *  no-longer-fireable move (a stale picker option). */
+  moveLifecycle: (toStatusId: string) => Promise<ConversationThread>;
 }
 
 export function useMessages(contactId: string | null | undefined): UseMessagesResult {
@@ -369,5 +376,25 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     [contactId],
   );
 
-  return { thread, messages, isLoading, error, isSending, sendError, send, sendTemplate, sendMedia, sendInteractive, sendLocation, sendContacts, react, addNote, assign, assignToMe, setStatus, setPriority };
+  const patchContact = useCallback(
+    async (patch: PatchContactInput) => {
+      if (!contactId) throw new Error('No conversation selected.');
+      const updated = await conversationService.patchContact(contactId, patch);
+      setThread(updated);
+      return updated;
+    },
+    [contactId],
+  );
+
+  const moveLifecycle = useCallback(
+    async (toStatusId: string) => {
+      if (!contactId) throw new Error('No conversation selected.');
+      const updated = await conversationService.moveLifecycle(contactId, toStatusId);
+      setThread(updated);
+      return updated;
+    },
+    [contactId],
+  );
+
+  return { thread, messages, isLoading, error, isSending, sendError, send, sendTemplate, sendMedia, sendInteractive, sendLocation, sendContacts, react, addNote, assign, assignToMe, setStatus, setPriority, patchContact, moveLifecycle };
 }

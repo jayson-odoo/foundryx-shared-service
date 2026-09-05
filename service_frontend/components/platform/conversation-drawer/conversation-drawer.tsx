@@ -12,6 +12,7 @@ import {
   ChevronDown,
   ChevronUp,
   Clock,
+  Contact as ContactIcon,
   Inbox,
   Search,
   UserPlus,
@@ -32,8 +33,10 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useMediaQuery } from '@/hooks/use-media-query';
 import { useMessages } from '@/hooks/use-messages';
 import { conversationService } from '@/services/conversation-service';
 import { workspaceService } from '@/services/workspace-service';
@@ -45,10 +48,16 @@ import type {
 } from '@/types/omnichannel';
 
 import { Composer } from './composer';
+import { ContactPanel } from './contact-panel';
 import { useDatetime } from '@/hooks/use-datetime';
 import { dateKey, parseUtc } from '@/lib/datetime';
 import { MessageBubble } from './message-bubble';
 import { THREAD_PRIORITY_REGISTRY, THREAD_STATUS_REGISTRY } from './thread-status';
+
+/** Contact panel open/closed persists per browser (plan 25, AC-CDM-34). */
+const CONTACT_PANEL_STORAGE_KEY = 'omnichannel:contact-panel-open';
+/** Right pane >= this width; a Sheet below it (plan 25 D14). */
+const CONTACT_PANEL_BREAKPOINT = '(min-width: 1280px)';
 
 export interface ConversationDrawerProps {
   contactId: string | null;
@@ -120,6 +129,8 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     assign,
     assignToMe,
     setStatus,
+    patchContact,
+    moveLifecycle,
   } = useMessages(contactId);
 
   const { timeZone, formatTime } = useDatetime();
@@ -128,6 +139,31 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [replyTo, setReplyTo] = useState<ConversationMessage | null>(null);
+
+  // Contact panel (plan 25, AC-CDM-34) - open state persists per browser;
+  // >=1280px renders a right pane, below it a Sheet (D14). Never shown in
+  // compact/embed mode (the header - and this toggle - is hidden there).
+  const [contactPanelOpen, setContactPanelOpen] = useState(false);
+  const isDesktopPanel = useMediaQuery(CONTACT_PANEL_BREAKPOINT);
+  useEffect(() => {
+    try {
+      setContactPanelOpen(window.localStorage.getItem(CONTACT_PANEL_STORAGE_KEY) === '1');
+    } catch {
+      // localStorage unavailable (private browsing etc.) - default closed.
+    }
+  }, []);
+  const setPanelOpen = useCallback((next: boolean) => {
+    setContactPanelOpen(next);
+    try {
+      window.localStorage.setItem(CONTACT_PANEL_STORAGE_KEY, next ? '1' : '0');
+    } catch {
+      // localStorage unavailable - the toggle still works for this session
+    }
+  }, []);
+  const toggleContactPanel = useCallback(
+    () => setPanelOpen(!contactPanelOpen),
+    [contactPanelOpen, setPanelOpen],
+  );
 
   // In-thread search (WhatsApp chat search): term + active-match cursor.
   const [searchOpen, setSearchOpen] = useState(false);
@@ -286,6 +322,16 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
           >
             <Search className="size-4" />
           </Button>
+          <Button
+            variant={contactPanelOpen ? 'primary' : 'ghost'}
+            size="icon"
+            aria-label="Toggle contact panel"
+            aria-pressed={contactPanelOpen}
+            onClick={toggleContactPanel}
+            data-testid="contact-panel-toggle"
+          >
+            <ContactIcon className="size-4" />
+          </Button>
           <StatusBadge status={thread.priority} registry={THREAD_PRIORITY_REGISTRY} size="sm" />
           <StatusBadge status={thread.status} registry={THREAD_STATUS_REGISTRY} size="sm" />
 
@@ -376,6 +422,10 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
       </div>
       )}
 
+      {/* Message column + the Contact panel's right pane (>=1280px) sit
+          side-by-side; below that width the panel opens as a Sheet instead. */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* Thread */}
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-2.5 p-4" data-testid="thread-window">
@@ -449,6 +499,34 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
         replyTo={replyTo}
         onCancelReply={() => setReplyTo(null)}
       />
+      </div>
+
+      {!compact && contactPanelOpen && isDesktopPanel && (
+        <div className="w-80 shrink-0 border-s" data-testid="contact-panel-pane">
+          <ContactPanel thread={thread} onPatchContact={patchContact} onMoveLifecycle={moveLifecycle} />
+        </div>
+      )}
+      </div>
+
+      {!compact && (
+        <Sheet
+          open={contactPanelOpen && !isDesktopPanel}
+          onOpenChange={(open) => setPanelOpen(open)}
+        >
+          <SheetContent
+            side="right"
+            className="w-full gap-0 p-0 sm:max-w-sm"
+            data-testid="contact-panel-sheet"
+          >
+            <SheetHeader className="border-b px-4 py-3">
+              <SheetTitle>Contact</SheetTitle>
+            </SheetHeader>
+            <div className="min-h-0 flex-1">
+              <ContactPanel thread={thread} onPatchContact={patchContact} onMoveLifecycle={moveLifecycle} />
+            </div>
+          </SheetContent>
+        </Sheet>
+      )}
     </div>
   );
 }

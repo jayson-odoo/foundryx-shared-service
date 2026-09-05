@@ -203,7 +203,15 @@ export interface ConversationThread {
   workspaceId: string;
   /** Display name resolved from first/last name, else the raw profile name. */
   name: string;
+  /** System fields (plan 25) - editable from the Contact panel Details tab. */
+  firstName: string | null;
+  lastName: string | null;
   phone: string | null;
+  email: string | null;
+  /** BCP-47 tag (e.g. "en", "zh-Hans"). */
+  language: string | null;
+  /** ISO-3166 alpha-2, upper-cased (e.g. "MY"). */
+  countryCode: string | null;
   avatarUrl: string | null;
   assignedUserId: string | null;
   assignedUserName: string | null;
@@ -220,6 +228,13 @@ export interface ConversationThread {
   lastMessagePreview: string | null;
   /** Inbound messages since the agent last opened the thread. */
   unreadCount: number;
+  /** Registered custom-field values, keyed by `ContactField.key` (plan 25). */
+  customFields: Record<string, string | number | boolean | null>;
+  /** Tags attached to this contact (plan 25, AC-CDM-12). */
+  tags: ContactTagRef[];
+  /** Current lifecycle stage, or null before the module registers the entity
+   *  (pre-migration / entity not yet adopted). */
+  lifecycle: ContactLifecycleSummary | null;
   createdAt: string; // ISO
 }
 
@@ -444,4 +459,149 @@ export interface ReactionResult {
   targetMessageId: string;
   emoji: string;
   removed: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 25 - contact data model (typed fields, tags, lifecycle on the status
+// engine). See documentation/plans/sprint-4/25-omnichannel-contact-data-model.md.
+// ---------------------------------------------------------------------------
+
+/** Custom contact-field value types (UAC Definitions - 8 total). */
+export type ContactFieldType =
+  | 'text'
+  | 'list'
+  | 'checkbox'
+  | 'email'
+  | 'number'
+  | 'url'
+  | 'date' // YYYY-MM-DD
+  | 'time'; // HH:MM
+
+/**
+ * `always` = rendered inline in the Contact panel Details tab (AC-CDM-35);
+ * `hidden` = registry-only (set via PATCH/workflow, never shown in the panel).
+ */
+export type ContactFieldVisibility = 'always' | 'hidden';
+
+/** Reserved system-field keys (UAC Definitions) - never a registrable custom
+ *  field key. Mirrors the backend reserved-key check (AC-CDM-02). */
+export const RESERVED_CONTACT_FIELD_KEYS: readonly string[] = [
+  'firstName',
+  'lastName',
+  'phone',
+  'email',
+  'language',
+  'countryCode',
+  'tags',
+  'lifecycle',
+  'profilePic',
+];
+
+/** A registered custom field (per workspace). Values live in
+ *  `ConversationThread.customFields[key]`. */
+export interface ContactField {
+  id: string;
+  workspaceId: string;
+  key: string;
+  label: string;
+  description: string | null;
+  type: ContactFieldType;
+  /** `list` type only - the selectable option strings. */
+  options: string[] | null;
+  visibility: ContactFieldVisibility;
+  sortOrder: number;
+  /** Contacts currently holding a non-null value for this field (delete
+   *  confirmation copy, AC-CDM-31). */
+  valuesCount: number;
+  createdAt: string; // ISO
+}
+
+export interface CreateContactFieldInput {
+  key: string;
+  label: string;
+  description?: string | null;
+  type: ContactFieldType;
+  /** Required (>= 1) when `type === 'list'`. */
+  options?: string[];
+  visibility?: ContactFieldVisibility;
+}
+
+/** `key` and `type` are immutable after create (D6) - omit both from updates. */
+export interface UpdateContactFieldInput {
+  label?: string;
+  description?: string | null;
+  options?: string[];
+  visibility?: ContactFieldVisibility;
+  sortOrder?: number;
+}
+
+/** A tag (per workspace), attached to contacts via a replace-set PATCH. */
+export interface ContactTag {
+  id: string;
+  workspaceId: string;
+  name: string;
+  emoji: string | null;
+  color: string | null; // hex
+  description: string | null;
+  contactsCount: number;
+  createdAt: string; // ISO
+}
+
+export interface CreateContactTagInput {
+  name: string;
+  emoji?: string | null;
+  color?: string | null;
+  description?: string | null;
+}
+
+export interface UpdateContactTagInput {
+  name?: string;
+  emoji?: string | null;
+  color?: string | null;
+  description?: string | null;
+}
+
+/** Compact tag ref carried on a thread/message item (AC-CDM-12). */
+export interface ContactTagRef {
+  id: string;
+  name: string;
+  emoji: string | null;
+  color: string | null;
+}
+
+/** The contact's current lifecycle stage, as carried on a `ThreadItem`
+ *  (AC-CDM-19) - `isWon` mirrors the status engine's `is_terminal`, `isLost`
+ *  mirrors `is_archived`. */
+export interface ContactLifecycleSummary {
+  statusId: string;
+  key: string;
+  label: string;
+  color: string | null;
+  isWon: boolean;
+  isLost: boolean;
+}
+
+/** One fireable outgoing edge from the contact's current stage (AC-CDM-18) -
+ *  the ONLY moves the "Move to" picker may offer (foolproof-UI). */
+export interface LifecycleMove {
+  edgeId: string;
+  toStatusId: string;
+  label: string;
+}
+
+/**
+ * Partial-merge contact PATCH (system fields + typed custom fields + tag
+ * replace-set). `customFields` value `null` clears that key; keys omitted from
+ * `customFields` are left unchanged (partial merge, NOT replace). `tagIds`
+ * REPLACES the contact's whole tag set (AC-CDM-06/07/10).
+ */
+export interface PatchContactInput {
+  firstName?: string | null;
+  lastName?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  language?: string | null;
+  countryCode?: string | null;
+  customFields?: Record<string, string | number | boolean | null>;
+  tagIds?: string[];
 }

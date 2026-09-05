@@ -1,16 +1,28 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { KeyRound, MessageCircle, Settings as SettingsIcon, Users as UsersIcon } from 'lucide-react';
+import {
+  FormInput,
+  GitBranch,
+  KeyRound,
+  MessageCircle,
+  Settings as SettingsIcon,
+  Tag,
+  Users as UsersIcon,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { LayoutController } from '@/components/platform/status-engine';
 import { workspaceService } from '@/services/workspace-service';
 import type { Workspace } from '@/types/omnichannel';
 import { SettingsTab, ChannelsTab, MembersTab } from './workspace-form-fields';
 import { ApiKeysTab } from './workspace-api-keys-tab';
+import { WorkspaceLifecycleTab } from './workspace-lifecycle-tab';
+import { WorkspaceContactFieldsTab } from './workspace-contact-fields-tab';
+import { WorkspaceTagsTab } from './workspace-tags-tab';
 import { useWorkspaceActions } from './use-workspace-actions';
 import { useCan } from '@/hooks/use-can';
 import { workspaceFormHref, workspaceFormPath, workspacesListPath } from './paths';
@@ -40,6 +52,10 @@ export function useWorkspaceForm(
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // Plan 25 - the Lifecycle tab's canvas layout draft plugs into this form's
+  // Save/Cancel exactly like the form engine's Flow tab (BL-064 pattern).
+  const [lifecycleDirty, setLifecycleDirty] = useState(false);
+  const lifecycleLayoutController = useRef<LayoutController | null>(null);
 
   const form = useForm<WorkspaceFormValues>({
     resolver: zodResolver(workspaceFormSchema),
@@ -95,12 +111,15 @@ export function useWorkspaceForm(
         }
         ok = true;
       })();
+      // The Lifecycle tab's layout draft commits with the same Save (BL-064).
+      if (ok) lifecycleLayoutController.current?.save();
       return ok;
     };
 
     const onCancel = () => {
       if (creating) router.push(workspacesListPath);
       else form.reset(toFormValues(workspace));
+      lifecycleLayoutController.current?.discard();
     };
 
     const tabs = [
@@ -124,6 +143,39 @@ export function useWorkspaceForm(
         icon: UsersIcon,
         render: () => <MembersTab workspaceId={workspace?.id ?? null} creating={creating} />,
       },
+      // Plan 25 - hidden while creating (AC-CDM-29): these hang off a real
+      // workspace id (scoped lifecycle graph / per-workspace registries).
+      ...(!creating
+        ? [
+            {
+              id: 'lifecycle',
+              label: 'Lifecycle',
+              icon: GitBranch,
+              render: ({ editing }: { editing: boolean }) =>
+                workspace ? (
+                  <WorkspaceLifecycleTab
+                    workspaceId={workspace.id}
+                    workspaceName={workspace.name}
+                    editing={editing}
+                    onDirtyChange={setLifecycleDirty}
+                    layoutController={lifecycleLayoutController}
+                  />
+                ) : null,
+            },
+            {
+              id: 'contact-fields',
+              label: 'Contact fields',
+              icon: FormInput,
+              render: () => <WorkspaceContactFieldsTab workspaceId={workspace?.id ?? null} creating={creating} />,
+            },
+            {
+              id: 'tags',
+              label: 'Tags',
+              icon: Tag,
+              render: () => <WorkspaceTagsTab workspaceId={workspace?.id ?? null} creating={creating} />,
+            },
+          ]
+        : []),
       ...(can('api_keys.read')
         ? [
             {
@@ -154,7 +206,7 @@ export function useWorkspaceForm(
       editable: !creating,
       editPermission: 'workspaces.manage',
       initialEditing: creating ? true : initialEditing,
-      isDirty: form.formState.isDirty,
+      isDirty: form.formState.isDirty || lifecycleDirty,
       onSave,
       onCancel,
       recordNav: creating
@@ -168,7 +220,19 @@ export function useWorkspaceForm(
             buildHref: (recordId, ctx, index) => workspaceFormHref(recordId, { ctx, index }),
           },
     };
-  }, [isLoading, notFound, creating, workspace, actions, form, initialEditing, workspaceId, router, can]);
+  }, [
+    isLoading,
+    notFound,
+    creating,
+    workspace,
+    actions,
+    form,
+    initialEditing,
+    workspaceId,
+    router,
+    can,
+    lifecycleDirty,
+  ]);
 
   return { config, form, isLoading, notFound };
 }

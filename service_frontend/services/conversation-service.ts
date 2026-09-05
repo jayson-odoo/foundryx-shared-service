@@ -10,6 +10,8 @@ import type {
   ConversationMessage,
   ConversationSocketEvent,
   ConversationThread,
+  LifecycleMove,
+  PatchContactInput,
   QuickReply,
   ReactionResult,
   SendContactsInput,
@@ -23,7 +25,7 @@ import type {
   ThreadStatus,
   WhatsAppTemplate,
 } from '@/types/omnichannel';
-import { realConversationService } from './conversation-service.real';
+import { mockConversationService } from './conversation-service.mock';
 
 export interface ConversationService {
   /** Thread list for the inbox left panel, sorted by lastMessageAt desc. */
@@ -61,11 +63,30 @@ export interface ConversationService {
   /** Canned responses for the workspace (★ composer picker). */
   listQuickReplies(workspaceId: string): Promise<QuickReply[]>;
   /**
+   * Plan 25 - system fields + typed custom fields + tag replace-set, ONE
+   * partial-merge PATCH (AC-CDM-06/07/10, AC-CDM-36). 422 `fieldErrors` map
+   * onto `customFields.<key>` / `tagIds` / `language` / `countryCode` / etc.
+   */
+  patchContact(contactId: string, patch: PatchContactInput): Promise<ConversationThread>;
+  /** Move the contact's lifecycle stage via the status-engine machine
+   *  (AC-CDM-17). 409 when no edge exists from the current stage. */
+  moveLifecycle(contactId: string, toStatusId: string): Promise<ConversationThread>;
+  /** The fireable outgoing edges from the contact's CURRENT stage only - the
+   *  "Move to" picker offers ONLY these (AC-CDM-18, foolproof-UI). */
+  lifecycleMoves(contactId: string): Promise<LifecycleMove[]>;
+  /**
    * Subscribe to realtime events for a workspace. Returns an unsubscribe fn.
    * Phase B: WebSocket + Redis pub/sub; Phase A: mock timer emitter.
    */
   subscribe(workspaceId: string, handler: (event: ConversationSocketEvent) => void): () => void;
 }
 
-// Phase B: real api-client + WS implementation. (Mock retained in *.mock.ts.)
-export const conversationService: ConversationService = realConversationService;
+// S0 MOCK - swap to real in S4 (plan 25). The rest of the omnichannel message
+// pipeline (plan 05) already shipped against `realConversationService`
+// (conversation-service.real.ts); this slice temporarily rebinds to the mock
+// so the NEW contact-panel surfaces (lifecycle move, tag add/remove, typed
+// custom fields) are fully tunable with no backend - the lifecycle/tags/
+// customFields routes don't exist until S1-S3. `realConversationService` is
+// fully implemented (incl. the 3 new methods) and swaps back in with this one
+// line once the backend lands.
+export const conversationService: ConversationService = mockConversationService;
