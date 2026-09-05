@@ -37,7 +37,7 @@ function TestDataBlock({ label, value }: { label: string; value: unknown }) {
   return (
     <div>
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <span className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
           {label}
         </span>
         {value != null && (
@@ -55,7 +55,7 @@ function TestDataBlock({ label, value }: { label: string; value: unknown }) {
           </button>
         )}
       </div>
-      <pre className="max-h-40 overflow-auto rounded-md bg-muted p-2 text-[11px] text-foreground">
+      <pre className="max-h-40 overflow-auto rounded-md bg-muted p-2 text-2xs text-foreground">
         {value == null ? '-' : textToCopy}
       </pre>
     </div>
@@ -83,7 +83,7 @@ function TestErrorBlock({ error }: { error: string }) {
   return (
     <div>
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <span className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
           Error
         </span>
         <button
@@ -99,7 +99,7 @@ function TestErrorBlock({ error }: { error: string }) {
           )}
         </button>
       </div>
-      <pre className="overflow-auto rounded-md bg-destructive/10 p-2 text-[11px] text-destructive">
+      <pre className="overflow-auto rounded-md bg-destructive/10 p-2 text-2xs text-destructive">
         {error}
       </pre>
     </div>

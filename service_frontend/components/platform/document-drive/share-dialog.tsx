@@ -15,6 +15,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Check, Copy, Globe, Link2, Lock, Loader2, Users, X } from 'lucide-react';
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -191,7 +193,7 @@ function Body({
                 </div>
                 <button
                   type="button"
-                  className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted"
+                  className={cn(PRESSED_CLASS, 'shrink-0 rounded p-1 text-muted-foreground hover:bg-muted')}
                   onClick={() => removePerson(p.id)}
                   aria-label="Remove person"
                 >

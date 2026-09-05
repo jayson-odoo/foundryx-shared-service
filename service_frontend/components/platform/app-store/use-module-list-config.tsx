@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { useSession } from 'next-auth/react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ColumnDef } from '@tanstack/react-table';
 import { ArrowUpCircle, Download, Power, RotateCw, Trash2 } from 'lucide-react';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
@@ -89,21 +89,40 @@ export function buildModuleActions(
         rows.length > 0 && rows.every((m) => m.status === 'ACTIVE' && m.updateAvailable),
       run: (rows, rt) => runAction(rows, 'update', rt),
     },
-    {
-      id: 'deactivate',
-      label: 'Deactivate',
-      icon: Power,
-      surfaces: { row: true, bulk: true, form: true },
-      permission: permFor('deactivate'),
-      isVisible: (rows) => rows.length > 0 && rows.every((m) => m.status === 'ACTIVE'),
-      confirm: {
-        title: 'Deactivate module?',
-        description:
-          'Its pages and API stop working until reactivated. All data is kept and permission assignments preserved.',
-        confirmLabel: 'Deactivate',
-      },
-      run: (rows, rt) => runAction(rows, 'deactivate', rt),
-    },
+    // T5 fix round 2, S2: Deactivate is fully reversible (Reactivate is one
+    // click, data + permission assignments are kept) - exactly the D2 "grace
+    // window, no confirm dialog" shape. Migrated to `deferred` for the
+    // STOREFRONT (own tenant, scoped from the JWT - the model `deferred`
+    // actions assume). The operator CONSOLE path (`tenantId` set) acts on
+    // ANOTHER tenant's module state - outside the actor's own tenant scope
+    // that `PendingAction`/`park`/`current` are keyed on - so it stays a
+    // disclosed plain-confirm carve-out (immediate, not deferred) rather
+    // than forcing a cross-tenant park the engine was never built for.
+    tenantId
+      ? {
+          id: 'deactivate',
+          label: 'Deactivate',
+          icon: Power,
+          surfaces: { row: true, bulk: true, form: true },
+          permission: permFor('deactivate'),
+          isVisible: (rows) => rows.length > 0 && rows.every((m) => m.status === 'ACTIVE'),
+          confirm: {
+            title: 'Deactivate module?',
+            description:
+              'Its pages and API stop working until reactivated. All data is kept and permission assignments preserved.',
+            confirmLabel: 'Deactivate',
+          },
+          run: (rows, rt) => runAction(rows, 'deactivate', rt),
+        }
+      : {
+          id: 'deactivate',
+          label: 'Deactivate',
+          icon: Power,
+          surfaces: { row: true, bulk: true, form: true },
+          permission: permFor('deactivate'),
+          isVisible: (rows) => rows.length > 0 && rows.every((m) => m.status === 'ACTIVE'),
+          deferred: { actionKey: 'tenant_modules.deactivate', entityType: 'tenant_module' },
+        },
     {
       id: 'reactivate',
       label: 'Reactivate',
@@ -218,6 +237,7 @@ export function useModuleListConfig(tenantId?: string): ResourceListConfig<Store
             <ActionMenu
               actions={actions}
               rows={[row.original]}
+              getEntityId={(m) => m.name}
               runtime={{ reload: table.options.meta?.reload ?? (() => {}) }}
               surface="row"
             />
@@ -262,6 +282,10 @@ export function useModuleListConfig(tenantId?: string): ResourceListConfig<Store
     return {
       viewKey: tenantId ? 'app-store.console' : 'app-store',
       getRowId: (m) => m.name,
+      // T5 fix round 2, S2: `StoreModule` is keyed by `name` (no `.id`) - the
+      // Deactivate action's `deferred` park/current/cancel calls need an
+      // explicit entity id.
+      getEntityId: (m) => m.name,
       // Storefront cards/rows open the module detail/form view; the operator
       // console (tenantId set) manages inline via the "…" menu (no own-tenant
       // detail route for another tenant's module).

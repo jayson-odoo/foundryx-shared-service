@@ -39,6 +39,7 @@ export default function Page() {
   if (!signupEnabled) notFound();
 
   const form = useForm<SignupSchemaType>({
+    mode: 'onTouched',
     resolver: zodResolver(getSignupSchema()),
     defaultValues: {
       name: '',
@@ -112,7 +113,7 @@ export default function Page() {
         <form onSubmit={handleSubmit} className="block w-full space-y-5">
           <div className="space-y-1.5 pb-3">
             <h1 className="text-2xl font-semibold tracking-tight text-center">
-              Sign Up to Metronic
+              Create your account
             </h1>
           </div>
 
@@ -267,15 +268,8 @@ export default function Page() {
                         htmlFor="accept"
                         className="text-sm leading-none text-muted-foreground"
                       >
-                        I agree to the
+                        I agree to the terms and conditions.
                       </label>
-                      <Link
-                        href="/privacy-policy"
-                        target="_blank"
-                        className="-ms-0.5 text-sm font-semibold text-foreground hover:text-primary"
-                      >
-                        Privacy Policy
-                      </Link>
                     </div>
                   </FormControl>
                   <FormMessage />

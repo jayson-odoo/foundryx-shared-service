@@ -4,9 +4,32 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 import { Check, ChevronRight, Circle } from 'lucide-react';
 import { DropdownMenu as DropdownMenuPrimitive } from 'radix-ui';
+import { AnimatePresence, motion } from 'motion/react';
+import { PRESSED_TRANSFORM_CLASS } from '@/components/ui/primitive-classes';
+import {
+  surfaceExitTransition,
+  surfaceTransition,
+  surfaceVariants,
+  useOpenState,
+  useReducedMotion,
+} from '@/lib/motion';
 
-function DropdownMenu({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
-  return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />;
+// Mirrors the Root's open state so DropdownMenuContent can gate its own
+// <AnimatePresence> - see the identical DialogOpenContext in dialog.tsx.
+const DropdownMenuOpenContext = React.createContext(true);
+
+function DropdownMenu({
+  open: openProp,
+  defaultOpen = false,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
+  const [open, setOpen] = useOpenState(openProp, defaultOpen, onOpenChange);
+  return (
+    <DropdownMenuOpenContext.Provider value={open}>
+      <DropdownMenuPrimitive.Root data-slot="dropdown-menu" open={open} onOpenChange={setOpen} {...props} />
+    </DropdownMenuOpenContext.Provider>
+  );
 }
 
 function DropdownMenuPortal({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Portal>) {
@@ -47,37 +70,84 @@ function DropdownMenuSubTrigger({
 
 function DropdownMenuSubContent({
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
+  const open = React.useContext(DropdownMenuSubOpenContext);
+  const prefersReducedMotion = useReducedMotion();
+  const variants = surfaceVariants(prefersReducedMotion);
+  const transition = surfaceTransition(prefersReducedMotion, 'menu');
+  const exitTransition = surfaceExitTransition(prefersReducedMotion);
+
+  // Same split as DropdownMenuContent: Radix Popper owns Content's own
+  // positioning transform, so the spring animates an inner div instead.
+  // Radix re-namespaces the same
+  // `--radix-dropdown-menu-content-transform-origin` variable onto
+  // SubContent, so the origin utility below matches the parent Content's.
   return (
-    <DropdownMenuPrimitive.SubContent
-      data-slot="dropdown-menu-sub-content"
-      className={cn(
-        'space-y-0.5 z-50 min-w-[8rem] overflow-hidden shadow-md shadow-black/5 rounded-md border border-border bg-popover text-popover-foreground p-2 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
-        className,
+    <AnimatePresence>
+      {open && (
+        <DropdownMenuPrimitive.SubContent forceMount data-slot="dropdown-menu-sub-content" className="z-(--z-modal)" {...props}>
+          <motion.div
+            className={cn(
+              'space-y-0.5 min-w-[8rem] overflow-hidden rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-md shadow-black/5 origin-(--radix-dropdown-menu-content-transform-origin)',
+              className,
+            )}
+            initial={variants.initial}
+            animate={variants.animate}
+            exit={{ ...variants.exit, transition: exitTransition }}
+            transition={transition}
+          >
+            {children}
+          </motion.div>
+        </DropdownMenuPrimitive.SubContent>
       )}
-      {...props}
-    />
+    </AnimatePresence>
   );
 }
 
 function DropdownMenuContent({
   className,
   sideOffset = 4,
+  children,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+  const open = React.useContext(DropdownMenuOpenContext);
+  const prefersReducedMotion = useReducedMotion();
+  const variants = surfaceVariants(prefersReducedMotion);
+  const transition = surfaceTransition(prefersReducedMotion, 'menu');
+  const exitTransition = surfaceExitTransition(prefersReducedMotion);
+
+  // Same split as PopoverContent: `Content` keeps Radix Popper's own inline
+  // positioning transform untouched, and the spring animates an INNER div
+  // instead of `Content` itself (AC-DLA-20, AC-DLA-21).
   return (
-    <DropdownMenuPrimitive.Portal>
-      <DropdownMenuPrimitive.Content
-        data-slot="dropdown-menu-content"
-        sideOffset={sideOffset}
-        className={cn(
-          'space-y-0.5 z-50 min-w-[8rem] overflow-hidden rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-md shadow-black/5 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
-          className,
-        )}
-        {...props}
-      />
-    </DropdownMenuPrimitive.Portal>
+    <AnimatePresence>
+      {open && (
+        <DropdownMenuPrimitive.Portal forceMount>
+          <DropdownMenuPrimitive.Content
+            forceMount
+            data-slot="dropdown-menu-content"
+            sideOffset={sideOffset}
+            className="z-(--z-modal)"
+            {...props}
+          >
+            <motion.div
+              className={cn(
+                'space-y-0.5 min-w-[8rem] overflow-hidden rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-md shadow-black/5 origin-(--radix-dropdown-menu-content-transform-origin)',
+                className,
+              )}
+              initial={variants.initial}
+              animate={variants.animate}
+              exit={{ ...variants.exit, transition: exitTransition }}
+              transition={transition}
+            >
+              {children}
+            </motion.div>
+          </DropdownMenuPrimitive.Content>
+        </DropdownMenuPrimitive.Portal>
+      )}
+    </AnimatePresence>
   );
 }
 
@@ -98,7 +168,8 @@ function DropdownMenuItem({
     <DropdownMenuPrimitive.Item
       data-slot="dropdown-menu-item"
       className={cn(
-        'text-foreground relative flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden transition-colors data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([role=img]):not([class*=text-])]:opacity-60 [&_svg:not([class*=size-])]:size-4 [&_svg]:shrink-0',
+        PRESSED_TRANSFORM_CLASS,
+        'text-foreground relative flex cursor-default select-none items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([role=img]):not([class*=text-])]:opacity-60 [&_svg:not([class*=size-])]:size-4 [&_svg]:shrink-0',
         'focus:bg-accent focus:text-foreground',
         'data-[active=true]:bg-accent data-[active=true]:text-accent-foreground',
         inset && 'ps-8',
@@ -201,8 +272,22 @@ function DropdownMenuShortcut({ className, ...props }: React.HTMLAttributes<HTML
   );
 }
 
-function DropdownMenuSub({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Sub>) {
-  return <DropdownMenuPrimitive.Sub data-slot="dropdown-menu-sub" {...props} />;
+// Mirrors the Sub's own open state so DropdownMenuSubContent can gate its
+// own <AnimatePresence> - same reason as DropdownMenuOpenContext above.
+const DropdownMenuSubOpenContext = React.createContext(true);
+
+function DropdownMenuSub({
+  open: openProp,
+  defaultOpen = false,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Sub>) {
+  const [open, setOpen] = useOpenState(openProp, defaultOpen, onOpenChange);
+  return (
+    <DropdownMenuSubOpenContext.Provider value={open}>
+      <DropdownMenuPrimitive.Sub data-slot="dropdown-menu-sub" open={open} onOpenChange={setOpen} {...props} />
+    </DropdownMenuSubOpenContext.Provider>
+  );
 }
 
 export {

@@ -124,7 +124,7 @@ export function BrandingPreview({
               {['Email', 'Password'].map((f) => (
                 <div key={f} className="flex flex-col gap-0.5">
                   <span
-                    className="text-[10px]"
+                    className="text-2xs"
                     style={{ color: 'var(--pv-muted)' }}
                   >
                     {f}
@@ -139,7 +139,7 @@ export function BrandingPreview({
                 </div>
               ))}
               <div
-                className="mt-1 flex h-6 items-center justify-center rounded text-[10px] font-medium text-white"
+                className="mt-1 flex h-6 items-center justify-center rounded text-2xs font-medium text-white"
                 style={{ backgroundColor: 'var(--pv-primary)' }}
               >
                 Sign In
@@ -177,7 +177,7 @@ export function BrandingPreview({
                     className="h-3.5 w-auto max-w-24 object-contain"
                   />
                 ) : (
-                  <span className="text-[9px] font-medium text-white">Your logo</span>
+                  <span className="text-2xs font-medium text-white">Your logo</span>
                 )}
               </span>
               <div className="ms-auto flex items-center gap-1.5">
@@ -193,13 +193,13 @@ export function BrandingPreview({
             <div className="flex flex-col gap-2.5 p-3">
               <div className="flex items-center gap-2">
                 <div
-                  className="flex h-6 items-center rounded px-2.5 text-[10px] font-medium text-white"
+                  className="flex h-6 items-center rounded px-2.5 text-2xs font-medium text-white"
                   style={{ backgroundColor: 'var(--pv-primary)' }}
                 >
                   Primary action
                 </div>
                 <div
-                  className="flex h-6 items-center rounded border px-2.5 text-[10px] font-medium"
+                  className="flex h-6 items-center rounded border px-2.5 text-2xs font-medium"
                   style={{ borderColor: 'var(--pv-border)' }}
                 >
                   Secondary
@@ -216,7 +216,7 @@ export function BrandingPreview({
                 ).map(([label, color]) => (
                   <span
                     key={label}
-                    className="flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px]"
+                    className="flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-2xs"
                     style={{
                       borderColor: 'var(--pv-border)',
                       backgroundColor: 'var(--pv-surface-soft)',
@@ -231,7 +231,7 @@ export function BrandingPreview({
                 ))}
               </div>
               <div
-                className={cn('rounded-md p-2 text-[10px]')}
+                className={cn('rounded-md p-2 text-2xs')}
                 style={{
                   backgroundColor: 'var(--pv-primary-soft)',
                   color: 'var(--pv-text)',

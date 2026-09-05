@@ -5,6 +5,9 @@
  * read-only mode hides manage controls · asset card validates type/size.
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+// The component under test now goes through the `lib/toast` wrapper (AC-
+// DLA-51), which itself imports from 'sonner' - assert against the
+// underlying sonner mock, not the wrapper's own (unmocked) function.
 import { toast } from 'sonner';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrandingTokens } from '@/types/branding';
@@ -148,7 +151,10 @@ describe('AssetUploadCard', () => {
       target: { files: [file] },
     });
     await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith('Unsupported file type.'),
+      expect(toast.error).toHaveBeenCalledWith('Unsupported file type.', {
+        duration: Infinity,
+        closeButton: true,
+      }),
     );
     expect(onUpload).not.toHaveBeenCalled();
   });

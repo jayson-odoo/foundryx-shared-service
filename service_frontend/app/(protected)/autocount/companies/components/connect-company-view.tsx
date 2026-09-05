@@ -4,7 +4,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Plug } from 'lucide-react';
 import { useForm } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Container } from '@/components/common/container';
 import { Form } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
@@ -31,7 +31,7 @@ import { AC_COMPANIES_PATH, acCompanyHref } from '../../components/autocount-met
  */
 export function ConnectCompanyView() {
   const router = useRouter();
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
   const { options, isLoading, emptyReason } = useAutocountConnections();
   const [connectionId, setConnectionId] = useState<string | null>(null);
   const [label, setLabel] = useState('');
@@ -98,7 +98,7 @@ export function ConnectCompanyView() {
                       setFieldError(null);
                     }}
                     disabled={isLoading || isSaving || options.length === 0}
-                    placeholder={isLoading ? 'Loading…' : 'Select a connection'}
+                    placeholder="Select a connection"
                     ariaLabel="AutoCount connection"
                     className="max-w-sm"
                   />

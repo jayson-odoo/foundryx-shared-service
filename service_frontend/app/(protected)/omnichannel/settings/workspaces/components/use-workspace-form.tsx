@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
@@ -14,9 +14,10 @@ import {
   Tag,
   Users as UsersIcon,
 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { LayoutController } from '@/components/platform/status-engine';
+import type { ListQuery } from '@/types/resource';
 import { workspaceService } from '@/services/workspace-service';
 import type { Workspace } from '@/types/omnichannel';
 import { SettingsTab, ChannelsTab, MembersTab } from './workspace-form-fields';
@@ -60,6 +61,7 @@ export function useWorkspaceForm(
   const lifecycleLayoutController = useRef<LayoutController | null>(null);
 
   const form = useForm<WorkspaceFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(workspaceFormSchema),
     defaultValues: toFormValues(null),
   });
@@ -88,6 +90,20 @@ export function useWorkspaceForm(
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, creating]);
+
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      workspaceService.getAt(query, index).then((r) => ({
+        recordId: r.workspace?.id ?? null,
+        total: r.total,
+      })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => workspaceFormHref(recordId, { ctx, index }),
+    [],
+  );
 
   const config = useMemo<ResourceFormConfig<Workspace> | null>(() => {
     if (isLoading || notFound) return null;
@@ -236,14 +252,7 @@ export function useWorkspaceForm(
       onCancel,
       recordNav: creating
         ? undefined
-        : {
-            fetchAt: (query, index) =>
-              workspaceService.getAt(query, index).then((r) => ({
-                recordId: r.workspace?.id ?? null,
-                total: r.total,
-              })),
-            buildHref: (recordId, ctx, index) => workspaceFormHref(recordId, { ctx, index }),
-          },
+        : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
     isLoading,
@@ -257,6 +266,8 @@ export function useWorkspaceForm(
     router,
     can,
     lifecycleDirty,
+    fetchRecordAt,
+    buildRecordHref,
   ]);
 
   return { config, form, isLoading, notFound };

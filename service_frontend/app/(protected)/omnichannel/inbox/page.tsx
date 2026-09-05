@@ -79,7 +79,7 @@ export default function InboxPage() {
               ? 'my-4 grid min-h-0 grid-cols-[200px_320px_1fr] grid-rows-[minmax(0,1fr)] overflow-hidden rounded-lg border bg-background'
               : 'my-4 grid min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden rounded-lg border bg-background'
           }
-          style={{ height: 'calc(100vh - 180px)' }}
+          style={{ height: 'calc(100dvh - 180px)' }}
           data-testid="inbox-shell"
         >
           {isDesktop && (

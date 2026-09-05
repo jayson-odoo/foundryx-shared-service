@@ -9,7 +9,7 @@
  */
 import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { SearchSelect } from '@/components/platform/search-select';
 import { StatusBadge, type StatusRegistry } from '@/components/platform/status-badge';
 import { ApiError } from '@/lib/api-client';

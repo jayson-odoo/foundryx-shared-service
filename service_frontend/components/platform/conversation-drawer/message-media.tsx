@@ -9,6 +9,8 @@ import { useState } from 'react';
 import { Download, FileText, ImageOff, Mic } from 'lucide-react';
 
 import { Dialog, DialogContent } from '@/components/ui/dialog';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useMediaBlob } from '@/hooks/use-media-blob';
 import type { ConversationMessage } from '@/types/omnichannel';
@@ -63,7 +65,7 @@ export function MessageMedia({ message }: { message: ConversationMessage }) {
         <button
           type="button"
           onClick={() => setLightbox(true)}
-          className="block overflow-hidden rounded-md"
+          className={cn(PRESSED_CLASS, 'block overflow-hidden rounded-md')}
           data-testid="media-image"
         >
           <img

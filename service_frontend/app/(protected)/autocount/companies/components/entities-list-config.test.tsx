@@ -149,17 +149,18 @@ describe('entities actions', () => {
     expect(edit.isVisible?.([entity({ watermarkAt: '2026-07-12T00:00:00Z' })])).toBe(false);
   });
 
-  it('offers "Re-fetch history" ONLY once superseded, as a confirmed reset', () => {
+  it('offers "Re-fetch history" ONLY once superseded, as an explicit (un-confirmed) reset (fix round 1, T5, item 15 - a re-sync needs no confirm)', () => {
     const c = config([entity({ watermarkAt: '2026-07-12T00:00:00Z' })]);
     const refetch = c.actions.find((a) => a.id === 'refetch-history')!;
     expect(refetch.permission).toBe('autocount.companies.manage');
     // The mirror image of edit-lookback - visible only when the window is spent.
     expect(refetch.isVisible?.([entity({ watermarkAt: '2026-07-12T00:00:00Z' })])).toBe(true);
     expect(refetch.isVisible?.([entity({ watermarkAt: null })])).toBe(false);
-    // Explicit + confirmed, never a silent Days box.
-    expect(refetch.confirm).toBeDefined();
+    // Explicit but no confirm dialog - a re-sync widens a read window, it
+    // doesn't delete or detach anything.
+    expect(refetch.confirm).toBeUndefined();
     const row = entity({ watermarkAt: '2026-07-12T00:00:00Z' });
-    refetch.run([row], { reload: vi.fn() });
+    refetch.run?.([row], { reload: vi.fn() });
     expect(onRefetch).toHaveBeenCalledWith(row);
   });
 

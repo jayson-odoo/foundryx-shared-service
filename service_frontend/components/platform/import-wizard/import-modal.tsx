@@ -12,6 +12,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -132,7 +134,7 @@ export function ImportModal({
 
               <button
                 type="button"
-                className="text-primary inline-flex items-center gap-1.5 text-sm font-medium hover:underline"
+                className={cn(PRESSED_CLASS, 'text-primary inline-flex items-center gap-1.5 text-sm font-medium hover:underline')}
                 onClick={() => setTemplateOpen(true)}
               >
                 <Download className="size-3.5" /> Download template
@@ -253,7 +255,7 @@ function TemplateDialog({
               {visibleOptional.length > 0 && (
                 <button
                   type="button"
-                  className="text-primary text-xs font-medium hover:underline"
+                  className={cn(PRESSED_CLASS, 'text-primary text-xs font-medium hover:underline')}
                   onClick={toggleAllVisible}
                 >
                   {allVisibleOn ? 'Clear' : 'Select all'}

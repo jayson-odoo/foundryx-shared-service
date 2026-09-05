@@ -1,10 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { FileText, GitBranch, History, Lightbulb, MessageSquare, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ListQuery } from '@/types/resource';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { ApiError } from '@/lib/api-client';
 import { businessRequirementService } from '@/services/business-requirement-service';
@@ -51,7 +51,6 @@ export function useBrForm(
   initialEditing: boolean,
   initialTab?: string,
 ): UseBrFormResult {
-  const router = useRouter();
   const [br, setBr] = useState<BusinessRequirementDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -162,6 +161,20 @@ export function useBrForm(
     onFieldErrors: setServerFieldErrors,
   });
 
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(async (query: ListQuery, index: number) => {
+    const all = await businessRequirementService.list({
+      filter: query.statusView === 'trashed' ? 'archived' : 'active',
+      search: query.search,
+    });
+    const row = all[index];
+    return { recordId: row?.id ?? null, total: all.length };
+  }, []);
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => brFormHref(recordId, { ctx, index }),
+    [],
+  );
+
   const config = useMemo<ResourceFormConfig<BusinessRequirementDetail> | null>(() => {
     if (!br) return null;
 
@@ -173,16 +186,13 @@ export function useBrForm(
         icon: Trash2,
         tone: 'destructive',
         surfaces: { form: true },
-        confirm: {
-          title: 'Delete business requirement',
-          description:
-            'This permanently removes the BR and its idea links. This action cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async () => {
-          await businessRequirementService.remove(brId);
-          toast.success('Business requirement deleted.');
-          router.push(BR_PATH);
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run`. ResourceForm's own onCommitted already
+        // carries the record's ctx/i/from back to the list (AC-DLA-30),
+        // matching what this `run` used to do by hand.
+        deferred: {
+          actionKey: 'ideation_business_requirements.delete',
+          entityType: 'ideation_business_requirement',
         },
       },
     ];
@@ -257,17 +267,7 @@ export function useBrForm(
       isDirty,
       onSave,
       onCancel,
-      recordNav: {
-        fetchAt: async (query, index) => {
-          const all = await businessRequirementService.list({
-            filter: query.statusView === 'trashed' ? 'archived' : 'active',
-            search: query.search,
-          });
-          const row = all[index];
-          return { recordId: row?.id ?? null, total: all.length };
-        },
-        buildHref: (recordId, ctx, index) => brFormHref(recordId, { ctx, index }),
-      },
+      recordNav: { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
     answers,
@@ -283,8 +283,9 @@ export function useBrForm(
     onGrillGenerated,
     onIdeasChanged,
     onSave,
-    router,
     serverFieldErrors,
+    fetchRecordAt,
+    buildRecordHref,
   ]);
 
   return { config, isLoading, notFound };

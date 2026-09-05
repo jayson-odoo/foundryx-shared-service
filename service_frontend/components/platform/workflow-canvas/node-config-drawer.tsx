@@ -781,7 +781,7 @@ export function OutputParamsEditor({
                 className="flex flex-col gap-1.5 rounded-md bg-muted/40 p-2"
                 data-testid={`enum-values-${i + 1}`}
               >
-                <div className="text-[11px] font-medium text-muted-foreground">
+                <div className="text-2xs font-medium text-muted-foreground">
                   Enum values
                 </div>
                 {enumValues.map((enumValue, enumIndex) => (
@@ -988,7 +988,7 @@ export function NodeConfigDrawer({
         {labelEl}
         {children}
         {field.help && (
-          <p className="text-[11px] text-muted-foreground">{field.help}</p>
+          <p className="text-2xs text-muted-foreground">{field.help}</p>
         )}
       </div>
     );
@@ -1381,7 +1381,7 @@ export function NodeConfigDrawer({
   return (
     <div className="flex flex-col gap-4" data-testid="node-config-drawer">
       <div className="flex flex-col gap-1">
-        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <div className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
           {node.kind === 'trigger'
             ? 'Trigger'
             : node.kind === 'if'
@@ -1406,7 +1406,7 @@ export function NodeConfigDrawer({
         )}
         {duplicateName && (
           <p
-            className="text-[11px] text-destructive"
+            className="text-2xs text-destructive"
             data-testid="node-name-error"
           >
             Another node already uses this name - names must be unique.
@@ -1414,7 +1414,7 @@ export function NodeConfigDrawer({
         )}
         {editing && onReplaceNode && node.kind !== 'if' && (
           <div className="mt-1 flex flex-col gap-1">
-            <Label className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            <Label className="text-2xs font-medium uppercase tracking-wide text-muted-foreground">
               {node.kind === 'trigger' ? 'Trigger type' : 'Action type'}
             </Label>
             <SearchSelect
@@ -1437,7 +1437,7 @@ export function NodeConfigDrawer({
           data-testid="node-run-data"
         >
           <div className="flex items-center justify-between">
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <span className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
               Run data
             </span>
             <Button
@@ -1453,17 +1453,17 @@ export function NodeConfigDrawer({
             </Button>
           </div>
           <div>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="mb-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
               Output
             </div>
-            <pre className="max-h-32 overflow-auto rounded bg-muted p-1.5 text-[11px] text-foreground">
+            <pre className="max-h-32 overflow-auto rounded bg-muted p-1.5 text-2xs text-foreground">
               {runData?.outputJson == null
                 ? '-'
                 : JSON.stringify(runData.outputJson, null, 2)}
             </pre>
           </div>
           {runData?.error && (
-            <pre className="overflow-auto rounded bg-destructive/10 p-1.5 text-[11px] text-destructive">
+            <pre className="overflow-auto rounded bg-destructive/10 p-1.5 text-2xs text-destructive">
               {runData.error}
             </pre>
           )}

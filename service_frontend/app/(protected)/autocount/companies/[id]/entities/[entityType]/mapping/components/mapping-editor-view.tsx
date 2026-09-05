@@ -4,7 +4,7 @@ import { useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { Info, LoaderCircleIcon } from 'lucide-react';
 import { useForm } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
 import { Form } from '@/components/ui/form';
@@ -36,7 +36,7 @@ export interface MappingEditorViewProps {
  */
 export function MappingEditorView({ companyId, entityType }: MappingEditorViewProps) {
   const { can } = useCan();
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
   const { detail } = useAutocountCompany(companyId);
   const { view, isLoading, notFound, saveError, save, testFormula, simulate } =
     useAutocountMapping(companyId, entityType);
@@ -66,6 +66,10 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
         { label: `${entityLabel(entityType)} mapping` },
       ],
       backHref: acCompanyHref(companyId),
+      // This route lives under the company detail page (not its own list),
+      // so the sidebar-derived noun would resolve to "company" (AC-DLA-35
+      // fix round 1) - override with the actual entity being saved.
+      entityNoun: 'mapping',
       title: `${entityLabel(entityType)} field mapping`,
       subtitle: companyName ?? undefined,
       tabs: [

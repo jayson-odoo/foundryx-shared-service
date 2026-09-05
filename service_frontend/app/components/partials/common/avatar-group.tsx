@@ -36,7 +36,7 @@ function AvatarGroup({ size, group, more, className }: AvatarGroupProp) {
         {each.fallback ? (
           <AvatarFallback
             className={cn(
-              'relative border-1 border-background hover:z-10 text-[11px]',
+              'relative border-1 border-background hover:z-10 text-2xs',
               size,
               each.variant,
             )}
@@ -54,7 +54,7 @@ function AvatarGroup({ size, group, more, className }: AvatarGroupProp) {
       {more && (
         <span
           className={cn(
-            'flex items-center cursor-default justify-center relative shrink-0 rounded-full border-1 border-background hover:z-10 font-semibold text-[11px] leading-none',
+            'flex items-center cursor-default justify-center relative shrink-0 rounded-full border-1 border-background hover:z-10 font-semibold text-2xs leading-none',
             avatarSize,
             more.variant,
           )}

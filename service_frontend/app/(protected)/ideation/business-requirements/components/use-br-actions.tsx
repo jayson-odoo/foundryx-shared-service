@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import type { StatusGraph } from '@/types/status-engine';

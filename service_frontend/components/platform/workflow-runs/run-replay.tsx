@@ -24,6 +24,8 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import { FlowCanvas } from '@/components/platform/flow-canvas';
 import {
   WorkflowFlowNode,
@@ -94,7 +96,7 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
           </span>
           {run.correlationKey && (
             <span
-              className="max-w-full rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground sm:max-w-[16rem]"
+              className="max-w-full rounded-md bg-muted px-1.5 py-0.5 font-mono text-2xs text-muted-foreground sm:max-w-[16rem]"
               data-testid="run-correlation-key"
             >
               <ClampedText text={run.correlationKey} lines={1} />
@@ -213,7 +215,7 @@ function DataBlock({ label, value }: DataBlockProps) {
   return (
     <div>
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <span className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
           {label}
         </span>
         {value != null && (
@@ -221,7 +223,7 @@ function DataBlock({ label, value }: DataBlockProps) {
             type="button"
             onClick={handleCopy}
             aria-label={`Copy ${label}`}
-            className="hover:text-foreground text-muted-foreground transition-colors"
+            className={cn(PRESSED_CLASS, 'hover:text-foreground text-muted-foreground transition-colors')}
           >
             {copied ? (
               <Check className="size-3.5" />
@@ -231,7 +233,7 @@ function DataBlock({ label, value }: DataBlockProps) {
           </button>
         )}
       </div>
-      <pre className="max-h-40 overflow-auto rounded-md bg-muted p-2 text-[11px] text-foreground">
+      <pre className="max-h-40 overflow-auto rounded-md bg-muted p-2 text-2xs text-foreground">
         {value == null ? '-' : textToCopy}
       </pre>
     </div>
@@ -262,14 +264,14 @@ function ErrorBlock({ error }: ErrorBlockProps) {
   return (
     <div>
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <span className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
           Error
         </span>
         <button
           type="button"
           onClick={handleCopy}
           aria-label="Copy Error"
-          className="hover:text-destructive text-muted-foreground transition-colors"
+          className={cn(PRESSED_CLASS, 'hover:text-destructive text-muted-foreground transition-colors')}
         >
           {copied ? (
             <Check className="size-3.5" />
@@ -278,7 +280,7 @@ function ErrorBlock({ error }: ErrorBlockProps) {
           )}
         </button>
       </div>
-      <pre className="overflow-auto rounded-md bg-destructive/10 p-2 text-[11px] text-destructive">
+      <pre className="overflow-auto rounded-md bg-destructive/10 p-2 text-2xs text-destructive">
         {error}
       </pre>
     </div>

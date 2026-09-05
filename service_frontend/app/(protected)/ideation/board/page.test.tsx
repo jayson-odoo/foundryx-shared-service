@@ -7,15 +7,19 @@ import BoardPage from './page';
 const useIdeas = vi.hoisted(() => vi.fn());
 vi.mock('@/hooks/use-ideas', () => ({ useIdeas: () => useIdeas() }));
 
-// SettingsProvider-free: Toolbar/Container read layout tokens; stub the partials.
-vi.mock('@/partials/common/toolbar', () => ({
-  Toolbar: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  ToolbarHeading: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  ToolbarDescription: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-  ToolbarPageTitle: () => <h1>Board</h1>,
-}));
+// SettingsProvider-free: Container reads layout tokens; PageHeader calls
+// useTerminology()/useSession() (network + NextAuth context this test has
+// none of) - stub both so the board's data states render in isolation.
 vi.mock('@/components/common/container', () => ({
   Container: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+}));
+vi.mock('@/components/platform/page-header', () => ({
+  PageHeader: ({ description }: { description?: React.ReactNode }) => (
+    <div>
+      <h1>Board</h1>
+      {description}
+    </div>
+  ),
 }));
 
 const anIdea = (over: Partial<Idea> = {}): Idea => ({

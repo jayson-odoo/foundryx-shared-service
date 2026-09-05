@@ -3,6 +3,7 @@
 /** Versions tab (plan sprint-2/08 D4) - paginated version history. Never embed
  * the full list in the workflow GET; page it (history grows unbounded). */
 import { useCallback, useEffect, useState } from 'react';
+import { LoaderCircleIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useDatetime } from '@/hooks/use-datetime';
@@ -81,7 +82,7 @@ export function WorkflowVersionsTab({ workflowId, currentVersionId }: WorkflowVe
           onClick={() => load(page + 1)}
           data-testid="versions-load-more"
         >
-          {loading ? 'Loading…' : `Load more (${total - rows.length})`}
+          {loading ? <LoaderCircleIcon className="size-4 animate-spin" /> : `Load more (${total - rows.length})`}
         </Button>
       )}
     </div>
