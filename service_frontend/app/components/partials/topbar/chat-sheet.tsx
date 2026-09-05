@@ -162,7 +162,7 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
                     align="end"
                   >
                     <DropdownMenuItem asChild>
-                      <Link href="/account/members/teams">
+                      <Link href="/user-management/users">
                         <Users /> Invite Users
                       </Link>
                     </DropdownMenuItem>
@@ -174,18 +174,18 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
                       <DropdownMenuPortal>
                         <DropdownMenuSubContent className="w-44">
                           <DropdownMenuItem asChild>
-                            <Link href="/account/members/import-members">
+                            <Link href="/user-management/users">
                               <Shield />
                               Find Members
                             </Link>
                           </DropdownMenuItem>
                           <DropdownMenuItem asChild>
-                            <Link href="/account/members/import-members">
+                            <Link href="/user-management/users">
                               <Calendar /> Meetings
                             </Link>
                           </DropdownMenuItem>
                           <DropdownMenuItem asChild>
-                            <Link href="/account/members/import-members">
+                            <Link href="/user-management/users">
                               <Shield /> Group Settings
                             </Link>
                           </DropdownMenuItem>
@@ -193,7 +193,7 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
                       </DropdownMenuPortal>
                     </DropdownMenuSub>
                     <DropdownMenuItem asChild>
-                      <Link href="/account/security/privacy-settings">
+                      <Link href="/account">
                         <Shield /> Group Settings
                       </Link>
                     </DropdownMenuItem>

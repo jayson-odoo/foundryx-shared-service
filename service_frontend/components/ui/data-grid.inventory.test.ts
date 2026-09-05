@@ -180,27 +180,14 @@ describe('AC-DLA-13 DataGrid defaults + scroller + pinned column + tabular-nums'
   });
 
   /**
-   * Fix round 1 widens the walk to `app/**` too (was `components/platform`
-   * only). The 14 genuine hits are ALL `account/**` Metronic demo pages plus
-   * the `demo1/light-sidebar` showcase team - dead code slated for wholesale
-   * deletion in T7 (AC-DLA-57/60), not touched here. A new offender anywhere
-   * else in the tree still fails the build.
+   * T7 (AC-DLA-57/60): the 13 `account/**` Metronic demo pages that used to
+   * be here are DELETED. The one survivor is the `demo1/light-sidebar`
+   * dashboard showcase team widget - live-mounted dead-demo dashboard
+   * content, out of this AC's scope (see the T7 report). A new offender
+   * anywhere else in the tree still fails the build.
    */
   const SCROLL_AREA_AROUND_GRID_ALLOWLIST = new Set([
     'app/(protected)/components/demo1/light-sidebar/components/teams.tsx',
-    'app/(protected)/account/security/current-sessions/components/current-sessions.tsx',
-    'app/(protected)/account/security/device-management/components/device.tsx',
-    'app/(protected)/account/security/backup-and-recovery/components/backup.tsx',
-    'app/(protected)/account/security/allowed-ip-addresses/components/ip-addresses.tsx',
-    'app/(protected)/account/security/security-log/components/security-log.tsx',
-    'app/(protected)/account/appearance/components/api-integrations.tsx',
-    'app/(protected)/account/api-keys/components/api-integrations.tsx',
-    'app/(protected)/account/members/permissions-toggle/components/members.tsx',
-    'app/(protected)/account/members/team-members/components/members.tsx',
-    'app/(protected)/account/members/teams/components/teams.tsx',
-    'app/(protected)/account/members/team-info/components/members.tsx',
-    'app/(protected)/account/billing/history/components/invoicing.tsx',
-    'app/(protected)/account/invite-a-friend/components/invites.tsx',
   ]);
 
   it('zero list under app/** or components/platform/** wraps DataGridTableDnd/DataGridTableDndRows/DataGridTable in a ScrollArea, outside the recorded account/**+demo1 allowlist (deleted in T7)', () => {
@@ -215,8 +202,8 @@ describe('AC-DLA-13 DataGrid defaults + scroller + pinned column + tabular-nums'
     expect(offenders).toEqual([]);
   });
 
-  it('records the ScrollArea-around-grid allowlist as exactly 14 files', () => {
-    expect(SCROLL_AREA_AROUND_GRID_ALLOWLIST.size).toBe(14);
+  it('records the ScrollArea-around-grid allowlist as exactly 1 file (T7: the 13 account/** demo pages are deleted)', () => {
+    expect(SCROLL_AREA_AROUND_GRID_ALLOWLIST.size).toBe(1);
     for (const f of SCROLL_AREA_AROUND_GRID_ALLOWLIST) {
       expect(fs.existsSync(path.join(repoRoot, f)), f).toBe(true);
     }

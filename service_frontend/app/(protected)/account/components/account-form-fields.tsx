@@ -102,8 +102,7 @@ export function AccountProfileTab({
                     <Button
                       type="button"
                       mode="link"
-                      underlined="none"
-                      className="text-foreground hover:text-primary"
+                      className="text-foreground no-underline hover:text-primary"
                       onClick={() => copyToClipboard(email)}
                       aria-label="Copy email address"
                     >

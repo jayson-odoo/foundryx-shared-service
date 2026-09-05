@@ -8,10 +8,12 @@
  * (fix round 1 item 3) no file bypasses the hook entirely by calling
  * `navigator.clipboard.writeText` directly AND firing a toast on the result
  * (`secret-reveal.tsx`, `webhook-secret-panel.tsx`, `mint-api-key-dialog.tsx`
- * all did this pre-fix). T7: the one remaining exception
- * (`account/components/account-form-fields.tsx`, the real /account page's
- * email-copy control, NOT dead demo) is fixed onto the hook too - the
- * allowlist is now empty.
+ * all did this pre-fix). T7: the account/** demo pages that used to carry
+ * disclosed exceptions here (no feedback at all, or a raw writeText+toast)
+ * are DELETED (AC-DLA-57); the one real exception
+ * (`account/components/account-form-fields.tsx`, the surviving /account
+ * page's email-copy control) is fixed onto the hook. Both allowlists are
+ * empty - a future entry needs a named reason, not a silent re-add.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,28 +21,7 @@ import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.join(__dirname, '..');
 
-/**
- * Pre-existing `account/**` Metronic DEMO pages (D8, plan 23 T7: "the 21
- * account/** demo pages ... DELETED, not migrated") - they copy an id with
- * no visual feedback at all today (no toast either, so AC-DLA-53's actual
- * ban - "no toast" - already holds for them). Wiring up `isCopied` for
- * pages T7 deletes wholesale would be wasted work; disclosed here instead
- * of silently passing or silently failing.
- */
-const DEAD_DEMO_NO_FEEDBACK = [
-  'app/(protected)/account/invite-a-friend/components/invites.tsx',
-  'app/(protected)/account/members/permissions-toggle/components/members.tsx',
-  'app/(protected)/account/members/team-info/components/members.tsx',
-  'app/(protected)/account/members/team-members/components/members.tsx',
-  'app/(protected)/account/security/current-sessions/components/current-sessions.tsx',
-];
-
-/**
- * T7: every file that used to bypass the hook is now either fixed onto it
- * (`account-form-fields.tsx`) or deleted (the other three, T6 fix round 1
- * item 3). Empty on purpose - a future entry needs a named reason, not a
- * silent re-add.
- */
+const NO_FEEDBACK_ALLOWED: string[] = [];
 const RAW_WRITE_TEXT_WITH_TOAST_ALLOWED: string[] = [];
 
 function sourceFiles(): string[] {
@@ -72,8 +53,8 @@ describe('AC-DLA-53 copy-to-clipboard = inline checkmark only', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('every consumer destructuring copyToClipboard also destructures isCopied (baseline: 5 dead demo pages excepted)', () => {
-    const allowed = new Set(DEAD_DEMO_NO_FEEDBACK.map((f) => path.join(repoRoot, f)));
+  it('every consumer destructuring copyToClipboard also destructures isCopied (allowlist empty)', () => {
+    const allowed = new Set(NO_FEEDBACK_ALLOWED.map((f) => path.join(repoRoot, f)));
     const offenders = sourceFiles().filter((f) => {
       if (f.endsWith('use-copy-to-clipboard.ts') || allowed.has(f)) return false;
       const src = fs.readFileSync(f, 'utf8');
@@ -84,7 +65,7 @@ describe('AC-DLA-53 copy-to-clipboard = inline checkmark only', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('no file bypasses the hook via a raw writeText + toast (baseline: one T7-scheduled-for-deletion demo file)', () => {
+  it('no file bypasses the hook via a raw writeText + toast (allowlist empty)', () => {
     const allowed = new Set(RAW_WRITE_TEXT_WITH_TOAST_ALLOWED.map((f) => path.join(repoRoot, f)));
     const offenders = sourceFiles().filter((f) => {
       if (allowed.has(f)) return false;
@@ -92,18 +73,5 @@ describe('AC-DLA-53 copy-to-clipboard = inline checkmark only', () => {
       return /navigator\.clipboard\.writeText/.test(src) && /\btoast\.(success|error)\(/.test(src);
     });
     expect(offenders).toEqual([]);
-  });
-
-  it('the disclosed dead-demo baseline is exact - every named file still exists and still lacks isCopied', () => {
-    for (const rel of DEAD_DEMO_NO_FEEDBACK) {
-      const full = path.join(repoRoot, rel);
-      expect(fs.existsSync(full), `${rel} should exist`).toBe(true);
-      const src = fs.readFileSync(full, 'utf8');
-      const usesHook = /const\s*\{([^}]*)\}\s*=\s*useCopyToClipboard\(/.exec(src);
-      expect(usesHook, `${rel} should still call useCopyToClipboard`).not.toBeNull();
-      expect(usesHook![1], `${rel} should still lack isCopied (remove it from the baseline once fixed)`).not.toMatch(
-        /\bisCopied\b/,
-      );
-    }
   });
 });
