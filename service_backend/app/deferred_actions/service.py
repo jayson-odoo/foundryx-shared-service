@@ -214,12 +214,17 @@ class PendingActionService:
             else self._last_outcome(tenant_id, entity_type, entity_id)
         )
 
-        # Fix round 1 item 1: `current` is gated by the SAME permission the
-        # parked action itself requires (resolved fresh from the actor's
-        # roles, exactly like `park`) - a teammate who cannot fire the action
-        # cannot observe its countdown either. Uniform empty response (never
-        # a distinct error shape) so a caller lacking the permission cannot
-        # distinguish "nothing pending" from "pending, but not yours to see".
+        # Fix round 1 item 1 (comment corrected fix round 3, item 2 - it had
+        # drifted from the shipped contract): `current` is gated by the SAME
+        # permission the parked action itself requires (resolved fresh from
+        # the actor's roles, exactly like `park`) - a teammate who cannot
+        # fire the action cannot observe its countdown either. A DENIED
+        # caller gets a uniform 404 (`ActionNotFound`, AC-DLA-40/43) -
+        # NOT the empty-but-200 `{pending: null, lastOutcome: null}` an
+        # AUTHORIZED caller gets for an entity with nothing pending. (An
+        # earlier version of this comment claimed a uniform empty 200
+        # response for the denied case - that was never what the code did;
+        # the router has always translated `ActionNotFound` to 404.)
         relevant_key = (
             raw_pending.action_key
             if raw_pending

@@ -346,12 +346,18 @@ def test_current_service_never_returns_committing_as_last_outcome(db):
 
 
 def test_current_with_nothing_parked(client):
+    """T5 fix round 3, item 2: an AUTHORIZED caller polling an entity with no
+    pending row EVER gets a 200 `{pending: null, lastOutcome: null}` - the
+    counterpart to `test_current_without_the_actions_permission_is_uniform_404`
+    (a DENIED caller gets a 404 instead), pinning both sides of the
+    corrected `current()` docstring contract."""
     h = _login(client)
     res = client.get(
         "/api/v1/pending-actions/current",
         params={"entityType": TEST_ENTITY, "entityId": "w-none"},
         headers=h,
     )
+    assert res.status_code == 200, res.text
     body = res.json()
     assert body["pending"] is None
     assert body["lastOutcome"] is None
