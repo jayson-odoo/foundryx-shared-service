@@ -45,6 +45,23 @@ describe('AC-DLA-52 dvh sizing + pointer-coarse input + no maximum-scale', () =>
     }
   });
 
+  it('the chat sheet and notifications sheet cap height off dvh, not a static inset-5 override', () => {
+    // T6 fix round 1 item 5 (AC-DLA-52/55): `inset-5` on SheetContent's
+    // className wins the tailwind-merge conflict against the shared side
+    // variant's `h-dvh`, collapsing back to a static height. top-5/bottom-5
+    // + an explicit dvh-based max-h keeps the fix in place without
+    // clobbering the variant's end-0 horizontal edge.
+    for (const file of [
+      'app/components/partials/topbar/chat-sheet.tsx',
+      'app/components/partials/topbar/notifications-sheet.tsx',
+    ]) {
+      const src = read(file);
+      expect(src).toContain('top-5 bottom-5');
+      expect(src).toContain('max-h-[calc(100dvh-2.5rem)]');
+      expect(src).not.toMatch(/\binset-5\b/);
+    }
+  });
+
   it('no tracked frontend file declares a maximum-scale viewport meta', () => {
     // A dedicated meta/viewport export is the only place this could live;
     // absence IS compliance (Next's own default carries no maximum-scale).
