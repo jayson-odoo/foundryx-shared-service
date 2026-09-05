@@ -47,6 +47,27 @@ const noPxTextClassRule = {
   },
 };
 
+// Plan 23 T8 fix round 1 (item 4) - each `no-restricted-imports` path entry
+// is declared ONCE here so an override block can re-declare the rule with
+// only the entries it still needs, instead of turning the whole rule `off`
+// (which let `lib/toast.ts` - exempted only for `sonner` - also import a
+// bare `@/components/ui/select`/`@/components/ui/table` unnoticed).
+const SELECT_RESTRICTION = {
+  name: '@/components/ui/select',
+  message:
+    'Radix Select is not searchable. Use SearchSelect (or MultiSelect for multi-value) from @/components/platform/search-select.',
+};
+const TABLE_RESTRICTION = {
+  name: '@/components/ui/table',
+  message:
+    'Every product table is a DataGrid (AC-DLA-56). @/components/ui/table is reserved for a form table FIELD (form-renderer/table-field.tsx) and a rendered email block (email-editor/block-view.tsx) - content, not a list.',
+};
+const SONNER_RESTRICTION = {
+  name: 'sonner',
+  message:
+    "Import { toast } from '@/lib/toast' instead - it wraps sonner with the house success/error duration + close-button defaults. Only lib/toast.ts, components/ui/sonner.tsx and components/platform/resource-actions/deferred-toast.tsx may import sonner directly.",
+};
+
 const eslintConfig = [
   ...compat.config({
     extends: ['next/core-web-vitals', 'next/typescript', 'prettier'],
@@ -79,28 +100,7 @@ const eslintConfig = [
       // Per-file exemptions for the small number of legitimate/pre-existing
       // importers are declared in the override blocks below (never widen
       // these lists without a comment naming why).
-      'no-restricted-imports': [
-        'error',
-        {
-          paths: [
-            {
-              name: '@/components/ui/select',
-              message:
-                'Radix Select is not searchable. Use SearchSelect (or MultiSelect for multi-value) from @/components/platform/search-select.',
-            },
-            {
-              name: '@/components/ui/table',
-              message:
-                'Every product table is a DataGrid (AC-DLA-56). @/components/ui/table is reserved for a form table FIELD (form-renderer/table-field.tsx) and a rendered email block (email-editor/block-view.tsx) - content, not a list.',
-            },
-            {
-              name: 'sonner',
-              message:
-                "Import { toast } from '@/lib/toast' instead - it wraps sonner with the house success/error duration + close-button defaults. Only lib/toast.ts, components/ui/sonner.tsx and components/platform/resource-actions/deferred-toast.tsx may import sonner directly.",
-            },
-          ],
-        },
-      ],
+      'no-restricted-imports': ['error', { paths: [SELECT_RESTRICTION, TABLE_RESTRICTION, SONNER_RESTRICTION] }],
     },
   }),
   {
@@ -108,13 +108,16 @@ const eslintConfig = [
     // test.ts is the runtime-enforced version of this same allowlist;
     // `branding.test.tsx` additionally mocks-and-reimports sonner to assert
     // against the mock directly - see that inventory test's own comment).
+    // T8 fix round 1 (item 4): re-declares the rule with `sonner` REMOVED
+    // from the path list (not `off`) - these files are exempt from the
+    // sonner restriction only, and still can't import a bare Select/table.
     files: [
       'lib/toast.ts',
       'components/ui/sonner.tsx',
       'components/platform/resource-actions/deferred-toast.tsx',
       'components/platform/branding/branding.test.tsx',
     ],
-    rules: { 'no-restricted-imports': 'off' },
+    rules: { 'no-restricted-imports': ['error', { paths: [SELECT_RESTRICTION, TABLE_RESTRICTION] }] },
   },
   {
     // The two content entries that render a real `<table>` as CONTENT (a
@@ -125,7 +128,7 @@ const eslintConfig = [
       'components/platform/form-renderer/table-field.tsx',
       'components/platform/email-editor/block-view.tsx',
     ],
-    rules: { 'no-restricted-imports': 'off' },
+    rules: { 'no-restricted-imports': ['error', { paths: [SELECT_RESTRICTION, SONNER_RESTRICTION] }] },
   },
   {
     // Pre-existing bare-Select debt (measured 5 Sep 2026), tracked and OPEN
@@ -134,7 +137,10 @@ const eslintConfig = [
     // (connections form's provider `select` fields specifically). This
     // guardrail's job is to stop the count growing, not to burn it down in
     // a guardrails-only slice (plan 23 T8) - a file leaves this list the day
-    // it migrates to SearchSelect/MultiSelect.
+    // it migrates to SearchSelect/MultiSelect. T8 fix round 1 (item 4):
+    // re-declares the rule with `select` REMOVED from the path list (not
+    // `off`) - these files are exempt from the select restriction only, and
+    // still can't import a bare table/sonner.
     files: [
       'app/(protected)/ideation/ideas/components/idea-form-fields.tsx',
       'app/(protected)/settings/integrations/components/connection-form-fields.tsx',
@@ -146,7 +152,7 @@ const eslintConfig = [
       'components/platform/resource-list/filter-builder.tsx',
       'components/platform/channel-connect-wizard/channel-connect-wizard.tsx',
     ],
-    rules: { 'no-restricted-imports': 'off' },
+    rules: { 'no-restricted-imports': ['error', { paths: [TABLE_RESTRICTION, SONNER_RESTRICTION] }] },
   },
   {
     // Plan 23 T8 (AC-DLA-63): text-[Npx] is an error everywhere in feature
