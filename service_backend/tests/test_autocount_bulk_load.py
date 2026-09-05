@@ -100,7 +100,7 @@ from modules.autocount.models import (
 )
 from modules.autocount.services.company_service import CompanyService
 from modules.autocount.sql_source.runtime import RUNTIME
-from modules.autocount.sql_source.source import CURSOR_MARK
+from modules.autocount.sql_source.source import CURSOR_KEY_COLUMNS, CURSOR_MARK
 from modules.autocount.sync import AUTOCOUNT_SYNC
 
 PASSWORD = "S3cret!Pa55"
@@ -881,6 +881,74 @@ def test_the_pass_start_is_read_from_the_cursor_on_continuation(
     assert started_2 == started_1, (
         "the continuation run must read the SAME pass start from the stored "
         "cursor - never re-stamp it to the clock"
+    )
+    db.close()
+
+
+def test_a_stale_cursor_missing_sql_key_columns_is_treated_as_unknown_not_a_reshape(
+    session_factory, monkeypatch, consumer
+):
+    """Round 5 (S2) bootstrap rule: a cursor with NO ``sqlKeyColumns``
+    fingerprint at all (a pre-round-5 row, never run under this check
+    before) must be treated as "unknown, assume unchanged" - never a
+    spurious identity reset (``sync.py``'s own comment: "a one-time,
+    harmless bootstrap cost the first time a genuinely reshaped task runs
+    after this code ships, never a risk to an untouched one").
+
+    After one incremental run establishes a normal cursor (which now
+    stamps ``sqlKeyColumns``), ``sqlKeyColumns`` is stripped back off to
+    simulate exactly that legacy shape, then a second incremental tick is
+    driven for real: every existing hash must survive, the top-level
+    ``sqlWatermark``/``lastKey`` must be untouched, this run's own
+    ``rows_scanned`` must be 0 (nothing new at source - a spurious reset
+    would force a full re-read instead), and ``sqlKeyColumns`` must now be
+    stamped with the task's current key columns (the bootstrap)."""
+    company_id, sql_id, engine = _make_rig(session_factory)
+    rows = _rows(5)
+    _insert_rows(engine, rows)
+    db = session_factory()
+
+    job1 = _run(db, company_id, RUN_MODE_INCREMENTAL)
+    assert job1.status == JOB_DONE
+    hashes_before = _hashes(db, company_id)
+    assert len(hashes_before) == 5
+
+    watermark = _watermark_row(db, company_id)
+    cursor_before = dict(watermark.cursor_json or {})
+    assert CURSOR_KEY_COLUMNS in cursor_before, (
+        "the seed run must already stamp sqlKeyColumns going forward"
+    )
+    watermark.cursor_json = {
+        k: v for k, v in cursor_before.items() if k != CURSOR_KEY_COLUMNS
+    }
+    db.commit()
+
+    job2 = _run(db, company_id, RUN_MODE_INCREMENTAL)
+    run2 = _run_row(db, company_id, job2.id)
+    assert run2.outcome == RUN_SUCCESS
+    assert run2.rows_scanned == 0, (
+        f"nothing changed at source - a legacy cursor with no sqlKeyColumns "
+        f"must never be misread as a reshape (which would clear hashes and "
+        f"force a full re-read) - got rows_scanned={run2.rows_scanned}"
+    )
+
+    hashes_after = _hashes(db, company_id)
+    assert hashes_after == hashes_before, (
+        "every existing hash must survive - a spurious identity reset "
+        "would have cleared them all"
+    )
+
+    cursor_after = (_watermark_row(db, company_id).cursor_json) or {}
+    assert cursor_after.get(CURSOR_MARK) == cursor_before.get(CURSOR_MARK), (
+        "the top-level sqlWatermark must be unchanged"
+    )
+    assert cursor_after.get("lastKey") == cursor_before.get("lastKey"), (
+        "the top-level lastKey must be unchanged"
+    )
+    assert cursor_after.get(CURSOR_KEY_COLUMNS) == ["acc_no"], (
+        f"the bootstrap must stamp sqlKeyColumns with the task's current "
+        f"key columns on the very next run - got "
+        f"{cursor_after.get(CURSOR_KEY_COLUMNS)!r}"
     )
     db.close()
 
