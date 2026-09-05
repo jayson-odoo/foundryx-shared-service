@@ -71,6 +71,53 @@ describe('realConversationService.listThreads', () => {
     const url = apiFetch.mock.calls[0][0] as string;
     expect(url).toContain('unreplied=true');
   });
+
+  it('sends an EXPLICIT status=ALL when a view is active and Show reads All (review round 2, finding 1)', async () => {
+    apiFetch.mockResolvedValue({ data: [] });
+
+    // A saved view stores a `statuses` filter server-side; the backend
+    // treats an absent `status` param as "keep the view's value" and an
+    // explicit `ALL` as "clear it" - so the bar reading "All" must send
+    // status=ALL, or the view's stored statuses silently win (AC-IVE-17).
+    await service.listThreads({ ...BASE_QUERY, viewId: 'view-1', status: 'ALL' });
+
+    const url = apiFetch.mock.calls[0][0] as string;
+    expect(url).toContain('status=ALL');
+  });
+
+  it('sends an EXPLICIT priority=ALL when a view is active and Priority reads All (review round 2, finding 1)', async () => {
+    apiFetch.mockResolvedValue({ data: [] });
+
+    await service.listThreads({ ...BASE_QUERY, viewId: 'view-1', priority: 'ALL' });
+
+    const url = apiFetch.mock.calls[0][0] as string;
+    expect(url).toContain('priority=ALL');
+  });
+
+  it('still sends the picked status/priority when a view is active and the bar overrides them', async () => {
+    apiFetch.mockResolvedValue({ data: [] });
+
+    await service.listThreads({
+      ...BASE_QUERY,
+      viewId: 'view-1',
+      status: 'OPEN',
+      priority: 'HIGH',
+    });
+
+    const url = apiFetch.mock.calls[0][0] as string;
+    expect(url).toContain('status=OPEN');
+    expect(url).toContain('priority=HIGH');
+  });
+
+  it('omits status/priority when no view is active and the bar reads All (unchanged behaviour)', async () => {
+    apiFetch.mockResolvedValue({ data: [] });
+
+    await service.listThreads({ ...BASE_QUERY, status: 'ALL', priority: 'ALL' });
+
+    const url = apiFetch.mock.calls[0][0] as string;
+    expect(url).not.toContain('status=');
+    expect(url).not.toContain('priority=');
+  });
 });
 
 describe('realConversationService plan-27 routes', () => {

@@ -50,8 +50,18 @@ function threadQueryString(query: ThreadListQuery): string {
   const params = new URLSearchParams();
   if (query.workspaceId) params.set('workspaceId', query.workspaceId);
   if (query.assignee && query.assignee !== 'all') params.set('assignee', query.assignee);
-  if (query.status && query.status !== 'ALL') params.set('status', query.status);
-  if (query.priority && query.priority !== 'ALL') params.set('priority', query.priority);
+  // Review round 2 (finding 1): when a saved view is active, the backend
+  // treats an ABSENT param as "use the view's stored value" and an EXPLICIT
+  // `ALL` as "clear it" - so `status`/`priority` must always be sent while
+  // `viewId` is set, even when the bar reads "All", or the view's stored
+  // filter silently wins over an explicit "All" selection (AC-IVE-17).
+  if (query.viewId) {
+    params.set('status', query.status && query.status !== 'ALL' ? query.status : 'ALL');
+    params.set('priority', query.priority && query.priority !== 'ALL' ? query.priority : 'ALL');
+  } else {
+    if (query.status && query.status !== 'ALL') params.set('status', query.status);
+    if (query.priority && query.priority !== 'ALL') params.set('priority', query.priority);
+  }
   if (query.search) params.set('search', query.search);
   // Plan 27 (AC-IVE-15/16/17) - server-side filtering + sorting.
   if (query.lifecycleStageIds?.length) params.set('lifecycleStageIds', query.lifecycleStageIds.join(','));

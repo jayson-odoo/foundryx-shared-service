@@ -21,7 +21,6 @@ export interface UseInboxViewsResult {
   refresh: () => Promise<void>;
   create: (input: CreateInboxViewInput) => Promise<InboxView>;
   update: (id: string, input: UpdateInboxViewInput) => Promise<InboxView>;
-  remove: (id: string) => Promise<boolean>;
 }
 
 export function useInboxViews(workspaceId: string | null): UseInboxViewsResult {
@@ -78,20 +77,5 @@ export function useInboxViews(workspaceId: string | null): UseInboxViewsResult {
     [workspaceId, refresh],
   );
 
-  const remove = useCallback(
-    async (id: string) => {
-      if (!workspaceId) return false;
-      try {
-        await inboxViewService.remove(workspaceId, id);
-        await refresh();
-        return true;
-      } catch (error) {
-        toast.error(describe(error));
-        return false;
-      }
-    },
-    [workspaceId, refresh],
-  );
-
-  return { views, loading, refresh, create, update, remove };
+  return { views, loading, refresh, create, update };
 }

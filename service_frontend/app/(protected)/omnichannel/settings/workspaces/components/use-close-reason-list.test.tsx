@@ -53,6 +53,14 @@ describe('useCloseReasonList row actions', () => {
     expect(visible('deactivate')).toBe(false);
   });
 
+  it('the delete action is a DEFERRED action, not a confirm dialog (review round 2, finding 4)', () => {
+    const row = reason({ usesCount: 0, isActive: true });
+    const actions = actionsFor([row]);
+    const deleteAction = actions.find((a) => a.id === 'delete');
+    expect(deleteAction?.deferred).toEqual({ actionKey: 'close_reasons.delete', entityType: 'close_reason' });
+    expect(deleteAction?.confirm).toBeUndefined();
+  });
+
   it('hides the create action entirely when canManage is false', () => {
     const { result } = renderHook(() =>
       useCloseReasonList({

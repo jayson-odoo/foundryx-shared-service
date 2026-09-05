@@ -215,3 +215,66 @@ Test Files  268 passed (268)
      Tests  2036 passed (2036)
   Duration  54.60s
 ```
+
+## Review round 2 fixes (addendum, 2026-09-06)
+
+Opus code-review round 2 (post-`31988b4`) returned four should-fix findings, addressed in one
+follow-up commit on top of this branch. No plan/UAC amendment needed - these are bug fixes against
+the existing AC-IVE-16/17/21/22 contract, not new scope.
+
+1. **AC-IVE-16/21 (server-side status/priority filtering + saved views)** - `threadQueryString`
+   (`services/conversation-service.real.ts`) only sent an explicit `unreplied` override alongside an
+   active `viewId`; `status`/`priority` were omitted whenever the bar read "All", so the backend
+   (`routers/conversations.py` - absent param = "use the view's stored value", explicit `ALL` =
+   "clear it") silently kept applying the view's stored `statuses`/`priority` instead of the
+   picked "All". Fixed to always send `status`/`priority` explicitly while `viewId` is set;
+   covered by 4 new cases in `conversation-service.real.test.ts`. Live-verified in this addendum:
+   selected the tenant's saved view (`Show` auto-expanded to `Open`), set `Show` back to `All`
+   without deselecting the view, and confirmed the thread list widened to include a
+   previously-hidden thread with no console errors.
+2. **AC-IVE-22 (saved view delete)** - deleting the CURRENTLY-SELECTED view left
+   `filters.viewId` pointing at the deleted row, 404ing the next thread-list fetch. Fixed:
+   `inbox-view-rail.tsx`'s deferred-delete `onCommitted` now falls back to the All rail entry
+   (same patch + `?view=` URL key as clicking All) when the committed view was selected. Live-
+   verified: selected the tenant's own saved view, deleted it via the deferred (no-confirm-dialog)
+   flow, waited past the 10s window, and confirmed the URL fell back to `?view=all` with no error
+   toast and no console errors - closing this report's own "Could not fully verify" gap on the
+   saved-view Delete action.
+3. **AC-IVE-22 (saved view delete, concurrency)** - a single `useDeferredAction` instance backs
+   every row in the rail; starting a second delete before the first settled silently overwrote the
+   hook's tracked park, so the FIRST toast's Undo would cancel the SECOND view. Fixed: `deleteView`
+   now settles (dismisses) any already-active delete toast before starting the next one. Covered by
+   a new vitest case driving the real park/settle/cancel sequence via `userEvent` against the mock
+   pending-actions service (`inbox-view-rail.test.tsx`). Not independently re-verified live in this
+   addendum (CLI round-trip latency between two agent-browser commands exceeded the production 10s
+   window on the attempt made, which only proves the single-countdown fallback path again rather
+   than the concurrency path) - the vitest case is the authoritative coverage for this finding.
+4. **Confirm-to-deferred swap pinned with tests** - `use-close-reason-list.test.tsx` now asserts
+   the close-reason delete action carries `deferred: { actionKey: 'close_reasons.delete' }` with no
+   `confirm`; `inbox-view-rail.test.tsx` gained a `describe` block (4 cases) driving the saved-view
+   delete end to end (parks via the pending-actions service, renders no `alertdialog`, falls back
+   to All only when the deleted view was selected, leaves an unrelated selection untouched).
+
+Nits also closed: dead `remove()` removed from `use-inbox-views.ts`/`use-close-reasons.ts` (no
+caller used it); `close-thread-dialog.tsx`'s Reason `<Label>` no longer carries a `htmlFor`
+pointing at nothing. Backend nit: `deferred_actions.py`'s `_inbox_views_delete` gained a comment
+documenting a latent cross-tenant-impersonation edge case (`requested_by_id` is the real actor, not
+the effective/impersonated user) - documented per the review's "resolve if the engine passes it,
+else document" guidance, since widening the shared `DeferredActionDef.execute` contract for one
+consumer was out of scope for this fix.
+
+**Commit:** `87dd467` - `fix(omnichannel): plan 27 review round 2 - view overrides for
+status/priority, selected-view delete fallback, single deferred countdown, swap tests` (frontend +
+one backend comment-only file; the branch tip immediately following `31988b4` above).
+
+**Suite counts after the fix (verbatim):**
+
+```
+Frontend: Test Files  268 passed (268)
+          Tests  2045 passed (2045)
+```
+
+```
+Backend (tests/test_omnichannel_deferred_actions.py only - full suite unaffected, comment-only
+change): 17 passed
+```

@@ -22,7 +22,6 @@ export interface UseCloseReasonsResult {
   refresh: () => Promise<void>;
   create: (input: CreateCloseReasonInput) => Promise<CloseReason>;
   update: (id: string, input: UpdateCloseReasonInput) => Promise<CloseReason>;
-  remove: (id: string) => Promise<boolean>;
 }
 
 export function useCloseReasons(workspaceId: string | null): UseCloseReasonsResult {
@@ -79,20 +78,5 @@ export function useCloseReasons(workspaceId: string | null): UseCloseReasonsResu
     [workspaceId, refresh],
   );
 
-  const remove = useCallback(
-    async (id: string) => {
-      if (!workspaceId) return false;
-      try {
-        await closeReasonService.remove(workspaceId, id);
-        await refresh();
-        return true;
-      } catch (error) {
-        toast.error(describe(error));
-        return false;
-      }
-    },
-    [workspaceId, refresh],
-  );
-
-  return { reasons, loading, refresh, create, update, remove };
+  return { reasons, loading, refresh, create, update };
 }

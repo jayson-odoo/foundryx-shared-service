@@ -371,6 +371,20 @@ def _inbox_views_delete(db: Session, tenant_id: str, entity_id: str, payload: di
     row = _inbox_view_row(db, tenant_id, entity_id)
     if row is None:
         raise ValueError("View no longer exists.")
+    # Review round 2 - `actor_user_id` here is `PendingAction.requested_by_id`,
+    # which `deferred_actions/service.py park()` stamps from `get_actor_user_id`
+    # - the REAL actor, never the impersonated target (impersonation must
+    # never attribute a parked action to the target). That is correct for
+    # audit, but it means a cross-tenant impersonator (a platform admin
+    # impersonating INTO this tenant) resolves to `actor is None` below even
+    # when the person who clicked Delete was the impersonated owner acting on
+    # their OWN view - `requires_manage` then falls back to True and the
+    # commit 409s "Missing permission" for an action the effective user was
+    # always allowed to take. The `execute` contract (`DeferredActionDef`) has
+    # no effective-user parameter to resolve this properly today; documenting
+    # rather than widening that shared contract for one consumer - a real fix
+    # threads the EFFECTIVE user id through park's payload (it is known at
+    # park time) so commit-time checks can use it instead of `requested_by_id`.
     actor = db.query(User).filter(User.id == actor_user_id, User.tenant_id == tenant_id).first()
     requires_manage = row.is_shared or actor is None or row.owner_user_id != actor.id
     if requires_manage and (actor is None or "inbox_views.manage" not in effective_permission_keys(actor)):

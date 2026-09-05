@@ -87,7 +87,10 @@ export function CloseThreadDialog({ open, onOpenChange, reasons, onClose }: Clos
         <DialogBody className="flex flex-col gap-4">
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="close-reason">Reason</Label>
+            {/* SearchSelect's trigger has no `id` to point a `htmlFor` at
+                (it's a button, not a native input) - `ariaLabel` on the
+                SearchSelect below already names it for assistive tech. */}
+            <Label>Reason</Label>
             <SearchSelect
               options={options}
               value={reasonId || null}

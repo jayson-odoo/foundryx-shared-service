@@ -78,7 +78,7 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingView, setEditingView] = useState<InboxView | null>(null);
 
-  const activeDeleteToastRef = useRef<{ id: string | number; name: string } | null>(null);
+  const activeDeleteToastRef = useRef<{ id: string | number; name: string; viewId: string } | null>(null);
   const settleActiveDelete = () => {
     const active = activeDeleteToastRef.current;
     if (active) dismissDeferredToast(active.id);
@@ -89,6 +89,14 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
     onCommitted: () => {
       const active = settleActiveDelete();
       toast.success(active ? deferredDoneMessage('Delete', 'inbox_view', 1) : 'Done.');
+      // Review round 2 (finding 2): the just-deleted view may still be the
+      // selected rail entry - the next thread-list fetch would 404 "View not
+      // found" against a viewId that no longer exists. Fall back to All
+      // exactly like clicking the All rail entry (same filter patch + URL
+      // key), never leave `filters.viewId` pointing at a deleted row.
+      if (active && filters.viewId === active.viewId) {
+        select({ kind: 'default', key: 'all', label: 'All' });
+      }
       void refresh();
     },
     onFailed: (error) => {
@@ -99,6 +107,15 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
   });
 
   const deleteView = async (view: InboxView) => {
+    // Review round 2 (finding 3): ONE `useDeferredAction` instance serves
+    // every row - `start()` overwrites `parkedRef`, so deleting view A then
+    // view B inside the grace window would leave A's toast live with an
+    // `onCancel` that (after the overwrite) actually cancels B. Settle any
+    // already-active delete's TOAST before starting the next one (matches
+    // the engine's one-visible-countdown model) - A's own pending action
+    // still resolves server-side on its own countdown, it is just no longer
+    // the one this toast/hook instance is tracking.
+    settleActiveDelete();
     const toastId = `pending-action-inbox-view-${view.id}`;
     try {
       const { commitAt, windowSeconds, parkedEntityIds } = await deferred.start('inbox_views.delete', {
@@ -106,7 +123,7 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
         entityId: view.id,
       });
       if (parkedEntityIds.length === 0) return;
-      activeDeleteToastRef.current = { id: toastId, name: view.name };
+      activeDeleteToastRef.current = { id: toastId, name: view.name, viewId: view.id };
       deferredToast({
         id: toastId,
         verb: presentContinuous('Delete'),

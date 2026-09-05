@@ -326,7 +326,7 @@ merge-rendering `{{trigger.record.id}}` into its `contactId` field - no new acti
     message}` - reopen then close again is the way to change the reason. `ThreadAlreadyClosed`
     (`services/conversation_service.py`), mapped in the router.
 
-### Review round 1 - frontend follow-ups (pending)
+### Review round 1 - frontend follow-ups (shipped in `7239856`)
 
 Backend-focused review round 1 (2026-09-06) also found frontend gaps, out of scope for the backend
 coder that closed the findings above - queued here for the next frontend pass on this branch:
@@ -343,3 +343,29 @@ coder that closed the findings above - queued here for the next frontend pass on
    bubbles, not activity-feed lines) - drop it or gate it behind an actual code path.
 12. **Shortcut success toast has no link.** AC-IVE-39 says "running one shows a success toast
     linking to the run"; the shipped toast does not link anywhere - wire it to the run's route.
+
+### Review round 2 (2026-09-06)
+
+1. **`threadQueryString` didn't send an explicit `status`/`priority` override alongside a saved
+   view.** `unreplied` already had the "always send while `viewId` is set" fix from round 1;
+   `status`/`priority` did not, so a view active + Show/Priority set to "All" silently fell back to
+   the view's stored filter (the backend treats an absent param as "use the view", explicit `ALL`
+   as "clear it" - `routers/conversations.py`). Fixed in `services/conversation-service.real.ts`;
+   covered in `conversation-service.real.test.ts`.
+2. **Deleting the currently-selected saved view left `filters.viewId` pointing at a deleted row** -
+   the next thread-list fetch 404'd "View not found". `inbox-view-rail.tsx`'s deferred-delete
+   `onCommitted` now falls back to the All rail entry (same filter patch + `?view=` URL key as
+   clicking All) when the committed view was the selected one.
+3. **One `useDeferredAction` instance served every row in the rail, so a second delete's `start()`
+   silently overwrote the first's tracked park** - the first toast's Undo would then cancel the
+   SECOND view. `deleteView` now settles (dismisses) any already-active delete toast before
+   starting the next one, matching the engine's one-visible-countdown model.
+4. **Confirmed the round-1 confirm-to-deferred swap with tests** -
+   `use-close-reason-list.test.tsx` pins the delete action's `deferred: { actionKey:
+   'close_reasons.delete' }` shape (no `confirm`); `inbox-view-rail.test.tsx` drives the real
+   delete flow (park via `useDeferredAction` against the mock pending-actions service, no
+   `alertdialog` rendered, the fallback-to-All and settle-on-second-start behaviors above).
+5. **Nits**: dropped the dead `remove()` from `use-inbox-views.ts`/`use-close-reasons.ts` (no
+   caller used it); `close-thread-dialog.tsx`'s Reason `<Label>` no longer carries a `htmlFor`
+   pointing at nothing (`SearchSelect`'s trigger is a button, not a native input - its own
+   `ariaLabel` already names it for assistive tech).
