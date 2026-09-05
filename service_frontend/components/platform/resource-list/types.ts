@@ -79,10 +79,12 @@ interface ResourceActionCommon<T> {
 export type ResourceAction<T> =
   | (ResourceActionCommon<T> & {
       /**
-       * When set, a confirm dialog gates the action - RESERVED for the two
-       * typed-confirmation carve-outs (module uninstall, tenant purge,
+       * When set, a confirm dialog gates the action - RESERVED for the
+       * disclosed typed-confirmation carve-outs (module uninstall, tenant
+       * purge, and Documents > Shares' BULK revoke - T5 fix round 2, S1;
        * D2/D13): every other destructive/reversible action uses `deferred`
-       * instead (the grace-window engine, sprint-4/23 T5).
+       * instead (the grace-window engine, sprint-4/23 T5). See
+       * `confirm-action-dialog.tsx` for the full disclosed list.
        */
       confirm?: {
         title: string;

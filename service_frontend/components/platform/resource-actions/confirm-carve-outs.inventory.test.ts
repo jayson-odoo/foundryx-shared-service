@@ -1,9 +1,10 @@
 /**
  * AC-DLA-43/47 (sprint-4/23, T5, D2/D13): `confirm:` (a `ResourceAction`'s
- * typed/plain confirm dialog) is RESERVED for the two typed-confirmation
- * carve-outs - module uninstall and tenant purge (irreversible hard
- * deletes) - PLUS the disclosed exceptions below. Every other action in the
- * app now carries `deferred` instead (the grace-window engine).
+ * typed/plain confirm dialog) is RESERVED for the typed-confirmation
+ * carve-outs - module uninstall, tenant purge (irreversible hard deletes),
+ * and Documents > Shares' BULK revoke - PLUS the disclosed exceptions below.
+ * Every other action in the app now carries `deferred` instead (the
+ * grace-window engine).
  *
  * T5 fix round 1 (item 15) migrated the remaining 17 files (closes
  * BL-SS-051): autocount task pause + entity re-fetch-history (genuinely
@@ -16,10 +17,18 @@
  * WhatsApp template delete, webhook endpoint disable/delete, quick-reply
  * delete, API-key revoke, workspace trash - registered in
  * `modules/omnichannel/deferred_actions.py`), and the email-log cancel
- * (`email_outbox.cancel`, core). `PENDING_MIGRATION` is now EMPTY - the
- * allowlist below is exactly the three typed-confirmation carve-outs
- * (BL-SS-052 tracks the tenant custom-status-edge fallback separately, as
- * a disclosed 4th CARVE_OUTS exception, not a migration gap).
+ * (`email_outbox.cancel`, core). `PENDING_MIGRATION` is now EMPTY.
+ *
+ * T5 fix round 2, S1: Documents > Shares' BULK revoke typed confirm was
+ * RESTORED (round 1 had migrated it to `deferred`, dropping a shipped
+ * sprint-3/05 UAT criterion, AC-OVERSIGHT-03/AC-UX-03) - the row-surface
+ * revoke on that page stays on `deferred`; only the bulk `ResourceAction`
+ * (`id: 'revoke-bulk'`) carries `confirm`. This is the FOURTH typed
+ * confirm.input site (module uninstall, tenant purge, tenant purge's typed
+ * slug/DELETE input, and now shares bulk-revoke) - `CARVE_OUTS` below gains
+ * the shares page as a fourth allowlisted FILE (BL-SS-052 still tracks the
+ * tenant custom-status-edge PLAIN-confirm fallback separately, its own
+ * disclosed exception within `use-tenant-actions.tsx`, not a migration gap).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -44,6 +53,7 @@ const CARVE_OUTS = [
   'components/platform/app-store/use-module-list-config.tsx',
   'app/(protected)/platform/tenants/components/use-tenant-actions.tsx',
   'app/(protected)/user-management/users/components/use-user-actions.tsx',
+  'app/(protected)/documents/shares/page.tsx',
 ];
 
 /**
@@ -119,10 +129,11 @@ describe('AC-DLA-43/47 confirm: is reserved to the carve-outs + the disclosed pe
     }
   });
 
-  it('the two AC-DLA-47 carve-outs (module uninstall, tenant purge) keep typed confirm.input', () => {
+  it('the typed-confirmation carve-outs (module uninstall, tenant purge, shares bulk revoke) keep typed confirm.input', () => {
     const typed = [
       'components/platform/app-store/use-module-list-config.tsx',
       'app/(protected)/platform/tenants/components/use-tenant-actions.tsx',
+      'app/(protected)/documents/shares/page.tsx',
     ];
     for (const file of typed) {
       const src = fs.readFileSync(path.join(repoRoot, file), 'utf8');
