@@ -11,7 +11,7 @@ import {
   Pencil,
   Trash2,
 } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { WorkflowListItem } from '@/types/workflows';
 import { workflowPublishIssue } from '@/lib/workflow-validation';
 import { useCan } from '@/hooks/use-can';
