@@ -74,6 +74,7 @@ export function NotificationsSheet({ trigger }: { trigger: ReactNode }) {
                         variant="ghost"
                         size="sm"
                         mode="icon"
+                        aria-label="Notification settings"
                         className="mb-1"
                       >
                         <Settings className="size-4.5!" />

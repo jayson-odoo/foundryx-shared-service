@@ -152,7 +152,7 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
                 />
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" mode="icon" size="sm">
+                    <Button variant="ghost" mode="icon" size="sm" aria-label="More options">
                       <MoreVertical className="size-4!" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -314,7 +314,7 @@ export function ChatSheet({ trigger }: { trigger: ReactNode }) {
               className="w-full ps-12 pe-24 py-4 h-auto"
             />
             <div className="absolute end-7 top-1/2 -translate-y-1/2 flex gap-2">
-              <Button size="sm" variant="ghost" mode="icon">
+              <Button size="sm" variant="ghost" mode="icon" aria-label="Attach a file">
                 <Upload className="size-4!" />
               </Button>
               <Button size="sm" variant="mono">

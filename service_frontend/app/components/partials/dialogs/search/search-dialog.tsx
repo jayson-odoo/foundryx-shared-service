@@ -257,7 +257,7 @@ export function SearchDialog({ trigger }: { trigger: ReactNode }) {
               type="text"
               name="query"
               value={searchInput}
-              className="ps-6 outline-none! ring-0! shadow-none! border-0"
+              className="ps-6 shadow-none! border-0"
               onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Search..."
             />
@@ -282,6 +282,7 @@ export function SearchDialog({ trigger }: { trigger: ReactNode }) {
                     variant="ghost"
                     mode="icon"
                     size="sm"
+                    aria-label="Search settings"
                     className="mb-1.5 -me-2"
                   >
                     <Settings />

@@ -72,6 +72,7 @@ function DataGridPagination(props: DataGridPaginationProps) {
           size="sm"
           mode="icon"
           variant="ghost"
+          aria-current={pageIndex === i ? 'page' : undefined}
           className={cn(btnBaseClasses, 'text-muted-foreground', {
             'bg-accent text-accent-foreground': pageIndex === i,
           })}
@@ -97,6 +98,7 @@ function DataGridPagination(props: DataGridPaginationProps) {
           mode="icon"
           className={btnBaseClasses}
           variant="ghost"
+          aria-label="Show earlier pages"
           onClick={() => table.setPageIndex(currentGroupStart - 1)}
         >
           ...
@@ -115,6 +117,7 @@ function DataGridPagination(props: DataGridPaginationProps) {
           variant="ghost"
           size="sm"
           mode="icon"
+          aria-label="Show later pages"
           onClick={() => table.setPageIndex(currentGroupEnd)}
         >
           ...

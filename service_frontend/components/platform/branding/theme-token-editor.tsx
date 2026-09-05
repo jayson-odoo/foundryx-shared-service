@@ -242,6 +242,7 @@ export function ThemeTokenEditor({
                         mode="icon"
                         variant="ghost"
                         className="size-7"
+                        aria-label={`Reset ${d.label} to default`}
                         title="Reset to default"
                         onClick={() => setValue(d.key, '')}
                       >

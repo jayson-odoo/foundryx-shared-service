@@ -135,6 +135,7 @@ export function Header() {
                       variant="ghost"
                       mode="icon"
                       shape="circle"
+                      aria-label="Search"
                       className="size-9 hover:bg-primary/10 hover:[&_svg]:text-primary"
                     >
                       <Search className="size-4.5!" />
@@ -149,6 +150,7 @@ export function Header() {
                     variant="ghost"
                     mode="icon"
                     shape="circle"
+                    aria-label="Notifications"
                     className="size-9 hover:bg-primary/10 hover:[&_svg]:text-primary"
                   >
                     <Bell className="size-4.5!" />
@@ -161,6 +163,7 @@ export function Header() {
                     variant="ghost"
                     mode="icon"
                     shape="circle"
+                    aria-label="Chat"
                     className="size-9 hover:bg-primary/10 hover:[&_svg]:text-primary"
                   >
                     <MessageCircleMore className="size-4.5!" />
@@ -173,6 +176,7 @@ export function Header() {
                     variant="ghost"
                     mode="icon"
                     shape="circle"
+                    aria-label="Apps"
                     className="size-9 hover:bg-primary/10 hover:[&_svg]:text-primary"
                   >
                     <LayoutGrid className="size-4.5!" />
