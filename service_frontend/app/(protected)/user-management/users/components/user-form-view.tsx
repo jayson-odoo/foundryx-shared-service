@@ -1,13 +1,11 @@
 'use client';
 
-import Link from 'next/link';
+import { notFound } from 'next/navigation';
 import { LoaderCircleIcon } from 'lucide-react';
 import { Container } from '@/components/common/container';
-import { Button } from '@/components/ui/button';
 import { Form } from '@/components/ui/form';
 import { ResourceForm } from '@/components/platform/resource-form';
 import { useUserForm } from './use-user-form';
-import { usersListPath } from './paths';
 
 export interface UserFormViewProps {
   userId?: string;
@@ -16,7 +14,7 @@ export interface UserFormViewProps {
 
 /** Loads + renders a user form (create when userId is absent). */
 export function UserFormView({ userId, initialEditing }: UserFormViewProps) {
-  const { config, form, isLoading, notFound } = useUserForm(userId, initialEditing);
+  const { config, form, isLoading, notFound: recordNotFound } = useUserForm(userId, initialEditing);
 
   if (isLoading) {
     return (
@@ -28,17 +26,11 @@ export function UserFormView({ userId, initialEditing }: UserFormViewProps) {
     );
   }
 
-  if (notFound || !config) {
-    return (
-      <Container width="fluid">
-        <div className="flex flex-col items-center gap-3 py-24 text-center">
-          <p className="text-sm font-medium">User not found.</p>
-          <Button variant="outline" size="sm" asChild>
-            <Link href={usersListPath}>Back to users</Link>
-          </Button>
-        </div>
-      </Container>
-    );
+  // AC-DLA-50 - an unknown user id renders the route's own not-found.tsx
+  // (INSIDE app/(protected)/layout.tsx, chrome intact) via Next's real
+  // notFound() boundary, not a hand-rolled inline message.
+  if (recordNotFound || !config) {
+    notFound();
   }
 
   return (
