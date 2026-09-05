@@ -86,3 +86,69 @@ example) is the ONE conversion done in this slice; the other 16 forms
 keep their inline pattern (already inside the shell trivially, just not
 via the new shared `not-found.tsx`) - tracked as a backlog sweep, not
 silently left inconsistent.
+
+## T6 - Fix round 1
+
+Stack unchanged: this worktree's own backend `:8003` (untouched - fix round
+1 is frontend-only), frontend prod build `:3002` (`pkill` only the pid whose
+`lsof cwd` is this worktree, `rm -rf .next && npm run build`,
+`nohup npx next start -p 3002 &`). `agent-browser --session t6fix1`, real
+clicks from `/`, login `demo@example.com` / `demo1234`.
+
+Items 1-4 (commits `3bb9700`/`427a112`/`6e8bb39`/`296148d`, done by the
+previous coder) are covered by the "T6 - Shells" section above; items 5/7-11
+are source/CSS/test-only fixes verified by the updated Vitest suites (no new
+screenshots needed per-item - the two captures below are the round's own
+evidence requirement, item 12).
+
+### Run log
+
+1. Confirmed `:8003` healthy, rebuilt and restarted `:3002` from this
+   worktree (`lsof -p <pid> | grep cwd` confirmed ownership before kill).
+2. **`fixround1-02-settings-general-skeleton-1280.png`** - logged in at
+   1280 (real form fill + submit), then from the Dashboard: real click to
+   expand the "Settings" sidebar section, immediately followed by a real
+   click on "General" with the screenshot fired back-to-back (no
+   intervening `wait`) to win the race against the client-side route
+   transition. Caught the neutral, generic `PageSkeleton` (item 1's fix -
+   two title bars + one card with header + a few content bars) rendering
+   in the content pane while the sidebar/header chrome stays mounted -
+   this is the group-root `loading.tsx` fallback, not a list/record-shaped
+   skeleton, matching item 1's ruling.
+3. Attempted `fixround1-01-press-375-crop.png` (a held root sidebar item at
+   375, cropped) and could not obtain it - see "Disclosed limitation"
+   below. Kept `01-sidebar-root-pointerdown-1280.png` /
+   `02-sidebar-child-pointerdown-1280.png` (already in this folder, from
+   the original T6 run) as the press proof per the fix brief's own
+   fallback instruction.
+4. Verified no console errors on `/settings/general` after the race
+   capture (`agent-browser errors`), closed the session.
+
+### Disclosed limitation - could not hold a pointer for the 375 press crop
+
+`agent-browser mouse move`/`mouse down`/`mouse up` (the same primitives
+`01`/`02` were captured with, on this same build, at 1280) produced NO
+observable press effect in this session, at EITHER 375 or 1280, with or
+without `set device` touch emulation:
+
+- `document.querySelector(':active')` returned `null` immediately after
+  `mouse down` at a coordinate independently confirmed correct via
+  `document.elementFromPoint` (the button/link IS the top hit-test result).
+- More surprising: a full `mouse down` + `mouse up` pair at that same
+  coordinate never fired a `click` at all - an accordion trigger's
+  `data-state` stayed `"closed"` through the whole sequence (checked
+  immediately after `down`, again after `up`, and again after an extra
+  500ms) where a real user press-release unquestionably toggles it. A
+  plain JS `.click()` on the same element (via `eval`) DOES toggle it
+  instantly - consistent with the pre-existing house lesson in `CLAUDE.md`
+  ("a browser-automation click helper on a freshly-mounted React button
+  sometimes doesn't fire the onClick... a native `.click()` via a JS-eval
+  bridge does; not a product bug") but here extended to raw CDP mouse
+  down/up as well, not just the `click` command.
+- This is an `agent-browser`/Chrome-for-Testing (152.0.7977.42) environment
+  quirk, not a product regression: item 5's fix is CSS-only (Tailwind
+  classes on `SheetContent`), unrelated to sidebar `:active` styling, and
+  the sidebar's own `PRESSED_CLASS` code is untouched by fix round 1.
+  Per the brief's own fallback instruction, this is disclosed rather than
+  faked, and `01`/`02` (1280, from the original T6 run, captured when this
+  same technique DID work) remain the press proof on file.
