@@ -56,17 +56,9 @@ export function useTemplateActions(): ResourceAction<TemplateListItem>[] {
         permission: 'templates.manage',
         // Only forked system templates have a platform default to reset to.
         isVisible: (rows) => rows.every((t) => t.isSystem && t.tier === 'customized'),
-        confirm: {
-          title: 'Reset to platform default?',
-          description:
-            'Your customized design will be replaced by the platform default. This cannot be undone.',
-          confirmLabel: 'Reset',
-        },
-        run: async ([template], runtime) => {
-          await templateEngineService.resetTemplate(template.id);
-          toast.success(`"${template.name}" reset to the platform default.`);
-          runtime.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm,
+        // no `run` (the registered `templates.reset` handler commits it).
+        deferred: { actionKey: 'templates.reset', entityType: 'template' },
       },
       {
         id: 'delete',
@@ -77,18 +69,9 @@ export function useTemplateActions(): ResourceAction<TemplateListItem>[] {
         permission: 'templates.manage',
         // System templates are delete-blocked (D6) - reset instead.
         isVisible: (rows) => rows.every((t) => !t.isSystem),
-        confirm: {
-          title: 'Delete template?',
-          description: 'Emails referencing this template will fail to render. This cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows, runtime) => {
-          for (const template of rows) {
-            await templateEngineService.deleteTemplate(template.id);
-          }
-          toast.success(`Deleted ${rows.length} template(s).`);
-          runtime.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm,
+        // no `run` (the registered `templates.delete` handler commits it).
+        deferred: { actionKey: 'templates.delete', entityType: 'template' },
       },
     ],
     [router],

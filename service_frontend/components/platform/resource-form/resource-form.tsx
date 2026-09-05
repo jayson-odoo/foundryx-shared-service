@@ -1,12 +1,16 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { usePathname, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, ChevronLeft, ChevronRight, Pencil } from 'lucide-react';
+import { toast } from 'sonner';
 import { MENU_SIDEBAR } from '@/config/menu.config';
 import { buildListNav } from '@/lib/list-context';
+import { deferredDoneMessage, presentContinuous } from '@/lib/deferred-verb';
+import { trackPendingEntities, untrackPendingEntities } from '@/lib/pending-entity-store';
 import { useCan } from '@/hooks/use-can';
+import { useDeferredAction } from '@/hooks/use-deferred-action';
 import { useMenu } from '@/hooks/use-menu';
 import { useTerminology } from '@/hooks/use-terminology';
 import {
@@ -23,6 +27,7 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { PageHeader } from '@/components/platform/page-header';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
+import { DeferredCountdown } from '@/components/platform/resource-actions/deferred-action-button';
 import { RecordNav } from './record-nav';
 import type { ResourceFormConfig } from './types';
 
@@ -63,6 +68,7 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
   const canEdit = !config.editPermission || can(config.editPermission);
   const pathname = usePathname() ?? '';
   const searchParams = useSearchParams();
+  const router = useRouter();
   const { getCurrentItem } = useMenu(pathname);
   const { label } = useTerminology();
 
@@ -140,21 +146,124 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
         from: recordId,
       });
 
+  // Deferred (grace-window) form-surface action (sprint-4/23 T5, AC-DLA-44):
+  // the gear's Delete/Archive/etc. no longer opens a confirm dialog - it
+  // parks on the server and the countdown REPLACES the primary area below.
+  // On commit the record is gone, so the page returns to the list (`ctx`/
+  // `i`/`from` preserved via the SAME `backHref` the record's own Back link
+  // already computes).
+  const deferredEntityTypeRef = useRef('');
+  const deferredLabelRef = useRef('');
+  // The entity type any of this record's registered deferred actions target -
+  // `watchFromMount`/`watch` below needs it to ask `current` about THIS
+  // record without waiting for a local click (AC-DLA-46, second-tab parity).
+  const watchEntityType = config.actions.find((a) => a.deferred)?.deferred?.entityType;
+  const deferred = useDeferredAction({
+    watchFromMount: Boolean(!config.embedded && recordId && watchEntityType),
+    watch:
+      !config.embedded && recordId && watchEntityType
+        ? { entityType: watchEntityType, entityId: recordId }
+        : undefined,
+    onCommitted: () => {
+      if (recordId) untrackPendingEntities([recordId]);
+      toast.success(deferredDoneMessage(deferredLabelRef.current || 'Delete', deferredEntityTypeRef.current, 1));
+      router.push(backHref ?? config.backHref);
+    },
+    onFailed: (error) => {
+      if (recordId) untrackPendingEntities([recordId]);
+      toast.error(error || 'The action failed.');
+    },
+    onCancelledElsewhere: () => {
+      if (recordId) untrackPendingEntities([recordId]);
+    },
+    onCancelFailed: (error) => {
+      toast.error(error || 'Could not cancel that action.');
+    },
+  });
+
+  const deferredPending = deferred.state.status === 'pending' ? deferred.state : null;
+  // A countdown picked up via `watch` (another tab / a re-mount) never ran
+  // through `onDeferredStart` - derive its label from the matching action's
+  // OWN registered key. Fix round 1 item 11: this used to MUTATE a ref
+  // directly in the render body and read that same ref back for the JSX
+  // below (worked, but a ref write during render is a footgun the moment
+  // something reads it before the write - StrictMode double-invokes render
+  // for exactly this class of bug). `useMemo` derives it PURELY, fresh every
+  // render, so the label the countdown displays is never stale-by-one-frame.
+  const derivedDeferred = useMemo(() => {
+    if (!deferredPending) return null;
+    const matched = config.actions.find((a) => a.deferred?.actionKey === deferredPending.actionKey);
+    if (!matched) return null;
+    const label =
+      typeof matched.label === 'function' ? matched.label(config.actionRows) : matched.label;
+    return { label, entityType: matched.deferred?.entityType ?? '' };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- config.actions/actionRows are stable per render pass; re-run only when the pending action itself changes
+  }, [deferredPending?.actionKey]);
+
+  // `onCommitted` fires AFTER `deferredPending` has already gone back to
+  // null (the poll that discovers the commit settles straight to `done`),
+  // so it needs the LAST known label/entityType - cached here (a ref write
+  // in an effect, not render, is fine: nothing reads it during rendering).
+  useLayoutEffect(() => {
+    if (!derivedDeferred) return;
+    deferredLabelRef.current = derivedDeferred.label;
+    deferredEntityTypeRef.current = derivedDeferred.entityType;
+  }, [derivedDeferred]);
+
   const gear =
-    !editing && config.actions.some((a) => a.surfaces.form) ? (
+    !editing && !deferredPending && config.actions.some((a) => a.surfaces.form) ? (
       <ActionMenu
         actions={config.actions}
         rows={config.actionRows}
+        getEntityId={config.getEntityId}
         runtime={{
           reload: config.onReload ?? (() => {}),
           backHref: backHref ?? undefined,
         }}
         surface="form"
         trigger="gear"
+        onDeferredStart={(action, entityIds) => {
+          // The label/entityType for THIS action reach the countdown via
+          // `derivedDeferred` above the moment `deferred.state` flips to
+          // `pending` (it re-derives from `config.actions` + the resulting
+          // `actionKey`) - no need to cache anything eagerly here.
+          const entityType = action.deferred!.entityType;
+          trackPendingEntities(entityIds);
+          // Fix round 1 item 5: mirror `action-menu.tsx`'s own try/catch - an
+          // unhandled park rejection here (a 409 "another action is already
+          // counting down") previously vanished silently, leaving the record
+          // dimmed with no countdown and no way to tell what happened.
+          deferred
+            .start(
+              action.deferred!.actionKey,
+              entityIds.map((id) => ({ entityType, entityId: id })),
+              action.deferred!.payload?.(config.actionRows),
+            )
+            .catch((error: unknown) => {
+              untrackPendingEntities(entityIds);
+              toast.error(error instanceof Error ? error.message : 'Could not start that action.');
+            });
+        }}
       />
     ) : null;
 
-  const primary = editing ? (
+  // The countdown REPLACES the primary area only (AC-DLA-44) - identity,
+  // gear-less record card and tabs stay put; no dialog, no full-page swap.
+  const primary = deferredPending ? (
+    <DeferredCountdown
+      verb={derivedDeferred ? presentContinuous(derivedDeferred.label) : 'Working'}
+      commitAt={deferredPending.commitAt}
+      windowSeconds={deferredPending.windowSeconds}
+      onCancel={() => {
+        // Fix round 1 item 9: `deferred.cancel()` now leaves `pending`
+        // SYNCHRONOUSLY (before its own network round-trip) - this whole
+        // countdown unmounts on the SAME render, so there is no window
+        // where a stale/disabled Cancel could be double-pressed.
+        void deferred.cancel();
+        if (recordId) untrackPendingEntities([recordId]);
+      }}
+    />
+  ) : editing ? (
     <>
       <Button
         variant="outline"

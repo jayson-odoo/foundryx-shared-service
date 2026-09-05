@@ -135,21 +135,15 @@ export function useWebhookList(
         permission: 'webhooks.manage',
         surfaces: { row: true },
         isVisible: (rows) => rows.length === 1 && rows[0]?.status === 'ACTIVE',
-        confirm: {
-          title: 'Disable endpoint?',
-          description: 'Deliveries to this endpoint pause until you re-enable it.',
-          confirmLabel: 'Disable',
-        },
-        run: async (rows, rt) => {
-          const [e] = rows;
-          if (!e) return;
-          try {
-            await whatsappWebhookService.disable(e.id);
-            toast.success('Endpoint disabled.');
-            rt.reload();
-          } catch {
-            toast.error('Could not disable the endpoint. Please retry.');
-          }
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `webhooks.set_active`
+        // handler commits it server-side); `payload.active=false` is the
+        // Disable direction (the Enable action above stays a plain, no-
+        // confirm run - it was never gated to begin with).
+        deferred: {
+          actionKey: 'webhooks.set_active',
+          entityType: 'webhook_endpoint',
+          payload: () => ({ active: false }),
         },
       },
       {
@@ -169,23 +163,9 @@ export function useWebhookList(
         permission: 'webhooks.manage',
         surfaces: { row: true },
         isVisible: (rows) => rows.length === 1,
-        confirm: {
-          title: 'Delete endpoint?',
-          description:
-            'Foundryx stops sending events to this endpoint immediately. This cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows, rt) => {
-          const [e] = rows;
-          if (!e) return;
-          try {
-            await whatsappWebhookService.remove(e.id);
-            toast.success('Endpoint deleted.');
-            rt.reload();
-          } catch {
-            toast.error('Could not delete the endpoint. Please retry.');
-          }
-        },
+        // Grace-window deferred action - no confirm, no `run` (the
+        // registered `webhooks.delete` handler commits it server-side).
+        deferred: { actionKey: 'webhooks.delete', entityType: 'webhook_endpoint' },
       },
     ],
     [onEdit, onRotate, onViewDeliveries],

@@ -75,6 +75,14 @@ def register_engine_entities() -> None:
 
     register_omnichannel_workflow_nodes()
 
+    # Deferred (grace-window) actions (sprint-4/23, T5 fix round 1, item 15):
+    # omnichannel's own confirm:-gated destructive actions register into the
+    # CORE grace-window engine here, the same way any other module extends a
+    # shared engine (status/rule/workflow) - never a fork.
+    from .deferred_actions import register_omnichannel_deferred_actions
+
+    register_omnichannel_deferred_actions()
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""

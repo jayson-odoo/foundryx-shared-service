@@ -23,6 +23,9 @@ const stop = (e: React.MouseEvent) => e.stopPropagation();
 
 export interface BrListHandlers {
   onCreate: () => void;
+  /** No longer called by this config (fix round 1, T5, item 15 - Delete is
+   * `deferred`, the registered handler commits it server-side). Kept in the
+   * signature so the caller needs no change. */
   onDelete: (br: BusinessRequirement) => Promise<void>;
 }
 
@@ -36,7 +39,7 @@ export function useBrListConfig(
   brs: BusinessRequirement[],
   handlers: BrListHandlers,
 ): ResourceListConfig<BusinessRequirement> {
-  const { onCreate, onDelete } = handlers;
+  const { onCreate } = handlers;
 
   return useMemo<ResourceListConfig<BusinessRequirement>>(() => {
     const actions: ResourceAction<BusinessRequirement>[] = [
@@ -46,14 +49,13 @@ export function useBrListConfig(
         icon: Trash2,
         tone: 'destructive',
         surfaces: { row: true, form: true, bulk: true },
-        confirm: {
-          title: 'Delete business requirement',
-          description:
-            'This permanently removes the BR and its idea links. This action cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows) => {
-          for (const r of rows) await onDelete(r);
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered
+        // `ideation_business_requirements.delete` handler commits it
+        // server-side).
+        deferred: {
+          actionKey: 'ideation_business_requirements.delete',
+          entityType: 'ideation_business_requirement',
         },
       },
     ];
@@ -184,5 +186,5 @@ export function useBrListConfig(
       ],
       actions,
     };
-  }, [brs, onCreate, onDelete]);
+  }, [brs, onCreate]);
 }

@@ -45,17 +45,40 @@ export default function DocumentSharesPage() {
         label: 'Revoke',
         icon: Slash,
         tone: 'destructive',
-        surfaces: { row: true, bulk: true },
+        // Row surface ONLY - the bulk surface below is the typed-confirm
+        // carve-out (fix round 2, S1). Grace-window deferred action
+        // (sprint-4/23, T5, D2/D13) - no confirm dialog, no `run` (the
+        // registered `document_shares.revoke` handler commits it
+        // server-side).
+        surfaces: { row: true },
+        permission: 'documents.share',
+        deferred: { actionKey: 'document_shares.revoke', entityType: 'document_share' },
+      },
+      {
+        // Fix round 2, S1: the bulk revoke's typed confirmation is a
+        // SHIPPED acceptance criterion (sprint-3/05 UAT AC-OVERSIGHT-03/
+        // AC-UX-03) - round 1 dropped it migrating this action to
+        // `deferred`, but a bulk selection has no per-row surface to host a
+        // countdown, and bulk-revoking many links at once is exactly the
+        // kind of "big blast radius" action D2/D13's own carve-out language
+        // anticipates. Restored as the FOURTH typed-confirmation carve-out
+        // (see `confirm-action-dialog.tsx` + `confirm-carve-outs.inventory.
+        // test.ts`) - bulk only; the row action above stays on the
+        // grace-window model.
+        id: 'revoke-bulk',
+        label: 'Revoke',
+        icon: Slash,
+        tone: 'destructive',
+        surfaces: { bulk: true },
         permission: 'documents.share',
         confirm: {
           title: 'Revoke link(s)?',
           description:
             'Revoked links stop working immediately. This keeps the audit trail.',
           confirmLabel: 'Revoke',
-          // Bulk revoke = typed confirm (AC-OVERSIGHT-03 / AC-UX-03).
           input: {
-            expected: (rows) => (rows.length > 1 ? 'REVOKE' : ''),
-            hint: (rows) => (rows.length > 1 ? 'Type REVOKE to confirm' : ''),
+            expected: () => 'REVOKE',
+            hint: () => 'Type REVOKE to confirm',
           },
         },
         run: async (rows, runtime) => {

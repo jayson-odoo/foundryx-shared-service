@@ -2242,3 +2242,658 @@ worktree via `lsof -p <pid> | grep cwd` before kill).
 
 **Verdict: T4 fix round 2 DONE.** All 5 findings resolved and gate green: `npm test` 197/197 files,
 1657/1657 tests, exit 0; zero eslint warnings on every touched file.
+## T5 - Deferred actions (the grace-window engine)
+
+Branch `sprint-4/23-T5-deferred-actions` off `sprint-4/23-design-language-alignment` (integration
+at `9d73de4`). Own stack for this backend slice: Postgres db `foundryx_service_s23`, backend
+`:8003`, frontend prod build `:3002` - see `documentation/plans/sprint-4/23-evidence/T5/README.md`
+for the exact commands + evidence run log.
+
+### Backend engine (AC-DLA-37..41)
+
+New package `app/deferred_actions/` (`registry.py`, `service.py`, `handlers.py`), model
+`app/models/pending_action.py` (`PendingAction`, partial unique index
+`uq_pending_actions_one_per_record` on `(tenant_id, entity_type, entity_id) WHERE status =
+'pending'`), migration `65458ac6203e` (also adds `tenant_settings.deferred_destructive_seconds` /
+`deferred_reversible_seconds`, both nullable - NULL = defaults 10/5, no backfill needed for
+existing tenants). Router `app/api/v1/pending_actions.py` mounted at `/api/v1/pending-actions`
+(park/cancel/current), schemas `app/schemas/pending_action.py`. Beat task
+`pending_actions.commit_due` wired into `app/workflow_engine/worker.py`'s existing 60s
+`beat_schedule` (same host as the other sweeps). Settings surfaced through the existing
+`app/services/catalog_service.py TenantSettingsService` + `app/schemas/catalog.py` (no new
+router - `settings.read`/`settings.update` already gate `/settings/general`, no new permission).
+
+**16 deferred actions registered** (`app/deferred_actions/handlers.py`), covering the 10 the plan
+names explicitly plus 6 more found live-necessary (document-share revoke's typed confirm had to
+go somewhere; template reset, connection activate, and the tenant lifecycle's three well-known
+edges needed their own keys to leave `confirm:` behind honestly rather than silently):
+
+| Key | Entity type | Permission | Window | Calls |
+|---|---|---|---|---|
+| `users.trash` | user | `users.delete` | destructive | `UserService.trash` |
+| `roles.delete` | role | `roles.delete` | destructive | `RoleService.delete` |
+| `workflows.delete` | workflow | `workflows.manage` | destructive | `WorkflowService.remove` |
+| `forms.delete` | form | `forms.manage` | destructive | `FormService.delete` |
+| `templates.delete` | template | `templates.manage` | destructive | `TemplateService.delete` |
+| `templates.reset` | template | `templates.manage` | destructive | `TemplateService.reset` |
+| `connections.delete` | connection | `integrations.manage` | destructive | `IntegrationService.delete` |
+| `connections.activate` | connection | `integrations.manage` | reversible | `IntegrationService.set_active` |
+| `ai_agents.delete` | ai_agent | `ai_agents.manage` | destructive | `AgentService.delete` |
+| `ai_skills.delete` | ai_skill | `ai_agents.manage` | destructive | `SkillService.delete` |
+| `documents.trash` | document_file | `documents.manage` | destructive | `DocumentService.delete` (single file) |
+| `products.delete` | product | `products.delete` | destructive | `ProductService.delete` |
+| `document_shares.revoke` | document_share | `documents.share` | destructive | `ShareService.revoke` |
+| `tenants.archive` | tenant | `tenants.archive` | reversible | `TenantService.archive` (platform-only) |
+| `tenants.suspend` | tenant | `tenants.suspend` | reversible | `TenantService.suspend` (platform-only) |
+| `tenants.reactivate` | tenant | `tenants.suspend` | reversible | `TenantService.reactivate` (platform-only) |
+
+Note on naming: the plan's prose said `workflows.trash`/`forms.trash`/`tenants.archive` as
+shorthand for "the deferred action on that entity" - the actual site guarded by `confirm:` for
+workflows/forms is the ARCHIVED-view hard delete (`WorkflowService.remove`/`FormService.delete`),
+so the registered keys are `workflows.delete`/`forms.delete` to match what they actually do.
+
+**Tests** (`tests/test_deferred_actions.py`, 18 cases): registry duplicate/unknown-key loud
+errors, all 10 first-party keys registered, park 202 + idempotent re-park + 409 different-key +
+400 unknown-key + 403 missing-permission, cancel before/after (409 after, entity committed
+first), `current` lazy-commit (with and without a prior park), cross-tenant cancel 404, sweeper
+isolation (one handler failure never blocks or corrupts the rest of the sweep, failed row's
+entity untouched), window-seconds read from `tenant_settings`, impersonation actor recorded as
+the REAL admin (`get_actor_user_id`, not the impersonated target), `users.trash` end to end
+(row trashed after lazy-commit, restorable via `/users/restore`). Full backend suite: **2720
+passed, 1 skipped, 18 deselected** (Postgres, `foundryx_service_s23`) - zero regressions. Also
+fixed a pre-existing storage-key drift-test false-positive this slice's own migration tripped
+(`pending_actions.action_key` looks like a storage key to the `*_key` heuristic but is a
+registry key with no blob behind it - added to `app/storage_migration/registry.py`'s documented
+`_NON_STORAGE_KEY_COLUMNS` exclude-set with a reason, both drift tests green).
+
+**CORS fix** (T3 finding, folded into this slice per the brief): `app/config.py` `cors_origins`/
+`cors_origin_regex` widened from `300[0-2]` to `300[0-5]` so parallel worktree builds (each on
+their own frontend port talking to their own backend port) aren't silently CORS-blocked.
+
+### Frontend engine (AC-DLA-42..47)
+
+Service trio `services/pending-actions-service.{ts,mock,real}.ts` (mock swapped to `.real` -
+this is the shipped boundary, the mock exists only for `hooks/use-deferred-action.test.ts`'s
+deterministic fake-timer driving). `hooks/use-deferred-action.ts` (state machine `idle |
+pending{actionKey,commitAt,windowSeconds,count} | committing | done | failed`, `start`/`cancel`/
+`reset`, `dimEntityIds`, `watchFromMount`/`watch` for second-tab parity + a `focus` listener).
+`components/platform/resource-actions/deferred-action-button.tsx` (`DeferredCountdown` - `scaleX`
+fill armed ONCE via a double-rAF keyed off `commitAt`, 1000ms label tick, `motion-reduce:
+transition-none`, no Escape handler) + `deferred-toast.tsx` (sonner `toast.custom`, duration =
+window + 8s safety margin). `lib/pending-entity-store.ts` (module-level pub/sub the row/bulk
+surfaces publish into) + `data-grid-table.tsx`'s new `useRowPendingDim` (imperative `data-pending`
+DOM toggling, matching `useRestoreReturnedRow`'s existing pattern - the class carrying
+`data-[pending=true]:opacity-50` was ALREADY present from T4, left as a forward-reference).
+`ResourceAction.deferred?: {actionKey, entityType, window}` (added `entityType` beyond the
+AC-DLA-43 shape - disclosed below). `ActionMenu`/`BulkActions` run a deferred action through the
+hook + toast themselves (row/bulk surfaces, self-contained); `ResourceForm` lifts it via
+`onDeferredStart` so the countdown replaces the record card's PRIMARY area instead of a toast
+(AC-DLA-44) and now ALSO watches its own record from mount (second-tab parity fix, see below).
+Settings > General gained a "Deferred actions" card (`app/(protected)/settings/general/page.tsx`
+`DeferredActionsSettingsForm`) with the two 1-60 fields.
+
+**Disclosed deviations from the literal AC text** (all reasoned, none silent):
+- **AC-DLA-43's `deferred` shape omits `entityType`**; it was added (`{actionKey, entityType,
+  window}`) because the frontend must supply `entityType` in the park POST body, and co-locating
+  it on the action definition (where `actionKey` already lives) avoids threading a brand-new
+  required prop through every `ActionMenu`/`BulkActions`/`ResourceForm` call site across the
+  whole app for this one slice.
+- **AC-DLA-47's "the two allowed importers" grew a third, disclosed exception**: Users'
+  "Impersonate" keeps its plain (non-typed) confirm - D2's grace-window model ("commit after Ns
+  unless Cancelled") has no sensible meaning for starting an impersonation session (there is
+  nothing to "undo" server-side the way a delete/archive can be). `confirm-carve-outs.
+  inventory.test.ts` pins exactly these 3 files, no more.
+- **AC-DLA-43's "zero other `confirm:` remains"**: this T5 pass migrated the 12 files / 16
+  registered actions above. **17 files remain on `confirm:`** (AutoCount task/entity delete,
+  ideation BR/idea/embed-connection delete, jobs abort, six omnichannel deletes, document-types
+  delete, email-log purge) - each needs its own backend `DeferredActionDef` before it can move,
+  which is a full module-by-module pass beyond this slice's remaining budget. Tracked as
+  **BL-SS-051** with the exact file list; `confirm-carve-outs.inventory.test.ts`'s
+  `PENDING_MIGRATION` array pins the baseline so the count can only shrink, never silently grow.
+  A fourth disclosed carve-out (`use-tenant-actions.tsx`'s custom-status-edge fallback) is
+  BL-SS-052.
+
+**Live-caught bug + fix** (see the evidence README for the full narrative): `useDeferredAction`'s
+poll only checked the FIRST entity in a bulk park, so under eager dev (no beat process) a 3-row
+bulk delete committed only 1 of 3 rows - the other two stayed parked forever server-side. Fixed
+to poll every entity in the batch; regression-pinned
+(`hooks/use-deferred-action.test.ts`, "bulk commit polls EVERY entity, not just the first") and
+re-verified live.
+
+**Tests** (all new, all green): `hooks/use-deferred-action.test.ts` (9 - idle/pending/done state
+machine, cancel, bulk park + dim, second-tab watch-from-mount, the bulk-poll regression, reset),
+`components/platform/resource-actions/deferred-action-button.test.tsx` (7 - label text, bulk
+count+noun copy, 1000ms tick, the double-rAF ONE-time arm, reduced-motion live-fraction, Cancel
+enabled/disabled, Escape is a no-op), `deferred-toast.test.tsx` (3), `data-grid-table.pending-dim.
+test.tsx` (4 - AC-DLA-45 row/bulk dim via the store, opacity class present),
+`pending-actions-service.test.ts` (7 - real service hits the 3 routes exactly, mock idempotent/
+conflict/lazy-commit/cancel), `resource-form.deferred.test.tsx` (3 - AC-DLA-44 countdown replaces
+primary no dialog, Cancel restores, AC-DLA-46 second-tab pickup on mount with the right verb),
+`app/(protected)/settings/general/page.test.tsx` (3 - fields render pre-filled, out-of-range
+rejected client-side before saving, valid values reach the service),
+`confirm-carve-outs.inventory.test.ts` (4). One pre-existing test updated
+(`use-products-list-config.test.tsx` - Delete is now `deferred`, not `confirm`).
+
+### Gate
+
+`npx eslint` on every touched file: 0 errors. `npm test`: **213/213 files, 1757/1757 tests**
+(up from 213/1755 before this slice's 2 fixes added tests). `rm -rf .next && npm run build`:
+green (two real TypeScript failures caught and fixed mid-slice - `start()`'s empty-entities
+early-return needed to throw instead of returning `undefined` against its typed Promise, and two
+`for...of` spreads over a `Set`/`Map.entries()` needed `Array.from` per the house lint rule).
+`pytest -q` (Postgres, `foundryx_service_s23`): **2720 passed, 1 skipped, 18 deselected** (0
+failed - the 2 storage-key drift-test failures this migration introduced were fixed the same
+slice, see above).
+
+### Definition of Done checklist (T5)
+
+1. Every AC-DLA-37..47 verified live (`agent-browser`, real clicks, timestamped users, own
+   isolated stack) and/or by a new test - see the AC table in
+   `documentation/plans/sprint-4/23-evidence/T5/README.md`; one real bug (bulk-poll) caught DURING
+   live verification and regression-pinned, exactly the T4 precedent.
+2. `npx eslint` (0 errors), `npm test` (213/213, 1757/1757), `npm run build` all green. `pytest -q`
+   2720/2720 passed (Postgres).
+3. `rm -rf .next && npm run build` before every live-verify pass in this run (twice - once before
+   the initial evidence pass, once after the bulk-poll fix); port ownership confirmed via
+   `lsof -p <pid> | grep cwd` before every kill (two collisions with OTHER worktrees' processes on
+   :8002/:3002 were correctly left untouched, a different port used instead).
+4. **No mock left behind** - `pending-actions-service.ts` exports the `.real` impl; the `.mock`
+   is tagged and used only by Vitest. **No backfill needed** - `tenant_settings`'s two new columns
+   are nullable, NULL reads as the coded defaults (10/5), verified by
+   `test_default_settings_have_no_row_needed`. **No new permission** - every registered action
+   reuses its entity's existing permission (table above). Scope reduction on the confirm→deferred
+   migration is FLAGGED (BL-SS-051/052), not silently dropped.
+5. Verified from the user's perspective, real sidebar clicks, at 375 AND 1280, against the real
+   backend on a fresh prod build (`documentation/plans/sprint-4/23-evidence/T5/README.md`).
+
+**Verdict: T5 (Deferred actions) DONE**, with two disclosed, tracked scope reductions
+(BL-SS-051 - 17 `confirm:` sites still to migrate; BL-SS-052 - a fully general per-row-payload
+tenant-transition deferred action). All AC-DLA-37..47 pass either fully or via a disclosed,
+reasoned, tracked deviation - none silently skipped.
+
+## T5 - Fix round 1
+
+16 findings from the T5 review, all addressed on the same branch
+(`sprint-4/23-T5-deferred-actions`, worktree `.claude/worktrees/s23`). Full mapping + evidence:
+`documentation/plans/sprint-4/23-evidence/T5/README.md` ("T5 - Fix round 1" section).
+
+**Security blockers (1-3):**
+1. `cancel`/`current` were authenticated-only - any tenant user could veto or watch another
+   action's countdown. Both now resolve the parked action's OWN permission fresh from the
+   actor's roles (the same path `park` uses, plus the platform double-lock); `current` 404s
+   uniformly without it, `cancel` 403s. Any teammate HOLDING the permission may still cancel
+   (D2's "anyone with the permission may veto").
+2. A `cancelled` outcome (a teammate cancelling from ANOTHER tab) fell through to
+   `settle('done', ...)` - a success toast + navigation for a record that was never deleted.
+   `pollOnce` now short-circuits to `idle` via a new `onCancelledElsewhere` callback;
+   `onFailed` now actually fires for a genuine failure (previously unobserved).
+3. Bulk `start()` used `Promise.all` - one park rejecting (a 409 mid-batch) orphaned every row
+   that DID succeed. Switched to `Promise.allSettled`; `start()` returns
+   `{parkedEntityIds, failedCount}` so the caller tracks the successes and surfaces ONE toast
+   naming the rest.
+
+**Should-fix (4-7):**
+4. `commit_one` now claims `pending`→`committing` before running the handler (atomic,
+   `WHERE status='pending'`), so the beat sweep racing the frontend's lazy poll can never run a
+   handler twice; a stuck `committing` row (worker crash) is reaped `failed` by the next sweep
+   after a grace window. Migration `b7c1d2e3f4a5` adds `committing` to the status CHECK.
+5. `resource-form.tsx`'s `onDeferredStart` now has a `.catch` on `deferred.start()`, mirroring
+   `action-menu.tsx` (a park rejection used to vanish silently).
+6. Every handler resolves the acting user via `UserRepository.get_by_id(id, tenant_id, ...)`
+   instead of an unscoped `db.get(User, id)` (the polymorphic-target_id rule).
+7. `DeferredActionDef` gained a mandatory `exists(db, tenant_id, entity_id)` check wired to each
+   entity's own repository - `park()` 404s a target that's already gone. The three handlers
+   whose service call is a bulk-shaped `UPDATE ... WHERE id IN (...)` that silently no-ops on a
+   missing row (`users.trash`, `documents.trash`, `document_shares.revoke`) now assert the row
+   still exists immediately before calling the service, so a target that vanishes DURING the
+   window fails the commit loudly.
+
+**Animation blockers (8-10):**
+8. The countdown fill snapped `scaleX(0)`→`scaleX(1)` untransitioned at lapse (reads as a
+   glitch/reset at the exact moment the destructive action fires). Now holds `scaleX(0)`; the
+   track's colour swap (destructive→muted) animates via a class-level transition.
+9. Cancel gave no feedback until the round trip resolved. `cancel()` now leaves `pending`
+   SYNCHRONOUSLY (before its network call) - the countdown unmounts on the SAME click. The
+   dead `cancelling` prop on `DeferredCountdown` (never passed by any caller) is deleted rather
+   than wired to a button that no longer exists by the time it would matter.
+10. `remainingMs` for the armed transition was measured in the effect body (before either rAF
+    frame ran) - a hidden-tab throttle could arm a near-full-duration transition against an
+    already-mostly-elapsed clock. Now measured inside the second frame.
+
+**Nits (11-13):**
+11. `deferredVerbRef` was mutated directly during render and read back in the same render's
+    JSX. Replaced with a pure `useMemo` (`derivedDeferred`, fresh every render); a
+    `useLayoutEffect` caches the label/entityType ONLY for the later commit toast (never read
+    during render, so that ref write is fine).
+12. `ResourceAction<T>` is now a discriminated union - a `deferred` action carries no `run` (the
+    shell never calls it) and no `confirm`; a `confirm`/plain action requires `run`.
+    `deferred.window` (set at all 13 call sites, read nowhere - the server owns the window) is
+    deleted from the type; every migrated action's dead `run:` body is deleted (11 files);
+    `use-tenant-actions.tsx`'s conditional confirm-or-deferred action is restructured into two
+    fully separate branches.
+13. The three `toast.success('Done.')` sites now read `deferredDoneMessage(label, entityType,
+    count)` - "User trashed.", "3 users trashed.", "Role deleted." - composed from the label's
+    LEADING verb only (never the rest of a multi-word label like "Delete role", which would
+    otherwise double the noun).
+
+**Remaining migration (15, closes BL-SS-051):** all 17 `confirm:` sites migrated.
+- Core: `document_types.delete`, `jobs.abort`/`jobs.complete`, `email_outbox.cancel` (added to
+  `app/deferred_actions/handlers.py`).
+- `modules/ideation/deferred_actions.py` (new, registered from `bootstrap.register_engine_entities`):
+  `ideation_ideas.archive`/`.delete`, `ideation_business_requirements.delete`/`.unlink_idea`,
+  `ideation_embed_connections.delete`/`.set_active` (6 keys).
+- `modules/omnichannel/deferred_actions.py` (new, same registration pattern):
+  `channels.disconnect`/`.delete`, `wa_templates.delete`, `webhooks.set_active`/`.delete`,
+  `quick_replies.delete`, `api_keys.revoke`, `workspaces.trash` (8 keys).
+- AutoCount's 2 sites (`task-editor-view.tsx` Pause, `use-entities-list-config.tsx` Re-fetch
+  history) were genuinely non-destructive re-sync/pause actions - `confirm` DROPPED entirely
+  (no `deferred` needed), matching the item's own rule.
+- `confirm-carve-outs.inventory.test.ts`'s `PENDING_MIGRATION` is now `[]` (asserted empty by a
+  new test); the allowlist is exactly the three typed-confirmation carve-outs (module uninstall,
+  tenant purge, Users' Impersonate) plus the pre-existing BL-SS-052 tenant custom-status-edge
+  fallback. **BL-SS-051 closed** (row removed from the backlog); BL-SS-052 kept.
+- A new `ResourceListConfig.getEntityId`/`ActionMenu.onDeferredCommitted` seam was added for
+  the ideation BR<->idea unlink (a join row with no id of its own the frontend row type
+  carries) - documented in `components/platform/resource-list/types.ts` and
+  `action-menu.tsx`.
+
+**Item 14 (Settings provider):** confirmed NOT needed - the server's `windowSeconds` (read from
+`tenant_settings` at park time) is authoritative; Settings > General keeps fetching its own
+values directly via the existing `GET/PUT /settings/general` pair. No new provider added.
+
+**Gate (item 16):** `pytest -q` (Postgres, `foundryx_service_s23`) **2748 passed, 1 skipped, 18
+deselected** (0 failed - up from 2727/1/18 before this round's new tests). `npx eslint .`: 0
+errors (3 pre-existing, unrelated warnings). `npm test`: **214/214 files, 1770/1770 tests**.
+`rm -rf .next && npm run build`: green. Both `:8003`/`:3002` restarted from THIS worktree's own
+processes only (`lsof -p <pid> | grep cwd` confirmed before every kill). Evidence:
+`documentation/plans/sprint-4/23-evidence/T5/README.md` "T5 - Fix round 1" (17 new
+`fixround1-NN-*` screenshots/captures at 1280px + 375px covering: viewer-cannot-cancel via raw
+API capture, two-tab cancel-to-idle, bulk-with-one-409 (two dimmed rows + one error toast + the
+eventual "2 users trashed." commit toast), the optimistic-Cancel record view, a migrated
+omnichannel delete (workspace trash) counting down, and a newly-registered core action
+(`document_types.delete`) counting down at both widths).
+
+**Disclosed for this round:** ideation and AutoCount are not installed on the `default` tenant
+in this worktree's DB, so their deferred actions were verified via passing backend integration
+tests (`test_ideation_deferred_actions.py` x8, through the real HTTP API) plus the updated
+frontend unit tests, rather than live agent-browser clicks against that tenant - installing
+either module purely to screenshot it was judged a bigger tenant-state change than the gap
+justified. No AutoCount "delete" action exists in this migration's scope (both its sites were
+confirm-drops, not deferred deletes) - a second core action (`document_types.delete`)
+substitutes as the "second engine counting down" evidence alongside omnichannel.
+
+**Verdict: T5 fix round 1 DONE.** All 16 items addressed with tests/evidence; PENDING_MIGRATION
+ends empty; no regressions (pytest 2748/2748, vitest 1770/1770, build green).
+
+## T5 - Fix round 2
+
+15 items from the T5 fix-round-2 review, all addressed on the same branch
+(`sprint-4/23-T5-deferred-actions`, worktree `.claude/worktrees/s23`). Full mapping + evidence:
+`documentation/plans/sprint-4/23-evidence/T5/README.md` ("T5 - Fix round 2" section). Per-item
+commit shas below (`git log --oneline`).
+
+**B1 (blocker, `abf...`->`34661b0`) - a beat-driven commit read as success mid-flight.**
+`_last_outcome` excluded only `pending`, so a row CLAIMED by another caller (the beat sweep, or
+a racing `current` poll from a second tab) but not yet settled surfaced via `lastOutcome` with
+`status='committing'` - the frontend treated anything but `cancelled`/`failed` as success and
+toasted + navigated away before the handler even finished (and even if it then failed).
+- `service.py`: `_last_outcome` now excludes `committing` too; a new `_committing_for` lookup
+  surfaces a claimed row via the `pending` slot (a new `status` field on `PendingActionOut`
+  distinguishes `pending` vs `committing` - the smaller wire change vs a new response field,
+  documented in the schema); `lastOutcome` stays `null` while a row is `committing`.
+- `types/pending-actions.ts`: `PendingActionRowStatus = 'pending' | 'committing'`,
+  `PendingActionOutcomeStatus` gained `'committing'` (defensive - `current()` never returns it
+  there, but `pollOnce` treats it as non-terminal if it ever does).
+- `hooks/use-deferred-action.ts` `pollOnce`: a `pending.status === 'committing'` response sets
+  `{status: 'committing', count}` and keeps polling - no toast, no navigation, no settle.
+- Tests: `test_current_never_reports_a_committing_row_as_settled` (API),
+  `test_current_service_never_returns_committing_as_last_outcome` (service) - both red before
+  the fix (asserted `assert 'committed' == 'pending'`-shaped failures pre-fix); frontend "a
+  `committing` current() response stays non-terminal, then settles on the next terminal
+  response" (confirmed red via a temporary revert - `state.status` was `'pending'` not
+  `'committing'`, then `done` prematurely).
+
+**S1 (ruling, AC-DLA-43/47) - restored the typed confirm on Documents > Shares BULK revoke.**
+Round 1 had migrated the WHOLE `document_shares.revoke` action to `deferred`, dropping a shipped
+sprint-3/05 UAT criterion (AC-OVERSIGHT-03/AC-UX-03: bulk revoke requires typing `REVOKE`).
+**RULING:** the ROW-surface revoke stays `deferred` (grace window, unchanged); the BULK surface
+becomes a SEPARATE `ResourceAction` (`id: 'revoke-bulk'`) carrying `confirm` + typed `input` -
+the FOURTH typed-confirmation carve-out. Named in `confirm-action-dialog.tsx`'s doc comment, the
+`CARVE_OUTS` allowlist, and the "keep typed confirm.input" test in
+`confirm-carve-outs.inventory.test.ts`.
+
+**S2 (ruling) - migrated module Deactivate to `deferred`; tightened the carve-outs inventory.**
+`use-module-list-config.tsx`'s Deactivate survived round 1's sweep as a PLAIN (non-typed)
+`confirm` because the old inventory only checked "does this allowlisted file contain a
+`confirm:` at all", not which shape. Deactivate is fully reversible (Reactivate is one click,
+data + grants kept) - exactly D2's shape.
+- **Storefront (own-tenant) Deactivate -> `deferred`**: new core `DeferredActionDef`
+  `tenant_modules.deactivate` (`app/deferred_actions/handlers.py`, permission
+  `app_store.deactivate`, `window='reversible'`, `execute` calls the existing
+  `AppStoreService.deactivate`, `exists` checks the tenant's `TenantModule.status == ACTIVE`).
+- **Operator console Deactivate (cross-tenant) stays a disclosed PLAIN-confirm exception** - it
+  acts on ANOTHER tenant's module state, outside the deferred-actions engine's own-tenant scope
+  (`PendingAction.tenant_id` is the ACTOR's JWT tenant, not an arbitrary target); named in
+  `DISCLOSED_PLAIN_CONFIRMS`.
+- `StoreModule` has no `.id` (keyed by `name`) - `ResourceListConfig.getEntityId` /
+  `ResourceFormConfig.getEntityId` (new field) threaded through the row-cell, card-view, and
+  form-gear `ActionMenu`/`BulkActions` call sites (`resource-list.tsx`, `resource-form.tsx`,
+  `use-module-list-config.tsx`, `module-detail.tsx`).
+- `confirm-carve-outs.inventory.test.ts` rewritten to brace-match every `confirm: { ... }`
+  block per file (`extractConfirmBlocks`) and assert each is either typed (`input:` present) or
+  a NAMED, counted `DISCLOSED_PLAIN_CONFIRMS` entry - a second, unaccounted-for plain confirm in
+  an already-allowlisted file now fails loudly.
+- Tests: `test_tenant_modules_deactivate_registered_and_commits`,
+  `test_tenant_modules_deactivate_park_against_an_already_inactive_module_is_404` (backend);
+  the tightened inventory test itself (7 tests, all green).
+
+**S3 - workspace trash asserts existence before commit.**
+`WorkspaceService.trash([id])` is bulk-shaped (`get_many` loop) and silently no-ops on a missing
+row - a workspace deleted between park and commit previously reported `committed` untouched.
+`_workspaces_trash` now asserts `_workspace_exists` immediately before the service call
+(mirrors `_channels_disconnect`/`_channels_delete` in the same file). Test
+`test_workspaces_trash_fails_when_the_workspace_is_gone_by_commit_time` confirmed red
+(`assert 'committed' == 'failed'`) before the guard, green after.
+
+**S4 - deferred actions gated by module activation.**
+`DeferredActionDef` carried no `module` tag and `park()`/`current()`/`cancel()` never checked
+module activation - a tenant with a module DEACTIVATED (not merely never-installed; grants
+survive deactivate) could still park/observe/commit that module's actions via a stale role
+grant. Added `module: str = 'core'` (mirrors every other catalog's `active_modules`/`is_visible`
+convention); tagged every `omnichannel`/`ideation` registration; `PendingActionService` gates
+`park`/`current`/`cancel` via `_module_active`. Test
+`test_park_rejected_when_the_module_is_inactive_for_the_tenant` (provisions a dedicated tenant,
+installs omnichannel, parks+cancels while ACTIVE (202), deactivates, parks again -> 403,
+confirmed red via a temporary revert: `assert 202 == 403`).
+
+**S5 - `current()` now gates BEFORE the lazy commit.**
+`_commit_if_due` ran on line one of `current()`, before the permission/module check - a caller
+with NO permission on the parked action could trigger the handler just by polling an overdue
+row before ever being told 404. Reordered: resolve the raw pending/committing/last-outcome rows
+WITHOUT committing, run `_may_act_on` first, only lazy-commit once confirmed allowed. Test
+`test_current_without_permission_never_commits_an_overdue_row` (an unauthorized viewer polls an
+overdue row -> 404, row status still `pending` in the DB, `_WIDGET_STATE` untouched; the
+permission-holder's own poll still lazily commits, unaffected) - confirmed red pre-fix
+(`assert 'committed' == 'pending'`).
+
+**S6 - `ENTITY_NOUNS` covers every registered `entityType`.**
+Was 12 of the 25+ types actually used by `deferred:` configs across the app; the rest leaked the
+raw registry key into a commit toast ("Ideation_idea deleted."). Added `document_type`,
+`background_job`, `email_outbox`, `channel`, `workspace`, `wa_template`, `webhook_endpoint`,
+`quick_reply`, `api_key`, `ideation_idea`, `ideation_business_requirement`,
+`ideation_br_idea_link`, `ideation_embed_connection`, and S2's new `tenant_module`. New
+`lib/deferred-verb.entity-nouns.inventory.test.ts` walks every `deferred: { entityType }` config
+in the app (brace-matched, mirrors the carve-outs inventory) and fails if any type has no
+`ENTITY_NOUNS` entry - confirmed it catches a real gap (temporarily reverting `ENTITY_NOUNS`
+threw on the very first lookup).
+
+**N1 - requester-name resolution moved out of the router.**
+`app/api/v1/pending_actions.py` ran a tenant-scoped `UserRepository` query directly (`db` access
+in a router) to resolve `requestedByName`. Moved to `PendingActionService.requester_name(row)`;
+the router just merges the string onto the validated schema. Test
+`test_current_reports_the_requester_name` (regression - no prior test asserted this field at
+all).
+
+**N2 - `onFailed` test added.** Landed inside the B1 commit (adjacent code, same test file
+edit): "a `failed` outcome calls onFailed, not onCommitted" - asserts `onFailed` fires with the
+error text, `onCommitted` never does, state settles `failed`.
+
+**N3 - `current()` errors no longer strand the hook in `pending` forever.**
+`if (results.some(r => r === null)) return;` left the hook stuck showing a countdown against a
+window that had already lapsed, with no way out, once `current()` started erroring (e.g. a 404
+after the actor's permission or module was revoked mid-countdown - S4/S5's own new failure
+modes, closing the loop). `parkedRef` now also carries `commitAt`; a post-lapse error increments
+`lapsedErrorPollsRef` and settles `failed` ("Could not confirm the action's outcome.") after 2
+grace polls; a PRE-lapse error (a blip while still counting down) is tolerated silently. Two new
+tests (grace-then-fail; blip-while-counting-down-never-fails), the first confirmed red pre-fix
+(stuck on `'pending'` past its own grace-and-a-half window).
+
+**N4 - Alembic `b7c1d2e3f4a5` downgrade reassigns `committing` rows first.**
+Re-adding the pre-`committing` 4-value CHECK would otherwise fail outright on a live DB carrying
+any row genuinely `committing` (the real beat-sweep-claim state, not a rare edge case).
+`downgrade()` now runs `UPDATE pending_actions SET status='failed', error_text=COALESCE(...)
+WHERE status='committing'` first - a plain `UPDATE`, so a no-op on a DB that never reached this
+revision, Postgres/SQLite-safe. **Smoke-tested against the live `foundryx_service_s23`
+Postgres DB**: inserted a `committing` row via `psql`, ran `alembic downgrade -1` (succeeded;
+row reassigned to `failed` with the marker text), ran `alembic upgrade head` (succeeded cleanly),
+deleted the test row.
+
+**N5 - backlog note.** `documents.trash` is registered (`app/deferred_actions/handlers.py`) with
+no frontend caller (the document drive is a bespoke explorer, not on the Resource shell) -
+`BL-SS-053` added to `documentation/backlogs/backlog.md`.
+
+**AC ids touched by this round's rulings (integration into the UAC file is the main session's
+job, noted here per the brief):**
+- **S1 ruling** touches **AC-DLA-43** (deferred is the default model) and **AC-DLA-47** (the
+  typed-confirm carve-out list) - the carve-out count goes from 2 named + 1 disclosed to 3
+  named + 1 disclosed (Users' Impersonate).
+- **S2 ruling** touches **AC-DLA-43** (module Deactivate joins the deferred model) and
+  **AC-DLA-47** indirectly (the operator-console Deactivate becomes a newly-disclosed plain-
+  confirm exception, distinct from the typed carve-outs).
+
+### Gate (real numbers)
+
+- **Backend**: `DATABASE_URL=postgresql://foundryx:foundryx@localhost:5432/foundryx_service_s23
+  .venv/bin/python -m pytest -q` -> **2756 passed, 1 skipped, 18 deselected** (0 failed; up from
+  2748/1/18 at the end of fix round 1 - +8 net new tests this round after some consolidation).
+- **Frontend lint**: `npx eslint .` -> **0 errors** (3 pre-existing unrelated warnings, unchanged
+  from round 1).
+- **Frontend tests**: `npx vitest run` -> **215 files / 1778 tests passed** (up from 214/1770).
+- **Build**: `rm -rf .next && npm run build` -> green, no errors.
+- **Servers**: `:8003` (uvicorn, `foundryx_service_s23`) and `:3002` (`next start`) both killed
+  and restarted from THIS worktree's own processes only - `lsof -p <pid> | grep cwd` confirmed
+  ownership before every kill, for both the accidental first `npm start` (which ignored `PORT=`
+  and grabbed :3001 - `next start -p 3001` is hardcoded in `package.json`'s `start` script, so
+  `:3002` was started directly via `npx next start -p 3002` instead) and the final processes.
+- **Migration smoke test**: `alembic downgrade -1` / `upgrade head` round-trip against the live
+  `foundryx_service_s23` Postgres DB (N4), described above - DB left at `head` afterward.
+
+### Evidence
+
+`documentation/plans/sprint-4/23-evidence/T5/fixround2-NN-*` (this session's real `agent-browser
+--session t5fix2` clicks, from `/`, both 375px and 1280px where applicable):
+1. `fixround2-01-app-store-omnichannel-menu-1280.png` - App Store, Omnichannel card's "…" menu
+   (Deactivate/Uninstall) before the click.
+2. `fixround2-02-omnichannel-deactivate-countdown-1280.png` - "Deactivating in 4s / Cancel" toast
+   after clicking Deactivate (S2's storefront `deferred` migration - no confirm dialog).
+3. `fixround2-03-omnichannel-inactive-committed-1280.png` - card shows "Inactive" after the
+   window lapses.
+4. `fixround2-04-omnichannel-reactivated-1280.png` - Reactivate is one click, card back to
+   "Active" (module state fully restored on the `default` tenant).
+5. `fixround2-05-omnichannel-deactivate-countdown-375.png` - the same countdown toast at 375px,
+   row visibly dimmed.
+6. `fixround2-06-shares-bulk-revoke-typed-confirm-1280.png` - Documents > Shares, 2 rows
+   selected, bulk "Revoke" -> "Revoke link(s)? / Type REVOKE to confirm" dialog (S1's restored
+   typed carve-out), Revoke button disabled pre-type.
+7. `fixround2-07-shares-bulk-revoke-typed-enabled-1280.png` - same dialog with `REVOKE` typed,
+   Revoke button now enabled.
+8. `fixround2-08-shares-bulk-revoked-result-1280.png` - both rows gone from the Active view
+   (immediate, not deferred - the typed-confirm surface commits synchronously).
+9. `fixround2-09-shares-bulk-revoke-typed-confirm-375.png` - the same typed dialog at 375px
+   (buttons stack, full-width - confirms the mobile reflow).
+10. `fixround2-10-doctype-delete-countdown-1280.png` - a freshly-created Document type's
+    "Deleting in 9s / Cancel" countdown (existing `document_types.delete` deferred action,
+    unaffected by this round - used as the S6 noun-mapping vehicle).
+11. `fixround2-11-doctype-deleted-toast-1280.png` - the commit toast reading **"Document type
+    deleted."** (S6's added `document_type` -> "document type" noun mapping; previously would
+    have leaked "Document_type deleted.").
+12. `fixround2-12-doctype-deleted-toast-375.png` - the same toast at 375px.
+
+**On "don't install modules to screenshot":** omnichannel was ALREADY installed+active on the
+`default` tenant (used unchanged, then restored to Active) - no new module install was needed
+for evidence (a) or (c). Evidence (c) used Document types (core, already reachable) rather than
+an omnichannel workspace specifically, since it needed a type with NO prior `ENTITY_NOUNS`
+mapping and a fast, disposable create/delete cycle; `document_type` is exactly such a type and
+was already reachable without any module install. S4's module-gating scenario (an
+omnichannel-scoped key rejected while inactive) is covered by
+`test_park_rejected_when_the_module_is_inactive_for_the_tenant` (a DEDICATED provisioned tenant,
+never the shared `default` one) rather than a click-through, since it requires deactivating a
+real installed module mid-flow purely to prove a 403 - a backend test states the contract more
+precisely than a screenshot of an error toast would.
+
+### Definition-of-Done checklist (mirrors fix round 1's gate)
+
+- [x] Every item has a failing-test-first commit (or, for N4/S3, a red-confirmed-via-temporary-
+      revert regression test) before the fix, per-item.
+- [x] No router does DB/service work directly (N1 fixed the one violation found).
+- [x] No new permission without a grant path (S2's `tenant_modules.deactivate` reuses the
+      EXISTING `app_store.deactivate` permission the immediate endpoint already gates - no new
+      CSV row needed).
+- [x] Every repository/service query stays tenant-scoped (S4's module gate reads
+      `active_modules(db, tenant_id)` from the ACTOR's own tenant, never client input; S3's
+      existence guard reuses the already tenant-scoped `_workspace_exists`).
+- [x] Migration is Postgres-live-smoke-tested AND SQLite-safe (N4 - plain `UPDATE`, no dialect-
+      specific syntax).
+- [x] Frontend: no raw fetch in a component (S2's `getEntityId` threading stays inside the
+      existing hook/service boundary); no `any` types introduced; Metronic utilities only.
+- [x] Responsive: every UI-facing item's evidence includes a 375px capture (S1, S2's countdown
+      shape unchanged from round 1, S6's toast).
+- [x] Foolproof-UI: S1's typed-confirm carve-out matches the exact shipped UAT copy
+      (AC-OVERSIGHT-03/AC-UX-03), no new hint copy added anywhere.
+- [x] White-label: no "Foundryx" string introduced in tenant-facing copy this round.
+- [x] Backend suite green (2756/2757), frontend suite green (1778/1778), lint 0 errors, build
+      green, both servers restarted from this worktree's own processes.
+- [x] Worktree left clean - every item committed individually (14 commits, see shas above),
+      docs/backlog/evidence committed alongside.
+
+**Verdict: T5 fix round 2 DONE.** All 15 items (B1, S1-S6, N1-N5) addressed with tests and/or
+live evidence; two rulings (S1, S2) applied and their AC touchpoints noted for the main
+session's UAC integration; no regressions (pytest 2756 vs 2748 before, vitest 1778 vs 1770
+before, build green); worktree clean.
+
+## T5 - Fix round 3
+
+5 items from the T5 fix-round-3 review, all addressed on the same branch
+(`sprint-4/23-T5-deferred-actions`, worktree `.claude/worktrees/s23`). No frontend logic
+changes were needed this round (item 4 is a doc-comment-only edit), so :3002/the frontend
+build was left untouched per the brief - no new screenshots. Per-item commit shas below
+(`git log --oneline`).
+
+**Item 1 - module gate at commit time (`9252c99`).** `commit_one` (`service.py:357`) and the
+beat sweep `commit_due` (`:446`) executed a handler even if the action's module had since been
+deactivated for the tenant - only the lazy `current()`/`park()` paths (`_may_act_on`) were
+gated. **Ruling (as briefed):** in `commit_one`, right after the atomic `pending`->`committing`
+claim and before ever calling the handler, re-check `_module_active(row.tenant_id, action_def)`;
+if inactive, settle the row `failed` with `error_text = "Module '<name>' is not active"` and
+never run the handler. Covers both the direct `commit_one` path and the sweep (`commit_due`
+calls `commit_one` per overdue row, so one fix covers both).
+- Tests (`test_omnichannel_deferred_actions.py`, both confirmed red before the fix - `assert
+  'committed' == 'failed'`): `test_commit_settles_failed_when_the_module_is_deactivated_during_the_window`
+  (park `workspaces.trash` while omnichannel ACTIVE, deactivate mid-window, call `commit_one`
+  directly - row settles `failed`, the exact error text, workspace untouched);
+  `test_commit_due_settles_failed_when_the_module_is_deactivated_during_the_window` (same
+  scenario via `commit_due()` - the beat sweep path specifically).
+- `_module_active`'s doc comment (`service.py:154-163`) updated to describe park/current/cancel
+  AND commit as all gated (it previously only described park/current/cancel, from fix round 2).
+
+**Item 2 - `current()` denied-caller comment corrected to match the shipped 404 contract
+(`4d41c31`).** `service.py:211-216`'s comment (written fix round 1, item 1) claimed a caller
+lacking the permission gets a "uniform empty response" - the code has always raised
+`ActionNotFound`, which the router (`app/api/v1/pending_actions.py`) translates to a 404,
+matching the amended AC-DLA-40/43 contract (a denied caller 404s; only an AUTHORIZED caller
+with nothing pending gets the empty-but-200 `{pending: null, lastOutcome: null}` body).
+Comment-only fix, behaviour unchanged. Pinned both sides of the contract with an explicit
+status-code assertion: `test_current_with_nothing_parked` (`tests/test_deferred_actions.py`)
+now asserts `res.status_code == 200` for the authorized-nothing-pending case, alongside the
+pre-existing `test_current_without_the_actions_permission_is_uniform_404` for the denied case
+(404) - both tests already existed in substance; this pins the exact status code the comment
+now describes.
+
+**Item 3 - S4 coverage for `current`/`cancel` after module deactivation (`293ec5a`).** Fix
+round 2, S4 gated `park`/`current`/`cancel` via `_may_act_on`/`_module_active`, but the only
+regression test (`test_park_rejected_when_the_module_is_inactive_for_the_tenant`) covered only
+the `park` 403. Added `test_current_and_cancel_rejected_when_the_module_is_inactive_for_the_tenant`
+(dedicated tenant, installs omnichannel, parks `workspaces.trash` while ACTIVE, confirms
+`current` 200s with the pending row and cancel would work, deactivates the module, then asserts
+`GET .../current` -> **404** (matches the S4/S5 `ActionNotFound` contract, same as a denied
+caller) and `POST .../cancel` -> **403** (matches `park`'s own `PermissionDenied` -> 403
+contract - the id itself already resolved via the prior 200, so there's nothing left for a 404
+to hide). No code change was needed - the gate already existed; this closes the coverage gap.
+
+**Item 4 - `confirm-action-dialog.tsx` doc comment rewritten (`eb32d1b`).** The comment still
+described exactly three typed carve-out files "PLUS one disclosed fourth exception
+(Impersonate)" - stale since fix round 2 added a fourth typed `confirm.input` SITE (tenant
+purge gained a bulk-`DELETE`-typed input alongside its existing single-row typed-slug one, so
+tenant purge alone carries two typed sites) and a THIRD disclosed plain-confirm exception
+(operator-console module Deactivate, S2). Rewritten to: name the four typed sites across the
+three carve-out files (module uninstall; tenant purge - single typed-slug AND bulk typed-DELETE;
+Documents > Shares bulk revoke); and point at `DISCLOSED_PLAIN_CONFIRMS` inside
+`confirm-carve-outs.inventory.test.ts` as the SINGLE SOURCE OF TRUTH for the three disclosed
+plain-confirm exceptions (Impersonate, tenant custom-status-edge fallback, operator-console
+module Deactivate) rather than re-listing them in the dialog's comment where they can drift
+again (exactly what happened here). Comment-only; `npx eslint` clean.
+
+**Item 5 - backlog perf note, no code change (`9b0974c`).** `service.py:161`'s `_module_active`
+runs `active_modules(db, tenant_id)` on every `park`/`current`/`cancel`/`commit_one` call - the
+frontend's lazy `current()` poll re-queries the tenant's active-module set on every tick. Added
+`BL-SS-054` to `documentation/backlogs/backlog.md` (next free id after BL-SS-053) tracking the
+memoise/cache follow-up, gated on the poll window ever tightening past ~60s aggregate load.
+
+### Gate (real numbers)
+
+- **Backend**: `DATABASE_URL=postgresql://foundryx:foundryx@localhost:5432/foundryx_service_s23
+  .venv/bin/python -m pytest -q` -> **2759 passed, 1 skipped, 18 deselected** (0 failed; up from
+  2756/1/18 at the end of fix round 2 - +3 net new tests this round, all in
+  `test_omnichannel_deferred_actions.py`: the two item-1 commit-gate tests + the one item-3
+  current/cancel coverage test). Full run took ~34 minutes wall-clock on this shared, heavily
+  loaded machine (Postgres connections cycling steadily throughout - confirmed via
+  `pg_stat_activity`, not a hang); the targeted files re-ran in isolation afterward in 39s (46
+  passed, `tests/test_deferred_actions.py` + `tests/test_omnichannel_deferred_actions.py`).
+- **Frontend lint**: `npx eslint .` -> **0 errors** (3 pre-existing unrelated warnings, unchanged
+  from rounds 1/2 - `idea-attachment-preview-dialog.tsx`, `use-connections-list-config.tsx`,
+  `share-browser.tsx`).
+- **Frontend tests**: `npx vitest run` -> **215 files / 1778 tests passed** on a clean re-run
+  (unchanged from round 2's final count - no frontend test additions this round, only the
+  round-2-noted `test_current_reports_the_requester_name` etc. stay as-is). A first full run
+  under the same heavy host load transiently failed 2 unrelated timing-sensitive tests
+  (`resource-form.deferred.test.tsx`'s countdown-text assertion off by 1s, `timezone-card.test.tsx`
+  hitting a 5000ms timeout) - both pass individually and pass on a clean full re-run; neither
+  touches deferred-actions code from this round, confirmed pre-existing flakiness under load, not
+  a regression.
+- **Build**: not rebuilt this round - the brief's own scope note ("No frontend logic changes are
+  needed (only a comment), so do NOT rebuild :3002") explicitly excludes it; the last verified
+  build remains fix round 2's green `rm -rf .next && npm run build`.
+- **Servers**: not restarted this round per the brief (:8003 backend only needs a restart on a
+  backend CODE change - `service.py`'s `commit_one`/`_module_active` comment change is covered by
+  the pytest suite, not live-server behaviour that needed re-verifying via `agent-browser`; no
+  route/schema/permission change shipped this round). :3002 was left untouched entirely.
+
+### Evidence
+
+**No new screenshots this round** - every item is backend-test-verified (items 1, 3) or a
+comment-only change with no observable UI/behaviour delta (items 2, 4, 5). The brief explicitly
+scoped this round to backend TDD + one frontend comment + one backlog row, with no live-verify
+step required; the fix round 1/2 evidence directories (`documentation/plans/sprint-4/23-evidence/T5/`)
+remain the last agent-browser-recorded proof for the deferred-actions UI surfaces, unaffected by
+this round's changes.
+
+### Definition-of-Done checklist (mirrors fix rounds 1/2's gate)
+
+- [x] Every backend item has a failing-test-first commit before the fix (items 1) or an added
+      regression test confirmed to already pass under the existing contract (item 3); items 2/4/5
+      are comment/backlog-only with no test-affecting behaviour to red/green.
+- [x] No router does DB/service work directly - no router touched this round.
+- [x] No new permission without a grant path - no new permission introduced this round.
+- [x] Every repository/service query stays tenant-scoped - item 1's `_module_active` check reads
+      `row.tenant_id` (the row's OWN tenant, set at park time from the actor's JWT tenant), never
+      client input.
+- [x] No migration this round.
+- [x] Frontend: item 4's comment edit introduces no code change, no `any` types, no raw fetch;
+      `npx eslint` clean on the touched file.
+- [x] Responsive: no UI surface changed this round - nothing to capture at 375px/1280px.
+- [x] Foolproof-UI: no UI copy changed this round (item 1's `error_text` is a backend audit
+      field, never rendered to the tenant as instructional/hint copy).
+- [x] White-label: no "Foundryx" string introduced.
+- [x] Backend suite green (2759 passed, 1 skipped, 18 deselected, 0 failed), frontend suite
+      green on a clean run (1778/1778), lint 0 errors; build/servers correctly left untouched
+      per the brief's explicit scope.
+- [x] Worktree left clean - every item committed individually (5 commits, see shas above),
+      docs/backlog committed alongside.
+
+**Verdict: T5 fix round 3 DONE.** All 5 items (1-5) addressed - item 1 with a failing-test-first
+backend fix (module gate now covers commit as well as park/current/cancel), item 2 with a
+corrected comment + a pinned status-code assertion, item 3 with new regression coverage (no
+code change needed - the S4 gate already covered current/cancel), item 4 with a corrected,
+drift-resistant doc comment pointing at the single source of truth, item 5 with a backlog entry
+for a deferred perf follow-up; no regressions (pytest 2759 vs 2756 before, vitest 1778 vs 1778
+before once re-run clean, build/lint unaffected); worktree clean.

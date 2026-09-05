@@ -592,6 +592,7 @@ export function ResourceList<T extends object>({
                     actions={config.actions}
                     rows={selectedRows}
                     runtime={runtime}
+                    getEntityId={config.getEntityId}
                   />
                   <Button
                     variant="outline"
@@ -740,6 +741,7 @@ export function ResourceList<T extends object>({
                           <ActionMenu
                             actions={config.actions}
                             rows={[row]}
+                            getEntityId={config.getEntityId}
                             runtime={runtime}
                             surface="row"
                           />

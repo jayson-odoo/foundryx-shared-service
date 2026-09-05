@@ -34,25 +34,12 @@ export function useEmailLogActions(): ResourceAction<EmailLogListItem>[] {
         surfaces: { row: true, bulk: true, form: true },
         permission: 'emails.manage',
         isVisible: (rows) => rows.every((r) => r.status === 'PENDING'),
-        confirm: {
-          title: 'Cancel pending email?',
-          description:
-            'The email will not be sent. If the dispatcher already claimed it, cancelling fails - it was too late.',
-          confirmLabel: 'Cancel email',
-        },
-        run: async (rows, runtime) => {
-          let cancelled = 0;
-          for (const row of rows) {
-            try {
-              await emailLogService.cancel(row.id);
-              cancelled += 1;
-            } catch (e) {
-              toast.error(e instanceof Error ? e.message : 'Cancel failed.');
-            }
-          }
-          if (cancelled) toast.success(`Cancelled ${cancelled} email(s).`);
-          runtime.reload();
-        },
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `email_outbox.cancel`
+        // handler commits it server-side; a cancelled email stays retryable,
+        // so this is the reversible window - matching D14's "cancelled rows
+        // retryable" contract).
+        deferred: { actionKey: 'email_outbox.cancel', entityType: 'email_outbox' },
       },
     ],
     [],

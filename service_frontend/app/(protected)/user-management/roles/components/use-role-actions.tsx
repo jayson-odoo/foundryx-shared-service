@@ -3,11 +3,9 @@
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Pencil, Trash2 } from 'lucide-react';
-import { toast } from 'sonner';
 import type { ResourceAction } from '@/components/platform/resource-list';
-import { roleService } from '@/services/role-service';
 import type { RoleListItem } from '@/types/role';
-import { roleFormHref, rolesListPath } from './paths';
+import { roleFormHref } from './paths';
 
 /**
  * The Role action registry (plan 03 §7.5). Edit (row) + Delete (row/form). Delete
@@ -39,22 +37,12 @@ export function useRoleActions(): ResourceAction<RoleListItem>[] {
         surfaces: { row: true, bulk: true, form: true },
         // Hidden entirely when any selected row is a system role.
         isVisible: (rows) => rows.length > 0 && rows.every((r) => !r.isSystem),
-        confirm: {
-          title: 'Delete this role?',
-          description:
-            'Users currently assigned to it will have their role unset. This action cannot be undone.',
-          confirmLabel: 'Delete role',
-        },
-        run: async (rows, rt) => {
-          await Promise.all(rows.map((r) => roleService.remove(r.id)));
-          toast.success(`Deleted ${rows.length} role(s).`);
-          rt.reload();
-          // Form surface (AC-DLA-30 fix round 1): rt.backHref already carries
-          // this record's own ctx/i/from, so leaving via delete restores the
-          // exact list state (page/sort/filter) the user came from - not just
-          // page one. Row/bulk surfaces never set backHref and stay put.
-          router.push(rt.backHref ?? rolesListPath);
-        },
+        // Grace-window deferred action (sprint-4/23, T5, D2) - no confirm
+        // dialog, no `run` (the registered `roles.delete` handler commits it
+        // server-side); the form surface's commit navigates via
+        // ResourceForm's own `backHref`-aware handler (AC-DLA-30), row/bulk
+        // stay put + reload.
+        deferred: { actionKey: 'roles.delete', entityType: 'role' },
       },
     ];
   }, [router]);

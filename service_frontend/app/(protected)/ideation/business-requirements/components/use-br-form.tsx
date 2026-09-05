@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { FileText, GitBranch, History, Lightbulb, MessageSquare, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
@@ -52,7 +51,6 @@ export function useBrForm(
   initialEditing: boolean,
   initialTab?: string,
 ): UseBrFormResult {
-  const router = useRouter();
   const [br, setBr] = useState<BusinessRequirementDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -188,18 +186,13 @@ export function useBrForm(
         icon: Trash2,
         tone: 'destructive',
         surfaces: { form: true },
-        confirm: {
-          title: 'Delete business requirement',
-          description:
-            'This permanently removes the BR and its idea links. This action cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async (_rows, rt) => {
-          await businessRequirementService.remove(brId);
-          toast.success('Business requirement deleted.');
-          // Carry the record's own ctx/i/from back to the list (AC-DLA-30
-          // fix round 2) instead of a bare list path.
-          router.push(rt.backHref ?? BR_PATH);
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run`. ResourceForm's own onCommitted already
+        // carries the record's ctx/i/from back to the list (AC-DLA-30),
+        // matching what this `run` used to do by hand.
+        deferred: {
+          actionKey: 'ideation_business_requirements.delete',
+          entityType: 'ideation_business_requirement',
         },
       },
     ];
@@ -290,7 +283,6 @@ export function useBrForm(
     onGrillGenerated,
     onIdeasChanged,
     onSave,
-    router,
     serverFieldErrors,
     fetchRecordAt,
     buildRecordHref,

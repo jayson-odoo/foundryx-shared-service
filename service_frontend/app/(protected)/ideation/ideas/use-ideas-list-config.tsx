@@ -80,15 +80,19 @@ export function useIdeasListConfig(
     onCreate: () => void;
     onVote: (idea: Idea, dir: 'up' | 'down') => void;
     onAdvance: (idea: Idea) => Promise<void>;
+    /** No longer called by this config (fix round 1, T5, item 15 - Archive is
+     * `deferred`, the registered handler commits it server-side). Kept in
+     * the signature so the caller needs no change. */
     onArchive: (idea: Idea) => Promise<void>;
     onRestore: (idea: Idea) => Promise<void>;
+    /** No longer called by this config (fix round 1, T5, item 15 - Delete is
+     * `deferred`). Kept in the signature so the caller needs no change. */
     onDelete: (idea: Idea) => Promise<void>;
     onReorder: (orderedIds: string[]) => void | Promise<void>;
     onPromote: (ideas: Idea[]) => Promise<void>;
   },
 ): ResourceListConfig<Idea> {
-  const { onCreate, onVote, onAdvance, onArchive, onRestore, onDelete, onReorder, onPromote } =
-    handlers;
+  const { onCreate, onVote, onAdvance, onRestore, onReorder, onPromote } = handlers;
   const { paths, mode } = useIdeationRuntime();
 
   return useMemo<ResourceListConfig<Idea>>(() => {
@@ -133,14 +137,11 @@ export function useIdeasListConfig(
         icon: Archive,
         surfaces: { row: true, form: true, bulk: true },
         isVisible: (rows) => rows.every((r) => r.status !== 'archived'),
-        confirm: {
-          title: 'Archive idea',
-          description: 'Archived ideas are hidden from the active list but retained. You can restore them later.',
-          confirmLabel: 'Archive',
-        },
-        run: async (rows) => {
-          for (const r of rows) await onArchive(r);
-        },
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `ideation_ideas.archive`
+        // handler commits it server-side; Restore stays a plain, un-gated
+        // action, so this is the reversible window).
+        deferred: { actionKey: 'ideation_ideas.archive', entityType: 'ideation_idea' },
       },
       {
         id: 'restore',
@@ -158,14 +159,10 @@ export function useIdeasListConfig(
         icon: Trash2,
         tone: 'destructive',
         surfaces: { row: true, form: true, bulk: true },
-        confirm: {
-          title: 'Confirm delete',
-          description: 'This permanently removes the idea. This action cannot be undone.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows) => {
-          for (const r of rows) await onDelete(r);
-        },
+        // Grace-window deferred action - no confirm, no `run` (the
+        // registered `ideation_ideas.delete` handler commits it
+        // server-side).
+        deferred: { actionKey: 'ideation_ideas.delete', entityType: 'ideation_idea' },
       },
     ];
 
@@ -290,5 +287,5 @@ export function useIdeasListConfig(
       ],
       actions,
     };
-  }, [ideas, onCreate, onVote, onAdvance, onArchive, onRestore, onDelete, onReorder, onPromote, paths, mode]);
+  }, [ideas, onCreate, onVote, onAdvance, onRestore, onReorder, onPromote, paths, mode]);
 }
