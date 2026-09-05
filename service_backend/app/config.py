@@ -298,6 +298,16 @@ class Settings(BaseSettings):
     # config while quietly extracting the whole 306k-header table per page.
     autocount_page_size: int = 2000
     autocount_run_time_budget_seconds: int = 600
+    # The Sorento sink's own HTTP client timeout (round 5) - a 1,000-record
+    # document batch with lines can genuinely take Sorento longer than the
+    # OLD hard-coded 30s to ingest, which recorded a push FAILURE while
+    # Sorento was still processing it (the batch itself was fine). Read at
+    # CALL time by `sorento_sink_from_connection` (never cached at import
+    # time), same "retune a running deployment without a restart" contract
+    # as `autocount_page_size`. Floored at 30s - the sink's own CONNECT
+    # timeout stays short regardless (a dead endpoint should fail fast);
+    # this setting only widens the read/write/pool budget.
+    autocount_sink_timeout_seconds: int = 300
 
     @field_validator("autocount_page_size")
     @classmethod
@@ -314,6 +324,15 @@ class Settings(BaseSettings):
         if v < 30:
             raise ValueError(
                 "autocount_run_time_budget_seconds must be at least 30 seconds."
+            )
+        return v
+
+    @field_validator("autocount_sink_timeout_seconds")
+    @classmethod
+    def _autocount_sink_timeout_floor(cls, v: int) -> int:
+        if v < 30:
+            raise ValueError(
+                "autocount_sink_timeout_seconds must be at least 30 seconds."
             )
         return v
 

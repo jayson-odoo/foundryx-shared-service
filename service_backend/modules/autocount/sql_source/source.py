@@ -151,6 +151,18 @@ DELETE_GUARD_MIN_ABSOLUTE = 50
 # existing "watermark at" surface keeps working.
 CURSOR_MARK = "sqlWatermark"
 CURSOR_COLUMN = "sqlWatermarkColumn"
+# The key-column SHAPE the top-level ``lastKey`` was last recorded under
+# (S2, review round 5) - a fingerprint, not a resume value itself.
+# ``key_columns`` determines BOTH ``lastKey``'s own shape (scalar vs list,
+# S2's multi-key generalisation) AND ``source_ref``'s identity SCHEME - a
+# reshape (grown, shrunk, or a same-count rename) makes a stored value
+# recorded under the OLD columns unsafe to resume from (wrong shape, or a
+# shape that still "fits" but means something else entirely, e.g. a
+# same-cardinality rename). ``sync.py``'s run loop is where a MISMATCH here
+# also triggers the wider identity reset (clearing ``ac_row_hash``, never
+# just this cursor) - this module only carries the fingerprint and refuses
+# to resume against a mismatched one.
+CURSOR_KEY_COLUMNS = "sqlKeyColumns"
 
 _QUERY_HEAD = 200
 
@@ -436,7 +448,12 @@ class PageCursor:
 
     @classmethod
     def from_watermark_row(
-        cls, watermark_row: Any, mode: str, *, watermark_column: str
+        cls,
+        watermark_row: Any,
+        mode: str,
+        *,
+        watermark_column: str,
+        key_columns: Sequence[str] = (),
     ) -> "PageCursor":
         """Resume an UNFINISHED pass matching ``mode``, or start a fresh one.
 
@@ -474,17 +491,43 @@ class PageCursor:
         position at all - the pass restarts fresh. This is a LOCAL-lane-only
         concern (only a lane DB mid-migration between review rounds carries
         such a row); the real company has never run either round yet.
+
+        !!  A ``lastKey`` SHAPED FOR A DIFFERENT ``key_columns`` IS ALSO NOT
+            RESUMABLE (S2-a, review round 5 - a second line of defence).  !!
+        A stored ``lastKey`` was recorded under whatever ``key_columns`` the
+        task had AT THE TIME - a task reconfigured since (a column added or
+        removed, changing SCALAR vs LIST; or, same count, a different
+        column entirely) leaves a value whose shape no longer matches
+        ``len(key_columns)``. Blindly threading it through would eventually
+        reach a bind step that has to guess how to split it - `list()`-ing a
+        stored STRING would slice it into individual CHARACTERS, not
+        columns. Any mismatch is treated exactly like nothing stored: a
+        fresh full read. (The PRIMARY defence against a reshape is
+        ``sync.py``'s own identity reset, which clears the stale position
+        - and the now-mis-scoped ``ac_row_hash`` population - the moment a
+        run detects one; this guard only prevents a residual bad bind if
+        that reset is somehow bypassed.)
         """
         cursor = watermark_row.cursor_json if isinstance(watermark_row.cursor_json, dict) else {}
         pass_state = cursor.get("pass") if isinstance(cursor.get("pass"), dict) else None
         now = datetime.now(timezone.utc)
         column_matches = cursor.get(CURSOR_COLUMN) == watermark_column
+        key_count = len(key_columns)
+
+        def _last_key_shape_ok(value: Any) -> bool:
+            if value is None:
+                return True
+            if key_count > 1:
+                return isinstance(value, list) and len(value) == key_count
+            return not isinstance(value, (list, tuple))
+
         if (
             pass_state is not None
             and column_matches
             and pass_state.get("kind") == mode
             and not pass_state.get("complete", False)
             and (pass_state.get("mark") is None or pass_state.get("lastKey") is not None)
+            and _last_key_shape_ok(pass_state.get("lastKey"))
         ):
             started_raw = pass_state.get("startedAt")
             started = _decode_mark(started_raw) if started_raw else now
@@ -515,6 +558,7 @@ class PageCursor:
             mode != RUN_MODE_RECONCILE
             and column_matches
             and cursor.get("lastKey") is not None
+            and _last_key_shape_ok(cursor.get("lastKey"))
         ):
             start_mark = cursor.get(CURSOR_MARK)
             start_last_key = cursor.get("lastKey")
@@ -1148,6 +1192,20 @@ class SqlDbSource:
             # column). ``last_key`` is one value for a single-key task, a
             # list (one per ``key_columns``, same order) for a multi-key one
             # (S2) - both bind their elements verbatim.
+            #
+            # Known, accepted asymmetry: the STORED value already went
+            # through ``_encode_mark`` for JSON-safety on the way IN (a
+            # ``Decimal`` key becomes its string form, ``bytes`` becomes
+            # hex) - binding it back out AS-IS means a non-str/int key
+            # column rides as that stringified/hex text, not its native
+            # Python type. A paged task's key column is virtually always a
+            # business code (str) or a plain int, for which this never
+            # matters; a genuinely ``Decimal``/``bytes`` key column would
+            # need a real, type-aware reversal this deliberately does not
+            # attempt - the string-key correctness this fixes is the
+            # common, load-bearing case; the other is exotic enough that
+            # guessing wrong (the KEY-decoding bug this whole fix exists
+            # to remove) is worse than not guessing at all.
             if len(key_columns) > 1:
                 last_key_values = (
                     list(cursor.last_key) if cursor.last_key is not None else [None] * len(key_columns)
@@ -1547,6 +1605,19 @@ class SqlDbSource:
         (a broken line query/join) - never a silently-accepted, valid
         zero-line document. A task with no such column, or one reporting
         zero (a real lineless document, AC-13's own rule), is untouched.
+
+        Deliberately checks only the ALL-OR-NOTHING case (``expected > 0``
+        and ``fetched == 0``), never a PARTIAL mismatch (``fetched`` some
+        smaller positive number than ``expected``): the preset's own
+        ``LineCount`` aggregate is computed with an ``ItemCode IS NOT
+        NULL`` filter (dropping description-only/sub-total display lines),
+        while ``lineQuery`` is not - a header with, say, 2 description
+        lines and 3 real ones legitimately reports ``LineCount=3`` but
+        fetches 5 rows, and the reverse skew is just as possible depending
+        on how an operator wrote their OWN ``lineQuery``. Zero fetched is
+        the one shape no such skew can ever produce when the fingerprint
+        says lines exist, which is what makes it - and only it - a safe,
+        unambiguous signal of a genuinely broken join.
         """
         if LINE_COUNT_FINGERPRINT_COLUMN not in header:
             return None

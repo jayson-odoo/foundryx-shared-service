@@ -118,6 +118,7 @@ from .sql_source.errors import (
 # implementation registered", which reads like a config fault and is not one.
 from .sql_source.source import (
     CURSOR_COLUMN,
+    CURSOR_KEY_COLUMNS,
     CURSOR_MARK,
     DELETE_GUARD_MIN_ABSOLUTE,
     DELETE_GUARD_RATIO,
@@ -1085,8 +1086,50 @@ def _run_paged_sql_db(
         run.updated_count = 0
         db.commit()
 
+    #     !!  A keyColumns RESHAPE IS AN IDENTITY CHANGE - A RUN-TIME
+    #         BACKSTOP, NOT JUST A RESUMABILITY QUESTION (S2, review round
+    #         5).  !!
+    # ``source_ref``'s own scheme is BUILT FROM ``key_columns`` - a reshape
+    # (grown, shrunk, or a same-count rename) makes every EXISTING
+    # ``ac_row_hash`` ref read as "not seen this pass" under the NEW
+    # scheme, so an ordinary reconcile would stage a PHANTOM DELETE for
+    # every one of them (the rows are all still genuinely there; only
+    # their COMPUTED ref changed). ``EtlService.update_task`` already does
+    # this at SAVE time (the normal path); this is the RUN-time half,
+    # mirroring the watermark-column backstop ``PageCursor.from_
+    # watermark_row`` already carries - a task's ``source_config`` can be
+    # edited directly, bypassing ``update_task`` entirely. A stored
+    # fingerprint of ``None`` (a row that has never run under this check
+    # yet) is treated as "unknown, assume unchanged" - never a spurious
+    # reset for a task that never actually reshaped - so this is a
+    # one-time, harmless bootstrap cost the first time a genuinely
+    # reshaped task runs after this code ships, never a risk to an
+    # untouched one.
+    existing_cursor_before_reset = (
+        watermark_row.cursor_json if isinstance(watermark_row.cursor_json, dict) else {}
+    )
+    current_key_columns = list(source.key_columns)
+    stored_key_columns = existing_cursor_before_reset.get(CURSOR_KEY_COLUMNS)
+    if stored_key_columns is not None and stored_key_columns != current_key_columns:
+        logger.info(
+            "autocount: keyColumns reshape detected for %s/%s (%r -> %r) - "
+            "clearing row hashes and the top-level cursor for a fresh, "
+            "adds-only pass.",
+            company_id, entity_type, stored_key_columns, current_key_columns,
+        )
+        hashes_repo.clear_all(tenant_id, company_id, entity_type)
+        watermark_row.cursor_json = {
+            CURSOR_COLUMN: source.watermark_column,
+            CURSOR_KEY_COLUMNS: current_key_columns,
+            CURSOR_MARK: None,
+            "lastKey": None,
+            "pass": None,
+        }
+        db.commit()
+
     cursor = PageCursor.from_watermark_row(
-        watermark_row, mode, watermark_column=source.watermark_column
+        watermark_row, mode, watermark_column=source.watermark_column,
+        key_columns=source.key_columns,
     )
     pass_started_at = cursor.pass_started_at or datetime.now(timezone.utc)
     deadline = time.monotonic() + float(settings.autocount_run_time_budget_seconds)
@@ -1280,6 +1323,7 @@ def _run_paged_sql_db(
                 # separate from ``pass.mark``/``pass.lastKey`` below, which
                 # is this SPECIFIC pass's own live per-page position.
                 CURSOR_COLUMN: source.watermark_column,
+                CURSOR_KEY_COLUMNS: current_key_columns,
                 CURSOR_MARK: top_mark,
                 "lastKey": top_last_key,
                 "pass": {
@@ -1415,6 +1459,7 @@ def _run_paged_sql_db(
             watermark_row.cursor_json = {
                 **(watermark_row.cursor_json or {}),
                 CURSOR_COLUMN: source.watermark_column,
+                CURSOR_KEY_COLUMNS: current_key_columns,
                 CURSOR_MARK: top_mark,
                 "lastKey": top_last_key,
             }
@@ -1458,6 +1503,7 @@ def _run_paged_sql_db(
     watermark_row.cursor_json = {
         **(watermark_row.cursor_json or {}),
         CURSOR_COLUMN: source.watermark_column,
+        CURSOR_KEY_COLUMNS: current_key_columns,
         CURSOR_MARK: top_mark,
         "lastKey": top_last_key,
     }

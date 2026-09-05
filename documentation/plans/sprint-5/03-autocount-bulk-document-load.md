@@ -224,6 +224,54 @@
   unconditional `auto_push` drains an aborted job's stranded final page across jobs; there is no
   gap to track.
 
+**Review round 5 amendments (sink timeout + a `keyColumns` reshape is an identity change):**
+- **Sink timeout from settings.** `SorentoSink` hard-coded `timeout: float = 30.0` - a 1,000-
+  record document batch with lines genuinely takes Sorento longer than 30s to ingest, so the
+  ESB recorded a push FAILURE while Sorento was still processing a perfectly good batch. New
+  `Settings.autocount_sink_timeout_seconds` (env `AUTOCOUNT_SINK_TIMEOUT_SECONDS`, default 300,
+  floored at 30 - same pattern as `autocount_page_size`/`autocount_run_time_budget_seconds`).
+  `sorento_sink_from_connection` reads it at CALL time and passes it through; `SorentoSink`
+  builds an `httpx.Timeout` with a short, fixed `SINK_CONNECT_TIMEOUT_SECONDS` (10s - a dead
+  endpoint should fail fast) and the setting on read/write/pool (the phases that actually wait
+  for a slow-but-alive Sorento).
+- **A `keyColumns` reshape is an IDENTITY change, not just a resumability question.**
+  `source_ref`'s own scheme is built from `key_columns` - a reshape (grown, shrunk, or a
+  same-count rename) makes every EXISTING `ac_row_hash` ref read as "not seen this pass" under
+  the NEW scheme, so an ordinary reconcile staged a PHANTOM DELETE for every one of them (proven
+  by a real reconcile run in `test_a_key_columns_reshape_never_resumes_a_stale_top_level_
+  position`, parametrized grow/shrink/rename). Two halves, mirroring the existing watermark-
+  column SAVE-time/RUN-time pair:
+  - **SAVE-time (`EtlService.update_task`).** A `keyColumns` change now clears the entity's
+    `ac_row_hash` rows for EVERY entity type (previously document-only, via the F1 narrowed-
+    population check, which never covered a master at all). The existing pass-clearing block
+    also now clears the TOP-LEVEL `sqlWatermark`/`lastKey` (not only `cursor_json["pass"]`)
+    whenever `keyColumns` OR `watermarkColumn` changes - a schedule-only or narrower-scope-only
+    edit still clears `pass` alone, since it does not change what the same column/key means.
+  - **RUN-time (`sync.py`'s `_run_paged_sql_db`, for a `source_config` edited directly,
+    bypassing `update_task`).** A new `CURSOR_KEY_COLUMNS` (`sqlKeyColumns`) fingerprint is
+    written into `cursor_json` alongside `sqlWatermarkColumn` on every write. At the top of every
+    run, a stored fingerprint that does not match the task's CURRENT `key_columns` clears the
+    entity's hashes and resets the whole cursor (`sqlWatermark`/`lastKey`/`pass` all `None`) for
+    a genuinely fresh, adds-only pass. A `None` stored fingerprint (a row that has never run
+    under this check) is treated as "unknown, assume unchanged" - never a spurious reset for an
+    untouched task, and a harmless one-time bootstrap cost for a task that genuinely did reshape
+    before this code shipped.
+  - **S2-a (second line of defence, `PageCursor.from_watermark_row`).** A stored `lastKey` whose
+    SHAPE does not match `len(key_columns)` (scalar vs list, or a list of the wrong length) is
+    treated as no stored position, in both the resume and fresh-pass branches - never threaded
+    through a `list()` call that would slice a stored STRING into individual characters. This
+    guards the case the identity reset does not (a same-count rename that a fingerprint mismatch
+    already catches independently, and any residual bad bind if the reset were somehow
+    bypassed).
+- **Docstring nits.** `_line_count_mismatch` now notes why it deliberately ignores a PARTIAL
+  mismatch (the `LineCount` aggregate is `ItemCode IS NOT NULL`-filtered; an operator's own
+  `lineQuery` is not, so a skew in either direction is expected and not a broken join - only
+  `expected > 0` with `fetched == 0` is unambiguous). The S1 key-bind comment now notes the
+  accepted non-str/int asymmetry: a stored key already went through `_encode_mark` for JSON-
+  safety (`Decimal` -> str, `bytes` -> hex) and rides back out AS-IS, so a non-str/int key column
+  binds as that stringified/hex text, not its native type - accepted because a paged task's key
+  column is virtually always a business code or a plain int.
+
 ### 2.2 Run loop, change-only staging, watermark (`sync.py`)
 
 `run_autocount_sync`, sql_db branch with a watermark column:
@@ -359,11 +407,17 @@ tasks are saved with `2023-09-01` during live verification.
 
 ### 2.7 Files
 
-- `service_backend/app/config.py` (+2 settings, validators)
+- `service_backend/app/config.py` (+3 settings, validators - `autocount_page_size`,
+  `autocount_run_time_budget_seconds`, and round 5's `autocount_sink_timeout_seconds`)
 - `service_backend/modules/autocount/sql_source/source.py` (paged wrap, `fetch_page`, hash diff
   before lines, cap removal), `sql_source/errors.py` (drop `SqlDocumentCapExceeded`)
 - `service_backend/modules/autocount/sync.py` (page loop, change-only staging, watermark rule,
-  seen stamps, deletes at completion)
+  seen stamps, deletes at completion, round 5's keyColumns-reshape identity reset)
+- `service_backend/modules/autocount/sinks_sorento.py` (round 5 - `SorentoSink`'s HTTP client
+  timeout follows `settings.autocount_sink_timeout_seconds`, connect phase stays short; ops
+  note: a slow-but-alive Sorento ingesting a large document batch used to record a push FAILURE
+  at the old hard-coded 30s even though the batch itself was fine - retune
+  `AUTOCOUNT_SINK_TIMEOUT_SECONDS` (default 300s, floor 30s) instead of changing code)
 - `service_backend/modules/autocount/repositories/autocount_repository.py` (`touch_seen`,
   `stale_refs`)
 - `service_backend/modules/autocount/scheduler.py` (continuation due), `services/etl_service.py`

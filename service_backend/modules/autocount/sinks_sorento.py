@@ -71,6 +71,12 @@ SINK_SORENTO = "sorento"
 # over is a 413 (or, until their fix lands, a 500), never a silent truncation.
 SORENTO_MAX_BATCH = 1000
 
+# The CONNECT phase stays short regardless of `settings.
+# autocount_sink_timeout_seconds` (round 5) - a dead/unreachable endpoint
+# should fail fast, never wait for the same generous budget a slow-but-alive
+# Sorento needs to finish INGESTING a large document batch (read/write/pool).
+SINK_CONNECT_TIMEOUT_SECONDS = 10.0
+
 # The canonical entity_type → Sorento's ingest path segment (Appendix A6/A8 -
 # ``product_categories | units_of_measure | warehouses | suppliers | customers
 # | products | sales_agents``). A canonical entity with no mapping here CANNOT
@@ -277,7 +283,17 @@ class SorentoSink:
                 f"No Sorento ingest path for canonical entity '{entity_type}'."
             )
         self._path_segment = path
-        self._timeout = timeout
+        #     !!  CONNECT STAYS SHORT; READ/WRITE/POOL FOLLOW THE CALLER'S
+        #         `timeout` (round 5).  !!
+        # A dead/unreachable endpoint should fail fast (``SINK_CONNECT_
+        # TIMEOUT_SECONDS``, never the same generous budget); a slow-but-
+        # ALIVE Sorento genuinely ingesting a large document batch (lines
+        # included) needs the full `timeout` on the phases that actually
+        # wait for it. ``sorento_sink_from_connection`` passes ``settings.
+        # autocount_sink_timeout_seconds`` here - never the OLD hard-coded
+        # 30.0, which recorded a push FAILURE while Sorento was still
+        # processing a genuinely large batch.
+        self._timeout = httpx.Timeout(float(timeout), connect=SINK_CONNECT_TIMEOUT_SECONDS)
         self._transport = transport
         self._max_rate_limit_waits = max_rate_limit_waits
 
@@ -715,6 +731,8 @@ def sorento_sink_from_connection(
     ``EXTERNAL_API_KEY`` shape is out of scope here; the operator supplies the
     integration's own minted key.
     """
+    from app.config import settings  # read at CALL time (round 5), never cached
+
     return SorentoSink(
         base_url=str(config.get("baseUrl", "")).strip(),
         api_key=str(credentials.get("apiKey", "")).strip(),
@@ -725,6 +743,10 @@ def sorento_sink_from_connection(
         # the code to the connection would anchor them all to one Sorento
         # company and silently cross-post their masters.
         company_code=company_code,
+        # The LIVE setting (round 5), never the class default - an operator
+        # whose Sorento endpoint needs a longer (or shorter) budget retunes
+        # it without a code change.
+        timeout=settings.autocount_sink_timeout_seconds,
         transport=transport,
         # AC-02-14 - the connection's own authoritative gate. Default 1 (pre-
         # addendum) so an existing connection with no such key configured

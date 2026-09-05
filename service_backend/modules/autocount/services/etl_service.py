@@ -85,7 +85,11 @@ from ..sql_source.runtime import (
     sanitize_error,
     secrets_of,
 )
-from ..sql_source.source import build_document_header_wrap, build_incremental_wrap
+from ..sql_source.source import (
+    CURSOR_MARK,
+    build_document_header_wrap,
+    build_incremental_wrap,
+)
 from .company_service import (
     SOURCE_KIND_DB,
     AutocountServiceError,
@@ -983,6 +987,26 @@ class EtlService:
             )
             if narrowed:
                 RowHashRepository(self.db).clear_all(tenant_id, company_id, entity_type)
+        #     !!  A keyColumns CHANGE IS AN IDENTITY CHANGE, EVERY ENTITY -
+        #         NOT JUST A DOCUMENT'S NARROWED POPULATION (S2, review
+        #         round 5).  !!
+        # `source_ref`'s own scheme is BUILT FROM `keyColumns` - changing it
+        # (grown, shrunk, or a same-count rename) makes every EXISTING
+        # `ac_row_hash` ref read as "not seen this pass" under the NEW
+        # scheme on the very next reconcile, which would stage a PHANTOM
+        # DELETE for every one of them (the rows are all still genuinely
+        # there; only their COMPUTED ref changed). A master has no
+        # `fromDate`/`filterFormula` scope to narrow, so the document-only
+        # block above never covered it at all - this one is entity-
+        # agnostic and fires independently (a document whose `keyColumns`
+        # changes trips BOTH; `clear_all` is idempotent, so that costs
+        # nothing extra).
+        key_columns_changed = (
+            previous_source_config is not None
+            and previous_source_config.get("keyColumns") != clean.get("keyColumns")
+        )
+        if key_columns_changed:
+            RowHashRepository(self.db).clear_all(tenant_id, company_id, entity_type)
         #     !!  A MID-PASS WATERMARK-COLUMN OR POPULATION EDIT MUST CLEAR
         #         ANY OPEN PAGED PASS (F4, review round 2) - EVERY ENTITY,
         #         NOT JUST DOCUMENTS.  !!
@@ -997,10 +1021,14 @@ class EtlService:
         # entity can be paged (a watermark column, not documents alone), so
         # this check is deliberately NOT gated on ``is_document_entity``.
         if previous_source_config is not None:
+            key_or_watermark_changed = (
+                key_columns_changed
+                or previous_source_config.get("watermarkColumn") != clean.get("watermarkColumn")
+            )
             population_changed = any(
                 previous_source_config.get(key) != clean.get(key)
                 for key in POPULATION_DEFINING_KEYS
-            ) or previous_source_config.get("watermarkColumn") != clean.get("watermarkColumn")
+            ) or key_or_watermark_changed
             if population_changed:
                 watermark_row = WatermarkRepository(self.db).get(
                     tenant_id, company_id, entity_type
@@ -1008,12 +1036,31 @@ class EtlService:
                 if (
                     watermark_row is not None
                     and isinstance(watermark_row.cursor_json, dict)
-                    and watermark_row.cursor_json.get("pass") is not None
+                    and (
+                        watermark_row.cursor_json.get("pass") is not None
+                        or key_or_watermark_changed
+                    )
                 ):
-                    # Fresh dict (SQLAlchemy misses in-place JSON mutation).
-                    watermark_row.cursor_json = {
-                        **watermark_row.cursor_json, "pass": None,
-                    }
+                    #     !!  A keyColumns/watermarkColumn CHANGE ALSO
+                    #         CLEARS THE TOP-LEVEL sqlWatermark/lastKey (S2,
+                    #         review round 5) - NOT JUST `pass`.  !!
+                    # The top-level pair is the PUBLIC, monotonic position a
+                    # fresh incremental/manual pass resumes from
+                    # (`PageCursor.from_watermark_row`'s fresh-pass branch)
+                    # - it is just as stale as `pass`'s own position once
+                    # the column it was recorded against, or the KEY SHAPE
+                    # it was seeked with, no longer applies. A schedule-only
+                    # or narrower-scope-only edit (no key/watermark change)
+                    # still clears `pass` (an open resume position is stale
+                    # either way) but leaves the top-level pair alone - a
+                    # merely narrower population does not change what the
+                    # SAME column/key means. Fresh dict (SQLAlchemy misses
+                    # in-place JSON mutation).
+                    updates = {**watermark_row.cursor_json, "pass": None}
+                    if key_or_watermark_changed:
+                        updates[CURSOR_MARK] = None
+                        updates["lastKey"] = None
+                    watermark_row.cursor_json = updates
         # The validation preview already proved what this query returns, so its
         # column names are stored (AC-22-09/11) - the Mapping tab's source
         # picker reads them instead of re-running the query per keystroke.
