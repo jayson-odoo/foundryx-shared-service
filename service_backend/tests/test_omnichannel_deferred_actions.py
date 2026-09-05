@@ -364,6 +364,78 @@ def test_park_rejected_when_the_module_is_inactive_for_the_tenant(client, sessio
     assert res2.status_code == 403, res2.text
 
 
+def test_current_and_cancel_rejected_when_the_module_is_inactive_for_the_tenant(client, session_factory):
+    """T5 fix round 3, item 3: `park` already 403s (S4) once the module is
+    inactive - `current`/`cancel` on a row parked while the module was still
+    ACTIVE must ALSO refuse once it goes INACTIVE (`_may_act_on` gates both
+    via the same `_module_active` check `park` uses)."""
+    from app.models import Tenant
+    from app.services.app_store_service import AppStoreService
+    from app.services.tenant_service import TenantService
+    from modules.omnichannel.models import Workspace
+
+    db = session_factory()
+    TenantService(db).provision(
+        name="Gamma", slug="gamma-mod-gate", admin_name="Gia",
+        admin_email="admin@gamma-mod-gate.example.com", admin_password="pw12345678",
+    )
+    tenant = db.query(Tenant).filter(Tenant.slug == "gamma-mod-gate").first()
+    AppStoreService(db).install(tenant.id, "omnichannel")
+    ws = (
+        db.query(Workspace)
+        .filter(Workspace.tenant_id == tenant.id, Workspace.is_default.is_(True))
+        .first()
+    )
+    ws_id = ws.id
+    db.close()
+
+    login_res = client.post(
+        "/auth/login",
+        json={
+            "email": "admin@gamma-mod-gate.example.com",
+            "password": "pw12345678",
+            "tenantSlug": "gamma-mod-gate",
+        },
+    )
+    assert login_res.status_code == 200, login_res.text
+    h = {"Authorization": f"Bearer {login_res.json()['access_token']}"}
+
+    park_res = client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "workspaces.trash", "entityType": "workspace", "entityId": ws_id},
+        headers=h,
+    )
+    assert park_res.status_code == 202, park_res.text
+    action_id = park_res.json()["id"]
+
+    # Module still ACTIVE - both observe and cancel work.
+    current_res = client.get(
+        "/api/v1/pending-actions/current",
+        params={"entityType": "workspace", "entityId": ws_id},
+        headers=h,
+    )
+    assert current_res.status_code == 200, current_res.text
+    assert current_res.json()["pending"] is not None
+
+    db2 = session_factory()
+    AppStoreService(db2).deactivate(tenant.id, "omnichannel")
+    db2.close()
+
+    # Module now INACTIVE - `current` 404s uniformly (matches the S4/S5
+    # permission-denied contract) and `cancel` 403s (matches `park`'s own
+    # `PermissionDenied` -> 403 contract, not a 404 - the id itself already
+    # resolved above, so there's nothing left to enumerate).
+    current_res2 = client.get(
+        "/api/v1/pending-actions/current",
+        params={"entityType": "workspace", "entityId": ws_id},
+        headers=h,
+    )
+    assert current_res2.status_code == 404, current_res2.text
+
+    cancel_res = client.post(f"/api/v1/pending-actions/{action_id}/cancel", headers=h)
+    assert cancel_res.status_code == 403, cancel_res.text
+
+
 # ── T5 fix round 3, item 1: `commit_one`/`commit_due` must ALSO gate on
 # module activation - only the lazy `current()` path was gated before this
 # fix, so the beat sweep (or a racing `current` poll) could still run a
