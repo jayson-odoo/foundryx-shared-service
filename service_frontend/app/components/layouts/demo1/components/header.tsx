@@ -143,7 +143,15 @@ export function Header() {
                   }
                 />
               )}
-              <ActivityTriggers />
+              {/* T7 (AC-DLA-62): 4 extra icons (Uploads/Imports/Jobs/
+                  Downloads) with no wrap/shrink protection overflowed the
+                  375px header and visually overlapped the hamburger + apps-
+                  menu drawer triggers on the left - the same !mobileMode gate
+                  Search already uses above. Desktop keeps them; mobile still
+                  reaches Imports/Jobs via the sidebar drawer's own menu
+                  entries, and the activity badges are best-effort progress
+                  indicators, not the only path to that data. */}
+              {!mobileMode && <ActivityTriggers />}
               <NotificationsSheet
                 trigger={
                   <Button
