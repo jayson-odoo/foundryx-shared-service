@@ -104,6 +104,17 @@ LINE_COUNT_FINGERPRINT_COLUMN = "LineCount"
 # columns that happen to be line-derived. `ItemCode IS NOT NULL` drops
 # description-only/sub-total display lines from the aggregate so a cosmetic
 # note does not masquerade as a fulfilment/qty change.
+#     !!  PSEUDO-LINE EXCLUSION (live finding, 2026-09).  !!
+# AutoCount also lets a header carry a "pseudo-line" whose `ItemCode` IS
+# present (the cut above alone does not drop it) but whose `Qty` is NULL
+# and price is zero - a marker/bundle item such as `ItemCode 'PP'
+# "PROMOTION PACKAGE"` that exists to group the real lines underneath it,
+# never a real quantity to deliver. Left uncut, it inflates `LineCount`
+# past what `lineQuery` (below) actually fetches once ITS OWN `Qty IS NOT
+# NULL` cut drops the same row - a disagreement the LineCount-mismatch
+# guard (S2, review round 4) reads as a broken line query on a perfectly
+# normal document. 570 real SOs (18.6k marker lines) tripped exactly this
+# before both queries carried the SAME `Qty IS NOT NULL` cut.
 _SO_HEADER_QUERY = (
     "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, c.AutoKey AS DebtorAutoKey, "
     "h.SalesAgent AS SalesAgent, h.DocDate AS DocDate, "
@@ -119,7 +130,7 @@ _SO_HEADER_QUERY = (
     "SUM(d.TransferedQty) AS TransferedSum, SUM(d.SubTotal) AS SubTotalSum, "
     "MAX(d.DtlKey) AS MaxDtlKey "
     "FROM {database}.dbo.SODTL AS d "
-    "WHERE d.DocKey = h.DocKey AND d.ItemCode IS NOT NULL"
+    "WHERE d.DocKey = h.DocKey AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
     ") AS l"
 )
 _SO_LINE_QUERY = (
@@ -132,7 +143,7 @@ _SO_LINE_QUERY = (
     "FROM {database}.dbo.SODTL AS d "
     "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
     "LEFT JOIN {database}.dbo.Location AS w ON w.Location = d.Location "
-    "WHERE d.DocKey = :doc_key"
+    "WHERE d.DocKey = :doc_key AND d.Qty IS NOT NULL"
 )
 
 SO_PRESET = DocumentPreset(
@@ -196,7 +207,9 @@ SO_PRESET = DocumentPreset(
 # Line fingerprint (plan sprint-5/03 S4, AC-03-20 - see the SO header's own
 # comment above for the 19%-of-fulfilled-SOs finding this closes) - added to
 # the SAME `OUTER APPLY` that already computes `FirstDeliveryDate`, with the
-# SAME `ItemCode IS NOT NULL` line filter.
+# SAME `ItemCode IS NOT NULL` line filter, and the SAME pseudo-line
+# exclusion (`Qty IS NOT NULL` - see the SO header's own comment above for
+# the PROMOTION PACKAGE marker-item finding) PO/SPO share with SO.
 _PO_HEADER_QUERY = (
     "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, s.AutoKey AS CreditorAutoKey, "
     "h.PurchaseAgent AS SalesAgent, h.DocDate AS DocDate, "
@@ -212,7 +225,7 @@ _PO_HEADER_QUERY = (
     "SUM(d.Qty) AS QtySum, SUM(d.TransferedQty) AS TransferedSum, "
     "SUM(d.SubTotal) AS SubTotalSum, MAX(d.DtlKey) AS MaxDtlKey "
     "FROM {database}.dbo.PODTL AS d "
-    "WHERE d.DocKey = h.DocKey AND d.ItemCode IS NOT NULL"
+    "WHERE d.DocKey = h.DocKey AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
     ") AS l"
 )
 _PO_LINE_QUERY = (
@@ -225,7 +238,7 @@ _PO_LINE_QUERY = (
     "FROM {database}.dbo.PODTL AS d "
     "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
     "LEFT JOIN {database}.dbo.Location AS w ON w.Location = d.Location "
-    "WHERE d.DocKey = :doc_key"
+    "WHERE d.DocKey = :doc_key AND d.Qty IS NOT NULL"
 )
 
 # addendum §3/§9 - a PO task filters OUT the SPO-numbered documents its

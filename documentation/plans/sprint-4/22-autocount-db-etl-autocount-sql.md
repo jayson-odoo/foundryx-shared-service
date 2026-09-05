@@ -26,6 +26,7 @@ from the SQL.
 | Row hash = all result columns minus key (unless `comparedColumns` set) | Keep column types stable across runs; avoid `varchar` renderings of numbers. |
 | Caps: 5000 lines/header, 200k rows/page; a page is `AUTOCOUNT_PAGE_SIZE` headers (default 2000) | Paged extraction (plan sprint-5/03) - no more fixed 2000-headers-per-run cap. |
 | **Line fingerprint** (plan sprint-5/03, AC-03-20) - `LineCount`/`QtySum`/`TransferedSum`/`SubTotalSum`/`MaxDtlKey` in the header's own `OUTER APPLY`, filtered `d.ItemCode IS NOT NULL` | Live 2026-09-05: header `LastModified` moved for only **19%** of fulfilled June-2026 SOs - fulfilment (`TransferedQty` rising) is a LINE fact. These columns are ordinary result columns (no engine knowledge of them); a line-only edit changes the header's row hash and so is picked up WITHOUT re-reading every header's lines on every pass. |
+| **Pseudo-line exclusion** - `d.Qty IS NOT NULL` alongside `d.ItemCode IS NOT NULL`, in BOTH the line fingerprint `OUTER APPLY` and the `lineQuery` itself (SO §2, PO §4) | AutoCount lets a header carry a marker/bundle line - e.g. `ItemCode 'PP'` labelled `"PROMOTION PACKAGE"` - whose `ItemCode` IS present (the existing cut alone does not drop it) but whose `Qty` is NULL and price is zero: a grouping row, never a real quantity to deliver/receive. Left uncut, `LineCount` disagrees with what `lineQuery` actually fetches once ITS OWN cut drops the same row, tripping the LineCount-mismatch guard (S2, review round 4) on a perfectly normal document. 570 real SOs (18.6k marker lines) hit exactly this before both queries carried the SAME predicate. |
 
 ---
 
@@ -78,6 +79,7 @@ OUTER APPLY (
     FROM AED_SORENTO.dbo.SODTL AS d
     WHERE d.DocKey = h.DocKey
       AND d.ItemCode IS NOT NULL
+      AND d.Qty IS NOT NULL
 ) AS l
 ```
 
@@ -136,6 +138,7 @@ LEFT JOIN AED_SORENTO.dbo.Item     AS i ON i.ItemCode  = d.ItemCode
 LEFT JOIN AED_SORENTO.dbo.Location AS w ON w.Location  = d.Location
 WHERE d.DocKey = :doc_key
   AND d.ItemCode IS NOT NULL
+  AND d.Qty IS NOT NULL
 ORDER BY d.Seq
 ```
 
@@ -143,6 +146,11 @@ Notes
 - `ItemCode IS NOT NULL` drops AutoCount's description-only / sub-total /
   package-header rows. Verify on real data that no stock line has a NULL
   `ItemCode` (check `DtlType` distribution too).
+- `Qty IS NOT NULL` drops AutoCount's pseudo-lines (`ItemCode` present,
+  `Qty` NULL, price zero) - a marker/bundle item like `"PROMOTION PACKAGE"`
+  that groups the real lines underneath it, never a real quantity. See §0's
+  note - the SAME cut must also sit in the header's own `LineCount`
+  `OUTER APPLY`, or the two disagree.
 - `discount` uses `DiscountAmt` (money). The `Discount` column is text
   (`"10%"`, `"5+2"`) and would fail the `decimal` transform.
 - `qty_ordered` is `Qty` in the line's `UOM`. `SmallestQty` is base-UOM; swap
@@ -197,6 +205,7 @@ OUTER APPLY (
     FROM AED_SORENTO.dbo.PODTL AS d
     WHERE d.DocKey = h.DocKey
       AND d.ItemCode IS NOT NULL
+      AND d.Qty IS NOT NULL
 ) AS l
 ```
 
@@ -240,6 +249,7 @@ LEFT JOIN AED_SORENTO.dbo.Item     AS i ON i.ItemCode  = d.ItemCode
 LEFT JOIN AED_SORENTO.dbo.Location AS w ON w.Location  = d.Location
 WHERE d.DocKey = :doc_key
   AND d.ItemCode IS NOT NULL
+  AND d.Qty IS NOT NULL
 ORDER BY d.Seq
 ```
 
