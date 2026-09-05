@@ -114,7 +114,14 @@ LINE_COUNT_FINGERPRINT_COLUMN = "LineCount"
 # NULL` cut drops the same row - a disagreement the LineCount-mismatch
 # guard (S2, review round 4) reads as a broken line query on a perfectly
 # normal document. 570 real SOs (18.6k marker lines) tripped exactly this
-# before both queries carried the SAME `Qty IS NOT NULL` cut.
+# before both queries carried the SAME `Qty IS NOT NULL` cut. The MIRROR
+# gap (live 2026-09-06): a `NULL`-`ItemCode` display line (e.g. `Description
+# 'CURRENCY ROUNDING DIFFERENCE'`, `Qty 1`) is dropped from the header
+# aggregate by `ItemCode IS NOT NULL` but, before this fix, `lineQuery`
+# carried no such cut - the row reached the mapper and failed the required
+# `product_ref`. `lineQuery` now carries the SAME `ItemCode IS NOT NULL AND
+# Qty IS NOT NULL` filter as the header fingerprint's `OUTER APPLY`, so a
+# row either counts in both places or neither.
 _SO_HEADER_QUERY = (
     "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, c.AutoKey AS DebtorAutoKey, "
     "h.SalesAgent AS SalesAgent, h.DocDate AS DocDate, "
@@ -143,7 +150,7 @@ _SO_LINE_QUERY = (
     "FROM {database}.dbo.SODTL AS d "
     "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
     "LEFT JOIN {database}.dbo.Location AS w ON w.Location = d.Location "
-    "WHERE d.DocKey = :doc_key AND d.Qty IS NOT NULL"
+    "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
 )
 
 SO_PRESET = DocumentPreset(
@@ -210,6 +217,11 @@ SO_PRESET = DocumentPreset(
 # SAME `ItemCode IS NOT NULL` line filter, and the SAME pseudo-line
 # exclusion (`Qty IS NOT NULL` - see the SO header's own comment above for
 # the PROMOTION PACKAGE marker-item finding) PO/SPO share with SO.
+# `_PO_LINE_QUERY` below (shared by PO and SPO) carries the SAME
+# `ItemCode IS NOT NULL AND Qty IS NOT NULL` cut as this header's `OUTER
+# APPLY` - see the SO header's own comment above for the live finding
+# (`ItemCode NULL` display lines such as 'CURRENCY ROUNDING DIFFERENCE')
+# this closes.
 _PO_HEADER_QUERY = (
     "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, s.AutoKey AS CreditorAutoKey, "
     "h.PurchaseAgent AS SalesAgent, h.DocDate AS DocDate, "
@@ -238,7 +250,7 @@ _PO_LINE_QUERY = (
     "FROM {database}.dbo.PODTL AS d "
     "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
     "LEFT JOIN {database}.dbo.Location AS w ON w.Location = d.Location "
-    "WHERE d.DocKey = :doc_key AND d.Qty IS NOT NULL"
+    "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
 )
 
 # addendum §3/§9 - a PO task filters OUT the SPO-numbered documents its
