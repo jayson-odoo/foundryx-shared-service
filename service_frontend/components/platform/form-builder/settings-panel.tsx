@@ -311,7 +311,7 @@ function SortableShell({ id, children }: { id: string; children: (handle: React.
     <button
       type="button"
       aria-label="Drag to reorder"
-      className={cn('cursor-grab px-0.5 text-muted-foreground/60 hover:text-foreground')}
+      className="cursor-grab px-0.5 text-muted-foreground/60 hover:text-foreground"
       {...listeners}
       {...attributes}
     >

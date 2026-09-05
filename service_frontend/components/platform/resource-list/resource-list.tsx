@@ -82,7 +82,7 @@ function RowDragGrip({ rowId }: { rowId: string }) {
       ref={setActivatorNodeRef}
       aria-label="Drag to reorder"
       onClick={(e) => e.stopPropagation()}
-      className={cn('flex cursor-grab touch-none items-center text-muted-foreground/60 hover:text-foreground active:cursor-grabbing')}
+      className="flex cursor-grab touch-none items-center text-muted-foreground/60 hover:text-foreground active:cursor-grabbing"
       {...attributes}
       {...listeners}
     >

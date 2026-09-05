@@ -196,7 +196,7 @@ function CanvasBlock({
             type="button"
             aria-label="Drag block"
             data-testid={`block-handle-${block.id}`}
-            className={cn('cursor-grab rounded border border-input bg-background p-1 text-muted-foreground shadow-sm hover:text-foreground active:cursor-grabbing')}
+            className="cursor-grab rounded border border-input bg-background p-1 text-muted-foreground shadow-sm hover:text-foreground active:cursor-grabbing"
             {...listeners}
             {...attributes}
           >

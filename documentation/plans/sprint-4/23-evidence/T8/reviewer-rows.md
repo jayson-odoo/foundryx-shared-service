@@ -45,7 +45,7 @@ anywhere"). The main session applies them to its own gitignored copy.
       import (`eslint.config.mjs`'s `no-restricted-imports`; the small pre-existing debt list is
       tracked BL-062/BL-SS-043, not to be widened).
 - [ ] Every toast goes through `lib/toast.ts` - no direct `sonner` import outside its three
-      sanctioned files (`lib.toast.ts`, `components/ui/sonner.tsx`,
+      sanctioned files (`lib/toast.ts`, `components/ui/sonner.tsx`,
       `components/platform/resource-actions/deferred-toast.tsx`).
 - [ ] Every product table is a `DataGrid` - no raw `<table>`/`@/components/ui/table` outside the
       two content files (`form-renderer/table-field.tsx`, `email-editor/block-view.tsx`).

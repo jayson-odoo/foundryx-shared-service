@@ -91,7 +91,7 @@ function FieldRow({
         <button
           type="button"
           aria-label="Drag to reorder"
-          className={cn('mt-0.5 cursor-grab text-muted-foreground/60 hover:text-foreground')}
+          className="mt-0.5 cursor-grab text-muted-foreground/60 hover:text-foreground"
           {...listeners}
           {...attributes}
         >
