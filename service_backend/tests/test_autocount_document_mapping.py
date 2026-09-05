@@ -2949,3 +2949,149 @@ def test_preview_no_watermark_warning_for_a_normal_config(session_factory):
     assert "watermarkInKey" not in warnings, f"unexpected watermarkInKey warning: {warnings}"
     db.close()
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Live re-push finding (1) - `shipping_order` staged rows are "not pushable"
+# in production: `CANONICAL_MODELS` (sync_service.py) is the map a staged
+# record's `canonical_json` rehydrates through before it can reach the sink -
+# an entity missing from it can never actually push, no matter how correct
+# its mapping/preview path is. A drift guard (every ETL entity type must
+# have an entry) plus the concrete SPO push through the REAL `auto_push`
+# path, mirroring `test_a_retryable_product_stays_staged_and_the_next_run_
+# resolves_it` in test_autocount_masters_fanout.py.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_every_etl_entity_type_has_a_canonical_model():
+    """Drift guard: every entity a DB task can be configured for
+    (`ETL_ENTITY_TYPES`) must have an entry in `CANONICAL_MODELS` - a staged
+    record for an entity missing here can NEVER be pushed (rehydration is
+    the first step of every push path), regardless of how correct its
+    mapping/preview looked. `shipping_order` was the concrete miss (live
+    re-push finding) - this guard is generic so the NEXT one fails loudly
+    at test time, not silently in production."""
+    from modules.autocount.services.etl_service import ETL_ENTITY_TYPES
+    from modules.autocount.services.sync_service import CANONICAL_MODELS
+
+    missing = [e for e in ETL_ENTITY_TYPES if e not in CANONICAL_MODELS]
+    assert not missing, (
+        f"CANONICAL_MODELS is missing an entry for: {missing} - a staged row "
+        f"for any of these entities can never be pushed."
+    )
+
+
+def test_shipping_order_pushes_through_the_real_sync_path(session_factory, monkeypatch):
+    """Concrete case: a STAGED `shipping_order` row must actually reach the
+    sink's `shipping_orders` path through `SyncService.auto_push` (the same
+    push step the other document entities use) - not report `pushed=0`/
+    "not pushable" the way it does live today because `CANONICAL_MODELS`
+    has no `shipping_order` entry to rehydrate `canonical_json` through.
+    """
+    import httpx
+    from app.models.background_job import JOB_DONE, BackgroundJob
+    from modules.autocount.sync import AUTOCOUNT_SYNC
+    from modules.autocount.canonical.documents import (
+        ENTITY_SHIPPING_ORDER,
+        CanonicalShippingOrder,
+        CanonicalShippingOrderLine,
+    )
+    from modules.autocount.models import STAGED, STAGED_PUSHED
+    from modules.autocount.services.sync_service import SyncService
+
+    db = session_factory()
+    try:
+        api = Connection(
+            tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp",
+            name="autocount conn", config_json={"baseUrl": "https://ac.example.com"},
+            credentials_json=encrypt_secret({"password": "secret"}), is_active=True,
+        )
+        sorento_conn = Connection(
+            tenant_id=DEFAULT_TENANT_ID, provider="sorento", type="consumer",
+            name="sorento conn", config_json={"baseUrl": "https://sorento.example.com"},
+            credentials_json=encrypt_secret({"apiKey": "k"}), is_active=True,
+        )
+        db.add(api)
+        db.add(sorento_conn)
+        db.commit()
+        db.refresh(api)
+        db.refresh(sorento_conn)
+
+        company = AcCompany(
+            tenant_id=DEFAULT_TENANT_ID, connection_id=api.id, database_name="AED_SPO_PUSH",
+            company_name="SPO Push Co", name="SPO Push Co", is_active=True,
+            sink_impl="sorento", sink_connection_id=sorento_conn.id, sorento_company_code="SRT",
+        )
+        db.add(company)
+        db.commit()
+        db.refresh(company)
+
+        record = CanonicalShippingOrder(
+            source_ref="AED_SPO_PUSH:SPO-1", spo_number="SPO-1", status="open",
+            lines=[CanonicalShippingOrderLine(source_ref="AED_SPO_PUSH:SPO-1:L1", product_ref="p1", qty_ordered=Decimal("5"))],
+        )
+        staged = AcStagedRecord(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_SHIPPING_ORDER,
+            job_id="job-1", source_ref=record.source_ref, canonical_json=record.comparable(),
+            status=STAGED,
+        )
+        db.add(staged)
+        job = BackgroundJob(tenant_id=DEFAULT_TENANT_ID, type=AUTOCOUNT_SYNC, status=JOB_DONE)
+        db.add(job)
+        db.commit()
+        db.refresh(staged)
+        db.refresh(job)
+
+        import modules.autocount.services.company_service as company_module
+        from modules.autocount.sinks_sorento import sorento_sink_from_connection as real_sink
+
+        responses = [{
+            "summary": {"total": 1, "created": 1, "updated": 0, "failed": 0, "retryable": 0},
+            "records": [{"source_ref": record.source_ref, "outcome": "created", "entity_id": "spo-1"}],
+        }]
+        requests: List[Dict] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            import json as _json
+            requests.append(_json.loads(request.content or b"{}"))
+            return httpx.Response(200, json=responses.pop(0))
+
+        def fake(config, credentials, *, entity_type, company_code=None, transport=None):
+            return real_sink(
+                config, credentials, entity_type=entity_type, company_code=company_code,
+                transport=httpx.MockTransport(handle),
+            )
+
+        monkeypatch.setattr(company_module, "sorento_sink_from_connection", fake)
+
+        summary = SyncService(db).auto_push(
+            DEFAULT_TENANT_ID, company.id, ENTITY_SHIPPING_ORDER, job_id=job.id
+        )
+        assert summary["pushed"] == 1, (
+            f"a staged shipping_order row must actually push - got {summary}"
+        )
+        db.refresh(staged)
+        assert staged.status == STAGED_PUSHED, (
+            f"the staged row must be marked PUSHED, not left as {staged.status!r}"
+        )
+        assert requests, "the sink's shipping_orders path was never called"
+    finally:
+        db.close()
+
+
+
+def test_every_document_entity_has_a_prerequisites_entry():
+    """Drift guard (live re-push follow-up): every registered document
+    entity (`DOCUMENT_ENTITY_TYPES`) must have an entry in
+    `DOCUMENT_PREREQUISITES` (company_service.py) - `shipping_order` was
+    missing one when the entity was first added (review-round gap fix,
+    comment on the dict), silently withholding the "missing master" warning
+    a PO gets for the identical situation. Generic so the NEXT new document
+    entity fails loudly at test time if its own entry is forgotten."""
+    from modules.autocount.canonical.documents import DOCUMENT_ENTITY_TYPES
+    from modules.autocount.services.company_service import DOCUMENT_PREREQUISITES
+
+    missing = [e for e in DOCUMENT_ENTITY_TYPES if e not in DOCUMENT_PREREQUISITES]
+    assert not missing, (
+        f"DOCUMENT_PREREQUISITES is missing an entry for: {missing} - that "
+        f"document's rows would never warn on a missing/inactive master."
+    )
