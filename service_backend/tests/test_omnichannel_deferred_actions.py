@@ -256,3 +256,43 @@ def test_workspaces_trash(db):
     assert result.status == "committed"
     db.refresh(ws)
     assert ws.is_trashed is True
+
+
+def test_workspaces_trash_fails_when_the_workspace_is_gone_by_commit_time(db):
+    """T5 fix round 2, S3: `WorkspaceService.trash` is bulk-shaped (`get_many`
+    loop) and silently no-ops on a missing id - a workspace removed between
+    park and commit must fail the commit loudly (row `failed`, `error_text`
+    set), never report `committed` for a row it never touched."""
+    from modules.omnichannel.models import Workspace
+    from modules.omnichannel.services import statuses
+
+    admin = _admin(db)
+    ws = Workspace(
+        tenant_id=DEFAULT_TENANT_ID,
+        name="Vanishing workspace",
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "WORKSPACE", "ACTIVE"),
+        is_default=False,
+        is_trashed=False,
+    )
+    db.add(ws)
+    db.commit()
+    db.refresh(ws)
+    ws_id = ws.id
+
+    svc = PendingActionService(db)
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key="workspaces.trash", entity_type="workspace", entity_id=ws_id,
+    )
+    pa = db.get(PendingAction, row.id)
+    pa.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+
+    # The workspace vanishes (hard-deleted) before the sweep gets to it.
+    db.delete(db.get(Workspace, ws_id))
+    db.commit()
+
+    committed = svc.commit_one(row)
+    assert committed.status == "failed"
+    assert committed.error_text
+    assert db.get(Workspace, ws_id) is None

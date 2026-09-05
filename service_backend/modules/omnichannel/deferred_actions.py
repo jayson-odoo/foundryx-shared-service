@@ -253,6 +253,14 @@ def _workspace_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
 def _workspaces_trash(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
     from .services.workspace_service import WorkspaceService
 
+    # T5 fix round 2, S3: `WorkspaceService.trash` is bulk-shaped (`get_many`
+    # loop) and silently no-ops on a missing id - matches `_channels_disconnect`
+    # /`_channels_delete` above and `app/deferred_actions/handlers.py`'s
+    # `_users_trash` guard. A workspace deleted between park and commit must
+    # fail the commit loudly, never report `committed` for a row that was
+    # never touched.
+    if not _workspace_exists(db, tenant_id, entity_id):
+        raise ValueError("Workspace no longer exists.")
     WorkspaceService(db).trash([entity_id], tenant_id)
 
 
