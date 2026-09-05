@@ -1022,9 +1022,10 @@ const PROFILE_NAMES: Record<string, string> = {
 const DOCUMENT_PREREQUISITES: Record<string, string[]> = {
   sales_order: ['customer', 'product'],
   purchase_order: ['supplier', 'product'],
+  shipping_order: ['supplier', 'product', 'warehouse'],
 };
 
-/** Display order of a DB company's rows - the nine `sql_db` entities in dependency order. */
+/** Display order of a DB company's rows - the ten `sql_db` entities in dependency order. */
 const DB_ENTITY_ORDER = [
   'customer',
   'supplier',
@@ -1035,6 +1036,7 @@ const DB_ENTITY_ORDER = [
   'sales_agent',
   'sales_order',
   'purchase_order',
+  'shipping_order',
 ];
 
 /** The pure function the backend's `document_prerequisites(company)` must mirror. */

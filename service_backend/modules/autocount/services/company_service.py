@@ -141,11 +141,17 @@ SOURCE_PROVIDERS = (PROVIDER_KEY, SQL_DATABASE_PROVIDER_KEY)
 # ── document prerequisites (AC-01-11, decision Q17) ──────────────────────────
 # The masters a document's rows reference and Sorento cannot NULL: a sales
 # order needs its customer + products, a purchase order its supplier +
-# products. While any is missing/inactive the document's rows stay
-# ``retryable`` (never lost), so the surface WARNS - it never blocks.
+# products. A shipping order (SPO, sprint-5/02) additionally references a
+# warehouse (the ship-from location, absent from a plain PO) - review-round
+# gap fix: this dict was never given a `shipping_order` entry when the
+# entity was added, so an SPO with a missing/inactive master silently never
+# got the warning a PO gets for the identical situation. While any is
+# missing/inactive the document's rows stay ``retryable`` (never lost), so
+# the surface WARNS - it never blocks.
 DOCUMENT_PREREQUISITES: Dict[str, Tuple[str, ...]] = {
     "sales_order": (ENTITY_CUSTOMER, "product"),
     "purchase_order": (ENTITY_SUPPLIER, "product"),
+    "shipping_order": (ENTITY_SUPPLIER, "product", "warehouse"),
 }
 
 NOT_API_BACKED_MESSAGE = (
