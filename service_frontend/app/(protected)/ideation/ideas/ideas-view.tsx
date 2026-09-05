@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ResourceList } from '@/components/platform/resource-list';
 import { useIdeas } from '@/hooks/use-ideas';
 import type { IdeaCreateInput } from '@/services/ideation-service';

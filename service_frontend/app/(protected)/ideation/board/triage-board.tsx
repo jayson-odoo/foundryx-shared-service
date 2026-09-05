@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ChevronDown, ChevronUp, GripVertical } from 'lucide-react';
 import {
   Kanban,

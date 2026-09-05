@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { LoaderCircleIcon, Plus, X } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';

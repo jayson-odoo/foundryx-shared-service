@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { businessRequirementService } from '@/services/business-requirement-service';
 import { brFormHref } from '@/app/(protected)/ideation/business-requirements/components/paths';
 import type { Idea } from '@/types/ideation';
