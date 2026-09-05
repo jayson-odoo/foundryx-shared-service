@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { ResourceList } from '@/components/platform/resource-list';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useCan } from '@/hooks/use-can';
 import { whatsappTemplateService } from '@/services/whatsapp-template-service';
 import { toMetaComponents, fromMetaComponents } from '@/lib/whatsapp-template';
@@ -40,7 +41,7 @@ export function ChannelTemplatesTab({ channelId }: { channelId: string }) {
   const onViewPayload = useCallback(
     async (item: TemplateManageItem) => {
       setPayloadOf(item);
-      setPayloadJson('Loading…');
+      setPayloadJson('');
       try {
         const detail = await whatsappTemplateService.get(channelId, item.id);
         // Render the canonical Meta component array (View payload, BR-12).
@@ -96,9 +97,17 @@ export function ChannelTemplatesTab({ channelId }: { channelId: string }) {
           <DialogHeader>
             <DialogTitle>Template payload - {payloadOf?.name}</DialogTitle>
           </DialogHeader>
-          <pre className="max-h-[60vh] overflow-auto rounded-md bg-muted p-3 text-xs">
-            {payloadJson}
-          </pre>
+          {payloadJson ? (
+            <pre className="max-h-[60vh] overflow-auto rounded-md bg-muted p-3 text-xs">
+              {payloadJson}
+            </pre>
+          ) : (
+            <div className="space-y-2 rounded-md bg-muted p-3">
+              <Skeleton className="h-3.5 w-full" />
+              <Skeleton className="h-3.5 w-5/6" />
+              <Skeleton className="h-3.5 w-2/3" />
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

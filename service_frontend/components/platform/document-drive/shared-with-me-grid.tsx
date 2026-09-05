@@ -7,6 +7,7 @@
  * which limits the user to exactly that file/folder subtree.
  */
 import { File as FileIcon, Folder, Users } from 'lucide-react';
+import { Skeleton } from '@/components/ui/skeleton';
 import type { SharedWithMeItem } from '@/types/documents';
 
 export function SharedWithMeGrid({
@@ -19,7 +20,13 @@ export function SharedWithMeGrid({
   onOpen: (token: string) => void;
 }) {
   if (loading) {
-    return <p className="p-10 text-center text-sm text-muted-foreground">Loading…</p>;
+    return (
+      <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 lg:grid-cols-4">
+        {Array.from({ length: 8 }).map((_, index) => (
+          <Skeleton key={index} className="h-24 w-full" />
+        ))}
+      </div>
+    );
   }
   if (items.length === 0) {
     return (

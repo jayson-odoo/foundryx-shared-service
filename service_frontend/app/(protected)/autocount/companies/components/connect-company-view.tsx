@@ -98,7 +98,7 @@ export function ConnectCompanyView() {
                       setFieldError(null);
                     }}
                     disabled={isLoading || isSaving || options.length === 0}
-                    placeholder={isLoading ? 'Loading…' : 'Select a connection'}
+                    placeholder="Select a connection"
                     ariaLabel="AutoCount connection"
                     className="max-w-sm"
                   />

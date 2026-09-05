@@ -26,7 +26,8 @@ const repoRoot = path.join(__dirname, '..');
 
 // This file itself necessarily contains the guarded-against pattern (it is
 // the pattern's own description + regex) - exclude it from the corpus it
-// scans, the same trick `no-playwright.guard.test.ts` uses for itself.
+// scans, the same self-exclusion trick this repo's other retirement-guard
+// test uses for itself.
 const THIS_FILE = 'lib/toast.inventory.test.ts';
 
 const ALLOWED_DIRECT_IMPORTERS = new Set([

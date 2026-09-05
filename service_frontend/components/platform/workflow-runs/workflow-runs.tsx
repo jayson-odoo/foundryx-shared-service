@@ -6,12 +6,13 @@
  * (inside the replay) hands the run off to the Editor tab.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { FlaskConical } from 'lucide-react';
+import { FlaskConical, LoaderCircleIcon } from 'lucide-react';
 import type { WorkflowRunDetail, WorkflowRunListItem } from '@/types/workflows';
 import { cn } from '@/lib/utils';
 import { useDatetime } from '@/hooks/use-datetime';
 import { workflowService } from '@/services/workflow-service';
 import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
 import { SearchSelect } from '@/components/platform/search-select';
 import { RunReplay } from './run-replay';
 import { RunStatusBadge } from './run-status-badge';
@@ -111,10 +112,12 @@ export function WorkflowRuns({
         />
 
         <div className="flex max-h-[40vh] min-h-64 flex-col gap-1 overflow-auto rounded-lg border border-border p-1 lg:max-h-[calc(100vh-19rem)] lg:min-h-[420px]">
-          {loading && (
-            <p className="px-2 py-6 text-center text-xs text-muted-foreground">
-              Loading…
-            </p>
+          {loading && rows.length === 0 && (
+            <div className="flex flex-col gap-1.5 p-1" data-testid="run-list-loading">
+              {Array.from({ length: 4 }).map((_, index) => (
+                <Skeleton key={index} className="h-14 w-full" />
+              ))}
+            </div>
           )}
           {!loading && rows.length === 0 && (
             <p
@@ -165,7 +168,7 @@ export function WorkflowRuns({
               onClick={loadMore}
               data-testid="runs-load-more"
             >
-              {loading ? 'Loading…' : `Load more (${total - rows.length})`}
+              {loading ? <LoaderCircleIcon className="size-4 animate-spin" /> : `Load more (${total - rows.length})`}
             </Button>
           )}
         </div>

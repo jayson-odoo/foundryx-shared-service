@@ -86,7 +86,6 @@ export interface DataGridProps<TData extends object> {
   isPlaceholderData?: boolean;
   isLoading?: boolean;
   loadingMode?: 'skeleton' | 'spinner';
-  loadingMessage?: ReactNode | string;
   emptyMessage?: ReactNode | string;
   tableLayout?: {
     dense?: boolean;

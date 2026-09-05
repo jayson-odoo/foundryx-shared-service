@@ -28,6 +28,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useCan } from '@/hooks/use-can';
 import { cn } from '@/lib/utils';
 import { documentService } from '@/services/document-service';
@@ -473,7 +474,11 @@ export function DriveExplorer() {
               ) : section === 'trash' ? (
                 <TrashView view={view} onChanged={afterStructuralChange} />
               ) : drive.loading ? (
-                <p className="p-10 text-center text-sm text-muted-foreground">Loading…</p>
+                <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 lg:grid-cols-4">
+                  {Array.from({ length: 8 }).map((_, index) => (
+                    <Skeleton key={index} className="h-24 w-full" />
+                  ))}
+                </div>
               ) : drive.error ? (
                 <p className="p-10 text-center text-sm text-destructive">{drive.error}</p>
               ) : drive.listing ? (
