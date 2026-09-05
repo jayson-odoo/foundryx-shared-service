@@ -773,3 +773,300 @@ def test_a_no_watermark_task_in_INCREMENTAL_mode_still_detects_deletes(rig):
         _ctx(db, company, config), entity_type=ENTITY_CUSTOMER, mode=RUN_MODE_MANUAL
     ).fetch_changes(Watermark())
     assert result.delete_refs == [f"{DB_NAME}:300-A003"]
+
+
+# ── plan sprint-5/03 - paged extraction (S1) + seen stamps (S3) ─────────────
+#
+# RED tests written BEFORE the coder, from the UAC
+# (`03-autocount-bulk-document-load-acceptance-criteria.md`, AC-03-01/02/05/
+# 14/15/18) and the plan (`03-autocount-bulk-document-load.md` section 2.1).
+#
+# ASSUMPTIONS this section makes about not-yet-built names (imported LOCALLY
+# per test, so a missing name only reds the one test - mirrors
+# `test_autocount_document_mapping.py`'s own stated convention):
+#
+# * `modules.autocount.sql_source.source.PageCursor` - a small value object
+#   with (at least) `mark`, `tie_refs`, `pass_kind`, `pass_started_at`,
+#   `pages_done` fields, all defaulting to the "first page of a pass" shape
+#   (`PageCursor()` with no args = no mark, empty tie_refs, pages_done=0).
+# * `modules.autocount.sql_source.source.SqlDbSource.fetch_page(cursor:
+#   PageCursor) -> PageResult`, where `PageResult` carries (at least)
+#   `records`, `unchanged_refs`, `hashes`, `last_mark`, `tie_refs`,
+#   `rows_scanned`, `added`, `updated`, `complete: bool` (`complete` = fewer
+#   rows read than `settings.autocount_page_size`).
+# * `app.config.settings.autocount_page_size` (int, default 2000) - read at
+#   CALL time by `fetch_page`, so monkeypatching the shared singleton
+#   instance (`raising=False` - the field does not exist yet) steers paging
+#   with no restart.
+# * `modules.autocount.repositories.RowHashRepository.touch_seen(tenant_id,
+#   company_id, entity_type, refs, *, seen_at)` - bumps `last_seen_at` for
+#   every given ref WITHOUT touching `row_hash`.
+
+
+def test_a_pass_reads_pages_of_page_size_and_stages_each_before_the_next(rig, monkeypatch):
+    """AC-03-01. 11 headers, page size 4 -> three pages (4/4/3); the former
+    ``MAX_DOCUMENT_HEADERS_PER_RUN``-style cap must never fire regardless of
+    how many pages a pass takes."""
+    from app.config import settings as cfg
+    from modules.autocount.sql_source.source import PageCursor
+
+    db, company, config, engine = rig
+    monkeypatch.setattr(cfg, "autocount_page_size", 4, raising=False)
+    with engine.begin() as conn:
+        for i in range(4, 12):  # 8 more rows alongside the fixture's 3 -> 11
+            conn.exec_driver_sql(
+                "INSERT INTO debtor VALUES (?, ?, ?, ?, ?)",
+                (f"300-P{i:03d}", f"Paged {i}", f"p{i}@x.com", 1, f"2026-09-{i:02d} 09:00:00"),
+            )
+
+    source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_CUSTOMER)
+    page1 = source.fetch_page(PageCursor())
+    assert page1.rows_scanned == 4
+    assert page1.complete is False
+
+    page2 = source.fetch_page(
+        PageCursor(mark=page1.last_mark, tie_refs=page1.tie_refs, pages_done=1)
+    )
+    assert page2.rows_scanned == 4
+    assert page2.complete is False
+
+    page3 = source.fetch_page(
+        PageCursor(mark=page2.last_mark, tie_refs=page2.tie_refs, pages_done=2)
+    )
+    assert page3.rows_scanned == 3
+    assert page3.complete is True
+
+
+def test_a_tie_group_across_a_page_boundary_is_staged_exactly_once(rig, monkeypatch):
+    """AC-03-02. Six rows share ONE watermark value straddling the page
+    boundary (page size 4) - every one of them must be returned exactly
+    once across the two pages, none skipped, none duplicated."""
+    from app.config import settings as cfg
+    from modules.autocount.sql_source.source import PageCursor
+
+    db, company, config, engine = rig
+    monkeypatch.setattr(cfg, "autocount_page_size", 4, raising=False)
+    TIE = "2026-09-01 09:00:00"
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DELETE FROM debtor")  # start from a clean, known set
+        for i in range(6):
+            conn.exec_driver_sql(
+                "INSERT INTO debtor VALUES (?, ?, ?, ?, ?)",
+                (f"300-T{i:03d}", f"Tie {i}", f"t{i}@x.com", 1, TIE),
+            )
+
+    source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_CUSTOMER)
+    page1 = source.fetch_page(PageCursor())
+    assert page1.rows_scanned == 4
+    page2 = source.fetch_page(
+        PageCursor(mark=page1.last_mark, tie_refs=page1.tie_refs, pages_done=1)
+    )
+    all_refs = {r.raw["acc_no"] for r in page1.records} | {r.raw["acc_no"] for r in page2.records}
+    assert all_refs == {f"300-T{i:03d}" for i in range(6)}
+    assert page1.rows_scanned + page2.rows_scanned == 6
+    assert page2.complete is True
+
+
+def test_a_tie_group_larger_than_the_page_still_advances(rig, monkeypatch):
+    """Plan section 5 risk note: a tie group BIGGER than the page size must
+    still terminate - ``exclude_refs`` grows across as many same-mark pages
+    as the group needs, rather than looping forever on the same mark."""
+    from app.config import settings as cfg
+    from modules.autocount.sql_source.source import PageCursor
+
+    db, company, config, engine = rig
+    monkeypatch.setattr(cfg, "autocount_page_size", 3, raising=False)
+    TIE = "2026-09-01 09:00:00"
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DELETE FROM debtor")
+        for i in range(7):  # a tie group of 7 against a page size of 3
+            conn.exec_driver_sql(
+                "INSERT INTO debtor VALUES (?, ?, ?, ?, ?)",
+                (f"300-U{i:03d}", f"Tie {i}", f"u{i}@x.com", 1, TIE),
+            )
+
+    source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_CUSTOMER)
+    cursor = PageCursor()
+    seen: set[str] = set()
+    for _ in range(10):  # generous cap - a real implementation finishes well inside it
+        page = source.fetch_page(cursor)
+        seen |= {r.raw["acc_no"] for r in page.records}
+        if page.complete:
+            break
+        cursor = PageCursor(mark=page.last_mark, tie_refs=page.tie_refs, pages_done=cursor.pages_done + 1)
+    else:
+        pytest.fail("the tie group never completed - exclude_refs is not accumulating")
+    assert seen == {f"300-U{i:03d}" for i in range(7)}
+
+
+def test_a_master_without_a_watermark_still_reads_in_one_statement(rig, monkeypatch):
+    """AC-03-05. Paging is a WATERMARK-column concept - a master with none
+    must stay on the old unpaged path even when a small page size is set."""
+    from app.config import settings as cfg
+
+    db, company, config, engine = rig
+    monkeypatch.setattr(cfg, "autocount_page_size", 1, raising=False)
+    config.source_config = {**config.source_config, "watermarkColumn": None}
+    db.commit()
+    source = SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_CUSTOMER)
+    result = source.fetch_changes(Watermark())
+    assert len(result.records) == 3  # every row, in ONE statement, page size ignored
+    calls = source.drain_activity()
+    assert len(calls) == 1
+
+
+def test_preview_reads_one_page_and_writes_nothing(rig, monkeypatch):
+    """AC-03-14. A dry run on a PAGED task must read at most one page - never
+    loop - and (as before) persist no hash and no staged record."""
+    from app.config import settings as cfg
+
+    db, company, config, engine = rig
+    monkeypatch.setattr(cfg, "autocount_page_size", 1, raising=False)
+    source = SqlDbSource(
+        _ctx(db, company, config), entity_type=ENTITY_CUSTOMER, persist_hashes=False
+    )
+    result = source.fetch_changes(Watermark())
+    assert _hashes(db, company) == {}
+    calls = source.drain_activity()
+    assert len(calls) == 1, "a preview must execute exactly ONE page statement"
+
+
+def test_touch_seen_updates_the_seen_stamp_without_changing_the_hash(rig):
+    """AC-03-15. The repository primitive a paged reconcile's seen-stamping
+    needs - every fetched ref (changed OR unchanged) gets `last_seen_at`
+    bumped, but `touch_seen` must never alter `row_hash` (that is
+    `upsert_many`'s job, for CHANGED rows only)."""
+    db, company, config, _engine = rig
+    repo = RowHashRepository(db)
+    early = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    repo.upsert_many(DEFAULT_TENANT_ID, company.id, ENTITY_CUSTOMER, {"r1": "hash-a"}, seen_at=early)
+    db.commit()
+
+    later = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    repo.touch_seen(DEFAULT_TENANT_ID, company.id, ENTITY_CUSTOMER, ["r1"], seen_at=later)
+    db.commit()
+
+    row = (
+        db.query(AcRowHash)
+        .filter(
+            AcRowHash.tenant_id == DEFAULT_TENANT_ID,
+            AcRowHash.company_id == company.id,
+            AcRowHash.entity_type == ENTITY_CUSTOMER,
+            AcRowHash.source_ref == "r1",
+        )
+        .one()
+    )
+    assert row.row_hash == "hash-a"  # unchanged
+    assert row.last_seen_at == later
+
+
+def test_stale_refs_returns_only_refs_seen_before_the_given_time(rig):
+    """AC-03-16/17 rely on this repository primitive to compute a completed
+    reconcile pass's delete candidates."""
+    db, company, config, _engine = rig
+    repo = RowHashRepository(db)
+    old = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    fresh = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    repo.upsert_many(DEFAULT_TENANT_ID, company.id, ENTITY_CUSTOMER, {"stale-1": "h"}, seen_at=old)
+    repo.upsert_many(DEFAULT_TENANT_ID, company.id, ENTITY_CUSTOMER, {"fresh-1": "h"}, seen_at=fresh)
+    db.commit()
+
+    cutoff = datetime(2026, 3, 1, tzinfo=timezone.utc)
+    stale = repo.stale_refs(DEFAULT_TENANT_ID, company.id, ENTITY_CUSTOMER, before=cutoff)
+    assert list(stale) == ["stale-1"]
+
+
+def test_a_filtered_out_header_is_never_a_delete_candidate_after_paging(session_factory, monkeypatch):
+    """AC-03-18. A header the filter formula skips on every page must not
+    surface as a delete intent once a PAGED reconcile pass completes, and
+    its stale hash (established before the filter existed) is dropped -
+    proves AC-02-11's non-paged guarantee still holds across a page
+    boundary (page size 1, three headers -> three separate `fetch_page`
+    calls)."""
+    from app.config import settings as cfg
+    from modules.autocount.canonical.documents import ENTITY_SALES_ORDER
+    from modules.autocount.models import (
+        ETL_STATUS_DRAFT,
+        RUN_MODE_RECONCILE,
+        SOURCE_IMPL_SQL_DB,
+        AcEntityConfig as _Cfg,
+    )
+    from modules.autocount.repositories import RowHashRepository as _Repo
+    from modules.autocount.sql_source.source import PageCursor
+
+    db = session_factory()
+    engine = sa.create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE so_header (doc_key TEXT PRIMARY KEY, doc_no TEXT, last_modified TEXT)"
+        )
+        conn.exec_driver_sql(
+            "CREATE TABLE so_line (dtl_key TEXT PRIMARY KEY, doc_key TEXT, item_code TEXT)"
+        )
+        for row in [
+            ("D1", "SO-1", "2026-09-01 09:00:00"),
+            ("D2", "SPO-1", "2026-09-02 09:00:00"),  # excluded once the filter is on
+            ("D3", "SO-2", "2026-09-03 09:00:00"),
+        ]:
+            conn.exec_driver_sql("INSERT INTO so_header VALUES (?, ?, ?)", row)
+
+    sql_conn = _sql_connection(db, engine)
+    company = _company(db)
+    config = _Cfg(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_SALES_ORDER,
+        source_impl=SOURCE_IMPL_SQL_DB, etl_status=ETL_STATUS_DRAFT,
+    )
+    config.source_config = {
+        "connectionId": sql_conn.id,
+        "query": "SELECT doc_key, doc_no, last_modified FROM so_header",
+        "lineQuery": "SELECT dtl_key, item_code FROM so_line WHERE doc_key = :doc_key",
+        "keyColumns": ["doc_key"],
+        "watermarkColumn": "last_modified",
+        "comparedColumns": [],
+        "fromDate": "2026-01-01",
+        "docDateColumn": "last_modified",
+        "incrementalMinutes": 15, "reconcileMode": "dailyAt", "reconcileAt": "02:00",
+    }
+    config.result_columns = ["doc_key", "doc_no", "last_modified"]
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+
+    # Establish all 3 hashes BEFORE the filter exists - D2's is the STALE one
+    # the filtered pass must then drop.
+    SqlDbSource(_ctx(db, company, config), entity_type=ENTITY_SALES_ORDER).fetch_changes(
+        Watermark()
+    )
+    assert set(
+        _Repo(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER)
+    ) == {f"{DB_NAME}:D1", f"{DB_NAME}:D2", f"{DB_NAME}:D3"}
+
+    config.source_config = {
+        **config.source_config,
+        "filterFormula": 'not(startswith(upper(trim(DocNo)), "SPO-"))'.replace("DocNo", "doc_no"),
+    }
+    db.commit()
+    monkeypatch.setattr(cfg, "autocount_page_size", 1, raising=False)
+
+    source = SqlDbSource(
+        _ctx(db, company, config), entity_type=ENTITY_SALES_ORDER, mode=RUN_MODE_RECONCILE
+    )
+    cursor = PageCursor()
+    all_refs: set[str] = set()
+    for _ in range(6):
+        page = source.fetch_page(cursor)
+        all_refs |= {r.raw["doc_key"] for r in page.records}
+        if page.complete:
+            break
+        cursor = PageCursor(mark=page.last_mark, tie_refs=page.tie_refs)
+    else:
+        pytest.fail("the 3-header pass never completed at page size 1")
+
+    assert "D2" not in all_refs, "the filtered-out header must never be fetched as current"
+    remaining_hashes = _Repo(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER)
+    assert f"{DB_NAME}:D2" not in remaining_hashes, (
+        "D2's stale hash must be dropped once the filter excludes it, so a "
+        "later unfiltered re-appearance stages as a fresh ADD, not an update"
+    )

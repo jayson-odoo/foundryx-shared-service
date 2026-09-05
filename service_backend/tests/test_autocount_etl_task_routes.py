@@ -1147,6 +1147,55 @@ def test_runs_are_newest_first_paginated_and_capped(client, rig, consumer):
     ).status_code == 422
 
 
+# ── plan sprint-5/03 - continuation on the wire (AC-03-21) ──────────────────
+#
+# RED test written BEFORE the coder. ASSUMPTION this test makes about the
+# not-yet-built wire shape: ``EtlTaskResponse`` gains an ``initialLoad`` key
+# (``None`` while no pass is open) shaped
+# ``{"complete": bool, "pagesDone": int, "lastMark": str|None, "kind": str}``,
+# derived from ``AcWatermark.cursor_json["pass"]`` (plan section 2.6) - there
+# is no HTTP affordance yet to force a real truncated run (paging does not
+# exist), so the precondition is seeded directly on the watermark row, same
+# technique as ``tests/test_autocount_bulk_load.py``'s guard test.
+
+
+def test_task_view_and_run_item_expose_continuation(client, session_factory, rig, consumer):
+    company_id, _sql_id = rig
+    _activated(client, company_id)
+    response = client.post(_url(company_id, "/run"), headers=_auth(client))
+    assert response.status_code == 200, response.text
+    run_id = response.json()["runId"]
+
+    db = session_factory()
+    run = db.get(AcSyncRun, run_id)
+    run.truncated = True
+    run.error = "Budget reached after page 1; continues on the next tick."
+    watermark = _watermark_row(db, _company_row(db, company_id))
+    watermark.cursor_json = {
+        **(watermark.cursor_json or {}),
+        "pass": {
+            "kind": "incremental", "startedAt": "2026-09-05T00:00:00+00:00",
+            "pagesDone": 1, "complete": False,
+        },
+    }
+    db.commit()
+    db.close()
+
+    runs_body = client.get(_url(company_id, "/runs"), headers=_auth(client)).json()
+    run_item = next(r for r in runs_body["data"] if r["id"] == run_id)
+    assert run_item["truncated"] is True
+    assert "page" in run_item["error"].lower()
+
+    task_body = client.get(_url(company_id), headers=_auth(client)).json()
+    assert task_body["initialLoad"] == {
+        "complete": False, "pagesDone": 1, "lastMark": None, "kind": "incremental",
+    }, task_body.get("initialLoad")
+
+
+def _company_row(db, company_id: str) -> AcCompany:
+    return db.get(AcCompany, company_id)
+
+
 def test_runs_requires_sync_read_and_404s_cross_tenant(client, session_factory, rig):
     company_id, _sql_id = rig
     db = session_factory()

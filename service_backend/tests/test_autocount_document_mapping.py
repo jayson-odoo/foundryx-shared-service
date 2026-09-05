@@ -3174,4 +3174,53 @@ def test_mapping_view_header_source_columns_come_from_the_last_preview(session_f
     assert set(view.ac_fields) >= {"doc_key", "doc_no", "status", "cancelled", "doc_date"}, (
         f"header ac_fields must be the previewed result columns - got {view.ac_fields}"
     )
+
+
+# ── plan sprint-5/03 - line fingerprint in the document presets (AC-03-20) ──
+#
+# RED test written BEFORE the coder, from the UAC + plan section 2.5: the
+# SO/PO/SPO header presets must gain an ``OUTER APPLY`` (SO currently has
+# none at all; PO/SPO's existing one only computes ``FirstDeliveryDate``)
+# selecting ``LineCount``/``QtySum``/``TransferedSum``/``SubTotalSum``/
+# ``MaxDtlKey`` from the line table filtered to ``ItemCode IS NOT NULL`` -
+# a line-only edit (e.g. fulfilment) then changes the header's own hash
+# without the engine needing any special knowledge of these columns.
+
+
+FINGERPRINT_COLUMNS = ("LineCount", "QtySum", "TransferedSum", "SubTotalSum", "MaxDtlKey")
+
+
+def test_document_presets_select_the_line_fingerprint_columns():
+    from modules.autocount.presets import PO_PRESET, SO_PRESET, SPO_PRESET
+
+    for preset, label in ((SO_PRESET, "SO"), (PO_PRESET, "PO"), (SPO_PRESET, "SPO")):
+        header_query = preset.header_query
+        for column in FINGERPRINT_COLUMNS:
+            assert f"AS {column}" in header_query, (
+                f"{label}_PRESET.header_query must select {column} - got:\n{header_query}"
+            )
+        assert "OUTER APPLY" in header_query, f"{label}_PRESET.header_query has no OUTER APPLY"
+        assert "ItemCode IS NOT NULL" in header_query, (
+            f"{label}_PRESET.header_query's fingerprint OUTER APPLY must filter "
+            f"ItemCode IS NOT NULL (drops description-only/sub-total lines)"
+        )
+
+
+def test_sql_pack_documents_the_line_fingerprint_columns():
+    """The cross-repo contract doc must show the SAME columns, with a note on
+    why (plan section 2.5) - a wire/contract change without the matching
+    doc change is a standing hard-fail rule (CLAUDE.md)."""
+    from pathlib import Path
+
+    pack_path = (
+        Path(__file__).resolve().parents[2]
+        / "documentation" / "plans" / "sprint-4" / "22-autocount-db-etl-autocount-sql.md"
+    )
+    text = pack_path.read_text(encoding="utf-8")
+    for column in FINGERPRINT_COLUMNS:
+        assert column in text, f"the SQL pack must document the {column} fingerprint column"
+    assert "19%" in text, (
+        "the pack must carry the 19%-of-fulfilled-SOs finding that motivates "
+        "the line fingerprint (header LastModified alone is not enough)"
+    )
     db.close()
