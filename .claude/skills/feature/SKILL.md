@@ -204,7 +204,7 @@ whenever the feature touches UI, not on every feature:
 | Any new FE dependency | `pick-ui-library` | First - repo picks already made: `motion`, `sonner`, `vaul`, `@dnd-kit` |
 | Periodic | `improve-animations` | - |
 
-Not used here: `animate-expo`, `write-swift`, `webapp-testing` (Playwright-based, idle per D15).
+Not used here: `animate-expo`, `write-swift`, `webapp-testing` (idle for this stack, D15).
 
 ## Related
 
