@@ -59,8 +59,13 @@ const SELECT_RESTRICTION = {
 };
 const TABLE_RESTRICTION = {
   name: '@/components/ui/table',
+  // Reworded (T8 fix round 1, item 5): the prior message said the primitive
+  // was "reserved for" table-field.tsx/block-view.tsx, but neither file
+  // actually imports it (measured 6 Sep 2026 - both render plain `<table>`
+  // markup directly, no import of the primitive) - so the message states
+  // the rule plainly instead of pointing at a non-existent allowlist.
   message:
-    'Every product table is a DataGrid (AC-DLA-56). @/components/ui/table is reserved for a form table FIELD (form-renderer/table-field.tsx) and a rendered email block (email-editor/block-view.tsx) - content, not a list.',
+    'Raw <table> markup is reserved for content renderers (a form table FIELD, a rendered email block) - every product table is a DataGrid (AC-DLA-56).',
 };
 const SONNER_RESTRICTION = {
   name: 'sonner',
@@ -118,17 +123,6 @@ const eslintConfig = [
       'components/platform/branding/branding.test.tsx',
     ],
     rules: { 'no-restricted-imports': ['error', { paths: [SELECT_RESTRICTION, TABLE_RESTRICTION] }] },
-  },
-  {
-    // The two content entries that render a real `<table>` as CONTENT (a
-    // form's table FIELD, a rendered email block), not a product list -
-    // `components/ui/ui-table.inventory.test.ts` is the runtime-enforced
-    // version of this same allowlist (AC-DLA-56/D8).
-    files: [
-      'components/platform/form-renderer/table-field.tsx',
-      'components/platform/email-editor/block-view.tsx',
-    ],
-    rules: { 'no-restricted-imports': ['error', { paths: [SELECT_RESTRICTION, SONNER_RESTRICTION] }] },
   },
   {
     // Pre-existing bare-Select debt (measured 5 Sep 2026), tracked and OPEN
