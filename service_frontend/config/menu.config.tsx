@@ -20,14 +20,10 @@ import {
 import { type MenuConfig } from './types';
 
 export const MENU_SIDEBAR: MenuConfig = [
-  {
-    title: 'Dashboards',
-    icon: LayoutGrid,
-    children: [
-      { title: 'Light Sidebar', path: '/' },
-      { title: 'Dark Sidebar', path: '/dark-sidebar' },
-    ],
-  },
+  // T7 fix round 1 - was a "Light Sidebar" / "Dark Sidebar" theme-demo
+  // submenu (Metronic showcase leftovers, BL-SS-057); a single leaf to `/`
+  // matches MENU_MEGA's "Home" entry (also a single leaf, no submenu).
+  { title: 'Dashboards', icon: LayoutGrid, path: '/' },
   // Platform Console (plan 07) - operator-only: hidden unless the session user
   // is in the platform tenant AND can('tenants.read') (SidebarMenu filters).
   { heading: 'Platform', platformOnly: true },
