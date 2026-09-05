@@ -172,24 +172,25 @@ class SyncConfigError(Exception):
 # ── cooperative abort ─────────────────────────────────────────────────────────
 
 
-def _advance_mark_and_ties(
+def _advance_mark_and_key(
     existing_mark: Any,
-    existing_ties: List[str],
+    existing_last_key: Any,
     candidate_mark: Any,
-    candidate_ties: List[str],
-) -> Tuple[Any, List[str]]:
+    candidate_last_key: Any,
+) -> Tuple[Any, Any]:
     """The MAX of two stored marks, never backwards (F3, review round 2) -
-    and the tie-ref set that travels WITH whichever mark wins.
+    and the ``lastKey`` that travels WITH whichever mark wins (composite
+    seek ordering, review round 3 R2-B1 - replaces the round-2 tie-ref-set
+    version of this same idea).
 
-    A tie-ref list belongs to the EXACT mark it was recorded against - if a
+    A ``lastKey`` belongs to the EXACT mark it was recorded against - if a
     just-completed pass's own frontier LOSES the monotonic compare (the
     public position was already ahead, left there by a different mode's
-    pass), its tie group must NOT overwrite the winning mark's own tie
-    group with one for a DIFFERENT mark value entirely. That silent
-    cross-contamination (an earlier version of this fix always replaced the
-    root ``tieRefs`` with whatever the CURRENT page produced, regardless of
-    mode) is exactly what makes a fresh incremental pass wrongly exclude an
-    unrelated ref merely because it once sat in some OTHER pass's tie group.
+    pass), its ``lastKey`` must NOT overwrite the winning mark's own key
+    with one for a DIFFERENT mark value entirely (that cross-contamination,
+    with round 2's tie-ref-set equivalent, is what made a fresh incremental
+    pass wrongly exclude an unrelated ref that once sat in some OTHER
+    pass's tie group).
 
     Both sides are whatever ``sql_source.source._encode_mark`` already
     produced (a JSON-safe ISO string for a datetime, or the value as-is for
@@ -200,21 +201,31 @@ def _advance_mark_and_ties(
     never a safety gate, so failing loud here would be the wrong trade.
     """
     if candidate_mark is None:
-        return existing_mark, existing_ties
+        return existing_mark, existing_last_key
     if existing_mark is None:
-        return candidate_mark, list(candidate_ties)
+        return candidate_mark, candidate_last_key
     try:
         decoded_candidate = decode_mark(candidate_mark)
         decoded_existing = decode_mark(existing_mark)
     except TypeError:
-        return candidate_mark, list(candidate_ties)
+        return candidate_mark, candidate_last_key
     if decoded_candidate > decoded_existing:
-        return candidate_mark, list(candidate_ties)
+        return candidate_mark, candidate_last_key
     if decoded_candidate == decoded_existing:
-        # An EXACT tie between two independent passes' frontiers - merge
-        # rather than let either one silently evict the other's tie group.
-        return existing_mark, sorted(set(existing_ties) | set(candidate_ties))
-    return existing_mark, existing_ties
+        # An EXACT tie between two independent passes' frontiers - keep
+        # whichever ``lastKey`` represents FURTHER progress through the
+        # shared tie group, never guess when the two are not comparable.
+        if existing_last_key is None:
+            return existing_mark, candidate_last_key
+        if candidate_last_key is None:
+            return existing_mark, existing_last_key
+        try:
+            if decode_mark(candidate_last_key) > decode_mark(existing_last_key):
+                return existing_mark, candidate_last_key
+        except TypeError:
+            pass
+        return existing_mark, existing_last_key
+    return existing_mark, existing_last_key
 
 
 def _aborted(db: Session, job_id: str) -> bool:
@@ -1044,17 +1055,18 @@ def _run_paged_sql_db(
     # ONCE here, straight off the stored row, never off ``cursor.mark``
     # (which for a fresh RECONCILE pass is deliberately ``None``, and for a
     # RESUMED pass is the PASS-scoped position, not this one). It only ever
-    # moves forward (``_advance_mark_and_ties``), and for a reconcile it does
+    # moves forward (``_advance_mark_and_key``), and for a reconcile it does
     # not move AT ALL until the whole pass completes - see the tail below.
     existing_cursor = watermark_row.cursor_json if isinstance(watermark_row.cursor_json, dict) else {}
     top_mark: Any = existing_cursor.get(CURSOR_MARK)
-    top_tie_refs: List[str] = list(existing_cursor.get("tieRefs") or [])
+    top_last_key: Any = existing_cursor.get("lastKey")
     pass_rows_scanned_before = cursor.rows_scanned
 
     total_rows_scanned = total_added = total_updated = total_staged = total_failed = 0
     truncated = False
     pages_done = cursor.pages_done
     pass_mark: Any = cursor.mark
+    pass_last_key: Any = cursor.last_key
     cumulative_rows_scanned = pass_rows_scanned_before
     aborted_flag = False
     page = None
@@ -1194,6 +1206,8 @@ def _run_paged_sql_db(
             cumulative_rows_scanned = pass_rows_scanned_before + total_rows_scanned
             if page.last_mark is not None:
                 pass_mark = page.last_mark
+            if page.last_key is not None:
+                pass_last_key = page.last_key
             # The TOP-LEVEL public position advances per page for a plain
             # incremental/manual pass (unchanged, legacy-compatible
             # behaviour a truncated MANUAL/INCREMENTAL run's own tests
@@ -1202,8 +1216,8 @@ def _run_paged_sql_db(
             # in-flight reconcile is never mistaken, mid-pass, for having
             # already advanced past work it has not finished yet.
             if mode != RUN_MODE_RECONCILE:
-                top_mark, top_tie_refs = _advance_mark_and_ties(
-                    top_mark, top_tie_refs, pass_mark, list(page.tie_refs)
+                top_mark, top_last_key = _advance_mark_and_key(
+                    top_mark, top_last_key, pass_mark, pass_last_key
                 )
 
             service.log(
@@ -1219,13 +1233,15 @@ def _run_paged_sql_db(
                 # rows on the real company already carry
                 # ``sqlWatermarkColumn``/``sqlWatermark`` - renaming them
                 # would orphan every task's mark and force a full re-read.
-                # ``tieRefs`` and ``pass`` are the only ADDED keys. This
+                # ``lastKey`` and ``pass`` are the only ADDED keys (round 3
+                # R2-B1 - REPLACES the round-2 ``tieRefs`` shape entirely,
+                # composite seek ordering needs no ref-set exclusion). This
                 # TOP-LEVEL pair is the PUBLIC, monotonic position (F3) -
-                # separate from ``pass.mark``/``pass.tieRefs`` below, which
+                # separate from ``pass.mark``/``pass.lastKey`` below, which
                 # is this SPECIFIC pass's own live per-page position.
                 CURSOR_COLUMN: source.watermark_column,
                 CURSOR_MARK: top_mark,
-                "tieRefs": top_tie_refs,
+                "lastKey": top_last_key,
                 "pass": {
                     "kind": mode,
                     "startedAt": pass_started_at.isoformat(),
@@ -1240,7 +1256,7 @@ def _run_paged_sql_db(
                     # behind by an unrelated, already-finished one. A brand
                     # new, pass-scoped field - not part of the legacy shape.
                     "mark": pass_mark,
-                    "tieRefs": list(page.tie_refs),
+                    "lastKey": pass_last_key,
                     # Cumulative across the WHOLE pass, not just this run
                     # (R-NIT, review round 2) - the zero-rows delete guard
                     # below reads this to tell "this pass never read
@@ -1266,7 +1282,7 @@ def _run_paged_sql_db(
                 break
 
             cursor = PageCursor(
-                mark=page.last_mark, tie_refs=page.tie_refs, pass_kind=mode,
+                mark=page.last_mark, last_key=page.last_key, pass_kind=mode,
                 pass_started_at=pass_started_at, pages_done=pages_done,
                 rows_scanned=cumulative_rows_scanned,
             )
@@ -1350,17 +1366,17 @@ def _run_paged_sql_db(
             # The reconcile's OWN public position advances only NOW that the
             # whole pass has genuinely finished (F3, review round 2) - never
             # per page, and never past whatever an incremental tick may have
-            # already left ahead of it. Its tie-ref set travels WITH it (or
+            # already left ahead of it. Its ``lastKey`` travels WITH it (or
             # not at all) - never overwriting a DIFFERENT, winning mark's own
-            # tie group (``_advance_mark_and_ties``).
-            top_mark, top_tie_refs = _advance_mark_and_ties(
-                top_mark, top_tie_refs, pass_mark, list(page.tie_refs)
+            # key (``_advance_mark_and_key``).
+            top_mark, top_last_key = _advance_mark_and_key(
+                top_mark, top_last_key, pass_mark, pass_last_key
             )
             watermark_row.cursor_json = {
                 **(watermark_row.cursor_json or {}),
                 CURSOR_COLUMN: source.watermark_column,
                 CURSOR_MARK: top_mark,
-                "tieRefs": top_tie_refs,
+                "lastKey": top_last_key,
             }
         # A completed pass's ``pass`` dict is LEFT AS-IS (``complete: true``
         # already written per-page above) - plan sprint-5/03 §2.2: only a
@@ -1382,14 +1398,28 @@ def _run_paged_sql_db(
     #     !!  D1 REVERSAL: THE WATERMARK ADVANCES REGARDLESS OF MAPPING
     #         FAILURES (plan sprint-5/03 S2, AC-03-11) - a permanently bad
     #         document must never force a full re-extract every run.  !!
-    decoded_max = decode_mark(pass_mark) if pass_mark is not None else None
+    #
+    #     !!  THE PUBLIC ``last_modified_at`` USES THE MONOTONIC ``top_mark``,
+    #         NEVER THE PASS'S OWN ``pass_mark`` (R2-S2, review round 3).  !!
+    # A RECONCILE pass always restarts its own position from scratch,
+    # ascending - ``pass_mark`` legitimately sits BELOW whatever a previous
+    # successful run already advanced the public watermark to, for as long
+    # as this pass has not yet caught back up. Stamping the PUBLIC
+    # ``last_modified_at``/``run.watermark_advanced_to`` from ``pass_mark``
+    # regressed both backwards on every truncated reconcile tick - exactly
+    # the field an operator (and D18-style staleness monitoring) reads to
+    # ask "how fresh is this entity", now silently going backwards.
+    # ``top_mark`` already folds the pass's own frontier in monotonically
+    # (advancing per page for manual/incremental, only at completion for a
+    # reconcile) - it is the ONLY value this may ever be stamped from.
+    decoded_max = decode_mark(top_mark) if top_mark is not None else None
     if isinstance(decoded_max, datetime):
         watermark_row.last_modified_at = decoded_max.astimezone(timezone.utc)
     watermark_row.cursor_json = {
         **(watermark_row.cursor_json or {}),
         CURSOR_COLUMN: source.watermark_column,
         CURSOR_MARK: top_mark,
-        "tieRefs": top_tie_refs,
+        "lastKey": top_last_key,
     }
     watermark_row.consecutive_failures = 0
     watermark_row.last_success_at = datetime.now(timezone.utc)

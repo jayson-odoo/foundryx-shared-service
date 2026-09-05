@@ -57,22 +57,9 @@
   once (`persist_hashes=False`, nothing written) and report that ONE page's records. `preview_
   task`'s payload gains `warnings.pagedPreview: true` when the page is not `complete` (AC-03-14).
   A non-watermarked master is unaffected (still `fetch_changes`, one page = everything).
-- **F5/F6 (tie-group bound, row cap).** `build_paged_wrap` gained an OPTIONAL `skip: int = 0`
-  keyword (every existing caller/test that omits it gets byte-identical text) - when given, it
-  swaps `TOP (:page_size)`/`LIMIT :page_size` for `OFFSET :skip ROWS FETCH NEXT :page_size ROWS
-  ONLY` (mssql) / `LIMIT :page_size OFFSET :skip` (everyone else). `fetch_page` uses this
-  INTERNALLY, within ONE call, to walk past whatever it has already pulled THIS call without
-  ever inflating the bound `:page_size` itself - the persisted `tie_refs` (round-tripped via
-  `PageCursor`/`cursor_json`, unchanged shape) stays purely VALUE-based (a ref, matched against
-  the row's OWN mark too - see below) so nothing here depends on row POSITION being stable
-  ACROSS separate runs (an OFFSET that were persisted across calls would be unsafe the moment a
-  row is deleted between two runs - the whole point of the R-S1 fix below). The per-partition
-  row cap (F6) moved inside this per-batch read, matching `_read`.
-- **Exclusion is by (ref, mark), never ref alone (closes the R-S1 gap for STAGING, not just
-  deletes).** A row is only ever excluded from a page's `records` when its OWN current
-  watermark value equals the boundary `cursor.mark` being resumed - a ref that reappears with a
-  NEW, later mark (a delete then a fresh insert/edit with the same key) is never mistaken for
-  "already taken" just because that same ref sat in a tie group at some OLDER mark.
+- **F5/F6 (tie-group bound, row cap) - SUPERSEDED by round 3's composite seek ordering below**
+  (round 2's `skip`/`OFFSET` internal-retry design turned out to be unsafe under a concurrent
+  delete between statements, R2-B1). Kept here only as history; see the round 3 section.
 - **F2 (abort between pages) - investigated, no code change.** The security review's literal fix
   (roll back a just-staged page's hashes/cursor on a post-stage abort, discard that page's rows)
   was NOT implemented: the tester's own real-entry-point test for this scenario
@@ -86,6 +73,96 @@
   a DRAFT/paused task run manually past an abort (its rows are job-scoped and never reach a
   review batch) - flagged to the backlog (§6), not fixed here, since no red test demands it and
   the two existing tests actively disagree about which behaviour is correct.
+
+**Review round 3 amendments (R2-B1 blocker + follow-up S1/S2 + NIT):**
+- **R2-B1 (composite `(watermark, key)` seek ordering) - REPLACES round 2's `skip`/`OFFSET`
+  design entirely.** Round 2's internal retry loop assumed the database returns a same-mark tie
+  group in a STABLE relative order across separate statements within one call - no engine
+  actually guarantees that for an `ORDER BY` on a column with duplicate values, so a row could be
+  silently skipped (or misread as a phantom delete on a reconcile). `build_paged_wrap` gained
+  `quoted_key`/`last_key` keywords (both optional, defaulting to the byte-identical OLD
+  watermark-only shape for any caller that omits them): given, it orders `ORDER BY t.<wm>,
+  t.<key>` (`key` = `key_columns[0]`, checked/quoted the same way as the watermark) with a
+  strict SEEK predicate `(t.<wm> > :mark) OR (t.<wm> = :mark AND t.<key> > :last_key)`, ANDed
+  with the document from-date floor inside its OWN parens (AND binds tighter than OR - an
+  ungrouped seek predicate ANDed with the date floor would silently drop the floor off the
+  second branch). `PageCursor`/`PageResult` gain `last_key: Any` REPLACING `tie_refs`/`tie_refs`
+  entirely; `cursor_json` gains a top-level `lastKey` (replacing `tieRefs`) and
+  `pass.lastKey`/`pass.mark` (replacing `pass.tieRefs`). `fetch_page` is exactly ONE statement
+  per page now - no internal retry loop, no `max_iterations` valve, no `exclude_refs` set;
+  `sync._advance_mark_and_key` replaces `_advance_mark_and_ties` (same monotonic-never-backwards
+  contract, now carrying a scalar `lastKey` instead of a tie-ref set).
+- **Exact-multiple pages: bind `page_size + 1`, one statement, no trailing confirmation page.**
+  `fetch_page` asks for one row MORE than `page_size` and trims it back off - `len(raw_rows) <=
+  page_size` means this page is genuinely the last one (whether short or an exact multiple),
+  `> page_size` means one more row exists beyond it (dropped, re-read as the first row of the
+  NEXT page via the normal seek). This is what makes a same-mark tie group of `n` rows cost
+  EXACTLY `ceil(n/page_size)` real statements (T1(b)) - the old `rows_scanned < page_size`
+  heuristic needed a whole extra all-empty page to confirm completion whenever a population
+  landed on an exact multiple of `page_size`.
+- **A pass with a stored `mark` but no `lastKey` is NOT resumable (documented per the brief).**
+  Only a LANE database mid-migration between review rounds can carry this shape (round 2's
+  `PageCursor.from_watermark_row` stored `mark`/`tieRefs` but never a `lastKey`) - the real
+  company has never run under either round yet. Both the resume branch and the fresh-pass branch
+  of `PageCursor.from_watermark_row` treat this as equivalent to no stored position at all and
+  restart the pass from scratch; this is a ONE-TIME, LOCAL-only cost, never a production
+  migration concern.
+- **R2-S1 (preview reports the page's real row count).** `PageResult` gained `preview_records`
+  (every candidate on the page regardless of changed/unchanged status, built AFTER a document's
+  changed-header lines are attached) alongside the existing change-only `records`.
+  `EtlService._extract_and_map`'s preview path now maps `preview_records`; the run loop
+  (`sync.py`) is UNCHANGED (`records`, still change-only). A preview run immediately after a real
+  run (source unchanged, everything hashed) used to report `total: 0` for a task that plainly has
+  rows - a known, ACCEPTED simplification stays: an UNCHANGED document row's `preview_records`
+  entry does not carry lines (lines are only ever fetched for changed/new headers, by design) -
+  no test exercises this combination today. `preview_task`'s `warnings.pagedPreview` (F1) note
+  applies to the FIRST page only, same as before - a sibling-overlap warning computed from
+  `current_refs` is therefore also scoped to that one page, not the whole population.
+- **R2-S2 (monotone `last_modified_at`).** `watermark_row.last_modified_at` (and therefore
+  `run.watermark_advanced_to`, assigned from it one line later) is now stamped from the
+  MONOTONIC `top_mark`, never the pass's own `pass_mark` - a RECONCILE pass always restarts its
+  OWN position from scratch, ascending, so `pass_mark` legitimately sits BELOW whatever a
+  previous successful run already advanced the public watermark to for as long as this pass has
+  not yet caught back up; stamping the public field from it regressed the ONE value an operator
+  (and staleness monitoring) reads to ask "how fresh is this entity".
+- **NIT (scheduler never records `mode='manual'`).** `_sweep_one`'s open-pass override (round 2
+  F3) now clamps a continued pass's `kind` to `incremental`/`reconcile` - a continued MANUAL pass
+  (an operator-triggered initial load truncated by the budget) is swept as `incremental`, never
+  the operator's own `manual` verbatim (a scheduler-fired job literally recording `manual` is a
+  contradiction). `build_paged_wrap`'s two `assert`s are now `SqlSourceError` guards (a caller
+  fault reads as a NAMED source error, never an `AssertionError` a test/production trace would
+  have to decode).
+- **Known test conflicts from this round's design, reported not fixed (do not edit tests):**
+  four PRE-EXISTING tests round 3 did not touch still construct `PageCursor(tie_refs=...)`/read
+  `PageResult.tie_refs` directly (`test_a_pass_reads_pages_of_page_size_and_stages_each_before_
+  the_next`, `test_a_filtered_out_header_is_never_a_delete_candidate_after_paging` in
+  `test_autocount_sql_db_source.py`, and round 2's OWN F5 test
+  `test_a_tie_group_larger_than_3x_page_size_stays_bounded_per_page` in
+  `test_autocount_bulk_load_review.py`) and now raise `AttributeError` - the field no longer
+  exists, per the brief's explicit "remove tieRefs ... entirely". Two round-3 `build_paged_wrap`
+  unit tests (`test_build_paged_wrap_first_page_orders_by_watermark_then_key`,
+  `test_build_paged_wrap_later_page_is_a_seek_predicate`) assert the SQL text
+  `.rstrip().endswith("ORDER BY t.<wm>, t.<key>")` for EVERY dialect including postgresql/mysql/
+  sqlite - those dialects have no `TOP`-style prefix bound, so `LIMIT :page_size` must trail
+  `ORDER BY` (standard SQL syntax; `LIMIT` cannot precede `ORDER BY`), which the assertion does
+  not account for (5 of the parametrized cases fail; only `mssql`, whose `TOP` is a PREFIX
+  clause, passes). Two further tests regress from the page_size+1 fix's own correctness gain (an
+  exact-multiple population now completes ONE PAGE SOONER than before, since it no longer needs
+  a trailing all-empty confirmation page): `test_deletes_are_staged_only_when_the_reconcile_
+  pass_completes` (`test_autocount_bulk_load.py`) hardcodes "2 full pages of 2, still
+  incomplete" for a 4-row population at page_size 2, which now completes after page 2, not 3;
+  `test_a_later_pages_empty_read_completes_normally_not_a_guard_trip` similarly assumed a
+  2nd read of exactly `page_size` rows stays open, so its 3rd call becomes a FRESH pass (not a
+  continuation) that legitimately trips the zero-rows guard - correct per R-NIT's own control
+  case, just reached one call earlier than the test expected. One further, GENUINE gap the
+  peek-ahead surfaces (not merely a stale assumption): `test_an_abort_between_pages_delivers_
+  page_one_exactly_once_via_the_scheduler` now needs only 2 statements (not 3) to cover its
+  4-row fixture, so the SAME abort-injection point (the 2nd statement) lands on the FINAL,
+  pass-completing page instead of a middle one - the aborted job's cursor already shows
+  `pass.complete: true`, so nothing ever schedules a further tick to run `auto_push`, and the
+  already-staged rows are never pushed. Tracked as BL-SS-061 (§6) - a genuine, narrow gap
+  (an abort landing on the pass's OWN final page has no future run to auto-push it), out of
+  round 3's explicit scope.
 
 ### 2.2 Run loop, change-only staging, watermark (`sync.py`)
 
@@ -304,3 +381,5 @@ parallel at the end. Live load = AC-03-22/23 on the real company and `ac_sim`.
 - BL-SS-059 Preview does not count mapping-failed rows (tester BL-B/BL-C).
 - BL-SS-060 A DRAFT/paused paged task's page-in-flight abort can strand staged rows forever
   (security review round 2, F2 - investigated, not fixed; see the 2.1 amendment above).
+- BL-SS-061 An abort landing on a pass's own FINAL (completing) page never gets auto-pushed
+  (surfaced by review round 3's peek-ahead fix; see the round 3 amendment above).

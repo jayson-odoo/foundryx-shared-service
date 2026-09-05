@@ -165,8 +165,21 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         pass_state = watermark.cursor_json.get("pass")
         if isinstance(pass_state, dict) and not pass_state.get("complete", False):
             open_kind = pass_state.get("kind")
-            if open_kind:
+            #     !!  A SCHEDULER TICK NEVER RECORDS mode='manual' (NIT,
+            #         review round 3).  !!
+            # A manual "Run now" can itself open an incomplete pass (an
+            # operator-triggered initial load truncated by the budget) - the
+            # scheduler continuing it must still record a SCHEDULE-driven
+            # mode on the job/run, never the operator's own ``manual``
+            # verbatim (a scheduler-fired job claiming to be "manual" is a
+            # contradiction in terms and would misreport how the run
+            # started). Falls back to incremental, the shorter/default
+            # cadence - reconcile only ever opens its OWN kind, so this only
+            # ever fires for a continued manual pass.
+            if open_kind in (RUN_MODE_INCREMENTAL, RUN_MODE_RECONCILE):
                 mode = open_kind
+            elif open_kind:
+                mode = RUN_MODE_INCREMENTAL
 
     next_incremental, next_reconcile = EtlService.next_run_times(
         config.source_config or {}, now=now

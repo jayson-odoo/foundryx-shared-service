@@ -303,70 +303,78 @@ def build_paged_wrap(
     *,
     dialect: str,
     page_size: int,
-    skip: int = 0,
+    quoted_key: Optional[str] = None,
+    last_key: Any = None,
 ) -> str:
-    """The PAGED statement shape (plan sprint-5/03 S1, AC-03-07) - the SAME
-    derived-table wrap as ``build_incremental_wrap``/``build_document_header_
-    wrap``, plus a bounded page.
+    """The PAGED statement shape (plan sprint-5/03 S1, AC-03-07; composite
+    seek ordering, review round 3 R2-B1) - the SAME derived-table wrap as
+    ``build_incremental_wrap``/``build_document_header_wrap``, plus a
+    bounded, ORDERED page.
 
-    Two differences from the older wraps, both deliberate:
+    ``quoted_key`` (round 3) is the task's key column, seeked ALONGSIDE the
+    watermark - ``ORDER BY t.<wm>, t.<key>`` with a compound predicate
+    ``(t.<wm> > :mark) OR (t.<wm> = :mark AND t.<key> > :last_key)``. This
+    REPLACES round 2's ``>=``-plus-Python-exclusion design entirely: that
+    design paged a same-mark tie group by re-reading the boundary and
+    dropping already-taken refs in Python, which only works if the DATABASE
+    returns ties in the SAME relative order on every statement - a real
+    engine gives NO such guarantee for an ``ORDER BY`` on a single column
+    with duplicate values, so a row could be silently skipped (or, on a
+    reconcile, misread as a phantom delete). A STRICT ``>`` seek on a fully
+    deterministic ``(watermark, key)`` ordering has no such gap: exactly one
+    statement per page, always bounded by ``:page_size``, regardless of how
+    large a same-mark tie group is.
 
-    * The predicate on the mark is ``>=`` (not ``>``) - a page boundary
-      landing inside a group of rows that share one watermark value must
-      lose nothing; the CALLER (``SqlDbSource.fetch_page``) drops the refs
-      already taken at exactly that mark from the raw result, in Python,
-      after the read (AC-03-02).
-    * ``page_size`` rides as the bound parameter ``:page_size`` - NEVER
-      spliced into the text - so a huge page size can never widen the SQL
-      shape itself, only the bound value. (NIT, review round 2: the value
-      itself does nothing to the TEXT built here either way - asserted, not
-      silently unused, since the caller's contract still promises it rides
-      as a genuine bind.)
+    ``quoted_key is None`` keeps the OLD watermark-only shape byte-for-byte
+    (every caller that has not been updated to pass one) - the inclusive
+    ``>=`` bound plus Python-side exclusion this used to require is now ONLY
+    reachable this way, kept for a caller with no key to seek on (there is
+    none in this codebase any more; ``SqlDbSource.fetch_page`` always has a
+    key column, construction-time-guarded already).
+
+    ``page_size`` rides as the bound parameter ``:page_size`` - NEVER
+    spliced into the text - so a huge page size can never widen the SQL
+    shape itself, only the bound value; ``last_key`` rides as ``:last_key``
+    the same way, never spliced (a business key can be arbitrary tenant
+    text).
 
     ``quoted_date_column is None`` = a paged MASTER (no from-date floor);
     given = a document task's permanent ``fromDate`` scope boundary, ANDed
-    with the mark predicate exactly like ``build_document_header_wrap``.
-    ``mark is None`` = the first page of a pass - no mark predicate at all.
-
-    ``skip`` (F5, review round 2) - defaults to 0, which reproduces the
-    EXACT text every existing caller already depends on (a plain
-    ``TOP``/``LIMIT``). A caller walking a tie group larger than one page
-    (several rows sharing the exact same watermark value) sets this to how
-    many of THAT group it has already taken, so the DATABASE skips them via
-    ``OFFSET``/``FETCH`` instead of the caller inflating ``page_size`` itself
-    by that same count on every subsequent page - which is what let a single
-    oversized tie group's own bound page size grow without limit as more of
-    it was walked. ``skip`` rides as its OWN bind (``:skip``), never spliced.
+    with the seek predicate exactly like ``build_document_header_wrap`` -
+    the seek predicate is parenthesised as ONE group when it is ANDed with
+    the date floor (AND binds tighter than OR in SQL; an ungrouped
+    ``date_floor AND wm > mark OR (...)`` would silently drop the date
+    floor off the second branch of the seek). ``mark is None`` = the first
+    page of a pass - no mark predicate (and no seek predicate) at all.
     """
-    assert page_size > 0, "page_size must be a positive bind value"
-    assert skip >= 0, "skip must never be negative"
+    if page_size <= 0:
+        raise SqlSourceError("page_size must be a positive bind value")
     inner = _strip_trailing_order_by(query).replace(":", r"\:")
+
+    seek_predicate: Optional[str] = None
+    if mark is not None:
+        if quoted_key is not None:
+            seek_predicate = (
+                f"(t.{quoted_watermark} > :mark) OR "
+                f"(t.{quoted_watermark} = :mark AND t.{quoted_key} > :last_key)"
+            )
+        else:
+            seek_predicate = f"t.{quoted_watermark} >= :mark"
+
     predicates: List[str] = []
     if quoted_date_column is not None:
         predicates.append(f"t.{quoted_date_column} >= :from_date")
-    if mark is not None:
-        predicates.append(f"t.{quoted_watermark} >= :mark")
+    if seek_predicate is not None:
+        needs_grouping = quoted_date_column is not None and quoted_key is not None
+        predicates.append(f"({seek_predicate})" if needs_grouping else seek_predicate)
     where = f" WHERE {' AND '.join(predicates)}" if predicates else ""
-    if dialect == "mssql":
-        if skip:
-            return (
-                f"SELECT * FROM ({inner}) AS t{where} "
-                f"ORDER BY t.{quoted_watermark} "
-                f"OFFSET :skip ROWS FETCH NEXT :page_size ROWS ONLY"
-            )
-        return (
-            f"SELECT TOP (:page_size) * FROM ({inner}) AS t{where} "
-            f"ORDER BY t.{quoted_watermark}"
-        )
-    if skip:
-        return (
-            f"SELECT * FROM ({inner}) AS t{where} "
-            f"ORDER BY t.{quoted_watermark} LIMIT :page_size OFFSET :skip"
-        )
-    return (
-        f"SELECT * FROM ({inner}) AS t{where} "
-        f"ORDER BY t.{quoted_watermark} LIMIT :page_size"
+
+    order_by = (
+        f"t.{quoted_watermark}, t.{quoted_key}" if quoted_key is not None else f"t.{quoted_watermark}"
     )
+    if dialect == "mssql":
+        return f"SELECT TOP (:page_size) * FROM ({inner}) AS t{where} ORDER BY {order_by}"
+    return f"SELECT * FROM ({inner}) AS t{where} ORDER BY {order_by} LIMIT :page_size"
 
 
 @dataclass
@@ -383,11 +391,16 @@ class PageCursor:
     """
 
     mark: Any = None
-    # Refs already taken at EXACTLY ``mark`` (a tie group straddling the
-    # previous page boundary, AC-03-02) - the source drops these from the
-    # next page's raw read so a shared watermark value loses/duplicates
-    # nothing, however large the tie group grows relative to the page size.
-    tie_refs: Sequence[str] = field(default_factory=tuple)
+    # The LAST KEY-COLUMN value taken at ``mark`` (composite seek ordering,
+    # review round 3 R2-B1) - together ``(mark, last_key)`` is the exact
+    # ``(watermark, key)`` position the SEEK predicate resumes strictly
+    # AFTER. REPLACES round 2's ``tie_refs`` ref-set exclusion entirely: a
+    # deterministic ``ORDER BY t.<wm>, t.<key>`` plus a strict ``>`` seek
+    # never needs to re-read a boundary and drop already-taken refs in
+    # Python, which depended on the database returning ties in a STABLE
+    # order across separate statements - a guarantee no engine actually
+    # makes for an ``ORDER BY`` on a column with duplicate values.
+    last_key: Any = None
     pass_kind: str = RUN_MODE_MANUAL
     pass_started_at: Optional[datetime] = None
     pages_done: int = 0
@@ -418,14 +431,26 @@ class PageCursor:
         branch carried this check before; the resume branch did not, which
         is the bug.
 
-        The pass's OWN position (``pass.mark``/``pass.tieRefs``/
-        ``pass.rowsScanned``, review round 2 F3) is what a RESUME reads -
-        never the top-level ``CURSOR_MARK``/``tieRefs``, which is a
-        SEPARATE, purely monotonic public position (``sync.py``'s own
-        ``_advance_mark``) that a reconcile pass does not move until it
-        completes. The top-level pair is what the FRESH-pass branch below
-        still reads, to resume a plain incremental/manual run from wherever
-        the public position last stood - the legacy shape, unchanged.
+        The pass's OWN position (``pass.mark``/``pass.lastKey``/
+        ``pass.rowsScanned``, review round 2 F3 + round 3 R2-B1) is what a
+        RESUME reads - never the top-level ``CURSOR_MARK``/``lastKey``,
+        which is a SEPARATE, purely monotonic public position (``sync.py``'s
+        own ``_advance_mark_and_ties``) that a reconcile pass does not move
+        until it completes. The top-level pair is what the FRESH-pass
+        branch below still reads, to resume a plain incremental/manual run
+        from wherever the public position last stood - the legacy shape,
+        unchanged.
+
+        !!  A MARK WITH NO ``lastKey`` IS NOT RESUMABLE (round 3 R2-B1).  !!
+        Round 2 stored ``mark``/``tieRefs`` but never a ``lastKey`` - a row
+        left mid-pass by that code (or the round-2 legacy shape at the top
+        level) has a ``mark`` with nothing to seek a KEY from, so resuming
+        it under the composite predicate would silently re-admit or drop
+        whatever shares that exact mark. Both branches below treat a stored
+        ``mark`` with no matching ``lastKey`` as equivalent to no stored
+        position at all - the pass restarts fresh. This is a LOCAL-lane-only
+        concern (only a lane DB mid-migration between review rounds carries
+        such a row); the real company has never run either round yet.
         """
         cursor = watermark_row.cursor_json if isinstance(watermark_row.cursor_json, dict) else {}
         pass_state = cursor.get("pass") if isinstance(cursor.get("pass"), dict) else None
@@ -436,6 +461,7 @@ class PageCursor:
             and column_matches
             and pass_state.get("kind") == mode
             and not pass_state.get("complete", False)
+            and (pass_state.get("mark") is None or pass_state.get("lastKey") is not None)
         ):
             started_raw = pass_state.get("startedAt")
             started = _decode_mark(started_raw) if started_raw else now
@@ -443,7 +469,7 @@ class PageCursor:
                 started = now
             return cls(
                 mark=pass_state.get("mark"),
-                tie_refs=tuple(pass_state.get("tieRefs") or ()),
+                last_key=pass_state.get("lastKey"),
                 pass_kind=mode,
                 pass_started_at=started,
                 pages_done=int(pass_state.get("pagesDone") or 0),
@@ -454,23 +480,24 @@ class PageCursor:
         # "full <query> extract, ignore watermark"); an incremental/manual
         # pass resumes from the STORED watermark mark, when it was left by
         # THIS SAME watermark column (a reconfigured column's stored mark
-        # belongs to a different comparison and must never be reused). The
-        # cursor keeps the LEGACY keys (``CURSOR_COLUMN``/``CURSOR_MARK`` -
-        # live rows on real companies already carry them; renaming would
-        # orphan every task's mark and force a full re-read) - ``tieRefs``
-        # and ``pass`` are the only ADDED keys.
+        # belongs to a different comparison and must never be reused) AND
+        # carries a ``lastKey`` to seek from (see the module note above).
+        # The cursor keeps the LEGACY keys (``CURSOR_COLUMN``/``CURSOR_MARK``
+        # - live rows on the real company already carry them; renaming
+        # would orphan every task's mark and force a full re-read) -
+        # ``lastKey`` and ``pass`` are the only ADDED top-level keys.
         start_mark = None
-        start_tie_refs: Sequence[str] = ()
-        if mode != RUN_MODE_RECONCILE and column_matches:
+        start_last_key = None
+        if (
+            mode != RUN_MODE_RECONCILE
+            and column_matches
+            and cursor.get("lastKey") is not None
+        ):
             start_mark = cursor.get(CURSOR_MARK)
-            # The refs already taken at EXACTLY ``start_mark`` (from the
-            # pass that left it) must travel with it - otherwise the very
-            # row that PRODUCED the mark is re-included by the ``>=``
-            # predicate and mis-reads as a freshly "scanned" row every tick.
-            start_tie_refs = tuple(cursor.get("tieRefs") or ())
+            start_last_key = cursor.get("lastKey")
         return cls(
             mark=start_mark,
-            tie_refs=start_tie_refs,
+            last_key=start_last_key,
             pass_kind=mode,
             pass_started_at=now,
             pages_done=0,
@@ -491,13 +518,27 @@ class PageResult:
     """
 
     records: List["SourceRecord"] = field(default_factory=list)
+    # EVERY candidate row on this page, regardless of changed/unchanged
+    # status (R2-S1, review round 3) - a preview immediately after a real
+    # run has already hashed the page, so ``records`` (change-only by
+    # design, D2) would report 0 rows for a task that plainly has some;
+    # ``EtlService._extract_and_map``'s preview path maps THIS instead,
+    # while the run loop keeps using ``records`` (change-only staging is
+    # unaffected). Lines are attached for a document's row here too, same
+    # as ``records`` - see the note in ``fetch_page`` on the one exception
+    # (an UNCHANGED document row's lines are not re-fetched).
+    preview_records: List["SourceRecord"] = field(default_factory=list)
     # A SET (R-S3, review round 2) - the caller (``sync.py``) tests membership
     # against this on every hashed ref; a list made that an O(n) scan per ref
     # instead of O(1).
     unchanged_refs: set = field(default_factory=set)
     hashes: Dict[str, str] = field(default_factory=dict)
     last_mark: Any = None
-    tie_refs: List[str] = field(default_factory=list)
+    # The key-column value of the LAST row on this page (composite seek
+    # ordering, review round 3 R2-B1) - paired with ``last_mark`` as the
+    # exact ``(mark, last_key)`` position the NEXT page's cursor seeks
+    # strictly after. Replaces ``tie_refs`` entirely.
+    last_key: Any = None
     rows_scanned: int = 0
     added: int = 0
     updated: int = 0
@@ -741,6 +782,25 @@ class SqlDbSource:
             )
         return self._engine.dialect.identifier_preparer.quote(column)
 
+    def _quoted_key(self) -> str:
+        """The task's FIRST key column, checked-then-quoted the same way the
+        watermark column is (F5, review round 3) - a paged task always seeks
+        on ``(watermark, key)`` together, even a multi-key task (the
+        reviewer's own call: ``keyColumns[0]`` disambiguates ties without
+        needing every key column in the ORDER BY)."""
+        column = self.key_columns[0] if self.key_columns else ""
+        if not self.result_columns:
+            raise SqlTaskNotConfigured(
+                "This task has no cached result columns to check the key "
+                "column against. Re-test the query and re-save the task."
+            )
+        if column not in self.result_columns:
+            raise SqlTaskNotConfigured(
+                f"The key column '{column}' is not one this task's query "
+                f"returns. Re-test the query and re-save the task."
+            )
+        return self._engine.dialect.identifier_preparer.quote(column)
+
     def _statement(self, mark: Any) -> Tuple[Any, Optional[Dict[str, Any]]]:
         """``(executable, params)`` for this run.
 
@@ -978,7 +1038,8 @@ class SqlDbSource:
         )
 
     def fetch_page(self, cursor: "PageCursor") -> "PageResult":
-        """One page of a paged pass (plan sprint-5/03 S1/S2, AC-03-01..04/09).
+        """One page of a paged pass (plan sprint-5/03 S1/S2, AC-03-01..04/09;
+        composite seek ordering, review round 3 R2-B1).
 
         ``fetch_changes`` stays the thin, unpaged, whole-population read for
         a non-watermarked master and the API path; a WATERMARKED task's run
@@ -986,179 +1047,126 @@ class SqlDbSource:
         ``cursor`` through so a pass can span several runs (D3) without ever
         re-reading a page already staged. Requires a watermark column - the
         caller only reaches this method for a task that has one.
+
+        ONE statement, ALWAYS - ``ORDER BY t.<wm>, t.<key>`` (``key`` =
+        ``key_columns[0]``, checked/quoted the same way as the watermark)
+        with a strict SEEK predicate makes the read order fully
+        deterministic, so a page never needs to re-read a boundary and drop
+        already-taken rows in Python (round 2's design, which relied on the
+        database returning ties in a stable order across separate
+        statements - a guarantee no engine actually makes for duplicate
+        ``ORDER BY`` values, and the reason a row could be silently skipped,
+        or misread as a phantom delete on a reconcile).
         """
         from app.config import settings as _settings  # read at CALL time, D-note
 
         page_size = int(getattr(_settings, "autocount_page_size", 2000) or 2000)
-        #     !!  EXCLUSION IS BY REF+MARK, NEVER REF ALONE (R-S1 fix, review
-        #         round 2).  !!
-        # A ref that was excluded because it was taken AT a previous mark is
-        # NOT the same evidence as that same ref showing up again at a LATER
-        # mark (a row deleted then re-inserted/re-modified with a fresh
-        # timestamp - exactly ``discard_stale_deletes``'s own scenario). Only
-        # a row sharing the EXACT boundary mark being resumed is ever
-        # excluded - the check below pairs ``exclude_refs`` with a live
-        # per-row mark comparison, so a genuinely NEW appearance of an old
-        # ref is never silently swallowed just because its identity matches
-        # something once seen at a now-superseded mark.
-        exclude_refs: set[str] = set(cursor.tie_refs or ()) if cursor.mark is not None else set()
 
         wm_column = self._quoted_watermark()
+        key_column = self._quoted_key()
         date_column = self._quoted_doc_date_column() if self.is_document else None
         dialect = self._engine.dialect.name
 
+        sql = build_paged_wrap(
+            self.query, wm_column, date_column, cursor.mark,
+            dialect=dialect, page_size=page_size,
+            quoted_key=key_column, last_key=cursor.last_key,
+        )
+        #     !!  BIND ``page_size + 1`` - PEEK ONE ROW AHEAD, ONE STATEMENT
+        #         PER PAGE.  !!
+        # ``complete`` must be knowable from THIS page's own read alone - an
+        # exact-multiple population (e.g. 9 rows at page_size=3) would
+        # otherwise need a TRAILING, all-empty page just to confirm nothing
+        # remains, which is a real extra round trip the "one statement per
+        # page" guarantee (T1(b)) must not pay. Fetching one row beyond
+        # ``page_size`` answers "is there more" for free; the extra row is
+        # trimmed back off before anything downstream ever sees it - it
+        # belongs to the NEXT page, re-read there via the normal seek.
+        params: Dict[str, Any] = {"page_size": page_size + 1}
+        if self.is_document:
+            params["from_date"] = self.from_date
+        if cursor.mark is not None:
+            #     !!  BIND A NAIVE INSTANT, NOT AN OFFSET-DECORATED ONE.  !!
+            # A driver that stores a plain datetime column (no offset in its
+            # own text/native form) and is handed an aware ``+00:00``-
+            # suffixed value can render it as a DIFFERENT, textually-later
+            # string than an equal, naive one. ``_decode_mark``'s tzinfo
+            # attachment is correct for comparing INSTANTS in a real
+            # DATETIME/TIMESTAMP column (Postgres/MSSQL numeric compare); it
+            # is normalised back to naive-UTC here purely for the bind, so
+            # the wall-clock instant is unchanged either way.
+            decoded_mark = _decode_mark(cursor.mark)
+            if isinstance(decoded_mark, datetime) and decoded_mark.tzinfo is not None:
+                decoded_mark = decoded_mark.astimezone(timezone.utc).replace(tzinfo=None)
+            params["mark"] = decoded_mark
+            # Bound even when ``None`` (the SEEK predicate's second branch
+            # then reads ``key > NULL``, which SQL evaluates to unknown/
+            # false on every dialect - the predicate degrades cleanly to a
+            # strict ``t.wm > :mark``, never a crash and never a duplicate).
+            decoded_last_key = _decode_mark(cursor.last_key) if cursor.last_key is not None else None
+            if isinstance(decoded_last_key, datetime) and decoded_last_key.tzinfo is not None:
+                decoded_last_key = decoded_last_key.astimezone(timezone.utc).replace(tzinfo=None)
+            params["last_key"] = decoded_last_key
+        executable = sa.text(sql)
+
         started = time.monotonic()
         raw_rows: List[Dict[str, Any]] = []
-        kept_raw: List[Dict[str, Any]] = []
         try:
             with open_readonly(
                 self._engine, timeout_s=self.timeout_s, secrets=self._secrets
             ) as conn:
-                #     !!  ``:page_size`` NEVER GROWS WITH THE TIE GROUP (F5,
-                #         review round 2).  !!
-                # The OLD code inflated the bound page size by
-                # ``len(exclude_refs)`` so a single over-fetch-then-Python-
-                # filter call could still return a full page of NEW rows -
-                # which made the bound value (and the real statement cost)
-                # grow roughly linearly with how much of an oversized
-                # same-mark tie group had already been walked. Instead, this
-                # loop re-issues the SAME flat-``page_size`` statement,
-                # ``OFFSET``-ing past whatever it has ALREADY pulled THIS
-                # CALL - never a position persisted across calls (a
-                # cross-call OFFSET would be unsafe: a row genuinely deleted
-                # between two runs shifts every later row's position, which
-                # is exactly the scenario ``exclude_refs`` above, being
-                # ref-based, stays correct under).
-                internal_skip = 0
-                # A generous, proportwithional safety valve - this only
-                # iterates more than once or twice for a tie group many
-                # multiples of ``page_size`` wide; it must never spin forever.
-                max_iterations = max(self.row_limit // max(page_size, 1), 1) + 2
-                for _ in range(max_iterations):
-                    sql = build_paged_wrap(
-                        self.query, wm_column, date_column, cursor.mark,
-                        dialect=dialect, page_size=page_size, skip=internal_skip,
-                    )
-                    params: Dict[str, Any] = {"page_size": page_size}
-                    if internal_skip:
-                        params["skip"] = internal_skip
-                    if self.is_document:
-                        params["from_date"] = self.from_date
-                    if cursor.mark is not None:
-                        #     !!  BIND A NAIVE INSTANT, NOT AN OFFSET-
-                        #         DECORATED ONE.  !!
-                        # The predicate is INCLUSIVE (``>=``, AC-03-02 - a
-                        # page boundary inside a tie group must lose
-                        # nothing), so it must match a row sharing the EXACT
-                        # same instant. A driver that stores a plain
-                        # datetime column (no offset in its own text/native
-                        # form) and is handed an aware ``+00:00``-suffixed
-                        # value can render it as a DIFFERENT, textually-later
-                        # string than an equal, naive one - turning an exact
-                        # tie into "just missed it". ``_decode_mark``'s
-                        # tzinfo attachment is correct for comparing
-                        # INSTANTS in a real DATETIME/TIMESTAMP column
-                        # (Postgres/MSSQL numeric compare); it is normalised
-                        # back to naive-UTC here purely for the bind, so the
-                        # wall-clock instant is unchanged either way.
-                        decoded_mark = _decode_mark(cursor.mark)
-                        if isinstance(decoded_mark, datetime) and decoded_mark.tzinfo is not None:
-                            decoded_mark = decoded_mark.astimezone(timezone.utc).replace(tzinfo=None)
-                        params["mark"] = decoded_mark
-                    executable = sa.text(sql)
-
-                    streaming = conn.execution_options(
-                        stream_results=True, max_row_buffer=STREAM_BATCH
-                    )
-                    result = streaming.execute(executable, params)
-                    batch_rows: List[Dict[str, Any]] = []
-                    #     !!  THE ROW CAP IS CHECKED PER PARTITION (F6,
-                    #         review round 2), NOT AFTER THE WHOLE RESULT IS
-                    #         PULLED.  !!
-                    # Mirrors ``_read`` exactly - the OLD code below this
-                    # loop materialised the entire result into memory before
-                    # ever looking at ``row_limit``, defeating the cap's
-                    # whole point (a runaway query still pulls everything
-                    # before failing).
-                    for partition in result.partitions(STREAM_BATCH):
-                        for row in partition:
-                            batch_rows.append(dict(row._mapping))
-                        if len(raw_rows) + len(batch_rows) > self.row_limit:
-                            raise SqlSourceError(
-                                f"The extract passed {self.row_limit:,} rows "
-                                f"without finishing, so it was stopped and "
-                                f"nothing was accepted. Narrow the query or "
-                                f"set a watermark column so runs stay "
-                                f"incremental."
-                            )
-                    internal_skip += len(batch_rows)
-
-                    # ── drop refs already taken at this exact mark (AC-03-02) ──
-                    # Consumed ONE ROW AT A TIME (not the whole batch at
-                    # once) so ``raw_rows`` (which the frontier/tie
-                    # computation below reads) never extends past the EXACT
-                    # row that filled this page to ``page_size`` NEW rows -
-                    # a batch straddling that boundary must not silently
-                    # drop its own tail past what this page actually reports.
-                    exhausted_source = len(batch_rows) < page_size
-                    for raw in batch_rows:
-                        raw_rows.append(raw)
-                        ref = self.source_ref(raw)
-                        row_mark = (
-                            _encode_mark(raw.get(self.watermark_column))
-                            if self.watermark_column
-                            else None
+                streaming = conn.execution_options(
+                    stream_results=True, max_row_buffer=STREAM_BATCH
+                )
+                result = streaming.execute(executable, params)
+                #     !!  THE ROW CAP IS CHECKED PER PARTITION (F6, review
+                #         round 2), NOT AFTER THE WHOLE RESULT IS PULLED.  !!
+                # Mirrors ``_read`` exactly - materialising the entire
+                # result before ever looking at ``row_limit`` would defeat
+                # the cap's whole point (a runaway query still pulls
+                # everything before failing).
+                for partition in result.partitions(STREAM_BATCH):
+                    for row in partition:
+                        raw_rows.append(dict(row._mapping))
+                    if len(raw_rows) > self.row_limit:
+                        raise SqlSourceError(
+                            f"The extract passed {self.row_limit:,} rows without "
+                            f"finishing, so it was stopped and nothing was "
+                            f"accepted. Narrow the query or set a watermark "
+                            f"column so runs stay incremental."
                         )
-                        excluded = (
-                            cursor.mark is not None
-                            and ref is not None
-                            and ref in exclude_refs
-                            and row_mark == cursor.mark
-                        )
-                        if not excluded:
-                            kept_raw.append(raw)
-                            if len(kept_raw) >= page_size:
-                                break
 
-                    if exhausted_source or len(kept_raw) >= page_size:
-                        # Either the source is exhausted (a short read - no
-                        # more rows exist beyond this point at all), or this
-                        # page already has a full ``page_size`` of genuinely
-                        # NEW rows - either way, nothing more to gain by
-                        # OFFSET-ing further this call.
-                        break
+                # ── trim the peeked-ahead row back off ──────────────────────
+                # ``len(raw_rows) <= page_size`` means the query's own
+                # ``page_size + 1`` LIMIT was never actually filled - this IS
+                # the last page, whether it came back short or landed on an
+                # exact multiple. ``> page_size`` means one row beyond this
+                # page exists; drop it (it is re-read, unchanged, as the
+                # first row the NEXT page's seek predicate finds).
+                complete = len(raw_rows) <= page_size
+                if not complete:
+                    raw_rows = raw_rows[:page_size]
 
                 # ── the frontier for the NEXT cursor ────────────────────────
                 last_mark = cursor.mark
-                tie_refs: List[str] = list(cursor.tie_refs or ())
+                last_key = cursor.last_key
                 if raw_rows:
-                    tail_value = raw_rows[-1].get(self.watermark_column)
-                    if tail_value is not None:
-                        new_mark = _encode_mark(tail_value)
-                        same_group = new_mark == cursor.mark
-                        group_refs = {
-                            ref
-                            for ref in (
-                                self.source_ref(row)
-                                for row in raw_rows
-                                if _encode_mark(row.get(self.watermark_column)) == new_mark
-                            )
-                            if ref is not None
-                        }
-                        tie_refs = sorted(
-                            (exclude_refs | group_refs) if same_group else group_refs
-                        )
-                        last_mark = new_mark
+                    tail = raw_rows[-1]
+                    tail_mark_value = tail.get(self.watermark_column)
+                    if tail_mark_value is not None:
+                        last_mark = _encode_mark(tail_mark_value)
+                    tail_key_value = tail.get(self.key_columns[0])
+                    if tail_key_value is not None:
+                        last_key = _encode_mark(tail_key_value)
 
-                rows_scanned = len(kept_raw)
-                complete = rows_scanned < page_size
+                rows_scanned = len(raw_rows)
 
                 # ── document row-set filter, BEFORE the hash diff (AC-02-11) ─
-                candidates = kept_raw
+                candidates = raw_rows
                 filtered_this_page: List[Dict[str, Any]] = []
                 if self.is_document and self.filter_formula:
                     keep_rows = []
-                    for header in kept_raw:
+                    for header in raw_rows:
                         try:
                             if evaluate_row_filter(self.filter_formula, header):
                                 keep_rows.append(header)
@@ -1178,7 +1186,7 @@ class SqlDbSource:
                 changed_headers: List[Dict[str, Any]] = []
                 records: List[SourceRecord] = []
                 added = updated = 0
-                key_column = self.key_columns[0] if self.is_document else None
+                key_column_name = self.key_columns[0] if self.is_document else None
 
                 for header in candidates:
                     ref = self.source_ref(header)
@@ -1209,8 +1217,29 @@ class SqlDbSource:
                 #     !!  LINES ONLY FOR CHANGED/NEW HEADERS (plan §2.1).  !!
                 if self.is_document and changed_headers:
                     for header in changed_headers:
-                        doc_key_value = header.get(key_column)
+                        doc_key_value = header.get(key_column_name)
                         header[SQL_DOC_LINES_KEY] = self._read_lines(conn, doc_key_value)
+
+                #     !!  PREVIEW NEEDS EVERY CANDIDATE, NOT JUST CHANGED ONES
+                #         (R2-S1, review round 3).  !!
+                # Built AFTER the lines-for-changed-headers step above, so a
+                # CHANGED document row's snapshot here carries its lines too
+                # - an UNCHANGED document row's does not (its lines were
+                # never fetched this page, matching the "only for changed
+                # headers" rule above); a preview of an all-unchanged page
+                # still reports the right ROW COUNT either way, which is
+                # what regressed to 0.
+                preview_records: List[SourceRecord] = [
+                    SourceRecord(
+                        raw=json_safe(header),
+                        last_modified=(
+                            _as_utc(header.get(self.watermark_column))
+                            if self.watermark_column
+                            else None
+                        ),
+                    )
+                    for header in candidates
+                ]
 
                 #     !!  A FILTERED-OUT HEADER'S STALE HASH IS DROPPED HERE
                 #         (AC-03-18) - the ONLY write ``fetch_page`` itself
@@ -1256,10 +1285,11 @@ class SqlDbSource:
 
         return PageResult(
             records=records,
+            preview_records=preview_records,
             unchanged_refs=unchanged_refs,
             hashes=hashes,
             last_mark=last_mark,
-            tie_refs=tie_refs,
+            last_key=last_key,
             rows_scanned=rows_scanned,
             added=added,
             updated=updated,

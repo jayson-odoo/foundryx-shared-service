@@ -1369,7 +1369,16 @@ class EtlService:
         try:
             if source.watermark_column:
                 page = source.fetch_page(PageCursor())
-                raw_records = page.records
+                #     !!  PREVIEW MAPS EVERY CANDIDATE, NOT JUST CHANGED ONES
+                #         (R2-S1, review round 3).  !!
+                # ``page.records`` is CHANGE-ONLY by design (D2) - a preview
+                # run right after a real run has already hashed the page, so
+                # every row reads as unchanged and ``page.records`` is
+                # empty, reporting "total: 0" for a task that plainly has
+                # rows. ``page.preview_records`` carries every candidate on
+                # the page regardless of changed/unchanged status; the RUN
+                # loop (``sync.py``) keeps using ``page.records`` unchanged.
+                raw_records = page.preview_records
                 current_refs = list(page.hashes)
                 page_complete = page.complete
             else:
