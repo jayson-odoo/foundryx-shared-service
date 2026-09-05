@@ -134,3 +134,64 @@ Every test row is timestamped; a viewer user (`t5-viewer@foundryx.io`,
   (`document_types.delete`) alongside the omnichannel workspace-trash
   screenshot to still demonstrate two independently-registered engines
   counting down live.
+
+## T5 - Fix round 2 (15 items)
+
+Same worktree/stack (`.claude/worktrees/s23`, backend `:8003` on
+`foundryx_service_s23`, frontend prod build `:3002`), branch
+`sprint-4/23-T5-deferred-actions`. `agent-browser --session t5fix2`, real
+clicks from `/`, both 375px and 1280px where the item is UI-facing. Logged
+in as `demo@example.com`/`demo1234` on the `default` tenant.
+
+| # | Item | What was fixed | Evidence |
+|---|---|---|---|
+| B1 | Committing row read as a settled success | `_last_outcome` excludes `committing`; a claimed-but-unsettled row surfaces via `pending` (new `status` field distinguishes `pending`/`committing`); `pollOnce` treats `committing` as non-terminal | Backend service/API tests (`test_current_never_reports_a_committing_row_as_settled`, `test_current_service_never_returns_committing_as_last_outcome`); frontend hook test ("a `committing` current() response stays non-terminal, then settles on the next terminal response") |
+| S1 | Bulk revoke lost its typed confirm | RESTORED as the fourth typed carve-out - bulk-only `ResourceAction` (`revoke-bulk`) with `confirm.input`; the row-surface revoke stays `deferred` | `fixround2-06-shares-bulk-revoke-typed-confirm-1280.png` (dialog, disabled Revoke), `fixround2-07-shares-bulk-revoke-typed-enabled-1280.png` (typed, enabled), `fixround2-08-shares-bulk-revoked-result-1280.png` (both rows gone), `fixround2-09-shares-bulk-revoke-typed-confirm-375.png` (mobile reflow) |
+| S2 | Module Deactivate hid a plain confirm | Storefront Deactivate migrated to `deferred` (new `tenant_modules.deactivate`); operator-console Deactivate stays a disclosed plain-confirm exception (cross-tenant, outside the engine's own-tenant scope) | `fixround2-01-app-store-omnichannel-menu-1280.png`, `fixround2-02-omnichannel-deactivate-countdown-1280.png` (4s countdown, no dialog), `fixround2-03-omnichannel-inactive-committed-1280.png`, `fixround2-04-omnichannel-reactivated-1280.png` (Reactivate = one click), `fixround2-05-omnichannel-deactivate-countdown-375.png` (mobile); backend tests + tightened `confirm-carve-outs.inventory.test.ts` (7 tests) |
+| S3 | Workspace trash silent no-op on a vanished row | `_workspaces_trash` asserts `_workspace_exists` before the service call | `test_workspaces_trash_fails_when_the_workspace_is_gone_by_commit_time` (confirmed red pre-fix: `assert 'committed' == 'failed'`) |
+| S4 | No module-activation gate | `DeferredActionDef.module` (default `'core'`) + `park`/`current`/`cancel` gate via `active_modules`/`is_visible` | `test_park_rejected_when_the_module_is_inactive_for_the_tenant` (dedicated provisioned tenant, not `default`; confirmed red pre-fix: `assert 202 == 403`) - a click-through would have needed a real module deactivate on a real tenant purely to hit this edge, judged not worth the extra tenant-state churn given the test already exercises the exact HTTP boundary |
+| S5 | `current()` committed before checking permission | Reordered: resolve raw rows, gate via `_may_act_on`, THEN lazy-commit | `test_current_without_permission_never_commits_an_overdue_row` (confirmed red pre-fix: `assert 'committed' == 'pending'`) |
+| S6 | `ENTITY_NOUNS` missing 13+ types | Added `document_type`, `background_job`, `email_outbox`, `channel`, `workspace`, `wa_template`, `webhook_endpoint`, `quick_reply`, `api_key`, 4 ideation types, `tenant_module` | `fixround2-11-doctype-deleted-toast-1280.png` / `fixround2-12-doctype-deleted-toast-375.png` ("Document type deleted." - a previously-unmapped noun); new `lib/deferred-verb.entity-nouns.inventory.test.ts` |
+| N1 | Router ran a DB query directly | `PendingActionService.requester_name(row)`; router just merges the string | `test_current_reports_the_requester_name` |
+| N2 | No `onFailed` test | Added beside the B1/round-1 cancellation tests | "a `failed` outcome calls onFailed, not onCommitted" in `use-deferred-action.test.ts` |
+| N3 | `current()` errors stranded the hook | `parkedRef` carries `commitAt`; post-lapse errors count toward a 2-poll grace before settling `failed` | Two new hook tests (grace-then-fail confirmed red pre-fix: stuck `pending`; pre-lapse blip tolerated) |
+| N4 | Downgrade would fail on a live `committing` row | `downgrade()` reassigns `committing`→`failed` first | Smoke-tested live against `foundryx_service_s23`: inserted a `committing` row via `psql`, `alembic downgrade -1` succeeded (row reassigned), `alembic upgrade head` succeeded cleanly, test row deleted |
+| N5 | `documents.trash` has no caller | Backlog note | `BL-SS-053` in `documentation/backlogs/backlog.md` |
+
+**Evidence files this round** (`fixround2-NN-*`):
+1. `fixround2-01-app-store-omnichannel-menu-1280.png`
+2. `fixround2-02-omnichannel-deactivate-countdown-1280.png`
+3. `fixround2-03-omnichannel-inactive-committed-1280.png`
+4. `fixround2-04-omnichannel-reactivated-1280.png`
+5. `fixround2-05-omnichannel-deactivate-countdown-375.png`
+6. `fixround2-06-shares-bulk-revoke-typed-confirm-1280.png`
+7. `fixround2-07-shares-bulk-revoke-typed-enabled-1280.png`
+8. `fixround2-08-shares-bulk-revoked-result-1280.png`
+9. `fixround2-09-shares-bulk-revoke-typed-confirm-375.png`
+10. `fixround2-10-doctype-delete-countdown-1280.png`
+11. `fixround2-11-doctype-deleted-toast-1280.png`
+12. `fixround2-12-doctype-deleted-toast-375.png`
+
+**Disclosed scope notes for this round:**
+- The omnichannel Deactivate/Reactivate cycle (evidence 1-5) ran against the
+  `default` tenant's ALREADY-installed omnichannel module - no new install,
+  and the module was left re-Activated at the end (state fully restored).
+- Documents > Shares had zero existing shared links on this tenant; two
+  fresh shares were created (a timestamped test folder
+  `T5-fixround2-shares-folder`, created via a real "New folder" click, and
+  the pre-existing seed file `purchasing_sop_2.jpeg`) purely to populate the
+  bulk-revoke evidence. The drive's per-card context menu opens on a
+  browser-native `contextmenu` event, which `agent-browser` has no direct
+  primitive for; it was dispatched via `agent-browser eval` (a single native
+  DOM event on the card, the same one a real right-click fires) and every
+  subsequent step - clicking "Share" in the resulting menu, filling the
+  typed-confirm textbox, clicking Revoke - was a normal `agent-browser
+  click`/`fill` against real refs. Both shares were then revoked by the flow
+  under test. The test folder itself is left in the Drive (empty, harmless
+  residue - `documents.trash` has no frontend caller per N5, so there is no
+  UI delete action for it; matches the existing residue precedent from
+  round 1's `T5 Fix Type 1788583695` document type, still present).
+- S4's module-gating scenario is deliberately NOT click-through evidence
+  (see the S4 table row) - it needs a real module deactivate on a tenant
+  mid-flow purely to prove a 403, and a dedicated backend test states the
+  exact HTTP contract more precisely than a screenshot would.

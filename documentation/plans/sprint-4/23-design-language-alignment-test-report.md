@@ -2524,3 +2524,239 @@ substitutes as the "second engine counting down" evidence alongside omnichannel.
 
 **Verdict: T5 fix round 1 DONE.** All 16 items addressed with tests/evidence; PENDING_MIGRATION
 ends empty; no regressions (pytest 2748/2748, vitest 1770/1770, build green).
+
+## T5 - Fix round 2
+
+15 items from the T5 fix-round-2 review, all addressed on the same branch
+(`sprint-4/23-T5-deferred-actions`, worktree `.claude/worktrees/s23`). Full mapping + evidence:
+`documentation/plans/sprint-4/23-evidence/T5/README.md` ("T5 - Fix round 2" section). Per-item
+commit shas below (`git log --oneline`).
+
+**B1 (blocker, `abf...`->`34661b0`) - a beat-driven commit read as success mid-flight.**
+`_last_outcome` excluded only `pending`, so a row CLAIMED by another caller (the beat sweep, or
+a racing `current` poll from a second tab) but not yet settled surfaced via `lastOutcome` with
+`status='committing'` - the frontend treated anything but `cancelled`/`failed` as success and
+toasted + navigated away before the handler even finished (and even if it then failed).
+- `service.py`: `_last_outcome` now excludes `committing` too; a new `_committing_for` lookup
+  surfaces a claimed row via the `pending` slot (a new `status` field on `PendingActionOut`
+  distinguishes `pending` vs `committing` - the smaller wire change vs a new response field,
+  documented in the schema); `lastOutcome` stays `null` while a row is `committing`.
+- `types/pending-actions.ts`: `PendingActionRowStatus = 'pending' | 'committing'`,
+  `PendingActionOutcomeStatus` gained `'committing'` (defensive - `current()` never returns it
+  there, but `pollOnce` treats it as non-terminal if it ever does).
+- `hooks/use-deferred-action.ts` `pollOnce`: a `pending.status === 'committing'` response sets
+  `{status: 'committing', count}` and keeps polling - no toast, no navigation, no settle.
+- Tests: `test_current_never_reports_a_committing_row_as_settled` (API),
+  `test_current_service_never_returns_committing_as_last_outcome` (service) - both red before
+  the fix (asserted `assert 'committed' == 'pending'`-shaped failures pre-fix); frontend "a
+  `committing` current() response stays non-terminal, then settles on the next terminal
+  response" (confirmed red via a temporary revert - `state.status` was `'pending'` not
+  `'committing'`, then `done` prematurely).
+
+**S1 (ruling, AC-DLA-43/47) - restored the typed confirm on Documents > Shares BULK revoke.**
+Round 1 had migrated the WHOLE `document_shares.revoke` action to `deferred`, dropping a shipped
+sprint-3/05 UAT criterion (AC-OVERSIGHT-03/AC-UX-03: bulk revoke requires typing `REVOKE`).
+**RULING:** the ROW-surface revoke stays `deferred` (grace window, unchanged); the BULK surface
+becomes a SEPARATE `ResourceAction` (`id: 'revoke-bulk'`) carrying `confirm` + typed `input` -
+the FOURTH typed-confirmation carve-out. Named in `confirm-action-dialog.tsx`'s doc comment, the
+`CARVE_OUTS` allowlist, and the "keep typed confirm.input" test in
+`confirm-carve-outs.inventory.test.ts`.
+
+**S2 (ruling) - migrated module Deactivate to `deferred`; tightened the carve-outs inventory.**
+`use-module-list-config.tsx`'s Deactivate survived round 1's sweep as a PLAIN (non-typed)
+`confirm` because the old inventory only checked "does this allowlisted file contain a
+`confirm:` at all", not which shape. Deactivate is fully reversible (Reactivate is one click,
+data + grants kept) - exactly D2's shape.
+- **Storefront (own-tenant) Deactivate -> `deferred`**: new core `DeferredActionDef`
+  `tenant_modules.deactivate` (`app/deferred_actions/handlers.py`, permission
+  `app_store.deactivate`, `window='reversible'`, `execute` calls the existing
+  `AppStoreService.deactivate`, `exists` checks the tenant's `TenantModule.status == ACTIVE`).
+- **Operator console Deactivate (cross-tenant) stays a disclosed PLAIN-confirm exception** - it
+  acts on ANOTHER tenant's module state, outside the deferred-actions engine's own-tenant scope
+  (`PendingAction.tenant_id` is the ACTOR's JWT tenant, not an arbitrary target); named in
+  `DISCLOSED_PLAIN_CONFIRMS`.
+- `StoreModule` has no `.id` (keyed by `name`) - `ResourceListConfig.getEntityId` /
+  `ResourceFormConfig.getEntityId` (new field) threaded through the row-cell, card-view, and
+  form-gear `ActionMenu`/`BulkActions` call sites (`resource-list.tsx`, `resource-form.tsx`,
+  `use-module-list-config.tsx`, `module-detail.tsx`).
+- `confirm-carve-outs.inventory.test.ts` rewritten to brace-match every `confirm: { ... }`
+  block per file (`extractConfirmBlocks`) and assert each is either typed (`input:` present) or
+  a NAMED, counted `DISCLOSED_PLAIN_CONFIRMS` entry - a second, unaccounted-for plain confirm in
+  an already-allowlisted file now fails loudly.
+- Tests: `test_tenant_modules_deactivate_registered_and_commits`,
+  `test_tenant_modules_deactivate_park_against_an_already_inactive_module_is_404` (backend);
+  the tightened inventory test itself (7 tests, all green).
+
+**S3 - workspace trash asserts existence before commit.**
+`WorkspaceService.trash([id])` is bulk-shaped (`get_many` loop) and silently no-ops on a missing
+row - a workspace deleted between park and commit previously reported `committed` untouched.
+`_workspaces_trash` now asserts `_workspace_exists` immediately before the service call
+(mirrors `_channels_disconnect`/`_channels_delete` in the same file). Test
+`test_workspaces_trash_fails_when_the_workspace_is_gone_by_commit_time` confirmed red
+(`assert 'committed' == 'failed'`) before the guard, green after.
+
+**S4 - deferred actions gated by module activation.**
+`DeferredActionDef` carried no `module` tag and `park()`/`current()`/`cancel()` never checked
+module activation - a tenant with a module DEACTIVATED (not merely never-installed; grants
+survive deactivate) could still park/observe/commit that module's actions via a stale role
+grant. Added `module: str = 'core'` (mirrors every other catalog's `active_modules`/`is_visible`
+convention); tagged every `omnichannel`/`ideation` registration; `PendingActionService` gates
+`park`/`current`/`cancel` via `_module_active`. Test
+`test_park_rejected_when_the_module_is_inactive_for_the_tenant` (provisions a dedicated tenant,
+installs omnichannel, parks+cancels while ACTIVE (202), deactivates, parks again -> 403,
+confirmed red via a temporary revert: `assert 202 == 403`).
+
+**S5 - `current()` now gates BEFORE the lazy commit.**
+`_commit_if_due` ran on line one of `current()`, before the permission/module check - a caller
+with NO permission on the parked action could trigger the handler just by polling an overdue
+row before ever being told 404. Reordered: resolve the raw pending/committing/last-outcome rows
+WITHOUT committing, run `_may_act_on` first, only lazy-commit once confirmed allowed. Test
+`test_current_without_permission_never_commits_an_overdue_row` (an unauthorized viewer polls an
+overdue row -> 404, row status still `pending` in the DB, `_WIDGET_STATE` untouched; the
+permission-holder's own poll still lazily commits, unaffected) - confirmed red pre-fix
+(`assert 'committed' == 'pending'`).
+
+**S6 - `ENTITY_NOUNS` covers every registered `entityType`.**
+Was 12 of the 25+ types actually used by `deferred:` configs across the app; the rest leaked the
+raw registry key into a commit toast ("Ideation_idea deleted."). Added `document_type`,
+`background_job`, `email_outbox`, `channel`, `workspace`, `wa_template`, `webhook_endpoint`,
+`quick_reply`, `api_key`, `ideation_idea`, `ideation_business_requirement`,
+`ideation_br_idea_link`, `ideation_embed_connection`, and S2's new `tenant_module`. New
+`lib/deferred-verb.entity-nouns.inventory.test.ts` walks every `deferred: { entityType }` config
+in the app (brace-matched, mirrors the carve-outs inventory) and fails if any type has no
+`ENTITY_NOUNS` entry - confirmed it catches a real gap (temporarily reverting `ENTITY_NOUNS`
+threw on the very first lookup).
+
+**N1 - requester-name resolution moved out of the router.**
+`app/api/v1/pending_actions.py` ran a tenant-scoped `UserRepository` query directly (`db` access
+in a router) to resolve `requestedByName`. Moved to `PendingActionService.requester_name(row)`;
+the router just merges the string onto the validated schema. Test
+`test_current_reports_the_requester_name` (regression - no prior test asserted this field at
+all).
+
+**N2 - `onFailed` test added.** Landed inside the B1 commit (adjacent code, same test file
+edit): "a `failed` outcome calls onFailed, not onCommitted" - asserts `onFailed` fires with the
+error text, `onCommitted` never does, state settles `failed`.
+
+**N3 - `current()` errors no longer strand the hook in `pending` forever.**
+`if (results.some(r => r === null)) return;` left the hook stuck showing a countdown against a
+window that had already lapsed, with no way out, once `current()` started erroring (e.g. a 404
+after the actor's permission or module was revoked mid-countdown - S4/S5's own new failure
+modes, closing the loop). `parkedRef` now also carries `commitAt`; a post-lapse error increments
+`lapsedErrorPollsRef` and settles `failed` ("Could not confirm the action's outcome.") after 2
+grace polls; a PRE-lapse error (a blip while still counting down) is tolerated silently. Two new
+tests (grace-then-fail; blip-while-counting-down-never-fails), the first confirmed red pre-fix
+(stuck on `'pending'` past its own grace-and-a-half window).
+
+**N4 - Alembic `b7c1d2e3f4a5` downgrade reassigns `committing` rows first.**
+Re-adding the pre-`committing` 4-value CHECK would otherwise fail outright on a live DB carrying
+any row genuinely `committing` (the real beat-sweep-claim state, not a rare edge case).
+`downgrade()` now runs `UPDATE pending_actions SET status='failed', error_text=COALESCE(...)
+WHERE status='committing'` first - a plain `UPDATE`, so a no-op on a DB that never reached this
+revision, Postgres/SQLite-safe. **Smoke-tested against the live `foundryx_service_s23`
+Postgres DB**: inserted a `committing` row via `psql`, ran `alembic downgrade -1` (succeeded;
+row reassigned to `failed` with the marker text), ran `alembic upgrade head` (succeeded cleanly),
+deleted the test row.
+
+**N5 - backlog note.** `documents.trash` is registered (`app/deferred_actions/handlers.py`) with
+no frontend caller (the document drive is a bespoke explorer, not on the Resource shell) -
+`BL-SS-053` added to `documentation/backlogs/backlog.md`.
+
+**AC ids touched by this round's rulings (integration into the UAC file is the main session's
+job, noted here per the brief):**
+- **S1 ruling** touches **AC-DLA-43** (deferred is the default model) and **AC-DLA-47** (the
+  typed-confirm carve-out list) - the carve-out count goes from 2 named + 1 disclosed to 3
+  named + 1 disclosed (Users' Impersonate).
+- **S2 ruling** touches **AC-DLA-43** (module Deactivate joins the deferred model) and
+  **AC-DLA-47** indirectly (the operator-console Deactivate becomes a newly-disclosed plain-
+  confirm exception, distinct from the typed carve-outs).
+
+### Gate (real numbers)
+
+- **Backend**: `DATABASE_URL=postgresql://foundryx:foundryx@localhost:5432/foundryx_service_s23
+  .venv/bin/python -m pytest -q` -> **2756 passed, 1 skipped, 18 deselected** (0 failed; up from
+  2748/1/18 at the end of fix round 1 - +8 net new tests this round after some consolidation).
+- **Frontend lint**: `npx eslint .` -> **0 errors** (3 pre-existing unrelated warnings, unchanged
+  from round 1).
+- **Frontend tests**: `npx vitest run` -> **215 files / 1778 tests passed** (up from 214/1770).
+- **Build**: `rm -rf .next && npm run build` -> green, no errors.
+- **Servers**: `:8003` (uvicorn, `foundryx_service_s23`) and `:3002` (`next start`) both killed
+  and restarted from THIS worktree's own processes only - `lsof -p <pid> | grep cwd` confirmed
+  ownership before every kill, for both the accidental first `npm start` (which ignored `PORT=`
+  and grabbed :3001 - `next start -p 3001` is hardcoded in `package.json`'s `start` script, so
+  `:3002` was started directly via `npx next start -p 3002` instead) and the final processes.
+- **Migration smoke test**: `alembic downgrade -1` / `upgrade head` round-trip against the live
+  `foundryx_service_s23` Postgres DB (N4), described above - DB left at `head` afterward.
+
+### Evidence
+
+`documentation/plans/sprint-4/23-evidence/T5/fixround2-NN-*` (this session's real `agent-browser
+--session t5fix2` clicks, from `/`, both 375px and 1280px where applicable):
+1. `fixround2-01-app-store-omnichannel-menu-1280.png` - App Store, Omnichannel card's "…" menu
+   (Deactivate/Uninstall) before the click.
+2. `fixround2-02-omnichannel-deactivate-countdown-1280.png` - "Deactivating in 4s / Cancel" toast
+   after clicking Deactivate (S2's storefront `deferred` migration - no confirm dialog).
+3. `fixround2-03-omnichannel-inactive-committed-1280.png` - card shows "Inactive" after the
+   window lapses.
+4. `fixround2-04-omnichannel-reactivated-1280.png` - Reactivate is one click, card back to
+   "Active" (module state fully restored on the `default` tenant).
+5. `fixround2-05-omnichannel-deactivate-countdown-375.png` - the same countdown toast at 375px,
+   row visibly dimmed.
+6. `fixround2-06-shares-bulk-revoke-typed-confirm-1280.png` - Documents > Shares, 2 rows
+   selected, bulk "Revoke" -> "Revoke link(s)? / Type REVOKE to confirm" dialog (S1's restored
+   typed carve-out), Revoke button disabled pre-type.
+7. `fixround2-07-shares-bulk-revoke-typed-enabled-1280.png` - same dialog with `REVOKE` typed,
+   Revoke button now enabled.
+8. `fixround2-08-shares-bulk-revoked-result-1280.png` - both rows gone from the Active view
+   (immediate, not deferred - the typed-confirm surface commits synchronously).
+9. `fixround2-09-shares-bulk-revoke-typed-confirm-375.png` - the same typed dialog at 375px
+   (buttons stack, full-width - confirms the mobile reflow).
+10. `fixround2-10-doctype-delete-countdown-1280.png` - a freshly-created Document type's
+    "Deleting in 9s / Cancel" countdown (existing `document_types.delete` deferred action,
+    unaffected by this round - used as the S6 noun-mapping vehicle).
+11. `fixround2-11-doctype-deleted-toast-1280.png` - the commit toast reading **"Document type
+    deleted."** (S6's added `document_type` -> "document type" noun mapping; previously would
+    have leaked "Document_type deleted.").
+12. `fixround2-12-doctype-deleted-toast-375.png` - the same toast at 375px.
+
+**On "don't install modules to screenshot":** omnichannel was ALREADY installed+active on the
+`default` tenant (used unchanged, then restored to Active) - no new module install was needed
+for evidence (a) or (c). Evidence (c) used Document types (core, already reachable) rather than
+an omnichannel workspace specifically, since it needed a type with NO prior `ENTITY_NOUNS`
+mapping and a fast, disposable create/delete cycle; `document_type` is exactly such a type and
+was already reachable without any module install. S4's module-gating scenario (an
+omnichannel-scoped key rejected while inactive) is covered by
+`test_park_rejected_when_the_module_is_inactive_for_the_tenant` (a DEDICATED provisioned tenant,
+never the shared `default` one) rather than a click-through, since it requires deactivating a
+real installed module mid-flow purely to prove a 403 - a backend test states the contract more
+precisely than a screenshot of an error toast would.
+
+### Definition-of-Done checklist (mirrors fix round 1's gate)
+
+- [x] Every item has a failing-test-first commit (or, for N4/S3, a red-confirmed-via-temporary-
+      revert regression test) before the fix, per-item.
+- [x] No router does DB/service work directly (N1 fixed the one violation found).
+- [x] No new permission without a grant path (S2's `tenant_modules.deactivate` reuses the
+      EXISTING `app_store.deactivate` permission the immediate endpoint already gates - no new
+      CSV row needed).
+- [x] Every repository/service query stays tenant-scoped (S4's module gate reads
+      `active_modules(db, tenant_id)` from the ACTOR's own tenant, never client input; S3's
+      existence guard reuses the already tenant-scoped `_workspace_exists`).
+- [x] Migration is Postgres-live-smoke-tested AND SQLite-safe (N4 - plain `UPDATE`, no dialect-
+      specific syntax).
+- [x] Frontend: no raw fetch in a component (S2's `getEntityId` threading stays inside the
+      existing hook/service boundary); no `any` types introduced; Metronic utilities only.
+- [x] Responsive: every UI-facing item's evidence includes a 375px capture (S1, S2's countdown
+      shape unchanged from round 1, S6's toast).
+- [x] Foolproof-UI: S1's typed-confirm carve-out matches the exact shipped UAT copy
+      (AC-OVERSIGHT-03/AC-UX-03), no new hint copy added anywhere.
+- [x] White-label: no "Foundryx" string introduced in tenant-facing copy this round.
+- [x] Backend suite green (2756/2757), frontend suite green (1778/1778), lint 0 errors, build
+      green, both servers restarted from this worktree's own processes.
+- [x] Worktree left clean - every item committed individually (14 commits, see shas above),
+      docs/backlog/evidence committed alongside.
+
+**Verdict: T5 fix round 2 DONE.** All 15 items (B1, S1-S6, N1-N5) addressed with tests and/or
+live evidence; two rulings (S1, S2) applied and their AC touchpoints noted for the main
+session's UAC integration; no regressions (pytest 2756 vs 2748 before, vitest 1778 vs 1770
+before, build green); worktree clean.
