@@ -189,9 +189,27 @@ active plan.
 | periodic | `mattpocock-skills:codebase-design` | main session |
 | context capture | `mattpocock-skills:research` | main session or background agent |
 
+## Design-skill slots (plan 23, `docs/reference/design-language.md` section 8)
+
+Where the installed animation/design skills plug into the pipeline above - a slot fires
+whenever the feature touches UI, not on every feature:
+
+| Step | Skill | Mode |
+| ---- | ----- | ---- |
+| 1 grill | `animation-vocabulary` | Naming only |
+| 2 UAC | `find-animation-opportunities` | Read-only; capped output becomes ACs or an explicit no-motion list |
+| 5 Phase 1 FE mock | `animate` | Decision gate for any new motion added in Phase 1 |
+| 8 review | `emil-design-eng` | Before/After/Why table on every UI diff |
+| 8 review | `review-animations` | Only when the diff touches motion. Runs as ONE `general-purpose` agent on Opus - **never** the built-in `/code-review` fork, and never delegated to the `reviewer` agent's own pass (they check different things: `reviewer` = correctness + hard-fails, `review-animations` = feel) |
+| Any new FE dependency | `pick-ui-library` | First - repo picks already made: `motion`, `sonner`, `vaul`, `@dnd-kit` |
+| Periodic | `improve-animations` | - |
+
+Not used here: `animate-expo`, `write-swift`, `webapp-testing` (Playwright-based, idle per D15).
+
 ## Related
 
 - `PRINCIPLES.md` - the binding contract this skill executes (governs on conflict)
+- `docs/reference/design-language.md` - tokens, motion, primitives roster, decisions D1-D16
 - `CLAUDE.md` - the detailed per-engine reference, conventions, lessons learned
 - `documentation/development_process/AI_Agent_Orchestration_Guide.md` §6 - Test
   Execution Report format
