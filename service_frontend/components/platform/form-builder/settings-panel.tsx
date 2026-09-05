@@ -22,6 +22,7 @@ import {
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { cn } from '@/lib/utils';
 import { FormulaBuilder } from './formula-builder';
 import {
@@ -362,7 +363,7 @@ function RepeaterConfig(props: FieldConfigProps) {
                   type="button"
                   aria-label="Remove sub-field"
                   data-testid={`subfield-remove-${index}`}
-                  className="px-1 text-xs text-destructive"
+                  className={cn(PRESSED_CLASS, 'px-1 text-xs text-destructive')}
                   onClick={() => props.onRemoveSubField(sub.id)}
                 >
                   ✕
@@ -559,7 +560,7 @@ function TableConfig({ field, onPatch }: FieldConfigProps) {
           </DndContext>
           <button
             type="button"
-            className="self-start text-xs font-medium text-primary"
+            className={cn(PRESSED_CLASS, 'self-start text-xs font-medium text-primary')}
             data-testid="table-add-column"
             onClick={addCol}
           >
@@ -618,7 +619,7 @@ function TableColumnEditor({ col, index, earlierNumeric, onUpdate, onRemove }: T
         <button
           type="button"
           aria-label={`Drag column ${index + 1}`}
-          className="cursor-grab px-0.5 text-muted-foreground/60 hover:text-foreground"
+          className={cn('cursor-grab px-0.5 text-muted-foreground/60 hover:text-foreground')}
           {...listeners}
           {...attributes}
         >
@@ -634,7 +635,7 @@ function TableColumnEditor({ col, index, earlierNumeric, onUpdate, onRemove }: T
         <button
           type="button"
           aria-label="Remove column"
-          className="px-1 text-xs text-destructive"
+          className={cn(PRESSED_CLASS, 'px-1 text-xs text-destructive')}
           onClick={onRemove}
         >
           ✕

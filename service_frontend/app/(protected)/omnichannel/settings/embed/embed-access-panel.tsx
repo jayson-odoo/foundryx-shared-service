@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Code2, Globe, ShieldCheck, SlidersHorizontal } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import {
   AlertDialog,
   AlertDialogAction,

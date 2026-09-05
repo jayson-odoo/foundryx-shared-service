@@ -19,12 +19,24 @@ function Command({ className, ...props }: React.ComponentProps<typeof CommandPri
   );
 }
 
-type CommandDialogProps = DialogProps & { className?: string };
+type CommandDialogProps = DialogProps & {
+  className?: string;
+  /**
+   * A command palette is the one surface the frequency table forbids
+   * animating outright (AC-DLA-22, T3 fix round 1 finding 4/BLOCKER 2): it
+   * is keyboard-initiated and opened tens-to-hundreds of times a day, so
+   * motion is opt IN, never opt out - `motion={false}` is the default and a
+   * caller has to explicitly pass `motion` (e.g. a genuine click-triggered
+   * `CommandDialog`, which still wants the surface spring per the same
+   * gate) to get the spring back.
+   */
+  motion?: boolean;
+};
 
-const CommandDialog = ({ children, className, ...props }: CommandDialogProps) => {
+const CommandDialog = ({ children, className, motion = false, ...props }: CommandDialogProps) => {
   return (
     <Dialog {...props}>
-      <DialogContent className={cn('overflow-hidden p-0 shadow-lg', className)}>
+      <DialogContent motion={motion} className={cn('overflow-hidden p-0 shadow-lg', className)}>
         <DialogTitle className="hidden" />
         <Command className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-group]]:px-2 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5">
           {children}
@@ -35,6 +47,12 @@ const CommandDialog = ({ children, className, ...props }: CommandDialogProps) =>
 };
 
 function CommandInput({ className, ...props }: React.ComponentProps<typeof CommandPrimitive.Input>) {
+  // T6 fix round 1 item 8: cmdk filters its option list SYNCHRONOUSLY (it's
+  // an already-loaded in-memory list, unlike ResourceList's server fetch),
+  // so a settling-spinner swap here was pure flash with nothing behind it
+  // to wait for - removed. `SearchSelect`/`MultiSelect` still debounce their
+  // own `value` for the actual filter/query, just without a leading-icon
+  // indicator (AC-DLA-54's leading icon stays `ListSearchInput`-only).
   return (
     <div className="flex items-center border-border border-b px-3" cmdk-input-wrapper="" data-slot="command-input">
       <Search className="me-2 h-4 w-4 shrink-0 opacity-50" />
@@ -91,6 +109,9 @@ function CommandItem({ className, ...props }: React.ComponentProps<typeof Comman
     <CommandPrimitive.Item
       data-slot="command-item"
       className={cn(
+        // No press class (AC-DLA-09 fix round 1): keyboard-driven, 100+/day -
+        // arrow keys move `data-[selected=true]` between siblings and any
+        // pressed transition would read as motion on a keyboard action.
         'relative flex text-foreground cursor-default gap-2 select-none items-center rounded-sm px-2 py-1.5 text-sm outline-hidden data-[disabled=true]:pointer-events-none data-[selected=true]:bg-accent data-[disabled=true]:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0',
         className,
       )}

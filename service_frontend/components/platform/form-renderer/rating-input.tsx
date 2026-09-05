@@ -6,6 +6,7 @@
  * is the integer count; 0 = unset.
  */
 import { Star } from 'lucide-react';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { cn } from '@/lib/utils';
 
 export interface RatingInputProps {
@@ -47,7 +48,7 @@ export function RatingInput({ max, value, onChange, disabled, ariaLabel }: Ratin
           aria-label={`${n}`}
           disabled={disabled}
           onClick={() => onChange(value === n ? 0 : n)}
-          className="p-0.5 disabled:cursor-not-allowed"
+          className={cn(PRESSED_CLASS, 'p-0.5 disabled:cursor-not-allowed')}
         >
           <Star
             className={cn(

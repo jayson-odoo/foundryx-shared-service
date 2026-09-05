@@ -83,7 +83,8 @@ function canvasNodes() {
 describe('FlowCanvas + StatusFlowNode', () => {
   it('renders status nodes from graph data', async () => {
     // Edge SVG paths need real layout measurement (inert ResizeObserver in
-    // jsdom) - edge rendering is asserted by the Playwright E2E instead.
+    // jsdom) - not asserted in jsdom; edge rendering needs a recorded
+    // agent-browser check in any slice that touches it.
     const { container } = render(
       <FlowCanvas
         nodes={canvasNodes()}
@@ -126,7 +127,7 @@ describe('StatusDrawer', () => {
     render(
       <StatusDrawer {...baseProps} status={null} canManage onCreate={onCreate} />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create status' }));
     expect(await screen.findByText('Label is required.')).toBeInTheDocument();
     expect(onCreate).not.toHaveBeenCalled();
   });
@@ -138,7 +139,7 @@ describe('StatusDrawer', () => {
     );
     fireEvent.change(screen.getByLabelText(/Label/), { target: { value: 'On Hold' } });
     fireEvent.click(screen.getByRole('switch', { name: 'Blocks access' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create status' }));
     await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
     // The picker works in hex (default = the gray token swatch).
     expect(onCreate).toHaveBeenCalledWith('On Hold', '#6B7280', expect.objectContaining({
@@ -160,7 +161,7 @@ describe('StatusDrawer', () => {
 
   it('hides ALL manage controls without statuses.manage', () => {
     render(<StatusDrawer {...baseProps} status={pending} canManage={false} />);
-    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save status' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
     expect(screen.getByLabelText(/Label/)).toBeDisabled();
   });
@@ -247,7 +248,7 @@ describe('TransitionDrawer', () => {
         canManage={false}
       />,
     );
-    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save transition' })).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Delete transition' }),
     ).not.toBeInTheDocument();
@@ -303,7 +304,7 @@ describe('TransitionDrawer', () => {
         onUpdate={onUpdate}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save transition' }));
     expect(
       await screen.findByText('An automatic transition needs at least one condition.'),
     ).toBeInTheDocument();
@@ -312,8 +313,8 @@ describe('TransitionDrawer', () => {
 });
 
 describe('StatusTable', () => {
-  it('lists statuses and hides reorder handles without manage', () => {
-    render(
+  it('lists statuses (as DataGrid rows, AC-DLA-56) and hides reorder handles without manage', () => {
+    const { container } = render(
       <StatusTable
         statuses={[pending, approved]}
         canManage={false}
@@ -322,8 +323,10 @@ describe('StatusTable', () => {
         onRowClick={vi.fn()}
       />,
     );
-    expect(screen.getByTestId('status-row-pending')).toBeInTheDocument();
-    expect(screen.getByTestId('status-row-approved')).toBeInTheDocument();
+    // `DataGridTableBodyRow` stamps `data-row-id` off `getRowId` (status.id),
+    // not a bespoke per-surface testid - the generic DataGrid convention.
+    expect(container.querySelector(`[data-row-id="${pending.id}"]`)).toBeInTheDocument();
+    expect(container.querySelector(`[data-row-id="${approved.id}"]`)).toBeInTheDocument();
     expect(screen.queryByLabelText(/Reorder/)).not.toBeInTheDocument();
   });
 
@@ -338,5 +341,24 @@ describe('StatusTable', () => {
       />,
     );
     expect(screen.getByLabelText('Reorder Pending')).toBeInTheDocument();
+  });
+
+  it('a row click fires onRowClick with the status; a drag-handle click does not (AC-DLA-58 stopPropagation)', () => {
+    const onRowClick = vi.fn();
+    const { container } = render(
+      <StatusTable
+        statuses={[pending, approved]}
+        canManage
+        entityLabel="Ticket"
+        onReorder={vi.fn().mockResolvedValue(true)}
+        onRowClick={onRowClick}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Reorder Pending'));
+    expect(onRowClick).not.toHaveBeenCalled();
+
+    const row = container.querySelector(`[data-row-id="${pending.id}"]`) as HTMLElement;
+    fireEvent.click(row);
+    expect(onRowClick).toHaveBeenCalledWith(pending);
   });
 });

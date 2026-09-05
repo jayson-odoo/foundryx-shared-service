@@ -137,7 +137,7 @@ export function EntityLookbackDialog({
           </Button>
           <Button onClick={submit} disabled={!valid || saving} data-testid="save-lookback">
             {saving && <LoaderCircleIcon className="size-4 animate-spin" />}
-            Save
+            Save lookback
           </Button>
         </DialogFooter>
       </DialogContent>

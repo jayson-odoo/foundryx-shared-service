@@ -12,6 +12,8 @@ import {
   Paperclip,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import { Card, CardContent } from '@/components/ui/card';
 import { FormControl, FormField, FormItem, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
@@ -305,7 +307,10 @@ export function AttachmentsTab({ attachments }: { attachments: IdeaAttachment[] 
                 <button
                   type="button"
                   onClick={() => setPreview(a)}
-                  className="flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className={cn(
+                    PRESSED_CLASS,
+                    'flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  )}
                   title={`Preview ${a.name}`}
                 >
                   <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted">

@@ -1,6 +1,6 @@
 /** Mock import service (Phase A) - static config + a single in-memory job. */
 import type { ImportConfig, ImportJob, ImportJobList, ImportPreview } from '@/types/import';
-import type { CreateImportInput, ImportService } from './import-service';
+import type { ImportService } from './import-service';
 
 const delay = <T>(v: T) => new Promise<T>((r) => setTimeout(() => r(v), 150));
 
@@ -30,7 +30,7 @@ let job: ImportJob = {
 export const mockImportService: ImportService = {
   getConfig: () => delay(CONFIG),
   downloadTemplate: () => delay(new Blob(['Email,Name\n'], { type: 'text/csv' })),
-  create: (_i: CreateImportInput) => delay({ jobId: job.id }),
+  create: () => delay({ jobId: job.id }),
   preview: () => delay<ImportPreview>({ sheets: ['Sheet1'], sheetName: 'Sheet1', headers: ['Email', 'Name'], autoMapping: { Email: 'email', Name: 'name' } }),
   setMapping: (_id, mapping, sheetName) => delay({ ...job, mapping, sheetName: sheetName ?? null, status: 'validated' }),
   commit: () => { job = { ...job, status: 'done', createdIds: ['u1', 'u2', 'u3', 'u4'] }; return delay(job); },

@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Bot } from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ListQuery } from '@/types/resource';
 import { useAiModels } from '@/hooks/use-ai-models';
 import { useAiPrerequisite } from '@/hooks/use-ai-prerequisite';
 import { aiService } from '@/services/ai-service';
@@ -123,6 +124,20 @@ export function useAgentForm(
     if (agent) form.reset(toValues(agent));
   }, [agent, form, isNew, router]);
 
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      aiService.getAgentAt(query, index).then((r) => ({
+        recordId: r.agent?.id ?? null,
+        total: r.total,
+      })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => agentFormHref(recordId, { ctx, index }),
+    [],
+  );
+
   const config = useMemo<ResourceFormConfig<AiAgent> | null>(() => {
     if (!isNew && !agent) return null;
     return {
@@ -163,14 +178,7 @@ export function useAgentForm(
       onCancel,
       recordNav: isNew
         ? undefined
-        : {
-            fetchAt: (query, index) =>
-              aiService.getAgentAt(query, index).then((r) => ({
-                recordId: r.agent?.id ?? null,
-                total: r.total,
-              })),
-            buildHref: (recordId, ctx, index) => agentFormHref(recordId, { ctx, index }),
-          },
+        : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
     actions,
@@ -186,6 +194,8 @@ export function useAgentForm(
     onCancel,
     onSave,
     skills,
+    fetchRecordAt,
+    buildRecordHref,
   ]);
 
   return { config, form, isLoading, notFound };

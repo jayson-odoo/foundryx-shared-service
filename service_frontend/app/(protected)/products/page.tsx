@@ -1,22 +1,16 @@
 'use client';
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
-import { toast } from 'sonner';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
-import { Container } from '@/components/common/container';
-import { ResourceList } from '@/components/platform/resource-list';
+import { toast } from '@/lib/toast';
 import {
   productService,
   type Product,
   type ProductKind,
 } from '@/services/productService';
-import { useProductsListConfig } from './use-products-list-config';
+import { Container } from '@/components/common/container';
+import { ResourceList } from '@/components/platform/resource-list';
 import { ProductFormDialog } from './product-form-dialog';
+import { useProductsListConfig } from './use-products-list-config';
 
 /**
  * Products catalog (core master-data) on the shared ResourceList. Create + Edit
@@ -56,7 +50,9 @@ function ProductsView() {
           toast.success('Product deleted.');
           bump();
         } catch (e) {
-          toast.error(e instanceof Error ? e.message : 'Could not delete the product.');
+          toast.error(
+            e instanceof Error ? e.message : 'Could not delete the product.',
+          );
         }
       },
     }),
@@ -86,16 +82,6 @@ function ProductsView() {
 export default function ProductsPage() {
   return (
     <Fragment>
-      <Container width="fluid">
-        <Toolbar>
-          <ToolbarHeading>
-            <ToolbarPageTitle />
-            <ToolbarDescription>
-              The core product catalog - goods, services, and software.
-            </ToolbarDescription>
-          </ToolbarHeading>
-        </Toolbar>
-      </Container>
       <Container width="fluid">
         <ProductsView />
       </Container>

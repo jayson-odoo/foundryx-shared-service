@@ -1,0 +1,17 @@
+=== viewer (users.read only) GET /api/v1/pending-actions/current -- expect 404 ===
+HTTP/1.1 404 Not Found
+date: Sat, 05 Sep 2026 04:33:01 GMT
+server: uvicorn
+content-length: 38
+content-type: application/json
+
+{"detail":"Pending action not found."}
+
+=== viewer (users.read only) POST /api/v1/pending-actions/{id}/cancel -- expect 403 ===
+HTTP/1.1 403 Forbidden
+date: Sat, 05 Sep 2026 04:33:01 GMT
+server: uvicorn
+content-length: 50
+content-type: application/json
+
+{"detail":"Missing permission for 'users.trash'."}

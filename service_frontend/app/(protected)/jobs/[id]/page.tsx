@@ -2,27 +2,14 @@
 
 import { use, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { ArrowLeft, LoaderCircle } from 'lucide-react';
-import {
-  Toolbar,
-  ToolbarActions,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
+import { LoaderCircle } from 'lucide-react';
+import { PageHeader } from '@/components/platform/page-header';
 import { Container } from '@/components/common/container';
 import { Card, CardContent, CardHeader, CardHeading, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { ClampedText } from '@/components/platform/clamped-text';
 import {
@@ -35,6 +22,7 @@ import { useDatetime } from '@/hooks/use-datetime';
 import { jobsService } from '@/services/jobs-service';
 import { JOB_IN_FLIGHT, type Job, type JobFailure, type JobLogEntry } from '@/types/jobs';
 import { useJobActions } from '../use-job-actions';
+import { FailedAssetsCard } from './failed-assets-card';
 
 const POLL_MS = 3000;
 
@@ -104,15 +92,10 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
 
   return (
     <Container width="fluid">
-      <Toolbar>
-        <ToolbarHeading>
+      <PageHeader
+        title={jobTypeLabel(job.type)}
+        description={
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" asChild>
-              <Link href="/jobs">
-                <ArrowLeft className="size-4" />
-              </Link>
-            </Button>
-            <ToolbarPageTitle text={jobTypeLabel(job.type)} />
             <Badge variant={JOB_STATUS_TONE[job.status]} appearance="light">
               {JOB_STATUS_LABEL[job.status]}
             </Badge>
@@ -120,16 +103,16 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
               <LoaderCircle className="text-muted-foreground size-4 animate-spin" />
             )}
           </div>
-        </ToolbarHeading>
-        <ToolbarActions>
+        }
+        actions={
           <ActionMenu
             actions={actions}
             rows={[job]}
             runtime={{ reload: () => void refresh() }}
             surface="form"
           />
-        </ToolbarActions>
-      </Toolbar>
+        }
+      />
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <Card>
@@ -218,39 +201,7 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
         </CardContent>
       </Card>
 
-      {failures.length > 0 && (
-        <Card className="mt-5">
-          <CardHeader>
-            <CardHeading>
-              <CardTitle>Failed assets ({failures.length})</CardTitle>
-            </CardHeading>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Key</TableHead>
-                    <TableHead>Reason</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {failures.map((f, i) => (
-                    <TableRow key={i}>
-                      <TableCell className="max-w-xs font-mono text-xs">
-                        <ClampedText text={f.key} lines={1} />
-                      </TableCell>
-                      <TableCell className="text-destructive">
-                        <ClampedText text={f.reason} lines={2} />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {failures.length > 0 && <FailedAssetsCard failures={failures} />}
     </Container>
   );
 }

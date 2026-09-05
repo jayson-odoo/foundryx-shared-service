@@ -3,10 +3,21 @@
  * fact registry. Sibling of filter-builder (D9): per-type operators,
  * cross-fact compare toggle, nested AND/OR groups, stale-fact chips.
  */
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render as rtlRender, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { RuleFact, RuleGroup } from '@/types/rules';
+import { TooltipsProvider } from '@/providers/tooltips-provider';
 import { RuleBuilder } from './rule-builder';
+
+/**
+ * `tooltip.tsx` is a bare Radix Root since AC-DLA-16 (the one app-wide
+ * provider lives in `TooltipsProvider`, mounted once in `app/layout.tsx`) -
+ * `RuleBuilder` renders tooltips on its stale-fact chips, so every render in
+ * this file needs one in its tree too.
+ */
+function render(ui: React.ReactElement) {
+  return rtlRender(<TooltipsProvider>{ui}</TooltipsProvider>);
+}
 
 const FACTS: RuleFact[] = [
   {
@@ -85,7 +96,7 @@ describe('RuleBuilder', () => {
     expect(screen.getByText('Tenant record')).toBeInTheDocument();
   });
 
-  it('offers operators per the selected fact type', () => {
+  it('offers operators per the selected fact type', async () => {
     const onChange = vi.fn();
     render(<RuleBuilder facts={FACTS} value={TREE} onChange={onChange} />);
 
@@ -93,7 +104,14 @@ describe('RuleBuilder', () => {
     fireEvent.click(screen.getByRole('combobox', { name: /fact/i }));
     fireEvent.click(screen.getByText('User count'));
 
-    const operator = screen.getByRole('combobox', { name: /operator/i });
+    // T3 (AC-DLA-20): the fact picker's Popover now closes on the shared
+    // spring (`AnimatePresence` + `forceMount`, see popover.tsx) instead of
+    // a synchronous CSS class toggle - even with `MotionGlobalConfig.
+    // skipAnimations` (vitest.setup.ts) collapsing the tween itself, the
+    // exit-complete callback that un-hides the rest of the page still
+    // resolves on a microtask, so a synchronous `fireEvent.click` can query
+    // the Operator combobox one tick too early. `waitFor` gives that tick.
+    const operator = await waitFor(() => screen.getByRole('combobox', { name: /operator/i }));
     fireEvent.click(operator);
     expect(screen.getByRole('option', { name: 'between' })).toBeInTheDocument();
     expect(

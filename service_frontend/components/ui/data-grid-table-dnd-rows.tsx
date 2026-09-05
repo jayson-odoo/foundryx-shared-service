@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { useDataGrid } from '@/components/ui/data-grid';
 import {
   DataGridTableBase,
+  shouldShowSkeletonRows,
   DataGridTableBody,
   DataGridTableBodyRow,
   DataGridTableBodyRowCell,
@@ -32,13 +33,26 @@ import { CSS } from '@dnd-kit/utilities';
 import { Cell, flexRender, HeaderGroup, Row } from '@tanstack/react-table';
 import { GripHorizontal } from 'lucide-react';
 
-function DataGridTableDndRowHandle({ rowId }: { rowId: string }) {
+function DataGridTableDndRowHandle({ rowId, ariaLabel = 'Drag to reorder' }: { rowId: string; ariaLabel?: string }) {
   const { attributes, listeners } = useSortable({
     id: rowId,
   });
 
   return (
-    <Button variant="dim" size="sm" className="size-7" {...attributes} {...listeners}>
+    <Button
+      type="button"
+      variant="dim"
+      size="sm"
+      className="size-7"
+      aria-label={ariaLabel}
+      // A clickable row (AC-DLA-58's onRowClick / rowHref darken) must not
+      // navigate/select when the user is only grabbing the handle - same
+      // stopPropagation convention as resource-list.tsx's own row-reorder
+      // grip.
+      onClick={(e) => e.stopPropagation()}
+      {...attributes}
+      {...listeners}
+    >
       <GripHorizontal />
     </Button>
   );
@@ -89,7 +103,11 @@ function DataGridTableDndRows<TData>({
       onDragEnd={handleDragEnd}
       sensors={sensors}
     >
-      <div className="relative">
+      {/* min-w-0: this div is CardTable's direct grid item - without it a
+          grid item refuses to shrink below the table's intrinsic width
+          (default min-width: auto), so the grid never clips and the whole
+          PAGE scrolls sideways instead of just the grid scroller. */}
+      <div className="relative min-w-0">
         <DataGridTableBase>
           <DataGridTableHead>
             {table.getHeaderGroups().map((headerGroup: HeaderGroup<TData>, index) => {
@@ -115,7 +133,7 @@ function DataGridTableDndRows<TData>({
           {(props.tableLayout?.stripped || !props.tableLayout?.rowBorder) && <DataGridTableRowSpacer />}
 
           <DataGridTableBody>
-            {props.loadingMode === 'skeleton' && isLoading && pagination?.pageSize ? (
+            {shouldShowSkeletonRows(props, isLoading, table) && pagination?.pageSize ? (
               Array.from({ length: pagination.pageSize }).map((_, rowIndex) => (
                 <DataGridTableBodyRowSkeleton key={rowIndex}>
                   {table.getVisibleFlatColumns().map((column, colIndex) => {

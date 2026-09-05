@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ResourceList } from '@/components/platform/resource-list';
 import type { BusinessRequirement } from '@/types/business-requirement';
 import { useBusinessRequirements } from '@/hooks/use-business-requirements';

@@ -41,11 +41,13 @@ describe('SqlPreviewGrid', () => {
       />,
     );
     expect(screen.getByTestId('sql-preview-success')).toBeInTheDocument();
-    expect(screen.getByText('AccNo')).toBeInTheDocument();
+    // AC-DLA-56 (T7): a DataGrid now, not a bare <table>.
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: /AccNo/ })).toBeInTheDocument();
     expect(screen.getByText('varchar(12)')).toBeInTheDocument();
     expect(screen.getByText('3000/A01')).toBeInTheDocument();
     expect(screen.getByText('NULL')).toBeInTheDocument();
-    expect(screen.queryByTestId('sql-preview-empty')).not.toBeInTheDocument();
+    expect(screen.queryByText('Query returned no rows.')).not.toBeInTheDocument();
   });
 
   it('keeps the column header on a 0-row success and states it', () => {
@@ -63,7 +65,7 @@ describe('SqlPreviewGrid', () => {
         }}
       />,
     );
-    expect(screen.getByText('Location')).toBeInTheDocument();
-    expect(screen.getByTestId('sql-preview-empty')).toHaveTextContent('Query returned no rows.');
+    expect(screen.getByRole('columnheader', { name: /Location/ })).toBeInTheDocument();
+    expect(screen.getByText('Query returned no rows.')).toBeInTheDocument();
   });
 });

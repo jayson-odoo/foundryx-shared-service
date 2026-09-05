@@ -22,6 +22,8 @@ import {
   type PaletteCategory,
 } from '@/components/platform/palette/collapsible-palette';
 import type { TemplateBlockType } from '@/types/templates';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import type { EditorSurface } from './email-editor';
 
 export interface PaletteEntry {
@@ -117,9 +119,12 @@ function PaletteItem({ type, disabled }: { type: TemplateBlockType; disabled: bo
       ref={setNodeRef}
       type="button"
       data-testid={`palette-${type}`}
-      className={`flex w-full items-center gap-2 rounded-md border border-input bg-background px-2.5 py-1.5 text-left text-xs text-foreground transition-colors ${
-        disabled ? 'cursor-not-allowed opacity-50' : 'cursor-grab hover:border-primary hover:text-primary'
-      } ${isDragging ? 'opacity-40' : ''}`}
+      className={cn(
+        PRESSED_CLASS,
+        'flex w-full items-center gap-2 rounded-md border border-input bg-background px-2.5 py-1.5 text-left text-xs text-foreground transition-colors',
+        disabled ? 'cursor-not-allowed opacity-50' : 'cursor-grab hover:border-primary hover:text-primary',
+        isDragging && 'opacity-40',
+      )}
       {...listeners}
       {...attributes}
     >

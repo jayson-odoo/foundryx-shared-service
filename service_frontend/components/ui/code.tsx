@@ -52,9 +52,11 @@ function Code({
       </Comp>
       {showCopyButton && textToCopy && (
         <Button
+          type="button"
           mode="icon"
           size="sm"
           variant="ghost"
+          aria-label={isCopied ? 'Copied' : 'Copy'}
           className="h-4 w-4 p-0 opacity-60 hover:opacity-100"
           onClick={() => copyToClipboard(textToCopy)}
         >

@@ -186,6 +186,14 @@ from app.models.review import (
     ReviewRole,
     ReviewRoleActor,
 )
+from app.models.pending_action import (
+    PENDING_ACTION_CANCELLED,
+    PENDING_ACTION_COMMITTED,
+    PENDING_ACTION_FAILED,
+    PENDING_ACTION_PENDING,
+    PENDING_ACTION_STATUSES,
+    PendingAction,
+)
 
 __all__ = [
     "IntegrationActivity",
@@ -340,4 +348,11 @@ __all__ = [
     "ROLE_USER",
     "ROLE_ASSISTANT",
     "MESSAGE_ROLES",
+    # Deferred actions (sprint-4/23, T5).
+    "PendingAction",
+    "PENDING_ACTION_PENDING",
+    "PENDING_ACTION_COMMITTED",
+    "PENDING_ACTION_CANCELLED",
+    "PENDING_ACTION_FAILED",
+    "PENDING_ACTION_STATUSES",
 ]

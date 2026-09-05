@@ -62,6 +62,11 @@ celery_app.conf.beat_schedule = {
     # ACTIVE sql_db tasks and enqueues the SAME `autocount_sync` job the
     # manual Run-now button uses. Same 60s tick; does no extraction itself.
     "autocount-etl-sweep": {"task": "autocount.etl_sweep", "schedule": 60.0},
+    # Deferred actions (sprint-4/23, T5, AC-DLA-41) - commits every pending
+    # row whose grace window has closed. Under eager dev (no beat process)
+    # the frontend's lapse-time `GET current` performs the lazy commit
+    # instead; this sweep is the safety net for whoever isn't watching.
+    "pending-actions-commit-due": {"task": "pending_actions.commit_due", "schedule": 60.0},
 }
 
 
@@ -211,6 +216,27 @@ def autocount_etl_sweep_task() -> dict:
         logger.exception("autocount ETL sweep tick failed")
         db.rollback()
         return {"fired": 0, "skipped": 0, "failed": 0}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="pending_actions.commit_due")
+def pending_actions_commit_due_task() -> dict:
+    """Deferred-actions beat sweep (sprint-4/23, T5, AC-DLA-41) - commits
+    every pending row whose grace window closed. `commit_one` isolates each
+    row's own transaction, so a handler failure here never blocks the rest;
+    this outer try/except is only the beat-loop safety net."""
+    from app.database import SessionLocal
+    from app.deferred_actions.service import PendingActionService
+
+    db = SessionLocal()
+    try:
+        committed = PendingActionService(db).commit_due()
+        return {"committed": committed}
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("pending-actions commit-due tick failed")
+        db.rollback()
+        return {"committed": 0}
     finally:
         db.close()
 

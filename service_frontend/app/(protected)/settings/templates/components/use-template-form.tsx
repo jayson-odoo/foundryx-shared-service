@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { LayoutTemplate, Settings2 } from 'lucide-react';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ListQuery } from '@/types/resource';
 import { EmailEditor } from '@/components/platform/email-editor';
 import { CanvasEditor } from '@/components/platform/canvas-editor';
 import { createBlankDocument, createBlankDocumentDoc } from '@/lib/template-doc';
@@ -245,6 +246,20 @@ export function useTemplateForm(
     setDocDirty(false);
   }, [form, isNew, router, template]);
 
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      templateEngineService.getAt(query, index).then((r) => ({
+        recordId: r.template?.id ?? null,
+        total: r.total,
+      })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => templateFormHref(recordId, { ctx, index }),
+    [],
+  );
+
   const config = useMemo<ResourceFormConfig<Template> | null>(() => {
     if (!isNew && !template) return null;
     const mergeFields = activeContext?.facts ?? [];
@@ -324,14 +339,7 @@ export function useTemplateForm(
       // House Form invariant: circular N / M prev-next record-nav (?ctx=&i=).
       recordNav: isNew
         ? undefined
-        : {
-            fetchAt: (query, index) =>
-              templateEngineService.getAt(query, index).then((r) => ({
-                recordId: r.template?.id ?? null,
-                total: r.total,
-              })),
-            buildHref: (recordId, ctx, index) => templateFormHref(recordId, { ctx, index }),
-          },
+        : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
   }, [
     actions,
@@ -353,6 +361,8 @@ export function useTemplateForm(
     template,
     typeKey,
     visibilityFacts,
+    fetchRecordAt,
+    buildRecordHref,
   ]);
 
   return { config, form, isLoading, notFound };

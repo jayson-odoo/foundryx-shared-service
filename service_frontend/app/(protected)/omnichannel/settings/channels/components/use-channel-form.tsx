@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { Settings as SettingsIcon, MessageSquareText, IdCard, Webhook } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import type { ListQuery } from '@/types/resource';
 import { useCan } from '@/hooks/use-can';
 import { channelService } from '@/services/channel-service';
 import { ApiError } from '@/lib/api-client';
@@ -50,6 +51,7 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
   const [notFound, setNotFound] = useState(false);
 
   const form = useForm<ChannelDetailValues>({
+    mode: 'onTouched',
     resolver: zodResolver(channelDetailSchema),
     defaultValues: toFormValues(null, null),
   });
@@ -72,6 +74,20 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId]);
+
+  // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
+  const fetchRecordAt = useCallback(
+    (query: ListQuery, index: number) =>
+      channelService.getAt(query, index).then((r) => ({
+        recordId: r.channel?.id ?? null,
+        total: r.total,
+      })),
+    [],
+  );
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => channelFormHref(recordId, { ctx, index }),
+    [],
+  );
 
   const config = useMemo<ResourceFormConfig<Channel> | null>(() => {
     if (isLoading || notFound) return null;
@@ -211,16 +227,21 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
       isDirty: form.formState.isDirty,
       onSave,
       onCancel,
-      recordNav: {
-        fetchAt: (query, index) =>
-          channelService.getAt(query, index).then((r) => ({
-            recordId: r.channel?.id ?? null,
-            total: r.total,
-          })),
-        buildHref: (recordId, ctx, index) => channelFormHref(recordId, { ctx, index }),
-      },
+      recordNav: { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
-  }, [isLoading, notFound, channel, profile, actions, form, initialEditing, channelId, canReadWebhooks]);
+  }, [
+    isLoading,
+    notFound,
+    channel,
+    profile,
+    actions,
+    form,
+    initialEditing,
+    channelId,
+    canReadWebhooks,
+    fetchRecordAt,
+    buildRecordHref,
+  ]);
 
   return { config, form, isLoading, notFound };
 }
