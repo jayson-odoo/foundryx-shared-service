@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { CircleCheck, HardDriveDownload, Pencil, PlugZap, Unplug } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { integrationService } from '@/services/integration-service';
 import { useJobsActivity } from '@/providers/jobs-activity-provider';

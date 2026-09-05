@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { CURRENCY_OPTIONS } from '@/lib/money';
 import { useCan } from '@/hooks/use-can';
 import { emsService } from '@/services/ems-service';
