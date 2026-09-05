@@ -1,9 +1,18 @@
 import { MenuItem } from '@/config/types';
+import { matchesMenuPath } from '@/lib/menu-path-match';
 
 type MenuConfig = MenuItem[];
 
 interface UseMenuReturn {
-  isActive: (path: string | undefined) => boolean;
+  /**
+   * `menuPaths` is optional (fix round 1, AC-DLA-72 same-class defect):
+   * pass `collectMenuPaths(visibleMenu)` for the segment-boundary +
+   * most-specific-wins match (`lib/menu-path-match.ts`) - a naive
+   * `startsWith` lit `/scm` up on `/scm-archive` and kept a section root lit
+   * beside its own active child. Omitting it keeps the old plain-prefix
+   * behaviour for callers that don't have a menu list at hand.
+   */
+  isActive: (path: string | undefined, menuPaths?: readonly string[]) => boolean;
   hasActiveChild: (children: MenuItem[] | undefined) => boolean;
   isItemActive: (item: MenuItem) => boolean;
   getCurrentItem: (items: MenuConfig) => MenuItem | undefined;
@@ -12,12 +21,15 @@ interface UseMenuReturn {
 }
 
 export const useMenu = (pathname: string): UseMenuReturn => {
-  const isActive = (path: string | undefined): boolean => {
-    if (path && path === '/') {
-      return path === pathname;
-    } else {
-      return !!path && pathname.startsWith(path);
+  const isActive = (path: string | undefined, menuPaths?: readonly string[]): boolean => {
+    if (!path) return false;
+    if (menuPaths) {
+      return matchesMenuPath(path, pathname, menuPaths);
     }
+    if (path === '/') {
+      return path === pathname;
+    }
+    return pathname.startsWith(path);
   };
 
   const hasActiveChild = (children: MenuItem[] | undefined): boolean => {
