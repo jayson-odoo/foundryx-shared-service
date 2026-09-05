@@ -155,4 +155,52 @@ describe('AC-DLA-48 loading.tsx inventory - every ResourceList/DataGrid/Resource
       unmount();
     }
   });
+
+  // Fix round 1 item 1: a list-only segment must render ListPageSkeleton
+  // (not just "any skeleton"), a record-only segment must render
+  // RecordPageSkeleton - each carries a `data-skeleton` discriminator
+  // (`skeletons.test.tsx`). A segment qualifying as BOTH (a record page with
+  // an embedded list tab) is skeletoned as a record (existing convention -
+  // every "both" loading.tsx in this repo renders RecordPageSkeleton).
+  it('list-only segments render ListPageSkeleton, record segments render RecordPageSkeleton', async () => {
+    const mismatches: string[] = [];
+    for (const s of segments) {
+      // The group ROOT (`app/(protected)`) is a disclosed heuristic-limit
+      // exception: its page.tsx is the demo dashboard, which embeds a bare
+      // `components/ui/data-grid` DataGrid widget (a small "Teams" card, not
+      // the Resource-shell `ResourceList`) - the scan's JSX-tag detection
+      // can't tell that apart from a genuine full-page list. The group root
+      // is also the one directory whose `loading.tsx` IS the neutral
+      // fallback (asserted separately below), so it's excluded here rather
+      // than forced into ListPageSkeleton against its own fix-round-1 intent.
+      if (s.dir === appProtected) continue;
+      const loadingPath = path.join(s.dir, 'loading.tsx');
+      const mod = await import(/* @vite-ignore */ loadingPath);
+      const Loading = mod.default;
+      const { container, unmount } = render(<Loading />);
+      const wantsRecord = s.isRecord;
+      const wantsList = s.isList && !s.isRecord;
+      if (wantsRecord && !container.querySelector('[data-skeleton="record"]')) {
+        mismatches.push(`${s.rel} should render RecordPageSkeleton`);
+      }
+      if (wantsList && !container.querySelector('[data-skeleton="list"]')) {
+        mismatches.push(`${s.rel} should render ListPageSkeleton`);
+      }
+      unmount();
+    }
+    expect(mismatches).toEqual([]);
+  });
+});
+
+describe('AC-DLA-48 fix round 1 - group-root loading.tsx renders the neutral PageSkeleton', () => {
+  it('app/(protected)/loading.tsx renders PageSkeleton, not a list/record skeleton', async () => {
+    const rootLoadingPath = path.join(appProtected, 'loading.tsx');
+    const mod = await import(/* @vite-ignore */ rootLoadingPath);
+    const Loading = mod.default;
+    const { container, unmount } = render(<Loading />);
+    expect(container.querySelector('[data-skeleton="page"]')).not.toBeNull();
+    expect(container.querySelector('[data-skeleton="list"]')).toBeNull();
+    expect(container.querySelector('[data-skeleton="record"]')).toBeNull();
+    unmount();
+  });
 });

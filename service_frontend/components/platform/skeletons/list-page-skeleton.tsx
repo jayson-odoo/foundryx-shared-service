@@ -21,7 +21,7 @@ export interface ListPageSkeletonProps {
  */
 export function ListPageSkeleton({ rows = 8 }: ListPageSkeletonProps) {
   return (
-    <>
+    <div data-skeleton="list">
       <Container width="fluid">
         {/* Crumb bar above the title (D6 - PageHeader always renders crumbs
             above the h1). */}
@@ -79,6 +79,6 @@ export function ListPageSkeleton({ rows = 8 }: ListPageSkeletonProps) {
           </CardContent>
         </Card>
       </Container>
-    </>
+    </div>
   );
 }
