@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { AlertCircle, Globe } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { getTimeZones } from '@/i18n/timezones';
 import { SearchSelect } from '@/components/platform/search-select/search-select';
 import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
