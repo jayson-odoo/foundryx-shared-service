@@ -803,6 +803,30 @@ def validate_formula(formula: str, known_variables: AbstractSet[str] = frozenset
 
 _COMPARISON_OPS = frozenset({"==", "!=", "<", "<=", ">", ">="})
 
+# Predicate calls (SF-b review round) - the fixed, short list of functions
+# that always return a bool and whose arguments are match targets, never a
+# value that could become a formula's result (see `string_literals` below).
+# Hoisted to module level (not a local inside the function) so the drift
+# assertion below can run at IMPORT time - a bool-returning function added
+# to FUNCTION_CATALOG without also joining this set would otherwise silently
+# leak into `string_literals`'s vocabulary-gate output.
+_PREDICATE_CALLS = frozenset({"contains", "startswith", "bool"})
+
+# Nit 9 (review round) - tie _PREDICATE_CALLS to the catalog so the two can
+# never quietly drift apart. A catalog entry is "bool-returning" when its
+# category is Boolean, or its description reads "True when ..." (the
+# String-category predicates `contains`/`startswith`).
+_CATALOG_BOOL_RETURNING = frozenset(
+    f.name
+    for f in FUNCTION_CATALOG
+    if f.category == "Boolean" or f.description.startswith("True when ")
+)
+assert _PREDICATE_CALLS == _CATALOG_BOOL_RETURNING, (
+    "_PREDICATE_CALLS has drifted from FUNCTION_CATALOG's bool-returning "
+    f"entries: {sorted(_PREDICATE_CALLS)!r} vs {sorted(_CATALOG_BOOL_RETURNING)!r} "
+    "- update whichever side is stale."
+)
+
 
 def string_literals(parsed: ParsedFormula) -> List[str]:
     """Every STRING literal reachable in ``parsed``'s AST that could actually
@@ -835,7 +859,6 @@ def string_literals(parsed: ParsedFormula) -> List[str]:
       allow-list of the many value-returning ones.
     """
     out: List[str] = []
-    _PREDICATE_CALLS = frozenset({"contains", "startswith", "bool"})
 
     def walk(node: object) -> None:
         if isinstance(node, _Lit):
