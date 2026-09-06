@@ -18,7 +18,7 @@ import sqlalchemy as sa
 import app.models.utc_datetime  # noqa: F401
 
 revision = "wf_run_pause_s31"
-down_revision = "teams_core_s428"  # re-parented at the plan 31 merge (was b7c1d2e3f4a5)
+down_revision = "bgjob_heartbeat_orphan"  # re-parented at the plan 31 merge (was b7c1d2e3f4a5, then teams_core_s428)
 branch_labels = None
 depends_on = None
 
