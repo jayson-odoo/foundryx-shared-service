@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import datetime, timedelta, timezone
 from typing import Dict
 
 import httpx
@@ -65,7 +66,14 @@ def _active_task_staged_supplier_job(db, company, *, refs) -> BackgroundJob:
     ``needs_review`` job (that gate is for the review-approve path only;
     an ACTIVE db task's own rows are never behind it), so a plain ``done``
     job (as an ACTIVE task's own run would leave behind) is what makes
-    those rows visible to ``auto_push`` at all."""
+    those rows visible to ``auto_push`` at all.
+
+    ``created_at`` is EXPLICIT and strictly increasing in ``refs`` order:
+    ``list_pending_for_entity`` orders oldest-first and SQLite's
+    ``func.now()`` has one-second resolution, so 30 rows inserted in one
+    go all tied and the tie-break fell to random UUIDs - chunk membership
+    ("ref 15 is in the second chunk") only held by luck (BL-SS-129)."""
+    base = datetime(2026, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
     job = BackgroundJob(
         tenant_id=DEFAULT_TENANT_ID,
         type=AUTOCOUNT_SYNC,
@@ -86,6 +94,7 @@ def _active_task_staged_supplier_job(db, company, *, refs) -> BackgroundJob:
                 tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
                 entity_type=ENTITY_SUPPLIER, job_id=job.id, source_ref=ref,
                 canonical_json=record.comparable(), status=STAGED,
+                created_at=base + timedelta(seconds=i),
             )
         )
     db.commit()
