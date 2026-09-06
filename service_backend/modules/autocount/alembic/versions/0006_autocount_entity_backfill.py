@@ -29,20 +29,33 @@ Retrofitting that snapshot here would only recreate the SAME seeding logic
 keep in sync - so instead this migration's ``upgrade()`` becomes a no-op:
 
 * The gap this migration existed to close - a pre-existing company stranded
-  on GRN only - is now closed a different, ORM-safe way instead:
-  ``update_tenant`` (``modules/autocount/bootstrap.py``) already calls
-  ``seed_company_defaults`` for every one of the tenant's companies as its
-  OWN seed-if-absent loop, and that loop runs at HEAD (every column exists)
-  on every version bump, not at a fixed migration stamp. A tenant that
-  upgrades through this revision gets the exact same masters backfill from
-  that loop moments later in the SAME deploy, with none of the stamp-order
-  hazard.
+  on GRN only - is closed a different, ORM-safe way: ``update_tenant``
+  (``modules/autocount/bootstrap.py``) calls ``seed_company_defaults`` for
+  every one of the tenant's companies as its OWN seed-if-absent loop, at
+  HEAD (every column exists), and ``seed_company_defaults`` also runs when a
+  company is created. That loop is NOT part of the deploy: nothing in
+  ``bootstrap_modules`` calls ``update_tenant`` (``tenant_has_data()``
+  returns False, so ``_backfill_tenant_modules`` never reaches it either).
+  It fires only from ``AppStoreService.update()`` - an operator clicking
+  Services > AutoCount > Update - and only while that tenant's
+  ``installed_version`` is below the manifest version
+  (``app_store_service.py:175`` raises "already up to date" otherwise).
+  Verified on Postgres by review: rows seeded at 0002, replay 0003->0012,
+  supplier/customer configs ABSENT until that Update runs.
+
+      !!  REQUIRED POST-DEPLOY OPERATOR STEP  !!
+  For every tenant whose companies predate the masters slices: Services >
+  AutoCount > Update, while the version window is open. The window closes
+  the moment ``installed_version`` reaches the manifest version by ANY route
+  (an update taken for an unrelated reason, a fresh install at the current
+  version); after that only creating a company seeds, and an existing
+  stranded company needs ``seed_company_defaults`` re-run by hand.
 * The revision itself, its id and its position in the chain are UNCHANGED -
   a database already stamped 0006 (this migration having run successfully
   before the incident, on a chain that had not yet added 0007-0010) is not
   re-run and does not need repair; a database stuck BEFORE 0006, or replaying
-  0001->head from nothing, now passes through 0006 doing nothing and reaches
-  ``update_tenant`` on the very next version bump instead of dying here.
+  0001->head from nothing, now passes through 0006 doing nothing and is
+  seeded by the operator's next App Store Update instead of dying here.
 
 Revision ID: 0006_autocount_entity_backfill   (30 chars <= 32)
 Revises: 0005_autocount_mapping_formula
