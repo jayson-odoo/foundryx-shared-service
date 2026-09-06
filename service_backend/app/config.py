@@ -353,6 +353,15 @@ class Settings(BaseSettings):
     # the next push. Bounded 1..`SORENTO_MAX_BATCH` - the ceiling is Sorento's
     # own per-request limit and cannot be raised from here.
     autocount_sink_batch_size: int = 200
+    # Bounded retry for a TRANSIENT Sorento 5xx (502/503/504 - prod finding
+    # 2026-09-07: their own nginx answers a bare 502 on roughly 1 in 25 chunk
+    # POSTs, upstream momentarily unreachable, never reaching their app). A
+    # plain 500 (still a guard-rail error until the companion Sorento fix
+    # lands) or a 4xx is NEVER retried - only a 502/503/504 is. Read at CALL
+    # time by `SorentoSink._post_with_retry`. Bounded 1..5 - backoff between
+    # attempts is short (never more than a few seconds) so a stuck retry
+    # cannot itself run into the run's own time budget.
+    autocount_sink_retry_attempts: int = 3
 
     @field_validator("autocount_page_size")
     @classmethod
@@ -407,6 +416,13 @@ class Settings(BaseSettings):
                 f"autocount_sink_batch_size must be between 1 and {SORENTO_MAX_BATCH} "
                 f"(Sorento's per-request ingest ceiling)."
             )
+        return v
+
+    @field_validator("autocount_sink_retry_attempts")
+    @classmethod
+    def _autocount_sink_retry_attempts_bounds(cls, v: int) -> int:
+        if v < 1 or v > 5:
+            raise ValueError("autocount_sink_retry_attempts must be between 1 and 5.")
         return v
 
 
