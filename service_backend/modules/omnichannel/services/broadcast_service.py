@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from app.models.user import User
-from app.schemas.filters import FilterCondition, FilterGroup
+from app.schemas.filters import FilterCondition, FilterGroup, has_leaf_condition
 from app.services.filter_translator import FilterError
 from app.workflow_engine.entity_events import emit_entity_event
 
@@ -234,7 +234,14 @@ class BroadcastService:
 
     def audience_preview(self, tenant_id: str, workspace_id: str, audience: BroadcastAudienceIn) -> int:
         """Raises `SegmentNotFound` (router -> 404) / `FilterError` (router ->
-        422) exactly like every other A2 consumer of `ContactListService`."""
+        plain-string 422) exactly like every other A2 consumer of
+        `ContactListService`. Review round 1, D-4: an empty (or
+        recursively-empty) filter raises `BroadcastValidationError` instead -
+        the SAME `{fieldErrors}` shape create/update use for this exact
+        condition, so a preview and a save never disagree on what "invalid
+        filter" looks like on the wire."""
+        if audience.kind == "filter" and audience.filter is not None and not has_leaf_condition(audience.filter):
+            raise BroadcastValidationError({"audience.filter": "Add at least one condition."})
         return _preview_count(
             self.db, tenant_id, workspace_id,
             kind=audience.kind, segment_id=audience.segmentId,
@@ -257,6 +264,17 @@ class BroadcastService:
         elif kind == "filter":
             if not audience.filter or audience.segmentId or audience.contactIds:
                 errors["audience"] = "Choose exactly one audience source."
+                return
+            # Review round 1, D-4: an empty rule group (or a group whose only
+            # content is further empty sub-groups) resolves to "match every
+            # contact in the workspace" (`translate_filter` returns no clause
+            # for zero rules) - the frontend's zod schema already rejects a
+            # ZERO-length top-level `rules` array; mirror it server-side,
+            # recursively, so a client bypassing the UI (or a nested empty
+            # subgroup the client-side check doesn't see) can never persist
+            # a vacuous "everyone" audience.
+            if not has_leaf_condition(audience.filter):
+                errors["audience.filter"] = "Add at least one condition."
                 return
             try:
                 validate_filter_tree(self.db, tenant_id, workspace_id, audience.filter)
@@ -703,7 +721,24 @@ def start_scheduled_broadcast(
     DRAFT/SCHEDULED - a concurrent /send call, a concurrent tick, or a tick
     racing a manual send): the caller decides what that means (`send()`
     raises `BroadcastStatusConflict`; the tick just skips it - another
-    caller already started it, never a second job)."""
+    caller already started it, never a second job).
+
+    Review round 1 (tester observation, backlogged as BL-SS-102): the
+    SENDING claim and the `background_jobs` row are NOT atomic - if
+    `JobService.create()`'s `handler_for(type)` check ever raised (e.g. a
+    process that never ran the module boot hook, so
+    `omnichannel.broadcast_send` isn't registered), the broadcast is left
+    stuck SENDING with `job_id NULL` (the 15-minute stuck-sweep in
+    `run_due_broadcasts` is the only recovery). This is NOT a simple
+    "defer the outer `db.commit()`" fix: `BroadcastRepository.claim_status`
+    (mirroring `BackgroundJobRepository.claim`) commits INTERNALLY as part
+    of its own atomic-claim pattern, so the claim is already durable the
+    moment it returns, before this function ever reaches the job-creation
+    call below. A real fix needs `claim_status` to take an optional
+    `commit: bool = True` (the OTHER two call sites - `send()`'s schedule
+    branch, `cancel()` - keep the default; only this caller passes
+    `commit=False`) - deferred rather than risked in this pass, since it
+    touches a primitive all three of AC-BRD-26/40/42 depend on exactly."""
     tenant_id = broadcast.tenant_id
     repo = BroadcastRepository(db)
     rows = db.query(Status).filter(Status.tenant_id == tenant_id, Status.scope == "BROADCAST").all()

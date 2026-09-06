@@ -132,15 +132,12 @@ export function useBroadcastActions(workspaceId: string | null): ResourceAction<
         permission: 'broadcasts.manage',
         surfaces: { row: true, bulk: true, form: true },
         isVisible: editable,
-        run: async (rows, rt) => {
-          if (!workspaceId) return;
-          for (const row of rows) {
-            await broadcastService.remove(workspaceId, row.id);
-          }
-          toast.success(rows.length > 1 ? `Deleted ${rows.length} broadcasts.` : 'Broadcast deleted.');
-          if (rt.backHref) router.push(rt.backHref);
-          else rt.reload();
-        },
+        // Grace-window deferred action (review round 1, S1) - no confirm
+        // dialog, no immediate `run`; the registered `broadcasts.delete`
+        // handler commits it server-side once the countdown lapses, same
+        // shape as every other destructive verb in this module (channel
+        // delete, segment delete, quick-reply delete, …).
+        deferred: { actionKey: 'broadcasts.delete', entityType: 'broadcast' },
       },
     ];
   }, [router, workspaceId]);

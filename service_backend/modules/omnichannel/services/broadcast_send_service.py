@@ -41,6 +41,7 @@ from ..models import (
     BroadcastRecipient,
     Channel,
     Contact,
+    ContactSegment,
     ConversationMessage,
     Status,
     WhatsappTemplate,
@@ -104,6 +105,20 @@ def channel_or_none(db: Session, broadcast: Broadcast) -> Optional[Channel]:
 def _status_key_to_id(db: Session, tenant_id: str) -> Dict[str, str]:
     rows = db.query(Status).filter(Status.tenant_id == tenant_id, Status.scope == "BROADCAST").all()
     return {r.key: r.id for r in rows}
+
+
+def _require_status_id(key_to_id: Dict[str, str], key: str, tenant_id: str) -> str:
+    """Review round 1, nit: a bare `key_to_id["SENT"|"FAILED"]` KeyErrors (a
+    job crash, broadcast stuck SENDING) if a tenant somehow lacks the
+    BROADCAST scope's statuses (`install_tenant`/`ensure_statuses` should
+    make this unreachable, but a loud, named failure here is cheaper than an
+    unhandled KeyError deep in a job handler)."""
+    status_id = key_to_id.get(key)
+    if status_id is None:
+        raise RuntimeError(
+            f"Tenant {tenant_id} has no BROADCAST-scope status row for key {key!r}."
+        )
+    return status_id
 
 
 def _current_status_key(db: Session, broadcast: Broadcast) -> Optional[str]:
@@ -189,7 +204,24 @@ def _lifecycle_labels(db: Session, contacts: List[Contact], tenant_id: str, work
 def _preflight(db: Session, broadcast: Broadcast) -> None:
     """Plan §5.4 step 1: the channel must still be ACTIVE and the template
     still APPROVED at the moment the job actually runs (both may have changed
-    since the broadcast was saved or scheduled)."""
+    since the broadcast was saved or scheduled). Review round 1, S5: a
+    segment-audience broadcast whose segment was deleted between save and
+    send used to raise `SegmentNotFound` straight out of `run_broadcast_send`
+    (uncaught), wedging the broadcast at SENDING forever until the 15-minute
+    stuck-sweep finalized it as SENT with 0 recipients - resolve the
+    audience's EXISTENCE here too, routed through the same `PreflightFailed`
+    -> `_fail_broadcast` path as the channel/template checks."""
+    if broadcast.audience_kind == "segment":
+        segment = (
+            db.query(ContactSegment.id)
+            .filter(
+                ContactSegment.id == broadcast.audience_segment_id,
+                ContactSegment.tenant_id == broadcast.tenant_id,
+            )
+            .first()
+        )
+        if segment is None:
+            raise PreflightFailed("The audience segment no longer exists.")
     channel = (
         db.query(Channel)
         .filter(
@@ -217,7 +249,7 @@ def _preflight(db: Session, broadcast: Broadcast) -> None:
 
 def _fail_broadcast(db: Session, broadcast: Broadcast, message: str) -> None:
     key_to_id = _status_key_to_id(db, broadcast.tenant_id)
-    broadcast.status_id = key_to_id["FAILED"]
+    broadcast.status_id = _require_status_id(key_to_id, "FAILED", broadcast.tenant_id)
     broadcast.error = message
     broadcast.finished_at = datetime.now(timezone.utc)
     db.flush()
@@ -420,7 +452,7 @@ def finalize_broadcast(db: Session, broadcast: Broadcast, job: Optional[Backgrou
         return
 
     key_to_id = _status_key_to_id(db, broadcast.tenant_id)
-    broadcast.status_id = key_to_id["SENT"]
+    broadcast.status_id = _require_status_id(key_to_id, "SENT", broadcast.tenant_id)
     broadcast.finished_at = datetime.now(timezone.utc)
     db.flush()
     emit_entity_event(db, "omnichannel_broadcast", "updated", broadcast, tenant_id=broadcast.tenant_id)

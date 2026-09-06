@@ -52,7 +52,7 @@ from tests.test_omnichannel_broadcasts import (
 )
 
 from app.jobs.service import JobService
-from app.models.background_job import BackgroundJob
+from app.models.background_job import JOB_DONE, BackgroundJob
 
 
 def _read_only_send_auth(client, session_factory, email="brd-readonly@example.com"):
@@ -116,6 +116,48 @@ def test_send_now_full_happy_path_sent_with_counts_and_message(client, session_f
     assert job.progress_failed == 0
     assert job.result_json == {"total": 1, "sent": 1, "failed": 0, "skipped": 0, "cancelled": False}
     db.close()
+
+
+def test_start_scheduled_broadcast_claim_not_atomic_with_job_creation_bl_ss_102(client, session_factory, monkeypatch):
+    """Tester observation (review round 1, backlogged as BL-SS-102, NOT
+    fixed in this pass): the SENDING claim and the `background_jobs` row are
+    NOT atomic. `BroadcastRepository.claim_status` commits INTERNALLY as
+    part of its own atomic-claim pattern (mirrors `BackgroundJobRepository.
+    claim`), so if job creation then raises (e.g. a process that never ran
+    the module boot hook, so `omnichannel.broadcast_send` isn't registered),
+    the claim is ALREADY durable - the broadcast is left stuck SENDING with
+    `job_id NULL` (the 15-minute stuck-sweep in `run_due_broadcasts` is the
+    only recovery). This test PINS today's actual (buggy) behavior so a
+    future change doesn't silently make it worse without anyone noticing;
+    BL-SS-102 tracks the real fix (`claim_status(commit=False)` for this ONE
+    caller only)."""
+    import app.jobs.service as jobs_service_module
+    from app.jobs.registry import UnknownJobType
+    from modules.omnichannel.services.broadcast_service import start_scheduled_broadcast
+
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    created = client.post(_broadcasts_base(ws), headers=h, json=_create_payload(
+        channel_id, template_id, audience={"kind": "contacts", "contactIds": [contact_id]},
+    )).json()
+
+    def boom(job_type: str):
+        raise UnknownJobType(f"No handler registered for job type '{job_type}'.")
+
+    monkeypatch.setattr(jobs_service_module, "handler_for", boom)
+
+    db = session_factory()
+    broadcast = db.query(Broadcast).filter(Broadcast.id == created["id"]).first()
+    with pytest.raises(UnknownJobType):
+        start_scheduled_broadcast(db, broadcast)
+    db.rollback()  # what the request-teardown `get_db` finally-block does
+
+    db2 = session_factory()
+    survivor = db2.query(Broadcast).filter(Broadcast.id == created["id"]).first()
+    # Today: stuck SENDING with no job - this is BL-SS-102, not a passing
+    # contract. Flip this assertion to DRAFT/job_id is None once fixed.
+    assert statuses.status_id_for(db2, DEFAULT_TENANT_ID, "BROADCAST", "SENDING") == survivor.status_id
+    assert survivor.job_id is None
+    db2.close()
 
 
 def test_send_csw_exempt_expired_window_still_sends(client, session_factory):
@@ -286,6 +328,81 @@ def test_sanitize_param_strips_control_chars_and_long_runs():
     assert _sanitize_param("x" * 2000) == "x" * 1024
 
 
+# ── AC-BRD-36: transient vs permanent send failure ──────────────────────────
+def test_broadcast_recipient_permanent_send_failure_marks_failed(client, session_factory, monkeypatch):
+    """A permanent send rejection (`SendError` with no `transient` flag)
+    stamps the outbound message FAILED - `_process_recipient` maps that to
+    `failed`/`send_failed`, and the broadcast still finalizes SENT overall
+    (SENT means "every recipient reached a terminal state", not "every send
+    succeeded" - counts disambiguate)."""
+    from modules.omnichannel.adapters import whatsapp_cloud
+    from modules.omnichannel.adapters.base import SendError
+
+    def boom(self, creds, phone, to, **kw):
+        raise SendError("Recipient number is invalid.")
+
+    monkeypatch.setattr(whatsapp_cloud.WhatsAppCloudAdapter, "send", boom)
+
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    created = client.post(_broadcasts_base(ws), headers=h, json=_create_payload(
+        channel_id, template_id, audience={"kind": "contacts", "contactIds": [contact_id]},
+    )).json()
+    res = client.post(f"{_broadcasts_base(ws)}/{created['id']}/send", headers=h, json={})
+    assert res.status_code == 200, res.text
+
+    db = session_factory()
+    recip = db.query(BroadcastRecipient).filter(BroadcastRecipient.broadcast_id == created["id"]).first()
+    assert recip.state == "failed"
+    assert recip.error_code == "send_failed"
+    broadcast = db.query(Broadcast).filter(Broadcast.id == created["id"]).first()
+    assert broadcast.failed_count == 1
+    assert broadcast.sent_count == 0
+    assert statuses.status_id_for(db, DEFAULT_TENANT_ID, "BROADCAST", "SENT") == broadcast.status_id
+    db.close()
+
+
+def test_broadcast_recipient_transient_send_failure_stays_queued_not_failed(client, session_factory, monkeypatch):
+    """A transient send failure (`SendError(transient=True)`, e.g. a Meta 5xx)
+    must NOT be marked `failed` - it stays `queued` for a later retry
+    (`_requeue_transient` resets the outbound row to QUEUED; the bounded
+    in-run retry re-attempts once, and a still-transient outcome after that
+    retry is deliberately left ambiguous for S2b's reconciler/beat tick,
+    never silently counted as a permanent failure). Asserted straight after
+    `run_one_chunk` - BEFORE `finalize_broadcast`'s `reconcile_broadcast` runs
+    - because that reconciler unconditionally ADOPTS any ambiguous
+    claimed-but-queued recipient with a matching outbound message as `sent`
+    (by design, F6/AC-BRD-38); this test is about the mid-run outcome, not
+    the eventual reconciled one."""
+    from modules.omnichannel.adapters import whatsapp_cloud
+    from modules.omnichannel.adapters.base import SendError
+
+    def boom(self, creds, phone, to, **kw):
+        raise SendError("Meta 503", transient=True)
+
+    monkeypatch.setattr(whatsapp_cloud.WhatsAppCloudAdapter, "send", boom)
+
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    created = client.post(_broadcasts_base(ws), headers=h, json=_create_payload(
+        channel_id, template_id, audience={"kind": "contacts", "contactIds": [contact_id]},
+    )).json()
+
+    db = session_factory()
+    broadcast = db.query(Broadcast).filter(Broadcast.id == created["id"]).first()
+    broadcast.status_id = statuses.status_id_for(db, DEFAULT_TENANT_ID, "BROADCAST", "SENDING")
+    db.commit()
+    snapshot_audience(db, broadcast)
+    db.commit()
+    job = JobService(db).create(type=SEND_JOB_TYPE, tenant_id=DEFAULT_TENANT_ID, payload={"broadcastId": broadcast.id})
+
+    more = run_one_chunk(db, broadcast, job)
+    assert more is False
+
+    recip = db.query(BroadcastRecipient).filter(BroadcastRecipient.broadcast_id == broadcast.id).first()
+    assert recip.state == "queued"
+    assert recip.error_code is None
+    db.close()
+
+
 # ── AC-BRD-29: preflight failure -> broadcast FAILED, zero recipients ───────
 def test_preflight_channel_inactive_fails_broadcast_zero_recipients(client, session_factory):
     h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
@@ -332,6 +449,48 @@ def test_preflight_template_not_approved_fails_broadcast(client, session_factory
 
     db.refresh(broadcast)
     assert statuses.status_id_for(db, DEFAULT_TENANT_ID, "BROADCAST", "FAILED") == broadcast.status_id
+    db.close()
+
+
+def test_preflight_deleted_segment_fails_broadcast_instead_of_wedging(client, session_factory):
+    """Review round 1, S5: a segment-audience broadcast whose segment was
+    deleted between save and send used to raise `SegmentNotFound` straight
+    out of `run_broadcast_send` (uncaught) - the broadcast stayed SENDING
+    forever instead of failing cleanly like the channel/template preflight
+    checks above."""
+    from modules.omnichannel.models import ContactSegment
+
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+
+    db = session_factory()
+    segment = ContactSegment(
+        tenant_id=DEFAULT_TENANT_ID, workspace_id=ws, name="Doomed segment",
+        filter_json={"kind": "group", "combinator": "and", "rules": []},
+    )
+    db.add(segment)
+    db.commit()
+    segment_id = segment.id
+    db.close()
+
+    created = client.post(_broadcasts_base(ws), headers=h, json=_create_payload(
+        channel_id, template_id, audience={"kind": "segment", "segmentId": segment_id},
+    )).json()
+
+    db = session_factory()
+    db.query(ContactSegment).filter(ContactSegment.id == segment_id).delete()
+    broadcast = db.query(Broadcast).filter(Broadcast.id == created["id"]).first()
+    broadcast.status_id = statuses.status_id_for(db, DEFAULT_TENANT_ID, "BROADCAST", "SENDING")
+    db.commit()
+
+    job = JobService(db).create(type=SEND_JOB_TYPE, tenant_id=DEFAULT_TENANT_ID, payload={"broadcastId": broadcast.id})
+    run_broadcast_send(db, job)
+
+    db.refresh(broadcast)
+    db.refresh(job)
+    assert statuses.status_id_for(db, DEFAULT_TENANT_ID, "BROADCAST", "FAILED") == broadcast.status_id
+    assert broadcast.error
+    assert job.status == "failed"
+    assert db.query(BroadcastRecipient).filter(BroadcastRecipient.broadcast_id == broadcast.id).count() == 0
     db.close()
 
 
@@ -408,6 +567,94 @@ def test_run_one_chunk_called_twice_on_same_chunk_no_double_send(client, session
 
     count = db.query(ConversationMessage).filter(ConversationMessage.contact_id == contact_id).count()
     assert count == 1
+    db.close()
+
+
+# ── AC-BRD-30 (non-eager half) / S4: `worker.broadcast_chunk` ───────────────
+def test_worker_broadcast_chunk_reschedules_then_finalizes(client, session_factory, monkeypatch):
+    """`worker.broadcast_chunk` is the CHAINED Celery task that stands in for
+    `run_one_chunk`'s inline eager-dev loop in prod (D-A4-7/AC-BRD-30) - the
+    whole suite always takes the eager branch elsewhere, so this task had
+    ZERO coverage until now. Stub `run_one_chunk` to return True once
+    (forcing the RE-SCHEDULE branch, `broadcast_chunk.apply_async`) then
+    fall through to the real implementation (forcing the `finalize_broadcast`
+    branch) - Celery's OWN eager mode (set at `worker.py` import time, same
+    as every other test in this suite) runs the re-scheduled call inline, so
+    the whole chain completes synchronously with no real broker.
+
+    The task opens its OWN `app.database.SessionLocal` (a worker process has
+    its own DB engine, `send_runner`'s docstring) - the SAME reason
+    `test_omnichannel_consumer_webhooks.py` avoids calling a Celery task
+    directly. Monkeypatch `SessionLocal` to the test's session factory so
+    the task sees this test's SQLite data."""
+    import app.database as app_database
+    from modules.omnichannel.services import broadcast_send_service
+    from modules.omnichannel.worker import broadcast_chunk
+
+    monkeypatch.setattr(app_database, "SessionLocal", session_factory)
+
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    created = client.post(_broadcasts_base(ws), headers=h, json=_create_payload(
+        channel_id, template_id, audience={"kind": "contacts", "contactIds": [contact_id]},
+    )).json()
+
+    db = session_factory()
+    broadcast = db.query(Broadcast).filter(Broadcast.id == created["id"]).first()
+    broadcast_id = broadcast.id
+    broadcast.status_id = statuses.status_id_for(db, DEFAULT_TENANT_ID, "BROADCAST", "SENDING")
+    db.commit()
+    snapshot_audience(db, broadcast)
+    db.commit()
+    job = JobService(db).create(type=SEND_JOB_TYPE, tenant_id=DEFAULT_TENANT_ID, payload={"broadcastId": broadcast_id})
+    job_id = job.id
+    db.close()
+
+    calls = {"n": 0}
+    real_run_one_chunk = broadcast_send_service.run_one_chunk
+
+    def fake_run_one_chunk(db2, bcast, jobrow, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return True  # forces `broadcast_chunk`'s re-schedule branch
+        return real_run_one_chunk(db2, bcast, jobrow, **kw)
+
+    monkeypatch.setattr(broadcast_send_service, "run_one_chunk", fake_run_one_chunk)
+
+    broadcast_chunk(job_id)
+
+    assert calls["n"] == 2  # one re-scheduled (no-op) call + the real terminal chunk
+
+    db = session_factory()
+    broadcast = db.query(Broadcast).filter(Broadcast.id == broadcast_id).first()
+    job_row = JobService(db).repo.get_unscoped(job_id)
+    assert statuses.status_id_for(db, DEFAULT_TENANT_ID, "BROADCAST", "SENT") == broadcast.status_id
+    assert job_row.status == JOB_DONE
+    recip = db.query(BroadcastRecipient).filter(BroadcastRecipient.broadcast_id == broadcast_id).first()
+    assert recip.state == "sent"
+    db.close()
+
+
+def test_worker_broadcast_chunk_missing_broadcast_fails_job(session_factory, monkeypatch):
+    """`broadcast_chunk`'s own not-found guard (mirrors `run_broadcast_send`'s)
+    - a job whose broadcast row has since been hard-deleted must fail the
+    job loudly, never crash the task."""
+    import app.database as app_database
+    from modules.omnichannel.worker import broadcast_chunk
+
+    monkeypatch.setattr(app_database, "SessionLocal", session_factory)
+
+    db = session_factory()
+    job = JobService(db).create(
+        type=SEND_JOB_TYPE, tenant_id=DEFAULT_TENANT_ID, payload={"broadcastId": "no-such-broadcast"}
+    )
+    job_id = job.id
+    db.close()
+
+    broadcast_chunk(job_id)
+
+    db = session_factory()
+    job_row = JobService(db).repo.get_unscoped(job_id)
+    assert job_row.status == "failed"
     db.close()
 
 
@@ -595,6 +842,40 @@ def test_no_conversation_events_written_for_a_broadcast(client, session_factory)
     client.post(f"{_broadcasts_base(ws)}/{created['id']}/send", headers=h, json={})
     after = session_factory().query(ConversationEvent).count()
     assert after == before
+
+
+def test_broadcast_send_leaves_an_unreplied_contact_unreplied(client, session_factory):
+    """B2 (review round 1): a broadcast is not a reply in a conversation -
+    it must NOT advance `last_agent_message_at` (only `last_message_at`), or
+    it would silently mark every waiting contact "replied" and empty the
+    agent team's Unreplied inbox view (plan 27 AC-IVE-11/12) on every blast."""
+    from modules.omnichannel.repositories.contact_repository import _unreplied_expr
+
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+
+    incoming_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    db = session_factory()
+    contact = db.query(Contact).filter(Contact.id == contact_id).first()
+    contact.last_incoming_message_at = incoming_at
+    contact.last_agent_message_at = None
+    contact.last_message_at = incoming_at
+    db.commit()
+    assert db.query(Contact.id).filter(Contact.id == contact_id, _unreplied_expr()).first() is not None
+    db.close()
+
+    created = client.post(_broadcasts_base(ws), headers=h, json=_create_payload(
+        channel_id, template_id, audience={"kind": "contacts", "contactIds": [contact_id]},
+    )).json()
+    client.post(f"{_broadcasts_base(ws)}/{created['id']}/send", headers=h, json={})
+
+    db = session_factory()
+    contact = db.query(Contact).filter(Contact.id == contact_id).first()
+    # Still unreplied - the broadcast must not have touched last_agent_message_at.
+    assert contact.last_agent_message_at is None
+    assert db.query(Contact.id).filter(Contact.id == contact_id, _unreplied_expr()).first() is not None
+    # last_message_at DOES advance - the broadcast message really is in the thread.
+    assert contact.last_message_at > incoming_at
+    db.close()
 
 
 # ── AC-BRD-45: realtime publish, best-effort ────────────────────────────────

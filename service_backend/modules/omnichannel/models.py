@@ -531,15 +531,23 @@ class Broadcast(OmniBase):
     name = Column(String, nullable=False)
     labels_json = Column(JSON(none_as_null=True), nullable=True)  # string[] (D-A4-21)
 
-    channel_id = Column(String, ForeignKey("channels.id"), nullable=False, index=True)
+    # Plain indexed column pointing at `channels.id` - no FK (BL-030). A
+    # channel hard-delete must not be blocked by a historical broadcast.
+    channel_id = Column(String, nullable=False, index=True)
 
     # ── audience CONFIGURATION (D-A4-2) - exactly one branch is populated ──
     audience_kind = Column(String, nullable=False)  # segment | filter | contacts
-    audience_segment_id = Column(String, ForeignKey("contact_segments.id"), nullable=True)
+    # Plain indexed column pointing at `contact_segments.id` - no FK (BL-030).
+    # A segment delete must not be blocked by a historical broadcast.
+    audience_segment_id = Column(String, nullable=True, index=True)
     audience_filter_json = Column(JSON(none_as_null=True), nullable=True)
     audience_contact_ids_json = Column(JSON(none_as_null=True), nullable=True)
 
-    template_id = Column(String, ForeignKey("whatsapp_templates.id"), nullable=False)
+    # Plain indexed column pointing at `whatsapp_templates.id` - no FK
+    # (BL-030). A template delete must not be blocked by a historical
+    # broadcast; `template_name`/`template_language` below are denormalized
+    # for exactly this reason.
+    template_id = Column(String, nullable=False, index=True)
     # Denormalized at save (the template row may change/disappear later; the
     # list must not join it) - mirrors the `WorkspaceItem`/`ChannelItem`
     # denormalization convention already used across this module.
@@ -593,7 +601,9 @@ class BroadcastRecipient(OmniBase):
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String, nullable=False, index=True)
     broadcast_id = Column(String, ForeignKey("broadcasts.id"), nullable=False, index=True)
-    contact_id = Column(String, ForeignKey("contacts.id"), nullable=False, index=True)
+    # Plain indexed column pointing at `contacts.id` - no FK (BL-030). A
+    # contact hard-delete must not be blocked by a historical broadcast.
+    contact_id = Column(String, nullable=False, index=True)
     message_id = Column(String, nullable=True, index=True)
 
     # queued | sent | delivered | read | failed | skipped

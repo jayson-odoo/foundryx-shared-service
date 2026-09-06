@@ -30,11 +30,12 @@ import { StatusBadge } from '@/components/platform/status-badge';
 import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
 import { useDatetime } from '@/hooks/use-datetime';
+import { useContactPicker } from '@/hooks/use-contact-picker';
 import { channelService } from '@/services/channel-service';
 import { conversationService } from '@/services/conversation-service';
 import { broadcastService } from '@/services/broadcast-service';
 import { zonedTimeToUtc, utcToZonedInputValue } from '@/lib/datetime';
-import type { Broadcast, BroadcastCounts, Channel, ConversationThread, WhatsAppTemplate } from '@/types/omnichannel';
+import type { Broadcast, BroadcastCounts, Channel, WhatsAppTemplate } from '@/types/omnichannel';
 import { BROADCAST_STATUS_REGISTRY } from './broadcast-status';
 import type { BroadcastFormValues } from './broadcast-schema';
 
@@ -422,17 +423,15 @@ export function TestSendDialog({
   workspaceId: string | null;
   ensureBroadcastId: () => Promise<string | null>;
 }) {
-  const [contacts, setContacts] = useState<ConversationThread[]>([]);
   const [contactId, setContactId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-
-  useEffect(() => {
-    if (!open || !workspaceId) return;
-    conversationService
-      .listThreads({ workspaceId })
-      .then(setContacts)
-      .catch(() => setContacts([]));
-  }, [open, workspaceId]);
+  // Server-searched A2 contact list (review round 1, S2) - the dialog only
+  // needs contacts while open, but the picker's debounce/cache is cheap to
+  // keep mounted regardless.
+  const { options: contactOptions, setQuery: setContactQuery } = useContactPicker(
+    open ? workspaceId : null,
+    contactId ? [contactId] : [],
+  );
 
   const submit = async () => {
     if (!workspaceId || !contactId) return;
@@ -461,9 +460,10 @@ export function TestSendDialog({
           <div className="space-y-1.5">
             <label className="text-sm text-muted-foreground">Contact</label>
             <SearchSelect
-              options={contacts.map((c) => ({ label: `${c.name} (${c.phone ?? 'no phone'})`, value: c.id }))}
+              options={contactOptions}
               value={contactId}
               onChange={setContactId}
+              onQueryChange={setContactQuery}
               ariaLabel="Test-send contact"
               className="w-full"
             />

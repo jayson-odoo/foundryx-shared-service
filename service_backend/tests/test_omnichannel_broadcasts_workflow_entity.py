@@ -1,10 +1,13 @@
-"""Omnichannel Broadcasts - plan 29 S3 (BE events + polish). Covers the two
+"""Omnichannel Broadcasts - plan 29 S3 (BE events + polish). Covers the three
 S3 rows not already exercised by S2a/S2b: AC-BRD-44 (workflow entity
-registration - facts resolve, `entity.update` writable is EMPTY) and
+registration - facts resolve, `entity.update` writable is EMPTY), AC-BRD-46
+(no public-gateway surface for broadcasts - review round 1, S4) and
 AC-BRD-48 (`uninstall_tenant` wipes this tenant's broadcasts + recipients,
 another tenant's rows untouched). AC-BRD-43/45/47/49/50 already have
 dedicated coverage in `test_omnichannel_broadcasts.py` /
 `test_omnichannel_broadcasts_send.py` - not duplicated here."""
+import pathlib
+
 from app.models import DEFAULT_TENANT_ID
 from app.workflow_engine.actions.entity_actions import ActionError, entity_update
 from app.workflow_engine.entities import get_workflow_entity, record_facts
@@ -68,6 +71,45 @@ def test_record_status_fact_tracks_a_terminal_state(client, session_factory) -> 
     db.close()
     assert facts["record.status"] == "SENT"
     assert facts["record.sentCount"] == 1
+
+
+def test_status_key_fact_resolution_is_tenant_scoped(client, session_factory) -> None:
+    """Review round 1, S6 (the polymorphic stored-id rule) - `_status_key`
+    used to resolve `Status.id == obj.status_id` with NO tenant filter, even
+    though `broadcast_send_service._current_status_key` already scopes the
+    SAME lookup correctly. Prove the fix fails closed rather than leaking a
+    foreign tenant's status label if `status_id` is ever corrupted/planted
+    to point at another tenant's row (defense-in-depth, same class as the
+    status-engine notification / omnichannel gateway leaks this rule guards
+    against elsewhere in the codebase)."""
+    from app.models import Tenant
+    from modules.omnichannel.models import Status
+
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    created = client.post(
+        _broadcasts_base(ws), headers=h,
+        json=_create_payload(channel_id, template_id, audience={
+            "kind": "contacts", "contactIds": [contact_id],
+        }),
+    ).json()
+
+    _other_tenant_auth(client, session_factory)  # provisions + installs omnichannel for a second tenant
+
+    db = session_factory()
+    other_tenant = db.query(Tenant).filter(Tenant.slug == "other-ctm").first()
+    foreign_status_id = (
+        db.query(Status.id)
+        .filter(Status.tenant_id == other_tenant.id, Status.scope == "BROADCAST", Status.key == "DRAFT")
+        .scalar()
+    )
+    assert foreign_status_id is not None
+    row = db.query(Broadcast).filter(Broadcast.id == created["id"]).first()
+    row.status_id = foreign_status_id  # simulate a corrupted/planted stored id
+    db.commit()
+
+    facts = record_facts(db, "omnichannel_broadcast", row)
+    db.close()
+    assert facts["record.status"] is None  # fails closed - never resolves the foreign tenant's key
 
 
 # ── AC-BRD-44: `entity.update` is unreachable - writable is EMPTY ──────────
@@ -166,3 +208,52 @@ def test_uninstall_tenant_deletes_broadcasts_and_recipients(client, session_fact
     assert db.query(BroadcastRecipient).filter(BroadcastRecipient.tenant_id == DEFAULT_TENANT_ID).count() == 0
     assert db.query(Broadcast).filter(Broadcast.tenant_id == tenant_b).count() == 1
     db.close()
+
+
+# ── AC-BRD-46: no public-gateway surface for broadcasts (review round 1, S4) ─
+def _module_root() -> pathlib.Path:
+    return pathlib.Path(__file__).resolve().parents[1] / "modules" / "omnichannel"
+
+
+def _repo_root() -> pathlib.Path:
+    return pathlib.Path(__file__).resolve().parents[2]
+
+
+def test_gateway_router_carries_no_broadcast_surface() -> None:
+    """`routers/api_v1.py` is the public `/api/v1/omnichannel/*` gateway
+    (workspace-API-key auth) - AC-BRD-46 requires it stay UNCHANGED by this
+    whole slice (broadcasts have no v1 gateway surface). A textual "no
+    mention of broadcast" check is the durable regression guard: it fails
+    the instant a future change wires a `/broadcasts` route, a `Rio*`
+    broadcast field, or a mention in the consumer guide onto the gateway -
+    forcing the review-gate rule this module's own reference doc states
+    (`CLAUDE.md`: a `Rio*`/`api_v1.py` diff without a guide diff is an
+    automatic review question)."""
+    text = (_module_root() / "routers" / "api_v1.py").read_text().lower()
+    assert "broadcast" not in text
+
+
+def test_gateway_rio_schemas_carry_no_broadcast_field() -> None:
+    """Same guard over the `Rio*` respond.io-parity schema family - a
+    broadcast concept must not leak into ANY `Rio*` class (contact/message/
+    thread/template/webhook shapes)."""
+    text = (_module_root() / "schemas.py").read_text()
+    lines = text.splitlines()
+    in_rio_class = False
+    for line in lines:
+        if line.startswith("class Rio"):
+            in_rio_class = True
+        elif line and not line[0].isspace() and not line.startswith("class Rio"):
+            in_rio_class = False
+        if in_rio_class:
+            assert "broadcast" not in line.lower(), f"Rio* schema mentions broadcast: {line!r}"
+
+
+def test_consumer_integration_guide_carries_no_broadcast_mention() -> None:
+    """The published consumer contract (`documentation/omnichannel/
+    consumer-integration-guide.md`) must not mention broadcasts - there is
+    nothing there for an external API-key integrator to read about, because
+    v1 exposes no such endpoint."""
+    guide = _repo_root() / "documentation" / "omnichannel" / "consumer-integration-guide.md"
+    assert guide.exists()
+    assert "broadcast" not in guide.read_text().lower()

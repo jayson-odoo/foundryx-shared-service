@@ -2,13 +2,18 @@ import { z } from 'zod';
 import type { FilterGroup } from '@/types/resource';
 
 /** One WhatsApp template parameter slot binding (D-A4-4/D-A4-5) - `static`
- *  text may never carry token syntax (anti-SSTI guard, save-time), a
+ *  text may never carry token syntax (anti-SSTI guard, save-time) AND may
+ *  never be empty (review round 1, S3 - an empty static binding used to
+ *  save cleanly, then resolve to a skipped recipient at send time for
+ *  EVERY recipient, silently reporting "Sent" with 0 sends), a
  *  `contactField` binding always requires a non-empty fallback. */
 export const templateBindingSchema = z.discriminatedUnion('source', [
   z.object({
     source: z.literal('static'),
     text: z
       .string()
+      .trim()
+      .min(1, 'Static text is required.')
       .refine((v) => !/\{\{|\}\}/.test(v), 'Static text cannot contain template token syntax.'),
   }),
   z.object({

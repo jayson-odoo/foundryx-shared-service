@@ -90,6 +90,8 @@ def audience_preview(
         count = BroadcastService(db).audience_preview(current_user.tenant_id, ws_id, body.audience)
     except SegmentNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Segment not found.")
+    except BroadcastValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {"fieldErrors": exc.errors})
     except FilterError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
     return AudiencePreviewResponse(count=count)

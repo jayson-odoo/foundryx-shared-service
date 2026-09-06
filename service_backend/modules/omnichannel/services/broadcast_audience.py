@@ -40,6 +40,13 @@ SNAPSHOT_BATCH_SIZE = 200
 # `channel_inactive` and `duplicate` are producible by THIS function;
 # `missing_variable` (send-time binding resolution) and `cancelled`
 # (mid-run cancellation) are S2's.
+#
+# Review round 1 (nit): `duplicate` is REPORTING-ONLY - a duplicate contact
+# was already snapshotted by an earlier call (idempotent re-run), so THIS
+# call writes NO row for it and it is never reflected in the broadcast's own
+# persisted `skipped_count` (computed from live `broadcast_recipients` rows
+# via `recompute_counts`). Only `no_identity`/`channel_inactive` land as
+# real `skipped` rows and count toward `skipped_count`.
 SKIP_REASONS = ("no_identity", "duplicate", "channel_inactive", "cancelled", "missing_variable")
 
 

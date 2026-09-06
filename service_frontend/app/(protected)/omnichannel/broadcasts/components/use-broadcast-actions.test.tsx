@@ -118,6 +118,16 @@ describe('useBroadcastActions - permission gating (AC-BRD-12)', () => {
   });
 });
 
+describe('useBroadcastActions - Delete is a deferred action (review round 1, S1)', () => {
+  it('Delete has no immediate `run` - it registers the grace-window `broadcasts.delete` handler', () => {
+    const actions = actionsFor();
+    const del = find(actions, 'delete');
+    expect(del.deferred).toEqual({ actionKey: 'broadcasts.delete', entityType: 'broadcast' });
+    expect(del.run).toBeUndefined();
+    expect(del.confirm).toBeUndefined();
+  });
+});
+
 describe('useBroadcastActions - run() against the real service', () => {
   it('cancel() calls broadcastService.cancel and reloads on success', async () => {
     cancelMock.mockResolvedValueOnce(broadcast('CANCELLED'));

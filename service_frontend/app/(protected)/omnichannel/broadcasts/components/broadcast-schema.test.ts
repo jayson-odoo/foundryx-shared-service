@@ -89,6 +89,19 @@ describe('templateBindingSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  // Review round 1, S3: an empty static binding used to save cleanly, then
+  // resolve to a skipped recipient at send time for EVERY recipient
+  // (silently "Sent" with 0 sends) - reject it at save on both layers.
+  it('rejects a static binding with empty text', () => {
+    const result = templateBindingSchema.safeParse({ source: 'static', text: '' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a static binding with whitespace-only text', () => {
+    const result = templateBindingSchema.safeParse({ source: 'static', text: '   ' });
+    expect(result.success).toBe(false);
+  });
+
   it('accepts a contactField binding with a non-empty fallback', () => {
     expect(
       templateBindingSchema.safeParse({ source: 'contactField', field: 'firstName', fallback: 'there' }).success,

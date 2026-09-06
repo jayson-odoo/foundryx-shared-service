@@ -382,6 +382,28 @@ def test_create_static_binding_rejects_token_syntax_422(client, session_factory)
     assert "bindings.body.0.text" in res.json()["detail"]["fieldErrors"]
 
 
+def test_create_empty_static_binding_rejected_422(client, session_factory):
+    """Review round 1, S3: an empty (or whitespace-only) static binding used
+    to save cleanly, then resolve to a skipped recipient for EVERY
+    recipient at send time (`SkipMissingVariable`) - reject it at save."""
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    payload = _create_payload(
+        channel_id, template_id, audience={"kind": "contacts", "contactIds": [contact_id]},
+        bindings={"header": [], "body": [
+            {"source": "static", "text": ""},
+            {"source": "static", "text": "ok"},
+        ], "buttons": []},
+    )
+    res = client.post(_broadcasts_base(ws), headers=h, json=payload)
+    assert res.status_code == 422
+    assert "bindings.body.0.text" in res.json()["detail"]["fieldErrors"]
+
+    payload["bindings"]["body"][0]["text"] = "   "
+    res2 = client.post(_broadcasts_base(ws), headers=h, json=payload)
+    assert res2.status_code == 422
+    assert "bindings.body.0.text" in res2.json()["detail"]["fieldErrors"]
+
+
 def test_create_scheduled_at_in_past_422(client, session_factory):
     h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
     past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat().replace("+00:00", "Z")
@@ -543,6 +565,103 @@ def test_audience_preview_unknown_segment_404_and_invalid_filter_422(client, ses
         "kind": "group", "combinator": "and", "rules": [{"kind": "condition", "field": "notAField", "operator": "eq", "value": "x"}]
     }}})
     assert res.status_code == 422
+
+
+# ── D-4 (review round 1, AC-BRD-18/23): an empty/malformed filter must never
+# silently resolve to "every contact in the workspace" ─────────────────────
+def test_audience_preview_empty_filter_group_422_not_whole_workspace(client, session_factory):
+    """A zero-rule top-level group used to return `200 {"count": <everyone>}`
+    (`translate_filter` returns no clause for an empty group) - reject it
+    with the same `{fieldErrors}` shape create/update use."""
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    empty = {"kind": "group", "combinator": "and", "rules": []}
+    res = client.post(f"{_broadcasts_base(ws)}/audience-preview", headers=h, json={"audience": {"kind": "filter", "filter": empty}})
+    assert res.status_code == 422
+    assert res.json()["detail"]["fieldErrors"]["audience.filter"]
+
+
+def test_audience_preview_nested_empty_group_422(client, session_factory):
+    """A top-level group whose only rule is a further EMPTY sub-group has
+    length 1 at the top (the frontend's shallow zod check would pass it) but
+    contains no real condition anywhere - must still 422."""
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    nested_empty = {
+        "kind": "group", "combinator": "and",
+        "rules": [{"kind": "group", "combinator": "or", "rules": []}],
+    }
+    res = client.post(f"{_broadcasts_base(ws)}/audience-preview", headers=h, json={"audience": {"kind": "filter", "filter": nested_empty}})
+    assert res.status_code == 422
+    assert res.json()["detail"]["fieldErrors"]["audience.filter"]
+
+
+def test_audience_preview_unknown_key_on_condition_422(client, session_factory):
+    """`extra="forbid"` on `FilterCondition`/`FilterGroup` (app/schemas/
+    filters.py) - a stray/unrecognised key is a 422, never silently dropped."""
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    malformed = {
+        "kind": "group", "combinator": "and",
+        "rules": [{"kind": "condition", "field": "firstName", "operator": "eq", "value": "Alex", "extraKey": "x"}],
+    }
+    res = client.post(f"{_broadcasts_base(ws)}/audience-preview", headers=h, json={"audience": {"kind": "filter", "filter": malformed}})
+    assert res.status_code == 422
+
+
+def test_audience_preview_valid_filter_still_resolves_count(client, session_factory):
+    """Control: a real condition still works (proves the guard rejects only
+    the vacuous shape, not a valid one)."""
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    valid = {"kind": "group", "combinator": "and", "rules": [
+        {"kind": "condition", "field": "firstName", "operator": "eq", "value": "Alex"}
+    ]}
+    res = client.post(f"{_broadcasts_base(ws)}/audience-preview", headers=h, json={"audience": {"kind": "filter", "filter": valid}})
+    assert res.status_code == 200
+    assert res.json()["count"] == 1
+
+
+def test_create_empty_filter_group_422_not_whole_workspace(client, session_factory):
+    """Same D-4 guard on the CREATE path - the previously-reproduced bug: an
+    empty filter used to `201` and store `{"rules": []}`, resolving to every
+    contact in the workspace at send time."""
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    empty = {"kind": "group", "combinator": "and", "rules": []}
+    payload = _create_payload(channel_id, template_id, audience={"kind": "filter", "filter": empty})
+    res = client.post(_broadcasts_base(ws), headers=h, json=payload)
+    assert res.status_code == 422
+    assert res.json()["detail"]["fieldErrors"]["audience.filter"]
+
+
+def test_create_nested_empty_filter_group_422(client, session_factory):
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    nested_empty = {
+        "kind": "group", "combinator": "and",
+        "rules": [{"kind": "group", "combinator": "or", "rules": []}],
+    }
+    payload = _create_payload(channel_id, template_id, audience={"kind": "filter", "filter": nested_empty})
+    res = client.post(_broadcasts_base(ws), headers=h, json=payload)
+    assert res.status_code == 422
+    assert res.json()["detail"]["fieldErrors"]["audience.filter"]
+
+
+def test_create_filter_unknown_key_422(client, session_factory):
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    malformed = {
+        "kind": "group", "combinator": "and",
+        "rules": [{"kind": "condition", "field": "firstName", "operator": "eq", "value": "Alex", "extraKey": "x"}],
+    }
+    payload = _create_payload(channel_id, template_id, audience={"kind": "filter", "filter": malformed})
+    res = client.post(_broadcasts_base(ws), headers=h, json=payload)
+    assert res.status_code == 422
+
+
+def test_create_valid_filter_still_creates(client, session_factory):
+    """Control: create still works with a real condition."""
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    valid = {"kind": "group", "combinator": "and", "rules": [
+        {"kind": "condition", "field": "firstName", "operator": "eq", "value": "Alex"}
+    ]}
+    payload = _create_payload(channel_id, template_id, audience={"kind": "filter", "filter": valid})
+    res = client.post(_broadcasts_base(ws), headers=h, json=payload)
+    assert res.status_code == 201
 
 
 # ── AC-BRD-24: tenant isolation, uniform 404 ────────────────────────────────
@@ -718,4 +837,90 @@ def test_validate_bindings_direct_count_and_whitelist(session_factory):
     with pytest.raises(BindingValidationError) as exc:
         validate_bindings(db, DEFAULT_TENANT_ID, "irrelevant-ws", shape, bindings)
     assert "bindings.body" in exc.value.errors
+
+
+# ── review round 1, B1: no DB-level FK from broadcasts/broadcast_recipients ──
+def _enable_fk_enforcement(session_factory) -> None:
+    """`channel_id`/`template_id`/`audience_segment_id`/`contact_id` on the
+    broadcast tables are PLAIN INDEXED columns, not DB-level FKs (BL-030) -
+    a channel/template/segment/contact hard-delete must never be blocked by a
+    historical broadcast. SQLite doesn't enforce FKs by default, so without
+    turning enforcement ON this whole test class would pass even if a real
+    ``ForeignKey(...)`` were still declared on those columns (Postgres would
+    then reject the very deletes this test proves succeed). The fixture's
+    engine is a single StaticPool connection - the PRAGMA persists for every
+    session opened against it for the rest of the test."""
+    from sqlalchemy import text
+
+    db = session_factory()
+    engine = db.get_bind()
+    db.close()
+    with engine.connect() as conn:
+        conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+        conn.commit()
+
+
+def test_channel_template_segment_hard_delete_not_blocked_by_broadcast(client, session_factory):
+    """B1: a broadcast referencing a channel/template/segment must never block
+    those shipped hard-delete paths (`ChannelService.remove`,
+    `TemplateManagementService.delete`, `ContactSegmentService.delete`) - even
+    with real FK enforcement turned on."""
+    from modules.omnichannel.models import ContactSegment
+    from modules.omnichannel.services.channel_service import ChannelService
+    from modules.omnichannel.services.contact_segment_service import ContactSegmentService
+    from modules.omnichannel.services.template_management_service import TemplateManagementService
+
+    _enable_fk_enforcement(session_factory)
+
+    # A broadcast can only be CREATED against an APPROVED template
+    # (`test_create_template_not_approved_422`) - downgrade to LOCAL_DRAFT
+    # AFTER creation so the delete call skips the Meta adapter entirely.
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+
+    db = session_factory()
+    segment = ContactSegment(
+        tenant_id=DEFAULT_TENANT_ID,
+        workspace_id=ws,
+        name="Segment for delete test",
+        filter_json={"kind": "group", "combinator": "and", "rules": []},
+    )
+    db.add(segment)
+    db.commit()
+    segment_id = segment.id
+    db.close()
+
+    created = client.post(_broadcasts_base(ws), headers=h, json=_create_payload(
+        channel_id, template_id, audience={"kind": "segment", "segmentId": segment_id},
+    )).json()
+    broadcast_id = created["id"]
+
+    db = session_factory()
+    row = db.query(Broadcast).filter(Broadcast.id == broadcast_id).first()
+    assert row.audience_segment_id == segment_id
+    assert row.channel_id == channel_id
+    assert row.template_id == template_id
+
+    # Segment delete must succeed - the broadcast keeps its (now-dangling)
+    # audience_segment_id, since there is no FK to enforce/cascade.
+    ContactSegmentService(db).delete(segment_id, ws, DEFAULT_TENANT_ID)
+    assert db.query(ContactSegment).filter(ContactSegment.id == segment_id).first() is None
+
+    # Template delete must succeed (LOCAL_DRAFT never calls the Meta adapter).
+    tpl = db.query(WhatsappTemplate).filter(WhatsappTemplate.id == template_id).first()
+    tpl.status = "LOCAL_DRAFT"
+    db.commit()
+    TemplateManagementService(db).delete(channel_id, template_id, DEFAULT_TENANT_ID)
+    assert db.query(WhatsappTemplate).filter(WhatsappTemplate.id == template_id).first() is None
+
+    # Channel delete (hard delete) must succeed even with a broadcast still
+    # pointing at its id.
+    ChannelService(db).remove([channel_id], DEFAULT_TENANT_ID)
+    assert db.query(Channel).filter(Channel.id == channel_id).first() is None
+
+    # The broadcast row itself survives untouched - no cascade, no FK error.
+    survivor = db.query(Broadcast).filter(Broadcast.id == broadcast_id).first()
+    assert survivor is not None
+    assert survivor.channel_id == channel_id
+    assert survivor.template_id == template_id
+    assert survivor.audience_segment_id == segment_id
     db.close()

@@ -35,6 +35,13 @@ export interface MultiSelectProps {
   size?: 'sm' | 'md';
   className?: string;
   disabled?: boolean;
+  /**
+   * Called with the typed search text on every keystroke, IN ADDITION to the
+   * built-in client-side filter over `options` - lets a caller drive a
+   * server-searched/debounced options set (e.g. a large contact picker)
+   * instead of forking a parallel multi-select component.
+   */
+  onQueryChange?: (query: string) => void;
 }
 
 /**
@@ -52,6 +59,7 @@ export function MultiSelect({
   size = 'md',
   className,
   disabled = false,
+  onQueryChange,
 }: MultiSelectProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -115,7 +123,14 @@ export function MultiSelect({
         align="start"
       >
         <Command>
-          <CommandInput placeholder={searchPlaceholder} value={query} onValueChange={setQuery} />
+          <CommandInput
+            placeholder={searchPlaceholder}
+            value={query}
+            onValueChange={(v) => {
+              setQuery(v);
+              onQueryChange?.(v);
+            }}
+          />
           <div className="flex items-center justify-between border-b border-border px-2 py-1.5">
             <span className="text-xs text-muted-foreground">
               {value.length} selected

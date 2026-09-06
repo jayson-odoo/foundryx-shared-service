@@ -39,6 +39,14 @@ class BindingValidationError(Exception):
 def _validate_static(text: str) -> Optional[str]:
     from app.template_engine.merge import collect_tokens
 
+    # Review round 1, S3: an empty static binding used to save cleanly, then
+    # `_resolve_one` below sanitizes it to '' at send time and raises
+    # `SkipMissingVariable` - every recipient silently becomes
+    # `skipped/missing_variable` and the broadcast reports "Sent" with 0
+    # sends. Require non-empty text at save (mirrors the contact-field
+    # binding's own required-fallback rule right below).
+    if not (text or "").strip():
+        return "Static text is required."
     if collect_tokens(text or ""):
         return "Static text cannot contain {{ }} merge syntax."
     return None

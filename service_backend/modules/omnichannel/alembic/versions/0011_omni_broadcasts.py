@@ -8,6 +8,12 @@ contact_id)` the per-recipient idempotency backstop S2 relies on). Idempotent
 guards (inspector checks), mirrors `0010_omni_contacts_module`'s style.
 Revision id <= 32 chars.
 
+`broadcasts.channel_id`/`template_id`/`audience_segment_id` and
+`broadcast_recipients.contact_id` are PLAIN INDEXED columns - NOT DB-level
+FKs (BL-030 convention, same as `job_id`/`created_by_user_id`/`message_id`
+elsewhere on this table). A channel/template/segment/contact hard-delete
+must never be blocked by a historical broadcast (review round 1, B1).
+
 Revision ID: 0011_omni_broadcasts
 Revises: 0010_omni_contacts_module
 Create Date: 2026-09-06
@@ -50,21 +56,16 @@ def upgrade() -> None:
             ),
             sa.Column("name", sa.String(), nullable=False),
             sa.Column("labels_json", sa.JSON(), nullable=True),
-            sa.Column(
-                "channel_id", sa.String(), sa.ForeignKey(f"{SCHEMA}.channels.id"),
-                nullable=False, index=True,
-            ),
+            # No FK (BL-030) - a channel hard-delete must not be blocked.
+            sa.Column("channel_id", sa.String(), nullable=False, index=True),
             sa.Column("audience_kind", sa.String(), nullable=False),
-            sa.Column(
-                "audience_segment_id", sa.String(),
-                sa.ForeignKey(f"{SCHEMA}.contact_segments.id"), nullable=True,
-            ),
+            # No FK (BL-030) - a segment delete must not be blocked.
+            sa.Column("audience_segment_id", sa.String(), nullable=True, index=True),
             sa.Column("audience_filter_json", sa.JSON(), nullable=True),
             sa.Column("audience_contact_ids_json", sa.JSON(), nullable=True),
-            sa.Column(
-                "template_id", sa.String(), sa.ForeignKey(f"{SCHEMA}.whatsapp_templates.id"),
-                nullable=False,
-            ),
+            # No FK (BL-030) - a template delete must not be blocked;
+            # template_name/template_language below are denormalized.
+            sa.Column("template_id", sa.String(), nullable=False, index=True),
             sa.Column("template_name", sa.String(), nullable=False),
             sa.Column("template_language", sa.String(), nullable=True),
             sa.Column("bindings_json", sa.JSON(), nullable=True),
@@ -109,10 +110,8 @@ def upgrade() -> None:
                 "broadcast_id", sa.String(), sa.ForeignKey(f"{SCHEMA}.broadcasts.id"),
                 nullable=False, index=True,
             ),
-            sa.Column(
-                "contact_id", sa.String(), sa.ForeignKey(f"{SCHEMA}.contacts.id"),
-                nullable=False, index=True,
-            ),
+            # No FK (BL-030) - a contact hard-delete must not be blocked.
+            sa.Column("contact_id", sa.String(), nullable=False, index=True),
             sa.Column("message_id", sa.String(), nullable=True, index=True),
             sa.Column("state", sa.String(), nullable=False, server_default="queued"),
             sa.Column("skip_reason", sa.String(), nullable=True),

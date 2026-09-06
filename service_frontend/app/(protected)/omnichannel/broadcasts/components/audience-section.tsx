@@ -4,13 +4,17 @@
  * Audience section (plan 29, AC-BRD-05) - source is a `SearchSelect` offering
  * Segment / Filter / Selected contacts (mutually exclusive); Segment lists
  * the workspace's saved segments, Filter reuses the Resource-shell filter
- * builder, Selected contacts uses a contacts `MultiSelect` (a real contacts
- * PICKER route lands with A2 - S0 sources it from the real, already-seeded
- * `conversationService.listThreads`, the only contact data available before
- * A2 merges). The resolved recipient COUNT refreshes whenever the source or
- * its value changes.
+ * builder over the SAME whitelisted field list `use-contacts-list-config.tsx`
+ * uses (`useContactFilterFields`, review round 1 B3 - the S0 hand-rolled
+ * `status`/`assignee`/`priority` copy offered fields the backend's
+ * `contact_filters.py` whitelist rejects with a 422), and Selected contacts
+ * uses a contacts `MultiSelect` sourced from the real, server-searched A2
+ * contact list (review round 1 S2 - `useContactPicker`, replacing the S0
+ * `conversationService.listThreads` stand-in capped at 50 rows with no
+ * search). The resolved recipient COUNT refreshes whenever the source or its
+ * value changes.
  */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Filter as FilterIcon, Users as UsersIcon } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -19,41 +23,15 @@ import { SearchSelect } from '@/components/platform/search-select';
 import { MultiSelect } from '@/components/platform/multi-select';
 import { FilterBuilder } from '@/components/platform/resource-list/filter-builder';
 import { useContactSegments } from '@/hooks/use-contact-segments';
-import { conversationService } from '@/services/conversation-service';
-import type { BroadcastAudience, ConversationThread } from '@/types/omnichannel';
-import type { FilterFieldDef } from '@/types/resource';
+import { useContactTags } from '@/hooks/use-contact-tags';
+import { useContactFields } from '@/hooks/use-contact-fields';
+import { useContactLifecycleStages } from '@/hooks/use-contact-lifecycle-stages';
+import { useWorkspaceMembers } from '@/hooks/use-workspace-members';
+import { useContactFilterFields } from '@/hooks/use-contact-filter-fields';
+import { useContactPicker } from '@/hooks/use-contact-picker';
+import { useChannelTypeOptions } from '@/hooks/use-channel-type-options';
+import type { BroadcastAudience } from '@/types/omnichannel';
 import { useAudiencePreview } from './use-audience-preview';
-
-const AUDIENCE_FILTER_FIELDS: FilterFieldDef[] = [
-  {
-    field: 'status',
-    label: 'Status',
-    type: 'enum',
-    options: [
-      { label: 'Open', value: 'OPEN' },
-      { label: 'Snoozed', value: 'SNOOZED' },
-      { label: 'Closed', value: 'CLOSED' },
-    ],
-  },
-  {
-    field: 'priority',
-    label: 'Priority',
-    type: 'enum',
-    options: [
-      { label: 'Low', value: 'LOW' },
-      { label: 'Medium', value: 'MEDIUM' },
-      { label: 'High', value: 'HIGH' },
-      { label: 'Urgent', value: 'URGENT' },
-    ],
-  },
-  {
-    field: 'assignee',
-    label: 'Assignee',
-    type: 'enum',
-    options: [{ label: 'Unassigned', value: 'unassigned' }],
-  },
-  { field: 'lastMessageAt', label: 'Last message', type: 'date' },
-];
 
 const SOURCE_OPTIONS = [
   { label: 'Segment', value: 'segment' },
@@ -72,15 +50,16 @@ export function AudienceSection({ workspaceId, editing, value, onChange }: Audie
   const { segments } = useContactSegments(workspaceId);
   const { count } = useAudiencePreview(workspaceId, value);
   const [filterOpen, setFilterOpen] = useState(false);
-  const [contacts, setContacts] = useState<ConversationThread[]>([]);
 
-  useEffect(() => {
-    if (!workspaceId) return;
-    conversationService
-      .listThreads({ workspaceId })
-      .then(setContacts)
-      .catch(() => setContacts([]));
-  }, [workspaceId]);
+  const { tags } = useContactTags(workspaceId);
+  const { fields } = useContactFields(workspaceId);
+  const { stages } = useContactLifecycleStages(workspaceId);
+  const { members } = useWorkspaceMembers(workspaceId);
+  const channelTypeOptions = useChannelTypeOptions(workspaceId);
+  const filterFields = useContactFilterFields({ tags, fields, stages, members, channelTypeOptions });
+
+  const contactIds = value.kind === 'contacts' ? (value.contactIds ?? []) : [];
+  const { options: contactOptions, setQuery: setContactQuery } = useContactPicker(workspaceId, contactIds);
 
   const segmentSummary =
     value.kind === 'segment'
@@ -131,9 +110,10 @@ export function AudienceSection({ workspaceId, editing, value, onChange }: Audie
             <div className="space-y-1.5">
               <label className="text-sm text-muted-foreground">Contacts</label>
               <MultiSelect
-                options={contacts.map((c) => ({ label: `${c.name} (${c.phone ?? 'no phone'})`, value: c.id }))}
-                value={value.contactIds ?? []}
-                onChange={(contactIds) => onChange({ kind: 'contacts', contactIds })}
+                options={contactOptions}
+                value={contactIds}
+                onChange={(ids) => onChange({ kind: 'contacts', contactIds: ids })}
+                onQueryChange={setContactQuery}
                 disabled={!editing}
                 className="w-full"
               />
@@ -151,7 +131,7 @@ export function AudienceSection({ workspaceId, editing, value, onChange }: Audie
               </PopoverTrigger>
               <PopoverContent align="start" className="w-auto p-3">
                 <FilterBuilder
-                  fields={AUDIENCE_FILTER_FIELDS}
+                  fields={filterFields}
                   onApply={(group) => onChange({ kind: 'filter', filter: group ?? undefined })}
                   onClose={() => setFilterOpen(false)}
                 />

@@ -68,7 +68,7 @@ configuration and read model.
 | Schemas | `modules/omnichannel/schemas.py` | `BroadcastItem`, `BroadcastCreate`, `BroadcastUpdate`, `BroadcastSendRequest`, `BroadcastTestSendRequest`, `BroadcastRecipientItem`, `BroadcastAudience`, `TemplateBinding`, `BroadcastCounts` - all `ApiModel` where they carry a datetime |
 | Workflow seam | `modules/omnichannel/workflow_nodes.py` | register the `omnichannel_broadcast` `WorkflowEntity` (read-only, `writable=()`); the job emits `emit_entity_event(..., "completed", ...)` |
 | Permissions | `modules/omnichannel/permissions/permissions.csv` | `broadcasts.read`, `broadcasts.manage`, `broadcasts.send` |
-| Manifest + hooks | `modules/omnichannel/manifest.json`, `modules/omnichannel/bootstrap.py` | version bump to `0.6.0` (F1), the new router declared, `update_tenant` calls `statuses.ensure_statuses` for the `BROADCAST` scope; `AppStoreService.update()` re-grants the three keys |
+| Manifest + hooks | `modules/omnichannel/manifest.json`, `modules/omnichannel/bootstrap.py` | version bump to `0.5.0` (review round 1, D-2 - see F1: `0.6.0` was a branch-time placeholder, corrected once the real numbering was checked), the new router declared, `update_tenant` calls `statuses.ensure_statuses` for the `BROADCAST` scope; `AppStoreService.update()` re-grants the three keys |
 
 Reused unchanged: `services/message_service.py` (one additive kwarg, section 5.5),
 `services/template_send.py`, `services/send_runner.py` (one hook call), `services/realtime.py`,
@@ -345,15 +345,24 @@ path; the reconciler resolves anything still ambiguous at finalize.
 | BL-SS-091 | Label a broadcast-originated bubble in the Inbox using the `metadata_json.broadcast` marker this slice stamps | Low |
 | BL-SS-092 | `broadcast_recipients` retention / archival for large campaigns (pairs with BL-SS-060) | Low |
 | BL-SS-093 | A crashed/stuck chunk chain that leaves `queued` recipients unclaimed (the beat's stuck-SENDING repair reconciles claimed-but-ambiguous rows, S2b D-A4-9, but does not RESUME a chain whose next `broadcast_chunk.apply_async` was never enqueued) - a broadcast can wedge in SENDING with never-attempted recipients until an operator re-runs the job. Needs a beat-driven "stalled SENDING" detector (last count-advance older than N minutes) that re-enqueues the next chunk, not just the finalize path `run_due_broadcasts` already covers | Medium |
+| BL-SS-101 | Review round 1, S7 - `BroadcastService.cancel()`'s SENDING branch deliberately delegates the ledger sweep to the job's NEXT chunk checkpoint (`run_one_chunk`'s `current_status == "CANCELLED"` branch calls `repo.skip_remaining_queued` + finalizes), but `run_due_broadcasts`'s stuck-sweep only scans `Status.key == "SENDING"` - if the chunk chain has already DIED (crashed process, lost Celery task) before that checkpoint runs, a CANCELLED broadcast keeps `queued`/unclaimed recipients forever with `finished_at = NULL`. Fix needs its OWN branch (not a bare extension of the SENDING stuck-sweep, whose `has_dispatchable_recipients` early-`continue` is wrong for a cancelled broadcast - those queued rows are abandoned, not "real work still queued"): a "stuck CANCELLED" scan that unconditionally calls `repo.skip_remaining_queued(reason="cancelled")` then `reconcile_broadcast` + `finalize_broadcast`. | Medium |
 
 ## 8. Flagged for the user
 
-- **F1 - migration number and manifest version are assumptions.** The brief assigns
+- **F1 - migration number and manifest version are assumptions (resolved, D-2).** The brief assigns
   `0012_omni_broadcasts` and manifest `0.6.0` (A3 = 0009/0.3.0, A2 = 0010/0.4.0, A8 = 0011/0.5.0),
   but at `d302ea7` the head is `0008_omni_contact_model` and the manifest is `0.2.0`, and plan 26 as
-  written still claims `0009`/`0.3.0` for itself. The coder MUST re-read
-  `modules/omnichannel/alembic/versions/` and `manifest.json` at branch time and take the next free
-  number and the next minor version; the numbers above are labels, not facts.
+  written still claims `0009`/`0.3.0` for itself. The coder re-read `modules/omnichannel/alembic/
+  versions/` and `manifest.json` at branch time and took the next free number and minor version:
+  migration `0011_omni_broadcasts`, manifest `0.5.0` (NOT `0.6.0`, a stale placeholder from before
+  the real numbers were checked - corrected in the "Backend pieces" table above). **Merge-order
+  rule (review round 1, D-2):** A4 merges to main BEFORE A8 by decision - main is at `0.4.0` when
+  A4 lands, so the manifest bump to `0.5.0` genuinely fires `AppStoreService`'s Update path for
+  every existing tenant (the tester's local s29 lane DB had ALREADY bootstrapped at `0.5.0` before
+  this round's testing began, which is why the Update action looked unreachable there - an
+  artifact of lane setup order, not a product defect; on `main` the mechanism fires as designed).
+  Whichever of A4/A8 merges SECOND must re-check both numbers again and take the next free ones -
+  this file's own numbers stop being facts the moment the other one merges first instead.
 - **F2 - bindings are structured, not a merge-string micro-render (D-A4-4).** The brief said
   "`{{contact.firstName}}` style via the existing micro-renderer". A WhatsApp parameter is a single
   value slot, so this plan stores `{source, field, fallback}` and never renders a tenant string at
@@ -381,3 +390,47 @@ path; the reconciler resolves anything still ambiguous at finalize.
   contacts twice. Flagging the choice, not asking to change it.
 - **F7 - two concurrent broadcasts on one channel can exceed the rate tier** (D-A4-12). v1 paces per
   broadcast; the global per-channel bucket is BL-SS-084.
+- **F8 - review round 1 fix pass (B1-B3, S1-S6 fixed; S7 + nits below flagged/backlogged).**
+  B1/B2/B3 and S1-S6 landed as code fixes with new tests (see the round-1 test report / commit).
+  Deferred rather than fixed in this pass:
+  - **S7** (a CANCELLED broadcast whose chunk chain already died keeps a dangling `queued` ledger
+    forever) needs its OWN stuck-sweep branch, not a bare extension of the SENDING one - backlogged
+    as **BL-SS-101** rather than risked as a rushed fix.
+  - **Nit "duplicate not counted in `skipped_count`"** - confirmed correct-by-design (a duplicate
+    contact writes NO row, so it can never contribute to a persisted count); clarified with a
+    docstring, no behavior change.
+  - **Nit "finalize's reconcile adopts a still-QUEUED message as `sent`"** - by design (F6's own
+    trade-off: adoption over ambiguity), now called out explicitly here rather than only in the
+    reviewer's notes.
+  - **Nit "`key_to_id["SENT"|"FAILED"]` KeyErrors if a tenant lacks BROADCAST-scope statuses"** -
+    fixed (`_require_status_id` raises a named `RuntimeError` instead of a bare `KeyError`).
+  - **Nits "pacing always uses `CHUNK_SIZE`/`elapsed=0`" and "migration uses `sa.DateTime(timezone=
+    True)` not `UTCDateTime`"** - reviewed, no action: both were already confirmed harmless /
+    DDL-identical by the reviewer.
+  - **Explanation-copy nit** (`use-broadcast-form.tsx` subtitle, `TestSendDialog`'s
+    `DialogDescription`) - reviewed against the foolproof-UI carve-out (a one-line WHAT-is-this
+    description is allowed; only procedural HOW-TO copy is banned) - both are short identifying
+    descriptions, not instructions, so left as-is.
+- **F9 - tester defects D-1..D-6 (E2E test report, round 1) - all fixed except D-5 (already covered
+  by F8's S4) - two tester observations backlogged.**
+  - **D-1** (no list row-actions column, AC-BRD-11/54) - fixed: `use-broadcasts-list-config.tsx`
+    gained the trailing `id: 'actions'` column exactly as `use-users-list-config.tsx`'s.
+  - **D-3/D-4** (the Audience Filter branch was a hardcoded non-functional stub, AND an empty/
+    malformed filter silently resolved to "every contact in the workspace") - D-3 was already fixed
+    by F8's B3 (`useContactFilterFields`) landing in the same round; D-4 is the NEW server-side
+    guard this round - `has_leaf_condition` (recursive, `app/schemas/filters.py`) + `extra="forbid"`
+    on `FilterCondition`/`FilterGroup`, wired into both `audience-preview` and create/update via
+    `BroadcastValidationError` (`{fieldErrors}`, not a bare string).
+  - **D-2** (manifest version deviation) - resolved as a doc-only fix; manifest STAYS `0.5.0` (see
+    the corrected "Backend pieces" table row and F1 above) - A4 merges before A8 by decision.
+  - **D-6** (no vitest for the template picker's non-approved/media-header exclusion, no vitest for
+    `broadcast-service.mock.ts`) - fixed: `broadcast-form-sections.test.tsx` (4 tests) +
+    `services/broadcast-service.mock.test.ts` (10 tests, states + error paths). The mock file itself
+    stays a cleanup candidate (AC-BRD-13's own remark: dead code, no importer since S4).
+  - **Observation "the SENDING claim and job creation aren't atomic"** - investigated, NOT fixed:
+    `BroadcastRepository.claim_status` commits internally (mirrors `BackgroundJobRepository.claim`),
+    so the real fix needs an optional `commit=False` on that shared primitive, touching all three of
+    its call sites' atomicity guarantees - backlogged as **BL-SS-102** with the current (buggy)
+    behavior pinned by a test, not silently left undocumented.
+  - **Observation "a `broadcasts.read`-only role sees an empty list"** - backlogged as **BL-SS-103**
+    (same class as BL-SS-081 for contacts).

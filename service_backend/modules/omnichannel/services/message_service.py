@@ -127,7 +127,7 @@ class MessageService:
         *,
         actor_user_id: Optional[str],
         external_agent_id: Optional[str],
-        record_first_reply: bool = True,
+        is_agent_reply: bool = True,
     ) -> None:
         """Maintains `last_message_at` (every send) + `last_agent_message_at`
         (plan 27 A3, AC-IVE-11/12 - the ONE outbound seam) and writes ONE
@@ -136,12 +136,16 @@ class MessageService:
         send_media / `_structured_row`) - NEVER called by `add_internal_note`
         (a SYSTEM note is never a reply).
 
-        `record_first_reply=False` (plan 29 D-A4-15) - a broadcast send routes
-        through this SAME path on purpose (no second outbound path), but a
-        broadcast is not a conversation: it must write NO `conversation_events`
-        row (AC-BRD-43). `last_message_at`/`last_agent_message_at` still
-        advance either way - that bookkeeping is real contact activity, not a
-        conversation-timeline event.
+        `is_agent_reply=False` (plan 29 D-A4-15, review round 1 B2) - a
+        broadcast send routes through this SAME path on purpose (no second
+        outbound path), but a broadcast is NOT a reply in a conversation: it
+        must write NO `conversation_events` row (AC-BRD-43) AND must NOT
+        advance `last_agent_message_at` - `unreplied` is defined as
+        `last_agent_message_at < last_incoming_message_at` (plan 27
+        AC-IVE-11/12), so advancing it here would silently mark every
+        contact "replied" and empty the agent team's Unreplied inbox view on
+        every broadcast blast. Only `last_message_at` advances (the message
+        really is in the thread - real contact activity, just not a reply).
 
         B20 (round-3 codex triage) - the SELECT (`is_first_reply_pending`)
         then INSERT (`event_service.record`) is a check-then-write race: two
@@ -156,8 +160,9 @@ class MessageService:
                 Contact.id == contact.id, Contact.tenant_id == contact.tenant_id
             ).with_for_update().first()
         contact.last_message_at = now
-        contact.last_agent_message_at = now
-        if record_first_reply and event_service.is_first_reply_pending(self.db, contact):
+        if is_agent_reply:
+            contact.last_agent_message_at = now
+        if is_agent_reply and event_service.is_first_reply_pending(self.db, contact):
             payload = None
             if contact.last_incoming_message_at is not None:
                 incoming = contact.last_incoming_message_at
@@ -426,7 +431,7 @@ class MessageService:
         self.db.add(row)
         self._mark_agent_message(
             contact, now, actor_user_id=actor_user_id, external_agent_id=external_agent_id,
-            record_first_reply=not (metadata_extra and metadata_extra.get("broadcast")),
+            is_agent_reply=not (metadata_extra and metadata_extra.get("broadcast")),
         )
         self.db.commit()
         self.db.refresh(row)

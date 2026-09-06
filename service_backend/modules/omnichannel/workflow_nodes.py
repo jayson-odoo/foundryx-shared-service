@@ -154,9 +154,17 @@ def _register_broadcast_entity() -> None:
     register_workflow_entity(entity, register_facts=False)
 
     def _status_key(obj: Broadcast, db) -> Optional[str]:
+        # Review round 1, S6: tenant-scope this stored-id resolution even on
+        # a read path (the polymorphic stored-id rule) - mirrors
+        # `broadcast_send_service._current_status_key`, which resolves the
+        # SAME `status_id` correctly scoped.
         if not obj.status_id:
             return None
-        row = db.query(Status.key).filter(Status.id == obj.status_id).first()
+        row = (
+            db.query(Status.key)
+            .filter(Status.id == obj.status_id, Status.tenant_id == obj.tenant_id, Status.scope == "BROADCAST")
+            .first()
+        )
         return row[0] if row else None
 
     facts = list(infer_facts(Broadcast, list(entity.fact_attrs), prefix="record"))

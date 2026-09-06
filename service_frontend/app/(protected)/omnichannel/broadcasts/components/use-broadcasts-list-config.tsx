@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { OverflowPills } from '@/components/platform/overflow-pills';
+import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import { useDatetime } from '@/hooks/use-datetime';
 import { broadcastService } from '@/services/broadcast-service';
@@ -175,6 +176,29 @@ export function useBroadcastsListConfig(workspaceId: string | null): ResourceLis
         cell: ({ row }) => <span className="text-muted-foreground">{formatDate(row.original.createdAt)}</span>,
         size: 130,
         enableSorting: true,
+      },
+      {
+        id: 'actions',
+        meta: { reorderable: false },
+        header: () => null,
+        cell: ({ row, table }) => {
+          const meta = table.options.meta;
+          const index = (meta?.pageStartIndex ?? 0) + row.index;
+          return (
+            <div onClick={stop} className="flex justify-end">
+              <ActionMenu
+                actions={actions}
+                rows={[row.original]}
+                runtime={{ ctx: meta?.resourceCtx, index, reload: meta?.reload ?? (() => {}) }}
+                surface="row"
+              />
+            </div>
+          );
+        },
+        size: 60,
+        enableSorting: false,
+        enableHiding: false,
+        enableResizing: false,
       },
     ];
 
