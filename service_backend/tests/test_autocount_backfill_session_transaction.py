@@ -90,3 +90,52 @@ def test_existing_columns_does_not_roll_back_a_pending_uncommitted_update(db):
     assert _sink_impl(db, company_id) == "pending-marker", (
         "existing_columns rolled back the session's uncommitted UPDATE"
     )
+
+
+# ── the COMPOSED production path (reviewer finding S2) ──────────────────────
+
+
+def test_update_tenant_delivers_every_backfill_before_any_commit(db):
+    """``update_tenant`` runs four backfills and then ``seed_company_defaults``
+    in ONE session transaction. The existing upgrade tests assert only the
+    seed's output, so a column check that rolled the earlier backfills back
+    left them green while every filled value was lost. Blank every value the
+    first three helpers own on committed rows, run the upgrade ONCE, and read
+    all of them back in the same session before anything commits."""
+    from modules.autocount.bootstrap import update_tenant
+    from modules.autocount.canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
+    from modules.autocount.envelopes import ENVELOPE_STATUS_DICT
+    from modules.autocount.models import ETL_STATUS_DRAFT, AcEntityConfig
+    from modules.autocount.sources import INITIAL_LOAD_WINDOWED
+
+    company_id = _blank_company(db, database_name="AED_UPGRADE")
+    config = AcEntityConfig(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company_id,
+        entity_type=ENTITY_GOODS_RECEIVED_NOTE,
+    )
+    db.add(config)
+    db.commit()
+    config_id = config.id
+    db.execute(
+        sa.text(
+            "UPDATE ac_entity_config SET envelope = '', initial_load = '', etl_status = '' "
+            "WHERE id = :id"
+        ),
+        {"id": config_id},
+    )
+    db.commit()
+    db.expire_all()
+
+    update_tenant(db, DEFAULT_TENANT_ID, "0.3.0")
+
+    # No commit: what the session sees now is what the upgrade delivered.
+    envelope, initial_load, etl_status = db.execute(
+        sa.text(
+            "SELECT envelope, initial_load, etl_status FROM ac_entity_config WHERE id = :id"
+        ),
+        {"id": config_id},
+    ).one()
+    assert envelope == ENVELOPE_STATUS_DICT
+    assert initial_load == INITIAL_LOAD_WINDOWED
+    assert etl_status == ETL_STATUS_DRAFT
+    assert _sink_impl(db, company_id) == SINK_IMPL_LOGGING
