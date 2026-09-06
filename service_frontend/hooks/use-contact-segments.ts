@@ -43,7 +43,21 @@ export function useContactSegments(workspaceId: string | null): UseContactSegmen
   useEffect(() => {
     setSegments([]);
     if (!workspaceId) {
-      setLoading(false);
+      // Round-3 fix: do NOT report `loading: false` here. `ContactsPage`
+      // only mounts `ResourceList` once its own workspace resolution is
+      // `ready` (a SEPARATE hook) - so a caller reading `loading` while
+      // `workspaceId` is still null never has a consumer watching it
+      // anyway. Reporting `false` here used to create a real race: on the
+      // very render where `workspaceId` first goes null -> real id,
+      // `ResourceList` mounts in the SAME commit as this effect's dep
+      // change fires, but React runs the CHILD's mount effects (the
+      // shell's ctx-restored-segment fallback) BEFORE this effect - so the
+      // shell read the STALE `loading=false` this branch had already set
+      // on the PRIOR (workspaceId=null) render and treated the segment
+      // list as final before the real fetch even started, permanently
+      // losing a ctx-restored segment. Leaving `loading` at its initial
+      // `true` (never toggled false without a real fetch load having
+      // completed) removes the false-then-true-again tick entirely.
       return;
     }
     let cancelled = false;

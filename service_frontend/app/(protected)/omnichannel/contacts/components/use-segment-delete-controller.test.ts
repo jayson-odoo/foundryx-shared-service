@@ -105,6 +105,41 @@ describe('useSegmentDeleteController', () => {
     expect(result.current.deletingId).toBe('seg-a');
   });
 
+  it('two startDelete calls fired in the SAME tick only park once (round 3 fix - synchronous guard)', async () => {
+    // `activeRef` (the round-2 guard) is set only after `await
+    // deferred.start(...)` resolves - so two calls issued before that await
+    // settles both used to read `activeRef.current === null` and both
+    // parked. Model that race: park() doesn't resolve until we say so, and
+    // BOTH startDelete calls fire before it does.
+    let resolvePark: (value: { id: string; commitAt: string; windowSeconds: number }) => void = () => {};
+    park.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvePark = resolve;
+        }),
+    );
+    const { result } = renderHook(() => useSegmentDeleteController());
+
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    act(() => {
+      first = result.current.startDelete(segment('seg-a'));
+      second = result.current.startDelete(segment('seg-b'));
+    });
+
+    resolvePark({ id: 'pa1', commitAt: new Date(Date.now() + 10_000).toISOString(), windowSeconds: 10 });
+    await act(async () => {
+      await first;
+      await second;
+    });
+
+    // Only seg-a's park call happened - the second call was a synchronous
+    // no-op, not a race that could overwrite the first's tracked state.
+    expect(park).toHaveBeenCalledTimes(1);
+    expect(park).toHaveBeenCalledWith('contact_segments.delete', 'contact_segment', 'seg-a', undefined);
+    expect(result.current.deletingId).toBe('seg-a');
+  });
+
   it("A's Cancel cancels A only, settling deletingId back to null", async () => {
     park.mockResolvedValue({
       id: 'pa1',

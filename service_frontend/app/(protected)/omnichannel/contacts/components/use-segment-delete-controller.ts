@@ -45,7 +45,7 @@ export interface SegmentDeleteController {
    * every OTHER row's Delete button while this is set (one countdown at a
    * time, matching the engine's model). */
   deletingId: string | null;
-  startDelete: (segment: ContactSegment) => void;
+  startDelete: (segment: ContactSegment) => Promise<void>;
 }
 
 export function useSegmentDeleteController(onDeleted?: () => void): SegmentDeleteController {
@@ -53,6 +53,15 @@ export function useSegmentDeleteController(onDeleted?: () => void): SegmentDelet
   // Read from callbacks that outlive any single render (mirrors ActionMenu's
   // own `activeRef`).
   const activeRef = useRef<{ id: string } | null>(null);
+  // Round-3 fix: `activeRef` is set only AFTER `await deferred.start(...)`
+  // resolves, so two `startDelete` calls in the same tick (e.g. a fast
+  // double-invoke on the row button) both read `activeRef.current === null`
+  // and both start a park under the SAME hook instance. Set `startingRef`
+  // SYNCHRONOUSLY before the await so the second call's guard check sees it
+  // immediately; cleared once the in-flight call settles (either `activeRef`
+  // takes over on success, or the catch runs on failure) so a later,
+  // legitimate `startDelete` is never permanently blocked.
+  const startingRef = useRef(false);
 
   const settleDelete = useCallback(() => {
     const active = activeRef.current;
@@ -79,8 +88,12 @@ export function useSegmentDeleteController(onDeleted?: () => void): SegmentDelet
       // Defensive: the dialog already disables every row's Delete button
       // while one is pending - this guards the controller itself against a
       // stray second call (e.g. a fast double-invoke) ever starting a
-      // concurrent park under the SAME hook instance.
-      if (activeRef.current) return;
+      // concurrent park under the SAME hook instance. `startingRef` is the
+      // SYNCHRONOUS half of the guard (set before the first `await`); a
+      // second call arriving in the same tick - before `activeRef` is set -
+      // is a no-op too.
+      if (activeRef.current || startingRef.current) return;
+      startingRef.current = true;
       setDeletingId(segment.id);
       try {
         const { commitAt, windowSeconds } = await deferred.start('contact_segments.delete', {
@@ -101,6 +114,8 @@ export function useSegmentDeleteController(onDeleted?: () => void): SegmentDelet
       } catch (error) {
         setDeletingId(null);
         toast.error(error instanceof Error ? error.message : 'Could not delete the segment.');
+      } finally {
+        startingRef.current = false;
       }
     },
     [deferred, settleDelete],

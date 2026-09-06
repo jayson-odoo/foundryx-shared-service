@@ -61,6 +61,16 @@ function customFieldFilterType(field: ContactField): FilterFieldType {
 export interface UseContactsListConfigParams {
   workspaceId: string;
   segments: ContactSegment[];
+  /**
+   * Round-3 fix: whether `segments` reflects the workspace's real segment
+   * list (vs `useContactSegments`' initial/in-flight state) - `segmentOptions()`
+   * always prepends the `all` sentinel, so the shell's "segments not loaded
+   * yet" signal must come from here, not from `segments.length`. See
+   * `ResourceListConfig.segmentsReady`. Optional, default `true` (matches
+   * every pre-existing caller/test - only the live page wires the real
+   * loading state).
+   */
+  segmentsReady?: boolean;
   tags: ContactTag[];
   fields: ContactField[];
   stages: LifecycleStageOption[];
@@ -73,6 +83,7 @@ export interface UseContactsListConfigParams {
 export function useContactsListConfig({
   workspaceId,
   segments,
+  segmentsReady = true,
   tags,
   fields,
   stages,
@@ -307,6 +318,7 @@ export function useContactsListConfig({
       defaultSort: { id: 'lastMessageAt', desc: true },
       enableStatusViews: false,
       segments: segmentOptions(segments),
+      segmentsReady,
       onFilterChange,
       exportFilename: 'contacts',
       createLabel: 'Add contact',
@@ -314,5 +326,5 @@ export function useContactsListConfig({
       onCreate: () => router.push(contactNewPath),
       importer: { entityType: 'omnichannel_contacts', writePermission: 'contacts.import', context: { workspaceId } },
     };
-  }, [workspaceId, filterFields, actions, segments, onFilterChange, formatDate, formatDateTime, router]);
+  }, [workspaceId, filterFields, actions, segments, segmentsReady, onFilterChange, formatDate, formatDateTime, router]);
 }

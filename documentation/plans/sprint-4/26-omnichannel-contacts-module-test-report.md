@@ -533,3 +533,50 @@ both Cancel and an early Close. AC-CTM-13 (Manage segments dialog contract) -
 extended with the one-countdown-at-a-time disable rule. AC-CTM-42 (export/
 import round-trip) - extended to cover a tag name and a contact name that
 themselves trigger the formula-injection guard.
+
+### Round 3 fixes (Opus re-read: one blocker, one should-fix, nits)
+
+- **Blocker**: the round-2 segment fallback (`resource-list.tsx`) could not
+  tell "segment deleted" from "segments not loaded yet" - for Contacts,
+  `segmentOptions()` always prepends the `all` sentinel so `length === 0`
+  never trips, and a `ctx`-restored segment (list -> form -> Back) got
+  stomped back to `all` before `useContactSegments` resolved. Fixed with a
+  new optional `ResourceListConfig.segmentsReady` (the fallback effect defers
+  while `false`; omitted = always ready, existing static-segment lists
+  unaffected) - wired for Contacts (`!segmentsLoading`) and the form
+  Submissions tab (`graph !== null`). Live-verify surfaced a SECOND, deeper
+  race in `useContactSegments` itself: its `loading` flag briefly went
+  `true -> false -> true` around the exact render where `ResourceList` first
+  mounts (once `workspaceId` resolves from null to real), because the
+  `!workspaceId` branch reported `loading:false` - a value never actually
+  consumed by anything (`ResourceList` only mounts once a workspace id
+  exists) but which stomped the ctx-restored segment during that one bad
+  tick regardless. Fixed by no longer flipping `loading` false in that
+  branch - it now stays at its initial `true` until a real fetch completes,
+  which removes the tick entirely. New shell tests:
+  `resource-list.segment-fallback.test.tsx` (2 new cases - a ctx-restored
+  segment survives across `segmentsReady: false -> true`, and a genuinely
+  deleted segment still falls back once ready).
+- **Should-fix**: `use-segment-delete-controller.ts`'s one-at-a-time guard
+  read `activeRef`, set only AFTER `await deferred.start(...)` resolved - two
+  `startDelete` calls in the same tick both read `activeRef.current === null`
+  and could both park. Fixed with a `startingRef` set SYNCHRONOUSLY before
+  the first await (cleared in `finally`). New test: two same-tick calls only
+  park once.
+- **Nits**: `startDelete` now typed `Promise<void>` (was `void`, though
+  always async); `docs/reference/import-engine.md` created, documenting that
+  `coerce.py`'s `_strip_formula_guard` deliberately undoes the export
+  sanitizer's `'` guard on TEXT columns house-wide (not contacts-only) so
+  export -> edit -> re-import round-trips a value that itself starts with
+  `= + - @`/tab/CR.
+- Live-verify (`agent-browser`, session `s26d`, real sidebar clicks, :3004):
+  created a segment via Filters -> Save as segment, selected it, opened a
+  contact, clicked Back - the segment stayed selected at 1280px AND 375px
+  (screenshots in `26-evidence/round3/`). Console clean (only the
+  pre-existing DialogContent description warning). Cleaned up the verify
+  segment via the grace-window delete afterward.
+- Counts: `npx vitest run` **269 files, 2036 passed** (up from round 2's
+  2033 - net +3: 2 segment-fallback, 1 delete-controller same-tick guard).
+  `npx eslint .` on touched files: **0 errors** (pre-existing warnings only,
+  none on new/changed lines). `npx tsc --noEmit`: same 60-line pre-existing
+  error set before and after (no new errors introduced).

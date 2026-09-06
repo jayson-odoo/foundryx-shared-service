@@ -11,6 +11,7 @@ import type { ColumnDef } from '@tanstack/react-table';
 import { render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { encodeListQuery } from '@/lib/list-context';
 import { ResourceList } from './resource-list';
 import type { ResourceListConfig } from './types';
 
@@ -105,5 +106,84 @@ describe('ResourceList segment fallback (plan 26 review round 2, should-fix 3)',
     // Still there after settling - the fallback effect is a no-op when the
     // selected segment still exists.
     expect(screen.getByText('VIPs')).toBeInTheDocument();
+  });
+});
+
+describe('ResourceList segment fallback waits for segmentsReady (round 3 fix)', () => {
+  it('keeps a ctx-restored segment across the segments load rather than stomping it to the placeholder default', async () => {
+    // Simulates Contacts: `segmentOptions()` always prepends an `all`
+    // sentinel before `useContactSegments` resolves, so a naive
+    // `segments.length === 0` guard never trips - the mount-time state is a
+    // single-entry list, indistinguishable from "no real segments configured"
+    // without `segmentsReady`.
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({ ctx: encodeListQuery({ page: 0, pageSize: 10, segment: 'seg-1' }) }) as unknown as ReturnType<
+        typeof useSearchParams
+      >,
+    );
+
+    const fetcher = vi.fn(async () => ({ data: rows, total: rows.length, page: 0 }));
+    const loading = baseConfig({
+      fetcher,
+      segments: [{ id: 'all', label: 'All contacts' }],
+      segmentsReady: false,
+    });
+    const { rerender } = render(<ResourceList config={loading} restoreFromCtx />);
+
+    // The restored "seg-1" isn't in the not-yet-loaded single-entry list, so
+    // the trigger shows the unmatched placeholder rather than "All
+    // contacts" - the tell that the effect did NOT reset the value while
+    // segmentsReady is false (a reset would render "All contacts" here).
+    await waitFor(() => expect(fetcher).toHaveBeenCalled());
+    expect(screen.queryByText('All contacts')).not.toBeInTheDocument();
+    expect(screen.queryByText('VIPs')).not.toBeInTheDocument();
+
+    // The real segment list resolves - rerender in place (same component
+    // instance, same as `loading` flipping to `false` on the real hook).
+    const ready = baseConfig({
+      fetcher,
+      segments: [
+        { id: 'all', label: 'All contacts' },
+        { id: 'seg-1', label: 'VIPs' },
+      ],
+      segmentsReady: true,
+    });
+    rerender(<ResourceList config={ready} restoreFromCtx />);
+
+    // The ctx-restored "seg-1" survives - it was never overwritten.
+    await waitFor(() => expect(screen.getByText('VIPs')).toBeInTheDocument());
+  });
+
+  it('still falls back once ready if the ctx-restored segment genuinely no longer exists', async () => {
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({ ctx: encodeListQuery({ page: 0, pageSize: 10, segment: 'seg-deleted' }) }) as unknown as ReturnType<
+        typeof useSearchParams
+      >,
+    );
+
+    const fetcher = vi.fn(async () => ({ data: rows, total: rows.length, page: 0 }));
+    const loading = baseConfig({
+      fetcher,
+      segments: [{ id: 'all', label: 'All contacts' }],
+      segmentsReady: false,
+    });
+    const { rerender } = render(<ResourceList config={loading} restoreFromCtx />);
+    await waitFor(() => expect(fetcher).toHaveBeenCalled());
+    expect(screen.queryByText('All contacts')).not.toBeInTheDocument();
+
+    // Real segments load; "seg-deleted" is not among them - falls back to
+    // the first configured segment.
+    const ready = baseConfig({
+      fetcher,
+      segments: [
+        { id: 'all', label: 'All contacts' },
+        { id: 'seg-1', label: 'VIPs' },
+      ],
+      segmentsReady: true,
+    });
+    rerender(<ResourceList config={ready} restoreFromCtx />);
+
+    await waitFor(() => expect(screen.getByText('All contacts')).toBeInTheDocument());
+    expect(screen.queryByText('seg-deleted')).not.toBeInTheDocument();
   });
 });

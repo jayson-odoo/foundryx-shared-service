@@ -53,6 +53,7 @@ export default function ContactsPage() {
   const { workspaceId, workspaces, ready, setWorkspaceId } = useActiveWorkspace();
   const {
     segments,
+    loading: segmentsLoading,
     create: createSegment,
     update: updateSegment,
     refresh: refreshSegments,
@@ -114,6 +115,7 @@ export default function ContactsPage() {
   const config = useContactsListConfig({
     workspaceId: workspaceId ?? '',
     segments,
+    segmentsReady: !segmentsLoading,
     tags,
     fields,
     stages,

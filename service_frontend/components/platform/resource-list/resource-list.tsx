@@ -173,14 +173,24 @@ export function ResourceList<T extends object>({
   // first configured segment rather than stranding the list on a 404 for an
   // id that no longer exists. Generic for any N-way-segmented list, not just
   // Contacts (plan 26 review round 2, should-fix 3).
+  //
+  // Round-3 fix: `config.segments.length === 0` can't tell "segment deleted"
+  // from "the real segment list hasn't loaded yet" - a config like Contacts'
+  // `segmentOptions()` always prepends an `all` sentinel, so `length` is
+  // never 0 even before the async list resolves. On a mount that restores a
+  // `ctx`-encoded segment (list -> form -> Back, or a shared URL), this
+  // effect used to reset to `all` before the real segments arrived. Defer
+  // the whole check while `config.segmentsReady === false`; a config that
+  // never sets it (segments are always complete) is unaffected.
   const segmentIds = config.segments?.map((s) => s.id).join(' ');
   useEffect(() => {
+    if (config.segmentsReady === false) return;
     if (!config.segments || config.segments.length === 0) return;
     if (list.segment && config.segments.some((s) => s.id === list.segment)) return;
     setRowSelection({});
     list.setSegment(config.segments[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- segmentIds is the stable dep for config.segments' identity; list.segment/list.setSegment are read fresh each run
-  }, [segmentIds, list.segment]);
+  }, [segmentIds, list.segment, config.segmentsReady]);
   const [filterOpen, setFilterOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
 
