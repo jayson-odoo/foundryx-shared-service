@@ -518,7 +518,13 @@ instance: the real company's SO/PO/SPO `lineQuery` were hand-edited to the same
   same all-or-nothing contract at every concurrency level; ops note: default stays 1
   (byte-identical to the old fully sequential loop) - raise `AUTOCOUNT_SINK_CONCURRENCY` (max 4)
   only once the RECEIVING side has confirmed it can take concurrent batches, since a rate limit
-  or per-connection-serialised commit on their end would turn "faster" into "more 429s/5xxs")
+  or per-connection-serialised commit on their end would turn "faster" into "more 429s/5xxs".
+  `fix/sorento-batch-size` (2026-09-06) - records per ingest POST are now
+  `AUTOCOUNT_SINK_BATCH_SIZE` (default 200, bounded 1..1000 = Sorento's per-request ceiling,
+  read at call time), after a 1,000-record purchase_order batch with per-record supplier
+  back-create ran past Sorento production nginx's 60s proxy timeout and came back 504; ops
+  note: lower it further for a slow consumer before touching the timeout, raise it only with
+  Sorento's agreement - the 1,000 ceiling is theirs)
 - `service_backend/modules/autocount/repositories/autocount_repository.py` (`touch_seen`,
   `stale_refs`)
 - `service_backend/modules/autocount/scheduler.py` (continuation due), `services/etl_service.py`
