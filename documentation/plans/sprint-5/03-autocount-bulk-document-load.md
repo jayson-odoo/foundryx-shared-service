@@ -524,7 +524,12 @@ instance: the real company's SO/PO/SPO `lineQuery` were hand-edited to the same
   read at call time), after a 1,000-record purchase_order batch with per-record supplier
   back-create ran past Sorento production nginx's 60s proxy timeout and came back 504; ops
   note: lower it further for a slow consumer before touching the timeout, raise it only with
-  Sorento's agreement - the 1,000 ceiling is theirs)
+  Sorento's agreement - the 1,000 ceiling is theirs. A smaller batch means MORE chunks per push,
+  and two costs are per chunk: a fresh `httpx.Client` + TLS handshake each (BL-SS-096, now Medium -
+  5x the chunk count at the new default) and the 429 retry budget `_max_rate_limit_waits`
+  (per chunk, uncoordinated across chunks in flight, see the S5b ops note above) - so at the
+  200 default expect roughly five times the handshakes and five times the independent 429
+  retries of the old 1,000-record chunking for the same population)
 - `service_backend/modules/autocount/repositories/autocount_repository.py` (`touch_seen`,
   `stale_refs`)
 - `service_backend/modules/autocount/scheduler.py` (continuation due), `services/etl_service.py`
