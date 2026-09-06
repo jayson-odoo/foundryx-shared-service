@@ -9,14 +9,16 @@ import type { WorkflowRunDetail } from '@/types/workflows';
 import { RunReplay } from './run-replay';
 
 // ---- jsdom shims @xyflow/react needs beyond the global ResizeObserver stub
-// (mirrors components/platform/status-engine/status-engine.test.tsx). ----
+// (mirrors components/platform/status-engine/status-engine.test.tsx). No
+// `any` (plan 31 S3 review SF-8) - `unknown` casts satisfy the no-`any` rule
+// for jsdom globals TypeScript's lib doesn't declare. ----
 class DOMMatrixReadOnlyStub {
   m22 = 1;
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(globalThis as any).DOMMatrixReadOnly =
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).DOMMatrixReadOnly ?? DOMMatrixReadOnlyStub;
+const globalWithDOMMatrix = globalThis as unknown as {
+  DOMMatrixReadOnly?: typeof DOMMatrixReadOnlyStub;
+};
+globalWithDOMMatrix.DOMMatrixReadOnly ??= DOMMatrixReadOnlyStub;
 Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
   configurable: true,
   get() {
@@ -29,8 +31,10 @@ Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
     return 800;
   },
 });
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(SVGElement.prototype as any).getBBox = () => ({ x: 0, y: 0, width: 0, height: 0 });
+const svgProtoWithBBox = SVGElement.prototype as unknown as {
+  getBBox: () => { x: number; y: number; width: number; height: number };
+};
+svgProtoWithBBox.getBBox = () => ({ x: 0, y: 0, width: 0, height: 0 });
 
 function run(): WorkflowRunDetail {
   return {

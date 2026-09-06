@@ -1216,3 +1216,28 @@ export function deniedNodePermissions(flags: {
 export function isTriggerType(type: string): boolean {
   return TRIGGER_CATALOG.some((e) => e.type === type);
 }
+
+/** Whether `entry`'s type is backend-registered TODAY (plan 31 S3 review
+ * B-4) - the palette (and every quick-replace picker: the drawer's Node
+ * type SearchSelect, the canvas right-click Replace menu) filters
+ * `TRIGGER_CATALOG`/`ACTION_CATALOG` down to `registeredNodeTypes` (from
+ * `GET /workflows/metadata`) so a node with no backend `ActionDef`/
+ * `TriggerDef` yet is OMITTED entirely rather than shown-then-disabled
+ * (foolproof-UI - the S4/S5 ask_question/wait/business_hours/http.request
+ * entries ship in the frontend catalog ahead of their backend executor by
+ * design, per the plan's slice order). The IF node is exempt - it is a
+ * structural kind the executor branches on directly, never a registry
+ * entry, matching the backend publish gate's own IF exemption
+ * (`schemas.py definition_issues`). `registeredNodeTypes` undefined (the
+ * metadata hasn't loaded yet) is treated as "nothing confirmed yet" -
+ * same convention as `useInstalledModules().isActive` defaulting to false
+ * pre-load - never show a node type before we know the backend can run it. */
+export function isNodeTypeRegistered(
+  entry: NodeCatalogEntry | undefined,
+  registeredNodeTypes: readonly string[] | undefined,
+): boolean {
+  if (!entry) return false;
+  if (entry.kind === 'if') return true;
+  if (!registeredNodeTypes) return false;
+  return registeredNodeTypes.includes(entry.type);
+}

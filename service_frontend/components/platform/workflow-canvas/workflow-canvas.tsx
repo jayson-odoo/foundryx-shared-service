@@ -59,6 +59,7 @@ import {
   ACTION_CATALOG,
   catalogEntry,
   deniedNodePermissions,
+  isNodeTypeRegistered,
   isPermissionDenied,
   TRIGGER_CATALOG,
 } from '@/lib/workflow-catalog';
@@ -344,6 +345,10 @@ export function WorkflowCanvas({
     (type: string, position?: { x: number; y: number }) => {
       const entry = catalogEntry(type);
       if (isPermissionDenied(entry, deniedPermissions)) return;
+      // Defense in depth (B-4): the palette already omits an unregistered
+      // type, but a stale drag payload or a future non-palette caller must
+      // not add a node the backend can't publish/run either.
+      if (!isNodeTypeRegistered(entry, metadata.registeredNodeTypes)) return;
       if (entry?.kind === 'trigger' && hasTrigger(doc)) {
         toast.error('A workflow can have only one trigger.');
         return;
@@ -367,7 +372,7 @@ export function WorkflowCanvas({
       emit(addDocNode(doc, node));
       setSelectedNodeId(node.id);
     },
-    [deniedPermissions, doc, emit],
+    [deniedPermissions, doc, emit, metadata.registeredNodeTypes],
   );
 
   const sensors = useSensors(
@@ -436,9 +441,10 @@ export function WorkflowCanvas({
     (nodeId: string, newType: string) => {
       const entry = catalogEntry(newType);
       if (isPermissionDenied(entry, deniedPermissions)) return;
+      if (!isNodeTypeRegistered(entry, metadata.registeredNodeTypes)) return;
       emit(replaceNodeType(doc, nodeId, newType));
     },
-    [deniedPermissions, doc, emit],
+    [deniedPermissions, doc, emit, metadata.registeredNodeTypes],
   );
 
   const handleNodeContextMenu = useCallback(
@@ -465,7 +471,11 @@ export function WorkflowCanvas({
       : contextNode?.kind === 'action'
         ? ACTION_CATALOG
         : []
-  ).filter((entry) => !isPermissionDenied(entry, deniedPermissions));
+  ).filter(
+    (entry) =>
+      !isPermissionDenied(entry, deniedPermissions) &&
+      isNodeTypeRegistered(entry, metadata.registeredNodeTypes),
+  );
 
   return (
     <DndContext sensors={sensors} onDragEnd={onDragEnd}>
@@ -493,6 +503,7 @@ export function WorkflowCanvas({
                 disabled={!editing}
                 canCode={canCode}
                 canHttp={canHttp}
+                registeredNodeTypes={metadata.registeredNodeTypes}
                 onAdd={(t) => addNodeAt(t)}
               />
             ) : (

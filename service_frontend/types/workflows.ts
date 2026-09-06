@@ -6,6 +6,7 @@
  * strings (ApiModel); render via `useDatetime`.
  */
 
+import type { ContactFieldType } from './omnichannel';
 import type { RuleFactType, RuleGroup } from './rules';
 import type { TemplateDocument } from './templates';
 
@@ -294,9 +295,15 @@ export interface WorkflowOmnichannelWorkspace {
   id: string;
   name: string;
   contactTags: { id: string; name: string }[];
-  contactFields: { key: string; label: string; type: RuleFactType }[];
+  // `ContactField.type` (plan 25) - NOT a rule-engine fact type (nothing
+  // consumes this today, but the previous `RuleFactType` label was wrong
+  // - plan 31 S3 review nit).
+  contactFields: { key: string; label: string; type: ContactFieldType }[];
   lifecycleStages: { id: string; name: string }[];
-  closeReasons: { id: string; name: string; isActive: boolean }[];
+  // The backend already filters to active reasons
+  // (`_omnichannel_workspace_options`) - the wire never carries `isActive`
+  // (plan 31 S3 review B-1).
+  closeReasons: { id: string; name: string }[];
   members: { id: string; name: string }[];
   /** Every template regardless of Meta review status - pickers filter to
    * `status === 'APPROVED'` themselves (foolproof-UI). */
@@ -335,6 +342,17 @@ export interface WorkflowMetadata {
   codeRunnerAvailable?: boolean;
   /** The runner's language policy summary, rendered in the Code drawer. */
   codeCapabilities?: string[];
+  /** Every trigger/action key the backend registry currently resolves
+   * (plan 31 S3 review B-4) - the palette (and every quick-replace/context-
+   * menu picker) filters `TRIGGER_CATALOG`/`ACTION_CATALOG` down to this set
+   * so a node type with no backend `ActionDef`/`TriggerDef` yet (S4/S5's
+   * ask_question/wait/business_hours/http.request) is OMITTED entirely,
+   * never offered-then-disabled (foolproof-UI: never a choice guaranteed to
+   * 422 at Publish / RuntimeError at Run). Absent (undefined) means the
+   * metadata hasn't loaded yet - callers treat that as "show nothing new
+   * until we know", never "show everything".
+   */
+  registeredNodeTypes?: string[];
 }
 
 /** One backend-validated sandbox contact/channel pair for test-trigger runs. */

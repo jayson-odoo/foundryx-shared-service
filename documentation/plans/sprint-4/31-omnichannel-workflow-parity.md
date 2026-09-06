@@ -439,6 +439,34 @@ existing guarded-claim pattern under SQLite tests).
 BL-SS-084 (the `broadcast_completed` trigger A4 handed over) is CLOSED by AC-WFP-22 when A4 is
 merged; BL-128 (respond.io-style conversation automation) is CLOSED by this slice.
 
+**Review round 1 (S0-S3, branch `sprint-4/31-workflow-parity` @ `0db05830`) - additional backlog
+rows.** Provisional ids from BL-SS-118 upward - main is at BL-SS-117 and A4/A8 are expected to land
+their own rows before this branch merges, so these WILL be renumbered at merge time (flagged
+per-row below, not fixed now):
+
+| ID (provisional, renumbered at merge) | Title | Priority |
+|---|---|---|
+| BL-SS-118 | `_make_tag_context` (`workflow_nodes.py`) picks an arbitrary added tag (`sorted(delta)[0]`) when several are added in one patch and the trigger has no `tagId` configured - emit the full added-tag set as `trigger.tagIds` instead of guessing one | Low |
+| BL-SS-119 | Evidence-dir naming: AC-WFP-39 names `31-evidence/a5a/`; the actual runs live at `31-evidence/{S0,S3,E2E}/` - reconcile the AC wording or the folder convention, whichever the tester's later slices settle on | Low |
+| BL-SS-120 | `modules/omnichannel/manifest.json` version + the `0013`/`0014` Alembic revisions renumber onto whichever of A4's `0011` / A8's `0012` lands first at merge (manifest target `0.7.0` per the plan's stated sequence 0.4.x -> A4 0.5.0 -> A8 0.6.0 -> this branch 0.7.0) | Medium (merge-blocking, not code-blocking) |
+| BL-SS-121 | AC-WFP-37 server-side permission enforcement - the API must reject a workflow create/update/publish/run that carries a node type the caller lacks permission for (today's rejection is only the incidental unregistered-node-type gate, B-4); deferred to S5 alongside the permission-gated node types it protects | Medium |
+
+## 8a. Merge-time reconciliation flag (review round 1)
+
+**`omnichannel.assign_conversation` (this branch, S2) folds into A8's `ActionDef` at the main
+merge.** A8 (plan sprint-4/28, `sprint-4/28-teams-core-and-omnichannel-assignment`) is expected to
+land on `main` before this branch and to register its own `omnichannel.assign_conversation`
+`ActionDef` (team-based assignment, `assignedVia` kwarg on `patch_thread`). This branch defined the
+SAME action key independently (user / round_robin / unassign modes, `assigned_via_override` kwarg)
+because A8 had not merged onto this base yet - see this file's own NOTE at `workflow_actions.py`
+(`omnichannel_assign_conversation`). At merge:
+- Fold this branch's `round_robin` mode into A8's action as one more `mode` value (A8's `team` mode
+  stays A8's) - do NOT ship two `omnichannel.assign_conversation` ActionDefs.
+- Reconcile `assigned_via_override` with A8's `assignedVia` onto ONE kwarg on `patch_thread` - pick
+  whichever name A8 shipped (it merges first) and rename this branch's call sites to match.
+- Re-run both branches' assign-conversation test suites after the fold; a name/kwarg mismatch will
+  surface as a `TypeError` at the merge commit, not silently.
+
 ## 9. Flagged for the user (decisions taken that deviate from, or extend, the brief)
 
 - **F1 - A5b needs ONE core Alembic migration.** The brief said "core migration for `workflows.http`

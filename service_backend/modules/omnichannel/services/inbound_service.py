@@ -260,6 +260,7 @@ class InboundService:
             is_first_message = (
                 self.db.query(ConversationMessage.id)
                 .filter(
+                    ConversationMessage.tenant_id == channel.tenant_id,
                     ConversationMessage.contact_id == contact.id,
                     ConversationMessage.sender_type == "CONTACT",
                     ConversationMessage.id != row.id,

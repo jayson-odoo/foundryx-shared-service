@@ -45,6 +45,7 @@ import {
   ACTION_CATALOG,
   catalogEntry,
   deniedNodePermissions,
+  isNodeTypeRegistered,
   isPermissionDenied,
   TRIGGER_CATALOG,
 } from '@/lib/workflow-catalog';
@@ -1086,6 +1087,18 @@ export function OutputParamsEditor({
   );
 }
 
+/** Field types whose options come from the chosen workspace (plan 31 §5.7) -
+ * changing the workspace invalidates any of them already selected
+ * (AC-WFP-03: never leave a stale pick from the old workspace). Module-scope
+ * (plan 31 S3 review nit) - a fresh `Set` per render bought nothing. */
+const WORKSPACE_SCOPED_TYPES = new Set<NodeFieldDef['type']>([
+  'omnichannelTag',
+  'omnichannelContactField',
+  'omnichannelLifecycleStage',
+  'omnichannelCloseReason',
+  'omnichannelMember',
+]);
+
 export function NodeConfigDrawer({
   node,
   doc,
@@ -1138,7 +1151,11 @@ export function NodeConfigDrawer({
   const replaceOptions = (
     node.kind === 'trigger' ? TRIGGER_CATALOG : ACTION_CATALOG
   )
-    .filter((e) => !isPermissionDenied(e, denied))
+    .filter(
+      (e) =>
+        !isPermissionDenied(e, denied) &&
+        isNodeTypeRegistered(e, metadata.registeredNodeTypes),
+    )
     .map((e) => ({ value: e.type, label: e.label }));
 
   /** Changing the entity invalidates its dependent pickers. */
@@ -1151,16 +1168,6 @@ export function NodeConfigDrawer({
     onConfigChange(node.id, patch);
   };
 
-  /** Field types whose options come from the chosen workspace (plan 31 §5.7) -
-   * changing the workspace invalidates any of them already selected
-   * (AC-WFP-03: never leave a stale pick from the old workspace). */
-  const WORKSPACE_SCOPED_TYPES = new Set<NodeFieldDef['type']>([
-    'omnichannelTag',
-    'omnichannelContactField',
-    'omnichannelLifecycleStage',
-    'omnichannelCloseReason',
-    'omnichannelMember',
-  ]);
   const changeWorkspace = (key: string, value: string) => {
     const patch: WorkflowNodeConfig = { [key]: value };
     for (const f of entry?.fields ?? []) {
@@ -1180,7 +1187,7 @@ export function NodeConfigDrawer({
     const probe = { ...node.config, [changedKey]: nextValue };
     for (const f of entry?.fields ?? []) {
       if (f.showWhen?.field !== changedKey) continue;
-      if (matchesShowWhen(probe, f.showWhen)) continue;
+      if (matchesShowWhen(probe, f.showWhen, entry?.fields)) continue;
       const existing = node.config[f.key];
       patch[f.key] = Array.isArray(existing) ? [] : '';
     }
@@ -1600,9 +1607,11 @@ export function NodeConfigDrawer({
             : field.type === 'omnichannelLifecycleStage'
               ? (workspace?.lifecycleStages ?? []).map((s) => ({ value: s.id, label: s.name }))
               : field.type === 'omnichannelCloseReason'
-                ? (workspace?.closeReasons ?? [])
-                    .filter((r) => r.isActive)
-                    .map((r) => ({ value: r.id, label: r.name }))
+                // The backend already filters to active reasons
+                // (`_omnichannel_workspace_options` - plan 31 S3 review B-1);
+                // the wire never carries `isActive` and never did, so a
+                // client-side filter on it silently emptied this picker.
+                ? (workspace?.closeReasons ?? []).map((r) => ({ value: r.id, label: r.name }))
                 : (workspace?.members ?? []).map((m) => ({ value: m.id, label: m.name }));
       const noun =
         field.type === 'omnichannelTag'
@@ -1973,7 +1982,7 @@ export function NodeConfigDrawer({
             </div>
           )}
           {(entry?.fields ?? [])
-            .filter((f) => matchesShowWhen(node.config, f.showWhen))
+            .filter((f) => matchesShowWhen(node.config, f.showWhen, entry?.fields))
             .map(renderField)}
         </div>
       )}

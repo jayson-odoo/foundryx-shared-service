@@ -5,7 +5,7 @@ config schema (drawer), output schema (dynamic-content picker) and - for actions
 ``email.send``; modules append at install (slice 09 fans out core triggers/actions).
 """
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from sqlalchemy.orm import Session
 
@@ -23,10 +23,42 @@ class NodeField:
     required: bool = False
     mergeable: bool = False
     options: Optional[List[Dict[str, str]]] = None
-    # Conditional field: only shown/required when config[field] == value.
-    show_when: Optional[Tuple[str, str]] = None
+    # Conditional field: only shown/required when config[field] matches value
+    # - one literal, or one of several (SF-9, plan 31 S3 review; mirrors the
+    # frontend `showWhen` tuple-of-values form the HTTP body field needs).
+    show_when: Optional[Tuple[str, Union[str, Tuple[str, ...]]]] = None
     # For `entity` - restrict the picker (e.g. only status-engine entities).
     entity_filter: Optional[str] = None
+
+
+def matches_show_when(
+    config: Dict[str, Any], field_def: "NodeField", sibling_fields: Sequence["NodeField"]
+) -> bool:
+    """Whether `field_def` is visible/required given `config`, resolving the
+    CONTROLLING field's default when it is absent from `config` (plan 31 S3
+    review SF-2) - an absent controlling key falls back to that field's FIRST
+    declared option, so a node saved before the controlling field existed
+    (e.g. a plan-17 `omnichannel.send_message` node with no `mode` key) keeps
+    its dependent field visible/required instead of being silently hidden.
+    Mirrors the frontend `lib/workflow-doc.ts matchesShowWhen` exactly,
+    including the tuple/list-of-values form (SF-9)."""
+    if field_def.show_when is None:
+        return True
+    controlling_key, wanted = field_def.show_when
+    if controlling_key in config:
+        actual = config.get(controlling_key)
+    else:
+        controlling_field = next(
+            (f for f in sibling_fields if f.key == controlling_key), None
+        )
+        actual = (
+            controlling_field.options[0]["value"]
+            if controlling_field and controlling_field.options
+            else None
+        )
+    if isinstance(wanted, (list, tuple)):
+        return str(actual) in {str(w) for w in wanted}
+    return str(actual) == str(wanted)
 
 
 @dataclass(frozen=True)
@@ -87,6 +119,11 @@ class TriggerDef:
     # "Trigger once per contact"-style guards, called once per candidate
     # workflow right before a run would be created.
     fire_guard: Optional[FireGuardFn] = None
+    # Release a WINNING `fire_guard` claim when the run was never actually
+    # created after all (plan 31 S3 review nit) - e.g. a `CodeNotAuthorized`
+    # skip inside `_create_run` would otherwise burn the once-per-contact
+    # marker permanently with no run ever produced.
+    fire_release: Optional[FireGuardFn] = None
     context_extra: Optional[ContextExtraFn] = None
 
 

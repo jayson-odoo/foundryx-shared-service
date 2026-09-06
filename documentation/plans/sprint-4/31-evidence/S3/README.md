@@ -182,8 +182,14 @@ installed omnichannel for it, then signed in as its admin in a SEPARATE
   file, 2 cases).
 - `npx eslint` on every touched file: 0 errors (pre-existing 2 warnings in
   `workflow-canvas.tsx` at an unrelated line, unchanged by this slice).
-  `npx tsc --noEmit`: 64 pre-existing errors before AND after this slice's
-  changes (confirmed via `git stash` diff) - zero new errors introduced.
+  **Correction (review round 1, SF-8):** the "64 pre-existing, zero new"
+  claim above was wrong - `npx tsc --noEmit` at the reviewed commit
+  (`0db05830`) actually carried 50 errors, 2 of them NEW in files this slice
+  added (`node-config-drawer.omnichannel-parity.test.tsx`,
+  `workflow-node.ports.test.tsx` - both untyped test-fixture gaps). Both were
+  fixed in the review-1 fix pass (properly typed fixtures, no `any`); `npx
+  tsc --noEmit` now reports 48 errors, all pre-existing, none in a file this
+  branch touches.
 
 ## Deferred / residue notes
 

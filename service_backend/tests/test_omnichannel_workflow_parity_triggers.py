@@ -147,6 +147,47 @@ def test_conversation_opened_fires_for_new_thread_and_reopen(session_factory):
         db.close()
 
 
+# ── SF-1 (review round 1): trigger.channelId resolves on every "opened"
+# path, not only inbound ────────────────────────────────────────────────────
+def test_conversation_opened_channel_id_resolves_on_manual_reopen(session_factory):
+    """`patch_thread`'s manual reopen (no inbound message, no `channel_id`
+    threaded in) must still carry `trigger.channelId` - resolved from the
+    contact's most recent channel-bound message - so an
+    `omnichannel.conversation_opened` trigger CONFIGURED with a Channel
+    filter fires on a manual reopen too."""
+    _seed_thread(session_factory, messages=[])
+    channel_id = _channel_id(session_factory)
+    _process(session_factory, channel_id, _wa_payload(wamid="wamid.sf1-1", from_="60111000199", text="hi"))
+
+    from modules.omnichannel.models import Contact
+    from modules.omnichannel.services.conversation_service import ConversationService
+
+    db = session_factory()
+    try:
+        wf = _publish(db, "omnichannel.conversation_opened", {"channelId": channel_id})
+        wf_id = wf.id
+        cid = db.query(Contact).filter(Contact.phone == "+60111000199").first().id
+        ConversationService(db).patch_thread(cid, DEFAULT_TENANT_ID, status="CLOSED")
+    finally:
+        db.close()
+
+    db = session_factory()
+    try:
+        # Manual reopen - no inbound message, no channel_id passed in.
+        ConversationService(db).patch_thread(cid, DEFAULT_TENANT_ID, status="OPEN")
+    finally:
+        db.close()
+
+    db = session_factory()
+    try:
+        runs = _runs_for(db, wf_id)
+        assert len(runs) == 1
+        assert runs[0].trigger_payload_json["eventData"]["isReopen"] is True
+        assert runs[0].trigger_payload_json["eventData"]["channelId"] == channel_id
+    finally:
+        db.close()
+
+
 # ── AC-WFP-38: Logs shows the trigger node's captured event data ───────────
 def test_conversation_opened_trigger_node_captures_event_data_in_logs(session_factory):
     """The trigger node's `WorkflowRunNode.output_json` is reconstructed
@@ -625,6 +666,53 @@ def test_lifecycle_changed_and_generic_status_changed_both_fire(session_factory)
         db.close()
 
 
+# ── SF-6 (plan 31 S3 review): `trigger.toStageLabel` is actually populated ──
+def test_lifecycle_changed_populates_to_stage_label(session_factory):
+    """`omnichannel.lifecycle_changed` advertises `trigger.toStageLabel` as a
+    `NodeOutput` - it must not always render empty (foolproof-UI)."""
+    from app.models.status import Status as CoreStatus
+    from modules.omnichannel.models import Contact, Workspace
+    from modules.omnichannel.services import lifecycle_service
+
+    cid = _seed_thread(session_factory, messages=[{"body": "hi"}])
+    db = session_factory()
+    ws_id = db.query(Workspace).filter(Workspace.is_default.is_(True)).first().id
+    contact = db.query(Contact).filter(Contact.id == cid).first()
+    contact.lifecycle_status_id = lifecycle_service.initial_status_id(db, DEFAULT_TENANT_ID, ws_id)
+    db.commit()
+    db.close()
+
+    db = session_factory()
+    try:
+        wf = _publish(db, "omnichannel.lifecycle_changed", {})
+        wf_id = wf.id
+    finally:
+        db.close()
+
+    db = session_factory()
+    try:
+        moves = lifecycle_service.fireable_moves(db, db.query(Contact).filter(Contact.id == cid).first())
+        assert moves
+        target_id = moves[0].to_status_id
+        target_label = (
+            db.query(CoreStatus.label).filter(CoreStatus.id == target_id).scalar()
+        )
+        contact = db.query(Contact).filter(Contact.id == cid).first()
+        lifecycle_service.move(db, contact, target_id)
+        db.commit()
+    finally:
+        db.close()
+
+    db = session_factory()
+    try:
+        runs = _runs_for(db, wf_id)
+        assert len(runs) == 1
+        assert runs[0].trigger_payload_json["eventData"]["toStageLabel"] == target_label
+        assert target_label is not None
+    finally:
+        db.close()
+
+
 # ── AC-WFP-14: message_received filters (firstMessageOnly, keywordContains) ─
 def test_message_received_first_message_and_keyword_filters(session_factory):
     _seed_thread(session_factory, messages=[])
@@ -779,6 +867,64 @@ def test_trigger_once_per_contact_marker_survives_republish_deleted_with_workflo
     try:
         assert (
             db.query(WorkflowContactFire).filter(WorkflowContactFire.workflow_id == wf_id).count() == 0
+        )
+    finally:
+        db.close()
+
+
+# ── nit (plan 31 S3 review): a CodeNotAuthorized skip releases the winning
+# once-per-contact claim instead of burning it with no run ever produced ────
+def test_trigger_once_per_contact_claim_released_on_code_not_authorized_skip(session_factory):
+    from app.workflow_engine.code_runner import use_code_runner_client
+    from modules.omnichannel.models import WorkflowContactFire
+    from modules.omnichannel.services.conversation_service import ConversationService
+
+    cid = _seed_thread(session_factory, messages=[{"body": "hi"}])
+    db = session_factory()
+    admin = _actor(db)
+    doc = {
+        "schemaVersion": 2,
+        "nodes": [
+            {
+                "id": "trg", "kind": "trigger", "type": "omnichannel.conversation_closed",
+                "config": {"triggerOncePerContact": True},
+            },
+            {"id": "code_1", "kind": "action", "type": "code.run", "config": {
+                "language": "python", "source": "result = {}", "inputs": [],
+                "outputs": [{"key": "ok", "type": "string", "required": True}],
+            }},
+        ],
+        "edges": [{"id": "e1", "source": "trg", "target": "code_1"}],
+    }
+    service = WorkflowService(db)
+    wf = service.create(
+        DEFAULT_TENANT_ID, name="WFP-once code-skip", description="", draft=doc,
+        actor_id=admin.id, actor=admin,
+    )
+    service.set_active(wf.id, DEFAULT_TENANT_ID, True)
+    with use_code_runner_client(FakeRunner(healthy=True)):
+        service.publish(wf.id, DEFAULT_TENANT_ID, actor_id=admin.id, actor=admin)
+    version = db.query(WorkflowVersion).filter(WorkflowVersion.id == wf.current_version_id).one()
+    version.code_authorized_by = None  # simulate a tampered/legacy stamp
+    db.commit()
+    wf_id = wf.id
+    db.close()
+
+    db = session_factory()
+    try:
+        ConversationService(db).patch_thread(cid, DEFAULT_TENANT_ID, status="CLOSED")
+    finally:
+        db.close()
+
+    db = session_factory()
+    try:
+        assert _runs_for(db, wf_id) == []  # the skip never produced a run ...
+        # ... and the claim it took was RELEASED, not burned permanently.
+        assert (
+            db.query(WorkflowContactFire)
+            .filter(WorkflowContactFire.workflow_id == wf_id, WorkflowContactFire.contact_id == cid)
+            .count()
+            == 0
         )
     finally:
         db.close()
@@ -971,6 +1117,159 @@ def test_metadata_returns_omnichannel_workspaces(session_factory):
         # `WorkflowOmnichannelWorkspace.lifecycleStages` contract (S3 drift fix).
         assert any(s["name"] == "Qualified" for s in found["lifecycleStages"])
         assert "members" in found
+    finally:
+        db.close()
+
+
+# ── B-1 (review round 1) parity guard: backend<->FE metadata key shape ─────
+def test_omnichannel_workspace_options_key_shape_matches_frontend_type(session_factory):
+    """Plan 31 S3 review B-1: the review's root cause was a backend<->FE
+    field-shape drift (the wire never carried `closeReasons[].isActive`, but
+    the FE type/filter assumed it did) that silently emptied a whole picker.
+    Pin every array's dict-key SET exactly against
+    `WorkflowOmnichannelWorkspace` (types/workflows.ts) - this is the backend
+    half of the parity pair; `types/workflows.parity.test.ts` is the frontend
+    half. A field added/removed on either side without the other must fail
+    ONE of these two tests, loudly, instead of silently breaking a node."""
+    from modules.omnichannel.models import (
+        Channel, CloseReason, ContactField, ContactTag, Workspace, WhatsappTemplate, WorkspaceMember,
+    )
+    from modules.omnichannel.services import lifecycle_service
+    from app.models.status import Status as CoreStatus
+
+    db = session_factory()
+    try:
+        ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+        admin = _actor(db)
+        channel = Channel(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, name="Parity Channel")
+        db.add(channel)
+        db.flush()
+        db.add(ContactTag(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, name="VIP"))
+        db.add(ContactField(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, key="plan", label="Plan", type="text"))
+        db.add(CloseReason(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, name="Resolved"))
+        existing_member = (
+            db.query(WorkspaceMember)
+            .filter(WorkspaceMember.workspace_id == ws.id, WorkspaceMember.user_id == admin.id)
+            .first()
+        )
+        if existing_member is None:
+            db.add(WorkspaceMember(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, user_id=admin.id))
+        db.add(
+            WhatsappTemplate(
+                tenant_id=DEFAULT_TENANT_ID, channel_id=channel.id,
+                name="welcome_message", status="approved",
+            )
+        )
+        db.add(
+            CoreStatus(
+                tenant_id=DEFAULT_TENANT_ID,
+                entity_type=lifecycle_service.ENTITY_TYPE,
+                scope_id=ws.id,
+                key="wfp-b1-parity",
+                label="Qualified",
+                color="#000000",
+                sort_order=0,
+            )
+        )
+        db.commit()
+        metadata = WorkflowService(db).metadata(DEFAULT_TENANT_ID)
+        found = next(w for w in metadata["omnichannelWorkspaces"] if w["id"] == ws.id)
+        assert set(found["contactTags"][0].keys()) == {"id", "name"}
+        assert set(found["contactFields"][0].keys()) == {"key", "label", "type"}
+        assert set(found["lifecycleStages"][0].keys()) == {"id", "name"}
+        # The load-bearing assertion - NO `isActive` key (B-1).
+        assert set(found["closeReasons"][0].keys()) == {"id", "name"}
+        assert set(found["members"][0].keys()) == {"id", "name", "email"}
+        assert set(found["templates"][0].keys()) == {"id", "name", "status"}
+    finally:
+        db.close()
+
+
+# ── B-2 (review round 1): metadata members picker never leaks another
+# tenant's user by name/email; SF-7: a trashed user is never offered either ──
+def test_metadata_members_excludes_foreign_tenant_and_trashed_users(session_factory):
+    from modules.omnichannel.models import Workspace, WorkspaceMember
+
+    other_tenant_id = None
+    db = session_factory()
+    try:
+        other_tenant_id = TenantService(db).provision(
+            name="WFP Members Other", slug="wfp-members-other",
+            admin_email="wfp-members-other@example.com",
+            admin_name="Other Admin", admin_password="Password123!",
+        ).id
+    finally:
+        db.close()
+
+    db = session_factory()
+    try:
+        ws = db.query(Workspace).filter(
+            Workspace.tenant_id == DEFAULT_TENANT_ID, Workspace.is_default.is_(True)
+        ).first()
+        other_user = db.query(User).filter(User.tenant_id == other_tenant_id).one()
+
+        trashed_user = User(
+            tenant_id=DEFAULT_TENANT_ID,
+            email="wfp-trashed-member@example.com",
+            name="Trashed Member",
+            password="x",
+            is_trashed=True,
+        )
+        db.add(trashed_user)
+        db.flush()
+
+        # A stored (polymorphic) member id planted straight in the table - the
+        # exact shape a leaked/forged id would take (B-2 - the members query
+        # must resolve `WorkspaceMember.user_id` tenant-scoped, never bare).
+        db.add(WorkspaceMember(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, user_id=other_user.id))
+        db.add(WorkspaceMember(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, user_id=trashed_user.id))
+        db.commit()
+
+        metadata = WorkflowService(db).metadata(DEFAULT_TENANT_ID)
+        found = next(w for w in metadata["omnichannelWorkspaces"] if w["id"] == ws.id)
+        member_ids = {m["id"] for m in found["members"]}
+        member_names = {m["name"] for m in found["members"]}
+        member_emails = {m.get("email") for m in found["members"]}
+        assert other_user.id not in member_ids
+        assert other_user.email not in member_emails
+        assert other_user.name not in member_names
+        assert trashed_user.id not in member_ids
+        assert trashed_user.name not in member_names
+    finally:
+        db.close()
+
+
+# ── plan 31 S3 review B-4: registeredNodeTypes gates the palette ───────────
+def test_metadata_registered_node_types_lists_every_registered_trigger_and_action(session_factory):
+    """The frontend catalog filters itself to this list (B-4) so an
+    unregistered node type (ask_question/wait/business_hours/http.request -
+    S4/S5) is never offered before its backend ActionDef/TriggerDef lands."""
+    db = session_factory()
+    try:
+        metadata = WorkflowService(db).metadata(DEFAULT_TENANT_ID)
+        assert "registeredNodeTypes" in metadata
+        registered = set(metadata["registeredNodeTypes"])
+        # Registered (S1/S2) - must be present.
+        for key in (
+            "omnichannel.conversation_opened",
+            "omnichannel.conversation_closed",
+            "omnichannel.message_received",
+            "omnichannel.assign_conversation",
+            "omnichannel.add_tag",
+            "omnichannel.update_lifecycle",
+            "omnichannel.send_message",
+            "workflow.trigger",
+            "manual",
+        ):
+            assert key in registered, f"{key} missing from registeredNodeTypes"
+        # NOT registered until S4/S5 - must be ABSENT.
+        for key in (
+            "omnichannel.ask_question",
+            "omnichannel.wait",
+            "omnichannel.business_hours",
+            "http.request",
+        ):
+            assert key not in registered, f"{key} should not be registered yet (S4/S5)"
     finally:
         db.close()
 

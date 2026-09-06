@@ -73,7 +73,10 @@ IDs: `AC-WFP-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
 - **AC-WFP-06 [FE]** Given a graph that contains an Ask a question node, then the frontend
   `validateDefinition` blocks publish unless `execution.mode = serialized` with a valid correlation
   key, naming the requirement; the backend `definition_issues` returns the SAME message (parity),
-  pinned by a test.
+  pinned by a test. **Amended (review round 1, SF-4):** the backend half is deferred to S4 -
+  `omnichannel.ask_question` has no backend `ActionDef`/registered node type until S4 lands (see
+  B-4), so `definition_issues` cannot yet apply this rule to it; S1-S3 ship the FE-only half
+  (pinned by `lib/workflow-doc.test.ts`) and S4 lands the backend rule alongside the node itself.
 
 ## Slice S1 - Backend: triggers, dispatch generalization, once-per-contact
 

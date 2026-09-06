@@ -134,6 +134,27 @@ def _close_reason_label(db: Session, tenant_id: str, close_reason_id: Optional[s
     return row[0] if row else None
 
 
+def _resolve_active_channel_id(db: Session, contact: Contact) -> Optional[str]:
+    """Plan 31 S3 review SF-1: `record()`'s callers (`patch_thread`'s manual
+    reopen/unsnooze, `omnichannel.open_conversation`) have no `channel_id` to
+    thread through - only the inbound webhook path does. Rather than make
+    every caller resolve it, fall back here to the contact's MOST RECENT
+    channel-bound message (tenant+contact scoped), so `trigger.channelId` and
+    the `omnichannel.conversation_opened` trigger's Channel filter work off
+    every "opened" path, not just inbound."""
+    row = (
+        db.query(ConversationMessage.channel_id)
+        .filter(
+            ConversationMessage.tenant_id == contact.tenant_id,
+            ConversationMessage.contact_id == contact.id,
+            ConversationMessage.channel_id.isnot(None),
+        )
+        .order_by(ConversationMessage.created_at.desc())
+        .first()
+    )
+    return row[0] if row else None
+
+
 def _emit_workflow_event(
     db: Session,
     contact: Contact,
@@ -158,7 +179,10 @@ def _emit_workflow_event(
     extra: dict = {}
     if event_type in _OPENED_LIKE_EVENT_TYPES:
         action = "conversation_opened"
-        extra = {"isReopen": event_type != "opened", "channelId": channel_id}
+        resolved_channel_id = (
+            channel_id if channel_id is not None else _resolve_active_channel_id(db, contact)
+        )
+        extra = {"isReopen": event_type != "opened", "channelId": resolved_channel_id}
     elif event_type == "closed":
         action = "conversation_closed"
         extra = {

@@ -24,6 +24,12 @@ function renderNode(type: string) {
         type="workflow"
         dragging={false}
         zIndex={0}
+        // `NodeProps` (`@xyflow/system`) requires these three too - a
+        // real React Flow render always supplies them (plan 31 S3 review
+        // SF-8: the previous fixture omitted them, a tsc error).
+        draggable
+        selectable
+        deletable
         isConnectable
         positionAbsoluteX={0}
         positionAbsoluteY={0}

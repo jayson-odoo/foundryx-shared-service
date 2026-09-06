@@ -15,6 +15,20 @@ vi.mock('@/hooks/use-app-store', () => ({
   useInstalledModules: () => ({ ready: true, isActive: isActiveMock }),
 }));
 
+// Every type these tests probe - as if the backend registry already resolves
+// all of them, so these pre-existing tests exercise module/permission
+// gating in isolation from the B-4 registration gate (a dedicated describe
+// block below tests THAT gate).
+const ALL_REGISTERED = [
+  'manual',
+  'omnichannel.message_received',
+  'omnichannel.get_contact',
+  'omnichannel.send_message',
+  'ai_agent.run',
+  'code.run',
+  'http.request',
+];
+
 function renderPalette(
   props: Partial<React.ComponentProps<typeof NodePalette>> = {},
 ) {
@@ -24,6 +38,7 @@ function renderPalette(
         hasTrigger={false}
         disabled={false}
         onAdd={vi.fn()}
+        registeredNodeTypes={ALL_REGISTERED}
         {...props}
       />
     </DndContext>,
@@ -106,5 +121,38 @@ describe('NodePalette module filtering', () => {
       target: { value: 'http request' },
     });
     expect(screen.getByTestId('palette-http.request')).not.toBeDisabled();
+  });
+});
+
+describe('NodePalette - registeredNodeTypes gates the palette (plan 31 S3 review B-4)', () => {
+  it('omits (not disables) a catalog entry with no backend ActionDef yet', () => {
+    isActiveMock.mockReturnValue(true);
+    // Registry does NOT resolve `omnichannel.ask_question` yet (S4).
+    renderPalette({
+      registeredNodeTypes: ALL_REGISTERED.filter((t) => t !== 'http.request'),
+    });
+    fireEvent.change(screen.getByTestId('palette-search'), {
+      target: { value: 'http request' },
+    });
+    expect(screen.queryByTestId('palette-http.request')).not.toBeInTheDocument();
+    expect(screen.getByText('No matching nodes.')).toBeInTheDocument();
+  });
+
+  it('shows nothing new before the metadata has loaded (registeredNodeTypes undefined)', () => {
+    isActiveMock.mockReturnValue(true);
+    renderPalette({ registeredNodeTypes: undefined });
+    fireEvent.change(screen.getByTestId('palette-search'), {
+      target: { value: 'ai agent' },
+    });
+    expect(screen.queryByTestId('palette-ai_agent.run')).not.toBeInTheDocument();
+  });
+
+  it('the IF node is always shown - it is structural, never a registry entry', () => {
+    isActiveMock.mockReturnValue(true);
+    renderPalette({ registeredNodeTypes: [] });
+    fireEvent.change(screen.getByTestId('palette-search'), {
+      target: { value: 'condition' },
+    });
+    expect(screen.getByTestId('palette-if')).toBeInTheDocument();
   });
 });

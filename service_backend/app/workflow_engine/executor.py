@@ -24,7 +24,7 @@ from app.models.workflow import (
     WorkflowRunNode,
 )
 from app.workflow_engine.context import build_initial_context, render_field, set_node_output
-from app.workflow_engine.registry import get_action
+from app.workflow_engine.registry import get_action, matches_show_when
 from app.workflow_engine.schemas import (
     WorkflowNodeModel,
     parse_definition,
@@ -193,8 +193,15 @@ def _execute_node(
                     # only this one key.
                     collided = True
                     break
-            if not collided:
-                target[parts[-1]] = value
+            if collided:
+                continue
+            leaf = parts[-1]
+            if isinstance(target.get(leaf), dict):
+                # Symmetric guard: a deeper key already nested a branch here
+                # (processed earlier in iteration order) - never let a later
+                # scalar silently clobber it. Drop only this one key.
+                continue
+            target[leaf] = value
         return output
     if node.kind == "if":
         from app.rule_engine.evaluator import evaluate
@@ -233,7 +240,7 @@ def _node_input_json(node: WorkflowNodeModel, ctx: Dict[str, Any]) -> Optional[D
         if not fld.mergeable:
             continue
         # Respect show_when: a hidden field is not part of this run's input.
-        if fld.show_when is not None and str(config.get(fld.show_when[0])) != str(fld.show_when[1]):
+        if not matches_show_when(config, fld, action.fields):
             continue
         raw = config.get(fld.key)
         if isinstance(raw, str) and raw != "":
@@ -253,7 +260,7 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
     edge (``active`` set). An IF node activates only its true OR false targets,
     so the untaken branch's descendants are skipped (descendant-based, not
     order-based). A node failure still halts the whole run (downstream skipped)."""
-    from app.workflow_engine.entity_events import clear_run_origin, set_run_origin
+    from app.workflow_engine.entity_events import set_origin
 
     run = (
         db.query(WorkflowRun)
@@ -294,7 +301,14 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
     db.flush()
 
     # Tag the session so action writes during this run carry the loop chain (D5).
-    set_run_origin(db, run_id=run.id, workflow_id=run.workflow_id, depth=run.depth or 0)
+    # `set_origin` returns the PREVIOUS origin so it can be restored below -
+    # nesting-safe: a `workflow.trigger` step dispatches a CHILD run on this
+    # SAME session (eager dev), and an unconditional clear-on-exit would strip
+    # the PARENT's origin off every event the parent emits after that node,
+    # collapsing its loop-guard chain to empty (plan 31 S3 review B-3).
+    prev_origin = set_origin(
+        db, {"run_id": run.id, "workflow_id": run.workflow_id, "depth": run.depth or 0}
+    )
 
     doc = parse_definition(run.definition_snapshot_json)
     ctx = _ctx_from_payload(run.trigger_payload_json or {})
@@ -314,7 +328,7 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
         run.error = str(exc)
         run.finished_at = _now()
         db.commit()
-        clear_run_origin(db)
+        set_origin(db, prev_origin)
         return run
     if correlation_key is not None:
         ctx["_workflow.correlationKey"] = correlation_key
@@ -379,7 +393,7 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
         db.commit()
         db.refresh(run)
     finally:
-        clear_run_origin(db)
+        set_origin(db, prev_origin)
     return run
 
 

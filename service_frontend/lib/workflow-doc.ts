@@ -68,13 +68,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Does `config[showWhen.field]` match a `showWhen` clause? Mirrors the
  * backend `NodeField.show_when` (plan 31 §5.1) - `value` is one literal or a
- * list of literals (the HTTP body field shows for BOTH `json` and `text`). */
+ * list of literals (the HTTP body field shows for BOTH `json` and `text`).
+ *
+ * `siblingFields` (plan 31 S3 review SF-2) resolves the CONTROLLING field's
+ * default when its key is absent from `config` entirely - an absent
+ * controlling key falls back to that field's first declared option, so a
+ * node saved before the controlling field existed (e.g. a plan-17
+ * `omnichannel.send_message` node with no `mode` key) keeps its dependent
+ * field (Message) visible instead of being silently hidden. Callers that
+ * omit `siblingFields` keep the old strict-equality behaviour (an absent key
+ * never matches) - every in-repo call site now passes the catalog entry's
+ * `fields`. */
 export function matchesShowWhen(
   config: Record<string, unknown>,
   showWhen: { field: string; value: string | string[] } | undefined,
+  siblingFields?: readonly { key: string; options?: { value: string; label: string }[] }[],
 ): boolean {
   if (!showWhen) return true;
-  const current = config[showWhen.field];
+  let current = config[showWhen.field];
+  if (!(showWhen.field in config) && siblingFields) {
+    const controlling = siblingFields.find((f) => f.key === showWhen.field);
+    current = controlling?.options?.[0]?.value;
+  }
   if (Array.isArray(showWhen.value)) {
     return typeof current === 'string' && showWhen.value.includes(current);
   }
@@ -707,7 +722,7 @@ export function validateDefinition(
     const entry = catalogEntry(n.type);
     if (!entry) continue;
     for (const field of entry.fields) {
-      if (field.showWhen && !matchesShowWhen(n.config, field.showWhen)) {
+      if (field.showWhen && !matchesShowWhen(n.config, field.showWhen, entry.fields)) {
         continue; // hidden field - don't require it
       }
       if (field.required) {

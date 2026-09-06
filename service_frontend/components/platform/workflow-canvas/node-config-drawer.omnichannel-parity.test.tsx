@@ -9,9 +9,13 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { NodeConfigDrawer } from './node-config-drawer';
 import { createNode } from '@/lib/workflow-doc';
-import type { WorkflowDefinition, WorkflowMetadata } from '@/types/workflows';
+import type {
+  WorkflowDefinition,
+  WorkflowMetadata,
+  WorkflowNodeConfig,
+} from '@/types/workflows';
 
-function docWith(nodeType: string, config?: Record<string, unknown>) {
+function docWith(nodeType: string, config?: WorkflowNodeConfig) {
   const node = { ...createNode(nodeType, { x: 0, y: 0 }), id: 'n1' };
   if (config) node.config = { ...node.config, ...config };
   return { doc: { schemaVersion: 2, nodes: [node], edges: [] } as WorkflowDefinition, node };
@@ -24,11 +28,13 @@ const METADATA: WorkflowMetadata = {
       id: 'ws-1',
       name: 'General',
       contactTags: [{ id: 'tag-1', name: 'VIP' }],
-      contactFields: [{ key: 'company', label: 'Company', type: 'string' }],
+      contactFields: [{ key: 'company', label: 'Company', type: 'text' }],
       lifecycleStages: [{ id: 'stage-1', name: 'New' }],
+      // No `isActive` key - the wire never carries one (the backend already
+      // filters to active reasons); plan 31 S3 review B-1 fixture.
       closeReasons: [
-        { id: 'reason-1', name: 'Resolved', isActive: true },
-        { id: 'reason-2', name: 'Retired', isActive: false },
+        { id: 'reason-1', name: 'Resolved' },
+        { id: 'reason-2', name: 'Legacy' },
       ],
       members: [{ id: 'user-1', name: 'Demo Admin' }],
       templates: [
@@ -111,7 +117,11 @@ describe('NodeConfigDrawer - plan 31 workspace-scoped pickers (AC-WFP-03)', () =
     });
   });
 
-  it('the close reason picker only lists ACTIVE reasons', async () => {
+  it('the close reason picker lists every reason the wire returns (no client-side isActive re-filter, plan 31 S3 review B-1)', async () => {
+    // The backend already filters to active reasons - a client-side
+    // `.filter((r) => r.isActive)` on a wire that never carries `isActive`
+    // (this fixture doesn't either) silently empties the picker. This test
+    // fails loudly if that filter is ever reintroduced.
     const user = userEvent.setup();
     const { doc, node } = docWith('omnichannel.close_conversation', { workspaceId: 'ws-1' });
     render(
@@ -127,7 +137,7 @@ describe('NodeConfigDrawer - plan 31 workspace-scoped pickers (AC-WFP-03)', () =
     );
     await user.click(screen.getByLabelText('Close reason'));
     expect(screen.getByText('Resolved')).toBeInTheDocument();
-    expect(screen.queryByText('Retired')).not.toBeInTheDocument();
+    expect(screen.getByText('Legacy')).toBeInTheDocument();
   });
 
   it('the template picker only lists APPROVED templates, tenant-wide', async () => {
@@ -343,5 +353,32 @@ describe('NodeConfigDrawer - show_when clears hidden dependents (AC-WFP-04)', ()
     await user.click(screen.getByLabelText('Workflow'));
     expect(screen.getByText('Onboarding')).toBeInTheDocument();
     expect(screen.queryByText('This workflow')).not.toBeInTheDocument();
+  });
+});
+
+describe('NodeConfigDrawer - absent controlling key defaults to the first option (plan 31 S3 review SF-2)', () => {
+  it('a pre-existing send_message node with no "mode" key still shows the Message field', () => {
+    // Simulates a plan-17 `omnichannel.send_message` node saved BEFORE the
+    // `mode` field existed - `docWith` merges over `createNode`'s defaults
+    // (which seed `mode: 'text'`), so build the config by hand with the key
+    // genuinely absent.
+    const node = { ...createNode('omnichannel.send_message', { x: 0, y: 0 }), id: 'n1' };
+    delete (node.config as Record<string, unknown>).mode;
+    node.config = { ...node.config, contactId: '{{ trigger.contact.id }}', message: 'Hi there' };
+    const doc: WorkflowDefinition = { schemaVersion: 2, nodes: [node], edges: [] };
+    render(
+      <NodeConfigDrawer
+        node={node}
+        doc={doc}
+        editing
+        templateOptions={[]}
+        metadata={METADATA}
+        onConfigChange={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText('Message')).toBeInTheDocument();
+    expect(screen.getByLabelText('Message')).toHaveValue('Hi there');
+    expect(screen.queryByLabelText('Template')).not.toBeInTheDocument();
   });
 });

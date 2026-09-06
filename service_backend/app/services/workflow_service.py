@@ -718,6 +718,20 @@ class WorkflowService:
         }
         from app.workflow_engine.code_runner import code_runner_available
         from code_runner.policy import CAPABILITIES as CODE_CAPABILITIES
+        from app.workflow_engine.registry import list_actions, list_triggers
+
+        # Plan 31 S3 review B-4: this branch's palette ships catalog entries
+        # (ask_question/wait/business_hours/http.request) with no backend
+        # ActionDef until S4/S5 register them - offering them would 422 at
+        # Publish and RuntimeError at Run. `registeredNodeTypes` is the
+        # generic, tenant-agnostic fix: the registry is process-global (every
+        # module's TriggerDef/ActionDef lands here at boot regardless of
+        # tenant), so the frontend catalog filters itself to exactly what the
+        # backend can execute TODAY - a node type earns its palette slot the
+        # moment its ActionDef/TriggerDef is registered, zero further FE edit.
+        registered_node_types = sorted(
+            {t.key for t in list_triggers()} | {a.key for a in list_actions()}
+        )
 
         metadata = {
             "entities": entities,
@@ -728,6 +742,7 @@ class WorkflowService:
             "workflows": self._workflow_ref_options(tenant_id),
             "codeRunnerAvailable": code_runner_available(),
             "codeCapabilities": list(CODE_CAPABILITIES),
+            "registeredNodeTypes": registered_node_types,
         }
         if include_ai_agents:
             metadata["aiAgents"] = self._ai_agent_options(tenant_id)
@@ -795,7 +810,14 @@ class WorkflowService:
         fields, lifecycle stages, close reasons, members, templates) in ONE
         call (plan sprint-4/31, AC-WFP-21; `templates` added S2 for the Send
         message/Ask a question template pickers). Guarded import - empty when
-        the module isn't present in the build; tenant-scoped throughout."""
+        the module isn't present in the build; tenant-scoped throughout.
+
+        Plan 31 S3 review SF-3: early-returns `[]` when the module is not
+        ACTIVE for the tenant (AC-WFP-21 - "all empty when the module is
+        inactive"; the previous version only guarded the missing-in-BUILD
+        case), and the six per-workspace queries are batched into six
+        `IN (workspace_ids)` queries grouped in Python, instead of 6xN queries
+        for N workspaces."""
         try:
             from modules.omnichannel.models import (
                 Channel,
@@ -811,6 +833,10 @@ class WorkflowService:
             return []
         from app.models.status import Status as CoreStatus
         from app.models.user import User
+        from app.repositories.module_repository import ModuleRepository
+
+        if not ModuleRepository(self.db).is_active(tenant_id, "omnichannel"):
+            return []
 
         workspaces = (
             self.db.query(Workspace)
@@ -818,87 +844,131 @@ class WorkflowService:
             .order_by(Workspace.name)
             .all()
         )
+        if not workspaces:
+            return []
+        ws_ids = [ws.id for ws in workspaces]
+
+        tags_by_ws: Dict[str, List[Any]] = {wid: [] for wid in ws_ids}
+        for row in (
+            self.db.query(ContactTag.id, ContactTag.name, ContactTag.workspace_id)
+            .filter(ContactTag.tenant_id == tenant_id, ContactTag.workspace_id.in_(ws_ids))
+            .order_by(ContactTag.name)
+            .all()
+        ):
+            tags_by_ws[row.workspace_id].append(row)
+
+        fields_by_ws: Dict[str, List[Any]] = {wid: [] for wid in ws_ids}
+        for row in (
+            self.db.query(
+                ContactField.key, ContactField.label, ContactField.type, ContactField.workspace_id
+            )
+            .filter(ContactField.tenant_id == tenant_id, ContactField.workspace_id.in_(ws_ids))
+            .order_by(ContactField.label)
+            .all()
+        ):
+            fields_by_ws[row.workspace_id].append(row)
+
+        stages_by_ws: Dict[str, List[Any]] = {wid: [] for wid in ws_ids}
+        for row in (
+            self.db.query(CoreStatus.id, CoreStatus.label, CoreStatus.scope_id)
+            .filter(
+                CoreStatus.tenant_id == tenant_id,
+                CoreStatus.entity_type == lifecycle_service.ENTITY_TYPE,
+                CoreStatus.scope_id.in_(ws_ids),
+            )
+            .order_by(CoreStatus.sort_order)
+            .all()
+        ):
+            stages_by_ws[row.scope_id].append(row)
+
+        reasons_by_ws: Dict[str, List[Any]] = {wid: [] for wid in ws_ids}
+        for row in (
+            self.db.query(CloseReason.id, CloseReason.name, CloseReason.workspace_id)
+            .filter(
+                CloseReason.tenant_id == tenant_id,
+                CloseReason.workspace_id.in_(ws_ids),
+                CloseReason.is_active.is_(True),
+            )
+            .order_by(CloseReason.name)
+            .all()
+        ):
+            reasons_by_ws[row.workspace_id].append(row)
+
+        # B-2: a stored `WorkspaceMember.user_id` is resolved tenant-scoped
+        # AND excludes trashed users (the polymorphic-stored-id rule - the
+        # exact leak class that shipped twice already, status-engine
+        # notifications then the gateway `_user_names`) - a name AND email
+        # render into an authenticated response below.
+        members_by_ws: Dict[str, List[Any]] = {wid: [] for wid in ws_ids}
+        for row in (
+            self.db.query(User.id, User.name, User.email, WorkspaceMember.workspace_id)
+            .join(WorkspaceMember, WorkspaceMember.user_id == User.id)
+            .filter(
+                WorkspaceMember.tenant_id == tenant_id,
+                WorkspaceMember.workspace_id.in_(ws_ids),
+                User.tenant_id == tenant_id,
+                User.is_trashed.is_(False),
+            )
+            .order_by(User.name)
+            .all()
+        ):
+            members_by_ws[row.workspace_id].append(row)
+
+        # `whatsappTemplate` field type (Send message / Ask a question
+        # template mode, plan sprint-4/31 S2) - every template regardless of
+        # Meta review status; the drawer filters to APPROVED itself
+        # (foolproof-UI - the picker only OFFERS a usable choice, but the
+        # full set stays available for a future "show pending" affordance
+        # without a second endpoint).
+        templates_by_ws: Dict[str, List[Any]] = {wid: [] for wid in ws_ids}
+        for row in (
+            self.db.query(
+                WhatsappTemplate.id,
+                WhatsappTemplate.name,
+                WhatsappTemplate.status,
+                Channel.workspace_id,
+            )
+            .join(Channel, Channel.id == WhatsappTemplate.channel_id)
+            .filter(
+                WhatsappTemplate.tenant_id == tenant_id,
+                Channel.tenant_id == tenant_id,
+                Channel.workspace_id.in_(ws_ids),
+            )
+            .order_by(WhatsappTemplate.name)
+            .all()
+        ):
+            templates_by_ws[row.workspace_id].append(row)
+
         out: List[Dict[str, Any]] = []
         for ws in workspaces:
-            tags = (
-                self.db.query(ContactTag.id, ContactTag.name)
-                .filter(ContactTag.tenant_id == tenant_id, ContactTag.workspace_id == ws.id)
-                .order_by(ContactTag.name)
-                .all()
-            )
-            fields = (
-                self.db.query(ContactField.key, ContactField.label, ContactField.type)
-                .filter(ContactField.tenant_id == tenant_id, ContactField.workspace_id == ws.id)
-                .order_by(ContactField.label)
-                .all()
-            )
-            stages = (
-                self.db.query(CoreStatus.id, CoreStatus.label)
-                .filter(
-                    CoreStatus.tenant_id == tenant_id,
-                    CoreStatus.entity_type == lifecycle_service.ENTITY_TYPE,
-                    CoreStatus.scope_id == ws.id,
-                )
-                .order_by(CoreStatus.sort_order)
-                .all()
-            )
-            reasons = (
-                self.db.query(CloseReason.id, CloseReason.name)
-                .filter(
-                    CloseReason.tenant_id == tenant_id,
-                    CloseReason.workspace_id == ws.id,
-                    CloseReason.is_active.is_(True),
-                )
-                .order_by(CloseReason.name)
-                .all()
-            )
-            members = (
-                self.db.query(User.id, User.name, User.email)
-                .join(WorkspaceMember, WorkspaceMember.user_id == User.id)
-                .filter(
-                    WorkspaceMember.tenant_id == tenant_id,
-                    WorkspaceMember.workspace_id == ws.id,
-                )
-                .order_by(User.name)
-                .all()
-            )
-            # `whatsappTemplate` field type (Send message / Ask a question
-            # template mode, plan sprint-4/31 S2) - every template regardless
-            # of Meta review status; the drawer filters to APPROVED itself
-            # (foolproof-UI - the picker only OFFERS a usable choice, but the
-            # full set stays available for a future "show pending" affordance
-            # without a second endpoint).
-            templates = (
-                self.db.query(WhatsappTemplate.id, WhatsappTemplate.name, WhatsappTemplate.status)
-                .join(Channel, Channel.id == WhatsappTemplate.channel_id)
-                .filter(
-                    WhatsappTemplate.tenant_id == tenant_id,
-                    Channel.tenant_id == tenant_id,
-                    Channel.workspace_id == ws.id,
-                )
-                .order_by(WhatsappTemplate.name)
-                .all()
-            )
             out.append(
                 {
                     "id": ws.id,
                     "name": ws.name,
-                    "contactTags": [{"id": t.id, "name": t.name} for t in tags],
+                    "contactTags": [
+                        {"id": t.id, "name": t.name} for t in tags_by_ws[ws.id]
+                    ],
                     "contactFields": [
-                        {"key": f.key, "label": f.label, "type": f.type} for f in fields
+                        {"key": f.key, "label": f.label, "type": f.type}
+                        for f in fields_by_ws[ws.id]
                     ],
                     # `name` (not `label`) matches every sibling array on this
                     # workspace shape (contactTags/closeReasons/members all use
                     # `name`) and the pre-existing frontend contract
                     # (WorkflowOmnichannelWorkspace.lifecycleStages, S3 drift fix).
-                    "lifecycleStages": [{"id": s.id, "name": s.label} for s in stages],
-                    "closeReasons": [{"id": r.id, "name": r.name} for r in reasons],
+                    "lifecycleStages": [
+                        {"id": s.id, "name": s.label} for s in stages_by_ws[ws.id]
+                    ],
+                    "closeReasons": [
+                        {"id": r.id, "name": r.name} for r in reasons_by_ws[ws.id]
+                    ],
                     "members": [
-                        {"id": m.id, "name": m.name or m.email, "email": m.email} for m in members
+                        {"id": m.id, "name": m.name or m.email, "email": m.email}
+                        for m in members_by_ws[ws.id]
                     ],
                     "templates": [
                         {"id": t.id, "name": t.name, "status": (t.status or "").upper()}
-                        for t in templates
+                        for t in templates_by_ws[ws.id]
                     ],
                 }
             )

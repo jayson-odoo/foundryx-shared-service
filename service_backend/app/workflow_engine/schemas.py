@@ -135,7 +135,7 @@ def definition_issues(
     published, so a `workflow.trigger` node targeting ITSELF is refused here
     rather than only at run time (the S0 frontend catalog does not yet
     self-exclude the picker - S3 wires that; this is the real 422 gate)."""
-    from app.workflow_engine.registry import get_action, get_trigger
+    from app.workflow_engine.registry import get_action, get_trigger, matches_show_when
 
     issues: List[str] = []
     triggers = [n for n in doc.nodes if n.kind == "trigger"]
@@ -213,7 +213,7 @@ def definition_issues(
             issues.append(f'"{label}" has an unrecognized node type ("{n.type}").')
             continue
         for field in entry.fields:
-            if field.show_when and n.config.get(field.show_when[0]) != field.show_when[1]:
+            if not matches_show_when(n.config, field, entry.fields):
                 continue  # hidden field - don't require it
             if field.required:
                 value = n.config.get(field.key)
@@ -273,9 +273,10 @@ def definition_issues(
         if n.type == "workflow.trigger" and workflow_id:
             target_id = n.config.get("workflowId")
             if isinstance(target_id, str) and target_id == workflow_id:
-                issues.append(
-                    '"Trigger another workflow" cannot target this same workflow.'
-                )
+                # SAME string as the frontend `validateDefinition` (SF-4) and
+                # the runtime `workflow_trigger_actions.ActionError` - one
+                # message across publish-time, client-side and run-time.
+                issues.append("A workflow cannot trigger itself.")
     return issues
 
 

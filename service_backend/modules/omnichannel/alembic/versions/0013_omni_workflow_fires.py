@@ -21,6 +21,10 @@ Create Date: 2026-09-06
 from alembic import op
 import sqlalchemy as sa
 
+# UTCDateTime columns ride sa.DateTime(timezone=True) here (module-migration
+# convention, matching 0006); import kept for parity with the house rule.
+import app.models.utc_datetime  # noqa: F401
+
 revision = "0013_omni_workflow_fires"
 down_revision = "0010_omni_contacts_module"
 branch_labels = None

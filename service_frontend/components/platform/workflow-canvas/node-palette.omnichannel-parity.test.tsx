@@ -15,10 +15,28 @@ vi.mock('@/hooks/use-app-store', () => ({
   useInstalledModules: () => ({ ready: true, isActive: isActiveMock }),
 }));
 
+// These tests probe section PLACEMENT and SEARCH matching, not the plan 31
+// S3 review B-4 registration gate (covered in node-palette.test.tsx) - render
+// as if every entry these tests reference is backend-registered, including
+// the S4/S5 entries (`wait`/`business_hours`/`ask_question`/`http.request`)
+// this file predates.
+const ALL_REGISTERED = [
+  'omnichannel.wait',
+  'omnichannel.business_hours',
+  'omnichannel.conversation_closed',
+  'omnichannel.ask_question',
+  'http.request',
+];
+
 function renderPalette() {
   return render(
     <DndContext onDragEnd={() => {}}>
-      <NodePalette hasTrigger={false} disabled={false} onAdd={vi.fn()} />
+      <NodePalette
+        hasTrigger={false}
+        disabled={false}
+        onAdd={vi.fn()}
+        registeredNodeTypes={ALL_REGISTERED}
+      />
     </DndContext>,
   );
 }

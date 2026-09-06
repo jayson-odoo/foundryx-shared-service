@@ -385,7 +385,9 @@ def _match_and_enqueue(session: Session, ev: Dict[str, Any]) -> None:
             # candidate silently, never surfacing as a request error.
             if not trig_def.fire_guard(session, wf, config, ev):
                 continue
-        _create_run(session, wf, ev, depth=new_depth)
+        created = _create_run(session, wf, ev, depth=new_depth)
+        if not created and trig_def is not None and trig_def.fire_release is not None:
+            trig_def.fire_release(session, wf, config, ev)
 
 
 def build_event_trigger_payload(
@@ -556,11 +558,16 @@ def create_run_for_event(
     return run
 
 
-def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: int) -> None:
+def _create_run(session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: int) -> bool:
+    """Returns True iff a run was actually created - `_match_and_enqueue`
+    releases a winning `fire_guard` claim when this is False (a skip must
+    never burn the once-per-contact marker with no run to show for it)."""
     try:
         create_run_for_event(session, wf, ev, depth=depth)
+        return True
     except CodeNotAuthorized:
         logger.warning("workflow %s: Code-bearing version lacks authorization; skipped", wf.id)
+        return False
 
 
 # Register once on the Session class (all sessions share the hook).

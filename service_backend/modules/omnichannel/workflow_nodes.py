@@ -90,6 +90,32 @@ def _once_per_contact_fire_guard_from_extra(db, wf, config: Dict[str, Any], ev: 
     return claim_fire(db, tenant_id=wf.tenant_id, workflow_id=wf.id, contact_id=contact_id)
 
 
+def _once_per_contact_fire_release(db, wf, config: Dict[str, Any], ev: Dict[str, Any]) -> None:
+    """Pairs with `_once_per_contact_fire_guard` - releases a winning claim
+    when `_create_run` never actually produced a run (plan 31 S3 review nit).
+    A no-op when the checkbox was off (the guard claimed nothing)."""
+    if not config.get("triggerOncePerContact"):
+        return
+    contact_id = ev.get("record_id")
+    if not contact_id:
+        return
+    from .services.workflow_fire_store import release_fire
+
+    release_fire(db, tenant_id=wf.tenant_id, workflow_id=wf.id, contact_id=contact_id)
+
+
+def _once_per_contact_fire_release_from_extra(db, wf, config: Dict[str, Any], ev: Dict[str, Any]) -> None:
+    """`_once_per_contact_fire_guard_from_extra`'s release counterpart."""
+    if not config.get("triggerOncePerContact"):
+        return
+    contact_id = (ev.get("extra") or {}).get("contactId")
+    if not contact_id:
+        return
+    from .services.workflow_fire_store import release_fire
+
+    release_fire(db, tenant_id=wf.tenant_id, workflow_id=wf.id, contact_id=contact_id)
+
+
 def _delete_fires_on_workflow_deleted(db, ev: Dict[str, Any]) -> None:
     """AC-WFP-15: "once-per-contact" markers are deleted WITH the workflow.
     Registered as a generic core event subscriber (`register_event_subscriber`,
@@ -258,7 +284,14 @@ def _lifecycle_refine(config: Dict[str, Any], ev: Dict[str, Any]) -> bool:
 
 
 def _lifecycle_context(config: Dict[str, Any], ev: Dict[str, Any]) -> Dict[str, Any]:
-    return {**_contact_base_context(ev)}
+    """SF-6 (plan 31 S3 review): `toStageLabel` is advertised as a
+    `NodeOutput` but was never populated - the `{ }` picker offered
+    `{{ trigger.toStageLabel }}` and it always rendered empty. The label rides
+    the emission's own `extra.to_status_label` (`status_machine.transition`
+    already resolves `edge.to_status.label` for its notification context;
+    no second query needed here)."""
+    extra = ev.get("extra") or {}
+    return {**_contact_base_context(ev), "toStageLabel": extra.get("to_status_label")}
 
 
 # ── broadcast_completed (A4, AC-WFP-22 - registered generically now) ────────
@@ -448,6 +481,7 @@ def register_omnichannel_workflow_nodes() -> None:
             event_entity_type="omnichannel_message",
             refine=_message_received_refine,
             fire_guard=_once_per_contact_fire_guard_from_extra,
+            fire_release=_once_per_contact_fire_release_from_extra,
         )
     )
     register_trigger(
@@ -473,6 +507,7 @@ def register_omnichannel_workflow_nodes() -> None:
             event_entity_type="omnichannel_contact",
             refine=_opened_refine,
             fire_guard=_once_per_contact_fire_guard,
+            fire_release=_once_per_contact_fire_release,
             context_extra=_opened_context,
         )
     )
@@ -499,6 +534,7 @@ def register_omnichannel_workflow_nodes() -> None:
             event_entity_type="omnichannel_contact",
             refine=_closed_refine,
             fire_guard=_once_per_contact_fire_guard,
+            fire_release=_once_per_contact_fire_release,
             context_extra=_closed_context,
         )
     )
@@ -526,6 +562,7 @@ def register_omnichannel_workflow_nodes() -> None:
             event_entity_type="omnichannel_contact",
             refine=_assigned_refine,
             fire_guard=_once_per_contact_fire_guard,
+            fire_release=_once_per_contact_fire_release,
             context_extra=_assigned_context,
         )
     )
@@ -551,6 +588,7 @@ def register_omnichannel_workflow_nodes() -> None:
             event_entity_type="omnichannel_contact",
             refine=_make_tag_refine(added=True),
             fire_guard=_once_per_contact_fire_guard,
+            fire_release=_once_per_contact_fire_release,
             context_extra=_make_tag_context(added=True),
         )
     )
@@ -576,6 +614,7 @@ def register_omnichannel_workflow_nodes() -> None:
             event_entity_type="omnichannel_contact",
             refine=_make_tag_refine(added=False),
             fire_guard=_once_per_contact_fire_guard,
+            fire_release=_once_per_contact_fire_release,
             context_extra=_make_tag_context(added=False),
         )
     )
@@ -605,6 +644,7 @@ def register_omnichannel_workflow_nodes() -> None:
             event_entity_type="omnichannel_contact",
             refine=_field_changed_refine,
             fire_guard=_once_per_contact_fire_guard,
+            fire_release=_once_per_contact_fire_release,
             context_extra=_field_changed_context,
         )
     )
@@ -640,6 +680,7 @@ def register_omnichannel_workflow_nodes() -> None:
             event_entity_type="omnichannel_contact",
             refine=_lifecycle_refine,
             fire_guard=_once_per_contact_fire_guard,
+            fire_release=_once_per_contact_fire_release,
             context_extra=_lifecycle_context,
         )
     )

@@ -31,6 +31,18 @@ def claim_fire(db: Session, *, tenant_id: str, workflow_id: str, contact_id: str
         return False
 
 
+def release_fire(db: Session, *, tenant_id: str, workflow_id: str, contact_id: str) -> None:
+    """Release a WINNING claim that never produced a run (plan 31 S3 review
+    nit) - e.g. a `CodeNotAuthorized` skip. Without this the once-per-contact
+    marker is burned permanently with no run to show for it, silently
+    disabling the trigger for that contact forever."""
+    db.query(WorkflowContactFire).filter(
+        WorkflowContactFire.tenant_id == tenant_id,
+        WorkflowContactFire.workflow_id == workflow_id,
+        WorkflowContactFire.contact_id == contact_id,
+    ).delete(synchronize_session=False)
+
+
 def delete_for_workflow(db: Session, tenant_id: str, workflow_id: str) -> None:
     """Delete every claim for a permanently-deleted workflow (AC-WFP-15 -
     markers are "deleted with the workflow"). Called by the `workflow`

@@ -20,6 +20,7 @@ import {
   IF_CATALOG,
   TRIGGER_CATALOG,
   deniedNodePermissions,
+  isNodeTypeRegistered,
   isPermissionDenied,
 } from '@/lib/workflow-catalog';
 import { cn } from '@/lib/utils';
@@ -106,6 +107,10 @@ export interface NodePaletteProps {
   canCode?: boolean;
   /** Gates the HTTP request node (`workflows.http`), same as `canCode`. */
   canHttp?: boolean;
+  /** Every trigger/action type the backend registry currently resolves
+   * (`GET /workflows/metadata`, plan 31 S3 review B-4) - a catalog entry
+   * absent here is OMITTED entirely (never shown-then-disabled). */
+  registeredNodeTypes?: string[];
 }
 
 export function NodePalette({
@@ -114,6 +119,7 @@ export function NodePalette({
   onAdd,
   canCode = true,
   canHttp = true,
+  registeredNodeTypes,
 }: NodePaletteProps) {
   const [query, setQuery] = useState('');
   // Sections collapsed by default - the catalog is long; expand on click/search.
@@ -128,16 +134,22 @@ export function NodePalette({
   // (Wait, Business hours - D-A5-19) - flow-control actions live with the
   // other branching/pausing primitive, not buried in the long Actions list.
   const sections: PaletteSection[] = useMemo(() => {
-    const actions = visibleEntries(ACTION_CATALOG, isActive);
+    const registered = <T extends NodeCatalogEntry>(entries: T[]) =>
+      entries.filter((e) => isNodeTypeRegistered(e, registeredNodeTypes));
+    const actions = registered(visibleEntries(ACTION_CATALOG, isActive));
     return [
-      { title: 'Triggers', entries: visibleEntries(TRIGGER_CATALOG, isActive), itemsDisabled: hasTrigger },
+      {
+        title: 'Triggers',
+        entries: registered(visibleEntries(TRIGGER_CATALOG, isActive)),
+        itemsDisabled: hasTrigger,
+      },
       {
         title: 'Logic',
         entries: [...IF_CATALOG, ...actions.filter((e) => e.category === 'Logic')],
       },
       { title: 'Actions', entries: actions.filter((e) => e.category !== 'Logic') },
     ];
-  }, [hasTrigger, isActive]);
+  }, [hasTrigger, isActive, registeredNodeTypes]);
 
   const q = query.trim().toLowerCase();
   const searching = q.length > 0;

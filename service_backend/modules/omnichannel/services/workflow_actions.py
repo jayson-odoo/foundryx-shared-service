@@ -172,7 +172,13 @@ def _round_robin_pick(db: Session, tenant_id: str, workspace: Workspace) -> Opti
     """AC-WFP-24: eligible members are workspace members that still resolve to
     a LIVE user in the SAME tenant, ordered stably (insertion order); the next
     pick follows the workspace's stored cursor. Returns None (no eligible
-    member) rather than raising - an empty roster never fails the node."""
+    member) rather than raising - an empty roster never fails the node.
+
+    Plan 31 S3 review nit: does NOT mutate `workspace.round_robin_cursor` -
+    the caller advances it only after the assign actually SUCCEEDS
+    (`_advance_round_robin_cursor` below). Advancing it here meant a
+    subsequent `InvalidPatch` still persisted the advance at the run's
+    terminal commit, silently skipping a member who was never assigned."""
     rows = (
         db.query(WorkspaceMember.user_id)
         .join(User, User.id == WorkspaceMember.user_id)
@@ -190,10 +196,12 @@ def _round_robin_pick(db: Session, tenant_id: str, workspace: Workspace) -> Opti
         return None
     cursor = workspace.round_robin_cursor
     idx = (eligible.index(cursor) + 1) % len(eligible) if cursor in eligible else 0
-    chosen = eligible[idx]
+    return eligible[idx]
+
+
+def _advance_round_robin_cursor(db: Session, workspace: Workspace, chosen: str) -> None:
     workspace.round_robin_cursor = chosen
     db.add(workspace)
-    return chosen
 
 
 def omnichannel_assign_conversation(
@@ -242,6 +250,8 @@ def omnichannel_assign_conversation(
             )
         except InvalidPatch as exc:
             raise ActionError(str(exc)) from exc
+        # Cursor advances ONLY on a successful assign (plan 31 S3 review nit).
+        _advance_round_robin_cursor(db, workspace, chosen)
         return {"assignedUserId": chosen, "assigned": True}
 
     # mode == "user"

@@ -168,6 +168,37 @@ def test_assign_conversation_round_robin_alternates_and_persists_cursor(session_
         db.close()
 
 
+def test_assign_conversation_round_robin_cursor_not_advanced_on_failed_assign(session_factory, monkeypatch):
+    """Plan 31 S3 review nit: the cursor must advance ONLY on a successful
+    assign - advancing before `patch_thread` would persist the advance (at
+    the run's terminal commit) even though the pick was never assigned."""
+    from modules.omnichannel.services.conversation_service import ConversationService, InvalidPatch
+
+    cid = _seed_thread(session_factory, messages=[])
+    db = session_factory()
+    try:
+        ws = _default_workspace(db)
+        _add_member(db, ws.id, email="rr-fail1@example.com", offset_seconds=0)
+        _add_member(db, ws.id, email="rr-fail2@example.com", offset_seconds=1)
+        db.commit()
+
+        def _boom(self, *a, **k):
+            raise InvalidPatch("simulated race")
+
+        monkeypatch.setattr(ConversationService, "patch_thread", _boom)
+        with pytest.raises(OmniActionError):
+            omnichannel_assign_conversation(
+                db, DEFAULT_TENANT_ID, {"contactId": cid, "mode": "round_robin"}, {}
+            )
+
+        from modules.omnichannel.models import Workspace
+
+        refreshed = db.query(Workspace).filter(Workspace.id == ws.id).first()
+        assert refreshed.round_robin_cursor is None  # NOT advanced to m1
+    finally:
+        db.close()
+
+
 def test_assign_conversation_round_robin_empty_roster_succeeds_no_op(session_factory):
     cid = _seed_thread(session_factory, messages=[])
     db = session_factory()
@@ -697,7 +728,7 @@ def test_workflow_trigger_self_refused_at_publish(session_factory):
         flag_modified(wf, "draft_definition_json")
         db.commit()
         svc.set_active(wf.id, DEFAULT_TENANT_ID, True)
-        with pytest.raises(WorkflowValidationError, match="cannot target this same workflow"):
+        with pytest.raises(WorkflowValidationError, match="A workflow cannot trigger itself"):
             svc.publish(wf.id, DEFAULT_TENANT_ID, actor_id=None)
     finally:
         db.close()
@@ -856,5 +887,126 @@ def test_end_to_end_closed_workflow_tags_fields_and_sends_template(session_facto
             .first()
         )
         assert sent is not None
+    finally:
+        db.close()
+
+
+# ── AC-WFP-32 (plan 31 S3 review SF-5): an already-committed step is NOT
+# rolled back by a later node's failure - each A5 step commits its own write
+# immediately (module docstring D-A5-5), so a downstream failure only halts
+# the REST of the run. ─────────────────────────────────────────────────────
+def test_committed_step_survives_a_later_node_failure(session_factory):
+    from modules.omnichannel.models import Contact
+    from modules.omnichannel.services.contact_tag_service import ContactTagService
+
+    cid = _seed_thread(session_factory, status_key="OPEN", messages=[{"body": "hi"}])
+    db = session_factory()
+    try:
+        ws_id = db.query(Contact).filter(Contact.id == cid).first().workspace_id
+        tag_id = _add_tag(db, ws_id, name="wfp32-survives")
+        db.commit()
+    finally:
+        db.close()
+
+    tag_node_id = "tag_1"
+    fail_node_id = "field_1"
+    doc = {
+        "schemaVersion": 2,
+        "nodes": [
+            {"id": "trg", "kind": "trigger", "type": "omnichannel.conversation_closed", "config": {}},
+            {
+                "id": tag_node_id,
+                "kind": "action",
+                "type": "omnichannel.add_tag",
+                "config": {
+                    "contactId": "{{ trigger.contact.id }}",
+                    "workspaceId": ws_id,
+                    "tagId": tag_id,
+                },
+            },
+            {
+                "id": fail_node_id,
+                "kind": "action",
+                "type": "omnichannel.update_field",
+                "config": {
+                    "contactId": "{{ trigger.contact.id }}",
+                    "workspaceId": ws_id,
+                    # No such field in this workspace - guaranteed ActionError.
+                    "fieldKey": "does-not-exist",
+                    "value": "x",
+                },
+            },
+        ],
+        "edges": [
+            {"id": "e1", "source": "trg", "target": tag_node_id},
+            {"id": "e2", "source": tag_node_id, "target": fail_node_id},
+        ],
+    }
+    db = session_factory()
+    try:
+        svc = WorkflowService(db)
+        wf = svc.create(DEFAULT_TENANT_ID, name="WFP-32 pin", description="", draft=doc, actor_id=None)
+        svc.set_active(wf.id, DEFAULT_TENANT_ID, True)
+        svc.publish(wf.id, DEFAULT_TENANT_ID, actor_id=None)
+        wf_id = wf.id
+        db.commit()
+    finally:
+        db.close()
+
+    from modules.omnichannel.services.conversation_service import ConversationService
+
+    db = session_factory()
+    try:
+        ConversationService(db).patch_thread(cid, DEFAULT_TENANT_ID, status="CLOSED")
+    finally:
+        db.close()
+
+    db = session_factory()
+    try:
+        runs = _runs_for(db, wf_id)
+        assert len(runs) == 1
+        run = runs[0]
+        # The run as a whole is FAILED (the downstream node's error halts it) ...
+        assert run.status == RUN_FAILED
+        node_types = {n.node_type: n.status for n in run.nodes}
+        assert node_types["omnichannel.add_tag"] == "success"
+        assert node_types["omnichannel.update_field"] == "failed"
+        # ... but the already-committed tag write from node 1 SURVIVES - it is
+        # never rolled back by node 2's later failure (AC-WFP-32).
+        assert tag_id in ContactTagService(db).ids_for_contact(cid, DEFAULT_TENANT_ID)
+    finally:
+        db.close()
+
+
+# ── AC-WFP-34 (plan 31 S3 review SF-5): every A5 executor fails closed when
+# the omnichannel module is deactivated for the tenant - not just get_contact
+# (already pinned in test_omnichannel_workflow_triggers.py). ────────────────
+def test_every_a5_action_rejects_when_module_inactive(session_factory):
+    from app.services.app_store_service import AppStoreService
+    from modules.omnichannel.services.workflow_actions import (
+        omnichannel_open_conversation,
+        omnichannel_update_field,
+        omnichannel_update_lifecycle,
+    )
+
+    cid = _seed_thread(session_factory, messages=[])
+    db = session_factory()
+    try:
+        AppStoreService(db).deactivate(DEFAULT_TENANT_ID, "omnichannel")
+        empty_ctx: dict = {}
+        config = {"contactId": cid}
+        for fn in (
+            omnichannel_send_message,
+            omnichannel_assign_conversation,
+            omnichannel_add_tag,
+            omnichannel_remove_tag,
+            omnichannel_update_field,
+            omnichannel_update_lifecycle,
+            omnichannel_open_conversation,
+            omnichannel_close_conversation,
+            omnichannel_add_comment,
+        ):
+            with pytest.raises(OmniActionError, match="not active"):
+                fn(db, DEFAULT_TENANT_ID, config, empty_ctx)
     finally:
         db.close()
