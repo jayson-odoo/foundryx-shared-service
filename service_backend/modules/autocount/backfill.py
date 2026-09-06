@@ -15,6 +15,23 @@ but the ADD only happens on a host where the column was missing. On a host where
 arrives from the model with no server default, and the migration must not assume
 it is populated. So the backfill is written to be correct in BOTH orders: it
 fills only rows that lack a value, and is safe to run repeatedly.
+
+    !!  A BACKFILL RUNS AT ANY POINT IN HISTORY, NOT JUST THE DAY IT WAS
+        WRITTEN (prod incident, 2026-09-06).  !!
+Every function below is called from TWO places: a module Alembic migration
+(bound to THAT migration's own stamp - every LATER migration's columns are
+still missing) and ``update_tenant`` at HEAD (every column already exists).
+Writing a backfill against the ORM model's CURRENT shape (or a fixed column
+list assumed always present) is therefore never safe - it is only ever
+correct for whichever ONE stamp its author was looking at when they wrote
+it. Prod got stuck stamped before 0007 (``UndefinedColumn`` in ``0006``, then
+``0007``/``0008``'s own ``backfill_etl_defaults`` failing on a stamp between
+them because ``_ETL_DEFAULTS`` names ``ac_sync_run.added_count`` - a column
+0008 itself adds) and ``bootstrap_modules`` swallowed the failure, so the
+container went "healthy" on a module frozen at 0.1.0 with every AutoCount
+write 500ing. Every backfill here now checks ``existing_columns`` (inspects
+the LIVE connection, never the model) before writing to a table/column, so
+it degrades to a no-op at any stamp that predates it instead of raising.
 """
 from __future__ import annotations
 
@@ -49,6 +66,62 @@ def default_schema(bind: Any) -> Optional[str]:
     return AUTOCOUNT_SCHEMA if dialect == "postgresql" else None
 
 
+def existing_columns(
+    bind: Any, table: str, *, schema: Optional[str]
+) -> Optional[frozenset]:
+    """The column names ``table`` ACTUALLY HAS on the connection in front of
+    us right now, or ``None`` when the table does not exist at all yet.
+
+        !!  Prod incident, 2026-09-06 - "a backfill runs at ANY point in
+            history, not just the day it was written."  !!
+    Every backfill in this file is called from TWO very different places: a
+    module Alembic migration (which by definition runs on a schema stuck at
+    THAT migration's own down_revision - every LATER migration's columns are
+    still missing) and ``update_tenant`` at HEAD (where every column already
+    exists). A prod deploy stuck mid-chain (App Store showed 0.1.0, stamp
+    stuck before 0007) proved a backfill written only for the HEAD shape is
+    unsafe at any earlier stamp: 0007/0008's ``backfill_etl_defaults`` named
+    ``ac_sync_run.added_count``/``updated_count`` - columns 0008 itself adds
+    - so replaying 0001->head on a fresh Postgres died in 0007 with
+    ``column "added_count" does not exist``, ``bootstrap_modules`` swallowed
+    the failure, and the container went "healthy" on a module stuck at 0.1.0.
+    A backfill must check what is ACTUALLY there before writing to it -
+    inspecting the live connection (never the ORM model, which always
+    reflects the code's current HEAD shape regardless of what migration is
+    running) is the only source of truth that stays correct at every stamp.
+
+    ``bind`` is whatever the caller already has in hand - a plain
+    ``Connection`` (Alembic's ``op.get_bind()``) or a ``Session``
+    (``update_tenant``'s ``db``) - so a ``Session`` is unwrapped via its own
+    ``get_bind()`` first; ``sa.inspect`` needs a connectable, not a session.
+
+    ``schema=None`` (the SQLite test path) ALSO checks every other schema
+    the connection knows about, not only the default one: conftest's
+    ``ac_``-prefixed tables live in an ATTACHED SQLite database (``omni``)
+    via ``schema_translate_map``, never in ``main`` - a raw, unqualified
+    ``UPDATE ac_company ...`` still finds them (SQLite's own name-resolution
+    searches every attached database), but ``Inspector.has_table(table,
+    schema=None)`` only looks at ``main`` and would otherwise report every
+    module table permanently missing under test, defeating every backfill
+    the moment this tolerance check shipped. Postgres never hits this branch
+    - every real caller passes the actual ``app_autocount`` schema.
+    """
+    connectable = bind.get_bind() if hasattr(bind, "get_bind") else bind
+    inspector = sa.inspect(connectable)
+    if inspector.has_table(table, schema=schema):
+        return frozenset(col["name"] for col in inspector.get_columns(table, schema=schema))
+    if schema is not None:
+        return None
+    for candidate in inspector.get_schema_names():
+        if candidate in (None, "main"):
+            continue
+        if inspector.has_table(table, schema=candidate):
+            return frozenset(
+                col["name"] for col in inspector.get_columns(table, schema=candidate)
+            )
+    return None
+
+
 def backfill_sink_impl_defaults(
     bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
 ) -> int:
@@ -61,7 +134,15 @@ def backfill_sink_impl_defaults(
     to a column default a create_all-first host would never apply. Fills only
     rows that lack a value and is safe to run repeatedly. Does **not** commit -
     the caller (Alembic's own connection, or ``update_tenant``) owns that.
+
+    Schema-tolerant (prod incident, 2026-09-06 - see ``existing_columns``): a
+    stamp before the table/column existed is a silent no-op here, never an
+    ``UndefinedColumn``/``UndefinedTable``, so this function is safe to call
+    from ANY migration in the chain, not only the one that first needed it.
     """
+    columns = existing_columns(bind, "ac_company", schema=schema)
+    if columns is None or "sink_impl" not in columns:
+        return 0
     prefix = f'"{schema}".' if schema else ""
     result = bind.execute(
         sa.text(
@@ -84,10 +165,19 @@ def backfill_entity_config_defaults(
     ``alembic_version`` stamp - learned on the storage-migration slice).
 
     ``schema=None`` for SQLite, which has no schemas.
+
+    Schema-tolerant (prod incident, 2026-09-06 - see ``existing_columns``):
+    a stamp before ``ac_entity_config`` (or one of its two columns) existed
+    skips that column rather than raising, so this is safe at ANY stamp.
     """
+    columns = existing_columns(bind, "ac_entity_config", schema=schema)
+    if columns is None:
+        return 0
     prefix = f'"{schema}".' if schema else ""
     touched = 0
     for column, value in _ENTITY_CONFIG_DEFAULTS:
+        if column not in columns:
+            continue
         # ``column`` comes from the fixed tuple above, never from input.
         result = bind.execute(
             sa.text(
@@ -123,10 +213,24 @@ def backfill_etl_defaults(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
     Same two-order safety as the backfills above: fills only rows that lack a
     value, safe to run repeatedly, does **not** commit (Alembic's connection or
     ``update_tenant`` owns that).
+
+    Schema-tolerant (prod incident, 2026-09-06 - see ``existing_columns``):
+    ``_ETL_DEFAULTS`` spans THREE tables across TWO migrations (0007's own
+    columns and 0008's ``added_count``/``updated_count``), so a stamp
+    between them - or before any of them - must skip whichever entries name
+    a table/column that is not there YET, never fail the whole backfill.
+    Columns are inspected ONCE per table (several entries share
+    ``ac_sync_run``), not once per entry.
     """
     prefix = f'"{schema}".' if schema else ""
     touched = 0
+    columns_by_table: Dict[str, Optional[frozenset]] = {}
     for table, column, value in _ETL_DEFAULTS:
+        if table not in columns_by_table:
+            columns_by_table[table] = existing_columns(bind, table, schema=schema)
+        columns = columns_by_table[table]
+        if columns is None or column not in columns:
+            continue
         # ``table``/``column`` come from the fixed tuple above, never from input.
         blank = f" OR {column} = ''" if isinstance(value, str) else ""
         result = bind.execute(
