@@ -216,6 +216,15 @@ export interface ConversationThread {
   avatarUrl: string | null;
   assignedUserId: string | null;
   assignedUserName: string | null;
+  /**
+   * Assigned CORE team (plan 28, roadmap A8) - a plain indexed id into
+   * `public.teams`, no cross-schema FK (mirrors `lifecycle_status_id`/
+   * BL-030), resolved tenant-scoped by the backend on every read.
+   * `assignedTeamName` is null for a foreign/stale/deleted id - never a
+   * guess.
+   */
+  assignedTeamId?: string | null;
+  assignedTeamName?: string | null;
   status: ThreadStatus;
   priority: ThreadPriority;
   /** Channel the latest message arrived on (drives the thread-list icon). */
@@ -452,6 +461,9 @@ export interface ThreadListQuery {
   unreplied?: boolean;
   sort?: ThreadSort;
   viewId?: string | null;
+  /** Team Inbox filter (plan 28, S2) - `GET /omnichannel/contacts` filters
+   *  server-side on `assigned_team_id`. */
+  teamId?: string | null;
 }
 
 /** Realtime events fanned out per workspace (WS in Phase B; mock emitter in A). */
@@ -622,6 +634,10 @@ export interface PatchContactInput {
   countryCode?: string | null;
   customFields?: Record<string, string | number | boolean | null>;
   tagIds?: string[];
+  /** Assign (or clear, `null`) a CORE team on this thread (plan 28, roadmap
+   *  A8) - rides the same `PATCH /omnichannel/contacts/{id}` the rest of this
+   *  input does; native-only (403 for an embed/external-agent token). */
+  assignedTeamId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -918,6 +934,10 @@ export interface InboxViewFilter {
   unreplied?: boolean;
   sort?: ThreadSort;
   segmentId?: string | null;
+  /** AC-TEM-46 (plan 28, roadmap A8) - a Team Inbox scope a saved view can
+   *  pin; validated tenant-scoped at save time. Views saved before this
+   *  slice have no `teamIds` key and keep working unchanged. */
+  teamIds?: string[];
 }
 
 /** A saved inbox view (AC-IVE-18/19). Own views need only `conversations.read`
@@ -960,6 +980,27 @@ export interface ShortcutRunResult {
 }
 
 // ---------------------------------------------------------------------------
+// Plan 28 (roadmap A8) - per-team assignment-pick strategy, one row per
+// (workspace, team). See `documentation/plans/sprint-4/28-teams-core-and-
+// omnichannel-assignment.md` §5.2 (AC-TEM-28).
+// ---------------------------------------------------------------------------
+
+export type TeamAssignmentStrategy = 'round_robin' | 'least_open';
+
+/** A team's assignment-pick strategy within one workspace - one row per
+ *  ACTIVE core team (review round 1, finding 4/5/6: the backend now returns
+ *  the full active-team roster merged with any configured settings, so this
+ *  is the ONLY source the tab needs - no separate `GET /teams` call). A
+ *  never-configured team defaults to `round_robin`/`isConfigured: false`/
+ *  `updatedAt: null`. */
+export interface TeamAssignmentSetting {
+  teamId: string;
+  teamName: string | null;
+  strategy: TeamAssignmentStrategy;
+  lastAssignedUserId: string | null;
+  updatedAt: string | null; // ISO, null when never configured
+  isConfigured: boolean;
+}
 // Plan 30 - Dashboard + Reports v1 (roadmap A9). See
 // documentation/plans/sprint-4/30-omnichannel-dashboard-reports.md §5.
 // No new fact tables - every shape below is an aggregate over

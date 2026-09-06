@@ -48,6 +48,11 @@ export interface UseMessagesResult {
   addNote: (body: string) => Promise<boolean>;
   assign: (userId: string | null) => Promise<void>;
   assignToMe: () => Promise<void>;
+  /** Assign (or clear, teamId=null) a CORE team on this thread (plan 28,
+   *  roadmap A8) - `PATCH /omnichannel/contacts/{id} {assignedTeamId}`.
+   *  Throws on failure - the caller reverts any optimistic UI and shows the
+   *  message (AC-TEM-47). */
+  assignTeam: (teamId: string | null) => Promise<void>;
   setStatus: (status: ThreadStatus) => Promise<void>;
   setPriority: (priority: ThreadPriority) => Promise<void>;
   /** Plan 27 - close with a required reason + optional note (AC-IVE-28).
@@ -429,6 +434,18 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     commitThreadIfActive(contactId, await conversationService.assignToMe(contactId));
   }, [contactId, commitThreadIfActive]);
 
+  const assignTeam = useCallback(
+    async (teamId: string | null) => {
+      if (!contactId) return;
+      // The PATCH response is already the fully-resolved ThreadItem - the
+      // strategy-picked user (or team-unassigned NULL) and the resolved
+      // `assignedTeamName` both come back in ONE round trip.
+      const updated = await conversationService.patchContact(contactId, { assignedTeamId: teamId });
+      commitThreadIfActive(contactId, updated);
+    },
+    [contactId, commitThreadIfActive],
+  );
+
   const setStatus = useCallback(
     async (status: ThreadStatus) => {
       if (!contactId) return;
@@ -475,5 +492,5 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     [contactId, commitThreadIfActive],
   );
 
-  return { thread, messages, isLoading, error, isSending, sendError, send, sendTemplate, sendMedia, sendInteractive, sendLocation, sendContacts, react, addNote, assign, assignToMe, setStatus, setPriority, closeThread, patchContact, moveLifecycle };
+  return { thread, messages, isLoading, error, isSending, sendError, send, sendTemplate, sendMedia, sendInteractive, sendLocation, sendContacts, react, addNote, assign, assignToMe, assignTeam, setStatus, setPriority, closeThread, patchContact, moveLifecycle };
 }

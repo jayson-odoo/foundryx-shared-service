@@ -15,8 +15,12 @@ from app.workflow_engine.context import render_field
 from ..models import Status
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import SendMessageRequest
-from .conversation_service import ThreadNotFound
+from .conversation_service import InvalidPatch, ThreadNotFound
 from .message_service import MessageService, SendRejected
+
+# plan 28 S3 (§5.5, AC-TEM-32) - the `mode` config value → the exact
+# assignment shape passed to `ConversationService.patch_thread`.
+ASSIGN_MODES = ("user", "team", "unassign")
 
 
 class ActionError(Exception):
@@ -87,3 +91,71 @@ def omnichannel_send_message(
     except SendRejected as exc:
         raise ActionError(exc.message) from exc
     return {"messageId": item.id, "status": item.deliveryStatus or "QUEUED"}
+
+
+def omnichannel_assign_conversation(
+    db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[str, Any]
+) -> Dict[str, Any]:
+    """`omnichannel.assign_conversation` (plan 28 S3, §5.5, D-A8-5, AC-TEM-32).
+
+    Routes through the ONE `ConversationService.patch_thread` write seam - the
+    identical realtime push, consumer webhook and `conversation_events` row
+    every other assignment path gets. `assigned_via_override="workflow"` +
+    the run's ids (from `_workflow.workflowId`/`_workflow.runId`, set by the
+    executor for every node - see `executor.py`) attribute the event to this
+    run rather than to a human actor (D-A8 pinned decision: `actor=None`,
+    never the workflow's publishing user).
+    """
+    _require_module_active(db, tenant_id)
+    contact_id = _contact_id(config, ctx)
+    mode = config.get("mode")
+    if mode not in ASSIGN_MODES:
+        raise ActionError("Assignment mode is not configured.")
+
+    from .conversation_service import ConversationService
+
+    kwargs: Dict[str, Any] = {
+        "assigned_via_override": "workflow",
+        "workflow_id": ctx.get("_workflow.workflowId"),
+        "workflow_run_id": ctx.get("_workflow.runId"),
+    }
+    if mode == "user":
+        user_id = render_field(config.get("userId"), ctx).strip()
+        if not user_id:
+            raise ActionError("User is empty after merging.")
+        kwargs["assigned_user_id"] = user_id
+    elif mode == "team":
+        team_id = config.get("teamId")
+        if not team_id:
+            raise ActionError("Team is not configured.")
+        kwargs["assigned_team_id"] = team_id
+        # "default" (the picker's own sentinel, §5.5) means "use the team's
+        # saved strategy" - `patch_thread`/`team_assignment_service.pick`
+        # already treat `strategy_override=None` that way, so only a REAL
+        # override value is forwarded.
+        strategy = config.get("strategy")
+        if strategy and strategy != "default":
+            kwargs["strategy_override"] = strategy
+    else:  # "unassign" - clears both sides unconditionally (§5.2 table).
+        kwargs["assigned_user_id"] = None
+        kwargs["assigned_team_id"] = None
+
+    try:
+        item = ConversationService(db).patch_thread(contact_id, tenant_id, **kwargs)
+    except ThreadNotFound as exc:
+        raise ActionError("Contact not found.") from exc
+    except InvalidPatch as exc:
+        # `exc.message` never embeds the raw id (D-A8-5 pinned wording -
+        # "Team not found or inactive." / "Assignee not found in this
+        # tenant." / "User is not a member of this team.").
+        raise ActionError(exc.message) from exc
+
+    return {
+        "assignedUserId": item.assignedUserId,
+        "assignedTeamId": item.assignedTeamId,
+        # AC-TEM-35: `assigned` tracks whether a USER ended up owning the
+        # thread - a team assignment with an empty roster is still a SUCCESS
+        # (D-A8-11), just with `assigned = false` (the team is set, no user
+        # is), never an ActionError.
+        "assigned": bool(item.assignedUserId),
+    }

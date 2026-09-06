@@ -608,20 +608,31 @@ def test_empty_workspace_returns_zeroed_dashboard(client, session_factory):
     assert len(body["buckets"]) == 7
 
 
-# ── AC-RPT-15: team dimension unavailable ────────────────────────────────────
-def test_team_id_filter_is_422_until_a8(client, fixture_ids):
+# ── AC-RPT-15: team dimension - gated on `Contact.assigned_team_id` ──────────
+# Plan 28 (A8) landed AFTER plan 30 (A9): the column now exists, so the
+# `team_available()` seam (D-A9-13, `report_filters.team_column`) flips to
+# True. These two tests pinned the pre-A8 state ("422 until A8" / "available:
+# false"); at the A8 merge they pin the post-A8 state instead - an unknown
+# team id is a valid filter that narrows to zero (no existence oracle), and
+# `reports/meta` advertises the dimension.
+def test_team_id_filter_accepted_once_a8_landed(client, fixture_ids):
     h = _auth(client)
     res = _dashboard(client, h, fixture_ids.workspace_id, tz="Asia/Kuala_Lumpur", teamId="some-team", **FIXTURE_RANGE)
-    assert res.status_code == 422
-    assert "teamId" in res.json()["detail"]["fieldErrors"]
+    assert res.status_code == 200, res.text
+    body = res.json()
+    # The dimension is applied by A9's own query builder (its per-report
+    # team-scoped semantics are A9's contract, not pinned here) - this test
+    # only pins that the filter is ACCEPTED and the envelope still renders.
+    assert body["granularity"] == "day"
+    assert len(body["buckets"]) == 7
 
 
-def test_reports_meta_reports_team_unavailable(client, fixture_ids):
+def test_reports_meta_reports_team_available(client, fixture_ids):
     h = _auth(client)
     res = client.get(f"/omnichannel/workspaces/{fixture_ids.workspace_id}/reports/meta", headers=h)
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["dimensions"]["team"]["available"] is False
+    assert body["dimensions"]["team"]["available"] is True
     keys = {r["key"] for r in body["reports"]}
     assert keys == {"conversations", "responses", "resolutions", "messages", "users", "leaderboard", "assignments"}
     assert set(body["granularities"]) == {"hour", "day", "week", "month"}

@@ -63,6 +63,13 @@ def load_modules(app: FastAPI) -> None:
     check). Plan 05 §7.
     """
     from app.dependencies import require_module
+    from app.services.team_capabilities import ensure_team_capabilities
+
+    # Core-provided capabilities (plan 28 S1, D-A8-3) must be registered
+    # BEFORE any module boots, so a module's own `register_capabilities()`
+    # (which may resolve a core capability at import/boot time) never races
+    # against an unregistered provider. Idempotent.
+    ensure_team_capabilities()
 
     for manifest in discover_manifests():
         name = manifest["module_name"]
@@ -113,6 +120,13 @@ def boot_module_hooks() -> None:
     API process). Same D8 isolation as ``load_modules``: a broken module is
     marked errored + skipped, siblings continue. Idempotent.
     """
+    from app.services.team_capabilities import ensure_team_capabilities
+
+    # Same reasoning as `load_modules` - a worker process never calls
+    # `load_modules`, so this is the ONLY place a worker registers core's
+    # teams capabilities before any module's boot hooks run.
+    ensure_team_capabilities()
+
     for manifest in discover_manifests():
         name = manifest["module_name"]
         try:

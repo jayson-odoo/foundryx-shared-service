@@ -382,6 +382,12 @@ class ThreadItem(ApiModel):
     # name/avatar from whichever assignee column is set.
     assignedExternalAgentId: Optional[str] = None
     assignedAvatarUrl: Optional[str] = None
+    # A CORE `public.teams` id (plan 28 S2, D-A8-3) - resolved tenant-scoped
+    # through the teams capability, batched per page. A foreign/deleted team
+    # id (or the capability not being registered, AC-TEM-15) renders
+    # `assignedTeamName: null`, never another tenant's team name.
+    assignedTeamId: Optional[str] = None
+    assignedTeamName: Optional[str] = None
     status: str  # OPEN | SNOOZED | CLOSED
     priority: str
     channelId: Optional[str] = None
@@ -788,6 +794,28 @@ class CloseReasonUpdate(ApiModel):
     isActive: Optional[bool] = None
 
 
+class TeamAssignmentSettingItem(ApiModel):
+    """The per-(workspace, CORE team) pick-strategy row (plan 28 S2,
+    AC-TEM-28). `teamName` resolves through the teams capability (null on a
+    foreign/deleted team, same rule as `ThreadItem.assignedTeamName`).
+
+    Review round 1, finding 4/5/6: `GET .../team-settings` now returns one
+    row per ACTIVE core team (not just previously-configured ones), so
+    `updatedAt` is `None`/`isConfigured` is `false` for a team that has never
+    had its strategy set."""
+
+    teamId: str
+    teamName: Optional[str] = None
+    strategy: str  # round_robin | least_open
+    lastAssignedUserId: Optional[str] = None
+    updatedAt: Optional[datetime] = None
+    isConfigured: bool = False
+
+
+class TeamAssignmentSettingUpdate(ApiModel):
+    strategy: str  # round_robin | least_open
+
+
 class ShortcutItem(ApiModel):
     """A published `entity.shortcut` workflow bound to `omnichannel_contact`
     the drawer's Shortcuts control may fire (AC-IVE-36)."""
@@ -830,6 +858,12 @@ class InboxViewFilter(ApiModel):
     unreplied: Optional[bool] = None
     sort: Optional[Literal["newest", "oldest", "unreplied_first", "longest_waiting"]] = None
     segmentId: Optional[str] = None
+    # AC-TEM-46 (plan 28, roadmap A8, review round 1 finding 9) - a Team
+    # Inbox scope a saved view can pin. Validated tenant-scoped at save time
+    # via the core `team.resolve@1` capability (`_validate_filter_ids`
+    # below); views saved before this slice have no `teamIds` key and keep
+    # working unchanged (`None` = no team scope, not "every team").
+    teamIds: Optional[List[str]] = None
 
 
 class InboxViewItem(ApiModel):
@@ -872,6 +906,9 @@ class ThreadPatch(ApiModel):
     panel must render phone read-only."""
 
     assignedUserId: Optional[str] = None
+    # A CORE team id, or explicit `null` to clear it (plan 28 S2) - native-
+    # only (an embed/external-agent token gets 403, D-A8-13).
+    assignedTeamId: Optional[str] = None
     status: Optional[str] = None  # OPEN | SNOOZED | CLOSED
     priority: Optional[str] = None  # LOW | MEDIUM | HIGH | URGENT
     firstName: Optional[str] = None
@@ -1119,6 +1156,9 @@ class PublicContactUpdateRequest(ApiModel):
     lastName: Optional[str] = None
     priority: Optional[str] = None  # LOW|MEDIUM|HIGH|URGENT
     assignedUserId: Optional[str] = None
+    # A CORE `public.teams` id, or explicit `null` to clear it (plan 28 S4).
+    # BY ID ONLY - never by name, never auto-creating a team (D-A8-6).
+    assignedTeamId: Optional[str] = None
     customFields: Optional[dict] = None
     language: Optional[str] = None
     countryCode: Optional[str] = None
@@ -1187,6 +1227,13 @@ class RioContactItem(BaseModel):
     lastMessageAt: Optional[str] = None
     lastIncomingMessageAt: Optional[str] = None
     lastMessagePreview: Optional[str] = None
+    # A CORE `public.teams` id/name (plan 28 S4, D-A8-6). respond.io has no
+    # team field on a contact - kept here as a Foundryx extension so this
+    # shape stays lossless versus the internal `ThreadItem` (a consumer has
+    # no other read source for it). Null on a foreign/deleted team or when
+    # the teams capability is not registered, same rule as `ThreadItem`.
+    assignedTeamId: Optional[str] = None
+    assignedTeamName: Optional[str] = None
 
 
 class RioContactListResponse(BaseModel):
@@ -1209,6 +1256,9 @@ class RioMessageStatus(BaseModel):
 class RioMessageSender(BaseModel):
     source: str                       # user | contact | system
     userId: Optional[str] = None
+    # Deliberately ALWAYS null (plan 28, D-A8-6 flag 8) - a message-level team
+    # concept (which team sent this) is a second, distinct notion from the
+    # thread-level `assignedTeamId` on the contact and is out of scope here.
     teamId: Optional[str] = None
 
 

@@ -200,6 +200,8 @@ class PublicGatewayService:
             lastMessageAt=_iso_z(thread.lastMessageAt),
             lastIncomingMessageAt=_iso_z(thread.lastIncomingMessageAt),
             lastMessagePreview=thread.lastMessagePreview,
+            assignedTeamId=thread.assignedTeamId,
+            assignedTeamName=thread.assignedTeamName,
         )
 
     def _rio_message(self, m, *, reactions: Optional[list] = None) -> RioMessageItem:
@@ -389,6 +391,7 @@ class PublicGatewayService:
         last_name=...,
         priority: Optional[str] = None,
         assigned_user_id=...,
+        assigned_team_id=...,
         custom_fields=...,
         language=...,
         country_code=...,
@@ -396,16 +399,20 @@ class PublicGatewayService:
         lifecycle=...,
         fmt: str = FORMAT_GUIDE,
     ):
-        """Gateway PATCH (AC-CDM-26). `tags` is a list of NAMES (respond.io
-        parity, D8) - unknown names are auto-created in this contact's
-        workspace; `null` replaces the set with empty (clears every tag).
-        `lifecycle` is a stage KEY or LABEL, resolved in this contact's own
-        workspace - a value that matches no stage is a 422
+        """Gateway PATCH (AC-CDM-26, AC-TEM-37). `tags` is a list of NAMES
+        (respond.io parity, D8) - unknown names are auto-created in this
+        contact's workspace; `null` replaces the set with empty (clears every
+        tag). `lifecycle` is a stage KEY or LABEL, resolved in this contact's
+        own workspace - a value that matches no stage is a 422
         `fieldErrors.lifecycle`, a value that matches a stage with no fireable
         edge from the current one is a `409 lifecycle_move_not_allowed`.
-        Everything (system fields, customFields, tags, the lifecycle move)
+        `assignedTeamId` (plan 28 S4) is a CORE team id BY ID ONLY, feeding
+        the SAME `patch_thread` four-combination assignee rules as the
+        internal PATCH (§5.2); an unknown/foreign/inactive id is a 422
+        `{assignedTeamId: "Team not found or inactive."}`. Everything (system
+        fields, customFields, tags, the lifecycle move, the assignment)
         applies in ONE unit of work via `ConversationService.patch_thread` - a
-        4xx from either half leaves nothing written."""
+        4xx from any part leaves nothing written."""
         from .contact_profile_service import ProfilePatchError
         from .contact_tag_service import ContactTagService, TagValidationError
         from .conversation_service import ConversationService, InvalidPatch
@@ -449,6 +456,7 @@ class PublicGatewayService:
                 contact.id,
                 tenant_id,
                 assigned_user_id=assigned_user_id,
+                assigned_team_id=assigned_team_id,
                 priority=priority,
                 first_name=first_name,
                 last_name=last_name,
@@ -467,7 +475,8 @@ class PublicGatewayService:
                 assignment_source="api",
             )
         except InvalidPatch as exc:
-            raise ApiError(422, "invalid_request", str(exc)) from exc
+            details = {exc.field: exc.message} if exc.field else None
+            raise ApiError(422, "invalid_request", exc.message, details) from exc
         except ProfilePatchError as exc:
             raise ApiError(422, "invalid_request", "Validation failed.", exc.errors) from exc
         except LifecycleStageNotFound as exc:

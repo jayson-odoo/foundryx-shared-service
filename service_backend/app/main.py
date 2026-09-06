@@ -31,6 +31,7 @@ from app.api.v1 import (
     roles,
     rules,
     statuses,
+    teams,
     templates,
     terminology,
     users,
@@ -63,6 +64,12 @@ async def lifespan(_: FastAPI):
     from app.deferred_actions.handlers import register_deferred_actions
 
     register_deferred_actions()
+    # Teams capability seam (plan 28 S1, D-A8-3) - idempotent; must also run on
+    # the module_loader entry points (API router-load + Celery worker boot) so
+    # every process that can resolve `team.resolve@1`/etc. has them registered.
+    from app.services.team_capabilities import ensure_team_capabilities
+
+    ensure_team_capabilities()
     # Email outbox dispatcher (plan 09 §5) - daemon thread, gated by an
     # explicit settings flag (conftest turns it off; tests drive
     # dispatch_pending() directly against their own session).
@@ -101,6 +108,8 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(roles.router, prefix="/roles", tags=["roles"])
+# Teams (plan 28, roadmap A8) - core grouping of tenant users, next to roles.
+app.include_router(teams.router, prefix="/teams", tags=["teams"])
 app.include_router(permissions.router, prefix="/permissions", tags=["permissions"])
 app.include_router(impersonation.router, prefix="/impersonation", tags=["impersonation"])
 app.include_router(me.router, prefix="/me", tags=["me"])
