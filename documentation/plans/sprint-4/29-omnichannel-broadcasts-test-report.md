@@ -212,7 +212,7 @@ Full run log + curl transcripts: `29-evidence/E2E/README.md` ("Round 2").
 **O-4 (new, minor UX, not a guard failure):** the "Static text is required." zod rule blocks the
 save silently - `BindingEditor` takes no `error` prop and `form.handleSubmit` has no `onInvalid`, so
 the error sits in `formState.errors.bindings.body[n].text` unrendered. Backlog candidate alongside
-BL-SS-102/103.
+BL-SS-119/120.
 
 ## DEFERRED
 

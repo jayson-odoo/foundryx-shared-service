@@ -776,7 +776,7 @@ def start_scheduled_broadcast(
     raises `BroadcastStatusConflict`; the tick just skips it - another
     caller already started it, never a second job).
 
-    Review round 1 (tester observation, backlogged as BL-SS-102): the
+    Review round 1 (tester observation, backlogged as BL-SS-119): the
     SENDING claim and the `background_jobs` row are NOT atomic - if
     `JobService.create()`'s `handler_for(type)` check ever raised (e.g. a
     process that never ran the module boot hook, so

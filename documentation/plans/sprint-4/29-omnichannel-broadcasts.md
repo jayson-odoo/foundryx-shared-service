@@ -345,7 +345,7 @@ path; the reconciler resolves anything still ambiguous at finalize.
 | BL-SS-091 | Label a broadcast-originated bubble in the Inbox using the `metadata_json.broadcast` marker this slice stamps | Low |
 | BL-SS-092 | `broadcast_recipients` retention / archival for large campaigns (pairs with BL-SS-060) | Low |
 | BL-SS-093 | A crashed/stuck chunk chain that leaves `queued` recipients unclaimed (the beat's stuck-SENDING repair reconciles claimed-but-ambiguous rows, S2b D-A4-9, but does not RESUME a chain whose next `broadcast_chunk.apply_async` was never enqueued) - a broadcast can wedge in SENDING with never-attempted recipients until an operator re-runs the job. Needs a beat-driven "stalled SENDING" detector (last count-advance older than N minutes) that re-enqueues the next chunk, not just the finalize path `run_due_broadcasts` already covers | Medium |
-| BL-SS-101 | Review round 1, S7 - `BroadcastService.cancel()`'s SENDING branch deliberately delegates the ledger sweep to the job's NEXT chunk checkpoint (`run_one_chunk`'s `current_status == "CANCELLED"` branch calls `repo.skip_remaining_queued` + finalizes), but `run_due_broadcasts`'s stuck-sweep only scans `Status.key == "SENDING"` - if the chunk chain has already DIED (crashed process, lost Celery task) before that checkpoint runs, a CANCELLED broadcast keeps `queued`/unclaimed recipients forever with `finished_at = NULL`. Fix needs its OWN branch (not a bare extension of the SENDING stuck-sweep, whose `has_dispatchable_recipients` early-`continue` is wrong for a cancelled broadcast - those queued rows are abandoned, not "real work still queued"): a "stuck CANCELLED" scan that unconditionally calls `repo.skip_remaining_queued(reason="cancelled")` then `reconcile_broadcast` + `finalize_broadcast`. | Medium |
+| BL-SS-118 | Review round 1, S7 - `BroadcastService.cancel()`'s SENDING branch deliberately delegates the ledger sweep to the job's NEXT chunk checkpoint (`run_one_chunk`'s `current_status == "CANCELLED"` branch calls `repo.skip_remaining_queued` + finalizes), but `run_due_broadcasts`'s stuck-sweep only scans `Status.key == "SENDING"` - if the chunk chain has already DIED (crashed process, lost Celery task) before that checkpoint runs, a CANCELLED broadcast keeps `queued`/unclaimed recipients forever with `finished_at = NULL`. Fix needs its OWN branch (not a bare extension of the SENDING stuck-sweep, whose `has_dispatchable_recipients` early-`continue` is wrong for a cancelled broadcast - those queued rows are abandoned, not "real work still queued"): a "stuck CANCELLED" scan that unconditionally calls `repo.skip_remaining_queued(reason="cancelled")` then `reconcile_broadcast` + `finalize_broadcast`. | Medium |
 
 ## 8. Flagged for the user
 
@@ -395,7 +395,7 @@ path; the reconciler resolves anything still ambiguous at finalize.
   Deferred rather than fixed in this pass:
   - **S7** (a CANCELLED broadcast whose chunk chain already died keeps a dangling `queued` ledger
     forever) needs its OWN stuck-sweep branch, not a bare extension of the SENDING one - backlogged
-    as **BL-SS-101** rather than risked as a rushed fix.
+    as **BL-SS-118** rather than risked as a rushed fix.
   - **Nit "duplicate not counted in `skipped_count`"** - confirmed correct-by-design (a duplicate
     contact writes NO row, so it can never contribute to a persisted count); clarified with a
     docstring, no behavior change.
@@ -430,7 +430,7 @@ path; the reconciler resolves anything still ambiguous at finalize.
   - **Observation "the SENDING claim and job creation aren't atomic"** - investigated, NOT fixed:
     `BroadcastRepository.claim_status` commits internally (mirrors `BackgroundJobRepository.claim`),
     so the real fix needs an optional `commit=False` on that shared primitive, touching all three of
-    its call sites' atomicity guarantees - backlogged as **BL-SS-102** with the current (buggy)
+    its call sites' atomicity guarantees - backlogged as **BL-SS-119** with the current (buggy)
     behavior pinned by a test, not silently left undocumented.
-  - **Observation "a `broadcasts.read`-only role sees an empty list"** - backlogged as **BL-SS-103**
+  - **Observation "a `broadcasts.read`-only role sees an empty list"** - backlogged as **BL-SS-120**
     (same class as BL-SS-081 for contacts).

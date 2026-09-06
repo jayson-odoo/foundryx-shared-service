@@ -118,8 +118,8 @@ def test_send_now_full_happy_path_sent_with_counts_and_message(client, session_f
     db.close()
 
 
-def test_start_scheduled_broadcast_claim_not_atomic_with_job_creation_bl_ss_102(client, session_factory, monkeypatch):
-    """Tester observation (review round 1, backlogged as BL-SS-102, NOT
+def test_start_scheduled_broadcast_claim_not_atomic_with_job_creation_bl_ss_119(client, session_factory, monkeypatch):
+    """Tester observation (review round 1, backlogged as BL-SS-119, NOT
     fixed in this pass): the SENDING claim and the `background_jobs` row are
     NOT atomic. `BroadcastRepository.claim_status` commits INTERNALLY as
     part of its own atomic-claim pattern (mirrors `BackgroundJobRepository.
@@ -129,7 +129,7 @@ def test_start_scheduled_broadcast_claim_not_atomic_with_job_creation_bl_ss_102(
     `job_id NULL` (the 15-minute stuck-sweep in `run_due_broadcasts` is the
     only recovery). This test PINS today's actual (buggy) behavior so a
     future change doesn't silently make it worse without anyone noticing;
-    BL-SS-102 tracks the real fix (`claim_status(commit=False)` for this ONE
+    BL-SS-119 tracks the real fix (`claim_status(commit=False)` for this ONE
     caller only)."""
     import app.jobs.service as jobs_service_module
     from app.jobs.registry import UnknownJobType
@@ -153,7 +153,7 @@ def test_start_scheduled_broadcast_claim_not_atomic_with_job_creation_bl_ss_102(
 
     db2 = session_factory()
     survivor = db2.query(Broadcast).filter(Broadcast.id == created["id"]).first()
-    # Today: stuck SENDING with no job - this is BL-SS-102, not a passing
+    # Today: stuck SENDING with no job - this is BL-SS-119, not a passing
     # contract. Flip this assertion to DRAFT/job_id is None once fixed.
     assert statuses.status_id_for(db2, DEFAULT_TENANT_ID, "BROADCAST", "SENDING") == survivor.status_id
     assert survivor.job_id is None
