@@ -315,6 +315,14 @@ export const MENU_SIDEBAR: MenuConfig = [
     module: 'omnichannel',
     children: [
       {
+        // Dashboard (plan 30, roadmap A9) - AC-RPT-41. Permission key is the
+        // existing CORE `reports.read` (main-session override of the
+        // planner's D-A9-10 `conversation_reports.read`).
+        title: 'Dashboard',
+        path: '/omnichannel/dashboard',
+        permission: 'reports.read',
+      },
+      {
         title: 'Inbox',
         path: '/omnichannel/inbox',
         permission: 'conversations.read',
@@ -324,6 +332,12 @@ export const MENU_SIDEBAR: MenuConfig = [
         title: 'Contacts',
         path: '/omnichannel/contacts',
         permission: 'contacts.read',
+      },
+      {
+        // Reports (plan 30, roadmap A9) - AC-RPT-41.
+        title: 'Reports',
+        path: '/omnichannel/reports',
+        permission: 'reports.read',
       },
       {
         title: 'Channels',
@@ -450,6 +464,12 @@ export const MENU_MEGA: MenuConfig = [
           {
             children: [
               {
+                // Dashboard (plan 30, roadmap A9) - AC-RPT-41.
+                title: 'Dashboard',
+                path: '/omnichannel/dashboard',
+                permission: 'reports.read',
+              },
+              {
                 title: 'Inbox',
                 path: '/omnichannel/inbox',
                 permission: 'conversations.read',
@@ -458,6 +478,12 @@ export const MENU_MEGA: MenuConfig = [
                 title: 'Contacts',
                 path: '/omnichannel/contacts',
                 permission: 'contacts.read',
+              },
+              {
+                // Reports (plan 30, roadmap A9) - AC-RPT-41.
+                title: 'Reports',
+                path: '/omnichannel/reports',
+                permission: 'reports.read',
               },
               {
                 title: 'Channels',
@@ -583,6 +609,12 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
     module: 'omnichannel',
     children: [
       {
+        // Dashboard (plan 30, roadmap A9) - AC-RPT-41.
+        title: 'Dashboard',
+        path: '/omnichannel/dashboard',
+        permission: 'reports.read',
+      },
+      {
         title: 'Inbox',
         path: '/omnichannel/inbox',
         permission: 'conversations.read',
@@ -591,6 +623,12 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Contacts',
         path: '/omnichannel/contacts',
         permission: 'contacts.read',
+      },
+      {
+        // Reports (plan 30, roadmap A9) - AC-RPT-41.
+        title: 'Reports',
+        path: '/omnichannel/reports',
+        permission: 'reports.read',
       },
       {
         title: 'Channels',
