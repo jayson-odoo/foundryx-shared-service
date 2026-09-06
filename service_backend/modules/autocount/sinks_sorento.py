@@ -69,9 +69,15 @@ logger = logging.getLogger("foundryx.autocount")
 
 SINK_SORENTO = "sorento"
 
-# Sorento's ingest batch ceiling (`MAX_BATCH`). We chunk at or below it; going
-# over is a 413 (or, until their fix lands, a 500), never a silent truncation.
-SORENTO_MAX_BATCH = 1000
+# Sorento's ingest batch ceiling (`MAX_BATCH`) - their PER-REQUEST limit and
+# the HARD ceiling here: the batch size a sink actually posts is
+# `settings.autocount_sink_batch_size` (default 200 since the 2026-09-06 prod
+# 504 - a 1,000-record purchase_order batch with per-record supplier
+# back-create outran Sorento nginx's 60s proxy timeout), clamped to this
+# constant. Going over it is a 413 (or, until their fix lands, a 500), never a
+# silent truncation. Defined in `app.config` (its validator needs it, core
+# must not import from modules) and re-exported here under its historic name.
+from app.config import SORENTO_MAX_BATCH  # noqa: E402 - re-export, see above
 
 # The CONNECT phase stays short regardless of `settings.
 # autocount_sink_timeout_seconds` (round 5) - a dead/unreachable endpoint
@@ -315,10 +321,17 @@ class SorentoSink:
         # `/contract` version (`fetch_contract`) is ADVISORY ONLY and never
         # auto-flips it.
         contract_version: int = 1,
+        # Records per ingest POST. Clamped to `SORENTO_MAX_BATCH` (their
+        # per-request limit); the factory passes
+        # `settings.autocount_sink_batch_size` (default 200). Every chunk
+        # loop below (`dry_run`, `read`, `delete_batch`, `write_batch`) uses
+        # it, so one setting governs every request shape.
+        batch_size: int = SORENTO_MAX_BATCH,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self.contract_version = contract_version
+        self.batch_size = max(1, min(int(batch_size), SORENTO_MAX_BATCH))
         # The Sorento company this sink delivers INTO (Appendix A6). Sent as the
         # top-level ``companyCode`` on every call; a blank one is deliberately
         # still SENT (as absent) so Sorento answers the authoritative
@@ -497,8 +510,8 @@ class SorentoSink:
         # of an INITIAL LOAD (the activation gate, AC-22-18) is routinely larger
         # than one batch, and an over-size body is a 413 - which would make the
         # gate un-passable on precisely the companies that most need it.
-        for start in range(0, len(projected), SORENTO_MAX_BATCH):
-            body = self._post(projected[start : start + SORENTO_MAX_BATCH], dry_run=True)
+        for start in range(0, len(projected), self.batch_size):
+            body = self._post(projected[start : start + self.batch_size], dry_run=True)
             for key, value in (body.get("summary") or {}).items():
                 if isinstance(value, int):
                     summary[key] = summary.get(key, 0) + value
@@ -530,10 +543,10 @@ class SorentoSink:
         refs = [str(r) for r in source_refs if str(r or "").strip()]
         records: List[Dict[str, Any]] = []
         not_found: List[str] = []
-        for start in range(0, len(refs), SORENTO_MAX_BATCH):
+        for start in range(0, len(refs), self.batch_size):
             body = self._call(
                 f"read/{self._path_segment}",
-                {"source_refs": refs[start : start + SORENTO_MAX_BATCH]},
+                {"source_refs": refs[start : start + self.batch_size]},
                 dry_run=False,
             )
             records.extend(_decimalize(r) for r in (body.get("records") or []))
@@ -565,8 +578,8 @@ class SorentoSink:
             "failed": 0, "retryable": 0,
         }
         results: List[Dict[str, Any]] = []
-        for start in range(0, len(refs), SORENTO_MAX_BATCH):
-            chunk = refs[start : start + SORENTO_MAX_BATCH]
+        for start in range(0, len(refs), self.batch_size):
+            chunk = refs[start : start + self.batch_size]
             try:
                 body = self._call(
                     f"ingest/{self._path_segment}/deletions",
@@ -641,8 +654,8 @@ class SorentoSink:
         """
         record_list = list(records)
         chunks = [
-            record_list[start : start + SORENTO_MAX_BATCH]
-            for start in range(0, len(record_list), SORENTO_MAX_BATCH)
+            record_list[start : start + self.batch_size]
+            for start in range(0, len(record_list), self.batch_size)
         ]
         if not chunks:
             return []
@@ -936,6 +949,9 @@ def sorento_sink_from_connection(
         # whose Sorento endpoint needs a longer (or shorter) budget retunes
         # it without a code change.
         timeout=settings.autocount_sink_timeout_seconds,
+        # Records per ingest POST, read at CALL time like ``timeout`` (default
+        # 200 since the 2026-09-06 prod 504; ceiling ``SORENTO_MAX_BATCH``).
+        batch_size=settings.autocount_sink_batch_size,
         transport=transport,
         # AC-02-14 - the connection's own authoritative gate. The integrations
         # form stores the select's value as the STRING "1" / "2"; ``int`` on

@@ -5,6 +5,14 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Sorento's per-request ingest ceiling (`MAX_BATCH` on their side): the hard
+# upper bound for `autocount_sink_batch_size`. Lives here (not in the module)
+# because the validator below needs it and core config must not import from
+# `modules/`; `modules/autocount/sinks_sorento.py` re-exports it under the
+# same name.
+SORENTO_MAX_BATCH = 1000
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables (.env)."""
 
@@ -336,6 +344,15 @@ class Settings(BaseSettings):
     # order) - an operator raises it only once the RECEIVING side (Sorento)
     # has confirmed it can take concurrent batches. Bounded 1..4.
     autocount_sink_concurrency: int = 1
+    # Records per Sorento ingest POST (2026-09-06 prod incident: a 1,000-record
+    # purchase_order batch with per-record supplier back-create ran past
+    # Sorento production nginx's 60s proxy timeout and came back 504; Sorento
+    # asked for 200 per document ingest and a configurable size). Read at
+    # CALL time by `sorento_sink_from_connection` (same "retune without a
+    # restart" contract as `autocount_sink_timeout_seconds`), so it applies to
+    # the next push. Bounded 1..`SORENTO_MAX_BATCH` - the ceiling is Sorento's
+    # own per-request limit and cannot be raised from here.
+    autocount_sink_batch_size: int = 200
 
     @field_validator("autocount_page_size")
     @classmethod
@@ -379,6 +396,16 @@ class Settings(BaseSettings):
         if v < 1 or v > 4:
             raise ValueError(
                 "autocount_sink_concurrency must be between 1 and 4."
+            )
+        return v
+
+    @field_validator("autocount_sink_batch_size")
+    @classmethod
+    def _autocount_sink_batch_size_bounds(cls, v: int) -> int:
+        if v < 1 or v > SORENTO_MAX_BATCH:
+            raise ValueError(
+                f"autocount_sink_batch_size must be between 1 and {SORENTO_MAX_BATCH} "
+                f"(Sorento's per-request ingest ceiling)."
             )
         return v
 
