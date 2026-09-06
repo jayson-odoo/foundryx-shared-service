@@ -9,7 +9,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { conversationService } from '@/services/conversation-service';
-import { teamAssignmentService } from '@/services/team-assignment-service';
 import type {
   CloseThreadInput,
   ConversationMessage,
@@ -27,16 +26,6 @@ import type {
 } from '@/types/omnichannel';
 
 import { useConversationSocket } from './use-conversation-socket';
-
-/**
- * S0 MOCK overlay (plan 28) - the real backend doesn't carry `assignedTeamId`
- * yet (S2), so every thread that passes through this hook is patched with the
- * client-side team overlay before it reaches state/UI. Swaps away in S5 once
- * the real API returns these fields directly.
- */
-function withTeamOverlay(thread: ConversationThread): ConversationThread {
-  return { ...thread, ...teamAssignmentService.overlayFor(thread.id) };
-}
 
 export interface UseMessagesResult {
   thread: ConversationThread | null;
@@ -60,8 +49,9 @@ export interface UseMessagesResult {
   assign: (userId: string | null) => Promise<void>;
   assignToMe: () => Promise<void>;
   /** Assign (or clear, teamId=null) a CORE team on this thread (plan 28,
-   *  S0 mock - see `services/team-assignment-service.ts`). Throws on failure -
-   *  the caller reverts any optimistic UI and shows the message (AC-TEM-47). */
+   *  roadmap A8) - `PATCH /omnichannel/contacts/{id} {assignedTeamId}`.
+   *  Throws on failure - the caller reverts any optimistic UI and shows the
+   *  message (AC-TEM-47). */
   assignTeam: (teamId: string | null) => Promise<void>;
   setStatus: (status: ThreadStatus) => Promise<void>;
   setPriority: (priority: ThreadPriority) => Promise<void>;
@@ -114,7 +104,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     Promise.all([conversationService.getThread(contactId), conversationService.listMessages(contactId)])
       .then(([t, msgs]) => {
         if (seq !== fetchSeq.current) return;
-        setThread(withTeamOverlay(t));
+        setThread(t);
         // Merge, don't overwrite - a WS `message.created` for this SAME
         // contactId may have landed (and been appended by `onEvent` below)
         // while this REST fetch was still in flight; a blind
@@ -143,7 +133,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         setMessages((prev) =>
           prev.some((m) => m.id === event.message.id) ? prev : [...prev, event.message],
         );
-        setThread(withTeamOverlay(event.thread));
+        setThread(event.thread);
       } else if (event.type === 'message.status' && event.contactId === contactId) {
         setMessages((prev) =>
           prev.map((m) =>
@@ -153,7 +143,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
           ),
         );
       } else if (event.type === 'contact.updated' && event.thread.id === contactId) {
-        setThread(withTeamOverlay(event.thread));
+        setThread(event.thread);
       } else if (
         event.type === 'message.reaction' &&
         event.contactId === contactId &&
@@ -421,16 +411,10 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
   // F1: only commit a resolved thread if `forContactId` is STILL the active
   // selection - a response that resolves after the user switched threads is
   // discarded (the caller still gets the resolved value back either way).
-  //
-  // Every commit re-applies the S0 team overlay (plan 28) - `assign`/
-  // `assignToMe`/`setStatus`/`setPriority`/`patchContact`/`moveLifecycle` all
-  // return the REAL backend's thread, which doesn't carry `assignedTeamId`
-  // yet (S2), so a bare commit would silently drop a team assignment on the
-  // next unrelated mutation (D-A8-26: clearing the USER must keep the TEAM).
   const commitThreadIfActive = useCallback(
     (forContactId: string | null | undefined, updated: ConversationThread) => {
       if (activeContactIdRef.current === forContactId) {
-        setThread(withTeamOverlay(updated));
+        setThread(updated);
       }
       return updated;
     },
@@ -453,12 +437,11 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
   const assignTeam = useCallback(
     async (teamId: string | null) => {
       if (!contactId) return;
-      await teamAssignmentService.assignTeam(contactId, teamId);
-      // Re-fetch so the (possibly newly, really) picked user's assignee
-      // fields are authoritative - commitThreadIfActive reapplies the team
-      // overlay on top.
-      const fresh = await conversationService.getThread(contactId);
-      commitThreadIfActive(contactId, fresh);
+      // The PATCH response is already the fully-resolved ThreadItem - the
+      // strategy-picked user (or team-unassigned NULL) and the resolved
+      // `assignedTeamName` both come back in ONE round trip.
+      const updated = await conversationService.patchContact(contactId, { assignedTeamId: teamId });
+      commitThreadIfActive(contactId, updated);
     },
     [contactId, commitThreadIfActive],
   );

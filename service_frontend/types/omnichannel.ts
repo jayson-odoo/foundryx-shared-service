@@ -219,11 +219,9 @@ export interface ConversationThread {
   /**
    * Assigned CORE team (plan 28, roadmap A8) - a plain indexed id into
    * `public.teams`, no cross-schema FK (mirrors `lifecycle_status_id`/
-   * BL-030). Optional: the real backend doesn't return these fields until
-   * S2/S5 land, so an unmerged thread simply omits them; the S0 mock overlay
-   * (`services/team-assignment-service.mock.ts`) fills them in for a
-   * team-assigned thread. `assignedTeamName` is a tenant-scoped resolution -
-   * a foreign/stale id renders `null`, never a name (never a guess).
+   * BL-030), resolved tenant-scoped by the backend on every read.
+   * `assignedTeamName` is null for a foreign/stale/deleted id - never a
+   * guess.
    */
   assignedTeamId?: string | null;
   assignedTeamName?: string | null;
@@ -632,6 +630,10 @@ export interface PatchContactInput {
   countryCode?: string | null;
   customFields?: Record<string, string | number | boolean | null>;
   tagIds?: string[];
+  /** Assign (or clear, `null`) a CORE team on this thread (plan 28, roadmap
+   *  A8) - rides the same `PATCH /omnichannel/contacts/{id}` the rest of this
+   *  input does; native-only (403 for an embed/external-agent token). */
+  assignedTeamId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -852,4 +854,24 @@ export interface ShortcutItem {
 export interface ShortcutRunResult {
   runId: string;
   status: string;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 28 (roadmap A8) - per-team assignment-pick strategy, one row per
+// (workspace, team). See `documentation/plans/sprint-4/28-teams-core-and-
+// omnichannel-assignment.md` §5.2 (AC-TEM-28).
+// ---------------------------------------------------------------------------
+
+export type TeamAssignmentStrategy = 'round_robin' | 'least_open';
+
+/** A team's assignment-pick strategy within one workspace. A team with no
+ *  row yet simply defaults to `round_robin` (this list is lazily populated
+ *  by the settings tab from `GET /teams`, NOT the source of the team
+ *  catalog). */
+export interface TeamAssignmentSetting {
+  teamId: string;
+  teamName: string | null;
+  strategy: TeamAssignmentStrategy;
+  lastAssignedUserId: string | null;
+  updatedAt: string; // ISO
 }

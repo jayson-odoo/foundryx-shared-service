@@ -3,8 +3,7 @@
  * (`documentation/plans/sprint-4/28-teams-core-and-omnichannel-assignment.md`
  * §5.1) a core `public.teams` grouping of tenant users, platform-wide, so any
  * Service (omnichannel first) can assign work to a team instead of only a
- * single user. `S0` binds the service trio to a mock (`team-service.mock.ts`)
- * seeded from the REAL tenant users list; S1 wires the real backend.
+ * single user. `team-service.ts` binds to the real backend since S5.
  */
 
 /** A team member's role - a label only in this slice (D-A8-17): no extra

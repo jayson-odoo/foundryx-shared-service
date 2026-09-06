@@ -1,8 +1,10 @@
 /**
  * Conversation drawer - Teams group on the assignee dropdown (plan 28,
- * roadmap A8, AC-TEM-45/47). S0 mock: `teamAssignmentService` + `useTeams`
- * are mocked directly so this test targets the drawer's wiring, not the
- * mock service internals (covered separately).
+ * roadmap A8, AC-TEM-45/47). `useTeams` is mocked directly; team assignment
+ * rides the real `conversationService.patchContact` (S5 wire - the real
+ * backend contract is `PATCH /omnichannel/contacts/{id} {assignedTeamId}`),
+ * with `patchContact` overridden here so this test targets the drawer's
+ * wiring, not the mock service's internals.
  */
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -14,21 +16,18 @@ vi.mock('next-auth/react', () => ({
   useSession: () => ({ status: 'authenticated', data: null }),
 }));
 
+const patchContactMock = vi.fn();
 vi.mock('@/services/conversation-service', async () => {
   const { mockConversationService } = await import('@/services/conversation-service.mock');
-  return { conversationService: mockConversationService };
+  return {
+    conversationService: {
+      ...mockConversationService,
+      patchContact: (...args: unknown[]) => patchContactMock(...args),
+    },
+  };
 });
 vi.mock('@/services/workspace-service', () => ({
   workspaceService: { getMembers: vi.fn(async () => []) },
-}));
-
-const assignTeamMock = vi.fn();
-const overlayForMock = vi.fn(() => ({ assignedTeamId: null, assignedTeamName: null }));
-vi.mock('@/services/team-assignment-service', () => ({
-  teamAssignmentService: {
-    assignTeam: (...args: unknown[]) => assignTeamMock(...args),
-    overlayFor: (...args: unknown[]) => overlayForMock(...args),
-  },
 }));
 
 vi.mock('@/hooks/use-teams', () => ({
@@ -47,13 +46,18 @@ vi.mock('@/lib/toast', () => ({
 
 describe('ConversationDrawer - Teams group (plan 28)', () => {
   beforeEach(() => {
-    assignTeamMock.mockReset();
-    overlayForMock.mockReturnValue({ assignedTeamId: null, assignedTeamName: null });
+    patchContactMock.mockReset();
     toastError.mockReset();
   });
 
   it('lists a Teams group in the assignee dropdown and assigns on click', async () => {
-    assignTeamMock.mockResolvedValue(undefined);
+    // The real `PATCH` returns the FULL resolved ThreadItem (assignee +
+    // team both authoritative in one round trip) - mirror that shape here
+    // rather than a partial object the drawer might read undefined fields
+    // off of.
+    const { mockConversationService } = await import('@/services/conversation-service.mock');
+    const base = await mockConversationService.getThread('cnt-001');
+    patchContactMock.mockResolvedValue({ ...base, assignedTeamId: 'team-1', assignedTeamName: 'Support' });
     const user = userEvent.setup();
     render(<ConversationDrawer contactId="cnt-001" />);
 
@@ -65,11 +69,13 @@ describe('ConversationDrawer - Teams group (plan 28)', () => {
     expect(teamItem).toHaveTextContent('Support');
 
     await user.click(teamItem);
-    await waitFor(() => expect(assignTeamMock).toHaveBeenCalledWith('cnt-001', 'team-1'));
+    await waitFor(() =>
+      expect(patchContactMock).toHaveBeenCalledWith('cnt-001', { assignedTeamId: 'team-1' }),
+    );
   });
 
   it('reverts (no state change) and toasts the server message on a failed assign', async () => {
-    assignTeamMock.mockRejectedValue(new Error('Please fix the highlighted fields.'));
+    patchContactMock.mockRejectedValue(new Error('Please fix the highlighted fields.'));
     const user = userEvent.setup();
     render(<ConversationDrawer contactId="cnt-001" />);
 

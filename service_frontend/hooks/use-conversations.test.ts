@@ -1,7 +1,7 @@
 /**
  * `useConversations` covers two independent additions:
- * - Team Inbox (plan 28, roadmap A8, AC-TEM-44 slice content): `teamId`
- *   scopes the fetched page client-side (via the S0 overlay) and the
+ * - Team Inbox (plan 28, roadmap A8, AC-TEM-44): `teamId` is a real,
+ *   server-side filter (`GET /omnichannel/contacts?teamId=`) and the
  *   selection round-trips through the URL so a reload restores it.
  * - Round-3 codex triage F10 - workspace switch must reset filters/rows,
  *   not carry the PREVIOUS workspace's view-rail dimensions
@@ -20,14 +20,6 @@ const { listThreadsMock, subscribeMock } = vi.hoisted(() => ({
 }));
 vi.mock('@/services/conversation-service', () => ({
   conversationService: { listThreads: listThreadsMock, subscribe: subscribeMock },
-}));
-
-const overlays: Record<string, { assignedTeamId: string | null; assignedTeamName: string | null }> = {};
-vi.mock('@/services/team-assignment-service', () => ({
-  teamAssignmentService: {
-    assignTeam: vi.fn(),
-    overlayFor: (contactId: string) => overlays[contactId] ?? { assignedTeamId: null, assignedTeamName: null },
-  },
 }));
 
 import { DEFAULT_FILTERS, useConversations } from './use-conversations';
@@ -68,24 +60,25 @@ describe('useConversations - Team Inbox (plan 28)', () => {
   beforeEach(() => {
     listThreadsMock.mockReset();
     window.history.replaceState(null, '', '/omnichannel/inbox');
-    Object.keys(overlays).forEach((k) => delete overlays[k]);
   });
   afterEach(() => {
     window.history.replaceState(null, '', '/omnichannel/inbox');
   });
 
-  it('scopes the list to a selected team (client-side, via the overlay)', async () => {
-    overlays['cnt-1'] = { assignedTeamId: 'team-1', assignedTeamName: 'Support' };
-    listThreadsMock.mockResolvedValue([thread({ id: 'cnt-1' }), thread({ id: 'cnt-2' })]);
+  it('sends the selected team as a server-side filter (AC-TEM-30)', async () => {
+    listThreadsMock.mockResolvedValue([
+      thread({ id: 'cnt-1', assignedTeamId: 'team-1', assignedTeamName: 'Support' }),
+    ]);
 
     const { result } = renderHook(() => useConversations('wsp-1'));
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(result.current.threads.map((t) => t.id)).toEqual(['cnt-1', 'cnt-2']);
+    expect(listThreadsMock).toHaveBeenLastCalledWith(expect.objectContaining({ teamId: null }));
 
     act(() => result.current.setFilters({ teamId: 'team-1' }));
     await waitFor(() =>
-      expect(result.current.threads.map((t) => t.id)).toEqual(['cnt-1']),
+      expect(listThreadsMock).toHaveBeenLastCalledWith(expect.objectContaining({ teamId: 'team-1' })),
     );
+    expect(result.current.threads.map((t) => t.id)).toEqual(['cnt-1']);
   });
 
   it('round-trips the selected team + unassigned-only through the URL', async () => {
@@ -129,9 +122,8 @@ function workspaceThread(id: string, workspaceId: string): ConversationThread {
     status: 'OPEN', priority: 'MEDIUM', assignedUserId: null, assignedUserName: null,
     lastMessageAt: '2026-01-01T00:00:00Z', lastMessagePreview: null, unreadCount: 0,
     channelId: null, cswExpiresAt: null,
-    // The hook merges the plan-28 S0 team overlay onto every fetched thread -
-    // the mocked `overlayFor` above returns nulls for any contactId with no
-    // recorded overlay (the default here).
+    // The real backend resolves these on every thread read (plan 28) -
+    // no team assigned in this fixture.
     assignedTeamId: null, assignedTeamName: null,
   } as unknown as ConversationThread;
 }

@@ -11,18 +11,15 @@
  * carries the filter state + issues the fetch; no client-side re-filter/
  * re-sort layer (the S0 `applyInboxViewFilters` proxy is retired).
  *
- * Plan 28 (roadmap A8, S0 mock): `teamId` scopes the list to a Team Inbox
- * (the rail's Teams section). The real backend gains a `teamId` list filter
- * in S2 - until then this hook applies it CLIENT-SIDE over the fetched page,
- * merged with the S0 team-assignment overlay (`services/team-assignment-
- * service.ts`) so the rail is fully tunable with no backend support. The
+ * Plan 28 (roadmap A8, S5 wire): `teamId` scopes the list to a Team Inbox
+ * (the rail's Teams section) - the real backend filters server-side on
+ * `assigned_team_id` (`GET /omnichannel/contacts?teamId=`, AC-TEM-30). The
  * selection round-trips through the URL (`?team=`/`?assignee=`) so a reload
  * restores it (AC-TEM-44).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { conversationService } from '@/services/conversation-service';
-import { teamAssignmentService } from '@/services/team-assignment-service';
 import type {
   ConversationSocketEvent,
   ConversationThread,
@@ -101,10 +98,6 @@ function sortThreads(list: ConversationThread[]): ConversationThread[] {
   return [...list].sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));
 }
 
-function withTeamOverlay(thread: ConversationThread): ConversationThread {
-  return { ...thread, ...teamAssignmentService.overlayFor(thread.id) };
-}
-
 export function useConversations(workspaceId: string | null | undefined): UseConversationsResult {
   const [rawThreads, setRawThreads] = useState<ConversationThread[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -158,6 +151,7 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
       unreplied: filters.unreplied,
       sort: filters.sort,
       viewId: filters.viewId,
+      teamId: filters.teamId,
     }),
     [workspaceId, filters],
   );
@@ -170,14 +164,7 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
       .listThreads(query)
       .then((list) => {
         if (seq !== fetchSeq.current) return; // stale response - a newer fetch won
-        // Plan 28 S0: merge the mock team-assignment overlay, then scope to
-        // the selected team client-side (the real backend gains a `teamId`
-        // list filter in S2 - see the file header).
-        const merged = list.map(withTeamOverlay);
-        const scoped = filters.teamId
-          ? merged.filter((t) => t.assignedTeamId === filters.teamId)
-          : merged;
-        setRawThreads(scoped);
+        setRawThreads(list);
         setError(null);
       })
       .catch((e: unknown) => {
@@ -187,7 +174,7 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
       .finally(() => {
         if (seq === fetchSeq.current) setIsLoading(false);
       });
-  }, [workspaceId, query, filters.teamId]);
+  }, [workspaceId, query]);
 
   useEffect(load, [load]);
 
@@ -208,8 +195,8 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
 
   // Live updates. Unfiltered view: upsert the event's thread in place and
   // re-sort (cheap). Filtered view: the event may move a thread IN or OUT of
-  // the current bucket (e.g. self-claim leaves Unassigned) and 'me' can only
-  // be resolved server-side (or, for teamId, via the mock overlay) -
+  // the current bucket (e.g. self-claim leaves Unassigned, a team reassign
+  // leaves this team's scope) and can only be resolved server-side -
   // reconcile with a refetch instead of guessing. A non-default sort or an
   // active saved view ALSO needs a refetch (the fast path below only ever
   // re-sorts by lastMessageAt desc, and a view's stored filter can carry
@@ -239,7 +226,7 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
         load();
         return;
       }
-      const thread = withTeamOverlay(event.thread);
+      const thread = event.thread;
       setRawThreads((prev) => {
         const rest = prev.filter((t) => t.id !== thread.id);
         return sortThreads([...rest, thread]);
@@ -253,8 +240,8 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
     setFiltersState((prev) => ({ ...prev, ...patch }));
   }, []);
 
-  // Server-filtered + server-sorted (AC-IVE-15/16) - `rawThreads` is already
-  // the exact page the backend computed for the current `query`, then the
-  // plan-28 S0 team overlay/scope is applied on top (see `load` above).
+  // Server-filtered + server-sorted (AC-IVE-15/16, plan 28 AC-TEM-30) -
+  // `rawThreads` is already the exact page the backend computed for the
+  // current `query`, `teamId` included.
   return { threads: rawThreads, isLoading, error, filters, setFilters, reload: load };
 }

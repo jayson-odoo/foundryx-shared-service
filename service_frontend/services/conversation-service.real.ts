@@ -90,6 +90,10 @@ function threadQueryString(query: ThreadListQuery): string {
   else if (query.unreplied) params.set('unreplied', 'true');
   if (query.sort) params.set('sort', query.sort);
   if (query.viewId) params.set('viewId', query.viewId);
+  // Plan 28 (roadmap A8, AC-TEM-30) - Team Inbox scope, server-filtered on
+  // `assigned_team_id` (composed with `assignee=unassigned` for a team's
+  // Unassigned queue).
+  if (query.teamId) params.set('teamId', query.teamId);
   params.set('pageSize', String(THREAD_PAGE_SIZE));
   const qs = params.toString();
   return qs ? `?${qs}` : '';

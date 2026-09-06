@@ -1,13 +1,13 @@
 /**
- * Mock team service (plan 28, S0 MOCK - swap to real in S5). In-memory store,
- * seeded ONCE from the REAL tenant users list (`userService.list`, already
- * wired to the live backend) so Members/Leads are real people, not fabricated
- * names - the current signed-in tenant user (matched by
- * `NEXT_PUBLIC_DEMO_EMAIL`, falling back to `demo@example.com`) lands in TWO
- * of the four seeded teams so the drawer/rail smoke walkthrough has a
- * believable "my teams" set. One team (`Onboarding`) is pre-flagged as
- * "in use" so the delete-blocked (409 `team_in_use`) error state is tunable
- * without a backend reference guard.
+ * Mock team service (plan 28) - retained for component/hook tests only; the
+ * real backend (`team-service.real.ts`) is bound in `team-service.ts` since
+ * S5. In-memory store, seeded ONCE from the REAL tenant users list
+ * (`userService.list`, already wired to the live backend) so Members/Leads
+ * are real people, not fabricated names - the current signed-in tenant user
+ * (matched by `NEXT_PUBLIC_DEMO_EMAIL`, falling back to `demo@example.com`)
+ * lands in TWO of the four seeded teams. One team (`Onboarding`) is
+ * pre-flagged as "in use" so the delete-blocked (409 `team_in_use`) error
+ * state is exercisable in a test with no backend reference guard.
  */
 import { ApiError } from '@/lib/api-client';
 import { userService } from '@/services/user-service';
@@ -105,18 +105,6 @@ async function ensureSeeded(): Promise<Team[]> {
   seedPromise ??= buildSeed();
   rows = await seedPromise;
   return rows;
-}
-
-/**
- * Synchronous read of whatever teams are currently in memory (or `null`
- * before the async seed resolves) - used ONLY by
- * `team-assignment-service.mock.ts` to re-validate a stored team-assignment
- * overlay against the LIVE list (a deleted/renamed/foreign team must never
- * render a stale name, mirroring the polymorphic-stored-id rule the real
- * backend will enforce via `team.resolve@1` in S1/S2).
- */
-export function seededTeamsSync(): Team[] | null {
-  return rows.length ? rows : null;
 }
 
 const adapter: QueryAdapter<Team> = {
