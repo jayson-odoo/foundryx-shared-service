@@ -319,9 +319,15 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/omnichannel/inbox',
         permission: 'conversations.read',
       },
-      // Broadcasts (plan 29, roadmap A4) - after Inbox (Contacts, from A2,
-      // is not on this base yet - it lands right after Inbox too).
       {
+        // Contacts module (plan 26, roadmap A2) - AC-CTM-01.
+        title: 'Contacts',
+        path: '/omnichannel/contacts',
+        permission: 'contacts.read',
+      },
+      {
+        // Broadcasts (plan 29, roadmap A4) - after Contacts (its audience
+        // picker consumes A2's segments).
         title: 'Broadcasts',
         path: '/omnichannel/broadcasts',
         permission: 'broadcasts.read',
@@ -438,11 +444,14 @@ export const MENU_MEGA: MenuConfig = [
           },
         ],
       },
-      // Omnichannel (plan 29, roadmap A4) - at `d302ea7` neither mega menu
-      // carried an Omnichannel block at all (sidebar-only); this pass adds it
-      // properly tagged (module + per-child permission) rather than tagging
-      // only the sidebar, mirroring the sidebar's own children plus the new
-      // Broadcasts entry after Inbox.
+      // Omnichannel (D-A2-16, plan 26; extended plan 29) - closes a
+      // pre-existing gap verified 2026-09-06: this DESKTOP mega menu had NO
+      // Omnichannel entry at all (only the sidebar copy was tagged), so a
+      // tenant without the module saw the Apps menu missing the section, but
+      // a page-URL guess would have 403'd correctly - the fix here is purely
+      // additive parity with the sidebar, same module + per-child permission
+      // tags (Inbox, Contacts, Broadcasts, Channels, Workspaces, Media
+      // limits, Quick replies, Embed access).
       {
         title: 'Omnichannel',
         module: 'omnichannel',
@@ -453,6 +462,11 @@ export const MENU_MEGA: MenuConfig = [
                 title: 'Inbox',
                 path: '/omnichannel/inbox',
                 permission: 'conversations.read',
+              },
+              {
+                title: 'Contacts',
+                path: '/omnichannel/contacts',
+                permission: 'contacts.read',
               },
               {
                 title: 'Broadcasts',
@@ -468,6 +482,21 @@ export const MENU_MEGA: MenuConfig = [
                 title: 'Workspaces',
                 path: '/omnichannel/settings/workspaces',
                 permission: 'workspaces.read',
+              },
+              {
+                title: 'Media limits',
+                path: '/omnichannel/settings/media',
+                permission: 'channels.manage',
+              },
+              {
+                title: 'Quick replies',
+                path: '/omnichannel/settings/quick-replies',
+                permission: 'workspaces.manage',
+              },
+              {
+                title: 'Embed access',
+                path: '/omnichannel/settings/embed',
+                permission: 'workspaces.manage',
               },
             ],
           },
@@ -558,7 +587,10 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
       },
     ],
   },
-  // Omnichannel (plan 29, roadmap A4) - third menu copy (mobile mega); same
+  // Omnichannel (D-A2-16, plan 26; extended plan 29) - closes a
+  // pre-existing gap verified 2026-09-06: the mobile mega menu had NO
+  // Omnichannel block at all, so a tenant on a phone had no path to
+  // Inbox/Contacts/Broadcasts/Channels/etc from this menu surface. Same
   // module + per-child permission tags, mirroring MENU_SIDEBAR/MENU_MEGA.
   {
     title: 'Omnichannel',
@@ -569,6 +601,11 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Inbox',
         path: '/omnichannel/inbox',
         permission: 'conversations.read',
+      },
+      {
+        title: 'Contacts',
+        path: '/omnichannel/contacts',
+        permission: 'contacts.read',
       },
       {
         title: 'Broadcasts',
@@ -584,6 +621,21 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Workspaces',
         path: '/omnichannel/settings/workspaces',
         permission: 'workspaces.read',
+      },
+      {
+        title: 'Media limits',
+        path: '/omnichannel/settings/media',
+        permission: 'channels.manage',
+      },
+      {
+        title: 'Quick replies',
+        path: '/omnichannel/settings/quick-replies',
+        permission: 'workspaces.manage',
+      },
+      {
+        title: 'Embed access',
+        path: '/omnichannel/settings/embed',
+        permission: 'workspaces.manage',
       },
     ],
   },

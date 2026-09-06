@@ -130,6 +130,7 @@ def main() -> None:
     db = SessionLocal()
     try:
         sweep_tenant_admin_grants(db)
+        db.commit()
     finally:
         db.close()
 

@@ -73,10 +73,16 @@ class ContactProfileService:
         tag_ids: Any = _UNSET,
         actor: Optional[Any] = None,
         actor_id: Optional[str] = None,
+        emit: bool = True,
     ) -> Dict[str, Dict[str, Any]]:
         """Validate + apply every provided field. Returns the `changes` diff
         (`{wireKey: {from, to}}`) actually written (empty if nothing changed).
-        Raises `ProfilePatchError` with NOTHING written on any violation."""
+        Raises `ProfilePatchError` with NOTHING written on any violation.
+
+        `emit=False` (plan 26 S2, `ContactAdminService.create`): suppress this
+        method's own `updated` event - a brand-new contact fires exactly ONE
+        `created` event (the caller's), never a `created` + a same-call
+        `updated` for the very fields the create request itself populated."""
         errors: Dict[str, str] = {}
 
         clean_custom: Optional[dict] = None
@@ -126,6 +132,14 @@ class ContactProfileService:
             _apply("last_name", _WIRE_KEY["last_name"], last_name)
         if phone is not _UNSET:
             _apply("phone", _WIRE_KEY["phone"], phone)
+            # `phone_digits` (plan 26 S1, D-A2-9) must stay in lock-step with
+            # `phone` on EVERY write path (AC-CTM-27) - this branch is dead
+            # today (the internal PATCH router rejects any `phone` key
+            # outright, AC-CTM-28) but keeps the invariant true in case a
+            # future caller ever reaches it.
+            from ..phone import digits_only
+
+            contact.phone_digits = digits_only(phone) if phone else None
         if email is not _UNSET:
             _apply("email", _WIRE_KEY["email"], email)
         if language is not _UNSET:
@@ -155,7 +169,7 @@ class ContactProfileService:
                 self.tags.replace_links(contact, clean_tag_ids)
                 changes["tags"] = {"from": before_ids, "to": after_ids}
 
-        if changes:
+        if changes and emit:
             from app.workflow_engine.entity_events import emit_entity_event
 
             emit_entity_event(

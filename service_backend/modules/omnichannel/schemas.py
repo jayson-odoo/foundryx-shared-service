@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.base import ApiModel
 from app.schemas.filters import FilterGroup
@@ -403,6 +403,275 @@ class ThreadItem(ApiModel):
 class ThreadListResponse(ApiModel):
     data: List[ThreadItem]
     total: int
+
+
+# ── Contacts module (plan 26 S1) ─────────────────────────────────────────────
+class ContactChannelRef(ApiModel):
+    """One channel a contact has an identity on (AC-CTM-19) - resolved
+    tenant-scoped from `contact_channel_identities`, batched for a whole page.
+    Never defaulted: a contact with no identity yields `channels: []`."""
+
+    channelId: str
+    channelType: str
+    name: str
+
+
+class ContactListItem(ThreadItem):
+    """`ThreadItem` (plan 25) + `channels[]` (D-A2-11) - the Contacts-module
+    list/detail shape. No new fields beyond `channels` - everything else is
+    inherited so the module never forks a second contact representation."""
+
+    channels: List[ContactChannelRef] = []
+
+
+class ContactListResponse(ApiModel):
+    data: List[ContactListItem]
+    total: int
+    page: int
+
+
+class ContactCreate(ApiModel):
+    """Manual create (plan 26 S2, D-A2-4, §5.1). `phone` is required + create-
+    only (never PATCH-able, AC-CTM-28); every other field mirrors the
+    optional `ThreadPatch` system/custom/tag fields plus the lifecycle stage
+    a brand new contact may start on. Omitted `lifecycleStatusId` defaults to
+    the workspace's `is_initial` stage server-side."""
+
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
+    phone: str
+    email: Optional[str] = None
+    language: Optional[str] = None
+    countryCode: Optional[str] = None
+    lifecycleStatusId: Optional[str] = None
+    tagIds: Optional[List[str]] = None
+    customFields: Optional[dict] = None
+
+
+class BulkFailure(ApiModel):
+    id: str
+    error: str
+
+
+class BulkResult(ApiModel):
+    """Per-record bulk-action outcome (D-A2-5) - `ok` is the list of ids that
+    succeeded; a failed id always carries its own reason, never a bare
+    "something went wrong"."""
+
+    ok: List[str]
+    failed: List[BulkFailure]
+
+
+class BulkAssignRequest(ApiModel):
+    ids: List[str] = Field(max_length=500)
+    assigneeUserId: Optional[str] = None
+
+
+class BulkTagsRequest(ApiModel):
+    ids: List[str] = Field(max_length=500)
+    mode: Literal["add", "remove"]
+    tagIds: List[str]
+
+
+class BulkLifecycleRequest(ApiModel):
+    ids: List[str] = Field(max_length=500)
+    toStatusId: str
+
+
+# The STATIC export column whitelist (finding 14, review round 1) - the
+# single source of truth `contact_export_service._COLUMN_LABELS` keys off
+# too (imported from here, never duplicated). `customFields.<key>` is the
+# one DYNAMIC (per-workspace) shape - matched by pattern here (a save-time
+# 422 on a malformed key), then checked against the workspace's ACTUALLY
+# registered fields in the service layer (`create_export_job`), which is the
+# only place with DB + workspace context.
+EXPORT_COLUMN_IDS = frozenset(
+    {
+        "id", "name", "firstName", "lastName", "phone", "email", "language",
+        "countryCode", "lifecycle", "tags", "assignee", "channel",
+        "lastMessageAt", "createdAt",
+    }
+)
+MAX_EXPORT_COLUMNS = 50
+_CUSTOM_FIELD_COLUMN_RE = re.compile(r"^customFields\.[A-Za-z0-9_]+$")
+
+
+class ContactExportRequest(ApiModel):
+    """Export job request (plan 26 S3, D-A2-6a). An explicit `ids` selection
+    WINS over search/filter/segment/sort (`ContactListService.query_for_
+    export`) - the current list query is otherwise honoured exactly."""
+
+    columns: List[str]
+    ids: Optional[List[str]] = None
+    search: Optional[str] = None
+    filter: Optional[FilterGroup] = None
+    segment: Optional[str] = None
+    sortBy: Optional[str] = None
+    sortDir: Optional[Literal["asc", "desc"]] = None
+
+    @field_validator("columns")
+    @classmethod
+    def _validate_columns(cls, v: List[str]) -> List[str]:
+        """Finding 14: cap + reject an unknown column id at the wire boundary
+        instead of the export silently rendering a blank cell for it
+        (`_column_value`'s catch-all). `customFields.<key>` format is
+        checked here (no DB in a pydantic validator); whether `<key>` is
+        actually REGISTERED for this workspace is re-checked in
+        `create_export_job` (DB + workspace-scoped)."""
+        if not v:
+            raise ValueError("At least one column is required.")
+        if len(v) > MAX_EXPORT_COLUMNS:
+            raise ValueError(f"At most {MAX_EXPORT_COLUMNS} columns.")
+        unknown = [
+            c for c in v if c not in EXPORT_COLUMN_IDS and not _CUSTOM_FIELD_COLUMN_RE.match(c)
+        ]
+        if unknown:
+            raise ValueError(f"Unknown export column(s): {', '.join(unknown)}.")
+        return v
+
+
+class ContactSegmentItem(ApiModel):
+    id: str
+    workspaceId: str
+    name: str
+    description: Optional[str] = None
+    filter: Optional[FilterGroup] = None
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class ContactSegmentCreate(ApiModel):
+    name: str
+    description: Optional[str] = None
+    filter: Optional[FilterGroup] = None
+
+
+class ContactSegmentUpdate(ApiModel):
+    """Partial update (`model_fields_set` drives which fields apply)."""
+
+    name: Optional[str] = None
+    description: Optional[str] = None
+    filter: Optional[FilterGroup] = None
+# ── Conversation events (plan 27 A3, S1) ─────────────────────────────────────
+class ConversationEventItem(ApiModel):
+    """One append-only `conversation_events` row (AC-IVE-13). `fromLabel`/
+    `toLabel` are resolved tenant-scoped server-side (never a raw id echoed
+    without its label) - a THREAD status id, a core lifecycle status id, or a
+    user/external-agent display name, depending on `eventType`. `closeReasonId`/
+    `closeReasonName` stay null until plan 27 A3 slice S2 lands close reasons."""
+
+    id: str
+    eventType: str
+    actorName: Optional[str] = None
+    actorUserId: Optional[str] = None
+    fromValue: Optional[str] = None
+    fromLabel: Optional[str] = None
+    toValue: Optional[str] = None
+    toLabel: Optional[str] = None
+    closeReasonId: Optional[str] = None
+    closeReasonName: Optional[str] = None
+    note: Optional[str] = None
+    payload: Optional[dict] = None
+    createdAt: datetime
+
+
+class ConversationEventListResponse(ApiModel):
+    data: List[ConversationEventItem]
+    total: int
+
+
+# ── Close reasons (plan 27 A3, S2 - D-A3-3) ─────────────────────────────────
+class CloseReasonItem(ApiModel):
+    id: str
+    workspaceId: str
+    name: str
+    sortOrder: int
+    isActive: bool
+    # Count of events referencing this reason - Delete is offered only at 0,
+    # Deactivate otherwise (AC-IVE-31, D-A3-13).
+    usesCount: int = 0
+    createdAt: datetime
+
+
+class CloseReasonCreate(ApiModel):
+    name: str
+    sortOrder: Optional[int] = None
+    isActive: Optional[bool] = None
+
+
+class CloseReasonUpdate(ApiModel):
+    name: Optional[str] = None
+    sortOrder: Optional[int] = None
+    isActive: Optional[bool] = None
+
+
+class ShortcutItem(ApiModel):
+    """A published `entity.shortcut` workflow bound to `omnichannel_contact`
+    the drawer's Shortcuts control may fire (AC-IVE-36)."""
+
+    workflowId: str
+    name: str
+
+
+class ShortcutRunResponse(ApiModel):
+    """Response of firing a shortcut (AC-IVE-37)."""
+
+    runId: str
+    status: str
+
+
+class CloseThreadRequest(ApiModel):
+    """`POST /contacts/{id}/close` (AC-IVE-28/29). `closeReasonId` is required
+    (Close is disabled in the UI until one is picked); `note` is capped at
+    2000 chars - stored on the event, never on the thread."""
+
+    closeReasonId: str
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+
+# ── Saved inbox views (plan 27 A3, S2 - D-A3-2) ─────────────────────────────
+class InboxViewFilter(ApiModel):
+    """Typed saved-view filter - NOT a rule-engine tree. Unknown keys 422
+    (`extra="forbid"`, AC-IVE-18). `segmentId` is a reserved seam for A2
+    (plan 26's `contact_segments`) - unused until that lane merges (D-A3-17)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    statuses: Optional[List[Literal["OPEN", "SNOOZED", "CLOSED"]]] = None
+    assignee: Optional[Literal["all", "me", "unassigned", "user"]] = None
+    assigneeUserIds: Optional[List[str]] = None
+    lifecycleStageIds: Optional[List[str]] = None
+    tagIds: Optional[List[str]] = None
+    channelIds: Optional[List[str]] = None
+    priority: Optional[Literal["ALL", "URGENT", "HIGH", "MEDIUM", "LOW"]] = None
+    unreplied: Optional[bool] = None
+    sort: Optional[Literal["newest", "oldest", "unreplied_first", "longest_waiting"]] = None
+    segmentId: Optional[str] = None
+
+
+class InboxViewItem(ApiModel):
+    id: str
+    workspaceId: str
+    name: str
+    ownerUserId: str
+    ownerName: Optional[str] = None
+    isShared: bool
+    filter: InboxViewFilter
+    sortOrder: int
+    createdAt: datetime
+
+
+class InboxViewCreate(ApiModel):
+    name: str
+    isShared: bool = False
+    filter: InboxViewFilter = Field(default_factory=InboxViewFilter)
+
+
+class InboxViewUpdate(ApiModel):
+    name: Optional[str] = None
+    isShared: Optional[bool] = None
+    filter: Optional[InboxViewFilter] = None
+    sortOrder: Optional[int] = None
 
 
 class ThreadPatch(ApiModel):

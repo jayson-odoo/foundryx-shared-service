@@ -104,13 +104,13 @@ Reused unchanged: `components/platform/{resource-list,resource-form,resource-act
 | D-A4-3 | Broadcast lifecycle rides the module's lightweight `statuses` table under a NEW `BROADCAST` scope, NOT the core status engine | Brief D-A4-1. These states are machine-driven and must never be tenant-editable; the core engine's value (editable graphs, edge auth, notifications) is a liability here. `ensure_statuses` gives the per-tenant seed AND the backfill for existing tenants for free. The `wa_templates` precedent (a plain column + a frontend badge registry) is the alternative; the statuses table wins only because a `status_id` FK keeps the list filter and the wire key consistent with every other omnichannel entity |
 | D-A4-4 | Bindings are STRUCTURED (`{source: 'static', text}` or `{source: 'contactField', field, fallback}`), not free-form merge strings | **Deviation from the brief, flagged (F2).** A WhatsApp parameter is a single value SLOT, not a sentence, so a template renderer buys nothing and costs a rendering surface over tenant-authored strings. A structured binding means the server never renders a tenant string at all: it reads a whitelisted field, applies the fallback, sanitizes, done. `template_engine.merge.collect_tokens` is still used at SAVE time as the guard that a `static` text carries no token syntax. Anti-SSTI by construction; Jinja never enters the picture |
 | D-A4-5 | A `contactField` binding REQUIRES a non-empty fallback | Meta rejects an empty parameter, and respond.io asks for the same default. Requiring it at save makes the empty-parameter runtime failure unreachable; the `missing_variable` skip stays only as a defence-in-depth path |
-| D-A4-6 | Only APPROVED templates with NO media header are offered and accepted in v1 | Foolproof-UI ("a picker offers only choices that will work"). A media-header template needs per-send header bytes uploaded by id; doing that once per broadcast is its own design. Backlog BL-SS-081 |
+| D-A4-6 | Only APPROVED templates with NO media header are offered and accepted in v1 | Foolproof-UI ("a picker offers only choices that will work"). A media-header template needs per-send header bytes uploaded by id; doing that once per broadcast is its own design. Backlog BL-SS-083 |
 | D-A4-7 | Sending is ONE `background_jobs` job (`omnichannel.broadcast_send`) whose handler snapshots then drives CHAINED chunk tasks (one chunk in flight per broadcast); eager dev/tests loop the same chunk function inline | Brief D-A4-2 + the house rule "new async worker job = `background_jobs` + `register_job_handler`". Chaining (rather than fanning N chunks out at once) is what makes the per-channel rate cap actually hold, and it gives a clean cooperative-cancel checkpoint per chunk |
 | D-A4-8 | Per-recipient idempotency = an atomic CLAIM (`UPDATE broadcast_recipients SET attempted_at = now(), attempts = attempts + 1 WHERE id = :id AND attempted_at IS NULL`) before the send path is touched | Mirrors `send_runner`'s own QUEUED -> SENDING claim. A Celery retry, a duplicate delivery or a resumed job re-reads the row and skips it. **Never double-send** is the invariant, and it outranks "never lose a send" (a WhatsApp duplicate costs money and annoys the customer) |
 | D-A4-9 | A recipient claimed but left without a `message_id` is RECONCILED by adopting a matching outbound TEMPLATE message to that contact created after the claim; if none exists it becomes `failed/send_result_unknown`. It is never re-sent | The only crash window is between the send path's commit and the recipient update. Adoption closes it in practice; the give-up branch keeps D-A4-8 absolute |
 | D-A4-10 | Delivery/read receipts update recipients through ONE new `broadcast_receipts.record_delivery(db, message)` called from the three EXISTING delivery-status sites (section 5.5), each failure-isolated | The receipt seam already exists twice (`send_runner` stamps SENT/FAILED, `inbound_service._handle_status` applies Meta receipts). Adding a broadcast-aware branch inside those functions would couple them; a lazily imported hook that catches everything keeps the inbound pipeline's "a broadcast bug never drops a message" property |
 | D-A4-11 | Counts are denormalized on `broadcasts` and recomputed set-based per chunk and at finalize; a test pins them against a live aggregate | The list must not run six sub-counts per row. Recomputing per chunk (not per recipient) keeps the write volume bounded |
-| D-A4-12 | Rate tier = `channels.broadcast_rate_per_second` (nullable) falling back to a conservative global setting; pacing is computed per chunk inside the chained task | Brief D-A4-2. Two concurrent broadcasts on the SAME channel can still exceed the tier in v1 (accepted, documented); a per-channel Redis token bucket is BL-SS-082 and pairs with BL-SS-007 |
+| D-A4-12 | Rate tier = `channels.broadcast_rate_per_second` (nullable) falling back to a conservative global setting; pacing is computed per chunk inside the chained task | Brief D-A4-2. Two concurrent broadcasts on the SAME channel can still exceed the tier in v1 (accepted, documented); a per-channel Redis token bucket is BL-SS-084 and pairs with BL-SS-007 |
 | D-A4-13 | Scheduled broadcasts fire from a new 60s tick on the WORKFLOW beat (`omnichannel.broadcasts_due`), guarded and failure-isolated | That worker is the sole beat host and already carries module ticks the same way (`webhooks.retry_due`, `meetings.*`, `autocount.etl_sweep`). A second beat process would be a new ops surface |
 | D-A4-14 | Cancellation is cooperative at CHUNK granularity: the chunk re-reads the broadcast status from the DB before each batch; remaining `queued` recipients become `skipped/cancelled` | The house lesson from plan 10: eager mode hides a non-cooperative abort, so the status re-read must be a real DB read per checkpoint, and a test must assert the mid-run abort |
 | D-A4-15 | Broadcasts write NO `conversation_events` (A3) rows | Brief D-A4-6. A broadcast is an outbound campaign, not a conversation; polluting the A9 read model with N campaign rows per contact would distort every conversation report |
@@ -118,7 +118,7 @@ Reused unchanged: `components/platform/{resource-list,resource-form,resource-act
 | D-A4-17 | NO public gateway surface for broadcasts in v1: `routers/api_v1.py`, the `Rio*` schemas and `documentation/omnichannel/consumer-integration-guide.md` are untouched | Brief D-A4-6. Consumers have no broadcast use case yet, and the guide is a contract: adding a surface means owning its shape forever. A guard test asserts no diff |
 | D-A4-18 | Test send goes through the same send path and the same resolved bindings but creates NO recipient rows and touches no counts or status | Brief D-A4-3. A test send is a message, not a campaign event |
 | D-A4-19 | `MessageService.send_message` gains ONE additive kwarg `metadata_extra: Optional[dict] = None` merged into `metadata_json` | The broadcast stamps `{"broadcast": {"id": ..., "recipientId": ...}}`, which makes D-A4-9's adoption exact and lets the inbox label a broadcast bubble later. Additive, defaulted, no existing caller changes |
-| D-A4-20 | Skips for opted-out / blocked contacts are NOT implemented | Verified at `d302ea7`: `Contact` has no opt-out or blocked column (contact block lands in B2). The `skipReason` vocabulary reserves the value; BL-SS-083 |
+| D-A4-20 | Skips for opted-out / blocked contacts are NOT implemented | Verified at `d302ea7`: `Contact` has no opt-out or blocked column (contact block lands in B2). The `skipReason` vocabulary reserves the value; BL-SS-085 |
 | D-A4-21 | Labels are a plain `labels_json` string array on the broadcast, NOT `contact_tags` | respond.io broadcast labels are campaign metadata, unrelated to contact tags; reusing the tag table would make a tag deletion mutate campaign history |
 
 ## 4. Slices (build order)
@@ -298,7 +298,7 @@ path; the reconciler resolves anything still ambiguous at finalize.
   ONE chunk twice and asserts exactly one `conversation_messages` row per recipient.
 - **Rate limits.** Meta throttles per number; a fast fan-out gets 429s and, worse, quality-rating
   damage. Chunk chaining plus per-channel pacing bounds a single broadcast; two concurrent
-  broadcasts on one channel are an accepted v1 gap (BL-SS-082, pairs with BL-SS-007).
+  broadcasts on one channel are an accepted v1 gap (BL-SS-084, pairs with BL-SS-007).
 - **Template variable safety.** Bindings are structured, so no tenant string is ever rendered as a
   template; a `static` text is rejected at save if it carries token syntax, and every emitted
   parameter is sanitized for Meta's newline / tab / repeated-space / length rules. There is no path
@@ -329,21 +329,21 @@ path; the reconciler resolves anything still ambiguous at finalize.
   all three; if not, A4 adds the block properly tagged (`module` + per-child `permission`) rather
   than tagging only the sidebar. Mega-menu sections resolve by TITLE, never by index.
 
-## 7. Backlog candidates (register on close; ids reserved from BL-SS-080)
+## 7. Backlog candidates (register on close; ids reserved from BL-SS-082)
 
 | Id | Title | Priority |
 |---|---|---|
-| BL-SS-080 | Broadcast calendar view (respond.io Table / Calendar toggle) - deferred to Phase D | Low |
-| BL-SS-081 | Broadcasts with media-header templates (upload the header blob once, reuse the media id across the run) | Medium |
-| BL-SS-082 | Per-channel Redis token bucket so CONCURRENT broadcasts share one rate tier (pairs with BL-SS-007) | Medium |
-| BL-SS-083 | Skip opted-out / blocked contacts once the B2 contact block flag exists (the `skipReason` value is already reserved) | Medium |
-| BL-SS-084 | `omnichannel.broadcast_completed` workflow TRIGGER (the two core one-liners A5 owns) | Medium |
-| BL-SS-085 | Broadcast analytics in Reports (A9): per-broadcast delivery funnel, per-template performance | Medium |
-| BL-SS-086 | Retry the failed recipients of a finished broadcast as a new run (respond.io has no equivalent, the customer will ask) | Low |
-| BL-SS-087 | Per-channel rate tier editable in the Channel Configuration tab (v1 is a DB / env value only) | Low |
-| BL-SS-088 | Broadcast recipients export (CSV through `background_jobs`, reusing the A2 export job pattern) | Low |
-| BL-SS-089 | Label a broadcast-originated bubble in the Inbox using the `metadata_json.broadcast` marker this slice stamps | Low |
-| BL-SS-090 | `broadcast_recipients` retention / archival for large campaigns (pairs with BL-SS-060) | Low |
+| BL-SS-082 | Broadcast calendar view (respond.io Table / Calendar toggle) - deferred to Phase D | Low |
+| BL-SS-083 | Broadcasts with media-header templates (upload the header blob once, reuse the media id across the run) | Medium |
+| BL-SS-084 | Per-channel Redis token bucket so CONCURRENT broadcasts share one rate tier (pairs with BL-SS-007) | Medium |
+| BL-SS-085 | Skip opted-out / blocked contacts once the B2 contact block flag exists (the `skipReason` value is already reserved) | Medium |
+| BL-SS-086 | `omnichannel.broadcast_completed` workflow TRIGGER (the two core one-liners A5 owns) | Medium |
+| BL-SS-087 | Broadcast analytics in Reports (A9): per-broadcast delivery funnel, per-template performance | Medium |
+| BL-SS-088 | Retry the failed recipients of a finished broadcast as a new run (respond.io has no equivalent, the customer will ask) | Low |
+| BL-SS-089 | Per-channel rate tier editable in the Channel Configuration tab (v1 is a DB / env value only) | Low |
+| BL-SS-090 | Broadcast recipients export (CSV through `background_jobs`, reusing the A2 export job pattern) | Low |
+| BL-SS-091 | Label a broadcast-originated bubble in the Inbox using the `metadata_json.broadcast` marker this slice stamps | Low |
+| BL-SS-092 | `broadcast_recipients` retention / archival for large campaigns (pairs with BL-SS-060) | Low |
 
 ## 8. Flagged for the user
 
@@ -379,4 +379,4 @@ path; the reconciler resolves anything still ambiguous at finalize.
   The alternative (retry on ambiguity) risks charging the customer twice and messaging their
   contacts twice. Flagging the choice, not asking to change it.
 - **F7 - two concurrent broadcasts on one channel can exceed the rate tier** (D-A4-12). v1 paces per
-  broadcast; the global per-channel bucket is BL-SS-082.
+  broadcast; the global per-channel bucket is BL-SS-084.

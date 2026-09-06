@@ -387,6 +387,42 @@ describe('ConversationDrawer - in-thread search', () => {
   });
 });
 
+// F8 (round-3 codex triage) - Reopen must surface a `setStatus()` failure
+// (a 409 the record raced into, a network blip), not silently discard it
+// (`void setStatus('OPEN').then(reloadEvents)` - no catch anywhere in the
+// chain, an unhandled rejection with the button visibly doing nothing).
+describe('ConversationDrawer - Reopen error handling (F8)', () => {
+  beforeEach(async () => {
+    const { __mockResetConversations } = await import('@/services/conversation-service.mock');
+    __mockResetConversations();
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  it('toasts an error when setStatus() rejects, and does not flip to Open', async () => {
+    const { mockConversationService } = await import('@/services/conversation-service.mock');
+    const { toast } = await import('@/lib/toast');
+    const toastErrorSpy = vi.spyOn(toast, 'error').mockImplementation(() => 'toast-id');
+    const setStatusSpy = vi
+      .spyOn(mockConversationService, 'setStatus')
+      .mockRejectedValueOnce(new Error('Only an active caller may reopen this conversation.'));
+    const user = userEvent.setup();
+
+    // cnt-004 seeds SNOOZED - only a snoozed/closed thread renders Reopen.
+    render(<ConversationDrawer contactId="cnt-004" />);
+    await waitFor(() => expect(screen.getByTestId('thread-reopen')).toBeInTheDocument());
+
+    await user.click(screen.getByTestId('thread-reopen'));
+
+    await waitFor(() => expect(setStatusSpy).toHaveBeenCalledWith('cnt-004', 'OPEN'));
+    await waitFor(() => expect(toastErrorSpy).toHaveBeenCalled());
+    // The button is still offering Reopen - the status never actually flipped.
+    expect(screen.getByTestId('thread-reopen')).toBeInTheDocument();
+
+    setStatusSpy.mockRestore();
+    toastErrorSpy.mockRestore();
+  });
+});
+
 describe('dayLabel', () => {
   it('maps today/yesterday/older correctly', () => {
     // Pin the viewer tz to UTC so the naive-UTC inputs land on known days.

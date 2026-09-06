@@ -14,10 +14,11 @@ from app.config import settings
 
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import Channel, Contact, ContactChannelIdentity, ConversationMessage
+from ..phone import digits_only
 from ..repositories.contact_repository import ContactRepository
 from ..security import signed_media_url
 from .conversation_service import ConversationService
-from . import realtime, statuses
+from . import event_service, realtime, statuses
 
 logger = logging.getLogger(__name__)
 
@@ -191,9 +192,24 @@ class InboundService:
         self.db.add(row)
 
         # Re-open + CSW reset (§4.2.6): any inbound restarts the 24h window.
-        contact.status_id = statuses.status_id_for(
-            self.db, channel.tenant_id, "THREAD", "OPEN"
-        )
+        # `reopened`/`unsnoozed` event (plan 27 A3, AC-IVE-04) - capture the
+        # PREVIOUS status key before overwriting; an already-OPEN thread
+        # writes no event (`new_status_id == contact.status_id` below).
+        open_status_id = statuses.status_id_for(self.db, channel.tenant_id, "THREAD", "OPEN")
+        if open_status_id != contact.status_id:
+            prev_status_id = contact.status_id
+            prev_key = self.conversations.status_keys(channel.tenant_id).get(prev_status_id)
+            event_type = (
+                "reopened" if prev_key == "CLOSED"
+                else "unsnoozed" if prev_key == "SNOOZED"
+                else None
+            )
+            if event_type:
+                event_service.record(
+                    self.db, contact, event_type,
+                    from_value=prev_status_id, to_value=open_status_id,
+                )
+        contact.status_id = open_status_id
         contact.csw_expires_at = now + CSW_WINDOW
         contact.last_incoming_message_at = now
         contact.last_message_at = now
@@ -330,7 +346,7 @@ class InboundService:
                     identity.profile_name = event["profile_name"]
                 return contact
 
-        digits = "".join(ch for ch in wa_id if ch.isdigit())
+        digits = digits_only(wa_id)
         contact = self.repo.find_by_phone_in_workspace(
             digits, channel.workspace_id, channel.tenant_id
         )
@@ -345,6 +361,7 @@ class InboundService:
                 first_name=first or None,
                 last_name=last or None,
                 phone=f"+{digits}",
+                phone_digits=digits,
                 status_id=statuses.status_id_for(self.db, channel.tenant_id, "THREAD", "OPEN"),
                 priority="MEDIUM",
                 # A workspace with no lifecycle graph "should not happen" post-
@@ -356,6 +373,9 @@ class InboundService:
             )
             self.db.add(contact)
             self.db.flush()
+            # `opened` event (plan 27 A3, AC-IVE-03) - exactly one per new
+            # thread, `to_value` = the OPEN status just assigned above.
+            event_service.record(self.db, contact, "opened", to_value=contact.status_id)
 
         self.db.add(
             ContactChannelIdentity(

@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * Contact-segment state - pulled forward from plan 26 (A2) for the plan 29
- * Broadcasts Audience section's segment `SearchSelect`. Mirrors the `s26`
- * worktree's `use-contact-segments.ts` shape.
+ * Contact-segment state (plan 26) - backs the Contacts list's segment
+ * `SearchSelect`, the "Save as segment" dialog and the "Manage segments"
+ * dialog. Mirrors `use-contact-tags.ts` / `use-contact-fields.ts` shape.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from '@/lib/toast';
@@ -22,7 +22,6 @@ export interface UseContactSegmentsResult {
   refresh: () => Promise<void>;
   create: (input: CreateContactSegmentInput) => Promise<ContactSegment>;
   update: (id: string, input: UpdateContactSegmentInput) => Promise<ContactSegment>;
-  remove: (id: string) => Promise<boolean>;
 }
 
 export function useContactSegments(workspaceId: string | null): UseContactSegmentsResult {
@@ -44,7 +43,21 @@ export function useContactSegments(workspaceId: string | null): UseContactSegmen
   useEffect(() => {
     setSegments([]);
     if (!workspaceId) {
-      setLoading(false);
+      // Round-3 fix: do NOT report `loading: false` here. `ContactsPage`
+      // only mounts `ResourceList` once its own workspace resolution is
+      // `ready` (a SEPARATE hook) - so a caller reading `loading` while
+      // `workspaceId` is still null never has a consumer watching it
+      // anyway. Reporting `false` here used to create a real race: on the
+      // very render where `workspaceId` first goes null -> real id,
+      // `ResourceList` mounts in the SAME commit as this effect's dep
+      // change fires, but React runs the CHILD's mount effects (the
+      // shell's ctx-restored-segment fallback) BEFORE this effect - so the
+      // shell read the STALE `loading=false` this branch had already set
+      // on the PRIOR (workspaceId=null) render and treated the segment
+      // list as final before the real fetch even started, permanently
+      // losing a ctx-restored segment. Leaving `loading` at its initial
+      // `true` (never toggled false without a real fetch load having
+      // completed) removes the false-then-true-again tick entirely.
       return;
     }
     let cancelled = false;
@@ -79,20 +92,10 @@ export function useContactSegments(workspaceId: string | null): UseContactSegmen
     [workspaceId, refresh],
   );
 
-  const remove = useCallback(
-    async (id: string) => {
-      if (!workspaceId) return false;
-      try {
-        await contactSegmentService.remove(workspaceId, id);
-        await refresh();
-        return true;
-      } catch (error) {
-        toast.error(describe(error));
-        return false;
-      }
-    },
-    [workspaceId, refresh],
-  );
+  // Segment delete no longer goes through this hook (review round 2) - it
+  // rides the CORE grace-window engine via
+  // `use-segment-delete-controller.ts` (`contactSegmentService.remove` stays
+  // exported for any future direct-delete caller).
 
-  return { segments, loading, refresh, create, update, remove };
+  return { segments, loading, refresh, create, update };
 }

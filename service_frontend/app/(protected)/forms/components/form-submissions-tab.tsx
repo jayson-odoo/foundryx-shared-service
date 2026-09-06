@@ -220,6 +220,11 @@ export function FormSubmissionsTab({ form }: FormSubmissionsTabProps) {
         { id: 'all', label: 'All statuses' },
         ...(graph?.statuses ?? []).map((s) => ({ id: s.key, label: s.label })),
       ],
+      // Round-3 fix: `graph` (the submission-status graph, incl. the real
+      // segment list) loads async - same "all sentinel always present"
+      // trap as Contacts' segmentOptions(). Defer the shell's segment
+      // fallback until the graph has actually resolved.
+      segmentsReady: graph !== null,
       defaultSegment: 'all',
       columns,
       filterFields: [],

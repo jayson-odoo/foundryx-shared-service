@@ -7,10 +7,12 @@
  * it into recipient rows (D-A4-2); a claimed-but-unsent recipient never
  * double-sends (D-A4-8, mirrored here as "advance queued -> sent once").
  *
- * `audiencePreview` composes the REAL `conversationService.listThreads` (the
- * only contact data source available before A2 merges) with the mocked
- * segment store + the shared `evalGroup` filter evaluator - so the count
- * shown while building a broadcast reflects the actual seeded demo contacts.
+ * `audiencePreview` composes the REAL `conversationService.listThreads` +
+ * the REAL `contactSegmentService` (A2, merged plan 26 - backend-wired
+ * segments) with the shared `evalGroup` filter evaluator - so the count
+ * shown while building a broadcast reflects the actual seeded demo contacts
+ * AND a segment saved from the real Contacts list resolves correctly (only
+ * `broadcasts` itself is mocked in S0).
  */
 import { ApiError } from '@/lib/api-client';
 import type {
@@ -28,7 +30,7 @@ import type {
 import type { ListQuery, ListResult } from '@/types/resource';
 import { conversationService } from './conversation-service';
 import { channelService } from './channel-service';
-import { mockContactSegmentService } from './contact-segment-service.mock';
+import { contactSegmentService } from './contact-segment-service';
 import { delay, evalGroup, runQuery, type QueryAdapter } from './mock-query';
 
 const STATUS_LABELS: Record<BroadcastStatus, string> = {
@@ -482,7 +484,7 @@ async function resolveAudienceContacts(
   }
   let filter = audience.filter;
   if (audience.kind === 'segment' && audience.segmentId) {
-    const segments = await mockContactSegmentService.list(workspaceId);
+    const segments = await contactSegmentService.list(workspaceId);
     filter = segments.find((s) => s.id === audience.segmentId)?.filter;
   }
   if (!filter) return [];

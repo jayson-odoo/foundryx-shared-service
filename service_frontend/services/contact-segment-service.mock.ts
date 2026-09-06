@@ -1,10 +1,9 @@
 /**
- * Mock contact-segment service (S0, plan 29 - pulled forward from plan 26/A2).
- * Single-workspace in-memory store seeded with 3 segments built ONLY on
- * system columns (priority, assignee, lastMessageAt) so they stay valid
- * regardless of which real tags/custom fields the workspace happens to have.
- * Mirrors the backend rules A2 will enforce: unique name (case-insensitive),
- * 100-segment cap.
+ * Mock contact-segment service (S0, plan 26). Single-workspace in-memory
+ * store seeded with 3 segments built ONLY on system columns (priority,
+ * assignee, lastMessageAt) so they stay valid regardless of which real tags /
+ * custom fields the workspace happens to have. Mirrors the backend rules
+ * (AC-CTM-20): unique name (case-insensitive), 100-segment cap.
  */
 import { ApiError } from '@/lib/api-client';
 import type { ContactSegment, CreateContactSegmentInput, UpdateContactSegmentInput } from '@/types/omnichannel';

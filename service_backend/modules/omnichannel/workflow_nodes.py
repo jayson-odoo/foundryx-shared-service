@@ -91,6 +91,10 @@ def _register_contact_entity() -> None:
             status_attr="lifecycle_status_id",
             module=MODULE_NAME,
             apply_update=_contact_apply_update,
+            # Plan sprint-4/27 (A3) - the conversation drawer's Shortcuts
+            # control runs a published `entity.shortcut` workflow against the
+            # open thread's contact record.
+            supports_shortcut=True,
         )
     )
 

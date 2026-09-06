@@ -68,6 +68,7 @@ export const ENTITY_NOUNS: Record<string, { singular: string; plural: string }> 
   webhook_endpoint: { singular: 'webhook', plural: 'webhooks' },
   quick_reply: { singular: 'quick reply', plural: 'quick replies' },
   api_key: { singular: 'API key', plural: 'API keys' },
+  contact_segment: { singular: 'segment', plural: 'segments' },
   ideation_idea: { singular: 'idea', plural: 'ideas' },
   ideation_business_requirement: {
     singular: 'business requirement',
@@ -76,6 +77,10 @@ export const ENTITY_NOUNS: Record<string, { singular: string; plural: string }> 
   ideation_br_idea_link: { singular: 'link', plural: 'links' },
   ideation_embed_connection: { singular: 'embed connection', plural: 'embed connections' },
   tenant_module: { singular: 'module', plural: 'modules' },
+  // Plan 27 review round 1 frontend follow-up: saved views + close reasons
+  // migrated onto the deferred-actions engine.
+  close_reason: { singular: 'close reason', plural: 'close reasons' },
+  inbox_view: { singular: 'view', plural: 'views' },
 };
 
 function capitalize(word: string): string {
