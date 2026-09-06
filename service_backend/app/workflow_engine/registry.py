@@ -29,6 +29,12 @@ class NodeField:
     show_when: Optional[Tuple[str, Union[str, Tuple[str, ...]]]] = None
     # For `entity` - restrict the picker (e.g. only status-engine entities).
     entity_filter: Optional[str] = None
+    # True = this field's VALUE(S) are secret-shaped (e.g. an HTTP header
+    # value) and must be scrubbed at the trace boundary, not left to a
+    # `mergeable=False` convention (plan sprint-4/31 review B1). A `keyValue`
+    # field's rows get their `value` masked to `"***"` (key kept); any other
+    # field's whole value is masked. Enforced by `executor._node_input_json`.
+    redacted: bool = False
 
 
 def matches_show_when(
@@ -689,8 +695,13 @@ def _register_core() -> None:
                 # secrets") - the generic `_node_input_json` trace helper only
                 # renders fields flagged mergeable, so header VALUES never
                 # reach the run trace even though the executor merge-renders
-                # them at request time (AC-WFP-59).
-                NodeField(key="headers", label="Headers", type="keyValue"),
+                # them at request time (AC-WFP-59). `redacted=True` closes the
+                # LITERAL-secret gap the merge-token convention alone missed
+                # (review B1): the raw `config` `_node_input_json` always
+                # stores gets its header VALUES masked before it is written,
+                # regardless of whether the author typed a merge token or a
+                # literal value.
+                NodeField(key="headers", label="Headers", type="keyValue", redacted=True),
                 NodeField(
                     key="bodyMode",
                     label="Body",
@@ -743,8 +754,9 @@ def _register_core() -> None:
             executor=code_run,
             # Plan sprint-4/31 S5 (closes BL-SS-121): `workflows.code` now
             # flows through the SAME generic `ActionDef.permission` seam
-            # `http.request`'s `workflows.http` uses - `assert_code_permitted`/
-            # `required_node_permissions` no longer special-case `code.run` by
+            # `http.request`'s `workflows.http` uses - `assert_node_permissions`
+            # (nee `assert_code_permitted`)/`required_node_permissions` no
+            # longer special-case `code.run` by
             # name. The `code_authorized_by` publish-time stamp (below, via
             # `has_code_nodes`) is a SEPARATE, additional Code-only mechanism
             # (it also captures runner-health-at-publish-time for the

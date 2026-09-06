@@ -183,6 +183,19 @@ def test_evaluate_overnight_window_spans_midnight():
     assert _inside(windows, saturday_1000) is False
 
 
+def test_evaluate_end_boundary_is_exclusive():
+    """A 09:00-18:00 window is open through 17:59, closed AT 18:00 (plan 31
+    review nit) - the conventional business-hours reading, and consistent
+    with the overnight branch's own already-exclusive `end`."""
+    from modules.omnichannel.services.business_hours import _inside
+
+    windows = _default_windows()
+    monday_1759 = datetime(2026, 9, 7, 17, 59, tzinfo=timezone.utc)
+    monday_1800 = datetime(2026, 9, 7, 18, 0, tzinfo=timezone.utc)
+    assert _inside(windows, monday_1759) is True
+    assert _inside(windows, monday_1800) is False
+
+
 def test_evaluate_falls_back_to_tenant_default_then_fails_loudly(session_factory):
     from modules.omnichannel.models import Workspace
 

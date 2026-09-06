@@ -71,16 +71,21 @@ def duration_to_delta(value: Any, unit: Any) -> timedelta:
     return delta
 
 
-def find_open_question(db: Session, tenant_id: str, contact_id: str) -> Optional[WorkflowWait]:
-    return (
-        db.query(WorkflowWait)
-        .filter(
-            WorkflowWait.tenant_id == tenant_id,
-            WorkflowWait.contact_id == contact_id,
-            WorkflowWait.kind == KIND_QUESTION,
-        )
-        .first()
+def find_open_question(
+    db: Session, tenant_id: str, contact_id: str, workspace_id: Optional[str] = None
+) -> Optional[WorkflowWait]:
+    """Tenant + contact scoped lookup. ``workspace_id`` is optional
+    defence-in-depth (plan 31 review nit) - contact ids are already
+    workspace-unique so it changes nothing today, but a caller that has the
+    workspace on hand should pass it."""
+    query = db.query(WorkflowWait).filter(
+        WorkflowWait.tenant_id == tenant_id,
+        WorkflowWait.contact_id == contact_id,
+        WorkflowWait.kind == KIND_QUESTION,
     )
+    if workspace_id is not None:
+        query = query.filter(WorkflowWait.workspace_id == workspace_id)
+    return query.first()
 
 
 def open_wait(
@@ -102,7 +107,7 @@ def open_wait(
     if kind == KIND_QUESTION:
         if contact is None:
             raise WaitError("A question wait needs a contact.")
-        if find_open_question(db, tenant_id, contact.id) is not None:
+        if find_open_question(db, tenant_id, contact.id, contact.workspace_id) is not None:
             raise WaitError("This contact already has an open question.")
     row = WorkflowWait(
         tenant_id=tenant_id,
@@ -225,7 +230,16 @@ def _claim_delete(db: Session, snap: Dict[str, Any]) -> bool:
 
 
 def _claim_retry(db: Session, snap: Dict[str, Any], seen: int) -> bool:
-    """Atomically claim ONE re-ask (guarded on the retry counter we read)."""
+    """Atomically claim ONE re-ask (guarded on the retry counter we read).
+
+    Deliberately asymmetric vs ``_claim_delete`` on a lost race (plan 31
+    review nit): losing HERE means the wait row is still OPEN - another
+    delivery already advanced the retry counter for this same event, so the
+    caller reports the message consumed (``return True``) rather than
+    re-sending a duplicate retry. ``_claim_delete`` losing its race means the
+    wait row is GONE - already resolved by someone else - so that caller
+    reports NOT consumed (``return False``) and lets the message flow on as
+    ordinary inbound content instead of being silently swallowed."""
     updated = (
         db.query(WorkflowWait)
         .filter(
@@ -264,7 +278,10 @@ def _send(db: Session, snap: Dict[str, Any], body: str) -> None:
 def _resume(db: Session, snap: Dict[str, Any], *, branch: Optional[str], output: Dict[str, Any]) -> None:
     from app.workflow_engine.executor import resume_run
 
-    resume_run(db, snap["run_id"], node_id=snap["node_id"], output=output, branch=branch)
+    resume_run(
+        db, snap["run_id"], snap["tenant_id"],
+        node_id=snap["node_id"], output=output, branch=branch,
+    )
 
 
 def resume_from_inbound(
@@ -276,7 +293,7 @@ def resume_from_inbound(
 
     A message that is not an answer (no open wait) returns False and flows on
     unchanged."""
-    wait = find_open_question(db, tenant_id, contact.id)
+    wait = find_open_question(db, tenant_id, contact.id, contact.workspace_id)
     if wait is None:
         return False
     snap = _snapshot(wait)
@@ -329,10 +346,18 @@ def sweep_due_waits(
         .limit(max(1, min(limit, SWEEP_BATCH)))
         .all()
     )
+    # Snapshot EVERY row up front (plan 31 review S2), before any claim commits.
+    # A claim commit expires the whole session's ORM instances, so touching a
+    # later row in `rows` after an earlier claim would re-SELECT it - and if a
+    # concurrent inbound resume deleted that row in the meantime, the re-SELECT
+    # raises `ObjectDeletedError` OUTSIDE this function's own try/except,
+    # aborting the whole tick and losing the counts of work already done.
+    # Snapshotting here means every row's plain-value copy is taken before any
+    # commit can expire anything.
+    snaps = [_snapshot(wait) for wait in rows]
     resumed = 0
     discarded = 0
-    for wait in rows:
-        snap = _snapshot(wait)
+    for snap in snaps:
         kind = snap["kind"]
         run_id = snap["run_id"]
         node_id = snap["node_id"]
@@ -360,13 +385,13 @@ def sweep_due_waits(
                 continue
             if kind == KIND_DELAY:
                 resume_run(
-                    db, run_id, node_id=node_id,
+                    db, run_id, tenant_id, node_id=node_id,
                     output={"resumedAt": current.isoformat().replace("+00:00", "Z")},
                     branch=None,
                 )
             else:
                 resume_run(
-                    db, run_id, node_id=node_id,
+                    db, run_id, tenant_id, node_id=node_id,
                     output={
                         "answer": None,
                         "answerRaw": "",

@@ -62,9 +62,11 @@ def _new_secret() -> str:
 def validate_callback_url(url: str, *, strict_dns: bool = False) -> str:
     """Delegates to the shared core guard (``app/services/url_guard.py``),
     re-raising its ``UrlGuardError`` as this module's own ``WebhookError`` -
-    behaviour is byte-identical to the pre-extraction implementation."""
+    ``subject="Callback URL"`` keeps every pre-extraction 422 message
+    byte-identical (review S5; pinned by ``tests/test_omnichannel_consumer_
+    webhooks.py``)."""
     try:
-        return _core_validate_url(url, strict_dns=strict_dns)
+        return _core_validate_url(url, strict_dns=strict_dns, subject="Callback URL")
     except UrlGuardError as exc:
         raise WebhookError(str(exc)) from exc
 
@@ -73,7 +75,7 @@ def assert_deliverable(url: str) -> None:
     """Re-check the target IMMEDIATELY before POSTing to it (delegates to the
     shared core guard - see its docstring for the full rationale)."""
     try:
-        _core_assert_deliverable(url)
+        _core_assert_deliverable(url, subject="Callback URL")
     except UrlGuardError as exc:
         raise WebhookError(str(exc)) from exc
 

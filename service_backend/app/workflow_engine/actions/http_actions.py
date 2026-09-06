@@ -17,9 +17,15 @@ Security invariants:
 - Header VALUES are merge-rendered here at execution time but the field is
   NOT declared ``mergeable`` on the ``ActionDef`` - the generic
   ``executor._node_input_json`` trace helper only renders fields flagged
-  ``mergeable``, so header values are never written to the run trace (names
-  only, via the raw ``config`` it always stores). This is enforced by
-  ``tests/test_http_workflow_action.py``, not by any special case here.
+  ``mergeable``, so a merge-TOKEN-authored header value is never written to
+  the run trace. The ``headers`` field is ALSO flagged ``redacted=True``
+  (plan 31 review B1) - this closes the gap the ``mergeable=False``
+  convention alone missed: a LITERAL secret typed straight into the graph
+  (no merge token at all) is masked (``"***"``) in the stored ``config``
+  itself, before it ever reaches ``input_json``. The same masking applies to
+  a transport error's message (h11 echoes a rejected header value verbatim).
+  This is enforced by ``tests/test_http_workflow_action.py``, not by any
+  further special case here.
 """
 from __future__ import annotations
 
@@ -44,6 +50,9 @@ DEFAULT_TIMEOUT_SECONDS = 10
 MAX_TIMEOUT_SECONDS = 30
 MAX_RESPONSE_BYTES = 256 * 1024  # AC-WFP-57/59 response-read cap
 MAX_JSON_FLATTEN_KEYS = 500  # safety valve - never explode an enormous body
+MAX_REQUEST_BODY_BYTES = 1024 * 1024  # 1 MB - authored config, not a file upload
+MAX_HEADER_NAME_LENGTH = 256
+MAX_HEADER_VALUE_LENGTH = 8000  # generous (Bearer JWTs, signed cookies) but bounded
 
 
 def _timeout_seconds(config: Dict[str, Any]) -> int:
@@ -59,7 +68,12 @@ def _timeout_seconds(config: Dict[str, Any]) -> int:
 
 def _headers(config: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, str]:
     """Merge-render each header VALUE (never traced - see module docstring).
-    Blank keys are dropped; a later duplicate key wins (author order)."""
+    Blank keys are dropped; a later duplicate key wins (author order).
+
+    Name/value are length- and CRLF-checked HERE (plan 31 review nit) rather
+    than left for h11 to reject as a raw transport exception - a clean
+    ``ActionError`` is a better node failure than a translated protocol error,
+    and it means the http-client library never even SEES an illegal value."""
     rows = config.get("headers")
     out: Dict[str, str] = {}
     if not isinstance(rows, list):
@@ -70,7 +84,12 @@ def _headers(config: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, str]:
         key = str(row.get("key") or "").strip()
         if not key:
             continue
-        out[key] = render_field(row.get("value"), ctx)
+        value = render_field(row.get("value"), ctx)
+        if len(key) > MAX_HEADER_NAME_LENGTH or len(value) > MAX_HEADER_VALUE_LENGTH:
+            raise ActionError("A header name or value is too long.")
+        if any(ch in key for ch in ("\r", "\n")) or any(ch in value for ch in ("\r", "\n")):
+            raise ActionError("A header name or value contains an illegal character.")
+        out[key] = value
     return out
 
 
@@ -134,8 +153,13 @@ def _body_and_content_type(
             raise ActionError(
                 "The request body is not valid JSON after merging."
             ) from exc
-        return rendered.encode("utf-8"), "application/json"
-    return rendered.encode("utf-8"), "text/plain; charset=utf-8"
+        content_type = "application/json"
+    else:
+        content_type = "text/plain; charset=utf-8"
+    encoded = rendered.encode("utf-8")
+    if len(encoded) > MAX_REQUEST_BODY_BYTES:
+        raise ActionError("The request body exceeds the size limit.")
+    return encoded, content_type
 
 
 def http_request(
@@ -178,6 +202,17 @@ def http_request(
             total = 0
             truncated = False
             for chunk in resp.iter_bytes():
+                # Wall-clock deadline (plan 31 review S3): `timeout=` on
+                # `httpx.stream` is a PER-OPERATION budget (connect/read/write/
+                # pool), not a cap on total elapsed time - a hostile endpoint
+                # drip-feeding one byte every few seconds under the read
+                # timeout would otherwise hold this worker slot indefinitely
+                # while never exceeding MAX_RESPONSE_BYTES. Checked BEFORE
+                # counting the chunk so a slow-drip response truncates even
+                # when every individual read succeeds.
+                if time.monotonic() - started > timeout:
+                    truncated = True
+                    break
                 total += len(chunk)
                 if total > MAX_RESPONSE_BYTES:
                     truncated = True
@@ -186,8 +221,16 @@ def http_request(
             raw = b"".join(chunks)
     except httpx.HTTPError as exc:
         # AC-WFP-60: a transport error fails the node with its error class in
-        # the message - no silent success.
-        raise ActionError(f"Request failed: {type(exc).__name__}: {exc}") from exc
+        # the message - no silent success. Scrub any CONFIGURED header value
+        # out of the message (B1, second leg): `httpx.LocalProtocolError` (an
+        # `HTTPError`) is what h11 raises for an illegal header value, and its
+        # message ECHOES the raw value - without this, a value that never
+        # reaches `input_json` could still leak via `WorkflowRunNode.error`.
+        message = f"Request failed: {type(exc).__name__}: {exc}"
+        for secret_value in headers.values():
+            if secret_value:
+                message = message.replace(secret_value, "***")
+        raise ActionError(message) from exc
     duration_ms = int((time.monotonic() - started) * 1000)
 
     ok = 200 <= status_code < 300
@@ -209,13 +252,24 @@ def http_request(
                 parsed = None
             if parsed is not None:
                 output["json"] = json_module.dumps(parsed, separators=(",", ":"))
-                flat: Dict[str, Any] = {}
-                _flatten_json(parsed, "json", flat, [MAX_JSON_FLATTEN_KEYS])
-                output.update(flat)
+                # Only flatten a CONTAINER root (dict/list) - a scalar root
+                # (`5`, `"hi"`) would otherwise write `flat["json"] = 5` and
+                # `output.update(flat)` clobbers the compact-dumps STRING
+                # above with the raw scalar, flipping the output's type
+                # (plan 31 review nit). A scalar root has no dotted sub-path
+                # to expose anyway - `output["json"]` already carries it.
+                if isinstance(parsed, (dict, list)):
+                    flat: Dict[str, Any] = {}
+                    _flatten_json(parsed, "json", flat, [MAX_JSON_FLATTEN_KEYS])
+                    output.update(flat)
     else:
         # AC-WFP-59: a non-text response records size + content type only -
-        # never the raw bytes.
-        output["body"] = f"[{content_type or 'binary'}, {total} bytes]"
+        # never the raw bytes. A TRUNCATED size is reported as a rounded cap
+        # ("256 KB+"), not the exact byte count at the moment of the break -
+        # that count is an artifact of chunk boundaries, not a real size
+        # (plan 31 review nit).
+        size_text = f"{MAX_RESPONSE_BYTES // 1024} KB+" if truncated else f"{total} bytes"
+        output["body"] = f"[{content_type or 'binary'}, {size_text}]"
 
     if not ok:
         # AC-WFP-60: a non-2xx response fails the node (with the status code

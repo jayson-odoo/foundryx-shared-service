@@ -33,6 +33,9 @@ function readFieldErrors(detail: unknown): Record<string, string> {
 
 export interface UseBusinessHoursResult {
   isLoading: boolean;
+  /** Set when the initial GET failed - the tab renders a failure state with
+   * no editable fields (nothing to Save over a schedule we never loaded). */
+  loadError: string | null;
   timezone: string | null;
   windows: BusinessHoursWindows;
   isDirty: boolean;
@@ -51,6 +54,7 @@ export interface UseBusinessHoursResult {
 export function useBusinessHours(workspaceId: string | null): UseBusinessHoursResult {
   const [baseline, setBaseline] = useState<BusinessHours | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [timezone, setTimezoneState] = useState<string | null>(null);
   const [windows, setWindowsState] = useState<BusinessHoursWindows>(emptyWindows());
   const [isSaving, setIsSaving] = useState(false);
@@ -64,6 +68,7 @@ export function useBusinessHours(workspaceId: string | null): UseBusinessHoursRe
     }
     let cancelled = false;
     setIsLoading(true);
+    setLoadError(null);
     businessHoursService
       .get(workspaceId)
       .then((loaded) => {
@@ -71,6 +76,9 @@ export function useBusinessHours(workspaceId: string | null): UseBusinessHoursRe
         setBaseline(loaded);
         setTimezoneState(loaded.timezone);
         setWindowsState(loaded.windows);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadError('Business hours could not be loaded.');
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);
@@ -125,6 +133,7 @@ export function useBusinessHours(workspaceId: string | null): UseBusinessHoursRe
 
   return {
     isLoading,
+    loadError,
     timezone,
     windows,
     isDirty,

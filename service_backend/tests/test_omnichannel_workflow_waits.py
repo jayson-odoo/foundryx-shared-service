@@ -408,6 +408,99 @@ def test_sweep_is_bounded_per_tick(session_factory):
         db.close()
 
 
+# ── review S2: a concurrent claim mid-loop must not abort the whole tick ────
+def test_sweep_snapshots_every_row_up_front_so_a_concurrent_deletion_mid_loop_does_not_abort_the_tick(
+    session_factory, monkeypatch
+):
+    """Regression for review S2: `_snapshot`/`_claim_delete` used to sit
+    OUTSIDE each row's isolation, so `_claim_delete`'s commit (which expires
+    every ORM instance in the session) could leave a LATER row's attributes
+    expired; touching them then re-SELECTs a row a concurrent worker already
+    deleted, raising `ObjectDeletedError` OUTSIDE the per-row try and
+    aborting the whole tick. Snapshotting every row up front (before any
+    commit) means a row that vanishes underneath the sweep is just a lost
+    claim race for THAT row - the rest of the tick still completes."""
+    db = session_factory()
+    try:
+        db.add(
+            WorkflowWait(
+                tenant_id=DEFAULT_TENANT_ID, run_id="ghost-a", workflow_id="ghost-wf",
+                node_id="ask_1", kind="question", deadline_at=_now() - timedelta(minutes=5),
+            )
+        )
+        db.add(
+            WorkflowWait(
+                tenant_id=DEFAULT_TENANT_ID, run_id="ghost-b", workflow_id="ghost-wf",
+                node_id="ask_1", kind="question", deadline_at=_now() - timedelta(minutes=4),
+            )
+        )
+        db.commit()
+
+        real_claim_delete = waits._claim_delete
+        triggered = {"done": False}
+
+        def _racy_claim_delete(db_arg, snap):
+            if snap["run_id"] == "ghost-a" and not triggered["done"]:
+                triggered["done"] = True
+                # A concurrent worker (a genuinely separate session) claims +
+                # deletes "ghost-b" BETWEEN the sweep's initial SELECT (both
+                # rows were snapshotted already) and this loop iteration -
+                # exactly the race S2 closes.
+                other = session_factory()
+                try:
+                    other.query(WorkflowWait).filter(WorkflowWait.run_id == "ghost-b").delete()
+                    other.commit()
+                finally:
+                    other.close()
+            return real_claim_delete(db_arg, snap)
+
+        monkeypatch.setattr(waits, "_claim_delete", _racy_claim_delete)
+        # Must NOT raise ObjectDeletedError - both rows are accounted for.
+        result = waits.sweep_due_waits(db, now=_now())
+        # "ghost-a" is discarded normally (its run doesn't exist); "ghost-b"
+        # lost its claim race to the concurrent deleter and is silently
+        # skipped by THIS tick (not double-counted) - not an exception.
+        assert result == {"resumed": 0, "discarded": 1}
+        assert _wait_rows(db) == []
+    finally:
+        db.close()
+
+
+# ── review S1: resume_run resolves the stored run_id tenant-scoped ──────────
+def test_resume_run_never_resumes_a_foreign_tenant_run_id(session_factory):
+    """A `workflow_waits.run_id` is a polymorphic stored core id (CLAUDE.md
+    "Polymorphic stored ids") - `resume_run` must resolve it tenant-scoped,
+    never with a bare id lookup."""
+    from app.workflow_engine.executor import resume_run
+
+    wf_id, _contact_id, _ = _park_via_inbound(session_factory)
+    db = session_factory()
+    try:
+        run = _run_of(db, wf_id)
+        run_id = run.id
+        assert resume_run(
+            db, run_id, "some-other-tenant",
+            node_id="ask_1", output={"answer": "Pro"}, branch="answer",
+        ) is None
+        db.expire_all()
+        # Untouched - still parked.
+        assert _run_of(db, wf_id).status == RUN_WAITING
+    finally:
+        db.close()
+
+
+# ── review nit: `_claim_delete` is atomic - a second call never wins twice ──
+def test_claim_delete_called_twice_with_the_same_snapshot_only_wins_once(session_factory):
+    wf_id, _contact_id, _ = _park_via_inbound(session_factory)
+    db = session_factory()
+    try:
+        wait = db.query(WorkflowWait).one()
+        snap = waits._snapshot(wait)
+        assert (waits._claim_delete(db, snap), waits._claim_delete(db, snap)) == (True, False)
+    finally:
+        db.close()
+
+
 # ── AC-WFP-50: the plain Wait step ──────────────────────────────────────────
 def _wait_doc():
     return {

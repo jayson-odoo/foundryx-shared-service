@@ -18,6 +18,7 @@ function emptyWindows(): BusinessHoursWindows {
 function base(over: Partial<ReturnType<typeof useBusinessHoursMock>> = {}) {
   return {
     isLoading: false,
+    loadError: null,
     timezone: 'Asia/Kuala_Lumpur',
     windows: { ...emptyWindows(), mon: [{ from: '09:00', to: '18:00' }] },
     isDirty: false,
@@ -42,10 +43,22 @@ describe('WorkspaceBusinessHoursTab', () => {
   it('renders the read view: a configured window and "Closed" for empty days', () => {
     useBusinessHoursMock.mockReturnValue(base());
     render(<WorkspaceBusinessHoursTab workspaceId="wsp-001" creating={false} editing={false} />);
-    expect(screen.getByText('09:00–18:00')).toBeInTheDocument();
+    expect(screen.getByText('09:00 - 18:00')).toBeInTheDocument();
     expect(screen.getAllByText('Closed').length).toBeGreaterThan(0);
     // Read-only: no time inputs, no add-window buttons.
     expect(screen.queryByTestId('business-hours-add-mon')).not.toBeInTheDocument();
+  });
+
+  it('renders a failure state (no Save possible) when the load fails', () => {
+    useBusinessHoursMock.mockReturnValue(
+      base({ loadError: 'Business hours could not be loaded.' }),
+    );
+    render(<WorkspaceBusinessHoursTab workspaceId="wsp-001" creating={false} editing />);
+    expect(screen.getByTestId('business-hours-load-error')).toHaveTextContent(
+      'Business hours could not be loaded.',
+    );
+    // No editable schedule is rendered - nothing to accidentally Save over.
+    expect(screen.queryByTestId('business-hours-schedule')).not.toBeInTheDocument();
   });
 
   it('renders time inputs and an Add window button per day while editing', () => {

@@ -108,6 +108,14 @@ describe('useBusinessHours', () => {
     expect(result.current.isDirty).toBe(false);
   });
 
+  it('sets loadError (and stops loading) when the GET rejects', async () => {
+    getMock.mockRejectedValue(new ApiError('Forbidden', 403, null, null));
+    const { result } = renderHook(() => useBusinessHours('wsp-001'));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.loadError).toBe('Business hours could not be loaded.');
+    expect(result.current.timezone).toBeNull();
+  });
+
   it('save() is a no-op when nothing changed (no network call)', async () => {
     getMock.mockResolvedValue(loaded());
     const { result } = renderHook(() => useBusinessHours('wsp-001'));

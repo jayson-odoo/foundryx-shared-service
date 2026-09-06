@@ -186,11 +186,54 @@ def test_ssrf_guard_is_the_shared_core_guard(monkeypatch):
 # ── AC-WFP-59: header values never traced; response truncation + non-text ──
 
 
-def test_header_values_never_reach_the_run_trace(session_factory, fake_http):
-    """The header VALUE is authored as a merge TOKEN (never a literal secret
-    typed into the graph) - the trace must never show the RESOLVED secret,
-    only the unrendered token the author typed (the graph's own content, not
-    a leak)."""
+def test_a_literal_header_secret_never_reaches_the_run_trace(session_factory, fake_http, client):
+    """B1 (review round 1): the OVERWHELMINGLY common way a header value is
+    authored is a LITERAL string (an API key pasted in), not a merge token -
+    the trace must never show it, in `input_json`, `output_json`, `error`,
+    NOR the run-detail wire (readable with `workflows.read`, a much broader
+    grant than `workflows.http`)."""
+    from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD
+
+    calls, state = fake_http
+    state["responses"] = [_FakeStream(status_code=200, headers={"content-type": "text/plain"}, body=b"ok")]
+    secret = "Bearer sk_live_LITERAL_SECRET"
+    doc = _doc(
+        {
+            "method": "GET",
+            "url": "https://api.example.com/ping",
+            "headers": [{"key": "Authorization", "value": secret}],
+            "timeoutSeconds": "5",
+        }
+    )
+    db = session_factory()
+    result, nodes = _execute(db, doc)
+    assert result.status == "success"
+    # The actual (literal) header VALUE was sent...
+    assert calls[0]["headers"]["Authorization"] == secret
+    node = nodes["http_1"]
+    # ...but it never reaches the trace: `config.headers[*].value` is masked,
+    # names are kept, and nothing in output/error carries the raw value.
+    assert node.input_json["config"]["headers"][0]["key"] == "Authorization"
+    assert node.input_json["config"]["headers"][0]["value"] == "***"
+    trace = json.dumps({"input": node.input_json, "output": node.output_json, "error": node.error})
+    assert "sk_live_LITERAL_SECRET" not in trace
+
+    # ...nor the run-detail WIRE's per-node TRACE (a `workflows.read`-gated
+    # response) - `nodes[*].inputJson/outputJson/error`. The run's own
+    # `definition` field (the authored graph snapshot) is OUT OF SCOPE for
+    # this redaction by design (plan §9 F9 / BL-SS-127): it holds the node's
+    # config exactly as authored, same as every other field on every other
+    # node, gated the same as the rest of the graph.
+    login = client.post("/auth/login", json={"email": ACTIVE_EMAIL, "password": ACTIVE_PASSWORD})
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    detail = client.get(f"/workflows/runs/{result.id}", headers=headers)
+    assert detail.status_code == 200, detail.text
+    assert "sk_live_LITERAL_SECRET" not in json.dumps(detail.json()["nodes"])
+
+
+def test_header_values_authored_as_a_merge_token_still_never_reach_the_trace(session_factory, fake_http):
+    """Keeps the S5-era merge-token case covered alongside the literal case
+    above - both authoring styles must be masked identically."""
     calls, state = fake_http
     state["responses"] = [_FakeStream(status_code=200, headers={"content-type": "text/plain"}, body=b"ok")]
     doc = _doc(
@@ -206,17 +249,121 @@ def test_header_values_never_reach_the_run_trace(session_factory, fake_http):
         db, doc, payload={"triggeredBy": "manual", "input": {"token": "super-secret-token"}}
     )
     assert result.status == "success"
-    # The actual header VALUE was sent (merge-rendered at request time)...
     assert calls[0]["headers"]["Authorization"] == "Bearer super-secret-token"
-    # ...but the RESOLVED secret never reaches the run's trace - only the
-    # unrendered `{{ trigger.input.token }}` token the author typed (via the
-    # raw `config`, which every action stores regardless).
-    trace = json.dumps(nodes["http_1"].input_json)
+    node = nodes["http_1"]
+    assert node.input_json["config"]["headers"][0]["value"] == "***"
+    trace = json.dumps({"input": node.input_json, "output": node.output_json, "error": node.error})
     assert "super-secret-token" not in trace
-    assert "{{ trigger.input.token }}" in trace
-    assert nodes["http_1"].input_json.get("resolved") is None or "headers" not in (
-        nodes["http_1"].input_json.get("resolved") or {}
+
+
+def test_a_header_value_h11_rejects_never_appears_in_the_error(session_factory, fake_http):
+    """B1, second leg: h11 rejects some header values with a message that
+    ECHOES the raw value verbatim (`httpx.LocalProtocolError`, an
+    `httpx.HTTPError`) - even though this header value itself passes the
+    CRLF/length pre-check (a real illegal-value case is already caught
+    earlier, with no request attempted at all), the scrub must ALSO cover
+    whatever OTHER transport error message might repeat a configured header
+    value - defense in depth, not reliant on the pre-check being exhaustive."""
+    _calls, state = fake_http
+    secret = "Bearer sk_live_LITERAL_SECRET"
+    state["raise"] = httpx.LocalProtocolError(f"Illegal header value: {secret!r}")
+    doc = _doc(
+        {
+            "method": "GET",
+            "url": "https://api.example.com/ping",
+            "headers": [{"key": "Authorization", "value": secret}],
+            "timeoutSeconds": "5",
+        }
     )
+    db = session_factory()
+    result, nodes = _execute(db, doc)
+    assert result.status == "failed"
+    assert "sk_live_LITERAL_SECRET" not in nodes["http_1"].error
+    assert "LocalProtocolError" in nodes["http_1"].error
+
+
+# ── header/body caps (plan 31 review nits) ──────────────────────────────────
+
+
+def test_a_header_value_containing_crlf_fails_with_a_clean_node_error(session_factory, fake_http):
+    calls, _state = fake_http
+    doc = _doc(
+        {
+            "method": "GET",
+            "url": "https://api.example.com/ping",
+            "headers": [{"key": "X-Custom", "value": "line1\r\nline2"}],
+            "timeoutSeconds": "5",
+        }
+    )
+    db = session_factory()
+    result, nodes = _execute(db, doc)
+    assert result.status == "failed"
+    assert "illegal character" in nodes["http_1"].error.lower()
+    assert calls == []  # never reached the http client
+
+
+def test_an_oversized_header_value_fails_with_a_clean_node_error(session_factory, fake_http):
+    import app.workflow_engine.actions.http_actions as http_actions
+
+    calls, _state = fake_http
+    doc = _doc(
+        {
+            "method": "GET",
+            "url": "https://api.example.com/ping",
+            "headers": [{"key": "X-Big", "value": "x" * (http_actions.MAX_HEADER_VALUE_LENGTH + 1)}],
+            "timeoutSeconds": "5",
+        }
+    )
+    db = session_factory()
+    result, nodes = _execute(db, doc)
+    assert result.status == "failed"
+    assert "too long" in nodes["http_1"].error.lower()
+    assert calls == []
+
+
+def test_an_oversized_request_body_fails_before_sending(session_factory, fake_http):
+    import app.workflow_engine.actions.http_actions as http_actions
+
+    calls, _state = fake_http
+    doc = _doc(
+        {
+            "method": "POST",
+            "url": "https://api.example.com/create",
+            "bodyMode": "text",
+            "body": "x" * (http_actions.MAX_REQUEST_BODY_BYTES + 1),
+            "timeoutSeconds": "5",
+        }
+    )
+    db = session_factory()
+    result, nodes = _execute(db, doc)
+    assert result.status == "failed"
+    assert "size limit" in nodes["http_1"].error.lower()
+    assert calls == []
+
+
+def test_wall_clock_deadline_truncates_a_slow_drip_feed_response(session_factory, fake_http, monkeypatch):
+    """S3: `timeout=` on `httpx.stream` is a PER-OPERATION budget, not a cap on
+    total elapsed time - simulate a wall clock that has already blown the
+    configured timeout by the time the first chunk is read."""
+    import app.workflow_engine.actions.http_actions as http_actions
+
+    calls, state = fake_http
+    state["responses"] = [
+        _FakeStream(status_code=200, headers={"content-type": "text/plain"}, body=b"slow-drip")
+    ]
+    call_count = {"n": 0}
+
+    def fake_monotonic():
+        call_count["n"] += 1
+        return 0.0 if call_count["n"] == 1 else 100.0
+
+    monkeypatch.setattr(http_actions.time, "monotonic", fake_monotonic)
+    doc = _doc({"method": "GET", "url": "https://api.example.com/slow", "timeoutSeconds": "10"})
+    db = session_factory()
+    result, nodes = _execute(db, doc)
+    assert result.status == "success"
+    assert "(truncated)" in nodes["http_1"].output_json["body"]
+    assert len(calls) == 1
 
 
 def test_response_body_truncated_at_the_cap(session_factory, fake_http, monkeypatch):
@@ -251,6 +398,47 @@ def test_non_text_response_records_size_and_content_type_only(session_factory, f
     assert "image/png" in out["body"]
     assert "PNG" not in out["body"]
     assert "json" not in out
+
+
+def test_a_truncated_non_text_response_reports_a_rounded_cap_not_a_raw_byte_count(
+    session_factory, fake_http, monkeypatch
+):
+    """A truncated non-text response's byte count at the moment of the break
+    is a chunk-boundary artifact, not a real size (plan 31 review nit) -
+    report the rounded cap instead."""
+    import app.workflow_engine.actions.http_actions as http_actions
+
+    monkeypatch.setattr(http_actions, "MAX_RESPONSE_BYTES", 10)
+    calls, state = fake_http
+    state["responses"] = [
+        _FakeStream(status_code=200, headers={"content-type": "image/png"}, body=b"x" * 100)
+    ]
+    doc = _doc({"method": "GET", "url": "https://api.example.com/logo.png", "timeoutSeconds": "5"})
+    db = session_factory()
+    result, nodes = _execute(db, doc)
+    assert result.status == "success"
+    out = nodes["http_1"].output_json
+    assert "0 KB+" in out["body"]  # 10 bytes // 1024 == 0, still "rounded cap" not a raw count
+    assert "100" not in out["body"]
+
+
+def test_a_scalar_json_root_keeps_the_compact_dumps_string_not_the_raw_scalar(
+    session_factory, fake_http
+):
+    """A scalar JSON body (`5`, `"hi"`) must not flip `output["json"]`'s type -
+    `output.update(flat)` previously clobbered the compact-dumps STRING with
+    the raw scalar (plan 31 review nit)."""
+    calls, state = fake_http
+    state["responses"] = [
+        _FakeStream(status_code=200, headers={"content-type": "application/json"}, body=b"5")
+    ]
+    doc = _doc({"method": "GET", "url": "https://api.example.com/scalar", "timeoutSeconds": "5"})
+    db = session_factory()
+    result, nodes = _execute(db, doc)
+    assert result.status == "success"
+    out = nodes["http_1"].output_json
+    assert out["json"] == "5"
+    assert isinstance(out["json"], str)
 
 
 # ── AC-WFP-60: non-2xx / transport errors fail the node, downstream skips ──

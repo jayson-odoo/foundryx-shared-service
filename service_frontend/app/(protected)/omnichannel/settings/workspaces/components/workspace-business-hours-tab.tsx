@@ -15,6 +15,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
 import { SearchSelect } from '@/components/platform/search-select';
 import { FormRow } from '@/components/platform/resource-form';
 import {
@@ -68,6 +69,7 @@ export function WorkspaceBusinessHoursTab({
 }: WorkspaceBusinessHoursTabProps) {
   const {
     isLoading,
+    loadError,
     timezone,
     windows,
     isDirty,
@@ -102,7 +104,24 @@ export function WorkspaceBusinessHoursTab({
   if (isLoading) {
     return (
       <Card>
-        <CardContent className="py-12 text-center text-sm text-muted-foreground">Loading…</CardContent>
+        <CardContent className="flex flex-col gap-3 py-4">
+          <Skeleton className="h-5 w-40" />
+          <Skeleton className="h-9 w-full max-w-sm" />
+          <Skeleton className="h-24 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <Card>
+        <CardContent
+          className="flex flex-col items-center justify-center gap-2 py-16 text-center"
+          data-testid="business-hours-load-error"
+        >
+          <p className="text-sm font-medium text-destructive">{loadError}</p>
+        </CardContent>
       </Card>
     );
   }
@@ -205,7 +224,7 @@ export function WorkspaceBusinessHoursTab({
                             </>
                           ) : (
                             <span className="text-sm">
-                              {row.from}–{row.to}
+                              {row.from} - {row.to}
                             </span>
                           )}
                         </div>

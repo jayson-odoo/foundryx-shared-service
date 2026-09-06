@@ -154,7 +154,11 @@ def _inside(windows: Dict[str, List[Dict[str, str]]], local: datetime) -> bool:
     for window in windows.get(today_key, []) or []:
         start, end = window.get("from", ""), window.get("to", "")
         if end > start:
-            if start <= time_str <= end:
+            # `to` is EXCLUSIVE (plan 31 review nit): a 09:00-18:00 window is
+            # open THROUGH 17:59, closed AT 18:00 - the conventional reading
+            # of a business-hours end time, and consistent with the overnight
+            # branch below (which is already exclusive at its own `end`).
+            if start <= time_str < end:
                 return True
         else:
             # Overnight window that STARTED today - still open until it wraps.

@@ -508,3 +508,19 @@ because A8 had not merged onto this base yet - see this file's own NOTE at `work
 - **F8 - the wait sweep is a module-owned beat task in the core worker**, guarded like
   `webhooks.retry_due`. Core therefore names a module task string in `beat_schedule`. The precedent
   exists and is documented; the alternative (a second beat host) is worse.
+- **F9 - `http.request` header secrets are redacted at the RUN-TRACE boundary only (review B1);
+  `definition_json`/`definition_snapshot_json` still hold the authored config in full, by design.**
+  `_node_input_json` now masks every `redacted=True` field's value before it is ever written to
+  `WorkflowRunNode.input_json` - closing the gap where a LITERAL secret (not a merge token) was
+  stored verbatim and readable by any `workflows.read` holder. But the workflow's own `definition_json`
+  (draft), `workflow_versions.definition_json` (published) and every run's `definition_snapshot_json`
+  are the author's OWN document - they hold the node's config as authored, same as every other field
+  on every other node, gated `workflows.manage`/`workflows.read` same as the rest of the graph. That is
+  consistent with how the rest of the engine treats authored config (nothing else in the graph is
+  encrypted-at-rest either), but it means a tenant that types a literal API key into an HTTP header is
+  still storing that key in plaintext in three places, just not in the run TRACE. The clean fix is
+  authoring header secrets as references into the existing connection-credential store (Fernet-encrypted,
+  write-only) rather than as literal config - flagged as a follow-up, not built this slice (no
+  `http.request`-specific credential UI exists to attach). **Backlog row proposed**: "`http.request`
+  header secrets should be sourceable from `connections.credentials_json` (Fernet-encrypted), not typed
+  as literal config" - register at merge alongside the other BL-SS-1xx rows this review round produced.

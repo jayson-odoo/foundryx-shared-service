@@ -235,18 +235,46 @@ def _execute_node(
     return output
 
 
+def _redact_config(config: Optional[Dict[str, Any]], action) -> Dict[str, Any]:
+    """Deep-copy ``config`` masking every field the ``ActionDef`` flags
+    ``redacted`` (plan sprint-4/31 review B1) - closes the LITERAL-secret gap
+    the ``mergeable=False`` convention alone didn't (a header value typed as a
+    literal, not a merge token, was still stored verbatim). A `keyValue`-shaped
+    field (list of ``{key, value}`` rows) keeps its keys and masks each row's
+    ``value``; any other shape masks the whole value. This runs BEFORE the raw
+    config ever reaches ``input_json`` - the trace never carries the secret,
+    not even transiently."""
+    import copy
+
+    out: Dict[str, Any] = copy.deepcopy(config or {})
+    if action is None:
+        return out
+    for fld in action.fields:
+        if not getattr(fld, "redacted", False):
+            continue
+        value = out.get(fld.key)
+        if isinstance(value, list):
+            for row in value:
+                if isinstance(row, dict) and "value" in row:
+                    row["value"] = "***"
+        elif value is not None:
+            out[fld.key] = "***"
+    return out
+
+
 def _node_input_json(node: WorkflowNodeModel, ctx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """The node's stored trace input: its raw ``config`` PLUS a ``resolved``
-    map of every mergeable field rendered against the run context, so Logs can
-    show what was actually SENT (e.g. the message text), not just the template
-    (user request, plan sprint-4/19). Non-mergeable fields (ids, selects) are
-    never rendered - only substitution-only string fields are. Code nodes carry
-    their own ``runtime.input`` and declare no mergeable field, so this adds
-    nothing there."""
+    """The node's stored trace input: its raw ``config`` (with any ``redacted``
+    field masked, B1) PLUS a ``resolved`` map of every mergeable field rendered
+    against the run context, so Logs can show what was actually SENT (e.g. the
+    message text), not just the template (user request, plan sprint-4/19).
+    Non-mergeable fields (ids, selects) are never rendered - only
+    substitution-only string fields are. Code nodes carry their own
+    ``runtime.input`` and declare no mergeable field, so this adds nothing
+    there."""
     if node.kind == "trigger":
         return None
-    base: Dict[str, Any] = {"config": node.config}
     action = get_action(node.type)
+    base: Dict[str, Any] = {"config": _redact_config(node.config, action)}
     if action is None:
         return base
     resolved: Dict[str, Any] = {}
@@ -531,6 +559,7 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
 def resume_run(
     db: Session,
     run_id: str,
+    tenant_id: str,
     *,
     node_id: str,
     output: Dict[str, Any],
@@ -538,6 +567,12 @@ def resume_run(
 ) -> Optional[WorkflowRun]:
     """Continue a parked run from ``node_id`` with that node's final ``output``
     (plan sprint-4/31 S4, D-A5-6, AC-WFP-42).
+
+    ``run_id`` is a polymorphic stored id (a module's wait row carries it) -
+    the house rule (CLAUDE.md "Polymorphic stored ids") requires it be
+    resolved tenant-scoped at use time, never with a bare id lookup, so
+    ``tenant_id`` is REQUIRED (plan 31 review S1) even though no caller today
+    passes a cross-tenant id - defence-in-depth against a planted/corrupt row.
 
     ``branch`` is the port the parked node took - required for a branching node
     (Ask a question: ``answer``/``timeout``), ``None`` for a single-out node
@@ -551,7 +586,9 @@ def resume_run(
     from app.workflow_engine.serialization import dispatch_persisted_run
 
     query = db.query(WorkflowRun).filter(
-        WorkflowRun.id == run_id, WorkflowRun.status == RUN_WAITING
+        WorkflowRun.id == run_id,
+        WorkflowRun.tenant_id == tenant_id,
+        WorkflowRun.status == RUN_WAITING,
     )
     if db.get_bind().dialect.name == "postgresql":
         query = query.with_for_update()

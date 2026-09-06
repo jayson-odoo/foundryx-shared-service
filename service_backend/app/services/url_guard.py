@@ -39,11 +39,21 @@ def _is_blocked_ip(ip: "ipaddress._BaseAddress") -> bool:
     )
 
 
-def validate_public_https_url(url: str, *, strict_dns: bool = False) -> str:
+def validate_public_https_url(
+    url: str, *, strict_dns: bool = False, subject: str = "URL"
+) -> str:
     """HTTPS-only + block SSRF targets. Rejects private/loopback/link-local/
     reserved IPs whether given as a literal, a numeric/hex-encoded IP, OR a
     hostname that RESOLVES to one (e.g. an A record pointing at
     169.254.169.254). ``strict_dns`` also rejects a host we cannot resolve.
+
+    ``subject`` names the thing being validated in every raised message
+    (plan sprint-4/31 S5 review) - the pre-extraction consumer-webhook guard
+    said "Callback URL ..."; a caller with its own noun (the module's
+    ``validate_callback_url`` passes ``subject="Callback URL"``) keeps its
+    existing, already-documented 422 copy byte-identical after this
+    extraction. Defaults to the generic "URL" for callers with no better noun
+    (e.g. the core ``http.request`` action).
 
     Callers that only VALIDATE (registration/save) should keep
     ``strict_dns=False`` - a transient DNS failure must not reject a
@@ -53,20 +63,20 @@ def validate_public_https_url(url: str, *, strict_dns: bool = False) -> str:
     url = (url or "").strip()
     parsed = urlparse(url)
     if parsed.scheme != "https":
-        raise UrlGuardError("URL must use https://.")
+        raise UrlGuardError(f"{subject} must use https://.")
     host = parsed.hostname
     if not host:
-        raise UrlGuardError("URL is missing a host.")
+        raise UrlGuardError(f"{subject} is missing a host.")
     lowered = host.lower()
     if lowered == "localhost" or lowered.endswith(".localhost") or lowered.endswith(".local"):
-        raise UrlGuardError("URL cannot target localhost.")
+        raise UrlGuardError(f"{subject} cannot target localhost.")
 
     # IP literal (dotted, numeric like 2130706433, or hex like 0x7f000001 - the
     # latter two fail ip_address, so resolve them below).
     try:
         ip = ipaddress.ip_address(host)
         if _is_blocked_ip(ip):
-            raise UrlGuardError("URL cannot target a private or reserved IP.")
+            raise UrlGuardError(f"{subject} cannot target a private or reserved IP.")
         return url
     except ValueError:
         pass
@@ -83,13 +93,13 @@ def validate_public_https_url(url: str, *, strict_dns: bool = False) -> str:
         addr = info[4][0]
         try:
             if _is_blocked_ip(ipaddress.ip_address(addr)):
-                raise UrlGuardError("URL resolves to a private or reserved IP.")
+                raise UrlGuardError(f"{subject} resolves to a private or reserved IP.")
         except ValueError:
             continue
     return url
 
 
-def assert_deliverable(url: str) -> None:
+def assert_deliverable(url: str, *, subject: str = "URL") -> None:
     """Re-check the target IMMEDIATELY before making the request.
 
     Registration/save-time validation is not sufficient alone: DNS can be
@@ -104,4 +114,4 @@ def assert_deliverable(url: str) -> None:
     own - but it does turn every transient DNS blip into a refused delivery.
     What matters is that a host resolving to an internal address is never
     connected to."""
-    validate_public_https_url(url, strict_dns=False)
+    validate_public_https_url(url, strict_dns=False, subject=subject)

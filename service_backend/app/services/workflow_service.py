@@ -243,15 +243,17 @@ class WorkflowService:
     # ---- writes ----
 
     @staticmethod
-    def assert_code_permitted(actor: Optional[User], doc: Any) -> None:
+    def assert_node_permissions(actor: Optional[User], doc: Any) -> None:
         """Every ``ActionDef.permission`` a node in ``doc`` declares gates
         adding/editing/publishing/running that graph (AC-SAR-68, AC-WFP-61;
         plan sprint-4/31 S5 generalizes this beyond ``workflows.code`` -
         closes BL-SS-121, one seam for any current or future gated action -
         e.g. ``workflows.http`` on ``http.request``). ``actor=None`` = system
-        path (an event/scheduled trigger has no live actor; ``code.run``
-        keeps its own separate ``code_authorized_by`` publish-time stamp for
-        that path - see ``entity_events.create_run_for_event``)."""
+        path (an event/scheduled trigger has no live actor - the gate is
+        SKIPPED for that path; ``code.run`` keeps its own separate
+        ``code_authorized_by`` publish-time stamp precisely because a system
+        publish has no actor to check a permission against - see
+        ``entity_events.create_run_for_event`` and BL-SS-124)."""
         from app.workflow_engine.schemas import required_node_permissions
 
         if actor is None:
@@ -266,9 +268,14 @@ class WorkflowService:
         if missing:
             raise WorkflowPermissionError(f"Missing permission: {missing[0]}")
 
+    # Back-compat alias - renamed from `assert_code_permitted` (plan 31 review
+    # nit: the name no longer matched what it does since S5 generalized it
+    # beyond `code.run`). Same staticmethod object under both names.
+    assert_code_permitted = assert_node_permissions
+
     def create(self, tenant_id: str, *, name: str, description: str, draft: Dict[str, Any], actor_id: str, actor: Optional[User] = None) -> Workflow:
         parse_definition(draft)  # shape gate (422 on malformed)
-        self.assert_code_permitted(actor, draft)
+        self.assert_node_permissions(actor, draft)
         wf = Workflow(
             tenant_id=tenant_id,
             name=name.strip(),
@@ -286,7 +293,7 @@ class WorkflowService:
     def update(self, workflow_id: str, tenant_id: str, *, name: str, description: str, draft: Dict[str, Any], actor: Optional[User] = None) -> Workflow:
         wf = self.get(workflow_id, tenant_id)
         parse_definition(draft)
-        self.assert_code_permitted(actor, draft)
+        self.assert_node_permissions(actor, draft)
         changes: Dict[str, Any] = {}
         if wf.name != name.strip():
             changes["name"] = {"from": wf.name, "to": name.strip()}
@@ -354,7 +361,7 @@ class WorkflowService:
         # `code.run` - must be checked at publish, so `http.request`'s
         # `workflows.http` (AC-WFP-61) is enforced here too, not only at
         # create/update/manual-run.
-        self.assert_code_permitted(actor, doc)
+        self.assert_node_permissions(actor, doc)
         code_bearing = has_code_nodes(doc)
         code_authorized_by = None
         if code_bearing:
@@ -424,7 +431,7 @@ class WorkflowService:
     ) -> WorkflowRun:
         """Execute the draft manually or with registered synthetic trigger data."""
         wf = self.get(workflow_id, tenant_id)
-        self.assert_code_permitted(actor, wf.draft_definition_json)
+        self.assert_node_permissions(actor, wf.draft_definition_json)
         version_id = wf.current_version_id
         current = self.repo.get_version(version_id) if version_id else None
         version_number = current.version_number if current else 0
@@ -664,7 +671,7 @@ class WorkflowService:
         # source) - the same ``workflows.code`` gate as a manual run (AC-SAR-68).
         # Scratch can only override config on existing nodes, never add a node
         # or change its type, so gating on the snapshot covers scratch too.
-        self.assert_code_permitted(actor, run.definition_snapshot_json)
+        self.assert_node_permissions(actor, run.definition_snapshot_json)
         touched = _debug_execute(
             self.db, run, target_node_id=target_node_id, scratch=scratch, stale_node_ids=stale_node_ids
         )

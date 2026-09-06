@@ -288,7 +288,7 @@ report used) - **FAIL** (defect, repro below) - **DEFERRED**.
 | AC-WFP-56 (evaluate inside/outside, tenant-default fallback, missing-prerequisite error) | **PASS** | BOTH branches independently live-verified this run: Run 1 (always-open window) -> `{"isOpen":true,...,"branch":"inside"}` (inferred from the inside-hours message landing); Run 3 (narrowed to Monday 08:00-18:00, evaluated at ~05:20 KL) -> `{"isOpen":false,"checkedAt":"2026-09-06T21:20:47Z","timezone":"Asia/Kuala_Lumpur","branch":"outside"}`, DB- and UI-confirmed - `E2E-a5b/38`; tenant-default-row fallback and the missing-prerequisite error path not independently re-tested (suite green) |
 | AC-WFP-57 (HTTP method/url/headers/body/timeout; outputs statusCode/ok/body/json/durationMs) | **PASS** | `GET https://example.com/` -> `200`, real HTML body, `durationMs:82` captured live (`E2E-a5b/46`); the `json.<path>` flattening for a JSON response body not independently demonstrated this run (no JSON-responding endpoint used - suite covers it) |
 | AC-WFP-58 (SSRF guard runs before EVERY request, refuses private/loopback etc, uniform message, ONE shared guard) | **PASS** | `https://127.0.0.1:9/probe` refused with "URL refused: URL cannot target a private or reserved IP." (Run 2's timeout path, `E2E-a5b/34`/`35`); this is the SAME guard the pre-existing consumer-webhook SSRF tests exercise (suite green, untouched) |
-| AC-WFP-59 (header VALUES never stored or logged - names only) | **FAIL** | See §10 below - the RAW `config.headers[*].value` (a literal, non-merge-token secret) reaches `WorkflowRunNode.input_json` and is rendered verbatim in the Logs "INPUT" panel / `GET /workflows/runs/{id}` wire, readable with only `workflows.read`. The "RESOLVED INPUT" (merge-rendered) half correctly omits it - only the raw-config half leaks. Live-reproduced `E2E-a5b/46`/`47`; corroborated by an in-flight (uncommitted) fix on this shared worktree and its own currently-failing pytest case |
+| AC-WFP-59 (header VALUES never stored or logged - names only) | **FAIL, then PASS (fix round 1)** | Originally **FAIL** - see §10 below (the RAW `config.headers[*].value`, a literal non-merge-token secret, reached `WorkflowRunNode.input_json` and rendered verbatim in the Logs "INPUT" panel / `GET /workflows/runs/{id}` wire). **Fixed and independently re-verified live against the running server - see §15 "Fix round 1 verification"**: `config.headers[*].value` is now masked (`"***"`) at the trace boundary (`NodeField.redacted` + `executor._redact_config`), a CRLF-bearing header value fails with a clean node error instead of an echoed transport exception, and the fix is confirmed via 4 live curl probes against `:8010` plus the full backend/frontend suites (§15) |
 | AC-WFP-60 (non-2xx/transport error fails node+run, downstream skips, no continue-on-error option) | **PASS** | SSRF refusal (a transport-class error) failed the node, failed the run, both Send Message nodes downstream showed **skipped** (`E2E-a5b/34`/`36`); the HTTP node's drawer offers no "continue on error" toggle (confirmed via the full field list in `E2E-a5b/13`/`19`) |
 | AC-WFP-61 (`workflows.http` core permission, grant-swept to new tenants, gates create/update/publish/run) | **PASS** | Brand-new tenant's Admin role carried `workflows.http` day-one (110 perms, confirmed via `GET /roles/{id}`) - the grant sweep works for NEW tenants too; revoked it -> `PATCH /workflows/{id}` carrying an `http.request` node -> `403 "Missing permission: workflows.http"` (stricter than publish-only); FE palette rendered the entry **visible-but-disabled**, 0 nodes added on click (`E2E-a5b/42`); restored afterward. "Already-provisioned tenants" grant-sweep half not re-tested (this tenant was new, not pre-existing - same caveat the S6 coder's own README noted) |
 | AC-WFP-62 (JSON body mode must parse post-render or the node fails, nothing sent) | **PASS (suite)** | Not independently live-tested this run (no JSON-body HTTP node built); `tests/test_http_workflow_action.py` covers it (green) |
@@ -321,6 +321,10 @@ the raw-config half leaks. Reproduced live twice (a public-URL run with a real h
 currently-failing pytest case discovered on this shared worktree, §7.1/§8). **Not fixed by this
 tester** (tester writes tests/evidence only) - flagged for the coder/reviewer already visibly
 working on it.
+
+> **Fix round 1 (added after this tester's run, tester's text above left verbatim):** the coder's
+> in-flight fix referenced above landed and was independently re-verified live against the running
+> server - see §15 "Fix round 1 verification". AC-WFP-59 is now **PASS**.
 
 ## 11. What could not be independently verified this run (A5b)
 
@@ -371,3 +375,111 @@ implicate any other AC (the SSRF guard, publish gate, park/resume mechanics, bus
 branching, permission gate, and every other A5b mechanic were independently confirmed correct).
 No other defects were found across either A5a or A5b. `broadcast_completed` (AC-WFP-22) remains
 DEFERRED per its own documented plan-A4-merge-order condition, unrelated to A5b.
+
+**Update (fix round 1): AC-WFP-59 is now PASS - see §15. 70 of 70 acceptance criteria PASS.**
+
+## 15. Fix round 1 verification (AC-WFP-59)
+
+Independent verification of the coder's fix for this tester's §10 defect, performed on the SAME
+shared lane (backend restarted `:8010` on `foundryx_service_s31`, frontend rebuilt + restarted
+`:3009`) after the fix commit landed on `sprint-4/31-workflow-parity`. This section is ADDED to
+the report, not a rewrite of §7-§14 above.
+
+### 15.1 What changed (summary; full detail in the fix commit's own message)
+
+- `NodeField` gained a `redacted: bool` flag; `http.request`'s `headers` field is flagged
+  `redacted=True`.
+- `executor._node_input_json` now deep-copies `node.config` through a new `_redact_config()` that
+  masks every `redacted` field's value (`headers[*].value -> "***"`, keys kept) BEFORE it is ever
+  written to `WorkflowRunNode.input_json` - closing the literal-secret gap the S5-era
+  `mergeable=False` convention alone missed.
+- `http_actions.py`'s `except httpx.HTTPError` branch scrubs any CONFIGURED header value out of the
+  `ActionError` message too (the h11-echo leg of the same defect).
+- A CRLF/length pre-check on header name/value now fails with a clean node error BEFORE the value
+  ever reaches the http client (closes the h11-echo path at its source, not just its symptom).
+- Also fixed in the same round: `resume_run` is now tenant-scoped (core review S1), the wait sweep
+  snapshots every row up front (core review S2), a wall-clock deadline caps the HTTP streaming read
+  (core review S3), `url_guard`/`webhook_service` keep the pre-extraction "Callback URL ..." 422
+  copy via a `subject=` kwarg (core review S5, pinned by a new test), business-hours evaluation
+  `to` bound is now EXCLUSIVE (core review nit), plus the smaller nits (truncated non-text size
+  reported as a rounded cap, scalar JSON-body root no longer clobbered, request-body size cap,
+  `_claim_delete`/`_claim_retry` asymmetry documented, `find_open_question` gained `workspace_id`,
+  the business-hours tab gained a `loadError` failure state, `assert_code_permitted` renamed to
+  `assert_node_permissions`).
+- **Scope note (plan §9 F9 / BL-SS-127, not a defect):** the redaction is at the RUN-TRACE
+  boundary only. The workflow's own `definition`/`definition_snapshot_json` (the authored graph,
+  same field every OTHER node's config lives in) still carries the header value as typed - by
+  design, consistent with how the rest of the engine treats authored config. Confirmed explicitly
+  in probe 1 below.
+
+### 15.2 Live probes against the restarted `:8010` (verbatim results)
+
+**Probe 1 - literal header secret, redacted at the trace boundary, NOT the definition.** Built,
+published and ran a `manual -> http.request` workflow (`GET https://example.com/`, header
+`Authorization: Bearer sk_live_PROBE`, no merge token) via the real API (login as
+`demo@example.com`, `POST /workflows`, `PATCH .../publish`, `POST .../run`). `GET
+/workflows/runs/{id}`:
+```
+node.inputJson.config.headers -> [{'key': 'Authorization', 'value': '***'}]
+node.inputJson.resolved       -> {'url': 'https://example.com/'}   (no headers key)
+node.outputJson.statusCode    -> 200
+node.error                    -> None
+"sk_live_PROBE" in json.dumps(detail["nodes"])       -> False   (the run-trace, PASS)
+"sk_live_PROBE" in json.dumps(detail["definition"])  -> True    (the authored graph, F9 - by design)
+```
+
+**Probe 2 - a header value containing `\n` fails with a clean, secret-free error.** Same workflow,
+header value `sk_live_PROBE_CRLF\nline2`. Run result:
+```
+{"status": "failed", "error": "Node failed: A header name or value contains an illegal character."}
+```
+`"sk_live_PROBE_CRLF" in node.error` -> `False`. No request was ever sent (the pre-check runs
+before `httpx.stream`).
+
+**Probe 3 - gateway callback-URL copy parity ("Callback URL", not "URL").** Minted a workspace API
+key (`POST /omnichannel/workspaces/{id}/api-keys`), then `POST /api/v1/omnichannel/webhooks` with
+`{"url": "http://consumer.example/hook", ...}`:
+```
+422 {"error": {"code": "invalid_request", "message": "Callback URL must use https://."}}
+```
+Key revoked after the probe.
+
+**Probe 4 - business hours `to` bound is EXCLUSIVE on the live server.** Set the default
+workspace's business hours to a window ending 2 minutes in the future (`UTC`, today's weekday
+only), ran a `manual -> omnichannel.business_hours` workflow twice via the real API - once BEFORE
+the boundary, once AFTER (polled real wall-clock time to the minute boundary, no code/DB
+manipulation of "now"):
+```
+22:09:18 (before 22:11 boundary) -> branch: inside,  isOpen: True
+22:11:08 (at/after 22:11)        -> branch: outside, isOpen: False
+```
+Business hours restored to an always-open schedule afterward (this is the shared demo tenant's
+default workspace).
+
+All four probe workflows/keys were created and cleaned up (deleted/revoked) by this verification;
+no residue left on the shared `foundryx_service_s31` lane.
+
+### 15.3 Suite results (same lane, after the fix)
+
+- Backend, `DATABASE_URL=...foundryx_service_s31`, full suite: **3201 passed, 1 skipped, 18
+  deselected, 0 failed** (1861s / 31m01s) - up from A5b's original `3200 passed, 1 FAILED` (§8/§14);
+  the +1 passed is this round's AC-WFP-59 fix test, no other count moved.
+- Frontend, full `npx vitest run`: **293 files / 2205 tests passed**.
+- `npm run lint` (full repo): **0 errors, 216 warnings** (all pre-existing a11y warnings, none
+  introduced by this round - matches the reviewer's own note re: `workflow-canvas.tsx:629`).
+- `npx tsc --noEmit` (full repo): **48 errors, all pre-existing, 0 new** (same count the review
+  round 1 report and the S6 coder both recorded).
+- Targeted suites re-run individually before the full run (all green): `test_http_workflow_action.py`
+  (20), `test_url_guard.py` (9, untouched), `test_omnichannel_workflow_waits.py` (37),
+  `test_omnichannel_business_hours.py` (14), `test_omnichannel_consumer_webhooks.py` (13),
+  `test_workflow_engine.py`, `test_omnichannel_webhooks.py`, `test_omnichannel_api_gateway.py`,
+  `test_omnichannel_workflow_parity_triggers.py`, `test_code_workflow_action.py`.
+
+### 15.4 Verdict
+
+**AC-WFP-59: PASS.** All four probes confirm the fix live against the running server, not just
+pytest. **70 of 70 acceptance criteria now PASS.** Fixed in the commit immediately following this
+report update on `sprint-4/31-workflow-parity` (see `git log` for its hash;
+subject: `fix(workflows): plan 31 A5b review round 1 - redact header secrets at the trace
+boundary, tenant-scoped resume, sweep snapshot, streaming deadline, callback copy parity,
+business-hours load error, exclusive to-bound, nits`).

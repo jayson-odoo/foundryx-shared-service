@@ -543,7 +543,7 @@ def omnichannel_ask_question(
     )
     # One open question per contact (D-A5-9) - checked BEFORE sending, so a
     # refused second Ask never messages the contact.
-    if waits.find_open_question(db, tenant_id, contact.id) is not None:
+    if waits.find_open_question(db, tenant_id, contact.id, contact.workspace_id) is not None:
         raise ActionError("This contact already has an open question.")
 
     spec: Dict[str, Any] = {
@@ -557,14 +557,12 @@ def omnichannel_ask_question(
         "sandboxOnly": ctx.get("_workflow.sandboxOnly") is True,
     }
     sent_text = waits.question_text(spec)
-    # Template mode sends the approved template as authored (Meta owns the
-    # body) - the numbered choice list is a TEXT-mode affordance only; either
-    # way the answer matcher accepts the label or its number.
-    item = _send_configured_message(
-        db, tenant_id, config, ctx, contact_id=contact.id,
-        text_override=sent_text if str(config.get("mode") or "text") != "template" else None,
-    )
 
+    # Open the wait BEFORE sending (plan 31 review nit): the pre-check above
+    # closes the common case but not a genuine concurrent race on the
+    # one-question-per-contact unique constraint - opening first means a race
+    # LOSER raises here and never sends a question, instead of sending one the
+    # contact can never resume.
     try:
         waits.open_wait(
             db,
@@ -580,6 +578,14 @@ def omnichannel_ask_question(
         )
     except waits.WaitError as exc:
         raise ActionError(str(exc)) from exc
+
+    # Template mode sends the approved template as authored (Meta owns the
+    # body) - the numbered choice list is a TEXT-mode affordance only; either
+    # way the answer matcher accepts the label or its number.
+    item = _send_configured_message(
+        db, tenant_id, config, ctx, contact_id=contact.id,
+        text_override=sent_text if str(config.get("mode") or "text") != "template" else None,
+    )
     db.commit()
 
     raise WorkflowPaused(
