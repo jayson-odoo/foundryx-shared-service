@@ -177,6 +177,74 @@ def backfill_disable_credit_limit_mapping_rows(
     return result.rowcount or 0
 
 
+def backfill_db_company_entity_sources(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
+) -> int:
+    """Point a DATABASE company's stranded, never-run ``autocount_read``
+    entity configs at ``sql_db``. Returns the number of rows touched.
+
+    Prod incident 2026-09-06: ``seed_company_defaults`` seeded the vendor-API
+    entity set onto EVERY company on the App Store Update reseed, so a company
+    whose source connection is the ``sql_database`` provider got API-sourced
+    Customer/Supplier/GRN rows, and the entities list (which hid "Change
+    source" on a DB company, AC-01-18) left no UI way out. The seed now stops
+    at a DB company (D13: born empty); this sweep repairs the rows it already
+    produced: a DB company's ``ac_entity_config`` still at ``autocount_read``
+    that has NEVER RUN - ``last_run_at IS NULL`` and no ``ac_watermark`` row
+    carrying a ``last_modified_at`` (the pipeline's own "has run" markers) -
+    becomes ``sql_db``. A row with any run history is left to the operator,
+    who can now reach "Change source" on it. Idempotent; across ALL
+    tenants/companies; does **not** commit.
+
+    The company's provider comes from core ``connections`` - a READ-ONLY,
+    tenant-matched join (``cn.tenant_id = co.tenant_id``, never a bare id
+    lookup). The module never alters a core table; a SELECT against one is
+    fine. Only the MODULE tables are schema-qualified: core ``connections``
+    resolves through the search path on Postgres and lives in ``main`` on the
+    SQLite test rig, so it stays unqualified on both.
+
+    Runs at ANY module stamp (module Alembic 0014 and ``update_tenant`` both
+    call it), so every table/column it names is checked on the live
+    connection first (``existing_columns``) and it degrades to a no-op.
+    """
+    needed = {
+        "ac_entity_config": {"tenant_id", "company_id", "entity_type", "source_impl", "last_run_at"},
+        "ac_company": {"id", "tenant_id", "connection_id"},
+        "ac_watermark": {"tenant_id", "company_id", "entity_type", "last_modified_at"},
+    }
+    for table, columns in needed.items():
+        have = existing_columns(bind, table, schema=schema)
+        if have is None or not columns <= have:
+            return 0
+    core_have = existing_columns(bind, "connections", schema=None)
+    if core_have is None or not {"id", "tenant_id", "provider"} <= core_have:
+        return 0
+    prefix = f'"{schema}".' if schema else ""
+    result = bind.execute(
+        sa.text(
+            f"UPDATE {prefix}ac_entity_config SET source_impl = :sql_db "
+            f"WHERE source_impl = :api "
+            f"AND last_run_at IS NULL "
+            f"AND company_id IN ("
+            f"  SELECT co.id FROM {prefix}ac_company co "
+            f"  JOIN connections cn "
+            f"    ON cn.id = co.connection_id AND cn.tenant_id = co.tenant_id "
+            f"  WHERE cn.provider = :provider "
+            f"    AND co.tenant_id = {prefix}ac_entity_config.tenant_id"
+            f") "
+            f"AND NOT EXISTS ("
+            f"  SELECT 1 FROM {prefix}ac_watermark w "
+            f"  WHERE w.tenant_id = {prefix}ac_entity_config.tenant_id "
+            f"    AND w.company_id = {prefix}ac_entity_config.company_id "
+            f"    AND w.entity_type = {prefix}ac_entity_config.entity_type "
+            f"    AND w.last_modified_at IS NOT NULL"
+            f")"
+        ),
+        {"sql_db": "sql_db", "api": "autocount_read", "provider": "sql_database"},
+    )
+    return result.rowcount or 0
+
+
 def backfill_entity_config_defaults(
     bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
 ) -> int:

@@ -167,6 +167,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
        time.
     """
     from .backfill import (
+        backfill_db_company_entity_sources,
         backfill_disable_credit_limit_mapping_rows,
         backfill_entity_config_defaults,
         backfill_etl_defaults,
@@ -191,6 +192,13 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # target set. Module Alembic 0013 does the same on deploy; this covers the
     # App Store 0.4.0 -> 0.5.0 update path (idempotent either way).
     backfill_disable_credit_limit_mapping_rows(db, schema=schema)
+    # 0.5.0 -> 0.6.0 (prod incident 2026-09-06): a DATABASE company's stranded
+    # never-run ``autocount_read`` rows (the old seed ran on every company) are
+    # pointed at ``sql_db`` BEFORE the seed loop below - which now returns
+    # early for a DB company (D13: born empty), so this upgrade and every
+    # later one stop seeding onto one. Module Alembic 0014 runs the same
+    # sweep on deploy.
+    backfill_db_company_entity_sources(db, schema=schema)
 
     service = CompanyService(db)
     page = 0
