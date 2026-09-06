@@ -92,8 +92,15 @@ def existing_columns(
 
     ``bind`` is whatever the caller already has in hand - a plain
     ``Connection`` (Alembic's ``op.get_bind()``) or a ``Session``
-    (``update_tenant``'s ``db``) - so a ``Session`` is unwrapped via its own
-    ``get_bind()`` first; ``sa.inspect`` needs a connectable, not a session.
+    (``update_tenant``'s ``db``) - so a ``Session`` is unwrapped to its OWN
+    current connection (``Session.connection()``), never to its engine:
+    ``sa.inspect(engine)`` checks a SECOND connection out of the pool, so the
+    inspection runs outside the session's transaction (blind to anything it
+    has not committed yet) and, under the suite's StaticPool SQLite where
+    both are the same DBAPI connection, returning that checkout to the pool
+    ROLLS BACK the session's uncommitted writes - a second sweep pass then
+    "touched" the same row again. Inspecting the session's connection keeps
+    the check inside the same transaction on every backend.
 
     ``schema=None`` (the SQLite test path) ALSO checks every other schema
     the connection knows about, not only the default one: conftest's
@@ -106,7 +113,7 @@ def existing_columns(
     the moment this tolerance check shipped. Postgres never hits this branch
     - every real caller passes the actual ``app_autocount`` schema.
     """
-    connectable = bind.get_bind() if hasattr(bind, "get_bind") else bind
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
     inspector = sa.inspect(connectable)
     if inspector.has_table(table, schema=schema):
         return frozenset(col["name"] for col in inspector.get_columns(table, schema=schema))
