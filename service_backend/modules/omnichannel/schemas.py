@@ -4,7 +4,7 @@ keys by the services before constructing these models.
 """
 import re
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -1311,3 +1311,27 @@ class ReportMetaResponse(ApiModel):
     reports: List[ReportDescriptorItem]
     granularities: List[str]
     dimensions: ReportDimensions
+
+
+# ── Plan 30 - S2 the seven report builders + assignment log ─────────────────
+# `rows`/`totals` are per-report shapes (plan §5.2 table) - kept as plain
+# JSON-safe dict/list here rather than a per-report Pydantic union so ONE
+# envelope serves all seven `reportKey`s (mirrors `types/omnichannel.ts`
+# `ReportResponse<TRow, TTotals>`, which is generic for the same reason).
+# Every datetime a row carries (only the assignment log's `createdAt`) is
+# pre-formatted to a Z-suffixed ISO string by the service BEFORE it lands in
+# this dict - `ApiModel`'s wildcard datetime serializer only nets top-level
+# fields, never a `datetime` nested inside a `Dict[str, Any]` (see its own
+# docstring caveat), so a raw `datetime` must never be placed in `rows` here.
+class ReportResponse(ApiModel):
+    reportKey: str
+    timezone: str
+    range: ReportRange
+    granularity: str
+    buckets: List[ReportBucketItem]
+    series: List[ReportSeriesItem]
+    rows: List[Dict[str, Any]]
+    totals: Dict[str, Any]
+    page: Optional[int] = None
+    pageSize: Optional[int] = None
+    total: Optional[int] = None

@@ -59,6 +59,12 @@ class ReportQuery:
     user_id: Optional[str] = None
     channel_id: Optional[str] = None
     group_by: Optional[str] = None
+    # The ORIGINAL `from`/`to` local-date strings the caller sent (S2's
+    # `report()` echoes these verbatim in `ReportResponse.range` - the
+    # resolved `window_start`/`window_end` above are UTC instants, not the
+    # wire's local-date `range` shape).
+    from_str: str = ""
+    to_str: str = ""
 
 
 def _require_no_team(team_id: Optional[str], group_by: Optional[str]) -> None:
@@ -160,4 +166,6 @@ def build_query(
         user_id=user_id,
         channel_id=channel_id,
         group_by=group_by,
+        from_str=from_,
+        to_str=to,
     )
