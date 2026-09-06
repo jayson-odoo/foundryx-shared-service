@@ -961,6 +961,9 @@ class PublicContactUpdateRequest(ApiModel):
     lastName: Optional[str] = None
     priority: Optional[str] = None  # LOW|MEDIUM|HIGH|URGENT
     assignedUserId: Optional[str] = None
+    # A CORE `public.teams` id, or explicit `null` to clear it (plan 28 S4).
+    # BY ID ONLY - never by name, never auto-creating a team (D-A8-6).
+    assignedTeamId: Optional[str] = None
     customFields: Optional[dict] = None
     language: Optional[str] = None
     countryCode: Optional[str] = None
@@ -1029,6 +1032,13 @@ class RioContactItem(BaseModel):
     lastMessageAt: Optional[str] = None
     lastIncomingMessageAt: Optional[str] = None
     lastMessagePreview: Optional[str] = None
+    # A CORE `public.teams` id/name (plan 28 S4, D-A8-6). respond.io has no
+    # team field on a contact - kept here as a Foundryx extension so this
+    # shape stays lossless versus the internal `ThreadItem` (a consumer has
+    # no other read source for it). Null on a foreign/deleted team or when
+    # the teams capability is not registered, same rule as `ThreadItem`.
+    assignedTeamId: Optional[str] = None
+    assignedTeamName: Optional[str] = None
 
 
 class RioContactListResponse(BaseModel):
@@ -1051,6 +1061,9 @@ class RioMessageStatus(BaseModel):
 class RioMessageSender(BaseModel):
     source: str                       # user | contact | system
     userId: Optional[str] = None
+    # Deliberately ALWAYS null (plan 28, D-A8-6 flag 8) - a message-level team
+    # concept (which team sent this) is a second, distinct notion from the
+    # thread-level `assignedTeamId` on the contact and is out of scope here.
     teamId: Optional[str] = None
 
 
