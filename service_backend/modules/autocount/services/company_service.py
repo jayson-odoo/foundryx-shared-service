@@ -1385,7 +1385,9 @@ class CompanyService:
         # must stay a no-op sweep, never a spurious 422) and must not be
         # blocked here.
         if rows:
-            missing_required = sorted(required - {row.sorento_field for row in clean})
+            missing_required = sorted(
+                required - {row.sorento_field for row in clean if row.is_enabled}
+            )
             if missing_required:
                 raise AutocountServiceError(
                     f"The required Sorento field '{missing_required[0]}' is not mapped."
@@ -1530,7 +1532,9 @@ class CompanyService:
 
         #     !!  source_ref/product_ref/qty_ordered ARE REQUIRED THE MOMENT
         #         ANY LINE ROW IS SAVED.  !!  (AC-02-03.)
-        missing_required = sorted(required - {row.sorento_field for row in clean})
+        missing_required = sorted(
+            required - {row.sorento_field for row in clean if row.is_enabled}
+        )
         if missing_required:
             raise AutocountServiceError(
                 f"The required line field '{missing_required[0]}' is not mapped."
@@ -1800,7 +1804,13 @@ class CompanyService:
                     transform=row.transform,
                     scope=scope,
                     is_required=target in required,
-                    is_enabled=True,
+                    # Honour the draft's own flag (sprint-5/04 review): a
+                    # disabled draft row previews exactly as it saves - absent
+                    # from the record - never as if it were enabled. Simulate
+                    # writes nothing, so the required-means-enabled gate lives
+                    # in the SAVE paths only; a partial draft must still
+                    # preview (sprint-5/02 contract).
+                    is_enabled=row.is_enabled,
                     formula=formula,
                 )
             )

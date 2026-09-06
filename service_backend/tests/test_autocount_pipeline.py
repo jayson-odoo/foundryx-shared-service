@@ -2595,7 +2595,10 @@ def test_the_canonical_supplier_claims_only_what_sorento_persists():
     """AC-14-13. Sorento ACCEPTS seven address fields on ``CanonicalSupplier``
     and ``_supplier_columns`` writes none of them, so sending them would have us
     report a sync that did not happen."""
-    payload = CanonicalSupplier(source_ref="AED:1", code="400-A", name="A").sink_payload()
+    payload = CanonicalSupplier(
+        source_ref="AED:1", source_doc_no="400-A", code="400-A", name="A",
+        email="a@example.my", is_active=True,
+    ).sink_payload()
     assert set(payload) == {
         "source_ref",
         "source_doc_no",
@@ -2604,6 +2607,11 @@ def test_the_canonical_supplier_claims_only_what_sorento_persists():
         "email",
         "is_active",
     }
+    # Sorento 2.1: a None-valued key is OMITTED (null = clear, absent = leave
+    # alone), so a supplier with nothing but the required fields sends only
+    # those - never "email": null.
+    sparse = CanonicalSupplier(source_ref="AED:1", code="400-A", name="A").sink_payload()
+    assert set(sparse) == {"source_ref", "code", "name"}
 
 
 def test_no_payment_terms_field_exists_on_either_master():
@@ -2675,7 +2683,10 @@ def test_a_debtor_row_maps_to_a_canonical_customer_with_its_extra_fields():
     assert record.source_ref == "AED_VSOFT:9"
     assert record.phone_number == "+60123456789"
     assert record.tax_id == "IG12345678900"
-    assert record.credit_limit == Decimal("25000.00000000")
+    # Sorento contract 2.1 (sprint-5/04): ``credit_limit`` is gone from the
+    # seed, the accepted targets AND the model - a dead attribute must not
+    # creep back as a place for a stale mapping row to land.
+    assert not hasattr(record, "credit_limit")
 
 
 def test_a_master_record_has_no_lines_attribute_to_half_fill():
@@ -3862,7 +3873,10 @@ def test_mapping_view_customer_offers_the_extra_master_fields(db, transports):
     company = _company(db, transports)
     view = CompanyService(db).mapping_view(DEFAULT_TENANT_ID, company.id, ENTITY_CUSTOMER)
     accepted = {f.field for f in view.sorento_fields}
-    assert {"phone_number", "credit_limit", "tax_id"} <= accepted
+    assert {"phone_number", "tax_id"} <= accepted
+    # Sorento 2.1 rejects customers.credit_limit (extra="forbid") - it must
+    # not be offered as a mapping target either.
+    assert "credit_limit" not in accepted
 
 
 def test_mapping_view_unknown_entity_is_a_clean_not_found(db, transports):
@@ -4379,22 +4393,30 @@ def test_a_formula_output_is_coerced_to_the_target_type():
 
 
 def test_a_formula_decimal_output_reaches_a_decimal_field():
-    """A number-producing formula lands as a Decimal on the customer credit
-    limit (coerce_output routes it through t_decimal)."""
+    """A number-producing formula lands as a Decimal on a decimal canonical
+    field (coerce_output routes it through t_decimal). The product's
+    ``list_price`` is the decimal master field that still exists - the
+    customer's ``credit_limit`` left the model under Sorento contract 2.1."""
     from decimal import Decimal
 
+    from modules.autocount.canonical.masters import ENTITY_PRODUCT, CanonicalProduct
+
     rows = [
-        _MappingRow("AccNo", "code", "string", SCOPE_HEADER, is_required=True),
-        _MappingRow("CompanyName", "name", "string", SCOPE_HEADER, is_required=True),
+        _MappingRow("Code", "code", "string", SCOPE_HEADER, is_required=True),
+        _MappingRow("Description", "name", "string", SCOPE_HEADER, is_required=True),
         _MappingRow(
-            "CreditLimit", "credit_limit", "string", SCOPE_HEADER,
+            "Price", "list_price", "string", SCOPE_HEADER,
             formula="number(value)",
         ),
     ]
-    engine = MappingEngine(rows, entity_type=ENTITY_CUSTOMER, database_name="AED_VSOFT")
-    mapped = engine.map_document(_customer(CreditLimit="30000.0"))
-    assert mapped.ok
-    assert mapped.record.credit_limit == Decimal("30000")
+    engine = MappingEngine(rows, entity_type=ENTITY_PRODUCT, database_name="AED_VSOFT")
+    mapped = engine.map_document(
+        {"Code": "P-001", "Description": "Widget", "Price": "30000.0", "Data": [{"AutoKey": 7}]}
+    )
+    assert mapped.ok, mapped.errors
+    assert isinstance(mapped.record, CanonicalProduct)
+    assert isinstance(mapped.record.list_price, Decimal)
+    assert mapped.record.list_price == Decimal("30000")
 
 
 def test_a_runtime_formula_error_names_the_field():

@@ -8,7 +8,7 @@ import { MappingSimulator } from './mapping-simulator';
 
 const ROWS: AutocountMappingWriteRow[] = [
   { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code' },
-  { sourcePath: 'CreditLimit', transform: 'decimal', formula: 'number(value)', sorentoField: 'credit_limit' },
+  { sourcePath: 'Mobile', transform: 'string', formula: 'number(value)', sorentoField: 'phone_number' },
 ];
 
 function rejectedResult(): AutocountSimulateResult {
@@ -29,8 +29,8 @@ function rejectedResult(): AutocountSimulateResult {
       },
       {
         scope: 'header',
-        sourcePath: 'CreditLimit',
-        canonicalField: 'credit_limit',
+        sourcePath: 'Mobile',
+        canonicalField: 'phone_number',
         present: true,
         ok: false,
         value: null,
@@ -38,7 +38,7 @@ function rejectedResult(): AutocountSimulateResult {
       },
     ],
     lineFields: [],
-    errors: [{ field: 'credit_limit', message: 'number() expected a number, got "abc".' }],
+    errors: [{ field: 'phone_number', message: 'number() expected a number, got "abc".' }],
   };
 }
 
@@ -87,7 +87,7 @@ describe('MappingSimulator (AC-16-30/31)', () => {
     expect(onSimulate.mock.calls[0][1]).toEqual(ROWS);
     // And the parsed mock record is the first - prefilled from the top-level
     // (non-dotted) source paths of the current rows.
-    expect(onSimulate.mock.calls[0][0]).toEqual({ AccNo: '', CreditLimit: '' });
+    expect(onSimulate.mock.calls[0][0]).toEqual({ AccNo: '', Mobile: '' });
   });
 
   it('rejects invalid JSON before running', () => {
@@ -127,7 +127,7 @@ describe('MappingSimulator (AC-16-30/31)', () => {
     expect(screen.getByRole('columnheader', { name: 'Sorento field' })).toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: 'Source' })).toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: 'Value' })).toBeInTheDocument();
-    // header field (Code) + header field (Credit limit, failed) + line field (Qty).
+    // header field (Code) + header field (Phone number, failed) + line field (Qty).
     expect(screen.getAllByRole('row')).toHaveLength(4); // 1 header row + 3 data rows.
   });
 });

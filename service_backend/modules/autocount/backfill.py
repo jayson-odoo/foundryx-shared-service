@@ -53,7 +53,6 @@ def default_schema(bind: Any) -> Optional[str]:
     dialect = getattr(getattr(bind, "dialect", None), "name", "")
     return AUTOCOUNT_SCHEMA if dialect == "postgresql" else None
 
-
 def existing_columns(
     bind: Any, table: str, *, schema: Optional[str]
 ) -> Optional[frozenset[str]]:
@@ -118,6 +117,62 @@ def backfill_sink_impl_defaults(
             f"UPDATE {prefix}ac_company SET sink_impl = 'logging' "
             f"WHERE sink_impl IS NULL OR sink_impl = ''"
         )
+    )
+    return result.rowcount or 0
+
+
+def backfill_disable_credit_limit_mapping_rows(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
+) -> int:
+    """Disable every ENABLED ``customer`` ``ac_field_mapping`` row that targets
+    ``credit_limit``. Returns the number of rows touched.
+
+    Sorento contract 2.1 (sprint-5/04): ``CanonicalCustomer.SINK_FIELDS`` no
+    longer carries ``credit_limit`` - Sorento's ``CanonicalCustomer`` on
+    ``feat/ingest-parity`` (their PR #699) sets ``extra="forbid"`` and does
+    not declare the field, so a payload naming it is a field-named 422. The
+    drill that found it ran against Sorento's LOCAL ingest-parity lane
+    (:8042, build b1c01aa2f, ``extra="forbid"``), NOT Sorento main: 27/27 SIM
+    customers failed there. A tenant's already-saved enabled row that still
+    targets ``credit_limit`` is a DEAD row after that change: mapped, never
+    sent (``sink_payload`` only emits ``SINK_FIELDS``), invisible in the
+    editor (the target left the accepted set, so the picker no longer offers
+    it) and pruned by ``delete_unknown`` on the next save. It does NOT trip
+    the mapping PUT guard - the guard validates only the targets the editor
+    submits, and the editor never submits a target it cannot show. The real
+    benefit of this sweep is narrower and still worth having: the stored
+    mapping table matches the accepted target set for every tenant WITHOUT
+    waiting for each operator's next save, and the App Store 0.4.0 -> 0.5.0
+    bump carries a visible, delivered change rather than a silent one.
+
+    ``entity_type = 'customer'`` only: the canonical name ``credit_limit``
+    is customer-specific today, but the sweep must never reach a row of
+    another entity that happens to share the name later. Idempotent (fills
+    only rows still ``is_enabled``), across ALL tenants/companies, does
+    **not** commit (Alembic's connection or ``update_tenant`` owns that).
+
+    Runs at ANY module stamp (module Alembic 0013 and ``update_tenant`` both
+    call it), so it checks what the live table actually has first - see
+    ``existing_columns`` - and is a no-op on a schema that does not carry
+    ``ac_field_mapping`` with ``is_enabled``/``entity_type``/``canonical_field``
+    yet.
+    """
+    columns = existing_columns(bind, "ac_field_mapping", schema=schema)
+    if columns is None or not {"is_enabled", "entity_type", "canonical_field"} <= columns:
+        return 0
+    prefix = f'"{schema}".' if schema else ""
+    result = bind.execute(
+        sa.text(
+            f"UPDATE {prefix}ac_field_mapping SET is_enabled = :disabled "
+            f"WHERE canonical_field = :field AND entity_type = :entity_type "
+            f"AND is_enabled = :enabled"
+        ),
+        {
+            "disabled": False,
+            "field": "credit_limit",
+            "entity_type": "customer",
+            "enabled": True,
+        },
     )
     return result.rowcount or 0
 

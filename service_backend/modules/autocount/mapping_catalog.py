@@ -208,7 +208,6 @@ _MASTER_COMMON_SOURCES: Tuple[str, ...] = (
     "IsActive",
     "RegisterNo",
     "TaxRegistrationNo",
-    "CreditLimit",
     "Data.0.AutoKey",
     "Data.0.LastModified",
     "Data.0.Guid",

@@ -315,3 +315,21 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   `credit_limit`/`payment_terms_days` schema drift -> accepted-and-ignored; ESB (c) `CANONICAL_MODELS`
   lacked shipping_order (fixed 3dce123 + drift guard), (d) `DOCUMENT_PREREQUISITES` lacked
   shipping_order (fixed). Sorento posts the final table on PR #670.
+- 2026-09-06 (sprint-5/04, Sorento contract 2.1 - contract of record: Sorento
+  `documentation/plans/autocount/PLAN-autocount-cross-repo-contract.md` section 10 ("Contract v2.1
+  (ingest parity)"; `PLAN-ingest-parity-standardisation.md` section 4 is now a pointer stub to it).
+  Verified against Sorento branch `feat/ingest-parity` ref 39ddd8c0a (their PR #699):
+  `GET /api/v1/external/contract` answers `"version": "2.1"` (a string) with `absent_vs_null: true`,
+  and `field_notes.products` = "name is transitional, maps to description when description is absent"
+  (D24, next lane). ESB changes, both unconditional: masters OMIT every `null`-valued key instead of
+  sending it (2.1: absent = leave alone, `null` = clear - the (b) drift logged above becomes a hard
+  rejection under 2.1), and `customers` no longer sends `credit_limit` (`payment_terms_*` was never
+  sent). Sequencing (D15): the ESB stops sending `credit_limit` BEFORE Sorento removes it - Sorento
+  main still declares `credit_limit` / `payment_terms_*` and treats `null` like absent, so both ESB
+  changes are behaviour-neutral there, which is why they ship without a contract-version gate;
+  Sorento's removal 422s (`extra="forbid"`, field-named, `IngestOutcome.FAILED`, never retryable)
+  only once 2.1 answers the contract endpoint. The 27/27 SIM-customer 422 drill that opened this
+  lane ran against Sorento's LOCAL ingest-parity lane (:8042, build b1c01aa2f), not Sorento main.
+  Delivered backfill for existing tenants: module Alembic `0013_autocount_drop_credit_limit` +
+  App Store 0.4.0 -> 0.5.0 (`update_tenant`) disable the now-dead enabled customer
+  `credit_limit` rows. Known capability loss (no explicit-clear path under 2.1) = BL-SS-102.
