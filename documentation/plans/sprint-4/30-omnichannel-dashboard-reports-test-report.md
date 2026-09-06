@@ -138,3 +138,36 @@ isn't already tracked there.
   and the two-dialect SQL compile (AC-RPT-11) are internal/numeric properties that pytest already
   pins byte-for-byte; a browser click cannot assert them any more precisely, so these are cited to
   the backend suite only, per house convention for this class of AC.
+
+## Round 1 fixes (coder, 2026-09-06, post-review)
+
+The Opus review of `58759ed..dc92223` raised one blocker, nine significant findings and a set of
+nits. All are fixed on this branch; nothing was deferred. Lane `s30` throughout (`:8009` backend,
+`:3008` frontend, `foundryx_service_s30`). The tester's 55/55 PASS run (`04cd2aff`) was recorded
+against the same working tree, so the evidence above already covers these changes.
+
+| Finding | Fix | Verified by |
+|---|---|---|
+| **B-1** legacy first-response derivation fetched every no-reply contact id into an unbounded `IN (...)` list, then pulled EVERY message of those contacts into Python | `_derived_response_samples` now identifies each contact's first-ever `AGENT` message (correlated `MIN`) and its preceding `CONTACT` message (correlated `MAX`) under a correlated `NOT EXISTS` on `first_agent_reply`, in ONE statement routed through `duration_samples(cap=REPORT_MAX_SAMPLE_ROWS)` | pytest: fixture numbers unchanged in both timezones; a 25-extra-contact seed proves the round-trip count stays at exactly 1 statement; the cap still raises at `cap + 1`. Live: dashboard `responseTotals.derivedFromMessages = 3` |
+| **S-1** correlated / `EXISTS` subqueries over `conversation_events` were not tenant-scoped | `tenant_id` (+ `workspace_id` where available) added to `resolution_samples`' cycle-marker subquery and to the legacy-derivation `NOT EXISTS` | pytest suite green; both remaining correlated sites audited by grep |
+| **S-2** `outerjoin(ThreadStatus, ...)` on `Contact.status_id` was unscoped | join condition now carries `ThreadStatus.tenant_id == rq.tenant_id`; audit confirms it is the only such join in the report path | pytest |
+| **S-3** lifecycle `percent` divided by the STAGED contact count, not the workspace total (AC-RPT-02) | denominator is now a `COUNT(*)` over the workspace's contacts | pytest (a 9th, unstaged contact makes the fixture read 44.4 / 22.2 / 11.1 / 11.1 / 0.0). Live probe: one unstaged contact took `new_lead` from `5 / 100.0` to `5 / 83.3`, restored on cleanup |
+| **S-4** `_series` lacked the explicit window bound its sibling bucketed queries carry | bound added (redundant with the per-bucket `CASE`, but it lets Postgres range-scan `ix_conv_events_ws_created`) | pytest - all series numbers unchanged |
+| **S-5** Export ignored the renderer-local `groupBy`, so an export taken while viewing "By agent" silently produced the ungrouped CSV | `groupBy` lifted into `useReportFilters` (URL-synced); the three grouping reports are now controlled; the page derives ONE `scopedFilters` used by both the report request and the export, and clears a group-by the newly selected report does not declare | vitest (`page.test.tsx`: "By agent" -> export sends `groupBy=user`; report switch keeps range/granularity and drops the unsupported group-by). Live: the same export POST with and without `groupBy=user` returns two different CSVs (`User ID,Name,Samples,...` vs `Bucket,Label,Count,Percent`) |
+| **S-6** `parseKey` built UTC-midnight Dates while `react-day-picker` matches local midnight - west of UTC the calendar highlighted the previous day and opened on the wrong month | `parseKey` builds from local components, matching `localDateKey`; `displayLabel` drops its `timeZone: 'UTC'` override | vitest `date-range-picker.tz.test.tsx` runs under `TZ=America/Los_Angeles` (with a guard assertion so it cannot pass vacuously) and pins `localDateKey(parseKey(k)) === k` |
+| **S-7** the shared fixture hashed three passwords with bcrypt on EVERY test | one module-level precomputed hash | measured A/B on `test_omnichannel_reports_builders.py` (25 tests): **37.74s -> 23.40s**, a 38% cut |
+| **S-8** the two-dialect compile test built its own stand-in column | `report_queries.bucketed_select_columns` extracted as the pure column-building half of `bucketed_counts`; the test compiles the REAL multi-series statement on both dialects | pytest |
+| **S-9** plan 30's backlog candidates were never registered | `BL-SS-090..101` added to `documentation/backlogs/backlog.md`, each linking back to the plan; BL-SS-091 carries the D-A9-12 measurement in full (1,000,000 rows, ~37-49 ms with or without the composite index after `ANALYZE`, index deferred) | file |
+| Nits | assignment-log `source` prefers the writer's own `payload.source` and infers only for legacy rows; `page`/`pageSize` are a typed 422 on the four unpaginated reports; the reports page dropped its hardcoded descriptor fallback for an error state; `useWorkspaceChannels` extracted and used by both pages; `dashboard/loading.tsx` added; the export builds the `users`/`leaderboard` row set ONCE then paginates in memory | pytest (foreign-tenant actor id renders an empty name; a job of another TYPE 404s; two-page proof for `users` + `leaderboard`; explicit `page` 422) + vitest |
+
+UAC/plan amendments (all tagged **amended 2026-09-06 (review round 1)**): AC-RPT-27 (source
+precedence), AC-RPT-28 (422 rather than silent ignore, plus the users/leaderboard two-page proof),
+AC-RPT-43 (group-by is URL-synced shared state), AC-RPT-44 (unsupported group-by dropped on report
+switch; `reports/meta` is the only descriptor source), AC-RPT-47 (export carries the on-screen
+group-by; the stale pre-D-A9-10 `conversation_reports.export` corrected to the core `reports.export`).
+Plan section 7 records the backlog registration.
+
+Suites after the round: **backend 3121 passed, 1 skipped** (baseline 3114/1, +7 new tests);
+**frontend 2181 passed across 292 files** (baseline 2176, +5 new tests); `npx eslint .` 0 errors
+(216 pre-existing warnings); `npx tsc --noEmit` 0 errors outside the repo's pre-existing test-file
+noise.

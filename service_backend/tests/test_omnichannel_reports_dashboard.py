@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import and_, case, func
 from sqlalchemy.dialects import postgresql, sqlite
 
 from app.models import DEFAULT_TENANT_ID
@@ -85,6 +84,41 @@ def test_lifecycle_stage_counts(client, fixture_ids):
     assert [s["sortOrder"] for s in ordered] == sorted(s["sortOrder"] for s in ordered)
 
 
+def test_lifecycle_percent_denominator_is_the_workspace_total_not_just_staged(client, session_factory, fixture_ids):
+    """S-3 (review round 1): AC-RPT-02 says `percent` is against the
+    workspace's TOTAL contact count - an unstaged contact
+    (`lifecycle_status_id IS NULL`) still counts against the denominator, it
+    just never appears in any stage's numerator. The fixture's 8 contacts are
+    all staged, so summing only the staged counts happened to equal the
+    total; adding one unstaged 9th contact exposes the bug (every percent
+    would otherwise be computed over 8, not 9)."""
+    db = session_factory()
+    db.add(
+        Contact(
+            tenant_id=fixture_ids.tenant_id,
+            workspace_id=fixture_ids.workspace_id,
+            first_name="Unstaged",
+            last_name="Customer",
+            status_id=fixture_ids.thread_statuses["OPEN"],
+            lifecycle_status_id=None,
+        )
+    )
+    db.commit()
+    db.close()
+
+    h = _auth(client)
+    res = _dashboard(client, h, fixture_ids.workspace_id, tz="Asia/Kuala_Lumpur", **FIXTURE_RANGE)
+    lifecycle = {row["key"]: row for row in res.json()["lifecycle"]}
+    assert lifecycle["new_lead"]["count"] == 4
+    assert lifecycle["new_lead"]["percent"] == 44.4
+    assert lifecycle["hot_lead"]["count"] == 2
+    assert lifecycle["hot_lead"]["percent"] == 22.2
+    assert lifecycle["payment"]["percent"] == 11.1
+    assert lifecycle["customer"]["percent"] == 11.1
+    assert lifecycle["cold_lead"]["count"] == 0
+    assert lifecycle["cold_lead"]["percent"] == 0.0
+
+
 # ── AC-RPT-03/04: opened/closed series, two timezones ────────────────────────
 def test_opened_closed_series_kuala_lumpur(client, fixture_ids):
     h = _auth(client)
@@ -120,6 +154,121 @@ def test_response_and_resolution_totals(client, fixture_ids):
     assert body["resolutionTotals"].get("derivedFromMessages") is None
 
 
+# ── Blocker B-1 (review round 1) ──────────────────────────────────────────────
+def test_legacy_derivation_bounded_statements_no_per_contact_in_list(client, session_factory, fixture_ids):
+    """Blocker B-1: the legacy first-response derivation used to fetch every
+    no-reply contact's id into an `IN (...)` list (unbounded - a Postgres
+    65535-bind 500 on a large workspace), then pull EVERY message of those
+    contacts into Python. The SQL-bound version identifies each contact's
+    first-ever AGENT message and its preceding CONTACT message via correlated
+    scalar subqueries in ONE statement - seed a batch of extra no-reply
+    contacts and prove the round-trip count stays constant (never scales with
+    contact count, and never touches a per-contact `IN` list)."""
+    from sqlalchemy import event
+
+    from modules.omnichannel.models import ConversationMessage
+    from modules.omnichannel.services import report_service
+    from modules.omnichannel.services.report_filters import build_query
+
+    db = session_factory()
+    extra_ids = []
+    for i in range(25):
+        c = Contact(
+            tenant_id=fixture_ids.tenant_id,
+            workspace_id=fixture_ids.workspace_id,
+            first_name="Bulk",
+            last_name=f"NoReply{i}",
+            phone=f"+60191{i:06d}",
+            phone_digits=f"60191{i:06d}",
+            status_id=fixture_ids.thread_statuses["OPEN"],
+            lifecycle_status_id=fixture_ids.lifecycle["new_lead"],
+        )
+        db.add(c)
+        db.flush()
+        extra_ids.append(c.id)
+        db.add(ConversationMessage(
+            tenant_id=fixture_ids.tenant_id, contact_id=c.id, channel_id=fixture_ids.channel_id,
+            sender_type="CONTACT", message_type="TEXT", body="hi",
+            created_at=datetime(2026, 3, 2, 1, 0, 0, tzinfo=timezone.utc),
+        ))
+        db.add(ConversationMessage(
+            tenant_id=fixture_ids.tenant_id, contact_id=c.id, channel_id=fixture_ids.channel_id,
+            sender_type="AGENT", sender_id=fixture_ids.users["ann"], message_type="TEXT", body="hello",
+            created_at=datetime(2026, 3, 2, 1, 5, 0, tzinfo=timezone.utc),
+        ))
+    db.commit()
+
+    rq = build_query(
+        db, fixture_ids.tenant_id, fixture_ids.workspace_id, from_="2026-03-01", to="2026-03-07", tz="UTC"
+    )
+
+    statements: list = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    engine = db.get_bind()
+    event.listen(engine, "before_cursor_execute", _capture)
+    try:
+        samples = report_service._derived_response_samples(db, rq)
+    finally:
+        event.remove(engine, "before_cursor_execute", _capture)
+    db.close()
+
+    # ONE round trip regardless of how many no-reply contacts exist - the
+    # NOT EXISTS + two correlated scalar subqueries compile into a SINGLE SQL
+    # statement, never a per-contact IN list or an N+1 message fetch.
+    assert len(statements) == 1
+    derived_ids = {s.contact_id for s in samples if s.derived}
+    assert set(extra_ids) <= derived_ids
+
+
+def test_legacy_derivation_cap_raises_before_cap_plus_two(session_factory, fixture_ids, monkeypatch):
+    """B-1: the SQL-bound derivation still routes through `duration_samples`,
+    so `SampleCapExceeded` (AC-RPT-13) fires reading `cap + 1` rows - never
+    `cap + 2` or the full set."""
+    from modules.omnichannel.models import ConversationMessage
+    from modules.omnichannel.services import report_queries
+    from modules.omnichannel.services.report_service import _derived_response_samples
+    from modules.omnichannel.services.report_filters import build_query
+
+    db = session_factory()
+    for i in range(4):
+        c = Contact(
+            tenant_id=fixture_ids.tenant_id,
+            workspace_id=fixture_ids.workspace_id,
+            first_name="Cap",
+            last_name=f"Test{i}",
+            phone=f"+60192{i:06d}",
+            phone_digits=f"60192{i:06d}",
+            status_id=fixture_ids.thread_statuses["OPEN"],
+            lifecycle_status_id=fixture_ids.lifecycle["new_lead"],
+        )
+        db.add(c)
+        db.flush()
+        db.add(ConversationMessage(
+            tenant_id=fixture_ids.tenant_id, contact_id=c.id, channel_id=fixture_ids.channel_id,
+            sender_type="CONTACT", message_type="TEXT", body="hi",
+            created_at=datetime(2026, 3, 2, 1, 0, 0, tzinfo=timezone.utc),
+        ))
+        db.add(ConversationMessage(
+            tenant_id=fixture_ids.tenant_id, contact_id=c.id, channel_id=fixture_ids.channel_id,
+            sender_type="AGENT", sender_id=fixture_ids.users["ann"], message_type="TEXT", body="hello",
+            created_at=datetime(2026, 3, 2, 1, 5, 0, tzinfo=timezone.utc),
+        ))
+    db.commit()
+
+    rq = build_query(
+        db, fixture_ids.tenant_id, fixture_ids.workspace_id, from_="2026-03-01", to="2026-03-07", tz="UTC"
+    )
+    monkeypatch.setattr(report_queries, "REPORT_MAX_SAMPLE_ROWS", 2)
+    with pytest.raises(report_queries.SampleCapExceeded) as exc_info:
+        _derived_response_samples(db, rq)
+    assert exc_info.value.count == 3  # cap + 1 rows read, never cap + 2 or all 4
+    assert exc_info.value.cap == 2
+    db.close()
+
+
 # ── AC-RPT-07: top agents ─────────────────────────────────────────────────────
 def test_top_agents_ordered_by_closed_count(client, fixture_ids):
     h = _auth(client)
@@ -131,6 +280,51 @@ def test_top_agents_ordered_by_closed_count(client, fixture_ids):
     ]
     # u_cara (no activity) never appears.
     assert "Cara Tan" not in [a["name"] for a in top_agents]
+
+
+def test_top_agent_actor_id_from_another_tenant_renders_empty_name(client, session_factory, fixture_ids):
+    """AC-RPT-07 (nit, review round 1): `_top_agents` resolves every stored
+    `actor_user_id` tenant-scoped in ONE batched pass - a planted/corrupt id
+    belonging to ANOTHER tenant must render an EMPTY name, never that other
+    tenant's real user name (the polymorphic stored-id house rule)."""
+    from app.models import User as CoreUser
+    from app.services.tenant_service import TenantService
+
+    db = session_factory()
+    foreign_tenant = TenantService(db).provision(
+        name="Foreign RPT Actor",
+        slug="foreign-rpt-actor",
+        admin_email="admin-foreign-rpt-actor@example.com",
+        admin_password="Password123!",
+        admin_name="Foreign Admin",
+    )
+    db.commit()
+    foreign_user_id = (
+        db.query(CoreUser.id)
+        .filter(CoreUser.tenant_id == foreign_tenant.id, CoreUser.email == "admin-foreign-rpt-actor@example.com")
+        .scalar()
+    )
+    assert foreign_user_id
+
+    db.add(
+        ConversationEvent(
+            tenant_id=fixture_ids.tenant_id,
+            workspace_id=fixture_ids.workspace_id,
+            contact_id=fixture_ids.contacts["C6"],
+            event_type="closed",
+            actor_user_id=foreign_user_id,
+            created_at=datetime(2026, 3, 5, 4, 0, 0, tzinfo=timezone.utc),
+        )
+    )
+    db.commit()
+    db.close()
+
+    h = _auth(client)
+    res = _dashboard(client, h, fixture_ids.workspace_id, tz="Asia/Kuala_Lumpur", **FIXTURE_RANGE)
+    top_agents = res.json()["topAgents"]
+    planted = next(a for a in top_agents if a["userId"] == foreign_user_id)
+    assert planted["name"] == ""
+    assert "Foreign Admin" not in [a["name"] for a in top_agents]
 
 
 # ── AC-RPT-08: granularity auto-selection + range/tz validation ─────────────
@@ -226,12 +420,30 @@ def test_unknown_workspace_id_is_404(client, fixture_ids):
 
 # ── AC-RPT-11: golden two-dialect compile ─────────────────────────────────────
 def test_bucket_query_compiles_dialect_free():
-    starts_at = datetime(2026, 3, 1, tzinfo=timezone.utc)
-    ends_at = datetime(2026, 3, 2, tzinfo=timezone.utc)
-    ts = ConversationEvent.created_at
-    column = func.sum(case((and_(ts >= starts_at, ts < ends_at), 1), else_=0)).label("b0")
-    sqlite_sql = str(column.compile(dialect=sqlite.dialect())).lower()
-    postgres_sql = str(column.compile(dialect=postgresql.dialect())).lower()
+    """S-8 (review round 1): compile the ACTUAL columns `bucketed_counts`
+    builds (`report_queries.bucketed_select_columns` - the same helper every
+    report/dashboard series query runs through), not a hand-built stand-in
+    column with no series dimension - a multi-series, multi-bucket statement
+    is exactly what production emits."""
+    from modules.omnichannel.services import report_queries
+    from modules.omnichannel.services.report_windows import Bucket
+
+    edges = [
+        Bucket(key="2026-03-01", starts_at=datetime(2026, 3, 1, tzinfo=timezone.utc), ends_at=datetime(2026, 3, 2, tzinfo=timezone.utc)),
+        Bucket(key="2026-03-02", starts_at=datetime(2026, 3, 2, tzinfo=timezone.utc), ends_at=datetime(2026, 3, 3, tzinfo=timezone.utc)),
+    ]
+    series_predicates = {
+        "opened": ConversationEvent.event_type == "opened",
+        "closed": ConversationEvent.event_type == "closed",
+    }
+    columns = report_queries.bucketed_select_columns(ConversationEvent.created_at, edges, series_predicates)
+    assert len(columns) == 4  # 2 series x 2 buckets
+
+    from sqlalchemy import select
+
+    stmt = select(*columns)
+    sqlite_sql = str(stmt.compile(dialect=sqlite.dialect())).lower()
+    postgres_sql = str(stmt.compile(dialect=postgresql.dialect())).lower()
     for sql in (sqlite_sql, postgres_sql):
         assert "date_trunc" not in sql
         assert "strftime" not in sql
@@ -299,8 +511,6 @@ def test_sample_cap_exceeded_is_422(client, fixture_ids, monkeypatch):
 
 
 def test_duration_samples_raises_before_cap_plus_two():
-    from sqlalchemy.orm import Query
-
     from modules.omnichannel.services.report_queries import SampleCapExceeded, duration_samples
 
     class FakeQuery:

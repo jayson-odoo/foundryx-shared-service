@@ -200,14 +200,26 @@ def _report_kwargs(payload: dict) -> dict:
     )
 
 
+# `users`/`leaderboard` never SQL-paginate their own row set (`_build_user_
+# rows` always builds every member up front) - re-running `report_service.
+# report()` once per export page just re-ran the whole per-user aggregation
+# from scratch for a slice it already had (nit, review round 1). Both the row
+# count and the export handler build the row set ONCE via this set.
+_USER_ROW_REPORTS = {"users", "leaderboard"}
+
+
+def _all_user_rows(
+    db: Session, tenant_id: str, workspace_id: str, report_key: str, kwargs: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    rq = report_service.build_report_query(db, report_key, tenant_id=tenant_id, workspace_id=workspace_id, **kwargs)
+    return report_service.sorted_user_rows(db, rq, report_key)
+
+
 def _row_count(db: Session, tenant_id: str, workspace_id: str, report_key: str, req: ReportExportRequest) -> int:
     """The row count the export would produce, via the SAME builder the
     handler runs - never a second query path (AC-RPT-33's "reuse each
     builder's rows" rule extends to the cap check)."""
-    descriptor = descriptor_for(report_key)
     kwargs = dict(
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
         from_=req.from_,
         to=req.to,
         tz=req.tz,
@@ -217,10 +229,13 @@ def _row_count(db: Session, tenant_id: str, workspace_id: str, report_key: str, 
         team_id=req.teamId,
         group_by=req.groupBy,
     )
+    if report_key in _USER_ROW_REPORTS:
+        return len(_all_user_rows(db, tenant_id, workspace_id, report_key, kwargs))
+    descriptor = descriptor_for(report_key)
     if descriptor.paginated:
-        resp = report_service.report(db, report_key, page=0, page_size=1, **kwargs)
+        resp = report_service.report(db, report_key, tenant_id=tenant_id, workspace_id=workspace_id, page=0, page_size=1, **kwargs)
         return resp.total or 0
-    resp = report_service.report(db, report_key, **kwargs)
+    resp = report_service.report(db, report_key, tenant_id=tenant_id, workspace_id=workspace_id, **kwargs)
     return len(_rows_for(report_key, req.groupBy, resp))
 
 
@@ -282,7 +297,32 @@ def run_report_export(db: Session, job: BackgroundJob) -> None:
     writer = csv.writer(buf)
     total_rows = 0
 
-    if descriptor.paginated:
+    if report_key in _USER_ROW_REPORTS:
+        # Built ONCE (nit, review round 1) - `sorted_user_rows` already ran
+        # every per-member aggregation; paginate the in-memory list, never
+        # re-run the builder per page.
+        all_rows = _all_user_rows(db, tenant_id, workspace_id, report_key, kwargs)
+        columns = _STATIC_COLUMNS[(report_key, None)]
+        writer.writerow([sanitize_cell(label) for _, label in columns])
+        total = len(all_rows)
+        service.set_total(job, total)
+
+        offset = 0
+        while True:
+            page_rows = all_rows[offset : offset + EXPORT_PAGE_SIZE]
+            for row in page_rows:
+                writer.writerow([_cell(row, key, tz) for key, _ in columns])
+                total_rows += 1
+            service.advance(job, done=len(page_rows))
+            # Cooperative cancel (mirrors contacts export) - re-read status
+            # FRESH before writing the next slice.
+            if _aborted(db, job.id):
+                logger.info("report export %s aborted mid-run at offset %s", job.id, offset)
+                return
+            offset += EXPORT_PAGE_SIZE
+            if offset >= total or not page_rows:
+                break
+    elif descriptor.paginated:
         page = 0
         resp = report_service.report(
             db, report_key, tenant_id=tenant_id, workspace_id=workspace_id,

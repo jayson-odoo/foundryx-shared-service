@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { type ColumnDef, getCoreRowModel, useReactTable } from '@tanstack/react-table';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DataGrid } from '@/components/ui/data-grid';
@@ -38,15 +38,21 @@ const USER_COLUMNS: ColumnDef<DurationByUserRow>[] = [
  * renders empty (D-A9's "no invented label server-side" rule extends to the
  * client).
  */
-export function ResolutionsReport({ workspaceId, filters }: { workspaceId: string; filters: ReportFilters }) {
-  const [groupBy, setGroupBy] = useState<'none' | 'user'>('none');
-  const { report, loading, error } = useOmnichannelReport(workspaceId, 'resolutions', {
-    ...filters,
-    groupBy: groupBy === 'user' ? 'user' : undefined,
-  });
+export interface ResolutionsReportProps {
+  workspaceId: string;
+  /** Already carries the effective `groupBy` (owned by `useReportFilters`). */
+  filters: ReportFilters;
+  /** `null` = the ungrouped close-reason breakdown. */
+  groupBy: string | null;
+  onGroupByChange: (value: string | null) => void;
+}
 
-  const reasonRows = (groupBy === 'none' ? (report?.rows as CloseReasonRow[] | undefined) : undefined) ?? [];
-  const userRows = (groupBy === 'user' ? (report?.rows as DurationByUserRow[] | undefined) : undefined) ?? [];
+export function ResolutionsReport({ workspaceId, filters, groupBy, onGroupByChange }: ResolutionsReportProps) {
+  const { report, loading, error } = useOmnichannelReport(workspaceId, 'resolutions', filters);
+
+  const grouped = groupBy === 'user';
+  const reasonRows = (grouped ? undefined : (report?.rows as CloseReasonRow[] | undefined)) ?? [];
+  const userRows = (grouped ? (report?.rows as DurationByUserRow[] | undefined) : undefined) ?? [];
 
   const reasonTable = useReactTable({
     data: reasonRows,
@@ -76,13 +82,13 @@ export function ResolutionsReport({ workspaceId, filters }: { workspaceId: strin
           <SearchSelect
             ariaLabel="Group by"
             className="w-44"
-            value={groupBy}
-            onChange={(v) => setGroupBy(v as 'none' | 'user')}
+            value={groupBy ?? 'none'}
+            onChange={(v) => onGroupByChange(v === 'none' ? null : v)}
             options={groupByOptions}
           />
         </CardHeader>
         <CardContent className="p-0">
-          {groupBy === 'user' ? (
+          {grouped ? (
             <DataGrid table={userTable} recordCount={userRows.length} emptyMessage="No data in this range.">
               <DataGridTable />
             </DataGrid>

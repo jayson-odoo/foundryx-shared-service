@@ -7,7 +7,7 @@
  * exactly like Contacts (D-A9-16); gated `reports.read` (the main-session
  * override of D-A9-10's `conversation_reports.read`).
  */
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment } from 'react';
 import { LoaderCircleIcon } from 'lucide-react';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
@@ -17,9 +17,8 @@ import { useActiveWorkspace } from '@/hooks/use-contacts';
 import { useOmnichannelDashboard } from '@/hooks/use-omnichannel-dashboard';
 import { useReportFilters } from '@/hooks/use-report-filters';
 import { useReportMeta } from '@/hooks/use-report-meta';
+import { useWorkspaceChannels } from '@/hooks/use-workspace-channels';
 import { useWorkspaceMembers } from '@/hooks/use-workspace-members';
-import { channelService } from '@/services/channel-service';
-import type { Channel } from '@/types/omnichannel';
 import { DurationStatCard } from '../components/duration-stat-card';
 import { ReportFilterBar } from '../components/report-filter-bar';
 import { LifecycleTiles } from './components/lifecycle-tiles';
@@ -34,14 +33,7 @@ export default function OmnichannelDashboardPage() {
   const { state, setDateRange, setUserId, setChannelId, setGranularity, filters } = useReportFilters();
   const { dashboard, loading, error } = useOmnichannelDashboard(workspaceId, filters);
 
-  const [channels, setChannels] = useState<Channel[]>([]);
-  useEffect(() => {
-    if (!workspaceId) return;
-    channelService
-      .listByWorkspace(workspaceId)
-      .then(setChannels)
-      .catch(() => setChannels([]));
-  }, [workspaceId]);
+  const { options: channelOptions } = useWorkspaceChannels(workspaceId);
 
   if (!ready) {
     return (
@@ -83,7 +75,7 @@ export default function OmnichannelDashboardPage() {
             members={members.map((m) => ({ id: m.userId, name: m.name ?? m.email }))}
             channelId={state.channelId}
             onChannelIdChange={setChannelId}
-            channels={channels.map((c) => ({ id: c.id, name: c.name }))}
+            channels={channelOptions}
             granularity={state.granularity}
             onGranularityChange={setGranularity}
             granularityOptions={meta?.granularities ?? ['hour', 'day', 'week', 'month']}

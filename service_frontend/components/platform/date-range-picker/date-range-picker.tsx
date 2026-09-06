@@ -95,9 +95,19 @@ export function resolvePresetRange(preset: DateRangePreset, tz: string): { from:
   }
 }
 
-function parseKey(key: string): Date {
+/**
+ * A `YYYY-MM-DD` key back into a calendar Date - built from LOCAL components
+ * (S-6, review round 1). It used to build `Date.UTC(...)`, i.e. UTC midnight,
+ * while `react-day-picker` matches `selected`/`defaultMonth` against Dates at
+ * LOCAL midnight and hands back local-midnight Dates on click. West of UTC,
+ * UTC midnight is the PREVIOUS local day - so `2026-03-01` highlighted Feb 28
+ * and the popover opened on the wrong month, even though the value written
+ * back (via `localDateKey`) was correct. The two halves must agree:
+ * `localDateKey(parseKey(k)) === k` in every timezone.
+ */
+export function parseKey(key: string): Date {
   const [y, m, d] = key.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d));
+  return new Date(y, m - 1, d);
 }
 
 /**
@@ -106,7 +116,7 @@ function parseKey(key: string): Date {
  * date by a day in any timezone ahead of UTC. Read the local
  * year/month/date components instead (matches how the picker built it).
  */
-function localDateKey(date: Date): string {
+export function localDateKey(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
@@ -114,7 +124,9 @@ function localDateKey(date: Date): string {
 }
 
 function displayLabel(from: string, to: string): string {
-  const fmt = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  // No `timeZone` override - `parseKey` now returns LOCAL midnight, so
+  // formatting it in UTC would shift the label a day west of UTC.
+  const fmt = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' });
   const fromLabel = fmt.format(parseKey(from));
   const toLabel = fmt.format(parseKey(to));
   return from === to ? fromLabel : `${fromLabel} - ${toLabel}`;

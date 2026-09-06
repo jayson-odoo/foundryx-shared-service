@@ -44,6 +44,13 @@ _REASON_KEYS = {
     "Others": "others",
 }
 
+# S-7 (review round 1): bcrypt is deliberately slow (~1s for 3 hashes), and
+# `seed_report_fixture` runs once per test across three test files (S1/S2/S3)
+# - hashing the SAME literal password 3x per call added up. Every fixture
+# user shares this ONE precomputed hash (computed once at import time, never
+# per-call) rather than calling `hash_password` per user.
+_FIXTURE_PASSWORD_HASH = hash_password("pw12345678")
+
 
 @dataclass
 class FixtureIds:
@@ -65,7 +72,7 @@ def _make_user(db: Session, tenant_id: str, email: str, name: str) -> str:
     user = User(
         tenant_id=tenant_id,
         email=email,
-        password=hash_password("pw12345678"),
+        password=_FIXTURE_PASSWORD_HASH,
         name=name,
         status=UserStatus.ACTIVE.value,
         email_verified_at=sa_func.now(),

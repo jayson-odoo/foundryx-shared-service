@@ -262,6 +262,28 @@ def test_download_uniform_404_matrix(client, session_factory, fixture_ids):
     assert _download(client, h, fixture_ids.workspace_id, "conversations", pending_id).status_code == 404
 
 
+def test_download_404_for_a_job_of_another_type(client, session_factory, fixture_ids):
+    """AC-RPT-34 (nit, review round 1): a real, DONE background job that
+    matches on workspace/reportKey but is of a DIFFERENT job `type`
+    altogether (e.g. the unrelated contacts-export job) must still 404 - the
+    guard checks `job.type == REPORT_EXPORT_JOB_TYPE` before anything else."""
+    db = session_factory()
+    other_type_job = BackgroundJob(
+        tenant_id=fixture_ids.tenant_id,
+        type="omnichannel.contacts_export",
+        status=JOB_DONE,
+        payload_json={"workspaceId": fixture_ids.workspace_id, "reportKey": "conversations"},
+        result_json={"fileKey": "exports/does-not-matter.csv"},
+    )
+    db.add(other_type_job)
+    db.commit()
+    other_type_job_id = other_type_job.id
+    db.close()
+
+    h = _auth(client)
+    assert _download(client, h, fixture_ids.workspace_id, "conversations", other_type_job_id).status_code == 404
+
+
 # ── AC-RPT-37/39: permission gates (core `reports.export`) ──────────────────
 def test_export_permission_gate_403_reports_read_only(client, session_factory, fixture_ids):
     _role_with_keys(session_factory, ["reports.read"], email="reports-read-only@fixture.example")

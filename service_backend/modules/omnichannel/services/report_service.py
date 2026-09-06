@@ -40,7 +40,7 @@ from ..schemas import (
 )
 from . import report_queries, report_stats
 from .lifecycle_service import stages_for_workspace
-from .report_filters import ReportQuery, build_query, team_available
+from .report_filters import ReportQuery, ReportValidationError, build_query, team_available
 from .report_windows import GRANULARITIES
 
 # The seven-report catalog (`reports/meta`, S2 fills the `/reports/{key}`
@@ -163,59 +163,98 @@ def response_samples(db: Session, rq: ReportQuery) -> List[ResponseSample]:
         for contact_id, actor_user_id, payload in rows
     ]
 
+    samples.extend(_derived_response_samples(db, rq))
+    return samples
+
+
+def _derived_response_samples(db: Session, rq: ReportQuery) -> List[ResponseSample]:
+    """Review round 1 (Blocker B-1): the legacy derivation used to fetch every
+    no-reply contact's id into an `IN (...)` list (unbounded - up to a
+    Postgres 65535-bind 500 on a large workspace) then pull EVERY message of
+    those contacts into Python. This version identifies, in ONE SQL
+    statement, each contact's first-ever AGENT message (a correlated `MIN`
+    scalar subquery - never window-bounded, matching the "anywhere in their
+    history" rule) and its immediately preceding CONTACT message (a second
+    correlated `MAX` scalar subquery), for contacts that carry NO
+    `first_agent_reply` event at all (a correlated `NOT EXISTS`, D-A9-6) -
+    with no per-contact `IN` list anywhere. Routed through `duration_samples`
+    so `SampleCapExceeded` (AC-RPT-13) still applies to this source too."""
+    first_agent_at_marker = aliased(ConversationMessage)
+    first_agent_at = (
+        db.query(func.min(first_agent_at_marker.created_at))
+        .filter(
+            first_agent_at_marker.tenant_id == rq.tenant_id,
+            first_agent_at_marker.contact_id == ConversationMessage.contact_id,
+            first_agent_at_marker.sender_type == "AGENT",
+        )
+        .correlate(ConversationMessage)
+        .scalar_subquery()
+    )
+
+    preceding_contact_marker = aliased(ConversationMessage)
+    last_contact_before_at = (
+        db.query(func.max(preceding_contact_marker.created_at))
+        .filter(
+            preceding_contact_marker.tenant_id == rq.tenant_id,
+            preceding_contact_marker.contact_id == ConversationMessage.contact_id,
+            preceding_contact_marker.sender_type == "CONTACT",
+            preceding_contact_marker.created_at < ConversationMessage.created_at,
+        )
+        .correlate(ConversationMessage)
+        .scalar_subquery()
+    )
+
     # D-A9-6: contacts with NO `first_agent_reply` event at all, anywhere in
     # their history (not just this window) - a genuinely legacy thread.
-    no_reply_query = db.query(Contact.id).filter(
-        Contact.tenant_id == rq.tenant_id,
-        Contact.workspace_id == rq.workspace_id,
-        ~db.query(ConversationEvent.id)
+    # Tenant+workspace scoped per S-1 (review round 1) so
+    # `ix_conv_events_contact_created` stays usable.
+    first_reply_event_exists = (
+        db.query(ConversationEvent.id)
         .filter(
-            ConversationEvent.contact_id == Contact.id,
+            ConversationEvent.tenant_id == rq.tenant_id,
+            ConversationEvent.workspace_id == rq.workspace_id,
+            ConversationEvent.contact_id == ConversationMessage.contact_id,
             ConversationEvent.event_type == "first_agent_reply",
         )
-        .exists(),
+        .correlate(ConversationMessage)
+        .exists()
     )
-    no_reply_ids = [
-        r[0]
-        for r in report_queries.duration_samples(
-            no_reply_query, cap=report_queries.REPORT_MAX_SAMPLE_ROWS
-        )
-    ]
 
-    if no_reply_ids:
-        messages = (
-            db.query(ConversationMessage)
-            .filter(
-                ConversationMessage.tenant_id == rq.tenant_id,
-                ConversationMessage.contact_id.in_(no_reply_ids),
-                ConversationMessage.sender_type.in_(("AGENT", "CONTACT")),
-            )
-            .order_by(ConversationMessage.contact_id, ConversationMessage.created_at, ConversationMessage.id)
-            .all()
+    query = (
+        db.query(
+            ConversationMessage.contact_id,
+            ConversationMessage.sender_id,
+            ConversationMessage.created_at,
+            last_contact_before_at.label("last_contact_at"),
         )
-        by_contact: Dict[str, list] = defaultdict(list)
-        for m in messages:
-            by_contact[m.contact_id].append(m)
-        for contact_id, msgs in by_contact.items():
-            last_contact_before = None
-            first_agent = None
-            for m in msgs:
-                if m.sender_type == "AGENT":
-                    first_agent = m
-                    break
-                last_contact_before = m
-            if first_agent is None or last_contact_before is None:
-                continue
-            if not (rq.window_start <= first_agent.created_at < rq.window_end):
-                continue
-            if rq.user_id and first_agent.sender_id != rq.user_id:
-                continue
-            seconds = int((first_agent.created_at - last_contact_before.created_at).total_seconds())
-            samples.append(
-                ResponseSample(
-                    contact_id=contact_id, seconds=seconds, actor_user_id=first_agent.sender_id, derived=True
-                )
-            )
+        .join(Contact, Contact.id == ConversationMessage.contact_id)
+        .filter(
+            ConversationMessage.tenant_id == rq.tenant_id,
+            Contact.tenant_id == rq.tenant_id,
+            Contact.workspace_id == rq.workspace_id,
+            ConversationMessage.sender_type == "AGENT",
+            # Identifies THIS row as the contact's first-ever AGENT message
+            # (unbounded by the window - matches the original semantics).
+            ConversationMessage.created_at == first_agent_at,
+            ConversationMessage.created_at >= rq.window_start,
+            ConversationMessage.created_at < rq.window_end,
+            # ...and the contact carries NO `first_agent_reply` event at all.
+            ~first_reply_event_exists,
+        )
+    )
+    if rq.user_id:
+        query = query.filter(ConversationMessage.sender_id == rq.user_id)
+
+    rows = report_queries.duration_samples(query, cap=report_queries.REPORT_MAX_SAMPLE_ROWS)
+
+    samples: List[ResponseSample] = []
+    for contact_id, sender_id, agent_at, last_contact_at in rows:
+        if last_contact_at is None:
+            continue
+        seconds = int((agent_at - last_contact_at).total_seconds())
+        samples.append(
+            ResponseSample(contact_id=contact_id, seconds=seconds, actor_user_id=sender_id, derived=True)
+        )
     return samples
 
 
@@ -237,6 +276,11 @@ def resolution_samples(db: Session, rq: ReportQuery) -> List[ResolutionSample]:
     cycle_start_at = (
         db.query(func.max(cycle_marker.created_at))
         .filter(
+            # S-1 (review round 1): tenant+workspace scoped so
+            # `ix_conv_events_contact_created` stays usable instead of a
+            # cross-tenant scan.
+            cycle_marker.tenant_id == rq.tenant_id,
+            cycle_marker.workspace_id == rq.workspace_id,
             cycle_marker.contact_id == ConversationEvent.contact_id,
             cycle_marker.event_type.in_(("opened", "reopened")),
             cycle_marker.created_at <= ConversationEvent.created_at,
@@ -287,7 +331,10 @@ def _tiles(db: Session, rq: ReportQuery) -> DashboardTiles:
             func.sum(case((and_(not_closed, ~has_assignee), 1), else_=0)),
         )
         .select_from(Contact)
-        .outerjoin(ThreadStatus, ThreadStatus.id == Contact.status_id)
+        .outerjoin(
+            ThreadStatus,
+            and_(ThreadStatus.id == Contact.status_id, ThreadStatus.tenant_id == rq.tenant_id),
+        )
         .filter(*filters)
         .one()
     )
@@ -299,7 +346,12 @@ def _tiles(db: Session, rq: ReportQuery) -> DashboardTiles:
 
 def _lifecycle(db: Session, rq: ReportQuery) -> List[DashboardLifecycleStageItem]:
     """CURRENT STATE, workspace-wide (AC-RPT-02) - a stage with zero contacts
-    is still listed, never dropped."""
+    is still listed, never dropped. `percent`'s denominator is the
+    WORKSPACE'S TOTAL contact count (S-3, review round 1) - an unstaged
+    contact (`lifecycle_status_id IS NULL`) still counts against the whole,
+    it just never appears in any stage's numerator; summing only the staged
+    counts as the denominator silently rescaled every percentage upward
+    whenever an unstaged contact existed."""
     stages = stages_for_workspace(db, rq.tenant_id, rq.workspace_id)
     counts = dict(
         db.query(Contact.lifecycle_status_id, func.count())
@@ -311,7 +363,12 @@ def _lifecycle(db: Session, rq: ReportQuery) -> List[DashboardLifecycleStageItem
         .group_by(Contact.lifecycle_status_id)
         .all()
     )
-    total = sum(counts.values())
+    total = (
+        db.query(func.count(Contact.id))
+        .filter(Contact.tenant_id == rq.tenant_id, Contact.workspace_id == rq.workspace_id)
+        .scalar()
+        or 0
+    )
     items = []
     for stage in stages:
         count = counts.get(stage.id, 0)
@@ -331,7 +388,18 @@ def _lifecycle(db: Session, rq: ReportQuery) -> List[DashboardLifecycleStageItem
 
 
 def _series(db: Session, rq: ReportQuery) -> DashboardSeries:
-    filters = [ConversationEvent.tenant_id == rq.tenant_id, ConversationEvent.workspace_id == rq.workspace_id]
+    # S-4 (review round 1): the explicit window bound is redundant with the
+    # per-bucket CASE predicates `bucketed_counts` already applies (the
+    # buckets collectively cover exactly this window), but - same reasoning
+    # as `_report_conversations`/`_message_filters` (D-A9-12) - it lets
+    # Postgres use `ix_conv_events_ws_created` as a genuine range scan
+    # instead of reading the workspace's whole event history every call.
+    filters = [
+        ConversationEvent.tenant_id == rq.tenant_id,
+        ConversationEvent.workspace_id == rq.workspace_id,
+        ConversationEvent.created_at >= rq.window_start,
+        ConversationEvent.created_at < rq.window_end,
+    ]
     if rq.user_id:
         filters.append(ConversationEvent.actor_user_id == rq.user_id)
     series_predicates = {
@@ -821,8 +889,7 @@ def _paginate(rows: List[Dict[str, Any]], page: int, page_size: int) -> tuple:
 
 
 def _report_users(db: Session, rq: ReportQuery, page: int, page_size: int) -> ReportResponse:
-    all_rows = _build_user_rows(db, rq)
-    all_rows.sort(key=lambda r: (r["name"].lower(), r["userId"]))
+    all_rows = sorted_user_rows(db, rq, "users")
     page_rows, total = _paginate(all_rows, page, page_size)
     totals = {"userCount": total}
     return _envelope(
@@ -835,17 +902,7 @@ def _report_leaderboard(db: Session, rq: ReportQuery, page: int, page_size: int)
     last), name asc - `userId` asc is the FINAL tiebreak underneath "name asc"
     (AC-RPT-28's determinism guarantee: two members could share a display
     name, `userId` never collides)."""
-    all_rows = _build_user_rows(db, rq)
-    all_rows.sort(
-        key=lambda r: (
-            -r["closedCount"],
-            r["medianFirstResponseSeconds"] if r["medianFirstResponseSeconds"] is not None else float("inf"),
-            r["name"].lower(),
-            r["userId"],
-        )
-    )
-    for i, row in enumerate(all_rows, start=1):
-        row["rank"] = i
+    all_rows = sorted_user_rows(db, rq, "leaderboard")
     page_rows, total = _paginate(all_rows, page, page_size)
     totals = {"userCount": total}
     return _envelope(
@@ -911,13 +968,16 @@ def _assignment_log_rows(
     rows: List[Dict[str, Any]] = []
     for e in events:
         payload = e.payload_json or {}
-        # AC-RPT-27: `workflow` when the writer said so explicitly, `api`
-        # when no actor of any kind wrote it (today the ONLY such caller is
-        # the public gateway - `ConversationService.patch_thread(actor=None)`
-        # - a system/backfill event never reaches this log since it is never
-        # `assigned`/`unassigned`), otherwise `agent`.
-        if payload.get("source") == "workflow":
-            source = "workflow"
+        # AC-RPT-27 (review round 1: prefer the writer's OWN recorded
+        # `payload_json.source` whenever present - `conversation_service`
+        # stamps it on every `assigned`/`unassigned` event it writes
+        # (`assignment_source`, default "agent"; the public gateway passes
+        # "api"; a future workflow action would pass "workflow") - only
+        # INFER from actor presence for a legacy row that predates that
+        # stamp (no `source` key in its payload at all).
+        payload_source = payload.get("source")
+        if payload_source in ("workflow", "agent", "api"):
+            source = payload_source
         elif e.actor_user_id is None and e.actor_external_agent_id is None:
             source = "api"
         else:
@@ -1014,7 +1074,7 @@ MAX_PAGE_SIZE = 200
 DEFAULT_PAGE_SIZE = 25
 
 
-def report(
+def build_report_query(
     db: Session,
     report_key: str,
     *,
@@ -1028,12 +1088,12 @@ def report(
     channel_id: Optional[str] = None,
     team_id: Optional[str] = None,
     group_by: Optional[str] = None,
-    page: int = 0,
-    page_size: int = DEFAULT_PAGE_SIZE,
-) -> ReportResponse:
-    """AC-RPT-17..32. Raises `ReportKeyNotFound` (router -> uniform 404),
-    `GroupByNotSupported` / `ReportValidationError` (router -> 422
-    `{fieldErrors}`) or `SampleCapExceeded` (422)."""
+) -> ReportQuery:
+    """The `report_key`-aware `ReportQuery` builder shared by `report()` and
+    `report_export_service` (nit, review round 1) - a caller that needs the
+    row set directly (the users/leaderboard export dedup) builds the SAME
+    validated query exactly once, rather than re-deriving it. Raises
+    `ReportKeyNotFound`, `GroupByNotSupported` or `ReportValidationError`."""
     descriptor = descriptor_for(report_key)
     if group_by is not None and group_by not in descriptor.supportsGroupBy:
         raise GroupByNotSupported(report_key, descriptor.supportsGroupBy)
@@ -1059,10 +1119,79 @@ def report(
     )
     if report_key not in CHANNEL_FILTERED_REPORTS:
         rq.channel_id = None
+    return rq
 
-    page_size = max(1, min(page_size, MAX_PAGE_SIZE))
-    page = max(0, page)
 
-    if report_key in _PAGINATED_BUILDERS:
-        return _PAGINATED_BUILDERS[report_key](db, rq, page, page_size)
-    return _UNPAGINATED_BUILDERS[report_key](db, rq)
+def sorted_user_rows(db: Session, rq: ReportQuery, report_key: str) -> List[Dict[str, Any]]:
+    """The FULL, sorted `users`/`leaderboard` row set (nit, review round 1) -
+    pulled out of `_report_users`/`_report_leaderboard` so a caller that
+    needs every row (the export handler) builds it ONCE and paginates in
+    Python, instead of re-running `_build_user_rows` (which itself re-runs
+    `response_samples`/`resolution_samples`/several event queries) once per
+    export page."""
+    all_rows = _build_user_rows(db, rq)
+    if report_key == "leaderboard":
+        all_rows.sort(
+            key=lambda r: (
+                -r["closedCount"],
+                r["medianFirstResponseSeconds"] if r["medianFirstResponseSeconds"] is not None else float("inf"),
+                r["name"].lower(),
+                r["userId"],
+            )
+        )
+        for i, row in enumerate(all_rows, start=1):
+            row["rank"] = i
+    else:
+        all_rows.sort(key=lambda r: (r["name"].lower(), r["userId"]))
+    return all_rows
+
+
+def report(
+    db: Session,
+    report_key: str,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    from_: str,
+    to: str,
+    tz: str,
+    granularity: Optional[str] = None,
+    user_id: Optional[str] = None,
+    channel_id: Optional[str] = None,
+    team_id: Optional[str] = None,
+    group_by: Optional[str] = None,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
+) -> ReportResponse:
+    """AC-RPT-17..32. Raises `ReportKeyNotFound` (router -> uniform 404),
+    `GroupByNotSupported` / `ReportValidationError` (router -> 422
+    `{fieldErrors}`) or `SampleCapExceeded` (422). AC-RPT-28 (review round 1,
+    now enforced literally): `page`/`pageSize` are 422 on the four
+    UNPAGINATED reports - `None` means "the caller didn't send one" (the
+    router only forwards a param it actually received), so a caller who
+    never sent either sails through unaffected."""
+    rq = build_report_query(
+        db,
+        report_key,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        from_=from_,
+        to=to,
+        tz=tz,
+        granularity=granularity,
+        user_id=user_id,
+        channel_id=channel_id,
+        team_id=team_id,
+        group_by=group_by,
+    )
+
+    if report_key not in _PAGINATED_BUILDERS:
+        if page is not None:
+            raise ReportValidationError("page", "This report does not support pagination.")
+        if page_size is not None:
+            raise ReportValidationError("pageSize", "This report does not support pagination.")
+        return _UNPAGINATED_BUILDERS[report_key](db, rq)
+
+    resolved_page = max(0, page if page is not None else 0)
+    resolved_page_size = max(1, min(page_size if page_size is not None else DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE))
+    return _PAGINATED_BUILDERS[report_key](db, rq, resolved_page, resolved_page_size)

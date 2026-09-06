@@ -249,13 +249,23 @@ messages: C6 at 180s). Resolution sample `[3600, 3600, 10800, 14400, 37800, 5184
   `{id, createdAt, contactId, contactName, eventType, previousAssigneeId, previousAssigneeName,
   assignedToId, assignedToName, source, actorUserId, actorName}`; on the fixture `total = 3`.
 - **AC-RPT-27 [BE]** Given an assignment-log row, then `source` is derived from the event, not
-  invented: `workflow` when `payload_json.source == "workflow"`, `api` when the event was written
-  by the public gateway, otherwise `agent`; every id is resolved TENANT-SCOPED in ONE batched pass
-  (reuse the `event_service._label_map` pattern) and an unresolvable id renders an empty name.
+  invented: the WRITER'S OWN `payload_json.source` when it is present and one of
+  `workflow` / `agent` / `api` (`ConversationService.patch_thread` stamps it on every
+  `assigned`/`unassigned` event it writes; the public gateway passes `api`), falling back to
+  INFERENCE only for a legacy row that carries no `source` key at all - `api` when the row has no
+  actor of any kind, otherwise `agent` (**amended 2026-09-06 (review round 1)** - the original
+  wording only honoured `source == "workflow"` and re-inferred everything else, so a row the
+  writer had explicitly stamped `api` was re-derived as `agent` whenever an actor happened to be
+  attached); every id is resolved TENANT-SCOPED in ONE batched pass (reuse the
+  `event_service._label_map` pattern) and an unresolvable id renders an empty name.
 - **AC-RPT-28 [BE]** Given any report route with `page` / `pageSize`, then only `assignments` and
-  `users` / `leaderboard` accept them, `pageSize` is capped at 200, and every ordering ends with a
-  deterministic tiebreak (`created_at DESC, id DESC` for the log; `userId ASC` for the tables) so
-  page 0 and page 1 never repeat or drop a row - pinned by a two-page test.
+  `users` / `leaderboard` accept them - the four unpaginated reports return a 422 `{fieldErrors}`
+  naming the offending param rather than silently ignoring it (**amended 2026-09-06 (review round
+  1)** - "only X accept them" is now enforced literally; a caller that sends neither param is
+  unaffected) - `pageSize` is capped at 200, and every ordering ends with a deterministic tiebreak
+  (`created_at DESC, id DESC` for the log; `userId ASC` for the tables) so page 0 and page 1 never
+  repeat or drop a row - pinned by a two-page test for the log AND for `users` / `leaderboard`
+  (which build their whole row set in Python, so their slicing needs its own proof).
 - **AC-RPT-29 [BE]** Given an unknown `reportKey`, then 404 uniform; given an unknown `groupBy` for
   a report that does not declare it, then 422 naming the accepted values (the whitelist is the same
   list `reports/meta` publishes - one source, never forked).
@@ -354,11 +364,17 @@ messages: C6 at 180s). Resolution sample `[3600, 3600, 10800, 14400, 37800, 5184
   the existing `Calendar` in range mode inside a `Popover`), a user `SearchSelect` over workspace
   members, a channel `SearchSelect`, and a granularity `SearchSelect`; the team control is ABSENT
   while `reports/meta` reports `dimensions.team.available = false`; every dropdown is a
-  `SearchSelect` (no bare shadcn `Select`); state is synced to the URL so a reload restores it.
+  `SearchSelect` (no bare shadcn `Select`); state is synced to the URL so a reload restores it -
+  including the current report's group-by (**amended 2026-09-06 (review round 1)**: the group-by
+  was renderer-local state, so it survived neither a reload nor the Export request).
 - **AC-RPT-44 [FE]** Given `/omnichannel/reports`, then the report is chosen with a `SearchSelect`
   over the seven `reports/meta` descriptors (default `conversations`), the filter bar is the same
   component as the dashboard's, and switching report keeps the range, user, channel and
-  granularity.
+  granularity - while a group-by the newly selected report does not declare in `supportsGroupBy`
+  is dropped, so a carried-over dimension can never 422 (**amended 2026-09-06 (review round 1)**,
+  a consequence of AC-RPT-43's group-by now being shared filter state). `reports/meta` is the ONLY
+  source of the descriptor list; if it fails to load the page shows an error state rather than
+  falling back to a hardcoded list that could drift from the server's.
 - **AC-RPT-45 [FE]** Given any chart, then it is rendered through the EXISTING
   `components/ui/chart.tsx` recharts wrapper (`ChartContainer` + `ChartTooltip` +
   `ChartTooltipContent` + `ChartLegend`) with a `ChartConfig` whose colours are Foundryx brand CSS
@@ -371,8 +387,10 @@ messages: C6 at 180s). Resolution sample `[3600, 3600, 10800, 14400, 37800, 5184
 - **AC-RPT-47 [FE]** Given Export on a report, then it calls the `background_jobs` export, polls
   `GET /jobs/{id}` briefly and downloads through the authed file route via `apiFetchBlob`, falling
   back to the Jobs drawer when the wait window elapses - the exact A2 contacts-export controller,
-  reused not re-implemented; the control is hidden without `conversation_reports.export`
-  (`useCan`, UX only - the API is the gate).
+  reused not re-implemented, and the request carries the SAME filters the on-screen report was
+  built from, group-by included (**amended 2026-09-06 (review round 1)**); the control is hidden
+  without the core `reports.export` key (`useCan`, UX only - the API is the gate; corrected here
+  from the pre-D-A9-10 `conversation_reports.export` the rest of this file already dropped).
 - **AC-RPT-48 [FE]** Given every duration rendered on screen, then it is formatted from whole
   seconds by ONE shared helper (`formatDuration`) as `1m 30s` / `3h 30m` / `6d 0h`, and every
   timestamp goes through `useDatetime()`; nothing renders a raw UTC string and nothing re-converts

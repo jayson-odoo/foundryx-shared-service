@@ -34,6 +34,24 @@ class SampleCapExceeded(Exception):
         )
 
 
+def bucketed_select_columns(
+    ts_column: Any, edges: List[Bucket], series_predicates: Dict[str, Optional[Any]]
+) -> List[Any]:
+    """The pure column-building half of `bucketed_counts` - no `db`/execution,
+    so it is directly compile-testable against any dialect (AC-RPT-11's
+    golden two-dialect test, S-8 review round 1: the test asserts against
+    the SAME columns the real query builds, never a hand-built stand-in)."""
+    columns = []
+    for series_index, (_, predicate) in enumerate(series_predicates.items()):
+        for bucket_index, bucket in enumerate(edges):
+            window = and_(ts_column >= bucket.starts_at, ts_column < bucket.ends_at)
+            condition = and_(window, predicate) if predicate is not None else window
+            columns.append(
+                func.sum(case((condition, 1), else_=0)).label(f"s{series_index}_b{bucket_index}")
+            )
+    return columns
+
+
 def bucketed_counts(
     db: Session,
     ts_column: Any,
@@ -49,14 +67,7 @@ def bucketed_counts(
     if not edges:
         return {name: [] for name, _ in names}
 
-    columns = []
-    for series_index, (_, predicate) in enumerate(names):
-        for bucket_index, bucket in enumerate(edges):
-            window = and_(ts_column >= bucket.starts_at, ts_column < bucket.ends_at)
-            condition = and_(window, predicate) if predicate is not None else window
-            columns.append(
-                func.sum(case((condition, 1), else_=0)).label(f"s{series_index}_b{bucket_index}")
-            )
+    columns = bucketed_select_columns(ts_column, edges, series_predicates)
     row = db.query(*columns).filter(*filters).one()
 
     result: Dict[str, List[int]] = {}

@@ -320,6 +320,13 @@ and unit-testable before any endpoint exists. S4's swap is one line per method i
 
 `BL-SS-082..089` are reserved by plan 29 after renumbering, so this slice starts at 090.
 
+**Registered 2026-09-06 (review round 1)**: all twelve rows below are now in
+`documentation/backlogs/backlog.md` under these ids, each linking back to this plan. The
+plan's `P0/P1/P2` map onto the register's `High/Medium/Low` column. BL-SS-091 carries the
+D-A9-12 measurement in full (1,000,000 seeded `conversation_messages` rows, ~37-49 ms via
+the existing single-column `tenant_id` index with OR without the composite index once
+`ANALYZE` has run - so the index was deferred, not shipped).
+
 | Proposed id | Title | Priority |
 |---|---|---|
 | BL-SS-090 | Omnichannel reports: materialized daily rollup table + incremental refresh job (replaces the live aggregate once a tenant outgrows it) | P1 |

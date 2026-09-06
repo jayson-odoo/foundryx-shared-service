@@ -115,8 +115,8 @@ def get_report(
     channelId: Optional[str] = Query(None),
     teamId: Optional[str] = Query(None),
     groupBy: Optional[str] = Query(None),
-    page: int = Query(0),
-    pageSize: int = Query(report_service.DEFAULT_PAGE_SIZE),
+    page: Optional[int] = Query(None),
+    pageSize: Optional[int] = Query(None),
 ) -> ReportResponse:
     WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
     try:

@@ -1,6 +1,5 @@
 'use client';
 
-import { useState } from 'react';
 import { type ColumnDef, getCoreRowModel, useReactTable } from '@tanstack/react-table';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DataGrid } from '@/components/ui/data-grid';
@@ -21,14 +20,20 @@ const CHANNEL_COLUMNS: ColumnDef<MessageChannelRow>[] = [
  * Messages report (plan 30, AC-RPT-23/44) - incoming vs outgoing series over
  * time, plus an optional per-channel breakdown (`DataGrid`, AC-DLA-56).
  */
-export function MessagesReport({ workspaceId, filters }: { workspaceId: string; filters: ReportFilters }) {
-  const [groupBy, setGroupBy] = useState<'none' | 'channel'>('none');
-  const { report, loading, error } = useOmnichannelReport(workspaceId, 'messages', {
-    ...filters,
-    groupBy: groupBy === 'channel' ? 'channel' : undefined,
-  });
+export interface MessagesReportProps {
+  workspaceId: string;
+  /** Already carries the effective `groupBy` (owned by `useReportFilters`). */
+  filters: ReportFilters;
+  /** `null` = the over-time series. */
+  groupBy: string | null;
+  onGroupByChange: (value: string | null) => void;
+}
 
-  const channelRows = (groupBy === 'channel' ? (report?.rows as MessageChannelRow[] | undefined) : undefined) ?? [];
+export function MessagesReport({ workspaceId, filters, groupBy, onGroupByChange }: MessagesReportProps) {
+  const { report, loading, error } = useOmnichannelReport(workspaceId, 'messages', filters);
+
+  const grouped = groupBy === 'channel';
+  const channelRows = (grouped ? (report?.rows as MessageChannelRow[] | undefined) : undefined) ?? [];
   const channelTable = useReactTable({
     data: channelRows,
     columns: CHANNEL_COLUMNS,
@@ -61,16 +66,16 @@ export function MessagesReport({ workspaceId, filters }: { workspaceId: string; 
           <SearchSelect
             ariaLabel="Group by"
             className="w-40"
-            value={groupBy}
-            onChange={(v) => setGroupBy(v as 'none' | 'channel')}
+            value={groupBy ?? 'none'}
+            onChange={(v) => onGroupByChange(v === 'none' ? null : v)}
             options={[
               { label: 'Over time', value: 'none' },
               { label: 'By channel', value: 'channel' },
             ]}
           />
         </CardHeader>
-        <CardContent className={groupBy === 'channel' ? 'p-0' : undefined}>
-          {groupBy === 'channel' ? (
+        <CardContent className={grouped ? 'p-0' : undefined}>
+          {grouped ? (
             <DataGrid table={channelTable} recordCount={channelRows.length} emptyMessage="No data in this range.">
               <DataGridTable />
             </DataGrid>

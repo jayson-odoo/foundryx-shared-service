@@ -6,7 +6,7 @@
  * Workspace resolves exactly like Contacts/Dashboard (D-A9-16); gated
  * `reports.read` (main-session override of D-A9-10).
  */
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { LoaderCircleIcon } from 'lucide-react';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
@@ -17,9 +17,9 @@ import { useCan } from '@/hooks/use-can';
 import { useActiveWorkspace } from '@/hooks/use-contacts';
 import { useReportFilters } from '@/hooks/use-report-filters';
 import { useReportMeta } from '@/hooks/use-report-meta';
+import { useWorkspaceChannels } from '@/hooks/use-workspace-channels';
 import { useWorkspaceMembers } from '@/hooks/use-workspace-members';
-import { channelService } from '@/services/channel-service';
-import type { Channel, ReportKey } from '@/types/omnichannel';
+import type { ReportKey } from '@/types/omnichannel';
 import { ReportFilterBar } from '../components/report-filter-bar';
 import { AssignmentsReport } from './components/assignments-report';
 import { ConversationsReport } from './components/conversations-report';
@@ -44,8 +44,8 @@ export default function OmnichannelReportsPage() {
   const { can } = useCan();
   const { workspaceId, workspaces, ready, setWorkspaceId } = useActiveWorkspace();
   const { members } = useWorkspaceMembers(workspaceId);
-  const { meta } = useReportMeta(workspaceId);
-  const { state, setDateRange, setUserId, setChannelId, setGranularity, filters } = useReportFilters();
+  const { meta, loading: metaLoading, error: metaError } = useReportMeta(workspaceId);
+  const { state, setDateRange, setUserId, setChannelId, setGranularity, setGroupBy, filters } = useReportFilters();
   const [reportKey, setReportKey] = useState<ReportKey>(() => readReportKeyFromUrl());
 
   useEffect(() => {
@@ -55,26 +55,61 @@ export default function OmnichannelReportsPage() {
     window.history.replaceState(null, '', url);
   }, [reportKey]);
 
-  const [channels, setChannels] = useState<Channel[]>([]);
-  useEffect(() => {
-    if (!workspaceId) return;
-    channelService
-      .listByWorkspace(workspaceId)
-      .then(setChannels)
-      .catch(() => setChannels([]));
-  }, [workspaceId]);
+  const { options: channelOptions } = useWorkspaceChannels(workspaceId);
 
-  const { exporting, runExport } = useReportExport(workspaceId, reportKey, filters);
   const currentDescriptor = meta?.reports.find((r) => r.key === reportKey);
+
+  // A `groupBy` carried over from the previous report (or a hand-edited URL)
+  // would be a server 422 - `supportsGroupBy` is per report. Clear it as soon
+  // as the descriptor says the current report can't take it (S-5, review
+  // round 1: the value is URL-synced now, so it outlives a report switch).
+  useEffect(() => {
+    if (!currentDescriptor) return;
+    if (state.groupBy && !currentDescriptor.supportsGroupBy.includes(state.groupBy)) setGroupBy(null);
+  }, [currentDescriptor, state.groupBy, setGroupBy]);
+
+  // The effective group-by for THIS report, and the one `ReportFilters` both
+  // the report request and the Export request are built from - so an export
+  // taken while looking at "By agent" carries `groupBy=user` (S-5).
+  const groupBy = currentDescriptor?.supportsGroupBy.includes(state.groupBy ?? '') ? state.groupBy : null;
+  const scopedFilters = useMemo(
+    () => ({ ...filters, groupBy: groupBy ?? undefined }),
+    [filters, groupBy],
+  );
+  const { exporting, runExport } = useReportExport(workspaceId, reportKey, scopedFilters);
   const canExport = can('reports.export');
 
-  if (!ready) {
+  const onReportChange = useCallback(
+    (next: ReportKey) => {
+      setReportKey(next);
+      setGroupBy(null);
+    },
+    [setGroupBy],
+  );
+
+  if (!ready || metaLoading) {
     return (
       <Container width="fluid">
         <div className="flex items-center justify-center py-24 text-muted-foreground">
           <LoaderCircleIcon className="size-6 animate-spin" />
         </div>
       </Container>
+    );
+  }
+
+  // The report catalog IS the page (which reports exist, which take a
+  // group-by, which export). A hardcoded fallback list would silently drift
+  // from the server's and offer reports/controls that may not exist - so a
+  // meta failure is an error state, not a guess (nit, review round 1).
+  if (metaError || !meta) {
+    return (
+      <RequirePermission permission="reports.read">
+        <Container width="fluid">
+          <div className="flex items-center justify-center py-24 text-sm text-muted-foreground">
+            Couldn&apos;t load the reports.
+          </div>
+        </Container>
+      </RequirePermission>
     );
   }
 
@@ -100,21 +135,7 @@ export default function OmnichannelReportsPage() {
 
         <Container width="fluid">
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-            <ReportPicker
-              value={reportKey}
-              onChange={setReportKey}
-              reports={
-                meta?.reports ?? [
-                  { key: 'conversations', label: 'Conversations', supportsGroupBy: [], paginated: false, exportable: true },
-                  { key: 'responses', label: 'Responses', supportsGroupBy: ['user'], paginated: false, exportable: true },
-                  { key: 'resolutions', label: 'Resolutions', supportsGroupBy: ['user'], paginated: false, exportable: true },
-                  { key: 'messages', label: 'Messages', supportsGroupBy: ['channel'], paginated: false, exportable: true },
-                  { key: 'users', label: 'Users', supportsGroupBy: [], paginated: true, exportable: true },
-                  { key: 'leaderboard', label: 'Leaderboard', supportsGroupBy: [], paginated: true, exportable: true },
-                  { key: 'assignments', label: 'Assignment log', supportsGroupBy: [], paginated: true, exportable: true },
-                ]
-              }
-            />
+            <ReportPicker value={reportKey} onChange={onReportChange} reports={meta.reports} />
             {canExport && (currentDescriptor?.exportable ?? true) && (
               <Button variant="outline" size="sm" disabled={!workspaceId || exporting} onClick={() => void runExport()}>
                 {exporting ? 'Exporting...' : 'Export'}
@@ -130,29 +151,44 @@ export default function OmnichannelReportsPage() {
             members={members.map((m) => ({ id: m.userId, name: m.name ?? m.email }))}
             channelId={state.channelId}
             onChannelIdChange={setChannelId}
-            channels={channels.map((c) => ({ id: c.id, name: c.name }))}
+            channels={channelOptions}
             granularity={state.granularity}
             onGranularityChange={setGranularity}
-            granularityOptions={meta?.granularities ?? ['hour', 'day', 'week', 'month']}
+            granularityOptions={meta.granularities}
             className="mb-4"
           />
         </Container>
 
         <Container width="fluid">
           {!workspaceId ? null : reportKey === 'conversations' ? (
-            <ConversationsReport workspaceId={workspaceId} filters={filters} />
+            <ConversationsReport workspaceId={workspaceId} filters={scopedFilters} />
           ) : reportKey === 'responses' ? (
-            <ResponsesReport workspaceId={workspaceId} filters={filters} />
+            <ResponsesReport
+              workspaceId={workspaceId}
+              filters={scopedFilters}
+              groupBy={groupBy}
+              onGroupByChange={setGroupBy}
+            />
           ) : reportKey === 'resolutions' ? (
-            <ResolutionsReport workspaceId={workspaceId} filters={filters} />
+            <ResolutionsReport
+              workspaceId={workspaceId}
+              filters={scopedFilters}
+              groupBy={groupBy}
+              onGroupByChange={setGroupBy}
+            />
           ) : reportKey === 'messages' ? (
-            <MessagesReport workspaceId={workspaceId} filters={filters} />
+            <MessagesReport
+              workspaceId={workspaceId}
+              filters={scopedFilters}
+              groupBy={groupBy}
+              onGroupByChange={setGroupBy}
+            />
           ) : reportKey === 'users' ? (
-            <UsersReport workspaceId={workspaceId} filters={filters} />
+            <UsersReport workspaceId={workspaceId} filters={scopedFilters} />
           ) : reportKey === 'leaderboard' ? (
-            <LeaderboardReport workspaceId={workspaceId} filters={filters} />
+            <LeaderboardReport workspaceId={workspaceId} filters={scopedFilters} />
           ) : (
-            <AssignmentsReport workspaceId={workspaceId} filters={filters} />
+            <AssignmentsReport workspaceId={workspaceId} filters={scopedFilters} />
           )}
         </Container>
       </Fragment>

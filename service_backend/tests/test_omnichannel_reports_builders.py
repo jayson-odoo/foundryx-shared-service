@@ -299,6 +299,43 @@ def test_page_size_is_capped_at_200(client, fixture_ids):
     assert res.json()["pageSize"] == 200
 
 
+def test_page_and_page_size_are_422_on_unpaginated_reports(client, fixture_ids):
+    """AC-RPT-28 (nit, review round 1, enforced literally): only `assignments`
+    / `users` / `leaderboard` accept `page`/`pageSize` - every other report
+    422s when either is explicitly sent (never silently ignored)."""
+    h = _auth(client)
+    res = _report(client, h, fixture_ids.workspace_id, "conversations", tz=KL, page=1, **FIXTURE_RANGE)
+    assert res.status_code == 422
+    assert "page" in res.json()["detail"]["fieldErrors"]
+
+    res2 = _report(client, h, fixture_ids.workspace_id, "responses", tz=KL, pageSize=10, **FIXTURE_RANGE)
+    assert res2.status_code == 422
+    assert "pageSize" in res2.json()["detail"]["fieldErrors"]
+
+    # A caller who never sends either sails through unaffected.
+    res3 = _report(client, h, fixture_ids.workspace_id, "conversations", tz=KL, **FIXTURE_RANGE)
+    assert res3.status_code == 200, res3.text
+
+
+def test_two_page_proof_for_users_and_leaderboard(client, fixture_ids):
+    """AC-RPT-28 (nit, review round 1): `users`/`leaderboard` never
+    SQL-paginate their own row set (`sorted_user_rows` builds every member up
+    front) - prove a small `pageSize` still slices deterministically with no
+    repeat/drop across pages, same guarantee as the assignment log."""
+    h = _auth(client)
+    for key in ("users", "leaderboard"):
+        page0 = _report(client, h, fixture_ids.workspace_id, key, tz=KL, pageSize=2, page=0, **FIXTURE_RANGE).json()
+        page1 = _report(client, h, fixture_ids.workspace_id, key, tz=KL, pageSize=2, page=1, **FIXTURE_RANGE).json()
+        assert page0["total"] == 3
+        assert len(page0["rows"]) == 2
+        assert len(page1["rows"]) == 1
+        ids_page0 = {r["userId"] for r in page0["rows"]}
+        ids_page1 = {r["userId"] for r in page1["rows"]}
+        assert ids_page0.isdisjoint(ids_page1), key
+        all_rows = _report(client, h, fixture_ids.workspace_id, key, tz=KL, pageSize=200, **FIXTURE_RANGE).json()["rows"]
+        assert ids_page0 | ids_page1 == {r["userId"] for r in all_rows}, key
+
+
 # ── AC-RPT-29: unknown reportKey / unknown groupBy ────────────────────────────
 def test_unknown_report_key_is_404(client, fixture_ids):
     h = _auth(client)
