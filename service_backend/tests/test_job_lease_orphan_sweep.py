@@ -315,6 +315,9 @@ def test_startup_runs_the_orphan_sweep_with_the_15_minute_threshold(monkeypatch)
         return 0
 
     monkeypatch.setattr(JobService, "fail_orphaned_running_jobs", recorder, raising=False)
+    # conftest turns the startup sweep OFF for the suite; this test is about
+    # what startup does when it is ON.
+    monkeypatch.setattr(settings, "background_job_orphan_sweep_on_startup", True)
     with TestClient(app):
         pass
 
