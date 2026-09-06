@@ -92,6 +92,21 @@ def register_engine_entities() -> None:
 
     register_omnichannel_deferred_actions()
 
+    # Contacts CSV importer (plan 26 S3, AC-CTM-34) - registered here like
+    # every other engine adoption in this hook, idempotent.
+    from .importers import register_contacts_importer
+
+    register_contacts_importer()
+
+    # Contacts export job handler (plan 26 S3, AC-CTM-39) - the API process
+    # creates + (eager dev/test) runs jobs inline; a real Celery worker needs
+    # this import too (mirrors the autocount-sync handler's own note) - see
+    # `app/jobs/worker.py`'s task, which only dispatches by registered type so
+    # ANY process that never imports this module leaves the job type unknown.
+    from .services.contact_export_service import register_contacts_export_handler
+
+    register_contacts_export_handler()
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""
@@ -316,6 +331,36 @@ def create_schema_and_tables(engine: Engine) -> None:
                     f'ON "{OMNI_SCHEMA}".contact_tags (workspace_id, lower(name))'
                 )
             )
+            # Contacts module (plan 26 S1) - `phone_digits` idempotent add +
+            # backfill + index, and the `contact_segments` per-workspace unique
+            # name index (the TABLE itself is new and already created by the
+            # `create_all` call above - only the functional index needs its own
+            # statement, same as contact_fields/contact_tags).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contacts '
+                    "ADD COLUMN IF NOT EXISTS phone_digits VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_contacts_phone_digits "
+                    f'ON "{OMNI_SCHEMA}".contacts (phone_digits)'
+                )
+            )
+            conn.execute(
+                text(
+                    f'UPDATE "{OMNI_SCHEMA}".contacts '
+                    "SET phone_digits = regexp_replace(phone, '[^0-9]', '', 'g') "
+                    "WHERE phone_digits IS NULL AND phone IS NOT NULL"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_contact_segments_workspace_name "
+                    f'ON "{OMNI_SCHEMA}".contact_segments (workspace_id, lower(name))'
+                )
+            )
             # phone_number_id → service-wide UNIQUE (plan Slice 3, AC-01-20) for
             # O(1) inbound routing. Reconcile any existing duplicates FIRST (keep
             # the earliest by created_at,id; NULL the losers) then add a partial
@@ -448,15 +493,35 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     tenant that somehow reaches this hook more than once.
 
     ``AppStoreService.update()`` already re-grants this module's permission
-    catalog rows (incl. `close_reasons.manage`/`inbox_views.manage`/
-    `conversations.shortcut`, AC-IVE-41) to the tenant's Admin role after this
-    hook returns - no grant-sweep code needed here.
+    catalog rows (incl. the plan 26 S1 ``segments.manage``/``contacts.import``/
+    ``contacts.export`` keys AND the plan 27 A3 ``close_reasons.manage``/
+    ``inbox_views.manage``/``conversations.shortcut`` keys, AC-IVE-41) to the
+    tenant's Admin role after this hook returns - no grant-sweep code needed
+    here.
+
+    0.2.0 -> 0.4.0 (plan 26 S1 + plan 27 A3 merged; nit 17 fix - no `0.3.0`
+    ever shipped on the plan-26 branch, so this hook must run BOTH lanes'
+    backfills unconditionally, idempotently, for a tenant landing on 0.4.0
+    from any earlier version):
+    - `phone_digits` (D-A2-9) - the Postgres-wide `regexp_replace` sweep in
+      `create_schema_and_tables` already runs on every boot, but that ALTER
+      path is dialect-gated (Postgres only) and idempotent-but-global;
+      re-running the portable per-tenant backfill here too is a cheap,
+      dialect-agnostic self-healing pass (matches the
+      `lifecycle_service.backfill_tenant` self-healing pattern above).
+    - `conversation_events`/`last_agent_message_at` (plan 27 A3 S1, AC-IVE-12)
+      and the seeded close reasons per workspace (plan 27 A3 S2, AC-IVE-27) -
+      both idempotent, called unconditionally so re-running `update` (or a
+      tenant already fully migrated) is a safe no-op.
     """
+    from .repositories.contact_repository import ContactRepository
     from .services import close_reason_service, event_service, lifecycle_service
 
     lifecycle_service.backfill_tenant(db, tenant_id)
     event_service.backfill_tenant(db, tenant_id)
     close_reason_service.CloseReasonService(db).backfill_tenant(tenant_id)
+    ContactRepository(db).backfill_phone_digits(tenant_id)
+    db.flush()
 
 
 def uninstall_tenant(db: Session, tenant_id: str) -> None:
@@ -600,6 +665,7 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     for cid, (first, last), phone, status_id, priority, csw, msgs in threads:
         last_at = None
         last_in = None
+        digits = "".join(c for c in phone if c.isdigit())
         contact = Contact(
             id=cid,
             tenant_id=tenant_id,
@@ -607,6 +673,7 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
             first_name=first,
             last_name=last,
             phone=phone,
+            phone_digits=digits,
             status_id=status_id,
             priority=priority,
             csw_expires_at=csw,
@@ -614,7 +681,6 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
         )
         db.add(contact)
         db.flush()
-        digits = "".join(c for c in phone if c.isdigit())
         db.add(
             ContactChannelIdentity(
                 tenant_id=tenant_id,

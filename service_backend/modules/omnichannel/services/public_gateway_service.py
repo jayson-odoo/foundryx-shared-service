@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.api_errors import ApiError
 
 from ..models import MEDIA_MESSAGE_TYPES, Channel, Contact, WhatsappTemplate
+from ..phone import digits_only
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import (
     PublicSendRequest,
@@ -58,7 +59,9 @@ WIRE_FORMATS = (FORMAT_GUIDE, FORMAT_RIO)
 
 
 def _digits(value: str) -> str:
-    return "".join(ch for ch in (value or "") if ch.isdigit())
+    # Delegates to the shared normalizer (plan 26 S1, D-A2-9) so this write
+    # path and `find_by_phone_in_workspace`'s lookup always agree.
+    return digits_only(value)
 
 
 def _epoch(dt) -> Optional[int]:
@@ -519,6 +522,7 @@ class PublicGatewayService:
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             phone=digits,
+            phone_digits=digits,
             priority="MEDIUM",
             status_id=statuses.status_id_for(self.db, tenant_id, "THREAD", "OPEN"),
             created_at=datetime.now(timezone.utc),

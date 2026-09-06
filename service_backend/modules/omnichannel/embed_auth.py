@@ -110,6 +110,25 @@ class ConversationPrincipal:
             )
         # Any embed token may READ within its scope (scope enforced separately).
 
+    def require_read_or_contacts(self) -> None:
+        """Like `require_read()` but ALSO accepts `contacts.read` (plan 26
+        review round 1, AC-CTM-22 phase-2 fix). The Contacts module's detail
+        page reuses THIS single-thread read (`get_thread`) and its message
+        history (`list_messages`) via the A1 `<ConversationDrawer>` - a role
+        holding only `contacts.read` (no `conversations.read`) must still be
+        able to open a contact's own detail page, mirroring the existing
+        "or" gate `get_lifecycle_moves` already applies. Deliberately
+        scoped to PER-RECORD reads only - `list_threads` (the shared Inbox
+        LIST) stays `conversations.read`-only, so `contacts.read` never
+        silently grants Inbox visibility (`app/permissions/... implied-read`
+        does not span module boundaries either)."""
+        if not self.is_embed and not ({"conversations.read", "contacts.read"} & self.permission_keys):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Missing permission: one of conversations.read, contacts.read",
+            )
+        # Any embed token may READ within its scope (scope enforced separately).
+
     def require_native_read(self, native_perm: str) -> None:
         """Gate a READ helper that both auth schemes reach (workspace templates /
         quick-replies / members). Native → the permission must be held (preserves

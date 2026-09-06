@@ -16,9 +16,19 @@
  * `[data-radix-focus-guard]` is Radix's own tab-trap sentinel, appended as a direct child
  * of `<body>` (a sibling of every portal root, not a descendant of any of them) - a focus
  * hop through one is a transient step INSIDE a modal's focus trap, not a departure from it.
+ *
+ * `[data-sonner-toaster]` (plan 26 review round 2, blocker 1 follow-up): sonner's
+ * toaster is ALSO a top-level `<body>` portal, sibling to every Dialog's own
+ * portal root. Once a toast became clickable over an open modal Dialog (the
+ * `pointer-events-auto` fix in `sonner.tsx`), clicking its Cancel button
+ * reads to Radix as a pointerdown OUTSIDE the dialog's content and closes
+ * it - discarding the very countdown the click was meant to interact with
+ * (found live: "Manage segments" + a row's deferred-delete countdown toast).
+ * Every toast-hosted control must stay "inside" any dialog beneath it, the
+ * same way a popover/menu opened FROM a dialog already does.
  */
 const FLOATING_SURFACE_SELECTOR =
-  '[data-radix-popper-content-wrapper], [data-radix-menu-content], [data-radix-popover-content], [data-radix-select-content], [data-radix-context-menu-content], [data-slot="dropdown-menu-content"], [data-slot="popover-content"], [data-slot="select-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="drawer-content"], [role="menu"], [role="menuitem"], [role="listbox"], [role="option"], [role="dialog"], [role="alertdialog"], [cmdk-root], [data-radix-focus-guard]';
+  '[data-radix-popper-content-wrapper], [data-radix-menu-content], [data-radix-popover-content], [data-radix-select-content], [data-radix-context-menu-content], [data-slot="dropdown-menu-content"], [data-slot="popover-content"], [data-slot="select-content"], [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"], [data-slot="drawer-content"], [role="menu"], [role="menuitem"], [role="listbox"], [role="option"], [role="dialog"], [role="alertdialog"], [cmdk-root], [data-radix-focus-guard], [data-sonner-toaster], [data-sonner-toast]';
 
 export function focusIsInsideFloating(node: Element | null): boolean {
   if (!node) return false;

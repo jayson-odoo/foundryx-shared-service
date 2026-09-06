@@ -1,7 +1,8 @@
 """Omnichannel's deferred (grace-window) action registrations (sprint-4/23,
-T5 fix round 1, item 15) - migrating the module's own `confirm:`-gated
-destructive actions onto the shared core grace-window engine (D2). Covers
-registration for all 8 keys + park->lapse->commit end to end for each.
+T5 fix round 1, item 15; `contact_segments.delete` added plan 26 review round
+1, Blocker 2) - migrating the module's own `confirm:`-gated destructive
+actions onto the shared core grace-window engine (D2). Covers registration
+for every key + park->lapse->commit end to end for each.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -107,6 +108,19 @@ def _make_wa_template(db, channel_id):
     return row
 
 
+def _make_contact_segment(db, ws_id, name="VIPs"):
+    from modules.omnichannel.models import ContactSegment
+
+    row = ContactSegment(
+        tenant_id=DEFAULT_TENANT_ID, workspace_id=ws_id, name=name,
+        filter_json={"kind": "group", "combinator": "and", "rules": []},
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def _park_and_lapse(db, admin, action_key, entity_type, entity_id, payload=None):
     svc = PendingActionService(db)
     row = svc.park(
@@ -128,7 +142,7 @@ def db(session_factory):
         session.close()
 
 
-def test_all_ten_omnichannel_keys_registered(db):
+def test_all_registered_omnichannel_keys_registered(db):
     for key in (
         "channels.disconnect",
         "channels.delete",
@@ -137,6 +151,7 @@ def test_all_ten_omnichannel_keys_registered(db):
         "webhooks.delete",
         "quick_replies.delete",
         "api_keys.revoke",
+        "contact_segments.delete",
         "workspaces.trash",
         "close_reasons.delete",
         "inbox_views.delete",
@@ -220,6 +235,58 @@ def test_quick_replies_delete(db):
     from modules.omnichannel.models import QuickReply
 
     assert db.get(QuickReply, qr.id) is None
+
+
+def test_contact_segments_delete(db):
+    ws_id = _default_workspace_id(db)
+    admin = _admin(db)
+    segment = _make_contact_segment(db, ws_id)
+
+    # `entity_id` is the bare segment id (globally unique PK) - the handler
+    # resolves its owning workspace from the row itself.
+    result = _park_and_lapse(db, admin, "contact_segments.delete", "contact_segment", segment.id)
+    assert result.status == "committed"
+
+    from modules.omnichannel.models import ContactSegment
+
+    assert db.get(ContactSegment, segment.id) is None
+
+
+def test_contact_segments_cancel_within_the_window_leaves_the_row_intact(db):
+    """Review round 2, nit 11: the server side of blocker 2/should-fix 4's
+    fix - Cancel arriving WHILE the window is still open must not commit,
+    and the segment must still exist afterward (the frontend
+    `use-segment-delete-controller.ts` calls this exact endpoint from the
+    countdown toast's Cancel button)."""
+    ws_id = _default_workspace_id(db)
+    admin = _admin(db)
+    segment = _make_contact_segment(db, ws_id, name="Cancel me")
+    svc = PendingActionService(db)
+
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key="contact_segments.delete", entity_type="contact_segment", entity_id=segment.id,
+    )
+    cancelled = svc.cancel(DEFAULT_TENANT_ID, row.id, admin)
+    assert cancelled.status == "cancelled"
+
+    from modules.omnichannel.models import ContactSegment
+
+    assert db.get(ContactSegment, segment.id) is not None  # never deleted
+
+
+def test_contact_segments_missing_target_404_at_park(client):
+    h = _auth(client)
+    res = client.post(
+        "/api/v1/pending-actions",
+        headers=h,
+        json={
+            "actionKey": "contact_segments.delete",
+            "entityType": "contact_segment",
+            "entityId": "no-such-segment",
+        },
+    )
+    assert res.status_code == 404
 
 
 def test_api_keys_revoke(db):

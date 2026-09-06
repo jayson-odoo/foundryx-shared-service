@@ -14,6 +14,7 @@ from app.config import settings
 
 from ..adapters.whatsapp_cloud import get_adapter
 from ..models import Channel, Contact, ContactChannelIdentity, ConversationMessage
+from ..phone import digits_only
 from ..repositories.contact_repository import ContactRepository
 from ..security import signed_media_url
 from .conversation_service import ConversationService
@@ -345,7 +346,7 @@ class InboundService:
                     identity.profile_name = event["profile_name"]
                 return contact
 
-        digits = "".join(ch for ch in wa_id if ch.isdigit())
+        digits = digits_only(wa_id)
         contact = self.repo.find_by_phone_in_workspace(
             digits, channel.workspace_id, channel.tenant_id
         )
@@ -360,6 +361,7 @@ class InboundService:
                 first_name=first or None,
                 last_name=last or None,
                 phone=f"+{digits}",
+                phone_digits=digits,
                 status_id=statuses.status_id_for(self.db, channel.tenant_id, "THREAD", "OPEN"),
                 priority="MEDIUM",
                 # A workspace with no lifecycle graph "should not happen" post-

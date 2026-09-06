@@ -8,6 +8,7 @@
  */
 
 import type { UserStatus } from '@/types/user';
+import type { FilterGroup } from '@/types/resource';
 
 /** Channels the platform can connect. MVP builds WHATSAPP; others are later adapters. */
 export type ChannelType = 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM' | 'DOUYIN' | 'XIAOHONGSHU';
@@ -617,6 +618,103 @@ export interface PatchContactInput {
   countryCode?: string | null;
   customFields?: Record<string, string | number | boolean | null>;
   tagIds?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Plan 26 - Contacts module (list, segments, form, bulk, CSV import/export).
+// See documentation/plans/sprint-4/26-omnichannel-contacts-module.md. A2 adds
+// NO new contact entity - a "contact" is still the A1 `contacts` row (=
+// ConversationThread). ContactListItem is a SUBCLASS adding `channels[]`
+// (D-A2-11); the internal `/api/v1/omnichannel` gateway shapes are untouched.
+// ---------------------------------------------------------------------------
+
+/** One channel identity a contact has messaged through (`contact_channel_identities`,
+ *  D-A2-11) - the Channel column source, NEVER the last message's channel (a
+ *  manually created contact has no message and must not show a fabricated type). */
+export interface ContactChannelRef {
+  channelId: string;
+  channelType: ChannelType;
+  name: string;
+}
+
+/** A list row (plan 26 §5.1) - every `ConversationThread` (= A1 `ThreadItem`)
+ *  field PLUS the resolved channel identities. */
+export interface ContactListItem extends ConversationThread {
+  channels: ContactChannelRef[];
+}
+
+/** A saved, named filter tree on a workspace (D-A2-3) - stores the EXACT
+ *  `FilterGroup` shape the Resource shell's filter builder emits, applied in
+ *  SQL. Consumed as-is by A3 (inbox views) and A4 (broadcast audiences). */
+export interface ContactSegment {
+  id: string;
+  workspaceId: string;
+  name: string;
+  description: string | null;
+  filter: FilterGroup;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+}
+
+export interface CreateContactSegmentInput {
+  name: string;
+  description?: string | null;
+  filter: FilterGroup;
+}
+
+export interface UpdateContactSegmentInput {
+  name?: string;
+  description?: string | null;
+  filter?: FilterGroup;
+}
+
+/** Create-form payload (D-A2-4) - `phone` is required + create-only; every
+ *  other field mirrors `PatchContactInput` plus the lifecycle/tags a brand
+ *  new contact needs up front. */
+export interface CreateContactInput {
+  firstName?: string | null;
+  lastName?: string | null;
+  phone: string;
+  email?: string | null;
+  language?: string | null;
+  countryCode?: string | null;
+  /** Defaults to the workspace's initial lifecycle stage when omitted. */
+  lifecycleStatusId?: string | null;
+  tagIds?: string[];
+  customFields?: Record<string, string | number | boolean | null>;
+}
+
+/** Per-record bulk-action outcome (D-A2-5) - never a bare "something went
+ *  wrong"; a failed id always carries its own reason. */
+export interface BulkResult {
+  ok: string[];
+  failed: { id: string; error: string }[];
+}
+
+export interface BulkAssignInput {
+  ids: string[];
+  assigneeUserId: string | null;
+}
+export interface BulkTagsInput {
+  ids: string[];
+  mode: 'add' | 'remove';
+  tagIds: string[];
+}
+export interface BulkLifecycleInput {
+  ids: string[];
+  toStatusId: string;
+}
+
+/** Export job request (D-A2-6a) - honours the EXACT query it was given
+ *  (an explicit `ids` selection wins over search/filter/segment/sort). */
+export interface ContactExportRequest {
+  columns: string[];
+  ids?: string[];
+  search?: string;
+  filter?: FilterGroup | null;
+  segment?: string | null;
+  sortBy?: string;
+  sortDir?: 'asc' | 'desc';
 }
 
 // ---------------------------------------------------------------------------

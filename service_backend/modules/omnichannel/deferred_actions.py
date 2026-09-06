@@ -22,6 +22,7 @@ WA_TEMPLATES_MANAGE = "wa_templates.manage"
 WEBHOOKS_MANAGE = "webhooks.manage"
 WORKSPACES_MANAGE = "workspaces.manage"
 API_KEYS_MANAGE = "api_keys.manage"
+SEGMENTS_MANAGE = "segments.manage"
 CONVERSATIONS_READ = "conversations.read"
 CLOSE_REASONS_MANAGE = "close_reasons.manage"
 
@@ -250,6 +251,48 @@ API_KEYS_REVOKE = DeferredActionDef(
 )
 
 
+# ---- contact segments (plan 26, review round 1 - Blocker 2) ---------------
+#
+# `entity_id` is the bare segment id (globally unique PK) - the handler
+# resolves its owning workspace from the row itself, mirroring the
+# `wa_template`/`quick_reply`/`api_key` entities above.
+
+
+def _contact_segment_row(db: Session, tenant_id: str, entity_id: str):
+    from .models import ContactSegment
+
+    return (
+        db.query(ContactSegment)
+        .filter(ContactSegment.id == entity_id, ContactSegment.tenant_id == tenant_id)
+        .first()
+    )
+
+
+def _contact_segments_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    return _contact_segment_row(db, tenant_id, entity_id) is not None
+
+
+def _contact_segments_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
+    from .services.contact_segment_service import ContactSegmentService
+
+    row = _contact_segment_row(db, tenant_id, entity_id)
+    if row is None:
+        raise ValueError("Segment no longer exists.")
+    ContactSegmentService(db).delete(entity_id, row.workspace_id, tenant_id)
+
+
+CONTACT_SEGMENTS_DELETE = DeferredActionDef(
+    key="contact_segments.delete",
+    module="omnichannel",
+    entity_type="contact_segment",
+    permission=SEGMENTS_MANAGE,
+    window="destructive",
+    label="Delete",
+    execute=_contact_segments_delete,
+    exists=_contact_segments_exists,
+)
+
+
 # ---- workspaces -------------------------------------------------------------
 
 
@@ -415,6 +458,7 @@ _ALL = (
     WEBHOOKS_DELETE,
     QUICK_REPLIES_DELETE,
     API_KEYS_REVOKE,
+    CONTACT_SEGMENTS_DELETE,
     WORKSPACES_TRASH,
     CLOSE_REASONS_DELETE,
     INBOX_VIEWS_DELETE,

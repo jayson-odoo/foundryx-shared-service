@@ -12,6 +12,7 @@ from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
 from ..models import (
+    Channel,
     Contact,
     ContactChannelIdentity,
     ContactTagLink,
@@ -469,25 +470,116 @@ class ContactRepository:
             .first()
         )
 
-    def find_by_phone_in_workspace(
+    def find_by_phone_digits(
         self, phone_digits: str, workspace_id: str, tenant_id: str
     ) -> Optional[Contact]:
-        """Within-workspace stitch (decision 15): match an existing contact by
-        phone. Phones are stored in varying formats - compare digits-only."""
-        # Empty digits (malformed wa_id) must NOT match contacts with a digitless
-        # phone - that would mis-stitch the message onto an unrelated contact.
+        """Within-workspace stitch/lookup (decision 15; indexed since plan 26
+        S1, D-A2-9) - match an existing contact by its normalized
+        `phone_digits` column. Empty digits (malformed `wa_id`) must NEVER
+        match a digitless contact - that would mis-stitch a message onto an
+        unrelated contact, so this is a plain equality on a non-empty value,
+        never a wildcard.
+
+        Falls back to a bounded scan over rows whose `phone_digits` hasn't
+        been stamped yet (`IS NULL`) - a genuinely legacy row right after this
+        migration lands and before a backfill runs, AND every pre-existing
+        test fixture across the suite that predates this slice and inserts a
+        `Contact` row directly (never through a write path that stamps
+        `phone_digits`). This keeps the lookup a byte-for-byte match for the
+        OLD O(n) digit-comparison scan (AC-CTM-27) regardless of backfill
+        state, while the indexed exact-match above is what serves once every
+        row is stamped."""
+        from ..phone import digits_only
+
         if not phone_digits:
             return None
+        exact = (
+            self.db.query(Contact)
+            .filter(
+                Contact.tenant_id == tenant_id,
+                Contact.workspace_id == workspace_id,
+                Contact.phone_digits == phone_digits,
+            )
+            .first()
+        )
+        if exact is not None:
+            return exact
         candidates = (
             self.db.query(Contact)
             .filter(
                 Contact.tenant_id == tenant_id,
                 Contact.workspace_id == workspace_id,
+                Contact.phone_digits.is_(None),
                 Contact.phone.isnot(None),
             )
             .all()
         )
         for c in candidates:
-            if "".join(ch for ch in (c.phone or "") if ch.isdigit()) == phone_digits:
+            if digits_only(c.phone) == phone_digits:
                 return c
         return None
+
+    def find_by_phone_in_workspace(
+        self, phone_digits: str, workspace_id: str, tenant_id: str
+    ) -> Optional[Contact]:
+        """Back-compat alias for `find_by_phone_digits` (every existing caller
+        already passes pre-digit-reduced input) - kept so `inbound_service`/
+        `public_gateway_service` need no signature change."""
+        return self.find_by_phone_digits(phone_digits, workspace_id, tenant_id)
+
+    def backfill_phone_digits(self, tenant_id: Optional[str] = None) -> int:
+        """Idempotent - stamps `phone_digits` on every row where it's still
+        NULL but `phone` isn't (D-A2-9/AC-CTM-27). A plain Python loop (not
+        raw SQL) so it runs identically on Postgres AND the SQLite test
+        engine - `tests/test_omnichannel_contacts_module.py` exercises this
+        FUNCTION directly (module Alembic's own `regexp_replace` backfill is
+        Postgres-only and never runs under pytest - CLAUDE.md's "unit-test
+        the backfill function directly" lesson). Returns the number of rows
+        stamped (0 on a second call - idempotent)."""
+        from ..phone import digits_only
+
+        q = self.db.query(Contact).filter(Contact.phone_digits.is_(None), Contact.phone.isnot(None))
+        if tenant_id is not None:
+            q = q.filter(Contact.tenant_id == tenant_id)
+        count = 0
+        for c in q.all():
+            digits = digits_only(c.phone)
+            if digits:
+                c.phone_digits = digits
+                count += 1
+        self.db.flush()
+        return count
+
+    # ── Channel identities decoration (plan 26 S1, AC-CTM-19/23) ────────────
+    def channels_for_contacts(self, contact_ids: List[str], tenant_id: str) -> dict:
+        """Batched `contact_id -> [{channelId, channelType, name}]` for a page
+        of contacts - ONE query for every distinct channel identity on the
+        page (never per-row), tenant-scoped on BOTH the identity and the
+        joined channel row (the polymorphic stored-id rule). A contact with
+        no identity is simply absent from the result (the caller defaults to
+        `[]`, never a fabricated channel type - D-A2-11)."""
+        if not contact_ids:
+            return {}
+        rows = (
+            self.db.query(
+                ContactChannelIdentity.contact_id,
+                Channel.id,
+                Channel.channel_type,
+                Channel.name,
+            )
+            .join(Channel, Channel.id == ContactChannelIdentity.channel_id)
+            .filter(
+                ContactChannelIdentity.tenant_id == tenant_id,
+                Channel.tenant_id == tenant_id,
+                ContactChannelIdentity.contact_id.in_(contact_ids),
+            )
+            .order_by(Channel.created_at.asc())
+            .all()
+        )
+        out: dict = {}
+        for contact_id, channel_id, channel_type, name in rows:
+            bucket = out.setdefault(contact_id, {})
+            # De-dupe per (contact, channel) - a contact can carry more than
+            # one identity on the SAME channel in a pathological case.
+            bucket[channel_id] = {"channelId": channel_id, "channelType": channel_type, "name": name}
+        return {contact_id: list(by_channel.values()) for contact_id, by_channel in out.items()}

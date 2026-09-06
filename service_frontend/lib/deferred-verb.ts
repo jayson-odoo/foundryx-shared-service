@@ -68,6 +68,7 @@ export const ENTITY_NOUNS: Record<string, { singular: string; plural: string }> 
   webhook_endpoint: { singular: 'webhook', plural: 'webhooks' },
   quick_reply: { singular: 'quick reply', plural: 'quick replies' },
   api_key: { singular: 'API key', plural: 'API keys' },
+  contact_segment: { singular: 'segment', plural: 'segments' },
   ideation_idea: { singular: 'idea', plural: 'ideas' },
   ideation_business_requirement: {
     singular: 'business requirement',
