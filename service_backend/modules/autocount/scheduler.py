@@ -33,6 +33,7 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.jobs.service import JobService
+from app.models.background_job import JOB_RUNNING
 from app.models.module import MODULE_STATUS_ACTIVE, Module, TenantModule
 from app.models.status import Status
 from app.models.tenant import Tenant
@@ -57,7 +58,10 @@ logger = logging.getLogger("foundryx.autocount")
 # guard fire on EVERY tick - 1440 skip rows/day and no signal an operator can
 # act on. Past this age the tick is treated as STALE rather than merely
 # in-flight: bounded, one-time, visible.
-STALE_JOB_AFTER = timedelta(minutes=60)
+def _orphan_after() -> timedelta:
+    from app.config import settings
+
+    return timedelta(minutes=settings.background_job_orphan_after_minutes)
 
 
 def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str, int]:
@@ -226,38 +230,36 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         tenant_id, AUTOCOUNT_SYNC, company_id, entity_type
     )
     if in_flight is not None:
-        started = in_flight.started_at or in_flight.created_at
-        stale = started is not None and (now - started) > STALE_JOB_AFTER
-        if stale:
-            # S3: bounded + one-time + visible, not a row per tick. Detect
-            # "already flagged" via the config's own `last_run_error` - once
-            # it names THIS stuck job, every later tick is a silent no-op
-            # until the job resolves (a fresh success/failure overwrites the
-            # field, which naturally re-arms detection for a future stuck job).
-            marker = f"sync job {in_flight.id} appears stuck"
-            if config.last_run_error != marker:
-                SyncRunRepository(db).add(
-                    AcSyncRun(
-                        tenant_id=tenant_id,
-                        company_id=company_id,
-                        entity_type=entity_type,
-                        job_id=None,
-                        mode=RUN_MODE_SKIPPED,
-                        skip_reason=(
-                            f"{marker} (running for over "
-                            f"{int(STALE_JOB_AFTER.total_seconds() // 60)} minutes) "
-                            f"- scheduled runs for this task are paused until it "
-                            f"is resolved."
-                        ),
-                        started_at=now,
-                        finished_at=now,
-                        duration_ms=0,
-                    )
-                )
-                config.last_run_error = marker
-                config.last_run_error_code = "JOB_STUCK"
-                db.commit()
-            return "skipped"
+        # Liveness, not age (fix/job-lease-orphan-sweep): a RUNNING job whose worker
+        # has not heart-beaten (legacy/pre-checkpoint: not started) for
+        # ``background_job_orphan_after_minutes`` is ORPHANED - a deploy
+        # drain or a crash left ``running`` behind (prod 2026-09-07, PO sync).
+        # Sweep exactly THAT job (failed + its run row closed through the
+        # module hook) and carry on with this tick as if nothing were in
+        # flight, instead of the old 60-minute JOB_STUCK pause that only a
+        # human with SQL could lift. A FRESH in-flight job still skips the
+        # tick below (overlap guard, AC-22-14).
+        # Only a RUNNING job can be an orphan - a PENDING one of any age is a
+        # backlogged queue, and running the tick over it would duplicate the
+        # work when it finally starts. And the tick proceeds ONLY when the
+        # sweep actually failed that job (== 1): a job that beat again in
+        # between, or that another process already swept, is not ours to
+        # run over.
+        last_alive = in_flight.heartbeat_at or in_flight.started_at or in_flight.created_at
+        stale = last_alive is not None and (now - last_alive) > _orphan_after()
+        if (
+            in_flight.status == JOB_RUNNING
+            and stale
+            and JobService(db).fail_orphaned_running_jobs(
+                older_than=_orphan_after(), now=now, job_id=in_flight.id
+            ) == 1
+        ):
+            logger.warning(
+                "autocount scheduler swept orphaned job %s for %s/%s; proceeding with the tick",
+                in_flight.id, company_id, entity_type,
+            )
+            in_flight = None
+    if in_flight is not None:
         SyncRunRepository(db).add(
             AcSyncRun(
                 tenant_id=tenant_id,

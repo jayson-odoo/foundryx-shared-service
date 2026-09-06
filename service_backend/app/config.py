@@ -171,6 +171,18 @@ class Settings(BaseSettings):
     # TERMINAL jobs (done/failed/aborted) older than this window; running,
     # pending and needs_review jobs are never pruned.
     background_job_retention_days: int = 30
+    # A RUNNING job whose worker has not heart-beaten (or, for a legacy /
+    # pre-first-checkpoint row, has not started) for this long is treated as
+    # orphaned - failed by ``JobService.fail_orphaned_running_jobs`` at app
+    # startup and by the autocount scheduler when the in-flight job it would
+    # skip for is this stale (prod incident 2026-09-07: a deploy's 30s drain
+    # killed a 4-minute PO run and nothing released it). Well above any
+    # legitimate gap between checkpoints (one page or one push batch); the
+    # floor is 5 so a slow-but-alive page can never be reaped mid-flight.
+    background_job_orphan_after_minutes: int = 15
+    # Run the orphan sweep in the API process lifespan. Off for a process
+    # that must never touch job state at boot (a one-off script, a rig).
+    background_job_orphan_sweep_on_startup: bool = True
 
     # ── Platform LLM default (Phase B-i slice 1) ───────────────────────────
     # Env-seeds the PLATFORM tenant's LLM connection, exactly like
@@ -353,6 +365,15 @@ class Settings(BaseSettings):
     # the next push. Bounded 1..`SORENTO_MAX_BATCH` - the ceiling is Sorento's
     # own per-request limit and cannot be raised from here.
     autocount_sink_batch_size: int = 200
+
+    @field_validator("background_job_orphan_after_minutes")
+    @classmethod
+    def _background_job_orphan_after_floor(cls, v: int) -> int:
+        if v < 5:
+            raise ValueError(
+                "background_job_orphan_after_minutes must be at least 5 minutes."
+            )
+        return v
 
     @field_validator("autocount_page_size")
     @classmethod
