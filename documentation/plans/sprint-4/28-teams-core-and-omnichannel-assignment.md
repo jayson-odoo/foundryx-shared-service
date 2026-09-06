@@ -311,20 +311,20 @@ review reject.
   its behaviour under a real delete is unproven. The 409 path gets a dedicated test with the guard
   registered AND a control test with it absent.
 
-## 7. Backlog candidates (proposed ids - the lane coder registers them in `documentation/backlogs/backlog.md` on close, each linking back to this plan; ids start at 068 because main's max is BL-SS-067)
+## 7. Backlog candidates (proposed ids - the lane coder registers them in `documentation/backlogs/backlog.md` on close, each linking back to this plan; ids start at 082 because main's max is BL-SS-081 (post plan-26/27 merge))
 
 | Proposed id | Title | Priority |
 |---|---|---|
-| BL-SS-068 | Teams: per-team saved inbox views shared with the team (needs plan-27 `inbox_views.team_id`) | P1 |
-| BL-SS-069 | Teams: a Teams column + filter on the core Users list, and a Teams tab on the user form | P2 |
-| BL-SS-070 | Omnichannel: business-hours-aware assignment (skip members outside their working hours) | P1 |
-| BL-SS-071 | Omnichannel: capacity-based strategy (max open threads per member, overflow stays Team Unassigned) | P2 |
-| BL-SS-072 | Omnichannel: auto-assign an inbound thread to a team by channel or lifecycle rule (no workflow authoring needed) | P1 |
-| BL-SS-073 | Teams: import teams + membership through the core import engine (`ImporterDef("teams")`) for the A6 migration | P1 |
-| BL-SS-074 | Omnichannel gateway: assign by team NAME with an explicit opt-in flag (never auto-create) | P2 |
-| BL-SS-075 | Teams: bulk reassign every thread of a team before deleting it (turn the 409 into a guided migration, like the status engine's `migrate-records`) | P1 |
-| BL-SS-076 | Workflow engine: expose the `team` field type to core entities (assign a core record to a team) | P2 |
-| BL-SS-077 | Teams: team avatar / colour for the rail and the assignment log | P2 |
+| BL-SS-082 | Teams: per-team saved inbox views shared with the team (needs plan-27 `inbox_views.team_id`) | P1 |
+| BL-SS-083 | Teams: a Teams column + filter on the core Users list, and a Teams tab on the user form | P2 |
+| BL-SS-084 | Omnichannel: business-hours-aware assignment (skip members outside their working hours) | P1 |
+| BL-SS-085 | Omnichannel: capacity-based strategy (max open threads per member, overflow stays Team Unassigned) | P2 |
+| BL-SS-086 | Omnichannel: auto-assign an inbound thread to a team by channel or lifecycle rule (no workflow authoring needed) | P1 |
+| BL-SS-087 | Teams: import teams + membership through the core import engine (`ImporterDef("teams")`) for the A6 migration | P1 |
+| BL-SS-088 | Omnichannel gateway: assign by team NAME with an explicit opt-in flag (never auto-create) | P2 |
+| BL-SS-089 | Teams: bulk reassign every thread of a team before deleting it (turn the 409 into a guided migration, like the status engine's `migrate-records`) | P1 |
+| BL-SS-090 | Workflow engine: expose the `team` field type to core entities (assign a core record to a team) | P2 |
+| BL-SS-091 | Teams: team avatar / colour for the rail and the assignment log | P2 |
 
 ## 8. Flagged for the user (planner deviations from the 2026-09-06 decision set - none are blocking)
 
@@ -354,7 +354,7 @@ review reject.
    preferred by the strategy, say so and it is one clause in the sort key.
 7. **Team delete is a 409, not a cascade (D-A8-15)**, and it is the first production consumer of
    `app/module_platform/reference_guards.py`. The alternative (unassign every thread on delete) loses
-   assignment history silently; BL-SS-075 offers the guided middle ground.
+   assignment history silently; BL-SS-089 offers the guided middle ground.
 8. **`RioMessageSender.teamId` stays `None`.** Populating it with the sending agent's team would be
    a second, message-level team concept. Out of scope; flagging it because the field already exists
    in the rio shape and a reviewer will notice.
@@ -364,4 +364,4 @@ review reject.
    parent that does not exist on `main` by merge time.
 10. **The `team` NodeField type is a core canvas addition** (`types/workflows.ts` plus one branch in
     `node-config-drawer.tsx`) made from inside a module slice, exactly like `omnichannelChannel` was.
-    It is generic, so BL-SS-076 can reuse it for core entities.
+    It is generic, so BL-SS-090 can reuse it for core entities.

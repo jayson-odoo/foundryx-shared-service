@@ -306,12 +306,23 @@ class PendingActionService:
             )
 
         window_seconds = self._window_seconds(tenant_id, action_def.window)
+        # B9 (round-3 codex triage) - stamp the EFFECTIVE user id into the
+        # stored payload, SERVER-SIDE, after copying whatever the client sent
+        # (never let client input override this key). `requested_by_id` above
+        # stays the REAL actor for audit attribution (impersonation must
+        # never attribute a parked action to the target); a commit-time
+        # handler that needs to authorize as the person who is actually
+        # allowed to act on the record (e.g. "is this MY view") reads
+        # `payload["_effectiveUserId"]` instead, generically, without
+        # widening the `DeferredActionExecutor` signature for every handler.
+        stored_payload = dict(payload or {})
+        stored_payload["_effectiveUserId"] = actor.id
         row = PendingAction(
             tenant_id=tenant_id,
             action_key=action_key,
             entity_type=entity_type,
             entity_id=entity_id,
-            payload_json=payload or None,
+            payload_json=stored_payload,
             status=PENDING_ACTION_PENDING,
             commit_at=_now() + timedelta(seconds=window_seconds),
             window_seconds=window_seconds,

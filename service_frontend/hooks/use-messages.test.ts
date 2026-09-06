@@ -114,6 +114,93 @@ describe('useMessages', () => {
     });
     expect(result.current.messages.at(-1)!.senderType).toBe('SYSTEM');
   });
+
+  // F11 (round-3 codex triage) - a note started for contact A must not
+  // commit into contact B's message list once the user has switched, even
+  // though the SAME `messages` state is shared by the hook instance.
+  it('F11: a slow addNote for the PREVIOUS contact does not land in the newly selected contact\'s messages', async () => {
+    const { mockConversationService } = await import('@/services/conversation-service.mock');
+
+    let resolveNote!: (m: import('@/types/omnichannel').ConversationMessage) => void;
+    const pending = new Promise<import('@/types/omnichannel').ConversationMessage>((resolve) => {
+      resolveNote = resolve;
+    });
+    const spy = vi.spyOn(mockConversationService, 'addInternalNote').mockReturnValue(pending);
+
+    const { result, rerender } = renderHook(({ id }: { id: string }) => useMessages(id), {
+      initialProps: { id: 'cnt-001' },
+    });
+    await waitFor(() => expect(result.current.thread?.id).toBe('cnt-001'));
+
+    let notePromise!: Promise<boolean>;
+    act(() => {
+      notePromise = result.current.addNote('Stale note for cnt-001');
+    });
+
+    // User switches to a different contact before the note above resolves.
+    rerender({ id: 'cnt-002' });
+    await waitFor(() => expect(result.current.thread?.id).toBe('cnt-002'));
+    const cnt002MessageCount = result.current.messages.length;
+
+    // NOW the stale note resolves - it must NOT be appended to cnt-002's list.
+    await act(async () => {
+      resolveNote({
+        id: 'msg-stale-note', contactId: 'cnt-001', channelId: null, senderType: 'SYSTEM',
+        senderId: null, senderName: null, messageType: 'TEXT', body: 'Stale note for cnt-001',
+        mediaUrl: null, mediaMime: null, mediaFilename: null, mediaSize: null, voice: false, payload: null,
+        reactions: [], externalMessageId: null, deliveryStatus: null, errorCode: null, errorMessage: null,
+        replyTo: null, createdAt: new Date().toISOString(),
+      });
+      await notePromise;
+    });
+
+    expect(result.current.thread?.id).toBe('cnt-002');
+    expect(result.current.messages.length).toBe(cnt002MessageCount);
+    expect(result.current.messages.some((m) => m.id === 'msg-stale-note')).toBe(false);
+    spy.mockRestore();
+  });
+
+  // F12 (round-3 codex triage) - a WS message that lands for the NEW contact
+  // WHILE its own initial `listMessages` fetch is still in flight must
+  // survive that fetch resolving, not be silently wiped by a blind overwrite.
+  it('F12: a WS message landing during the initial fetch is merged, not dropped', async () => {
+    const { mockConversationService } = await import('@/services/conversation-service.mock');
+
+    const { result, rerender } = renderHook(({ id }: { id: string }) => useMessages(id), {
+      initialProps: { id: 'cnt-001' },
+    });
+    await waitFor(() => expect(result.current.thread?.id).toBe('cnt-001'));
+
+    let resolveList!: (m: import('@/types/omnichannel').ConversationMessage[]) => void;
+    const pendingList = new Promise<import('@/types/omnichannel').ConversationMessage[]>((resolve) => {
+      resolveList = resolve;
+    });
+    const listSpy = vi.spyOn(mockConversationService, 'listMessages').mockReturnValue(pendingList);
+
+    // Switch to cnt-002 (same workspace as cnt-001 - the socket subscription
+    // never tears down across the switch) - its own `listMessages` fetch is
+    // now stuck pending.
+    rerender({ id: 'cnt-002' });
+
+    // A WS message for cnt-002 arrives WHILE the fetch above is still in flight.
+    act(() => __mockSimulateInbound('wsp-001', 'cnt-002'));
+    await waitFor(() => expect(result.current.messages.length).toBe(1));
+    const liveMessageId = result.current.messages[0].id;
+
+    // NOW the slow REST snapshot resolves (an empty history, e.g. a brand
+    // new contact) - it must be MERGED with the live message above, not
+    // overwritten away. `getThread` carries its OWN real ~150ms mock delay
+    // (`Promise.all` waits for both, and `onEvent` ALSO calls `setThread` off
+    // the inbound event above, so "thread === cnt-002" alone isn't proof the
+    // fetch's `.then()` ran) - wait out the real delay directly.
+    act(() => resolveList([]));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+
+    expect(result.current.messages.some((m) => m.id === liveMessageId)).toBe(true);
+    listSpy.mockRestore();
+  });
 });
 
 describe('useConversations', () => {

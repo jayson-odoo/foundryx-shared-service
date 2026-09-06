@@ -2,6 +2,7 @@ import type { ColumnDef, RowData } from '@tanstack/react-table';
 import type { LucideIcon } from 'lucide-react';
 import type {
   FilterFieldDef,
+  FilterGroup,
   ListQuery,
   ListResult,
   SortState,
@@ -222,6 +223,26 @@ export interface ResourceListConfig<T extends object> {
   segments?: { id: string; label: string }[];
   /** Initial segment id (default = first entry). */
   defaultSegment?: string;
+  /**
+   * Round-3 fix: whether `segments` reflects its FINAL set (vs still
+   * loading, e.g. a `segmentOptions()` catalog that always prepends an
+   * `all` sentinel before the async segment list resolves). The shell's
+   * "segment no longer exists -> fall back to the first segment" recovery
+   * (below) can't tell "deleted" from "not loaded yet" from `segments`
+   * alone - a mount with a `ctx`-restored segment id would get stomped back
+   * to the default before the real list arrives. Omit (default `undefined`)
+   * for a config whose `segments` is always the complete, static list (the
+   * common case) - the fallback effect runs on every render as before.
+   * Pass `false` while the real segments are still loading to defer the
+   * fallback check until they've arrived.
+   */
+  segmentsReady?: boolean;
+  /**
+   * Read-only mirror of the current ad-hoc filter tree (plan 26, contacts
+   * module "Save as segment" flow) - fires whenever the applied filter
+   * changes. Purely additive side channel; existing consumers are unaffected.
+   */
+  onFilterChange?: (filter: FilterGroup | null) => void;
   /** Filename stem for CSV export (default 'export'). */
   exportFilename?: string;
   createLabel?: string;

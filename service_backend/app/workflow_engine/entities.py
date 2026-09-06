@@ -40,6 +40,12 @@ class WorkflowEntity:
     tenant_scoped: bool = True
     has_status: bool = False
     status_attr: str = "status_id"
+    # Plan sprint-4/27 (A3) - may this entity be the target of the generic
+    # `entity.shortcut` trigger (an agent firing a workflow against ONE record
+    # from that record's own UI, e.g. the omnichannel conversation drawer)?
+    # Drives the `entity` field picker's `entityFilter: "shortcut"` filter and
+    # `WorkflowService.list_shortcuts`/`run_shortcut`'s entity-match guard.
+    supports_shortcut: bool = False
     module: str = "core"
     # B11 (plan-25 round-3 codex triage): optional hook - when set,
     # `entity.update` (`app/workflow_engine/actions/entity_actions.py`)

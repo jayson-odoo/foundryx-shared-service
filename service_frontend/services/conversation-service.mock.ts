@@ -12,6 +12,8 @@
  */
 import { ApiError } from '@/lib/api-client';
 import type {
+  CloseThreadInput,
+  ConversationEvent,
   ConversationMessage,
   ConversationSocketEvent,
   ConversationThread,
@@ -26,6 +28,7 @@ import type {
   SendMediaInput,
   SendMessageInput,
   SendTemplateInput,
+  ShortcutItem,
   ThreadListQuery,
   ThreadPriority,
   ThreadStatus,
@@ -35,6 +38,7 @@ import type {
 import type { ConversationService } from './conversation-service';
 import { __mockAllContactFields } from './contact-field-service.mock';
 import { __mockAllContactTags } from './contact-tag-service.mock';
+import { __mockAllCloseReasons, __mockBumpCloseReasonUse } from './close-reason-service.mock';
 import { delay } from './mock-query';
 
 // ---------------------------------------------------------------------------
@@ -425,10 +429,100 @@ export function __mockSimulateInbound(workspaceId = 'wsp-001', contactId = 'cnt-
   emit(workspaceId, { type: 'message.created', message, thread: updated });
 }
 
+// ---------------------------------------------------------------------------
+// Plan 27 - conversation events + shortcuts (S0 mock only; the events table +
+// the `entity.shortcut` trigger land S1/S3). One seeded history per thread
+// mixing status/assignment/lifecycle events so the Activities feed (merged
+// with the SYSTEM notes above) has real variety to demo (AC-IVE-49).
+// ---------------------------------------------------------------------------
+
+let eventIdSeq = 1;
+const nextEventId = () => `evt-${eventIdSeq++}`;
+
+function ev(
+  eventType: ConversationEvent['eventType'],
+  msAgo: number,
+  extra: Partial<ConversationEvent> = {},
+): ConversationEvent {
+  return {
+    id: nextEventId(),
+    eventType,
+    actorName: MOCK_CURRENT_USER.name,
+    actorUserId: MOCK_CURRENT_USER.id,
+    fromValue: null,
+    fromLabel: null,
+    toValue: null,
+    toLabel: null,
+    closeReasonId: null,
+    closeReasonName: null,
+    note: null,
+    payload: null,
+    createdAt: iso(msAgo),
+    ...extra,
+  };
+}
+
+function seedEvents(): Record<string, ConversationEvent[]> {
+  eventIdSeq = 1;
+  const paymentReasonId =
+    __mockAllCloseReasons('wsp-001').find((r) => r.name === 'Payment Issue')?.id ?? null;
+  return {
+    'cnt-001': [
+      ev('opened', 72 * HOUR, { actorName: null, actorUserId: null }),
+      ev('assigned', 71 * HOUR, { toValue: 'usr-demo', toLabel: 'Demo User', payload: { assigneeKind: 'user' } }),
+      ev('first_agent_reply', 4 * HOUR + 30 * MIN, { payload: { responseSeconds: 600 } }),
+    ],
+    'cnt-002': [
+      ev('opened', 9 * 24 * HOUR, { actorName: null, actorUserId: null }),
+      ev('assigned', 9 * 24 * HOUR - MIN, { toValue: 'usr-demo', toLabel: 'Demo User', payload: { assigneeKind: 'user' } }),
+    ],
+    'cnt-003': [ev('opened', 30 * MIN, { actorName: null, actorUserId: null })],
+    'cnt-004': [
+      ev('opened', 6 * 24 * HOUR, { actorName: null, actorUserId: null }),
+      ev('assigned', 6 * 24 * HOUR - MIN, {
+        actorName: 'Amira Tan', actorUserId: 'usr-amira',
+        toValue: 'usr-amira', toLabel: 'Amira Tan', payload: { assigneeKind: 'user' },
+      }),
+      ev('snoozed', 21 * HOUR, {
+        actorName: 'Amira Tan', actorUserId: 'usr-amira', fromLabel: 'Open', toLabel: 'Snoozed',
+      }),
+    ],
+    'cnt-005': [
+      ev('opened', 12 * 24 * HOUR, { actorName: null, actorUserId: null }),
+      ev('assigned', 12 * 24 * HOUR - MIN, {
+        actorName: 'Jon Lim', actorUserId: 'usr-jon',
+        toValue: 'usr-jon', toLabel: 'Jon Lim', payload: { assigneeKind: 'user' },
+      }),
+      ev('lifecycle_changed', 63 * HOUR + 45 * MIN, {
+        actorName: 'Jon Lim', actorUserId: 'usr-jon', fromLabel: 'Payment', toLabel: 'Customer',
+      }),
+      ev('closed', 63 * HOUR, {
+        actorName: 'Jon Lim', actorUserId: 'usr-jon',
+        fromLabel: 'Open', toLabel: 'Closed',
+        closeReasonId: paymentReasonId, closeReasonName: 'Payment Issue',
+        note: 'Paid in full, booking confirmed.',
+      }),
+    ],
+  };
+}
+
+let conversationEvents: Record<string, ConversationEvent[]> = seedEvents();
+
+/** Three shortcut workflows (DoD - agent-browser smoke picks one to run). */
+const SHORTCUT_WORKFLOWS: ShortcutItem[] = [
+  { workflowId: 'wf-shortcut-nps', name: 'Send NPS survey' },
+  { workflowId: 'wf-shortcut-escalate', name: 'Escalate to sales' },
+  { workflowId: 'wf-shortcut-translate', name: 'Auto-translate and reply' },
+];
+
+let shortcutRunSeq = 1;
+
 /** Reset mock state between tests. */
 export function __mockResetConversations(): void {
   threads = seedThreads();
   messages = seedMessages();
+  conversationEvents = seedEvents();
+  shortcutRunSeq = 1;
   subscribers.clear();
   inboundSeq = 0;
 }
@@ -677,6 +771,17 @@ export const mockConversationService: ConversationService = {
       errorCode: null, errorMessage: null, replyTo: null, createdAt: new Date().toISOString(),
     };
     messages = [...messages, message];
+    // AC-IVE-09/34 - a note also writes a `comment_added` event; the Activities
+    // feed deliberately does NOT render this one as a separate line (the note
+    // bubble already is the activity) - it exists so the event count/history
+    // is honest if a future surface reads events without the note bodies.
+    conversationEvents = {
+      ...conversationEvents,
+      [contactId]: [
+        ...(conversationEvents[contactId] ?? []),
+        ev('comment_added', 0, { payload: { messageId: message.id } }),
+      ],
+    };
     return delay(message, 150);
   },
 
@@ -814,5 +919,59 @@ export const mockConversationService: ConversationService = {
     return () => {
       subscribers.delete(handler);
     };
+  },
+
+  // -- Plan 27 additions (S0 mock; bound in conversation-service.ts) -----
+  async closeThread(contactId, input: CloseThreadInput) {
+    const t = threadOf(contactId);
+    const reason = __mockAllCloseReasons(t.workspaceId).find((r) => r.id === input.closeReasonId);
+    if (!reason || !reason.isActive) {
+      throw new ApiError('Choose an active close reason.', 422, null, {
+        fieldErrors: { closeReasonId: 'Choose an active close reason.' },
+      });
+    }
+    if ((input.note?.length ?? 0) > 2000) {
+      throw new ApiError('Note must be 2000 characters or fewer.', 422, null, {
+        fieldErrors: { note: 'Note must be 2000 characters or fewer.' },
+      });
+    }
+    const fromLabel = t.status === 'SNOOZED' ? 'Snoozed' : 'Open';
+    const updated = touchThread(t, { status: 'CLOSED' });
+    conversationEvents = {
+      ...conversationEvents,
+      [contactId]: [
+        ...(conversationEvents[contactId] ?? []),
+        ev('closed', 0, {
+          fromLabel,
+          toLabel: 'Closed',
+          closeReasonId: reason.id,
+          closeReasonName: reason.name,
+          note: input.note?.trim() || null,
+        }),
+      ],
+    };
+    __mockBumpCloseReasonUse(reason.id);
+    emit(t.workspaceId, { type: 'contact.updated', thread: updated });
+    return delay({ ...updated }, 200);
+  },
+
+  async listEvents(contactId) {
+    threadOf(contactId); // 404s (Error) if the contact doesn't exist / isn't ours
+    const list = [...(conversationEvents[contactId] ?? [])].sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt),
+    );
+    return delay(list, 150);
+  },
+
+  async listShortcuts(contactId) {
+    threadOf(contactId);
+    return delay([...SHORTCUT_WORKFLOWS], 150);
+  },
+
+  async runShortcut(contactId, workflowId) {
+    threadOf(contactId);
+    const workflow = SHORTCUT_WORKFLOWS.find((w) => w.workflowId === workflowId);
+    if (!workflow) throw new ApiError('Shortcut workflow not found.', 404);
+    return delay({ runId: `run-${shortcutRunSeq++}`, status: 'PENDING' }, 300);
   },
 };

@@ -76,14 +76,32 @@ function isEmpty(group: DraftGroup): boolean {
   return group.rules.length === 0;
 }
 
+/** Inverse of `toFilterRule` (plan 26, "edit filter" on a saved segment) -
+ *  assigns a fresh draft `key` per node via the caller's key generator so
+ *  React identity stays stable while editing. */
+function ruleToDraft(rule: FilterRule, nextKey: () => string): DraftRule {
+  if (rule.kind === 'group') {
+    return {
+      key: nextKey(),
+      kind: 'group',
+      combinator: rule.combinator,
+      rules: rule.rules.map((r) => ruleToDraft(r, nextKey)),
+    };
+  }
+  return { key: nextKey(), kind: 'condition', field: rule.field, operator: rule.operator, value: rule.value };
+}
+
 export interface FilterBuilderProps {
   fields: FilterFieldDef[];
   /** Called with the built group (or null to clear) when the user applies. */
   onApply: (group: FilterGroup | null) => void;
   onClose?: () => void;
+  /** Seed the builder with an existing tree (plan 26 - editing a saved
+   *  segment's filter) instead of one blank condition. */
+  initialValue?: FilterGroup | null;
 }
 
-export function FilterBuilder({ fields, onApply, onClose }: FilterBuilderProps) {
+export function FilterBuilder({ fields, onApply, onClose, initialValue }: FilterBuilderProps) {
   const keyRef = useRef(0);
   const nextKey = () => `k${++keyRef.current}`;
 
@@ -95,12 +113,12 @@ export function FilterBuilder({ fields, onApply, onClose }: FilterBuilderProps) 
     value: '',
   });
 
-  const [root, setRoot] = useState<DraftGroup>(() => ({
-    key: nextKey(),
-    kind: 'group',
-    combinator: 'and',
-    rules: [newCondition()],
-  }));
+  const [root, setRoot] = useState<DraftGroup>(() => {
+    if (initialValue && initialValue.rules.length > 0) {
+      return ruleToDraft(initialValue, nextKey) as DraftGroup;
+    }
+    return { key: nextKey(), kind: 'group', combinator: 'and', rules: [newCondition()] };
+  });
 
   const fieldDef = (name: string) => fields.find((f) => f.field === name);
 

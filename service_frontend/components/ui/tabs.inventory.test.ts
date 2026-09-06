@@ -66,10 +66,12 @@ describe('AC-DLA-12 tabs default variant + segmented keepers', () => {
     expect(src).toContain('PRESSED_CLASS');
   });
 
-  /** Every real TabsList `variant="default"` pin found in the tree, minus tabs.tsx itself. */
+  /** Every real TabsList `variant="default"` pin found in the tree, minus tabs.tsx itself.
+   *  `thread-list.tsx`'s assignee Tabs (All/Mine/Unassigned) were removed by
+   *  plan 27 (superseded by the view rail's All/Mine/Unassigned entries,
+   *  merged into main 2026-09-06) - one keeper remains. */
   const KEEPERS = [
     'components/platform/autocount/formula-builder/autocount-formula-builder.tsx',
-    'app/(protected)/omnichannel/inbox/components/thread-list.tsx',
   ];
 
   it.each(KEEPERS)('%s pins TabsList variant="default"', (file) => {
@@ -84,7 +86,7 @@ describe('AC-DLA-12 tabs default variant + segmented keepers', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('records the keeper count as exactly 2 (T2 ruling)', () => {
-    expect(KEEPERS.length).toBe(2);
+  it('records the keeper count as exactly 1 (T2 ruling, updated plan 27 merge)', () => {
+    expect(KEEPERS.length).toBe(1);
   });
 });

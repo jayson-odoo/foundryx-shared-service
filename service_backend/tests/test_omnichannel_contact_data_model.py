@@ -1548,6 +1548,56 @@ def test_move_lifecycle_impersonation_authorizes_as_effective_user(client, sessi
     assert res.json()["lifecycle"]["key"] == "hot_lead"
 
 
+def test_move_lifecycle_impersonation_attributes_event_to_real_admin(client, session_factory):
+    """B19 (round-3 codex triage) - the WRITTEN `lifecycle_changed` event
+    attributes to the REAL admin under impersonation, never the effective
+    (impersonated target) user - authorization (B5 above) and attribution
+    are two different identities, matching `move_lifecycle`'s own house-rule
+    split for entity-event actor facts."""
+    from app.models import Role
+    from app.repositories.permission_repository import PermissionRepository
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    graph = _lifecycle_graph(client, h, ws)
+    ids = _stage_ids(graph)
+    cid = _seed_lifecycle_contact(session_factory, ws)
+
+    db = session_factory()
+    real_admin = db.query(User).filter(User.email == ACTIVE_EMAIL).first()
+    real_admin_id = real_admin.id
+    role = Role(tenant_id=DEFAULT_TENANT_ID, name="Lifecycle Mover (B19)")
+    role.permissions = PermissionRepository(db).get_by_keys(["contacts.manage"])
+    db.add(role)
+    db.flush()
+    target = User(
+        tenant_id=DEFAULT_TENANT_ID, email="b19-target@example.com", name="Impersonated Target",
+        password=hash_password("Password123!"), status=UserStatus.ACTIVE.value,
+    )
+    target.roles = [role]
+    db.add(target)
+    db.flush()
+    target_id = target.id
+    db.commit()
+    db.close()
+
+    start = client.post("/impersonation/start", headers=h, json={"targetUserId": target_id})
+    assert start.status_code == 200, start.text
+    headers = {**h, "X-Impersonate-User-Id": target_id}
+
+    res = client.post(
+        f"/omnichannel/contacts/{cid}/lifecycle",
+        headers=headers,
+        json={"toStatusId": ids["hot_lead"]},
+    )
+    assert res.status_code == 200, res.text
+
+    events = client.get(f"/omnichannel/contacts/{cid}/events", headers=h).json()["data"]
+    lifecycle_event = next(e for e in events if e["eventType"] == "lifecycle_changed")
+    assert lifecycle_event["actorUserId"] == real_admin_id
+    assert lifecycle_event["actorUserId"] != target_id
+
+
 def test_move_lifecycle_no_edge_409(client, session_factory):
     h = _auth(client)
     ws = _workspace_id(client, h)

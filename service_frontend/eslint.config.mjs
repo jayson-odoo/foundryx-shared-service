@@ -121,6 +121,11 @@ const eslintConfig = [
       'components/ui/sonner.tsx',
       'components/platform/resource-actions/deferred-toast.tsx',
       'components/platform/branding/branding.test.tsx',
+      // Plan 26 review round 2, blocker 1: exercises the REAL `<Toaster>` +
+      // sonner `toast.custom` end to end (a mocked sonner has no CSS/DOM to
+      // assert the pointer-events fix against) - see
+      // `lib/toast.inventory.test.ts`'s matching allowlist entry.
+      'components/ui/sonner.pointer-events.test.tsx',
     ],
     rules: { 'no-restricted-imports': ['error', { paths: [SELECT_RESTRICTION, TABLE_RESTRICTION] }] },
   },

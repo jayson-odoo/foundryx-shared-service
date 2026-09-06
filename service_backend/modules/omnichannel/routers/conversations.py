@@ -41,21 +41,34 @@ from ..embed_auth import (
     resolve_native_actor,
 )
 from ..schemas import (
+    CloseThreadRequest,
+    ConversationEventListResponse,
     LifecycleMoveOption,
     LifecycleMoveRequest,
     MessageItem,
     SendContactsRequest,
     SendLocationRequest,
     SendMessageRequest,
+    ShortcutItem,
+    ShortcutRunResponse,
     ThreadItem,
     ThreadListResponse,
     ThreadPatch,
 )
+from ..services import event_service
+from ..services.close_reason_service import CloseReasonInactive, CloseReasonNotFound
 from ..services.contact_profile_service import ProfilePatchError
 from ..services.conversation_service import (
     ConversationService,
     InvalidPatch,
+    InvalidThreadFilter,
+    ThreadAlreadyClosed,
     ThreadNotFound,
+)
+from ..services.inbox_view_service import (
+    InboxViewNotFound,
+    InboxViewService,
+    InboxViewValidationError,
 )
 from ..services.lifecycle_service import LifecycleStageNotFound
 from ..services.media_pipeline import META_CEILINGS, MediaRejected
@@ -68,18 +81,42 @@ router = APIRouter()
 _MEDIA_HARD_CAP = max(META_CEILINGS.values()) + 1
 
 
+def _csv(v: Optional[str]) -> Optional[List[str]]:
+    if v is None:
+        return None
+    return [x.strip() for x in v.split(",") if x.strip()]
+
+
 @router.get("", response_model=ThreadListResponse)
 def list_threads(
     principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
     workspace_id: Optional[str] = Query(None, alias="workspaceId"),
-    assignee: str = Query("all", pattern="^(all|me|unassigned)$"),
+    assignee: Optional[str] = Query(None, pattern="^(all|me|unassigned|user)$"),
+    assignee_user_ids: Optional[str] = Query(None, alias="assigneeUserIds"),
     thread_status: Optional[str] = Query(None, alias="status"),
     priority: Optional[str] = None,
     search: Optional[str] = None,
+    lifecycle_stage_ids: Optional[str] = Query(None, alias="lifecycleStageIds"),
+    tag_ids: Optional[str] = Query(None, alias="tagIds"),
+    channel_ids: Optional[str] = Query(None, alias="channelIds"),
+    unreplied: Optional[bool] = Query(None),
+    sort: Optional[str] = Query(
+        None, pattern="^(newest|oldest|unreplied_first|longest_waiting)$"
+    ),
+    view_id: Optional[str] = Query(None, alias="viewId"),
+    segment_id: Optional[str] = Query(None, alias="segmentId"),
     page: int = Query(0, ge=0),
     page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
 ) -> ThreadListResponse:
+    """Thread list (plan 05; plan 27 A3 S2 widens it - AC-IVE-15/16/17). All
+    filtering/sorting happens in the repository, never Python. `viewId`
+    expands a saved view's stored filter server-side; any EXPLICIT param sent
+    alongside overrides that value (AC-IVE-17) - the sentinel for "not sent"
+    is `None` on every new param, so a view's value survives unless the
+    caller actually set that param. `segmentId` is reserved for A2 (plan 26,
+    not on this branch yet) - accepted on the wire, refused with a named 422
+    until then (D-A3-17)."""
     principal.require_read()
     # A thread-scoped embed token cannot list the workspace.
     principal.enforce_list()
@@ -87,15 +124,110 @@ def list_threads(
     # query is ignored for tenancy - never trust it).
     if principal.is_embed:
         workspace_id = principal.workspace_id
+    if segment_id:
+        raise HTTPException(
+            status_code=422, detail="Contact segments are not available yet."
+        )
+
+    # Round-3 codex triage B10/B11 - `tag_ids`/`channel_ids` are validated
+    # against the tenant/workspace ONLY when EXPLICIT (this-request), never a
+    # saved view's already-validated expansion (see
+    # `assert_explicit_filters_valid`'s docstring for why - a view's stored
+    # ids were validated at save time and should keep degrading gracefully
+    # if one is later deleted, not 422 the whole view forever). `assignee`
+    # can't use the same explicit-only rule: `assigneeUserIds` may legitimately
+    # come from the VIEW while only `assignee` itself is overridden (AC-IVE-17
+    # overrides each dimension independently) - that check runs below on the
+    # MERGED effective pair once the view is expanded.
+    explicit_tag_ids = _csv(tag_ids) if tag_ids is not None else None
+    explicit_channel_ids = _csv(channel_ids) if channel_ids is not None else None
+    try:
+        ConversationService(db).assert_explicit_filters_valid(
+            tenant_id=principal.tenant_id,
+            workspace_id=workspace_id,
+            tag_ids=explicit_tag_ids,
+            channel_ids=explicit_channel_ids,
+        )
+    except InvalidThreadFilter as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    view_kwargs: dict = {}
+    if view_id:
+        try:
+            # B12 (round-3 codex triage) - visibility ("is this MY personal
+            # view") is an ownership/"me" check, not attribution - authorize
+            # as the EFFECTIVE user (impersonation target when active), per
+            # the house rule (`resolve_effective_actor`'s own docstring makes
+            # the same distinction for the lifecycle move). `actor_user_id`
+            # stays reserved for attribution (entity-event actor, writes).
+            view = InboxViewService(db).get_visible(
+                view_id, principal.tenant_id, principal.effective_user_id
+            )
+        except InboxViewNotFound:
+            raise HTTPException(status_code=404, detail="View not found")
+        # AC-IVE-17 (review round 1, finding 7): a viewId from another
+        # workspace 404s - INCLUDING when the caller resolved no workspace
+        # at all. `workspace_id` here is either the embed principal's own
+        # (forced above) or the caller's EXPLICIT `workspaceId` query param;
+        # there is no third "portable" reading where an absent param quietly
+        # adopts the view's own workspace.
+        if workspace_id != view.workspace_id:
+            raise HTTPException(status_code=404, detail="View not found")
+        try:
+            view_kwargs = InboxViewService(db).expand(view)
+        except InboxViewValidationError:
+            # B18 - a view carrying a (pre-guard-era, or planted) segmentId
+            # 422s the same way an explicit `?segmentId=` query param does,
+            # rather than silently expanding into "no filter".
+            raise HTTPException(
+                status_code=422, detail="Contact segments are not available yet."
+            )
+
+    final_status_key = None
+    final_status_keys = view_kwargs.get("status_keys")
+    if thread_status is not None:
+        final_status_key = None if thread_status == "ALL" else thread_status
+        final_status_keys = None
+
+    final_assignee = assignee if assignee is not None else view_kwargs.get("assignee", "all")
+    final_assignee_user_ids = (
+        _csv(assignee_user_ids) if assignee_user_ids is not None else view_kwargs.get("assignee_user_ids")
+    )
+    # B10 - validated on the EFFECTIVE (merged) pair, since either half may
+    # independently come from the view (see the comment above).
+    if final_assignee == "user" and not final_assignee_user_ids:
+        raise HTTPException(
+            status_code=422, detail="assigneeUserIds is required when assignee=user."
+        )
+
     items, total = ConversationService(db).list_threads(
         principal.tenant_id,
         workspace_id=workspace_id,
-        assignee=assignee,
-        me_user_id=principal.actor_user_id,
+        assignee=final_assignee,
+        assignee_user_ids=final_assignee_user_ids,
+        # B12 - "Mine" is a "me" check, not attribution: the EFFECTIVE user
+        # (the impersonation target when active), same reasoning as above.
+        me_user_id=principal.effective_user_id,
         me_external_agent_id=principal.external_agent_id,
-        status_key=None if thread_status in (None, "ALL") else thread_status,
-        priority=None if priority in (None, "ALL") else priority,
+        status_key=final_status_key,
+        status_keys=final_status_keys,
+        priority=(
+            (None if priority in (None, "ALL") else priority)
+            if priority is not None
+            else view_kwargs.get("priority")
+        ),
         search=search,
+        lifecycle_stage_ids=(
+            _csv(lifecycle_stage_ids)
+            if lifecycle_stage_ids is not None
+            else view_kwargs.get("lifecycle_stage_ids")
+        ),
+        tag_ids=explicit_tag_ids if tag_ids is not None else view_kwargs.get("tag_ids"),
+        channel_ids=(
+            explicit_channel_ids if channel_ids is not None else view_kwargs.get("channel_ids")
+        ),
+        unreplied=unreplied if unreplied is not None else view_kwargs.get("unreplied"),
+        sort=sort if sort is not None else view_kwargs.get("sort"),
         page=page,
         page_size=page_size,
     )
@@ -108,7 +240,10 @@ def get_thread(
     principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> ThreadItem:
-    principal.require_read()
+    # AC-CTM-22 (phase-2 fix): a per-record read, reused by the Contacts
+    # module's detail page (`contact-service.real.ts get`) - `contacts.read`
+    # alone must be enough, not just `conversations.read`.
+    principal.require_read_or_contacts()
     enforce_thread_access(db, principal, contact_id)
     try:
         return ConversationService(db).get_thread(contact_id, principal.tenant_id)
@@ -122,7 +257,9 @@ def list_messages(
     principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> List[MessageItem]:
-    principal.require_read()
+    # AC-CTM-22 (phase-2 fix): the Contacts detail page's Conversation tab
+    # (`<ConversationDrawer compact>`) calls this too - same "or" gate.
+    principal.require_read_or_contacts()
     enforce_thread_access(db, principal, contact_id)
     try:
         return ConversationService(db).list_messages(contact_id, principal.tenant_id)
@@ -200,6 +337,7 @@ def patch_thread(
             tag_ids=payload.tagIds if "tagIds" in sent else ...,
             actor=resolve_native_actor(principal, db),
             actor_id=principal.actor_user_id,
+            actor_external_agent_id=principal.external_agent_id if principal.is_embed else None,
             external_connection_id=principal.connection_id if principal.is_embed else None,
         )
     except ThreadNotFound:
@@ -208,6 +346,135 @@ def patch_thread(
         raise HTTPException(status_code=422, detail=exc.message)
     except ProfilePatchError as exc:
         raise HTTPException(status_code=422, detail={"fieldErrors": exc.errors})
+
+
+@router.post("/{contact_id}/close", response_model=ThreadItem)
+def close_thread(
+    contact_id: str,
+    payload: CloseThreadRequest,
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
+    db: Session = Depends(get_db),
+) -> ThreadItem:
+    """Close with a required reason + optional note (plan 27 A3, S2 -
+    AC-IVE-28/29). Reuses `patch_thread`'s existing `closed` write (no
+    duplicate event insert) and its `_publish_contact_updated` fan-out - the
+    realtime WS event and the consumer `contact.updated` webhook both still
+    fire exactly once."""
+    principal.require(native_perm="conversations.reply", embed_cap="close")
+    enforce_thread_access(db, principal, contact_id)
+    try:
+        return ConversationService(db).close_thread(
+            contact_id,
+            principal.tenant_id,
+            close_reason_id=payload.closeReasonId,
+            note=payload.note,
+            actor=resolve_native_actor(principal, db),
+            actor_id=principal.actor_user_id,
+            actor_external_agent_id=principal.external_agent_id if principal.is_embed else None,
+        )
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except ThreadAlreadyClosed:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "already_closed", "message": "This conversation is already closed."},
+        )
+    except CloseReasonNotFound:
+        raise HTTPException(status_code=404, detail="Close reason not found")
+    except CloseReasonInactive:
+        raise HTTPException(
+            status_code=422, detail={"fieldErrors": {"closeReasonId": "This close reason is inactive."}}
+        )
+
+
+@router.get("/{contact_id}/events", response_model=ConversationEventListResponse)
+def list_events(
+    contact_id: str,
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
+    db: Session = Depends(get_db),
+    page: int = Query(0, ge=0),
+    page_size: int = Query(50, ge=1, le=200, alias="pageSize"),
+) -> ConversationEventListResponse:
+    """Conversation events (plan 27 A3, S1) - newest-first, paginated
+    (AC-IVE-13). Same read gate + scope enforcement as `list_messages` (an
+    embed token sees its own thread's events, exactly like notes) - a foreign-
+    tenant contact_id is a uniform 404, never a 403."""
+    principal.require_read()
+    enforce_thread_access(db, principal, contact_id)
+    try:
+        ConversationService(db).assert_contact_exists(contact_id, principal.tenant_id)
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    rows, total = event_service.list_for_contact(
+        db, contact_id, principal.tenant_id, page=page, page_size=page_size
+    )
+    items = event_service.to_items(db, rows, principal.tenant_id)
+    return ConversationEventListResponse(data=items, total=total)
+
+
+@router.get("/{contact_id}/shortcuts", response_model=List[ShortcutItem])
+def list_shortcuts(
+    contact_id: str,
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
+    db: Session = Depends(get_db),
+) -> List[ShortcutItem]:
+    """Published `entity.shortcut` workflows the drawer's Shortcuts control may
+    offer for this contact (plan 27 A3, S3 - AC-IVE-36). Gated
+    `conversations.shortcut` only (main-session decision 2026-09-06 supersedes
+    the plan's `conversations.read` + `workflows.read` pair - a typical agent
+    should not need core workflow-engine permissions to see the button); no
+    embed cap grants it (AC-IVE-40)."""
+    principal.require_native("conversations.shortcut")
+    enforce_thread_access(db, principal, contact_id)
+    try:
+        rows = ConversationService(db).list_shortcuts(contact_id, principal.tenant_id)
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return [ShortcutItem(workflowId=r["workflowId"], name=r["name"]) for r in rows]
+
+
+@router.post("/{contact_id}/shortcuts/{workflow_id}", response_model=ShortcutRunResponse)
+def run_shortcut(
+    contact_id: str,
+    workflow_id: str,
+    principal: ConversationPrincipal = Depends(get_conversation_principal),
+    db: Session = Depends(get_db),
+) -> ShortcutRunResponse:
+    """Fire a shortcut workflow against this contact's PUBLISHED version
+    (never the draft) through the SAME helper the CRUD event bus uses (plan 27
+    A3, S3 - AC-IVE-37, D-A3-10). Gated `conversations.shortcut` only (see
+    `list_shortcuts` above); no embed cap grants it (AC-IVE-40). Every
+    "not a valid shortcut for this record" case (unpublished / inactive /
+    archived / foreign tenant / not an `entity.shortcut` workflow / not bound
+    to `omnichannel_contact`) is a uniform 404 (AC-IVE-38, AC-IVE-42); a
+    Code-node the publisher never authorized is a 409, not a run."""
+    principal.require_native("conversations.shortcut")
+    enforce_thread_access(db, principal, contact_id)
+    from app.services.workflow_service import (
+        ShortcutCodeNotAuthorized,
+        ShortcutNotFound,
+        ShortcutSerializationConflict,
+    )
+
+    try:
+        run = ConversationService(db).run_shortcut(
+            contact_id, principal.tenant_id, workflow_id, actor=resolve_native_actor(principal, db)
+        )
+    except ThreadNotFound:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    except ShortcutNotFound:
+        raise HTTPException(status_code=404, detail="Shortcut not found")
+    except ShortcutCodeNotAuthorized:
+        raise HTTPException(
+            status_code=409,
+            detail="This workflow's published version has an unauthorized Code node.",
+        )
+    except ShortcutSerializationConflict:
+        raise HTTPException(
+            status_code=409,
+            detail="This workflow is serialized and its correlation key could not be resolved.",
+        )
+    return ShortcutRunResponse(runId=run.id, status=run.status)
 
 
 @router.post("/{contact_id}/lifecycle", response_model=ThreadItem)
@@ -233,7 +500,13 @@ def move_lifecycle(
     actor = resolve_effective_actor(principal, db)
     try:
         return ConversationService(db).move_lifecycle(
-            contact_id, principal.tenant_id, payload.toStatusId, actor=actor
+            contact_id,
+            principal.tenant_id,
+            payload.toStatusId,
+            actor=actor,
+            # B19 - the written `lifecycle_changed` event attributes to the
+            # REAL admin, never the effective (impersonated target) user.
+            attributed_actor_id=principal.actor_user_id,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")

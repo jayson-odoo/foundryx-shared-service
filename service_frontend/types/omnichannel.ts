@@ -8,6 +8,7 @@
  */
 
 import type { UserStatus } from '@/types/user';
+import type { FilterGroup } from '@/types/resource';
 
 /** Channels the platform can connect. MVP builds WHATSAPP; others are later adapters. */
 export type ChannelType = 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM' | 'DOUYIN' | 'XIAOHONGSHU';
@@ -442,13 +443,26 @@ export interface SendContactsInput {
   replyToMessageId?: string;
 }
 
-/** Inbox thread-list filters (left panel - not the Resource shell). */
+/** Sort order for the inbox list header (plan 27, AC-IVE-16). */
+export type ThreadSort = 'newest' | 'oldest' | 'unreplied_first' | 'longest_waiting';
+
+/** Inbox thread-list filters (left panel - not the Resource shell). Plan 27
+ *  adds the view-rail dimensions (`lifecycleStageIds`/`tagIds`/`channelIds`/
+ *  `unreplied`/`sort`/`viewId`) alongside the existing ones (AC-IVE-15). */
 export interface ThreadListQuery {
   workspaceId?: string;
   assignee?: 'all' | 'me' | 'unassigned';
   status?: ThreadStatus | 'ALL';
+  /** F2 (round-3 codex triage) - see `ConversationFilters.statusExplicit`. */
+  statusExplicit?: boolean;
   priority?: ThreadPriority | 'ALL';
   search?: string;
+  lifecycleStageIds?: string[];
+  tagIds?: string[];
+  channelIds?: string[];
+  unreplied?: boolean;
+  sort?: ThreadSort;
+  viewId?: string | null;
   /** Team Inbox filter (plan 28) - the real backend gains this in S2; the S0
    *  mock overlay filters the fetched page client-side in the meantime. */
   teamId?: string | null;
@@ -618,4 +632,224 @@ export interface PatchContactInput {
   countryCode?: string | null;
   customFields?: Record<string, string | number | boolean | null>;
   tagIds?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Plan 26 - Contacts module (list, segments, form, bulk, CSV import/export).
+// See documentation/plans/sprint-4/26-omnichannel-contacts-module.md. A2 adds
+// NO new contact entity - a "contact" is still the A1 `contacts` row (=
+// ConversationThread). ContactListItem is a SUBCLASS adding `channels[]`
+// (D-A2-11); the internal `/api/v1/omnichannel` gateway shapes are untouched.
+// ---------------------------------------------------------------------------
+
+/** One channel identity a contact has messaged through (`contact_channel_identities`,
+ *  D-A2-11) - the Channel column source, NEVER the last message's channel (a
+ *  manually created contact has no message and must not show a fabricated type). */
+export interface ContactChannelRef {
+  channelId: string;
+  channelType: ChannelType;
+  name: string;
+}
+
+/** A list row (plan 26 §5.1) - every `ConversationThread` (= A1 `ThreadItem`)
+ *  field PLUS the resolved channel identities. */
+export interface ContactListItem extends ConversationThread {
+  channels: ContactChannelRef[];
+}
+
+/** A saved, named filter tree on a workspace (D-A2-3) - stores the EXACT
+ *  `FilterGroup` shape the Resource shell's filter builder emits, applied in
+ *  SQL. Consumed as-is by A3 (inbox views) and A4 (broadcast audiences). */
+export interface ContactSegment {
+  id: string;
+  workspaceId: string;
+  name: string;
+  description: string | null;
+  filter: FilterGroup;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+}
+
+export interface CreateContactSegmentInput {
+  name: string;
+  description?: string | null;
+  filter: FilterGroup;
+}
+
+export interface UpdateContactSegmentInput {
+  name?: string;
+  description?: string | null;
+  filter?: FilterGroup;
+}
+
+/** Create-form payload (D-A2-4) - `phone` is required + create-only; every
+ *  other field mirrors `PatchContactInput` plus the lifecycle/tags a brand
+ *  new contact needs up front. */
+export interface CreateContactInput {
+  firstName?: string | null;
+  lastName?: string | null;
+  phone: string;
+  email?: string | null;
+  language?: string | null;
+  countryCode?: string | null;
+  /** Defaults to the workspace's initial lifecycle stage when omitted. */
+  lifecycleStatusId?: string | null;
+  tagIds?: string[];
+  customFields?: Record<string, string | number | boolean | null>;
+}
+
+/** Per-record bulk-action outcome (D-A2-5) - never a bare "something went
+ *  wrong"; a failed id always carries its own reason. */
+export interface BulkResult {
+  ok: string[];
+  failed: { id: string; error: string }[];
+}
+
+export interface BulkAssignInput {
+  ids: string[];
+  assigneeUserId: string | null;
+}
+export interface BulkTagsInput {
+  ids: string[];
+  mode: 'add' | 'remove';
+  tagIds: string[];
+}
+export interface BulkLifecycleInput {
+  ids: string[];
+  toStatusId: string;
+}
+
+/** Export job request (D-A2-6a) - honours the EXACT query it was given
+ *  (an explicit `ids` selection wins over search/filter/segment/sort). */
+export interface ContactExportRequest {
+  columns: string[];
+  ids?: string[];
+  search?: string;
+  filter?: FilterGroup | null;
+  segment?: string | null;
+  sortBy?: string;
+  sortDir?: 'asc' | 'desc';
+}
+
+// ---------------------------------------------------------------------------
+// Plan 27 - inbox views, close reasons, conversation events, shortcuts. See
+// documentation/plans/sprint-4/27-omnichannel-inbox-views-events.md §5.1/§5.2.
+// ---------------------------------------------------------------------------
+
+/** Append-only conversation-event row (AC-IVE-01/13). Ten types (D-A3-1). */
+export type ConversationEventType =
+  | 'opened'
+  | 'closed'
+  | 'reopened'
+  | 'snoozed'
+  | 'unsnoozed'
+  | 'assigned'
+  | 'unassigned'
+  | 'first_agent_reply'
+  | 'lifecycle_changed'
+  | 'comment_added';
+
+/** One event on a thread's history, newest-first from `GET .../events`
+ *  (AC-IVE-13). `fromLabel`/`toLabel` are pre-resolved server-side (tenant-
+ *  scoped) so the feed never needs its own id -> label lookups. */
+export interface ConversationEvent {
+  id: string;
+  eventType: ConversationEventType;
+  actorName: string | null;
+  actorUserId: string | null;
+  fromValue: string | null;
+  fromLabel: string | null;
+  toValue: string | null;
+  toLabel: string | null;
+  closeReasonId: string | null;
+  closeReasonName: string | null;
+  note: string | null;
+  payload: Record<string, unknown> | null;
+  createdAt: string; // ISO
+}
+
+/** A per-workspace close reason (AC-IVE-25/26/27). */
+export interface CloseReason {
+  id: string;
+  workspaceId: string;
+  name: string;
+  sortOrder: number;
+  isActive: boolean;
+  /** Count of events referencing this reason - delete is blocked (409) while
+   *  this is > 0; the UI offers Deactivate instead (D-A3-13). */
+  usesCount: number;
+  createdAt: string; // ISO
+}
+
+export interface CreateCloseReasonInput {
+  name: string;
+  sortOrder?: number;
+  isActive?: boolean;
+}
+export interface UpdateCloseReasonInput {
+  name?: string;
+  sortOrder?: number;
+  isActive?: boolean;
+}
+
+/** Close a thread with a required reason + optional note (AC-IVE-28/29). */
+export interface CloseThreadInput {
+  closeReasonId: string;
+  note?: string | null;
+}
+
+/**
+ * The typed, `extra="forbid"` saved-view filter (AC-IVE-18) - NOT a rule-engine
+ * tree (D-A3-2). `segmentId` is a reserved seam for A2 (plan 26), unused here.
+ */
+export interface InboxViewFilter {
+  statuses?: ThreadStatus[];
+  assignee?: 'all' | 'me' | 'unassigned' | 'user';
+  assigneeUserIds?: string[];
+  lifecycleStageIds?: string[];
+  tagIds?: string[];
+  channelIds?: string[];
+  priority?: ThreadPriority | 'ALL';
+  unreplied?: boolean;
+  sort?: ThreadSort;
+  segmentId?: string | null;
+}
+
+/** A saved inbox view (AC-IVE-18/19). Own views need only `conversations.read`
+ *  to create/edit/delete; a SHARED view (or someone else's) additionally needs
+ *  `inbox_views.manage` (D-A3-11). */
+export interface InboxView {
+  id: string;
+  workspaceId: string;
+  name: string;
+  ownerUserId: string;
+  ownerName: string | null;
+  isShared: boolean;
+  filter: InboxViewFilter;
+  sortOrder: number;
+  createdAt: string; // ISO
+}
+
+export interface CreateInboxViewInput {
+  name: string;
+  isShared: boolean;
+  filter: InboxViewFilter;
+}
+export interface UpdateInboxViewInput {
+  name?: string;
+  isShared?: boolean;
+  filter?: InboxViewFilter;
+  sortOrder?: number;
+}
+
+/** A published workflow the drawer's Shortcuts control may fire (AC-IVE-36). */
+export interface ShortcutItem {
+  workflowId: string;
+  name: string;
+}
+
+/** Response of firing a shortcut (AC-IVE-37). */
+export interface ShortcutRunResult {
+  runId: string;
+  status: string;
 }

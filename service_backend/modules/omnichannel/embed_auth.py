@@ -110,6 +110,25 @@ class ConversationPrincipal:
             )
         # Any embed token may READ within its scope (scope enforced separately).
 
+    def require_read_or_contacts(self) -> None:
+        """Like `require_read()` but ALSO accepts `contacts.read` (plan 26
+        review round 1, AC-CTM-22 phase-2 fix). The Contacts module's detail
+        page reuses THIS single-thread read (`get_thread`) and its message
+        history (`list_messages`) via the A1 `<ConversationDrawer>` - a role
+        holding only `contacts.read` (no `conversations.read`) must still be
+        able to open a contact's own detail page, mirroring the existing
+        "or" gate `get_lifecycle_moves` already applies. Deliberately
+        scoped to PER-RECORD reads only - `list_threads` (the shared Inbox
+        LIST) stays `conversations.read`-only, so `contacts.read` never
+        silently grants Inbox visibility (`app/permissions/... implied-read`
+        does not span module boundaries either)."""
+        if not self.is_embed and not ({"conversations.read", "contacts.read"} & self.permission_keys):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Missing permission: one of conversations.read, contacts.read",
+            )
+        # Any embed token may READ within its scope (scope enforced separately).
+
     def require_native_read(self, native_perm: str) -> None:
         """Gate a READ helper that both auth schemes reach (workspace templates /
         quick-replies / members). Native → the permission must be held (preserves
@@ -117,6 +136,22 @@ class ConversationPrincipal:
         workspace's catalog (workspace scope enforced by ``enforce_workspace`` /
         ``enforce_channel_workspace``); no write-cap needed for a read."""
         if not self.is_embed and native_perm not in self.permission_keys:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing permission: {native_perm}",
+            )
+
+    def require_native(self, native_perm: str) -> None:
+        """Gate a route with NO embed equivalent AT ALL - any embed token is
+        refused regardless of its caps (plan sprint-4/27 AC-IVE-40: the
+        shortcut list/run routes are not part of the embed widget's surface -
+        no embed cap grants them, ever)."""
+        if self.is_embed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This action is not available to embedded/federated callers.",
+            )
+        if native_perm not in self.permission_keys:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Missing permission: {native_perm}",
@@ -291,12 +326,16 @@ def resolve_native_actor(principal: ConversationPrincipal, db: Session) -> Optio
 def resolve_effective_actor(principal: ConversationPrincipal, db: Session) -> Optional[User]:
     """B5: the EFFECTIVE-user counterpart to `resolve_native_actor`, for the
     ONE use that is an AUTHORIZATION check, not attribution -
-    `status_machine.transition`'s edge-role/rule-condition gate (`move_lifecycle`
-    / `lifecycle_moves`, and the lifecycle sub-move inside `patch_thread`).
-    Under impersonation this is the TARGET (matches `permission_keys`, which
-    already reads the target's grants) - `resolve_native_actor` stays the real
-    admin for attribution (entity-event actor facts, `actor_id`). Tenant-scoped
-    (polymorphic stored-id rule); embed has no native actor at all."""
+    `status_machine.transition`'s edge-role/rule-condition gate for the
+    contact's lifecycle STAGE (`move_lifecycle` / `get_lifecycle_moves`).
+    `patch_thread`'s `status`/`priority` fields move the THREAD's own
+    open/snoozed/closed status, a separate concept from the lifecycle stage,
+    and resolve their actor via `resolve_native_actor` (attribution), not this
+    function. Under impersonation this is the TARGET (matches
+    `permission_keys`, which already reads the target's grants) -
+    `resolve_native_actor` stays the real admin for attribution (entity-event
+    actor facts, `actor_id`). Tenant-scoped (polymorphic stored-id rule);
+    embed has no native actor at all."""
     if principal.is_embed or not principal.effective_user_id:
         return None
     return (
