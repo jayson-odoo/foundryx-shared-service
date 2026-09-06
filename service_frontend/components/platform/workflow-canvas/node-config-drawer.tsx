@@ -44,6 +44,8 @@ import { cn } from '@/lib/utils';
 import {
   ACTION_CATALOG,
   catalogEntry,
+  deniedNodePermissions,
+  isPermissionDenied,
   TRIGGER_CATALOG,
 } from '@/lib/workflow-catalog';
 import {
@@ -98,6 +100,12 @@ export interface NodeConfigDrawerProps {
   onExecuteNode?: () => void;
   executeBusy?: boolean;
   canCode?: boolean;
+  /** Gates the HTTP request node (`workflows.http`), same as `canCode`. */
+  canHttp?: boolean;
+  /** The workflow being edited - excluded from the `workflow.trigger` picker
+   * (foolproof-UI: never offer an option the backend would refuse, plan 31
+   * S3). Absent for a new/unsaved workflow (nothing to exclude yet). */
+  currentWorkflowId?: string;
 }
 
 /** A trigger node's full output key list (static seed + entity record fields +
@@ -1092,6 +1100,8 @@ export function NodeConfigDrawer({
   onExecuteNode,
   executeBusy,
   canCode = true,
+  canHttp = true,
+  currentWorkflowId,
 }: NodeConfigDrawerProps) {
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [templatePreviewOpen, setTemplatePreviewOpen] = useState(false);
@@ -1102,7 +1112,8 @@ export function NodeConfigDrawer({
       </div>
     );
   }
-  const editing = requestedEditing && (node.type !== 'code.run' || canCode);
+  const denied = deniedNodePermissions({ code: canCode, http: canHttp });
+  const editing = requestedEditing && !isPermissionDenied(catalogEntry(node.type), denied);
   const entry = catalogEntry(node.type);
   const groups = upstreamGroups(doc, node.id, metadata);
   const entity = entityFor(node, metadata);
@@ -1127,10 +1138,7 @@ export function NodeConfigDrawer({
   const replaceOptions = (
     node.kind === 'trigger' ? TRIGGER_CATALOG : ACTION_CATALOG
   )
-    .filter(
-      (e) =>
-        canCode || !('permission' in e) || e.permission !== 'workflows.code',
-    )
+    .filter((e) => !isPermissionDenied(e, denied))
     .map((e) => ({ value: e.type, label: e.label }));
 
   /** Changing the entity invalidates its dependent pickers. */
@@ -1662,10 +1670,16 @@ export function NodeConfigDrawer({
     }
 
     if (field.type === 'workflowRef') {
-      const options = (metadata.workflows ?? []).map((w) => ({
-        value: w.id,
-        label: w.name,
-      }));
+      // Self-trigger exclusion (plan 31 S3, AC-WFP-33 parity): never offer
+      // the workflow being edited - the backend `workflow_trigger` action
+      // refuses it at run time ("A workflow cannot trigger itself.") and
+      // foolproof-UI means the picker never lists a choice that would fail.
+      const options = (metadata.workflows ?? [])
+        .filter((w) => w.id !== currentWorkflowId)
+        .map((w) => ({
+          value: w.id,
+          label: w.name,
+        }));
       return wrap(
         <SearchSelect
           options={options}

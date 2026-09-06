@@ -1185,6 +1185,34 @@ export function catalogEntry(type: string): NodeCatalogEntry | undefined {
   return CATALOG.find((e) => e.type === type);
 }
 
+/** True when the entry declares a `permission` (e.g. `workflows.code` on
+ * Code, `workflows.http` on HTTP request) the caller does not hold - the ONE
+ * gate every permission-restricted node type shares (plan 31 S3
+ * generalization: a THIRD gated action needs no new per-call-site check,
+ * only one more entry in the caller's `deniedNodePermissions` set). */
+export function isPermissionDenied(
+  entry: NodeCatalogEntry | undefined,
+  denied: ReadonlySet<string>,
+): boolean {
+  return Boolean(
+    entry && 'permission' in entry && entry.permission && denied.has(entry.permission),
+  );
+}
+
+/** Builds the denied-permission set from the caller's boolean permission
+ * flags (`can('workflows.code')`, `can('workflows.http')`) - the single spot
+ * every canvas/palette/drawer consumer derives its `isPermissionDenied` input
+ * from, so a new gated permission is a one-line addition here. */
+export function deniedNodePermissions(flags: {
+  code?: boolean;
+  http?: boolean;
+}): ReadonlySet<string> {
+  const denied = new Set<string>();
+  if (!flags.code) denied.add('workflows.code');
+  if (!flags.http) denied.add('workflows.http');
+  return denied;
+}
+
 export function isTriggerType(type: string): boolean {
   return TRIGGER_CATALOG.some((e) => e.type === type);
 }

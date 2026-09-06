@@ -156,25 +156,45 @@ def _execute_node(
             **{k.split("trigger.input.")[1]: v for k, v in ctx.items() if k.startswith("trigger.input.")},
         }
         # Event triggers expose the captured event in their trace, not only in
-        # the private flat executor context. This is identical for production
-        # and synthetic test events because both use the canonical envelope.
-        if "trigger.message.id" in ctx:
-            output["message"] = {
-                "id": ctx.get("trigger.message.id"),
-                "text": ctx.get("trigger.message.text"),
-                "type": ctx.get("trigger.message.type"),
-                "mediaUrl": ctx.get("trigger.message.mediaUrl"),
-            }
-            output["contact"] = {
-                "id": ctx.get("trigger.contact.id"),
-                "name": ctx.get("trigger.contact.name"),
-                "phone": ctx.get("trigger.contact.phone"),
-            }
-            output["channel"] = {
-                "id": ctx.get("trigger.channel.id"),
-                "name": ctx.get("trigger.channel.name"),
-            }
-            output["conversationId"] = ctx.get("trigger.conversationId")
+        # the private flat executor context - registry-driven (plan 31 S3,
+        # AC-WFP-38): every OTHER `trigger.<dotted>` context key is nested back
+        # into JSON (`trigger.contact.id` -> `output["contact"]["id"]`), so a
+        # NEW trigger's captured data (or a chained `workflow.trigger` run's
+        # `source`/`parentRunId`/`contactId`) shows in Logs with no per-trigger
+        # hardcoded block here - identical for production and synthetic test
+        # events because both use the canonical envelope. `trigger.input.*`
+        # stays flat (the pre-existing manual-trigger shape, above) and
+        # `trigger.triggeredBy` is already surfaced. `trigger.record.*` is
+        # SKIPPED - that is the rule-engine fact surface (already its own
+        # picker group), a different namespace from "what the trigger fired
+        # with", and some record facts (e.g. a date fact's `.daysSince`/
+        # `.daysUntil`) are BOTH a leaf value and a parent of derived
+        # sub-facts, which a bare dotted-key nest can't represent as JSON.
+        for key, value in ctx.items():
+            if (
+                not key.startswith("trigger.")
+                or key.startswith("trigger.input.")
+                or key.startswith("trigger.record.")
+                or key == "trigger.triggeredBy"
+            ):
+                continue
+            parts = key.split(".")[1:]
+            target = output
+            collided = False
+            for part in parts[:-1]:
+                existing = target.get(part)
+                if isinstance(existing, dict):
+                    target = existing
+                elif part not in target:
+                    target = target.setdefault(part, {})
+                else:
+                    # Defense in depth: a scalar already claims this path.
+                    # Never crash a run over a Logs-display nicety - drop
+                    # only this one key.
+                    collided = True
+                    break
+            if not collided:
+                target[parts[-1]] = value
         return output
     if node.kind == "if":
         from app.rule_engine.evaluator import evaluate

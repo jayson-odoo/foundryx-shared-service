@@ -566,10 +566,16 @@ export interface DefinitionIssue {
 }
 
 /** Mirror of the backend `validate_definition` (D17) - surfaced live in the
- * editor so publish failures are visible before the click. */
+ * editor so publish failures are visible before the click. `currentWorkflowId`
+ * (the workflow being edited, absent while still unsaved/new) backs the
+ * `workflow.trigger` self-trigger parity check (plan 31 S3) - the backend
+ * `workflow_trigger` action already refuses this at RUN time
+ * ("A workflow cannot trigger itself."); this mirrors the SAME message at
+ * publish time so the author sees it before running. */
 export function validateDefinition(
   doc: WorkflowDefinition,
   metadata?: { codeRunnerAvailable?: boolean },
+  currentWorkflowId?: string,
 ): DefinitionIssue[] {
   void metadata;
   const issues: DefinitionIssue[] = [];
@@ -625,6 +631,23 @@ export function validateDefinition(
         'Ask a question requires serialized execution and a Correlation key.',
     });
   }
+  // `workflow.trigger` self-trigger parity (plan 31 S3, AC-WFP-33/backend
+  // `ActionError("A workflow cannot trigger itself.")`) - the drawer already
+  // excludes the current workflow from the picker (foolproof-UI), but a
+  // config set before a rename/duplicate, or authored via the API, must still
+  // be caught before publish with the SAME message the run would fail with.
+  if (currentWorkflowId) {
+    for (const n of doc.nodes) {
+      if (n.type === 'workflow.trigger' && n.config.workflowId === currentWorkflowId) {
+        issues.push({
+          level: 'error',
+          message: 'A workflow cannot trigger itself.',
+          nodeId: n.id,
+        });
+      }
+    }
+  }
+
   if (trigger && doc.edges.some((e) => e.target === trigger.id)) {
     issues.push({
       level: 'error',

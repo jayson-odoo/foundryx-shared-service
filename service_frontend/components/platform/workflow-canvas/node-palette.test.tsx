@@ -89,4 +89,22 @@ describe('NodePalette module filtering', () => {
     });
     expect(screen.getByTestId('palette-code.run')).toBeDisabled();
   });
+
+  it('disables HTTP request when workflows.http is unavailable (plan 31 S3, AC-WFP-37/69)', () => {
+    isActiveMock.mockReturnValue(true);
+    renderPalette({ canHttp: false });
+    fireEvent.change(screen.getByTestId('palette-search'), {
+      target: { value: 'http request' },
+    });
+    expect(screen.getByTestId('palette-http.request')).toBeDisabled();
+  });
+
+  it('enables HTTP request when workflows.http is granted', () => {
+    isActiveMock.mockReturnValue(true);
+    renderPalette({ canHttp: true });
+    fireEvent.change(screen.getByTestId('palette-search'), {
+      target: { value: 'http request' },
+    });
+    expect(screen.getByTestId('palette-http.request')).not.toBeDisabled();
+  });
 });

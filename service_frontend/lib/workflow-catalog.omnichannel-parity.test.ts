@@ -239,3 +239,41 @@ describe('plan 31 Ask a question requires serialized execution (AC-WFP-06)', () 
     );
   });
 });
+
+function selfTriggerDoc(workflowId: string): WorkflowDefinition {
+  const trigger = createNode('manual', { x: 0, y: 0 });
+  trigger.id = 'trg_1';
+  const step = createNode('workflow.trigger', { x: 0, y: 100 });
+  step.id = 'wt_1';
+  step.config = { ...step.config, workflowId };
+  return {
+    schemaVersion: 2,
+    nodes: [trigger, step],
+    edges: [{ id: 'e1', source: 'trg_1', target: 'wt_1', sourcePort: 'out' }],
+  };
+}
+
+describe('plan 31 workflow.trigger self-trigger parity (AC-WFP-33, S3)', () => {
+  it('blocks publish when the node targets the workflow being edited - SAME message as the backend run-time refusal', () => {
+    const issues = validateDefinition(selfTriggerDoc('wf-self'), undefined, 'wf-self');
+    expect(issues).toContainEqual({
+      level: 'error',
+      message: 'A workflow cannot trigger itself.',
+      nodeId: 'wt_1',
+    });
+  });
+
+  it('passes when the node targets a different workflow', () => {
+    const issues = validateDefinition(selfTriggerDoc('wf-other'), undefined, 'wf-self');
+    expect(issues).not.toContainEqual(
+      expect.objectContaining({ message: 'A workflow cannot trigger itself.' }),
+    );
+  });
+
+  it('is a no-op for a new/unsaved workflow (no currentWorkflowId yet)', () => {
+    const issues = validateDefinition(selfTriggerDoc('wf-anything'));
+    expect(issues).not.toContainEqual(
+      expect.objectContaining({ message: 'A workflow cannot trigger itself.' }),
+    );
+  });
+});

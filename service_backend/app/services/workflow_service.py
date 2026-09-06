@@ -827,7 +827,7 @@ class WorkflowService:
                 .all()
             )
             fields = (
-                self.db.query(ContactField.key, ContactField.label)
+                self.db.query(ContactField.key, ContactField.label, ContactField.type)
                 .filter(ContactField.tenant_id == tenant_id, ContactField.workspace_id == ws.id)
                 .order_by(ContactField.label)
                 .all()
@@ -884,8 +884,14 @@ class WorkflowService:
                     "id": ws.id,
                     "name": ws.name,
                     "contactTags": [{"id": t.id, "name": t.name} for t in tags],
-                    "contactFields": [{"key": f.key, "label": f.label} for f in fields],
-                    "lifecycleStages": [{"id": s.id, "label": s.label} for s in stages],
+                    "contactFields": [
+                        {"key": f.key, "label": f.label, "type": f.type} for f in fields
+                    ],
+                    # `name` (not `label`) matches every sibling array on this
+                    # workspace shape (contactTags/closeReasons/members all use
+                    # `name`) and the pre-existing frontend contract
+                    # (WorkflowOmnichannelWorkspace.lifecycleStages, S3 drift fix).
+                    "lifecycleStages": [{"id": s.id, "name": s.label} for s in stages],
                     "closeReasons": [{"id": r.id, "name": r.name} for r in reasons],
                     "members": [
                         {"id": m.id, "name": m.name or m.email, "email": m.email} for m in members

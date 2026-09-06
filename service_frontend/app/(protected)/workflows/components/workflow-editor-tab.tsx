@@ -28,6 +28,8 @@ export interface WorkflowEditorTabProps {
   templateOptions: TemplateOption[];
   metadata: WorkflowMetadata;
   canCode?: boolean;
+  /** Gates the HTTP request node (`workflows.http`), same as `canCode`. */
+  canHttp?: boolean;
   busy: boolean;
   onPublish: () => void;
   onUnpublish: () => void;
@@ -47,6 +49,7 @@ export function WorkflowEditorTab({
   templateOptions,
   metadata,
   canCode = true,
+  canHttp = true,
   busy,
   onPublish,
   onUnpublish,
@@ -57,6 +60,9 @@ export function WorkflowEditorTab({
 }: WorkflowEditorTabProps) {
   const isPublished = workflow.currentVersionId !== null;
   const hasCode = doc.nodes.some((node) => node.type === 'code.run');
+  const hasHttp = doc.nodes.some((node) => node.type === 'http.request');
+  const permissionBlocked =
+    (hasCode && !canCode) || (hasHttp && !canHttp);
 
   return (
     <div className="flex flex-col gap-3" data-testid="workflow-editor-tab">
@@ -74,7 +80,7 @@ export function WorkflowEditorTab({
               variant="outline"
               size="sm"
               onClick={onExecuteAll}
-              disabled={busy || (hasCode && !canCode)}
+              disabled={busy || permissionBlocked}
               data-testid="execute-workflow"
             >
               <RefreshCw className="size-3.5" /> Execute workflow
@@ -120,7 +126,7 @@ export function WorkflowEditorTab({
             <Button
               variant="outline"
               size="sm"
-              disabled={busy || (hasCode && !canCode)}
+              disabled={busy || permissionBlocked}
               onClick={onRun}
               data-testid="workflow-run"
             >
@@ -142,7 +148,7 @@ export function WorkflowEditorTab({
                 size="sm"
                 disabled={
                   busy ||
-                  (hasCode && !canCode) ||
+                  permissionBlocked ||
                   (isPublished && !workflow.hasUnpublishedChanges)
                 }
                 onClick={onPublish}
@@ -167,6 +173,8 @@ export function WorkflowEditorTab({
         templateOptions={templateOptions}
         metadata={metadata}
         canCode={canCode}
+        canHttp={canHttp}
+        currentWorkflowId={workflow.id || undefined}
         debug={debug}
       />
     </div>

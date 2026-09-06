@@ -147,14 +147,23 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
                   <NodeRunStatusBadge status={selectedData.status} />
                 )}
               </div>
-              {resolvedInput(selectedData?.inputJson) && (
-                <DataBlock
-                  label="Resolved input"
-                  value={resolvedInput(selectedData?.inputJson)}
-                />
+              {selectedNode.kind !== 'trigger' && (
+                <>
+                  {resolvedInput(selectedData?.inputJson) && (
+                    <DataBlock
+                      label="Resolved input"
+                      value={resolvedInput(selectedData?.inputJson)}
+                    />
+                  )}
+                  <DataBlock label="Input" value={selectedData?.inputJson} />
+                </>
               )}
-              <DataBlock label="Input" value={selectedData?.inputJson} />
-              <DataBlock label="Output" value={selectedData?.outputJson} />
+              {/* Plan 31 S3, AC-WFP-38: the trigger node has no config input -
+                  only the captured event data it fired the run with. */}
+              <DataBlock
+                label={selectedNode.kind === 'trigger' ? 'Trigger data' : 'Output'}
+                value={selectedData?.outputJson}
+              />
               {selectedData?.error && (
                 <ErrorBlock error={selectedData.error} />
               )}

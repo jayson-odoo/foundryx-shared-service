@@ -58,6 +58,8 @@ import type {
 import {
   ACTION_CATALOG,
   catalogEntry,
+  deniedNodePermissions,
+  isPermissionDenied,
   TRIGGER_CATALOG,
 } from '@/lib/workflow-catalog';
 import {
@@ -107,6 +109,12 @@ export interface WorkflowCanvasProps {
   /** Triggerable entities + statuses/fields the node drawers resolve (D6). */
   metadata: WorkflowMetadata;
   canCode?: boolean;
+  /** Gates the HTTP request node (`workflows.http`), same as `canCode`. */
+  canHttp?: boolean;
+  /** The workflow being edited (absent for a new/unsaved workflow) - excludes
+   * itself from the `workflow.trigger` picker and backs the self-trigger
+   * publish-parity check (plan 31 S3). */
+  currentWorkflowId?: string;
   debug?: WorkflowDebugBundle | null;
 }
 
@@ -139,7 +147,13 @@ export function WorkflowCanvas({
   metadata,
   debug,
   canCode = true,
+  canHttp = true,
+  currentWorkflowId,
 }: WorkflowCanvasProps) {
+  const deniedPermissions = useMemo(
+    () => deniedNodePermissions({ code: canCode, http: canHttp }),
+    [canCode, canHttp],
+  );
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -329,13 +343,7 @@ export function WorkflowCanvas({
   const addNodeAt = useCallback(
     (type: string, position?: { x: number; y: number }) => {
       const entry = catalogEntry(type);
-      if (
-        !canCode &&
-        entry &&
-        'permission' in entry &&
-        entry.permission === 'workflows.code'
-      )
-        return;
+      if (isPermissionDenied(entry, deniedPermissions)) return;
       if (entry?.kind === 'trigger' && hasTrigger(doc)) {
         toast.error('A workflow can have only one trigger.');
         return;
@@ -359,7 +367,7 @@ export function WorkflowCanvas({
       emit(addDocNode(doc, node));
       setSelectedNodeId(node.id);
     },
-    [canCode, doc, emit],
+    [deniedPermissions, doc, emit],
   );
 
   const sensors = useSensors(
@@ -405,8 +413,8 @@ export function WorkflowCanvas({
   );
 
   const issues = useMemo(
-    () => validateDefinition(doc, metadata),
-    [doc, metadata],
+    () => validateDefinition(doc, metadata, currentWorkflowId),
+    [doc, metadata, currentWorkflowId],
   );
   const errors = issues.filter((i) => i.level === 'error');
 
@@ -427,16 +435,10 @@ export function WorkflowCanvas({
   const handleReplace = useCallback(
     (nodeId: string, newType: string) => {
       const entry = catalogEntry(newType);
-      if (
-        !canCode &&
-        entry &&
-        'permission' in entry &&
-        entry.permission === 'workflows.code'
-      )
-        return;
+      if (isPermissionDenied(entry, deniedPermissions)) return;
       emit(replaceNodeType(doc, nodeId, newType));
     },
-    [canCode, doc, emit],
+    [deniedPermissions, doc, emit],
   );
 
   const handleNodeContextMenu = useCallback(
@@ -463,12 +465,7 @@ export function WorkflowCanvas({
       : contextNode?.kind === 'action'
         ? ACTION_CATALOG
         : []
-  ).filter(
-    (entry) =>
-      canCode ||
-      !('permission' in entry) ||
-      entry.permission !== 'workflows.code',
-  );
+  ).filter((entry) => !isPermissionDenied(entry, deniedPermissions));
 
   return (
     <DndContext sensors={sensors} onDragEnd={onDragEnd}>
@@ -495,6 +492,7 @@ export function WorkflowCanvas({
                 hasTrigger={hasTrigger(doc)}
                 disabled={!editing}
                 canCode={canCode}
+                canHttp={canHttp}
                 onAdd={(t) => addNodeAt(t)}
               />
             ) : (
@@ -591,6 +589,8 @@ export function WorkflowCanvas({
               onDelete={handleDelete}
               onReplaceNode={handleReplace}
               canCode={canCode}
+              canHttp={canHttp}
+              currentWorkflowId={currentWorkflowId}
               runData={
                 selectedNode && debug
                   ? (debug.data[selectedNode.id] ?? null)

@@ -147,6 +147,93 @@ def test_conversation_opened_fires_for_new_thread_and_reopen(session_factory):
         db.close()
 
 
+# ── AC-WFP-38: Logs shows the trigger node's captured event data ───────────
+def test_conversation_opened_trigger_node_captures_event_data_in_logs(session_factory):
+    """The trigger node's `WorkflowRunNode.output_json` is reconstructed
+    generically from the flat `trigger.*` run context (plan 31 S3) - no
+    per-trigger hardcoded block, and it must never crash even though some
+    rule-engine record facts (e.g. a date fact's `.daysSince`/`.daysUntil`)
+    are BOTH a leaf value and a parent of derived sub-facts."""
+    _seed_thread(session_factory, messages=[])
+    channel_id = _channel_id(session_factory)
+    db = session_factory()
+    try:
+        wf = _publish(db, "omnichannel.conversation_opened", {})
+        wf_id = wf.id
+    finally:
+        db.close()
+
+    _process(session_factory, channel_id, _wa_payload(wamid="wamid.trace-1", from_="60111000112", text="hi"))
+    db = session_factory()
+    try:
+        runs = _runs_for(db, wf_id)
+        assert len(runs) == 1
+        assert runs[0].status == RUN_SUCCESS
+        trigger_node = next(
+            n for n in runs[0].nodes if n.node_type == "omnichannel.conversation_opened"
+        )
+        output = trigger_node.output_json
+        assert output["contact"]["phone"] == "+60111000112"
+        assert output["conversationId"]
+        assert output["workspaceId"]
+        assert output["isReopen"] is False
+        assert output["channelId"] == channel_id
+        # The rule-engine fact surface is a SEPARATE picker group - excluded
+        # from the trigger's own captured-event output (and the very source
+        # of the leaf/branch collision this test guards against).
+        assert "record" not in output
+    finally:
+        db.close()
+
+
+def test_workflow_trigger_child_run_trigger_node_captures_chain_context(session_factory):
+    """A `workflow.trigger`-started child run's trigger node exposes
+    `source`/`parentRunId`/`contactId` (plan 31 S3, AC-WFP-38) - the SAME
+    generic reconstruction that omnichannel triggers use, proving it is not
+    an omnichannel-only special case."""
+    from app.workflow_engine.actions.workflow_trigger_actions import workflow_trigger
+    from app.workflow_engine.executor import _ctx_from_payload
+
+    _seed_thread(session_factory, messages=[])
+    db = session_factory()
+    try:
+        child_wf = _publish(db, "manual", {})
+        child_id = child_wf.id
+        parent_run = WorkflowRun(
+            id="run-parent-1",
+            workflow_id="wf-parent-1",
+            version_id=None,
+            version_number=0,
+            status=RUN_SUCCESS,
+            triggered_by="event",
+            tenant_id=DEFAULT_TENANT_ID,
+            trigger_payload_json={},
+            definition_snapshot_json={"schemaVersion": 2, "nodes": [], "edges": []},
+            depth=0,
+        )
+        db.add(parent_run)
+        db.commit()
+        parent_run_id = parent_run.id
+        ctx = {"_workflow.runId": parent_run_id, "_workflow.workflowId": "wf-parent-1"}
+        result = workflow_trigger(db, DEFAULT_TENANT_ID, {"workflowId": child_id}, ctx)
+        child_run_id = result["runId"]
+    finally:
+        db.close()
+
+    db = session_factory()
+    try:
+        child_run = db.query(WorkflowRun).filter(WorkflowRun.id == child_run_id).one()
+        child_ctx = _ctx_from_payload(child_run.trigger_payload_json)
+        assert child_ctx["trigger.source"] == "workflow"
+        assert child_ctx["trigger.parentRunId"] == parent_run_id
+        trigger_node = next(n for n in child_run.nodes if n.node_type == "manual")
+        output = trigger_node.output_json
+        assert output["source"] == "workflow"
+        assert output["parentRunId"] == parent_run_id
+    finally:
+        db.close()
+
+
 def test_conversation_opened_reopen_only_filter(session_factory):
     _seed_thread(session_factory, messages=[])
     channel_id = _channel_id(session_factory)
@@ -853,6 +940,8 @@ def test_publish_denormalizes_trigger_entity_type_unpublish_clears(session_facto
 # ── AC-WFP-21: GET /workflows/metadata omnichannelWorkspaces ────────────────
 def test_metadata_returns_omnichannel_workspaces(session_factory):
     from modules.omnichannel.models import CloseReason, ContactField, ContactTag, Workspace
+    from modules.omnichannel.services import lifecycle_service
+    from app.models.status import Status as CoreStatus
 
     db = session_factory()
     try:
@@ -860,14 +949,28 @@ def test_metadata_returns_omnichannel_workspaces(session_factory):
         db.add(ContactTag(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, name="VIP"))
         db.add(ContactField(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, key="plan", label="Plan", type="text"))
         db.add(CloseReason(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, name="Resolved"))
+        db.add(
+            CoreStatus(
+                tenant_id=DEFAULT_TENANT_ID,
+                entity_type=lifecycle_service.ENTITY_TYPE,
+                scope_id=ws.id,
+                key="qualified",
+                label="Qualified",
+                color="#000000",
+                sort_order=0,
+            )
+        )
         db.commit()
         metadata = WorkflowService(db).metadata(DEFAULT_TENANT_ID)
         assert "omnichannelWorkspaces" in metadata
         found = next(w for w in metadata["omnichannelWorkspaces"] if w["id"] == ws.id)
         assert any(t["name"] == "VIP" for t in found["contactTags"])
-        assert any(f["key"] == "plan" for f in found["contactFields"])
+        assert any(f["key"] == "plan" and f["type"] == "text" for f in found["contactFields"])
         assert any(r["name"] == "Resolved" for r in found["closeReasons"])
-        assert "members" in found and "lifecycleStages" in found
+        # `name` (not `label`) - matches the sibling arrays + the frontend
+        # `WorkflowOmnichannelWorkspace.lifecycleStages` contract (S3 drift fix).
+        assert any(s["name"] == "Qualified" for s in found["lifecycleStages"])
+        assert "members" in found
     finally:
         db.close()
 

@@ -126,6 +126,7 @@ export function useWorkflowForm(
   canManage: boolean,
   debugRunId?: string,
   canCode = true,
+  canHttp = true,
 ): UseWorkflowFormResult {
   const router = useRouter();
   const actions = useWorkflowActions();
@@ -268,7 +269,7 @@ export function useWorkflowForm(
       toast.error('Name is required.');
       return false;
     }
-    const definitionIssue = validateDefinition(docRef.current, metadata).find(
+    const definitionIssue = validateDefinition(docRef.current, metadata, workflowId).find(
       (issue) => issue.level === 'error',
     );
     if (definitionIssue) {
@@ -315,7 +316,7 @@ export function useWorkflowForm(
 
   const onPublish = useCallback(async () => {
     if (!workflowId) return;
-    const definitionIssue = validateDefinition(docRef.current, metadata).find(
+    const definitionIssue = validateDefinition(docRef.current, metadata, workflowId).find(
       (issue) => issue.level === 'error',
     );
     if (definitionIssue) {
@@ -326,6 +327,7 @@ export function useWorkflowForm(
       { ...(workflow ?? blankWorkflow()), draftDefinition: docRef.current },
       metadata,
       canCode,
+      canHttp,
     );
     if (publishIssue) {
       toast.error(publishIssue);
@@ -345,7 +347,7 @@ export function useWorkflowForm(
     } finally {
       setBusy(false);
     }
-  }, [canCode, workflowId, docDirty, metadata, onSave, refresh, workflow]);
+  }, [canCode, canHttp, workflowId, docDirty, metadata, onSave, refresh, workflow]);
 
   const onUnpublish = useCallback(async () => {
     if (!workflowId) return;
@@ -424,6 +426,15 @@ export function useWorkflowForm(
         );
         return;
       }
+      if (
+        !canHttp &&
+        docRef.current.nodes.some((node) => node.type === 'http.request')
+      ) {
+        toast.error(
+          'You need the workflows.http permission to run HTTP request nodes.',
+        );
+        return;
+      }
       setBusy(true);
       try {
         if (docDirty) {
@@ -440,7 +451,7 @@ export function useWorkflowForm(
         setBusy(false);
       }
     },
-    [canCode, workflowId, docDirty, onSave],
+    [canCode, canHttp, workflowId, docDirty, onSave],
   );
 
   const loadTestOptions = useCallback(async () => {
@@ -516,6 +527,15 @@ export function useWorkflowForm(
         );
         return;
       }
+      if (
+        !canHttp &&
+        docRef.current.nodes.some((node) => node.type === 'http.request')
+      ) {
+        toast.error(
+          'You need the workflows.http permission to run HTTP request nodes.',
+        );
+        return;
+      }
       setDebugBusy(true);
       try {
         const result = await workflowService.debugExecute(workflowId, {
@@ -542,7 +562,7 @@ export function useWorkflowForm(
         setDebugBusy(false);
       }
     },
-    [canCode, workflowId, debugRunId],
+    [canCode, canHttp, workflowId, debugRunId],
   );
 
   const onExecuteAll = useCallback(() => {
@@ -623,6 +643,7 @@ export function useWorkflowForm(
                 templateOptions={templateOptions}
                 metadata={metadata}
                 canCode={canCode}
+                canHttp={canHttp}
                 busy={busy}
                 onPublish={onPublish}
                 onUnpublish={onUnpublish}
@@ -717,6 +738,7 @@ export function useWorkflowForm(
     busy,
     canManage,
     canCode,
+    canHttp,
     debugBundle,
     debugInEditor,
     doc,

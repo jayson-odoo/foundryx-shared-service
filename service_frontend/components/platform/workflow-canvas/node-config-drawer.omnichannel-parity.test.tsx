@@ -317,4 +317,31 @@ describe('NodeConfigDrawer - show_when clears hidden dependents (AC-WFP-04)', ()
     await user.click(screen.getByLabelText('Workflow'));
     expect(screen.getByText('Onboarding')).toBeInTheDocument();
   });
+
+  it('excludes the workflow being edited from the workflowRef picker (plan 31 S3, AC-WFP-33 parity)', async () => {
+    const user = userEvent.setup();
+    const { doc, node } = docWith('workflow.trigger');
+    const metadataWithSelf: WorkflowMetadata = {
+      ...METADATA,
+      workflows: [
+        { id: 'wf-1', name: 'Onboarding' },
+        { id: 'wf-self', name: 'This workflow' },
+      ],
+    };
+    render(
+      <NodeConfigDrawer
+        node={node}
+        doc={doc}
+        editing
+        templateOptions={[]}
+        metadata={metadataWithSelf}
+        onConfigChange={vi.fn()}
+        onDelete={vi.fn()}
+        currentWorkflowId="wf-self"
+      />,
+    );
+    await user.click(screen.getByLabelText('Workflow'));
+    expect(screen.getByText('Onboarding')).toBeInTheDocument();
+    expect(screen.queryByText('This workflow')).not.toBeInTheDocument();
+  });
 });

@@ -15,7 +15,13 @@
 import { useMemo, useState } from 'react';
 import { useDraggable } from '@dnd-kit/core';
 import { ChevronDown, Search, Zap } from 'lucide-react';
-import { ACTION_CATALOG, IF_CATALOG, TRIGGER_CATALOG } from '@/lib/workflow-catalog';
+import {
+  ACTION_CATALOG,
+  IF_CATALOG,
+  TRIGGER_CATALOG,
+  deniedNodePermissions,
+  isPermissionDenied,
+} from '@/lib/workflow-catalog';
 import { cn } from '@/lib/utils';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { Input } from '@/components/ui/input';
@@ -98,13 +104,25 @@ export interface NodePaletteProps {
   onAdd: (type: string) => void;
   /** Permission snapshot supplied by the page. Defaults true for isolated UI use. */
   canCode?: boolean;
+  /** Gates the HTTP request node (`workflows.http`), same as `canCode`. */
+  canHttp?: boolean;
 }
 
-export function NodePalette({ hasTrigger, disabled, onAdd, canCode = true }: NodePaletteProps) {
+export function NodePalette({
+  hasTrigger,
+  disabled,
+  onAdd,
+  canCode = true,
+  canHttp = true,
+}: NodePaletteProps) {
   const [query, setQuery] = useState('');
   // Sections collapsed by default - the catalog is long; expand on click/search.
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const { isActive } = useInstalledModules();
+  const denied = useMemo(
+    () => deniedNodePermissions({ code: canCode, http: canHttp }),
+    [canCode, canHttp],
+  );
 
   // Logic = the IF node + any action catalogued under the "Logic" category
   // (Wait, Business hours - D-A5-19) - flow-control actions live with the
@@ -170,7 +188,7 @@ export function NodePalette({ hasTrigger, disabled, onAdd, canCode = true }: Nod
                     disabled={
                       disabled ||
                       (section.itemsDisabled ?? false) ||
-                      (entry.kind === 'action' && entry.permission === 'workflows.code' ? !canCode : false)
+                      isPermissionDenied(entry, denied)
                     }
                   onAdd={onAdd}
                 />
