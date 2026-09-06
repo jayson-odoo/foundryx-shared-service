@@ -1,21 +1,27 @@
 'use client';
 
 /**
- * "Manage segments" dialog (AC-CTM-06, amended 2026-09-06 review round 1) -
- * rename, edit filter, delete for the workspace's saved segments. Reuses the
- * SAME `FilterBuilder` the Filters button opens (seeded via `initialValue`)
- * so there is exactly one filter-tree editor in the system.
+ * "Manage segments" dialog (AC-CTM-06, amended 2026-09-06 review rounds 1+2)
+ * - rename, edit filter, delete for the workspace's saved segments. Reuses
+ * the SAME `FilterBuilder` the Filters button opens (seeded via
+ * `initialValue`) so there is exactly one filter-tree editor in the system.
  *
  * Delete rides the CORE grace-window engine (`contact_segments.delete`,
  * `deferred_actions.py`) - no confirmation dialog (a hand-rolled destructive
  * `AlertDialog` here was a design-language hard-fail on review; every other
  * destructive action in this module already went through the deferred
- * engine). `useDeferredAction` parks the delete server-side and a toast-
- * hosted countdown (`deferredToast`, the SAME affordance a list row's "…"
- * menu uses) replaces the confirm step - Cancel withdraws it while the
- * window is open.
+ * engine). A toast-hosted countdown (`deferredToast`, the SAME affordance a
+ * list row's "…" menu uses) replaces the confirm step - Cancel withdraws it
+ * while the window is open.
+ *
+ * Review round 2: the delete controller (ONE `useDeferredAction`, one
+ * countdown at a time) is now owned by the PAGE
+ * (`use-segment-delete-controller.ts`), not this dialog - see that file's
+ * header for why. This component only renders each segment as its own
+ * `SegmentRow` and disables every row's Delete button except the one
+ * actually counting down.
  */
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { Filter, Pencil, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
@@ -31,9 +37,6 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { ApiError } from '@/lib/api-client';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { FilterBuilder } from '@/components/platform/resource-list/filter-builder';
-import { deferredToast, dismissDeferredToast } from '@/components/platform/resource-actions/deferred-toast';
-import { useDeferredAction } from '@/hooks/use-deferred-action';
-import { deferredDoneMessage, presentContinuous } from '@/lib/deferred-verb';
 import type { FilterFieldDef } from '@/types/resource';
 import type { ContactSegment } from '@/types/omnichannel';
 
@@ -44,17 +47,114 @@ export interface ManageSegmentsDialogProps {
   filterFields: FilterFieldDef[];
   onRename: (id: string, name: string) => Promise<unknown>;
   onEditFilter: (id: string, filter: import('@/types/resource').FilterGroup | null) => Promise<unknown>;
-  /** Called once the grace-window delete actually commits server-side - the
-   * dialog owns the whole park/cancel/commit lifecycle itself, the caller
-   * only needs to refresh its own segment list. */
-  onDeleted?: () => void;
+  /** The segment currently parked for delete (from the page-level
+   * `useSegmentDeleteController`) - every OTHER row's Delete button disables
+   * while this is set (one countdown at a time). */
+  deletingId: string | null;
+  /** Starts the grace-window delete for a row - owned by the caller so the
+   * countdown survives this dialog closing (review round 2, should-fix 4). */
+  onDelete: (segment: ContactSegment) => void;
 }
 
-const DELETE_LABEL = 'Delete';
-const ENTITY_TYPE = 'contact_segment';
+interface SegmentRowProps {
+  segment: ContactSegment;
+  filterFields: FilterFieldDef[];
+  isDeleting: boolean;
+  /** Another row's delete is counting down - THIS row's Delete disables too
+   * (review round 2, blocker 2: one countdown at a time). */
+  deleteDisabled: boolean;
+  onRename: (segment: ContactSegment) => void;
+  renaming: boolean;
+  renameValue: string;
+  onRenameValueChange: (value: string) => void;
+  onRenameCommit: () => void;
+  onRenameCancel: () => void;
+  renameBusy: boolean;
+  onEditFilter: (filter: import('@/types/resource').FilterGroup | null) => void;
+  onDelete: () => void;
+}
 
-function toastIdFor(segmentId: string): string {
-  return `contact-segment-delete-${segmentId}`;
+function SegmentRow({
+  segment,
+  filterFields,
+  isDeleting,
+  deleteDisabled,
+  onRename,
+  renaming,
+  renameValue,
+  onRenameValueChange,
+  onRenameCommit,
+  onRenameCancel,
+  renameBusy,
+  onEditFilter,
+  onDelete,
+}: SegmentRowProps) {
+  return (
+    <div
+      data-pending={isDeleting ? 'true' : undefined}
+      className="flex items-center gap-2 rounded-md border border-border p-2.5 data-[pending=true]:opacity-50"
+    >
+      {renaming ? (
+        <Input
+          autoFocus
+          value={renameValue}
+          onChange={(e) => onRenameValueChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onRenameCommit();
+            if (e.key === 'Escape') onRenameCancel();
+          }}
+          onBlur={onRenameCommit}
+          disabled={renameBusy}
+          className="h-8 flex-1"
+        />
+      ) : (
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <ClampedText text={segment.name} lines={1} className="text-sm font-medium" />
+          {segment.description && (
+            <ClampedText text={segment.description} lines={1} className="text-xs text-muted-foreground" />
+          )}
+        </div>
+      )}
+
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            mode="icon"
+            aria-label={`Edit ${segment.name} filter`}
+            disabled={isDeleting}
+          >
+            <Filter className="size-4" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-auto p-3">
+          <FilterBuilder fields={filterFields} initialValue={segment.filter} onApply={onEditFilter} />
+        </PopoverContent>
+      </Popover>
+
+      <Button
+        variant="ghost"
+        size="sm"
+        mode="icon"
+        aria-label={`Rename ${segment.name}`}
+        onClick={() => onRename(segment)}
+        disabled={isDeleting}
+      >
+        <Pencil className="size-4" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        mode="icon"
+        aria-label={`Delete ${segment.name}`}
+        onClick={onDelete}
+        disabled={deleteDisabled}
+      >
+        <Trash2 className="size-4 text-destructive" />
+      </Button>
+    </div>
+  );
 }
 
 export function ManageSegmentsDialog({
@@ -64,16 +164,12 @@ export function ManageSegmentsDialog({
   filterFields,
   onRename,
   onEditFilter,
-  onDeleted,
+  deletingId,
+  onDelete,
 }: ManageSegmentsDialogProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  // Read from callbacks that outlive any single render (mirrors ActionMenu's
-  // own `activeRef` - `deletingId` state would otherwise be a stale closure
-  // inside `useDeferredAction`'s commit/fail/cancel handlers).
-  const activeRef = useRef<{ id: string } | null>(null);
 
   const startRename = (segment: ContactSegment) => {
     setRenamingId(segment.id);
@@ -103,50 +199,6 @@ export function ManageSegmentsDialog({
     }
   };
 
-  const settleDelete = () => {
-    const active = activeRef.current;
-    activeRef.current = null;
-    if (active) dismissDeferredToast(toastIdFor(active.id));
-    setDeletingId(null);
-  };
-
-  const deferred = useDeferredAction({
-    onCommitted: () => {
-      settleDelete();
-      toast.success(deferredDoneMessage(DELETE_LABEL, ENTITY_TYPE, 1));
-      onDeleted?.();
-    },
-    onFailed: (error) => {
-      settleDelete();
-      toast.error(error || 'Could not delete the segment.');
-    },
-    onCancelledElsewhere: settleDelete,
-  });
-
-  const handleDelete = async (segment: ContactSegment) => {
-    setDeletingId(segment.id);
-    try {
-      const { commitAt, windowSeconds } = await deferred.start('contact_segments.delete', {
-        entityType: ENTITY_TYPE,
-        entityId: segment.id,
-      });
-      activeRef.current = { id: segment.id };
-      deferredToast({
-        id: toastIdFor(segment.id),
-        verb: presentContinuous(DELETE_LABEL),
-        commitAt,
-        windowSeconds,
-        onCancel: () => {
-          void deferred.cancel();
-          settleDelete();
-        },
-      });
-    } catch (error) {
-      setDeletingId(null);
-      toast.error(error instanceof Error ? error.message : 'Could not delete the segment.');
-    }
-  };
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
@@ -158,84 +210,24 @@ export function ManageSegmentsDialog({
             <p className="py-6 text-center text-sm text-muted-foreground">No saved segments yet.</p>
           ) : (
             <div className="flex max-h-[50vh] flex-col gap-2 overflow-y-auto">
-              {segments.map((segment) => {
-                const isDeleting = deletingId === segment.id;
-                return (
-                  <div
-                    key={segment.id}
-                    data-pending={isDeleting ? 'true' : undefined}
-                    className="flex items-center gap-2 rounded-md border border-border p-2.5 data-[pending=true]:opacity-50"
-                  >
-                    {renamingId === segment.id ? (
-                      <Input
-                        autoFocus
-                        value={renameValue}
-                        onChange={(e) => setRenameValue(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') void commitRename(segment.id);
-                          if (e.key === 'Escape') setRenamingId(null);
-                        }}
-                        onBlur={() => void commitRename(segment.id)}
-                        disabled={busyId === segment.id}
-                        className="h-8 flex-1"
-                      />
-                    ) : (
-                      <div className="flex flex-1 flex-col overflow-hidden">
-                        <ClampedText text={segment.name} lines={1} className="text-sm font-medium" />
-                        {segment.description && (
-                          <ClampedText
-                            text={segment.description}
-                            lines={1}
-                            className="text-xs text-muted-foreground"
-                          />
-                        )}
-                      </div>
-                    )}
-
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          mode="icon"
-                          aria-label={`Edit ${segment.name} filter`}
-                          disabled={isDeleting}
-                        >
-                          <Filter className="size-4" />
-                        </Button>
-                      </PopoverTrigger>
-                      <PopoverContent align="end" className="w-auto p-3">
-                        <FilterBuilder
-                          fields={filterFields}
-                          initialValue={segment.filter}
-                          onApply={(g) => void onEditFilter(segment.id, g)}
-                        />
-                      </PopoverContent>
-                    </Popover>
-
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      mode="icon"
-                      aria-label={`Rename ${segment.name}`}
-                      onClick={() => startRename(segment)}
-                      disabled={isDeleting}
-                    >
-                      <Pencil className="size-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      mode="icon"
-                      aria-label={`Delete ${segment.name}`}
-                      onClick={() => void handleDelete(segment)}
-                      disabled={isDeleting}
-                    >
-                      <Trash2 className="size-4 text-destructive" />
-                    </Button>
-                  </div>
-                );
-              })}
+              {segments.map((segment) => (
+                <SegmentRow
+                  key={segment.id}
+                  segment={segment}
+                  filterFields={filterFields}
+                  isDeleting={deletingId === segment.id}
+                  deleteDisabled={deletingId !== null}
+                  renaming={renamingId === segment.id}
+                  renameValue={renameValue}
+                  renameBusy={busyId === segment.id}
+                  onRename={startRename}
+                  onRenameValueChange={setRenameValue}
+                  onRenameCommit={() => void commitRename(segment.id)}
+                  onRenameCancel={() => setRenamingId(null)}
+                  onEditFilter={(g) => void onEditFilter(segment.id, g)}
+                  onDelete={() => onDelete(segment)}
+                />
+              ))}
             </div>
           )}
         </DialogBody>

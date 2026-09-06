@@ -61,7 +61,30 @@ _COLUMN_LABELS: Dict[str, str] = {
     "lastMessageAt": "Last message",
     "createdAt": "Created",
 }
-assert set(_COLUMN_LABELS) == EXPORT_COLUMN_IDS  # ONE whitelist (`schemas.py`), never forked
+# The `_COLUMN_LABELS == EXPORT_COLUMN_IDS` invariant (ONE whitelist,
+# `schemas.py`, never forked) is asserted by
+# `tests/test_omnichannel_contacts_import_export.py
+# test_column_labels_cover_every_export_column_id` (review round 2, nit 6) -
+# a bare module-level `assert` only runs once, at IMPORT time, so a failure
+# there reads as an opaque `ImportError` wherever this module happens to
+# first get imported rather than a clear pytest failure with a real name.
+
+
+def _column_header(col: str, cf_labels: Dict[str, str]) -> str:
+    """The CSV header text for one export column (review round 2, nit 7):
+    a `customFields.<key>` column used to fall back to its raw wire id
+    (`customFields.<key>`) when no static label existed, which auto-mapping
+    on re-import (`ImportService.preview`'s `by_norm`) can never match - it
+    matches on the registered field's LABEL or the importer's OWN `cf_<key>`
+    key, neither of which is `customFields.<key>`. Using the field's label
+    here makes the label-based auto-map actually work; a since-deleted field
+    (no longer in `cf_labels`) still falls back to the raw id rather than a
+    blank header."""
+    if col in _COLUMN_LABELS:
+        return _COLUMN_LABELS[col]
+    if col.startswith("customFields."):
+        return cf_labels.get(col.split(".", 1)[1], col)
+    return col
 
 
 class ExportRowCapExceeded(Exception):
@@ -253,9 +276,11 @@ def run_contacts_export(db: Session, job: BackgroundJob) -> None:
     total = query.count()
     service.set_total(job, total)
 
+    cf_labels = {f.key: f.label for f in ContactFieldService(db).list(workspace_id, tenant_id)}
+
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow([sanitize_cell(_COLUMN_LABELS.get(c, c)) for c in columns])
+    writer.writerow([sanitize_cell(_column_header(c, cf_labels)) for c in columns])
 
     repo = list_service.repo
     tags_svc = ContactTagService(db)

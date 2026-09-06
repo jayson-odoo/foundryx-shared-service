@@ -250,6 +250,29 @@ def test_contact_segments_delete(db):
     assert db.get(ContactSegment, segment.id) is None
 
 
+def test_contact_segments_cancel_within_the_window_leaves_the_row_intact(db):
+    """Review round 2, nit 11: the server side of blocker 2/should-fix 4's
+    fix - Cancel arriving WHILE the window is still open must not commit,
+    and the segment must still exist afterward (the frontend
+    `use-segment-delete-controller.ts` calls this exact endpoint from the
+    countdown toast's Cancel button)."""
+    ws_id = _default_workspace_id(db)
+    admin = _admin(db)
+    segment = _make_contact_segment(db, ws_id, name="Cancel me")
+    svc = PendingActionService(db)
+
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key="contact_segments.delete", entity_type="contact_segment", entity_id=segment.id,
+    )
+    cancelled = svc.cancel(DEFAULT_TENANT_ID, row.id, admin)
+    assert cancelled.status == "cancelled"
+
+    from modules.omnichannel.models import ContactSegment
+
+    assert db.get(ContactSegment, segment.id) is not None  # never deleted
+
+
 def test_contact_segments_missing_target_404_at_park(client):
     h = _auth(client)
     res = client.post(

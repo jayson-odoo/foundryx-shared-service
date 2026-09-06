@@ -41,6 +41,12 @@ const ALLOWED_DIRECT_IMPORTERS = new Set([
   // `vi.mock('sonner', () => ...)` factory instead, so none of them import
   // 'sonner' as a statement and none needs a slot here.
   'components/platform/branding/branding.test.tsx',
+  // `sonner.pointer-events.test.tsx` (plan 26 review round 2, blocker 1)
+  // deliberately exercises the REAL `<Toaster>` + REAL sonner `toast.custom`
+  // end to end (a mocked sonner has no CSS/DOM to assert the actual
+  // pointer-events fix against) - the one case where mocking sonner would
+  // defeat the test's entire purpose.
+  'components/ui/sonner.pointer-events.test.tsx',
 ]);
 
 /** Every `.ts`/`.tsx` under the app, tests included - a mock is a call site too. */

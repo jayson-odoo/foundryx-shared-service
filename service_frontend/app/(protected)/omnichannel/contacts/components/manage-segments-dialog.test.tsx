@@ -1,47 +1,28 @@
 /**
  * "Manage segments" dialog (D-A2-3, AC-CTM-06/47, amended 2026-09-06 review
- * round 1). The filter-edit popover reuses the SAME `FilterBuilder` the
+ * rounds 1+2). The filter-edit popover reuses the SAME `FilterBuilder` the
  * list's Filters button opens, seeded via `initialValue` (plan §"one
  * filter-tree editor in the system"). Applying without changing anything
  * must round-trip the EXACT saved tree back out - a silent reshape here
- * would corrupt a segment nobody touched. Also covers rename + delete
- * (permission-gated by the caller, `segments.manage`, see `page.tsx`).
+ * would corrupt a segment nobody touched. Also covers rename + the delete
+ * button's disabled state (permission-gated by the caller, `segments.manage`,
+ * see `page.tsx`).
  *
- * Delete no longer opens an `AlertDialog` (a design-language hard-fail) - it
- * parks on the CORE grace-window engine (`contact_segments.delete`) via
- * `useDeferredAction`, same as every other destructive action in this
- * module.
+ * Delete no longer opens an `AlertDialog` (a design-language hard-fail) and,
+ * since review round 2, this dialog no longer owns the deferred-action
+ * lifecycle itself - `use-segment-delete-controller.test.ts` covers the
+ * actual park/cancel/commit behaviour (moved to the PAGE so a countdown
+ * survives the dialog closing, should-fix 4). This file only asserts the
+ * dialog's OWN contract: `onDelete` fires with the clicked row, and every
+ * OTHER row's Delete button disables while `deletingId` names one segment
+ * (review round 2, blocker 2 - one countdown at a time).
  */
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { FilterGroup } from '@/types/resource';
 import type { ContactSegment } from '@/types/omnichannel';
 import { ManageSegmentsDialog } from './manage-segments-dialog';
-
-const park = vi.fn();
-const cancelPark = vi.fn();
-const current = vi.fn();
-vi.mock('@/services/pending-actions-service', () => ({
-  pendingActionsService: {
-    park: (...a: unknown[]) => park(...a),
-    cancel: (...a: unknown[]) => cancelPark(...a),
-    current: (...a: unknown[]) => current(...a),
-  },
-}));
-
-const toastCustom = vi.fn(() => 'toast-id-1');
-const toastDismiss = vi.fn();
-const toastSuccess = vi.fn();
-const toastError = vi.fn();
-vi.mock('sonner', () => ({
-  toast: {
-    custom: (...a: unknown[]) => toastCustom(...a),
-    dismiss: (...a: unknown[]) => toastDismiss(...a),
-    success: (...a: unknown[]) => toastSuccess(...a),
-    error: (...a: unknown[]) => toastError(...a),
-  },
-}));
 
 const FILTER: FilterGroup = {
   kind: 'group',
@@ -55,6 +36,16 @@ const SEGMENT: ContactSegment = {
   name: 'Urgent & high priority',
   description: 'Contacts flagged HIGH or URGENT.',
   filter: FILTER,
+  createdAt: '2026-01-01T00:00:00Z',
+  updatedAt: '2026-01-01T00:00:00Z',
+};
+
+const SEGMENT_2: ContactSegment = {
+  id: 'seg-2',
+  workspaceId: 'wsp-1',
+  name: 'VIP contacts',
+  description: null,
+  filter: { kind: 'group', combinator: 'and', rules: [] },
   createdAt: '2026-01-01T00:00:00Z',
   updatedAt: '2026-01-01T00:00:00Z',
 };
@@ -73,11 +64,6 @@ const FIELDS = [
   },
 ];
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  current.mockResolvedValue({ pending: null, lastOutcome: null });
-});
-
 describe('ManageSegmentsDialog', () => {
   it('round-trips the saved FilterGroup unchanged when Apply is clicked with no edits', async () => {
     const user = userEvent.setup();
@@ -90,6 +76,8 @@ describe('ManageSegmentsDialog', () => {
         filterFields={FIELDS}
         onRename={vi.fn()}
         onEditFilter={onEditFilter}
+        deletingId={null}
+        onDelete={vi.fn()}
       />,
     );
 
@@ -110,6 +98,8 @@ describe('ManageSegmentsDialog', () => {
         filterFields={FIELDS}
         onRename={onRename}
         onEditFilter={vi.fn()}
+        deletingId={null}
+        onDelete={vi.fn()}
       />,
     );
 
@@ -121,14 +111,9 @@ describe('ManageSegmentsDialog', () => {
     await waitFor(() => expect(onRename).toHaveBeenCalledWith(SEGMENT.id, 'VIP contacts'));
   });
 
-  it('deletes via the grace-window engine - NO confirm dialog', async () => {
+  it('starts a delete via onDelete - NO confirm dialog', async () => {
     const user = userEvent.setup();
-    const onDeleted = vi.fn();
-    park.mockResolvedValue({
-      id: 'pa1',
-      commitAt: new Date(Date.now() + 10_000).toISOString(),
-      windowSeconds: 10,
-    });
+    const onDelete = vi.fn();
     render(
       <ManageSegmentsDialog
         open
@@ -137,7 +122,8 @@ describe('ManageSegmentsDialog', () => {
         filterFields={FIELDS}
         onRename={vi.fn()}
         onEditFilter={vi.fn()}
-        onDeleted={onDeleted}
+        deletingId={null}
+        onDelete={onDelete}
       />,
     );
 
@@ -146,12 +132,54 @@ describe('ManageSegmentsDialog', () => {
     // No AlertDialog anywhere - the grace window IS the confirmation.
     expect(screen.queryByText(/cannot be undone/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(onDelete).toHaveBeenCalledWith(SEGMENT);
+  });
 
-    await waitFor(() =>
-      expect(park).toHaveBeenCalledWith('contact_segments.delete', 'contact_segment', SEGMENT.id, undefined),
+  it('disables every OTHER row Delete while one segment is counting down (review round 2, blocker 2)', () => {
+    render(
+      <ManageSegmentsDialog
+        open
+        onOpenChange={vi.fn()}
+        segments={[SEGMENT, SEGMENT_2]}
+        filterFields={FIELDS}
+        onRename={vi.fn()}
+        onEditFilter={vi.fn()}
+        deletingId={SEGMENT.id}
+        onDelete={vi.fn()}
+      />,
     );
-    // The countdown toast rendered (mirrors every other row-surface deferred
-    // delete in this module).
-    expect(toastCustom).toHaveBeenCalled();
+
+    expect(screen.getByRole('button', { name: `Delete ${SEGMENT.name}` })).toBeDisabled();
+    expect(screen.getByRole('button', { name: `Delete ${SEGMENT_2.name}` })).toBeDisabled();
+  });
+
+  it('re-enables every row once the countdown settles (deletingId back to null)', () => {
+    const { rerender } = render(
+      <ManageSegmentsDialog
+        open
+        onOpenChange={vi.fn()}
+        segments={[SEGMENT, SEGMENT_2]}
+        filterFields={FIELDS}
+        onRename={vi.fn()}
+        onEditFilter={vi.fn()}
+        deletingId={SEGMENT.id}
+        onDelete={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: `Delete ${SEGMENT_2.name}` })).toBeDisabled();
+
+    rerender(
+      <ManageSegmentsDialog
+        open
+        onOpenChange={vi.fn()}
+        segments={[SEGMENT, SEGMENT_2]}
+        filterFields={FIELDS}
+        onRename={vi.fn()}
+        onEditFilter={vi.fn()}
+        deletingId={null}
+        onDelete={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('button', { name: `Delete ${SEGMENT_2.name}` })).not.toBeDisabled();
   });
 });

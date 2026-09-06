@@ -208,11 +208,18 @@ def download_contacts_export(
     current_user: User = Depends(require_permission("contacts.export")),
     db: Session = Depends(get_db),
 ):
-    """Authed streaming download (D-A2-6b - never a bearer-less signed URL for
-    a CSV of an entire contact database). Uniform 404 unless the job belongs
-    to THIS caller's tenant AND workspace AND is of THIS type AND has finished
-    (AC-CTM-41) - never immutable-cached, CSP-sandboxed + nosniff (the PII-
-    egress precedent shared with the form-submission file route)."""
+    """Authed streaming download (D-A2-6b - reaching this route ALWAYS
+    requires the caller's bearer token + `contacts.export`; this is the
+    deviation from minting our OWN bearer-less capability URL, i.e.
+    `security.py signed_media_url`, for a CSV of an entire contact database).
+    Uniform 404 unless the job belongs to THIS caller's tenant AND workspace
+    AND is of THIS type AND has finished (AC-CTM-41) - never immutable-cached,
+    CSP-sandboxed + nosniff (the PII-egress precedent shared with the
+    form-submission file route). For an S3/R2-backed storage connection,
+    `resolve()` legitimately hands back a time-limited PRESIGNED url and this
+    route 307-redirects to it (the same pattern `documents.py` uses) - that
+    is Meta/AWS's own short-lived capability link, not ours, and getting here
+    at all still required the bearer + permission check above."""
     WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
     job = JobService(db).get(current_user.tenant_id, job_id)
     if (

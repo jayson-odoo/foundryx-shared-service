@@ -33,6 +33,7 @@ import { ManageSegmentsDialog } from './components/manage-segments-dialog';
 import { SaveSegmentDialog } from './components/save-segment-dialog';
 import { useContactActions } from './components/use-contact-actions';
 import { useContactsListConfig } from './components/use-contacts-list-config';
+import { useSegmentDeleteController } from './components/use-segment-delete-controller';
 
 interface PendingAction {
   rows: ContactListItem[];
@@ -61,6 +62,9 @@ export default function ContactsPage() {
   const { stages } = useContactLifecycleStages(workspaceId);
   const { members } = useWorkspaceMembers(workspaceId);
   const bulk = useContactBulk(workspaceId);
+  // Review round 2, should-fix 4: owned HERE (not inside the dialog) so the
+  // countdown/poll/refresh survives "Manage segments" closing mid-window.
+  const segmentDelete = useSegmentDeleteController(() => void refreshSegments());
 
   const [channelTypeOptions, setChannelTypeOptions] = useState<{ label: string; value: string }[]>([]);
   useEffect(() => {
@@ -184,7 +188,8 @@ export default function ContactsPage() {
           filterFields={config.filterFields}
           onRename={(id, name) => updateSegment(id, { name })}
           onEditFilter={(id, filter) => (filter ? updateSegment(id, { filter }) : Promise.resolve())}
-          onDeleted={() => void refreshSegments()}
+          deletingId={segmentDelete.deletingId}
+          onDelete={segmentDelete.startDelete}
         />
 
         <BulkAssignDialog

@@ -17,8 +17,16 @@ const Toaster = ({ ...props }: ToasterProps) => {
       className="group toaster [&_[data-type=success]>[data-icon]]:text-success [&_[data-type=success]_[data-title]]:text-success [&_[data-type=info]_[data-title]]:text-info [&_[data-type=error]>[data-icon]]:text-destructive [&_[data-type=error]_[data-title]]:text-destructive"
       toastOptions={{
         classNames: {
+          // `pointer-events-auto` (review round 2, blocker 1): a Radix
+          // `Dialog` is modal and sets `document.body.style.pointerEvents =
+          // "none"` on its dismissable layer while open - a toast's ancestor
+          // container inherits that, so its own children (e.g. this
+          // countdown's Cancel button) become unclickable underneath an open
+          // dialog UNLESS the toast opts itself back in explicitly. Every
+          // toast must stay clickable over any modal layer - fixed here,
+          // once, for every toast in the system rather than per-caller.
           toast:
-            'group toast group-[.toaster]:bg-background group-[.toaster]:text-foreground! group-[.toaster]:border-border group-[.toaster]:shadow-lg has-[[role=alert]]:border-0! has-[[role=alert]]:shadow-none! has-[[role=alert]]:bg-transparent!',
+            'group toast pointer-events-auto group-[.toaster]:bg-background group-[.toaster]:text-foreground! group-[.toaster]:border-border group-[.toaster]:shadow-lg has-[[role=alert]]:border-0! has-[[role=alert]]:shadow-none! has-[[role=alert]]:bg-transparent!',
           description: 'group-[.toast]:text-muted-foreground',
           actionButton: 'group-[.toast]:rounded-md! group-[.toast]:bg-primary group-[.toast]:text-primary-foreground!',
           cancelButton:

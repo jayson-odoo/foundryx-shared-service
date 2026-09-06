@@ -100,7 +100,6 @@ vi.mock('@/hooks/use-contact-segments', () => ({
     segments: SEGMENTS,
     create: vi.fn(),
     update: vi.fn(),
-    remove: vi.fn(),
     refresh: vi.fn(),
   }),
 }));
@@ -118,12 +117,12 @@ vi.mock('@/services/channel-service', () => ({
   channelService: { listByWorkspace: vi.fn().mockResolvedValue([]) },
 }));
 
-const listMock = vi.fn(
-  async (): Promise<ListResult<unknown>> => ({ data: [], total: 0, page: 0 }),
+const listMock = vi.fn<(workspaceId: string, query: ListQuery) => Promise<ListResult<unknown>>>(
+  async () => ({ data: [], total: 0, page: 0 }),
 );
 vi.mock('@/services/contact-service', () => ({
   contactService: {
-    list: (...args: unknown[]) => listMock(...(args as [string, ListQuery])),
+    list: (workspaceId: string, query: ListQuery) => listMock(workspaceId, query),
     exportContacts: vi.fn(),
   },
 }));

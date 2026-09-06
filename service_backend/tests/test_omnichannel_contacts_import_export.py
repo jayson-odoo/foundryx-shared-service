@@ -601,6 +601,42 @@ def test_export_columns_reject_unknown_id_and_cap(client, session_factory):
     assert res4.status_code == 201
 
 
+def test_column_labels_cover_every_export_column_id():
+    """Review round 2, nit 6: `_COLUMN_LABELS == EXPORT_COLUMN_IDS` used to
+    be a bare module-level `assert` in `contact_export_service.py` - it only
+    ran once, at IMPORT time, so a failure surfaced as an opaque
+    `ImportError` wherever the module happened to first get imported rather
+    than a named, re-runnable pytest failure. Moved here."""
+    from modules.omnichannel.schemas import EXPORT_COLUMN_IDS
+    from modules.omnichannel.services.contact_export_service import _COLUMN_LABELS
+
+    assert set(_COLUMN_LABELS) == EXPORT_COLUMN_IDS
+
+
+def test_export_custom_field_header_uses_the_field_label(client, session_factory):
+    """Review round 2, nit 7: a `customFields.<key>` export column's CSV
+    header is the registered field's LABEL, not the raw wire id
+    (`customFields.budget`) - the raw id can never auto-map on re-import
+    (`ImportService.preview`'s `by_norm` matches on the importer's OWN
+    `cf_<key>` key or the field's label, never `customFields.<key>`)."""
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    _seed_contact(session_factory, ws, first="A")
+    client.post(
+        f"{_base(ws)}/contact-fields", headers=h,
+        json={"key": "budget", "label": "Budget (MYR)", "type": "number"},
+    )
+
+    res = client.post(
+        f"{_base(ws)}/contacts/export", headers=h, json={"columns": ["name", "customFields.budget"]}
+    )
+    job_id = res.json()["jobId"]
+    download = client.get(f"{_base(ws)}/contacts/export/{job_id}/file", headers=h)
+    text = download.content.decode("utf-8-sig")
+    rows = list(csv.reader(io.StringIO(text)))
+    assert rows[0] == ["ID", "Name", "Budget (MYR)"]  # id ALWAYS first (AC-CTM-42)
+
+
 def test_export_row_cap_422(client, session_factory, monkeypatch):
     from modules.omnichannel.services import contact_export_service as svc
 
@@ -695,12 +731,18 @@ def test_export_sanitizes_formula_cells_and_round_trips_via_reimport(client, ses
     exact downloaded file must still resolve to the SAME digits
     (`_normalize_phone` strips non-digit characters, quote included). Tags
     export/import on the SAME `,` delimiter (promoted finding) - the full
-    tag set must survive the round-trip."""
+    tag set must survive the round-trip.
+
+    Review round 2, nit 8: `+VIP` (a tag NAME that itself starts with a
+    guarded prefix) round-trips too - `coerce_string`'s formula-guard strip
+    (`app/import_engine/coerce.py`) runs on the text column BEFORE the
+    comma-split, so only the cell's leading `'` (from `+VIP,Ops` being the
+    FIRST tag in the joined cell) is removed, not one per tag."""
     h = _auth(client)
     ws = _workspace_id(client, h)
     cid = _seed_contact(
         session_factory, ws, first="=2+5(evil)", last="+SUM(A1:A9)",
-        phone="+60 24-555 0001", tag_names=["VIP", "Ops"],
+        phone="+60 24-555 0001", tag_names=["+VIP", "Ops"],
     )
 
     res = client.post(
@@ -720,8 +762,9 @@ def test_export_sanitizes_formula_cells_and_round_trips_via_reimport(client, ses
     assert row[1] == "'=2+5(evil)"  # sanitized - literal text, never a formula
     assert row[2] == "'+SUM(A1:A9)"
     assert row[3].startswith("'+")  # every phone starts with `+` - always guarded
-    tag_set = set(row[4].split(","))
-    assert tag_set == {"VIP", "Ops"}
+    assert row[4] == "'+VIP,Ops"  # the joined cell's FIRST char (`+VIP`) triggers the guard
+    tag_set = set(row[4].lstrip("'").split(","))
+    assert tag_set == {"+VIP", "Ops"}
 
     # Re-import the EXACT downloaded file - `phone` is deliberately NEVER
     # rewritten by an update_only row (AC-CTM-37 - see `_update_contacts`), so
@@ -774,6 +817,11 @@ def test_export_sanitizes_formula_cells_and_round_trips_via_reimport(client, ses
     # the SAME number the ORIGINAL contact was seeded with.
     assert row_db.phone == "+60245550001"
     assert row_db.phone_digits == "60245550001"
+    # Nit 8: `coerce_string`'s formula-guard strip round-trips the EXACT
+    # original text for a plain string column too, not just phone's own
+    # digit-extraction transform.
+    assert row_db.first_name == "=2+5(evil)"
+    assert row_db.last_name == "+SUM(A1:A9)"
     tag_names = {
         t.name
         for t in db.query(ContactTag)
@@ -781,5 +829,5 @@ def test_export_sanitizes_formula_cells_and_round_trips_via_reimport(client, ses
         .filter(ContactTagLink.contact_id == new_id)
         .all()
     }
-    assert tag_names == {"VIP", "Ops"}  # the full tag set survives the round-trip
+    assert tag_names == {"+VIP", "Ops"}  # the full tag set, INCLUDING the guarded name, survives
     db.close()

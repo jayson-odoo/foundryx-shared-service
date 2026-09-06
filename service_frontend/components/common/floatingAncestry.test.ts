@@ -59,6 +59,22 @@ describe('focusIsInsideFloating', () => {
 
     content.remove();
   });
+
+  it('returns true for a click inside a sonner toast (plan 26 review round 2, blocker 1 follow-up)', () => {
+    const toaster = document.createElement('section');
+    toaster.setAttribute('data-sonner-toaster', '');
+    const toast = document.createElement('li');
+    toast.setAttribute('data-sonner-toast', '');
+    const cancelButton = document.createElement('button');
+    toast.appendChild(cancelButton);
+    toaster.appendChild(toast);
+    document.body.appendChild(toaster);
+
+    expect(focusIsInsideFloating(cancelButton)).toBe(true);
+    expect(focusIsInsideFloating(toast)).toBe(true);
+
+    toaster.remove();
+  });
 });
 
 describe('createOutsideInteractionGuard (T3 fix round 2 finding 5)', () => {
@@ -142,6 +158,23 @@ describe('createOutsideInteractionGuard (T3 fix round 2 finding 5)', () => {
 
     expect(event.defaultPrevented).toBe(true);
     menu.remove();
+  });
+
+  it('prevents a dialog from closing when the interaction target is inside a sonner toast (plan 26 review round 2, blocker 1 follow-up)', () => {
+    const toast = document.createElement('li');
+    toast.setAttribute('data-sonner-toast', '');
+    const cancelButton = document.createElement('button');
+    toast.appendChild(cancelButton);
+    document.body.appendChild(toast);
+
+    const mountedAtRef = { current: performance.now() - 10_000 };
+    const guard = createOutsideInteractionGuard(mountedAtRef);
+    const event = makeCustomEvent(cancelButton);
+
+    guard(event);
+
+    expect(event.defaultPrevented).toBe(true); // the dialog beneath it stays open
+    toast.remove();
   });
 
   it('mountedAtRef.current === 0 (unmounted content) never triggers the grace window', () => {

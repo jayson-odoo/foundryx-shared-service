@@ -90,7 +90,7 @@ describe('useContactActions', () => {
     );
     const reload = vi.fn();
     const rows = [row()];
-    result.current.find((a) => a.id === 'move-lifecycle')!.run(rows, { reload, ctx: undefined, index: 0 });
+    result.current.find((a) => a.id === 'move-lifecycle')!.run!(rows, { reload, ctx: undefined, index: 0 });
     expect(onMoveLifecycle).toHaveBeenCalledWith(rows, reload);
   });
 });

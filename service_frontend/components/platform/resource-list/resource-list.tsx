@@ -167,6 +167,20 @@ export function ResourceList<T extends object>({
   }, [list.filter, onFilterChange]);
 
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
+
+  // A segment can be deleted out from under the currently-selected view (e.g.
+  // "Manage segments" removes the one the list is showing) - fall back to the
+  // first configured segment rather than stranding the list on a 404 for an
+  // id that no longer exists. Generic for any N-way-segmented list, not just
+  // Contacts (plan 26 review round 2, should-fix 3).
+  const segmentIds = config.segments?.map((s) => s.id).join(' ');
+  useEffect(() => {
+    if (!config.segments || config.segments.length === 0) return;
+    if (list.segment && config.segments.some((s) => s.id === list.segment)) return;
+    setRowSelection({});
+    list.setSegment(config.segments[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- segmentIds is the stable dep for config.segments' identity; list.segment/list.setSegment are read fresh each run
+  }, [segmentIds, list.segment]);
   const [filterOpen, setFilterOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
 

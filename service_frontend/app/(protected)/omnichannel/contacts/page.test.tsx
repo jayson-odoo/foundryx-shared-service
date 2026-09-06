@@ -63,7 +63,6 @@ vi.mock('@/hooks/use-contact-segments', () => ({
     segments: SEGMENTS,
     create: vi.fn(),
     update: vi.fn(),
-    remove: vi.fn(),
     refresh: vi.fn(),
   }),
 }));

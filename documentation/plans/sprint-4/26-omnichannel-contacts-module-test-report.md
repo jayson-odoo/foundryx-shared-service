@@ -307,3 +307,229 @@ rebuilt `:8005`/`:3004`):**
 be cleaned up - the Contacts module ships no delete/merge/block action in this slice (D-A2-15), so
 it remains in the shared `default` tenant like the tester's own `CleanProbe`/`S4Smoke*` residue rows
 already did.
+
+---
+
+## Round 2 fixes (review round 2 - coder response)
+
+Commit: `fix(omnichannel): plan 26 review round 2 - clickable deferred toasts over
+modals, per-row segment delete controller, selected-segment fallback, dialog-close
+safety`. Lane: worktree `s26`, backend :8005 (`foundryx_service_s26`), frontend :3004.
+
+### Per-finding disposition
+
+- **Blocker 1 (countdown toast's Cancel unclickable over the open dialog) - FIXED,
+  globally.** `components/ui/sonner.tsx`'s `toastOptions.classNames.toast` gained
+  `pointer-events-auto` (a Radix `Dialog`'s dismissable layer sets
+  `document.body.style.pointerEvents = "none"` while open; sonner's toast portal
+  inherits that unless it opts back in). New test
+  `components/ui/sonner.pointer-events.test.tsx` renders the REAL `<Toaster>` + real
+  `sonner` `toast.custom` (allowlisted in `lib/toast.inventory.test.ts` +
+  `eslint.config.mjs`'s sonner-restriction override, mirroring the existing
+  `branding.test.tsx` precedent) and uses `@testing-library/user-event`'s built-in
+  pointer-events enforcement to prove the click reaches the button; verified red
+  (reverting the class) then green. `vitest.setup.ts` gained
+  `setPointerCapture`/`releasePointerCapture` jsdom stubs (sonner's own swipe
+  handler calls them; jsdom has neither) - a second small, generic, reusable fix.
+  **Live-verify surfaced a SECOND, previously-unreachable bug the moment Cancel
+  became clickable**: clicking it also closed the whole "Manage segments" dialog,
+  because sonner's toaster portal (a `document.body` sibling of the Dialog's own
+  portal) was outside `components/common/floatingAncestry.ts`'s shared
+  `FLOATING_SURFACE_SELECTOR` allowlist, so Radix's dismissable-layer read the click
+  as "outside" the dialog. Fixed in that ONE shared selector (added
+  `[data-sonner-toaster]`/`[data-sonner-toast]`) - the same seam
+  `dialog.tsx`/`alert-dialog.tsx`/`sheet.tsx` already share for popovers/menus
+  opened from within a dialog, so this benefits every Dialog+toast combination in
+  the app, not just Contacts. 2 new cases in `floatingAncestry.test.ts`.
+
+- **Blocker 2 (one shared `useDeferredAction` for every segment row - deleting A
+  then B while A counted down orphaned A) - FIXED, CHANGED-APPROACH.** The literal
+  ask was "extract a row component owning its own `useDeferredAction` (mirrors
+  `action-menu.tsx`)". Implemented instead: the delete controller (ONE
+  `useDeferredAction` instance, "one countdown at a time") is lifted OUT of the
+  dialog entirely into a new `use-segment-delete-controller.ts` hook, owned by
+  `page.tsx` (see should-fix 4 below for why lifting was necessary regardless);
+  `manage-segments-dialog.tsx` was still refactored into a `SegmentRow`
+  sub-component per the ask, but it is presentational (props-driven), not an
+  independent hook owner. Rationale documented in the controller file's header:
+  (a) the product rule is explicitly "one delete at a time" (every row's Delete
+  disables while `deletingId` names a different segment), so two concurrent parks
+  under one hook can never happen by construction - the exact race blocker 2
+  reports is structurally impossible; (b) embedding a REAL per-row hook inside the
+  dialog's `<DialogBody>{segments.map(...)}</DialogBody>` would put it inside
+  content Radix's `AnimatePresence` unmounts after the close animation, which
+  would have REINTRODUCED should-fix 4's bug for exactly this refactor - lifting
+  to the page (which never unmounts on dialog close) avoids that regression
+  entirely. `use-segment-delete-controller.test.ts` (4 new tests): delete A then
+  attempt B while A is pending is a no-op (only ONE `park` call, B never starts);
+  A's Cancel cancels A only and settles `deletingId` back to null; after A
+  commits, B can start its own countdown; a plain "starts and parks" case.
+  `manage-segments-dialog.test.tsx` covers the DIALOG's own contract: `onDelete`
+  fires with the clicked row, and every row's Delete button disables while
+  `deletingId` names ANY segment (2 new tests, replacing the round-1 test that
+  asserted the dialog calling `pendingActionsService.park` directly - it no longer
+  does; the controller test above covers that instead).
+
+- **Should-fix 3 (deleting the selected segment stranded the list) - FIXED,
+  generic shell fix.** `components/platform/resource-list/resource-list.tsx`
+  gained an effect: when `list.segment` no longer names one of
+  `config.segments`, it resets to `config.segments[0].id` (+ clears row
+  selection, matching the existing segment-switch convention) - additive to the
+  shell, so ANY N-way-segmented list gets the fallback for free, not just
+  Contacts. `segmentOptions()` already always prepends the `all` sentinel as
+  index 0, so the fallback always lands on "All contacts". New test
+  `resource-list.segment-fallback.test.tsx` (2 cases): falls back when the
+  selected segment disappears from `config.segments`; is a no-op when the
+  selection still exists.
+
+- **Should-fix 4 (closing the dialog mid-countdown orphaned the toast, no
+  refresh) - FIXED via the "lift the controller" option named in the brief.**
+  `use-segment-delete-controller.ts` is owned by `page.tsx` (mounted
+  unconditionally, independent of `manageSegmentsOpen`), so its
+  `useDeferredAction` polling/toast/`onCommitted`->`refreshSegments()` all
+  survive the dialog closing. Live-verified (see evidence run below): opened
+  Manage segments, clicked Delete, immediately clicked the dialog's own Close
+  (X) - the countdown toast stayed on screen with the dialog gone, and once the
+  window lapsed the segment was deleted server-side AND the page's own "Manage
+  segments" button disappeared (>0-segments gate), proving the refresh fired
+  with the dialog unmounted the whole time.
+
+- **Nit 5 (export-download docstring overclaimed "never a bearer-less signed
+  URL") - FIXED.** `modules/omnichannel/routers/contacts.py`'s docstring and the
+  plan's D-A2-6b row/§"Threats considered" bullet now say what is actually true:
+  reaching the route always requires the bearer + `contacts.export`; for an
+  S3/R2-backed storage connection the route may still 307-redirect to the
+  storage layer's OWN time-limited presigned URL (Meta/AWS's capability link,
+  not one we mint), matching the `documents.py` precedent - the D-A2-6b decision
+  ("no OWN signed capability URL") still holds, the old wording just implied
+  something stronger than the code does.
+
+- **Nit 6 (import-time `assert` in `contact_export_service.py`) - FIXED.** Moved
+  into `tests/test_omnichannel_contacts_import_export.py
+  test_column_labels_cover_every_export_column_id` - a failure now reads as a
+  named, re-runnable pytest failure instead of an opaque `ImportError` wherever
+  the module happens to first get imported.
+
+- **Nit 7 (`customFields.<key>` export header used the raw wire id) - FIXED.**
+  New `_column_header()` in `contact_export_service.py` uses the registered
+  field's LABEL (falls back to the raw id only if the field was since deleted).
+  This ALSO closes the auto-map gap the finding named: `ImportService.preview`'s
+  `by_norm` matches a file header against a column's LABEL or its `cf_<key>`
+  key - never `customFields.<key>` - so the raw-id header could never auto-map on
+  re-import; the label now does. New test
+  `test_export_custom_field_header_uses_the_field_label`.
+
+- **Nit 8 (`sanitize_cell`'s `'` guard broke on re-import for names/first tag) -
+  FIXED, house-wide.** `app/import_engine/coerce.py coerce_string()` now strips
+  exactly one leading `'` when the character right after it is one of
+  `sanitize_cell`'s own guarded prefixes (`= + - @` / tab / CR) - reversing our
+  OWN export convention symmetrically for EVERY text-typed import column (not a
+  contacts-only patch), since a CSV genuinely stores that `'` as a literal
+  character (unlike a native XLSX text-format flag). A value that happens to
+  start with a real apostrophe (`'Ohana Co`) is untouched (the check requires
+  the SECOND character to be a guarded prefix too). Because tag coercion runs
+  before the comma-split, a joined cell like `+VIP,Ops` (which sanitize_cell
+  guards to `'+VIP,Ops` since the cell's first char is `+`) round-trips
+  correctly with a SINGLE strip, not per-tag. Extended
+  `test_export_sanitizes_formula_cells_and_round_trips_via_reimport`: seeded tag
+  `+VIP` (was `VIP`) and added post-reimport assertions for
+  `first_name`/`last_name` exact round-trip (previously untested - only
+  phone/tag-set were asserted).
+
+- **Nit 9 (`hooks/use-contact-segments.ts` dead `remove`) - FIXED.** Removed the
+  hook's `remove` wrapper + its `UseContactSegmentsResult.remove` field
+  (deferred delete never called it); `contactSegmentService.remove` (the
+  service method) is left in place per the brief. Updated the two test files
+  that mocked `remove: vi.fn()` for this hook.
+
+- **Nit 10 (3 new tsc errors) - FIXED**, all three:
+  `manage-segments-dialog.test.tsx:39` (a `vi.fn(() => 'toast-id-1')`-typed
+  `toastCustom` mock had a ZERO-arg inferred signature, so
+  `toastCustom(...a)` with `a: unknown[]` failed `TS2556` - the actual
+  offending line was the SONNER `custom` mock, not the `pending-actions-service`
+  one the line-number initially looked like it pointed at; fixed by giving the
+  implementation a variadic signature: `vi.fn((..._args: unknown[]) =>
+  'toast-id-1')`); `page.fetch-stability.test.tsx:126` (`listMock` was typed
+  zero-arg from its own `vi.fn(async () => ...)` implementation, then called
+  with 2 args via a spread - fixed with an explicit `vi.fn<(workspaceId, query)
+  => ...>()` generic); `use-contact-actions.test.tsx:93` (`ResourceAction.run`
+  is optional in the discriminated-union type - `.find(...)!.run(...)` needed a
+  second `!` on `.run` itself). Two INCIDENTAL new tsc errors introduced by this
+  round's own new test files were also fixed rather than left for a future
+  round: a `filter: null` fixture (`ContactSegment.filter` is non-nullable) in
+  two new test files, and a `ListResult` missing its required `page` field in
+  the new `resource-list.segment-fallback.test.tsx` fixtures.
+
+- **Nit 11 (add a cancel-within-window backend test) - FIXED.**
+  `tests/test_omnichannel_deferred_actions.py
+  test_contact_segments_cancel_within_the_window_leaves_the_row_intact` - parks
+  `contact_segments.delete`, cancels via `PendingActionService.cancel` while the
+  window is open, asserts `status == "cancelled"` and the segment row still
+  exists.
+
+- **Nit 12 (migration `0010`'s `sa.DateTime(timezone=True)` vs `UTCDateTime`) -
+  DEFERRED to the merge step, as anticipated by the brief.** Confirmed
+  equivalent, not a bug: `UTCDateTime.impl = DateTime(timezone=True)`
+  (`app/models/utc_datetime.py`) - the migration's raw DDL produces the
+  identical Postgres column type (`timestamptz`) either way; the
+  `import app.models.utc_datetime` convention only matters for Alembic
+  autogenerate diffing, not for hand-written DDL. The file's own
+  "NOTE for the merging agent" already documents that `down_revision` needs
+  rebasing onto sibling lane A3's `0009` at merge time - left as-is.
+
+### Live verification (agent-browser, session `s26c`, backend :8005 / frontend :3004)
+
+Full run log: `documentation/plans/sprint-4/26-evidence/round2/README.md`.
+Screenshots: `documentation/plans/sprint-4/26-evidence/round2/*.png`.
+
+- **Lane setup note (environment, not a plan-26 code defect):** the default
+  tenant's Admin role on `foundryx_service_s26` had never been granted this
+  plan's `contacts.*`/`segments.*` permissions, and the shared
+  `service_backend/.env`'s `CORS_ORIGINS` only listed `:3001,:3002` - both hid
+  the Omnichannel menu entirely. Fixed for this lane's DB only (permission
+  sync + `tenant_admin_grant` re-run) and this process only (`DATABASE_URL`/
+  `CORS_ORIGINS` exported inline when starting uvicorn, no shared `.env` file
+  touched).
+- Real clicks from the sidebar (Omnichannel -> Contacts) at 1280px: opened
+  "Manage segments", clicked Delete on a real segment - the countdown toast
+  rendered over the still-open dialog with the row's controls disabled
+  (Blocker 1's exact repro). Clicked Cancel on the toast: the segment stayed
+  (confirmed via `GET .../contact-segments`) AND the dialog itself stayed open
+  (the `floatingAncestry.ts` follow-up fix) - both AC-CTM-06/AC-CTM-13
+  behaviours hold.
+  - Repeated the countdown-visible + Delete-commits path at 375px.
+- Created a second segment and made it the ACTIVE "View segment" selection,
+  then deleted it and let the window lapse: the segment view fell back to
+  "All contacts" with no error (should-fix 3, AC-CTM-06).
+- Created a third segment, clicked Delete, then immediately closed the dialog
+  via its own Close (X) while the countdown was live: the toast persisted on
+  the page with the dialog gone, and once it lapsed the delete committed
+  server-side AND the page's "Manage segments" button disappeared (proving
+  `refreshSegments()` fired) - should-fix 4.
+- Console check across the whole run: only the pre-existing "Missing
+  Description for DialogContent" a11y warning (present on every Dialog in this
+  codebase already, unrelated to plan 26) - no errors.
+
+### Suite counts (this round)
+
+- Backend targeted (`test_omnichannel_contacts_import_export.py` +
+  `test_omnichannel_deferred_actions.py`): **46 passed** (30 + 16).
+- Backend full (`pytest -q`, whole repo): **2940 passed, 1 skipped, 18
+  deselected** in 1603s (up from round 1's 2936 - net +4 from this round's new
+  tests).
+- Frontend (`npx vitest run`): **269 test files, 2033 tests passed** (up from
+  round 1's 266/2022 - net +11 new tests: 4 controller, 2 dialog replacing 1,
+  2 segment-fallback, 1 sonner pointer-events, 2 floatingAncestry).
+- `npx eslint .`: **0 errors** (214 pre-existing warnings, none on touched
+  lines).
+- `npx tsc --noEmit`: the three named pre-existing errors are gone; no new
+  errors from any file touched or added this round.
+
+### ACs re-touched this round
+
+AC-CTM-06 (segment delete via the grace-window engine, no confirm dialog) -
+still holds, now with a genuinely clickable Cancel and a dialog that survives
+both Cancel and an early Close. AC-CTM-13 (Manage segments dialog contract) -
+extended with the one-countdown-at-a-time disable rule. AC-CTM-42 (export/
+import round-trip) - extended to cover a tag name and a contact name that
+themselves trigger the formula-injection guard.

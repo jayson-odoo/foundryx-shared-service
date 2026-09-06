@@ -39,6 +39,15 @@ if (typeof Element !== 'undefined') {
   if (!Element.prototype.hasPointerCapture) {
     Element.prototype.hasPointerCapture = () => false;
   }
+  // sonner's own swipe-to-dismiss handler calls these on every pointerdown
+  // (plan 26 review round 2, blocker 1's toast/dialog interaction test) -
+  // jsdom implements neither.
+  if (!Element.prototype.setPointerCapture) {
+    Element.prototype.setPointerCapture = () => {};
+  }
+  if (!Element.prototype.releasePointerCapture) {
+    Element.prototype.releasePointerCapture = () => {};
+  }
   if (!Element.prototype.scrollIntoView) {
     Element.prototype.scrollIntoView = () => {};
   }

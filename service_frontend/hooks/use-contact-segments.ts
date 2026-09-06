@@ -22,7 +22,6 @@ export interface UseContactSegmentsResult {
   refresh: () => Promise<void>;
   create: (input: CreateContactSegmentInput) => Promise<ContactSegment>;
   update: (id: string, input: UpdateContactSegmentInput) => Promise<ContactSegment>;
-  remove: (id: string) => Promise<boolean>;
 }
 
 export function useContactSegments(workspaceId: string | null): UseContactSegmentsResult {
@@ -79,20 +78,10 @@ export function useContactSegments(workspaceId: string | null): UseContactSegmen
     [workspaceId, refresh],
   );
 
-  const remove = useCallback(
-    async (id: string) => {
-      if (!workspaceId) return false;
-      try {
-        await contactSegmentService.remove(workspaceId, id);
-        await refresh();
-        return true;
-      } catch (error) {
-        toast.error(describe(error));
-        return false;
-      }
-    },
-    [workspaceId, refresh],
-  );
+  // Segment delete no longer goes through this hook (review round 2) - it
+  // rides the CORE grace-window engine via
+  // `use-segment-delete-controller.ts` (`contactSegmentService.remove` stays
+  // exported for any future direct-delete caller).
 
-  return { segments, loading, refresh, create, update, remove };
+  return { segments, loading, refresh, create, update };
 }
