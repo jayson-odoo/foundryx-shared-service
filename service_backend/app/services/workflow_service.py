@@ -655,13 +655,27 @@ class WorkflowService:
             for t in touched
         ]
 
-    def metadata(self, tenant_id: str, *, include_ai_agents: bool = False) -> Dict[str, Any]:
+    def metadata(
+        self,
+        tenant_id: str,
+        *,
+        include_ai_agents: bool = False,
+        include_teams: bool = False,
+    ) -> Dict[str, Any]:
         """Triggerable entities + resolved statuses + record fields - the editor's
         entity/status/field pickers (swaps the frontend mock, slice 09).
 
         AI-agent options are included only when the caller holds the dedicated
         ``ai_agents.read`` permission. The workflow metadata endpoint itself
-        remains available to every ``workflows.read`` caller."""
+        remains available to every ``workflows.read`` caller.
+
+        ``teams`` (plan 28 S3, AC-TEM-34) resolves through the GENERIC
+        `NodeField(type="team")` option-provider seam (`registry.
+        get_option_provider`) rather than a core import of anything
+        team-specific - the same seam any future field type reuses (BL-090).
+        Always present (never omitted like ``aiAgents``) so the frontend's
+        `metadata.teams ?? []` renders an empty picker, not another tenant's
+        teams, for a caller without ``teams.read``."""
         from app.models.status import Status
         from app.rule_engine.registry import _camel, get_facts
         from app.workflow_engine.entities import list_workflow_entities
@@ -723,10 +737,21 @@ class WorkflowService:
             "omnichannelChannels": self._omnichannel_channel_options(tenant_id),
             "codeRunnerAvailable": code_runner_available(),
             "codeCapabilities": list(CODE_CAPABILITIES),
+            "teams": self._team_options(tenant_id) if include_teams else [],
         }
         if include_ai_agents:
             metadata["aiAgents"] = self._ai_agent_options(tenant_id)
         return metadata
+
+    def _team_options(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Backs the `team` NodeField's picker (plan 28 S3, AC-TEM-34) via the
+        generic option-provider seam - `[]` when no provider is registered
+        (a boot path that skipped `ensure_team_capabilities()`, same degrade
+        contract as the rest of the teams capability family)."""
+        from app.workflow_engine.registry import get_option_provider
+
+        provider = get_option_provider("team")
+        return provider(self.db, tenant_id) if provider else []
 
     def test_options(self, workflow_id: str, tenant_id: str) -> Dict[str, Any]:
         """Return tenant-safe options for the trigger in this workflow's draft.

@@ -874,3 +874,94 @@ def test_tenant_modules_deactivate_park_against_an_already_inactive_module_is_40
     state.status = MODULE_STATUS_ACTIVE
     db.commit()
     db.close()
+
+
+# ── review round 1, finding 3: teams.delete rides the grace-window engine ───
+
+
+def test_teams_delete_registered() -> None:
+    action_def = deferred_action_for("teams.delete")
+    assert action_def.entity_type == "team"
+    assert action_def.permission == "teams.manage"
+    assert action_def.window == "destructive"
+
+
+def test_teams_delete_end_to_end_commits_and_deletes(client, session_factory):
+    h = _login(client)
+    team = client.post("/teams", headers=h, json={"name": "ParkDelete", "members": []}).json()
+
+    row = client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "teams.delete", "entityType": "team", "entityId": team["id"]},
+        headers=h,
+    ).json()
+    assert row["windowSeconds"] == 10
+
+    db = session_factory()
+    pa = db.get(PendingAction, row["id"])
+    pa.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+    db.close()
+
+    cur = client.get(
+        "/api/v1/pending-actions/current",
+        params={"entityType": "team", "entityId": team["id"]},
+        headers=h,
+    ).json()
+    assert cur["pending"] is None
+    assert cur["lastOutcome"]["status"] == PENDING_ACTION_COMMITTED
+
+    assert client.get(f"/teams/{team['id']}", headers=h).status_code == 404
+
+
+def test_teams_delete_cancel_before_window_leaves_team_intact(client):
+    h = _login(client)
+    team = client.post("/teams", headers=h, json={"name": "CancelDelete", "members": []}).json()
+
+    row = client.post(
+        "/api/v1/pending-actions",
+        json={"actionKey": "teams.delete", "entityType": "team", "entityId": team["id"]},
+        headers=h,
+    ).json()
+
+    cancel = client.post(f"/api/v1/pending-actions/{row['id']}/cancel", headers=h)
+    assert cancel.status_code == 200
+
+    assert client.get(f"/teams/{team['id']}", headers=h).status_code == 200
+
+
+def test_teams_delete_blocked_by_reference_guard_fails_with_message(client, session_factory):
+    from app.module_platform import register_reference_guard
+
+    h = _login(client)
+    team = client.post("/teams", headers=h, json={"name": "GuardedDelete", "members": []}).json()
+
+    def _fake_checker(db, tenant_id, entity_id):
+        return 2 if entity_id == team["id"] else 0
+
+    register_reference_guard("team", "conversations", _fake_checker)
+    try:
+        row = client.post(
+            "/api/v1/pending-actions",
+            json={"actionKey": "teams.delete", "entityType": "team", "entityId": team["id"]},
+            headers=h,
+        ).json()
+
+        db = session_factory()
+        pa = db.get(PendingAction, row["id"])
+        pa.commit_at = _now() - timedelta(seconds=1)
+        db.commit()
+        db.close()
+
+        cur = client.get(
+            "/api/v1/pending-actions/current",
+            params={"entityType": "team", "entityId": team["id"]},
+            headers=h,
+        ).json()
+        assert cur["pending"] is None
+        assert cur["lastOutcome"]["status"] == PENDING_ACTION_FAILED
+        assert "conversations" in cur["lastOutcome"]["errorText"]
+        # Never deleted - the reference guard blocked the commit.
+        assert client.get(f"/teams/{team['id']}", headers=h).status_code == 200
+    finally:
+        register_reference_guard("team", "conversations", lambda db, t, i: 0)

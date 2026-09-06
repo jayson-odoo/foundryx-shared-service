@@ -36,9 +36,12 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useCan } from '@/hooks/use-can';
 import { useCloseReasons } from '@/hooks/use-close-reasons';
 import { useMediaQuery } from '@/hooks/use-media-query';
 import { useMessages } from '@/hooks/use-messages';
+import { useMyTeams } from '@/hooks/use-my-teams';
+import { useTeams } from '@/hooks/use-teams';
 import { useThreadEvents } from '@/hooks/use-thread-events';
 import { conversationService } from '@/services/conversation-service';
 import { workspaceService } from '@/services/workspace-service';
@@ -135,6 +138,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     addNote,
     assign,
     assignToMe,
+    assignTeam,
     setStatus,
     closeThread,
     patchContact,
@@ -166,6 +170,34 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [replyTo, setReplyTo] = useState<ConversationMessage | null>(null);
+  // Team Inbox (plan 28) - the assignee dropdown's Teams group. `GET /teams`
+  // is gated `teams.read`, which a plain Agent (`conversations.assign` only)
+  // doesn't hold - `useTeams` is only fetched for a `teams.read` holder;
+  // `useMyTeams` (no `teams.read` required) always resolves so ANY caller
+  // with `conversations.assign` can still assign to a team they belong to
+  // (review round 1, finding 4/5/6). Union + dedupe by id. Review round 2
+  // N1: only ACTIVE teams are offered - `PATCH {assignedTeamId}` 422s on an
+  // inactive team (`GET /teams` lists inactive teams and `/teams/mine` has
+  // no is_active filter, so both sources are filtered here).
+  const canReadAllTeams = useCan().can('teams.read');
+  const { teams: allTeams } = useTeams({ enabled: canReadAllTeams });
+  const { teams: myTeams } = useMyTeams();
+  const teams = useMemo(() => {
+    const byId = new Map<string, { id: string; name: string }>();
+    for (const t of [...allTeams, ...myTeams]) {
+      if (!t.isActive) continue;
+      if (!byId.has(t.id)) byId.set(t.id, { id: t.id, name: t.name });
+    }
+    return Array.from(byId.values());
+  }, [allTeams, myTeams]);
+  const handleAssignTeam = useCallback(
+    (teamId: string | null) => {
+      assignTeam(teamId).catch((e: unknown) => {
+        toast.error(e instanceof Error ? e.message : 'Could not update the team assignment.');
+      });
+    },
+    [assignTeam],
+  );
 
   // Contact panel (plan 25, AC-CDM-34) - open state persists per browser;
   // >=1280px renders a right pane, below it a Sheet (D14). Never shown in
@@ -371,7 +403,13 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" data-testid="assign-trigger">
                 <UserPlus className="size-4" />
-                {thread.assignedUserName ?? 'Unassigned'}
+                {thread.assignedTeamId ? (
+                  <span data-testid="assign-team-label">
+                    {thread.assignedTeamName ?? 'Team'} · {thread.assignedUserName ?? 'Unassigned'}
+                  </span>
+                ) : (
+                  (thread.assignedUserName ?? 'Unassigned')
+                )}
                 <ChevronDown className="size-3.5" />
               </Button>
             </DropdownMenuTrigger>
@@ -390,6 +428,26 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
               <DropdownMenuItem onClick={() => void assign(null)} data-testid="assign-clear">
                 Unassign
               </DropdownMenuItem>
+              {teams.length > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel>Teams</DropdownMenuLabel>
+                  {teams.map((t) => (
+                    <DropdownMenuItem
+                      key={t.id}
+                      onClick={() => handleAssignTeam(t.id)}
+                      data-testid={`assign-team-${t.id}`}
+                    >
+                      {t.name}
+                    </DropdownMenuItem>
+                  ))}
+                  {thread.assignedTeamId && (
+                    <DropdownMenuItem onClick={() => handleAssignTeam(null)} data-testid="assign-team-clear">
+                      Clear team
+                    </DropdownMenuItem>
+                  )}
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
 

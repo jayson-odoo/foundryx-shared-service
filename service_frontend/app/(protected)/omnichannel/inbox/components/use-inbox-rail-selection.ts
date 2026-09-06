@@ -15,6 +15,7 @@ import type { InboxView } from '@/types/omnichannel';
 import {
   expandViewFilter,
   parseRailKey,
+  railKeyForTeam,
   railSelectionPatch,
   type InboxRailEntry,
   type RailStage,
@@ -33,9 +34,25 @@ function writeUrlKey(key: string): void {
   window.history.replaceState(null, '', url);
 }
 
+/** Plan 28 - drop a stale `?view=` param when a Team Inbox entry is picked
+ *  (team selection persists via `?team=`/`?assignee=` instead, see `select`
+ *  below). Without this, a PRIOR default/lifecycle/view selection's `?view=`
+ *  lingers in the URL and the restoration effect below reapplies it on the
+ *  next reload, silently overriding the team scope the user actually picked. */
+function clearUrlKey(): void {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has(URL_PARAM)) return;
+  url.searchParams.delete(URL_PARAM);
+  window.history.replaceState(null, '', url);
+}
+
 /** Best-effort reconstruction of "what's selected" from the filter state
- *  itself (no separate selection state to fall out of sync). */
+ *  itself (no separate selection state to fall out of sync). Team Inbox
+ *  (plan 28) takes priority - `teamId` is only ever set by picking a team
+ *  entry, so its presence is unambiguous even though `assignee` is also set
+ *  alongside it (`all` or `unassigned`, for the nested "Unassigned" row). */
 export function selectedRailKey(filters: ConversationFilters): string {
+  if (filters.teamId) return railKeyForTeam(filters.teamId, filters.assignee === 'unassigned');
   if (filters.viewId) return filters.viewId;
   if (filters.lifecycleStageIds.length === 1) return `lifecycle:${filters.lifecycleStageIds[0]}`;
   return filters.assignee;
@@ -71,7 +88,15 @@ export function useInboxRailSelection(
       } else {
         setFilters(railSelectionPatch(entry));
       }
-      writeUrlKey(entry.key);
+      // Team Inbox (plan 28) persists via `useConversations`' own
+      // `?team=`/`?assignee=` params, not the `?view=` key scheme -
+      // `parseRailKey`/the restoration effect below know nothing of `team:`
+      // keys, so writing one here would strand the URL on a key the
+      // restoration effect immediately (and incorrectly) treats as an
+      // unknown saved view and resets to All. Clear any STALE `?view=` left
+      // from a prior default/lifecycle/view selection instead.
+      if (entry.kind === 'team') clearUrlKey();
+      else writeUrlKey(entry.key);
     },
     [setFilters, views],
   );
@@ -84,6 +109,14 @@ export function useInboxRailSelection(
       restoredForWorkspaceRef.current = workspaceId;
     }
     if (restoredRef.current) return;
+    // Plan 28 - a Team Inbox scope (restored by `useConversations` itself
+    // from `?team=`/`?assignee=`, independent of this hook) always wins over
+    // whatever a lingering `?view=` param might say; never let this effect
+    // clobber it back to a default/lifecycle/view selection.
+    if (filters.teamId) {
+      restoredRef.current = true;
+      return;
+    }
     const raw = currentUrlKey();
     if (!raw) {
       restoredRef.current = true;

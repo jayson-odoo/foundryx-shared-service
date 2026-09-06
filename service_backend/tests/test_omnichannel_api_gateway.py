@@ -1641,3 +1641,206 @@ def test_internal_lifecycle_move_also_fans_out_contact_updated_webhook(client, s
 
     assert contact["id"] == cid
     assert contact["lifecycle"]["key"] == "hot_lead"
+
+
+# ── Plan 28 S4 - gateway team fields (default + rio), PATCH assignedTeamId ──
+def test_gateway_default_and_rio_shapes_carry_team_fields(client, session_factory):
+    """AC-TEM-36/37 - `assignedTeamId`/`assignedTeamName` (resolved off the
+    same internal `ThreadItem`, one data path) ride the default GET/list
+    shapes AND `?format=rio` (in its Foundryx-extensions block); an empty
+    roster is still a SUCCESS (D-A8-11)."""
+    from tests.test_omnichannel_team_assignment import _add_workspace_member, _create_team, _user
+
+    hdr, cid = _seeded(client, session_factory, phone="+60555222030")
+    ws = _default_workspace_id(session_factory)
+    admin = _auth(client)
+
+    empty_team = _create_team(client, admin, "Gateway Empty Team")
+    r = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}",
+        json={"assignedTeamId": empty_team["id"]},
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["assignedTeamId"] == empty_team["id"]
+    assert r.json()["assignedTeamName"] == "Gateway Empty Team"
+    assert r.json()["assignedUserId"] is None  # empty roster - still a success
+
+    uid = _user(session_factory, "gw-member@example.com")
+    _add_workspace_member(session_factory, ws, uid)
+    team = _create_team(client, admin, "Gateway Team", member_ids=[uid])
+    r2 = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}",
+        json={"assignedTeamId": team["id"]},
+        headers=hdr,
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["assignedUserId"] == uid
+    assert r2.json()["assignedTeamId"] == team["id"]
+    assert r2.json()["assignedTeamName"] == "Gateway Team"
+
+    got = client.get(f"/api/v1/omnichannel/contacts/{cid}", headers=hdr).json()
+    assert got["assignedTeamId"] == team["id"] and got["assignedTeamName"] == "Gateway Team"
+
+    rio = client.get(f"/api/v1/omnichannel/contacts/{cid}?format=rio", headers=hdr).json()
+    assert rio["assignedTeamId"] == team["id"] and rio["assignedTeamName"] == "Gateway Team"
+
+    lst = client.get("/api/v1/omnichannel/contacts?pageSize=10", headers=hdr).json()["data"]
+    row = next(c for c in lst if c["id"] == cid)
+    assert row["assignedTeamId"] == team["id"] and row["assignedTeamName"] == "Gateway Team"
+
+    lst_rio = client.get(
+        "/api/v1/omnichannel/contacts?pageSize=10&format=rio", headers=hdr
+    ).json()["items"]
+    row_rio = next(c for c in lst_rio if c["id"] == cid)
+    assert row_rio["assignedTeamId"] == team["id"] and row_rio["assignedTeamName"] == "Gateway Team"
+
+
+def test_gateway_patch_team_plus_user_combinations(client, session_factory):
+    """AC-TEM-37 - the four assignee combinations (§5.2) apply identically
+    through the gateway PATCH: team+member, team+non-member (422), team+null
+    user (Team Unassigned), null team alone (clears the team)."""
+    from tests.test_omnichannel_team_assignment import _add_workspace_member, _create_team, _user
+
+    hdr, cid = _seeded(client, session_factory, phone="+60555222031")
+    ws = _default_workspace_id(session_factory)
+    admin = _auth(client)
+
+    member = _user(session_factory, "gw-combo-member@example.com")
+    outsider = _user(session_factory, "gw-combo-outsider@example.com")
+    for uid in (member, outsider):
+        _add_workspace_member(session_factory, ws, uid)
+    team = _create_team(client, admin, "Combo Team", member_ids=[member])
+
+    # team + a user who IS a member -> both set, no strategy pick.
+    r = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}",
+        json={"assignedTeamId": team["id"], "assignedUserId": member},
+        headers=hdr,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["assignedUserId"] == member and r.json()["assignedTeamId"] == team["id"]
+
+    # team + a user who is NOT a member -> 422 details.assignedUserId, atomic
+    # (nothing changes from the prior successful state).
+    r2 = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}",
+        json={"assignedTeamId": team["id"], "assignedUserId": outsider},
+        headers=hdr,
+    )
+    assert r2.status_code == 422, r2.text
+    assert r2.json()["error"]["details"] == {
+        "assignedUserId": "User is not a member of this team."
+    }
+    still = client.get(f"/api/v1/omnichannel/contacts/{cid}", headers=hdr).json()
+    assert still["assignedUserId"] == member  # unchanged by the rejected PATCH
+
+    # team + null user -> team stays, user cleared (Team Unassigned).
+    r3 = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}",
+        json={"assignedTeamId": team["id"], "assignedUserId": None},
+        headers=hdr,
+    )
+    assert r3.status_code == 200, r3.text
+    assert r3.json()["assignedTeamId"] == team["id"] and r3.json()["assignedUserId"] is None
+
+    # null team alone -> clears the team, keeps whatever user is set (none).
+    r4 = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}", json={"assignedTeamId": None}, headers=hdr
+    )
+    assert r4.status_code == 200, r4.text
+    assert r4.json()["assignedTeamId"] is None and r4.json()["assignedTeamName"] is None
+
+
+def test_gateway_patch_unknown_team_id_is_422(client, session_factory):
+    """AC-TEM-37 - an unknown/foreign/inactive team id is a typed 422, never
+    a silent no-op or a 500."""
+    hdr, cid = _seeded(client, session_factory, phone="+60555222032")
+    r = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}",
+        json={"assignedTeamId": "not-a-real-team"},
+        headers=hdr,
+    )
+    assert r.status_code == 422, r.text
+    assert r.json()["error"]["code"] == "invalid_request"
+    assert r.json()["error"]["details"] == {"assignedTeamId": "Team not found or inactive."}
+
+
+def test_gateway_rio_message_sender_team_id_stays_null(client, session_factory):
+    """D-A8-6 flag 8 - `sender.teamId` on the rio message shape never
+    populates, even on a thread that carries an `assignedTeamId` (a distinct,
+    out-of-scope message-level concept)."""
+    from tests.test_omnichannel_team_assignment import _create_team
+
+    hdr, cid = _seeded(client, session_factory, phone="+60555222033")
+    admin = _auth(client)
+    team = _create_team(client, admin, "Sender Team")
+    patch = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}", json={"assignedTeamId": team["id"]}, headers=hdr
+    )
+    assert patch.status_code == 200, patch.text
+
+    rio = client.get(
+        f"/api/v1/omnichannel/contacts/{cid}/messages?format=rio", headers=hdr
+    ).json()
+    assert rio["items"], "expected the seeded text message"
+    for item in rio["items"]:
+        assert item["sender"]["teamId"] is None
+
+
+def test_gateway_webhook_contact_updated_payload_carries_team_fields(client, session_factory):
+    """AC-TEM-36/38 - the `contact.updated` webhook's `data.contact` is the
+    same default `ThreadItem` shape the read endpoints return, so team
+    assignment is already lossless on delivery (one internal type covers
+    reads and webhooks alike)."""
+    from tests.test_omnichannel_team_assignment import _create_team
+
+    hdr, cid = _seeded(client, session_factory, phone="+60555222034")
+    admin = _auth(client)
+    team = _create_team(client, admin, "Webhook Team")
+    reg = client.post(
+        "/api/v1/omnichannel/webhooks",
+        json={"name": "w", "url": "https://hooks.example.com/w", "events": ["contact.updated"]},
+        headers=hdr,
+    )
+    assert reg.status_code == 201, reg.text
+
+    r = client.patch(
+        f"/api/v1/omnichannel/contacts/{cid}", json={"assignedTeamId": team["id"]}, headers=hdr
+    )
+    assert r.status_code == 200, r.text
+
+    from modules.omnichannel.models import WebhookDelivery
+
+    db = session_factory()
+    delivery = (
+        db.query(WebhookDelivery)
+        .filter(WebhookDelivery.event_type == "contact.updated")
+        .order_by(WebhookDelivery.created_at.desc())
+        .first()
+    )
+    assert delivery is not None
+    contact = delivery.payload_json["data"]["contact"]
+    db.close()
+
+    assert contact["assignedTeamId"] == team["id"]
+    assert contact["assignedTeamName"] == "Webhook Team"
+
+
+def test_consumer_guide_documents_the_team_fields():
+    """AC-TEM-38 - a `Rio*`/`api_v1.py` diff without a guide diff in the SAME
+    commit is a review reject; this pins the guide actually mentions the new
+    keys (contact sample, PATCH field table, rio field-map, webhook note)."""
+    import pathlib
+
+    guide = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "documentation"
+        / "omnichannel"
+        / "consumer-integration-guide.md"
+    ).read_text()
+    assert "assignedTeamId" in guide
+    assert "assignedTeamName" in guide
+    # The PATCH section documents the by-id-only, team+user combination rules.
+    assert "by id only" in guide.lower()
+    assert "not a member of this team" in guide

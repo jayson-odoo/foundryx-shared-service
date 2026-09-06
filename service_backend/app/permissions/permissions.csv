@@ -9,6 +9,8 @@ roles,Roles & Permissions,read,Read,View roles
 roles,Roles & Permissions,create,Create,Create roles
 roles,Roles & Permissions,update,Update,Edit roles
 roles,Roles & Permissions,delete,Delete,Delete roles
+teams,Teams,read,Read,View teams
+teams,Teams,manage,Manage,Create / edit / delete teams
 events,Events,read,Read,View events
 events,Events,create,Create,Create events
 events,Events,update,Update,Edit events

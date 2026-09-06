@@ -113,4 +113,21 @@ describe('useInboxRailSelection - URL restoration', () => {
     );
     expect(new URLSearchParams(window.location.search).get('view')).toBe('all');
   });
+
+  // Plan 28 (roadmap A8) - a Team Inbox scope (restored independently by
+  // `useConversations` from `?team=`/`?assignee=`) must NOT be clobbered by
+  // a STALE `?view=` param left over from a rail selection made before the
+  // team was picked (`select()` clears `?view=` when picking a team, but an
+  // old tab/bookmark could still carry both params together).
+  it('never restores a stale ?view= when a team scope is already active', () => {
+    setUrl('me'); // stale - would normally restore assignee='me'
+    const setFilters = vi.fn();
+    const teamFilters: ConversationFilters = { ...DEFAULT_FILTERS, teamId: 'team-1', assignee: 'all' };
+    renderHook(
+      ({ filters }: { filters: ConversationFilters }) =>
+        useInboxRailSelection(filters, setFilters, [], [], 'wsp-a'),
+      { initialProps: { filters: teamFilters } },
+    );
+    expect(setFilters).not.toHaveBeenCalled();
+  });
 });
