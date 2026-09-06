@@ -11,7 +11,7 @@
  */
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ConversationFilters } from '@/hooks/use-conversations';
 import { DEFAULT_FILTERS } from '@/hooks/use-conversations';
@@ -33,6 +33,16 @@ vi.mock('@/hooks/use-inbox-views', () => ({ useInboxViews: useInboxViewsMock }))
 
 const { useStatusGraphMock } = vi.hoisted(() => ({ useStatusGraphMock: vi.fn() }));
 vi.mock('@/hooks/use-status-engine', () => ({ useStatusGraph: useStatusGraphMock }));
+
+// Plan 28 (roadmap A8, D-A8-4) - the rail's folded-in Teams section. Default
+// to "no teams" so the pre-existing (plan 27) tests below render exactly as
+// they did before the fold-in; the dedicated Teams describe block overrides
+// these per test.
+const { useMyTeamsMock, useTeamsMock } = vi.hoisted(() => ({ useMyTeamsMock: vi.fn(), useTeamsMock: vi.fn() }));
+vi.mock('@/hooks/use-my-teams', () => ({ useMyTeams: useMyTeamsMock }));
+vi.mock('@/hooks/use-teams', () => ({ useTeams: useTeamsMock }));
+useMyTeamsMock.mockReturnValue({ teams: [], isLoading: false, error: null, reload: vi.fn() });
+useTeamsMock.mockReturnValue({ teams: [], isLoading: false, error: null, reload: vi.fn() });
 
 // The real deferred-action hook runs against the mock pending-actions
 // service (matches `use-deferred-action.test.ts`'s own convention) so the
@@ -192,7 +202,7 @@ describe('InboxViewRail - delete is a deferred action (review round 2)', () => {
     });
 
     expect(setFilters).toHaveBeenCalledWith({
-      assignee: 'all', lifecycleStageIds: [], tagIds: [], channelIds: [], viewId: null,
+      assignee: 'all', lifecycleStageIds: [], tagIds: [], channelIds: [], viewId: null, teamId: null,
     });
     // The URL falls back to the All rail entry's key too (never left
     // pointing at the deleted view).
@@ -258,5 +268,100 @@ describe('InboxViewRail - delete is a deferred action (review round 2)', () => {
     });
     const cancelledView1 = await mockPendingActionsService.current('inbox_view', 'view-1');
     expect(cancelledView1.lastOutcome?.status).toBe('cancelled');
+  });
+});
+
+// Plan 28 (roadmap A8, D-A8-4) - Teams folded into this rail as a third
+// section (mirrors the retired standalone `TeamRail`'s own test coverage:
+// `use-conversations.test.ts` still covers the query-param side of
+// "selection -> URL").
+describe('InboxViewRail - Teams (plan 28, D-A8-4)', () => {
+  afterEach(() => {
+    useMyTeamsMock.mockReturnValue({ teams: [], isLoading: false, error: null, reload: vi.fn() });
+    useTeamsMock.mockReturnValue({ teams: [], isLoading: false, error: null, reload: vi.fn() });
+    window.history.replaceState(null, '', '/');
+  });
+
+  it('clears a stale ?view= param when a team entry is selected', async () => {
+    window.history.replaceState(null, '', '/?view=me');
+    withSession('usr-1', []);
+    useMyTeamsMock.mockReturnValue({
+      teams: [{ id: 'team-1', name: 'Sales' }], isLoading: false, error: null, reload: vi.fn(),
+    });
+    useTeamsMock.mockReturnValue({
+      teams: [{ id: 'team-1', name: 'Sales' }], isLoading: false, error: null, reload: vi.fn(),
+    });
+    renderRail([]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('rail-team:team-1'));
+    expect(new URLSearchParams(window.location.search).get('view')).toBeNull();
+  });
+
+  it('renders My teams with a nested Unassigned entry and selects on click', async () => {
+    withSession('usr-1', []);
+    useMyTeamsMock.mockReturnValue({
+      teams: [{ id: 'team-1', name: 'Sales' }], isLoading: false, error: null, reload: vi.fn(),
+    });
+    useTeamsMock.mockReturnValue({
+      teams: [{ id: 'team-1', name: 'Sales' }], isLoading: false, error: null, reload: vi.fn(),
+    });
+    const setFilters = vi.fn();
+    renderRail([], DEFAULT_FILTERS, setFilters);
+
+    expect(screen.getByTestId('rail-team:team-1')).toHaveTextContent('Sales');
+    // Not privileged (no conversations.assign) - no "All teams" group.
+    expect(screen.queryByText('All teams')).not.toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('rail-team:team-1'));
+    expect(setFilters).toHaveBeenLastCalledWith(
+      expect.objectContaining({ teamId: 'team-1', assignee: 'all', viewId: null }),
+    );
+
+    await user.click(screen.getByTestId('rail-team:team-1:unassigned'));
+    expect(setFilters).toHaveBeenLastCalledWith(
+      expect.objectContaining({ teamId: 'team-1', assignee: 'unassigned' }),
+    );
+  });
+
+  it('shows an All teams group for conversations.assign holders (a team not the caller\'s own)', () => {
+    withSession('usr-1', ['conversations.assign']);
+    useMyTeamsMock.mockReturnValue({
+      teams: [{ id: 'team-1', name: 'Sales' }], isLoading: false, error: null, reload: vi.fn(),
+    });
+    useTeamsMock.mockReturnValue({
+      teams: [{ id: 'team-1', name: 'Sales' }, { id: 'team-2', name: 'Support' }],
+      isLoading: false, error: null, reload: vi.fn(),
+    });
+    renderRail([]);
+    expect(screen.getByText('All teams')).toBeInTheDocument();
+    expect(screen.getByTestId('rail-team:team-2')).toHaveTextContent('Support');
+  });
+
+  it('hides the "All teams" group without conversations.assign, even when other teams exist', () => {
+    withSession('usr-1', []);
+    useMyTeamsMock.mockReturnValue({
+      teams: [{ id: 'team-1', name: 'Sales' }], isLoading: false, error: null, reload: vi.fn(),
+    });
+    useTeamsMock.mockReturnValue({
+      teams: [{ id: 'team-1', name: 'Sales' }, { id: 'team-2', name: 'Support' }],
+      isLoading: false, error: null, reload: vi.fn(),
+    });
+    renderRail([]);
+    expect(screen.queryByText('All teams')).not.toBeInTheDocument();
+    expect(screen.queryByText('Support')).not.toBeInTheDocument();
+  });
+
+  it('highlights the currently-selected team entry (via filters.teamId, not local state)', () => {
+    withSession('usr-1', []);
+    useMyTeamsMock.mockReturnValue({
+      teams: [{ id: 'team-1', name: 'Sales' }], isLoading: false, error: null, reload: vi.fn(),
+    });
+    useTeamsMock.mockReturnValue({
+      teams: [{ id: 'team-1', name: 'Sales' }], isLoading: false, error: null, reload: vi.fn(),
+    });
+    renderRail([], { ...DEFAULT_FILTERS, teamId: 'team-1', assignee: 'unassigned' });
+    expect(screen.getByTestId('rail-team:team-1:unassigned')).toHaveClass('bg-accent');
   });
 });

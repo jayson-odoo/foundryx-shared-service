@@ -7,6 +7,7 @@ import {
   expandViewFilter,
   parseRailKey,
   railKeyForStage,
+  railKeyForTeam,
   railSelectionPatch,
 } from './inbox-rail-entries';
 
@@ -46,19 +47,55 @@ describe('buildRailEntries', () => {
     const viewEntries = entries.filter((e) => e.kind === 'view');
     expect(viewEntries.map((e) => (e as { label: string }).label)).toEqual(['First', 'Second']);
   });
+
+  // Plan 28 (roadmap A8, D-A8-4) - each team contributes a main entry + a
+  // nested Unassigned entry, "mine" before "other" (My teams before All teams).
+  it('adds a main + Unassigned entry per team, scoped mine-then-other', () => {
+    const entries = buildRailEntries([], [], {
+      mine: [{ id: 'team-1', name: 'Sales' }],
+      other: [{ id: 'team-2', name: 'Support' }],
+    });
+    const teamEntries = entries.filter((e) => e.kind === 'team');
+    expect(teamEntries).toEqual([
+      { kind: 'team', key: 'team:team-1', teamId: 'team-1', unassigned: false, label: 'Sales', scope: 'mine' },
+      { kind: 'team', key: 'team:team-1:unassigned', teamId: 'team-1', unassigned: true, label: 'Sales - Unassigned', scope: 'mine' },
+      { kind: 'team', key: 'team:team-2', teamId: 'team-2', unassigned: false, label: 'Support', scope: 'other' },
+      { kind: 'team', key: 'team:team-2:unassigned', teamId: 'team-2', unassigned: true, label: 'Support - Unassigned', scope: 'other' },
+    ]);
+  });
 });
 
 describe('railSelectionPatch', () => {
   it('a default entry resets lifecycle/view selection', () => {
     expect(railSelectionPatch({ kind: 'default', key: 'me', label: 'Mine' })).toEqual({
-      assignee: 'me', lifecycleStageIds: [], tagIds: [], channelIds: [], viewId: null,
+      assignee: 'me', lifecycleStageIds: [], tagIds: [], channelIds: [], viewId: null, teamId: null,
     });
   });
 
   it('a lifecycle entry filters to that ONE stage and resets assignee/view', () => {
     expect(
       railSelectionPatch({ kind: 'lifecycle', key: railKeyForStage('stg-1'), stageId: 'stg-1', label: 'X', color: null }),
-    ).toEqual({ assignee: 'all', lifecycleStageIds: ['stg-1'], tagIds: [], channelIds: [], viewId: null });
+    ).toEqual({ assignee: 'all', lifecycleStageIds: ['stg-1'], tagIds: [], channelIds: [], viewId: null, teamId: null });
+  });
+
+  // Plan 28 - a team entry scopes to that team (+ Unassigned when nested) and
+  // resets the other rail-driven dimensions (lifecycle/view); a default,
+  // lifecycle, or view entry likewise clears `teamId` (never a hidden,
+  // un-clearable team scope left over after picking a different rail entry).
+  it('a team entry scopes to that team and clears lifecycle/view', () => {
+    expect(
+      railSelectionPatch({ kind: 'team', key: railKeyForTeam('team-1', false), teamId: 'team-1', unassigned: false, label: 'Sales', scope: 'mine' }),
+    ).toEqual({ assignee: 'all', lifecycleStageIds: [], tagIds: [], channelIds: [], viewId: null, teamId: 'team-1' });
+  });
+
+  it('a team\'s nested Unassigned entry scopes to that team AND assignee=unassigned', () => {
+    expect(
+      railSelectionPatch({ kind: 'team', key: railKeyForTeam('team-1', true), teamId: 'team-1', unassigned: true, label: 'Sales - Unassigned', scope: 'mine' }),
+    ).toEqual({ assignee: 'unassigned', lifecycleStageIds: [], tagIds: [], channelIds: [], viewId: null, teamId: 'team-1' });
+  });
+
+  it('a view entry clears a previously-active team scope', () => {
+    expect(railSelectionPatch({ kind: 'view', key: 'view-1', viewId: 'view-1', label: 'X', isShared: false }).teamId).toBeNull();
   });
 
   // F1 (round-3 codex triage): tagIds/channelIds are VIEW-ONLY dimensions -
@@ -102,6 +139,7 @@ describe('expandViewFilter', () => {
       unreplied: true,
       sort: 'longest_waiting',
       viewId: v.id,
+      teamId: null,
     });
   });
 

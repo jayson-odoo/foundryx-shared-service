@@ -12,6 +12,12 @@
  * equivalent here; the backend list route (`GET /omnichannel/contacts`)
  * fully supports both, so a view authored another way still filters
  * correctly server-side even though this rail can't build one.
+ *
+ * Plan 28 (roadmap A8, D-A8-4) adds a `team` entry kind - a Team Inbox scope
+ * alongside All/Mine/Unassigned. Team selection does NOT ride the `?view=`
+ * URL key scheme (`parseRailKey` below stays view/lifecycle/default-only) -
+ * it persists via `useConversations`' own `?team=`/`?assignee=` params, so
+ * `useInboxRailSelection.select()` skips `writeUrlKey` for a `team` entry.
  */
 import type { ConversationFilters } from '@/hooks/use-conversations';
 import type { InboxView, ThreadStatus } from '@/types/omnichannel';
@@ -22,14 +28,23 @@ export interface RailStage {
   color: string | null;
 }
 
+/** A team entry source (plan 28) - kept minimal (id/name) so this module
+ *  never imports the `Team` type just to re-shape two fields. */
+export interface RailTeam {
+  id: string;
+  name: string;
+}
+
 export type InboxRailEntry =
   // `key` mirrors `ConversationFilters.assignee` exactly ('me', not 'mine') so
   // there is no separate translation table between the rail and the filters.
   | { kind: 'default'; key: 'all' | 'me' | 'unassigned'; label: string }
   | { kind: 'lifecycle'; key: string; stageId: string; label: string; color: string | null }
-  | { kind: 'view'; key: string; viewId: string; label: string; isShared: boolean };
+  | { kind: 'view'; key: string; viewId: string; label: string; isShared: boolean }
+  | { kind: 'team'; key: string; teamId: string; unassigned: boolean; label: string; scope: 'mine' | 'other' };
 
 const LIFECYCLE_PREFIX = 'lifecycle:';
+const TEAM_PREFIX = 'team:';
 
 export function railKeyForStage(stageId: string): string {
   return `${LIFECYCLE_PREFIX}${stageId}`;
@@ -37,8 +52,15 @@ export function railKeyForStage(stageId: string): string {
 export function railKeyForView(viewId: string): string {
   return viewId;
 }
+export function railKeyForTeam(teamId: string, unassigned: boolean): string {
+  return unassigned ? `${TEAM_PREFIX}${teamId}:unassigned` : `${TEAM_PREFIX}${teamId}`;
+}
 
-export function buildRailEntries(stages: RailStage[], views: InboxView[]): InboxRailEntry[] {
+export function buildRailEntries(
+  stages: RailStage[],
+  views: InboxView[],
+  teams: { mine: RailTeam[]; other: RailTeam[] } = { mine: [], other: [] },
+): InboxRailEntry[] {
   const defaults: InboxRailEntry[] = [
     { kind: 'default', key: 'all', label: 'All' },
     { kind: 'default', key: 'me', label: 'Mine' },
@@ -54,7 +76,18 @@ export function buildRailEntries(stages: RailStage[], views: InboxView[]): Inbox
   const savedViews: InboxRailEntry[] = [...views]
     .sort((a, b) => a.sortOrder - b.sortOrder)
     .map((v) => ({ kind: 'view', key: railKeyForView(v.id), viewId: v.id, label: v.name, isShared: v.isShared }));
-  return [...defaults, ...lifecycle, ...savedViews];
+  const teamEntries = (list: RailTeam[], scope: 'mine' | 'other'): InboxRailEntry[] =>
+    list.flatMap((t) => [
+      { kind: 'team' as const, key: railKeyForTeam(t.id, false), teamId: t.id, unassigned: false, label: t.name, scope },
+      { kind: 'team' as const, key: railKeyForTeam(t.id, true), teamId: t.id, unassigned: true, label: `${t.name} - Unassigned`, scope },
+    ]);
+  return [
+    ...defaults,
+    ...lifecycle,
+    ...savedViews,
+    ...teamEntries(teams.mine, 'mine'),
+    ...teamEntries(teams.other, 'other'),
+  ];
 }
 
 function singleStatus(statuses: ThreadStatus[] | undefined): ThreadStatus | 'ALL' {
@@ -76,7 +109,7 @@ function singleStatus(statuses: ThreadStatus[] | undefined): ThreadStatus | 'ALL
 export function railSelectionPatch(entry: InboxRailEntry): Partial<ConversationFilters> {
   switch (entry.kind) {
     case 'default':
-      return { assignee: entry.key, lifecycleStageIds: [], tagIds: [], channelIds: [], viewId: null };
+      return { assignee: entry.key, lifecycleStageIds: [], tagIds: [], channelIds: [], viewId: null, teamId: null };
     case 'lifecycle':
       return {
         assignee: 'all',
@@ -84,9 +117,19 @@ export function railSelectionPatch(entry: InboxRailEntry): Partial<ConversationF
         tagIds: [],
         channelIds: [],
         viewId: null,
+        teamId: null,
       };
     case 'view':
-      return { viewId: entry.viewId };
+      return { viewId: entry.viewId, teamId: null };
+    case 'team':
+      return {
+        assignee: entry.unassigned ? 'unassigned' : 'all',
+        lifecycleStageIds: [],
+        tagIds: [],
+        channelIds: [],
+        viewId: null,
+        teamId: entry.teamId,
+      };
   }
 }
 
@@ -110,6 +153,7 @@ export function expandViewFilter(view: InboxView): Partial<ConversationFilters> 
     unreplied: f.unreplied ?? false,
     sort: f.sort ?? 'newest',
     viewId: view.id,
+    teamId: null,
   };
 }
 
