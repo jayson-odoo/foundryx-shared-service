@@ -34,6 +34,8 @@ function company(over: Partial<AutocountCompany> = {}): AutocountCompany {
     sinkConnectionId: 'conn-9',
     sorentoCompanyCode: 'SRT',
     createdAt: null,
+    sourceKind: 'api',
+    documentPrerequisites: [],
     ...over,
   };
 }
@@ -53,9 +55,7 @@ function task(over: Partial<AutocountEtlTask> = {}): AutocountEtlTask {
       comparedColumns: [],
       fromDate: null,
       docDateColumn: null,
-      lineKeyColumn: null,
-      lineProductColumn: null,
-      lineWarehouseColumn: null,
+      filterFormula: null,
       incrementalMinutes: 5,
       reconcileMode: 'dailyAt',
       reconcileHours: null,

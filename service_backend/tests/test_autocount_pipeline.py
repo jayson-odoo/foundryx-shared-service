@@ -1297,6 +1297,66 @@ def test_an_unknown_company_is_a_clean_404_not_a_500(client):
     assert "not found" in response.json()["detail"].lower()
 
 
+# ── mapping presets (sprint-5/02 S3, AC-02-16 "Use preset") ───────────────────
+
+
+def test_mapping_presets_are_database_substituted_for_a_document_entity(
+    client, session_factory, transports
+):
+    setup = session_factory()
+    company_id = _company(setup, transports, database_name="AED_PRESET_HTTP").id
+    setup.close()
+
+    response = client.get(
+        "/autocount/presets/sales_order?companyId=" + company_id, headers=_auth(client)
+    )
+    assert response.status_code == 200
+    presets = response.json()
+    assert len(presets) == 1
+    preset = presets[0]
+    assert preset["entityType"] == "sales_order"
+    assert "AED_PRESET_HTTP" in preset["headerQuery"]
+    assert "AED_PRESET_HTTP" in preset["lineQuery"]
+    assert preset["keyColumns"] == ["DocKey"]
+    assert preset["filterFormula"] is None
+
+
+def test_mapping_presets_is_empty_for_a_non_document_entity(client, session_factory, transports):
+    setup = session_factory()
+    company_id = _company(setup, transports, database_name="AED_PRESET_HTTP2").id
+    setup.close()
+
+    response = client.get(
+        "/autocount/presets/customer?companyId=" + company_id, headers=_auth(client)
+    )
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_mapping_presets_404s_an_unknown_company(client):
+    response = client.get(
+        "/autocount/presets/sales_order?companyId=nope", headers=_auth(client)
+    )
+    assert response.status_code == 404
+
+
+def test_the_spo_preset_filters_the_opposite_way_from_po(client, session_factory, transports):
+    setup = session_factory()
+    company_id = _company(setup, transports, database_name="AED_PRESET_HTTP3").id
+    setup.close()
+    headers = _auth(client)
+
+    po = client.get(
+        "/autocount/presets/purchase_order?companyId=" + company_id, headers=headers
+    ).json()[0]
+    spo = client.get(
+        "/autocount/presets/shipping_order?companyId=" + company_id, headers=headers
+    ).json()[0]
+    assert po["filterFormula"] == 'not(startswith(upper(trim(DocNo)), "SPO-"))'
+    assert spo["filterFormula"] == 'startswith(upper(trim(DocNo)), "SPO-")'
+    assert spo["entityType"] == "shipping_order"
+
+
 def test_approving_an_unknown_job_is_a_clean_404(client):
     response = client.post("/autocount/jobs/nope/approve", headers=_auth(client))
     assert response.status_code == 404
@@ -4530,3 +4590,73 @@ def test_the_formula_migration_adds_a_nullable_text_column():
     module.upgrade()
     assert "formula" in added
     assert added["formula"].nullable is True
+
+
+# ── Round 5 - the sink's HTTP timeout must come from settings ──────────────
+
+
+def test_the_sinks_http_timeout_comes_from_settings_not_a_hardcoded_30(
+    db, transports, sorento_sink, monkeypatch
+):
+    """``modules.autocount.sinks_sorento.SorentoSink`` hard-codes
+    ``timeout: float = 30.0`` - an operator whose Sorento endpoint is
+    slower than 30s (or who wants a SHORTER timeout to fail fast) has no
+    way to retune it without a code change. ``settings.
+    autocount_sink_timeout_seconds`` must exist (default 300s, floored at
+    30s exactly like ``autocount_page_size``'s own floor) and the sink the
+    REAL factory (``sorento_sink_from_connection``, resolved through
+    ``CompanyService``, exactly the path an approve/auto-push goes
+    through) builds must use it - never the hard-coded literal.
+
+    A read timeout must still surface as the existing batch-level
+    ``PushFailed`` ("The push failed before the consumer resolved it") -
+    a regression guard, not new behaviour: the generic ``except Exception``
+    in ``SyncService.push_batch`` already catches any raise from the sink,
+    ``httpx.ReadTimeout`` included.
+    """
+    from pydantic import ValidationError
+
+    from app.config import Settings
+    from app.config import settings as live_settings
+    from modules.autocount.services.sync_service import PushFailed
+
+    # ── the setting exists, defaults to 300s, and floors at 30s ──────────
+    monkeypatch.delenv("AUTOCOUNT_SINK_TIMEOUT_SECONDS", raising=False)
+    assert Settings().autocount_sink_timeout_seconds == 300
+
+    monkeypatch.setenv("AUTOCOUNT_SINK_TIMEOUT_SECONDS", "29")
+    with pytest.raises(ValidationError):
+        Settings()
+    monkeypatch.delenv("AUTOCOUNT_SINK_TIMEOUT_SECONDS", raising=False)
+
+    # ── the REAL factory's sink follows the LIVE setting, not 30.0 ───────
+    monkeypatch.setattr(
+        live_settings, "autocount_sink_timeout_seconds", 123, raising=False
+    )
+
+    company = _company(db, transports)
+    _point_at_sorento(db, company, _sorento_connection(db))
+    job = _staged_supplier_job(db, company, refs=("AED_VSOFT:1",))
+    sorento_sink.responder = _created
+
+    SyncService(db).approve(DEFAULT_TENANT_ID, job.id, actor_user_id="u1")
+
+    assert sorento_sink.requests, "the approve call must have reached the sink"
+    observed = sorento_sink.requests[-1].extensions.get("timeout") or {}
+    assert observed.get("read") == 123, (
+        f"expected the request's read timeout to follow "
+        f"settings.autocount_sink_timeout_seconds=123 (the LIVE "
+        f"sorento_sink_from_connection factory, no explicit timeout= "
+        f"passed) - got {observed!r}"
+    )
+
+    # ── a read timeout is STILL a clean, re-approvable PushFailed ────────
+    job2 = _staged_supplier_job(db, company, refs=("AED_VSOFT:9",))
+
+    def _timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    sorento_sink.responder = _timeout
+    with pytest.raises(PushFailed) as exc_info:
+        SyncService(db).approve(DEFAULT_TENANT_ID, job2.id)
+    assert "The push failed before the consumer resolved it" in str(exc_info.value)

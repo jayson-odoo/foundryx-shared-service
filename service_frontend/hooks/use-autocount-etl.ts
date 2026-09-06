@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/lib/api-client';
-import { readTaskError } from '@/lib/autocount-etl';
+import { readFieldErrors, readTaskError } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
   AutocountEtlSourceConfig,
@@ -35,17 +35,6 @@ export interface UseAutocountEtlTaskResult {
   /** Adopt a task returned by a lifecycle call (activate/pause/resume/run/preview). */
   apply: (task: AutocountEtlTask) => void;
   reload: () => void;
-}
-
-function readFieldErrors(detail: unknown): Record<string, string> {
-  if (!detail || typeof detail !== 'object') return {};
-  const bag = (detail as { fieldErrors?: unknown }).fieldErrors;
-  if (!bag || typeof bag !== 'object') return {};
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(bag as Record<string, unknown>)) {
-    if (typeof value === 'string') out[key] = value;
-  }
-  return out;
 }
 
 export function useAutocountEtlTask(
@@ -399,4 +388,22 @@ export function useSqlPreview(): UseSqlPreviewResult {
   }, []);
 
   return { state, run, reset };
+}
+
+/**
+ * A one-shot line fetch, distinct from `useSqlPreview` (sprint-5/02,
+ * AC-02-22): the Mapping tab's Simulate dialog picks ONE header preview row
+ * and fetches ITS lines by re-running the line query bound to that row's
+ * `:doc_key` - a separate call so it never disturbs the Query tab's own
+ * line-preview state (used for column discovery, always NULL-bound).
+ */
+export function useLineFetcher(): {
+  fetchLines: (connectionId: string, lineQuery: string, docKey: string) => Promise<AutocountSqlPreview>;
+} {
+  const fetchLines = useCallback(
+    (connectionId: string, lineQuery: string, docKey: string) =>
+      autocountService.previewSqlQuery(connectionId, lineQuery, { bindDocKey: true, docKey }),
+    [],
+  );
+  return { fetchLines };
 }

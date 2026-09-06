@@ -1,6 +1,6 @@
 import { renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AutocountEntityConfig } from '@/types/autocount';
+import type { AutocountEntityConfig, AutocountSourceKind } from '@/types/autocount';
 import { parseSyncSummary } from '@/types/autocount';
 import type { ListQuery } from '@/types/resource';
 
@@ -42,11 +42,16 @@ const onConfigureMapping = vi.fn();
 const onConfigureTask = vi.fn();
 const onChangeSource = vi.fn();
 
-function config(entities: AutocountEntityConfig[], companyActive = true) {
+function config(
+  entities: AutocountEntityConfig[],
+  companyActive = true,
+  sourceKind: AutocountSourceKind = 'api',
+) {
   return renderHook(() =>
     useAutocountEntitiesListConfig({
       entities,
       companyActive,
+      sourceKind,
       onSync,
       onEditLookback,
       onRefetch,
@@ -187,14 +192,47 @@ describe('entity source (plan 22 S2, AC-22-08)', () => {
     expect(onConfigureTask).toHaveBeenCalledWith(row);
   });
 
-  it('offers the guarded "Change source" on every row, gated on manage', () => {
+  it('offers the guarded "Change source" on every API-company row, gated on manage', () => {
     const c = config([entity()]);
     const change = c.actions.find((a) => a.id === 'change-source')!;
     expect(change.permission).toBe('autocount.companies.manage');
-    expect(change.isVisible).toBeUndefined();
+    expect(change.isVisible?.([entity()])).toBe(true);
     const row = entity();
     change.run([row], { reload: vi.fn() });
     expect(onChangeSource).toHaveBeenCalledWith(row);
+  });
+});
+
+describe('DB company - API-only actions hidden (plan sprint-5/01, AC-01-18)', () => {
+  const dbRow = entity({ entityType: 'customer', sourceImpl: 'sql_db', watermarkAt: null });
+
+  it('never offers "Edit first-run window" nor "Change source" on a DB company', () => {
+    const c = config([dbRow], true, 'db');
+    const edit = c.actions.find((a) => a.id === 'edit-lookback')!;
+    const change = c.actions.find((a) => a.id === 'change-source')!;
+    // Even before the first sync (where an API row WOULD offer the window edit).
+    expect(edit.isVisible?.([dbRow])).toBe(false);
+    expect(change.isVisible?.([dbRow])).toBe(false);
+  });
+
+  it('keeps configure-task, sync-now, configure-mapping and refetch-history on a DB company', () => {
+    const synced = { ...dbRow, watermarkAt: '2026-08-30T00:00:00Z' };
+    const c = config([synced], true, 'db');
+    const ids = c.actions.map((a) => a.id);
+    expect(ids).toEqual(
+      expect.arrayContaining(['configure-task', 'sync-now', 'configure-mapping', 'refetch-history']),
+    );
+    expect(c.actions.find((a) => a.id === 'configure-task')!.isVisible?.([synced])).toBe(true);
+    expect(c.actions.find((a) => a.id === 'refetch-history')!.isVisible?.([synced])).toBe(true);
+    expect(c.actions.find((a) => a.id === 'configure-mapping')!.isVisible).toBeUndefined();
+    expect(c.actions.find((a) => a.id === 'sync-now')!.isDisabled?.([synced])).toBe(false);
+  });
+
+  it('an API company\'s rows are unchanged (regression pin)', () => {
+    const apiRow = entity({ watermarkAt: null });
+    const c = config([apiRow], true, 'api');
+    expect(c.actions.find((a) => a.id === 'edit-lookback')!.isVisible?.([apiRow])).toBe(true);
+    expect(c.actions.find((a) => a.id === 'change-source')!.isVisible?.([apiRow])).toBe(true);
   });
 });
 

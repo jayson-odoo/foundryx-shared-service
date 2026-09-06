@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_STATUS_FORMULA,
+  LINE_AGGREGATES,
+  STATUS_VOCABULARY,
   activatePrerequisites,
   anchorErrorTitle,
   formatDurationMs,
@@ -19,6 +22,7 @@ import {
   validateReconcileAt,
   validateReconcileHours,
 } from './autocount-etl';
+import { evaluateFormula, validateFormula } from './autocount-formula';
 import type { AutocountSqlPreview, AutocountSqlSchema } from '@/types/autocount';
 
 const SCHEMA: AutocountSqlSchema = {
@@ -134,9 +138,7 @@ function task(
       comparedColumns: [],
       fromDate: null,
       docDateColumn: null,
-      lineKeyColumn: null,
-      lineProductColumn: null,
-      lineWarehouseColumn: null,
+      filterFormula: null,
       incrementalMinutes: 5,
       reconcileMode: 'dailyAt' as const,
       reconcileHours: null,
@@ -166,6 +168,8 @@ function company(over: Partial<import('@/types/autocount').AutocountCompany> = {
     sinkConnectionId: 'conn-9',
     sorentoCompanyCode: 'SRT',
     createdAt: null,
+    sourceKind: 'api',
+    documentPrerequisites: [],
     ...over,
   };
 }
@@ -378,5 +382,46 @@ describe('productDependencyWarning (plan 22 S4, AC-22-23)', () => {
         { entityType: 'unit_of_measure', etlStatus: 'active' },
       ]),
     ).toBeNull();
+  });
+});
+
+// ── sprint-5/02 - shipping_order is a document entity, line aggregates ──────
+
+describe('isDocumentEntity - sprint-5/02', () => {
+  it('treats shipping_order as a document entity', () => {
+    expect(isDocumentEntity('shipping_order')).toBe(true);
+  });
+  it('still true for sales_order/purchase_order, false otherwise', () => {
+    expect(isDocumentEntity('sales_order')).toBe(true);
+    expect(isDocumentEntity('purchase_order')).toBe(true);
+    expect(isDocumentEntity('customer')).toBe(false);
+  });
+});
+
+describe('LINE_AGGREGATES / STATUS_VOCABULARY / DEFAULT_STATUS_FORMULA (AC-02-07/08/09)', () => {
+  it('exposes exactly the five aggregate tokens', () => {
+    expect(LINE_AGGREGATES.map((a) => a.token)).toEqual([
+      'lines.count',
+      'lines.open_count',
+      'lines.ordered_sum',
+      'lines.fulfilled_sum',
+      'lines.outstanding_sum',
+    ]);
+  });
+  it('the status vocabulary is the fixed 5-word set', () => {
+    expect(STATUS_VOCABULARY).toEqual(['open', 'partial', 'fulfilled', 'closed', 'cancelled']);
+  });
+  it('the default status formula parses against its own variable set and never yields partial', () => {
+    const knownVars = ['Cancelled', ...LINE_AGGREGATES.map((a) => a.token)];
+    expect(validateFormula(DEFAULT_STATUS_FORMULA, knownVars)).toBeNull();
+    expect(
+      evaluateFormula(DEFAULT_STATUS_FORMULA, null, { Cancelled: 'T', 'lines.open_count': 3 }),
+    ).toBe('cancelled');
+    expect(
+      evaluateFormula(DEFAULT_STATUS_FORMULA, null, { Cancelled: 'F', 'lines.open_count': 0 }),
+    ).toBe('closed');
+    expect(
+      evaluateFormula(DEFAULT_STATUS_FORMULA, null, { Cancelled: 'F', 'lines.open_count': 2 }),
+    ).toBe('open');
   });
 });

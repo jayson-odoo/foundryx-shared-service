@@ -41,9 +41,11 @@ import {
   acReviewHref,
   acTaskHref,
   entityLabel,
+  sourceKindLabel,
 } from '../../components/autocount-meta';
 import { AddEntityControl } from './add-entity-control';
 import { DetailRow } from './detail-row';
+import { DocumentPrerequisiteCard } from './document-prerequisite-card';
 import { EntityLookbackDialog } from './entity-lookback-dialog';
 import { EntitySourceDialog } from './entity-source-dialog';
 import { SinkTargetSection } from './sink-target-section';
@@ -297,6 +299,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const entitiesConfig = useAutocountEntitiesListConfig({
     entities: detail?.entities ?? [],
     companyActive: detail?.company.isActive ?? false,
+    sourceKind: detail?.company.sourceKind ?? 'api',
     onSync,
     onEditLookback,
     onRefetch,
@@ -342,12 +345,19 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
                 </Badge>
               </DetailRow>
               <DetailRow label="Integration">
-                <Link
-                  href={`/settings/integrations/${company.connectionId}`}
-                  className="text-primary hover:underline"
-                >
-                  Open connection
-                </Link>
+                {/* The KIND states how the company is connected (AC-01-16);
+                    the link opens the one connection either way. */}
+                <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span data-testid="company-source-kind">
+                    {sourceKindLabel(company.sourceKind)}
+                  </span>
+                  <Link
+                    href={`/settings/integrations/${company.connectionId}`}
+                    className="text-primary hover:underline"
+                  >
+                    Open connection
+                  </Link>
+                </span>
               </DetailRow>
               <DetailRow label="Connected">
                 {company.createdAt ? formatDateTime(company.createdAt) : '-'}
@@ -399,8 +409,18 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
                   Syncing {entityLabel(syncing)}…
                 </div>
               )}
+              {/* A document whose masters are missing/inactive stays retryable -
+                  warned above the list, never blocked (AC-01-20). */}
+              <DocumentPrerequisiteCard
+                prerequisites={company.documentPrerequisites}
+                onAdd={canManage ? onAddEntity : undefined}
+              />
               {canManage && (
-                <AddEntityControl entities={detail?.entities ?? []} onAdd={onAddEntity} />
+                <AddEntityControl
+                  entities={detail?.entities ?? []}
+                  sourceKind={company.sourceKind}
+                  onAdd={onAddEntity}
+                />
               )}
               <ResourceList config={entitiesConfig} hideHeader />
             </div>

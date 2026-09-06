@@ -180,9 +180,10 @@ def _config(**overrides) -> Dict[str, object]:
         # Plan 22 S5 - documents-only, always present (None for a non-document
         # entity, exactly like `lineQuery`/`fromDate` above).
         "docDateColumn": None,
-        "lineKeyColumn": None,
-        "lineProductColumn": None,
-        "lineWarehouseColumn": None,
+        # sprint-5/02 (AC-02-05) - a document task's line fields are now real,
+        # operator-editable `ac_field_mapping` rows (scope='line'), not picker
+        # columns here. sprint-5/02 (AC-02-10, S3) - a document row-set filter.
+        "filterFormula": None,
         "incrementalMinutes": 15,
         "reconcileMode": "dailyAt",
         "reconcileHours": None,
@@ -415,6 +416,9 @@ def test_get_etl_task_returns_draft_defaults_for_a_configured_entity(client, ses
         "sourceConfig": _config(),
         # Read-only task state (plan 22 S2) - all empty on a never-saved task.
         "resultColumns": [],
+        # sprint-5/02 (AC-02-07) - a document entity's picked LINE aggregate
+        # columns. Empty for a non-document entity (customer has no lines).
+        "lineResultColumns": [],
         "lastPreviewAt": None,
         "lastPreviewFailedCount": None,
         "lastRunAt": None,
@@ -423,6 +427,9 @@ def test_get_etl_task_returns_draft_defaults_for_a_configured_entity(client, ses
         # Schedule (plan 22 S3) - NULL until the task is activated.
         "nextIncrementalAt": None,
         "nextReconcileAt": None,
+        # Continuation state (plan sprint-5/03, AC-03-21) - NULL when no
+        # paged pass is open.
+        "initialLoad": None,
     }
 
 

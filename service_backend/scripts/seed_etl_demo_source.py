@@ -21,6 +21,10 @@ normal way (Entities tab -> Add entity -> SQL Database source, pointed at this
 same Postgres / ``public.etl_demo_<table>``) - this script only ensures the
 company ROW exists; it does not seed entity configs (masters fan-out entities
 are added on demand via the "Add entity" affordance, plan 22 S4 AC-22-23).
+Since plan sprint-5/01 that is load-bearing, not just convenient: a company on a
+``sql_database`` connection IS a DB company (``sourceKind`` derives from the
+provider), so it must never carry API-path ``autocount_read`` seeds (AC-01-05/10)
+- Customer is born ``sql_db`` on its first query save, like any DB company.
 
 Creates ``public.etl_demo_<entity>`` tables **inside the Foundryx database
 itself**, so a `sql_database` connection pointed back at `foundryx_service`
@@ -630,25 +634,18 @@ def ensure_demo_company(tenant_slug: str = "default") -> str:
         companies.add(company)
         db.flush()
 
-        # Standard onboarding seeds the goods-received-note/supplier/customer
-        # entity configs (source_impl='autocount_read') + their DEFAULT_MAPPINGS
-        # - `create_from_connection` does this, but this rig deliberately
-        # bypasses that ceremony (no real AutoCount to sign in to), so it is
-        # replicated here directly (plan 22 S6 - E2E needs "Customer" reachable
-        # via the SAME "Change source" flow the S2 live-verify used on a real
-        # company, never a bespoke path). Seed-if-absent, so a re-run against an
-        # already-provisioned company is a no-op.
-        from modules.autocount.services.company_service import CompanyService
-
-        CompanyService(db).seed_company_defaults(tenant.id, company.id)
+        # Deliberately NO entity configs / mappings (plan sprint-5/01): a
+        # company on a `sql_database` connection is a DB company (`sourceKind`
+        # derives from the provider, AC-01-07) and must not carry the API-path
+        # `autocount_read` seeds (AC-01-05; GRN is not even available on one,
+        # AC-01-10). Customer is born `sql_db` on its first query save via the
+        # Entities tab's "Add entity" - exactly the product path.
         db.commit()
         print(
             f"Created company '{real_db_name}': {company.id} "
-            f"(sink=logging, connection={conn.id}), with the standard "
-            "goods_received_note/supplier/customer entity configs seeded.\n"
-            "Next: AutoCount -> this company -> Entities tab -> Customer -> "
-            "'...' -> Change source -> Database -> Configure database query, "
-            "pointed at 'public.etl_demo_<table>' above."
+            f"(sink=logging, connection={conn.id}), with no entity configs.\n"
+            "Next: AutoCount -> this company -> Entities tab -> Add entity -> "
+            "Customer -> Configure, pointed at 'public.etl_demo_<table>' above."
         )
         return company.id
     finally:
