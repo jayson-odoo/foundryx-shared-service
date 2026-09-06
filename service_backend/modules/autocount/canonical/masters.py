@@ -120,15 +120,19 @@ class CanonicalMaster(CanonicalRecord):
         ``extras``) stripped.
 
         A ``None``-valued key is OMITTED, never sent as ``null`` (Sorento
-        contract 2.1, live finding): on a MASTER, ``null`` means "clear this
-        field" and an absent key means "leave it alone" - every product was
-        shipping ``"list_price": null`` and every customer ``"credit_limit":
-        null`` on every push, silently clearing whatever Sorento already
-        held. A falsy but NOT-None value (``0``, ``""``, ``False``) is a real
-        value and stays. Safe unconditionally: 1.x/2.0 treat a present
-        ``null`` and an absent key the same way. Documents are OUT OF SCOPE
-        for this rule - a document's own ``sink_payload`` (``documents.py``)
-        is untouched and keeps sending ``status`` and friends as-is.
+        contract 2.1, ``PLAN-autocount-cross-repo-contract.md`` section 10):
+        under 2.1's ``model_fields_set`` writer a MASTER's ``null`` means
+        "clear this field" and an absent key means "leave it alone", so
+        every product shipping ``"list_price": null`` and every customer
+        ``"credit_limit": null`` on every push WOULD clear whatever Sorento
+        holds the moment 2.1 answers the contract endpoint. On Sorento main
+        (1.x/2.0) omitting the key changes nothing: an absent key still reads
+        as None and the writer blind-SETs NULL either way, so this is
+        behaviour-neutral there and bites only under 2.1. A falsy but
+        NOT-None value (``0``, ``""``, ``False``) is a real value and stays.
+        Documents are OUT OF SCOPE for this rule - a document's own
+        ``sink_payload`` (``documents.py``) is untouched and keeps sending
+        ``status`` and friends as-is.
         """
         data = self.model_dump(mode="json")
         return {
@@ -167,12 +171,15 @@ class CanonicalCustomer(CanonicalMaster):
 
     ``credit_limit`` stays a real model attribute (a mapping row can still map
     ``CreditLimit`` onto it for staging/diffing) but is DELIBERATELY absent
-    from ``SINK_FIELDS`` (Sorento contract 2.1, live finding). Sorento's own
-    ``CanonicalCustomer`` sets ``extra="forbid"`` and does not declare
-    ``credit_limit`` at all - 27/27 SIM customers came back a field-named 422
-    the moment it crossed the wire. Contract 1.x/2.0 simply ignore an unknown
-    field they do not reject, so dropping it is safe on every version, not
-    just 2.1.
+    from ``SINK_FIELDS`` (Sorento contract 2.1, D15). Sorento's
+    ``CanonicalCustomer`` on ``feat/ingest-parity`` (ref 39ddd8c0a, their PR
+    #699) sets ``extra="forbid"`` and does not declare ``credit_limit`` at all
+    - a field-named 422 the moment it crosses the wire. Proven against
+    Sorento's LOCAL ingest-parity lane (:8042, build b1c01aa2f), NOT Sorento
+    main: 27/27 SIM customers failed there. Sorento main still declares
+    ``credit_limit`` / ``payment_terms_*`` and treats null like absent, so
+    dropping the key is neutral there - which is why the removal is
+    unconditional (the ESB stops sending it BEFORE Sorento removes it).
     """
 
     entity_type: str = ENTITY_CUSTOMER

@@ -1603,11 +1603,11 @@ _MASTER_COMMON: Tuple[MappingRow, ...] = (
 # (AC-14-13).
 DEFAULT_SUPPLIER_MAPPING: Tuple[MappingRow, ...] = _MASTER_COMMON
 
-# Debtor → Sorento customers. Same core plus the three fields Debtor actually
-# carries and Sorento actually writes.
+# Debtor → Sorento customers. Same core plus the two fields Debtor actually
+# carries and Sorento actually writes (CreditLimit left with Sorento contract 2.1 -
+# `credit_limit` is no longer a sink field, see canonical/masters.py).
 DEFAULT_CUSTOMER_MAPPING: Tuple[MappingRow, ...] = _MASTER_COMMON + (
     MappingRow("Mobile", "phone_number", "string", SCOPE_HEADER),
-    MappingRow("CreditLimit", "credit_limit", "decimal", SCOPE_HEADER),
     MappingRow("TIN", "tax_id", "string", SCOPE_HEADER),
 )
 

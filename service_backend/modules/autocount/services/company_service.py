@@ -1385,7 +1385,9 @@ class CompanyService:
         # must stay a no-op sweep, never a spurious 422) and must not be
         # blocked here.
         if rows:
-            missing_required = sorted(required - {row.sorento_field for row in clean})
+            missing_required = sorted(
+                required - {row.sorento_field for row in clean if row.is_enabled}
+            )
             if missing_required:
                 raise AutocountServiceError(
                     f"The required Sorento field '{missing_required[0]}' is not mapped."
@@ -1530,7 +1532,9 @@ class CompanyService:
 
         #     !!  source_ref/product_ref/qty_ordered ARE REQUIRED THE MOMENT
         #         ANY LINE ROW IS SAVED.  !!  (AC-02-03.)
-        missing_required = sorted(required - {row.sorento_field for row in clean})
+        missing_required = sorted(
+                required - {row.sorento_field for row in clean if row.is_enabled}
+            )
         if missing_required:
             raise AutocountServiceError(
                 f"The required line field '{missing_required[0]}' is not mapped."
@@ -1800,8 +1804,28 @@ class CompanyService:
                     transform=row.transform,
                     scope=scope,
                     is_required=target in required,
-                    is_enabled=True,
+                    # Honour the draft's own flag (sprint-5/04 review): a
+                    # disabled draft row must preview exactly as it saves -
+                    # absent from the record - never as if it were enabled.
+                    is_enabled=row.is_enabled,
                     formula=formula,
                 )
             )
+        #     !!  REQUIRED MEANS ENABLED - SAME GATE AS THE SAVE.  !!
+        # (sprint-5/04 review.) A disabled row is dropped by the engine, so a
+        # required target covered ONLY by a disabled row is absent on the
+        # wire (a blacklisted supplier would activate under Sorento's
+        # ``is_active`` default). Mirrors ``_replace_header_mapping`` /
+        # ``_replace_line_mapping``: counted on ENABLED rows only, and only
+        # once this scope actually has draft rows (an empty slice - a master's
+        # line scope, a document draft with header rows only - is not a
+        # started mapping and must not fire).
+        if draft_rows:
+            missing_required = sorted(
+                required - {row.canonical_field for row in engine_rows if row.is_enabled}
+            )
+            if missing_required:
+                raise AutocountServiceError(
+                    f"The required Sorento {scope} field '{missing_required[0]}' is not mapped."
+                )
         return engine_rows

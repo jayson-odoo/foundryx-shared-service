@@ -48,6 +48,68 @@ def default_schema(bind: Any) -> Optional[str]:
     dialect = getattr(getattr(bind, "dialect", None), "name", "")
     return AUTOCOUNT_SCHEMA if dialect == "postgresql" else None
 
+def existing_columns(
+    bind: Any, table: str, *, schema: Optional[str]
+) -> Optional[frozenset]:
+    """The column names ``table`` ACTUALLY HAS on the connection in front of
+    us right now, or ``None`` when the table does not exist at all yet.
+
+        !!  Prod incident, 2026-09-06 - "a backfill runs at ANY point in
+            history, not just the day it was written."  !!
+    Every backfill in this file is called from TWO very different places: a
+    module Alembic migration (which by definition runs on a schema stuck at
+    THAT migration's own down_revision - every LATER migration's columns are
+    still missing) and ``update_tenant`` at HEAD (where every column already
+    exists). A prod deploy stuck mid-chain (App Store showed 0.1.0, stamp
+    stuck before 0007) proved a backfill written only for the HEAD shape is
+    unsafe at any earlier stamp: 0007/0008's ``backfill_etl_defaults`` named
+    ``ac_sync_run.added_count``/``updated_count`` - columns 0008 itself adds
+    - so replaying 0001->head on a fresh Postgres died in 0007 with
+    ``column "added_count" does not exist``, ``bootstrap_modules`` swallowed
+    the failure, and the container went "healthy" on a module stuck at 0.1.0.
+    A backfill must check what is ACTUALLY there before writing to it -
+    inspecting the live connection (never the ORM model, which always
+    reflects the code's current HEAD shape regardless of what migration is
+    running) is the only source of truth that stays correct at every stamp.
+
+    ``bind`` is whatever the caller already has in hand - a plain
+    ``Connection`` (Alembic's ``op.get_bind()``) or a ``Session``
+    (``update_tenant``'s ``db``) - so a ``Session`` is unwrapped to its OWN
+    current connection (``Session.connection()``), never to its engine:
+    ``sa.inspect(engine)`` checks a SECOND connection out of the pool, so the
+    inspection runs outside the session's transaction (blind to anything it
+    has not committed yet) and, under the suite's StaticPool SQLite where
+    both are the same DBAPI connection, returning that checkout to the pool
+    ROLLS BACK the session's uncommitted writes - a second sweep pass then
+    "touched" the same row again. Inspecting the session's connection keeps
+    the check inside the same transaction on every backend.
+
+    ``schema=None`` (the SQLite test path) ALSO checks every other schema
+    the connection knows about, not only the default one: conftest's
+    ``ac_``-prefixed tables live in an ATTACHED SQLite database (``omni``)
+    via ``schema_translate_map``, never in ``main`` - a raw, unqualified
+    ``UPDATE ac_company ...`` still finds them (SQLite's own name-resolution
+    searches every attached database), but ``Inspector.has_table(table,
+    schema=None)`` only looks at ``main`` and would otherwise report every
+    module table permanently missing under test, defeating every backfill
+    the moment this tolerance check shipped. Postgres never hits this branch
+    - every real caller passes the actual ``app_autocount`` schema.
+    """
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
+    inspector = sa.inspect(connectable)
+    if inspector.has_table(table, schema=schema):
+        return frozenset(col["name"] for col in inspector.get_columns(table, schema=schema))
+    if schema is not None:
+        return None
+    for candidate in inspector.get_schema_names():
+        if candidate in (None, "main"):
+            continue
+        if inspector.has_table(table, schema=candidate):
+            return frozenset(
+                col["name"] for col in inspector.get_columns(table, schema=candidate)
+            )
+    return None
+
 
 def backfill_sink_impl_defaults(
     bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
@@ -75,29 +137,55 @@ def backfill_sink_impl_defaults(
 def backfill_disable_credit_limit_mapping_rows(
     bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
 ) -> int:
-    """Disable every existing ``ac_field_mapping`` row that targets
+    """Disable every ENABLED ``customer`` ``ac_field_mapping`` row that targets
     ``credit_limit``. Returns the number of rows touched.
 
-    Sorento contract 2.1 (sprint-5/04, live finding): ``CanonicalCustomer.
-    SINK_FIELDS`` no longer carries ``credit_limit`` (Sorento's own model
-    forbids the key with a per-record 422 - 27/27 SIM customers failed
-    live). A tenant's ALREADY-SAVED mapping row that still targets it is now
-    inert (mapped, never sent) and would trip the mapping PUT guard on the
-    next save (an enabled row must target a field the entity still accepts).
-    Flipping it to ``is_enabled=False`` here, once, for every tenant/company,
-    means the next save finds a mapping already consistent with the new
-    accepted-fields set rather than surfacing a stale-row rejection out of
-    nowhere. Across ALL tenants/companies (never one), fills only rows still
-    ``is_enabled``, safe to run repeatedly, does **not** commit (Alembic's
-    connection or ``update_tenant`` owns that).
+    Sorento contract 2.1 (sprint-5/04): ``CanonicalCustomer.SINK_FIELDS`` no
+    longer carries ``credit_limit`` - Sorento's ``CanonicalCustomer`` on
+    ``feat/ingest-parity`` (their PR #699) sets ``extra="forbid"`` and does
+    not declare the field, so a payload naming it is a field-named 422. The
+    drill that found it ran against Sorento's LOCAL ingest-parity lane
+    (:8042, build b1c01aa2f, ``extra="forbid"``), NOT Sorento main: 27/27 SIM
+    customers failed there. A tenant's already-saved enabled row that still
+    targets ``credit_limit`` is a DEAD row after that change: mapped, never
+    sent (``sink_payload`` only emits ``SINK_FIELDS``), invisible in the
+    editor (the target left the accepted set, so the picker no longer offers
+    it) and pruned by ``delete_unknown`` on the next save. It does NOT trip
+    the mapping PUT guard - the guard validates only the targets the editor
+    submits, and the editor never submits a target it cannot show. The real
+    benefit of this sweep is narrower and still worth having: the stored
+    mapping table matches the accepted target set for every tenant WITHOUT
+    waiting for each operator's next save, and the App Store 0.4.0 -> 0.5.0
+    bump carries a visible, delivered change rather than a silent one.
+
+    ``entity_type = 'customer'`` only: the canonical name ``credit_limit``
+    is customer-specific today, but the sweep must never reach a row of
+    another entity that happens to share the name later. Idempotent (fills
+    only rows still ``is_enabled``), across ALL tenants/companies, does
+    **not** commit (Alembic's connection or ``update_tenant`` owns that).
+
+    Runs at ANY module stamp (module Alembic 0013 and ``update_tenant`` both
+    call it), so it checks what the live table actually has first - see
+    ``existing_columns`` - and is a no-op on a schema that does not carry
+    ``ac_field_mapping`` with ``is_enabled``/``entity_type``/``canonical_field``
+    yet.
     """
+    columns = existing_columns(bind, "ac_field_mapping", schema=schema)
+    if columns is None or not {"is_enabled", "entity_type", "canonical_field"} <= columns:
+        return 0
     prefix = f'"{schema}".' if schema else ""
     result = bind.execute(
         sa.text(
             f"UPDATE {prefix}ac_field_mapping SET is_enabled = :disabled "
-            f"WHERE canonical_field = :field AND is_enabled = :enabled"
+            f"WHERE canonical_field = :field AND entity_type = :entity_type "
+            f"AND is_enabled = :enabled"
         ),
-        {"disabled": False, "field": "credit_limit", "enabled": True},
+        {
+            "disabled": False,
+            "field": "credit_limit",
+            "entity_type": "customer",
+            "enabled": True,
+        },
     )
     return result.rowcount or 0
 
