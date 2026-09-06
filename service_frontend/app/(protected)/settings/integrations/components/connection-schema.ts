@@ -53,6 +53,26 @@ export function dependentDefault(
   return next;
 }
 
+/**
+ * The Sorento connection's contract-version select
+ * (`modules/autocount/sorento_provider.py`, `fix/sorento-contract-version-field`):
+ * a connection saved BEFORE the field existed has no stored value, and the
+ * sink then runs at contract 1. On edit that field prefills with that
+ * EFFECTIVE value, not blank: a blank required select would silently block
+ * every unrelated save of the connection, while "1" states the runtime truth
+ * without flipping anything - the operator still has to pick 2 explicitly.
+ * Scoped to this one key on purpose; every other field keeps the plain
+ * "stored value or blank" prefill (no new generic behaviour).
+ */
+export const SORENTO_CONTRACT_VERSION_KEY = 'sorentoContractVersion';
+const SORENTO_CONTRACT_VERSION_EFFECTIVE = '1';
+
+function storedOrEffective(f: ProviderField, config: Record<string, string>): string {
+  const stored = config[f.key];
+  if (stored !== undefined) return stored;
+  return f.key === SORENTO_CONTRACT_VERSION_KEY ? SORENTO_CONTRACT_VERSION_EFFECTIVE : '';
+}
+
 /** Values prefilled from an existing connection (secrets stay blank = keep). */
 export function valuesForConnection(
   provider: IntegrationProvider,
@@ -65,7 +85,7 @@ export function valuesForConnection(
   const credentials: Record<string, string> = {};
   for (const f of provider.fields) {
     if (isSecretField(f)) credentials[f.key] = '';
-    else config[f.key] = connection.config[f.key] ?? '';
+    else config[f.key] = storedOrEffective(f, connection.config);
   }
   return { provider: connection.provider, name: connection.name, config, credentials };
 }

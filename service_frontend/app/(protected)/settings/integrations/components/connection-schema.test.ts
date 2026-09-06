@@ -116,3 +116,64 @@ describe('connection-schema (blank-to-keep contract, plan 06 D6)', () => {
     expect(toConnectionInput(values).credentials).toEqual({});
   });
 });
+
+const sorento: IntegrationProvider = {
+  provider: 'sorento',
+  type: 'consumer',
+  title: 'Sorento',
+  description: '',
+  icon: 'upload-cloud',
+  testLabel: 'Test connection',
+  testTarget: null,
+  fields: [
+    { key: 'baseUrl', label: 'Sorento base URL', type: 'text', required: true },
+    {
+      key: 'sorentoContractVersion',
+      label: 'Contract version',
+      type: 'select',
+      required: true,
+      defaultValue: '2',
+      options: [
+        { value: '1', label: '1 (legacy)' },
+        { value: '2', label: '2' },
+      ],
+    },
+    { key: 'apiKey', label: 'API key', type: 'password', required: true, secret: true },
+  ],
+};
+
+describe('Sorento contract version on edit (fix/sorento-contract-version-field)', () => {
+  it('a connection saved before the field existed prefills the EFFECTIVE "1", not blank', () => {
+    const values = valuesForConnection(sorento, {
+      provider: 'sorento',
+      name: 'Sorento',
+      config: { baseUrl: 'https://sorento.example.com' },
+    });
+    expect(values.config).toEqual({
+      baseUrl: 'https://sorento.example.com',
+      sorentoContractVersion: '1',
+    });
+    // The prefilled value satisfies the required check, so an unrelated
+    // save of the connection is not blocked by a field the operator never set.
+    expect(requiredFieldErrors(sorento, values, false)).toEqual([]);
+    expect(connectionFormSchema.safeParse(values).success).toBe(true);
+  });
+
+  it('a stored "2" wins over the effective fallback', () => {
+    const values = valuesForConnection(sorento, {
+      provider: 'sorento',
+      name: 'Sorento',
+      config: { baseUrl: 'https://sorento.example.com', sorentoContractVersion: '2' },
+    });
+    expect(values.config.sorentoContractVersion).toBe('2');
+  });
+
+  it('a fresh Sorento connection still defaults the select to "2"', () => {
+    expect(defaultsForProvider(sorento).config.sorentoContractVersion).toBe('2');
+  });
+
+  it('the fallback is scoped to that key - other missing fields stay blank', () => {
+    const values = valuesForConnection(r2, { provider: 'r2', name: 'R2', config: { bucket: 'b' } });
+    expect(values.config).toEqual({ accountId: '', bucket: 'b', cdnBaseUrl: '' });
+  });
+});
