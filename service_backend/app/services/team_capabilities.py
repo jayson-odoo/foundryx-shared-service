@@ -19,12 +19,13 @@ FastAPI lifespan (`app/main.py`) and BOTH `app.module_loader` entry points
 (`load_modules` for the API process, `boot_module_hooks` for a Celery worker
 that never calls `load_modules`).
 """
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
 from app.module_platform import CapabilityDef, register_capability
 from app.repositories.team_repository import TeamRepository
+from app.workflow_engine.registry import register_option_provider
 
 PROVIDER_MODULE = "core"
 
@@ -75,6 +76,19 @@ def _teams_of_user(db: Session, tenant_id: str, payload: Optional[dict]) -> List
     return [{"id": t.id, "name": t.name} for t in teams]
 
 
+def _team_field_options(db: Session, tenant_id: str) -> List[Dict[str, Any]]:
+    """The generic `NodeField(type="team")` option provider (plan 28 S3,
+    registry.py's `register_option_provider` seam) - `[{id, name}]` of the
+    tenant's ACTIVE teams, reusing `_teams_list` rather than a second query.
+    Callers gate visibility on `teams.read` themselves (this function has no
+    permission concept - it is core-internal data access, like the other
+    capability handlers in this file)."""
+    return [
+        {"id": t["id"], "name": t["name"]}
+        for t in _teams_list(db, tenant_id, {"activeOnly": True})
+    ]
+
+
 def ensure_team_capabilities() -> None:
     """Idempotent boot-time registration (AC-TEM-13) - safe to call repeatedly
     from the API lifespan and from both module_loader entry points."""
@@ -104,3 +118,7 @@ def ensure_team_capabilities() -> None:
             handler=_teams_of_user,
         )
     )
+    # The generic canvas seam (plan 28 S3) - registered here, not in the
+    # workflow engine itself, because teams are core data; any consumer's
+    # `NodeField(type="team")` resolves through this without a module import.
+    register_option_provider("team", _team_field_options)

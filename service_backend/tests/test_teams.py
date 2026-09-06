@@ -617,3 +617,85 @@ def test_migration_revision_id_and_parent_and_no_collision():
             if match.group(1) == "b7c1d2e3f4a5":
                 other_children += 1
     assert other_children == 0
+
+
+# ── AC-TEM-34: GET /workflows/metadata exposes `teams` ───────────────────────
+# The generic `NodeField(type="team")` option-provider seam (plan 28 S3,
+# `registry.register_option_provider`) - registered by `team_capabilities.py`,
+# resolved by `WorkflowService._team_options`, gated by `teams.read` in the
+# router. Never another tenant's teams, never a 500 without the capability.
+
+
+def test_workflow_service_metadata_includes_teams_when_requested(client, session_factory):
+    from app.services.workflow_service import WorkflowService
+
+    h = _auth(client)
+    created = client.post(
+        "/teams", headers=h, json={"name": "Metadata Team", "members": []}
+    )
+    assert created.status_code == 201, created.text
+    team = created.json()
+
+    db = session_factory()
+    meta = WorkflowService(db).metadata(DEFAULT_TENANT_ID, include_teams=True)
+    db.close()
+
+    assert {"id": team["id"], "name": "Metadata Team"} in meta["teams"]
+
+
+def test_workflow_service_metadata_teams_empty_when_not_requested(client, session_factory):
+    from app.services.workflow_service import WorkflowService
+
+    h = _auth(client)
+    client.post("/teams", headers=h, json={"name": "Hidden Team", "members": []})
+
+    db = session_factory()
+    meta = WorkflowService(db).metadata(DEFAULT_TENANT_ID, include_teams=False)
+    db.close()
+
+    assert meta["teams"] == []
+
+
+def test_workflow_metadata_endpoint_gates_teams_on_permission(client, session_factory):
+    h = _auth(client)
+    created = client.post(
+        "/teams", headers=h, json={"name": "Endpoint Team", "members": []}
+    )
+    assert created.status_code == 201, created.text
+
+    # workflows.read alone (no teams.read) - the editor still loads, the
+    # picker is just empty (AC-TEM-34 - never a 403, never a peek at names).
+    limited = _grant_only(
+        client, session_factory, "wf-no-teams@foundryx.io", "pw12345678", keys=["workflows.read"]
+    )
+    res = client.get("/workflows/metadata", headers=limited)
+    assert res.status_code == 200, res.text
+    assert res.json()["teams"] == []
+
+    full = _grant_only(
+        client,
+        session_factory,
+        "wf-with-teams@foundryx.io",
+        "pw12345678",
+        keys=["workflows.read", "teams.read"],
+    )
+    res2 = client.get("/workflows/metadata", headers=full)
+    assert res2.status_code == 200, res2.text
+    assert any(t["name"] == "Endpoint Team" for t in res2.json()["teams"])
+
+
+def test_workflow_metadata_teams_tenant_scoped(client, session_factory):
+    """A caller never sees another tenant's teams via the metadata picker -
+    mirrors `test_workflow_metadata_ai_agents_is_tenant_scoped`."""
+    from app.services.workflow_service import WorkflowService
+
+    h = _auth(client)
+    client.post("/teams", headers=h, json={"name": "Own Team", "members": []})
+
+    other_tenant_id, _, _ = _provision_other_tenant(session_factory, slug="other-metadata-teams")
+
+    db = session_factory()
+    meta = WorkflowService(db).metadata(other_tenant_id, include_teams=True)
+    db.close()
+
+    assert meta["teams"] == []

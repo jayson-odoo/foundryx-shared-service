@@ -500,6 +500,7 @@ class ConversationService:
         *,
         assigned_user_id: Optional[str] = ...,
         assigned_team_id: Optional[str] = ...,
+        strategy_override: Optional[str] = None,
         status: Optional[str] = None,
         priority: Optional[str] = None,
         first_name: Optional[str] = ...,
@@ -517,6 +518,9 @@ class ConversationService:
         actor_id: Optional[str] = None,
         actor_external_agent_id: Optional[str] = None,
         external_connection_id: Optional[str] = None,
+        assigned_via_override: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        workflow_run_id: Optional[str] = None,
     ) -> ThreadItem:
         c = self.repo.get_by_id(contact_id, tenant_id)
         if c is None:
@@ -526,7 +530,12 @@ class ConversationService:
             prev_user_id = c.assigned_user_id
             prev_external_agent_id = c.assigned_external_agent_id
             prev_team_id = c.assigned_team_id
-            assigned_via = "manual"
+            # `assigned_via_override` (plan 28 S3) lets the workflow-engine
+            # action stamp `"workflow"` instead of the natural manual/
+            # team_strategy inference below - the ONLY other caller of this
+            # override is `omnichannel_assign_conversation`, never a client
+            # request (the router never accepts an `assignedVia` field).
+            assigned_via = assigned_via_override or "manual"
 
             if external_connection_id is not None:
                 # Embed principal: the assignee id is an EXTERNAL agent id - it
@@ -618,11 +627,16 @@ class ConversationService:
                                 )
                             new_user_id = self._validated_native_user_id(assigned_user_id, tenant_id)
                     else:
-                        # `<id>` alone - pick by the team's persisted strategy.
-                        # An empty roster is a SUCCESS (D-A8-11): team assigned,
-                        # user stays NULL (Team Unassigned).
-                        new_user_id = team_assignment_service.assign(self.db, c, assigned_team_id)
-                        assigned_via = "team_strategy"
+                        # `<id>` alone - pick by the team's persisted strategy
+                        # (or `strategy_override` - the workflow action's
+                        # per-run strategy override, §5.5). An empty roster is
+                        # a SUCCESS (D-A8-11): team assigned, user stays NULL
+                        # (Team Unassigned).
+                        new_user_id = team_assignment_service.assign(
+                            self.db, c, assigned_team_id, strategy_override=strategy_override
+                        )
+                        if assigned_via_override is None:
+                            assigned_via = "team_strategy"
                 else:
                     # Team omitted - `user_sent` is guaranteed True here (the
                     # outer `if` requires at least one of the two sent).
@@ -657,6 +671,16 @@ class ConversationService:
                         team_directory.resolve(self.db, tenant_id, new_team_id) or {}
                     ).get("name") if new_team_id else None
                     payload = {"teamId": new_team_id, "teamName": team_name, "assignedVia": assigned_via, "change": change}
+                    if assigned_via == "workflow":
+                        # AC-TEM-31/D-A8 attribution: a workflow run assigns
+                        # with actor=None (it is not a human's act) - the
+                        # feed instead identifies the RUN so the UI can render
+                        # "assigned by workflow <name>" (S4/S5 render this;
+                        # this layer only carries the ids).
+                        if workflow_id:
+                            payload["workflowId"] = workflow_id
+                        if workflow_run_id:
+                            payload["runId"] = workflow_run_id
                     if new_user_id or new_team_id:
                         if new_user_id:
                             payload["assigneeKind"] = "user"

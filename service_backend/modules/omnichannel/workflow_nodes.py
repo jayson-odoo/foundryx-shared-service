@@ -7,7 +7,11 @@ governance: hook via the predefined seam, no global-store injection).
 """
 from app.workflow_engine.registry import ActionDef, NodeField, NodeOutput, TriggerDef, register_action, register_trigger
 
-from .services.workflow_actions import omnichannel_get_contact, omnichannel_send_message
+from .services.workflow_actions import (
+    omnichannel_assign_conversation,
+    omnichannel_get_contact,
+    omnichannel_send_message,
+)
 from .services.workflow_test_data import build_test_payload, test_metadata
 
 MODULE_NAME = "omnichannel"
@@ -195,6 +199,73 @@ def register_omnichannel_workflow_nodes() -> None:
             outputs=[
                 NodeOutput("messageId", "Message id"),
                 NodeOutput("status", "Send status"),
+            ],
+        )
+    )
+    # Plan 28 S3 (roadmap A8, D-A8-5) - assign a conversation to a user, a
+    # team (by strategy), or unassign it. `teamId` uses the generic `"team"`
+    # NodeField type (resolved via `registry.get_option_provider("team")`,
+    # registered by CORE `team_capabilities.py` - this module never imports
+    # anything team-specific for the picker to work).
+    register_action(
+        ActionDef(
+            key="omnichannel.assign_conversation",
+            label="Assign Conversation",
+            description="Assign a conversation to a user, a team, or unassign it.",
+            icon="UserRoundCog",
+            category="Actions",
+            module=MODULE_NAME,
+            executor=omnichannel_assign_conversation,
+            fields=[
+                NodeField(
+                    key="contactId",
+                    label="Contact",
+                    type="text",
+                    required=True,
+                    mergeable=True,
+                ),
+                NodeField(
+                    key="mode",
+                    label="Assign to",
+                    type="select",
+                    required=True,
+                    options=[
+                        {"value": "user", "label": "A user"},
+                        {"value": "team", "label": "A team"},
+                        {"value": "unassign", "label": "Unassign"},
+                    ],
+                ),
+                NodeField(
+                    key="userId",
+                    label="User",
+                    type="text",
+                    required=True,
+                    mergeable=True,
+                    show_when=("mode", "user"),
+                ),
+                NodeField(
+                    key="teamId",
+                    label="Team",
+                    type="team",
+                    required=True,
+                    show_when=("mode", "team"),
+                ),
+                NodeField(
+                    key="strategy",
+                    label="Strategy",
+                    type="select",
+                    show_when=("mode", "team"),
+                    options=[
+                        {"value": "default", "label": "Team's saved strategy"},
+                        {"value": "round_robin", "label": "Round robin"},
+                        {"value": "least_open", "label": "Least open"},
+                    ],
+                ),
+            ],
+            outputs=[
+                NodeOutput("assignedUserId", "Assigned user id"),
+                NodeOutput("assignedTeamId", "Assigned team id"),
+                NodeOutput("assigned", "Assigned"),
             ],
         )
     )

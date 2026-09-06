@@ -7,6 +7,7 @@ core teams; `ConversationService.patch_thread`'s reworked assignee block
 implements the four combinations (§5.2); `ContactRepository.list_threads`
 gains `teamId`; the plan-27 `conversation_events` payload gains the team.
 """
+import pytest
 from sqlalchemy import event
 from sqlalchemy.sql import func
 
@@ -730,3 +731,253 @@ def test_core_team_delete_blocked_by_real_conversations_guard(client, session_fa
     client.patch(f"/omnichannel/contacts/{cid}", headers=h, json={"assignedTeamId": None})
     res = client.delete(f"/teams/{team['id']}", headers=h)
     assert res.status_code == 204, res.text
+
+
+# ── plan 28 S3: the workflow action `omnichannel.assign_conversation` ────────
+# AC-TEM-32..35. `omnichannel_get_contact`/`omnichannel_send_message` are
+# unit-tested the SAME way in `test_omnichannel_workflow_triggers.py` (direct
+# `(db, tenant_id, config, ctx)` calls) - this action follows the same shape.
+
+
+def _wf_ctx(workflow_id="wf_1", run_id="run_1") -> dict:
+    return {"_workflow.workflowId": workflow_id, "_workflow.runId": run_id}
+
+
+# ── AC-TEM-32: registration ───────────────────────────────────────────────────
+def test_assign_conversation_action_registered_with_fields():
+    from app.workflow_engine.registry import get_action
+
+    action = get_action("omnichannel.assign_conversation")
+    assert action is not None
+    assert action.module == "omnichannel"
+    by_key = {f.key: f for f in action.fields}
+
+    assert by_key["contactId"].required and by_key["contactId"].mergeable
+    assert by_key["mode"].required
+    assert {o["value"] for o in by_key["mode"].options} == {"user", "team", "unassign"}
+
+    assert by_key["userId"].show_when == ("mode", "user")
+    assert by_key["userId"].mergeable
+
+    assert by_key["teamId"].type == "team"
+    assert by_key["teamId"].show_when == ("mode", "team")
+
+    assert by_key["strategy"].show_when == ("mode", "team")
+    assert not by_key["strategy"].required
+    assert {o["value"] for o in by_key["strategy"].options} == {
+        "default",
+        "round_robin",
+        "least_open",
+    }
+
+    output_keys = {o.key for o in action.outputs}
+    assert {"assignedUserId", "assignedTeamId", "assigned"} <= output_keys
+
+
+# ── AC-TEM-33: module-inactive + cross-tenant rejection ──────────────────────
+def test_assign_conversation_module_inactive_rejected(session_factory):
+    from app.services.app_store_service import AppStoreService
+    from modules.omnichannel.services.workflow_actions import (
+        ActionError,
+        omnichannel_assign_conversation,
+    )
+
+    db = session_factory()
+    try:
+        ws = db.query(__import__("modules.omnichannel.models", fromlist=["Workspace"]).Workspace).first()
+        cid = _seed_contact(session_factory, ws.id)
+        AppStoreService(db).deactivate(DEFAULT_TENANT_ID, "omnichannel")
+        with pytest.raises(ActionError, match="not active"):
+            omnichannel_assign_conversation(
+                db, DEFAULT_TENANT_ID, {"contactId": cid, "mode": "unassign"}, _wf_ctx()
+            )
+    finally:
+        db.close()
+
+
+def test_assign_conversation_cross_tenant_rejected(session_factory):
+    from modules.omnichannel.services.workflow_actions import (
+        ActionError,
+        omnichannel_assign_conversation,
+    )
+
+    db = session_factory()
+    ws = db.query(__import__("modules.omnichannel.models", fromlist=["Workspace"]).Workspace).first()
+    cid = _seed_contact(session_factory, ws.id)
+    db.close()
+
+    db2 = session_factory()
+    try:
+        with pytest.raises(ActionError):
+            omnichannel_assign_conversation(
+                db2, "some-other-tenant", {"contactId": cid, "mode": "unassign"}, _wf_ctx()
+            )
+    finally:
+        db2.close()
+
+
+# ── mode=user / mode=team / mode=unassign, assigned_via=workflow attribution ─
+def test_assign_conversation_mode_user_sets_assignee_and_workflow_attribution(
+    client, session_factory
+):
+    from modules.omnichannel.services.workflow_actions import omnichannel_assign_conversation
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    member = _user(session_factory, "wf-user@foundryx.io")
+    cid = _seed_contact(session_factory, ws)
+
+    db = session_factory()
+    try:
+        out = omnichannel_assign_conversation(
+            db,
+            DEFAULT_TENANT_ID,
+            {"contactId": cid, "mode": "user", "userId": member},
+            _wf_ctx(workflow_id="wf_42", run_id="run_99"),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    assert out == {"assignedUserId": member, "assignedTeamId": None, "assigned": True}
+
+    events = client.get(f"/omnichannel/contacts/{cid}/events", headers=h).json()["data"]
+    assigned = next(e for e in events if e["eventType"] == "assigned")
+    assert assigned["payload"]["assignedVia"] == "workflow"
+    assert assigned["payload"]["workflowId"] == "wf_42"
+    assert assigned["payload"]["runId"] == "run_99"
+    assert assigned["actorUserId"] is None  # D-A8 pinned: no human actor
+
+
+def test_assign_conversation_mode_user_unknown_user_is_action_error(session_factory):
+    from modules.omnichannel.services.workflow_actions import (
+        ActionError,
+        omnichannel_assign_conversation,
+    )
+    from modules.omnichannel.models import Workspace
+
+    db = session_factory()
+    try:
+        ws = db.query(Workspace).first()
+        cid = _seed_contact(session_factory, ws.id)
+        with pytest.raises(ActionError) as exc:
+            omnichannel_assign_conversation(
+                db, DEFAULT_TENANT_ID, {"contactId": cid, "mode": "user", "userId": "nope"}, _wf_ctx()
+            )
+        # D-A8-5 pinned wording - no raw id embedded in the message.
+        assert "nope" not in str(exc.value)
+    finally:
+        db.close()
+
+
+# ── AC-TEM-35: team mode, no eligible member -> SUCCESS, assigned=false ─────
+def test_assign_conversation_mode_team_no_eligible_member_succeeds(client, session_factory):
+    from modules.omnichannel.services.workflow_actions import omnichannel_assign_conversation
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    team = _create_team(client, h, "Empty Roster Team")  # no members
+    cid = _seed_contact(session_factory, ws)
+
+    db = session_factory()
+    try:
+        out = omnichannel_assign_conversation(
+            db,
+            DEFAULT_TENANT_ID,
+            {"contactId": cid, "mode": "team", "teamId": team["id"]},
+            _wf_ctx(),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    assert out["assigned"] is False
+    assert out["assignedTeamId"] == team["id"]
+    assert out["assignedUserId"] is None
+
+    thread = client.get(f"/omnichannel/contacts/{cid}", headers=h).json()
+    assert thread["assignedTeamId"] == team["id"]
+    assert thread["assignedUserId"] is None
+
+
+def test_assign_conversation_mode_team_picks_eligible_member_with_strategy_override(
+    client, session_factory
+):
+    from modules.omnichannel.services.workflow_actions import omnichannel_assign_conversation
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    m1 = _user(session_factory, "wf-team-a@foundryx.io")
+    m2 = _user(session_factory, "wf-team-b@foundryx.io")
+    _add_workspace_member(session_factory, ws, m1)
+    _add_workspace_member(session_factory, ws, m2)
+    team = _create_team(client, h, "Strategy Team", member_ids=[m1, m2])
+    cid = _seed_contact(session_factory, ws)
+
+    db = session_factory()
+    try:
+        out = omnichannel_assign_conversation(
+            db,
+            DEFAULT_TENANT_ID,
+            {
+                "contactId": cid,
+                "mode": "team",
+                "teamId": team["id"],
+                "strategy": "round_robin",
+            },
+            _wf_ctx(),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    assert out["assigned"] is True
+    assert out["assignedTeamId"] == team["id"]
+    assert out["assignedUserId"] in {m1, m2}
+
+
+def test_assign_conversation_foreign_team_is_action_error(session_factory):
+    from modules.omnichannel.services.workflow_actions import (
+        ActionError,
+        omnichannel_assign_conversation,
+    )
+    from modules.omnichannel.models import Workspace
+
+    db = session_factory()
+    try:
+        ws = db.query(Workspace).first()
+        cid = _seed_contact(session_factory, ws.id)
+        with pytest.raises(ActionError) as exc:
+            omnichannel_assign_conversation(
+                db,
+                DEFAULT_TENANT_ID,
+                {"contactId": cid, "mode": "team", "teamId": "does-not-exist"},
+                _wf_ctx(),
+            )
+        assert "does-not-exist" not in str(exc.value)
+    finally:
+        db.close()
+
+
+def test_assign_conversation_mode_unassign_clears_both(client, session_factory):
+    from modules.omnichannel.services.workflow_actions import omnichannel_assign_conversation
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    member = _user(session_factory, "wf-unassign@foundryx.io")
+    cid = _seed_contact(session_factory, ws, assigned_user_id=member)
+
+    db = session_factory()
+    try:
+        out = omnichannel_assign_conversation(
+            db, DEFAULT_TENANT_ID, {"contactId": cid, "mode": "unassign"}, _wf_ctx()
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    assert out == {"assignedUserId": None, "assignedTeamId": None, "assigned": False}
+
+    events = client.get(f"/omnichannel/contacts/{cid}/events", headers=h).json()["data"]
+    unassigned = next(e for e in events if e["eventType"] == "unassigned")
+    assert unassigned["payload"]["assignedVia"] == "workflow"
