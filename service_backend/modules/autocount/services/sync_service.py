@@ -587,6 +587,7 @@ class SyncService:
             tenant_id=tenant_id,
             company_id=company_id,
             entity_type=entity_type,
+            job_id=job_id,
             summary=summary,
         ):
             return summary
@@ -736,6 +737,7 @@ class SyncService:
         tenant_id: str,
         company_id: str,
         entity_type: str,
+        job_id: str,
         summary: Dict[str, Any],
     ) -> bool:
         """The delete half of ``auto_push`` (plan 22 S3, AC-22-21). Routes
