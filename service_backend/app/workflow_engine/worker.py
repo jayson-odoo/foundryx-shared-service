@@ -49,6 +49,13 @@ celery_app.conf.beat_schedule = {
     # self-reschedule was lost to a crash (omnichannel Slice 4). Defined in this
     # worker (the sole beat host); guarded so a missing module is a no-op.
     "retry-due-webhooks": {"task": "webhooks.retry_due", "schedule": 60.0},
+    # Resume workflow runs parked by an omnichannel Ask-a-question / Wait step
+    # whose deadline passed (plan sprint-4/31 S4, D-A5-10/F8). Module-owned
+    # work, defined + scheduled HERE (the sole beat host) and guarded exactly
+    # like `webhooks.retry_due` so a missing module is a no-op. A 60s tick means
+    # a "1 hour" timeout fires between 60:00 and 61:00 - a deadline sweep, not a
+    # precise timer.
+    "omnichannel-wait-sweep": {"task": "omnichannel.wait_sweep", "schedule": 60.0},
     # Meetings calendar sync (sprint-5 S0) - a new event with a conference link
     # must surface within 60 s, so this is a minute tick like the rest. It only
     # enqueues for tenants that have the module active AND someone opted in.
@@ -198,6 +205,31 @@ def retry_due_webhooks_task() -> dict:
         logger.exception("webhook retry tick failed")
         db.rollback()
         return {"redriven": 0}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="omnichannel.wait_sweep")
+def omnichannel_wait_sweep_task() -> dict:
+    """Resume parked workflow runs whose wait deadline elapsed (plan 31 S4).
+    Failure-isolated; a no-op when the omnichannel module isn't installed.
+    Needs the module-registered workflow nodes booted - the resumed run
+    executes IN THIS PROCESS."""
+    from app.database import SessionLocal
+
+    try:
+        from modules.omnichannel.services.workflow_waits import sweep_due_waits
+    except ImportError:
+        return {"resumed": 0, "discarded": 0}
+
+    _ensure_module_nodes()
+    db = SessionLocal()
+    try:
+        return sweep_due_waits(db)
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("omnichannel wait sweep tick failed")
+        db.rollback()
+        return {"resumed": 0, "discarded": 0}
     finally:
         db.close()
 

@@ -422,6 +422,12 @@ export interface WorkflowInput {
 
 // ---- runs ----
 
+/** Load state of `GET /workflows/metadata`, which backs the node palette's
+ * registry gate (plan 31 S3 review B-4). The palette renders a skeleton while
+ * it loads and an inline error state when it fails, instead of a silently
+ * empty catalog (review round 2, R-2). */
+export type WorkflowCatalogStatus = 'loading' | 'ready' | 'error';
+
 export type WorkflowRunStatus =
   | 'pending'
   | 'running'

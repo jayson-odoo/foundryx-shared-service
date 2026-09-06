@@ -116,7 +116,12 @@ def prune_runs(db: Session, *, now: Optional[datetime] = None) -> int:
     (Postgres ON DELETE CASCADE vs SQLite's pragma being off in tests). Returns
     the total number of runs deleted."""
     from app.config import settings
-    from app.models.workflow import WorkflowRun, WorkflowRunNode, WorkflowSettings
+    from app.models.workflow import (
+        RUN_WAITING,
+        WorkflowRun,
+        WorkflowRunNode,
+        WorkflowSettings,
+    )
 
     now = now or datetime.now(timezone.utc)
     default_days = settings.workflow_run_retention_days
@@ -130,15 +135,24 @@ def prune_runs(db: Session, *, now: Optional[datetime] = None) -> int:
     for tenant_id in tenant_ids:
         days = overrides.get(tenant_id, default_days)
         cutoff = now - timedelta(days=days)
+        # A `waiting` run is PARKED, not history - retention never deletes it
+        # (or its module wait row would point at nothing, AC-WFP-52). It ages
+        # out normally once it resumes, times out or is cancelled.
         old_run_ids = db.query(WorkflowRun.id).filter(
-            WorkflowRun.tenant_id == tenant_id, WorkflowRun.created_at < cutoff
+            WorkflowRun.tenant_id == tenant_id,
+            WorkflowRun.created_at < cutoff,
+            WorkflowRun.status != RUN_WAITING,
         )
         db.query(WorkflowRunNode).filter(
             WorkflowRunNode.run_id.in_(old_run_ids.scalar_subquery())
         ).delete(synchronize_session=False)
         deleted += (
             db.query(WorkflowRun)
-            .filter(WorkflowRun.tenant_id == tenant_id, WorkflowRun.created_at < cutoff)
+            .filter(
+                WorkflowRun.tenant_id == tenant_id,
+                WorkflowRun.created_at < cutoff,
+                WorkflowRun.status != RUN_WAITING,
+            )
             .delete(synchronize_session=False)
         )
     db.commit()

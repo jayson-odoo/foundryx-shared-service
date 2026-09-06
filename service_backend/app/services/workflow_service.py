@@ -15,6 +15,7 @@ from app.models.workflow import (
     RUN_PENDING,
     RUN_RUNNING,
     RUN_CANCELLED,
+    RUN_WAITING,
     TRIGGER_MANUAL,
     Workflow,
     WorkflowRun,
@@ -611,9 +612,17 @@ class WorkflowService:
         run = self.repo.get_run(run_id, tenant_id)
         if run is None:
             raise WorkflowNotFound()
-        if run.status not in (RUN_PENDING, RUN_RUNNING):
-            raise WorkflowError("Only pending or running runs can be cancelled.")
+        if run.status not in (RUN_PENDING, RUN_RUNNING, RUN_WAITING):
+            raise WorkflowError("Only pending, running or waiting runs can be cancelled.")
+        if run.status == RUN_WAITING:
+            # AC-WFP-52: cancelling a parked run also drops whatever module row
+            # indexes it (omnichannel's `workflow_waits`) - core stays generic.
+            from app.workflow_engine.parking import run_wait_cleanup
+
+            run_wait_cleanup(self.db, run)
         run.status = RUN_CANCELLED
+        run.paused_node_id = None
+        run.resume_state_json = None
         run.finished_at = _now()
         self.db.commit()
         self.db.refresh(run)

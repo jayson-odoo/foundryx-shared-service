@@ -13,6 +13,7 @@ from app.workflow_engine.registry import ActionDef, NodeField, NodeOutput, Trigg
 from .services.workflow_actions import (
     omnichannel_add_comment,
     omnichannel_add_tag,
+    omnichannel_ask_question,
     omnichannel_assign_conversation,
     omnichannel_close_conversation,
     omnichannel_get_contact,
@@ -21,6 +22,7 @@ from .services.workflow_actions import (
     omnichannel_send_message,
     omnichannel_update_field,
     omnichannel_update_lifecycle,
+    omnichannel_wait,
 )
 from .services.workflow_test_data import build_test_payload, test_metadata
 
@@ -128,8 +130,13 @@ def _delete_fires_on_workflow_deleted(db, ev: Dict[str, Any]) -> None:
     if not workflow_id or not tenant_id:
         return
     from .services.workflow_fire_store import delete_for_workflow
+    from .services.workflow_waits import delete_for_workflow as delete_waits_for_workflow
 
     delete_for_workflow(db, tenant_id, workflow_id)
+    # AC-WFP-52: a deleted workflow's runs cascade away, so the wait rows that
+    # index them must go too - otherwise the sweep would keep finding rows whose
+    # run no longer exists.
+    delete_waits_for_workflow(db, tenant_id, workflow_id)
 
 
 # ── conversation_opened ──────────────────────────────────────────────────────
@@ -714,6 +721,14 @@ def register_omnichannel_workflow_nodes() -> None:
 
     register_event_subscriber(_delete_fires_on_workflow_deleted)
 
+    # Cancelling a parked run drops its wait row (AC-WFP-52) - core calls this
+    # generically through `parking.run_wait_cleanup`, never importing the module.
+    from app.workflow_engine.parking import register_wait_cleanup
+
+    from .services.workflow_waits import delete_for_run as delete_waits_for_run
+
+    register_wait_cleanup(delete_waits_for_run)
+
     register_action(
         ActionDef(
             key="omnichannel.get_contact",
@@ -965,5 +980,126 @@ def register_omnichannel_workflow_nodes() -> None:
                 NodeField(key="body", label="Comment", type="textarea", required=True, mergeable=True),
             ],
             outputs=[NodeOutput("messageId", "Message id")],
+        )
+    )
+    # ── plan sprint-4/31 S4 (A5b parking steps) ──────────────────────────────
+    # Both PARK the run (`WorkflowPaused`) instead of returning an output; the
+    # resume supplies the outputs below. Field-for-field mirror of the frontend
+    # catalog entries (`lib/workflow-catalog.ts`) - the palette gates on
+    # `metadata.registeredNodeTypes`, so these entries only appear once this
+    # registration exists (B-4).
+    register_action(
+        ActionDef(
+            key="omnichannel.ask_question",
+            label="Ask a question",
+            description="Send a message and wait for the contact to answer.",
+            icon="HelpCircle",
+            category="Actions",
+            module=MODULE_NAME,
+            destructive=True,
+            executor=omnichannel_ask_question,
+            ports=("answer", "timeout"),
+            # D-A5-7: two runs answering the same contact would race the single
+            # wait row, so publish REFUSES a non-serialized graph carrying this
+            # node (parity with the frontend `validateDefinition`).
+            requires_serialized=True,
+            fields=[
+                NodeField(key="contactId", label="Contact", type="text", required=True, mergeable=True),
+                NodeField(
+                    key="mode",
+                    label="Message type",
+                    type="select",
+                    options=[
+                        {"value": "text", "label": "Text message"},
+                        {"value": "template", "label": "Approved template"},
+                    ],
+                ),
+                NodeField(
+                    key="message", label="Message", type="textarea", required=True,
+                    mergeable=True, show_when=("mode", "text"),
+                ),
+                NodeField(
+                    key="templateId", label="Template", type="whatsappTemplate", required=True,
+                    show_when=("mode", "template"),
+                ),
+                NodeField(
+                    key="templateVariables", label="Template variables", type="templateParams",
+                    show_when=("mode", "template"),
+                ),
+                NodeField(
+                    key="answerType",
+                    label="Answer type",
+                    type="select",
+                    required=True,
+                    options=[
+                        {"value": "text", "label": "Text"},
+                        {"value": "choice", "label": "Choice"},
+                        {"value": "number", "label": "Number"},
+                        {"value": "email", "label": "Email"},
+                        {"value": "phone", "label": "Phone"},
+                    ],
+                ),
+                NodeField(
+                    key="choices", label="Choices", type="choiceList", required=True,
+                    show_when=("answerType", "choice"),
+                ),
+                NodeField(
+                    key="retryLimit",
+                    label="Retry limit",
+                    type="select",
+                    options=[
+                        {"value": "0", "label": "0"},
+                        {"value": "1", "label": "1"},
+                        {"value": "2", "label": "2"},
+                        {"value": "3", "label": "3"},
+                    ],
+                ),
+                NodeField(key="retryMessage", label="Re-ask message", type="textarea", mergeable=True),
+                NodeField(key="timeoutValue", label="Timeout", type="text", required=True),
+                NodeField(
+                    key="timeoutUnit",
+                    label="Timeout unit",
+                    type="select",
+                    required=True,
+                    options=[
+                        {"value": "minutes", "label": "Minutes"},
+                        {"value": "hours", "label": "Hours"},
+                        {"value": "days", "label": "Days"},
+                    ],
+                ),
+            ],
+            outputs=[
+                NodeOutput("answer", "Answer"),
+                NodeOutput("answerRaw", "Answer (raw message)"),
+                NodeOutput("answerKey", "Answer key"),
+                NodeOutput("timedOut", "Timed out"),
+                NodeOutput("reason", "Reason"),
+            ],
+        )
+    )
+    register_action(
+        ActionDef(
+            key="omnichannel.wait",
+            label="Wait",
+            description="Pause the run for a fixed duration before continuing.",
+            icon="Clock",
+            category="Logic",
+            module=MODULE_NAME,
+            executor=omnichannel_wait,
+            fields=[
+                NodeField(key="waitValue", label="Duration", type="text", required=True),
+                NodeField(
+                    key="waitUnit",
+                    label="Duration unit",
+                    type="select",
+                    required=True,
+                    options=[
+                        {"value": "minutes", "label": "Minutes"},
+                        {"value": "hours", "label": "Hours"},
+                        {"value": "days", "label": "Days"},
+                    ],
+                ),
+            ],
+            outputs=[NodeOutput("resumedAt", "Resumed at")],
         )
     )

@@ -12,6 +12,7 @@ import { useForm, type UseFormReturn } from 'react-hook-form';
 import { toast } from '@/lib/toast';
 import type {
   Workflow,
+  WorkflowCatalogStatus,
   WorkflowDefinition,
   WorkflowManualInput,
   WorkflowMetadata,
@@ -141,6 +142,11 @@ export function useWorkflowForm(
   const [docDirty, setDocDirty] = useState(false);
   const [templateOptions, setTemplateOptions] = useState<TemplateOption[]>([]);
   const [metadata, setMetadata] = useState<WorkflowMetadata>({ entities: [] });
+  // The node palette gates itself on `metadata.registeredNodeTypes` (B-4), so
+  // a failed/slow metadata call must not read as "this tenant has no nodes"
+  // (review round 2, R-2) - the palette shows a skeleton, then a failure state.
+  const [catalogStatus, setCatalogStatus] =
+    useState<WorkflowCatalogStatus>('loading');
   const [testSources, setTestSources] = useState<
     WorkflowOmnichannelTestSource[]
   >([]);
@@ -171,8 +177,14 @@ export function useWorkflowForm(
       .catch(() => undefined);
     workflowMetadataService
       .getMetadata()
-      .then(setMetadata)
-      .catch(() => undefined);
+      .then((loaded) => {
+        setMetadata(loaded);
+        setCatalogStatus('ready');
+      })
+      .catch(() => {
+        setCatalogStatus('error');
+        toast.error('Could not load the workflow node catalog.');
+      });
   }, []);
 
   useEffect(() => {
@@ -642,6 +654,7 @@ export function useWorkflowForm(
                 canManage={canManage && !isNew}
                 templateOptions={templateOptions}
                 metadata={metadata}
+                catalogStatus={catalogStatus}
                 canCode={canCode}
                 canHttp={canHttp}
                 busy={busy}
@@ -739,6 +752,7 @@ export function useWorkflowForm(
     canManage,
     canCode,
     canHttp,
+    catalogStatus,
     debugBundle,
     debugInEditor,
     doc,

@@ -8,6 +8,7 @@
 import { Bug, CloudUpload, Play, RefreshCw, Rocket, X } from 'lucide-react';
 import type {
   Workflow,
+  WorkflowCatalogStatus,
   WorkflowDefinition,
   WorkflowMetadata,
 } from '@/types/workflows';
@@ -27,6 +28,9 @@ export interface WorkflowEditorTabProps {
   canManage: boolean;
   templateOptions: TemplateOption[];
   metadata: WorkflowMetadata;
+  /** Load state of `GET /workflows/metadata` - the canvas palette renders a
+   * skeleton while it loads and a failure state when it errors (R-2). */
+  catalogStatus?: WorkflowCatalogStatus;
   canCode?: boolean;
   /** Gates the HTTP request node (`workflows.http`), same as `canCode`. */
   canHttp?: boolean;
@@ -48,6 +52,7 @@ export function WorkflowEditorTab({
   canManage,
   templateOptions,
   metadata,
+  catalogStatus = 'ready',
   canCode = true,
   canHttp = true,
   busy,
@@ -172,6 +177,7 @@ export function WorkflowEditorTab({
         editing={editing}
         templateOptions={templateOptions}
         metadata={metadata}
+        catalogStatus={catalogStatus}
         canCode={canCode}
         canHttp={canHttp}
         currentWorkflowId={workflow.id || undefined}

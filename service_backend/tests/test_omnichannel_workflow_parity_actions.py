@@ -1010,3 +1010,141 @@ def test_every_a5_action_rejects_when_module_inactive(session_factory):
                 fn(db, DEFAULT_TENANT_ID, config, empty_ctx)
     finally:
         db.close()
+
+
+# ── Plan 31 review round 1 B-3 regression (round-2 residual R-1) ────────────
+# `workflow.trigger` dispatches the CHILD run on the SAME session under eager
+# execution. Before the fix, the child's `run_workflow` cleared the session's
+# `workflow_origin` unconditionally on exit, so every event the PARENT emitted
+# from a LATER node carried NO origin - an empty loop-guard chain and a reset
+# depth. The parent then re-triggered itself off its own write.
+def _publish_graph(db, doc, name):
+    svc = WorkflowService(db)
+    wf = svc.create(DEFAULT_TENANT_ID, name=name, description="", draft=doc, actor_id=None)
+    svc.set_active(wf.id, DEFAULT_TENANT_ID, True)
+    svc.publish(wf.id, DEFAULT_TENANT_ID, actor_id=None)
+    db.refresh(wf)
+    return wf
+
+
+def _parent_doc(trigger_type, trigger_config, child_id, tag_id, workspace_id):
+    """[trigger] -> [workflow.trigger child] -> [omnichannel.add_tag]."""
+    return {
+        "schemaVersion": 2,
+        "nodes": [
+            {"id": "trg", "kind": "trigger", "type": trigger_type, "config": trigger_config},
+            {
+                "id": "chain_1",
+                "kind": "action",
+                "type": "workflow.trigger",
+                "config": {"workflowId": child_id, "contactId": "{{ trigger.contact.id }}"},
+            },
+            {
+                "id": "tag_1",
+                "kind": "action",
+                "type": "omnichannel.add_tag",
+                "config": {
+                    "contactId": "{{ trigger.contact.id }}",
+                    "workspaceId": workspace_id,
+                    "tagId": tag_id,
+                },
+            },
+        ],
+        "edges": [
+            {"id": "e1", "source": "trg", "target": "chain_1"},
+            {"id": "e2", "source": "chain_1", "target": "tag_1"},
+        ],
+    }
+
+
+def test_workflow_trigger_child_run_preserves_the_parent_origin(session_factory):
+    """A parent that chains a child and THEN writes must not re-trigger itself:
+    the tag its own `add_tag` step adds emits `updated` carrying the PARENT's
+    origin, so the loop guard skips it. Exactly one parent run, one child run."""
+    from modules.omnichannel.models import Contact, ContactTag
+    from modules.omnichannel.services.contact_profile_service import ContactProfileService
+
+    cid = _seed_thread(session_factory, messages=[])
+    db = session_factory()
+    try:
+        ws = _default_workspace(db)
+        trigger_tag = _add_tag(db, ws.id, name="Trigger tag")
+        follow_tag = _add_tag(db, ws.id, name="Follow-up")
+        db.commit()
+        child = _publish_manual(db, name="B3 child")
+        # Parent fires on ANY tag being added (the same event class its own
+        # add_tag step emits) - the shape that actually cascades without the fix.
+        parent = _publish_graph(
+            db,
+            _parent_doc("omnichannel.contact_tag_added", {}, child.id, follow_tag, ws.id),
+            "B3 parent",
+        )
+        parent_id, child_id = parent.id, child.id
+    finally:
+        db.close()
+
+    db = session_factory()
+    try:
+        contact = db.query(Contact).filter(Contact.id == cid).first()
+        ContactProfileService(db).patch(contact, tag_ids=[trigger_tag])
+        db.commit()
+    finally:
+        db.close()
+
+    db = session_factory()
+    try:
+        parent_runs = _runs_for(db, parent_id)
+        assert len(parent_runs) == 1, [r.trigger_payload_json for r in parent_runs]
+        assert parent_runs[0].status == RUN_SUCCESS
+        assert len(_runs_for(db, child_id)) == 1
+        tags = {t.name for t in db.query(ContactTag).all()}
+        assert {"Trigger tag", "Follow-up"} <= tags
+    finally:
+        db.close()
+
+
+def test_conversation_closed_parent_chains_a_child_then_tags_once(session_factory):
+    """The plan-31 review's own reproduction shape: a `conversation_closed`
+    parent whose graph is [workflow.trigger] -> [add_tag]. One parent run, one
+    child run, and the parent's later write still carries its origin."""
+    from modules.omnichannel.models import Contact
+
+    cid = _seed_thread(session_factory, messages=[])
+    db = session_factory()
+    try:
+        ws = _default_workspace(db)
+        tag_id = _add_tag(db, ws.id, name="Closed follow-up")
+        reason_id = _add_close_reason(db, ws.id, name="Resolved")
+        db.commit()
+        child = _publish_manual(db, name="Closed child")
+        parent = _publish_graph(
+            db,
+            _parent_doc("omnichannel.conversation_closed", {}, child.id, tag_id, ws.id),
+            "Closed parent",
+        )
+        parent_id, child_id = parent.id, child.id
+    finally:
+        db.close()
+
+    db = session_factory()
+    try:
+        from modules.omnichannel.services.conversation_service import ConversationService
+
+        ConversationService(db).close_thread(
+            cid, DEFAULT_TENANT_ID, close_reason_id=reason_id, note=None, actor=None
+        )
+    finally:
+        db.close()
+
+    db = session_factory()
+    try:
+        parent_runs = _runs_for(db, parent_id)
+        assert len(parent_runs) == 1
+        assert parent_runs[0].status == RUN_SUCCESS
+        assert len(_runs_for(db, child_id)) == 1
+        contact = db.query(Contact).filter(Contact.id == cid).first()
+        from modules.omnichannel.services.contact_tag_service import ContactTagService
+
+        assert ContactTagService(db).ids_for_contact(contact.id, DEFAULT_TENANT_ID) == [tag_id]
+    finally:
+        db.close()

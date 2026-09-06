@@ -86,6 +86,12 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+# Public alias - any producer that puts record facts / a context snapshot into a
+# JSON run column must coerce them first (a datetime fact once 500'd user-create
+# AFTER the user committed). Kept as one implementation, not a second copy.
+json_safe = _json_safe
+
+
 def set_run_origin(db: Session, *, run_id: str, workflow_id: str, depth: int) -> None:
     """Tag the session so any entity event emitted while this run executes
     carries the originating chain (loop guard). Cleared by ``clear_run_origin``."""

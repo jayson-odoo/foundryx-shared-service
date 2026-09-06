@@ -698,6 +698,51 @@ class WorkflowContactFire(OmniBase):
     )
 
 
+class WorkflowWait(OmniBase):
+    """A parked workflow run's module-side index (plan sprint-4/31 S4, §5.4).
+
+    Core owns the park itself (`workflow_runs.status='waiting'` +
+    `resume_state_json`); THIS row is the omnichannel-specific index from a
+    contact (or just a deadline) back to that parked run, plus the answer spec
+    and retry counters an Ask-a-question step needs.
+
+    `kind='question'` rows carry `contact_id`/`workspace_id` and are UNIQUE per
+    (tenant, contact) - D-A5-9, one open question per contact. `kind='delay'`
+    rows (a plain Wait step) carry NEITHER: they have no contact, so their NULL
+    `contact_id` never collides with the unique constraint and a plain Wait can
+    never block (or be resumed by) an unrelated question.
+
+    `run_id`/`workflow_id` are core `public` row ids held as plain columns
+    (BL-030 - no cross-schema FK) and are ALWAYS resolved tenant-scoped.
+    """
+
+    __tablename__ = "workflow_waits"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, index=True)
+    contact_id = Column(String, ForeignKey("contacts.id"), nullable=True)
+    run_id = Column(String, nullable=False, index=True)
+    workflow_id = Column(String, nullable=False, index=True)
+    node_id = Column(String, nullable=False)
+    kind = Column(String, nullable=False, default="question")
+    # {answerType, choices[], retryLimit, retryMessage, question} - rendered at
+    # park time (the run context is not available when an inbound answer lands).
+    answer_spec_json = Column(JSON(none_as_null=True), nullable=True)
+    retry_count = Column(Integer, nullable=False, default=0)
+    deadline_at = Column(UTCDateTime(), nullable=False, index=True)
+    is_test = Column(Boolean, nullable=False, default=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "contact_id", name="uq_workflow_wait_contact"),
+        Index("ix_workflow_waits_due", "tenant_id", "deadline_at"),
+    )
+
+
 class EmbedJti(OmniBase):
     """Single-use ledger for embed assertion ``jti`` values - plan 11H Slice 2
     (AC-11H-05). An assertion may be exchanged at ``/embed/session`` exactly once;

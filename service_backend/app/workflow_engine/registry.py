@@ -153,6 +153,13 @@ class ActionDef:
     # Optional extra permission gate beyond ``workflows.manage`` (e.g.
     # ``workflows.http``), checked at publish like ``workflows.code``.
     permission: Optional[str] = None
+    # True = the action PARKS the run keyed by something outside it (a contact),
+    # so two concurrent runs of the same workflow would race that key. Publish
+    # then REFUSES a graph carrying it unless `execution.mode = "serialized"`
+    # with a correlation key (plan sprint-4/31 D-A5-7, AC-WFP-51) - the same
+    # rule stateful AI outputs already carry, expressed on the registry instead
+    # of a hardcoded node-type check in `definition_issues`.
+    requires_serialized: bool = False
 
 
 _TRIGGERS: Dict[str, TriggerDef] = {}

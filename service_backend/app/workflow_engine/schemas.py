@@ -168,6 +168,22 @@ def definition_issues(
         issues.append(
             "Stateful AI Agent outputs require serialized execution and a Correlation key."
         )
+    # Registry-driven parking rule (plan sprint-4/31 S4, D-A5-7/AC-WFP-51):
+    # an action that PARKS the run keyed by a contact needs serialized
+    # execution, or two runs would race the single wait row. Message text is
+    # pinned in parity with the frontend `validateDefinition`.
+    parking_labels = []
+    for node in doc.nodes:
+        if node.kind != "action":
+            continue
+        action = get_action(node.type)
+        if action is not None and action.requires_serialized:
+            parking_labels.append(action.label)
+    if parking_labels and (
+        execution is None or execution.mode != "serialized" or not correlation_key
+    ):
+        for label in sorted(set(parking_labels)):
+            issues.append(f"{label} requires serialized execution and a Correlation key.")
     if trigger and any(e.target == trigger.id for e in doc.edges):
         issues.append("The trigger cannot have an incoming connection.")
 

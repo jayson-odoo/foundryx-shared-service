@@ -552,7 +552,12 @@ def uninstall_tenant(db: Session, tenant_id: str) -> None:
     """
     from app.status_engine.scoped import delete_scope
 
-    from .services import lifecycle_service
+    from .services import lifecycle_service, workflow_waits
+
+    # AC-WFP-54: a run this tenant parked on an omnichannel wait can never be
+    # resumed once the module is gone - cancel it through the CORE seam BEFORE
+    # the generic sweep below wipes the wait rows that point at it.
+    workflow_waits.cancel_parked_runs_for_tenant(db, tenant_id)
 
     for ws in db.query(Workspace).filter(Workspace.tenant_id == tenant_id).all():
         delete_scope(db, lifecycle_service.ENTITY_TYPE, tenant_id, ws.id)

@@ -156,3 +156,39 @@ describe('NodePalette - registeredNodeTypes gates the palette (plan 31 S3 review
     expect(screen.getByTestId('palette-if')).toBeInTheDocument();
   });
 });
+
+/**
+ * Plan 31 review round 2, R-2: the palette gates itself on the metadata call's
+ * `registeredNodeTypes`, so a slow/failed call must never read as "this tenant
+ * has no nodes" - it shows a skeleton, then an explicit failure state.
+ */
+describe('NodePalette catalog load state (R-2)', () => {
+  it('renders a skeleton while the node catalog is loading', () => {
+    isActiveMock.mockReturnValue(true);
+    renderPalette({ catalogStatus: 'loading', registeredNodeTypes: undefined });
+
+    expect(screen.getByTestId('node-palette-loading')).toBeInTheDocument();
+    expect(screen.queryByTestId('node-palette')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('palette-search')).not.toBeInTheDocument();
+  });
+
+  it('renders an explicit failure state when the node catalog fails', () => {
+    isActiveMock.mockReturnValue(true);
+    renderPalette({ catalogStatus: 'error', registeredNodeTypes: undefined });
+
+    expect(screen.getByTestId('node-palette-error')).toBeInTheDocument();
+    expect(
+      screen.getByText('The node catalog could not be loaded.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('palette-manual')).not.toBeInTheDocument();
+  });
+
+  it('renders the catalog once it is ready', () => {
+    isActiveMock.mockReturnValue(true);
+    renderPalette({ catalogStatus: 'ready' });
+
+    expect(screen.getByTestId('node-palette')).toBeInTheDocument();
+    expect(screen.queryByTestId('node-palette-loading')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('node-palette-error')).not.toBeInTheDocument();
+  });
+});

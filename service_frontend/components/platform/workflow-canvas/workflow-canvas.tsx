@@ -50,6 +50,7 @@ import {
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import type {
+  WorkflowCatalogStatus,
   WorkflowDefinition,
   WorkflowMetadata,
   WorkflowNodeConfig,
@@ -116,6 +117,9 @@ export interface WorkflowCanvasProps {
    * itself from the `workflow.trigger` picker and backs the self-trigger
    * publish-parity check (plan 31 S3). */
   currentWorkflowId?: string;
+  /** Load state of `GET /workflows/metadata` - drives the palette's skeleton /
+   * failure state (review round 2, R-2). */
+  catalogStatus?: WorkflowCatalogStatus;
   debug?: WorkflowDebugBundle | null;
 }
 
@@ -150,6 +154,7 @@ export function WorkflowCanvas({
   canCode = true,
   canHttp = true,
   currentWorkflowId,
+  catalogStatus = 'ready',
 }: WorkflowCanvasProps) {
   const deniedPermissions = useMemo(
     () => deniedNodePermissions({ code: canCode, http: canHttp }),
@@ -504,6 +509,7 @@ export function WorkflowCanvas({
                 canCode={canCode}
                 canHttp={canHttp}
                 registeredNodeTypes={metadata.registeredNodeTypes}
+                catalogStatus={catalogStatus}
                 onAdd={(t) => addNodeAt(t)}
               />
             ) : (

@@ -1,6 +1,7 @@
 """Workflow-engine action executors for omnichannel (plan sprint-4/17,
 extended plan sprint-4/31 S2 with the "simple steps" - assign, tags, field,
-lifecycle, open/close, comment, template send).
+lifecycle, open/close, comment, template send; S4 with the two PARKING steps -
+ask a question, wait).
 
 Module code depending on its own repos/services - not core depending on a
 module (the module registers these into the core workflow-engine registry via
@@ -16,6 +17,7 @@ immediately (matching the UI's synchronous commit) rather than deferring to
 the run's end-of-loop commit - AC-WFP-32 documents that an already-committed
 step is never rolled back by a later node's failure.
 """
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -119,14 +121,20 @@ def _rendered_kv_values(rows: Any, ctx: Dict[str, Any]) -> List[str]:
     return out
 
 
-def omnichannel_send_message(
-    db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[str, Any]
-) -> Dict[str, Any]:
-    """AC-WFP-31/32: `mode: text | template` over the ONE `MessageService.
-    send_message` path - template mode reuses its own approval + placeholder-
-    count validation, text mode is unchanged from plan 17."""
-    _require_module_active(db, tenant_id)
-    contact_id = _contact_id(config, ctx)
+def _send_configured_message(
+    db: Session,
+    tenant_id: str,
+    config: Dict[str, Any],
+    ctx: Dict[str, Any],
+    *,
+    contact_id: str,
+    text_override: Optional[str] = None,
+) -> Any:
+    """The ONE send path both `omnichannel.send_message` and
+    `omnichannel.ask_question` use (`mode: text | template`) - template mode
+    reuses `MessageService.send_message`'s own approval + placeholder-count
+    validation, text mode merge-renders `config.message` unless the caller
+    supplies `text_override` (the Ask node appends its numbered choices)."""
     mode = str(config.get("mode") or "text")
     sandbox_only = ctx.get("_workflow.sandboxOnly") is True
     channel_override = str(ctx.get("trigger.channel.id") or "") or None
@@ -147,7 +155,11 @@ def omnichannel_send_message(
                 sandbox_only=sandbox_only,
             )
         else:
-            text = render_field(config.get("message"), ctx)
+            text = (
+                text_override
+                if text_override is not None
+                else render_field(config.get("message"), ctx)
+            )
             if not text.strip():
                 raise ActionError("Message is empty after merging.")
             item = MessageService(db).send_message(
@@ -162,6 +174,18 @@ def omnichannel_send_message(
         raise ActionError("Contact not found.") from exc
     except SendRejected as exc:
         raise ActionError(exc.message) from exc
+    return item
+
+
+def omnichannel_send_message(
+    db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[str, Any]
+) -> Dict[str, Any]:
+    """AC-WFP-31/32: `mode: text | template` over the ONE `MessageService.
+    send_message` path - template mode reuses its own approval + placeholder-
+    count validation, text mode is unchanged from plan 17."""
+    _require_module_active(db, tenant_id)
+    contact_id = _contact_id(config, ctx)
+    item = _send_configured_message(db, tenant_id, config, ctx, contact_id=contact_id)
     return {"messageId": item.id, "status": item.deliveryStatus or "QUEUED"}
 
 
@@ -462,3 +486,151 @@ def omnichannel_add_comment(
     except SendRejected as exc:
         raise ActionError(exc.message) from exc
     return {"messageId": item.id}
+
+
+# ── omnichannel.ask_question / omnichannel.wait (AC-WFP-43/44/50/53) ────────
+
+
+def _parked_run_ids(ctx: Dict[str, Any]) -> tuple:
+    """The parking preconditions every suspending node shares: a real persisted
+    run to park, and a walk that can actually be resumed (never a debug pass)."""
+    run_id = str(ctx.get("_workflow.runId") or "")
+    workflow_id = str(ctx.get("_workflow.workflowId") or "")
+    node_id = str(ctx.get("_workflow.nodeId") or "")
+    if not (run_id and workflow_id and node_id):
+        raise ActionError("This step can only run inside a workflow run.")
+    if ctx.get("_workflow.canPark") is not True:
+        raise ActionError("This step cannot be executed on its own - run the whole workflow.")
+    return run_id, workflow_id, node_id
+
+
+def omnichannel_ask_question(
+    db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[str, Any]
+) -> Dict[str, Any]:
+    """AC-WFP-43/44/51/53: send the configured question through the ONE send
+    path, write ONE wait row keyed (tenant, workspace, contact) with the answer
+    spec + deadline, then PARK the run (`WorkflowPaused`). It never returns an
+    output - the resume supplies `answer`/`answerRaw`/`answerKey`/`timedOut`/
+    `reason` when the contact replies or the deadline passes."""
+    from app.workflow_engine.parking import WorkflowPaused
+
+    from . import workflow_waits as waits
+
+    _require_module_active(db, tenant_id)
+    run_id, workflow_id, node_id = _parked_run_ids(ctx)
+    contact = _load_contact(db, tenant_id, config, ctx)
+
+    answer_type = str(config.get("answerType") or "text").strip().lower()
+    if answer_type not in waits.ANSWER_TYPES:
+        raise ActionError("Answer type is not configured.")
+    choices = [str(c).strip() for c in (config.get("choices") or []) if str(c).strip()]
+    if answer_type == "choice":
+        if not choices:
+            raise ActionError("Choices are not configured.")
+        if len(choices) > waits.MAX_CHOICES:
+            raise ActionError(f"A question can offer at most {waits.MAX_CHOICES} choices.")
+    try:
+        retry_limit = int(str(config.get("retryLimit") or 0))
+    except ValueError as exc:
+        raise ActionError("Retry limit must be a number.") from exc
+    if retry_limit < 0 or retry_limit > waits.MAX_RETRY_LIMIT:
+        raise ActionError(f"Retry limit must be between 0 and {waits.MAX_RETRY_LIMIT}.")
+
+    # Deadline BEFORE the send: a misconfigured timeout must not leave the
+    # contact holding a question nobody will ever resume.
+    deadline = datetime.now(timezone.utc) + waits.duration_to_delta(
+        config.get("timeoutValue"), config.get("timeoutUnit")
+    )
+    # One open question per contact (D-A5-9) - checked BEFORE sending, so a
+    # refused second Ask never messages the contact.
+    if waits.find_open_question(db, tenant_id, contact.id) is not None:
+        raise ActionError("This contact already has an open question.")
+
+    spec: Dict[str, Any] = {
+        "answerType": answer_type,
+        "choices": choices,
+        "retryLimit": retry_limit,
+        "retryMessage": render_field(config.get("retryMessage"), ctx),
+        "question": render_field(config.get("message"), ctx),
+        # The resume path has no run context - pin what a re-ask needs now.
+        "channelId": str(ctx.get("trigger.channel.id") or "") or None,
+        "sandboxOnly": ctx.get("_workflow.sandboxOnly") is True,
+    }
+    sent_text = waits.question_text(spec)
+    # Template mode sends the approved template as authored (Meta owns the
+    # body) - the numbered choice list is a TEXT-mode affordance only; either
+    # way the answer matcher accepts the label or its number.
+    item = _send_configured_message(
+        db, tenant_id, config, ctx, contact_id=contact.id,
+        text_override=sent_text if str(config.get("mode") or "text") != "template" else None,
+    )
+
+    try:
+        waits.open_wait(
+            db,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            workflow_id=workflow_id,
+            node_id=node_id,
+            kind=waits.KIND_QUESTION,
+            deadline_at=deadline,
+            contact=contact,
+            answer_spec=spec,
+            is_test=ctx.get("_workflow.isTest") is True,
+        )
+    except waits.WaitError as exc:
+        raise ActionError(str(exc)) from exc
+    db.commit()
+
+    raise WorkflowPaused(
+        output={
+            "waiting": True,
+            "kind": waits.KIND_QUESTION,
+            "question": sent_text,
+            "answerType": answer_type,
+            "choices": choices,
+            "retryLimit": retry_limit,
+            "messageId": item.id,
+            "timeoutAt": deadline.isoformat().replace("+00:00", "Z"),
+        }
+    )
+
+
+def omnichannel_wait(
+    db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[str, Any]
+) -> Dict[str, Any]:
+    """AC-WFP-50: park the run on a bare deadline. The wait row carries NO
+    contact, so an inbound message never shortens it - only the beat sweep
+    resumes it, on the node's single out port."""
+    from app.workflow_engine.parking import WorkflowPaused
+
+    from . import workflow_waits as waits
+
+    _require_module_active(db, tenant_id)
+    run_id, workflow_id, node_id = _parked_run_ids(ctx)
+    try:
+        delta = waits.duration_to_delta(config.get("waitValue"), config.get("waitUnit"))
+    except waits.WaitError as exc:
+        raise ActionError(str(exc)) from exc
+    deadline = datetime.now(timezone.utc) + delta
+    try:
+        waits.open_wait(
+            db,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            workflow_id=workflow_id,
+            node_id=node_id,
+            kind=waits.KIND_DELAY,
+            deadline_at=deadline,
+            is_test=ctx.get("_workflow.isTest") is True,
+        )
+    except waits.WaitError as exc:
+        raise ActionError(str(exc)) from exc
+    db.commit()
+    raise WorkflowPaused(
+        output={
+            "waiting": True,
+            "kind": waits.KIND_DELAY,
+            "resumeAt": deadline.isoformat().replace("+00:00", "Z"),
+        }
+    )

@@ -1242,8 +1242,9 @@ def test_metadata_members_excludes_foreign_tenant_and_trashed_users(session_fact
 # ── plan 31 S3 review B-4: registeredNodeTypes gates the palette ───────────
 def test_metadata_registered_node_types_lists_every_registered_trigger_and_action(session_factory):
     """The frontend catalog filters itself to this list (B-4) so an
-    unregistered node type (ask_question/wait/business_hours/http.request -
-    S4/S5) is never offered before its backend ActionDef/TriggerDef lands."""
+    unregistered node type (business_hours/http.request - S5) is never offered
+    before its backend ActionDef/TriggerDef lands. `ask_question`/`wait` joined
+    the registry in S4."""
     db = session_factory()
     try:
         metadata = WorkflowService(db).metadata(DEFAULT_TENANT_ID)
@@ -1260,16 +1261,17 @@ def test_metadata_registered_node_types_lists_every_registered_trigger_and_actio
             "omnichannel.send_message",
             "workflow.trigger",
             "manual",
-        ):
-            assert key in registered, f"{key} missing from registeredNodeTypes"
-        # NOT registered until S4/S5 - must be ABSENT.
-        for key in (
+            # S4 (A5b parking steps).
             "omnichannel.ask_question",
             "omnichannel.wait",
+        ):
+            assert key in registered, f"{key} missing from registeredNodeTypes"
+        # NOT registered until S5 - must be ABSENT.
+        for key in (
             "omnichannel.business_hours",
             "http.request",
         ):
-            assert key not in registered, f"{key} should not be registered yet (S4/S5)"
+            assert key not in registered, f"{key} should not be registered yet (S5)"
     finally:
         db.close()
 

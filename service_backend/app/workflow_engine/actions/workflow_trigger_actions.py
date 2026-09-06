@@ -26,7 +26,11 @@ def workflow_trigger(
 ) -> Dict[str, Any]:
     from app.models.workflow import MAX_RUN_DEPTH, Workflow, WorkflowRun
     from app.workflow_engine.entities import get_workflow_entity, load_record, record_facts
-    from app.workflow_engine.entity_events import CodeNotAuthorized, create_run_for_event
+    from app.workflow_engine.entity_events import (
+        CodeNotAuthorized,
+        create_run_for_event,
+        json_safe,
+    )
     from app.workflow_engine.serialization import CorrelationKeyUnresolved
 
     target_id = str(config.get("workflowId") or "").strip()
@@ -108,7 +112,10 @@ def workflow_trigger(
         "actor": None,
         "changes": None,
         "extra": {},
-        "record_facts": (
+        # Coerced like every other event producer: these land in the child
+        # run's JSON `trigger_payload_json`, and a contact's date facts are
+        # real datetimes (an uncoerced fact 500s the INSERT, plan 31 S4).
+        "record_facts": json_safe(
             record_facts(db, entity_type, record) if entity_type and record is not None else {}
         ),
         "source": (

@@ -14,7 +14,7 @@
  */
 import { useMemo, useState } from 'react';
 import { useDraggable } from '@dnd-kit/core';
-import { ChevronDown, Search, Zap } from 'lucide-react';
+import { ChevronDown, Search, TriangleAlert, Zap } from 'lucide-react';
 import {
   ACTION_CATALOG,
   IF_CATALOG,
@@ -27,8 +27,9 @@ import { cn } from '@/lib/utils';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { Input } from '@/components/ui/input';
 import { ClampedText } from '@/components/platform/clamped-text';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useInstalledModules } from '@/hooks/use-app-store';
-import type { NodeCatalogEntry } from '@/types/workflows';
+import type { NodeCatalogEntry, WorkflowCatalogStatus } from '@/types/workflows';
 import { WORKFLOW_NODE_ICONS } from './workflow-icons';
 
 /** A `module`-tagged entry is visible only while that module is ACTIVE for the
@@ -111,6 +112,10 @@ export interface NodePaletteProps {
    * (`GET /workflows/metadata`, plan 31 S3 review B-4) - a catalog entry
    * absent here is OMITTED entirely (never shown-then-disabled). */
   registeredNodeTypes?: string[];
+  /** Load state of that metadata call. `loading` shows a skeleton, `error`
+   * shows an inline retry-less failure state - never a silently empty
+   * palette (review round 2, R-2). Defaults to `ready` for isolated UI use. */
+  catalogStatus?: WorkflowCatalogStatus;
 }
 
 export function NodePalette({
@@ -120,6 +125,7 @@ export function NodePalette({
   canCode = true,
   canHttp = true,
   registeredNodeTypes,
+  catalogStatus = 'ready',
 }: NodePaletteProps) {
   const [query, setQuery] = useState('');
   // Sections collapsed by default - the catalog is long; expand on click/search.
@@ -153,6 +159,35 @@ export function NodePalette({
 
   const q = query.trim().toLowerCase();
   const searching = q.length > 0;
+
+  if (catalogStatus === 'loading') {
+    return (
+      <div className="flex flex-col gap-3" data-testid="node-palette-loading">
+        <Skeleton className="h-8 w-full" />
+        {[0, 1, 2].map((row) => (
+          <div key={row} className="flex flex-col gap-1.5">
+            <Skeleton className="h-4 w-24" />
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (catalogStatus === 'error') {
+    return (
+      <div
+        className="flex flex-col items-center gap-2 px-1 py-6 text-center"
+        data-testid="node-palette-error"
+      >
+        <TriangleAlert className="size-5 text-muted-foreground" />
+        <p className="text-xs text-muted-foreground">
+          The node catalog could not be loaded.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-3" data-testid="node-palette">
