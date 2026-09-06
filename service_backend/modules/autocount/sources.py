@@ -103,6 +103,14 @@ class SourceRecord:
 
     raw: Dict[str, Any]
     last_modified: Optional[datetime] = None
+    # A pre-mapping fault the SOURCE itself already named (S2, review round
+    # 4 - the LineCount fingerprint mismatch guard) - ``None`` for every
+    # ordinary record. When set, ``_stage_documents`` stages this record
+    # FAILED with this exact message WITHOUT ever calling
+    # ``MappingEngine.map_document`` on it (D13: no canonical payload for a
+    # failed transaction), the same fail-safe contract a mapping-time
+    # failure gets, just detected one layer earlier.
+    error: Optional[str] = None
 
 
 @dataclass
@@ -145,6 +153,11 @@ class FetchResult:
     # clean batch (the DB source's own mark, which need not be a datetime).
     # ``None`` = leave the stored cursor untouched.
     cursor: Optional[Dict[str, Any]] = None
+    # sprint-5/02 (AC-02-11) - headers dropped by a document task's
+    # `filterFormula` BEFORE line fetch/mapping/staging: never a delete
+    # candidate (it never enters `current_refs` either), just excluded from
+    # this run's population entirely. 0 for every non-document source.
+    skipped_by_filter: int = 0
 
 
 class EntitySource(Protocol):

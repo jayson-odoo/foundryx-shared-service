@@ -81,6 +81,40 @@ class ConnectionRepository:
             .first()
         )
 
+    def get_for_providers(
+        self, tenant_id: str, connection_id: str, providers: Sequence[str]
+    ) -> Optional[Connection]:
+        """``get_for_provider`` for a connection that may be ANY of several
+        providers (a company's source connection is ``autocount`` OR
+        ``sql_database``, plan sprint-5/01 AC-01-01). Still tenant-scoped,
+        still one query - the caller branches on ``.provider``."""
+        return (
+            self.db.query(Connection)
+            .filter(
+                Connection.tenant_id == tenant_id,
+                Connection.id == connection_id,
+                Connection.provider.in_(list(providers)),
+            )
+            .first()
+        )
+
+    def get_many(
+        self, tenant_id: str, connection_ids: Sequence[str]
+    ) -> dict[str, Connection]:
+        """Batch, TENANT-scoped id→connection lookup (the companies list's
+        ``sourceKind`` derivation, AC-01-07) - ONE ``IN`` query, never one per
+        row. A stored id resolved here is filtered by tenant, so a company row
+        can never surface another tenant's connection."""
+        ids = list({cid for cid in connection_ids if cid})
+        if not ids:
+            return {}
+        rows = (
+            self.db.query(Connection)
+            .filter(Connection.tenant_id == tenant_id, Connection.id.in_(ids))
+            .all()
+        )
+        return {row.id: row for row in rows}
+
     def list_for_provider(self, tenant_id: str, provider: str) -> List[Connection]:
         """Every ACTIVE connection of one provider for THIS tenant (the task
         editor's connection picker, AC-22-29) - never a bare provider fetch."""
@@ -330,16 +364,20 @@ class FieldMappingRepository:
             .all()
         )
 
-    def count(self, tenant_id: str, company_id: str, entity_type: str) -> int:
-        return (
-            self.db.query(AcFieldMapping)
-            .filter(
-                AcFieldMapping.tenant_id == tenant_id,
-                AcFieldMapping.company_id == company_id,
-                AcFieldMapping.entity_type == entity_type,
-            )
-            .count()
+    def count(
+        self, tenant_id: str, company_id: str, entity_type: str, scope: Optional[str] = None
+    ) -> int:
+        query = self.db.query(AcFieldMapping).filter(
+            AcFieldMapping.tenant_id == tenant_id,
+            AcFieldMapping.company_id == company_id,
+            AcFieldMapping.entity_type == entity_type,
         )
+        # ``scope`` (sprint-5/02 hotfix): the document preset seed is per SCOPE -
+        # a task whose LINE rows were backfilled by migration 0010 but whose
+        # header was never mapped must still get its header preset.
+        if scope is not None:
+            query = query.filter(AcFieldMapping.scope == scope)
+        return query.count()
 
     def delete_by_canonical(
         self,
@@ -347,25 +385,34 @@ class FieldMappingRepository:
         company_id: str,
         entity_type: str,
         canonical_fields: Sequence[str],
+        *,
+        scope: Optional[str] = None,
     ) -> int:
         """Delete the mapping rows whose ``canonical_field`` is in the given set -
         the DELIVERABLE rows the operator is replacing (plan 15 §2). Rows whose
         canonical field is NOT listed (identity/watermark provenance like
         ``last_modified``) are left untouched, so a full re-map can never wipe the
-        watermark mapping and silently break delta sync."""
+        watermark mapping and silently break delta sync.
+
+        ``scope`` (sprint-5/02, AC-02-01) - when given, ONLY rows in that scope
+        are touched. A document's header and line scopes both accept
+        ``product_ref``-shaped canonical field NAMES independently (a header
+        catalog and a line catalog are disjoint sets in practice, but the
+        filter is the actual guarantee, not the disjointness) - without it, a
+        header-only re-map's ``delete_unknown`` sweep (below) would delete
+        every LINE row too (the bug AC-02-01 pins)."""
         fields = list(canonical_fields)
         if not fields:
             return 0
-        deleted = (
-            self.db.query(AcFieldMapping)
-            .filter(
-                AcFieldMapping.tenant_id == tenant_id,
-                AcFieldMapping.company_id == company_id,
-                AcFieldMapping.entity_type == entity_type,
-                AcFieldMapping.canonical_field.in_(fields),
-            )
-            .delete(synchronize_session=False)
+        query = self.db.query(AcFieldMapping).filter(
+            AcFieldMapping.tenant_id == tenant_id,
+            AcFieldMapping.company_id == company_id,
+            AcFieldMapping.entity_type == entity_type,
+            AcFieldMapping.canonical_field.in_(fields),
         )
+        if scope is not None:
+            query = query.filter(AcFieldMapping.scope == scope)
+        deleted = query.delete(synchronize_session=False)
         self.db.flush()
         return deleted
 
@@ -375,6 +422,8 @@ class FieldMappingRepository:
         company_id: str,
         entity_type: str,
         keep: Sequence[str],
+        *,
+        scope: Optional[str] = None,
     ) -> int:
         """Sweep STALE rows on a mapping save (plan 22 S4 review S4) - a row
         whose ``canonical_field`` is neither an accepted Sorento target NOR an
@@ -394,14 +443,16 @@ class FieldMappingRepository:
         names = list(keep)
         if not names:
             return 0
+        query = self.db.query(AcFieldMapping).filter(
+            AcFieldMapping.tenant_id == tenant_id,
+            AcFieldMapping.company_id == company_id,
+            AcFieldMapping.entity_type == entity_type,
+            AcFieldMapping.canonical_field.notin_(names),
+        )
+        if scope is not None:
+            query = query.filter(AcFieldMapping.scope == scope)
         deleted = (
-            self.db.query(AcFieldMapping)
-            .filter(
-                AcFieldMapping.tenant_id == tenant_id,
-                AcFieldMapping.company_id == company_id,
-                AcFieldMapping.entity_type == entity_type,
-                AcFieldMapping.canonical_field.notin_(names),
-            )
+            query
             .delete(synchronize_session=False)
         )
         self.db.flush()
@@ -626,6 +677,25 @@ class StagedRecordRepository:
         self.db.flush()
         return discarded
 
+    def discard_for_job(self, tenant_id: str, company_id: str, job_id: str) -> int:
+        """Hard-delete every staged row THIS job wrote (NIT/R-S9, review round
+        2 - a paged run's own guard-failure rollback used to run this as a
+        raw ``db.query(AcStagedRecord)...delete()`` in ``sync.py`` instead of
+        through this repository). A guard trip is fail-SAFE: nothing this
+        job staged may survive it, so a hard delete (not a status flip) is
+        correct here - unlike ``mark(..., status=STAGED_DISCARDED)``, which
+        is for a row that DID legitimately exist and is merely being
+        superseded. Does not commit; the caller owns the transaction."""
+        return (
+            self.db.query(AcStagedRecord)
+            .filter(
+                AcStagedRecord.tenant_id == tenant_id,
+                AcStagedRecord.company_id == company_id,
+                AcStagedRecord.job_id == job_id,
+            )
+            .delete(synchronize_session=False)
+        )
+
     def pending_delete_refs(
         self,
         tenant_id: str,
@@ -705,15 +775,25 @@ class RowHashRepository:
         hashes: dict[str, str],
         *,
         seen_at: datetime,
-    ) -> int:
-        """Write/refresh the hash of every ref given. Returns rows touched.
+    ) -> List[str]:
+        """Write/refresh the hash of every ref given. Returns the refs that
+        were genuinely NEW (an INSERT, not an UPDATE).
 
-        Set-based: ONE read of the existing refs, then an UPDATE per changed
+        Set-based: ONE read of the existing refs - scoped to just the refs in
+        ``hashes``, never the whole population - then an UPDATE per changed
         ref and a bulk INSERT for the new ones - never a SELECT per row. Does
         not commit; the caller owns the transaction.
+
+        R-S4 (review round 2): a paged run's guard-failure rollback used to
+        snapshot the WHOLE known hash population up front just to work out
+        which refs it introduced this run, on every tick, success or not.
+        This ``existing`` lookup already answers exactly that question, for
+        free, scoped to only the rows THIS call is about to touch - so the
+        caller accumulates the returned inserted refs across pages instead
+        of diffing against a separate full-population snapshot.
         """
         if not hashes:
-            return 0
+            return []
         existing = self.hashes_for(tenant_id, company_id, entity_type, list(hashes))
         scope = {
             "tenant_id": tenant_id,
@@ -725,10 +805,10 @@ class RowHashRepository:
             for ref, value in hashes.items()
             if ref in existing
         ]
+        inserted_refs = [ref for ref in hashes if ref not in existing]
         inserts = [
-            {**scope, "source_ref": ref, "row_hash": value, "last_seen_at": seen_at}
-            for ref, value in hashes.items()
-            if ref not in existing
+            {**scope, "source_ref": ref, "row_hash": hashes[ref], "last_seen_at": seen_at}
+            for ref in inserted_refs
         ]
         # Both take the FULL composite PK, so SQLAlchemy batches each set into
         # one executemany - never a statement per row.
@@ -737,7 +817,7 @@ class RowHashRepository:
         if inserts:
             self.db.bulk_insert_mappings(AcRowHash, inserts)
         self.db.flush()
-        return len(hashes)
+        return inserted_refs
 
     def count(self, tenant_id: str, company_id: str, entity_type: str) -> int:
         return (
@@ -749,6 +829,66 @@ class RowHashRepository:
             )
             .count()
         )
+
+    def touch_seen(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+        *,
+        seen_at: datetime,
+    ) -> int:
+        """Bump ``last_seen_at`` for every given ref WITHOUT touching
+        ``row_hash`` (plan sprint-5/03 S3, AC-03-15) - the primitive an
+        UNCHANGED row on a paged pass needs: it is not restaged, so
+        ``upsert_many`` never runs for it, but a completed reconcile's delete
+        diff (``stale_refs`` below) must still see it as seen THIS pass.
+        A single ``UPDATE ... WHERE ref IN (...)``, chunked like every other
+        ``IN`` list here. Does not commit; the caller owns the transaction."""
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        touched = 0
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            touched += (
+                self.db.query(AcRowHash)
+                .filter(
+                    AcRowHash.tenant_id == tenant_id,
+                    AcRowHash.company_id == company_id,
+                    AcRowHash.entity_type == entity_type,
+                    AcRowHash.source_ref.in_(chunk),
+                )
+                .update({"last_seen_at": seen_at}, synchronize_session=False)
+            )
+        self.db.flush()
+        return touched
+
+    def stale_refs(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        *,
+        before: datetime,
+    ) -> List[str]:
+        """Refs whose ``last_seen_at`` predates ``before`` (plan sprint-5/03
+        S3, AC-03-16/17) - a completed reconcile pass's delete candidates. A
+        pass may span several runs (D3), so this is DB-persisted rather than
+        an in-memory set (D6): every fetched ref (changed or not) gets
+        ``touch_seen``/``upsert_many`` on the page it was read, so a ref that
+        genuinely vanished at source is the only one whose stamp still
+        predates the pass start once the whole population has been walked."""
+        rows = (
+            self.db.query(AcRowHash.source_ref)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+                AcRowHash.entity_type == entity_type,
+                AcRowHash.last_seen_at < before,
+            )
+            .all()
+        )
+        return [ref for (ref,) in rows]
 
     def all_hashes(
         self, tenant_id: str, company_id: str, entity_type: str
@@ -805,6 +945,28 @@ class RowHashRepository:
                 )
                 .delete(synchronize_session=False)
             )
+        self.db.flush()
+        return deleted
+
+    def clear_all(self, tenant_id: str, company_id: str, entity_type: str) -> int:
+        """Wipe EVERY hash row for one (tenant, company, entity) - the
+        re-baseline primitive a population-narrowing task save needs (F1,
+        sprint-5/02 review round): a header that merely fell out of a new,
+        narrower scope must never be diffed against a stale hash population
+        and read as a genuine deletion. The caller re-populates from a clean
+        slate on the next fetch (`upsert_many`), so a real deletion is only
+        ever detected again once the new population has had a chance to see
+        every record it is actually configured to see. Does not commit; the
+        caller owns the transaction."""
+        deleted = (
+            self.db.query(AcRowHash)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+                AcRowHash.entity_type == entity_type,
+            )
+            .delete(synchronize_session=False)
+        )
         self.db.flush()
         return deleted
 

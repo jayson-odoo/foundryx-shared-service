@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -36,25 +36,33 @@ from ..client import AutoCountClient, AutoCountError
 from ..mapping import (
     DEFAULT_MAPPINGS,
     FIELD_REF_TRANSFORMS,
+    LINE_FIELD_REF_TRANSFORMS,
     REF_TRANSFORM_ENTITIES,
     SCOPE_HEADER,
+    SCOPE_LINE,
     TRANSFORMS,
     MappingEngine,
     MappingRow,
 )
 from ..formula import (
+    LINE_AGGREGATE_NAMES,
     FormulaError,
     FormulaParseError,
     catalog_payload,
     evaluate_formula,
     parse_formula,
     result_to_json,
+    string_literals,
 )
+from ..canonical.documents import DOCUMENT_STATUS_VALUES, is_document_entity
 from ..mapping_catalog import (
     SorentoFieldDef,
     accepted_fields,
     accepted_field_names,
     ac_source_fields,
+    line_accepted_field_names,
+    line_accepted_fields,
+    line_required_field_names,
     required_field_names,
     sorento_field_for,
 )
@@ -87,6 +95,9 @@ from ..repositories import (
 from ..sinks import EntitySink, UnknownSinkImpl, sink_for
 from ..sinks_sorento import sorento_sink_from_connection, sorento_supports_entity
 from ..sorento_provider import SORENTO_PROVIDER_KEY
+from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
+from ..sql_source.errors import SqlProbeFailed
+from ..sql_source.probe import probe_current_database, read_profile_name
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -114,6 +125,46 @@ from ..envelopes import ENVELOPE_ROW_ARRAY, ENVELOPE_STATUS_DICT  # noqa: E402
 from ..sources import INITIAL_LOAD_FULL, INITIAL_LOAD_WINDOWED  # noqa: E402
 
 SEEDED_ENTITIES = (ENTITY_GOODS_RECEIVED_NOTE, ENTITY_SUPPLIER, ENTITY_CUSTOMER)
+
+# ── company source kind (plan sprint-5/01, AC-01-07) ─────────────────────────
+# DERIVED from the company's ONE connection's provider at read time - never
+# stored, never client-supplied. ``autocount`` → the vendor HTTP API;
+# ``sql_database`` → a direct read-only database (every entity is a ``sql_db``
+# task locked to that connection). A connection that no longer resolves reads
+# as ``api`` so the row stays renderable (the historical default kind).
+SOURCE_KIND_API = "api"
+SOURCE_KIND_DB = "db"
+# The providers a company's source connection may carry - ``_source_connection``
+# resolves against exactly these (any other provider is a uniform 404).
+SOURCE_PROVIDERS = (PROVIDER_KEY, SQL_DATABASE_PROVIDER_KEY)
+
+# ── document prerequisites (AC-01-11, decision Q17) ──────────────────────────
+# The masters a document's rows reference and Sorento cannot NULL: a sales
+# order needs its customer + products, a purchase order its supplier +
+# products. A shipping order (SPO, sprint-5/02) additionally references a
+# warehouse (the ship-from location, absent from a plain PO) - review-round
+# gap fix: this dict was never given a `shipping_order` entry when the
+# entity was added, so an SPO with a missing/inactive master silently never
+# got the warning a PO gets for the identical situation. While any is
+# missing/inactive the document's rows stay ``retryable`` (never lost), so
+# the surface WARNS - it never blocks.
+DOCUMENT_PREREQUISITES: Dict[str, Tuple[str, ...]] = {
+    "sales_order": (ENTITY_CUSTOMER, "product"),
+    "purchase_order": (ENTITY_SUPPLIER, "product"),
+    "shipping_order": (ENTITY_SUPPLIER, "product", "warehouse"),
+}
+
+NOT_API_BACKED_MESSAGE = (
+    "This company is connected by database; the AutoCount API is not available."
+)
+
+
+def source_kind(connection: Optional[Connection]) -> str:
+    """``'db'`` for a ``sql_database`` connection, ``'api'`` otherwise
+    (including a deleted connection, AC-01-07)."""
+    if connection is not None and connection.provider == SQL_DATABASE_PROVIDER_KEY:
+        return SOURCE_KIND_DB
+    return SOURCE_KIND_API
 
 
 @dataclass(frozen=True)
@@ -196,6 +247,60 @@ class EntityConfigNotFound(AutocountServiceError):
     pass
 
 
+class CompanyNotApiBacked(AutocountServiceError):
+    """A vendor-API path was asked to run for a DB company (AC-01-08) - a
+    409: the request is well-formed, the COMPANY has no API to reach. Never
+    ``ConnectionNotFound`` (the connection exists; it is a database)."""
+
+    def __init__(self, message: str = NOT_API_BACKED_MESSAGE):
+        super().__init__(message)
+
+
+class ConnectionValidationError(AutocountServiceError):
+    """A company create rejected ON ITS CONNECTION (AC-01-02) - the probe
+    landed on a different database than the connection names, or the source
+    could not be opened. Rendered ``422 {fieldErrors: {connectionId}}`` so the
+    message sits under the picker the operator is looking at (the
+    ``SinkTargetValidationError`` shape)."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.field_errors = {"connectionId": message}
+
+
+@dataclass(frozen=True)
+class DocumentPrerequisite:
+    """One configured document entity's prerequisite-master status
+    (AC-01-11). ``missing`` = no config row at all; ``inactive`` = a row that
+    is not ``active`` or is disabled. Flat + snake_cased so
+    ``DocumentPrerequisiteOut.model_validate`` maps it through."""
+
+    entity_type: str
+    missing: List[str]
+    inactive: List[str]
+
+
+def document_prerequisites(entities: List["EntityState"]) -> List[DocumentPrerequisite]:
+    """Pure: the prerequisite status of every CONFIGURED document entity, in
+    the company's entity order (AC-01-11). Empty when no document entity is
+    configured. Runs over the states the detail already loaded - no query."""
+    by_type = {state.entity_type: state for state in entities}
+    out: List[DocumentPrerequisite] = []
+    for state in entities:
+        masters = DOCUMENT_PREREQUISITES.get(state.entity_type)
+        if masters is None:
+            continue
+        missing = [m for m in masters if m not in by_type]
+        inactive = [
+            m
+            for m in masters
+            if m in by_type
+            and (by_type[m].etl_status != ETL_STATUS_ACTIVE or not by_type[m].enabled)
+        ]
+        out.append(DocumentPrerequisite(state.entity_type, missing, inactive))
+    return out
+
+
 # The first sync of a brand-new company reaches back exactly this far
 # (``AcEntityConfig.initial_lookback_days``, default 30). Anything older is
 # INVISIBLE until the supervised full initial load lands (D20, slice 3) - which
@@ -257,9 +362,17 @@ class MappingWriteRow:
 
     ``sorento_field`` is the Sorento-facing target the operator picked; the
     service maps it back to the stored ``canonical_field`` (they are equal for
-    master sink fields). Only these three are operator-authored - ``scope`` and
-    the required/enabled flags are derived server-side so the editor cannot
-    invent them.
+    master sink fields). ``scope`` and the required flag are derived
+    server-side so the editor cannot invent them.
+
+    ``is_enabled`` (R1, code-review round) mirrors the read-side
+    ``MappingRowView.is_enabled`` on the WRITE side too - a backfill/preset
+    can seed a fixed-field row `disabled` (its ``source_path`` doesn't match
+    a real preview column yet), and the operator must be able to save the
+    REST of the draft without that one stale row 422ing the whole save; a
+    disabled row's own ``source_path`` is exempt from the S1 preview-column
+    gate (it is visibly greyed, not silently accepted as correct). Defaults
+    ``True`` - every pre-R1 call site byte-for-byte.
     """
 
     source_path: str
@@ -268,6 +381,11 @@ class MappingWriteRow:
     # Optional safe transform formula (slice 16). NULL/blank ⇒ the named
     # ``transform`` runs unchanged. Set ⇒ the formula is authoritative.
     formula: Optional[str] = None
+    # sprint-5/02 (AC-02-01) - which scope this row targets. Defaulting to
+    # ``header`` reproduces every pre-existing call site byte-for-byte (they
+    # never touch a document's line catalog at all).
+    scope: str = SCOPE_HEADER
+    is_enabled: bool = True
 
 
 @dataclass
@@ -301,6 +419,11 @@ class MappingView:
     rows: List[MappingRowView]
     sorento_fields: List[SorentoFieldDef]
     ac_fields: List[str]
+    # sprint-5/02 (AC-02-02) - a document entity's LINE catalog: the accepted
+    # Sorento line targets + the task's persisted ``line_result_columns``.
+    # Empty for a non-document entity (master/GRN have no line scope).
+    line_sorento_fields: List[SorentoFieldDef] = field(default_factory=list)
+    line_ac_fields: List[str] = field(default_factory=list)
 
 
 class CompanyService:
@@ -395,7 +518,7 @@ class CompanyService:
           on ``etl_status``; leaving it active under a source that no longer
           runs it would be a task that looks live and does nothing.
         """
-        self.get(tenant_id, company_id)  # tenant-scope guard before any write
+        company = self.get(tenant_id, company_id)  # tenant-scope guard before any write
         config = self.configs.get(tenant_id, company_id, entity_type)
         if config is None:
             raise EntityConfigNotFound(
@@ -407,6 +530,14 @@ class CompanyService:
                     f"Unknown source '{source_impl}'. Choose "
                     f"{' or '.join(SOURCE_IMPLS)}."
                 )
+            # A DB company has no vendor API to switch to (AC-01-08) - a named
+            # 409, checked BEFORE the entity-catalogue guard below so the
+            # operator reads the real reason, not a catalogue message.
+            if (
+                source_impl == SOURCE_IMPL_AUTOCOUNT_READ
+                and self.source_kind_for(tenant_id, company) == SOURCE_KIND_DB
+            ):
+                raise CompanyNotApiBacked()
             #     !!  NEVER OFFER "AutoCount API" FOR AN ENTITY WITH NO PROBED
             #         VENDOR PAYLOAD.  !!
             # (Plan 22 S4.) ``SEEDED_ENTITIES`` is exactly the entity catalogue
@@ -495,6 +626,35 @@ class CompanyService:
         if conn is None:
             raise ConnectionNotFound("That AutoCount connection was not found.")
         return conn
+
+    def _source_connection(self, tenant_id: str, connection_id: str) -> Connection:
+        """The company's SOURCE connection - ``autocount`` OR ``sql_database``
+        (plan sprint-5/01 AC-01-01). Tenant-scoped, one query; any other
+        provider or another tenant's row is the SAME uniform 404 (never
+        reveals which)."""
+        conn = self.connections.get_for_providers(
+            tenant_id, connection_id, SOURCE_PROVIDERS
+        )
+        if conn is None:
+            raise ConnectionNotFound("That connection was not found.")
+        return conn
+
+    def source_kind_map(self, tenant_id: str, companies: List[AcCompany]) -> Dict[str, str]:
+        """``{company_id: 'api'|'db'}`` for a PAGE of companies in ONE batched,
+        tenant-scoped connection query (AC-01-07) - never one per row. A
+        company whose connection is gone reads ``'api'``."""
+        by_id = self.connections.get_many(
+            tenant_id, [company.connection_id for company in companies]
+        )
+        return {
+            company.id: source_kind(by_id.get(company.connection_id))
+            for company in companies
+        }
+
+    def source_kind_for(self, tenant_id: str, company: AcCompany) -> str:
+        """One company's kind (detail / guards) - tenant-scoped resolution of
+        the stored connection id, ``'api'`` when it no longer resolves."""
+        return self.source_kind_map(tenant_id, [company])[company.id]
 
     def _consumer_connection(self, tenant_id: str, connection_id: str) -> Connection:
         """Tenant- AND provider-scoped lookup of the outbound Sorento connection.
@@ -661,10 +821,13 @@ class CompanyService:
         self.db.refresh(company)
         return company
 
-    def credentials(self, connection: Connection) -> Dict[str, Any]:
+    def credentials(
+        self, connection: Connection, *, reenter: str = "the AppId and password"
+    ) -> Dict[str, Any]:
         """Decrypt a connection's credentials. A wrong/rotated ``FERNET_KEY``
         yields a CLEAN rejection, never a 500 - and the message never echoes any
-        ciphertext."""
+        ciphertext. ``reenter`` names what the operator must re-enter (a SQL
+        connection holds a database password, not an AppId)."""
         if not connection.credentials_json:
             return {}
         try:
@@ -672,18 +835,144 @@ class CompanyService:
         except InvalidToken as exc:
             raise AutocountServiceError(
                 "This connection's stored credentials can no longer be decrypted. "
-                "Re-enter the AppId and password."
+                f"Re-enter {reenter}."
             ) from exc
 
     def client_for(
         self, tenant_id: str, company: AcCompany, *, transport: Any = None
     ) -> AutoCountClient:
+        """The vendor HTTP client for an API company. A DB company has no
+        vendor API at all - refused by NAME (``CompanyNotApiBacked``, AC-01-08)
+        before the provider-pinned lookup below could misreport it as a
+        missing connection."""
+        if self.source_kind_for(tenant_id, company) == SOURCE_KIND_DB:
+            raise CompanyNotApiBacked()
         conn = self._connection(tenant_id, company.connection_id)
         return client_from_connection(
             conn.config_json or {}, self.credentials(conn), transport=transport
         )
 
     # ── create (discovery) ───────────────────────────────────────────────────
+
+    def create(
+        self,
+        tenant_id: str,
+        connection_id: str,
+        *,
+        name: str = "",
+        transport: Any = None,
+    ) -> AcCompany:
+        """Register a company from its connection, branching on the
+        connection's PROVIDER (plan sprint-5/01 AC-01-01): ``autocount`` signs
+        in and discovers the company (``create_from_connection``, unchanged);
+        ``sql_database`` derives it from the connection itself
+        (``create_from_sql_connection``). One tenant-scoped resolution; any
+        other provider / another tenant's row = the uniform 404."""
+        conn = self._source_connection(tenant_id, connection_id)
+        if conn.provider == SQL_DATABASE_PROVIDER_KEY:
+            return self.create_from_sql_connection(tenant_id, conn, name=name)
+        return self.create_from_connection(
+            tenant_id, connection_id, name=name, transport=transport
+        )
+
+    def create_from_sql_connection(
+        self, tenant_id: str, conn: Connection, *, name: str = ""
+    ) -> AcCompany:
+        """A DB company (AC-01-02..06): identity = the connection's
+        ``config.database`` (trimmed), VERIFIED by the dialect's live
+        current-database probe; ``company_name`` best-effort off
+        ``dbo.Profile``; NO API-shaped seeds (every entity is born later as a
+        ``sql_db`` task); the same ``discover company`` activity channel.
+
+        Order matters: (1) the connection may hold ONE company; (2) one
+        company per database across BOTH kinds - checked before the probe so
+        a duplicate never pays a network round-trip; (3) the probe - a
+        mismatch or a connect failure is a 422 on ``connectionId`` and
+        creates NOTHING; (4) the profile read never fails the create.
+        """
+        existing_for_conn = self.companies.get_by_connection(tenant_id, conn.id)
+        if existing_for_conn is not None:
+            raise CompanyAlreadyExists(
+                self._already_connected_message(existing_for_conn)
+            )
+
+        config = conn.config_json or {}
+        database_name = str(config.get("database") or "").strip()
+        if not database_name:
+            raise ConnectionValidationError(
+                "This connection has no database name. Edit the connection first."
+            )
+
+        holder = self.companies.get_by_database_name(tenant_id, database_name)
+        if holder is not None:
+            raise CompanyAlreadyExists(self._already_connected_message(holder))
+
+        credentials = self.credentials(conn, reenter="the database password")
+        try:
+            probed = probe_current_database(conn.id, config, credentials)
+        except SqlProbeFailed as exc:
+            self._record_sql_discovery_error(tenant_id, conn.id, exc.message)
+            raise ConnectionValidationError(exc.message) from exc
+        if probed != database_name:
+            message = (
+                f"This login lands on '{probed}', but the connection names "
+                f"'{database_name}'."
+            )
+            self._record_sql_discovery_error(tenant_id, conn.id, message)
+            raise ConnectionValidationError(message)
+
+        company_name = read_profile_name(conn.id, config, credentials)
+
+        record_activity(
+            self.db,
+            tenant_id=tenant_id,
+            operation="discover company",
+            status=ACTIVITY_SUCCESS,
+            trace_id=f"acdiscover-{uuid.uuid4()}",
+            external_ref=database_name,
+            response={
+                "databaseName": database_name,
+                "companyName": company_name,
+                "source": SQL_DATABASE_PROVIDER_KEY,
+            },
+        )
+
+        company = self.companies.add(
+            AcCompany(
+                tenant_id=tenant_id,
+                connection_id=conn.id,
+                database_name=database_name,
+                company_name=company_name,
+                name=(name or company_name or database_name).strip(),
+                is_active=True,
+            )
+        )
+        # Deliberately NO ``seed_company_defaults`` (D13): its rows are the
+        # vendor-API shape (``autocount_read`` + vendor-path mappings) and a
+        # DB company has no API - the task editor births each entity.
+        self.db.commit()
+        return company
+
+    @staticmethod
+    def _already_connected_message(holder: AcCompany) -> str:
+        return (
+            f"'{holder.database_name}' is already connected as company "
+            f"'{holder.name or holder.database_name}'."
+        )
+
+    def _record_sql_discovery_error(
+        self, tenant_id: str, connection_id: str, message: str
+    ) -> None:
+        record_activity(
+            self.db,
+            tenant_id=tenant_id,
+            operation="discover company",
+            status=ACTIVITY_ERROR,
+            trace_id=f"acdiscover-{uuid.uuid4()}",
+            external_ref=connection_id,
+            error_message=message,
+            request={"source": SQL_DATABASE_PROVIDER_KEY},
+        )
 
     def create_from_connection(
         self,
@@ -876,7 +1165,7 @@ class CompanyService:
             MappingRowView(
                 source_path=row.source_path,
                 transform=row.transform,
-                sorento_field=sorento_field_for(entity_type, row.canonical_field),
+                sorento_field=sorento_field_for(entity_type, row.canonical_field, row.scope),
                 canonical_field=row.canonical_field,
                 scope=row.scope,
                 is_required=row.is_required,
@@ -885,11 +1174,30 @@ class CompanyService:
             )
             for row in self.mappings.list(tenant_id, company_id, entity_type)
         ]
+        line_sorento_fields: List[SorentoFieldDef] = []
+        line_ac_fields: List[str] = []
+        # Header source columns: a SQL-database task's LAST PREVIEW
+        # (`result_columns`) is the truth about what the header query returns;
+        # the static catalog is the API-path fallback only. Without this a
+        # document task's Mapping tab offered NO header columns (the static
+        # catalog has none for documents), so no header row and no formula
+        # could be authored there - found on the live Sorento company after
+        # the sprint-5/02 merge.
+        config = self.configs.get(tenant_id, company_id, entity_type)
+        header_ac_fields: List[str] = list(ac_source_fields(entity_type))
+        if config is not None and config.result_columns:
+            header_ac_fields = [str(c) for c in config.result_columns]
+        if is_document_entity(entity_type):
+            line_sorento_fields = list(line_accepted_fields(entity_type))
+            if config is not None:
+                line_ac_fields = [str(c) for c in (config.line_result_columns or [])]
         return MappingView(
             entity_type=entity_type,
             rows=rows,
             sorento_fields=list(accepted_fields(entity_type)),
-            ac_fields=list(ac_source_fields(entity_type)),
+            ac_fields=header_ac_fields,
+            line_sorento_fields=line_sorento_fields,
+            line_ac_fields=line_ac_fields,
         )
 
     def mapping_view(
@@ -906,12 +1214,64 @@ class CompanyService:
         company_id: str,
         entity_type: str,
         rows: List[MappingWriteRow],
+        line_rows_submitted: bool = False,
     ) -> MappingView:
         """Replace the DELIVERABLE mapping rows for one (company, entity) in ONE
-        transaction (AC-15-41).
+        transaction (AC-15-41), HEADER and LINE scope both (sprint-5/02,
+        AC-02-01).
 
-        Foolproof guard (AC-15-42/43 + AC-16-03), enforced server-side - never
-        advisory:
+        Split by ``row.scope`` and validated/persisted independently against
+        each scope's OWN catalog (``mapping_catalog.SORENTO_FIELDS`` /
+        ``SORENTO_LINE_FIELDS``) - the two guard sets share the same shape
+        (accepted target / no duplicate / known transform / ref-pairing /
+        formula parses) but are never mixed, so a header re-map can never
+        even LOOK at a line row's target name.
+
+        !!  A HEADER-ONLY SAVE MUST NEVER TOUCH LINE ROWS (AC-02-01).  !!
+        The line-scope block runs when the caller submitted at least one
+        ``scope='line'`` row THIS call, OR ``line_rows_submitted=True`` (S7,
+        review round): an empty ``rows`` list and an omitted Lines tab both
+        arrive as ``line_rows == []`` and are otherwise indistinguishable, but
+        they mean opposite things - "the operator cleared every line row and
+        saved" (must wipe, symmetric with an empty HEADER submission, which
+        already wipes unconditionally) versus "this save never touched line
+        scope at all" (must leave existing line rows untouched). The router
+        sets the flag from the wire's dedicated ``MappingUpdateRequest.
+        lineRows`` field being present (even ``[]``) - NOT from the entity
+        type alone (the security re-review catch: an entity-type-only signal
+        made every header-only PUT on a document entity wipe its lines,
+        because "no lineRows" and "lineRows: []" both read as `rows==[]`
+        without a dedicated field to tell them apart).
+        """
+        config = self._require_entity(tenant_id, company_id, entity_type)
+
+        header_rows = [r for r in rows if getattr(r, "scope", SCOPE_HEADER) != SCOPE_LINE]
+        line_rows = [r for r in rows if getattr(r, "scope", SCOPE_HEADER) == SCOPE_LINE]
+
+        self._replace_header_mapping(tenant_id, company_id, entity_type, header_rows, config)
+        if (line_rows or line_rows_submitted) and is_document_entity(entity_type):
+            self._replace_line_mapping(tenant_id, company_id, entity_type, line_rows, config)
+
+        self.db.commit()
+        return self._mapping_view(tenant_id, company_id, entity_type)
+
+    def _replace_header_mapping(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        rows: List[MappingWriteRow],
+        config: AcEntityConfig,
+    ) -> None:
+        """The pre-sprint-5/02 header guard chain (AC-15-42/43 + AC-16-03),
+        unchanged, PLUS two sprint-5/02 additions: named-variable formulas
+        (AC-02-07/09 - a document header may reference its own raw AC columns
+        and the ``lines.*`` aggregates by name) and the ``status`` vocabulary
+        literal guard (AC-02-08 - a string literal outside the fixed five
+        words is rejected at save time, never a value Sorento would reject
+        later as ``errors.status``).
+
+        Foolproof guard, enforced server-side - never advisory:
           * every ``sorento_field`` must be in the accepted set (else 422 naming
             the field) - a target Sorento would reject (``extra="forbid"``) can
             never be stored;
@@ -936,10 +1296,12 @@ class CompanyService:
         ingest path yet) - sweeping there with nothing accepted would wipe its
         whole default mapping instead of pruning stale rows.
         """
-        self._require_entity(tenant_id, company_id, entity_type)
-
         accepted = accepted_field_names(entity_type)
         required = required_field_names(entity_type)
+        # The header's own AC source columns + the line aggregates - a
+        # header formula may name either (AC-02-07/09). `result_columns` is
+        # NULL until the header query has previewed clean at least once.
+        known_vars = frozenset(config.result_columns or []) | LINE_AGGREGATE_NAMES
         seen: set = set()
         clean: List[MappingWriteRow] = []
         for row in rows:
@@ -984,13 +1346,30 @@ class CompanyService:
             formula = (row.formula or "").strip() or None
             if formula is not None:
                 try:
-                    parse_formula(formula)  # save-gate: unknown fn/name → 422
+                    parsed = parse_formula(formula, known_vars)  # save-gate: unknown fn/name → 422
                 except FormulaParseError as exc:
                     raise AutocountServiceError(
                         f"The formula for '{target}' is invalid: {exc}"
                     ) from exc
+                if target == "status":
+                    #     !!  A STATUS FORMULA'S LITERALS ARE THE FIXED VOCABULARY.  !!
+                    # (AC-02-08.) Checked on every string literal reachable in
+                    # the expression (an `if`/`coalesce` branch, a comparison
+                    # operand, ...) - never just the top-level shape.
+                    bad = [
+                        lit for lit in string_literals(parsed)
+                        if lit not in DOCUMENT_STATUS_VALUES
+                    ]
+                    if bad:
+                        raise AutocountServiceError(
+                            f"'{bad[0]}' is not a recognised document status - use "
+                            f"one of {', '.join(DOCUMENT_STATUS_VALUES)}."
+                        )
             clean.append(
-                MappingWriteRow(source_path, row.transform, target, formula=formula)
+                MappingWriteRow(
+                    source_path, row.transform, target, formula=formula,
+                    is_enabled=row.is_enabled,
+                )
             )
 
         #     !!  A REQUIRED FIELD LEFT UNMAPPED SLIPS THROUGH ACTIVATION.  !!
@@ -1012,8 +1391,11 @@ class CompanyService:
                     f"The required Sorento field '{missing_required[0]}' is not mapped."
                 )
 
-        # Replace only the deliverable rows; provenance rows survive.
-        self.mappings.delete_by_canonical(tenant_id, company_id, entity_type, accepted)
+        # Replace only the deliverable HEADER rows; line rows (a different
+        # scope entirely) and provenance rows survive (AC-02-01).
+        self.mappings.delete_by_canonical(
+            tenant_id, company_id, entity_type, accepted, scope=SCOPE_HEADER
+        )
         if accepted:
             # S4 review S4: prune any row that is neither about to be
             # recreated (accepted) nor an explicit provenance keeper - a
@@ -1021,6 +1403,7 @@ class CompanyService:
             self.mappings.delete_unknown(
                 tenant_id, company_id, entity_type,
                 accepted | PRESERVED_CANONICAL_FIELDS,
+                scope=SCOPE_HEADER,
             )
         for order, row in enumerate(clean):
             self.mappings.add(
@@ -1028,18 +1411,154 @@ class CompanyService:
                     tenant_id=tenant_id,
                     company_id=company_id,
                     entity_type=entity_type,
-                    scope=SCOPE_HEADER,  # masters are header-only (plan 15 §2)
+                    scope=SCOPE_HEADER,
                     source_path=row.source_path,
                     canonical_field=row.sorento_field,
                     transform=row.transform,
                     formula=row.formula,
                     is_required=row.sorento_field in required,
-                    is_enabled=True,
+                    is_enabled=row.is_enabled,
                     sort_order=order,
                 )
             )
-        self.db.commit()
-        return self._mapping_view(tenant_id, company_id, entity_type)
+
+    def _replace_line_mapping(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        rows: List[MappingWriteRow],
+        config: AcEntityConfig,
+    ) -> None:
+        """The LINE-scope guard chain (sprint-5/02, AC-02-02/03) - mirrors
+        ``_replace_header_mapping`` against the LINE catalog
+        (``mapping_catalog.SORENTO_LINE_FIELDS``/``LINE_FIELD_REF_TRANSFORMS``).
+
+        Called whenever the caller's ``replace_mapping`` decided the Lines
+        tab was touched THIS save (``line_rows`` non-empty OR
+        ``line_rows_submitted=True``, S7) - so ``rows`` CAN be empty here,
+        meaning "the operator cleared every line row and saved". That case
+        is a pure wipe: the required-fields check below only applies to a
+        genuine (non-empty) line mapping attempt, exactly like the header's
+        own ``if rows:`` guard - an intentional wipe to zero rows must never
+        420 on "status is required".
+        """
+        if not rows:
+            self.mappings.delete_by_canonical(
+                tenant_id, company_id, entity_type,
+                line_accepted_field_names(entity_type), scope=SCOPE_LINE,
+            )
+            return
+
+        accepted = line_accepted_field_names(entity_type)
+        required = line_required_field_names(entity_type)
+        line_columns = config.line_result_columns
+        known_vars = frozenset(line_columns or [])
+        seen: set = set()
+        clean: List[MappingWriteRow] = []
+        for row in rows:
+            source_path = (row.source_path or "").strip()
+            if not source_path:
+                raise AutocountServiceError(
+                    "A mapping row is missing its AutoCount source field."
+                )
+            #     !!  S1 (should-fix, AC-02-06) - MIRRORS THE HEADER
+            #         PREVIEW-COLUMN CONTRACT.  !!
+            # `line_result_columns` is only checked against FORMULA named
+            # variables below (`known_vars`) - a plain `source_path` was
+            # never validated at all, so a typo'd/renamed line source column
+            # saved silently and pushed null forever. Gated on the task
+            # having previewed its line query at least once (`line_columns
+            # is not None`) - a task that has never previewed yet has no
+            # column list to check against (same "test first" convention as
+            # `validate_source_config`'s `filterFormula` gate), so it stays
+            # permissive rather than rejecting every line row.
+            #
+            #     !!  R1 (blocker, code-review round) - A DISABLED ROW IS
+            #         EXEMPT.  !!
+            # A backfill/preset-seeded fixed field whose source_path does
+            # not match a real preview column lands `is_enabled=False`
+            # (visibly greyed, never silently accepted as correct) - it
+            # must NOT block the operator from saving the REST of the
+            # draft. An ENABLED row with the exact same unknown source_path
+            # still 422s; only the disabled state is exempt.
+            if row.is_enabled and line_columns is not None and source_path not in known_vars:
+                raise AutocountServiceError(
+                    f"'{source_path}' is not among the line query's last "
+                    f"preview columns - test the line query again."
+                )
+            if row.transform not in TRANSFORMS:
+                raise AutocountServiceError(
+                    f"'{row.transform}' is not a known transform."
+                )
+            target = row.sorento_field
+            if target not in accepted:
+                raise AutocountServiceError(
+                    f"'{target}' is not a Sorento line field accepted for "
+                    f"{entity_type}. Choose one of: {', '.join(sorted(accepted))}."
+                )
+            if target in seen:
+                raise AutocountServiceError(
+                    f"The Sorento line field '{target}' is mapped more than once."
+                )
+            seen.add(target)
+            if row.transform in REF_TRANSFORM_ENTITIES and LINE_FIELD_REF_TRANSFORMS.get(target) != row.transform:
+                raise AutocountServiceError(
+                    f"'{row.transform}' cannot be used for '{target}' - it mints a "
+                    f"reference for a different field."
+                )
+            if target in LINE_FIELD_REF_TRANSFORMS and row.transform != LINE_FIELD_REF_TRANSFORMS[target]:
+                raise AutocountServiceError(
+                    f"'{target}' must be mapped with the '{LINE_FIELD_REF_TRANSFORMS[target]}' "
+                    f"transform - a plain value would send the raw AutoCount code, which "
+                    f"Sorento cannot resolve as a reference."
+                )
+            formula = (row.formula or "").strip() or None
+            if formula is not None:
+                try:
+                    parse_formula(formula, known_vars)
+                except FormulaParseError as exc:
+                    raise AutocountServiceError(
+                        f"The formula for '{target}' is invalid: {exc}"
+                    ) from exc
+            clean.append(
+                MappingWriteRow(
+                    source_path, row.transform, target, formula=formula,
+                    is_enabled=row.is_enabled,
+                )
+            )
+
+        #     !!  source_ref/product_ref/qty_ordered ARE REQUIRED THE MOMENT
+        #         ANY LINE ROW IS SAVED.  !!  (AC-02-03.)
+        missing_required = sorted(required - {row.sorento_field for row in clean})
+        if missing_required:
+            raise AutocountServiceError(
+                f"The required line field '{missing_required[0]}' is not mapped."
+            )
+
+        self.mappings.delete_by_canonical(
+            tenant_id, company_id, entity_type, accepted, scope=SCOPE_LINE
+        )
+        if accepted:
+            self.mappings.delete_unknown(
+                tenant_id, company_id, entity_type, accepted, scope=SCOPE_LINE
+            )
+        for order, row in enumerate(clean):
+            self.mappings.add(
+                AcFieldMapping(
+                    tenant_id=tenant_id,
+                    company_id=company_id,
+                    entity_type=entity_type,
+                    scope=SCOPE_LINE,
+                    source_path=row.source_path,
+                    canonical_field=row.sorento_field,
+                    transform=row.transform,
+                    formula=row.formula,
+                    is_required=row.sorento_field in required,
+                    is_enabled=row.is_enabled,
+                    sort_order=order,
+                )
+            )
 
     # ── formula catalog + simulators (slice 16, AC-16-13/21/30) ───────────────
 
@@ -1082,6 +1601,8 @@ class CompanyService:
         entity_type: str,
         record: Dict[str, Any],
         draft_rows: Optional[List[MappingWriteRow]] = None,
+        *,
+        lines: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Run the REAL MappingEngine over a MOCK AutoCount record → the projected
         Sorento record + per-field results (AC-16-30). Writes NOTHING.
@@ -1091,21 +1612,38 @@ class CompanyService:
         + guarded exactly like ``replace_mapping``, but never persisted), while
         the saved provenance rows (``last_modified``, identity source) are kept so
         identity still mints. When absent, the saved rows are used as-is.
+
+        ``lines`` (sprint-5/02, AC-02-22) - a document entity's mock line
+        records, run through the SAME line rows/aggregates/status formula a
+        real sync would (``MappingEngine.project_document`` already reads
+        them off the profile's own ``detail_key`` - nesting them there is
+        the ONLY wiring this needs). ``None`` previews the header alone,
+        exactly as before this parameter existed.
         """
-        self._require_entity(tenant_id, company_id, entity_type)
+        config = self._require_entity(tenant_id, company_id, entity_type)
         company = self.get(tenant_id, company_id)
 
         if draft_rows is None:
             rows = self.mapping_rows(tenant_id, company_id, entity_type)
         else:
-            rows = self._draft_engine_rows(tenant_id, company_id, entity_type, draft_rows)
+            rows = self._draft_engine_rows(
+                tenant_id, company_id, entity_type, draft_rows, config
+            )
 
         engine = MappingEngine(
             rows,
             entity_type=entity_type,
             database_name=company.database_name,
         )
-        return engine.project_document(record)
+        mock_record = dict(record)
+        if lines is not None and engine.detail_key is not None:
+            mock_record[engine.detail_key] = lines
+        result = engine.project_document(mock_record)
+        # A convenience top-level mirror of the mapped document's `status`
+        # (None for a non-document entity, or a rejected record) - the
+        # simulate-with-lines caller wants it without reaching into `record`.
+        result["status"] = (result.get("record") or {}).get("status")
+        return result
 
     def _draft_engine_rows(
         self,
@@ -1113,6 +1651,7 @@ class CompanyService:
         company_id: str,
         entity_type: str,
         draft_rows: List[MappingWriteRow],
+        config: AcEntityConfig,
     ) -> List[MappingRow]:
         """Build in-memory engine rows from UNSAVED editor rows for a simulate.
 
@@ -1121,9 +1660,83 @@ class CompanyService:
         ``last_modified``) are appended so the simulation mints identity and
         advances nothing it shouldn't. Mirrors ``replace_mapping``'s guards so a
         simulate can't preview a mapping the save-gate would reject.
+
+        !!  HEADER AND LINE ROWS VALIDATE AGAINST THEIR OWN CATALOG.  !!
+        (Caught in sprint-5/02 S3 live-verify: this used to check EVERY draft
+        row - header AND line - against the header-only accepted/required
+        sets and stamp every resulting ``MappingRow`` ``scope=SCOPE_HEADER``,
+        so a document's line-scope draft (e.g. ``source_ref``/``product_ref``)
+        always 422'd "not a Sorento field accepted" the instant the operator
+        clicked Simulate with unsaved line edits - the S2 mapping-engine test
+        suite never caught it because it only exercises this path with
+        ``draft_rows=None``. Mirrors ``replace_mapping``'s header/line split.)
+
+        !!  KNOWN VARIABLES MIRROR THE SAVE GATE (F3/B2, review round).  !!
+        Formerly parsed with ``known_vars=None`` for BOTH scopes - unlike
+        ``replace_mapping``'s ``_replace_header_mapping``/
+        ``_replace_line_mapping``, which build ``known_vars`` from
+        ``config.result_columns`` (+ ``LINE_AGGREGATE_NAMES``) and
+        ``config.line_result_columns`` respectively - so a draft row carrying
+        the seeded ``DEFAULT_STATUS_FORMULA`` (``Cancelled``,
+        ``lines.open_count``) or any line-column formula 422'd "Unknown name"
+        at Simulate even though the IDENTICAL row saves cleanly via PUT
+        mapping. Simulate must accept exactly what the save gate accepts.
         """
-        accepted = accepted_field_names(entity_type)
-        required = required_field_names(entity_type)
+        header_draft = [r for r in draft_rows if getattr(r, "scope", SCOPE_HEADER) != SCOPE_LINE]
+        line_draft = [r for r in draft_rows if getattr(r, "scope", SCOPE_HEADER) == SCOPE_LINE]
+        header_known_vars = frozenset(config.result_columns or []) | LINE_AGGREGATE_NAMES
+        line_known_vars = frozenset(config.line_result_columns or [])
+
+        engine_rows: List[MappingRow] = []
+        engine_rows.extend(
+            self._draft_engine_rows_for_scope(
+                header_draft,
+                scope=SCOPE_HEADER,
+                accepted=accepted_field_names(entity_type),
+                required=required_field_names(entity_type),
+                ref_pairs=FIELD_REF_TRANSFORMS,
+                known_vars=header_known_vars,
+                check_status_vocabulary=True,
+            )
+        )
+        engine_rows.extend(
+            self._draft_engine_rows_for_scope(
+                line_draft,
+                scope=SCOPE_LINE,
+                accepted=line_accepted_field_names(entity_type),
+                required=line_required_field_names(entity_type),
+                ref_pairs=LINE_FIELD_REF_TRANSFORMS,
+                known_vars=line_known_vars,
+            )
+        )
+
+        # Keep the saved NON-deliverable rows (identity/provenance) so the
+        # simulated record still correlates and stamps its watermark source -
+        # each checked against ITS OWN scope's accepted set.
+        header_accepted = accepted_field_names(entity_type)
+        line_accepted = line_accepted_field_names(entity_type)
+        for saved in self.mapping_rows(tenant_id, company_id, entity_type):
+            accepted_for_saved = line_accepted if saved.scope == SCOPE_LINE else header_accepted
+            if saved.canonical_field not in accepted_for_saved:
+                engine_rows.append(saved)
+        return engine_rows
+
+    def _draft_engine_rows_for_scope(
+        self,
+        draft_rows: List[MappingWriteRow],
+        *,
+        scope: str,
+        accepted: frozenset,
+        required: frozenset,
+        ref_pairs: Dict[str, str],
+        known_vars: frozenset,
+        check_status_vocabulary: bool = False,
+    ) -> List[MappingRow]:
+        """One scope's slice of ``_draft_engine_rows`` - the guard chain
+        shared by header and line, parameterised by which catalog applies.
+        ``check_status_vocabulary`` mirrors ``_replace_header_mapping``'s
+        status-literal guard (AC-02-08) - header only, a line row can never
+        target ``status``."""
         seen: set = set()
         engine_rows: List[MappingRow] = []
         for row in draft_rows:
@@ -1137,49 +1750,58 @@ class CompanyService:
             target = row.sorento_field
             if target not in accepted:
                 raise AutocountServiceError(
-                    f"'{target}' is not a Sorento field accepted for {entity_type}."
+                    f"'{target}' is not a Sorento {scope} field accepted."
                 )
             if target in seen:
                 raise AutocountServiceError(
-                    f"The Sorento field '{target}' is mapped more than once."
+                    f"The Sorento {scope} field '{target}' is mapped more than once."
                 )
             seen.add(target)
             # Same ref-transform pairing as ``replace_mapping`` (S5 review
             # BLOCKER 2) - a simulate must not preview a mapping the save
             # gate would reject.
-            if row.transform in REF_TRANSFORM_ENTITIES and FIELD_REF_TRANSFORMS.get(target) != row.transform:
+            if row.transform in REF_TRANSFORM_ENTITIES and ref_pairs.get(target) != row.transform:
                 raise AutocountServiceError(
                     f"'{row.transform}' cannot be used for '{target}' - it mints a "
                     f"reference for a different field."
                 )
-            if target in FIELD_REF_TRANSFORMS and row.transform != FIELD_REF_TRANSFORMS[target]:
+            if target in ref_pairs and row.transform != ref_pairs[target]:
                 raise AutocountServiceError(
-                    f"'{target}' must be mapped with the '{FIELD_REF_TRANSFORMS[target]}' "
+                    f"'{target}' must be mapped with the '{ref_pairs[target]}' "
                     f"transform - a plain value would send the raw AutoCount code, which "
                     f"Sorento cannot resolve as a reference."
                 )
             formula = (row.formula or "").strip() or None
             if formula is not None:
                 try:
-                    parse_formula(formula)
+                    parsed = parse_formula(formula, known_vars)
                 except FormulaParseError as exc:
                     raise AutocountServiceError(
                         f"The formula for '{target}' is invalid: {exc}"
                     ) from exc
+                if check_status_vocabulary and target == "status":
+                    # Same fixed-vocabulary guard as `_replace_header_mapping`
+                    # (AC-02-08) - a simulate must reject the exact literals
+                    # the save gate would, never preview a formula that would
+                    # 422 the instant it was actually saved.
+                    bad = [
+                        lit for lit in string_literals(parsed)
+                        if lit not in DOCUMENT_STATUS_VALUES
+                    ]
+                    if bad:
+                        raise AutocountServiceError(
+                            f"'{bad[0]}' is not a recognised document status - use "
+                            f"one of {', '.join(DOCUMENT_STATUS_VALUES)}."
+                        )
             engine_rows.append(
                 MappingRow(
                     source_path=source_path,
                     canonical_field=target,
                     transform=row.transform,
-                    scope=SCOPE_HEADER,
+                    scope=scope,
                     is_required=target in required,
                     is_enabled=True,
                     formula=formula,
                 )
             )
-        # Keep the saved NON-deliverable rows (identity/provenance) so the
-        # simulated record still correlates and stamps its watermark source.
-        for saved in self.mapping_rows(tenant_id, company_id, entity_type):
-            if saved.canonical_field not in accepted:
-                engine_rows.append(saved)
         return engine_rows

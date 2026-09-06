@@ -9,7 +9,8 @@ import { DataGridTable } from '@/components/ui/data-grid-table';
 import { SearchSelect } from '@/components/platform/search-select';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { humanizeFieldKey } from '@/lib/autocount-diff';
-import { statusFormulaSeed } from '@/lib/autocount-etl';
+import { pickerColumnOptions, statusFormulaSeed } from '@/lib/autocount-etl';
+import { cn } from '@/lib/utils';
 import type {
   AutocountMappingRow,
   AutocountSorentoField,
@@ -29,6 +30,14 @@ export interface MappingEditableRow {
    *  runs (exact); a non-empty formula is authoritative. */
   formula: string | null;
   sorentoField: string;
+  /**
+   * B1 (final review round) - a backfill/preset can seed a fixed-field row
+   * DISABLED (its source_path doesn't match a real preview column yet,
+   * visibly greyed); this must round-trip through an ordinary save
+   * unchanged, or the editor silently RE-ENABLES it and the S1
+   * preview-column gate 422s the whole draft again.
+   */
+  isEnabled: boolean;
 }
 
 /** The preset label a row currently reflects (read-mode display). */
@@ -113,7 +122,16 @@ export function MappingTable({
   columnTypes = {},
 }: MappingTableProps) {
   const columnMode = sourceMode === 'column';
-  const sourceOptions = acFields.map((f) => ({ label: f, value: f }));
+  // A seeded row (sprint-5/02, AC-02-16/21) whose column vanished from the
+  // saved query still needs to show WHAT it currently is - fold any such
+  // stale value into the offered set (same pattern as the Query tab's
+  // key/watermark pickers) so the picker's trigger never blanks to the
+  // placeholder while a real value is stored.
+  const acFieldsSet = new Set(acFields);
+  const sourceOptions = pickerColumnOptions(
+    acFields,
+    rows.map((r) => r.sourcePath).filter(Boolean),
+  ).map((f) => ({ label: f, value: f }));
   const usedTargets = new Set(rows.map((r) => r.sorentoField).filter(Boolean));
   const allTargetsUsed = sorentoFields.every((f) => usedTargets.has(f.field));
 
@@ -131,37 +149,58 @@ export function MappingTable({
     return seed ? { ...patch, formula: seed } : patch;
   }
 
+  /** A preset-seeded row (AC-02-16/21) whose source column is no longer part
+   *  of the saved query - visible, greyed, with the SAME picker so the
+   *  operator can fix it in place. A blank row (just added) is never
+   *  flagged - only a REAL stale value is. */
+  function isRowStale(row: MappingEditableRow): boolean {
+    return columnMode && row.sourcePath !== '' && !acFieldsSet.has(row.sourcePath);
+  }
+
   // AC-DLA-56 (T7): migrated off the raw <table> onto DataGrid + DataGridTable
   // (sticky header + resizable/movable columns free from DataGrid's own
   // defaults, AC-DLA-13). Columns rebuilt fresh each render (a small,
   // frequently-edited in-memory grid - not worth memoizing against this
   // many closed-over values); `row.index` is the row's position in `rows`,
-  // matching the original array index (no sort/filter on this grid).
+  // matching the original array index (no sort/filter on this grid). DataGrid
+  // has no per-row className hook, so a stale row's dimming (AC-02-16/21) is
+  // applied per-cell (`opacity-60` on every cell's content) rather than on a
+  // `<tr>` - the visible effect is the same, the whole row reads dimmed.
   const columns: ColumnDef<MappingEditableRow>[] = [
     {
       id: 'source',
       header: columnMode ? 'Source column' : 'AutoCount field',
       cell: ({ row }) => {
         const index = row.index;
-        return editing ? (
-          <SearchSelect
-            options={sourceOptions}
-            value={row.original.sourcePath}
-            onChange={(value) => onChangeRow(index, withStatusSeed(row.original, { sourcePath: value }))}
-            placeholder={
-              columnMode
-                ? sourceOptions.length > 0
-                  ? 'Select a column'
-                  : 'No columns yet'
-                : 'Select or type a path'
-            }
-            searchPlaceholder={columnMode ? 'Search columns' : 'Search or type a dotted path'}
-            allowCustom={!columnMode}
-            disabled={columnMode && sourceOptions.length === 0}
-            ariaLabel={`${columnMode ? 'Source column' : 'AutoCount source'} for row ${index + 1}`}
-          />
-        ) : (
-          <code className="text-xs">{row.original.sourcePath}</code>
+        const stale = isRowStale(row.original);
+        return (
+          <div className={cn('flex flex-col gap-1', stale && 'opacity-60')}>
+            {editing ? (
+              <SearchSelect
+                options={sourceOptions}
+                value={row.original.sourcePath}
+                onChange={(value) => onChangeRow(index, withStatusSeed(row.original, { sourcePath: value }))}
+                placeholder={
+                  columnMode
+                    ? acFields.length > 0
+                      ? 'Select a column'
+                      : 'No columns yet'
+                    : 'Select or type a path'
+                }
+                searchPlaceholder={columnMode ? 'Search columns' : 'Search or type a dotted path'}
+                allowCustom={!columnMode}
+                disabled={columnMode && acFields.length === 0}
+                ariaLabel={`${columnMode ? 'Source column' : 'AutoCount source'} for row ${index + 1}`}
+              />
+            ) : (
+              <code className="text-xs">{row.original.sourcePath}</code>
+            )}
+            {stale && (
+              <Badge variant="warning" appearance="light" size="sm" className="w-fit">
+                Column not in query
+              </Badge>
+            )}
+          </div>
         );
       },
     },
@@ -170,8 +209,9 @@ export function MappingTable({
       header: 'Transform',
       cell: ({ row }) => {
         const index = row.index;
+        const stale = isRowStale(row.original);
         return editing ? (
-          <div className="flex items-center gap-1">
+          <div className={cn('flex items-center gap-1', stale && 'opacity-60')}>
             <div className="min-w-28 flex-1">
               <SearchSelect
                 options={presetOptionsForField(row.original.sorentoField)}
@@ -193,7 +233,7 @@ export function MappingTable({
             </Button>
           </div>
         ) : (
-          <div className="flex flex-col gap-0.5">
+          <div className={cn('flex flex-col gap-0.5', stale && 'opacity-60')}>
             <span className="text-muted-foreground">{presetLabel(row.original)}</span>
             {row.original.formula && (
               <ClampedText
@@ -209,7 +249,11 @@ export function MappingTable({
     {
       id: 'arrow',
       header: () => null,
-      cell: () => <ArrowRight className="size-4 text-muted-foreground" />,
+      cell: ({ row }) => (
+        <ArrowRight
+          className={cn('size-4 text-muted-foreground', isRowStale(row.original) && 'opacity-60')}
+        />
+      ),
       size: 32,
       enableResizing: false,
       enableHiding: false,
@@ -220,6 +264,7 @@ export function MappingTable({
       header: 'Sorento field',
       cell: ({ row }) => {
         const index = row.index;
+        const stale = isRowStale(row.original);
         // Foolproof: offer this row's own target + any not used elsewhere,
         // so a duplicate target can never be selected.
         const targetOptions = sorentoFields
@@ -228,17 +273,21 @@ export function MappingTable({
             label: f.required ? `${sorentoFieldLabel(f.field)} *` : sorentoFieldLabel(f.field),
             value: f.field,
           }));
-        return editing ? (
-          <SearchSelect
-            options={targetOptions}
-            value={row.original.sorentoField}
-            onChange={(value) => onChangeRow(index, withStatusSeed(row.original, { sorentoField: value }))}
-            placeholder="Select a Sorento field"
-            disabled={sorentoFields.length === 0}
-            ariaLabel={`Sorento field for row ${index + 1}`}
-          />
-        ) : (
-          <span className="font-medium text-foreground">{sorentoFieldLabel(row.original.sorentoField)}</span>
+        return (
+          <div className={cn(stale && 'opacity-60')}>
+            {editing ? (
+              <SearchSelect
+                options={targetOptions}
+                value={row.original.sorentoField}
+                onChange={(value) => onChangeRow(index, withStatusSeed(row.original, { sorentoField: value }))}
+                placeholder="Select a Sorento field"
+                disabled={sorentoFields.length === 0}
+                ariaLabel={`Sorento field for row ${index + 1}`}
+              />
+            ) : (
+              <span className="font-medium text-foreground">{sorentoFieldLabel(row.original.sorentoField)}</span>
+            )}
+          </div>
         );
       },
     },
@@ -247,7 +296,7 @@ export function MappingTable({
           {
             id: 'remove',
             header: () => null,
-            cell: ({ row }: { row: { index: number } }) => (
+            cell: ({ row }: { row: { index: number; original: MappingEditableRow } }) => (
               <Button
                 type="button"
                 variant="ghost"
@@ -255,6 +304,7 @@ export function MappingTable({
                 mode="icon"
                 onClick={() => onRemoveRow(row.index)}
                 aria-label={`Remove row ${row.index + 1}`}
+                className={cn(isRowStale(row.original) && 'opacity-60')}
               >
                 <Trash2 className="size-4" />
               </Button>

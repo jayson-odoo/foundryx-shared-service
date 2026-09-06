@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { autocountService } from '@/services/autocount-service';
 import { integrationService } from '@/services/integration-service';
 import type { SearchSelectOption } from '@/components/platform/search-select';
+import type { AutocountSourceKind } from '@/types/autocount';
 import type { FilterGroup } from '@/types/resource';
 
 /** The core integrations provider key the `autocount` module registers as. */
@@ -17,66 +18,99 @@ const PROVIDER_FILTER: FilterGroup = {
   ],
 };
 
-export interface UseAutocountConnectionsResult {
-  /** AutoCount connections not yet registered as a company - the ONLY valid picks. */
+/** One source's picker state - the SAME shape for both kinds so the form has one code path. */
+export interface SourceConnectionsState {
+  /** Connections of this provider not yet registered as a company - the ONLY valid picks. */
   options: SearchSelectOption[];
+  /** The tenant holds at least one connection of this provider (bound or not). */
+  hasAny: boolean;
+  /** Every connection of this provider is already a company (nothing left to pick). */
+  allBound: boolean;
   isLoading: boolean;
-  /**
-   * Why there is nothing to pick, when there is nothing to pick. Foolproof-UI:
-   * a missing prerequisite is stated, never left as a silent empty dropdown.
-   */
-  emptyReason: string | null;
 }
 
+export interface UseAutocountSourceConnectionsResult {
+  api: SourceConnectionsState;
+  db: SourceConnectionsState;
+  isLoading: boolean;
+  /**
+   * The Source toggle's default (AC-01-12): the first kind with an unbound
+   * connection - API first when both have one, `db` when only it does, `api`
+   * when neither does (its banner then explains why nothing is pickable).
+   */
+  defaultKind: AutocountSourceKind;
+}
+
+const EMPTY: SourceConnectionsState = {
+  options: [],
+  hasAny: false,
+  allBound: false,
+  isLoading: true,
+};
+
 /**
- * The connection picker's options for registering a company.
+ * The connection picker's options for registering a company, per source
+ * (plan sprint-5/01 §2.6).
  *
- * One connection maps to exactly one company (the vendor API resolves the
- * company from the AppId header), so a connection that already has a company is
- * excluded - offering it would guarantee a 409.
+ * One connection maps to exactly one company - the vendor API resolves the
+ * company from the AppId header, and a `sql_database` connection IS the
+ * company's identity - so a connection that already has a company is excluded
+ * from BOTH lists: offering it would guarantee a 409 (foolproof-UI). Both
+ * kinds load together because the toggle's default depends on both.
  */
-export function useAutocountConnections(): UseAutocountConnectionsResult {
-  const [options, setOptions] = useState<SearchSelectOption[]>([]);
-  const [totalConnections, setTotalConnections] = useState(0);
-  const [isLoading, setIsLoading] = useState(true);
+export function useAutocountSourceConnections(): UseAutocountSourceConnectionsResult {
+  const [api, setApi] = useState<SourceConnectionsState>(EMPTY);
+  const [db, setDb] = useState<SourceConnectionsState>(EMPTY);
 
   useEffect(() => {
     let cancelled = false;
-    setIsLoading(true);
+    setApi(EMPTY);
+    setDb(EMPTY);
     Promise.all([
-      integrationService.list({ page: 0, pageSize: 200, filter: PROVIDER_FILTER }),
-      autocountService.listCompanies({ page: 0, pageSize: 200 }),
-    ])
-      .then(([connections, companies]) => {
-        if (cancelled) return;
-        const taken = new Set(companies.data.map((c) => c.connectionId));
-        setTotalConnections(connections.data.length);
-        setOptions(
-          connections.data
-            .filter((c) => !taken.has(c.id))
-            .map((c) => ({ label: c.name, value: c.id })),
-        );
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setTotalConnections(0);
-        setOptions([]);
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false);
+      integrationService
+        .list({ page: 0, pageSize: 200, filter: PROVIDER_FILTER })
+        .then((r) => r.data)
+        .catch(() => []),
+      autocountService.listSqlConnections().catch(() => []),
+      autocountService
+        .listCompanies({ page: 0, pageSize: 200 })
+        .then((r) => r.data)
+        .catch(() => []),
+    ]).then(([apiConnections, sqlConnections, companies]) => {
+      if (cancelled) return;
+      const taken = new Set(companies.map((c) => c.connectionId));
+      const apiOptions = apiConnections
+        .filter((c) => !taken.has(c.id))
+        .map((c) => ({ label: c.name, value: c.id }));
+      // The database IS the company's identity, so the label carries it.
+      const dbOptions = sqlConnections
+        .filter((c) => !taken.has(c.id))
+        .map((c) => ({ label: `${c.name} · ${c.database}`, value: c.id }));
+      setApi({
+        options: apiOptions,
+        hasAny: apiConnections.length > 0,
+        allBound: apiConnections.length > 0 && apiOptions.length === 0,
+        isLoading: false,
       });
+      setDb({
+        options: dbOptions,
+        hasAny: sqlConnections.length > 0,
+        allBound: sqlConnections.length > 0 && dbOptions.length === 0,
+        isLoading: false,
+      });
+    });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const emptyReason = useMemo(() => {
-    if (isLoading || options.length > 0) return null;
-    if (totalConnections === 0) {
-      return 'No AutoCount integration is connected yet.';
-    }
-    return 'Every AutoCount connection is already registered as a company.';
-  }, [isLoading, options.length, totalConnections]);
+  const isLoading = api.isLoading || db.isLoading;
 
-  return { options, isLoading, emptyReason };
+  const defaultKind = useMemo<AutocountSourceKind>(() => {
+    if (api.options.length > 0) return 'api';
+    if (db.options.length > 0) return 'db';
+    return 'api';
+  }, [api.options.length, db.options.length]);
+
+  return { api, db, isLoading, defaultKind };
 }

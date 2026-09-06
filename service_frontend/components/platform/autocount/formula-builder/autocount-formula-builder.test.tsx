@@ -98,3 +98,48 @@ describe('AutocountFormulaBuilder (AC-16-11..15)', () => {
     expect(screen.getByTestId('client-output')).toHaveTextContent(/expected a number/i);
   });
 });
+
+// sprint-5/02 (AC-02-20) - the document Variables panel.
+describe('AutocountFormulaBuilder - Variables panel (sprint-5/02, AC-02-20)', () => {
+  const VARIABLES = [
+    { label: 'Header columns', items: [{ label: 'Cancelled', token: 'Cancelled' }] },
+    {
+      label: 'Line aggregates',
+      items: [{ label: 'Open line count', token: 'lines.open_count' }],
+    },
+  ];
+  const LITERALS = [{ label: 'open', token: '"open"' }];
+
+  it('hides the Testing tab (no single value to test a multi-variable formula against)', () => {
+    renderBuilder({ variables: VARIABLES });
+    expect(screen.queryByRole('tab', { name: 'Testing' })).not.toBeInTheDocument();
+  });
+
+  it('inserts a variable token at the caret, grouped by section', () => {
+    renderBuilder({ variables: VARIABLES });
+    expect(screen.getByText('Header columns')).toBeInTheDocument();
+    expect(screen.getByText('Line aggregates')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Open line count'));
+    expect(screen.getByLabelText('Formula expression')).toHaveValue('lines.open_count');
+  });
+
+  it('accepts a named variable in a formula (unknown without the panel, known with it)', () => {
+    renderBuilder({ value: 'Cancelled == "T"' });
+    expect(screen.getByTestId('formula-status')).toHaveTextContent(/unknown name/i);
+
+    renderBuilder({ value: 'Cancelled == "T"', variables: VARIABLES });
+    expect(screen.queryAllByTestId('formula-status').pop()).toHaveTextContent(/valid formula/i);
+  });
+
+  it('literal chips (status vocabulary) render as their own group and insert quoted', () => {
+    renderBuilder({ variables: VARIABLES, literalOptions: LITERALS });
+    expect(screen.getByText('Status')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('open'));
+    expect(screen.getByLabelText('Formula expression')).toHaveValue('"open"');
+  });
+
+  it('a formula with an unknown name still fails Apply even with a Variables panel', () => {
+    renderBuilder({ value: 'TotallyUnknown == 1', variables: VARIABLES });
+    expect(screen.getByRole('button', { name: 'Apply' })).toBeDisabled();
+  });
+});

@@ -18,7 +18,7 @@ import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { embeddedListConfig } from '@/components/platform/resource-list/embedded-list-config';
 import type { ResourceAction, ResourceListConfig } from '@/components/platform/resource-list';
 import { useDatetime } from '@/hooks/use-datetime';
-import type { AutocountEntityConfig } from '@/types/autocount';
+import type { AutocountEntityConfig, AutocountSourceKind } from '@/types/autocount';
 import type { ListQuery, ListResult } from '@/types/resource';
 import {
   AC_COMPANIES_MANAGE,
@@ -76,6 +76,12 @@ export interface EntitiesListConfigOptions {
   entities: AutocountEntityConfig[];
   /** False when the company is inactive - a sync could not succeed. */
   companyActive: boolean;
+  /**
+   * How the company is connected (AC-01-18). A DB company has no vendor API,
+   * so the API-only actions (first-run window, source switch) are not offered
+   * at all - offering them would be a guaranteed 409/422.
+   */
+  sourceKind: AutocountSourceKind;
   onSync: (entityType: string) => void | Promise<void>;
   onEditLookback: (entity: AutocountEntityConfig) => void;
   /** Reset a superseded entity's watermark to re-open its first-run window. */
@@ -91,6 +97,7 @@ export interface EntitiesListConfigOptions {
 export function useAutocountEntitiesListConfig({
   entities,
   companyActive,
+  sourceKind,
   onSync,
   onEditLookback,
   onRefetch,
@@ -101,6 +108,9 @@ export function useAutocountEntitiesListConfig({
   const { formatDateTime } = useDatetime();
 
   return useMemo<ResourceListConfig<AutocountEntityConfig>>(() => {
+    // The first-run window and the source switch are vendor-API concepts; a
+    // DB company's entities never had either (AC-01-18).
+    const apiBacked = sourceKind !== 'db';
     const actions: ResourceAction<AutocountEntityConfig>[] = [
       {
         id: 'sync-now',
@@ -126,7 +136,7 @@ export function useAutocountEntitiesListConfig({
         // is spent and editing it is a guaranteed no-op - offering a dialog that
         // cannot take effect is the dead-control violation (AC-15-30). The
         // superseded state is shown read-only in the "Synced up to" column.
-        isVisible: (rows) => !rows[0]?.watermarkAt,
+        isVisible: (rows) => apiBacked && !rows[0]?.watermarkAt,
         run: (rows) => {
           const row = rows[0];
           if (row) onEditLookback(row);
@@ -185,6 +195,7 @@ export function useAutocountEntitiesListConfig({
         icon: ArrowLeftRight,
         surfaces: { row: true },
         permission: AC_COMPANIES_MANAGE,
+        isVisible: () => apiBacked,
         run: (rows) => {
           const row = rows[0];
           if (row) onChangeSource(row);
@@ -409,5 +420,6 @@ export function useAutocountEntitiesListConfig({
     onEditLookback,
     onRefetch,
     onSync,
+    sourceKind,
   ]);
 }

@@ -30,6 +30,8 @@ const VIEW: AutocountMappingView = {
   ],
   sorentoFields: [{ field: 'code', required: true }],
   acFields: ['AccNo'],
+  lineSorentoFields: [],
+  lineAcFields: [],
 };
 
 beforeEach(() => {

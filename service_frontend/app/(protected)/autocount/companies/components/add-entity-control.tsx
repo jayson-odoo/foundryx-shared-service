@@ -4,11 +4,17 @@ import { useMemo, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { SearchSelect } from '@/components/platform/search-select';
-import type { AutocountEntityConfig } from '@/types/autocount';
-import { AC_NEW_MASTER_ENTITY_TYPES, entityLabel } from '../../components/autocount-meta';
+import type { AutocountEntityConfig, AutocountSourceKind } from '@/types/autocount';
+import { addableEntityTypes, entityLabel } from '../../components/autocount-meta';
 
 export interface AddEntityControlProps {
   entities: AutocountEntityConfig[];
+  /**
+   * How the company is connected (AC-01-17): a DB company may add every
+   * `sql_db` entity (nine, incl. customer/supplier); an API company only the
+   * masters fan-out (the API seeds customer/supplier/GRN itself).
+   */
+  sourceKind: AutocountSourceKind;
   onAdd: (entityType: string) => void;
 }
 
@@ -20,15 +26,15 @@ export interface AddEntityControlProps {
  * picker offers only the entities NOT already configured (foolproof-UI: only
  * valid options), and choosing one just opens that entity's task editor.
  */
-export function AddEntityControl({ entities, onAdd }: AddEntityControlProps) {
+export function AddEntityControl({ entities, sourceKind, onAdd }: AddEntityControlProps) {
   const [value, setValue] = useState<string | null>(null);
   const configured = useMemo(() => new Set(entities.map((e) => e.entityType)), [entities]);
   const options = useMemo(
     () =>
-      AC_NEW_MASTER_ENTITY_TYPES.filter((entityType) => !configured.has(entityType)).map(
-        (entityType) => ({ value: entityType, label: entityLabel(entityType) }),
-      ),
-    [configured],
+      addableEntityTypes(sourceKind)
+        .filter((entityType) => !configured.has(entityType))
+        .map((entityType) => ({ value: entityType, label: entityLabel(entityType) })),
+    [configured, sourceKind],
   );
 
   if (options.length === 0) return null;

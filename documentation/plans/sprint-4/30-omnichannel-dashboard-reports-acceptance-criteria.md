@@ -438,4 +438,4 @@ messages: C6 at 180s). Resolution sample `[3600, 3600, 10800, 14400, 37800, 5184
   (`documentation/plans/sprint-4/30-omnichannel-dashboard-reports-test-report.md`, the
   `AI_Agent_Orchestration_Guide.md` §6 format) is keyed to these ids with PASS / FAIL / DEFERRED
   and cites the evidence run per `[E2E]` id; deferrals are registered in
-  `documentation/backlogs/backlog.md` from `BL-SS-090` with a link back to the plan.
+  `documentation/backlogs/backlog.md` from `BL-SS-104` with a link back to the plan.

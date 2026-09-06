@@ -100,7 +100,7 @@ tabs,popover,calendar,skeleton,chart}`, `hooks/use-can.ts`, `hooks/use-datetime.
 
 | # | Decision | Why |
 |---|---|---|
-| D-A9-1 | Data source = `conversation_events` + `conversation_messages` + `contacts`. No new fact tables, no new events, no materialized rollups in v1 | Main session 2026-09-06. A3 already writes every event A9 needs and backfilled the history; a rollup is premature before a real tenant's volume is known (backlog BL-SS-090) |
+| D-A9-1 | Data source = `conversation_events` + `conversation_messages` + `contacts`. No new fact tables, no new events, no materialized rollups in v1 | Main session 2026-09-06. A3 already writes every event A9 needs and backfilled the history; a rollup is premature before a real tenant's volume is known (backlog BL-SS-104) |
 | D-A9-2 | Dashboard content = state tiles, lifecycle stage counts, opened vs closed series, response + resolution medians, top agents. Team presence deferred | Main session. Presence needs an online-status source we do not have (A8 follow-up) |
 | D-A9-3 | Reports = ONE page, a report `SearchSelect` + the shared filter bar, seven reports; each report = one endpoint returning `{buckets, series, rows, totals}` | Main session. A left rail (respond.io's shape) is a backlog polish item; a picker is one component and works identically at 375px |
 | D-A9-4 | Export = CSV through the A2 `background_jobs` pattern (`omnichannel.report_export`), authed download route | Main session. One job type covers all seven reports (the report key rides in the payload) |
@@ -322,25 +322,25 @@ and unit-testable before any endpoint exists. S4's swap is one line per method i
 
 **Registered 2026-09-06 (review round 1)**: all twelve rows below are now in
 `documentation/backlogs/backlog.md` under these ids, each linking back to this plan. The
-plan's `P0/P1/P2` map onto the register's `High/Medium/Low` column. BL-SS-091 carries the
+plan's `P0/P1/P2` map onto the register's `High/Medium/Low` column. BL-SS-105 carries the
 D-A9-12 measurement in full (1,000,000 seeded `conversation_messages` rows, ~37-49 ms via
 the existing single-column `tenant_id` index with OR without the composite index once
 `ANALYZE` has run - so the index was deferred, not shipped).
 
 | Proposed id | Title | Priority |
 |---|---|---|
-| BL-SS-090 | Omnichannel reports: materialized daily rollup table + incremental refresh job (replaces the live aggregate once a tenant outgrows it) | P1 |
-| BL-SS-091 | Omnichannel reports: `(tenant_id, created_at)` index on `conversation_messages` if D-A9-12's measurement defers it | P1 |
-| BL-SS-092 | Omnichannel reports: team dimension turned on (filter + `groupBy=team` + `teamName`) once plan 28 / A8 lands | P0 (blocked on A8) |
-| BL-SS-093 | Omnichannel dashboard: team presence panel (online status + assigned-count per member) | P2 |
-| BL-SS-094 | Omnichannel reports: scheduled report emails (a cron workflow rendering a report through `render_email`) | P2 |
-| BL-SS-095 | Omnichannel reports: lifecycle funnel, time-in-stage and contacts added / merged (reports v2, roadmap Phase D) | P2 |
-| BL-SS-096 | Omnichannel reports: tenant-wide roll-up across all workspaces (today every report is single-workspace) | P2 |
-| BL-SS-097 | Omnichannel reports: comment log on the Users report (respond.io parity - the second table on that page) | P2 |
-| BL-SS-098 | Omnichannel reports: left rail of report names at >= `lg` instead of the `SearchSelect` (respond.io shape) | P2 |
-| BL-SS-099 | Omnichannel reports: previous-period comparison line + delta percentage on every metric card (respond.io shows both) | P2 |
-| BL-SS-100 | Omnichannel reports: `first assignment -> first response` and `last assignment -> first response` metrics (respond.io Responses report has all three) | P2 |
-| BL-SS-101 | Platform: export blob garbage collection for `background_jobs.result_json.fileKey` artefacts (shared with A2's contacts export) | P2 |
+| BL-SS-104 | Omnichannel reports: materialized daily rollup table + incremental refresh job (replaces the live aggregate once a tenant outgrows it) | P1 |
+| BL-SS-105 | Omnichannel reports: `(tenant_id, created_at)` index on `conversation_messages` if D-A9-12's measurement defers it | P1 |
+| BL-SS-106 | Omnichannel reports: team dimension turned on (filter + `groupBy=team` + `teamName`) once plan 28 / A8 lands | P0 (blocked on A8) |
+| BL-SS-107 | Omnichannel dashboard: team presence panel (online status + assigned-count per member) | P2 |
+| BL-SS-108 | Omnichannel reports: scheduled report emails (a cron workflow rendering a report through `render_email`) | P2 |
+| BL-SS-109 | Omnichannel reports: lifecycle funnel, time-in-stage and contacts added / merged (reports v2, roadmap Phase D) | P2 |
+| BL-SS-110 | Omnichannel reports: tenant-wide roll-up across all workspaces (today every report is single-workspace) | P2 |
+| BL-SS-111 | Omnichannel reports: comment log on the Users report (respond.io parity - the second table on that page) | P2 |
+| BL-SS-112 | Omnichannel reports: left rail of report names at >= `lg` instead of the `SearchSelect` (respond.io shape) | P2 |
+| BL-SS-113 | Omnichannel reports: previous-period comparison line + delta percentage on every metric card (respond.io shows both) | P2 |
+| BL-SS-114 | Omnichannel reports: `first assignment -> first response` and `last assignment -> first response` metrics (respond.io Responses report has all three) | P2 |
+| BL-SS-115 | Platform: export blob garbage collection for `background_jobs.result_json.fileKey` artefacts (shared with A2's contacts export) | P2 |
 
 ## 8. Flagged for the user (planner deviations from the 2026-09-06 decision set)
 
@@ -375,7 +375,7 @@ the existing single-column `tenant_id` index with OR without the composite index
    Postgres-only and timestamp arithmetic is dialect-specific, so a SQL implementation could not
    be pinned by the pytest suite - and the ACs are built on exact numbers. The cost is a bounded
    single-column fetch with a hard 100000-row cap and a fail-fast 422 beyond it; rollups
-   (BL-SS-090) are the answer when a tenant outgrows that.
+   (BL-SS-104) are the answer when a tenant outgrows that.
 6. **The response-time attribution rule for derived (legacy) datapoints.** D-A9-6 stated the
    derivation but not who owns the datapoint in a per-agent breakdown. This plan attributes it to
    the sender of the derived `AGENT` message. The alternative (exclude derived datapoints from
@@ -384,7 +384,7 @@ the existing single-column `tenant_id` index with OR without the composite index
    said "group by" generally; a full group-by-anything surface is the custom report builder that
    D-A9-7 puts out of scope.
 8. **Reports are per workspace, not per tenant (D-A9-16)**, matching A2 and A3. A tenant with
-   several workspaces has no combined view in v1 (BL-SS-096).
+   several workspaces has no combined view in v1 (BL-SS-110).
 9. **The `users` report includes zero-activity workspace members as rows.** respond.io shows an
    empty table when there is no data; a row per member reads better and makes "who did nothing this
    week" answerable. Cheap to reverse.

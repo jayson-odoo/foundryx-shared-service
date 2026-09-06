@@ -59,8 +59,35 @@ docker compose pull worker_workflow worker_omni beat
 #     blue/green). The color is started with --no-deps below, so its depends_on
 #     does NOT auto-start these - without this the API container waits on `db`
 #     forever ("db not ready"). Idempotent: already-running = no-op.
+#
+#     A change to the compose NETWORK definition (the pinned ipam subnet for the
+#     Sorento SQL relay, 2026-09-04) makes compose recreate
+#     foundryx_ss_network, which is impossible while the live color, the
+#     workers or a stale orphan still hold endpoints on it: `up -d` STOPS
+#     db/redis/pgbackups first, then dies on "has active endpoints", and the
+#     retry finds redis "not connected to the network" - production left
+#     without its database (run 34011403918, 2026-09-06). So: try the normal
+#     no-op path; if it fails with the network-recreate signature, take the
+#     whole stack down ONCE (every profile, orphans included, so nothing holds
+#     the old network), then bring infra up on the recreated network and
+#     continue the normal blue/green flow. A brief full outage, only on the
+#     deploy that changes the network; later deploys never enter this branch.
+#     Any other failure still aborts here, before a color is touched.
 echo "==> Ensuring infra (db/redis/pgbackups) is up"
-docker compose up -d db redis pgbackups
+NETWORK_RECREATE_SIGNATURE='has active endpoints|is not connected to the network|needs to be recreated'
+if ! infra_out=$(docker compose up -d db redis pgbackups 2>&1); then
+  echo "$infra_out"
+  if grep -qE "$NETWORK_RECREATE_SIGNATURE" <<<"$infra_out"; then
+    echo "==> Network recreate pending: taking the whole stack down once (brief full outage)"
+    docker compose --profile blue --profile green down --remove-orphans
+    docker compose up -d db redis pgbackups
+  else
+    echo "::error::infra up failed for a reason other than a pending network recreate - aborting before touching any color"
+    exit 1
+  fi
+else
+  echo "$infra_out"
+fi
 
 # 2. Bring up the new color. The API container's start.sh runs
 #    `python -m scripts.bootstrap_db` (alembic upgrade + seed + modules) before

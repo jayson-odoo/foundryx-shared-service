@@ -21,7 +21,7 @@ Format: `documentation/development_process/AI_Agent_Orchestration_Guide.md` §6.
   pass, verified locally and left uncommitted rather than a foreign edit. **The tester did not
   author, modify, or evaluate this diff** - it is called out here so it gets committed (or explicitly
   reviewed) before merge; losing it would silently regress the D-A9-12 index-measurement note and the
-  BL-SS-090..101 backlog registration. The backend process tested (fresh restart, no `--reload`) and
+  BL-SS-104..101 backlog registration. The backend process tested (fresh restart, no `--reload`) and
   the frontend process tested (already-running prod build, left untouched) both reflect this code, so
   the PASS/FAIL findings below are against the code as it stood at test time, uncommitted diff
   included.
@@ -132,7 +132,7 @@ candidates were already correctly deferred by the plan itself, not by this test 
 
 None deferred by this test pass. The plan's own out-of-scope list (D-A9-7: custom report builder,
 scheduled report emails, team presence, broadcast reports, lifecycle funnel/time-in-stage/contacts-
-added, calls, materialized rollups) and its twelve backlog candidates (`BL-SS-090..101`, already
+added, calls, materialized rollups) and its twelve backlog candidates (`BL-SS-104..101`, already
 registered in `documentation/backlogs/backlog.md` by the coder's uncommitted-but-verified pass noted
 in Environment above) cover every acknowledged follow-up; nothing surfaced during this test run that
 isn't already tracked there.
@@ -143,7 +143,7 @@ isn't already tracked there.
   `agent | api | workflow`, and the reader prefers the writer's own `payload.source`; but no code path
   writes `"workflow"` today - the `omnichannel.*` workflow actions do not assign, so every row this run
   produced is `agent` (UI) or would be `api` (gateway). The `workflow` value is pinned only at the
-  reader/parity level until an assigning workflow action exists (BL-SS-100's neighbourhood; not a
+  reader/parity level until an assigning workflow action exists (BL-SS-114's neighbourhood; not a
   plan-30 defect).
 
 - The exact DST bucket-width arithmetic (AC-RPT-12), the 120-bucket/100000-sample caps (AC-RPT-08/13)
@@ -169,7 +169,7 @@ against the same working tree, so the evidence above already covers these change
 | **S-6** `parseKey` built UTC-midnight Dates while `react-day-picker` matches local midnight - west of UTC the calendar highlighted the previous day and opened on the wrong month | `parseKey` builds from local components, matching `localDateKey`; `displayLabel` drops its `timeZone: 'UTC'` override | vitest `date-range-picker.tz.test.tsx` runs under `TZ=America/Los_Angeles` (with a guard assertion so it cannot pass vacuously) and pins `localDateKey(parseKey(k)) === k` |
 | **S-7** the shared fixture hashed three passwords with bcrypt on EVERY test | one module-level precomputed hash | measured A/B on `test_omnichannel_reports_builders.py` (25 tests): **37.74s -> 23.40s**, a 38% cut |
 | **S-8** the two-dialect compile test built its own stand-in column | `report_queries.bucketed_select_columns` extracted as the pure column-building half of `bucketed_counts`; the test compiles the REAL multi-series statement on both dialects | pytest |
-| **S-9** plan 30's backlog candidates were never registered | `BL-SS-090..101` added to `documentation/backlogs/backlog.md`, each linking back to the plan; BL-SS-091 carries the D-A9-12 measurement in full (1,000,000 rows, ~37-49 ms with or without the composite index after `ANALYZE`, index deferred) | file |
+| **S-9** plan 30's backlog candidates were never registered | `BL-SS-104..101` added to `documentation/backlogs/backlog.md`, each linking back to the plan; BL-SS-105 carries the D-A9-12 measurement in full (1,000,000 rows, ~37-49 ms with or without the composite index after `ANALYZE`, index deferred) | file |
 | Nits | assignment-log `source` prefers the writer's own `payload.source` and infers only for legacy rows; `page`/`pageSize` are a typed 422 on the four unpaginated reports; the reports page dropped its hardcoded descriptor fallback for an error state; `useWorkspaceChannels` extracted and used by both pages; `dashboard/loading.tsx` added; the export builds the `users`/`leaderboard` row set ONCE then paginates in memory | pytest (foreign-tenant actor id renders an empty name; a job of another TYPE 404s; two-page proof for `users` + `leaderboard`; explicit `page` 422) + vitest |
 
 UAC/plan amendments (all tagged **amended 2026-09-06 (review round 1)**): AC-RPT-27 (source
