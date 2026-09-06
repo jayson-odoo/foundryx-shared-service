@@ -87,7 +87,16 @@ export default function OmnichannelReportsPage() {
     [setGroupBy],
   );
 
-  if (!ready || metaLoading) {
+  // N-1 (review round 2): `useReportMeta(null)` (pre-`ready`) settles at
+  // loading=false / meta=null / error=false, and the commit right after the
+  // workspace id lands - BEFORE the fetch effect re-runs - carries that same
+  // state. Treating `!meta` as an error there replaced the whole page with
+  // "Couldn't load" on every normal load. So: a workspace whose catalog has
+  // not arrived yet is a LOADING state; only an actual fetch failure is the
+  // error state; and no workspace at all (BL-SS-081 - a role without
+  // `workspaces.read`) renders the page with an empty body, as before.
+  const metaPending = Boolean(workspaceId) && !meta && !metaError;
+  if (!ready || metaLoading || metaPending) {
     return (
       <Container width="fluid">
         <div className="flex items-center justify-center py-24 text-muted-foreground">
@@ -101,7 +110,7 @@ export default function OmnichannelReportsPage() {
   // group-by, which export). A hardcoded fallback list would silently drift
   // from the server's and offer reports/controls that may not exist - so a
   // meta failure is an error state, not a guess (nit, review round 1).
-  if (metaError || !meta) {
+  if (metaError) {
     return (
       <RequirePermission permission="reports.read">
         <Container width="fluid">
@@ -135,7 +144,7 @@ export default function OmnichannelReportsPage() {
 
         <Container width="fluid">
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-            <ReportPicker value={reportKey} onChange={onReportChange} reports={meta.reports} />
+            <ReportPicker value={reportKey} onChange={onReportChange} reports={meta?.reports ?? []} />
             {canExport && (currentDescriptor?.exportable ?? true) && (
               <Button variant="outline" size="sm" disabled={!workspaceId || exporting} onClick={() => void runExport()}>
                 {exporting ? 'Exporting...' : 'Export'}
@@ -154,7 +163,7 @@ export default function OmnichannelReportsPage() {
             channels={channelOptions}
             granularity={state.granularity}
             onGranularityChange={setGranularity}
-            granularityOptions={meta.granularities}
+            granularityOptions={meta?.granularities ?? []}
             className="mb-4"
           />
         </Container>

@@ -9,11 +9,19 @@
  * The TZ is set BEFORE the module is loaded, so the import is dynamic (a
  * static import would hoist above the assignment).
  */
+const previousTz = process.env.TZ;
 process.env.TZ = 'America/Los_Angeles';
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 const { localDateKey, parseKey } = await import('./date-range-picker');
+
+afterAll(() => {
+  // Vitest isolates files by default, but restore anyway so a shared-worker
+  // config can never inherit a west-of-UTC clock from this suite.
+  if (previousTz === undefined) delete process.env.TZ;
+  else process.env.TZ = previousTz;
+});
 
 describe('date key round-trip west of UTC', () => {
   it('actually runs in America/Los_Angeles (guards against a vacuous pass)', () => {

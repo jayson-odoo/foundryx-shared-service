@@ -284,6 +284,48 @@ def test_download_404_for_a_job_of_another_type(client, session_factory, fixture
     assert _download(client, h, fixture_ids.workspace_id, "conversations", other_type_job_id).status_code == 404
 
 
+# ── N-4 (review round 2): the export honours `groupBy` (S-5's server half) ──
+def test_export_responses_group_by_user_renders_the_per_agent_shape(client, fixture_ids):
+    """S-5 lifted `groupBy` into the shared filters so Export carries the
+    on-screen breakdown; nothing on the server side pinned that a grouped
+    export actually renders the grouped table. `responses` + `groupBy=user`
+    must produce the per-agent header, and the SAME report ungrouped must
+    produce the bucket header - so the payload's `groupBy` is load-bearing,
+    not silently ignored."""
+    h = _auth(client)
+
+    grouped = _export(client, h, fixture_ids.workspace_id, "responses", groupBy="user")
+    assert grouped.status_code == 201, grouped.text
+    grouped_job_id = grouped.json()["jobId"]
+    grouped_rows = list(csv.reader(io.StringIO(
+        _download(client, h, fixture_ids.workspace_id, "responses", grouped_job_id).content.decode("utf-8-sig")
+    )))
+    assert grouped_rows[0] == ["User ID", "Name", "Samples", "Median (s)", "P90 (s)", "Average (s)"]
+    # One data row per agent that has at least one sample in the range.
+    assert len(grouped_rows) > 1
+    assert all(len(r) == 6 for r in grouped_rows[1:])
+
+    ungrouped = _export(client, h, fixture_ids.workspace_id, "responses")
+    ungrouped_job_id = ungrouped.json()["jobId"]
+    ungrouped_rows = list(csv.reader(io.StringIO(
+        _download(client, h, fixture_ids.workspace_id, "responses", ungrouped_job_id).content.decode("utf-8-sig")
+    )))
+    assert ungrouped_rows[0] == ["Bucket", "Label", "Count", "Percent"]
+
+
+def test_export_messages_group_by_channel_renders_the_per_channel_shape(client, fixture_ids):
+    """N-4: `messages` is the one report whose grouped shape is per-CHANNEL
+    (not per-user) - a different column set again, so pin it separately."""
+    h = _auth(client)
+    res = _export(client, h, fixture_ids.workspace_id, "messages", groupBy="channel")
+    assert res.status_code == 201, res.text
+    rows = list(csv.reader(io.StringIO(
+        _download(client, h, fixture_ids.workspace_id, "messages", res.json()["jobId"]).content.decode("utf-8-sig")
+    )))
+    assert rows[0] == ["Channel ID", "Channel", "Type", "Incoming", "Outgoing"]
+    assert len(rows) > 1
+
+
 # ── AC-RPT-37/39: permission gates (core `reports.export`) ──────────────────
 def test_export_permission_gate_403_reports_read_only(client, session_factory, fixture_ids):
     _role_with_keys(session_factory, ["reports.read"], email="reports-read-only@fixture.example")

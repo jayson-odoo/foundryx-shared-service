@@ -245,12 +245,23 @@ def _derived_response_samples(db: Session, rq: ReportQuery) -> List[ResponseSamp
     if rq.user_id:
         query = query.filter(ConversationMessage.sender_id == rq.user_id)
 
+    # N-2 (review round 2): `created_at == MIN(created_at)` matches EVERY
+    # agent message that shares the contact's first-reply second (bulk /
+    # seeded sends land on identical timestamps), which double-counted the
+    # contact in median/p90/avg and in `groupBy=user`. A deterministic order
+    # + a first-row-wins dedupe on contact_id keeps exactly one sample per
+    # contact (the lowest message id among the tied rows).
+    query = query.order_by(
+        ConversationMessage.contact_id, ConversationMessage.created_at, ConversationMessage.id
+    )
     rows = report_queries.duration_samples(query, cap=report_queries.REPORT_MAX_SAMPLE_ROWS)
 
     samples: List[ResponseSample] = []
+    seen_contacts: set = set()
     for contact_id, sender_id, agent_at, last_contact_at in rows:
-        if last_contact_at is None:
+        if last_contact_at is None or contact_id in seen_contacts:
             continue
+        seen_contacts.add(contact_id)
         seconds = int((agent_at - last_contact_at).total_seconds())
         samples.append(
             ResponseSample(contact_id=contact_id, seconds=seconds, actor_user_id=sender_id, derived=True)

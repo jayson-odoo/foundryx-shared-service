@@ -223,6 +223,56 @@ def test_legacy_derivation_bounded_statements_no_per_contact_in_list(client, ses
     assert set(extra_ids) <= derived_ids
 
 
+def test_legacy_derivation_tied_first_agent_messages_yield_one_sample(session_factory, fixture_ids):
+    """N-2 (review round 2): `created_at == MIN(created_at)` matches EVERY
+    agent message sharing the contact's first-reply second (bulk / seeded
+    sends land on identical timestamps). Two AGENT messages with the EXACT
+    same `created_at` must still produce ONE derived sample for the contact -
+    never two - so median/p90/avg and `groupBy=user` cannot double-count."""
+    from modules.omnichannel.models import ConversationMessage
+    from modules.omnichannel.services.report_service import _derived_response_samples
+    from modules.omnichannel.services.report_filters import build_query
+
+    db = session_factory()
+    c = Contact(
+        tenant_id=fixture_ids.tenant_id,
+        workspace_id=fixture_ids.workspace_id,
+        first_name="Tied",
+        last_name="FirstReply",
+        phone="+60199000001",
+        phone_digits="60199000001",
+        status_id=fixture_ids.thread_statuses["OPEN"],
+        lifecycle_status_id=fixture_ids.lifecycle["new_lead"],
+    )
+    db.add(c)
+    db.flush()
+    tied_contact_id = c.id
+    db.add(ConversationMessage(
+        tenant_id=fixture_ids.tenant_id, contact_id=c.id, channel_id=fixture_ids.channel_id,
+        sender_type="CONTACT", message_type="TEXT", body="hi",
+        created_at=datetime(2026, 3, 2, 1, 0, 0, tzinfo=timezone.utc),
+    ))
+    tied_at = datetime(2026, 3, 2, 1, 5, 0, tzinfo=timezone.utc)
+    for body in ("hello", "hello again"):
+        db.add(ConversationMessage(
+            tenant_id=fixture_ids.tenant_id, contact_id=c.id, channel_id=fixture_ids.channel_id,
+            sender_type="AGENT", sender_id=fixture_ids.users["ann"], message_type="TEXT", body=body,
+            created_at=tied_at,
+        ))
+    db.commit()
+
+    rq = build_query(
+        db, fixture_ids.tenant_id, fixture_ids.workspace_id, from_="2026-03-01", to="2026-03-07", tz="UTC"
+    )
+    samples = _derived_response_samples(db, rq)
+    db.close()
+
+    tied = [s for s in samples if s.contact_id == tied_contact_id]
+    assert len(tied) == 1
+    assert tied[0].seconds == 300
+    assert tied[0].derived is True
+
+
 def test_legacy_derivation_cap_raises_before_cap_plus_two(session_factory, fixture_ids, monkeypatch):
     """B-1: the SQL-bound derivation still routes through `duration_samples`,
     so `SampleCapExceeded` (AC-RPT-13) fires reading `cap + 1` rows - never

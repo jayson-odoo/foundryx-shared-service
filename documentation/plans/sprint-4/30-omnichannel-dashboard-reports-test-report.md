@@ -5,8 +5,13 @@ Format: `documentation/development_process/AI_Agent_Orchestration_Guide.md` §6.
 
 ## Environment
 
-- **Commit under test:** `dc92223a` (`feat(omnichannel): plan 30 S4 wire dashboard + reports to the
-  real backend, export via job, vitest`) on `sprint-4/30-dashboard-reports`.
+- **Commit under test:** the review round 2 commit (child of `983bff15`, `fix(omnichannel): plan 30
+  review round 2 - reports meta loading state, first-reply tiebreak, grouped export test, fresh-build
+  evidence`) on `sprint-4/30-dashboard-reports`, served from a clean build **`BUILD_ID UU2Fo2BsXkfYNqnCrOnZw`**
+  (2026-09-06 21:09) - see the "Re-record after review round 2" section of the E2E README. The original run
+  (below) was recorded against `dc92223a` + the then-uncommitted round-1 diff; screenshots 12-35 were
+  re-recorded on the round-2 build because the original captures predated the round-1 frontend fixes
+  (N-3).
 - **Uncommitted working-tree state found at test start (not authored by the tester):** `git status`
   showed an uncommitted diff (20 files, +907/-239) across `report_service.py`,
   `report_export_service.py`, `report_queries.py`, `reports.py`, their test files, the dashboard and
@@ -134,6 +139,13 @@ isn't already tracked there.
 
 ## Could not independently verify
 
+- **AC-RPT-27 `source: "workflow"` has no writer yet.** The assignment-log `source` column accepts
+  `agent | api | workflow`, and the reader prefers the writer's own `payload.source`; but no code path
+  writes `"workflow"` today - the `omnichannel.*` workflow actions do not assign, so every row this run
+  produced is `agent` (UI) or would be `api` (gateway). The `workflow` value is pinned only at the
+  reader/parity level until an assigning workflow action exists (BL-SS-100's neighbourhood; not a
+  plan-30 defect).
+
 - The exact DST bucket-width arithmetic (AC-RPT-12), the 120-bucket/100000-sample caps (AC-RPT-08/13)
   and the two-dialect SQL compile (AC-RPT-11) are internal/numeric properties that pytest already
   pins byte-for-byte; a browser click cannot assert them any more precisely, so these are cited to
@@ -171,3 +183,23 @@ Suites after the round: **backend 3121 passed, 1 skipped** (baseline 3114/1, +7 
 **frontend 2181 passed across 292 files** (baseline 2176, +5 new tests); `npx eslint .` 0 errors
 (216 pre-existing warnings); `npx tsc --noEmit` 0 errors outside the repo's pre-existing test-file
 noise.
+
+
+## Round 2 fixes (coder, 2026-09-06, post re-read)
+
+The Opus re-read of `983bff15` confirmed every round-1 finding closed and raised four new items plus
+nits. All fixed; nothing deferred. Lane `s30` throughout.
+
+| Finding | Fix | Verified by |
+|---|---|---|
+| **N-1** `reports/page.tsx` treated `!meta` as the error state, so the commit between the workspace id landing and the catalog fetch re-running (the real `useReportMeta(null)` post-state: loading=false / meta=null / error=false) replaced the page with "Couldn't load the reports." on every normal load, and permanently for a role with no workspace (BL-SS-081) | spinner while `!ready || metaLoading || (workspaceId && !meta && !metaError)`; error ONLY on `metaError`; a null workspace renders the header + empty body | new `page.meta-loading.test.tsx` keeps the REAL hook and drives the service with a deferred promise; a `MutationObserver` over the mutation RECORDS (not the live body) catches the transient paint. Both the transient and the dead-end case **fail on the old page** (mutation-checked) and pass on the new. Live: 17 and 28 render the catalog straight off the sidebar click, `Couldn't load` absent on every capture |
+| **N-2** `created_at == MIN(created_at)` matched every agent message tied on the first-reply second, double-counting a contact | deterministic `ORDER BY contact_id, created_at, id` + first-row-wins dedupe on `contact_id` in `_derived_response_samples` | `test_legacy_derivation_tied_first_agent_messages_yield_one_sample`: two AGENT messages with the exact same `created_at` -> ONE sample (300s). **Fails without the fix (2 samples), passes with it.** Live: the dashboard's real (untied) numbers are byte-identical to the original run |
+| **N-3** screenshots 12-35 predated the round-1 frontend fixes | clean rebuild (`BUILD_ID UU2Fo2BsXkfYNqnCrOnZw`), both servers restarted from the round-2 tree (cwd-verified before killing), all of 12-35 re-recorded with real clicks at 1280 + 375, plus a new **18b** for the group-by URL sync | E2E README "Re-record after review round 2" |
+| **N-4** no export test sent `groupBy` | `test_export_responses_group_by_user_renders_the_per_agent_shape` (per-agent header vs the bucket header for the same report ungrouped) + `test_export_messages_group_by_channel_renders_the_per_channel_shape` | pytest |
+| Nits | `BL-SS-077..079` moved above `080` (numeric order); `date-range-picker.tz.test.tsx` restores `process.env.TZ` in `afterAll`; this report's "Commit under test" restated to the round-2 commit + build; the AC-RPT-27 `source: "workflow"` gap recorded above | files |
+
+Suites after the round: targeted backend (`test_omnichannel_reports_{dashboard,export,builders}.py`)
+**72 passed** (69 + 3 new); **frontend 2184 passed across 293 files** (+3 new); `npx eslint .` 0
+errors (216 pre-existing warnings); `npx tsc --noEmit` 0 errors outside the repo's pre-existing
+test-file noise. The full backend suite was last run green at `983bff15` (3121 passed, 1 skipped);
+round 2 touches only `report_service.py` on the backend, covered by the targeted files.

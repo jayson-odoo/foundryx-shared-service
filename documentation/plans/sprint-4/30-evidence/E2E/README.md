@@ -163,3 +163,53 @@ runs).
   and the golden two-dialect SQL compile (AC-RPT-11) are numeric/internal properties proven by the
   backend suite (`test_omnichannel_reports_dashboard.py`), not something a browser click can assert
   differently from what pytest already pins byte-for-byte.
+
+
+## Re-record after review round 2 (coder, 2026-09-06 21:15-21:23 local, session `agent-browser --session s30c`)
+
+**Why:** the Opus re-read (N-3) found that screenshots 12-35 above were captured against a build
+(`BUILD_ID` 17:31) that predated the round-1 frontend fixes (page edits 16:38-16:41; the README's
+"already running" frontend). So every screenshot from 12 to 35 was re-recorded against a clean build
+of the round-2 tree: `rm -rf .next && npm run build` in `s30/service_frontend` at 2026-09-06 21:09
+(**`BUILD_ID UU2Fo2BsXkfYNqnCrOnZw`**), served by `npx next start -p 3008` (pid 16966, cwd-verified `s30`), backend
+`:8009` restarted from the round-2 tree with the `foundryx_service_s30` `DATABASE_URL` override +
+`CELERY_TASK_ALWAYS_EAGER=true` (pid 15471, cwd-verified `s30`). The old `:3008` (pid 54564) and
+`:8009` (pid 53020) processes were killed only after `lsof -p <pid> | grep cwd` confirmed both were
+this worktree's. Screenshots 00-11 (the Inbox activity that SEEDED the numbers) are unchanged - they
+record data creation, not a rendered surface the fixes touched.
+
+Same tenants and accounts as the original run; no new data was created, so every number below is
+the same real fixture the original run produced.
+
+| # | Capture | Proves |
+|---|---|---|
+| 12 | `12-dashboard-last7-1280.png` | Sidebar -> Omnichannel -> Dashboard (real click): tiles `Open 1 / Assigned 1 / Unassigned 1 / Snoozed 1`, Lifecycle `New Lead 3 / 100%` (the S-3 denominator = 3 total contacts, all staged) |
+| 13 | `13-dashboard-last30-1280.png` | Preset -> Last 30 days; URL flips to `preset=last30&from=2026-08-08&to=2026-09-06`, chart re-buckets |
+| 14 | `14-dashboard-lower-1280.png` | First response `6m10s / 6m53s / 5m9s / 3 samples` - **identical to the original run on the N-2 (tie-break) build**, so the dedupe changed nothing for real, non-tied data; Resolution "No data in this range."; Top agents P30 Admin 2 closed |
+| 15, 16 | `15-dashboard-375-top.png`, `16-dashboard-375-lifecycle-chart.png` | 375px: filter bar stacks full-width, tiles one per row; `scrollWidth === clientWidth === 375` via `eval` |
+| 17 | `17-reports-conversations-1280.png` | **N-1 proof**: sidebar -> Reports (real link click) renders the catalog straight away - Report `SearchSelect`, Export button, filter bar, "Conversations over time" - never "Couldn't load the reports." (`document.body.textContent.includes("Couldn't load")` was `false` on every reports capture in this run) |
+| 18 | `18-reports-responses-1280.png` | Responses: tile + "By duration" breakdown |
+| **18b** | `18b-reports-responses-groupby-user-url-1280.png` | **S-5 proof (new capture)**: Group by -> By agent; the URL gains `&groupBy=user` and the breakdown becomes the per-agent table (P30 Admin 3 samples / 6m10s, P30 Agent User 0). The Export request built from this state carries the same `groupBy` (pinned by `page.test.tsx`; the N-4 backend test pins the per-agent CSV header) |
+| 19-23 | `19-...resolutions`, `20-...messages`, `21-...users`, `22-...leaderboard`, `23-...assignments` (1280) | Each report via the Report `SearchSelect`. Switching away from Responses dropped `groupBy=user` from the URL (the report-switch rule) |
+| 24 | `24-reports-assignments-userfilter-1280.png` | User -> P30 Admin on Assignment log: URL carries `userId=...`; 3 assigned / 1 unassigned unchanged (actor-OR-to_value) |
+| 25 | `25-export-assignments-1280.png` | Export clicked (User reset to All first). Backend log: `POST .../reports/assignments/export` **201** -> `GET .../export/{jobId}/file` **200** (eager-inline job) |
+| 26, 27 | `26-reports-conversations-375.png`, `27-reports-assignments-375.png` | 375px reports; `scrollWidth === clientWidth === 375` on both |
+| 34 | `34-reports-switch-keeps-filters-1280.png` | User=P30 Admin set on Conversations, switched to Users: URL keeps `userId=...&report=users` |
+| 35 | `35-reports-reload-restores-state-1280.png` | The ONE sanctioned URL navigation (F5/bookmark): opened the step-34 URL fresh - Report `Users`, preset `Last 7 days`, User `P30 Admin` all restored |
+| 28-30 | `28-agent-reports-no-export-1280.png`, `29-agent-reports-with-data-no-export-1280.png`, `30-agent-reports-375.png` | Logged out (user menu -> Logout), logged in as **P30 Agent User** (`reports.read`, not `.export`): Reports renders the catalog (N-1 holds for this role too), **no Export button** at 1280 (Conversations and Users) or 375 (`eval` over every `button` = `false`) |
+| 31-33 | `31-noomni-tenant-no-menu-1280.png`, `32-noomni-desktop-megamenu-1280.png`, `33-noomni-mobile-megamenu-375.png` | Logged out, logged in as the **noomni** tenant Admin: no "Omnichannel" section in the sidebar (`eval` = `false`), the desktop Apps mega menu lists User Management only, the 375px Apps menu lists User Management + Developers only |
+
+Harness notes for this re-record (not product defects):
+
+- The plan-23 motion wrappers swallow a plain CDP `click` on sidebar links and on the header avatar /
+  Apps trigger (the "Reports" link click returned OK but never navigated). Those were dispatched on
+  the REAL element via `agent-browser eval` - `a.click()` for the Next `Link`, and a
+  `pointerdown -> mousedown -> pointerup -> mouseup -> click` sequence for the Radix triggers - per
+  the lane-harness notes. Every other control (all `SearchSelect`s, options, viewport) took normal
+  `@ref` clicks. `find text` did not resolve `SearchSelect` options; `snapshot -i` refs did.
+- `wait --url` with a query-string glob never matched here; `wait --load networkidle` + a short settle
+  was used instead.
+- After **Logout** the browser briefly landed on `chrome-error://chromewebdata/` before the next
+  `open .../signin` succeeded (both tenants). Sign-in itself worked first time in every case, so this
+  is the post-signout redirect target, not the login flow - noted for whoever owns the signout
+  callback URL in a multi-port lane; outside plan 30.
