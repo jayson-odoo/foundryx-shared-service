@@ -278,3 +278,33 @@ describe('sync summary parsing (the zero-record case)', () => {
     expect(odd.staged).toBe(0);
   });
 });
+
+// fix/db-company-seed-source: a DB company can carry a row stranded on the
+// vendor-API source (seeded before the seed followed the source kind). The
+// only way out is "Change source", so it must be offered PER ROW - on the
+// stranded row - never hidden for the whole company.
+describe('DB company - "Change source" is per row, offered on a stranded API-sourced row', () => {
+  const stranded = entity({ entityType: 'customer', sourceImpl: 'autocount_read', watermarkAt: null });
+  const dbSourced = entity({ entityType: 'supplier', sourceImpl: 'sql_db', watermarkAt: null });
+
+  it('offers "Change source" on a DB company row still at autocount_read', () => {
+    const c = config([stranded, dbSourced], true, 'db');
+    const change = c.actions.find((a) => a.id === 'change-source')!;
+    expect(change.isVisible?.([stranded])).toBe(true);
+    change.run([stranded], { reload: vi.fn() });
+    expect(onChangeSource).toHaveBeenCalledWith(stranded);
+  });
+
+  it('keeps "Change source" hidden on a DB company row already at sql_db', () => {
+    const c = config([stranded, dbSourced], true, 'db');
+    const change = c.actions.find((a) => a.id === 'change-source')!;
+    expect(change.isVisible?.([dbSourced])).toBe(false);
+  });
+
+  it('an API company offers "Change source" on every row regardless of sourceImpl (regression pin)', () => {
+    const c = config([stranded, dbSourced], true, 'api');
+    const change = c.actions.find((a) => a.id === 'change-source')!;
+    expect(change.isVisible?.([stranded])).toBe(true);
+    expect(change.isVisible?.([dbSourced])).toBe(true);
+  });
+});
