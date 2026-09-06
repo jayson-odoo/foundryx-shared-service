@@ -49,6 +49,14 @@ x-backend-env: &backend-env
   PLATFORM_SMTP_PASSWORD: ${PLATFORM_SMTP_PASSWORD:-}
   PLATFORM_SMTP_FROM_EMAIL: ${PLATFORM_SMTP_FROM_EMAIL:-}
   PLATFORM_SMTP_FROM_NAME: ${PLATFORM_SMTP_FROM_NAME:-Foundryx EMS}
+  # AutoCount ESB -> Sorento sink (module autocount). This block is an explicit
+  # allow-list with no env_file, so a setting missing here NEVER reaches the
+  # container (batch-size lane review, 2026-09-06). Defaults match app/config.py.
+  # Settings is an import-time singleton: a change needs the containers
+  # RECREATED (`docker compose up -d`), a `restart` keeps the old environment.
+  AUTOCOUNT_SINK_BATCH_SIZE: ${AUTOCOUNT_SINK_BATCH_SIZE:-200}
+  AUTOCOUNT_SINK_TIMEOUT_SECONDS: ${AUTOCOUNT_SINK_TIMEOUT_SECONDS:-300}
+  AUTOCOUNT_SINK_CONCURRENCY: ${AUTOCOUNT_SINK_CONCURRENCY:-1}
 
 x-backend-base: &backend-base
   image: ${IMAGE_REPO:-jayson1004/foundryx-shared-service}:backend-${IMAGE_TAG:-latest}
