@@ -1,7 +1,6 @@
 /**
- * Broadcast service (plan 29, S0). UI -> hook -> service -> `lib/api-client`.
- * S0 binds the MOCK below; S1 lands the backend routes (§5.1 of the plan)
- * and S4 swaps this export to the real api-client impl in ONE line:
+ * Broadcast service (plan 29). UI -> hook -> service -> `lib/api-client`.
+ * S4 swapped this export to the real api-client implementation:
  *
  *   GET    /omnichannel/workspaces/{wsId}/broadcasts
  *   GET    /omnichannel/workspaces/{wsId}/broadcasts/audience-preview
@@ -28,7 +27,7 @@ import type {
   UpdateBroadcastInput,
 } from '@/types/omnichannel';
 import type { ListQuery, ListResult } from '@/types/resource';
-import { mockBroadcastService } from './broadcast-service.mock';
+import { realBroadcastService } from './broadcast-service.real';
 
 export interface RecipientQuery {
   page: number;
@@ -40,8 +39,8 @@ export interface RecipientQuery {
 export interface BroadcastService {
   list(workspaceId: string, query: ListQuery): Promise<ListResult<Broadcast>>;
   get(workspaceId: string, id: string): Promise<Broadcast>;
-  /** SQL-computed (backend) / client-evaluated (S0 mock) resolved recipient
-   *  count for the audience currently being configured - never a stored list. */
+  /** SQL-computed resolved recipient count for the audience currently being
+   *  configured - never a stored list. */
   audiencePreview(workspaceId: string, audience: BroadcastAudience): Promise<{ count: number }>;
   create(workspaceId: string, input: CreateBroadcastInput): Promise<Broadcast>;
   update(workspaceId: string, id: string, input: UpdateBroadcastInput): Promise<Broadcast>;
@@ -56,5 +55,4 @@ export interface BroadcastService {
   recipients(workspaceId: string, id: string, query: RecipientQuery): Promise<ListResult<BroadcastRecipient>>;
 }
 
-// S0 MOCK - swap to real in S4 (plan 29).
-export const broadcastService: BroadcastService = mockBroadcastService;
+export const broadcastService: BroadcastService = realBroadcastService;

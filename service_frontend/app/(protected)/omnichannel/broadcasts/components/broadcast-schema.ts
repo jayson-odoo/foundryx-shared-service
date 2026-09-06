@@ -21,14 +21,17 @@ export const templateBindingSchema = z.discriminatedUnion('source', [
 const isFilterGroup = (v: unknown): v is FilterGroup =>
   typeof v === 'object' && v !== null && (v as { kind?: unknown }).kind === 'group';
 
-/** Exactly one of segment | filter | contacts (AC-BRD-18). */
+/** Exactly one of segment | filter | contacts (AC-BRD-18). The three unused
+ *  branches arrive as `null` on the real wire (`BroadcastAudienceOut` always
+ *  emits all four keys) - `.nullable()` alongside `.optional()` so a saved
+ *  broadcast loaded back into the builder validates (plan 29 S4). */
 export const broadcastAudienceSchema = z
   .object({
     kind: z.enum(['segment', 'filter', 'contacts']),
-    segmentId: z.string().optional(),
-    segmentName: z.string().optional(),
-    filter: z.custom<FilterGroup>(isFilterGroup).optional(),
-    contactIds: z.array(z.string()).optional(),
+    segmentId: z.string().nullable().optional(),
+    segmentName: z.string().nullable().optional(),
+    filter: z.custom<FilterGroup>(isFilterGroup).nullable().optional(),
+    contactIds: z.array(z.string()).nullable().optional(),
   })
   .superRefine((value, ctx) => {
     const has = {

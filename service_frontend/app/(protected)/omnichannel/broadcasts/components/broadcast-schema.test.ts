@@ -50,6 +50,33 @@ describe('broadcastAudienceSchema - exactly one source', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  // Plan 29 S4 real-data wiring bug: `BroadcastAudienceOut` (the real
+  // backend response) always emits all four keys - the three UNUSED
+  // branches are `null`, never an absent key like the S0 mock produced.
+  // Loading a real saved broadcast back into the builder must not fail
+  // closed on "Expected string, received null".
+  it('accepts a real-wire contacts audience where segmentId/segmentName/filter are explicit null', () => {
+    const result = broadcastAudienceSchema.safeParse({
+      kind: 'contacts',
+      segmentId: null,
+      segmentName: null,
+      filter: null,
+      contactIds: ['cnt-1', 'cnt-2'],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a real-wire segment audience where filter/contactIds are explicit null', () => {
+    const result = broadcastAudienceSchema.safeParse({
+      kind: 'segment',
+      segmentId: 'seg-1',
+      segmentName: 'VIP',
+      filter: null,
+      contactIds: null,
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('templateBindingSchema', () => {

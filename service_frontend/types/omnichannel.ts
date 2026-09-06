@@ -466,7 +466,11 @@ export type ConversationSocketEvent =
       reactorType: 'CONTACT' | 'AGENT';
       emoji: string;
       removed: boolean;
-    };
+    }
+  // Plan 29 (A4) S3 - published on every broadcast state/count change
+  // (created, scheduled, sending, each chunk's count advance, terminal);
+  // best-effort (a dead Redis never fails the send job, AC-BRD-45).
+  | { type: 'broadcast.updated'; broadcastId: string; status: BroadcastStatus; counts: BroadcastCounts };
 
 /** Result of an agent reaction (POST …/react). */
 export interface ReactionResult {
@@ -694,13 +698,18 @@ export const CONTACT_FIELD_BINDING_OPTIONS: { label: string; value: string }[] =
 
 /** The audience CONFIGURATION - exactly one of a saved segment, an inline
  *  filter, or an explicit contact-id list. Never a stored recipient list
- *  until send time (D-A4-2). */
+ *  until send time (D-A4-2). The three unused branches are `null` on the
+ *  real wire (`BroadcastAudienceOut` always emits all four keys), not an
+ *  absent key - `| null` here (and in `broadcast-schema.ts`'s zod shape)
+ *  matches that, so a real saved broadcast loaded back into the builder
+ *  validates instead of failing closed on "Expected string, received null"
+ *  (plan 29 S4 real-data wiring bug). */
 export interface BroadcastAudience {
   kind: 'segment' | 'filter' | 'contacts';
-  segmentId?: string;
-  segmentName?: string;
-  filter?: FilterGroup;
-  contactIds?: string[];
+  segmentId?: string | null;
+  segmentName?: string | null;
+  filter?: FilterGroup | null;
+  contactIds?: string[] | null;
 }
 
 export interface BroadcastBindings {

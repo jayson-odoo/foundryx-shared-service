@@ -34,7 +34,7 @@ import { channelService } from '@/services/channel-service';
 import { conversationService } from '@/services/conversation-service';
 import { broadcastService } from '@/services/broadcast-service';
 import { zonedTimeToUtc, utcToZonedInputValue } from '@/lib/datetime';
-import type { Channel, ConversationThread, WhatsAppTemplate } from '@/types/omnichannel';
+import type { Broadcast, BroadcastCounts, Channel, ConversationThread, WhatsAppTemplate } from '@/types/omnichannel';
 import { BROADCAST_STATUS_REGISTRY } from './broadcast-status';
 import type { BroadcastFormValues } from './broadcast-schema';
 
@@ -335,6 +335,78 @@ export function DetailStatusChip({ status }: { status: keyof typeof BROADCAST_ST
   return <StatusBadge status={status} registry={BROADCAST_STATUS_REGISTRY} />;
 }
 
+const COUNT_LABELS: { key: keyof BroadcastCounts; label: string }[] = [
+  { key: 'total', label: 'Total' },
+  { key: 'sent', label: 'Sent' },
+  { key: 'delivered', label: 'Delivered' },
+  { key: 'read', label: 'Read' },
+  { key: 'failed', label: 'Failed' },
+  { key: 'skipped', label: 'Skipped' },
+];
+
+/** Overview status/counts card (plan 29 S4, AC-BRD-10) - once a broadcast has
+ *  left Draft, its lifecycle stops being form fields and starts being a
+ *  status + a live ledger. Counts climb in place as the detail view's WS
+ *  `broadcast.updated` handler refreshes `broadcast` (no polling here). */
+export function StatusSummary({ broadcast }: { broadcast: Broadcast }) {
+  const { formatDateTime } = useDatetime();
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          Status
+          <DetailStatusChip status={broadcast.status} />
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4 py-4 text-sm">
+        <div className="grid grid-cols-3 gap-x-4 gap-y-3 sm:grid-cols-6">
+          {COUNT_LABELS.map(({ key, label }) => (
+            <div key={key} className="flex flex-col gap-0.5">
+              <span className="text-xs text-muted-foreground">{label}</span>
+              <span className="text-lg font-semibold tabular-nums">{broadcast.counts[key]}</span>
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-col gap-2 border-t border-border pt-3">
+          {broadcast.scheduledAt && (
+            <div className="flex justify-between gap-4">
+              <span className="text-muted-foreground">Scheduled for</span>
+              <span>{formatDateTime(broadcast.scheduledAt)}</span>
+            </div>
+          )}
+          {broadcast.startedAt && (
+            <div className="flex justify-between gap-4">
+              <span className="text-muted-foreground">Started</span>
+              <span>{formatDateTime(broadcast.startedAt)}</span>
+            </div>
+          )}
+          {broadcast.finishedAt && (
+            <div className="flex justify-between gap-4">
+              <span className="text-muted-foreground">Finished</span>
+              <span>{formatDateTime(broadcast.finishedAt)}</span>
+            </div>
+          )}
+        </div>
+        {broadcast.error && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-destructive">
+            <ClampedText text={broadcast.error} lines={3} />
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** The real backend's `test-send` 422 is `{fieldErrors: {contactId|...}}`, a
+ *  string `detail` isn't set, so `ApiError.message` alone falls back to a
+ *  bare "Unprocessable Entity" - surface the first field message instead. */
+function describeTestSendError(error: unknown): string {
+  if (!(error instanceof ApiError)) return 'Could not send the test message.';
+  const fieldErrors = (error.detail as { fieldErrors?: Record<string, string> } | null)?.fieldErrors;
+  const first = fieldErrors && Object.values(fieldErrors)[0];
+  return first ?? error.message;
+}
+
 /** Test-send dialog (AC-BRD-09) - pick ONE contact, send through the same
  *  broadcast (creates no recipient row, D-A4-18). `ensureBroadcastId`
  *  auto-saves the in-progress draft the first time so a not-yet-persisted
@@ -372,7 +444,7 @@ export function TestSendDialog({
       toast.success('Test message sent.');
       onOpenChange(false);
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : 'Could not send the test message.');
+      toast.error(describeTestSendError(error));
     } finally {
       setSending(false);
     }

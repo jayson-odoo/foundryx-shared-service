@@ -10,8 +10,21 @@ import { broadcastService } from '@/services/broadcast-service';
 import type { Broadcast } from '@/types/omnichannel';
 import { broadcastFormHref } from './paths';
 
+// Typed 409 reasons (plan §5.1) - `error.message` is just "Conflict" for
+// these (the backend body is `{reason: "..."}`, not a string `detail`, so
+// `apiFetch` falls back to `res.statusText`); map the reason to real copy.
+const CONFLICT_REASONS: Record<string, string> = {
+  broadcast_not_editable: 'Only a Draft broadcast can be edited or deleted.',
+  broadcast_not_cancellable: 'This broadcast can no longer be cancelled.',
+  broadcast_already_sending: 'This broadcast cannot be sent again.',
+};
+
 function describe(error: unknown): string {
-  if (error instanceof ApiError) return error.message;
+  if (error instanceof ApiError) {
+    const reason = (error.detail as { reason?: string } | null)?.reason;
+    if (reason && CONFLICT_REASONS[reason]) return CONFLICT_REASONS[reason];
+    return error.message;
+  }
   return 'Something went wrong. Please try again.';
 }
 

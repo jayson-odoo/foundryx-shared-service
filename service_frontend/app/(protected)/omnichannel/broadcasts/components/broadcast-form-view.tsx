@@ -7,7 +7,7 @@
  * the same sections read/edit (Overview tab, editable only while DRAFT) plus
  * an embedded Recipients `ResourceList` tab.
  */
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { LoaderCircleIcon, ListChecks, LayoutList } from 'lucide-react';
 import { useWatch } from 'react-hook-form';
@@ -17,11 +17,13 @@ import { Form } from '@/components/ui/form';
 import { ResourceForm, type FormTab } from '@/components/platform/resource-form';
 import { ResourceList } from '@/components/platform/resource-list';
 import { useCan } from '@/hooks/use-can';
-import type { Broadcast } from '@/types/omnichannel';
+import { useConversationSocket } from '@/hooks/use-conversation-socket';
+import type { Broadcast, ConversationSocketEvent } from '@/types/omnichannel';
 import { useBroadcastForm } from './use-broadcast-form';
-import { useActiveChannels, useApprovedTemplates, ChannelSection, DetailsSection, MessageSectionHeader, PrimaryActionsRow, ReviewSummary, ScheduleSection, TestSendDialog } from './broadcast-form-sections';
+import { useActiveChannels, useApprovedTemplates, ChannelSection, DetailsSection, MessageSectionHeader, PrimaryActionsRow, ReviewSummary, ScheduleSection, StatusSummary, TestSendDialog } from './broadcast-form-sections';
 import { AudienceSection } from './audience-section';
 import { BindingEditor } from './binding-editor';
+import { matchBroadcastUpdate } from './broadcast-realtime';
 import { useAudiencePreview } from './use-audience-preview';
 import { useRecipientsListConfig } from './use-recipients-list-config';
 import { broadcastFormSchema } from './broadcast-schema';
@@ -84,6 +86,8 @@ function BuilderSections({
 
   return (
     <div className="flex flex-col gap-4">
+      {!creating && broadcast && <StatusSummary broadcast={broadcast} />}
+
       <DetailsSection
         name={name}
         labels={labels}
@@ -182,7 +186,14 @@ function BuilderSections({
         audienceCount={audienceCount}
       />
 
-      {creating && editing && canSend && (
+      {/* AC-BRD-09/10: the primary Send/Schedule action lives on the Review
+          section for as long as the broadcast is STILL Draft (a brand-new
+          unsaved one OR a saved Draft revisited/duplicated) - "read-only"
+          starts only once it has actually LEFT Draft. Plan §S0 originally
+          gated this on `creating` alone, which stranded a saved Draft
+          (e.g. a just-duplicated broadcast) with no way to Send/Schedule
+          from this view at all - a real-data-only bug this slice fixes. */}
+      {(creating || broadcast?.status === 'DRAFT') && editing && canSend && (
         <>
           <PrimaryActionsRow
             scheduleMode={scheduleMode}
@@ -201,7 +212,7 @@ function BuilderSections({
         </>
       )}
 
-      {!creating && broadcast && canSend && (
+      {!creating && broadcast && broadcast.status !== 'DRAFT' && canSend && (
         <>
           <div className="flex flex-wrap items-center gap-2">
             <Button type="button" variant="outline" onClick={() => setTestOpen(true)}>
@@ -237,9 +248,29 @@ export function BroadcastFormView({ workspaceId, broadcastId, initialEditing }: 
     ensureDraftId,
     sendOrSchedule,
     sending,
+    refresh,
   } = useBroadcastForm(workspaceId, broadcastId, initialEditing);
 
-  const recipientsConfig = useRecipientsListConfig(workspaceId, broadcast?.id ?? null);
+  const { config: recipientsConfig, reload: reloadRecipients, reloadToken } = useRecipientsListConfig(
+    workspaceId,
+    broadcast?.id ?? null,
+  );
+
+  // Plan 29 S4 (AC-BRD-13/45) - the broadcast's own status/counts AND its
+  // Recipients tab update LIVE off the workspace socket while a send job is
+  // running, no polling. `broadcast.updated` is best-effort (a dead Redis
+  // never fails the send job) - a missed frame just means the next one (or
+  // the tab's own remount) catches the surface up.
+  const activeBroadcastId = broadcast?.id;
+  const onSocketEvent = useCallback(
+    (event: ConversationSocketEvent) => {
+      if (!matchBroadcastUpdate(event, activeBroadcastId)) return;
+      void refresh();
+      reloadRecipients();
+    },
+    [activeBroadcastId, refresh, reloadRecipients],
+  );
+  useConversationSocket(workspaceId, onSocketEvent);
 
   const fullConfig = useMemo(() => {
     if (!config) return null;
@@ -265,10 +296,14 @@ export function BroadcastFormView({ workspaceId, broadcastId, initialEditing }: 
       id: 'recipients',
       label: 'Recipients',
       icon: ListChecks,
-      render: () => <ResourceList config={recipientsConfig} hideHeader />,
+      // Keyed on `reloadToken` (bumped by the `broadcast.updated` WS handler
+      // above) - remounting is how every embedded `ResourceList` in this
+      // codebase forces a refetch from outside (no external "refetch now"
+      // prop on the shell; the Templates-tab precedent).
+      render: () => <ResourceList key={reloadToken} config={recipientsConfig} hideHeader />,
     };
     return { ...config, tabs: [overviewTab, recipientsTab], initialTabId: 'overview' };
-  }, [config, workspaceId, form, broadcast, creating, ensureDraftId, sendOrSchedule, sending, recipientsConfig]);
+  }, [config, workspaceId, form, broadcast, creating, ensureDraftId, sendOrSchedule, sending, recipientsConfig, reloadToken]);
 
   if (isLoading) {
     return (

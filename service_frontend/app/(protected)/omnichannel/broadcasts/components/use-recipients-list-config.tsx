@@ -16,16 +16,26 @@ const FILTER_FIELDS: FilterFieldDef[] = [
   { field: 'state', label: 'State', type: 'enum', options: RECIPIENT_STATE_OPTIONS },
 ];
 
+export interface UseRecipientsListConfigResult {
+  config: ResourceListConfig<BroadcastRecipient>;
+  /** Bump on a matching `broadcast.updated` WS event (plan 29 S4) - the
+   *  caller keys the embedded `<ResourceList>` on `reloadToken` to force a
+   *  refetch (the Templates-tab remount-via-key precedent; `ResourceList`
+   *  has no external "refetch now" prop). */
+  reload: () => void;
+  reloadToken: number;
+}
+
 /** Recipients tab list config (plan 29, AC-BRD-10) - an embedded `ResourceList`
  *  over `broadcast-service.recipients`, no detail page (`rowHref: '#'`). */
 export function useRecipientsListConfig(
   workspaceId: string | null,
   broadcastId: string | null,
-): ResourceListConfig<BroadcastRecipient> {
+): UseRecipientsListConfigResult {
   const { formatDateTime } = useDatetime();
-  const { fetcher } = useBroadcastRecipients(workspaceId, broadcastId);
+  const { fetcher, reload, reloadToken } = useBroadcastRecipients(workspaceId, broadcastId);
 
-  return useMemo<ResourceListConfig<BroadcastRecipient>>(() => {
+  const config = useMemo<ResourceListConfig<BroadcastRecipient>>(() => {
     const columns: ColumnDef<BroadcastRecipient>[] = [
       {
         id: 'contact',
@@ -98,4 +108,6 @@ export function useRecipientsListConfig(
       enableStatusViews: false,
     };
   }, [fetcher, formatDateTime]);
+
+  return { config, reload, reloadToken };
 }

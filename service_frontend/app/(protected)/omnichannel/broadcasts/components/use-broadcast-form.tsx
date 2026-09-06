@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm, type UseFormReturn } from 'react-hook-form';
+import { useForm, type FieldPath, type UseFormReturn } from 'react-hook-form';
 import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
@@ -40,9 +40,39 @@ function toCreateInput(values: BroadcastFormValues): CreateBroadcastInput {
   };
 }
 
+// Mirrors `use-broadcast-actions.tsx`'s `CONFLICT_REASONS` - `error.message`
+// alone is just "Conflict" for a typed 409 (the body is `{reason}`, not a
+// string `detail`).
+const CONFLICT_REASONS: Record<string, string> = {
+  broadcast_not_editable: 'Only a Draft broadcast can be edited or deleted.',
+  broadcast_not_cancellable: 'This broadcast can no longer be cancelled.',
+  broadcast_already_sending: 'This broadcast cannot be sent again.',
+};
+
 function describe(error: unknown): string {
-  if (error instanceof ApiError) return error.message;
+  if (error instanceof ApiError) {
+    const reason = (error.detail as { reason?: string } | null)?.reason;
+    if (reason && CONFLICT_REASONS[reason]) return CONFLICT_REASONS[reason];
+    return error.message;
+  }
   return 'Something went wrong. Please try again.';
+}
+
+/** Maps a real-backend 422 `{fieldErrors: {path: message}}` body onto RHF
+ *  field errors (plan 29 S4) - the SAME `use-contact-form.tsx`/`use-channel-
+ *  form.tsx` convention. Paths already match the form's own shape 1:1
+ *  (`name`, `channelId`, `audience.segmentId`, `bindings.body.0.fallback`,
+ *  `scheduledAt`, …) since `broadcastFormSchema` mirrors the wire contract.
+ *  Returns true when at least one field error was applied (the caller skips
+ *  the generic toast in that case - the inline errors ARE the message). */
+function applyFieldErrors(form: UseFormReturn<BroadcastFormValues>, error: unknown): boolean {
+  if (!(error instanceof ApiError) || error.status !== 422) return false;
+  const fieldErrors = (error.detail as { fieldErrors?: Record<string, string> } | null)?.fieldErrors;
+  if (!fieldErrors || Object.keys(fieldErrors).length === 0) return false;
+  for (const [path, message] of Object.entries(fieldErrors)) {
+    form.setError(path as FieldPath<BroadcastFormValues>, { message });
+  }
+  return true;
 }
 
 export interface UseBroadcastFormResult {
@@ -62,6 +92,10 @@ export interface UseBroadcastFormResult {
    *  detail page). */
   sendOrSchedule: () => Promise<void>;
   sending: boolean;
+  /** Re-fetches the broadcast row (also wired as `onReload` on the shell's
+   *  own actions) - exposed so the detail view's `broadcast.updated` WS
+   *  handler (plan 29 S4) can refresh live without polling. */
+  refresh: () => Promise<void>;
 }
 
 export function useBroadcastForm(
@@ -102,7 +136,7 @@ export function useBroadcastForm(
       setSavedId(created.id);
       return created.id;
     } catch (error) {
-      toast.error(describe(error));
+      if (!applyFieldErrors(form, error)) toast.error(describe(error));
       return null;
     }
   }, [savedId, creating, broadcastId, workspaceId, form]);
@@ -120,7 +154,7 @@ export function useBroadcastForm(
       toast.success(values.scheduleMode === 'now' ? 'Broadcast is sending.' : 'Broadcast scheduled.');
       router.push(broadcastFormPath(id));
     } catch (error) {
-      toast.error(describe(error));
+      if (!applyFieldErrors(form, error)) toast.error(describe(error));
     } finally {
       setSending(false);
     }
@@ -134,21 +168,25 @@ export function useBroadcastForm(
       await form.handleSubmit(async (values) => {
         if (!workspaceId) return;
         const input = toCreateInput(values);
-        if (creating) {
-          const id = savedId ?? broadcastId;
-          const result = id
-            ? await broadcastService.update(workspaceId, id, input)
-            : await broadcastService.create(workspaceId, input);
-          setSavedId(result.id);
-          toast.success('Broadcast saved as draft.');
-          router.push(broadcastFormPath(result.id));
-        } else if (broadcastId) {
-          const updated = await broadcastService.update(workspaceId, broadcastId, input);
-          form.reset(toFormValues(updated));
-          await refresh();
-          toast.success('Broadcast updated.');
+        try {
+          if (creating) {
+            const id = savedId ?? broadcastId;
+            const result = id
+              ? await broadcastService.update(workspaceId, id, input)
+              : await broadcastService.create(workspaceId, input);
+            setSavedId(result.id);
+            toast.success('Broadcast saved as draft.');
+            router.push(broadcastFormPath(result.id));
+          } else if (broadcastId) {
+            const updated = await broadcastService.update(workspaceId, broadcastId, input);
+            form.reset(toFormValues(updated));
+            await refresh();
+            toast.success('Broadcast updated.');
+          }
+          ok = true;
+        } catch (error) {
+          if (!applyFieldErrors(form, error)) toast.error(describe(error));
         }
-        ok = true;
       })();
       return ok;
     };
@@ -211,5 +249,6 @@ export function useBroadcastForm(
     ensureDraftId,
     sendOrSchedule,
     sending,
+    refresh,
   };
 }

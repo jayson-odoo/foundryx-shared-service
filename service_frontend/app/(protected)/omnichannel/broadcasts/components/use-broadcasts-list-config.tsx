@@ -115,7 +115,10 @@ export function useBroadcastsListConfig(workspaceId: string | null): ResourceLis
         header: ({ column }) => <DataGridColumnHeader title="Recipients" column={column} />,
         cell: ({ row }) => <span>{row.original.counts.total}</span>,
         size: 110,
-        enableSorting: true,
+        // Not in the backend's sort whitelist (`name/status/channel/
+        // scheduledAt/createdAt/createdBy`, plan §BROADCAST_FILTER_COLUMNS) -
+        // a denormalized count column, never a sortable one server-side.
+        enableSorting: false,
       },
       {
         id: 'status',

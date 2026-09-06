@@ -2,10 +2,12 @@
 
 /**
  * Broadcast recipients state (plan 29) - backs the detail form's Recipients
- * tab (an embedded Resource list, AC-BRD-10). Server-side (mock) paginated,
- * filterable by state, searchable by contact name/phone.
+ * tab (an embedded Resource list, AC-BRD-10). Server-side paginated,
+ * filterable by state, searchable by contact name/phone. `reload()` is
+ * called by the detail view's `broadcast.updated` WS handler (plan 29 S4) -
+ * this hook itself never polls.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
 import { broadcastService, type RecipientQuery } from '@/services/broadcast-service';
@@ -46,15 +48,6 @@ export function useBroadcastRecipients(
   );
 
   const reload = useCallback(() => setReloadToken((t) => t + 1), []);
-
-  // Recipients on a SENDING broadcast advance via the mock's wall-clock timer
-  // (see broadcast-service.mock.ts `tick`) - poll gently so the tab reflects
-  // progress without the caller wiring a real socket in S0.
-  useEffect(() => {
-    if (!workspaceId || !broadcastId) return;
-    const interval = setInterval(() => setReloadToken((t) => t + 1), 5000);
-    return () => clearInterval(interval);
-  }, [workspaceId, broadcastId]);
 
   return { fetcher, reload, reloadToken };
 }
