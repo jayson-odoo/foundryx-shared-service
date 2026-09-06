@@ -133,6 +133,18 @@ def register_engine_entities() -> None:
 
     register_report_export_handler()
 
+    # respond.io migration connection provider (plan 33 S1, D-A6-2, AC-MIG-11)
+    # - registers into the CORE `app.integrations` registry (the same
+    # `register_provider` seam `modules/autocount/bootstrap.py` uses), so
+    # `GET /integrations/providers` and `POST /integrations/connections` see
+    # `provider="respondio"` the moment this module is loaded, on every
+    # process (idempotent, keyed dict - re-registering replaces in place).
+    from app.integrations import register_provider
+
+    from .respondio_provider import RespondIoProvider
+
+    register_provider(RespondIoProvider())
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""
@@ -586,6 +598,14 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     both read back correctly as-is with zero backfill (a tenant landing here
     simply has no thread assigned to a team yet, which is a valid state, not
     a gap to repair).
+
+    0.6.0 -> 0.7.0 (plan 33 S1, AC-MIG-50): the NEW `omnichannel_migration`
+    permission resource (`read`/`manage`) needs no data backfill - it gates a
+    brand-new feature with no existing rows to repair. `AppStoreService.
+    update()`'s `_grant_admin` (called right after this hook returns) is what
+    actually delivers the new keys to an already-provisioned tenant's Admin
+    role - the manifest version bump above is what makes that call fire at
+    all (`update()` refuses when `installed_version` already matches).
     """
     from .repositories.contact_repository import ContactRepository
     from .services import close_reason_service, event_service, lifecycle_service

@@ -1589,3 +1589,63 @@ class ReportExportRequest(ApiModel):
     channelId: Optional[str] = None
     teamId: Optional[str] = None
     groupBy: Optional[str] = None
+
+
+# ── Plan 33 - respond.io migration, S1 preflight (plan §5.2, AC-MIG-14) ─────
+# Mirrors `service_frontend/types/respondio-migration.ts` exactly - S2 adds
+# the job-create/list/detail schemas alongside `MigrationService` (the phase
+# orchestrator) in the same slice that needs them.
+class MigrationSourceChannel(ApiModel):
+    id: str
+    name: str
+    source: str
+
+
+class MigrationSourceUser(ApiModel):
+    id: str
+    firstName: str
+    lastName: str
+    email: str
+    role: str
+    teamId: Optional[str] = None
+    teamName: Optional[str] = None
+
+
+class MigrationSourceTeam(ApiModel):
+    id: str
+    name: str
+
+
+class MigrationSourceField(ApiModel):
+    id: str
+    name: str
+    dataType: str
+
+
+class MigrationTargetChannel(ApiModel):
+    id: str
+    name: str
+    channelType: str
+
+
+class MigrationTargetStage(ApiModel):
+    statusId: str
+    label: str
+
+
+class MigrationPreflight(ApiModel):
+    apiAvailable: bool
+    spaceLabel: str
+    channels: List[MigrationSourceChannel]
+    users: List[MigrationSourceUser]
+    teams: List[MigrationSourceTeam]
+    fields: List[MigrationSourceField]
+    # Decision taken where the plan's §5.2 preflight response was silent (S0
+    # evidence README "what S1 must know"): AC-MIG-06 needs every OBSERVED
+    # source lifecycle label before any dry run exists, and none of the other
+    # preflight calls touch a contact - so this is filled by one read-only
+    # distinct-value pass over `contact.lifecycle` (zero writes, AC-MIG-14).
+    lifecycles: List[str]
+    targetChannels: List[MigrationTargetChannel]
+    targetStages: List[MigrationTargetStage]
+    warnings: List[str]
