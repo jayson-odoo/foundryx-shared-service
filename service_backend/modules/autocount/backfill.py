@@ -72,6 +72,36 @@ def backfill_sink_impl_defaults(
     return result.rowcount or 0
 
 
+def backfill_disable_credit_limit_mapping_rows(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
+) -> int:
+    """Disable every existing ``ac_field_mapping`` row that targets
+    ``credit_limit``. Returns the number of rows touched.
+
+    Sorento contract 2.1 (sprint-5/04, live finding): ``CanonicalCustomer.
+    SINK_FIELDS`` no longer carries ``credit_limit`` (Sorento's own model
+    forbids the key with a per-record 422 - 27/27 SIM customers failed
+    live). A tenant's ALREADY-SAVED mapping row that still targets it is now
+    inert (mapped, never sent) and would trip the mapping PUT guard on the
+    next save (an enabled row must target a field the entity still accepts).
+    Flipping it to ``is_enabled=False`` here, once, for every tenant/company,
+    means the next save finds a mapping already consistent with the new
+    accepted-fields set rather than surfacing a stale-row rejection out of
+    nowhere. Across ALL tenants/companies (never one), fills only rows still
+    ``is_enabled``, safe to run repeatedly, does **not** commit (Alembic's
+    connection or ``update_tenant`` owns that).
+    """
+    prefix = f'"{schema}".' if schema else ""
+    result = bind.execute(
+        sa.text(
+            f"UPDATE {prefix}ac_field_mapping SET is_enabled = :disabled "
+            f"WHERE canonical_field = :field AND is_enabled = :enabled"
+        ),
+        {"disabled": False, "field": "credit_limit", "enabled": True},
+    )
+    return result.rowcount or 0
+
+
 def backfill_entity_config_defaults(
     bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
 ) -> int:

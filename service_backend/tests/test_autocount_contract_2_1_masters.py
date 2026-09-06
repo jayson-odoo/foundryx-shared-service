@@ -181,3 +181,45 @@ def test_product_with_zero_list_price_sends_zero():
     payload = _product(list_price=Decimal("0")).sink_payload()
     assert "list_price" in payload
     assert Decimal(str(payload["list_price"])) == Decimal("0")
+
+
+# ── (4) the inert-mapping-row sweep (BL: existing tenants) ─────────────────
+
+
+def test_backfill_disables_saved_credit_limit_mapping_rows(session_factory):
+    """A tenant that already saved a ``credit_limit`` mapping row before it
+    left ``SINK_FIELDS`` must not be stuck with an ENABLED row targeting a
+    field the entity no longer accepts - the next mapping save's PUT guard
+    would reject it out of nowhere. The sweep disables it in place, is
+    idempotent, and leaves an unrelated enabled row alone."""
+    from modules.autocount.backfill import backfill_disable_credit_limit_mapping_rows
+    from modules.autocount.mapping import SCOPE_HEADER
+    from modules.autocount.models import AcFieldMapping
+
+    db = session_factory()
+
+    stale = AcFieldMapping(
+        tenant_id="tenant-a", company_id="company-a", entity_type="customer",
+        scope=SCOPE_HEADER, source_path="CreditLimit",
+        canonical_field="credit_limit", transform="decimal",
+        is_required=False, is_enabled=True, sort_order=5,
+    )
+    untouched = AcFieldMapping(
+        tenant_id="tenant-a", company_id="company-a", entity_type="customer",
+        scope=SCOPE_HEADER, source_path="Email",
+        canonical_field="email", transform="string",
+        is_required=False, is_enabled=True, sort_order=6,
+    )
+    db.add_all([stale, untouched])
+    db.commit()
+
+    touched = backfill_disable_credit_limit_mapping_rows(db, schema=None)
+    db.expire_all()
+    assert touched == 1
+
+    assert db.get(AcFieldMapping, stale.id).is_enabled is False
+    assert db.get(AcFieldMapping, untouched.id).is_enabled is True
+
+    # Idempotent: a second pass finds nothing left to touch.
+    again = backfill_disable_credit_limit_mapping_rows(db, schema=None)
+    assert again == 0

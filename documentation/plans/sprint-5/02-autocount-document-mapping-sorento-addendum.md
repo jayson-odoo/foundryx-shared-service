@@ -315,3 +315,12 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   `credit_limit`/`payment_terms_days` schema drift -> accepted-and-ignored; ESB (c) `CANONICAL_MODELS`
   lacked shipping_order (fixed 3dce123 + drift guard), (d) `DOCUMENT_PREREQUISITES` lacked
   shipping_order (fixed). Sorento posts the final table on PR #670.
+- 2026-09-06 (sprint-5/04, Sorento contract 2.1 - `documentation/plans/autocount/PLAN-ingest-parity-
+  standardisation.md` §4, branch `feat/ingest-parity`): once `GET /api/v1/external/contract` answers
+  `2.1`, masters OMIT every `null`-valued key instead of sending it (2.1: absent = leave alone, `null`
+  = clear - the (b) drift logged above is now a hard rejection, not accepted-and-ignored), and
+  `customers` no longer sends `credit_limit`/`payment_terms_*` at all (their `CanonicalCustomer` sets
+  `extra="forbid"` and does not declare either field - a per-record 422 the moment either key
+  crosses the wire). Both changes are unconditional on the ESB side (safe under 1.x/2.0 too, which
+  ignore an unknown/absent-vs-null key) rather than gated on the contract version. Removals 422 once
+  2.1 answers the endpoint - not before.
