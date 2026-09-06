@@ -114,6 +114,13 @@ def register_engine_entities() -> None:
 
     register_broadcast_send_handler()
 
+    # Report CSV export job handler (plan 30 S3, AC-RPT-33) - same reasoning
+    # as the contacts export handler above: any process (API or a real
+    # Celery worker) that dispatches this job type must have imported it.
+    from .services.report_export_service import register_report_export_handler
+
+    register_report_export_handler()
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""

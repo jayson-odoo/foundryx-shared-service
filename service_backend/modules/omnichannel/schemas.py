@@ -1387,3 +1387,155 @@ class EmbedRotateSecretResponse(ApiModel):
 
 class EmbedOriginsUpdate(ApiModel):
     allowedOrigins: List[str]
+
+
+# ── Plan 30 - Dashboard + Reports v1 (roadmap A9) ────────────────────────────
+# No new fact tables (D-A9-1) - every shape below is an aggregate over
+# `conversation_events` + `conversation_messages` + `contacts`. Mirrors
+# `service_frontend/types/omnichannel.ts` (the S0 mock's own contract).
+
+
+class ReportBucketItem(ApiModel):
+    """A bucket's `key` is already LOCAL (D-A9-11: `2026-03-01`,
+    `2026-03-01T09`, `2026-W10`, `2026-03`) - the client formats the axis
+    label from it and NEVER re-applies a timezone. Only `startsAt`/`endsAt`
+    are UTC instants."""
+
+    key: str
+    startsAt: datetime
+    endsAt: datetime
+
+
+class ReportSeriesItem(ApiModel):
+    key: str
+    label: str
+    points: List[int]
+
+
+class DurationStatsItem(ApiModel):
+    """Response-time / resolution-time reduction (Python-side, D-A9-9)."""
+
+    medianSeconds: Optional[int] = None
+    p90Seconds: Optional[int] = None
+    averageSeconds: Optional[int] = None
+    sampleCount: int
+    # How many datapoints were derived from messages rather than the
+    # `first_agent_reply` event (D-A9-6) - carried for support, never
+    # rendered as on-screen caveat copy (plan §8.1 item 10).
+    derivedFromMessages: Optional[int] = None
+
+
+class DashboardLifecycleStageItem(ApiModel):
+    statusId: str
+    key: str
+    label: str
+    color: Optional[str] = None
+    sortOrder: int
+    count: int
+    percent: float
+
+
+class DashboardTopAgentItem(ApiModel):
+    userId: str
+    name: str
+    closedCount: int
+    medianResponseSeconds: Optional[int] = None
+
+
+class DashboardTiles(ApiModel):
+    open: int
+    assigned: int
+    unassigned: int
+    snoozed: int
+
+
+class DashboardSeries(ApiModel):
+    opened: List[int]
+    closed: List[int]
+
+
+class ReportRange(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_: str = Field(alias="from")
+    to: str
+
+
+class DashboardResponse(ApiModel):
+    timezone: str
+    range: ReportRange
+    granularity: str
+    buckets: List[ReportBucketItem]
+    tiles: DashboardTiles
+    lifecycle: List[DashboardLifecycleStageItem]
+    series: DashboardSeries
+    responseTotals: DurationStatsItem
+    resolutionTotals: DurationStatsItem
+    topAgents: List[DashboardTopAgentItem]
+
+
+class ReportDimensionAvailability(ApiModel):
+    available: bool
+
+
+class ReportDimensions(ApiModel):
+    team: ReportDimensionAvailability
+
+
+class ReportDescriptorItem(ApiModel):
+    key: str
+    label: str
+    supportsGroupBy: List[str]
+    paginated: bool
+    exportable: bool
+
+
+class ReportMetaResponse(ApiModel):
+    reports: List[ReportDescriptorItem]
+    granularities: List[str]
+    dimensions: ReportDimensions
+
+
+# ── Plan 30 - S2 the seven report builders + assignment log ─────────────────
+# `rows`/`totals` are per-report shapes (plan §5.2 table) - kept as plain
+# JSON-safe dict/list here rather than a per-report Pydantic union so ONE
+# envelope serves all seven `reportKey`s (mirrors `types/omnichannel.ts`
+# `ReportResponse<TRow, TTotals>`, which is generic for the same reason).
+# Every datetime a row carries (only the assignment log's `createdAt`) is
+# pre-formatted to a Z-suffixed ISO string by the service BEFORE it lands in
+# this dict - `ApiModel`'s wildcard datetime serializer only nets top-level
+# fields, never a `datetime` nested inside a `Dict[str, Any]` (see its own
+# docstring caveat), so a raw `datetime` must never be placed in `rows` here.
+class ReportResponse(ApiModel):
+    reportKey: str
+    timezone: str
+    range: ReportRange
+    granularity: str
+    buckets: List[ReportBucketItem]
+    series: List[ReportSeriesItem]
+    rows: List[Dict[str, Any]]
+    totals: Dict[str, Any]
+    page: Optional[int] = None
+    pageSize: Optional[int] = None
+    total: Optional[int] = None
+
+
+# ── Plan 30 - S3 report export (plan §5.1/§5.4, D-A9-4) ─────────────────────
+class ReportExportRequest(ApiModel):
+    """`POST .../reports/{reportKey}/export` body - the SAME filter shape the
+    read route accepts as query params (plan §5.1), carried as JSON so the
+    job payload can echo it verbatim. `groupBy`/`teamId` are validated the
+    SAME way the read route validates them (`report_export_service` calls
+    the ONE `report_service.report`/`build_query` gate - never a second
+    validation path)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_: str = Field(alias="from")
+    to: str
+    tz: str
+    granularity: Optional[str] = None
+    userId: Optional[str] = None
+    channelId: Optional[str] = None
+    teamId: Optional[str] = None
+    groupBy: Optional[str] = None

@@ -307,11 +307,32 @@ class SqlSourceRuntime:
                 return held[1]
             if held is not None:
                 held[1].dispose()
+            #     !!  POOL SIZE FITS THE CONCURRENT LINE-FETCH WORKER COUNT
+            #         (S5, plan sprint-5/03 performance round) - NEVER
+            #         STARVES.  !!
+            # A page's own header connection plus up to `autocount_line_
+            # fetch_workers` line-fetch workers can all be open AT ONCE
+            # (`SqlDbSource._attach_lines`) - the OLD fixed `pool_size=2`
+            # (5 total with the default overflow) was sized for the
+            # single-connection sequential world before S5. Read at engine-
+            # CONSTRUCTION time, same as `query_timeout` above; a live
+            # settings change takes effect the next time this connection's
+            # engine is rebuilt (a credential/config fingerprint change,
+            # or an explicit `evict`), not retroactively on an already-
+            # pooled engine (pools are not resizable once created).
+            from app.config import settings as _settings
+
+            workers = int(getattr(_settings, "autocount_line_fetch_workers", 4) or 4)
+            # Headroom for TWO concurrent paged tasks sharing one connection
+            # on a real worker (a real deployment runs more than one entity
+            # task at a time) - `max_overflow` scales with `workers` too,
+            # not a flat 3, so a second task's own worker pool never starves
+            # waiting for the first task's to give connections back.
             engine = sa.create_engine(
                 url,
                 pool_pre_ping=True,
-                pool_size=2,
-                max_overflow=3,
+                pool_size=max(2, workers),
+                max_overflow=workers + 3,
                 pool_timeout=CONNECT_TIMEOUT_SECONDS,
                 pool_recycle=1800,
                 connect_args=connect_args_for(

@@ -11,11 +11,13 @@ Nothing here echoes a credential. A company's identity is the DISCOVERED
 never appear in any response (AC-13-42).
 """
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import ConfigDict, Field, model_validator
 
 from app.schemas.base import ApiModel
+
+from .sql_source.source import MAX_DOCUMENT_LINES_PER_HEADER
 
 
 # ── companies ─────────────────────────────────────────────────────────────────
@@ -24,9 +26,12 @@ from app.schemas.base import ApiModel
 class CompanyCreate(ApiModel):
     """The operator supplies ONLY a connection (and an optional label).
 
-    There is deliberately no company field: the vendor API resolves the company
-    from the ``AppId`` header, so any value typed here would be silently
-    overridden (AC-13-01, foolproof-UI - never ask for something we determine).
+    There is deliberately no company field: the identity is DISCOVERED - from
+    the vendor login for an ``autocount`` connection (the API resolves the
+    company from the ``AppId`` header, so any value typed here would be
+    silently overridden, AC-13-01) or from the connection's own ``database``,
+    verified by a live probe, for a ``sql_database`` connection (plan
+    sprint-5/01 AC-01-02). Foolproof-UI: never ask for something we determine.
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -98,6 +103,19 @@ class EntityConfigUpdate(ApiModel):
     sourceImpl: Optional[str] = None
 
 
+class DocumentPrerequisiteOut(ApiModel):
+    """One configured document entity's prerequisite-master status (plan
+    sprint-5/01, AC-01-11). ``missing`` = no config row; ``inactive`` = a row
+    that is not ``active`` or is disabled. Detail only - the list carries
+    ``[]`` (pinned by the phase-1 frontend contract)."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    entityType: str = Field(validation_alias="entity_type")
+    missing: List[str] = []
+    inactive: List[str] = []
+
+
 class CompanyItem(ApiModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -120,6 +138,13 @@ class CompanyItem(ApiModel):
         default=None, validation_alias="sorento_company_code"
     )
     createdAt: Optional[datetime] = Field(default=None, validation_alias="created_at")
+    # ── plan sprint-5/01 (AC-01-07/11) - DERIVED, set by the router from the
+    # service, never read off the row (``ac_company`` stores no kind): how the
+    # company is connected (``'api'`` = vendor HTTP API, ``'db'`` = a direct
+    # ``sql_database`` connection) and, on the DETAIL only, the prerequisite-
+    # master status of each configured document entity.
+    sourceKind: str = "api"
+    documentPrerequisites: List[DocumentPrerequisiteOut] = []
 
 
 class CompanySinkUpdate(ApiModel):
@@ -286,6 +311,10 @@ class MappingViewResponse(ApiModel):
     # AutoCount source paths (discovery; a free dotted path is still allowed).
     sorentoFields: List[SorentoFieldOut]
     acFields: List[str]
+    # sprint-5/02 (AC-02-02) - a document entity's LINE catalog. Empty for a
+    # non-document entity (master/GRN have no line scope).
+    lineSorentoFields: List[SorentoFieldOut] = []
+    lineAcFields: List[str] = []
 
 
 class MappingUpdateRow(ApiModel):
@@ -297,12 +326,47 @@ class MappingUpdateRow(ApiModel):
     # Optional safe transform formula (slice 16). NULL/blank ⇒ the named
     # transform runs. Validated (parsed) server-side at save (AC-16-03).
     formula: Optional[str] = None
+    # sprint-5/02 (AC-02-01) - which scope this row targets. Defaulting to
+    # ``header`` reproduces every pre-existing (master/GRN) save request.
+    # A `Literal` (S8, review nit) - "header"/"line" are the only two scopes
+    # this engine has ever had (SCOPE_HEADER/SCOPE_LINE in mapping.py); a
+    # typo'd third value should 422 at the wire boundary, not silently
+    # coerce through `getattr(row, "scope", SCOPE_HEADER) != SCOPE_LINE`
+    # everywhere it is read.
+    scope: Literal["header", "line"] = "header"
+    # R1 (code-review round) - write-side twin of the read-side
+    # `MappingRowOut.isEnabled`. A backfill/preset can seed a fixed-field
+    # line row disabled (its source_path doesn't match a real preview
+    # column); the operator toggles it once they've fixed the source
+    # column, or leaves it disabled to save the rest of the draft.
+    isEnabled: bool = True
 
 
 class MappingUpdateRequest(ApiModel):
+    """``PUT .../mapping`` body.
+
+    ``lineRows`` is the WIRE SIGNAL a header-only save needs and could never
+    express before (security re-review should-fix, sprint-5/02 review round):
+    a document entity's line rows are a SEPARATE scope from ``rows`` (header)
+    now - ``None``/absent = line scope untouched this save, ``[]`` = the
+    operator explicitly cleared every line row (wipe), a non-empty list =
+    replace the line set with exactly what was submitted. Threading this
+    tri-state through required a dedicated field - ``rows`` alone can never
+    distinguish "no lineRows key at all" from "lineRows: []" once both arrive
+    as an empty slice.
+
+    Backward compat (one release): a caller that still sends its line rows
+    INSIDE ``rows`` (``scope: "line"`` items mixed in, the pre-existing
+    shape) is honoured exactly as before - those rows count as a submitted
+    line scope too, same as a non-empty ``lineRows``. The router folds both
+    sources together before handing them to ``CompanyService.replace_
+    mapping``.
+    """
+
     model_config = ConfigDict(populate_by_name=True)
 
     rows: List[MappingUpdateRow]
+    lineRows: Optional[List[MappingUpdateRow]] = None
 
 
 # ── formula catalog + simulators (plan 16 §3, AC-16-13/21/30) ─────────────────
@@ -332,7 +396,20 @@ class SimulateRequest(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
     record: Dict[str, Any]
-    rows: Optional[List[MappingUpdateRow]] = None
+    # A sane defensive cap (review-round nit) - a mapping draft is operator-
+    # authored (a handful to a few dozen rows per entity in practice); this
+    # is not a real business constant, just a ceiling against a pathological
+    # payload reaching the simulator unbounded.
+    rows: Optional[List[MappingUpdateRow]] = Field(default=None, max_length=500)
+    # sprint-5/02 (AC-02-22) - a document entity's fetched line records for
+    # the picked header, so Simulate can preview the header AND its lines
+    # together (aggregates, status formula) without saving anything. Capped
+    # at the SAME ceiling the live SQL source enforces per header
+    # (``MAX_DOCUMENT_LINES_PER_HEADER``, review-round nit) - Simulate must
+    # never accept a payload the real pipeline would already have rejected.
+    lines: Optional[List[Dict[str, Any]]] = Field(
+        default=None, max_length=MAX_DOCUMENT_LINES_PER_HEADER
+    )
 
 
 class SimulateFieldResult(ApiModel):
@@ -359,6 +436,29 @@ class SimulateResponse(ApiModel):
     headerFields: List[SimulateFieldResult] = []
     lineFields: List[List[SimulateFieldResult]] = []
     errors: List[Dict[str, Any]] = []
+    # sprint-5/02 (AC-02-22) - the mapped document's `status`, mirrored to the
+    # top level for a document simulate (None for a non-document entity, or
+    # when the record was rejected).
+    status: Optional[str] = None
+
+
+class MappingPresetOut(ApiModel):
+    """One documented AutoCount SQL-pack preset for a document entity
+    (sprint-5/02 S3, AC-02-16 "Use preset" action) - database-substituted,
+    read-only. Empty list from the endpoint = no preset registered for this
+    entity (a non-document entity, or a family not yet documented)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    entityType: str
+    label: str
+    headerQuery: str
+    lineQuery: Optional[str] = None
+    keyColumns: List[str] = []
+    watermarkColumn: Optional[str] = None
+    docDateColumn: Optional[str] = None
+    fromDate: Optional[str] = None
+    filterFormula: Optional[str] = None
 
 
 class SyncRunItem(ApiModel):
@@ -503,18 +603,29 @@ class EtlSourceConfigIn(ApiModel):
     # `DocDate` - deliberately separate from `watermarkColumn`/`LastModified`,
     # which drives change detection, not the sync's date floor).
     docDateColumn: Optional[str] = None
-    # The lineQuery result column carrying the line's own key (AutoCount's
-    # DtlKey) - composed into the line's `source_ref`.
-    lineKeyColumn: Optional[str] = None
-    # The lineQuery result columns minting the two master refs a line can
-    # carry (Appendix A6 item 3) - `product_ref` (required by Sorento) and
-    # `warehouse_ref` (optional).
-    lineProductColumn: Optional[str] = None
-    lineWarehouseColumn: Optional[str] = None
+    # sprint-5/02 (AC-02-11) - a document task's optional header filter,
+    # authored ONLY via the AutocountFormulaBuilder (never free text). The
+    # line-column pickers this slot replaces (`lineKeyColumn`/
+    # `lineProductColumn`/`lineWarehouseColumn`) are gone - a document's line
+    # fields are persisted `ac_field_mapping` rows now (AC-02-01), saved
+    # through the mapping editor's PUT, not this task-config PUT.
+    filterFormula: Optional[str] = None
     incrementalMinutes: int = 15
     reconcileMode: str = "dailyAt"
     reconcileHours: Optional[int] = None
     reconcileAt: Optional[str] = None
+
+
+class InitialLoadProgress(ApiModel):
+    """A paged pass in progress (plan sprint-5/03 S1/S4, AC-03-03/21) - the
+    wire shape of ``AcWatermark.cursor_json["pass"]``, typed (NIT, review
+    round 2 - was a bare ``Dict[str, Any]``, which let the shape drift
+    silently)."""
+
+    complete: bool
+    pagesDone: int
+    lastMark: Optional[Any] = None
+    kind: Optional[str] = None
 
 
 class EtlTaskUpdate(ApiModel):
@@ -539,6 +650,9 @@ class EtlTaskResponse(ApiModel):
     # The saved query's result columns, from the validation preview every PUT
     # runs - the Mapping tab's source picker (AC-22-09).
     resultColumns: List[str] = []
+    # The saved LINE query's result columns (sprint-5/02, AC-02-06) - the
+    # Mapping tab's Line-fields source picker.
+    lineResultColumns: List[str] = []
     # The activate-once gate (AC-22-18); CLEARED by every config save.
     lastPreviewAt: Optional[datetime] = None
     # The last preview's genuinely-``failed`` count (S5 review SHOULD-FIX 4b) -
@@ -555,6 +669,12 @@ class EtlTaskResponse(ApiModel):
     # dispatches it).
     nextIncrementalAt: Optional[datetime] = None
     nextReconcileAt: Optional[datetime] = None
+    # ── continuation (plan sprint-5/03 S1/S4, AC-03-03/21) ───────────────────
+    # A paged pass in progress (initial, incremental or reconcile) - derived
+    # from ``AcWatermark.cursor_json["pass"]``. ``None`` once no pass is open
+    # (never configured, or the last one completed) - the FE offers no
+    # "continues" affordance in that case.
+    initialLoad: Optional[InitialLoadProgress] = None
 
 
 class EtlPreviewResponse(ApiModel):

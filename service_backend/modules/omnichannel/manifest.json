@@ -105,6 +105,10 @@
       "prefix": "/omnichannel/workspaces"
     },
     {
+      "name": "reports",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
       "name": "webhooks_subs",
       "prefix": "/omnichannel"
     },

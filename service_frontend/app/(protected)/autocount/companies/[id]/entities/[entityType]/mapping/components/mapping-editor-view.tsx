@@ -48,7 +48,8 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
       toast.error(problem);
       return false;
     }
-    const ok = await save(draft.writeRows());
+    const { rows, lineRows } = draft.writeRowsForSave();
+    const ok = await save(rows, lineRows);
     if (ok) toast.success('Field mapping saved.');
     return ok;
   }, [draft, save]);

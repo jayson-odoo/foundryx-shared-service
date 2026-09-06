@@ -13,8 +13,16 @@ import type {
   AutocountSqlSchema,
 } from '@/types/autocount';
 
-/** Entities whose task carries a second (line) query + a from-date (Q20). */
-const DOCUMENT_ENTITY_TYPES = new Set(['sales_order', 'purchase_order']);
+/**
+ * Entities whose task carries a second (line) query + a from-date (Q20).
+ * `shipping_order` (sprint-5/02, AC-02-10) is a document entity too, ahead of
+ * its own backend registration (S3) - this list is FE-internal presentation
+ * routing only, NOT the "Add entity" picker's candidate list (that stays
+ * `AC_SQL_DB_ENTITY_TYPES`/`AC_NEW_MASTER_ENTITY_TYPES` in `autocount-meta.ts`,
+ * parity-pinned to the backend registry - do not add `shipping_order` there
+ * until S3 lands it server-side).
+ */
+const DOCUMENT_ENTITY_TYPES = new Set(['sales_order', 'purchase_order', 'shipping_order']);
 
 /** True for header+lines document entities (SO/PO). Code constants, never a
  * tenant-editable key. */
@@ -187,6 +195,22 @@ export function anchorErrorTitle(code: string | null | undefined): string {
   return isAnchorErrorCode(code) ? ANCHOR_TITLES[code] : 'Task error';
 }
 
+/**
+ * Read a 422's `{fieldErrors: {field: message}}` detail into a flat map
+ * (empty when the detail carries none) - the per-field shape the task save
+ * (AC-22-11) and the company create (AC-01-14) both return.
+ */
+export function readFieldErrors(detail: unknown): Record<string, string> {
+  if (!detail || typeof detail !== 'object') return {};
+  const bag = (detail as { fieldErrors?: unknown }).fieldErrors;
+  if (!bag || typeof bag !== 'object') return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(bag as Record<string, unknown>)) {
+    if (typeof value === 'string') out[key] = value;
+  }
+  return out;
+}
+
 /** Read the structured `{code, message}` detail of a task-level 422; null otherwise. */
 export function readTaskError(detail: unknown): AutocountEtlTaskError | null {
   if (!detail || typeof detail !== 'object') return null;
@@ -316,3 +340,54 @@ export function statusFormulaSeed(
   if ((sourceColumnType ?? '').toLowerCase() !== 'boolean') return null;
   return STATUS_BOOLEAN_SEED_FORMULA;
 }
+
+// ── sprint-5/02 - line aggregates + status vocabulary (AC-02-07/08/20) ───────
+
+/**
+ * The five per-header facts the engine computes from a document's MAPPED
+ * lines and injects into the header formula scope under the `lines`
+ * namespace (AC-02-07). Header formulas run AFTER lines. Shared by the
+ * builder's Variables panel and the mock's Simulate aggregate math - keep
+ * both in lockstep with `MappingEngine.project_document` when S2 lands it.
+ */
+export interface LineAggregateDef {
+  token: string;
+  label: string;
+  description: string;
+}
+
+export const LINE_AGGREGATES: readonly LineAggregateDef[] = [
+  { token: 'lines.count', label: 'Line count', description: 'Every mapped line.' },
+  {
+    token: 'lines.open_count',
+    label: 'Open line count',
+    description: 'Lines whose outstanding quantity is greater than zero.',
+  },
+  { token: 'lines.ordered_sum', label: 'Ordered sum', description: 'Sum of qty_ordered.' },
+  {
+    token: 'lines.fulfilled_sum',
+    label: 'Fulfilled sum',
+    description: 'Sum of qty_delivered (SO) / qty_received (PO/SPO).',
+  },
+  {
+    token: 'lines.outstanding_sum',
+    label: 'Outstanding sum',
+    description: 'Sum of (ordered - fulfilled), floored at 0 per line.',
+  },
+];
+
+/** The `status` target's fixed output vocabulary (AC-02-08/15) - the ONLY
+ * string literals a status formula may return; a formula-builder literal
+ * chip set, never a free-typed string on this target. */
+export const STATUS_VOCABULARY: readonly string[] = [
+  'open',
+  'partial',
+  'fulfilled',
+  'closed',
+  'cancelled',
+];
+
+/** The default status formula the SO/PO/SPO presets seed (AC-02-08) - never
+ * emits `partial` by default (AC-02-15). */
+export const DEFAULT_STATUS_FORMULA =
+  'if(Cancelled == "T", "cancelled", if(lines.open_count == 0, "closed", "open"))';

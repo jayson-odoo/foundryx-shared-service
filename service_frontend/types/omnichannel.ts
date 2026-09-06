@@ -958,3 +958,219 @@ export interface ShortcutRunResult {
   runId: string;
   status: string;
 }
+
+// ---------------------------------------------------------------------------
+// Plan 30 - Dashboard + Reports v1 (roadmap A9). See
+// documentation/plans/sprint-4/30-omnichannel-dashboard-reports.md §5.
+// No new fact tables - every shape below is an aggregate over
+// `conversation_events` + `conversation_messages` + `contacts` (D-A9-1).
+// ---------------------------------------------------------------------------
+
+export type ReportGranularity = 'hour' | 'day' | 'week' | 'month';
+
+export type ReportKey =
+  | 'conversations'
+  | 'responses'
+  | 'resolutions'
+  | 'messages'
+  | 'users'
+  | 'leaderboard'
+  | 'assignments';
+
+/**
+ * A bucket's `key` is already LOCAL (D-A9-11: `2026-03-01`, `2026-03-01T09`,
+ * `2026-W10`, `2026-03`) - the client formats the axis label from the key and
+ * NEVER re-applies a timezone. Only `startsAt`/`endsAt` are UTC instants.
+ */
+export interface ReportBucket {
+  key: string;
+  startsAt: string; // ISO Z
+  endsAt: string; // ISO Z
+}
+
+/** One named series, points aligned to `buckets` by index. */
+export interface ReportSeries {
+  key: string;
+  label: string;
+  points: number[];
+}
+
+/** Response-time / resolution-time reduction (Python-side, D-A9-9). */
+export interface DurationStats {
+  medianSeconds: number | null;
+  p90Seconds: number | null;
+  averageSeconds: number | null;
+  sampleCount: number;
+  /** How many datapoints were derived from messages rather than the
+   *  `first_agent_reply` event (D-A9-6) - carried for support, never
+   *  rendered as on-screen caveat copy (D10 of the plan's flagged list). */
+  derivedFromMessages?: number;
+}
+
+/** One lifecycle stage tile on the dashboard. */
+export interface DashboardLifecycleStage {
+  statusId: string;
+  key: string;
+  label: string;
+  color: string | null;
+  sortOrder: number;
+  count: number;
+  percent: number;
+}
+
+/** One row of the dashboard's "top agents" list. */
+export interface DashboardTopAgent {
+  userId: string;
+  name: string;
+  closedCount: number;
+  medianResponseSeconds: number | null;
+}
+
+export interface DashboardResponse {
+  timezone: string;
+  range: { from: string; to: string };
+  granularity: ReportGranularity;
+  buckets: ReportBucket[];
+  tiles: { open: number; assigned: number; unassigned: number; snoozed: number };
+  lifecycle: DashboardLifecycleStage[];
+  series: { opened: number[]; closed: number[] };
+  responseTotals: DurationStats;
+  resolutionTotals: DurationStats;
+  topAgents: DashboardTopAgent[];
+}
+
+/** The catalog entry `reports/meta` publishes for one report. */
+export interface ReportDescriptor {
+  key: ReportKey;
+  label: string;
+  supportsGroupBy: string[];
+  paginated: boolean;
+  exportable: boolean;
+}
+
+export interface ReportMeta {
+  reports: ReportDescriptor[];
+  granularities: ReportGranularity[];
+  dimensions: { team: { available: boolean } };
+}
+
+/** The query every dashboard/report call sends (D-A9-13: `teamId` stays out
+ *  until plan 28 lands - `reports/meta.dimensions.team.available` gates it). */
+export interface ReportFilters {
+  from: string; // YYYY-MM-DD, inclusive
+  to: string; // YYYY-MM-DD, inclusive
+  tz: string; // IANA, always `useDatetime().timeZone`
+  granularity?: ReportGranularity;
+  userId?: string | null;
+  channelId?: string | null;
+  groupBy?: string | null;
+}
+
+/** `reports/responses` distribution row (no `groupBy`). */
+export interface ResponseBucketRow {
+  bucket: string;
+  label: string;
+  count: number;
+  percent: number;
+}
+
+/** `reports/responses?groupBy=user` / `reports/resolutions?groupBy=user` row. */
+export interface DurationByUserRow {
+  userId: string;
+  name: string;
+  sampleCount: number;
+  medianSeconds: number | null;
+  p90Seconds: number | null;
+  averageSeconds: number | null;
+}
+
+/** `reports/resolutions` close-reason breakdown row (no `groupBy`). */
+export interface CloseReasonRow {
+  closeReasonId: string | null;
+  name: string | null;
+  count: number;
+  percent: number;
+}
+
+/** `reports/messages?groupBy=channel` row. */
+export interface MessageChannelRow {
+  channelId: string;
+  name: string;
+  channelType: ChannelType;
+  incoming: number;
+  outgoing: number;
+}
+
+/** `reports/users` (and the `reports/leaderboard` base) row. */
+export interface UserReportRow {
+  userId: string;
+  name: string;
+  teamName: string | null;
+  assignedCount: number;
+  closedCount: number;
+  uniqueContacts: number;
+  messagesSent: number;
+  commentsCount: number;
+  medianFirstResponseSeconds: number | null;
+  medianResolutionSeconds: number | null;
+}
+
+/** `reports/leaderboard` row - `reports/users` rows plus a dense rank. */
+export interface LeaderboardRow extends UserReportRow {
+  rank: number;
+}
+
+/** `reports/assignments` paginated log row. */
+export interface AssignmentLogRow {
+  id: string;
+  createdAt: string; // ISO Z
+  contactId: string;
+  contactName: string;
+  eventType: 'assigned' | 'unassigned';
+  previousAssigneeId: string | null;
+  previousAssigneeName: string | null;
+  assignedToId: string | null;
+  assignedToName: string | null;
+  source: 'workflow' | 'api' | 'agent';
+  actorUserId: string | null;
+  actorName: string | null;
+}
+
+export interface ConversationsReportTotals {
+  opened: number;
+  closed: number;
+  reopened: number;
+}
+export interface MessagesReportTotals {
+  incoming: number;
+  outgoing: number;
+}
+export interface UsersReportTotals {
+  userCount: number;
+}
+export interface AssignmentsReportTotals {
+  assigned: number;
+  unassigned: number;
+}
+
+/**
+ * The generic report envelope (plan §5.2). `TRow`/`TTotals` are supplied per
+ * report so every renderer works with a concrete shape - never `any`.
+ */
+export interface ReportResponse<TRow = object, TTotals = object> {
+  reportKey: ReportKey;
+  timezone: string;
+  range: { from: string; to: string };
+  granularity: ReportGranularity;
+  buckets: ReportBucket[];
+  series: ReportSeries[];
+  rows: TRow[];
+  totals: TTotals;
+  page?: number;
+  pageSize?: number;
+  total?: number;
+}
+
+/** `POST .../reports/{reportKey}/export` request body (mirrors the read
+ *  filters, D-A9-4). */
+export type ReportExportRequest = ReportFilters;

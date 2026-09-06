@@ -1028,3 +1028,100 @@ def test_provider_test_against_local_postgres_when_reachable():
     assert result.message == (
         f"Connected to {url.database} on {url.host or 'localhost'} (PostgreSQL)."
     )
+
+
+# ── plan sprint-5/03 - settings + the paged-wrap statement builder (S1) ─────
+#
+# RED tests written BEFORE the coder, from AC-03-06/07. ``build_paged_wrap``
+# is ASSUMED to live in ``modules.autocount.sql_source.source`` (imported
+# LOCALLY - it does not exist yet) with the signature the plan names:
+# ``build_paged_wrap(query, quoted_watermark, quoted_date_column, mark, *,
+# dialect, page_size)`` - ``quoted_date_column`` is ``None`` for a paged
+# MASTER (no from-date floor); ``page_size`` rides as the bound parameter
+# ``:page_size``, never spliced into the text.
+
+
+def test_page_size_and_budget_come_from_settings_and_refuse_low_values(monkeypatch):
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    monkeypatch.setenv("AUTOCOUNT_PAGE_SIZE", "500")
+    monkeypatch.setenv("AUTOCOUNT_RUN_TIME_BUDGET_SECONDS", "45")
+    configured = Settings()
+    assert configured.autocount_page_size == 500
+    assert configured.autocount_run_time_budget_seconds == 45
+
+    monkeypatch.delenv("AUTOCOUNT_PAGE_SIZE", raising=False)
+    monkeypatch.delenv("AUTOCOUNT_RUN_TIME_BUDGET_SECONDS", raising=False)
+    defaults = Settings()
+    assert defaults.autocount_page_size == 2000
+    assert defaults.autocount_run_time_budget_seconds == 600
+
+    monkeypatch.setenv("AUTOCOUNT_PAGE_SIZE", "99")  # below the 100-row minimum
+    with pytest.raises(ValidationError):
+        Settings()
+    monkeypatch.delenv("AUTOCOUNT_PAGE_SIZE", raising=False)
+
+    monkeypatch.setenv("AUTOCOUNT_RUN_TIME_BUDGET_SECONDS", "29")  # below the 30s minimum
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_build_paged_wrap_uses_top_with_a_page_size_bind_for_mssql():
+    from modules.autocount.sql_source.source import build_paged_wrap
+
+    quoted = '"last_modified"'
+    sql = build_paged_wrap(
+        "SELECT acc_no, last_modified FROM Debtor", quoted, None, "2026-01-01",
+        dialect="mssql", page_size=500,
+    )
+    assert sql == (
+        f"SELECT TOP (:page_size) * FROM (SELECT acc_no, last_modified FROM Debtor) AS t "
+        f"WHERE t.{quoted} >= :mark ORDER BY t.{quoted}"
+    )
+    assert ":page_size" in sql and "500" not in sql, "page_size rides as a bind, never spliced"
+
+
+def test_build_paged_wrap_appends_limit_for_every_other_dialect():
+    from modules.autocount.sql_source.source import build_paged_wrap
+
+    quoted = '"last_modified"'
+    for dialect in ("postgresql", "mysql", "sqlite"):
+        sql = build_paged_wrap(
+            "SELECT acc_no, last_modified FROM debtor", quoted, None, "2026-01-01",
+            dialect=dialect, page_size=500,
+        )
+        assert sql == (
+            f"SELECT * FROM (SELECT acc_no, last_modified FROM debtor) AS t "
+            f"WHERE t.{quoted} >= :mark ORDER BY t.{quoted} LIMIT :page_size"
+        )
+
+
+def test_build_paged_wrap_first_page_of_a_pass_has_no_mark_predicate():
+    from modules.autocount.sql_source.source import build_paged_wrap
+
+    quoted = '"last_modified"'
+    sql = build_paged_wrap(
+        "SELECT acc_no, last_modified FROM debtor", quoted, None, None,
+        dialect="postgresql", page_size=500,
+    )
+    assert ":mark" not in sql
+    assert sql == (
+        f"SELECT * FROM (SELECT acc_no, last_modified FROM debtor) AS t "
+        f"ORDER BY t.{quoted} LIMIT :page_size"
+    )
+
+
+def test_build_paged_wrap_keeps_the_from_date_floor_for_a_document_task():
+    from modules.autocount.sql_source.source import build_paged_wrap
+
+    quoted_wm = '"LastModified"'
+    quoted_date = '"DocDate"'
+    sql = build_paged_wrap(
+        "SELECT DocKey, DocDate, LastModified FROM SO", quoted_wm, quoted_date, "2026-01-01",
+        dialect="mssql", page_size=2000,
+    )
+    assert f"t.{quoted_date} >= :from_date" in sql
+    assert f"t.{quoted_wm} >= :mark" in sql
+    assert sql.startswith("SELECT TOP (:page_size) * FROM (")
