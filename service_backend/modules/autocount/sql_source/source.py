@@ -36,13 +36,16 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import date, datetime, time as dt_time, timezone
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import sqlalchemy as sa
 from cryptography.fernet import InvalidToken
 from sqlalchemy.engine import Engine
+from sqlalchemy.pool import SingletonThreadPool, StaticPool
 
 from app.secrets import decrypt_secret
 
@@ -52,6 +55,7 @@ from ..canonical.documents import (
     is_document_entity,
 )
 from ..client import CallRecord
+from ..formula import FormulaError, evaluate_row_filter
 from ..mapping import IdentityError, flat_source_ref
 from ..models import (
     RUN_MODE_MANUAL,
@@ -59,6 +63,7 @@ from ..models import (
     SOURCE_IMPL_SQL_DB,
     AcRowHash,  # noqa: F401 - documents what ``persist_hashes`` writes
 )
+from ..presets import LINE_COUNT_FINGERPRINT_COLUMN
 from ..repositories import ConnectionRepository, RowHashRepository
 from ..sources import (
     FetchResult,
@@ -71,6 +76,7 @@ from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
 from .errors import (
     SqlDeleteGuardExceeded,
     SqlDocumentCapExceeded,
+    SqlFilterFormulaError,
     SqlQueryError,
     SqlSourceError,
 )
@@ -94,10 +100,14 @@ from .runtime import (
 logger = logging.getLogger("foundryx.autocount")
 
 __all__ = [
+    "PageCursor",
+    "PageResult",
     "SqlDbSource",
     "SqlTaskNotConfigured",
     "build_document_header_wrap",
     "build_incremental_wrap",
+    "build_paged_wrap",
+    "decode_mark",
     "register_sql_db_source",
 ]
 
@@ -106,19 +116,25 @@ __all__ = [
 # rather than taking the worker out with a MemoryError. Raising it is a
 # deliberate act, not a silent degradation (the house line on the record cap).
 STREAM_BATCH = 1000
+# Guards an UNPAGED read (a no-watermark master, the API path's own record cap
+# is separate) and a SINGLE PAGE (plan sprint-5/03 S1) - a page is already
+# bounded by ``AUTOCOUNT_PAGE_SIZE``, so this only ever fires on a tie group
+# vastly larger than any sane page size.
 MAX_EXTRACT_ROWS = 200_000
 
-# ── document line-fan-out caps (S5 review SHOULD-FIX 3) ──────────────────────
+# ── document line-fan-out cap (S5 review SHOULD-FIX 3) ───────────────────────
 # A document task runs ONE bound ``lineQuery`` PER CHANGED HEADER, in the same
 # read-only session - an N+1 by design (§2.8: the operator authors a scalar
 # ``WHERE ... = :doc_key``, so rewriting it into a batched ``IN`` is fragile
 # string surgery and was rejected; the batched-``IN`` approach is a backlog
-# item instead). Two hard, NAMED caps stand in for it: too many changed
-# headers in one pass, and one header carrying an unreasonable number of
-# lines (a WHERE clause matching more than its own header, most likely). Both
-# fail the WHOLE run - same fail-safe contract as the delete guard above:
-# nothing is staged or pushed, and the run's error names which cap tripped.
-MAX_DOCUMENT_HEADERS_PER_RUN = 2000
+# item instead). One header carrying an unreasonable number of lines (a WHERE
+# clause matching more than its own header, most likely) fails the WHOLE run -
+# same fail-safe contract as the delete guard above: nothing is staged or
+# pushed, and the run's error names the cap. The sibling "too many changed
+# headers in one pass" cap (``MAX_DOCUMENT_HEADERS_PER_RUN``) is REMOVED (plan
+# sprint-5/03 S1, AC-03-01): paging is now the bound on how many headers a
+# single read can return, so a fixed count-of-documents ceiling on top of it
+# would only ever fire below a pass that paging already keeps safe.
 MAX_DOCUMENT_LINES_PER_HEADER = 5000
 
 # ── delete guard (plan 22 §2.5, AC-22-22) ────────────────────────────────────
@@ -137,6 +153,18 @@ DELETE_GUARD_MIN_ABSOLUTE = 50
 # existing "watermark at" surface keeps working.
 CURSOR_MARK = "sqlWatermark"
 CURSOR_COLUMN = "sqlWatermarkColumn"
+# The key-column SHAPE the top-level ``lastKey`` was last recorded under
+# (S2, review round 5) - a fingerprint, not a resume value itself.
+# ``key_columns`` determines BOTH ``lastKey``'s own shape (scalar vs list,
+# S2's multi-key generalisation) AND ``source_ref``'s identity SCHEME - a
+# reshape (grown, shrunk, or a same-count rename) makes a stored value
+# recorded under the OLD columns unsafe to resume from (wrong shape, or a
+# shape that still "fits" but means something else entirely, e.g. a
+# same-cardinality rename). ``sync.py``'s run loop is where a MISMATCH here
+# also triggers the wider identity reset (clearing ``ac_row_hash``, never
+# just this cursor) - this module only carries the fingerprint and refuses
+# to resume against a mismatched one.
+CURSOR_KEY_COLUMNS = "sqlKeyColumns"
 
 _QUERY_HEAD = 200
 
@@ -175,6 +203,15 @@ def _decode_mark(value: Any) -> Any:
             return value
         return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
     return value
+
+
+# Public alias (R-NIT, review round 2): ``sync.py`` needs this to decode a
+# stored mark for its OWN monotonic top-level-watermark comparison - importing
+# a leading-underscore name from another module read like reaching into a
+# private implementation detail it should not touch. Kept as an alias (not a
+# rename) so every one of this module's OWN call sites, which predate the
+# public name, needs no churn.
+decode_mark = _decode_mark
 
 
 def _as_utc(value: Any) -> Optional[datetime]:
@@ -273,6 +310,310 @@ def build_document_header_wrap(
     )
 
 
+def _lexicographic_key_predicate(quoted_keys: List[str]) -> str:
+    """``t.k0 > :last_key0 OR (t.k0 = :last_key0 AND (t.k1 > :last_key1 OR
+    ...))`` - one key column degenerates to ``t.k > :last_key`` (the single
+    bind name ``last_key`` kept, unindexed, so a single-key task's generated
+    SQL text is byte-identical to before round 4's multi-key generalisation,
+    S2)."""
+    n = len(quoted_keys)
+
+    def build(idx: int) -> str:
+        column = quoted_keys[idx]
+        bind = "last_key" if n == 1 else f"last_key{idx}"
+        if idx == n - 1:
+            return f"t.{column} > :{bind}"
+        return f"(t.{column} > :{bind} OR (t.{column} = :{bind} AND {build(idx + 1)}))"
+
+    return build(0)
+
+
+def build_paged_wrap(
+    query: str,
+    quoted_watermark: str,
+    quoted_date_column: Optional[str],
+    mark: Any,
+    *,
+    dialect: str,
+    page_size: int,
+    quoted_key: Optional[Union[str, Sequence[str]]] = None,
+    last_key: Any = None,
+) -> str:
+    """The PAGED statement shape (plan sprint-5/03 S1, AC-03-07; composite
+    seek ordering, review round 3 R2-B1) - the SAME derived-table wrap as
+    ``build_incremental_wrap``/``build_document_header_wrap``, plus a
+    bounded, ORDERED page.
+
+    ``quoted_key`` (round 3) is the task's key column, seeked ALONGSIDE the
+    watermark - ``ORDER BY t.<wm>, t.<key>`` with a compound predicate
+    ``(t.<wm> > :mark) OR (t.<wm> = :mark AND t.<key> > :last_key)``. This
+    REPLACES round 2's ``>=``-plus-Python-exclusion design entirely: that
+    design paged a same-mark tie group by re-reading the boundary and
+    dropping already-taken refs in Python, which only works if the DATABASE
+    returns ties in the SAME relative order on every statement - a real
+    engine gives NO such guarantee for an ``ORDER BY`` on a single column
+    with duplicate values, so a row could be silently skipped (or, on a
+    reconcile, misread as a phantom delete). A STRICT ``>`` seek on a fully
+    deterministic ``(watermark, key)`` ordering has no such gap: exactly one
+    statement per page, always bounded by ``:page_size``, regardless of how
+    large a same-mark tie group is.
+
+    ``quoted_key is None`` keeps the OLD watermark-only shape byte-for-byte
+    (every caller that has not been updated to pass one) - the inclusive
+    ``>=`` bound plus Python-side exclusion this used to require is now ONLY
+    reachable this way, kept for a caller with no key to seek on (there is
+    none in this codebase any more; ``SqlDbSource.fetch_page`` always has a
+    key column, construction-time-guarded already).
+
+    ``page_size`` rides as the bound parameter ``:page_size`` - NEVER
+    spliced into the text - so a huge page size can never widen the SQL
+    shape itself, only the bound value; ``last_key`` rides as ``:last_key``
+    the same way, never spliced (a business key can be arbitrary tenant
+    text).
+
+    ``quoted_date_column is None`` = a paged MASTER (no from-date floor);
+    given = a document task's permanent ``fromDate`` scope boundary, ANDed
+    with the seek predicate exactly like ``build_document_header_wrap`` -
+    the seek predicate is parenthesised as ONE group when it is ANDed with
+    the date floor (AND binds tighter than OR in SQL; an ungrouped
+    ``date_floor AND wm > mark OR (...)`` would silently drop the date
+    floor off the second branch of the seek). ``mark is None`` = the first
+    page of a pass - no mark predicate (and no seek predicate) at all.
+    """
+    if page_size <= 0:
+        raise SqlSourceError("page_size must be a positive bind value")
+    inner = _strip_trailing_order_by(query).replace(":", r"\:")
+
+    quoted_keys: List[str] = (
+        [quoted_key] if isinstance(quoted_key, str) else list(quoted_key or [])
+    )
+
+    seek_predicate: Optional[str] = None
+    if mark is not None:
+        if quoted_keys:
+            seek_predicate = (
+                f"(t.{quoted_watermark} > :mark) OR "
+                f"(t.{quoted_watermark} = :mark AND {_lexicographic_key_predicate(quoted_keys)})"
+            )
+        else:
+            seek_predicate = f"t.{quoted_watermark} >= :mark"
+
+    predicates: List[str] = []
+    if quoted_date_column is not None:
+        predicates.append(f"t.{quoted_date_column} >= :from_date")
+    if seek_predicate is not None:
+        needs_grouping = quoted_date_column is not None and bool(quoted_keys)
+        predicates.append(f"({seek_predicate})" if needs_grouping else seek_predicate)
+    where = f" WHERE {' AND '.join(predicates)}" if predicates else ""
+
+    order_by = ", ".join(
+        [f"t.{quoted_watermark}"] + [f"t.{column}" for column in quoted_keys]
+    )
+    if dialect == "mssql":
+        return f"SELECT TOP (:page_size) * FROM ({inner}) AS t{where} ORDER BY {order_by}"
+    return f"SELECT * FROM ({inner}) AS t{where} ORDER BY {order_by} LIMIT :page_size"
+
+
+@dataclass
+class PageCursor:
+    """Where a paged pass resumes from (plan sprint-5/03 S1/S2, AC-03-01..04).
+
+    No schema change (D7): ``sync.py`` reads/writes this shape straight to
+    ``AcWatermark.cursor_json`` (``from_watermark_row``/its inverse in the
+    run loop) - this dataclass is only the in-memory carrier ``fetch_page``
+    takes and returns pieces of.
+
+    ``PageCursor()`` (every field default) IS the first page of a fresh
+    pass: no mark, nothing excluded, nothing done yet.
+    """
+
+    mark: Any = None
+    # The LAST KEY-COLUMN value taken at ``mark`` (composite seek ordering,
+    # review round 3 R2-B1) - together ``(mark, last_key)`` is the exact
+    # ``(watermark, key)`` position the SEEK predicate resumes strictly
+    # AFTER. REPLACES round 2's ``tie_refs`` ref-set exclusion entirely: a
+    # deterministic ``ORDER BY t.<wm>, t.<key>`` plus a strict ``>`` seek
+    # never needs to re-read a boundary and drop already-taken refs in
+    # Python, which depended on the database returning ties in a STABLE
+    # order across separate statements - a guarantee no engine actually
+    # makes for an ``ORDER BY`` on a column with duplicate values.
+    last_key: Any = None
+    pass_kind: str = RUN_MODE_MANUAL
+    pass_started_at: Optional[datetime] = None
+    pages_done: int = 0
+    # Cumulative rows scanned across the WHOLE pass so far (review round 2,
+    # R-NIT) - carried across runs the same way ``pages_done`` already is, so
+    # the zero-rows delete guard can tell "this pass has never read anything"
+    # apart from "a LATER page's own read happened to be empty" without
+    # loading the pass's own row count from anywhere but the cursor itself.
+    rows_scanned: int = 0
+
+    @classmethod
+    def from_watermark_row(
+        cls,
+        watermark_row: Any,
+        mode: str,
+        *,
+        watermark_column: str,
+        key_columns: Sequence[str] = (),
+    ) -> "PageCursor":
+        """Resume an UNFINISHED pass matching ``mode``, or start a fresh one.
+
+        A reconcile tick firing while an initial/incremental pass is still
+        open continues THAT pass first (its ``kind`` will not match
+        ``reconcile``) - the reconcile is simply re-armed by
+        ``next_run_times`` and fires again once the open pass completes.
+
+        ``column_matches`` (F4, review round 2) gates BOTH branches now - a
+        resumed pass whose watermark column no longer matches the task's
+        CURRENT one belongs to a comparison that no longer exists (an
+        operator switched columns mid-pass) and must start fresh exactly
+        like a never-run task would, never resume with the old column's
+        stale mark under the new column's semantics. Only the fresh-pass
+        branch carried this check before; the resume branch did not, which
+        is the bug.
+
+        The pass's OWN position (``pass.mark``/``pass.lastKey``/
+        ``pass.rowsScanned``, review round 2 F3 + round 3 R2-B1) is what a
+        RESUME reads - never the top-level ``CURSOR_MARK``/``lastKey``,
+        which is a SEPARATE, purely monotonic public position (``sync.py``'s
+        own ``_advance_mark_and_ties``) that a reconcile pass does not move
+        until it completes. The top-level pair is what the FRESH-pass
+        branch below still reads, to resume a plain incremental/manual run
+        from wherever the public position last stood - the legacy shape,
+        unchanged.
+
+        !!  A MARK WITH NO ``lastKey`` IS NOT RESUMABLE (round 3 R2-B1).  !!
+        Round 2 stored ``mark``/``tieRefs`` but never a ``lastKey`` - a row
+        left mid-pass by that code (or the round-2 legacy shape at the top
+        level) has a ``mark`` with nothing to seek a KEY from, so resuming
+        it under the composite predicate would silently re-admit or drop
+        whatever shares that exact mark. Both branches below treat a stored
+        ``mark`` with no matching ``lastKey`` as equivalent to no stored
+        position at all - the pass restarts fresh. This is a LOCAL-lane-only
+        concern (only a lane DB mid-migration between review rounds carries
+        such a row); the real company has never run either round yet.
+
+        !!  A ``lastKey`` SHAPED FOR A DIFFERENT ``key_columns`` IS ALSO NOT
+            RESUMABLE (S2-a, review round 5 - a second line of defence).  !!
+        A stored ``lastKey`` was recorded under whatever ``key_columns`` the
+        task had AT THE TIME - a task reconfigured since (a column added or
+        removed, changing SCALAR vs LIST; or, same count, a different
+        column entirely) leaves a value whose shape no longer matches
+        ``len(key_columns)``. Blindly threading it through would eventually
+        reach a bind step that has to guess how to split it - `list()`-ing a
+        stored STRING would slice it into individual CHARACTERS, not
+        columns. Any mismatch is treated exactly like nothing stored: a
+        fresh full read. (The PRIMARY defence against a reshape is
+        ``sync.py``'s own identity reset, which clears the stale position
+        - and the now-mis-scoped ``ac_row_hash`` population - the moment a
+        run detects one; this guard only prevents a residual bad bind if
+        that reset is somehow bypassed.)
+        """
+        cursor = watermark_row.cursor_json if isinstance(watermark_row.cursor_json, dict) else {}
+        pass_state = cursor.get("pass") if isinstance(cursor.get("pass"), dict) else None
+        now = datetime.now(timezone.utc)
+        column_matches = cursor.get(CURSOR_COLUMN) == watermark_column
+        key_count = len(key_columns)
+
+        def _last_key_shape_ok(value: Any) -> bool:
+            if value is None:
+                return True
+            if key_count > 1:
+                return isinstance(value, list) and len(value) == key_count
+            return not isinstance(value, (list, tuple))
+
+        if (
+            pass_state is not None
+            and column_matches
+            and pass_state.get("kind") == mode
+            and not pass_state.get("complete", False)
+            and (pass_state.get("mark") is None or pass_state.get("lastKey") is not None)
+            and _last_key_shape_ok(pass_state.get("lastKey"))
+        ):
+            started_raw = pass_state.get("startedAt")
+            started = _decode_mark(started_raw) if started_raw else now
+            if not isinstance(started, datetime):
+                started = now
+            return cls(
+                mark=pass_state.get("mark"),
+                last_key=pass_state.get("lastKey"),
+                pass_kind=mode,
+                pass_started_at=started,
+                pages_done=int(pass_state.get("pagesDone") or 0),
+                rows_scanned=int(pass_state.get("rowsScanned") or 0),
+            )
+        # A brand new pass. A RECONCILE always restarts extraction from
+        # scratch regardless of any stored incremental mark (D2/plan §2.5
+        # "full <query> extract, ignore watermark"); an incremental/manual
+        # pass resumes from the STORED watermark mark, when it was left by
+        # THIS SAME watermark column (a reconfigured column's stored mark
+        # belongs to a different comparison and must never be reused) AND
+        # carries a ``lastKey`` to seek from (see the module note above).
+        # The cursor keeps the LEGACY keys (``CURSOR_COLUMN``/``CURSOR_MARK``
+        # - live rows on the real company already carry them; renaming
+        # would orphan every task's mark and force a full re-read) -
+        # ``lastKey`` and ``pass`` are the only ADDED top-level keys.
+        start_mark = None
+        start_last_key = None
+        if (
+            mode != RUN_MODE_RECONCILE
+            and column_matches
+            and cursor.get("lastKey") is not None
+            and _last_key_shape_ok(cursor.get("lastKey"))
+        ):
+            start_mark = cursor.get(CURSOR_MARK)
+            start_last_key = cursor.get("lastKey")
+        return cls(
+            mark=start_mark,
+            last_key=start_last_key,
+            pass_kind=mode,
+            pass_started_at=now,
+            pages_done=0,
+            rows_scanned=0,
+        )
+
+
+@dataclass
+class PageResult:
+    """One page's worth of extraction (plan sprint-5/03 S1/S2, AC-03-01/09).
+
+    ``records`` carries ONLY changed/new rows (change-only staging, D2) -
+    lines fetched for a document only among these. ``unchanged_refs`` and
+    ``hashes`` (every fetched ref, changed or not) are what ``sync.py``'s
+    run loop needs to keep ``ac_row_hash`` truthful without restaging
+    anything: an upsert for the changed ones, a seen-stamp touch for the
+    rest.
+    """
+
+    records: List["SourceRecord"] = field(default_factory=list)
+    # EVERY candidate row on this page, regardless of changed/unchanged
+    # status (R2-S1, review round 3) - a preview immediately after a real
+    # run has already hashed the page, so ``records`` (change-only by
+    # design, D2) would report 0 rows for a task that plainly has some;
+    # ``EtlService._extract_and_map``'s preview path maps THIS instead,
+    # while the run loop keeps using ``records`` (change-only staging is
+    # unaffected). Lines are attached for a document's row here too, same
+    # as ``records`` - see the note in ``fetch_page`` on the one exception
+    # (an UNCHANGED document row's lines are not re-fetched).
+    preview_records: List["SourceRecord"] = field(default_factory=list)
+    # A SET (R-S3, review round 2) - the caller (``sync.py``) tests membership
+    # against this on every hashed ref; a list made that an O(n) scan per ref
+    # instead of O(1).
+    unchanged_refs: set = field(default_factory=set)
+    hashes: Dict[str, str] = field(default_factory=dict)
+    last_mark: Any = None
+    # The key-column value of the LAST row on this page (composite seek
+    # ordering, review round 3 R2-B1) - paired with ``last_mark`` as the
+    # exact ``(mark, last_key)`` position the NEXT page's cursor seeks
+    # strictly after. Replaces ``tie_refs`` entirely.
+    last_key: Any = None
+    rows_scanned: int = 0
+    added: int = 0
+    updated: int = 0
+    complete: bool = False
+
+
 class SqlDbSource:
     """One entity, one company, one saved query."""
 
@@ -336,9 +677,14 @@ class SqlDbSource:
         self.line_query: Optional[str] = None
         self.doc_date_column: Optional[str] = None
         self.from_date: Optional[date] = None
-        self.line_key_column: Optional[str] = None
-        self.line_product_column: Optional[str] = None
-        self.line_warehouse_column: Optional[str] = None
+        self.filter_formula: Optional[str] = None
+        self._last_skipped_by_filter = 0
+        # The headers `filterFormula` dropped this run (B4, sprint-5/02
+        # review round) - `fetch_changes` needs these to keep a filtered-out
+        # header from ever reading as a "vanished" delete, and to drop its
+        # stale row hash so a later unfiltered re-appearance stages as a
+        # fresh ADD, not a phantom update.
+        self._filtered_out_headers: List[Dict[str, Any]] = []
         if self.is_document:
             #     !!  A DOCUMENT TASK REQUIRES A HEADER WATERMARK COLUMN.  !!
             # Save-time validation already refuses to persist a document task
@@ -412,13 +758,15 @@ class SqlDbSource:
                 raise SqlTaskNotConfigured(
                     "This document task's from-date is not a valid date."
                 ) from exc
-            self.line_key_column = str(config.get("lineKeyColumn") or "").strip() or None
-            self.line_product_column = str(config.get("lineProductColumn") or "").strip() or None
-            self.line_warehouse_column = str(config.get("lineWarehouseColumn") or "").strip() or None
-            if not self.line_key_column:
-                raise SqlTaskNotConfigured(
-                    "This document task has no line key column chosen."
-                )
+            # sprint-5/02 (AC-02-05): the `lineKeyColumn`/`lineProductColumn`/
+            # `lineWarehouseColumn` pickers are gone - a document's line
+            # fields are persisted, operator-editable `ac_field_mapping` rows
+            # now (`CompanyService.replace_mapping`), never source_config
+            # picks. Nothing to validate or store here any more.
+            # sprint-5/02 (AC-02-11) - a row-set filter (e.g. the PO/SPO
+            # sibling-task split), evaluated against the RAW header row
+            # before line fetch. Blank/absent = every header passes.
+            self.filter_formula = str(config.get("filterFormula") or "").strip() or None
 
         # A STORED connection id, re-resolved tenant- AND provider-scoped on
         # every run (AC-22-29) - never a bare get-by-id.
@@ -502,6 +850,30 @@ class SqlDbSource:
                 f"returns. Re-test the query and re-save the task."
             )
         return self._engine.dialect.identifier_preparer.quote(column)
+
+    def _quoted_keys(self) -> List[str]:
+        """EVERY key column, checked-then-quoted the same way the watermark
+        column is - a paged task seeks on ``(watermark, key0, key1, ...)``
+        lexicographically (S2, review round 4 - supersedes round 3's F5,
+        which seeked on ``keyColumns[0]`` alone: two rows sharing
+        ``(watermark, key0)`` but differing in a LATER key column silently
+        collapsed onto the same seek frontier, so one of them was never
+        seen again once the other had already consumed that exact
+        position)."""
+        if not self.result_columns:
+            raise SqlTaskNotConfigured(
+                "This task has no cached result columns to check the key "
+                "columns against. Re-test the query and re-save the task."
+            )
+        quoted: List[str] = []
+        for column in self.key_columns:
+            if column not in self.result_columns:
+                raise SqlTaskNotConfigured(
+                    f"The key column '{column}' is not one this task's query "
+                    f"returns. Re-test the query and re-save the task."
+                )
+            quoted.append(self._engine.dialect.identifier_preparer.quote(column))
+        return quoted
 
     def _statement(self, mark: Any) -> Tuple[Any, Optional[Dict[str, Any]]]:
         """``(executable, params)`` for this run.
@@ -602,7 +974,7 @@ class SqlDbSource:
                     max_seen = stamp
             records.append(SourceRecord(raw=json_safe(raw), last_modified=stamp))
 
-            ref = self._source_ref(raw)
+            ref = self.source_ref(raw)
             if ref is None:
                 # A blank key is a per-RECORD fault: the mapping engine raises
                 # the same named IdentityError and stages the row FAILED. It
@@ -623,15 +995,36 @@ class SqlDbSource:
         # connection that dropped mid-extract must never read as "everything
         # else vanished too".
         #
-        #     !!  A DOCUMENT NEVER COMPUTES DELETE INTENTS AT ALL (plan 22 S5).  !!
-        # ``fromDate`` bounds the extract to a WINDOW, not the whole standing
-        # set - a header outside today's window is indistinguishable, from
-        # inside this diff, from one genuinely gone at the source. Computing
-        # (and guarding) delete_refs for a windowed population would be
-        # actively wrong, not just unnecessary, so documents skip this whole
-        # block; ``sync._stage_deletes`` mirrors the same skip at staging.
+        #     !!  A DOCUMENT NOW COMPUTES DELETE INTENTS TOO (sprint-5/02, S3,
+        #         AC-02-13 - reverses the plan-22 S5 decision below).  !!
+        # The plan-22 S5 reasoning was: `fromDate` bounds the extract to a
+        # WINDOW, not the whole standing set, so a header outside today's
+        # window would be indistinguishable from one genuinely gone. That
+        # reasoning does not survive scrutiny: `fromDate` is a PERMANENT scope
+        # boundary (module docstring), never a moving one-time lookback, and
+        # AutoCount dates do not travel backwards - a header that was ever
+        # inside the window stays inside it forever, so its disappearance from
+        # a later extract IS genuine evidence of deletion, not a window
+        # artifact. `sync._stage_deletes` mirrors this reversal (no more
+        # document special-case there either).
+        #     !!  A FILTERED-OUT HEADER IS NEVER A DELETE CANDIDATE (B4,
+        #         AC-02-11).  !!
+        # `_read` already dropped these rows before they ever reached
+        # `current_refs` above - indistinguishable, from here, from a header
+        # genuinely gone at source. Compute their refs the SAME way a kept
+        # row's ref is computed, and treat them as neither current nor
+        # missing: excluded from the delete diff below, and their stale hash
+        # (if the filter was only just added/tightened) is dropped so a
+        # later unfiltered re-appearance stages as a fresh ADD, not a
+        # phantom update.
+        filtered_refs: set[str] = {
+            ref
+            for ref in (self.source_ref(header) for header in self._filtered_out_headers)
+            if ref is not None
+        }
+
         delete_refs: List[str] = []
-        if full_extract and known and not self.is_document:
+        if full_extract and known:
             #     !!  A ZERO-ROW FULL EXTRACT IS NEVER A GENUINE TOTAL WIPE.  !!
             # (S3 review BLOCKER 2.) The ratio/absolute guard below is INERT on
             # a small (<=50-row) known population: e.g. known=20 gives a
@@ -649,7 +1042,9 @@ class SqlDbSource:
                     f"full deletion. Check the query and the connection, then "
                     f"re-run reconcile."
                 )
-            delete_refs = sorted(ref for ref in known if ref not in current_refs)
+            delete_refs = sorted(
+                ref for ref in known if ref not in current_refs and ref not in filtered_refs
+            )
             threshold = max(DELETE_GUARD_RATIO * len(known), DELETE_GUARD_MIN_ABSOLUTE)
             if len(delete_refs) > threshold:
                 raise SqlDeleteGuardExceeded(
@@ -659,14 +1054,35 @@ class SqlDbSource:
                     f"query and the connection, then re-run reconcile."
                 )
 
-        if self.persist_hashes and hashes:
-            RowHashRepository(self._ctx.db).upsert_many(
-                self._ctx.tenant_id,
-                self._ctx.company.id,
-                self.entity_type,
-                hashes,
-                seen_at=window_to,
-            )
+        # Only ever finds anything on a FULL extract (review-round nit): on an
+        # incremental run `known` is `self._prior_hashes(raw_rows)` - built
+        # from the POST-FILTER `raw_rows` this method already returned above,
+        # so it can never contain a filtered-out ref to begin with. That is
+        # fine, not a gap: an incremental run's filtered-out header was never
+        # a "changed header" this pass (the watermark WHERE clause excluded
+        # it), so it cannot be carrying a stale hash from THIS run's extract
+        # either. The case this drop exists for - a filter newly added/
+        # tightened so a PREVIOUSLY-hashed header now falls outside it - only
+        # ever surfaces on a reconcile's full-population diff (F1 covers the
+        # sibling case: editing the filter itself re-baselines the whole
+        # entity's hashes at save time).
+        stale_filtered_refs = [ref for ref in filtered_refs if ref in known]
+        if self.persist_hashes and (hashes or stale_filtered_refs):
+            if hashes:
+                RowHashRepository(self._ctx.db).upsert_many(
+                    self._ctx.tenant_id,
+                    self._ctx.company.id,
+                    self.entity_type,
+                    hashes,
+                    seen_at=window_to,
+                )
+            if stale_filtered_refs:
+                RowHashRepository(self._ctx.db).delete_many(
+                    self._ctx.tenant_id,
+                    self._ctx.company.id,
+                    self.entity_type,
+                    stale_filtered_refs,
+                )
             # The sync handler committed immediately before calling us and does
             # not write again until after ``record_client_calls`` (which commits
             # of its own accord), so this boundary is ours to own.
@@ -692,6 +1108,364 @@ class SqlDbSource:
                 if self.watermark_column and new_mark is not None
                 else None
             ),
+            skipped_by_filter=self._last_skipped_by_filter,
+        )
+
+    def fetch_page(self, cursor: "PageCursor") -> "PageResult":
+        """One page of a paged pass (plan sprint-5/03 S1/S2, AC-03-01..04/09;
+        composite seek ordering, review round 3 R2-B1).
+
+        ``fetch_changes`` stays the thin, unpaged, whole-population read for
+        a non-watermarked master and the API path; a WATERMARKED task's run
+        loop (``sync.py``) calls this instead, once per page, threading
+        ``cursor`` through so a pass can span several runs (D3) without ever
+        re-reading a page already staged. Requires a watermark column - the
+        caller only reaches this method for a task that has one.
+
+        ONE statement, ALWAYS - ``ORDER BY t.<wm>, t.<k0>, t.<k1>, ...`` over
+        EVERY key column (S2, review round 4 - `key_columns[0]` alone let
+        two rows sharing `(watermark, key0)` but differing in a later
+        column collapse onto the same seek frontier), checked/quoted the
+        same way as the watermark, with a strict lexicographic SEEK
+        predicate that makes the read order fully
+        deterministic, so a page never needs to re-read a boundary and drop
+        already-taken rows in Python (round 2's design, which relied on the
+        database returning ties in a stable order across separate
+        statements - a guarantee no engine actually makes for duplicate
+        ``ORDER BY`` values, and the reason a row could be silently skipped,
+        or misread as a phantom delete on a reconcile).
+        """
+        from app.config import settings as _settings  # read at CALL time, D-note
+
+        page_size = int(getattr(_settings, "autocount_page_size", 2000) or 2000)
+
+        wm_column = self._quoted_watermark()
+        key_columns = self._quoted_keys()
+        date_column = self._quoted_doc_date_column() if self.is_document else None
+        dialect = self._engine.dialect.name
+
+        sql = build_paged_wrap(
+            self.query, wm_column, date_column, cursor.mark,
+            dialect=dialect, page_size=page_size,
+            quoted_key=key_columns, last_key=cursor.last_key,
+        )
+        #     !!  BIND ``page_size + 1`` - PEEK ONE ROW AHEAD, ONE STATEMENT
+        #         PER PAGE.  !!
+        # ``complete`` must be knowable from THIS page's own read alone - an
+        # exact-multiple population (e.g. 9 rows at page_size=3) would
+        # otherwise need a TRAILING, all-empty page just to confirm nothing
+        # remains, which is a real extra round trip the "one statement per
+        # page" guarantee (T1(b)) must not pay. Fetching one row beyond
+        # ``page_size`` answers "is there more" for free; the extra row is
+        # trimmed back off before anything downstream ever sees it - it
+        # belongs to the NEXT page, re-read there via the normal seek.
+        params: Dict[str, Any] = {"page_size": page_size + 1}
+        if self.is_document:
+            params["from_date"] = self.from_date
+        if cursor.mark is not None:
+            #     !!  BIND A NAIVE INSTANT, NOT AN OFFSET-DECORATED ONE.  !!
+            # A driver that stores a plain datetime column (no offset in its
+            # own text/native form) and is handed an aware ``+00:00``-
+            # suffixed value can render it as a DIFFERENT, textually-later
+            # string than an equal, naive one. ``_decode_mark``'s tzinfo
+            # attachment is correct for comparing INSTANTS in a real
+            # DATETIME/TIMESTAMP column (Postgres/MSSQL numeric compare); it
+            # is normalised back to naive-UTC here purely for the bind, so
+            # the wall-clock instant is unchanged either way.
+            decoded_mark = _decode_mark(cursor.mark)
+            if isinstance(decoded_mark, datetime) and decoded_mark.tzinfo is not None:
+                decoded_mark = decoded_mark.astimezone(timezone.utc).replace(tzinfo=None)
+            params["mark"] = decoded_mark
+            # Bound even when ``None`` (the SEEK predicate's second branch
+            # then reads ``key > NULL``, which SQL evaluates to unknown/
+            # false on every dialect - the predicate degrades cleanly to a
+            # strict ``t.wm > :mark``, never a crash and never a duplicate).
+            #
+            #     !!  A KEY VALUE RIDES AS-IS, NEVER THROUGH ``_decode_mark``
+            #         (S1, review round 4).  !!
+            # ``_decode_mark`` exists to turn an ISO-looking STRING back into
+            # a real ``datetime`` for a WATERMARK bind - correct there
+            # because a watermark column genuinely IS a timestamp. A key
+            # column is a business identifier: it can happen to hold
+            # date-shaped TEXT ('2026-08-01') that must stay exactly that
+            # text, never get silently reparsed into a ``datetime`` (which
+            # a live task did, and lost the second half of a tie group to a
+            # type mismatch the driver could not compare against a TEXT
+            # column). ``last_key`` is one value for a single-key task, a
+            # list (one per ``key_columns``, same order) for a multi-key one
+            # (S2) - both bind their elements verbatim.
+            #
+            # Known, accepted asymmetry: the STORED value already went
+            # through ``_encode_mark`` for JSON-safety on the way IN (a
+            # ``Decimal`` key becomes its string form, ``bytes`` becomes
+            # hex) - binding it back out AS-IS means a non-str/int key
+            # column rides as that stringified/hex text, not its native
+            # Python type. A paged task's key column is virtually always a
+            # business code (str) or a plain int, for which this never
+            # matters; a genuinely ``Decimal``/``bytes`` key column would
+            # need a real, type-aware reversal this deliberately does not
+            # attempt - the string-key correctness this fixes is the
+            # common, load-bearing case; the other is exotic enough that
+            # guessing wrong (the KEY-decoding bug this whole fix exists
+            # to remove) is worse than not guessing at all.
+            if len(key_columns) > 1:
+                last_key_values = (
+                    list(cursor.last_key) if cursor.last_key is not None else [None] * len(key_columns)
+                )
+                for index in range(len(key_columns)):
+                    params[f"last_key{index}"] = (
+                        last_key_values[index] if index < len(last_key_values) else None
+                    )
+            else:
+                params["last_key"] = cursor.last_key
+        executable = sa.text(sql)
+
+        started = time.monotonic()
+        raw_rows: List[Dict[str, Any]] = []
+        try:
+            with open_readonly(
+                self._engine, timeout_s=self.timeout_s, secrets=self._secrets
+            ) as conn:
+                streaming = conn.execution_options(
+                    stream_results=True, max_row_buffer=STREAM_BATCH
+                )
+                result = streaming.execute(executable, params)
+                #     !!  THE ROW CAP IS CHECKED PER PARTITION (F6, review
+                #         round 2), NOT AFTER THE WHOLE RESULT IS PULLED.  !!
+                # Mirrors ``_read`` exactly - materialising the entire
+                # result before ever looking at ``row_limit`` would defeat
+                # the cap's whole point (a runaway query still pulls
+                # everything before failing).
+                for partition in result.partitions(STREAM_BATCH):
+                    for row in partition:
+                        raw_rows.append(dict(row._mapping))
+                    if len(raw_rows) > self.row_limit:
+                        raise SqlSourceError(
+                            f"The extract passed {self.row_limit:,} rows without "
+                            f"finishing, so it was stopped and nothing was "
+                            f"accepted. Narrow the query or set a watermark "
+                            f"column so runs stay incremental."
+                        )
+
+                # ── trim the peeked-ahead row back off ──────────────────────
+                # ``len(raw_rows) <= page_size`` means the query's own
+                # ``page_size + 1`` LIMIT was never actually filled - this IS
+                # the last page, whether it came back short or landed on an
+                # exact multiple. ``> page_size`` means one row beyond this
+                # page exists; drop it (it is re-read, unchanged, as the
+                # first row the NEXT page's seek predicate finds).
+                complete = len(raw_rows) <= page_size
+                if not complete:
+                    raw_rows = raw_rows[:page_size]
+
+                # ── the frontier for the NEXT cursor ────────────────────────
+                #     !!  A NULL WATERMARK OR KEY ON THE TAIL ROW FAILS LOUD
+                #         (S3, review round 4) - NEVER SILENTLY RE-READS. !!
+                # The tail row is the one the NEXT page's seek resumes from;
+                # the old code only advanced ``last_mark``/``last_key`` "if
+                # not None", silently leaving them AT THE PREVIOUS PAGE'S
+                # value otherwise - the next page then re-runs the EXACT
+                # SAME statement forever (a livelock, not a crash: nothing
+                # ever raises, the run just never makes progress). A NULL
+                # watermark/key on the row a page keeps is a source-data
+                # fault this task cannot resume past; it must be a named,
+                # immediate failure - not a second statement, not a retry.
+                last_mark = cursor.mark
+                last_key = cursor.last_key
+                if raw_rows:
+                    tail = raw_rows[-1]
+                    tail_mark_value = tail.get(self.watermark_column)
+                    if tail_mark_value is None:
+                        raise SqlSourceError(
+                            f"The watermark column '{self.watermark_column}' is "
+                            f"NULL on the last row of this page - a paged task "
+                            f"cannot resume from a NULL watermark. Nothing was "
+                            f"staged or pushed."
+                        )
+                    last_mark = _encode_mark(tail_mark_value)
+                    tail_key_values: List[Any] = []
+                    for key_column in self.key_columns:
+                        tail_key_value = tail.get(key_column)
+                        if tail_key_value is None:
+                            raise SqlSourceError(
+                                f"The key column '{key_column}' is NULL on the "
+                                f"last row of this page - a paged task cannot "
+                                f"resume from a NULL key. Nothing was staged or "
+                                f"pushed."
+                            )
+                        tail_key_values.append(_encode_mark(tail_key_value))
+                    last_key = (
+                        tail_key_values[0]
+                        if len(tail_key_values) == 1
+                        else tail_key_values
+                    )
+
+                rows_scanned = len(raw_rows)
+
+                # ── document row-set filter, BEFORE the hash diff (AC-02-11) ─
+                candidates = raw_rows
+                filtered_this_page: List[Dict[str, Any]] = []
+                if self.is_document and self.filter_formula:
+                    keep_rows = []
+                    for header in raw_rows:
+                        try:
+                            if evaluate_row_filter(self.filter_formula, header):
+                                keep_rows.append(header)
+                            else:
+                                filtered_this_page.append(header)
+                        except FormulaError as exc:
+                            raise SqlFilterFormulaError(
+                                f"The filter could not be evaluated: {exc}. "
+                                f"Nothing was staged or pushed."
+                            ) from exc
+                    candidates = keep_rows
+
+                # ── hash diff BEFORE lines (plan §2.1) ──────────────────────
+                known = self._prior_hashes(candidates)
+                hashes: Dict[str, str] = {}
+                unchanged_refs: set = set()
+                changed_headers: List[Dict[str, Any]] = []
+                changed_stamps: Dict[int, Optional[datetime]] = {}
+                records: List[SourceRecord] = []
+                added = updated = 0
+                key_column_name = self.key_columns[0] if self.is_document else None
+
+                for header in candidates:
+                    ref = self.source_ref(header)
+                    stamp = (
+                        _as_utc(header.get(self.watermark_column))
+                        if self.watermark_column
+                        else None
+                    )
+                    if ref is None:
+                        # A blank key is a per-RECORD identity fault the
+                        # mapping engine will name; it has no ref to hash on,
+                        # so it always counts as "changed" and is staged
+                        # FAILED downstream rather than silently vanishing.
+                        records.append(SourceRecord(raw=json_safe(header), last_modified=stamp))
+                        continue
+                    value_hash = row_hash(header, self.compared_columns)
+                    hashes[ref] = value_hash
+                    if known.get(ref) == value_hash:
+                        unchanged_refs.add(ref)
+                        continue
+                    if ref in known:
+                        updated += 1
+                    else:
+                        added += 1
+                    changed_headers.append(header)
+                    changed_stamps[id(header)] = stamp
+
+                #     !!  LINES ONLY FOR CHANGED/NEW HEADERS (plan §2.1) -
+                #         UP TO N CONCURRENT CONNECTIONS (S5, performance
+                #         round).  !!
+                if self.is_document and changed_headers:
+                    self._attach_lines(conn, changed_headers, key_column_name)
+
+                #     !!  A CHANGED HEADER'S ``SourceRecord`` IS BUILT ONLY
+                #         AFTER LINES ARE ATTACHED (URGENT fix, review round
+                #         4) - NEVER BEFORE.  !!
+                # ``json_safe(header)`` is a dict-comprehension SNAPSHOT, not
+                # a live reference - a live load found ``raw_json`` missing
+                # ``_lines`` entirely because the OLD code built this
+                # ``SourceRecord`` right inside the loop above, BEFORE the
+                # lines-attach loop mutated the SAME ``header`` dict; the
+                # snapshot already taken never saw ``_lines`` land. Building
+                # every changed header's record here, after lines are
+                # attached, is the fix.
+                for header in changed_headers:
+                    stamp = changed_stamps.get(id(header))
+                    mismatch = (
+                        self._line_count_mismatch(header) if self.is_document else None
+                    )
+                    records.append(
+                        SourceRecord(
+                            raw=json_safe(header), last_modified=stamp, error=mismatch,
+                        )
+                    )
+
+                #     !!  PREVIEW NEEDS EVERY CANDIDATE, NOT JUST CHANGED ONES
+                #         (R2-S1, review round 3) - ONLY BUILT ON A PREVIEW,
+                #         NEVER ON A REAL RUN (NIT, review round 4: a real
+                #         run has no reader for it and must not pay to build
+                #         a second, throwaway copy of every row on every
+                #         page).  !!
+                # Built AFTER the lines-for-changed-headers step above, so a
+                # CHANGED document row's snapshot here carries its lines too
+                # - an UNCHANGED document row's does not (its lines were
+                # never fetched this page, matching the "only for changed
+                # headers" rule above); a preview of an all-unchanged page
+                # still reports the right ROW COUNT either way, which is
+                # what regressed to 0.
+                preview_records: List[SourceRecord] = (
+                    [
+                        SourceRecord(
+                            raw=json_safe(header),
+                            last_modified=(
+                                _as_utc(header.get(self.watermark_column))
+                                if self.watermark_column
+                                else None
+                            ),
+                        )
+                        for header in candidates
+                    ]
+                    if not self.persist_hashes
+                    else []
+                )
+
+                #     !!  A FILTERED-OUT HEADER'S STALE HASH IS DROPPED HERE
+                #         (AC-03-18) - the ONLY write ``fetch_page`` itself
+                #         performs; the per-row hash upsert / seen-touch for
+                #         everything else is the CALLER's job (``sync.py``'s
+                #         run loop), which alone knows which refs a mapping
+                #         failure disqualifies from a hash write.  !!
+                if self.persist_hashes and filtered_this_page:
+                    filtered_refs = [
+                        ref
+                        for ref in (self.source_ref(h) for h in filtered_this_page)
+                        if ref is not None
+                    ]
+                    if filtered_refs:
+                        filtered_known = RowHashRepository(self._ctx.db).hashes_for(
+                            self._ctx.tenant_id, self._ctx.company.id, self.entity_type,
+                            filtered_refs,
+                        )
+                        stale_filtered = [ref for ref in filtered_refs if ref in filtered_known]
+                        if stale_filtered:
+                            RowHashRepository(self._ctx.db).delete_many(
+                                self._ctx.tenant_id, self._ctx.company.id, self.entity_type,
+                                stale_filtered,
+                            )
+                            self._ctx.db.commit()
+        except SqlSourceError as exc:
+            self._record_call(
+                started, rows=len(raw_rows), incremental=cursor.mark is not None,
+                error=exc.message,
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 - every driver has its own class
+            from .runtime import sanitize_error
+
+            message = sanitize_error(exc, secrets=self._secrets)
+            self._record_call(
+                started, rows=len(raw_rows), incremental=cursor.mark is not None,
+                error=message,
+            )
+            raise SqlQueryError(message) from exc
+
+        self._record_call(started, rows=len(raw_rows), incremental=cursor.mark is not None)
+
+        return PageResult(
+            records=records,
+            preview_records=preview_records,
+            unchanged_refs=unchanged_refs,
+            hashes=hashes,
+            last_mark=last_mark,
+            last_key=last_key,
+            rows_scanned=rows_scanned,
+            added=added,
+            updated=updated,
+            complete=complete,
         )
 
     def _read(self, mark: Any) -> List[Dict[str, Any]]:
@@ -740,19 +1514,47 @@ class SqlDbSource:
             # ``SQL_DOC_LINES_KEY`` so ``MappingEngine``'s EXISTING nested-
             # detail mechanism (built for the API path's vendor envelope)
             # reads it with zero engine changes - see ``mapping.flat_profile``.
+            self._last_skipped_by_filter = 0
+            self._filtered_out_headers = []
             if self.is_document:
-                #     !!  CAP THE FAN-OUT (S5 review SHOULD-FIX 3).  !!
-                # This is an N+1 by design (module doc) - a run with an
-                # unbounded number of changed headers would hold that many
-                # extra round trips open in one pass. Fails the WHOLE run
-                # (nothing staged/pushed), same as the delete guard.
-                if len(rows) > MAX_DOCUMENT_HEADERS_PER_RUN:
-                    raise SqlDocumentCapExceeded(
-                        f"This run would fetch lines for {len(rows):,} documents in "
-                        f"one pass - over the safety cap "
-                        f"({MAX_DOCUMENT_HEADERS_PER_RUN:,}). Nothing was staged or "
-                        f"pushed. Narrow the from-date window and re-run."
-                    )
+                #     !!  THE ROW-SET FILTER RUNS BEFORE LINE FETCH (AC-02-11).  !!
+                # A header the filter drops (e.g. the SPO-numbered rows a PO
+                # task's sibling task owns) never fetches lines, never enters
+                # `rows` at all - so it cannot be staged, mapped, or counted
+                # as a delete candidate either.
+                if self.filter_formula:
+                    kept = []
+                    try:
+                        for header in rows:
+                            if evaluate_row_filter(self.filter_formula, header):
+                                kept.append(header)
+                            else:
+                                self._last_skipped_by_filter += 1
+                                self._filtered_out_headers.append(header)
+                    except FormulaError as exc:
+                        #     !!  A RUNTIME FILTER FAULT IS A NAMED TASK
+                        #         ERROR, NEVER A SILENT KEEP-EVERYTHING.  !!
+                        # (F2/B3.) `validate_source_config` already proved
+                        # this formula PARSES against the saved result
+                        # columns - a failure reaching here is a genuine
+                        # per-row runtime fault (a value that doesn't coerce
+                        # the way the formula expects). Fails the WHOLE run,
+                        # same fail-safe contract as the delete guard/document
+                        # caps: nothing staged, nothing pushed, hashes
+                        # untouched.
+                        raise SqlFilterFormulaError(
+                            f"The filter could not be evaluated: {exc}. Nothing "
+                            f"was staged or pushed."
+                        ) from exc
+                    rows = kept
+                #     !!  NO PER-RUN HEADER-COUNT CAP HERE ANY MORE.  !!
+                # (plan sprint-5/03 S1, AC-03-01.) A document task ALWAYS
+                # carries a watermark column (construction-time guard above),
+                # so every real document run now goes through ``fetch_page``
+                # (``AUTOCOUNT_PAGE_SIZE`` bounds each read); this unpaged
+                # ``_read``/``fetch_changes`` path only remains reachable for
+                # the initial-load preview probe, which caps rows a different
+                # way (``MAX_EXTRACT_ROWS``, still enforced above).
                 key_column = self.key_columns[0]
                 for header in rows:
                     doc_key_value = header.get(key_column)
@@ -793,7 +1595,134 @@ class SqlDbSource:
             )
         return rows
 
-    def _source_ref(self, raw: Dict[str, Any]) -> Optional[str]:
+    def _attach_lines(
+        self,
+        conn: Any,
+        changed_headers: List[Dict[str, Any]],
+        key_column_name: str,
+    ) -> None:
+        """Fetch every changed/new header's lines for THIS page (S5,
+        performance round) - sequential over the page's OWN ``conn`` when
+        there is nothing to gain from concurrency, or a small thread pool
+        when there is.
+
+        A live pass over ZeroTier (~25ms RTT) spent ~60s per page on 2,000
+        sequential line queries. ``settings.autocount_line_fetch_workers``
+        (read at CALL time, never cached) bounds how many run at once, each
+        on its OWN ``open_readonly`` connection off ``self._engine`` -
+        NEVER the page's shared ``conn``, which is a single DB-API
+        connection object and is not safe to use from more than one
+        thread. Results are attached back onto each header IN THE SAME
+        ORDER ``changed_headers`` already has (never by which worker
+        happened to finish first), so the ``records``/``hashes`` built
+        from ``changed_headers`` immediately afterwards are byte-identical
+        to the old sequential path regardless of concurrency - only the
+        wall-clock time changes. One header's line query failing
+        propagates exactly like the OLD sequential loop did (whatever
+        ``_read_lines`` raises bubbles straight out of ``fetch_page`` -
+        nothing staged, the top-level cursor untouched); any OTHER
+        header's future still in the pool's queue (not yet started) is
+        cancelled rather than left to make a wasted call.
+
+        ``workers <= 1`` OR a single-connection pool (``StaticPool`` - the
+        in-memory SQLite rig every other test in this suite uses, which
+        hands back the SAME underlying connection every time; or
+        ``SingletonThreadPool`` - SQLAlchemy's own single-connection-PER-
+        THREAD pool, which still only ever hands out ONE connection to a
+        given thread and is the pool a bare ``sqlite://`` URL defaults to
+        without an explicit ``poolclass``) both fall back to the exact old
+        sequential loop: a second ``open_readonly`` against either while
+        the first is still open would deadlock or corrupt the shared
+        cursor, never run genuinely in parallel.
+        """
+        from app.config import settings as _settings
+
+        workers = int(getattr(_settings, "autocount_line_fetch_workers", 4) or 4)
+        if workers <= 1 or isinstance(
+            self._engine.pool, (StaticPool, SingletonThreadPool)
+        ):
+            for header in changed_headers:
+                doc_key_value = header.get(key_column_name)
+                header[SQL_DOC_LINES_KEY] = self._read_lines(conn, doc_key_value)
+            return
+
+        workers = min(workers, len(changed_headers))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [
+                executor.submit(
+                    self._read_lines_own_connection, header.get(key_column_name)
+                )
+                for header in changed_headers
+            ]
+            try:
+                for header, future in zip(changed_headers, futures):
+                    header[SQL_DOC_LINES_KEY] = future.result()
+            except BaseException:
+                for pending in futures:
+                    pending.cancel()
+                raise
+
+    def _read_lines_own_connection(self, doc_key_value: Any) -> List[Dict[str, Any]]:
+        """A worker's OWN ``open_readonly`` connection off ``self._engine``
+        (S5) - never the page's shared connection, which is not safe to
+        use from more than one thread at once."""
+        with open_readonly(
+            self._engine, timeout_s=self.timeout_s, secrets=self._secrets
+        ) as worker_conn:
+            return self._read_lines(worker_conn, doc_key_value)
+
+    def _line_count_mismatch(self, header: Dict[str, Any]) -> Optional[str]:
+        """The ``LineCount`` fingerprint mismatch guard (S2, review round 4).
+
+        Called AFTER ``_read_lines`` has already populated
+        ``header[SQL_DOC_LINES_KEY]``. A header carrying a ``LineCount``
+        column (``presets.LINE_COUNT_FINGERPRINT_COLUMN`` - a plain
+        column-name CONVENTION documented next to the preset queries, never
+        an engine concept) with a value greater than zero, whose own
+        ``lineQuery`` fetch came back with ZERO rows, is a genuine mismatch
+        (a broken line query/join) - never a silently-accepted, valid
+        zero-line document. A task with no such column, or one reporting
+        zero (a real lineless document, AC-13's own rule), is untouched.
+
+        Deliberately checks only the ALL-OR-NOTHING case (``expected > 0``
+        and ``fetched == 0``), never a PARTIAL mismatch (``fetched`` some
+        smaller positive number than ``expected``): the SHIPPED presets
+        apply the SAME ``ItemCode IS NOT NULL AND Qty IS NOT NULL`` cut on
+        both the header's ``LineCount`` aggregate and ``lineQuery`` itself
+        (plan sprint-5/03, fixed alongside c434a1d), so for them the two
+        counts agree. An OPERATOR-authored ``lineQuery`` is under no such
+        obligation, though - it can apply a narrower, wider, or differently
+        shaped filter than the aggregate, so a header with, say, 2
+        description lines and 3 real ones can legitimately report
+        ``LineCount=3`` while fetching 5 rows, and the reverse skew is just
+        as possible. Zero fetched is the one shape no such skew can ever
+        produce when the fingerprint says lines exist, which is what makes
+        it - and only it - a safe, unambiguous signal of a genuinely broken
+        join.
+        """
+        if LINE_COUNT_FINGERPRINT_COLUMN not in header:
+            return None
+        raw_value = header.get(LINE_COUNT_FINGERPRINT_COLUMN)
+        if raw_value is None:
+            return None
+        try:
+            expected = int(raw_value)
+        except (TypeError, ValueError):
+            return None
+        if expected <= 0:
+            return None
+        fetched = len(header.get(SQL_DOC_LINES_KEY) or [])
+        if fetched > 0:
+            return None
+        doc_key_value = (
+            header.get(self.key_columns[0]) if self.key_columns else None
+        )
+        return f"LineCount {expected} but {fetched} lines fetched for DocKey {doc_key_value}"
+
+    def source_ref(self, raw: Dict[str, Any]) -> Optional[str]:
+        """The identity ``sync.py`` keys ``ac_row_hash``/a failed-row hash
+        drop on (NIT, review round 2 - was a leading-underscore "private"
+        method a SIBLING module called directly)."""
         try:
             return flat_source_ref(
                 raw,
@@ -805,7 +1734,7 @@ class SqlDbSource:
             return None
 
     def _prior_hashes(self, raw_rows: Sequence[Dict[str, Any]]) -> Dict[str, str]:
-        refs = [ref for ref in (self._source_ref(raw) for raw in raw_rows) if ref]
+        refs = [ref for ref in (self.source_ref(raw) for raw in raw_rows) if ref]
         if not refs:
             return {}
         return RowHashRepository(self._ctx.db).hashes_for(

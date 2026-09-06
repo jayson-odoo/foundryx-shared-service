@@ -127,8 +127,6 @@ describe('mock autocount ETL service', () => {
           ...task.sourceConfig,
           watermarkColumn: 'LastModified',
           docDateColumn: 'DocDate',
-          lineKeyColumn: 'DtlKey',
-          lineProductColumn: 'ItemCode',
           fromDate: null,
         },
       });
@@ -142,6 +140,10 @@ describe('mock autocount ETL service', () => {
     });
   });
 
+  // sprint-5/02 (AC-02-05/19): the line key/product/warehouse columns moved
+  // OFF the task config and onto persisted `scope='line'` mapping rows - the
+  // task-save guard no longer names them; that guard lives in the mapping
+  // save path now (AC-02-03).
   it('422s naming every S5 field a document task is still missing (AC-22-11)', async () => {
     const task = await service.getEtlTask('company-doc2', 'sales_order');
     let caught: unknown;
@@ -157,8 +159,6 @@ describe('mock autocount ETL service', () => {
       fieldErrors: {
         watermarkColumn: expect.any(String),
         docDateColumn: expect.any(String),
-        lineKeyColumn: expect.any(String),
-        lineProductColumn: expect.any(String),
       },
     });
   });

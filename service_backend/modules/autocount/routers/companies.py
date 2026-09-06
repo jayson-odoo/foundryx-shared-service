@@ -4,6 +4,8 @@ No DB query and no raw SQL lives here (code-review hard-fail). Every handler
 takes the tenant from the authenticated user - NEVER from client input - and
 hands off to a service.
 """
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -12,12 +14,15 @@ from app.database import get_db
 from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
+from ..canonical.documents import is_document_entity
+from ..mapping import SCOPE_LINE
 from ..schemas import (
     CompanyCreate,
     CompanyDetailResponse,
     CompanyItem,
     CompanyListResponse,
     CompanySinkUpdate,
+    DocumentPrerequisiteOut,
     EntityConfigItem,
     EntityConfigUpdate,
     EtlPreviewResponse,
@@ -28,6 +33,7 @@ from ..schemas import (
     FormulaTestResponse,
     MappingRowOut,
     MappingUpdateRequest,
+    MappingUpdateRow,
     MappingViewResponse,
     SimulateRequest,
     SimulateResponse,
@@ -38,9 +44,11 @@ from ..schemas import (
 from ..services import (
     AutocountServiceError,
     CompanyAlreadyExists,
+    CompanyNotApiBacked,
     CompanyNotFound,
     CompanyService,
     ConnectionNotFound,
+    ConnectionValidationError,
     EntityConfigNotFound,
     EtlAnchorError,
     EtlService,
@@ -51,6 +59,7 @@ from ..services import (
     MappingWriteRow,
     PreviewUnavailable,
     SinkTargetValidationError,
+    document_prerequisites,
 )
 from ..sql_source.errors import SqlSourceError
 from .sql import raise_sql_error
@@ -63,7 +72,7 @@ def _raise(exc: AutocountServiceError) -> None:
     operator-safe (no stack traces, no credentials)."""
     if isinstance(exc, (CompanyNotFound, ConnectionNotFound, EntityConfigNotFound)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
-    if isinstance(exc, CompanyAlreadyExists):
+    if isinstance(exc, (CompanyAlreadyExists, CompanyNotApiBacked)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message)
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
@@ -83,6 +92,19 @@ def _field_errors(field_errors: dict, message: str) -> JSONResponse:
     )
 
 
+def _company_item(company, *, source_kind: str, prerequisites=()) -> CompanyItem:
+    """The row PLUS the derived wire fields (plan sprint-5/01 AC-01-07/11):
+    ``sourceKind`` comes from the service (the connection's provider - never
+    stored on the row) and ``documentPrerequisites`` from the detail's entity
+    states (the list sends ``[]``)."""
+    item = CompanyItem.model_validate(company)
+    item.sourceKind = source_kind
+    item.documentPrerequisites = [
+        DocumentPrerequisiteOut.model_validate(p) for p in prerequisites
+    ]
+    return item
+
+
 @router.get("", response_model=CompanyListResponse)
 def list_companies(
     current_user: User = Depends(require_permission("autocount.companies.read")),
@@ -90,11 +112,14 @@ def list_companies(
     page: int = Query(0, ge=0),
     page_size: int = Query(25, ge=1, le=200),
 ) -> CompanyListResponse:
-    rows, total = CompanyService(db).list(
-        current_user.tenant_id, page=page, page_size=page_size
-    )
+    service = CompanyService(db)
+    rows, total = service.list(current_user.tenant_id, page=page, page_size=page_size)
+    # ONE batched, tenant-scoped connection query for the whole page (AC-01-07).
+    kinds = service.source_kind_map(current_user.tenant_id, rows)
     return CompanyListResponse(
-        data=[CompanyItem.model_validate(row) for row in rows], total=total, page=page
+        data=[_company_item(row, source_kind=kinds[row.id]) for row in rows],
+        total=total,
+        page=page,
     )
 
 
@@ -103,15 +128,24 @@ def create_company(
     body: CompanyCreate,
     current_user: User = Depends(require_permission("autocount.companies.manage")),
     db: Session = Depends(get_db),
-) -> CompanyItem:
-    """Register an AutoCount company by DISCOVERING it from its connection."""
+):
+    """Register an AutoCount company by DISCOVERING it from its connection -
+    the vendor login for an ``autocount`` connection, the connection's own
+    ``database`` (verified by a live probe) for a ``sql_database`` one (plan
+    sprint-5/01 AC-01-01). A probe mismatch / connect failure is a per-field
+    422 on ``connectionId`` (AC-01-02)."""
+    service = CompanyService(db)
     try:
-        company = CompanyService(db).create_from_connection(
+        company = service.create(
             current_user.tenant_id, body.connectionId, name=body.name
         )
+    except ConnectionValidationError as exc:
+        return _field_errors(exc.field_errors, exc.message)
     except AutocountServiceError as exc:
         _raise(exc)
-    return CompanyItem.model_validate(company)
+    return _company_item(
+        company, source_kind=service.source_kind_for(current_user.tenant_id, company)
+    )
 
 
 @router.get("/{company_id}", response_model=CompanyDetailResponse)
@@ -129,7 +163,12 @@ def get_company(
     except AutocountServiceError as exc:
         _raise(exc)
     return CompanyDetailResponse(
-        company=CompanyItem.model_validate(company),
+        company=_company_item(
+            company,
+            source_kind=service.source_kind_for(current_user.tenant_id, company),
+            # Pure, over the states already loaded above - no extra query.
+            prerequisites=document_prerequisites(entities),
+        ),
         entities=[EntityConfigItem.model_validate(row) for row in entities],
     )
 
@@ -224,6 +263,8 @@ def _mapping_response(view: MappingView) -> MappingViewResponse:
         rows=[MappingRowOut.model_validate(row) for row in view.rows],
         sorentoFields=[SorentoFieldOut.model_validate(f) for f in view.sorento_fields],
         acFields=list(view.ac_fields),
+        lineSorentoFields=[SorentoFieldOut.model_validate(f) for f in view.line_sorento_fields],
+        lineAcFields=list(view.line_ac_fields),
     )
 
 
@@ -271,20 +312,50 @@ def replace_entity_mapping(
     rows are preserved; the write is seed-if-absent-safe (``update_tenant`` never
     reverts an operator edit).
     """
+    #     !!  SECURITY RE-REVIEW SHOULD-FIX - `lineRows` IS THE ONLY SIGNAL
+    #         THAT DISTINGUISHES "UNTOUCHED" FROM "EXPLICITLY WIPED".  !!
+    # `is_document_entity(entity_type)` alone (the old S7 wiring) made EVERY
+    # header-only PUT on a document entity wipe its line rows, because an
+    # omitted line scope and an explicit empty submission both collapsed to
+    # the same "no line rows in this request" shape. `body.lineRows` being
+    # present (even `[]`) is the operator's Lines tab actually being part of
+    # THIS save; `None` means the request never touched line scope at all.
+    #
+    # Backward compat (one release, documented on `MappingUpdateRequest`): a
+    # caller still sending its line rows folded INSIDE `rows` (`scope:
+    # "line"` items, the pre-existing combined shape) is honoured exactly as
+    # before - those rows count as a submitted line scope too.
+    line_rows_in_body = [row for row in body.rows if row.scope == SCOPE_LINE]
+    line_rows_submitted = (
+        body.lineRows is not None or bool(line_rows_in_body)
+    ) and is_document_entity(entity_type)
+
+    def _to_write_row(row: MappingUpdateRow, *, force_scope: Optional[str] = None) -> MappingWriteRow:
+        return MappingWriteRow(
+            source_path=row.sourcePath,
+            transform=row.transform,
+            sorento_field=row.sorentoField,
+            formula=row.formula,
+            # A `lineRows` item is unambiguously LINE scope by ARRIVING in
+            # this array (nit, code-review round) - forcing it rather than
+            # trusting the item's own `scope` field is defense-in-depth,
+            # the same class of guard as the polymorphic-target_id rule: a
+            # payload's OWN self-description is never the sole authority
+            # for where it lands.
+            scope=force_scope or row.scope,
+            is_enabled=row.isEnabled,
+        )
+
+    combined_rows = [_to_write_row(row) for row in body.rows] + [
+        _to_write_row(row, force_scope=SCOPE_LINE) for row in (body.lineRows or [])
+    ]
     try:
         view = CompanyService(db).replace_mapping(
             current_user.tenant_id,
             company_id,
             entity_type,
-            [
-                MappingWriteRow(
-                    source_path=row.sourcePath,
-                    transform=row.transform,
-                    sorento_field=row.sorentoField,
-                    formula=row.formula,
-                )
-                for row in body.rows
-            ],
+            combined_rows,
+            line_rows_submitted=line_rows_submitted,
         )
     except AutocountServiceError as exc:
         _raise(exc)
@@ -361,6 +432,7 @@ def simulate_mapping(
                     transform=row.transform,
                     sorento_field=row.sorentoField,
                     formula=row.formula,
+                    scope=row.scope,
                 )
                 for row in body.rows
             ]
@@ -368,7 +440,8 @@ def simulate_mapping(
             else None
         )
         result = CompanyService(db).simulate_mapping(
-            current_user.tenant_id, company_id, entity_type, body.record, draft
+            current_user.tenant_id, company_id, entity_type, body.record, draft,
+            lines=body.lines,
         )
     except AutocountServiceError as exc:
         _raise(exc)
@@ -386,6 +459,7 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         activatedAt=view.activated_at,
         sourceConfig=view.source_config,
         resultColumns=view.result_columns,
+        lineResultColumns=view.line_result_columns,
         lastPreviewAt=view.last_preview_at,
         lastPreviewFailedCount=view.last_preview_failed_count,
         lastRunAt=view.last_run_at,
@@ -393,6 +467,7 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         lastRunErrorCode=view.last_run_error_code,
         nextIncrementalAt=view.next_incremental_at,
         nextReconcileAt=view.next_reconcile_at,
+        initialLoad=view.initial_load,
     )
 
 

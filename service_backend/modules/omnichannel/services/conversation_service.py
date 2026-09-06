@@ -521,6 +521,12 @@ class ConversationService:
         assigned_via_override: Optional[str] = None,
         workflow_id: Optional[str] = None,
         workflow_run_id: Optional[str] = None,
+        # Plan 30 (roadmap A9), AC-RPT-27: the assignment log derives `source`
+        # from `payload_json.source` rather than inferring it - the public
+        # gateway (the only current caller with no acting user) passes "api";
+        # every other caller keeps the default "agent". A future
+        # `omnichannel.assign_contact` workflow action would pass "workflow".
+        assignment_source: str = "agent",
     ) -> ThreadItem:
         c = self.repo.get_by_id(contact_id, tenant_id)
         if c is None:
@@ -574,7 +580,7 @@ class ConversationService:
                             actor=actor, actor_id=actor_id,
                             external_agent_id=actor_external_agent_id,
                             from_value=prev_assignee, to_value=new_assignee,
-                            payload={"assigneeKind": kind},
+                            payload={"assigneeKind": kind, "source": assignment_source},
                         )
                     else:
                         event_service.record(
@@ -582,6 +588,7 @@ class ConversationService:
                             actor=actor, actor_id=actor_id,
                             external_agent_id=actor_external_agent_id,
                             from_value=prev_assignee,
+                            payload={"source": assignment_source},
                         )
             else:
                 # Native path - the four assignee combinations (§5.2,
@@ -670,7 +677,17 @@ class ConversationService:
                     team_name = (
                         team_directory.resolve(self.db, tenant_id, new_team_id) or {}
                     ).get("name") if new_team_id else None
-                    payload = {"teamId": new_team_id, "teamName": team_name, "assignedVia": assigned_via, "change": change}
+                    # Plan 30 (A9, AC-RPT-27) reads `payload.source` for the
+                    # assignment log: a workflow-driven assign (plan 28 S3)
+                    # is "workflow", otherwise the caller's `assignment_source`
+                    # ("api" from the public gateway, default "agent").
+                    payload = {
+                        "teamId": new_team_id,
+                        "teamName": team_name,
+                        "assignedVia": assigned_via,
+                        "change": change,
+                        "source": "workflow" if assigned_via == "workflow" else assignment_source,
+                    }
                     if assigned_via == "workflow":
                         # AC-TEM-31/D-A8 attribution: a workflow run assigns
                         # with actor=None (it is not a human's act) - the

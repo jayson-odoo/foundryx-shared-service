@@ -469,6 +469,10 @@ class PublicGatewayService:
                 # actor-conditioned lifecycle edge, by design (matches the
                 # embed principal's `_native_actor` convention).
                 actor=None,
+                # Plan 30 AC-RPT-27: an assignment written by the public
+                # gateway is never attributable to an agent - the reports
+                # assignment log renders its `source` as "api".
+                assignment_source="api",
             )
         except InvalidPatch as exc:
             details = {exc.field: exc.message} if exc.field else None

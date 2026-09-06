@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from app.models.utc_datetime import UTCDateTime  # house autogen gotcha
 
 revision = "teams_core_s428"
-down_revision = "b7c1d2e3f4a5"
+down_revision = "82497a2fcea3"  # re-parented at the origin/main 215d94cc merge (was b7c1d2e3f4a5)
 branch_labels = None
 depends_on = None
 

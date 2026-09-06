@@ -766,10 +766,11 @@ def test_new_permissions_granted_to_existing_tenant_admin_on_update(client, sess
 
     db2 = session_factory()
     module, new_state = AppStoreService(db2).update(DEFAULT_TENANT_ID, "omnichannel")
-    # Manifest is now 0.5.0 (plan 28 S2, team assignment) - bump alongside
-    # every module version change so this test tracks the CURRENT manifest.
-    assert module.version == "0.5.0"
-    assert new_state.installed_version == "0.5.0"
+    # Plan 29 S1 bumped the manifest to 0.5.0 and plan 28 to 0.6.0 - this test pins "the CURRENT
+    # manifest version", not a fixed string (updated the same way plan 27/29
+    # bumps updated it before).
+    assert module.version == "0.6.0"
+    assert new_state.installed_version == "0.6.0"
     db2.close()
 
     h = _auth(client)

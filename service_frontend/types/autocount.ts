@@ -21,6 +21,28 @@ export type AutocountSyncMode = 'AUTO' | 'SCHEDULED_REVIEW' | 'MANUAL';
 export type AutocountSourceImpl = 'autocount_read' | 'sql_db';
 
 /**
+ * How a company is connected (plan sprint-5/01, AC-01-07): DERIVED server-side
+ * from its ONE connection's provider - `autocount` → `'api'`, `sql_database` →
+ * `'db'`. Never stored, never client-supplied. A DB company has no vendor API:
+ * every entity reads through a `sql_db` task locked to the company connection.
+ */
+export type AutocountSourceKind = 'api' | 'db';
+
+/**
+ * One document entity's prerequisite-master status (AC-01-11). A sales order
+ * needs `customer` + `product`, a purchase order `supplier` + `product` - the
+ * refs Sorento cannot NULL. While any is missing/inactive the document's rows
+ * stay `retryable` (never lost), so the Entities tab warns instead of blocking.
+ */
+export interface AutocountDocumentPrerequisite {
+  entityType: string;
+  /** Prerequisite masters with no entity config row at all. */
+  missing: string[];
+  /** Masters configured but not active (`etl_status != 'active'` or disabled). */
+  inactive: string[];
+}
+
+/**
  * Per-entity sync configuration seeded when a company is registered, PLUS the
  * entity's live delta state.
  *
@@ -101,6 +123,13 @@ export interface AutocountCompany {
    */
   sorentoCompanyCode: string | null;
   createdAt: string | null; // ISO Z
+  /** Derived from the connection's provider (AC-01-07); a deleted connection reports `'api'`. */
+  sourceKind: AutocountSourceKind;
+  /**
+   * Prerequisite-master status per configured document entity (AC-01-11).
+   * Populated on `GET /autocount/companies/{id}`; the LIST returns `[]`.
+   */
+  documentPrerequisites: AutocountDocumentPrerequisite[];
 }
 
 /** `GET /autocount/companies/{id}` - the company plus its entity configs. */
@@ -124,7 +153,12 @@ export interface AutocountSinkTargetInput {
   sorentoCompanyCode?: string | null;
 }
 
-/** `POST /autocount/companies` - the operator supplies ONLY a connection. */
+/**
+ * `POST /autocount/companies` - the operator supplies ONLY a connection. The
+ * server branches on its provider (AC-01-01): an `autocount` connection signs
+ * in to discover the company; a `sql_database` connection derives the identity
+ * from `config.database` (verified by a live probe, AC-01-02).
+ */
 export interface AutocountCompanyCreateInput {
   connectionId: string;
   /** Optional label; blank falls back to the discovered company name. */
@@ -376,6 +410,15 @@ export interface AutocountMappingView {
   sorentoFields: AutocountSorentoField[];
   /** Known AutoCount source paths (discoverability; a free dotted path is allowed). */
   acFields: string[];
+  /**
+   * Document entities only (sprint-5/02, AC-02-02) - the accepted LINE targets
+   * (`source_ref`/`product_ref`/`qty_ordered` required, etc). Empty for a
+   * master/GRN entity - the Mapping tab renders a single section then.
+   */
+  lineSorentoFields: AutocountSorentoField[];
+  /** Document entities only - the task's persisted `line_result_columns`
+   * (empty until the line query has been saved with a successful preview). */
+  lineAcFields: string[];
 }
 
 /** One deliverable row on write. `sorentoField` must be an accepted target. */
@@ -389,11 +432,58 @@ export interface AutocountMappingWriteRow {
    * 422, AC-16-03) and becomes authoritative.
    */
   formula?: string | null;
+  /**
+   * `'header'` (default when omitted) or `'line'` (sprint-5/02, AC-02-01) -
+   * a document entity's line rows are a SEPARATE scope from its header rows
+   * sharing the same `canonical_field` vocabulary is allowed (e.g. `currency`
+   * on both). Master/GRN entities never send `'line'`.
+   */
+  scope?: 'header' | 'line';
+  /**
+   * B1 (final review round) - carries a backfill/preset-disabled row's
+   * enabled state through the save so it round-trips unchanged rather than
+   * silently defaulting to enabled server-side (which re-triggers the S1
+   * preview-column gate for an off-preview fixed-field row).
+   */
+  isEnabled?: boolean;
 }
 
 /** `PUT .../mapping` body - replaces the entity's deliverable rows transactionally. */
 export interface AutocountMappingUpdate {
+  /** Header-scope rows (a master/GRN entity's whole mapping). */
   rows: AutocountMappingWriteRow[];
+  /**
+   * The wire signal a header-only save needs (security re-review should-fix,
+   * sprint-5/02 review round) - a document entity's line rows are a
+   * SEPARATE scope now: omit this field entirely to leave line rows
+   * untouched, send `[]` to explicitly wipe them, send the current line
+   * draft to replace it. `rows` alone can never express "no lineRows key"
+   * vs "lineRows: []" once both arrive as an empty slice.
+   */
+  lineRows?: AutocountMappingWriteRow[];
+}
+
+// ── mapping/query presets (sprint-5/02, AC-02-16/17) ─────────────────────────
+
+/**
+ * `GET /autocount/presets/{entityType}` (S3 backend) - the AutoCount SQL-pack
+ * preset for one document entity, with the placeholder `{database}` already
+ * substituted for the company's `databaseName`. "Use preset" on the Query tab
+ * inserts the whole thing (header + line query, the picker defaults, and the
+ * filter formula); the mapping rows it seeds ride the SAME task-save path as
+ * any other first save of an empty mapping (AC-02-16) - this type carries only
+ * what the Query tab writes directly.
+ */
+export interface AutocountMappingPreset {
+  entityType: string;
+  label: string;
+  headerQuery: string;
+  lineQuery: string | null;
+  keyColumns: string[];
+  watermarkColumn: string | null;
+  docDateColumn: string | null;
+  fromDate: string | null;
+  filterFormula: string | null;
 }
 
 // ── formula catalog + simulators (plan 16 §3, AC-16-13/21/30) ─────────────────
@@ -434,6 +524,14 @@ export interface AutocountSimulateResult {
   headerFields: AutocountSimulateFieldResult[];
   lineFields: AutocountSimulateFieldResult[][];
   errors: Array<Record<string, unknown>>;
+  /**
+   * Document entities only (sprint-5/02, AC-02-08/22) - the header's computed
+   * `status` (from the status formula run AFTER the lines + aggregates), or
+   * null when the row isn't mapped / the record was rejected. Also present
+   * inside `record.status` - carried separately so the dialog can render it
+   * as a badge without re-parsing the payload.
+   */
+  status?: string | null;
 }
 
 // ── dry-run preview (hop 2, AC-14-20/21/22/26) ───────────────────────────────
@@ -639,14 +737,15 @@ export interface AutocountEtlSourceConfig {
    * filters (the document's OWN date, e.g. DocDate - deliberately separate
    * from `watermarkColumn`/LastModified, which drives change detection). */
   docDateColumn: string | null;
-  /** Documents only - the line query's result column carrying the line's own
-   * key (AutoCount's DtlKey), composed into the line's source_ref. */
-  lineKeyColumn: string | null;
-  /** Documents only - the line query's result columns minting the two
-   * master refs a line can carry (Appendix A6 item 3). `productColumn` is
-   * required (Sorento requires `product_ref`); `warehouseColumn` optional. */
-  lineProductColumn: string | null;
-  lineWarehouseColumn: string | null;
+  /**
+   * Documents only (sprint-5/02, AC-02-11) - a per-task boolean formula over
+   * HEADER columns (`AutocountFormulaBuilder`, never free text). A header
+   * evaluating false is skipped before the line fetch - never staged, never a
+   * delete candidate. Null = every header passes (the default for a
+   * never-configured task). Decides the SO/SPO family split
+   * (`not(startswith(upper(trim(DocNo)), "SPO-"))` / the SPO counterpart).
+   */
+  filterFormula: string | null;
   incrementalMinutes: number;
   reconcileMode: 'interval' | 'dailyAt';
   reconcileHours: number | null;

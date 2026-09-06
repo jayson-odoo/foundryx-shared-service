@@ -37,8 +37,29 @@ class SqlDeleteGuardExceeded(SqlSourceError):
 
 
 class SqlDocumentCapExceeded(SqlSourceError):
-    """A document task's per-header ``lineQuery`` fan-out exceeded one of its
-    two safety caps (S5 review SHOULD-FIX 3) - either too many changed
-    headers in a single run, or one header's own line count. Raised from
-    ``SqlDbSource._read`` BEFORE any hash write, same fail-safe contract as
-    ``SqlDeleteGuardExceeded``: nothing is staged or pushed."""
+    """A document task's per-header ``lineQuery`` fan-out exceeded its safety
+    cap - one header's own line count (S5 review SHOULD-FIX 3). Raised from
+    ``SqlDbSource._read_lines`` BEFORE any hash write, same fail-safe
+    contract as ``SqlDeleteGuardExceeded``: nothing is staged or pushed. The
+    sibling per-run "too many changed headers" cap is gone (plan sprint-5/03
+    S1, AC-03-01) - paging is the bound now."""
+
+
+class SqlFilterFormulaError(SqlSourceError):
+    """A document task's `filterFormula` failed to evaluate against an actual
+    header row AT RUN TIME (F2/B3, sprint-5/02 review round) - a genuine
+    runtime fault (a value that doesn't coerce the way the formula expects),
+    distinct from a save-time parse failure (caught by
+    `validate_source_config`'s own gate, which makes this exceedingly rare).
+    Raised from `SqlDbSource._read` BEFORE any hash write, same fail-safe
+    contract as `SqlDeleteGuardExceeded`/`SqlDocumentCapExceeded`: nothing is
+    staged or pushed - a broken filter must be a visible, named task error,
+    never a silent fail-open that keeps every header with no sign anything
+    is wrong."""
+
+
+class SqlProbeFailed(SqlSourceError):
+    """A company-onboarding probe (current database / profile name, plan
+    sprint-5/01 AC-01-02) could not connect or its statement failed. Carries
+    the SANITISED runtime message; the company service maps it to a per-field
+    422 on ``connectionId``."""

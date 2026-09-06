@@ -56,7 +56,7 @@ consumer webhook and the plan-27 event row happen once, in one place.
 | Piece | Where | Notes |
 |---|---|---|
 | Models | `service_backend/app/models/team.py` (new) | `Team`, `TeamMember`; `UTCDateTime` columns; `TeamMember.tenant_id` is set from the owning `Team`, never from the payload (house rule: an association's `tenant_id` derives from the owning role) |
-| Migration | `service_backend/alembic/versions/<rev>_teams_core.py` (new) | `down_revision = "b7c1d2e3f4a5"` (the SINGLE head verified 2026-09-06 by walking every `revision`/`down_revision` in `alembic/versions/`; re-verify at build time). Revision id <= 32 chars, collision-grepped against every existing id incl. the `revision: str = ...` files. Add `import app.models.utc_datetime` by hand. Postgres functional unique index `ix_teams_tenant_name_lower ON teams (tenant_id, lower(name))` created in the migration only; case-insensitive uniqueness is ALSO enforced in the service so the sqlite test path behaves identically |
+| Migration | `service_backend/alembic/versions/<rev>_teams_core.py` (new) | `down_revision = "b7c1d2e3f4a5"` (the SINGLE head verified 2026-09-06 by walking every `revision`/`down_revision` in `alembic/versions/`; re-verify at build time). **Landed as `teams_core_s428` with `down_revision = "82497a2fcea3"`** - re-parented at the 215d94cc merge because main had gained the plan-01/plan-27 merge-revision on `b7c1d2e3f4a5` (test report §7.1). Module migration landed as `0012_omni_team_assignment` on `0011_omni_broadcasts` (A4 took 0011 first); manifest 0.6.0. Revision id <= 32 chars, collision-grepped against every existing id incl. the `revision: str = ...` files. Add `import app.models.utc_datetime` by hand. Postgres functional unique index `ix_teams_tenant_name_lower ON teams (tenant_id, lower(name))` created in the migration only; case-insensitive uniqueness is ALSO enforced in the service so the sqlite test path behaves identically |
 | Repository | `service_backend/app/repositories/team_repository.py` (new) | `list(tenant_id, q, sort, page, page_size)`, `get(id, tenant_id)`, `by_ids(ids, tenant_id)`, `members_for(team_ids, tenant_id)`, `teams_for_user(user_id, tenant_id)`, `member_user_ids(team_id, tenant_id)`. EVERY method takes `tenant_id` and filters on it - there is no unscoped getter to misuse |
 | Service | `service_backend/app/services/team_service.py` (new) | create/update/delete, ci-name uniqueness, member-set replace with per-user tenant validation, lead subset validation, delete guarded by `reference_counts(db, tenant_id, "team", team_id)` -> 409 |
 | Router | `service_backend/app/api/v1/teams.py` (new), mounted `app.include_router(teams.router, prefix="/teams", tags=["teams"])` in `app/main.py` next to `roles` | HTTP + Pydantic only. `GET /teams`, `GET /teams/mine`, `GET /teams/{id}`, `POST`, `PATCH`, `DELETE`. `GET /teams/mine` is declared BEFORE `/{id}` so the literal path wins |
@@ -69,7 +69,7 @@ consumer webhook and the plan-27 event row happen once, in one place.
 
 | Piece | Where | Notes |
 |---|---|---|
-| Model + migration | `modules/omnichannel/models.py`, `modules/omnichannel/alembic/versions/0011_omni_team_assignment.py` (new) | `Contact.assigned_team_id` (String, nullable, index); `TeamAssignmentSetting` (`id, tenant_id, workspace_id FK workspaces, team_id String idx, strategy, last_assigned_user_id, created_at, updated_at`, unique `(workspace_id, team_id)`). Inspector-guarded like `0004` / `0008`; `bootstrap.create_schema_and_tables` mirrors the column with `ADD COLUMN IF NOT EXISTS assigned_team_id VARCHAR` |
+| Model + migration | `modules/omnichannel/models.py`, `modules/omnichannel/alembic/versions/0012_omni_team_assignment.py` (new) | `Contact.assigned_team_id` (String, nullable, index); `TeamAssignmentSetting` (`id, tenant_id, workspace_id FK workspaces, team_id String idx, strategy, last_assigned_user_id, created_at, updated_at`, unique `(workspace_id, team_id)`). Inspector-guarded like `0004` / `0008`; `bootstrap.create_schema_and_tables` mirrors the column with `ADD COLUMN IF NOT EXISTS assigned_team_id VARCHAR` |
 | Teams gateway | `modules/omnichannel/services/team_directory.py` (new) | The module's ONLY door to core teams: `resolve(db, tenant, team_id)` (via `validate_soft_ref` / `resolve_soft_ref` with `SoftRef("core", "team", id)`), `list_active(db, tenant)`, `members(db, tenant, team_id)`, `names(db, tenant, team_ids)` (batched, used by `_thread_items`). Every method returns an empty/None result when `resolve_capability` gives `None` - the self-disable path |
 | Assignment | `modules/omnichannel/services/team_assignment_service.py` (new) | `settings_for(ws, team_id)` (default `round_robin`), `eligible_members(...)`, `pick(...)` (see §5.3), `assign(contact, team_id, actor, strategy_override=None)` |
 | Write seam | `modules/omnichannel/services/conversation_service.py` | `patch_thread` gains `assigned_team_id: Optional[str] = ...`; the assignee block is reworked per §5.2; `_thread_items` gains one batched `team_directory.names(...)` call; `_publish_contact_updated` unchanged (it already fans out realtime + webhook) |
@@ -122,9 +122,9 @@ Reused unchanged: `components/platform/{resource-list,resource-form,resource-act
 | D-A8-17 | `lead` is a label only in this slice: no permission, no assignment priority | Access levels are B1 (roadmap D5). Storing the role now means B1 does not need a second migration |
 | D-A8-18 | Teams live under **User Management**, not Settings: route `/user-management/teams`, menu entry next to Roles | Deviation from D-A8-2's wording, flagged in §8. `Role` sits there, the terminology group is "Access", and the form is a literal clone of the Users form in the sibling folder |
 | D-A8-19 | Menu, route, permission and terminology are the ONLY core surfaces this slice adds. No dashboard tile, no team column on the Users list | Keeps the core diff auditable; a Teams column on Users is a backlog candidate |
-| D-A8-20 | The rail's "My teams" section KEEPS inactive teams (`/teams/mine` has no `is_active` filter); only WRITE surfaces are active-only - the drawer's Teams group and the team-settings tab skip `!isActive` | Post-approval ruling 2026-09-06. A read filter on a deactivated team's queue is still legitimate (its threads did not vanish), whereas assigning INTO one 422s. A muted "(inactive)" affordance is BL-SS-104 |
-| D-A8-21 | Saved views keep dangling `teamIds` by design: `expand()` passes them through and the tenant-scoped `IN` narrows to zero rows - it can never widen. Save-time validation (422) is the only gate | Post-approval ruling 2026-09-06, same rule as the pre-existing `tagIds`/`channelIds` degrade (plan 27 round-3 B11). Pruning at expansion is BL-SS-102 |
-| D-A8-22 | The team reference guard has exactly ONE source, `conversations` (`contacts.assigned_team_id`); `team_assignment_settings` rows are configuration, not references, and never block a delete | Post-approval ruling 2026-09-06. A strategy row for a team with no assigned threads must not make the team undeletable; orphan cleanup is BL-SS-103 |
+| D-A8-20 | The rail's "My teams" section KEEPS inactive teams (`/teams/mine` has no `is_active` filter); only WRITE surfaces are active-only - the drawer's Teams group and the team-settings tab skip `!isActive` | Post-approval ruling 2026-09-06. A read filter on a deactivated team's queue is still legitimate (its threads did not vanish), whereas assigning INTO one 422s. A muted "(inactive)" affordance is BL-SS-124 |
+| D-A8-21 | Saved views keep dangling `teamIds` by design: `expand()` passes them through and the tenant-scoped `IN` narrows to zero rows - it can never widen. Save-time validation (422) is the only gate | Post-approval ruling 2026-09-06, same rule as the pre-existing `tagIds`/`channelIds` degrade (plan 27 round-3 B11). Pruning at expansion is BL-SS-122 |
+| D-A8-22 | The team reference guard has exactly ONE source, `conversations` (`contacts.assigned_team_id`); `team_assignment_settings` rows are configuration, not references, and never block a delete | Post-approval ruling 2026-09-06. A strategy row for a team with no assigned threads must not make the team undeletable; orphan cleanup is BL-SS-123 |
 
 ### 3.1 Audit outcome - there is no assign action today (D-A8-5)
 
@@ -301,7 +301,7 @@ review reject.
 - **`create_all` never ALTERs.** `contacts.assigned_team_id` needs the `ADD COLUMN IF NOT EXISTS`
   mirror in `bootstrap.create_schema_and_tables`, or every `scripts/init_db` dev database silently
   lacks it while the ORM thinks it exists.
-- **Core migration head.** `b7c1d2e3f4a5` was the single head on 2026-09-06; other lanes may add core
+- **Core migration head.** (Materialised: two heads at merge time, re-parented onto `82497a2fcea3` - see §2.1 / report §7.1.) `b7c1d2e3f4a5` was the single head on 2026-09-06; other lanes may add core
   revisions before this one merges. Re-derive the head at build time and never guess a parent.
 - **Shared Postgres across worktrees.** Lane s28 owns `foundryx_service_s28`; reseed only from the
   branch you are serving (`sync_permissions` is delete-by-module, so seeding from another branch
@@ -329,18 +329,18 @@ review reject.
 | BL-SS-090 | Workflow engine: expose the `team` field type to core entities (assign a core record to a team) | P2 |
 | BL-SS-091 | Teams: team avatar / colour for the rail and the assignment log | P2 |
 
-**Registered on close (review rounds 1-2 + the post-approval read, 2026-09-06).** Provisional ids in
-the worktree `backlog.md` - they are renumbered from main's then-max at merge (A9/A4 land first):
+**Registered on close (review rounds 1-2 + the post-approval read, 2026-09-06).** Registered as BL-SS-121..127 at the
+`origin/main` 215d94cc merge (main's max was BL-SS-120 after A9/A4; provisional 101..107 before that):
 
 | Registered id | Title | Source |
 |---|---|---|
-| BL-SS-101 | Teams form Members/Leads picker capped at the first 200 tenant users (no async-options `MultiSelect`) | round 1, nit 17 |
-| BL-SS-102 | Saved views: prune unresolvable `teamIds` / `tagIds` / `channelIds` at expansion so a view degrades to no-scope, not no-results | post-approval read |
-| BL-SS-103 | Orphan `team_assignment_settings` rows survive a core team delete - cleanup in the `teams.delete` handler or a sweep | post-approval read |
-| BL-SS-104 | Rail entry for an inactive "My teams" team is indistinguishable - muted "(inactive)" affordance (see D-A8-20) | post-approval read |
-| BL-SS-105 | Full-suite timer flakes `timezone-card` / `resource-form.deferred` (D5 class) | round 2 |
-| BL-SS-106 | Plan-27 default agent role: Inbox renders nothing without `workspaces.read` | post-approval read |
-| BL-SS-107 | `teamService.remove()` unreferenced by production code after the deferred switch - ruling: keep, the sync `DELETE /teams/{id}` stays the API contract | post-approval read |
+| BL-SS-121 | Teams form Members/Leads picker capped at the first 200 tenant users (no async-options `MultiSelect`) | round 1, nit 17 |
+| BL-SS-122 | Saved views: prune unresolvable `teamIds` / `tagIds` / `channelIds` at expansion so a view degrades to no-scope, not no-results | post-approval read |
+| BL-SS-123 | Orphan `team_assignment_settings` rows survive a core team delete - cleanup in the `teams.delete` handler or a sweep | post-approval read |
+| BL-SS-124 | Rail entry for an inactive "My teams" team is indistinguishable - muted "(inactive)" affordance (see D-A8-20) | post-approval read |
+| BL-SS-125 | Full-suite timer flakes `timezone-card` / `resource-form.deferred` (D5 class) | round 2 |
+| BL-SS-126 | Plan-27 default agent role: Inbox renders nothing without `workspaces.read` | post-approval read |
+| BL-SS-127 | `teamService.remove()` unreferenced by production code after the deferred switch - ruling: keep, the sync `DELETE /teams/{id}` stays the API contract | post-approval read |
 
 ## 8. Flagged for the user (planner deviations from the 2026-09-06 decision set - none are blocking)
 

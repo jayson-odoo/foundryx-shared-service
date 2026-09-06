@@ -84,6 +84,8 @@ export const ENTITY_NOUNS: Record<string, { singular: string; plural: string }> 
   // Plan 28 (roadmap A8) review round 1, finding 3 - team delete migrated
   // onto the deferred-actions engine.
   team: { singular: 'team', plural: 'teams' },
+  // Plan 29 review round 1, S1: Delete migrated onto the deferred-actions engine.
+  broadcast: { singular: 'broadcast', plural: 'broadcasts' },
 };
 
 function capitalize(word: string): string {

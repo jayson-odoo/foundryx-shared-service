@@ -5,6 +5,8 @@ already-wired module boot hook (``app/module_loader.py::register_module_boot``)
 - so this module never needs a core file to import it directly (module
 governance: hook via the predefined seam, no global-store injection).
 """
+from typing import Optional
+
 from app.workflow_engine.registry import ActionDef, NodeField, NodeOutput, TriggerDef, register_action, register_trigger
 
 from .services.workflow_actions import (
@@ -103,6 +105,88 @@ def _register_contact_entity() -> None:
     )
 
 
+def _register_broadcast_entity() -> None:
+    """Workflow-engine entity registration (plan 29 S3, AC-BRD-44) - registers
+    ``record:omnichannel_broadcast`` facts (read-only IF conditions for A5's
+    ``omnichannel.broadcast_completed`` trigger, once that trigger itself is
+    wired in A5) and an EMPTY ``entity.update`` writable whitelist - a
+    broadcast's lifecycle is machine-driven (send job / cancel / scheduled
+    beat), never a workflow write (D-A4-16).
+
+    ``has_status=False`` for the SAME reason as `omnichannel_contact` above:
+    `Broadcast.status_id` FKs the module's own lightweight `BROADCAST`-scope
+    `statuses` row (D-A4-3), not a status-engine entity resolvable via
+    `status_machine.transition()` - there is no per-tenant editable graph to
+    expose, and `entity.transition_status` would raise `UnknownStatusEntity`
+    for it. The human-readable status KEY (`DRAFT`/`SCHEDULED`/`SENDING`/
+    `SENT`/`CANCELLED`/`FAILED`) is still exposed as a `record.status` fact
+    via a hand-written `FactDef` (raw `status_id` is an opaque row id, useless
+    to an author writing an IF condition) - `infer_facts` can only bind an
+    actual model column, so `register_facts=False` here and the fact source
+    is assembled by hand (mirrors `app/status_engine/registry.py`'s
+    `aggregate_facts` pattern for the same "derived, not a column" need)."""
+    from app.rule_engine.registry import FactDef, infer_facts, register_fact_source
+    from app.workflow_engine.entities import WorkflowEntity, register_workflow_entity
+
+    from .models import Broadcast, Status
+
+    entity = WorkflowEntity(
+        entity_type="omnichannel_broadcast",
+        label="Broadcast",
+        model=Broadcast,
+        fact_attrs=(
+            "name",
+            "channel_id",
+            "template_id",
+            "template_name",
+            "template_language",
+            "total_count",
+            "sent_count",
+            "delivered_count",
+            "read_count",
+            "failed_count",
+            "skipped_count",
+            "scheduled_at",
+            "started_at",
+            "finished_at",
+            "created_by_user_id",
+        ),
+        writable=frozenset(),
+        has_status=False,
+        module=MODULE_NAME,
+    )
+    register_workflow_entity(entity, register_facts=False)
+
+    def _status_key(obj: Broadcast, db) -> Optional[str]:
+        # Review round 1, S6: tenant-scope this stored-id resolution even on
+        # a read path (the polymorphic stored-id rule) - mirrors
+        # `broadcast_send_service._current_status_key`, which resolves the
+        # SAME `status_id` correctly scoped.
+        if not obj.status_id:
+            return None
+        row = (
+            db.query(Status.key)
+            .filter(Status.id == obj.status_id, Status.tenant_id == obj.tenant_id, Status.scope == "BROADCAST")
+            .first()
+        )
+        return row[0] if row else None
+
+    facts = list(infer_facts(Broadcast, list(entity.fact_attrs), prefix="record"))
+    facts.append(
+        FactDef(
+            key="record.status",
+            label="Status",
+            type="enum",
+            resolver=_status_key,
+            options=[
+                {"value": key, "label": key}
+                for key in ("DRAFT", "SCHEDULED", "SENDING", "SENT", "CANCELLED", "FAILED")
+            ],
+        )
+    )
+    register_fact_source("record:omnichannel_broadcast", "Broadcast record", facts)
+
+
 _TRIGGER_OUTPUTS = [
     NodeOutput("trigger.message.id", "Message · id"),
     NodeOutput("trigger.message.text", "Message · text"),
@@ -120,6 +204,7 @@ _TRIGGER_OUTPUTS = [
 def register_omnichannel_workflow_nodes() -> None:
     """Idempotent (``register_trigger``/``register_action`` are dict-set)."""
     _register_contact_entity()
+    _register_broadcast_entity()
     register_trigger(
         TriggerDef(
             key="omnichannel.message_received",

@@ -849,7 +849,8 @@ def test_migration_revision_id_and_parent_and_no_collision():
     down_revision = down_match.group(1)
 
     assert len(revision) <= 32
-    assert down_revision == "b7c1d2e3f4a5"
+    # Re-parented onto main's 82497a2fcea3 at the 215d94cc merge (plan 28 landed after A9/A4).
+    assert down_revision == "82497a2fcea3"
 
     # Collision grep - every OTHER migration file's revision id must differ,
     # including files that spell it `revision: str = "..."`.

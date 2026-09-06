@@ -232,8 +232,8 @@ restarted afterwards (PID 64904 -> 24933, cwd-verified) because the cycle drops 
 column (existing rows in those are lost - expected for a down/up on a lane DB).
 
 Migrations under test: core `teams_core_s428` (`alembic/versions/teams_core_s428_teams_core.py`,
-down_revision `b7c1d2e3f4a5`) and module `0011_omni_team_assignment`
-(`modules/omnichannel/alembic/versions/0011_omni_team_assignment.py`, down_revision
+down_revision `b7c1d2e3f4a5`) and module `0012_omni_team_assignment`
+(`modules/omnichannel/alembic/versions/0012_omni_team_assignment.py`, down_revision
 `0010_omni_contacts_module`). Both were head before and after.
 
 ```text
@@ -241,7 +241,7 @@ $ alembic current (core)
 teams_core_s428 (head)
 
 $ python /tmp/s28_module_mig.py current (omnichannel, version table app_omnichannel.alembic_version_omnichannel)
-0011_omni_team_assignment (head)
+0012_omni_team_assignment (head)
 
 $ psql schema check (before)
 teams|team_members|app_omnichannel.team_assignment_settings|1
@@ -259,7 +259,7 @@ $ alembic upgrade head (core)
 INFO  [alembic.runtime.migration] Running upgrade b7c1d2e3f4a5 -> teams_core_s428, Teams (core) - plan 28 S1, roadmap A8 D-A8-1.
 
 $ python /tmp/s28_module_mig.py upgrade head
-0011_omni_team_assignment (head)
+0012_omni_team_assignment (head)
 
 $ psql schema check (after up)
 teams|team_members|app_omnichannel.team_assignment_settings|1
@@ -268,6 +268,117 @@ teams|team_members|app_omnichannel.team_assignment_settings|1
 Schema-check columns: `teams | team_members | team_assignment_settings | contacts.assigned_team_id
 column count`. `<absent>`/`0` after the downgrade and all four back after the upgrade is the
 pass condition. Result: **PASS** (cycle clean, no residue, both version tables back at head).
+
+### 7.1 Post-renumber cycle (0012 on 0011_omni_broadcasts; core re-parented onto 82497a2fcea3)
+
+Run at the `origin/main` **215d94cc** merge (plan 29 A4 + plan 30 A9 landed first). Two renumberings
+were forced by main having moved:
+
+- **Module:** A4 took `0011_omni_broadcasts` on `0010_omni_contacts_module`, so plan 28's
+  `0011_omni_team_assignment` became **`0012_omni_team_assignment`** with
+  `down_revision = "0011_omni_broadcasts"`. The transcripts in §7 above were recorded BEFORE the
+  renumber (as `0011_omni_team_assignment` on `0010`); their ids were rewritten by the merge's
+  reference sweep, the DDL under test is byte-identical.
+- **Core:** main added the merge-revision `82497a2fcea3` (plan-01 `conn_erp_llm_s501` x plan-27
+  `b7c1d2e3f4a5`), so `alembic heads` showed TWO heads next to `teams_core_s428`.
+  `teams_core_s428.down_revision` is re-parented from `b7c1d2e3f4a5` to **`82497a2fcea3`** (the
+  `test_teams.py` migration-sanity test pins the new parent). Single head each, verified below.
+
+Order: the lane DB was still stamped `0011_omni_team_assignment`, which would be unresolvable once
+the file is renamed - so the module was downgraded to `0010` FIRST (pre-merge script dir), then the
+merge + rename, then `upgrade head` (runs A4's `0011_omni_broadcasts` and our `0012`), `downgrade
+0011_omni_broadcasts`, `upgrade head`; then the core `downgrade`/`upgrade head` (which first
+surfaced the two-head state - the failed `upgrade head` is left in the transcript deliberately -
+and was re-run clean after the re-parent). `:8007` restarted afterwards (PID 24933 -> 77371, then
+`scripts.bootstrap_db` to sync A4's `broadcasts.*` permission rows onto the lane DB).
+
+```text
+$ python /tmp/s28_module_mig.py current  (pre-merge, script dir still has 0011_omni_team_assignment)
+0011_omni_team_assignment (head)
+
+$ python /tmp/s28_module_mig.py downgrade 0010_omni_contacts_module  (BEFORE the merge/rename, so the stamped 0011_omni_team_assignment is still resolvable)
+0010_omni_contacts_module
+
+--- (merged origin/main 215d94cc; module migration renamed 0011_omni_team_assignment -> 0012_omni_team_assignment, down_revision 0011_omni_broadcasts) ---
+
+$ alembic heads (core)
+82497a2fcea3 (head)
+teams_core_s428 (head)
+
+$ python /tmp/s28_module_mig.py heads (module)
+0012_omni_team_assignment (head)
+current:
+0010_omni_contacts_module
+
+$ psql schema check (teams | team_members | team_assignment_settings | broadcasts | contacts.assigned_team_id col) - before
+teams|team_members|<absent>|<absent>|0
+
+$ python /tmp/s28_module_mig.py upgrade head   (runs 0011_omni_broadcasts + 0012_omni_team_assignment)
+0012_omni_team_assignment (head)
+
+$ psql schema check - after upgrade
+teams|team_members|app_omnichannel.team_assignment_settings|app_omnichannel.broadcasts|1
+
+$ python /tmp/s28_module_mig.py downgrade 0011_omni_broadcasts
+0011_omni_broadcasts
+
+$ psql schema check - after downgrade to 0011
+teams|team_members|<absent>|app_omnichannel.broadcasts|0
+
+$ python /tmp/s28_module_mig.py upgrade head
+0012_omni_team_assignment (head)
+
+$ psql schema check - after re-upgrade
+teams|team_members|app_omnichannel.team_assignment_settings|app_omnichannel.broadcasts|1
+
+$ alembic downgrade b7c1d2e3f4a5 (core, main moved)
+INFO  [alembic.runtime.migration] Running downgrade teams_core_s428 -> b7c1d2e3f4a5, Teams (core) - plan 28 S1, roadmap A8 D-A8-1.
+
+$ alembic current (core)
+b7c1d2e3f4a5 (branchpoint)
+
+$ alembic upgrade head (core)
+ERROR [alembic.util.messaging] Multiple head revisions are present for given argument 'head'; please specify a specific target revision, '<branchname>@head' to narrow to a specific head, or 'heads' for all heads
+FAILED: Multiple head revisions are present for given argument 'head'; please specify a specific target revision, '<branchname>@head' to narrow to a specific head, or 'heads' for all heads
+
+$ alembic current (core)
+b7c1d2e3f4a5 (branchpoint)
+
+$ psql schema check - final
+<absent>|<absent>|app_omnichannel.team_assignment_settings|app_omnichannel.broadcasts|1
+
+--- (core had TWO heads after the merge: main's 82497a2fcea3 merge-revision sits on b7c1d2e3f4a5 next to teams_core_s428; teams_core_s428 re-parented: down_revision = 82497a2fcea3) ---
+
+$ alembic heads (core, after re-parent)
+teams_core_s428 (head)
+
+$ alembic upgrade head (core: applies 82497a2fcea3 then teams_core_s428)
+INFO  [alembic.runtime.migration] Running upgrade run_heartbeat_s4 -> conn_erp_llm_s501, connections: restore the 'erp' carve-out on uq_connection_tenant_type (sprint-5/01)
+INFO  [alembic.runtime.migration] Running upgrade b7c1d2e3f4a5, conn_erp_llm_s501 -> 82497a2fcea3, merge plan 01 connection erp/llm head with plan 27 head
+INFO  [alembic.runtime.migration] Running upgrade 82497a2fcea3 -> teams_core_s428, Teams (core) - plan 28 S1, roadmap A8 D-A8-1.
+
+$ alembic current (core)
+teams_core_s428 (head)
+
+$ alembic downgrade 82497a2fcea3 (core)
+INFO  [alembic.runtime.migration] Running downgrade teams_core_s428 -> 82497a2fcea3, Teams (core) - plan 28 S1, roadmap A8 D-A8-1.
+
+$ psql schema check - after core down
+<absent>|<absent>|app_omnichannel.team_assignment_settings|app_omnichannel.broadcasts|1
+
+$ alembic upgrade head (core)
+INFO  [alembic.runtime.migration] Running upgrade 82497a2fcea3 -> teams_core_s428, Teams (core) - plan 28 S1, roadmap A8 D-A8-1.
+
+$ alembic current (core)
+teams_core_s428 (head)
+
+$ psql schema check - final
+teams|team_members|app_omnichannel.team_assignment_settings|app_omnichannel.broadcasts|1
+```
+
+Schema-check columns for this cycle: `teams | team_members | team_assignment_settings | broadcasts |
+contacts.assigned_team_id column count`. Result: **PASS** - module `0012_omni_team_assignment
+(head)`, core `teams_core_s428 (head)`, ONE head each, all objects back after the final upgrade.
 
 ## 8. Round 2 verification (commit `c6706b3c`)
 

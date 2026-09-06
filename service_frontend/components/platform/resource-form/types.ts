@@ -81,6 +81,13 @@ export interface ResourceFormConfig<T> {
   isDirty: boolean;
   /** Commit edits. Return false to stay in edit mode (validation failed). */
   onSave: () => Promise<boolean> | boolean;
+  /**
+   * Withhold the Save/Create button while a REQUIRED pick is still missing
+   * (foolproof-UI: a create form whose only input is a picker must not offer a
+   * Create that is guaranteed to fail). Distinct from `isDirty`, which gates
+   * the unsaved-changes guard, not the button.
+   */
+  saveDisabled?: boolean;
   /** Revert edits (RHF reset). */
   onCancel: () => void;
 

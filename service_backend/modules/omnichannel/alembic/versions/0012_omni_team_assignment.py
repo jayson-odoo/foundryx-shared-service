@@ -13,15 +13,15 @@ must renumber its migration to `0012`, rebase `down_revision` onto the other's
 tip, and bump the manifest to `0.6.0` - noted here so the merging agent does
 not have to re-derive it from scratch.
 
-Revision ID: 0011_omni_team_assignment
+Revision ID: 0012_omni_team_assignment
 Revises: 0010_omni_contacts_module
 Create Date: 2026-09-06
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0011_omni_team_assignment"
-down_revision = "0010_omni_contacts_module"
+revision = "0012_omni_team_assignment"
+down_revision = "0011_omni_broadcasts"
 branch_labels = None
 depends_on = None
 

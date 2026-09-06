@@ -119,7 +119,7 @@ IDs: `AC-TEM-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
 
 ## Slice C - Module backend: team assignment + strategies
 
-- **AC-TEM-18 [BE]** Given the module migration `0011_omni_team_assignment`, then it adds
+- **AC-TEM-18 [BE]** Given the module migration `0012_omni_team_assignment`, then it adds
   `contacts.assigned_team_id` (String, nullable, indexed) and creates `team_assignment_settings`
   (`id`, `tenant_id`, `workspace_id`, `team_id`, `strategy`, `last_assigned_user_id`, `created_at`,
   `updated_at`; unique `(workspace_id, team_id)`); it is inspector-guarded and idempotent, its

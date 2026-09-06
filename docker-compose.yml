@@ -61,6 +61,13 @@ x-backend-base: &backend-base
     redis:
       condition: service_started
   restart: unless-stopped
+  # `host.docker.internal` -> the compose network gateway (the HOST). Backend +
+  # workers dial host-side relays through it (e.g. the socat relay that carries
+  # the Sorento AutoCount SQL connection over the host's ZeroTier link - see
+  # documentation/ops/sorento-sql-relay.md). A NAME, so the integration config
+  # never embeds a Docker-assigned IP.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   # NOTE: the `backend` network alias is added ONLY on the API colors below, not
   # here - otherwise the workers/beat would also answer to `backend:8001` and the
   # frontend's BACKEND_API_URL could resolve to a process with no HTTP server.
@@ -257,3 +264,12 @@ volumes:
 networks:
   foundryx_ss_network:
     driver: bridge
+    # PINNED so a `docker compose down` / network recreate yields the SAME
+    # gateway (172.21.0.1). Host-side services bind to that gateway (the
+    # Sorento SQL relay) and its firewall rule is keyed on this subnet - a
+    # Docker-chosen pool address would silently move both. Matches the subnet
+    # prod was already given by the default pool (verified 2026-09-04).
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+          gateway: 172.21.0.1

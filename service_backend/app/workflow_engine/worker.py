@@ -49,6 +49,11 @@ celery_app.conf.beat_schedule = {
     # self-reschedule was lost to a crash (omnichannel Slice 4). Defined in this
     # worker (the sole beat host); guarded so a missing module is a no-op.
     "retry-due-webhooks": {"task": "webhooks.retry_due", "schedule": 60.0},
+    # Scheduled-broadcast sweep (plan 29 S2b, AC-BRD-42) - starts every
+    # SCHEDULED broadcast whose `scheduledAt` has passed and reconciles any
+    # broadcast stuck in SENDING. Same module-absence guard as the webhook
+    # retry tick above (this worker is the sole beat host).
+    "broadcasts-due": {"task": "omnichannel.broadcasts_due", "schedule": 60.0},
     # Meetings calendar sync (sprint-5 S0) - a new event with a conference link
     # must surface within 60 s, so this is a minute tick like the rest. It only
     # enqueues for tenants that have the module active AND someone opted in.
@@ -198,6 +203,28 @@ def retry_due_webhooks_task() -> dict:
         logger.exception("webhook retry tick failed")
         db.rollback()
         return {"redriven": 0}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="omnichannel.broadcasts_due")
+def broadcasts_due_task() -> dict:
+    """Scheduled-broadcast beat tick (plan 29 S2b, AC-BRD-42). Failure-
+    isolated; a no-op when the omnichannel module is absent."""
+    from app.database import SessionLocal
+
+    try:
+        from modules.omnichannel.services.broadcast_send_service import run_due_broadcasts
+    except ImportError:
+        return {"started": 0, "reconciled": 0, "finalized": 0}
+
+    db = SessionLocal()
+    try:
+        return run_due_broadcasts(db)
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("broadcasts-due tick failed")
+        db.rollback()
+        return {"started": 0, "reconciled": 0, "finalized": 0}
     finally:
         db.close()
 

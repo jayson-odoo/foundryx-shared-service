@@ -217,6 +217,7 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
     (event: ConversationSocketEvent) => {
       if (event.type === 'message.status') return; // tick updates live in the drawer
       if (event.type === 'message.reaction') return; // chips update in the drawer, not the list
+      if (event.type === 'broadcast.updated') return; // consumed by the broadcast detail view only
       // F2: the WS subscription is scoped per-workspace server-side, but a
       // stale/reused connection (or a mock/test double with no server-side
       // room filtering) could still deliver a foreign workspace's event -
