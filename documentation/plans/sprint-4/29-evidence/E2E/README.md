@@ -250,3 +250,103 @@ segment `E2E Segment R 20260906T085024Z`; broadcasts named `E2E broadcast 202609
 `E2E cancel probe 20260906T085024Z*`, `E2E rbac scheduled 20260906T085024Z`,
 `E2E malformed-filter probe 20260906T085024Z` (D-4 repro, left DRAFT, never sent). All names are
 timestamped, so a re-run does not collide. Local DB only - no code, migration or seed changed.
+
+---
+
+# Round 2 - re-run on the fix commit `c491d4a9`
+
+- **Commit under test:** `c491d4a9` (`fix(omnichannel): plan 29 review round 1 - ...`), tree **clean** at
+  start AND end of the run (the round-1 mixed-tree caveat no longer applies).
+- **Servers (rebuilt on `c491d4a9` by the coordinator, not restarted by this run):** backend `:8008`
+  pid 29426 (cwd = this worktree's `service_backend`, s29 DB + `CORS_ORIGIN_REGEX`), frontend `:3007`
+  pid 30927 (fresh `.next` of `c491d4a9`, cwd = this worktree's `service_frontend`).
+- **Browser session:** `agent-browser --session s29t2` (closed with `close`, never `close --all`).
+- **Timestamps:** run 2026-09-06 14:00-14:25 UTC (22:00-22:25 local); names carry `20260906T140000Z`.
+- **DB note:** the lane DB had been cycled (FK drops + migration down/up) - the round-1 tenants
+  (`p29-*`) and users survived, the round-1 broadcasts did not; new rows were created as needed.
+
+## Suites (targeted, once)
+
+- `pytest -q tests/test_omnichannel_broadcasts.py tests/test_omnichannel_broadcasts_send.py
+  tests/test_omnichannel_broadcasts_receipts.py tests/test_omnichannel_broadcasts_workflow_entity.py
+  tests/test_omnichannel_deferred_actions.py` -> **138 passed** (172.95s).
+- `npx vitest run "app/(protected)/omnichannel/broadcasts" hooks/use-contact-filter-fields.test.ts
+  hooks/use-contact-picker.test.ts services/broadcast-service.mock.test.ts` -> **12 files, 81 passed**.
+
+## Setup calls (disclosed)
+
+1. `POST /auth/login` for the demo admin -> JWT for the curl probes.
+2. Two drafts created over the API for the row-delete evidence (the round-1 draft was gone):
+   `R2 valid-filter control 20260906T140000Z` (also the D-4 control, 201) and
+   `R2 delete-undo probe 20260906T140000Z`.
+3. The D-4 / S3 curl probes below.
+
+## Journey (real clicks; 1280px unless noted)
+
+| # | Screenshot | What it shows |
+|---|---|---|
+| R1 | `r2-01-inbox-unreplied-before-1280.png` | Sidebar > Inbox > **Unreplied** switch on: exactly one thread, `Phase2Probe Unreplied` (the only contact with `last_agent_message_at IS NULL`). |
+| R2 | `r2-02-list-row-actions-column-1280.png` | Sidebar > Broadcasts. **D-1 fixed**: the table now carries a trailing actions column (empty header, one `Actions` button per row - 6 of 6). |
+| R3 | `r2-03-filter-field-picker-contact-fields-1280.png` | New broadcast > Audience source **Filter** > Build filter > field picker now lists the contact filter columns: Name, Phone, Email, Language, Country, Priority, Assignee, Channel, Lifecycle, Tags, Last message, Created (no `status`). **D-3 fixed.** |
+| R4 | `r2-04-filter-audience-count-resolved-1280.png` | `Name contains a` > Apply -> `POST .../audience-preview` **200**, chip "1 condition(s)", Review reads **6 recipient(s)** (all six contacts have an "a"). |
+| R5 | `r2-05-empty-static-binding-blocked-1280.png`, `r2-05b-save-blocked-no-visible-error-1280.png` | Channel + template picked, slot 1 = Contact field / First name / fallback `there`, slot 2 = **Static text left empty** > **Save broadcast**: no `POST` fires and the page stays on `/new` (the zod `min(1, 'Static text is required.')` guard blocks it, S3) - **but no field error is rendered and no toast fires**; `.text-destructive` is empty, `aria-invalid` count 0. Filling the slot and saving again -> `201` and navigation, so the submit path itself is fine. Recorded as observation O-4 (UX gap, not a guard failure). |
+| R6 | `r2-06-test-send-picker-server-search-1280.png` | Detail > Edit > **Send test message** > contact combobox: the initial page is `GET .../contacts?page=0&pageSize=50`; typing `Ais` fires `GET .../contacts?page=0&pageSize=50&search=Ais` and the list narrows to `Aisha Abdullah`. Server-side search (S2). |
+| R7 | `r2-07-contacts-picker-server-search-1280.png` | Audience source **Selected contacts** > picker: same `&search=Ais` call, same narrowing. (The tenant has 6 contacts, under the 50-row first page, so the narrowing is the evidence.) |
+| R8 | `r2-08-sent-6-recipients-1280.png` | Select all (6) > **Send now** -> `Sent`, Total 6 / Sent 6 / 0 / 0 / 0 / 0. |
+| R9 | `r2-09-inbox-unreplied-after-1280.png` | Sidebar > Inbox > Unreplied on again: `Phase2Probe Unreplied` is **still listed** (its preview now shows the broadcast text, "now"); `psql` confirms `last_agent_message_at IS NULL` after the send. **B2 verified.** |
+| R10 | `r2-13-row-actions-draft-1280.png` (+ snapshot text) | Row `Actions` on a Draft -> menu `Edit | Send now | Duplicate | Delete`; on a Sent row -> `Duplicate` only; on a Scheduled row -> `Send now | Duplicate | Cancel`. (Radix menu portals do not survive the screenshot call; the menu contents are the recorded accessibility-snapshot text.) |
+| R11 | - | Row `Actions` > **Duplicate** on the Sent broadcast -> `POST .../{id}/duplicate 201`, navigates to the copy in edit mode; `Schedule for 2026-09-07 10:00` local > **Schedule broadcast** -> `SCHEDULED`, stored `2026-09-07 02:00 UTC`. |
+| R12 | `r2-11-row-actions-scheduled-cancel-1280.png`, `r2-12-row-cancel-result-1280.png` | Back on the list, the Scheduled row's `Actions` > **Cancel** -> `POST .../cancel 200`, row flips to **Cancelled**, toast "Broadcast cancelled.", `psql`: `CANCELLED`, total 0, sent 0. **AC-BRD-54 clause (a) now performed from the ROW action.** |
+| R13 | `r2-14-row-delete-deferred-toast-1280.png` | Draft row `Actions` > **Delete** -> no confirm dialog; toast **"Deleting in 9s / Cancel"** with a countdown bar; `POST /api/v1/pending-actions 202`. Left to lapse: the row disappears, `pending_actions` row `broadcasts.delete` = **committed**, `broadcasts` row gone. |
+| R14 | `r2-15-row-delete-undone-draft-survives-1280.png` | Second draft: Delete > toast "Deleting in 10s" > **Cancel** inside the window -> `POST /api/v1/pending-actions/{id}/cancel 200`, toast gone, row still present as Draft, `pending_actions` row = **cancelled**, `broadcasts` row intact. |
+| R15 | `r2-16-list-row-actions-375.png`, `r2-16b-list-row-actions-scrolled-375.png`, `r2-17-filter-builder-375.png` | 375px: `document.documentElement.scrollWidth === 375` on the list and the builder; the actions column sits at the end of the table's own horizontal scroller (visible once scrolled); the filter builder popover fits the viewport. |
+
+## D-4 curl probes (round 2)
+
+```
+POST .../audience-preview  {"audience":{"kind":"filter","filter":{"kind":"group","combinator":"and","rules":[]}}}
+  -> 422 {"detail":{"fieldErrors":{"audience.filter":"Add at least one condition."}}}
+POST .../audience-preview  {... "conditions":[...]}   (unknown key)
+  -> 422 {"detail":[{"type":"extra_forbidden","loc":["body","audience","filter","conditions"],"msg":"Extra inputs are not permitted", ...}]}
+POST .../audience-preview  {... "zzz":[1]}            (unknown key)
+  -> 422 extra_forbidden (same shape)
+POST .../audience-preview  {... "rules":[{"kind":"condition","field":"firstName","operator":"contains","value":"Sarah"}]}
+  -> 200 {"count":1}                                  (control)
+POST .../broadcasts  (empty group)                    -> 422 {"fieldErrors":{"audience.filter":"Add at least one condition."}}
+POST .../broadcasts  (unknown key "conditions")       -> 422 extra_forbidden
+POST .../broadcasts  (valid filter, control)          -> 201  "R2 valid-filter control 20260906T140000Z"
+POST .../broadcasts  (static binding text "")         -> 422 {"fieldErrors":{"bindings.body.0.text":"Static text is required."}}   (S3, server side)
+```
+
+Note the two 422 shapes: the **empty group** is a domain rule and returns the house
+`{fieldErrors}` map; an **unknown key** is rejected earlier by Pydantic's `extra="forbid"` and returns
+FastAPI's standard validation body. Both are 422 and neither resolves to the workspace any more.
+
+## Console / errors (round 2)
+
+`agent-browser --session s29t2 errors` -> empty. `console` -> only the pre-existing Radix
+`Missing 'Description'` warning from the test-send dialog.
+
+## Round-2 findings
+
+- **D-1, D-3, D-4 verified fixed** on `c491d4a9` (rows R2, R3/R4, and the probes above).
+- **D-5 / D-6 verified fixed** by the named tests: backend
+  `test_gateway_router_carries_no_broadcast_surface`, `test_gateway_rio_schemas_carry_no_broadcast_field`,
+  `test_consumer_integration_guide_carries_no_broadcast_mention`
+  (`tests/test_omnichannel_broadcasts_workflow_entity.py`); frontend
+  `broadcast-form-sections.test.tsx` ("excludes a non-approved (PENDING) template", "excludes an
+  APPROVED template with a media header (IMAGE/VIDEO/DOCUMENT)", "returns no templates and makes no
+  call while no channel is selected", "resolves to an empty list ... when the service call rejects") and
+  `services/broadcast-service.mock.test.ts` (10 tests over every seeded status view, 404/409/422
+  paths, duplicate).
+- **O-4 (new, minor UX):** the client-side "Static text is required." guard blocks the save with **no
+  visible feedback** - `BindingEditor` receives no `error` prop and `form.handleSubmit` has no
+  `onInvalid` handler, so the zod error lands in `formState.errors.bindings.body[n].text` and is
+  never rendered (row R5). The server-side 422 for the same case does carry the house `fieldErrors`
+  shape. Backlog candidate.
+
+## Residue (round 2)
+
+Broadcasts `R2 broadcast 20260906T140000Z` (SENT, 6), `... (copy)` (CANCELLED),
+`R2 delete-undo probe 20260906T140000Z` (DRAFT); `R2 valid-filter control ...` was deleted by the
+committed deferred delete. `pending_actions`: one `committed`, one `cancelled`. Local DB only.
