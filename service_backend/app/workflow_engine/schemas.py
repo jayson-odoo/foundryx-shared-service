@@ -187,10 +187,23 @@ def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
                 label = _node_label(n)
                 issues.append(f'"{label}" is not connected to the trigger.')
 
-    # Required config per node (catalog-driven).
+    # Required config per node (catalog-driven). An unregistered node type
+    # (plan sprint-4/31 S1 - S0 found publish silently accepted one) blocks
+    # publish outright rather than skipping its required-config checks -
+    # a node whose type no longer resolves in the trigger/action registry
+    # would otherwise publish successfully and fail at run time.
     for n in doc.nodes:
+        if n.kind == "if":
+            # The IF node is a structural kind the executor branches on
+            # directly (`node.kind == "if"`) - it is deliberately NEVER a
+            # catalog entry, so it is exempt from the unregistered-type gate
+            # below (a real trigger/action always resolves through the
+            # registry; "if" never will).
+            continue
         entry = get_trigger(n.type) if n.kind == "trigger" else get_action(n.type)
         if entry is None:
+            label = _node_label(n)
+            issues.append(f'"{label}" has an unrecognized node type ("{n.type}").')
             continue
         for field in entry.fields:
             if field.show_when and n.config.get(field.show_when[0]) != field.show_when[1]:

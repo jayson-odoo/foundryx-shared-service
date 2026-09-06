@@ -208,6 +208,7 @@ class InboundService:
                 event_service.record(
                     self.db, contact, event_type,
                     from_value=prev_status_id, to_value=open_status_id,
+                    channel_id=channel.id,
                 )
         contact.status_id = open_status_id
         contact.csw_expires_at = now + CSW_WINDOW
@@ -253,6 +254,19 @@ class InboundService:
             name = " ".join(
                 part for part in [contact.first_name, contact.last_name] if part
             ).strip()
+            # AC-WFP-14: "first message only" - no PRIOR contact message exists
+            # for this contact before the one just inserted (`row`, already
+            # flushed above so it has an id to exclude).
+            is_first_message = (
+                self.db.query(ConversationMessage.id)
+                .filter(
+                    ConversationMessage.contact_id == contact.id,
+                    ConversationMessage.sender_type == "CONTACT",
+                    ConversationMessage.id != row.id,
+                )
+                .first()
+                is None
+            )
             notify_entity_event(
                 self.db,
                 "omnichannel_message",
@@ -272,6 +286,7 @@ class InboundService:
                     "messageText": row.body,
                     "mediaUrl": signed_media_url(row.id) if row.media_key else None,
                     "mediaMime": row.media_mime,
+                    "isFirstMessage": is_first_message,
                 },
             )
         except Exception:  # noqa: BLE001 - a broken workflow never drops a message
@@ -375,7 +390,9 @@ class InboundService:
             self.db.flush()
             # `opened` event (plan 27 A3, AC-IVE-03) - exactly one per new
             # thread, `to_value` = the OPEN status just assigned above.
-            event_service.record(self.db, contact, "opened", to_value=contact.status_id)
+            event_service.record(
+                self.db, contact, "opened", to_value=contact.status_id, channel_id=channel.id
+            )
 
         self.db.add(
             ContactChannelIdentity(

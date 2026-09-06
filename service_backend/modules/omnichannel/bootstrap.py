@@ -513,6 +513,10 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
       and the seeded close reasons per workspace (plan 27 A3 S2, AC-IVE-27) -
       both idempotent, called unconditionally so re-running `update` (or a
       tenant already fully migrated) is a safe no-op.
+
+    0.4.0 -> 0.4.5 (plan sprint-4/31 S1): adds `workflow_contact_fires`
+    (migration `0013_omni_workflow_fires`) - a brand-new, empty-until-written
+    table with no existing rows to backfill.
     """
     from .repositories.contact_repository import ContactRepository
     from .services import close_reason_service, event_service, lifecycle_service

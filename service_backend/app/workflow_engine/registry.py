@@ -48,6 +48,21 @@ class TriggerTestDataError(Exception):
     """A test-trigger selection failed structural or tenant validation."""
 
 
+# Registry-driven dispatch (plan sprint-4/31, D-A5-1/D-A5-4, closes A4's F3):
+# a TriggerDef declares everything ``_trigger_types_for``/publish denorm/
+# ``_passes_refine``/"trigger once per contact" need, so a NEW module trigger
+# requires NO further core edit (AC-WFP-07).
+RefineFn = Callable[[Dict[str, Any], Dict[str, Any]], bool]
+# (db, workflow, trigger_config, event) -> True = create the run, False = skip
+# (module-owned "trigger once per contact" claim, D-A5-4 - no core table).
+FireGuardFn = Callable[[Session, Any, Dict[str, Any], Dict[str, Any]], bool]
+# (trigger_config, event) -> extra ``trigger.<dotted key>`` context (merged by
+# the executor's generic ``payload["eventData"]`` flattening) - lets a
+# registry-driven trigger add context the fixed payload keys don't cover
+# without a per-trigger hardcoded branch in the executor.
+ContextExtraFn = Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]]
+
+
 @dataclass(frozen=True)
 class TriggerDef:
     key: str
@@ -60,6 +75,19 @@ class TriggerDef:
     module: str = "core"
     test_metadata_provider: Optional[TriggerTestMetadataProvider] = None
     test_payload_builder: Optional[TriggerTestPayloadBuilder] = None
+    # The domain-event ``action`` this trigger listens to (``emit_entity_event``/
+    # ``notify_entity_event``'s second arg) - drives ``_trigger_types_for``.
+    event_action: Optional[str] = None
+    # Denormalized ``Workflow.trigger_entity_type`` at publish (only needed when
+    # it is a FIXED constant, not the author-picked ``config.entityType`` the
+    # generic ``entity.*`` triggers already use).
+    event_entity_type: Optional[str] = None
+    # In-Python refinement the indexed candidate query can't do.
+    refine: Optional[RefineFn] = None
+    # "Trigger once per contact"-style guards, called once per candidate
+    # workflow right before a run would be created.
+    fire_guard: Optional[FireGuardFn] = None
+    context_extra: Optional[ContextExtraFn] = None
 
 
 # An action executor: (db, tenant_id, config, ctx) -> output dict. ``ctx`` is the
@@ -81,6 +109,13 @@ class ActionDef:
     requires_connection: Optional[str] = None  # 'email' | 'storage'
     destructive: bool = False
     module: str = "core"
+    # Non-empty = a BRANCHING action (mirrors the IF node): the executor
+    # activates only the outgoing edges whose ``sourcePort`` matches the
+    # executor output's ``branch`` key (plan sprint-4/31 S2+, D-A5-14).
+    ports: Tuple[str, ...] = ()
+    # Optional extra permission gate beyond ``workflows.manage`` (e.g.
+    # ``workflows.http``), checked at publish like ``workflows.code``.
+    permission: Optional[str] = None
 
 
 _TRIGGERS: Dict[str, TriggerDef] = {}
@@ -116,6 +151,37 @@ def list_actions() -> List[ActionDef]:
 
 
 # ---- core nodes ("module zero") ----
+
+
+# ── registry-driven refine callables (plan sprint-4/31, closes A4's F3) ─────
+# Moved out of ``entity_events._passes_refine``'s old if-chain (AC-WFP-07) so
+# a module trigger's refine logic lives with its own TriggerDef.
+
+
+def _refine_field_changed(config: Dict[str, Any], ev: Dict[str, Any]) -> bool:
+    from app.workflow_engine.entities import attr_for
+
+    wanted = config.get("field")
+    if not wanted:
+        return False
+    # The picker stores a camelCase field key; most emitters' change-diff keys
+    # are snake_case model attrs, but some (omnichannel_contact, AC-CDM-23)
+    # deliberately emit wire camelCase (incl. dotted `customFields.<key>`).
+    # Canonicalize BOTH sides through the SAME `attr_for` (plan-25 B7).
+    wanted_attr = attr_for(str(wanted))
+    return any(attr_for(str(key)) == wanted_attr for key in (ev.get("changes") or {}))
+
+
+def _refine_status_changed(config: Dict[str, Any], ev: Dict[str, Any]) -> bool:
+    extra = ev.get("extra") or {}
+    from_ok = not config.get("fromStatus") or config.get("fromStatus") == extra.get("from_status_id")
+    to_ok = not config.get("toStatus") or config.get("toStatus") == extra.get("to_status_id")
+    return from_ok and to_ok
+
+
+def _refine_form_submitted(config: Dict[str, Any], ev: Dict[str, Any]) -> bool:
+    wanted = config.get("formId")
+    return bool(wanted) and wanted == (ev.get("extra") or {}).get("formId")
 
 
 _ENTITY_TRIGGER_OUTPUTS = [
@@ -199,6 +265,7 @@ def _register_core() -> None:
                 NodeField(key="field", label="Field", type="field", required=True),
             ],
             outputs=[*_ENTITY_TRIGGER_OUTPUTS, NodeOutput("trigger.changedFields", "Changed fields")],
+            refine=_refine_field_changed,
         )
     )
     register_trigger(
@@ -219,6 +286,7 @@ def _register_core() -> None:
                 NodeOutput("trigger.toStatus", "To status"),
                 NodeOutput("trigger.actor.name", "Actor name"),
             ],
+            refine=_refine_status_changed,
         )
     )
     # Plan sprint-4/27 (A3, D-A3-5/D-A3-10) - a GENERIC "run this workflow
@@ -271,6 +339,9 @@ def _register_core() -> None:
                 NodeOutput("trigger.formId", "Form id"),
                 NodeOutput("trigger.submissionId", "Submission id"),
             ],
+            event_action="submitted",
+            event_entity_type="form_submission",
+            refine=_refine_form_submitted,
         )
     )
     register_action(

@@ -278,26 +278,27 @@ def _discard(session: Session) -> None:
     session.info.pop(_BUFFER, None)
 
 
+# The core CRUD event bus's fixed action->type mapping (plan sprint-2/09) -
+# this stays hardcoded (it IS the core entity bus, not a registry item).
+# Every OTHER action (form.submitted, omnichannel.*, ...) resolves from the
+# registry via `TriggerDef.event_action` (plan sprint-4/31, closes A4's F3) -
+# a newly registered module trigger needs NO further edit here (AC-WFP-07).
+_CORE_ACTION_TRIGGER_TYPES: Dict[str, List[str]] = {
+    "created": ["entity.created"],
+    "deleted": ["entity.deleted"],
+    "updated": ["entity.updated", "entity.field_changed"],
+    "status_changed": ["entity.status_changed"],
+}
+
+
 def _trigger_types_for(action: str) -> List[str]:
-    if action == "created":
-        return ["entity.created"]
-    if action == "deleted":
-        return ["entity.deleted"]
-    if action == "updated":
-        return ["entity.updated", "entity.field_changed"]
-    if action == "status_changed":
-        return ["entity.status_changed"]
-    if action == "submitted":
-        # Form-engine submission (plan sprint-3/02). The denormalized
-        # trigger_entity_type is the constant "form_submission"; per-form
-        # selectivity is refined by formId below.
-        return ["form.submitted"]
-    if action == "received":
-        # Omnichannel inbound message (plan sprint-4/17, module omnichannel).
-        # The denormalized trigger_entity_type is the constant
-        # "omnichannel_message"; per-channel selectivity is refined below.
-        return ["omnichannel.message_received"]
-    return []
+    from app.workflow_engine.registry import list_triggers
+
+    types = list(_CORE_ACTION_TRIGGER_TYPES.get(action, []))
+    for trig in list_triggers():
+        if trig.event_action == action and trig.key not in types:
+            types.append(trig.key)
+    return types
 
 
 def _published_trigger_config(session: Session, wf: Workflow) -> Dict[str, Any]:
@@ -317,36 +318,16 @@ def _published_trigger_config(session: Session, wf: Workflow) -> Dict[str, Any]:
 
 
 def _passes_refine(config: Dict[str, Any], ev: Dict[str, Any], trigger_type: str) -> bool:
-    """In-Python refinement the indexed query can't do (D4)."""
-    from app.workflow_engine.entities import attr_for
+    """In-Python refinement the indexed query can't do (D4) - registry-driven
+    (plan sprint-4/31, closes A4's F3): delegates to the matched TriggerDef's
+    own ``refine`` callable. A trigger with no ``refine`` always passes (the
+    old behaviour for `entity.created`/`entity.deleted`/`manual`/... )."""
+    from app.workflow_engine.registry import get_trigger
 
-    if trigger_type == "entity.field_changed":
-        wanted = config.get("field")
-        if not wanted:
-            return False
-        # The picker stores a camelCase field key; MOST emitters' change-diff
-        # keys are snake_case model attrs, but some (e.g. omnichannel_contact,
-        # AC-CDM-23) deliberately emit WIRE camelCase keys instead (incl.
-        # dotted `customFields.<key>`). Canonicalize BOTH sides through the
-        # SAME `attr_for` so this matches either convention (B7, plan-25
-        # round-3 codex triage) - comparing only one side silently never
-        # matched the camelCase emitters.
-        wanted_attr = attr_for(str(wanted))
-        return any(attr_for(str(key)) == wanted_attr for key in (ev.get("changes") or {}))
-    if trigger_type == "entity.status_changed":
-        extra = ev.get("extra") or {}
-        from_ok = not config.get("fromStatus") or config.get("fromStatus") == extra.get("from_status_id")
-        to_ok = not config.get("toStatus") or config.get("toStatus") == extra.get("to_status_id")
-        return from_ok and to_ok
-    if trigger_type == "form.submitted":
-        # Per-form selectivity: the picked formId must match the submitted form.
-        wanted = config.get("formId")
-        return bool(wanted) and wanted == (ev.get("extra") or {}).get("formId")
-    if trigger_type == "omnichannel.message_received":
-        # Per-channel selectivity: unset config = fires for any channel.
-        wanted = config.get("channelId")
-        return not wanted or wanted == (ev.get("extra") or {}).get("channelId")
-    return True
+    trig = get_trigger(trigger_type)
+    if trig is None or trig.refine is None:
+        return True
+    return trig.refine(config, ev)
 
 
 def _origin_chain(session: Session, source: Optional[Dict[str, Any]]):
@@ -365,6 +346,8 @@ def _origin_chain(session: Session, source: Optional[Dict[str, Any]]):
 
 
 def _match_and_enqueue(session: Session, ev: Dict[str, Any]) -> None:
+    from app.workflow_engine.registry import get_trigger
+
     types = _trigger_types_for(ev["action"])
     if not types:
         return
@@ -395,14 +378,32 @@ def _match_and_enqueue(session: Session, ev: Dict[str, Any]) -> None:
         if new_depth > MAX_RUN_DEPTH:
             logger.warning("loop guard tripped: workflow %s at depth %s", wf.id, new_depth)
             continue
+        trig_def = get_trigger(wf.trigger_type)
+        if trig_def is not None and trig_def.fire_guard is not None:
+            # "Trigger once per contact" (D-A5-4, AC-WFP-15) - a module-owned
+            # atomic claim. A losing race (concurrent duplicate) skips this
+            # candidate silently, never surfacing as a request error.
+            if not trig_def.fire_guard(session, wf, config, ev):
+                continue
         _create_run(session, wf, ev, depth=new_depth)
 
 
-def build_event_trigger_payload(ev: Dict[str, Any]) -> Dict[str, Any]:
+def build_event_trigger_payload(
+    ev: Dict[str, Any],
+    *,
+    trigger_type: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Canonical event envelope consumed by the executor.
 
     Production dispatch and module-owned synthetic test builders share this
     function so their ``trigger.*`` context cannot drift.
+
+    ``trigger_type``/``config`` (plan sprint-4/31, optional - callers that
+    omit them get the unchanged base payload) let a registry-driven trigger
+    contribute EXTRA ``trigger.*`` context via ``TriggerDef.context_extra``
+    without a per-trigger hardcoded branch here - the executor flattens the
+    result generically (``payload["eventData"]``, one nesting level).
     """
     actor = ev.get("actor") or {}
     extra = ev.get("extra") or {}
@@ -427,6 +428,12 @@ def build_event_trigger_payload(ev: Dict[str, Any]) -> Dict[str, Any]:
         # Omnichannel inbound message (sprint-4/17) - the executor flattens
         # this into trigger.message.*/trigger.contact.*/trigger.channel.*.
         payload["omnichannel"] = extra
+    if trigger_type is not None:
+        from app.workflow_engine.registry import get_trigger
+
+        trig_def = get_trigger(trigger_type)
+        if trig_def is not None and trig_def.context_extra is not None:
+            payload["eventData"] = trig_def.context_extra(config or {}, ev)
     return payload
 
 
@@ -477,7 +484,8 @@ def create_run_for_event(
         # Automated/shortcut triggers may execute a Code-bearing version ONLY
         # when a permitted actor stamped it at publish (AC-SAR-68). Fail closed.
         raise CodeNotAuthorized()
-    payload = build_event_trigger_payload(ev)
+    trigger_config = _published_trigger_config(session, wf)
+    payload = build_event_trigger_payload(ev, trigger_type=wf.trigger_type, config=trigger_config)
     source = ev.get("source") or {}
     run = WorkflowRun(
         tenant_id=wf.tenant_id,

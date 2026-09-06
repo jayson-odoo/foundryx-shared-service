@@ -358,15 +358,16 @@ class WorkflowService:
         wf.trigger_type = trigger.type if trigger else None
         wf.trigger_entity_type = (trigger.config.get("entityType") if trigger else None)
         wf.trigger_action = (trigger.config.get("action") if trigger else None)
-        # form.submitted denormalizes to the constant entity type so the indexed
-        # match finds it; per-form selectivity is refined by config.formId at
-        # dispatch (sprint-3/02). The formId itself stays in the version config.
-        if trigger and trigger.type == "form.submitted":
-            wf.trigger_entity_type = "form_submission"
-        # Omnichannel inbound message (sprint-4/17) - same denormalization
-        # shape as form.submitted (per-channel selectivity stays in config).
-        if trigger and trigger.type == "omnichannel.message_received":
-            wf.trigger_entity_type = "omnichannel_message"
+        # Registry-driven override (plan sprint-4/31, AC-WFP-07/20, closes A4's
+        # F3): a trigger with a FIXED entity type (form.submitted, omnichannel.*)
+        # declares `TriggerDef.event_entity_type` so the indexed candidate query
+        # matches - replaces the old per-type if-chain (form.submitted /
+        # omnichannel.message_received). Author-picked `entity.*` triggers have
+        # no `event_entity_type` and keep using `config.entityType` above.
+        if trigger is not None:
+            trig_def = get_trigger(trigger.type)
+            if trig_def is not None and trig_def.event_entity_type:
+                wf.trigger_entity_type = trig_def.event_entity_type
         # Scheduled trigger: arm the next fire (cron interpreted in its tz → UTC).
         wf.next_run_at = None
         if trigger and trigger.type == "schedule.cron":
@@ -721,6 +722,7 @@ class WorkflowService:
             "connections": connections,
             "forms": self._form_options(tenant_id),
             "omnichannelChannels": self._omnichannel_channel_options(tenant_id),
+            "omnichannelWorkspaces": self._omnichannel_workspace_options(tenant_id),
             "codeRunnerAvailable": code_runner_available(),
             "codeCapabilities": list(CODE_CAPABILITIES),
         }
@@ -764,6 +766,90 @@ class WorkflowService:
             .all()
         )
         return [{"id": r.id, "name": r.name} for r in rows]
+
+    def _omnichannel_workspace_options(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Backs every omnichannel workspace-scoped picker (tags, contact
+        fields, lifecycle stages, close reasons, members) in ONE call
+        (plan sprint-4/31, AC-WFP-21). Guarded import - empty when the module
+        isn't present in the build; tenant-scoped throughout."""
+        try:
+            from modules.omnichannel.models import (
+                CloseReason,
+                ContactField,
+                ContactTag,
+                Workspace,
+                WorkspaceMember,
+            )
+            from modules.omnichannel.services import lifecycle_service
+        except ImportError:
+            return []
+        from app.models.status import Status as CoreStatus
+        from app.models.user import User
+
+        workspaces = (
+            self.db.query(Workspace)
+            .filter(Workspace.tenant_id == tenant_id, Workspace.is_trashed.is_(False))
+            .order_by(Workspace.name)
+            .all()
+        )
+        out: List[Dict[str, Any]] = []
+        for ws in workspaces:
+            tags = (
+                self.db.query(ContactTag.id, ContactTag.name)
+                .filter(ContactTag.tenant_id == tenant_id, ContactTag.workspace_id == ws.id)
+                .order_by(ContactTag.name)
+                .all()
+            )
+            fields = (
+                self.db.query(ContactField.key, ContactField.label)
+                .filter(ContactField.tenant_id == tenant_id, ContactField.workspace_id == ws.id)
+                .order_by(ContactField.label)
+                .all()
+            )
+            stages = (
+                self.db.query(CoreStatus.id, CoreStatus.label)
+                .filter(
+                    CoreStatus.tenant_id == tenant_id,
+                    CoreStatus.entity_type == lifecycle_service.ENTITY_TYPE,
+                    CoreStatus.scope_id == ws.id,
+                )
+                .order_by(CoreStatus.sort_order)
+                .all()
+            )
+            reasons = (
+                self.db.query(CloseReason.id, CloseReason.name)
+                .filter(
+                    CloseReason.tenant_id == tenant_id,
+                    CloseReason.workspace_id == ws.id,
+                    CloseReason.is_active.is_(True),
+                )
+                .order_by(CloseReason.name)
+                .all()
+            )
+            members = (
+                self.db.query(User.id, User.name, User.email)
+                .join(WorkspaceMember, WorkspaceMember.user_id == User.id)
+                .filter(
+                    WorkspaceMember.tenant_id == tenant_id,
+                    WorkspaceMember.workspace_id == ws.id,
+                )
+                .order_by(User.name)
+                .all()
+            )
+            out.append(
+                {
+                    "id": ws.id,
+                    "name": ws.name,
+                    "contactTags": [{"id": t.id, "name": t.name} for t in tags],
+                    "contactFields": [{"key": f.key, "label": f.label} for f in fields],
+                    "lifecycleStages": [{"id": s.id, "label": s.label} for s in stages],
+                    "closeReasons": [{"id": r.id, "name": r.name} for r in reasons],
+                    "members": [
+                        {"id": m.id, "name": m.name or m.email, "email": m.email} for m in members
+                    ],
+                }
+            )
+        return out
 
     def _ai_agent_options(self, tenant_id: str) -> List[Dict[str, Any]]:
         """Backs the AI Agent node's agent picker (sprint-4/17)."""

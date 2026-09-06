@@ -89,6 +89,12 @@ def _ctx_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         ctx["trigger.channel.id"] = oc.get("channelId")
         ctx["trigger.channel.name"] = oc.get("channelName")
         ctx["trigger.conversationId"] = oc.get("conversationId")
+        ctx["trigger.message.isFirstMessage"] = oc.get("isFirstMessage")
+    # Registry-driven extra context (plan sprint-4/31, `TriggerDef.context_extra`)
+    # - one nesting level, camelCase preserved, so a new registered trigger
+    # never needs its own hardcoded block here (AC-WFP-07/08..14).
+    for key, value in (payload.get("eventData") or {}).items():
+        ctx[f"trigger.{key}"] = value
     return ctx
 
 

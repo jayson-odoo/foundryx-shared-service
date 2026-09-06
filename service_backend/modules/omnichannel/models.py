@@ -668,6 +668,32 @@ class ExternalAgent(OmniBase):
     )
 
 
+class WorkflowContactFire(OmniBase):
+    """Trigger-once-per-contact claim (plan sprint-4/31, D-A5-4). One row per
+    (tenant, workflow, contact) that has ALREADY fired a
+    `triggerOncePerContact` trigger for that workflow - a later matching event
+    for the same pair creates NO run. The unique constraint is the race-free
+    claim: two concurrent events insert-race to a single winner (a losing
+    `IntegrityError` is caught by `workflow_fire_store.claim_fire`, never
+    surfaced as a request error, AC-WFP-15). Survives unpublish/republish
+    (never touched by either); wiped by `uninstall_tenant`'s generic per-table
+    tenant sweep and by the `workflow` `deleted` event subscriber below."""
+
+    __tablename__ = "workflow_contact_fires"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workflow_id = Column(String, nullable=False, index=True)
+    contact_id = Column(String, nullable=False, index=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "workflow_id", "contact_id", name="uq_workflow_contact_fire"
+        ),
+    )
+
+
 class EmbedJti(OmniBase):
     """Single-use ledger for embed assertion ``jti`` values - plan 11H Slice 2
     (AC-11H-05). An assertion may be exchanged at ``/embed/session`` exactly once;
