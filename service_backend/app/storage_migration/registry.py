@@ -240,6 +240,10 @@ _NON_STORAGE_KEY_COLUMNS = frozenset(
         # of related runs / Agent-state rows (workflow_runs, workflow_agent_states).
         # A logical key, no blob behind it - nothing for a bucket migration to move.
         "correlation_key",
+        # Deferred actions (sprint-4/23, T5): pending_actions.action_key is the
+        # `app/deferred_actions/registry.py` registry key (`<entity>.<verb>`,
+        # e.g. "users.trash") - a logical identifier, no blob behind it.
+        "action_key",
         # NOTE: `media_sample_key` (WhatsApp draft media-header sample) IS a
         # storage key - registered by omnichannel at install (Slice 3), so it is
         # deliberately NOT excluded here; the drift test now enforces it.

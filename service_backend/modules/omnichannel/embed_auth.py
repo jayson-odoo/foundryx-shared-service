@@ -32,6 +32,7 @@ from app.dependencies import (
     _resolve_user,
     effective_permission_keys,
 )
+from app.models.user import User
 from app.repositories.module_repository import ModuleRepository
 from app.security import decode_access_token
 
@@ -69,6 +70,13 @@ class ConversationPrincipal:
     is_embed: bool
     # Native attribution (real admin under impersonation); None for embed.
     actor_user_id: Optional[str] = None
+    # Native EFFECTIVE user (impersonation target when active, else same as
+    # `actor_user_id`) - B5: the identity `status_machine.transition` must
+    # authorize edge-role/condition checks AS, matching every other caller in
+    # the codebase (form_service, tenant_service, ideation all pass the
+    # effective `current_user`, never the real-admin attribution id). None
+    # for embed.
+    effective_user_id: Optional[str] = None
     # Federated attribution; None for native.
     external_agent_id: Optional[str] = None
     # Embed: the token's workspace (scope boundary). Native: None = all workspaces.
@@ -109,6 +117,22 @@ class ConversationPrincipal:
         workspace's catalog (workspace scope enforced by ``enforce_workspace`` /
         ``enforce_channel_workspace``); no write-cap needed for a read."""
         if not self.is_embed and native_perm not in self.permission_keys:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing permission: {native_perm}",
+            )
+
+    def require_native(self, native_perm: str) -> None:
+        """Gate a route with NO embed equivalent AT ALL - any embed token is
+        refused regardless of its caps (plan sprint-4/27 AC-IVE-40: the
+        shortcut list/run routes are not part of the embed widget's surface -
+        no embed cap grants them, ever)."""
+        if self.is_embed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This action is not available to embedded/federated callers.",
+            )
+        if native_perm not in self.permission_keys:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Missing permission: {native_perm}",
@@ -215,6 +239,7 @@ def get_conversation_principal(
         tenant_id=effective.tenant_id,
         is_embed=False,
         actor_user_id=str(actor.id),
+        effective_user_id=str(effective.id),
         permission_keys=effective_permission_keys(effective),
     )
 
@@ -262,6 +287,43 @@ def enforce_workspace(principal: ConversationPrincipal, workspace_id: str) -> No
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This resource is outside the token's workspace.",
         )
+
+
+def resolve_native_actor(principal: ConversationPrincipal, db: Session) -> Optional[User]:
+    """Native-only actor resolution for edge-role auth (embed has none -
+    `actor=None` fails closed on any actor-conditioned edge, by design). Tenant-
+    scoped (the polymorphic stored-id rule - `actor_user_id` is a stored id,
+    never resolved unscoped). Lives here, not in a router, so a router never
+    runs its own `db.query(User)` (review round 1, finding 3)."""
+    if principal.is_embed or not principal.actor_user_id:
+        return None
+    return (
+        db.query(User)
+        .filter(User.id == principal.actor_user_id, User.tenant_id == principal.tenant_id)
+        .first()
+    )
+
+
+def resolve_effective_actor(principal: ConversationPrincipal, db: Session) -> Optional[User]:
+    """B5: the EFFECTIVE-user counterpart to `resolve_native_actor`, for the
+    ONE use that is an AUTHORIZATION check, not attribution -
+    `status_machine.transition`'s edge-role/rule-condition gate for the
+    contact's lifecycle STAGE (`move_lifecycle` / `get_lifecycle_moves`).
+    `patch_thread`'s `status`/`priority` fields move the THREAD's own
+    open/snoozed/closed status, a separate concept from the lifecycle stage,
+    and resolve their actor via `resolve_native_actor` (attribution), not this
+    function. Under impersonation this is the TARGET (matches
+    `permission_keys`, which already reads the target's grants) -
+    `resolve_native_actor` stays the real admin for attribution (entity-event
+    actor facts, `actor_id`). Tenant-scoped (polymorphic stored-id rule);
+    embed has no native actor at all."""
+    if principal.is_embed or not principal.effective_user_id:
+        return None
+    return (
+        db.query(User)
+        .filter(User.id == principal.effective_user_id, User.tenant_id == principal.tenant_id)
+        .first()
+    )
 
 
 def enforce_channel_workspace(

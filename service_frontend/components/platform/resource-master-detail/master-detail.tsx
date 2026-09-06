@@ -65,7 +65,7 @@ export function MasterDetail<T extends object>({
   return (
     <div>
       <div className={cn(sel && 'hidden')}>
-        <ResourceList config={listConfig} />
+        <ResourceList config={listConfig} hideHeader />
       </div>
       {row && nav && detailRender(row, nav)}
     </div>

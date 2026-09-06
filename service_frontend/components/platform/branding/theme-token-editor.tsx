@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { Download, RotateCcw, Upload } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { BrandingTokens, ThemeName } from '@/types/branding';
 import {
   buildTemplate,
@@ -242,6 +242,7 @@ export function ThemeTokenEditor({
                         mode="icon"
                         variant="ghost"
                         className="size-7"
+                        aria-label={`Reset ${d.label} to default`}
                         title="Reset to default"
                         onClick={() => setValue(d.key, '')}
                       >

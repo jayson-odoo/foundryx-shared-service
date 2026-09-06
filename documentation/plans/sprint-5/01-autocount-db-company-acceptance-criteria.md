@@ -9,7 +9,7 @@
 > `sql_db` entity tasks built in plan 22 are unreachable for them.
 > **Source of decisions:** grill session 2026-09-04 (19 questions, §Decision Log below).
 > **Companion:** `sprint-4/22-autocount-db-etl-autocount-sql.md` (the SO/PO/master SQL pack the
-> DB company will run - presets are a follow-up, BL-SS-045).
+> DB company will run - presets are a follow-up, BL-SS-080).
 
 ## Scope
 
@@ -21,7 +21,7 @@ enforced); API-only row actions hidden on DB companies; prerequisite-master warn
 document entities.
 
 **Out:** attaching a second (API) connection to a DB company (schema-ready via one column later;
-BL-SS-046). AutoCount SQL presets in the task editor (BL-SS-045). Any change to the API-path
+BL-SS-081). AutoCount SQL presets in the task editor (BL-SS-080). Any change to the API-path
 company flow beyond the shared form. Stock / write-back (BL-SS-041/042).
 
 ## Definitions
@@ -239,12 +239,12 @@ Customer, the Query tab shows the locked connection, preview returns rows
 | Q1 | Identity = connection `config.database` (verified by live probe), never operator-typed. |
 | Q2 | `company_name` best-effort from `dbo.Profile`, blank on failure. |
 | Q3 | ONE `connection_id`, no schema change; `sourceKind` derived from the connection provider. |
-| Q4 | A company holds one connection in this slice (attach-later = BL-SS-046). |
+| Q4 | A company holds one connection in this slice (attach-later = BL-SS-081). |
 | Q5 | Form: Source toggle first, then provider-filtered picker. |
 | Q6 | One company per SQL connection (app-level `get_by_connection` guard, both providers). |
 | Q7 | Task `connectionId` locked to the company connection. |
 | Q8 | Add-entity on a DB company lists only `sql_db`-capable entities, default `sql_db`. |
-| Q9 | AutoCount SQL presets = separate follow-up slice (BL-SS-045). |
+| Q9 | AutoCount SQL presets = separate follow-up slice (BL-SS-080). |
 | Q10 | Prerequisite-master warning card, read-only, no block. |
 | Q11/Q18 | `sprint-5/01-autocount-db-company`. |
 | Q12 | Probe `DB_NAME()` at create; mismatch = 422. |

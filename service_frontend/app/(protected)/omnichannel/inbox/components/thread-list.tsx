@@ -1,13 +1,15 @@
 'use client';
 
 /**
- * Inbox left panel (plan 05 §6): assignee buckets (All | Mine | Unassigned),
- * status/priority filters, search, and the thread rows - live-sorted by
- * recency via useConversations.
+ * Inbox left panel (plan 05 §6; plan 27 replaces the assignee buckets + the
+ * two bare status/priority `<Select>`s with the view rail (AC-IVE-20) and the
+ * Show/Sort/Unreplied filter bar (AC-IVE-21) - both live one level up in
+ * `page.tsx` now; this panel keeps the search box + the thread rows,
+ * live-sorted via useConversations.
  */
 import { Search } from 'lucide-react';
 
-import { StatusBadge } from '@/components/platform/status-badge';
+import { StatusBadge, type StatusRegistry } from '@/components/platform/status-badge';
 import {
   THREAD_PRIORITY_REGISTRY,
   THREAD_STATUS_REGISTRY,
@@ -16,18 +18,11 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { ConversationFilters } from '@/hooks/use-conversations';
 import { cn } from '@/lib/utils';
-import type { ConversationThread, ThreadPriority, ThreadStatus } from '@/types/omnichannel';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import type { ConversationThread } from '@/types/omnichannel';
 
 export interface ThreadListProps {
   threads: ConversationThread[];
@@ -80,53 +75,6 @@ export function ThreadList({
             data-testid="thread-search"
           />
         </div>
-        <Tabs
-          value={filters.assignee}
-          onValueChange={(v) => setFilters({ assignee: v as ConversationFilters['assignee'] })}
-        >
-          <TabsList className="w-full">
-            <TabsTrigger value="all" className="flex-1" data-testid="bucket-all">
-              All
-            </TabsTrigger>
-            <TabsTrigger value="me" className="flex-1" data-testid="bucket-me">
-              Mine
-            </TabsTrigger>
-            <TabsTrigger value="unassigned" className="flex-1" data-testid="bucket-unassigned">
-              Unassigned
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-        <div className="flex gap-2">
-          <Select
-            value={filters.status}
-            onValueChange={(v) => setFilters({ status: v as ThreadStatus | 'ALL' })}
-          >
-            <SelectTrigger size="sm" className="flex-1" aria-label="Status filter" data-testid="filter-status">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All statuses</SelectItem>
-              <SelectItem value="OPEN">Open</SelectItem>
-              <SelectItem value="SNOOZED">Snoozed</SelectItem>
-              <SelectItem value="CLOSED">Closed</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select
-            value={filters.priority}
-            onValueChange={(v) => setFilters({ priority: v as ThreadPriority | 'ALL' })}
-          >
-            <SelectTrigger size="sm" className="flex-1" aria-label="Priority filter" data-testid="filter-priority">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All priorities</SelectItem>
-              <SelectItem value="URGENT">Urgent</SelectItem>
-              <SelectItem value="HIGH">High</SelectItem>
-              <SelectItem value="MEDIUM">Medium</SelectItem>
-              <SelectItem value="LOW">Low</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
@@ -150,6 +98,7 @@ export function ThreadList({
                   type="button"
                   onClick={() => onSelect(t.id)}
                   className={cn(
+                    PRESSED_CLASS,
                     'flex w-full items-start gap-3 border-b px-3 py-2.5 text-start transition-colors hover:bg-accent',
                     selectedId === t.id && 'bg-accent',
                   )}
@@ -163,14 +112,20 @@ export function ThreadList({
                       <span className={cn('truncate text-sm', t.unreadCount > 0 ? 'font-semibold' : 'font-medium')}>
                         {t.name}
                       </span>
-                      <span className="shrink-0 text-[11px] text-muted-foreground">
+                      <span className="shrink-0 text-2xs text-muted-foreground">
                         {relativeTime(t.lastMessageAt)}
                       </span>
                     </div>
                     <div className="flex items-center justify-between gap-2">
                       <span className="truncate text-xs text-muted-foreground">{t.lastMessagePreview}</span>
                       {t.unreadCount > 0 && (
-                        <Badge variant="primary" size="sm" shape="circle" data-testid="unread-badge">
+                        <Badge
+                          variant="primary"
+                          size="sm"
+                          shape="circle"
+                          appearance="default"
+                          data-testid="unread-badge"
+                        >
                           {t.unreadCount}
                         </Badge>
                       )}
@@ -178,10 +133,42 @@ export function ThreadList({
                     <div className="mt-1 flex items-center gap-1.5">
                       <StatusBadge status={t.status} registry={THREAD_STATUS_REGISTRY} size="sm" />
                       <StatusBadge status={t.priority} registry={THREAD_PRIORITY_REGISTRY} size="sm" />
-                      <span className="ms-auto truncate text-[11px] text-muted-foreground">
+                      <span className="ms-auto truncate text-2xs text-muted-foreground">
                         {t.assignedUserName ?? 'Unassigned'}
                       </span>
                     </div>
+                    {/* Plan 25 - lifecycle stage + up to 2 tag chips (+N). Data
+                        already rides ThreadItem, no extra call (AC-CDM-39). */}
+                    {(t.lifecycle || t.tags.length > 0) && (
+                      <div className="mt-1 flex flex-wrap items-center gap-1">
+                        {t.lifecycle && (
+                          <StatusBadge
+                            status={t.lifecycle.key}
+                            registry={
+                              {
+                                [t.lifecycle.key]: {
+                                  label: t.lifecycle.label,
+                                  tone: 'secondary',
+                                  hex: t.lifecycle.color ?? undefined,
+                                },
+                              } as StatusRegistry<string>
+                            }
+                            size="sm"
+                          />
+                        )}
+                        {t.tags.slice(0, 2).map((tag) => (
+                          <Badge key={tag.id} variant="secondary" appearance="light" size="sm">
+                            {tag.emoji && <span aria-hidden>{tag.emoji}</span>}
+                            {tag.name}
+                          </Badge>
+                        ))}
+                        {t.tags.length > 2 && (
+                          <Badge variant="secondary" appearance="light" size="sm">
+                            +{t.tags.length - 2}
+                          </Badge>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </button>
               </li>

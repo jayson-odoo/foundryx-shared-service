@@ -203,7 +203,15 @@ export interface ConversationThread {
   workspaceId: string;
   /** Display name resolved from first/last name, else the raw profile name. */
   name: string;
+  /** System fields (plan 25) - editable from the Contact panel Details tab. */
+  firstName: string | null;
+  lastName: string | null;
   phone: string | null;
+  email: string | null;
+  /** BCP-47 tag (e.g. "en", "zh-Hans"). */
+  language: string | null;
+  /** ISO-3166 alpha-2, upper-cased (e.g. "MY"). */
+  countryCode: string | null;
   avatarUrl: string | null;
   assignedUserId: string | null;
   assignedUserName: string | null;
@@ -220,6 +228,13 @@ export interface ConversationThread {
   lastMessagePreview: string | null;
   /** Inbound messages since the agent last opened the thread. */
   unreadCount: number;
+  /** Registered custom-field values, keyed by `ContactField.key` (plan 25). */
+  customFields: Record<string, string | number | boolean | null>;
+  /** Tags attached to this contact (plan 25, AC-CDM-12). */
+  tags: ContactTagRef[];
+  /** Current lifecycle stage, or null before the module registers the entity
+   *  (pre-migration / entity not yet adopted). */
+  lifecycle: ContactLifecycleSummary | null;
   createdAt: string; // ISO
 }
 
@@ -416,13 +431,26 @@ export interface SendContactsInput {
   replyToMessageId?: string;
 }
 
-/** Inbox thread-list filters (left panel - not the Resource shell). */
+/** Sort order for the inbox list header (plan 27, AC-IVE-16). */
+export type ThreadSort = 'newest' | 'oldest' | 'unreplied_first' | 'longest_waiting';
+
+/** Inbox thread-list filters (left panel - not the Resource shell). Plan 27
+ *  adds the view-rail dimensions (`lifecycleStageIds`/`tagIds`/`channelIds`/
+ *  `unreplied`/`sort`/`viewId`) alongside the existing ones (AC-IVE-15). */
 export interface ThreadListQuery {
   workspaceId?: string;
   assignee?: 'all' | 'me' | 'unassigned';
   status?: ThreadStatus | 'ALL';
+  /** F2 (round-3 codex triage) - see `ConversationFilters.statusExplicit`. */
+  statusExplicit?: boolean;
   priority?: ThreadPriority | 'ALL';
   search?: string;
+  lifecycleStageIds?: string[];
+  tagIds?: string[];
+  channelIds?: string[];
+  unreplied?: boolean;
+  sort?: ThreadSort;
+  viewId?: string | null;
 }
 
 /** Realtime events fanned out per workspace (WS in Phase B; mock emitter in A). */
@@ -444,4 +472,272 @@ export interface ReactionResult {
   targetMessageId: string;
   emoji: string;
   removed: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 25 - contact data model (typed fields, tags, lifecycle on the status
+// engine). See documentation/plans/sprint-4/25-omnichannel-contact-data-model.md.
+// ---------------------------------------------------------------------------
+
+/** Custom contact-field value types (UAC Definitions - 8 total). */
+export type ContactFieldType =
+  | 'text'
+  | 'list'
+  | 'checkbox'
+  | 'email'
+  | 'number'
+  | 'url'
+  | 'date' // YYYY-MM-DD
+  | 'time'; // HH:MM
+
+/**
+ * `always` = rendered inline in the Contact panel Details tab (AC-CDM-35);
+ * `hidden` = registry-only (set via PATCH/workflow, never shown in the panel).
+ */
+export type ContactFieldVisibility = 'always' | 'hidden';
+
+/** Reserved system-field keys (UAC Definitions) - never a registrable custom
+ *  field key. Mirrors the backend reserved-key check (AC-CDM-02). */
+export const RESERVED_CONTACT_FIELD_KEYS: readonly string[] = [
+  'firstName',
+  'lastName',
+  'phone',
+  'email',
+  'language',
+  'countryCode',
+  'tags',
+  'lifecycle',
+  'profilePic',
+];
+
+/** A registered custom field (per workspace). Values live in
+ *  `ConversationThread.customFields[key]`. */
+export interface ContactField {
+  id: string;
+  workspaceId: string;
+  key: string;
+  label: string;
+  description: string | null;
+  type: ContactFieldType;
+  /** `list` type only - the selectable option strings. */
+  options: string[] | null;
+  visibility: ContactFieldVisibility;
+  sortOrder: number;
+  /** Contacts currently holding a non-null value for this field (delete
+   *  confirmation copy, AC-CDM-31). */
+  valuesCount: number;
+  createdAt: string; // ISO
+}
+
+export interface CreateContactFieldInput {
+  key: string;
+  label: string;
+  description?: string | null;
+  type: ContactFieldType;
+  /** Required (>= 1) when `type === 'list'`. */
+  options?: string[];
+  visibility?: ContactFieldVisibility;
+}
+
+/** `key` and `type` are immutable after create (D6) - omit both from updates. */
+export interface UpdateContactFieldInput {
+  label?: string;
+  description?: string | null;
+  options?: string[];
+  visibility?: ContactFieldVisibility;
+  sortOrder?: number;
+}
+
+/** A tag (per workspace), attached to contacts via a replace-set PATCH. */
+export interface ContactTag {
+  id: string;
+  workspaceId: string;
+  name: string;
+  emoji: string | null;
+  color: string | null; // hex
+  description: string | null;
+  contactsCount: number;
+  createdAt: string; // ISO
+}
+
+export interface CreateContactTagInput {
+  name: string;
+  emoji?: string | null;
+  color?: string | null;
+  description?: string | null;
+}
+
+export interface UpdateContactTagInput {
+  name?: string;
+  emoji?: string | null;
+  color?: string | null;
+  description?: string | null;
+}
+
+/** Compact tag ref carried on a thread/message item (AC-CDM-12). */
+export interface ContactTagRef {
+  id: string;
+  name: string;
+  emoji: string | null;
+  color: string | null;
+}
+
+/** The contact's current lifecycle stage, as carried on a `ThreadItem`
+ *  (AC-CDM-19) - `isWon` mirrors the status engine's `is_terminal`, `isLost`
+ *  mirrors `is_archived`. */
+export interface ContactLifecycleSummary {
+  statusId: string;
+  key: string;
+  label: string;
+  color: string | null;
+  isWon: boolean;
+  isLost: boolean;
+}
+
+/** One fireable outgoing edge from the contact's current stage (AC-CDM-18) -
+ *  the ONLY moves the "Move to" picker may offer (foolproof-UI). */
+export interface LifecycleMove {
+  edgeId: string;
+  toStatusId: string;
+  label: string;
+}
+
+/**
+ * Partial-merge contact PATCH (system fields + typed custom fields + tag
+ * replace-set). `customFields` value `null` clears that key; keys omitted from
+ * `customFields` are left unchanged (partial merge, NOT replace). `tagIds`
+ * REPLACES the contact's whole tag set (AC-CDM-06/07/10).
+ */
+export interface PatchContactInput {
+  firstName?: string | null;
+  lastName?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  language?: string | null;
+  countryCode?: string | null;
+  customFields?: Record<string, string | number | boolean | null>;
+  tagIds?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Plan 27 - inbox views, close reasons, conversation events, shortcuts. See
+// documentation/plans/sprint-4/27-omnichannel-inbox-views-events.md §5.1/§5.2.
+// ---------------------------------------------------------------------------
+
+/** Append-only conversation-event row (AC-IVE-01/13). Ten types (D-A3-1). */
+export type ConversationEventType =
+  | 'opened'
+  | 'closed'
+  | 'reopened'
+  | 'snoozed'
+  | 'unsnoozed'
+  | 'assigned'
+  | 'unassigned'
+  | 'first_agent_reply'
+  | 'lifecycle_changed'
+  | 'comment_added';
+
+/** One event on a thread's history, newest-first from `GET .../events`
+ *  (AC-IVE-13). `fromLabel`/`toLabel` are pre-resolved server-side (tenant-
+ *  scoped) so the feed never needs its own id -> label lookups. */
+export interface ConversationEvent {
+  id: string;
+  eventType: ConversationEventType;
+  actorName: string | null;
+  actorUserId: string | null;
+  fromValue: string | null;
+  fromLabel: string | null;
+  toValue: string | null;
+  toLabel: string | null;
+  closeReasonId: string | null;
+  closeReasonName: string | null;
+  note: string | null;
+  payload: Record<string, unknown> | null;
+  createdAt: string; // ISO
+}
+
+/** A per-workspace close reason (AC-IVE-25/26/27). */
+export interface CloseReason {
+  id: string;
+  workspaceId: string;
+  name: string;
+  sortOrder: number;
+  isActive: boolean;
+  /** Count of events referencing this reason - delete is blocked (409) while
+   *  this is > 0; the UI offers Deactivate instead (D-A3-13). */
+  usesCount: number;
+  createdAt: string; // ISO
+}
+
+export interface CreateCloseReasonInput {
+  name: string;
+  sortOrder?: number;
+  isActive?: boolean;
+}
+export interface UpdateCloseReasonInput {
+  name?: string;
+  sortOrder?: number;
+  isActive?: boolean;
+}
+
+/** Close a thread with a required reason + optional note (AC-IVE-28/29). */
+export interface CloseThreadInput {
+  closeReasonId: string;
+  note?: string | null;
+}
+
+/**
+ * The typed, `extra="forbid"` saved-view filter (AC-IVE-18) - NOT a rule-engine
+ * tree (D-A3-2). `segmentId` is a reserved seam for A2 (plan 26), unused here.
+ */
+export interface InboxViewFilter {
+  statuses?: ThreadStatus[];
+  assignee?: 'all' | 'me' | 'unassigned' | 'user';
+  assigneeUserIds?: string[];
+  lifecycleStageIds?: string[];
+  tagIds?: string[];
+  channelIds?: string[];
+  priority?: ThreadPriority | 'ALL';
+  unreplied?: boolean;
+  sort?: ThreadSort;
+  segmentId?: string | null;
+}
+
+/** A saved inbox view (AC-IVE-18/19). Own views need only `conversations.read`
+ *  to create/edit/delete; a SHARED view (or someone else's) additionally needs
+ *  `inbox_views.manage` (D-A3-11). */
+export interface InboxView {
+  id: string;
+  workspaceId: string;
+  name: string;
+  ownerUserId: string;
+  ownerName: string | null;
+  isShared: boolean;
+  filter: InboxViewFilter;
+  sortOrder: number;
+  createdAt: string; // ISO
+}
+
+export interface CreateInboxViewInput {
+  name: string;
+  isShared: boolean;
+  filter: InboxViewFilter;
+}
+export interface UpdateInboxViewInput {
+  name?: string;
+  isShared?: boolean;
+  filter?: InboxViewFilter;
+  sortOrder?: number;
+}
+
+/** A published workflow the drawer's Shortcuts control may fire (AC-IVE-36). */
+export interface ShortcutItem {
+  workflowId: string;
+  name: string;
+}
+
+/** Response of firing a shortcut (AC-IVE-37). */
+export interface ShortcutRunResult {
+  runId: string;
+  status: string;
 }

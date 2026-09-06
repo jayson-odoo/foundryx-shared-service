@@ -76,13 +76,18 @@ class Settings(BaseSettings):
     # Frontend origin - used to build invite / set-password / reset links.
     frontend_url: str = "http://localhost:3001"
 
-    # CORS - Next.js auto-bumps ports (3000 -> 3001 ...), cover a few.
+    # CORS - Next.js auto-bumps ports (3000 -> 3001 ...); parallel worktree
+    # builds (sprint-4/23 T3/T5) run their own frontend on 3001..3005, each
+    # talking to its own backend port - cover the whole local range so a
+    # sibling worktree's :3001/3002/... build isn't silently CORS-blocked.
     cors_origins: str = (
-        "http://localhost:3000,http://localhost:3001,http://localhost:3002"
+        "http://localhost:3000,http://localhost:3001,http://localhost:3002,"
+        "http://localhost:3003,http://localhost:3004,http://localhost:3005"
     )
     # Tenants live on subdomains (plan 07 §6) - allow <slug>.localhost in dev
-    # and <slug>.<prod-domain> in prod (override in env).
-    cors_origin_regex: str = r"http://[a-z0-9-]+\.localhost:300[0-2]"
+    # (any of the local frontend ports) and <slug>.<prod-domain> in prod
+    # (override in env).
+    cors_origin_regex: str = r"http://[a-z0-9-]+\.localhost:300[0-5]"
 
     @field_validator("cors_origins", mode="before")
     @classmethod

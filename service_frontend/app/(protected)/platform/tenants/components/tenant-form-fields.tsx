@@ -299,7 +299,7 @@ function TenantModulesGrid({ tenantId }: { tenantId: string }) {
   // Same Resource shell as the tenant storefront, parameterized to the operator
   // endpoints; every action gates on tenants.manage_modules (D6).
   const config = useModuleListConfig(tenantId);
-  return <ResourceList config={config} />;
+  return <ResourceList config={config} hideHeader />;
 }
 
 /* ─────────────────────────── Branding tab ─────────────────────────── */

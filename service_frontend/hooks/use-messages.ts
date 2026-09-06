@@ -10,9 +10,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { conversationService } from '@/services/conversation-service';
 import type {
+  CloseThreadInput,
   ConversationMessage,
   ConversationSocketEvent,
   ConversationThread,
+  PatchContactInput,
   SendContactsInput,
   SendInteractiveInput,
   SendLocationInput,
@@ -48,6 +50,16 @@ export interface UseMessagesResult {
   assignToMe: () => Promise<void>;
   setStatus: (status: ThreadStatus) => Promise<void>;
   setPriority: (priority: ThreadPriority) => Promise<void>;
+  /** Plan 27 - close with a required reason + optional note (AC-IVE-28).
+   *  Throws (ApiError, 422) on a missing/inactive/foreign reason - the Close
+   *  dialog maps the error, the thread stays open. */
+  closeThread: (input: CloseThreadInput) => Promise<ConversationThread>;
+  /** Plan 25 - system fields + typed custom fields + tag replace-set. Throws
+   *  (ApiError, 422 fieldErrors) on failure - the Details form maps errors. */
+  patchContact: (patch: PatchContactInput) => Promise<ConversationThread>;
+  /** Plan 25 - move the lifecycle stage. Throws (ApiError, 409) on a
+   *  no-longer-fireable move (a stale picker option). */
+  moveLifecycle: (toStatusId: string) => Promise<ConversationThread>;
 }
 
 export function useMessages(contactId: string | null | undefined): UseMessagesResult {
@@ -58,6 +70,15 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const fetchSeq = useRef(0);
+  // F1: the currently-selected contact, as a ref so async setters below can
+  // tell a STALE response (fired for the PREVIOUS contactId, resolving after
+  // the user already switched threads) from a current one - without this,
+  // e.g. a slow `patchContact` response for contact A can land after the
+  // user selected contact B and overwrite B's just-loaded thread with A's.
+  const activeContactIdRef = useRef(contactId);
+  useEffect(() => {
+    activeContactIdRef.current = contactId;
+  }, [contactId]);
 
   useEffect(() => {
     if (!contactId) {
@@ -69,11 +90,27 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
     setIsLoading(true);
     setError(null);
     setSendError(null);
+    // F12 (round-3 codex triage) - clear SYNCHRONOUSLY (not just on a
+    // falsy contactId) so `messages` is scoped to ONLY this contactId by the
+    // time the fetch below resolves - a prerequisite for the merge in
+    // `.then()` to be safe (otherwise a leftover message from the PREVIOUS
+    // contactId could get merged into this one).
+    setMessages([]);
     Promise.all([conversationService.getThread(contactId), conversationService.listMessages(contactId)])
       .then(([t, msgs]) => {
         if (seq !== fetchSeq.current) return;
         setThread(t);
-        setMessages(msgs);
+        // Merge, don't overwrite - a WS `message.created` for this SAME
+        // contactId may have landed (and been appended by `onEvent` below)
+        // while this REST fetch was still in flight; a blind
+        // `setMessages(msgs)` would silently drop it the instant the slower
+        // REST snapshot resolves. `prev` is guaranteed scoped to this
+        // contactId only (cleared above when this effect run started).
+        setMessages((prev) => {
+          const restIds = new Set(msgs.map((m) => m.id));
+          const extra = prev.filter((m) => !restIds.has(m.id));
+          return extra.length === 0 ? msgs : [...msgs, ...extra];
+        });
       })
       .catch((e: unknown) => {
         if (seq !== fetchSeq.current) return;
@@ -129,6 +166,24 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
   );
   useConversationSocket(thread?.workspaceId, onEvent);
 
+  // F11 (round-3 codex triage) - the SAME staleness race `commitThreadIfActive`
+  // (below) already guards against for thread-level fields, applied to the
+  // MESSAGES array: a note/message/reaction started for contact A that
+  // resolves AFTER the user switched to contact B must not commit into B's
+  // (already reloaded) message list. `messages` itself was already wiped and
+  // reloaded for B by the switch-effect above, so there is nothing to
+  // reconcile for A's late response - the update is simply skipped.
+  const guardMessagesUpdate = useCallback(
+    (
+      forContactId: string | null | undefined,
+      updater: (prev: ConversationMessage[]) => ConversationMessage[],
+    ) => {
+      if (activeContactIdRef.current !== forContactId) return;
+      setMessages(updater);
+    },
+    [],
+  );
+
   const send = useCallback(
     async (input: SendMessageInput): Promise<boolean> => {
       if (!contactId) return false;
@@ -164,7 +219,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         const created = await conversationService.sendMessage(contactId, input);
         // Replace the temp bubble with the real message; if the WS echo already
         // delivered it (race), just drop the temp (dedupe by real id).
-        setMessages((prev) => {
+        guardMessagesUpdate(contactId, (prev) => {
           const withoutTemp = prev.filter((m) => m.id !== tempId);
           return withoutTemp.some((m) => m.id === created.id)
             ? withoutTemp
@@ -175,7 +230,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         const msg = e instanceof Error ? e.message : 'Could not send the message';
         setSendError(msg);
         // Keep the bubble but mark it failed (CSW rejection, network, etc.).
-        setMessages((prev) =>
+        guardMessagesUpdate(contactId, (prev) =>
           prev.map((m) =>
             m.id === tempId
               ? { ...m, deliveryStatus: 'FAILED', errorMessage: msg }
@@ -187,7 +242,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         setIsSending(false);
       }
     },
-    [contactId],
+    [contactId, guardMessagesUpdate],
   );
 
   const sendTemplate = useCallback(
@@ -197,7 +252,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
       setIsSending(true);
       try {
         const created = await conversationService.sendTemplate(contactId, input);
-        setMessages((prev) => (prev.some((m) => m.id === created.id) ? prev : [...prev, created]));
+        guardMessagesUpdate(contactId, (prev) => (prev.some((m) => m.id === created.id) ? prev : [...prev, created]));
         return true;
       } catch (e: unknown) {
         setSendError(e instanceof Error ? e.message : 'Could not send the template');
@@ -206,7 +261,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         setIsSending(false);
       }
     },
-    [contactId],
+    [contactId, guardMessagesUpdate],
   );
 
   const sendMedia = useCallback(
@@ -244,7 +299,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
       try {
         const created = await conversationService.sendMedia(contactId, input);
         URL.revokeObjectURL(previewUrl);
-        setMessages((prev) => {
+        guardMessagesUpdate(contactId, (prev) => {
           const withoutTemp = prev.filter((m) => m.id !== tempId);
           return withoutTemp.some((m) => m.id === created.id) ? withoutTemp : [...withoutTemp, created];
         });
@@ -252,7 +307,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : 'Could not send the attachment';
         setSendError(msg);
-        setMessages((prev) =>
+        guardMessagesUpdate(contactId, (prev) =>
           prev.map((m) => (m.id === tempId ? { ...m, deliveryStatus: 'FAILED', errorMessage: msg } : m)),
         );
         return false;
@@ -260,7 +315,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         setIsSending(false);
       }
     },
-    [contactId],
+    [contactId, guardMessagesUpdate],
   );
 
   // Structured sends (interactive/location/contacts) - append the created bubble.
@@ -271,7 +326,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
       setIsSending(true);
       try {
         const created = await fn();
-        setMessages((prev) => (prev.some((m) => m.id === created.id) ? prev : [...prev, created]));
+        guardMessagesUpdate(contactId, (prev) => (prev.some((m) => m.id === created.id) ? prev : [...prev, created]));
         return true;
       } catch (e: unknown) {
         setSendError(e instanceof Error ? e.message : 'Could not send the message');
@@ -280,7 +335,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         setIsSending(false);
       }
     },
-    [contactId],
+    [contactId, guardMessagesUpdate],
   );
 
   const sendInteractive = useCallback(
@@ -304,7 +359,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
       if (!contactId) return false;
       try {
         const res = await conversationService.react(contactId, messageId, emoji);
-        setMessages((prev) =>
+        guardMessagesUpdate(contactId, (prev) =>
           prev.map((m) => {
             if (m.id !== messageId) return m;
             const others = m.reactions.filter((r) => r.reactorType !== 'AGENT');
@@ -322,7 +377,7 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
         return false;
       }
     },
-    [contactId],
+    [contactId, guardMessagesUpdate],
   );
 
   const addNote = useCallback(
@@ -330,44 +385,95 @@ export function useMessages(contactId: string | null | undefined): UseMessagesRe
       if (!contactId) return false;
       try {
         const note = await conversationService.addInternalNote(contactId, body);
-        setMessages((prev) => [...prev, note]);
+        // The backend publishes `message.created` on the same WS room this
+        // response races - the `onEvent` handler above may already have
+        // appended it by the time this resolves. Dedupe by id (same pattern
+        // as `send`'s temp-bubble swap) so the note never renders twice in
+        // the Messages tab OR the merged Activities feed (plan 27, AC-IVE-32).
+        // F11 - and if the user switched to a DIFFERENT contact while this
+        // was in flight, `guardMessagesUpdate` drops it instead of appending
+        // A's note into B's (already reloaded) message list.
+        guardMessagesUpdate(contactId, (prev) => (prev.some((m) => m.id === note.id) ? prev : [...prev, note]));
         return true;
       } catch (e: unknown) {
         setSendError(e instanceof Error ? e.message : 'Could not add the note');
         return false;
       }
     },
-    [contactId],
+    [contactId, guardMessagesUpdate],
+  );
+
+  // F1: only commit a resolved thread if `forContactId` is STILL the active
+  // selection - a response that resolves after the user switched threads is
+  // discarded (the caller still gets the resolved value back either way).
+  const commitThreadIfActive = useCallback(
+    (forContactId: string | null | undefined, updated: ConversationThread) => {
+      if (activeContactIdRef.current === forContactId) {
+        setThread(updated);
+      }
+      return updated;
+    },
+    [],
   );
 
   const assign = useCallback(
     async (userId: string | null) => {
       if (!contactId) return;
-      setThread(await conversationService.assign(contactId, userId));
+      commitThreadIfActive(contactId, await conversationService.assign(contactId, userId));
     },
-    [contactId],
+    [contactId, commitThreadIfActive],
   );
 
   const assignToMe = useCallback(async () => {
     if (!contactId) return;
-    setThread(await conversationService.assignToMe(contactId));
-  }, [contactId]);
+    commitThreadIfActive(contactId, await conversationService.assignToMe(contactId));
+  }, [contactId, commitThreadIfActive]);
 
   const setStatus = useCallback(
     async (status: ThreadStatus) => {
       if (!contactId) return;
-      setThread(await conversationService.setStatus(contactId, status));
+      commitThreadIfActive(contactId, await conversationService.setStatus(contactId, status));
     },
-    [contactId],
+    [contactId, commitThreadIfActive],
   );
 
   const setPriority = useCallback(
     async (priority: ThreadPriority) => {
       if (!contactId) return;
-      setThread(await conversationService.setPriority(contactId, priority));
+      commitThreadIfActive(contactId, await conversationService.setPriority(contactId, priority));
     },
-    [contactId],
+    [contactId, commitThreadIfActive],
   );
 
-  return { thread, messages, isLoading, error, isSending, sendError, send, sendTemplate, sendMedia, sendInteractive, sendLocation, sendContacts, react, addNote, assign, assignToMe, setStatus, setPriority };
+  const closeThread = useCallback(
+    async (input: CloseThreadInput) => {
+      if (!contactId) throw new Error('No conversation selected.');
+      const updated = await conversationService.closeThread(contactId, input);
+      commitThreadIfActive(contactId, updated);
+      return updated;
+    },
+    [contactId, commitThreadIfActive],
+  );
+
+  const patchContact = useCallback(
+    async (patch: PatchContactInput) => {
+      if (!contactId) throw new Error('No conversation selected.');
+      const updated = await conversationService.patchContact(contactId, patch);
+      commitThreadIfActive(contactId, updated);
+      return updated;
+    },
+    [contactId, commitThreadIfActive],
+  );
+
+  const moveLifecycle = useCallback(
+    async (toStatusId: string) => {
+      if (!contactId) throw new Error('No conversation selected.');
+      const updated = await conversationService.moveLifecycle(contactId, toStatusId);
+      commitThreadIfActive(contactId, updated);
+      return updated;
+    },
+    [contactId, commitThreadIfActive],
+  );
+
+  return { thread, messages, isLoading, error, isSending, sendError, send, sendTemplate, sendMedia, sendInteractive, sendLocation, sendContacts, react, addNote, assign, assignToMe, setStatus, setPriority, closeThread, patchContact, moveLifecycle };
 }

@@ -4,7 +4,7 @@
 > **Branch:** `sprint-5/autocount-db-company`.
 > **Builds on:** `sprint-4/13-autocount-esb.md` (company model, `CompanyService`),
 > `sprint-4/22-autocount-db-etl.md` (`sql_database` provider, `SqlSourceRuntime`, task editor).
-> **Follow-ups logged:** BL-SS-045 (AutoCount SQL presets), BL-SS-046 (second connection on a company).
+> **Follow-ups logged:** BL-SS-080 (AutoCount SQL presets), BL-SS-081 (second connection on a company).
 
 ## 1. Problem
 
@@ -97,5 +97,5 @@ Segmented control, `SearchSelect`, `DetailRow`, warning card (`Alert` variant al
 - **Deleted connection**: `sourceKind` falls back to `'api'`; the existing "Open connection" link 404s as it does today.
 
 ## 6. Backlog additions
-- **BL-SS-045** AutoCount SQL presets in the task editor (SO/PO/masters from `22-autocount-db-etl-autocount-sql.md`, pre-filled key/watermark/docDate/line-column config; validate on live MSSQL first).
-- **BL-SS-046** Attach a second (API) connection to a DB company - prerequisite for BL-SS-041 (stock via API) and BL-SS-042 (write-back) when the customer onboarded DB-first. Adds `api_connection_id` then; `sourceKind` becomes `'db' | 'api' | 'both'`.
+- **BL-SS-080** AutoCount SQL presets in the task editor (SO/PO/masters from `22-autocount-db-etl-autocount-sql.md`, pre-filled key/watermark/docDate/line-column config; validate on live MSSQL first).
+- **BL-SS-081** Attach a second (API) connection to a DB company - prerequisite for BL-SS-041 (stock via API) and BL-SS-042 (write-back) when the customer onboarded DB-first. Adds `api_connection_id` then; `sourceKind` becomes `'db' | 'api' | 'both'`.

@@ -125,8 +125,14 @@ describe('ConnectCompanyView - Source toggle (AC-01-12)', () => {
     const picker = screen.getByRole('combobox', { name: 'SQL database connection' });
     fireEvent.click(picker);
     fireEvent.click(await screen.findByRole('option', { name: 'SQL Branch · AED_BRANCH' }));
-    expect(screen.getByRole('combobox', { name: 'SQL database connection' })).toHaveTextContent(
-      'SQL Branch · AED_BRANCH',
+    // T3 (AC-DLA-20): the picker's Popover now closes on the shared spring
+    // (`AnimatePresence` + `forceMount`, see popover.tsx) - the exit-complete
+    // callback that un-hides the rest of the page resolves on a microtask, so
+    // a synchronous query can run one tick too early. `waitFor` gives that tick.
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'SQL database connection' })).toHaveTextContent(
+        'SQL Branch · AED_BRANCH',
+      ),
     );
     fireEvent.click(segment('AutoCount API'));
     expect(screen.getByRole('combobox', { name: 'AutoCount connection' })).toHaveTextContent(
@@ -211,7 +217,9 @@ describe('ConnectCompanyView - Create + errors (AC-01-14)', () => {
     await pickAndCreate();
     await waitFor(() => expect(push).toHaveBeenCalledWith('/autocount/companies/company-db-1'));
     expect(createCompany).toHaveBeenCalledWith({ connectionId: 'conn-sql-2', name: '' });
-    expect(toastSuccess).toHaveBeenCalledWith('Connected AED_BRANCH.');
+    // The component goes through the `lib/toast` wrapper (AC-DLA-51), which
+    // sets a default auto-dismiss duration on top of the mocked `sonner` call.
+    expect(toastSuccess).toHaveBeenCalledWith('Connected AED_BRANCH.', { duration: 4000 });
   });
 
   it('renders a 422 on connectionId inline under the picker (probe mismatch / auth failure)', async () => {
@@ -239,7 +247,14 @@ describe('ConnectCompanyView - Create + errors (AC-01-14)', () => {
   it('other failures still toast (unchanged)', async () => {
     createCompany.mockRejectedValue(new ApiError('Upstream unavailable.', 502));
     await pickAndCreate();
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith('Upstream unavailable.'));
+    // Error toasts stay on-screen until dismissed (AC-DLA-51 `lib/toast`
+    // default), so the wrapper adds `closeButton` + an infinite duration.
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith('Upstream unavailable.', {
+        duration: Infinity,
+        closeButton: true,
+      }),
+    );
     expect(screen.queryByTestId('connection-error')).not.toBeInTheDocument();
   });
 });

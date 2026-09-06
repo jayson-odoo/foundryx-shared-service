@@ -333,7 +333,7 @@ def validate_source_config(
     watermark = str(raw.get("watermarkColumn") or "").strip() or None
     compared = _clean_list(raw.get("comparedColumns"))
 
-    #     !!  BL-SS-052 - THE WATERMARK COLUMN CAN NEVER DOUBLE AS A KEY
+    #     !!  BL-SS-087 - THE WATERMARK COLUMN CAN NEVER DOUBLE AS A KEY
     #         COLUMN.  !!
     # A value that is GUARANTEED to change on every update (that is the
     # entire point of a watermark) can never also be part of what makes a

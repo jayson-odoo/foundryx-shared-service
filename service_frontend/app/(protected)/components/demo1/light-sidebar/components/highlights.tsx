@@ -117,7 +117,7 @@ const Highlights = ({ limit }: IHighlightsProps) => {
         <CardTitle>Highlights</CardTitle>
         <DropdownMenu4
           trigger={
-            <Button variant="ghost" mode="icon">
+            <Button variant="ghost" mode="icon" aria-label="More options">
               <EllipsisVertical />
             </Button>
           }

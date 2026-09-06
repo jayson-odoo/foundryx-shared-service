@@ -71,7 +71,7 @@ and phase; those files ARE the contract - read them first, do not rely on the pr
 
 ## Browser verification (Phase 1 and the DoD gate)
 Use the **`agent-browser` CLI only** (headless; `agent-browser skills get core --full` first).
-Never the Playwright MCP tools, never an ad-hoc Playwright script (user mandate). Sign in, then
+Never the retired browser MCP tools, never an ad-hoc E2E-runner script (user mandate, plan 23 D15). Sign in, then
 navigate by clicking through the UI - never a deep URL. Verify at 375px AND 1280px, capture
 screenshots into the scratchpad, read the console. `agent-browser click` sometimes misses
 Next/Radix handlers; dispatching a native click via its `eval` on the real element is the

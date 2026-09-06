@@ -1,4 +1,4 @@
-import { fireEvent, render as rtlRender, screen } from '@testing-library/react';
+import { fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsProvider } from '@/providers/settings-provider';
 import type { AutocountCompanyDetail, AutocountEtlTask } from '@/types/autocount';
@@ -195,12 +195,17 @@ describe('TaskEditorView - DB company locked connection seeds the BASELINE (revi
     expect(schemaSpy).toHaveBeenLastCalledWith('conn-sql-1');
   });
 
-  it('control: a real edit then Cancel DOES ask "Discard changes?" (the guard is live)', () => {
+  it('control: a real edit then Cancel DOES ask "Discard changes?" (the guard is live)', async () => {
     render(<TaskEditorView companyId="c1" entityType="customer" />);
     fireEvent.click(editButton());
     fireEvent.click(screen.getByLabelText('Watermark column'));
     fireEvent.click(screen.getByRole('option', { name: 'acc_no' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    // T3 (AC-DLA-20): the picker's Popover now closes on the shared spring
+    // (`AnimatePresence` + `forceMount`, see popover.tsx) - the exit-complete
+    // callback that un-hides the rest of the page resolves on a microtask, so
+    // a synchronous `fireEvent.click` can query Cancel one tick too early.
+    const cancelButton = await waitFor(() => screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(cancelButton);
     expect(screen.getByText('Discard changes?')).toBeInTheDocument();
   });
 

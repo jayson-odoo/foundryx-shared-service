@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -137,7 +137,7 @@ export function MyMeetingsView() {
       )}
 
       {enabled ? (
-        <ResourceList config={config} />
+        <ResourceList config={config} hideHeader />
       ) : (
         <Card>
           <CardContent className="flex flex-col items-center gap-4 py-14">

@@ -6,12 +6,14 @@
  * (inside the replay) hands the run off to the Editor tab.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { FlaskConical } from 'lucide-react';
+import { FlaskConical, LoaderCircleIcon } from 'lucide-react';
 import type { WorkflowRunDetail, WorkflowRunListItem } from '@/types/workflows';
 import { cn } from '@/lib/utils';
 import { useDatetime } from '@/hooks/use-datetime';
 import { workflowService } from '@/services/workflow-service';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { Skeleton } from '@/components/ui/skeleton';
 import { SearchSelect } from '@/components/platform/search-select';
 import { RunReplay } from './run-replay';
 import { RunStatusBadge } from './run-status-badge';
@@ -111,10 +113,12 @@ export function WorkflowRuns({
         />
 
         <div className="flex max-h-[40vh] min-h-64 flex-col gap-1 overflow-auto rounded-lg border border-border p-1 lg:max-h-[calc(100vh-19rem)] lg:min-h-[420px]">
-          {loading && (
-            <p className="px-2 py-6 text-center text-xs text-muted-foreground">
-              Loading…
-            </p>
+          {loading && rows.length === 0 && (
+            <div className="flex flex-col gap-1.5 p-1" data-testid="run-list-loading">
+              {Array.from({ length: 4 }).map((_, index) => (
+                <Skeleton key={index} className="h-14 w-full" />
+              ))}
+            </div>
           )}
           {!loading && rows.length === 0 && (
             <p
@@ -131,6 +135,7 @@ export function WorkflowRuns({
               data-testid={`run-row-${run.id}`}
               onClick={() => openRun(run.id)}
               className={cn(
+                PRESSED_CLASS,
                 'flex flex-col gap-1 rounded-md border px-2.5 py-2 text-left transition-colors',
                 selectedRunId === run.id
                   ? 'border-primary bg-accent'
@@ -139,7 +144,7 @@ export function WorkflowRuns({
             >
               <div className="flex items-center justify-between gap-2">
                 <RunStatusBadge status={run.status} size="sm" />
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-2xs text-muted-foreground">
                   {formatDuration(run.durationMs)}
                 </span>
               </div>
@@ -150,7 +155,7 @@ export function WorkflowRuns({
                 {run.isTest && <FlaskConical className="size-3" />}
               </div>
               {run.correlationKey && (
-                <div className="font-mono text-[11px] text-muted-foreground">
+                <div className="font-mono text-2xs text-muted-foreground">
                   <ClampedText text={run.correlationKey} lines={1} />
                 </div>
               )}
@@ -165,7 +170,7 @@ export function WorkflowRuns({
               onClick={loadMore}
               data-testid="runs-load-more"
             >
-              {loading ? 'Loading…' : `Load more (${total - rows.length})`}
+              {loading ? <LoaderCircleIcon className="size-4 animate-spin" /> : `Load more (${total - rows.length})`}
             </Button>
           )}
         </div>

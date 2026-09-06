@@ -18,13 +18,13 @@ idempotency contract. A never-configured / non-document entity is a no-op.
 
     !!  ORM-LEVEL BACKFILL, DELIBERATELY NOT sa.table.  !!
 Unlike a bare column UPDATE (which always queries a frozen snapshot per the
-BL-SS-047 lesson), this backfill BUILDS ROWS and is naturally an ORM insert.
+BL-SS-082 lesson), this backfill BUILDS ROWS and is naturally an ORM insert.
 That is safe here specifically because every column the ORM touches already
 exists BY CONSTRUCTION at this point in the migration: ``ac_field_mapping.scope``
 has existed since 0002 (long before this revision), and ``line_result_columns``
 is added by THIS SAME migration, above, before the backfill runs - so there is
 no revision gap where the live model outruns the schema (the exact failure
-BL-SS-047 describes). The backfill only ``flush()``es (never `commit()`s) on a
+BL-SS-082 describes). The backfill only ``flush()``es (never `commit()`s) on a
 ``Session(bind=op.get_bind())`` sharing Alembic's own transaction/connection,
 so Alembic's transaction still owns the single commit at the end - the
 storage-migration lesson (a migration must never commit Alembic's own

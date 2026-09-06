@@ -157,7 +157,7 @@ export function QueryTab({
     () => columnOptions.filter((o) => !config.keyColumns.includes(o.value)),
     [columnOptions, config.keyColumns],
   );
-  // BL-SS-052 (foolproof-UI half) - the watermark column is GUARANTEED to
+  // BL-SS-087 (foolproof-UI half) - the watermark column is GUARANTEED to
   // change on every update, so it can never also be a key column (a
   // reconcile would mint a "new" ref for the same real-world record every
   // time). Withhold the chosen watermark from the key-columns picker...
@@ -286,7 +286,7 @@ export function QueryTab({
                   options={connectionOptions}
                   value={config.connectionId}
                   onChange={onConnectionChange}
-                  placeholder={connectionsLoading ? 'Loading…' : 'Select a connection'}
+                  placeholder="Select a connection"
                   disabled={!editing || connectionsLoading || connections.length === 0}
                   ariaLabel="Connection"
                 />

@@ -3,7 +3,7 @@
 > **Status:** DRAFT - fulfils `02-autocount-document-mapping-acceptance-criteria.md` (AC-02-01..26).
 > **Branch:** `sprint-5/autocount-document-mapping`.
 > **Cross-repo:** `02-autocount-document-mapping-sorento-addendum.md` (Sorento session builds it).
-> **Backlog:** closes BL-SS-045 (presets); adds BL-SS-049..051 (below).
+> **Backlog:** closes BL-SS-080 (presets); adds BL-SS-084..051 (below).
 
 ## 1. Problem
 
@@ -139,7 +139,7 @@ documents.py` (fixed-convention tests → persisted rows), `test_autocount_entit
 - Header-after-lines pass order changes `MappingEngine` internals; the GRN API path also goes
   through `project_document` - keep its tests green (aggregates are additive).
 - Migration 0010 = module Alembic; MUST query a frozen table snapshot (`sa.table`), never the
-  live ORM (BL-SS-047 lesson).
+  live ORM (BL-SS-082 lesson).
 - `line_result_columns` for existing tasks = NULL until the operator re-saves the line query;
   the Mapping tab shows "Test the line query first" for the line section until then.
 - Contract-version gate defaults to `1` so today's Sorento never receives unknown fields.
@@ -147,14 +147,14 @@ documents.py` (fixed-convention tests → persisted rows), `test_autocount_entit
   `SPO-` row added to the rig's PO fixture.
 
 ## 6. Backlog
-- **BL-SS-049** Wire the `[XR]` fields (contract version 2) once the Sorento addendum lands;
+- **BL-SS-084** Wire the `[XR]` fields (contract version 2) once the Sorento addendum lands;
   flip the consumer connection default; remove the gate.
-- **BL-SS-050** Cutover playbook: first AutoCount push of a document previously loaded by xlsx
+- **BL-SS-085** Cutover playbook: first AutoCount push of a document previously loaded by xlsx
   must ADOPT its ref-less lines in place (Sorento `_sync_lines`, addendum §9) so the rows stay
   identical (same ids, allocations/claims intact); only lines absent in AutoCount are
   deleted/cancelled. Document the sequence (masters → SO/PO/SPO, reconcile off until first full
   load) + a dry-run report listing adopted / unmatched lines before go-live.
-- **BL-SS-051** Overlap check as a hard activation gate (today: warning).
-- **BL-SS-052** Refuse a watermark column inside `keyColumns` (proof finding: composite key ->
+- **BL-SS-086** Overlap check as a hard activation gate (today: warning).
+- **BL-SS-087** Refuse a watermark column inside `keyColumns` (proof finding: composite key ->
   refs carry the watermark -> document lines never hit the ref rung on Sorento).
-- **BL-SS-045** → Closed by this plan.
+- **BL-SS-080** → Closed by this plan.

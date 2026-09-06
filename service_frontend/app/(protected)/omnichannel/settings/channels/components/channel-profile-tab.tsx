@@ -2,7 +2,7 @@
 
 import type { UseFormReturn } from 'react-hook-form';
 import { useState } from 'react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Loader2, RefreshCw } from 'lucide-react';
 import Image from 'next/image';
 import { Card, CardContent } from '@/components/ui/card';

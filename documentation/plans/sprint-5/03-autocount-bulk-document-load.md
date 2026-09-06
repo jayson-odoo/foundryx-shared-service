@@ -158,7 +158,7 @@
   statement count now lands on the pass's own FINAL (completing) page instead of a middle one
   in some fixtures - REFUTED as a gap (round 3b/4): the very next ordinary incremental tick's
   unconditional `auto_push` (it runs on every run of an ACTIVE task, new rows or not) drains
-  and pushes the stranded final-page rows exactly once, the same mechanism BL-SS-060 already
+  and pushes the stranded final-page rows exactly once, the same mechanism BL-SS-095 already
   relies on for a draft/paused task once it goes active - proven by
   `test_an_abort_on_the_final_page_still_gets_pushed_by_the_next_ordinary_tick`.
 
@@ -219,7 +219,7 @@
   reader for `preview_records` (R2-S1's field exists for a PREVIEW's own row count) and must not
   pay to build a second, throwaway copy of every row on every page - now gated behind `if not
   self.persist_hashes`.
-- **BL-SS-061 REFUTED, removed from the backlog and this plan's round-3 amendment** (folded into
+- **Mid-pass-abort candidate REFUTED, removed from the backlog and this plan's round-3 amendment** (draft row BL-SS-061 on this lane, never published; BL-SS-061 on main is plan 23's frame-trace row) (folded into
   the round-3b abort-on-final-page bullet above) - the next ordinary incremental tick's
   unconditional `auto_push` drains an aborted job's stranded final page across jobs; there is no
   gap to track.
@@ -307,7 +307,7 @@
   time, same as `query_timeout`) so a high worker count can never starve the pool waiting for a
   connection the header page's own read already holds. `MAX_DOCUMENT_LINES_PER_HEADER` is
   unchanged (still enforced per header, inside `_read_lines` itself, worker or not).
-  `BL-SS-055` (batched line fetch - one `IN` query per page of DocKeys) stays open as the
+  `BL-SS-090` (batched line fetch - one `IN` query per page of DocKeys) stays open as the
   alternative approach this round did not take (fewer round trips per page rather than more
   connections in flight) - either can land later without conflicting with the other.
 - **S5b (sink push concurrency).** `SorentoSink.write_batch` chunked its POSTs at
@@ -350,7 +350,7 @@
   (`_max_rate_limit_waits`) is PER CHUNK, with no GLOBAL backoff across the chunks in flight
   together - N concurrent chunks each independently retrying a 429 can still hit Sorento N times
   over the same window, never coordinated into one shared wait.
-- **`BL-SS-062`** (new, `documentation/backlogs/backlog.md`) - `write_batch` opens a fresh
+- **`BL-SS-096`** (new, `documentation/backlogs/backlog.md`) - `write_batch` opens a fresh
   `httpx.Client` per chunk (`_call`'s `with httpx.Client(...) as client:`), so a multi-chunk push
   pays a TLS handshake per chunk instead of reusing one connection-pooled client across the
   whole batch. Low priority, out of this round's scope (the concurrent path already parallelises
@@ -485,7 +485,7 @@ A preset SQL change (like the `ItemCode IS NOT NULL` fix above) does NOT reach a
 configured live task on its own - `presets.py` only seeds a NEW task's `source_config`. An
 operator with an existing task must re-apply "Use preset" (or hand-edit `query`/`lineQuery`) per
 task to pick it up; either path is a population-defining edit, which clears every row's stored
-hash (BL-SS-063) and so defers the fresh baseline to the NEXT reconcile pass rather than the
+hash (BL-SS-097) and so defers the fresh baseline to the NEXT reconcile pass rather than the
 current run - a forced reconcile should follow the edit, not be assumed automatic. Tonight's
 instance: the real company's SO/PO/SPO `lineQuery` were hand-edited to the same
 `ItemCode IS NOT NULL AND Qty IS NOT NULL` filter and a reconcile pass driven for each.
@@ -589,13 +589,13 @@ parallel at the end. Live load = AC-03-22/23 on the real company and `ac_sim`.
 
 ## 6. Backlog entries (register in `documentation/backlogs/backlog.md`)
 
-- BL-SS-055 Batched line fetch (one `IN` query per page of DocKeys) - N+1 bounded per page today.
-- BL-SS-056 Operator "reset baseline" action (clear `ac_row_hash` for one task) - psql today.
-- BL-SS-057 Push cap per run as a setting (5,000 today).
-- BL-SS-058 Sink drops the consumer `warnings` key (tester BL-D).
-- BL-SS-059 Preview does not count mapping-failed rows (tester BL-B/BL-C).
-- BL-SS-060 A DRAFT/paused paged task's page-in-flight abort can strand staged rows forever
+- BL-SS-090 Batched line fetch (one `IN` query per page of DocKeys) - N+1 bounded per page today.
+- BL-SS-091 Operator "reset baseline" action (clear `ac_row_hash` for one task) - psql today.
+- BL-SS-092 Push cap per run as a setting (5,000 today).
+- BL-SS-093 Sink drops the consumer `warnings` key (tester BL-D).
+- BL-SS-094 Preview does not count mapping-failed rows (tester BL-B/BL-C).
+- BL-SS-095 A DRAFT/paused paged task's page-in-flight abort can strand staged rows forever
   (security review round 2, F2 - investigated, not fixed; see the 2.1 amendment above).
-- BL-SS-062 `SorentoSink.write_batch` opens a fresh `httpx.Client` per chunk - a TLS handshake
+- BL-SS-096 `SorentoSink.write_batch` opens a fresh `httpx.Client` per chunk - a TLS handshake
   per chunk instead of one connection-pooled client reused across the whole batch (review round
   7 polish; see the round 7 amendment above).

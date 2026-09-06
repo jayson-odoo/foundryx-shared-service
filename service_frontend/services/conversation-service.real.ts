@@ -11,9 +11,13 @@ import { getSession } from 'next-auth/react';
 import { apiFetch } from '@/lib/api-client';
 import { embedAuthStore } from '@/lib/embed-auth-store';
 import type {
+  CloseThreadInput,
+  ConversationEvent,
   ConversationMessage,
   ConversationSocketEvent,
   ConversationThread,
+  LifecycleMove,
+  PatchContactInput,
   QuickReply,
   ReactionResult,
   SendContactsInput,
@@ -22,6 +26,8 @@ import type {
   SendMediaInput,
   SendMessageInput,
   SendTemplateInput,
+  ShortcutItem,
+  ShortcutRunResult,
   ThreadListQuery,
   ThreadPriority,
   ThreadStatus,
@@ -44,9 +50,46 @@ function threadQueryString(query: ThreadListQuery): string {
   const params = new URLSearchParams();
   if (query.workspaceId) params.set('workspaceId', query.workspaceId);
   if (query.assignee && query.assignee !== 'all') params.set('assignee', query.assignee);
-  if (query.status && query.status !== 'ALL') params.set('status', query.status);
-  if (query.priority && query.priority !== 'ALL') params.set('priority', query.priority);
+  // Review round 2 (finding 1): when a saved view is active, the backend
+  // treats an ABSENT param as "use the view's stored value" and an EXPLICIT
+  // `ALL` as "clear it" - so `priority` must always be sent while `viewId`
+  // is set, even when the bar reads "All", or the view's stored filter
+  // silently wins over an explicit "All" selection (AC-IVE-17). `priority`
+  // is always single-value both sides, so there is no ambiguity to track.
+  //
+  // F2 (round-3 codex triage): `status` can't use the same blanket rule -
+  // a saved view's `statuses` is a LIST, and a MULTI-status view collapses
+  // to the single-value 'ALL' display (`expandViewFilter`) with NO user
+  // action involved. Round 2's fix sent `status=ALL` unconditionally
+  // whenever a view was active, which cleared that multi-status view's real
+  // server-side filter the instant it was selected. Gate on `statusExplicit`
+  // (true only when the FILTER BAR itself set `status`) - an explicit choice
+  // (including an explicit "All") still overrides the view; a value that
+  // merely reads "All" because of the collapse is omitted so the server
+  // applies the view's own stored (possibly multi-status) filter.
+  if (query.viewId) {
+    if (query.statusExplicit) {
+      params.set('status', query.status && query.status !== 'ALL' ? query.status : 'ALL');
+    }
+    params.set('priority', query.priority && query.priority !== 'ALL' ? query.priority : 'ALL');
+  } else {
+    if (query.status && query.status !== 'ALL') params.set('status', query.status);
+    if (query.priority && query.priority !== 'ALL') params.set('priority', query.priority);
+  }
   if (query.search) params.set('search', query.search);
+  // Plan 27 (AC-IVE-15/16/17) - server-side filtering + sorting.
+  if (query.lifecycleStageIds?.length) params.set('lifecycleStageIds', query.lifecycleStageIds.join(','));
+  if (query.tagIds?.length) params.set('tagIds', query.tagIds.join(','));
+  if (query.channelIds?.length) params.set('channelIds', query.channelIds.join(','));
+  // `unreplied` is a bool, unlike every other param above - `false` is a
+  // meaningful EXPLICIT override of a saved view's stored `unreplied: true`
+  // (AC-IVE-17), so it must always be sent (a truthy-only check would let a
+  // toggled-off switch silently fall back to the view's value since the
+  // backend treats "param absent" as "no override").
+  if (query.viewId) params.set('unreplied', String(!!query.unreplied));
+  else if (query.unreplied) params.set('unreplied', 'true');
+  if (query.sort) params.set('sort', query.sort);
+  if (query.viewId) params.set('viewId', query.viewId);
   params.set('pageSize', String(THREAD_PAGE_SIZE));
   const qs = params.toString();
   return qs ? `?${qs}` : '';
@@ -201,6 +244,26 @@ export const realConversationService: ConversationService = {
     return apiFetch<QuickReply[]>(`/omnichannel/workspaces/${workspaceId}/quick-replies`);
   },
 
+  // Plan 25 - not yet backed (routes land in S1-S2); written against the
+  // §5.1 contract so the S0->S4 swap is the one-line export change.
+  async patchContact(contactId, patch: PatchContactInput) {
+    return apiFetch<ConversationThread>(`/omnichannel/contacts/${contactId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+  },
+
+  async moveLifecycle(contactId, toStatusId) {
+    return apiFetch<ConversationThread>(`/omnichannel/contacts/${contactId}/lifecycle`, {
+      method: 'POST',
+      body: JSON.stringify({ toStatusId }),
+    });
+  },
+
+  async lifecycleMoves(contactId) {
+    return apiFetch<LifecycleMove[]>(`/omnichannel/contacts/${contactId}/lifecycle-moves`);
+  },
+
   subscribe(workspaceId, handler: (event: ConversationSocketEvent) => void) {
     let socket: WebSocket | null = null;
     let stopped = false;
@@ -254,5 +317,31 @@ export const realConversationService: ConversationService = {
       if (retryTimer) clearTimeout(retryTimer);
       socket?.close();
     };
+  },
+
+  // -- Plan 27 additions (§5.1) - not yet bound (S0 uses the mock for these
+  // four; the routes land S1-S3). Written now so the S4 swap is one line. --
+  async closeThread(contactId, input: CloseThreadInput) {
+    return apiFetch<ConversationThread>(`/omnichannel/contacts/${contactId}/close`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  async listEvents(contactId) {
+    const res = await apiFetch<{ data: ConversationEvent[] }>(
+      `/omnichannel/contacts/${contactId}/events`,
+    );
+    return res.data;
+  },
+
+  async listShortcuts(contactId) {
+    return apiFetch<ShortcutItem[]>(`/omnichannel/contacts/${contactId}/shortcuts`);
+  },
+
+  async runShortcut(contactId, workflowId) {
+    return apiFetch<ShortcutRunResult>(`/omnichannel/contacts/${contactId}/shortcuts/${workflowId}`, {
+      method: 'POST',
+    });
   },
 };

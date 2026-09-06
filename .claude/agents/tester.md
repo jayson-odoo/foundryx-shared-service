@@ -1,6 +1,6 @@
 ---
 name: tester
-description: Writes the Phase 2 failing tests BEFORE the coder - pytest (BE), vitest (FE components/hooks), playwright (FE→BE→DB real-click flows) - from the UAC, the Phase 1 contract doc, and the captain's test list, with no implementation to look at. Also runs end-of-lane browser verification via agent-browser once the coder is green, and writes the AC-keyed Test Execution Report. Tests land here, never deferred.
+description: Writes the Phase 2 failing tests BEFORE the coder - pytest (BE), vitest (FE components/hooks), agent-browser evidence runs (FE→BE→DB real-click flows) - from the UAC, the Phase 1 contract doc, and the captain's test list, with no implementation to look at. Also runs end-of-lane browser verification via agent-browser once the coder is green, and writes the AC-keyed Test Execution Report. Tests land here, never deferred.
 tools: Read, Grep, Glob, Bash, Write, Edit
 model: sonnet
 ---
@@ -49,17 +49,16 @@ Backend python = the absolute `<worktree>/service_backend/.venv/bin/python`. Liv
   hooks. Mock at the hook/service boundary.
 - Run one: `npx vitest run path/to/file.test.tsx`. All: `npx vitest run`.
 
-## Frontend - playwright (`service_frontend/e2e/`)
-- One spec per user flow, **real clicks after the single sign-in `goto`** (never deep-URL
-  entry), dedicated timestamped tenant provisioned via the platform API, purge in `finally`.
-  Suite runs `fullyParallel`; never mutate the `default` tenant's shared state.
-- Run one: `npx playwright test e2e/foo.spec.ts` (headless; the repo config hardcodes :3001 -
-  for an isolated :3002 stack use a temp override config in the scratchpad, deleted before
-  commit).
+## Frontend - end-to-end flows (agent-browser evidence runs)
+- The repo has NO scripted E2E suite (plan 23 D15, user ruling 2026-09-04): FE->BE->DB flows are
+  proven by recorded `agent-browser` runs, one per user flow, real clicks after the single
+  sign-in, dedicated timestamped tenant provisioned via the platform API, purged afterwards.
+  Never mutate the `default` tenant's shared state. Evidence (screenshots + a README run log)
+  lands under `documentation/plans/sprint-<N>/<NN>-evidence/<slice>/`.
 
 ## Browser verification (end of lane) - agent-browser, headless
-- `agent-browser skills get core --full` first. **Playwright MCP is retired for verification;
-  never use `mcp__plugin_playwright_playwright__*` tools nor an ad-hoc Playwright script.**
+- `agent-browser skills get core --full` first. **Browser MCP tools and ad-hoc E2E-runner scripts
+  are retired (user ruling 2026-09-04, plan 23 D15): agent-browser only.**
 - Frontend at :3002 (`rm -rf .next && npm run build` with the :8002 env baked in, then `next
   start -p 3002`), backend at :8002 from the worktree.
 - Sign in, then navigate by clicking through the UI from the home page. Check console + network

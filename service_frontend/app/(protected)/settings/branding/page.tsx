@@ -1,15 +1,10 @@
 'use client';
 
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { useCan } from '@/hooks/use-can';
 import { Container } from '@/components/common/container';
 import { RequirePermission } from '@/components/common/require-permission';
 import { BrandingEditor } from '@/components/platform/branding';
+import { PageHeader } from '@/components/platform/page-header';
 
 /**
  * Tenant branding hub (sprint-2/03) - logo / favicon / illustration uploads,
@@ -22,15 +17,14 @@ export default function BrandingPage() {
   return (
     <RequirePermission permission="branding.read">
       <Container width="fluid">
-        <Toolbar>
-          <ToolbarHeading>
-            <ToolbarPageTitle />
-            <ToolbarDescription>
+        <PageHeader
+          description={
+            <>
               Your logo, slogan and colors across the sign-in page, browser tab
               and app
-            </ToolbarDescription>
-          </ToolbarHeading>
-        </Toolbar>
+            </>
+          }
+        />
         <BrandingEditor canManage={can('branding.manage')} />
       </Container>
     </RequirePermission>

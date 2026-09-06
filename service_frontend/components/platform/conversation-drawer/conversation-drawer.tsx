@@ -12,6 +12,7 @@ import {
   ChevronDown,
   ChevronUp,
   Clock,
+  Contact as ContactIcon,
   Inbox,
   Search,
   UserPlus,
@@ -32,9 +33,13 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useCloseReasons } from '@/hooks/use-close-reasons';
+import { useMediaQuery } from '@/hooks/use-media-query';
 import { useMessages } from '@/hooks/use-messages';
+import { useThreadEvents } from '@/hooks/use-thread-events';
 import { conversationService } from '@/services/conversation-service';
 import { workspaceService } from '@/services/workspace-service';
 import type {
@@ -44,11 +49,22 @@ import type {
   WorkspaceMember,
 } from '@/types/omnichannel';
 
+import { ActivityFeed } from './activity-feed';
+import { CloseThreadDialog } from './close-thread-dialog';
 import { Composer } from './composer';
+import { ContactPanel } from './contact-panel';
 import { useDatetime } from '@/hooks/use-datetime';
+import { ApiError } from '@/lib/api-client';
 import { dateKey, parseUtc } from '@/lib/datetime';
+import { toast } from '@/lib/toast';
 import { MessageBubble } from './message-bubble';
+import { ShortcutMenu } from './shortcut-menu';
 import { THREAD_PRIORITY_REGISTRY, THREAD_STATUS_REGISTRY } from './thread-status';
+
+/** Contact panel open/closed persists per browser (plan 25, AC-CDM-34). */
+const CONTACT_PANEL_STORAGE_KEY = 'omnichannel:contact-panel-open';
+/** Right pane >= this width; a Sheet below it (plan 25 D14). */
+const CONTACT_PANEL_BREAKPOINT = '(min-width: 1280px)';
 
 export interface ConversationDrawerProps {
   contactId: string | null;
@@ -120,7 +136,29 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     assign,
     assignToMe,
     setStatus,
+    closeThread,
+    patchContact,
+    moveLifecycle,
   } = useMessages(contactId);
+  const { events, reload: reloadEvents } = useThreadEvents(contactId);
+  const { reasons: closeReasons } = useCloseReasons(thread?.workspaceId ?? null);
+  const [closeDialogOpen, setCloseDialogOpen] = useState(false);
+
+  // F8 (round-3 codex triage) - `setStatus` (`useMessages`) has no internal
+  // try/catch - it re-throws (matching `CloseThreadDialog`'s own `onClose`,
+  // which the dialog awaits inside ITS OWN try/catch). Reopen has no dialog
+  // wrapping it, so a bare `void setStatus('OPEN').then(reloadEvents)`
+  // dropped any rejection (a 409 the record raced into, a network blip) with
+  // zero user feedback - the button visibly does nothing, no toast, no retry
+  // cue.
+  const reopenThread = useCallback(async () => {
+    try {
+      await setStatus('OPEN');
+      await reloadEvents();
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : 'Could not reopen this conversation.');
+    }
+  }, [setStatus, reloadEvents]);
 
   const { timeZone, formatTime } = useDatetime();
   const [tab, setTab] = useState<'messages' | 'activities'>('messages');
@@ -128,6 +166,31 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [replyTo, setReplyTo] = useState<ConversationMessage | null>(null);
+
+  // Contact panel (plan 25, AC-CDM-34) - open state persists per browser;
+  // >=1280px renders a right pane, below it a Sheet (D14). Never shown in
+  // compact/embed mode (the header - and this toggle - is hidden there).
+  const [contactPanelOpen, setContactPanelOpen] = useState(false);
+  const isDesktopPanel = useMediaQuery(CONTACT_PANEL_BREAKPOINT);
+  useEffect(() => {
+    try {
+      setContactPanelOpen(window.localStorage.getItem(CONTACT_PANEL_STORAGE_KEY) === '1');
+    } catch {
+      // localStorage unavailable (private browsing etc.) - default closed.
+    }
+  }, []);
+  const setPanelOpen = useCallback((next: boolean) => {
+    setContactPanelOpen(next);
+    try {
+      window.localStorage.setItem(CONTACT_PANEL_STORAGE_KEY, next ? '1' : '0');
+    } catch {
+      // localStorage unavailable - the toggle still works for this session
+    }
+  }, []);
+  const toggleContactPanel = useCallback(
+    () => setPanelOpen(!contactPanelOpen),
+    [contactPanelOpen, setPanelOpen],
+  );
 
   // In-thread search (WhatsApp chat search): term + active-match cursor.
   const [searchOpen, setSearchOpen] = useState(false);
@@ -173,12 +236,12 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     workspaceService.getMembers(thread.workspaceId).then(setMembers).catch(() => setMembers([]));
   }, [thread?.workspaceId]);
 
-  // Pin the thread to the latest message.
+  // Pin the thread to the latest message. Plan 27: the Activities tab renders
+  // <ActivityFeed> (notes + events merged) instead of this list - in-thread
+  // search stays a Messages-tab feature (the search button is hidden on
+  // Activities, so `visibleMessages` only needs to serve the Messages tab).
   const bottomRef = useRef<HTMLDivElement>(null);
-  const visibleMessages = useMemo(
-    () => (tab === 'activities' ? messages.filter((m) => m.senderType === 'SYSTEM') : messages),
-    [messages, tab],
-  );
+  const visibleMessages = messages;
 
   // In-thread search matches (newest → oldest, like WhatsApp's ↑ navigation).
   const activeSearch = searchOpen ? searchTerm.trim().toLowerCase() : '';
@@ -277,6 +340,9 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
         </div>
 
         <div className="ms-auto flex items-center gap-2">
+          {/* In-thread search stays a Messages-tab feature - the merged
+              Activities feed has no per-message body to search against. */}
+          {tab === 'messages' && (
           <Button
             variant="ghost"
             size="icon"
@@ -285,6 +351,17 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
             data-testid="thread-search-toggle"
           >
             <Search className="size-4" />
+          </Button>
+          )}
+          <Button
+            variant={contactPanelOpen ? 'primary' : 'ghost'}
+            size="icon"
+            aria-label="Toggle contact panel"
+            aria-pressed={contactPanelOpen}
+            onClick={toggleContactPanel}
+            data-testid="contact-panel-toggle"
+          >
+            <ContactIcon className="size-4" />
           </Button>
           <StatusBadge status={thread.priority} registry={THREAD_PRIORITY_REGISTRY} size="sm" />
           <StatusBadge status={thread.status} registry={THREAD_STATUS_REGISTRY} size="sm" />
@@ -316,24 +393,39 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
             </DropdownMenuContent>
           </DropdownMenu>
 
-          {/* Lifecycle */}
+          {/* Status actions - Close opens the reason+note dialog (AC-IVE-30). */}
           {thread.status !== 'SNOOZED' && thread.status !== 'CLOSED' ? (
             <>
               <Button variant="outline" size="sm" onClick={() => void setStatus('SNOOZED')} data-testid="thread-snooze">
                 <Clock className="size-4" /> Snooze
               </Button>
-              <Button variant="outline" size="sm" onClick={() => void setStatus('CLOSED')} data-testid="thread-close">
+              <Button variant="outline" size="sm" onClick={() => setCloseDialogOpen(true)} data-testid="thread-close">
                 <CheckCircle2 className="size-4" /> Close
               </Button>
             </>
           ) : (
-            <Button variant="outline" size="sm" onClick={() => void setStatus('OPEN')} data-testid="thread-reopen">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void reopenThread()}
+              data-testid="thread-reopen"
+            >
               Reopen
             </Button>
           )}
+
+          {/* Shortcuts - fires a published entity.shortcut workflow (AC-IVE-39). */}
+          <ShortcutMenu contactId={contactId} />
         </div>
 
-        <Tabs value={tab} onValueChange={(v) => setTab(v as 'messages' | 'activities')} className="w-full">
+        <Tabs
+          value={tab}
+          onValueChange={(v) => {
+            setTab(v as 'messages' | 'activities');
+            if (v === 'activities') closeSearch();
+          }}
+          className="w-full"
+        >
           <TabsList>
             <TabsTrigger value="messages" data-testid="tab-messages">
               Messages
@@ -376,57 +468,76 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
       </div>
       )}
 
+      <CloseThreadDialog
+        open={closeDialogOpen}
+        onOpenChange={setCloseDialogOpen}
+        reasons={closeReasons}
+        onClose={(closeReasonId, note) =>
+          closeThread({ closeReasonId, note: note || undefined }).then(reloadEvents)
+        }
+      />
+
+      {/* Message column + the Contact panel's right pane (>=1280px) sit
+          side-by-side; below that width the panel opens as a Sheet instead. */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* Thread */}
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-2.5 p-4" data-testid="thread-window">
-          {visibleMessages.length === 0 && (
-            <p className="py-8 text-center text-sm text-muted-foreground">
-              {tab === 'activities' ? 'No internal notes yet.' : 'No messages yet.'}
-            </p>
-          )}
-          {visibleMessages.map((m, i) => (
-            <Fragment key={m.id}>
-              {/* Day separator pill whenever the calendar day changes. */}
-              {(i === 0 ||
-                dateKey(visibleMessages[i - 1].createdAt, { timeZone }) !==
-                  dateKey(m.createdAt, { timeZone })) && (
-                <div className="flex justify-center py-1">
-                  <span
-                    className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground shadow-xs"
-                    data-testid="day-pill"
-                  >
-                    {dayLabel(m.createdAt, new Date(), timeZone)}
-                  </span>
-                </div>
+          {tab === 'activities' ? (
+            <ActivityFeed
+              messages={messages}
+              events={events}
+              contactName={thread.name}
+              formatTime={formatTime}
+              timeZone={timeZone}
+            />
+          ) : (
+            <>
+              {visibleMessages.length === 0 && (
+                <p className="py-8 text-center text-sm text-muted-foreground">No messages yet.</p>
               )}
-              <div
-                ref={(el) => {
-                  if (el) messageRefs.current.set(m.id, el);
-                  else messageRefs.current.delete(m.id);
-                }}
-              >
-                <MessageBubble
-                  message={m}
-                  contactName={thread.name}
-                  formatTime={formatTime}
-                  highlight={activeSearch || undefined}
-                  isActiveMatch={m.id === activeMatchId || m.id === focusMsgId}
-                  onReply={
-                    tab === 'messages'
-                      ? (msg) => {
-                          setReplyTo(msg);
-                        }
-                      : undefined
-                  }
-                  onReact={
-                    tab === 'messages' && m.senderType !== 'SYSTEM' && windowOpen
-                      ? (msg, emoji) => void react(msg.id, emoji)
-                      : undefined
-                  }
-                />
-              </div>
-            </Fragment>
-          ))}
+              {visibleMessages.map((m, i) => (
+                <Fragment key={m.id}>
+                  {/* Day separator pill whenever the calendar day changes. */}
+                  {(i === 0 ||
+                    dateKey(visibleMessages[i - 1].createdAt, { timeZone }) !==
+                      dateKey(m.createdAt, { timeZone })) && (
+                    <div className="flex justify-center py-1">
+                      <span
+                        className="rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground shadow-xs"
+                        data-testid="day-pill"
+                      >
+                        {dayLabel(m.createdAt, new Date(), timeZone)}
+                      </span>
+                    </div>
+                  )}
+                  <div
+                    ref={(el) => {
+                      if (el) messageRefs.current.set(m.id, el);
+                      else messageRefs.current.delete(m.id);
+                    }}
+                  >
+                    <MessageBubble
+                      message={m}
+                      contactName={thread.name}
+                      formatTime={formatTime}
+                      highlight={activeSearch || undefined}
+                      isActiveMatch={m.id === activeMatchId || m.id === focusMsgId}
+                      onReply={(msg) => {
+                        setReplyTo(msg);
+                      }}
+                      onReact={
+                        m.senderType !== 'SYSTEM' && windowOpen
+                          ? (msg, emoji) => void react(msg.id, emoji)
+                          : undefined
+                      }
+                    />
+                  </div>
+                </Fragment>
+              ))}
+            </>
+          )}
           <div ref={bottomRef} />
         </div>
       </ScrollArea>
@@ -449,6 +560,34 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
         replyTo={replyTo}
         onCancelReply={() => setReplyTo(null)}
       />
+      </div>
+
+      {!compact && contactPanelOpen && isDesktopPanel && (
+        <div className="w-80 shrink-0 border-s" data-testid="contact-panel-pane">
+          <ContactPanel thread={thread} onPatchContact={patchContact} onMoveLifecycle={moveLifecycle} />
+        </div>
+      )}
+      </div>
+
+      {!compact && (
+        <Sheet
+          open={contactPanelOpen && !isDesktopPanel}
+          onOpenChange={(open) => setPanelOpen(open)}
+        >
+          <SheetContent
+            side="right"
+            className="w-full gap-0 p-0 sm:max-w-sm"
+            data-testid="contact-panel-sheet"
+          >
+            <SheetHeader className="border-b px-4 py-3">
+              <SheetTitle>Contact</SheetTitle>
+            </SheetHeader>
+            <div className="min-h-0 flex-1">
+              <ContactPanel thread={thread} onPatchContact={patchContact} onMoveLifecycle={moveLifecycle} />
+            </div>
+          </SheetContent>
+        </Sheet>
+      )}
     </div>
   );
 }

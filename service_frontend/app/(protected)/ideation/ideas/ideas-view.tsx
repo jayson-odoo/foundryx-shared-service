@@ -2,7 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { ResourceList } from '@/components/platform/resource-list';
 import { useIdeas } from '@/hooks/use-ideas';
 import type { IdeaCreateInput } from '@/services/ideation-service';
@@ -112,7 +112,7 @@ export function IdeasView() {
       <IdeaClusterSuggestions
         onPromote={(cluster, meta) => promoteIdeasToBr(cluster, router, meta)}
       />
-      <ResourceList key={version} config={config} />
+      <ResourceList key={version} config={config} hideHeader restoreFromCtx />
       {dialogOpen && (
         <IdeaCaptureDialog
           products={products}

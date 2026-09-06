@@ -236,8 +236,8 @@ when that alert is showing) and documents the gap in a comment. The new
 
 ## Deferred / backlog
 
-Already registered by the plan: **BL-SS-045** (AutoCount SQL presets in the task editor),
-**BL-SS-046** (attach a second, API connection to a DB company), **BL-SS-047** (migration 0006
+Already registered by the plan: **BL-SS-080** (AutoCount SQL presets in the task editor),
+**BL-SS-081** (attach a second, API connection to a DB company), **BL-SS-082** (migration 0006
 queries the live ORM model). New from this report, not yet backlogged: the task editor's Mapping
 tab stays on its pre-birth 404 state after the first query save births the row (plan 22 S4 gap,
 product code - see the regression section; one `mapping.reload()` after a successful save).

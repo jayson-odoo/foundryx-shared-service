@@ -84,6 +84,7 @@ export function SidebarHeader() {
         size="sm"
         mode="icon"
         variant="outline"
+        aria-label={settings.layouts.demo1.sidebarCollapse ? 'Expand sidebar' : 'Collapse sidebar'}
         className={cn(
           'size-7 absolute start-full top-2/4 rtl:translate-x-2/4 -translate-x-2/4 -translate-y-2/4',
           settings.layouts.demo1.sidebarCollapse

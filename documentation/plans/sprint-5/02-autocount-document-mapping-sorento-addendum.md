@@ -145,7 +145,7 @@ whose lines carry no `source_ref`, please ADOPT before you delete:
 5. Only the ref-less lines still unmatched after 1-3 are deleted (or cancelled in place when
    referenced) - the existing rule, now applied to the true remainder.
 6. Report per record `lines: {adopted, created, updated, deleted, cancelled}` (dry run too) so
-   the cutover playbook BL-SS-050 can be rehearsed.
+   the cutover playbook BL-SS-085 can be rehearsed.
 `line_number` is position-only on the Sorento side (not persisted; `spo_line_number` stays
 Sorento's own sequence). Sorento: plan D11, UAC group V7, issue #668, slice S1b.
 
@@ -194,7 +194,7 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   are filed under the field name (`errors.customer_ref`, `errors.supplier_ref`), not
   `errors.source_ref`. Consequence for the ESB: masters-first sequencing is a hard prerequisite
   only for products + warehouses; the `documentPrerequisites` card and the cutover playbook
-  (BL-SS-050) should say so, and the sink's error mapper must read the field-named keys.
+  (BL-SS-085) should say so, and the sink's error mapper must read the field-named keys.
 - 2026-09-05 (Sorento S1b green): `line_number` accepted; adopt-in-place live (outstanding key ->
   single candidate -> position); verdict carries `lines: {adopted, created, updated, deleted,
   cancelled}` (dry run too). A push is authoritative for the WHOLE document: unnamed lines are
@@ -213,7 +213,7 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   consumer connection may run at `sorento_contract_version = 2`. D6a confirmed: canonical
   `partial` on SALES orders is stored and read back as `open` (PO `partial` unchanged). Sorento S6
   (review + full suite) follows; any wire change will be announced before the proof completes.
-  Production flip = BL-SS-049, on their release tag.
+  Production flip = BL-SS-084, on their release tag.
 - 2026-09-05 (Sorento review round, wire unchanged, four tightenings): (1) caps -> record `failed`
   when exceeded: `customer_code`/`supplier_code` <= 50 chars, `spo_number` <= 50, lines <= 2000 per
   document, `from_so_numbers` <= 50 per line; (2) `warehouse_unresolved` fires only when a
@@ -311,7 +311,7 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   upload - captain to decide: ESB maps settled -> `closed`, or Sorento normalises at ingest); SPO all
   12 xlsx rows matched, 6 lane-only rows = the rig's synthetic clones, currency MYR vs NULL expected.
   Bugs found on the way: Sorento (a) product reference INSERT crash -> `ref_mismatch` warning
-  (root cause was the ESB proof config: watermark inside keyColumns, BL-SS-052), (b) customers
+  (root cause was the ESB proof config: watermark inside keyColumns, BL-SS-087), (b) customers
   `credit_limit`/`payment_terms_days` schema drift -> accepted-and-ignored; ESB (c) `CANONICAL_MODELS`
   lacked shipping_order (fixed 3dce123 + drift guard), (d) `DOCUMENT_PREREQUISITES` lacked
   shipping_order (fixed). Sorento posts the final table on PR #670.

@@ -232,7 +232,7 @@ Via `agent-browser` (headless), Part A live proof:
   API/database (the local proof set it directly). A tenant wanting to opt into v2 fields once
   Sorento's fix lands has no way to do so from the Integrations UI. Candidate: expose it as a
   field on the Sorento connection's edit form once the Sorento addendum's items are resolved and
-  the flip is safe to offer (currently deliberately hidden - BL-SS-049 gates the PRODUCTION
+  the flip is safe to offer (currently deliberately hidden - BL-SS-084 gates the PRODUCTION
   default, but even opt-in per-tenant needs a control).
 - **The date-spinbutton "From date" field is only keyboard-drivable (ArrowUp/ArrowDown), not
   type-to-set**, when driven by `agent-browser`'s browser automation - a real `<input

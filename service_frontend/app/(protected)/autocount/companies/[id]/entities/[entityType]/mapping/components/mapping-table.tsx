@@ -1,8 +1,11 @@
 'use client';
 
 import { ArrowRight, FunctionSquare, Plus, Trash2 } from 'lucide-react';
+import { type ColumnDef, getCoreRowModel, useReactTable } from '@tanstack/react-table';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { DataGrid } from '@/components/ui/data-grid';
+import { DataGridTable } from '@/components/ui/data-grid-table';
 import { SearchSelect } from '@/components/platform/search-select';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { humanizeFieldKey } from '@/lib/autocount-diff';
@@ -146,165 +149,187 @@ export function MappingTable({
     return seed ? { ...patch, formula: seed } : patch;
   }
 
+  /** A preset-seeded row (AC-02-16/21) whose source column is no longer part
+   *  of the saved query - visible, greyed, with the SAME picker so the
+   *  operator can fix it in place. A blank row (just added) is never
+   *  flagged - only a REAL stale value is. */
+  function isRowStale(row: MappingEditableRow): boolean {
+    return columnMode && row.sourcePath !== '' && !acFieldsSet.has(row.sourcePath);
+  }
+
+  // AC-DLA-56 (T7): migrated off the raw <table> onto DataGrid + DataGridTable
+  // (sticky header + resizable/movable columns free from DataGrid's own
+  // defaults, AC-DLA-13). Columns rebuilt fresh each render (a small,
+  // frequently-edited in-memory grid - not worth memoizing against this
+  // many closed-over values); `row.index` is the row's position in `rows`,
+  // matching the original array index (no sort/filter on this grid). DataGrid
+  // has no per-row className hook, so a stale row's dimming (AC-02-16/21) is
+  // applied per-cell (`opacity-60` on every cell's content) rather than on a
+  // `<tr>` - the visible effect is the same, the whole row reads dimmed.
+  const columns: ColumnDef<MappingEditableRow>[] = [
+    {
+      id: 'source',
+      header: columnMode ? 'Source column' : 'AutoCount field',
+      cell: ({ row }) => {
+        const index = row.index;
+        const stale = isRowStale(row.original);
+        return (
+          <div className={cn('flex flex-col gap-1', stale && 'opacity-60')}>
+            {editing ? (
+              <SearchSelect
+                options={sourceOptions}
+                value={row.original.sourcePath}
+                onChange={(value) => onChangeRow(index, withStatusSeed(row.original, { sourcePath: value }))}
+                placeholder={
+                  columnMode
+                    ? acFields.length > 0
+                      ? 'Select a column'
+                      : 'No columns yet'
+                    : 'Select or type a path'
+                }
+                searchPlaceholder={columnMode ? 'Search columns' : 'Search or type a dotted path'}
+                allowCustom={!columnMode}
+                disabled={columnMode && acFields.length === 0}
+                ariaLabel={`${columnMode ? 'Source column' : 'AutoCount source'} for row ${index + 1}`}
+              />
+            ) : (
+              <code className="text-xs">{row.original.sourcePath}</code>
+            )}
+            {stale && (
+              <Badge variant="warning" appearance="light" size="sm" className="w-fit">
+                Column not in query
+              </Badge>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      id: 'transform',
+      header: 'Transform',
+      cell: ({ row }) => {
+        const index = row.index;
+        const stale = isRowStale(row.original);
+        return editing ? (
+          <div className={cn('flex items-center gap-1', stale && 'opacity-60')}>
+            <div className="min-w-28 flex-1">
+              <SearchSelect
+                options={presetOptionsForField(row.original.sorentoField)}
+                value={presetForRow(row.original.transform, row.original.formula)}
+                onChange={(key) => onChangeRow(index, applyPreset(key))}
+                ariaLabel={`Transform for row ${index + 1}`}
+              />
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              mode="icon"
+              onClick={() => onBuildRow(index)}
+              aria-label={`Build formula for row ${index + 1}`}
+              title="Edit as a formula"
+            >
+              <FunctionSquare className="size-4" />
+            </Button>
+          </div>
+        ) : (
+          <div className={cn('flex flex-col gap-0.5', stale && 'opacity-60')}>
+            <span className="text-muted-foreground">{presetLabel(row.original)}</span>
+            {row.original.formula && (
+              <ClampedText
+                text={row.original.formula}
+                lines={2}
+                className="font-mono text-2xs text-muted-foreground/80"
+              />
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      id: 'arrow',
+      header: () => null,
+      cell: ({ row }) => (
+        <ArrowRight
+          className={cn('size-4 text-muted-foreground', isRowStale(row.original) && 'opacity-60')}
+        />
+      ),
+      size: 32,
+      enableResizing: false,
+      enableHiding: false,
+      meta: { utility: true },
+    },
+    {
+      id: 'target',
+      header: 'Sorento field',
+      cell: ({ row }) => {
+        const index = row.index;
+        const stale = isRowStale(row.original);
+        // Foolproof: offer this row's own target + any not used elsewhere,
+        // so a duplicate target can never be selected.
+        const targetOptions = sorentoFields
+          .filter((f) => f.field === row.original.sorentoField || !usedTargets.has(f.field))
+          .map((f) => ({
+            label: f.required ? `${sorentoFieldLabel(f.field)} *` : sorentoFieldLabel(f.field),
+            value: f.field,
+          }));
+        return (
+          <div className={cn(stale && 'opacity-60')}>
+            {editing ? (
+              <SearchSelect
+                options={targetOptions}
+                value={row.original.sorentoField}
+                onChange={(value) => onChangeRow(index, withStatusSeed(row.original, { sorentoField: value }))}
+                placeholder="Select a Sorento field"
+                disabled={sorentoFields.length === 0}
+                ariaLabel={`Sorento field for row ${index + 1}`}
+              />
+            ) : (
+              <span className="font-medium text-foreground">{sorentoFieldLabel(row.original.sorentoField)}</span>
+            )}
+          </div>
+        );
+      },
+    },
+    ...(editing
+      ? [
+          {
+            id: 'remove',
+            header: () => null,
+            cell: ({ row }: { row: { index: number; original: MappingEditableRow } }) => (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                mode="icon"
+                onClick={() => onRemoveRow(row.index)}
+                aria-label={`Remove row ${row.index + 1}`}
+                className={cn(isRowStale(row.original) && 'opacity-60')}
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            ),
+            size: 44,
+            enableResizing: false,
+            enableHiding: false,
+            meta: { utility: true },
+          } satisfies ColumnDef<MappingEditableRow>,
+        ]
+      : []),
+  ];
+
+  const table = useReactTable({
+    data: rows,
+    columns,
+    getRowId: (_row, index) => String(index),
+    getCoreRowModel: getCoreRowModel(),
+  });
+
   return (
     <div className="flex flex-col gap-4">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[640px] text-sm">
-          <thead>
-            <tr className="border-b text-start text-xs font-medium text-muted-foreground">
-              <th className="px-2 py-2 text-start font-medium">
-                {columnMode ? 'Source column' : 'AutoCount field'}
-              </th>
-              <th className="px-2 py-2 text-start font-medium">Transform</th>
-              <th className="w-6 px-2 py-2" aria-hidden />
-              <th className="px-2 py-2 text-start font-medium">Sorento field</th>
-              {editing && <th className="w-10 px-2 py-2" aria-hidden />}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 && (
-              <tr>
-                <td
-                  colSpan={editing ? 5 : 4}
-                  className="px-2 py-6 text-center text-muted-foreground"
-                >
-                  No deliverable fields mapped yet.
-                </td>
-              </tr>
-            )}
-            {rows.map((row, index) => {
-              // Foolproof: offer this row's own target + any not used elsewhere,
-              // so a duplicate target can never be selected.
-              const targetOptions = sorentoFields
-                .filter((f) => f.field === row.sorentoField || !usedTargets.has(f.field))
-                .map((f) => ({
-                  label: f.required ? `${sorentoFieldLabel(f.field)} *` : sorentoFieldLabel(f.field),
-                  value: f.field,
-                }));
-              // A preset-seeded row (AC-02-16/21) whose source column is no
-              // longer part of the saved query - visible, greyed, with the
-              // SAME picker so the operator can fix it in place. A blank row
-              // (just added) is never flagged - only a REAL stale value is.
-              const disabled = columnMode && row.sourcePath !== '' && !acFieldsSet.has(row.sourcePath);
-              return (
-                <tr key={index} className={cn('border-b align-top', disabled && 'opacity-60')}>
-                  <td className="px-2 py-2">
-                    {editing ? (
-                      <div className="flex flex-col gap-1">
-                        <SearchSelect
-                          options={sourceOptions}
-                          value={row.sourcePath}
-                          onChange={(value) =>
-                            onChangeRow(index, withStatusSeed(row, { sourcePath: value }))
-                          }
-                          placeholder={
-                            columnMode
-                              ? acFields.length > 0
-                                ? 'Select a column'
-                                : 'No columns yet'
-                              : 'Select or type a path'
-                          }
-                          searchPlaceholder={
-                            columnMode ? 'Search columns' : 'Search or type a dotted path'
-                          }
-                          allowCustom={!columnMode}
-                          disabled={columnMode && acFields.length === 0}
-                          ariaLabel={`${columnMode ? 'Source column' : 'AutoCount source'} for row ${index + 1}`}
-                        />
-                        {disabled && (
-                          <Badge variant="warning" appearance="light" size="sm" className="w-fit">
-                            Column not in query
-                          </Badge>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="flex flex-col gap-1">
-                        <code className="text-xs">{row.sourcePath}</code>
-                        {disabled && (
-                          <Badge variant="warning" appearance="light" size="sm" className="w-fit">
-                            Column not in query
-                          </Badge>
-                        )}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-2 py-2">
-                    {editing ? (
-                      <div className="flex items-center gap-1">
-                        <div className="min-w-28 flex-1">
-                          <SearchSelect
-                            options={presetOptionsForField(row.sorentoField)}
-                            value={presetForRow(row.transform, row.formula)}
-                            onChange={(key) => onChangeRow(index, applyPreset(key))}
-                            ariaLabel={`Transform for row ${index + 1}`}
-                          />
-                        </div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          mode="icon"
-                          onClick={() => onBuildRow(index)}
-                          aria-label={`Build formula for row ${index + 1}`}
-                          title="Edit as a formula"
-                        >
-                          <FunctionSquare className="size-4" />
-                        </Button>
-                      </div>
-                    ) : (
-                      <div className="flex flex-col gap-0.5">
-                        <span className="text-muted-foreground">{presetLabel(row)}</span>
-                        {row.formula && (
-                          <ClampedText
-                            text={row.formula}
-                            lines={2}
-                            className="font-mono text-[11px] text-muted-foreground/80"
-                          />
-                        )}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-2 py-3 text-muted-foreground">
-                    <ArrowRight className="size-4" />
-                  </td>
-                  <td className="px-2 py-2">
-                    {editing ? (
-                      <SearchSelect
-                        options={targetOptions}
-                        value={row.sorentoField}
-                        onChange={(value) =>
-                          onChangeRow(index, withStatusSeed(row, { sorentoField: value }))
-                        }
-                        placeholder="Select a Sorento field"
-                        disabled={sorentoFields.length === 0}
-                        ariaLabel={`Sorento field for row ${index + 1}`}
-                      />
-                    ) : (
-                      <span className="font-medium text-foreground">
-                        {sorentoFieldLabel(row.sorentoField)}
-                      </span>
-                    )}
-                  </td>
-                  {editing && (
-                    <td className="px-2 py-2 text-end">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        mode="icon"
-                        onClick={() => onRemoveRow(index)}
-                        aria-label={`Remove row ${index + 1}`}
-                      >
-                        <Trash2 className="size-4" />
-                      </Button>
-                    </td>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      <DataGrid table={table} recordCount={rows.length} emptyMessage="No deliverable fields mapped yet.">
+        <DataGridTable />
+      </DataGrid>
 
       {editing && (
         <div>

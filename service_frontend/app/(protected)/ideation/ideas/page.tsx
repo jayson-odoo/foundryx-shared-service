@@ -1,13 +1,7 @@
 'use client';
 
-import { Fragment } from 'react';
-import {
-  Toolbar,
-  ToolbarDescription,
-  ToolbarHeading,
-  ToolbarPageTitle,
-} from '@/partials/common/toolbar';
 import { Container } from '@/components/common/container';
+import { PageHeader } from '@/components/platform/page-header';
 import { IdeasView } from './ideas-view';
 
 /**
@@ -18,20 +12,9 @@ import { IdeasView } from './ideas-view';
  */
 export default function IdeasPage() {
   return (
-    <Fragment>
-      <Container width="fluid">
-        <Toolbar>
-          <ToolbarHeading>
-            <ToolbarPageTitle />
-            <ToolbarDescription>
-              The raw idea repository - drag the grip to reprioritise (top = highest).
-            </ToolbarDescription>
-          </ToolbarHeading>
-        </Toolbar>
-      </Container>
-      <Container width="fluid">
-        <IdeasView />
-      </Container>
-    </Fragment>
+    <Container width="fluid">
+      <PageHeader description="The raw idea repository - drag the grip to reprioritise (top = highest)." />
+      <IdeasView />
+    </Container>
   );
 }

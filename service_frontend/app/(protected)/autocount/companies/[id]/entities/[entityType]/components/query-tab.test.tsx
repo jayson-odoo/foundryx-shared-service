@@ -284,7 +284,7 @@ describe('QueryTab - DB company connection lock (plan sprint-5/01, AC-01-19)', (
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SF3/SF4 (final reviewer pass) - the key-columns MultiSelect / watermark
-// SearchSelect withhold each other's chosen column (BL-SS-052's foolproof
+// SearchSelect withhold each other's chosen column (BL-SS-087's foolproof
 // half) by filtering the SHARED OPTIONS list. That's correct for a NORMAL
 // save, but a LEGACY config saved before the guard existed can have the
 // watermark column sitting INSIDE keyColumns - and today the exclusion

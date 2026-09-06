@@ -30,6 +30,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SearchSelect } from '@/components/platform/search-select';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import {
   FUNCTION_CATALOG,
   OPERATOR_CATALOG,
@@ -223,8 +224,10 @@ export function AutocountFormulaBuilder({
                 sample `value` to test against - the Testing tab only makes
                 sense for the master-entity model (foolproof-UI: don't offer
                 a control that can't work). */}
+            {/* Segmented mode switch, not content navigation (AC-DLA-12) -
+                pinned explicitly, the tab strip default is now `line`. */}
             {!hasVariables && (
-              <TabsList className="mb-3">
+              <TabsList className="mb-3" variant="default">
                 <TabsTrigger value="formula">Formula</TabsTrigger>
                 <TabsTrigger value="testing">Testing</TabsTrigger>
               </TabsList>
@@ -283,7 +286,10 @@ export function AutocountFormulaBuilder({
               <div className="flex flex-wrap gap-1.5">
                 <button
                   type="button"
-                  className="h-8 rounded-md border border-border bg-primary/10 px-2.5 font-mono text-xs text-primary hover:bg-primary/20"
+                  className={cn(
+                    PRESSED_CLASS,
+                    'h-8 rounded-md border border-border bg-primary/10 px-2.5 font-mono text-xs text-primary hover:bg-primary/20',
+                  )}
                   onClick={() => insert('value')}
                 >
                   value
@@ -293,7 +299,10 @@ export function AutocountFormulaBuilder({
                     key={op.symbol}
                     type="button"
                     title={op.description}
-                    className="h-8 min-w-8 rounded-md border border-border bg-muted/40 px-2 font-mono text-xs hover:bg-accent"
+                    className={cn(
+                      PRESSED_CLASS,
+                      'h-8 min-w-8 rounded-md border border-border bg-muted/40 px-2 font-mono text-xs hover:bg-accent',
+                    )}
                     onClick={() => insert(` ${op.symbol} `)}
                   >
                     {op.symbol}
@@ -302,7 +311,10 @@ export function AutocountFormulaBuilder({
                 <button
                   type="button"
                   aria-label="Backspace"
-                  className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-muted/40 hover:bg-accent"
+                  className={cn(
+                    PRESSED_CLASS,
+                    'flex h-8 w-8 items-center justify-center rounded-md border border-border bg-muted/40 hover:bg-accent',
+                  )}
                   onClick={backspace}
                 >
                   <Delete className="size-4" />
@@ -338,18 +350,21 @@ export function AutocountFormulaBuilder({
                       ) : (
                         filteredVariableGroups.map((group) => (
                           <div key={group.label}>
-                            <p className="border-b border-border bg-muted/30 px-3 py-1 text-[11px] font-medium text-muted-foreground">
+                            <p className="border-b border-border bg-muted/30 px-3 py-1 text-2xs font-medium text-muted-foreground">
                               {group.label}
                             </p>
                             {group.items.map((item) => (
                               <button
                                 key={item.token}
                                 type="button"
-                                className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-start hover:bg-accent"
+                                className={cn(
+                                  PRESSED_CLASS,
+                                  'flex w-full items-center justify-between gap-2 px-3 py-1.5 text-start hover:bg-accent',
+                                )}
                                 onClick={() => insert(item.token)}
                               >
                                 <span className="truncate text-xs">{item.label}</span>
-                                <code className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                                <code className="shrink-0 font-mono text-2xs text-muted-foreground">
                                   {item.token}
                                 </code>
                               </button>
@@ -394,6 +409,7 @@ export function AutocountFormulaBuilder({
                           key={fn.name}
                           type="button"
                           className={cn(
+                            PRESSED_CLASS,
                             'flex w-full items-center justify-between gap-2 px-3 py-1.5 text-start hover:bg-accent',
                             selected?.name === fn.name && 'bg-accent',
                           )}

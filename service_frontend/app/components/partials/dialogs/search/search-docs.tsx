@@ -40,7 +40,7 @@ export function SearchDocs({ items }: { items: SearchDocsItem[] }) {
                   </div>
                 </div>
 
-                <Button variant="ghost" mode="icon">
+                <Button variant="ghost" mode="icon" aria-label={`More options for ${item.desc}`}>
                   <EllipsisVertical />
                 </Button>
               </div>

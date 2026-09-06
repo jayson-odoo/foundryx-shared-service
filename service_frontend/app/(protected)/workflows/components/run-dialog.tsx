@@ -253,9 +253,7 @@ export function RunDialog({
                       setChannelId(value);
                       setContactId('');
                     }}
-                    placeholder={
-                      testOptionsLoading ? 'Loading…' : 'Choose a channel…'
-                    }
+                    placeholder="Choose a channel…"
                     searchPlaceholder="Search channels…"
                     emptyText="No sandbox channels available."
                     ariaLabel="Channel"

@@ -152,10 +152,31 @@ def _backfill_tenant_modules(db: Session) -> None:
     """Pre-App-Store tenants already had module data seeded - mark them
     installed ACTIVE at the current code version (plan 08 §4). Detection is the
     module's optional ``tenant_has_data`` hook; without it nothing backfills.
+
+    B4 (plan-25 round-3 codex triage): a normal ``AppStoreService.install``
+    also runs the module's ``install_tenant`` seed hook + grants the module's
+    permission keys to the tenant's Admin role (`_grant_admin`) - this backfill
+    path used to skip BOTH, silently stamping the tenant ACTIVE at the
+    CURRENT code version with no later ``update_tenant`` ever firing (install
+    == current version, so the App Store never offers an update either).
+    Generic fix, not an omnichannel special case: mirror the same two steps
+    here for every module, isolated per-tenant so one tenant's failure never
+    blocks the others or the rest of bootstrap. Each tenant's row + hook +
+    grant runs inside its own SAVEPOINT (``db.begin_nested()``) so a failure
+    rolls back exactly that tenant's work and leaves the session usable for
+    the next tenant / the rest of bootstrap, instead of leaving it in
+    ``PendingRollbackError`` (or committing a half-applied seed alongside the
+    ACTIVE ``TenantModule`` row on a non-DB error).
+
+    Unlike ``AppStoreService.install`` this path skips ``check_requires`` and
+    unconditionally re-grants the module's permission keys to the tenant's
+    Admin role - both are only reachable here for tenants that have no
+    ``TenantModule`` row yet (the pre-App-Store backfill case), never for an
+    already-installed tenant.
     """
     from app.models.module import MODULE_STATUS_ACTIVE, Module, TenantModule
     from app.models.tenant import Tenant
-    from app.services.app_store_service import module_hooks
+    from app.services.app_store_service import AppStoreService, module_hooks
 
     tenants = db.query(Tenant).filter(Tenant.is_platform.is_(False)).all()
     for module in db.query(Module).filter(Module.is_listed.is_(True)).all():
@@ -170,14 +191,25 @@ def _backfill_tenant_modules(db: Session) -> None:
         for tenant in tenants:
             if tenant.id in installed or not has_data(db, tenant.id):
                 continue
-            db.add(
-                TenantModule(
-                    tenant_id=tenant.id,
-                    module_id=module.id,
-                    status=MODULE_STATUS_ACTIVE,
-                    installed_version=module.version,
+            try:
+                with db.begin_nested():
+                    db.add(
+                        TenantModule(
+                            tenant_id=tenant.id,
+                            module_id=module.id,
+                            status=MODULE_STATUS_ACTIVE,
+                            installed_version=module.version,
+                        )
+                    )
+                    db.flush()
+                    if hooks and hasattr(hooks, "install_tenant"):
+                        hooks.install_tenant(db, tenant.id)
+                    AppStoreService(db)._grant_admin(tenant.id, module.name)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Module '%s' backfill install_tenant failed for tenant %s: %s",
+                    module.name, tenant.id, exc, exc_info=True,
                 )
-            )
     db.flush()
 
 

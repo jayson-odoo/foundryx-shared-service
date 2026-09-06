@@ -2,12 +2,14 @@
 
 import { useState } from 'react';
 import { Plus, X } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardHeading, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { validateEmbedOrigin } from '@/lib/embed-origin';
+import { cn } from '@/lib/utils';
 
 export interface OriginsEditorProps {
   origins: string[];
@@ -102,7 +104,7 @@ export function OriginsEditor({ origins, onSave }: OriginsEditorProps) {
                 <button
                   type="button"
                   aria-label={`Remove ${origin}`}
-                  className="ms-0.5 rounded-sm text-muted-foreground hover:text-foreground"
+                  className={cn(PRESSED_CLASS, 'ms-0.5 rounded-sm text-muted-foreground hover:text-foreground')}
                   onClick={() => remove(origin)}
                 >
                   <X className="size-3.5" />

@@ -154,7 +154,9 @@ function editButton() {
   return screen.getByRole('button', { name: /^Edit$/ });
 }
 function saveButton() {
-  return screen.getByRole('button', { name: 'Save' });
+  // T3 (AC-DLA-35): the primary Save button now carries a verb+noun label
+  // ("Save task") derived from the sidebar entry, not a bare "Save".
+  return screen.getByRole('button', { name: /^Save/i });
 }
 
 beforeEach(() => {
@@ -181,8 +183,13 @@ describe('TaskEditorView.onSave - reload race (SF1, final reviewer pass)', () =>
     // The new row starts with a BLANK source column (foolproof-UI: `validate()`
     // rejects a save with any blank source), so pick one to make the row a
     // genuine, savable edit.
-    await user.click(screen.getByLabelText('Source column for row 2'));
-    await user.click(screen.getByRole('option', { name: 'CompanyName' }));
+    // `fireEvent.click` (not `userEvent.click`) for this freshly-added row's
+    // picker - `userEvent`'s pointerdown/pointerup sequence does not toggle
+    // the Popover open for a node that just mounted this same tick (a jsdom/
+    // Radix interaction quirk unrelated to the app code under test; row 1's
+    // pre-existing picker opens fine either way).
+    fireEvent.click(screen.getByLabelText('Source column for row 2'));
+    fireEvent.click(screen.getByRole('option', { name: 'CompanyName' }));
 
     await user.click(saveButton());
 

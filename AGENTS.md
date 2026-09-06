@@ -32,8 +32,9 @@ npm install --force        # React 19 peer deps
 npm run dev                # :3001 (3000 is taken)
 npm run build && npm start # prod build; after ANY change: rm -rf .next && npm run build before live-verifying
 npm run lint && npm test   # eslint; vitest (RTL)
-npm run test:e2e           # playwright, real clicks, against the live stack (backend up + seeded)
+npm run format             # prettier --write .
 ```
+- Playwright is retired (user ruling 2026-09-04, plan 23 D15): no `e2e/` specs, config or dependency. Browser verification = recorded `agent-browser` CLI runs against the live stack.
 - `.env.local`: `NEXT_PUBLIC_BACKEND_API_URL=http://localhost:8001`, `BACKEND_API_URL=http://localhost:8001`, `NEXTAUTH_URL=http://localhost:3001` (defaults point at 8000 = wrong backend). `NEXT_PUBLIC_*` are baked at BUILD time.
 - Real auth only (no mock mode). Vitest config `vitest.config.mts`.
 
@@ -66,6 +67,7 @@ npm run test:e2e           # playwright, real clicks, against the live stack (ba
 | Storage & jobs | `storage-and-background-jobs.md` | Connection-driven storage, key registry, A->B migration, centralized `background_jobs`, migration lessons |
 | Auth / tenancy / RBAC | `auth-tenancy-rbac.md` | Login contract, throttle, forgot-password, impersonation invariants |
 | Frontend + design | `frontend-and-design-system.md` | Resource shell contract, canvas-editor interaction principles, foolproof-UI, responsive |
+| Design language (plan 23, LIVE) | `docs/reference/design-language.md` (repo root `docs/`) | Canonical motion/material/z-scale/type tokens, `lib/motion.ts` spring API, primitives roster (`DataGrid`, `PageHeader`, `DeferredActionButton`, ...), D1-D16 + T5-T8 rulings that feed the hard-fail list; read before ANY UI file change |
 | Module platform / App Store | `module-platform-and-app-store.md` | Manifest, loader, lifecycle, capabilities, soft refs, per-module Alembic |
 | Omnichannel Service | `omnichannel-service.md` | WhatsApp BSP, WABA tabs, public gateway (guide IS the contract), signed media URLs, AI workflow nodes |
 | AutoCount Service | `documentation/plans/sprint-4/22-autocount-db-etl.md`, `sprint-5/01-*`, `sprint-5/02-*` | ERP -> Sorento ESB: `ac_company` (API or `sql_database` source), entity tasks, mapping engine + formula builder, `SorentoSink` (`X-API-Key`, `companyCode`), Sorento addendum = the cross-repo contract |
@@ -91,7 +93,7 @@ npm run test:e2e           # playwright, real clicks, against the live stack (ba
 
 ## Development methodology (summary; full order + gates in `PRINCIPLES.md`, detail in `process-lessons.md`)
 
-Grill -> **UAC first** (`<NN>-<feature>-acceptance-criteria.md`) -> plan (`<NN>-<feature>.md`) -> plan review (`lavish-axi` markup, mandatory) -> frontend-first against a `PHASE 1 MOCK` -> backend test-FIRST (tester's red tests, then coder) -> Playwright E2E with real clicks + AC-keyed test report -> code review (hard-fail rules + DoD gate) -> merge. Branch per feature `sprint-<N>/<feature>`. Run `/feature` (`.claude/skills/feature/SKILL.md`) - it drives the order and names the executor per step.
+Grill -> **UAC first** (`<NN>-<feature>-acceptance-criteria.md`) -> plan (`<NN>-<feature>.md`) -> plan review (`lavish-axi` markup, mandatory) -> frontend-first against a `PHASE 1 MOCK` -> backend test-FIRST (tester's red tests, then coder) -> `agent-browser` evidence run with real clicks at 375px AND 1280px + AC-keyed test report -> code review (hard-fail rules + DoD gate) -> merge. Branch per feature `sprint-<N>/<feature>`. Run `/feature` (`.claude/skills/feature/SKILL.md`) - it drives the order and names the executor per step.
 
 ### Code-review hard-fail rules
 DB queries / raw SQL in a router; a component calling fetch/axios; `any`; raw CSS / `<style>`; a module altering core `public` tables; a "done" slice still bound to a mock; a new column/engine with no backfill; hardcoded lookup of a tenant-editable key; a new permission with no grant path for existing tenants; em/en dashes.
@@ -106,7 +108,7 @@ DB queries / raw SQL in a router; a component calling fetch/axios; `any`; raw CS
 - Port ownership is the #1 time sink: `lsof -p $(lsof -ti :3001) | grep cwd`; `pkill -9 -f next-server` before a clean `npm start`.
 
 ### Subagent crew v2 (standing rule, 2026-09-05)
-Seats live in `.claude/agents/`: `coder`, `tester`, `reviewer`, `security-reviewer`, `planner`, `guide-writer`, `triage`; `/feature` names the executor per step; a `general-purpose` agent doing one of these jobs is a process violation (agent types load at session start - after adding/porting seats, start a fresh session via `/handoff` + `/clear` + `/resume-handoff`). Rules: **tester writes the red tests BEFORE the coder** (from the UAC + the Phase 1 contract block + the captain's test list); **one coder per lane, continued via message, never respawned**; **reviewer + security-reviewer + tester browser-verify run in PARALLEL once per lane**, reviewer runs a **kill test**; plan review = `lavish-axi` markup + grill. Models: execution on Sonnet, review + planner on Opus; escalate a single spawn with `model`, never by editing agent files; never spawn on Fable. Every brief carries the DoD gate + hard-fail rules (a subagent starts with zero project memory). Browser verification = **`agent-browser` CLI, headless** - Playwright MCP is retired for verification (the `e2e/*.spec.ts` suite stays the E2E step).
+Seats live in `.claude/agents/`: `coder`, `tester`, `reviewer`, `security-reviewer`, `planner`, `guide-writer`, `triage`; `/feature` names the executor per step; a `general-purpose` agent doing one of these jobs is a process violation (agent types load at session start - after adding/porting seats, start a fresh session via `/handoff` + `/clear` + `/resume-handoff`). Rules: **tester writes the red tests BEFORE the coder** (from the UAC + the Phase 1 contract block + the captain's test list); **one coder per lane, continued via message, never respawned**; **reviewer + security-reviewer + tester browser-verify run in PARALLEL once per lane**, reviewer runs a **kill test**; plan review = `lavish-axi` markup + grill. Models: execution on Sonnet, review + planner on Opus; escalate a single spawn with `model`, never by editing agent files; never spawn on Fable. Every brief carries the DoD gate + hard-fail rules (a subagent starts with zero project memory). Browser verification = **`agent-browser` CLI, headless**; the former E2E runner is retired entirely (user ruling 2026-09-04, plan 23 D15): `[E2E]` = one recorded agent-browser run per user flow, evidence under `documentation/plans/sprint-<N>/<NN>-evidence/`. **Never run the built-in `/code-review` skill**: it forks on the main session's model and fans out 20+ same-model verifiers; reviews go to the `reviewer` seat with a compact brief (branch, diff range, plan + UAC paths, hard-fail list).
 
 ### Agents-team orchestration (what works)
 Audit before building (per-AC gap matrix); sequential coders on a shared branch when files overlap; tester verifies from the USER's perspective (real clicks, real data, fresh build) and writes the AC-id-keyed PASS/FAIL/DEFERRED report; reviewer re-checks the recurring-gap gate, not only correctness.

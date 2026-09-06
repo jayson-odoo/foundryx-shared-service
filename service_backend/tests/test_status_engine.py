@@ -1009,6 +1009,74 @@ def test_update_to_auto_validates_resulting_state(client):
     assert res.status_code == 200 and res.json()["triggerMode"] == "auto"
 
 
+def test_is_initial_still_converges_to_at_most_one(client):
+    """AC-20 pre-existing behaviour, unaffected by the new guard: marking a
+    SECOND status `isInitial` silently converges the first one off."""
+    operator = _operator(client)
+    a = _create_status(client, operator, "synthetic_ticket", "A", {"isInitial": True})
+    b = _create_status(client, operator, "synthetic_ticket", "B", {"isInitial": True})
+    graph = _graph(client, operator, "synthetic_ticket")
+    initial = [s for s in graph["statuses"] if s["isInitial"]]
+    assert [s["id"] for s in initial] == [b["id"]]
+    assert next(s for s in graph["statuses"] if s["id"] == a["id"])["isInitial"] is False
+
+
+def test_is_initial_cannot_be_unset_on_the_last_initial_status(client):
+    """AC-20: EXACTLY one `is_initial` per set, never zero - `is_initial`
+    converging to AT MOST one (above) must never converge a set to ZERO
+    either, or a new record has nowhere to start. Generic - the guard lives
+    in `StatusService._apply_flags`, not any one entity's code."""
+    operator = _operator(client)
+    a = _create_status(client, operator, "synthetic_ticket", "A", {"isInitial": True})
+    res = client.patch(
+        f"/statuses/{a['id']}", json={"flags": {"isInitial": False}}, headers=operator
+    )
+    assert res.status_code == 422, res.text
+    assert "initial" in res.json()["detail"].lower()
+    # Nothing was written - re-fetch confirms the flag is untouched.
+    graph = _graph(client, operator, "synthetic_ticket")
+    assert next(s for s in graph["statuses"] if s["id"] == a["id"])["isInitial"] is True
+
+
+def test_is_initial_status_cannot_be_deleted_when_it_is_the_last_one(client):
+    """Same AC-20 guard on delete (finding 6's second half) - even with zero
+    records referencing it (so the reference-count guard alone would allow
+    the delete), deleting the sole `isInitial` status must still 422."""
+    operator = _operator(client)
+    a = _create_status(client, operator, "synthetic_ticket", "A", {"isInitial": True})
+    res = client.delete(f"/statuses/{a['id']}", headers=operator)
+    assert res.status_code == 422, res.text
+    assert "initial" in res.json()["detail"].lower()
+
+
+def test_first_status_of_an_empty_set_is_forced_initial(client):
+    """B1 (plan-25 round-3 codex triage): the very FIRST status created for a
+    brand new (entity_type, scope, scope_id) set must become `is_initial`
+    even if the caller omits the flag - otherwise the set converges to ZERO
+    initial statuses and a new record has nowhere to start. Generic guard in
+    `StatusService.create_status`, not any one entity's code."""
+    operator = _operator(client)
+    a = _create_status(client, operator, "synthetic_ticket", "A")
+    assert a["isInitial"] is True
+    graph = _graph(client, operator, "synthetic_ticket")
+    assert next(s for s in graph["statuses"] if s["id"] == a["id"])["isInitial"] is True
+    # A second status created afterwards must NOT be force-initialed - only
+    # the very first row of an empty set gets the auto-promote.
+    b = _create_status(client, operator, "synthetic_ticket", "B")
+    assert b["isInitial"] is False
+
+
+def test_is_initial_status_can_be_deleted_once_another_becomes_initial(client):
+    """The guard is about the SET, not the individual row - once a second
+    status has taken over as the initial one, the (now non-initial) first
+    status is free to be deleted."""
+    operator = _operator(client)
+    a = _create_status(client, operator, "synthetic_ticket", "A", {"isInitial": True})
+    _create_status(client, operator, "synthetic_ticket", "B", {"isInitial": True})
+    res = client.delete(f"/statuses/{a['id']}", headers=operator)
+    assert res.status_code == 204, res.text
+
+
 def test_auto_edges_excluded_from_user_surfaces(client, session_factory):
     """AC-03-04 - auto edges never appear in available_transitions / fireable_edge_ids;
     manual edges from the same status still do."""

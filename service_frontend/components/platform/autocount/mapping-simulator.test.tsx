@@ -100,6 +100,36 @@ describe('MappingSimulator (AC-16-30/31)', () => {
     fireEvent.click(screen.getByRole('button', { name: /run simulation/i }));
     expect(onSimulate).not.toHaveBeenCalled();
   });
+
+  it('AC-DLA-56 (T7): the field-results grid is a DataGrid, one row per header + line field', async () => {
+    const onSimulate = vi.fn().mockResolvedValue({
+      ...rejectedResult(),
+      lineFields: [
+        [
+          {
+            scope: 'line',
+            sourcePath: 'Qty',
+            canonicalField: 'quantity',
+            present: true,
+            ok: true,
+            value: 3,
+            error: null,
+          },
+        ],
+      ],
+    });
+    render(<MappingSimulator open onOpenChange={vi.fn()} rows={ROWS} onSimulate={onSimulate} />);
+    fireEvent.click(screen.getByRole('button', { name: /run simulation/i }));
+
+    await waitFor(() => expect(screen.getByTestId('field-results')).toBeInTheDocument());
+    const grid = screen.getByTestId('field-results');
+    expect(grid.querySelector('table')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Sorento field' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Source' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Value' })).toBeInTheDocument();
+    // header field (Code) + header field (Credit limit, failed) + line field (Qty).
+    expect(screen.getAllByRole('row')).toHaveLength(4); // 1 header row + 3 data rows.
+  });
 });
 
 // sprint-5/02 (AC-02-22) - document mode: pick a real header, fetch its lines.
@@ -154,7 +184,15 @@ describe('MappingSimulator - document mode (sprint-5/02, AC-02-22)', () => {
     );
     fireEvent.click(screen.getByRole('combobox', { name: 'Header row' }));
     fireEvent.click(screen.getByRole('option', { name: 'SO-1001' }));
-    fireEvent.click(screen.getByRole('button', { name: /run simulation/i }));
+    // T3 (AC-DLA-20): the header Popover now closes on the shared spring
+    // (`AnimatePresence` + `forceMount`, see popover.tsx) instead of a
+    // synchronous CSS class toggle - even with `MotionGlobalConfig.
+    // skipAnimations` (vitest.setup.ts) collapsing the tween itself, the
+    // exit-complete callback that un-hides the rest of the dialog still
+    // resolves on a microtask, so a synchronous `fireEvent.click` can query
+    // "Run simulation" one tick too early. `waitFor` gives that tick.
+    const runButton = await waitFor(() => screen.getByRole('button', { name: /run simulation/i }));
+    fireEvent.click(runButton);
 
     await waitFor(() => expect(onSimulate).toHaveBeenCalled());
     expect(onFetchLines).toHaveBeenCalledWith('SO-1001');

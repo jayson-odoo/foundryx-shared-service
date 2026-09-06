@@ -285,7 +285,7 @@ def test_an_abort_between_pages_delivers_page_one_exactly_once_via_the_scheduler
     # injected abort below lands on statement #2, a NON-final page
     # (round-3b: page_size=2 made statement #2 the LAST page for a 4-row
     # population, which tested an abort on the FINAL page instead of a
-    # mid-pass one - see BL-SS-061 for that separate scenario).
+    # mid-pass one - see the refuted mid-pass-abort candidate (no backlog row) for that separate scenario).
     monkeypatch.setattr(
         __import__("app.config", fromlist=["settings"]).settings,
         "autocount_page_size", 1, raising=False,
@@ -342,7 +342,7 @@ def test_an_abort_between_pages_delivers_page_one_exactly_once_via_the_scheduler
     # until every staged row has actually been PUSHED (round 3b: "the pass
     # completed" is not the same question - an aborted run can leave a
     # complete pass with its own page's rows staged but never auto-pushed,
-    # S4/BL-SS-061) - a generous cap, defensive about exactly how many
+    # S4/the refuted mid-pass-abort candidate (no backlog row)) - a generous cap, defensive about exactly how many
     # pages/ticks 4 rows needs.
     for _ in range(10):
         if _pending_count() == 0:
@@ -368,7 +368,7 @@ def test_an_abort_between_pages_delivers_page_one_exactly_once_via_the_scheduler
 def test_an_abort_on_the_final_page_still_gets_pushed_by_the_next_ordinary_tick(
     session_factory, monkeypatch, consumer,
 ):
-    """S4 / BL-SS-061 refutation. Abort lands on the FINAL page's own
+    """S4 / the refuted mid-pass-abort candidate (no backlog row) refutation. Abort lands on the FINAL page's own
     statement (page_size=2, 4 rows -> exactly 2 statements/pages) - that
     page's rows are staged and committed (the abort is only detected AFTER
     the page's own commit), and ``pass.complete`` is written True before the
@@ -423,7 +423,7 @@ def test_an_abort_on_the_final_page_still_gets_pushed_by_the_next_ordinary_tick(
     watermark = _watermark_row(db, company_id)
     assert ((watermark.cursor_json or {}).get("pass") or {}).get("complete") is True, (
         "the final page's own read must have completed the pass before the "
-        "abort was detected - otherwise this is not the BL-SS-061 scenario"
+        "abort was detected - otherwise this is not the the refuted mid-pass-abort candidate (no backlog row) scenario"
     )
     pending_before = (
         db.query(AcStagedRecord)

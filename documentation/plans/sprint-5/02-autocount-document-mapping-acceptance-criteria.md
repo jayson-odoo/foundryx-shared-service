@@ -289,7 +289,7 @@ timestamped, purged.
 | # | Decision |
 |---|---|
 | Q1 | Line mapping operator-editable, persisted `scope='line'`. |
-| Q2 | Presets (SQL pack) seed header + line rows and Query-tab queries. BL-SS-045 pulled in. |
+| Q2 | Presets (SQL pack) seed header + line rows and Query-tab queries. BL-SS-080 pulled in. |
 | Q3→Q7 | Target = parity with Sorento's xlsx outstanding import, not raw tables; addendum for the delta. |
 | Q4/Q9 | Header status = configurable formula with line aggregates; default cancelled/closed/open. |
 | Q5 | Three Query-tab line pickers become line rows (one-time migration). |

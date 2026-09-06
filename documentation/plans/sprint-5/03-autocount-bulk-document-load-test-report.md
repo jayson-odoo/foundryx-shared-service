@@ -63,7 +63,7 @@ fixture, Sorento company `SIM`). Report written at branch HEAD `40d5cb2`.
   per 2,000-header page including the per-document line fetch); each run also drained 5,000
   pending rows (about 100 s per 5,000 pushes once extraction was complete). The initial SO pass
   scanned only 68,068 of the 148,068 headers because the query re-save kept the old watermark
-  (Finding 3, BL-SS-063); the reconcile pass re-baselined all 148,068 and staged/pushed the
+  (Finding 3, BL-SS-097); the reconcile pass re-baselined all 148,068 and staged/pushed the
   80,000 that had no hash, then scanned the 68,068 hashed rows with 0 staged (AC-03-09 at scale).
 - All 39 SO runs of the load window (00:46-03:14 local, 14 of them truncated) total: 216,136
   rows scanned, 148,068 staged, 152,500 pushed, 0 failed.
@@ -101,7 +101,7 @@ unchanged was re-pushed.
 ## Step 7 - AC-03-23 fulfilment through reconcile (`ac_sim`, Sorento company `SIM`)
 
 1. `ac_sim` `sales_order` header query re-saved with the LATERAL fingerprint (Test query: 64
-   rows, PUT 200). The save cleared the task's hashes (BL-SS-063 behaviour) and kept the watermark.
+   rows, PUT 200). The save cleared the task's hashes (BL-SS-097 behaviour) and kept the watermark.
 2. Baseline reconcile (`ac_sim_reconcile_tick.py`): run `3c831721` `mode=reconcile`, scanned 64,
    added 64, staged 64, pushed 64, complete. Sorento `ac_sim:1:1`: `qty_ordered 40`,
    `qty_delivered 1`, `line_status open`, order `open`.
@@ -172,20 +172,20 @@ on :3042: DEFERRED (no approved Sorento login); Sorento state was verified with 
    `product_ref` (`ItemAutoKey`) in the initial pass. Fixed by re-saving both line queries with
    `AND d.ItemCode IS NOT NULL`; the reconcile then loaded 4,675 / 3,287 with 0 failures. Preset
    fix landed as `c434a1d`.
-3. **BL-SS-063** - a query re-save clears the hashes and the open pass but keeps `sqlWatermark`,
+3. **BL-SS-097** - a query re-save clears the hashes and the open pass but keeps `sqlWatermark`,
    so the next tick runs an INCREMENTAL from the old mark: the initial SO pass read only the
    68,068 headers past the mark, left 80,000 already-pushed headers unhashed, and the 570 FAILED
    rows were not retried until a reconcile was forced by hand. Correct by design; the operator
    gets no signal.
-4. **BL-SS-064** - Sorento's `retryable` verdict names the unresolved reference in `errors`;
+4. **BL-SS-098** - Sorento's `retryable` verdict names the unresolved reference in `errors`;
    `SorentoSink` folds it into a generic message and the STAGED row keeps `error`/`errors_json`
    NULL. Doc 45274227 stayed STAGED across every push with nothing on our side saying WHICH
    master was missing (it was product key 6, Finding 6).
-5. **BL-SS-065 / BL-SS-066** - product `name`: ten items have an empty `Description` (AutoKeys 6,
+5. **BL-SS-099 / BL-SS-100** - product `name`: ten items have an empty `Description` (AutoKeys 6,
    8, 11, 292, 6650, 8196, 10868, 10887, 10898, 11161), so 50 product staged rows FAILED on
-   required `name`. The formula builder refuses source columns on a master entity (BL-SS-065,
+   required `name`. The formula builder refuses source columns on a master entity (BL-SS-099,
    `builderVariables = []`), and `MappingRow.coerce` short-circuits a blank source before the
-   row's formula can run (BL-SS-066). Workaround applied by config: the `name` row re-sourced from
+   row's formula can run (BL-SS-100). Workaround applied by config: the `name` row re-sourced from
    `ItemCode` with `if(trim(coalesce(Description, "")) == "", ItemCode, Description)` (PUT 200,
    simulate on the real key-6 record -> `name "1861"`); the following product runs reported 0
    failures.

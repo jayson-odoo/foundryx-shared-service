@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import { Archive, ArchiveRestore, ArrowRight, ClipboardList, FileText, Lightbulb, Rocket } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { useCan } from '@/hooks/use-can';
@@ -62,6 +62,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
   const [notFound, setNotFound] = useState(false);
 
   const form = useForm<IdeaFormValues>({
+    mode: 'onTouched',
     resolver: zodResolver(ideaFormSchema),
     defaultValues: toFormValues(null),
   });
@@ -148,15 +149,11 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
         icon: Archive,
         surfaces: { row: false, form: true, bulk: false },
         isVisible: (rows) => rows.every((r) => r.status !== 'archived'),
-        confirm: {
-          title: 'Archive idea',
-          description: 'Archived ideas are hidden from the active list but retained. You can restore them later.',
-          confirmLabel: 'Archive',
-        },
-        run: async (rows) => {
-          await applyStatus(rows[0].id, 'archived');
-          toast.success('Idea archived.');
-        },
+        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+        // 15) - no confirm, no `run` (the registered `ideation_ideas.archive`
+        // handler commits it server-side; restore stays a plain, un-gated
+        // action, so this is the reversible window).
+        deferred: { actionKey: 'ideation_ideas.archive', entityType: 'ideation_idea' },
       },
       {
         id: 'restore',
@@ -175,16 +172,10 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
         icon: FileText,
         tone: 'destructive',
         surfaces: { row: false, form: true, bulk: false },
-        confirm: {
-          title: 'Delete idea?',
-          description: 'This permanently removes the idea from the repository.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows) => {
-          await ideationService.remove(rows[0].id);
-          toast.success('Idea deleted.');
-          router.push(paths.listHref);
-        },
+        // Grace-window deferred action - no confirm, no `run`. ResourceForm's
+        // own onCommitted already carries the record's ctx/i/from back to
+        // the list (AC-DLA-30), matching what this `run` used to do by hand.
+        deferred: { actionKey: 'ideation_ideas.delete', entityType: 'ideation_idea' },
       },
     ];
 

@@ -2,7 +2,8 @@
 
 `is_dev(connection)` is true when there is **no active LLM connection at all**
 or when the resolved connection carries `dev` credentials. Under it, pytest,
-Vitest and Playwright run with zero API key, zero cost and zero network.
+Vitest and browser-automation E2E runs proceed with zero API key, zero cost and
+zero network.
 
 **Only the provider HTTP call is faked.** The grill engine, coverage tracking,
 `form_engine` validation, status transitions and RBAC all execute for real - the

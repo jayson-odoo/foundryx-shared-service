@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Plug } from 'lucide-react';
 import { useForm } from 'react-hook-form';
-import { toast } from 'sonner';
+import { toast } from '@/lib/toast';
 import { Container } from '@/components/common/container';
 import { Form } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
@@ -66,7 +66,7 @@ function emptyReason(kind: AutocountSourceKind, state: SourceConnectionsState) {
  */
 export function ConnectCompanyView() {
   const router = useRouter();
-  const form = useForm();
+  const form = useForm({ mode: 'onTouched' });
   const sources = useAutocountSourceConnections();
   const [pickedKind, setPickedKind] = useState<AutocountSourceKind | null>(null);
   const [connectionId, setConnectionId] = useState<string | null>(null);
@@ -186,7 +186,7 @@ export function ConnectCompanyView() {
                       setFieldError(null);
                     }}
                     disabled={source.isLoading || isSaving || source.options.length === 0}
-                    placeholder={source.isLoading ? 'Loading…' : 'Select a connection'}
+                    placeholder="Select a connection"
                     ariaLabel={kind === 'db' ? 'SQL database connection' : 'AutoCount connection'}
                     className="max-w-sm"
                   />

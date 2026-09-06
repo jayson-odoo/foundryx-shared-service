@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ChevronRight, Folder, HardDrive } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { cn } from '@/lib/utils';
 import {
   Dialog,
   DialogContent,
@@ -11,6 +13,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Skeleton } from '@/components/ui/skeleton';
 import { documentService } from '@/services/document-service';
 import type { FolderRow } from '@/types/documents';
 
@@ -74,7 +77,7 @@ export function MoveDialog({
         <div className="flex flex-wrap items-center gap-1 text-sm text-muted-foreground">
           <button
             type="button"
-            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted"
+            className={cn(PRESSED_CLASS, 'inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-muted')}
             onClick={() => descend(null)}
           >
             <HardDrive className="size-3.5" /> Drive
@@ -84,7 +87,7 @@ export function MoveDialog({
               <ChevronRight className="size-3.5" />
               <button
                 type="button"
-                className="rounded px-1.5 py-0.5 hover:bg-muted"
+                className={cn(PRESSED_CLASS, 'rounded px-1.5 py-0.5 hover:bg-muted')}
                 onClick={() => descend(c.id)}
               >
                 {c.name}
@@ -95,7 +98,13 @@ export function MoveDialog({
 
         <ScrollArea className="h-64 rounded-md border">
           <div className="p-1">
-            {loading && <div className="p-4 text-sm text-muted-foreground">Loading…</div>}
+            {loading && (
+              <div className="space-y-1.5 p-1">
+                <Skeleton className="h-8 w-full" />
+                <Skeleton className="h-8 w-full" />
+                <Skeleton className="h-8 w-full" />
+              </div>
+            )}
             {!loading && folders.length === 0 && (
               <div className="p-4 text-sm text-muted-foreground">No sub-folders here.</div>
             )}
@@ -108,7 +117,10 @@ export function MoveDialog({
                     type="button"
                     disabled={disabled}
                     onClick={() => descend(f.id)}
-                    className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                    className={cn(
+                      PRESSED_CLASS,
+                      'flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40',
+                    )}
                   >
                     <span className="flex items-center gap-2 truncate">
                       <Folder className="size-4 text-primary" />
