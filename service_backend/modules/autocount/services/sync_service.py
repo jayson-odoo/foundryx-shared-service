@@ -84,7 +84,6 @@ from ..sinks_sorento import (
     sorento_supported_entities_label,
     sorento_supports_entity,
     describe_consumer_failure,
-    SorentoSink,
 )
 from ..sync import AUTOCOUNT_SYNC
 from .company_service import AutocountServiceError, CompanyService
