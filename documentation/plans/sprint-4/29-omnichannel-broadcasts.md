@@ -344,6 +344,7 @@ path; the reconciler resolves anything still ambiguous at finalize.
 | BL-SS-090 | Broadcast recipients export (CSV through `background_jobs`, reusing the A2 export job pattern) | Low |
 | BL-SS-091 | Label a broadcast-originated bubble in the Inbox using the `metadata_json.broadcast` marker this slice stamps | Low |
 | BL-SS-092 | `broadcast_recipients` retention / archival for large campaigns (pairs with BL-SS-060) | Low |
+| BL-SS-093 | A crashed/stuck chunk chain that leaves `queued` recipients unclaimed (the beat's stuck-SENDING repair reconciles claimed-but-ambiguous rows, S2b D-A4-9, but does not RESUME a chain whose next `broadcast_chunk.apply_async` was never enqueued) - a broadcast can wedge in SENDING with never-attempted recipients until an operator re-runs the job. Needs a beat-driven "stalled SENDING" detector (last count-advance older than N minutes) that re-enqueues the next chunk, not just the finalize path `run_due_broadcasts` already covers | Medium |
 
 ## 8. Flagged for the user
 
