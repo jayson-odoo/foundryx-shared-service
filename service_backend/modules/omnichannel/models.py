@@ -76,6 +76,10 @@ class Workspace(OmniBase):
     status_id = Column(String, ForeignKey("statuses.id"), nullable=True)
     is_default = Column(Boolean, nullable=False, default=False)
     is_trashed = Column(Boolean, nullable=False, default=False)
+    # plan sprint-4/31 S2 (D-A5-15) - the `omnichannel.assign_conversation`
+    # round-robin mode's cursor (last-assigned member's user id, or NULL). No
+    # separate pointer table - one workspace, one cursor.
+    round_robin_cursor = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False

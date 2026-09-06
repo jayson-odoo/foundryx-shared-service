@@ -125,9 +125,16 @@ class WorkflowValidationError(Exception):
         self.issues = issues
 
 
-def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
+def definition_issues(
+    doc: WorkflowDefinitionModel, *, workflow_id: Optional[str] = None
+) -> List[str]:
     """The publish-blocking issues (mirror of the frontend validateDefinition).
-    Empty list = publishable. Catalog-driven required-config checks included."""
+    Empty list = publishable. Catalog-driven required-config checks included.
+
+    ``workflow_id`` (plan sprint-4/31 S2, AC-WFP-33) - the workflow being
+    published, so a `workflow.trigger` node targeting ITSELF is refused here
+    rather than only at run time (the S0 frontend catalog does not yet
+    self-exclude the picker - S3 wires that; this is the real 422 gate)."""
     from app.workflow_engine.registry import get_action, get_trigger
 
     issues: List[str] = []
@@ -263,6 +270,12 @@ def definition_issues(doc: WorkflowDefinitionModel) -> List[str]:
             from app.workflow_engine.actions.code_actions import code_config_issues
 
             issues.extend(code_config_issues(n.config))
+        if n.type == "workflow.trigger" and workflow_id:
+            target_id = n.config.get("workflowId")
+            if isinstance(target_id, str) and target_id == workflow_id:
+                issues.append(
+                    '"Trigger another workflow" cannot target this same workflow.'
+                )
     return issues
 
 
@@ -288,10 +301,10 @@ def _node_label(node: WorkflowNodeModel) -> str:
     return entry.label if entry else node.type
 
 
-def validate_definition(raw: Any) -> WorkflowDefinitionModel:
+def validate_definition(raw: Any, *, workflow_id: Optional[str] = None) -> WorkflowDefinitionModel:
     """Full publish gate: shape + rules. Raises WorkflowValidationError."""
     doc = parse_definition(raw)
-    issues = definition_issues(doc)
+    issues = definition_issues(doc, workflow_id=workflow_id)
     if issues:
         raise WorkflowValidationError(issues)
     return doc

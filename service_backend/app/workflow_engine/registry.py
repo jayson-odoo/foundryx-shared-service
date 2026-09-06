@@ -592,6 +592,26 @@ def _register_core() -> None:
         )
     )
 
+    # ---- workflow.trigger (sprint-4/31 S2, AC-WFP-33) ----
+    from app.workflow_engine.actions.workflow_trigger_actions import workflow_trigger
+
+    register_action(
+        ActionDef(
+            key="workflow.trigger",
+            label="Trigger another workflow",
+            description="Start another published workflow for this contact.",
+            icon="Workflow",
+            category="Actions",
+            executor=workflow_trigger,
+            fields=[
+                NodeField(key="workflowId", label="Workflow", type="workflowRef", required=True),
+                NodeField(key="contactId", label="Contact", type="text", mergeable=True),
+                NodeField(key="payload", label="Payload (JSON)", type="textarea", mergeable=True),
+            ],
+            outputs=[NodeOutput("runId", "Run id"), NodeOutput("workflowId", "Workflow id")],
+        )
+    )
+
     # ---- Sandboxed Code action (sprint-4/19 S4) ----
     from app.workflow_engine.actions.code_actions import code_run
 

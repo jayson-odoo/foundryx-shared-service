@@ -493,7 +493,16 @@ class ConversationService:
         actor_id: Optional[str] = None,
         actor_external_agent_id: Optional[str] = None,
         external_connection_id: Optional[str] = None,
+        assigned_via_override: Optional[str] = None,
     ) -> ThreadItem:
+        """`assigned_via_override` (plan sprint-4/31 S2) - lets a caller stamp
+        the assigned/unassigned event's `assigneeKind` explicitly (workflow
+        actions pass ``"workflow"`` so `event_service._emit_workflow_event`
+        reports `trigger.assignedVia == "workflow"`, matching the UI's own
+        "manual"/"external" values) instead of the default user/external_agent
+        inference. Kept as its own kwarg (not folded into `actor`) because the
+        actor for an automated assign is `None` - there is no user to infer
+        "manual" from."""
         c = self.repo.get_by_id(contact_id, tenant_id)
         if c is None:
             raise ThreadNotFound()
@@ -534,7 +543,9 @@ class ConversationService:
             new_assignee = c.assigned_user_id or c.assigned_external_agent_id
             if new_assignee != prev_assignee:
                 if new_assignee:
-                    kind = "user" if c.assigned_user_id else "external_agent"
+                    kind = assigned_via_override or (
+                        "user" if c.assigned_user_id else "external_agent"
+                    )
                     event_service.record(
                         self.db, c, "assigned",
                         actor=actor, actor_id=actor_id,
@@ -548,6 +559,9 @@ class ConversationService:
                         actor=actor, actor_id=actor_id,
                         external_agent_id=actor_external_agent_id,
                         from_value=prev_assignee,
+                        payload={"assigneeKind": assigned_via_override}
+                        if assigned_via_override
+                        else None,
                     )
 
         if status is not None:

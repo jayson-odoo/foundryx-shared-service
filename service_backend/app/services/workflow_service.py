@@ -332,7 +332,9 @@ class WorkflowService:
 
     def publish(self, workflow_id: str, tenant_id: str, actor_id: str, actor: Optional[User] = None) -> Workflow:
         wf = self.get(workflow_id, tenant_id)
-        doc = validate_definition(wf.draft_definition_json)  # raises on issues (422)
+        # raises on issues (422); `workflow_id` gates a `workflow.trigger`
+        # node that targets ITSELF (AC-WFP-33).
+        doc = validate_definition(wf.draft_definition_json, workflow_id=wf.id)
         from app.workflow_engine.schemas import has_code_nodes
 
         code_bearing = has_code_nodes(doc)
@@ -723,6 +725,7 @@ class WorkflowService:
             "forms": self._form_options(tenant_id),
             "omnichannelChannels": self._omnichannel_channel_options(tenant_id),
             "omnichannelWorkspaces": self._omnichannel_workspace_options(tenant_id),
+            "workflows": self._workflow_ref_options(tenant_id),
             "codeRunnerAvailable": code_runner_available(),
             "codeCapabilities": list(CODE_CAPABILITIES),
         }
@@ -767,16 +770,39 @@ class WorkflowService:
         )
         return [{"id": r.id, "name": r.name} for r in rows]
 
+    def _workflow_ref_options(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Backs `workflow.trigger`'s `workflowId` picker (plan sprint-4/31 S2,
+        AC-WFP-33) - published, active, non-trashed workflows only (the same
+        bar `list_shortcuts`/`run_shortcut` hold a triggerable workflow to).
+        Self-exclusion (a workflow must not offer itself) is a client concern
+        (S3, drawer-scoped to the workflow being edited) - this generic,
+        workflow-agnostic list is reused by every node drawer."""
+        rows = (
+            self.db.query(Workflow)
+            .filter(
+                Workflow.tenant_id == tenant_id,
+                Workflow.is_active.is_(True),
+                Workflow.is_trashed.is_(False),
+                Workflow.current_version_id.isnot(None),
+            )
+            .order_by(Workflow.name)
+            .all()
+        )
+        return [{"id": r.id, "name": r.name} for r in rows]
+
     def _omnichannel_workspace_options(self, tenant_id: str) -> List[Dict[str, Any]]:
         """Backs every omnichannel workspace-scoped picker (tags, contact
-        fields, lifecycle stages, close reasons, members) in ONE call
-        (plan sprint-4/31, AC-WFP-21). Guarded import - empty when the module
-        isn't present in the build; tenant-scoped throughout."""
+        fields, lifecycle stages, close reasons, members, templates) in ONE
+        call (plan sprint-4/31, AC-WFP-21; `templates` added S2 for the Send
+        message/Ask a question template pickers). Guarded import - empty when
+        the module isn't present in the build; tenant-scoped throughout."""
         try:
             from modules.omnichannel.models import (
+                Channel,
                 CloseReason,
                 ContactField,
                 ContactTag,
+                WhatsappTemplate,
                 Workspace,
                 WorkspaceMember,
             )
@@ -836,6 +862,23 @@ class WorkflowService:
                 .order_by(User.name)
                 .all()
             )
+            # `whatsappTemplate` field type (Send message / Ask a question
+            # template mode, plan sprint-4/31 S2) - every template regardless
+            # of Meta review status; the drawer filters to APPROVED itself
+            # (foolproof-UI - the picker only OFFERS a usable choice, but the
+            # full set stays available for a future "show pending" affordance
+            # without a second endpoint).
+            templates = (
+                self.db.query(WhatsappTemplate.id, WhatsappTemplate.name, WhatsappTemplate.status)
+                .join(Channel, Channel.id == WhatsappTemplate.channel_id)
+                .filter(
+                    WhatsappTemplate.tenant_id == tenant_id,
+                    Channel.tenant_id == tenant_id,
+                    Channel.workspace_id == ws.id,
+                )
+                .order_by(WhatsappTemplate.name)
+                .all()
+            )
             out.append(
                 {
                     "id": ws.id,
@@ -846,6 +889,10 @@ class WorkflowService:
                     "closeReasons": [{"id": r.id, "name": r.name} for r in reasons],
                     "members": [
                         {"id": m.id, "name": m.name or m.email, "email": m.email} for m in members
+                    ],
+                    "templates": [
+                        {"id": t.id, "name": t.name, "status": (t.status or "").upper()}
+                        for t in templates
                     ],
                 }
             )

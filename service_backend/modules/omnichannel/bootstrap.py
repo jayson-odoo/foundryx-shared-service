@@ -229,6 +229,16 @@ def create_schema_and_tables(engine: Engine) -> None:
                     f'ON "{OMNI_SCHEMA}".contacts (last_agent_message_at)'
                 )
             )
+            # Round-robin assign cursor (plan sprint-4/31 S2, D-A5-15) -
+            # idempotent add for existing deployments (module Alembic 0014 is
+            # the real fix for a Postgres-tracked deploy; this covers the
+            # `create_all` path).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".workspaces '
+                    "ADD COLUMN IF NOT EXISTS round_robin_cursor VARCHAR"
+                )
+            )
             # contact_fields.key / contact_tags.name → per-workspace UNIQUE
             # (case-insensitive), plan 25 review round 1 finding 9 - the
             # DB backstop for `_find_by_key`/`_find_by_name`'s race (two

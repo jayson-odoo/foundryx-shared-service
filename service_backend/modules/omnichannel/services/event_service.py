@@ -169,10 +169,20 @@ def _emit_workflow_event(
     elif event_type in ("assigned", "unassigned"):
         action = "conversation_assigned"
         assignee_kind = (payload or {}).get("assigneeKind")
+        if assignee_kind == "external_agent":
+            assigned_via = "external"
+        elif assignee_kind == "workflow":
+            # plan sprint-4/31 S2 (`omnichannel.assign_conversation`) stamps
+            # this via `patch_thread`'s `assigned_via_override` - lets
+            # `trigger.assignedVia` distinguish an automated assign from a
+            # manual one on the `omnichannel.conversation_assigned` trigger.
+            assigned_via = "workflow"
+        else:
+            assigned_via = "manual"
         extra = {
             "assigneeUserId": to_value if event_type == "assigned" else None,
             "previousAssigneeUserId": from_value,
-            "assignedVia": "external" if assignee_kind == "external_agent" else "manual",
+            "assignedVia": assigned_via,
         }
     if action is None:
         return

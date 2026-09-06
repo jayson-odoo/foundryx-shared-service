@@ -393,6 +393,7 @@ def build_event_trigger_payload(
     *,
     trigger_type: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
+    extra_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Canonical event envelope consumed by the executor.
 
@@ -404,6 +405,16 @@ def build_event_trigger_payload(
     contribute EXTRA ``trigger.*`` context via ``TriggerDef.context_extra``
     without a per-trigger hardcoded branch here - the executor flattens the
     result generically (``payload["eventData"]``, one nesting level).
+
+    ``extra_context`` (plan sprint-4/31 S2, `workflow.trigger`) is a SECOND,
+    caller-supplied source of ``eventData`` - merged over whatever the
+    matched trigger's own ``context_extra`` produced (caller wins on a key
+    collision). Lets a direct `create_run_for_event` caller that is NOT the
+    CRUD event bus (a `workflow.trigger` action force-starting an unrelated
+    workflow) inject its own ``trigger.source``/``trigger.parentRunId``/
+    ``trigger.contactId``/``trigger.payload`` without teaching every
+    registered trigger's `context_extra` about a chaining concept it has
+    nothing to do with.
     """
     actor = ev.get("actor") or {}
     extra = ev.get("extra") or {}
@@ -434,6 +445,8 @@ def build_event_trigger_payload(
         trig_def = get_trigger(trigger_type)
         if trig_def is not None and trig_def.context_extra is not None:
             payload["eventData"] = trig_def.context_extra(config or {}, ev)
+    if extra_context:
+        payload["eventData"] = {**(payload.get("eventData") or {}), **extra_context}
     return payload
 
 
@@ -444,7 +457,12 @@ class CodeNotAuthorized(Exception):
 
 
 def create_run_for_event(
-    session: Session, wf: Workflow, ev: Dict[str, Any], *, depth: int
+    session: Session,
+    wf: Workflow,
+    ev: Dict[str, Any],
+    *,
+    depth: int,
+    extra_context: Optional[Dict[str, Any]] = None,
 ) -> Optional[WorkflowRun]:
     """Create + persist + dispatch a ``WorkflowRun`` against ``wf``'s PUBLISHED
     version for a domain event ``ev`` (the event-bus envelope this module
@@ -485,7 +503,9 @@ def create_run_for_event(
         # when a permitted actor stamped it at publish (AC-SAR-68). Fail closed.
         raise CodeNotAuthorized()
     trigger_config = _published_trigger_config(session, wf)
-    payload = build_event_trigger_payload(ev, trigger_type=wf.trigger_type, config=trigger_config)
+    payload = build_event_trigger_payload(
+        ev, trigger_type=wf.trigger_type, config=trigger_config, extra_context=extra_context
+    )
     source = ev.get("source") or {}
     run = WorkflowRun(
         tenant_id=wf.tenant_id,

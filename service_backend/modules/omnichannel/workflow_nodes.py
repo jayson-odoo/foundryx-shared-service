@@ -10,7 +10,18 @@ from typing import Any, Dict
 
 from app.workflow_engine.registry import ActionDef, NodeField, NodeOutput, TriggerDef, register_action, register_trigger
 
-from .services.workflow_actions import omnichannel_get_contact, omnichannel_send_message
+from .services.workflow_actions import (
+    omnichannel_add_comment,
+    omnichannel_add_tag,
+    omnichannel_assign_conversation,
+    omnichannel_close_conversation,
+    omnichannel_get_contact,
+    omnichannel_open_conversation,
+    omnichannel_remove_tag,
+    omnichannel_send_message,
+    omnichannel_update_field,
+    omnichannel_update_lifecycle,
+)
 from .services.workflow_test_data import build_test_payload, test_metadata
 
 MODULE_NAME = "omnichannel"
@@ -695,7 +706,7 @@ def register_omnichannel_workflow_nodes() -> None:
         ActionDef(
             key="omnichannel.send_message",
             label="Send Message",
-            description="Send a text reply into the triggering conversation.",
+            description="Send a text or approved-template reply into a conversation.",
             icon="Send",
             category="Actions",
             module=MODULE_NAME,
@@ -709,17 +720,209 @@ def register_omnichannel_workflow_nodes() -> None:
                     required=True,
                     mergeable=True,
                 ),
+                # plan sprint-4/31 S2 (AC-WFP-31): `mode: text | template` over
+                # the ONE `MessageService.send_message` path - F7 (the service
+                # already validated approval/placeholder-counts, this only
+                # exposes it on the node).
+                NodeField(
+                    key="mode",
+                    label="Message type",
+                    type="select",
+                    options=[
+                        {"value": "text", "label": "Text message"},
+                        {"value": "template", "label": "Approved template"},
+                    ],
+                ),
                 NodeField(
                     key="message",
                     label="Message",
                     type="textarea",
                     required=True,
                     mergeable=True,
+                    show_when=("mode", "text"),
+                ),
+                NodeField(
+                    key="templateId",
+                    label="Template",
+                    type="whatsappTemplate",
+                    required=True,
+                    show_when=("mode", "template"),
+                ),
+                NodeField(
+                    key="templateVariables",
+                    label="Template variables",
+                    type="templateParams",
+                    show_when=("mode", "template"),
                 ),
             ],
             outputs=[
                 NodeOutput("messageId", "Message id"),
                 NodeOutput("status", "Send status"),
             ],
+        )
+    )
+    # ── plan sprint-4/31 S2 (A5a simple steps) ───────────────────────────────
+    register_action(
+        ActionDef(
+            key="omnichannel.assign_conversation",
+            label="Assign conversation",
+            description="Assign, round-robin, or unassign a conversation.",
+            icon="UserRoundCog",
+            category="Actions",
+            module=MODULE_NAME,
+            executor=omnichannel_assign_conversation,
+            fields=[
+                NodeField(key="contactId", label="Contact", type="text", required=True, mergeable=True),
+                NodeField(key="workspaceId", label="Workspace", type="omnichannelWorkspace", required=True),
+                NodeField(
+                    key="mode",
+                    label="Assign mode",
+                    type="select",
+                    required=True,
+                    options=[
+                        {"value": "user", "label": "Specific user"},
+                        {"value": "round_robin", "label": "Round robin"},
+                        {"value": "unassign", "label": "Unassign"},
+                    ],
+                ),
+                NodeField(
+                    key="userId", label="User", type="omnichannelMember", required=True,
+                    show_when=("mode", "user"),
+                ),
+            ],
+            outputs=[
+                NodeOutput("assignedUserId", "Assigned user id"),
+                NodeOutput("assigned", "Assigned"),
+            ],
+        )
+    )
+    register_action(
+        ActionDef(
+            key="omnichannel.add_tag",
+            label="Add tag",
+            description="Add a tag to a contact.",
+            icon="Tag",
+            category="Actions",
+            module=MODULE_NAME,
+            executor=omnichannel_add_tag,
+            fields=[
+                NodeField(key="contactId", label="Contact", type="text", required=True, mergeable=True),
+                NodeField(key="workspaceId", label="Workspace", type="omnichannelWorkspace", required=True),
+                NodeField(key="tagId", label="Tag", type="omnichannelTag", required=True),
+            ],
+            outputs=[NodeOutput("tags", "Tags"), NodeOutput("changed", "Changed")],
+        )
+    )
+    register_action(
+        ActionDef(
+            key="omnichannel.remove_tag",
+            label="Remove tag",
+            description="Remove a tag from a contact.",
+            icon="Tag",
+            category="Actions",
+            module=MODULE_NAME,
+            executor=omnichannel_remove_tag,
+            fields=[
+                NodeField(key="contactId", label="Contact", type="text", required=True, mergeable=True),
+                NodeField(key="workspaceId", label="Workspace", type="omnichannelWorkspace", required=True),
+                NodeField(key="tagId", label="Tag", type="omnichannelTag", required=True),
+            ],
+            outputs=[NodeOutput("tags", "Tags"), NodeOutput("changed", "Changed")],
+        )
+    )
+    register_action(
+        ActionDef(
+            key="omnichannel.update_field",
+            label="Update contact field",
+            description="Set or clear a registered custom field on a contact.",
+            icon="PencilLine",
+            category="Actions",
+            module=MODULE_NAME,
+            destructive=True,
+            executor=omnichannel_update_field,
+            fields=[
+                NodeField(key="contactId", label="Contact", type="text", required=True, mergeable=True),
+                NodeField(key="workspaceId", label="Workspace", type="omnichannelWorkspace", required=True),
+                NodeField(key="fieldKey", label="Field", type="omnichannelContactField", required=True),
+                NodeField(key="value", label="Value", type="text", mergeable=True),
+                NodeField(key="clear", label="Clear the field", type="boolean"),
+            ],
+            outputs=[NodeOutput("fieldKey", "Field key"), NodeOutput("value", "Value")],
+        )
+    )
+    register_action(
+        ActionDef(
+            key="omnichannel.update_lifecycle",
+            label="Update lifecycle",
+            description="Move a contact to a lifecycle stage through its state machine.",
+            icon="Activity",
+            category="Actions",
+            module=MODULE_NAME,
+            destructive=True,
+            executor=omnichannel_update_lifecycle,
+            fields=[
+                NodeField(key="contactId", label="Contact", type="text", required=True, mergeable=True),
+                NodeField(key="workspaceId", label="Workspace", type="omnichannelWorkspace", required=True),
+                NodeField(
+                    key="toStageId", label="Move to stage", type="omnichannelLifecycleStage", required=True
+                ),
+            ],
+            outputs=[
+                NodeOutput("fromStageId", "From stage id"),
+                NodeOutput("toStageId", "To stage id"),
+                NodeOutput("stageLabel", "Stage label"),
+            ],
+        )
+    )
+    register_action(
+        ActionDef(
+            key="omnichannel.open_conversation",
+            label="Open conversation",
+            description="Reopen a closed or snoozed conversation.",
+            icon="FolderOpen",
+            category="Actions",
+            module=MODULE_NAME,
+            executor=omnichannel_open_conversation,
+            fields=[
+                NodeField(key="contactId", label="Contact", type="text", required=True, mergeable=True),
+            ],
+            outputs=[NodeOutput("status", "Status"), NodeOutput("changed", "Changed")],
+        )
+    )
+    register_action(
+        ActionDef(
+            key="omnichannel.close_conversation",
+            label="Close conversation",
+            description="Close a conversation with a reason and an optional note.",
+            icon="FolderX",
+            category="Actions",
+            module=MODULE_NAME,
+            destructive=True,
+            executor=omnichannel_close_conversation,
+            fields=[
+                NodeField(key="contactId", label="Contact", type="text", required=True, mergeable=True),
+                NodeField(key="workspaceId", label="Workspace", type="omnichannelWorkspace", required=True),
+                NodeField(
+                    key="closeReasonId", label="Close reason", type="omnichannelCloseReason", required=True
+                ),
+                NodeField(key="note", label="Note", type="textarea", mergeable=True),
+            ],
+            outputs=[NodeOutput("status", "Status"), NodeOutput("closeReasonId", "Close reason id")],
+        )
+    )
+    register_action(
+        ActionDef(
+            key="omnichannel.add_comment",
+            label="Add comment",
+            description="Write an internal note on the conversation (not sent to the contact).",
+            icon="MessageSquareText",
+            category="Actions",
+            module=MODULE_NAME,
+            executor=omnichannel_add_comment,
+            fields=[
+                NodeField(key="contactId", label="Contact", type="text", required=True, mergeable=True),
+                NodeField(key="body", label="Comment", type="textarea", required=True, mergeable=True),
+            ],
+            outputs=[NodeOutput("messageId", "Message id")],
         )
     )
