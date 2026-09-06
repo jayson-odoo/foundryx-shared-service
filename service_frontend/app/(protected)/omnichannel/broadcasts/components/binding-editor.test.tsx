@@ -99,6 +99,24 @@ describe('BindingEditor - fallback rule (D-A4-5)', () => {
     expect(onChangeBody).toHaveBeenCalledWith([{ source: 'contactField', field: 'firstName', fallback: 'there' }]);
   });
 
+  it('post-approval O-4: renders a per-slot server 422 message when passed', () => {
+    render(
+      <BindingEditor
+        channelId="chn-1"
+        template={TEMPLATE}
+        editing
+        header={[]}
+        body={[staticBinding(''), staticBinding('ok')]}
+        buttons={[]}
+        onChangeHeader={vi.fn()}
+        onChangeBody={vi.fn()}
+        onChangeButtons={vi.fn()}
+        bodyErrors={['Static text is required.', undefined]}
+      />,
+    );
+    expect(screen.getByText('Static text is required.')).toBeInTheDocument();
+  });
+
   it('a disabled (read-only) row never fires a change on input', () => {
     const onChangeBody = vi.fn();
     render(

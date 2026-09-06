@@ -8,8 +8,9 @@ Sending (`/send`, `/cancel`, `/test-send`) is S2 - this service only manages
 the DRAFT builder lifecycle (create/update/delete/duplicate) plus reads.
 """
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session
 
 from app.models.user import User
@@ -66,6 +67,29 @@ class BroadcastStatusConflict(Exception):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
+
+
+class _AudienceFilterInvalid(Exception):
+    """Post-approval fix, O-5: `BroadcastAudienceIn.filter` is a raw dict at
+    the wire boundary (see the schema docstring) precisely so a bad shape
+    lands HERE instead of a raw pydantic `RequestValidationError` the
+    router can't turn into `{fieldErrors}`."""
+
+
+def _parse_audience_filter(raw: Optional[Dict[str, Any]]) -> Optional[FilterGroup]:
+    """Re-validate the raw `audience.filter` dict into a real `FilterGroup`
+    (structure, `kind` literals, `extra="forbid"` - everything FastAPI's
+    automatic body validation used to check before this field became a raw
+    dict). Raises `_AudienceFilterInvalid` on ANY shape problem (missing
+    field, wrong literal, unknown key) - callers turn that into the SAME
+    `{"fieldErrors": {"audience.filter": "Unknown filter field."}}` 422
+    every other audience validation error already uses."""
+    if raw is None:
+        return None
+    try:
+        return FilterGroup.model_validate(raw)
+    except PydanticValidationError as exc:
+        raise _AudienceFilterInvalid() from exc
 
 
 class BroadcastService:
@@ -239,32 +263,57 @@ class BroadcastService:
         recursively-empty) filter raises `BroadcastValidationError` instead -
         the SAME `{fieldErrors}` shape create/update use for this exact
         condition, so a preview and a save never disagree on what "invalid
-        filter" looks like on the wire."""
-        if audience.kind == "filter" and audience.filter is not None and not has_leaf_condition(audience.filter):
-            raise BroadcastValidationError({"audience.filter": "Add at least one condition."})
+        filter" looks like on the wire. Post-approval fix, O-5: a
+        structurally-invalid raw filter (unknown key, bad `kind`) gets the
+        SAME `{fieldErrors}` shape too, instead of pydantic's raw
+        `extra_forbidden` body."""
+        filter_group: Optional[FilterGroup] = None
+        if audience.kind == "filter":
+            try:
+                filter_group = _parse_audience_filter(audience.filter)
+            except _AudienceFilterInvalid:
+                raise BroadcastValidationError({"audience.filter": "Unknown filter field."})
+            if filter_group is not None and not has_leaf_condition(filter_group):
+                raise BroadcastValidationError({"audience.filter": "Add at least one condition."})
         return _preview_count(
             self.db, tenant_id, workspace_id,
             kind=audience.kind, segment_id=audience.segmentId,
-            filter_group=audience.filter, contact_ids=audience.contactIds,
+            filter_group=filter_group, contact_ids=audience.contactIds,
         )
 
     # ── audience validation (shared by create/update) ───────────────────────
     def _validate_audience(
         self, tenant_id: str, workspace_id: str, audience: BroadcastAudienceIn, errors: Dict[str, str]
-    ) -> None:
+    ) -> Optional[FilterGroup]:
+        """Returns the parsed `FilterGroup` for a `kind=="filter"` audience
+        that validated clean (`None` for every other kind, or when any error
+        was recorded) - create/update reuse it for `audience_filter_json`
+        instead of re-deriving it, so a raw dict is parsed exactly once."""
         kind = audience.kind
         if kind == "segment":
             if not audience.segmentId or audience.filter or audience.contactIds:
                 errors["audience"] = "Choose exactly one audience source."
-                return
+                return None
             try:
                 ContactSegmentService(self.db).get(audience.segmentId, workspace_id, tenant_id)
             except SegmentNotFound:
                 errors["audience.segmentId"] = "Segment not found in this workspace."
+            return None
         elif kind == "filter":
             if not audience.filter or audience.segmentId or audience.contactIds:
                 errors["audience"] = "Choose exactly one audience source."
-                return
+                return None
+            # Post-approval fix, O-5: `audience.filter` is a raw dict at the
+            # wire boundary (schema docstring) - re-validate its SHAPE first
+            # (unknown key / bad literal), same `{fieldErrors}` shape as
+            # every other audience error, instead of letting FastAPI's
+            # automatic body validation 422 with pydantic's raw
+            # `extra_forbidden` list before this function is ever reached.
+            try:
+                filter_group = _parse_audience_filter(audience.filter)
+            except _AudienceFilterInvalid:
+                errors["audience.filter"] = "Unknown filter field."
+                return None
             # Review round 1, D-4: an empty rule group (or a group whose only
             # content is further empty sub-groups) resolves to "match every
             # contact in the workspace" (`translate_filter` returns no clause
@@ -273,17 +322,19 @@ class BroadcastService:
             # recursively, so a client bypassing the UI (or a nested empty
             # subgroup the client-side check doesn't see) can never persist
             # a vacuous "everyone" audience.
-            if not has_leaf_condition(audience.filter):
+            if not has_leaf_condition(filter_group):
                 errors["audience.filter"] = "Add at least one condition."
-                return
+                return None
             try:
-                validate_filter_tree(self.db, tenant_id, workspace_id, audience.filter)
+                validate_filter_tree(self.db, tenant_id, workspace_id, filter_group)
             except FilterError as exc:
                 errors["audience.filter"] = str(exc)
+                return None
+            return filter_group
         elif kind == "contacts":
             if not audience.contactIds or audience.segmentId or audience.filter:
                 errors["audience"] = "Choose exactly one audience source."
-                return
+                return None
             ids = list(dict.fromkeys(audience.contactIds))  # de-dupe, preserve order
             found = (
                 self.db.query(Contact.id)
@@ -292,8 +343,9 @@ class BroadcastService:
             )
             if found != len(ids):
                 errors["audience.contactIds"] = "One or more contacts are not in this workspace."
-        else:
-            errors["audience"] = "Choose exactly one audience source."
+            return None
+        errors["audience"] = "Choose exactly one audience source."
+        return None
 
     def _active_channel(self, channel_id: str, tenant_id: str, workspace_id: str) -> Optional[Channel]:
         return (
@@ -342,7 +394,7 @@ class BroadcastService:
         if channel is None:
             errors["channelId"] = "Select an active channel of this workspace."
 
-        self._validate_audience(tenant_id, workspace_id, payload.audience, errors)
+        filter_group = self._validate_audience(tenant_id, workspace_id, payload.audience, errors)
 
         template: Optional[WhatsappTemplate] = None
         if channel is not None:
@@ -374,8 +426,8 @@ class BroadcastService:
             audience_kind=payload.audience.kind,
             audience_segment_id=payload.audience.segmentId if payload.audience.kind == "segment" else None,
             audience_filter_json=(
-                payload.audience.filter.model_dump()
-                if payload.audience.kind == "filter" and payload.audience.filter
+                filter_group.model_dump()
+                if payload.audience.kind == "filter" and filter_group is not None
                 else None
             ),
             audience_contact_ids_json=(
@@ -423,8 +475,9 @@ class BroadcastService:
             channel = self._active_channel(payload.channelId, tenant_id, workspace_id)
             if channel is None:
                 errors["channelId"] = "Select an active channel of this workspace."
+        filter_group: Optional[FilterGroup] = None
         if "audience" in sent and payload.audience is not None:
-            self._validate_audience(tenant_id, workspace_id, payload.audience, errors)
+            filter_group = self._validate_audience(tenant_id, workspace_id, payload.audience, errors)
 
         template: Optional[WhatsappTemplate] = None
         effective_channel_id = channel.id if channel is not None else row.channel_id
@@ -466,8 +519,8 @@ class BroadcastService:
             row.audience_kind = payload.audience.kind
             row.audience_segment_id = payload.audience.segmentId if payload.audience.kind == "segment" else None
             row.audience_filter_json = (
-                payload.audience.filter.model_dump()
-                if payload.audience.kind == "filter" and payload.audience.filter
+                filter_group.model_dump()
+                if payload.audience.kind == "filter" and filter_group is not None
                 else None
             )
             row.audience_contact_ids_json = (

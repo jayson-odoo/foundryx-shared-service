@@ -20,6 +20,16 @@ import type { ContactListItem } from '@/types/omnichannel';
 
 const PAGE_SIZE = 50;
 const DEBOUNCE_MS = 250;
+// Post-approval nit N2: the backend has no "get many contacts by id" route
+// (the contact filter whitelist has no `id` column, `contactService.list`'s
+// `search` is a name/phone substring match, not an id lookup) - a real batch
+// call would need a new endpoint, out of scope for this fix. Cap the
+// per-pass backfill instead of firing one GET per selected id unbounded: a
+// realistic manual "Selected contacts" pick is small, and each selection
+// change re-runs this effect, so a selection built up over several picks
+// still converges - it just resolves in bounded chunks rather than one
+// unbounded burst.
+const MAX_BACKFILL_PER_PASS = 20;
 
 export interface ContactPickerOption {
   label: string;
@@ -72,7 +82,7 @@ export function useContactPicker(
   const selectedKey = selectedIds.join(',');
   useEffect(() => {
     if (!workspaceId) return undefined;
-    const missing = selectedIds.filter((id) => !knownRef.current.has(id));
+    const missing = selectedIds.filter((id) => !knownRef.current.has(id)).slice(0, MAX_BACKFILL_PER_PASS);
     if (missing.length === 0) return undefined;
     let cancelled = false;
     Promise.all(missing.map((id) => contactService.get(workspaceId, id).catch(() => null))).then((rows) => {

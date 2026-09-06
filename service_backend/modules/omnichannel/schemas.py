@@ -4,7 +4,7 @@ keys by the services before constructing these models.
 """
 import re
 from datetime import datetime
-from typing import Annotated, List, Literal, Optional, Union
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -596,11 +596,22 @@ class BroadcastBindings(ApiModel):
 
 class BroadcastAudienceIn(ApiModel):
     """Exactly one of `segmentId` / `filter` / `contactIds` must be set,
-    matching `kind` (D-A4-2 - configuration only, never a stored list)."""
+    matching `kind` (D-A4-2 - configuration only, never a stored list).
+
+    `filter` is a RAW dict here, not a typed `FilterGroup` (post-approval
+    fix, O-5): a typed nested model with `extra="forbid"` rejects a stray
+    filter key during FastAPI's automatic body validation, BEFORE the
+    router function ever runs - the caller gets pydantic's raw
+    `{"detail": [{"type": "extra_forbidden", ...}]}` shape instead of the
+    uniform `{"fieldErrors"}` 422 every other broadcast validation error
+    uses. `BroadcastService` re-validates it into a real `FilterGroup`
+    (`_parse_audience_filter`) inside the service layer, where a bad shape
+    can be turned into `{"fieldErrors": {"audience.filter": "..."}}` like
+    every other audience error (same path as the empty-group guard, D-4)."""
 
     kind: Literal["segment", "filter", "contacts"]
     segmentId: Optional[str] = None
-    filter: Optional[FilterGroup] = None
+    filter: Optional[Dict[str, Any]] = None
     contactIds: Optional[List[str]] = None
 
 

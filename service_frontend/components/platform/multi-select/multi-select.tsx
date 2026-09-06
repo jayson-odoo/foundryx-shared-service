@@ -122,7 +122,13 @@ export function MultiSelect({
         className="w-[--radix-popover-trigger-width] p-0"
         align="start"
       >
-        <Command>
+        {/* Post-approval nit N1: when a caller drives a server-searched
+            options set (`onQueryChange`), cmdk's own fuzzy filter must NOT
+            ALSO re-filter the page it just fetched - a server page of
+            near-matches (or a page that doesn't contain the literal typed
+            substring, e.g. debounce lag) would otherwise render empty even
+            though the server search is correct. */}
+        <Command shouldFilter={!onQueryChange}>
           <CommandInput
             placeholder={searchPlaceholder}
             value={query}

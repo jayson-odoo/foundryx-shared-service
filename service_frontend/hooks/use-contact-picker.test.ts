@@ -105,6 +105,20 @@ describe('useContactPicker', () => {
     expect(result.current.options.some((o) => o.value === 'cnt-9')).toBe(true);
   });
 
+  it('post-approval N2: caps the per-pass selected-id backfill instead of firing one GET per id unbounded', async () => {
+    list.mockResolvedValue({ data: [], total: 0, page: 0 });
+    get.mockImplementation((_ws: string, id: string) => Promise.resolve(contact(id, `Contact ${id}`)));
+    const manyIds = Array.from({ length: 30 }, (_, i) => `cnt-${i}`);
+    renderHook(() => useContactPicker('ws-1', manyIds));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // Capped at 20 per pass, NOT one call per all 30 selected ids.
+    expect(get).toHaveBeenCalledTimes(20);
+  });
+
   it('does nothing without a workspaceId', async () => {
     const { result } = renderHook(() => useContactPicker(null));
     await act(async () => {

@@ -29,6 +29,27 @@ import { useRecipientsListConfig } from './use-recipients-list-config';
 import { broadcastFormSchema } from './broadcast-schema';
 import { broadcastsListPath } from './paths';
 
+/** Tester O-4: pull the server-mapped 422 message for one binding slot
+ *  (`bindings.<group>.<index>.text|fallback|field`) out of RHF's nested
+ *  error tree. `TemplateBinding` is a discriminated union (static | contact
+ *  field), so a slot's error could land on `.text`, `.fallback` or `.field`
+ *  depending on which variant is selected - read defensively via `unknown`
+ *  rather than fighting RHF's union-narrowed `FieldErrors` typing. */
+export function bindingSlotErrors(
+  errors: unknown,
+  group: 'header' | 'body' | 'buttons',
+  count: number,
+): (string | undefined)[] {
+  const bindingsErrors = (errors as { bindings?: Record<string, unknown> } | undefined)?.bindings;
+  const groupErrors = bindingsErrors?.[group] as
+    | Array<Record<string, { message?: string }> | undefined>
+    | undefined;
+  return Array.from({ length: count }, (_, i) => {
+    const row = groupErrors?.[i];
+    return row?.text?.message ?? row?.fallback?.message ?? row?.field?.message;
+  });
+}
+
 function BuilderSections({
   workspaceId,
   editing,
@@ -163,6 +184,9 @@ function BuilderSections({
               onChangeHeader={(next) => setValue('bindings.header', next, { shouldDirty: true })}
               onChangeBody={(next) => setValue('bindings.body', next, { shouldDirty: true })}
               onChangeButtons={(next) => setValue('bindings.buttons', next, { shouldDirty: true })}
+              headerErrors={bindingSlotErrors(formState.errors, 'header', bindings.header.length)}
+              bodyErrors={bindingSlotErrors(formState.errors, 'body', bindings.body.length)}
+              buttonsErrors={bindingSlotErrors(formState.errors, 'buttons', bindings.buttons.length)}
             />
           </div>
         )}

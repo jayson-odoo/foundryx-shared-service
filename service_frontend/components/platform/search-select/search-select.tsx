@@ -131,7 +131,11 @@ export function SearchSelect({
         className="w-[var(--radix-popover-trigger-width)] p-0"
         align="start"
       >
-        <Command>
+        {/* Post-approval nit N1: when a caller drives a server-searched
+            options set (`onQueryChange`), cmdk's own fuzzy filter must NOT
+            ALSO re-filter the page it just fetched - see multi-select.tsx's
+            matching comment for the full reasoning. */}
+        <Command shouldFilter={!onQueryChange}>
           <CommandInput
             placeholder={searchPlaceholder}
             value={query}

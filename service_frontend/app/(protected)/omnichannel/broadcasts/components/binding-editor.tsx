@@ -47,12 +47,18 @@ function BindingRow({
   editing,
   onChange,
   testidPrefix,
+  error,
 }: {
   label: string;
   binding: TemplateBinding;
   editing: boolean;
   onChange: (next: TemplateBinding) => void;
   testidPrefix: string;
+  /** Tester O-4: a server 422 on this exact slot (`bindings.body.0.text`,
+   *  …) is mapped onto the form via `applyFieldErrors` (`use-broadcast-
+   *  form.tsx`) - but nothing rendered it, so a save that WAS rejected
+   *  looked identical to one that silently succeeded. */
+  error?: string;
 }) {
   return (
     <div className="grid gap-2 rounded-md border border-border p-3 sm:grid-cols-[140px_1fr]">
@@ -93,6 +99,7 @@ function BindingRow({
             />
           </div>
         )}
+        {error && <ClampedText text={error} lines={2} className="text-xs text-destructive" />}
       </div>
     </div>
   );
@@ -108,6 +115,12 @@ export interface BindingEditorProps {
   onChangeHeader: (next: TemplateBinding[]) => void;
   onChangeBody: (next: TemplateBinding[]) => void;
   onChangeButtons: (next: TemplateBinding[]) => void;
+  /** Tester O-4: per-slot server 422 messages (`bindings.<group>.<index>.
+   *  text|fallback|field`), one entry per row, index-aligned with the
+   *  matching `header`/`body`/`buttons` array. */
+  headerErrors?: (string | undefined)[];
+  bodyErrors?: (string | undefined)[];
+  buttonsErrors?: (string | undefined)[];
 }
 
 export function BindingEditor({
@@ -120,6 +133,9 @@ export function BindingEditor({
   onChangeHeader,
   onChangeBody,
   onChangeButtons,
+  headerErrors,
+  bodyErrors,
+  buttonsErrors,
 }: BindingEditorProps) {
   const [doc, setDoc] = useState<WaTemplateDoc | null>(null);
 
@@ -163,6 +179,7 @@ export function BindingEditor({
             editing={editing}
             onChange={(next) => update(header, i, next, onChangeHeader)}
             testidPrefix={`broadcast-binding-header-${i}`}
+            error={headerErrors?.[i]}
           />
         ))}
         {body.map((b, i) => (
@@ -173,6 +190,7 @@ export function BindingEditor({
             editing={editing}
             onChange={(next) => update(body, i, next, onChangeBody)}
             testidPrefix={`broadcast-binding-body-${i}`}
+            error={bodyErrors?.[i]}
           />
         ))}
         {buttons.map((b, i) => (
@@ -183,6 +201,7 @@ export function BindingEditor({
             editing={editing}
             onChange={(next) => update(buttons, i, next, onChangeButtons)}
             testidPrefix={`broadcast-binding-button-${i}`}
+            error={buttonsErrors?.[i]}
           />
         ))}
       </div>

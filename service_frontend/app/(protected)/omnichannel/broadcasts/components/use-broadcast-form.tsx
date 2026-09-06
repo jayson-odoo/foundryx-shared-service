@@ -49,6 +49,14 @@ const CONFLICT_REASONS: Record<string, string> = {
   broadcast_already_sending: 'This broadcast cannot be sent again.',
 };
 
+/** Tester O-4: the client-side zod validation (`broadcastFormSchema`) can
+ *  block a save/send with NO server round-trip at all - `form.trigger()`
+ *  returning `false` used to fail silently (the inline field errors are
+ *  real, but easy to miss if the offending field is scrolled out of view).
+ *  ONE toast, reused everywhere a client-side validation gate blocks the
+ *  action. */
+const INVALID_FORM_MESSAGE = 'Please fix the highlighted fields.';
+
 function describe(error: unknown): string {
   if (error instanceof ApiError) {
     const reason = (error.detail as { reason?: string } | null)?.reason;
@@ -130,7 +138,10 @@ export function useBroadcastForm(
     if (!creating && broadcastId) return broadcastId;
     if (!workspaceId) return null;
     const valid = await form.trigger(['name', 'channelId', 'templateId', 'audience', 'bindings']);
-    if (!valid) return null;
+    if (!valid) {
+      toast.error(INVALID_FORM_MESSAGE);
+      return null;
+    }
     try {
       const created = await broadcastService.create(workspaceId, toCreateInput(form.getValues()));
       setSavedId(created.id);
@@ -144,7 +155,10 @@ export function useBroadcastForm(
   const sendOrSchedule = useCallback(async () => {
     if (!workspaceId) return;
     const valid = await form.trigger();
-    if (!valid) return;
+    if (!valid) {
+      toast.error(INVALID_FORM_MESSAGE);
+      return;
+    }
     setSending(true);
     try {
       const id = await ensureDraftId();
@@ -187,7 +201,7 @@ export function useBroadcastForm(
         } catch (error) {
           if (!applyFieldErrors(form, error)) toast.error(describe(error));
         }
-      })();
+      }, () => toast.error(INVALID_FORM_MESSAGE))();
       return ok;
     };
 

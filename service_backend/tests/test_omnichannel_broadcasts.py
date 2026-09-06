@@ -596,7 +596,13 @@ def test_audience_preview_nested_empty_group_422(client, session_factory):
 
 def test_audience_preview_unknown_key_on_condition_422(client, session_factory):
     """`extra="forbid"` on `FilterCondition`/`FilterGroup` (app/schemas/
-    filters.py) - a stray/unrecognised key is a 422, never silently dropped."""
+    filters.py) - a stray/unrecognised key is a 422, never silently dropped.
+    Post-approval fix, O-5: `audience.filter` is a raw dict at the wire
+    boundary specifically so this 422 lands as the SAME `{fieldErrors}`
+    shape every other audience error uses, not pydantic's raw
+    `{"detail": [{"type": "extra_forbidden", ...}]}` body (which used to
+    leak here because `BroadcastAudienceIn.filter` was a typed nested
+    model FastAPI validated before the router ever ran)."""
     h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
     malformed = {
         "kind": "group", "combinator": "and",
@@ -604,6 +610,7 @@ def test_audience_preview_unknown_key_on_condition_422(client, session_factory):
     }
     res = client.post(f"{_broadcasts_base(ws)}/audience-preview", headers=h, json={"audience": {"kind": "filter", "filter": malformed}})
     assert res.status_code == 422
+    assert res.json()["detail"]["fieldErrors"]["audience.filter"] == "Unknown filter field."
 
 
 def test_audience_preview_valid_filter_still_resolves_count(client, session_factory):
@@ -643,6 +650,8 @@ def test_create_nested_empty_filter_group_422(client, session_factory):
 
 
 def test_create_filter_unknown_key_422(client, session_factory):
+    """Post-approval fix, O-5: same normalized `{fieldErrors}` shape on the
+    create path (see `test_audience_preview_unknown_key_on_condition_422`)."""
     h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
     malformed = {
         "kind": "group", "combinator": "and",
@@ -651,6 +660,31 @@ def test_create_filter_unknown_key_422(client, session_factory):
     payload = _create_payload(channel_id, template_id, audience={"kind": "filter", "filter": malformed})
     res = client.post(_broadcasts_base(ws), headers=h, json=payload)
     assert res.status_code == 422
+    assert res.json()["detail"]["fieldErrors"]["audience.filter"] == "Unknown filter field."
+
+
+def test_update_filter_unknown_key_422(client, session_factory):
+    """Same normalized shape on the UPDATE path (a draft broadcast that
+    already exists, patched with a malformed inline filter)."""
+    h, ws, channel_id, contact_id, template_id = _fixture(client, session_factory)
+    payload = _create_payload(
+        channel_id, template_id,
+        audience={"kind": "filter", "filter": {
+            "kind": "group", "combinator": "and",
+            "rules": [{"kind": "condition", "field": "firstName", "operator": "eq", "value": "Alex"}],
+        }},
+    )
+    created = client.post(_broadcasts_base(ws), headers=h, json=payload).json()
+    malformed = {
+        "kind": "group", "combinator": "and",
+        "rules": [{"kind": "condition", "field": "firstName", "operator": "eq", "value": "Alex", "extraKey": "x"}],
+    }
+    res = client.patch(
+        f"{_broadcasts_base(ws)}/{created['id']}", headers=h,
+        json={"audience": {"kind": "filter", "filter": malformed}},
+    )
+    assert res.status_code == 422
+    assert res.json()["detail"]["fieldErrors"]["audience.filter"] == "Unknown filter field."
 
 
 def test_create_valid_filter_still_creates(client, session_factory):
