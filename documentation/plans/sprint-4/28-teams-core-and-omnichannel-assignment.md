@@ -122,6 +122,9 @@ Reused unchanged: `components/platform/{resource-list,resource-form,resource-act
 | D-A8-17 | `lead` is a label only in this slice: no permission, no assignment priority | Access levels are B1 (roadmap D5). Storing the role now means B1 does not need a second migration |
 | D-A8-18 | Teams live under **User Management**, not Settings: route `/user-management/teams`, menu entry next to Roles | Deviation from D-A8-2's wording, flagged in §8. `Role` sits there, the terminology group is "Access", and the form is a literal clone of the Users form in the sibling folder |
 | D-A8-19 | Menu, route, permission and terminology are the ONLY core surfaces this slice adds. No dashboard tile, no team column on the Users list | Keeps the core diff auditable; a Teams column on Users is a backlog candidate |
+| D-A8-20 | The rail's "My teams" section KEEPS inactive teams (`/teams/mine` has no `is_active` filter); only WRITE surfaces are active-only - the drawer's Teams group and the team-settings tab skip `!isActive` | Post-approval ruling 2026-09-06. A read filter on a deactivated team's queue is still legitimate (its threads did not vanish), whereas assigning INTO one 422s. A muted "(inactive)" affordance is BL-SS-104 |
+| D-A8-21 | Saved views keep dangling `teamIds` by design: `expand()` passes them through and the tenant-scoped `IN` narrows to zero rows - it can never widen. Save-time validation (422) is the only gate | Post-approval ruling 2026-09-06, same rule as the pre-existing `tagIds`/`channelIds` degrade (plan 27 round-3 B11). Pruning at expansion is BL-SS-102 |
+| D-A8-22 | The team reference guard has exactly ONE source, `conversations` (`contacts.assigned_team_id`); `team_assignment_settings` rows are configuration, not references, and never block a delete | Post-approval ruling 2026-09-06. A strategy row for a team with no assigned threads must not make the team undeletable; orphan cleanup is BL-SS-103 |
 
 ### 3.1 Audit outcome - there is no assign action today (D-A8-5)
 
@@ -325,6 +328,19 @@ review reject.
 | BL-SS-089 | Teams: bulk reassign every thread of a team before deleting it (turn the 409 into a guided migration, like the status engine's `migrate-records`) | P1 |
 | BL-SS-090 | Workflow engine: expose the `team` field type to core entities (assign a core record to a team) | P2 |
 | BL-SS-091 | Teams: team avatar / colour for the rail and the assignment log | P2 |
+
+**Registered on close (review rounds 1-2 + the post-approval read, 2026-09-06).** Provisional ids in
+the worktree `backlog.md` - they are renumbered from main's then-max at merge (A9/A4 land first):
+
+| Registered id | Title | Source |
+|---|---|---|
+| BL-SS-101 | Teams form Members/Leads picker capped at the first 200 tenant users (no async-options `MultiSelect`) | round 1, nit 17 |
+| BL-SS-102 | Saved views: prune unresolvable `teamIds` / `tagIds` / `channelIds` at expansion so a view degrades to no-scope, not no-results | post-approval read |
+| BL-SS-103 | Orphan `team_assignment_settings` rows survive a core team delete - cleanup in the `teams.delete` handler or a sweep | post-approval read |
+| BL-SS-104 | Rail entry for an inactive "My teams" team is indistinguishable - muted "(inactive)" affordance (see D-A8-20) | post-approval read |
+| BL-SS-105 | Full-suite timer flakes `timezone-card` / `resource-form.deferred` (D5 class) | round 2 |
+| BL-SS-106 | Plan-27 default agent role: Inbox renders nothing without `workspaces.read` | post-approval read |
+| BL-SS-107 | `teamService.remove()` unreferenced by production code after the deferred switch - ruling: keep, the sync `DELETE /teams/{id}` stays the API contract | post-approval read |
 
 ## 8. Flagged for the user (planner deviations from the 2026-09-06 decision set - none are blocking)
 

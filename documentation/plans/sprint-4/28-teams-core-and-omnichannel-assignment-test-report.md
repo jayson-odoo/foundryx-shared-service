@@ -269,7 +269,7 @@ Schema-check columns: `teams | team_members | team_assignment_settings | contact
 column count`. `<absent>`/`0` after the downgrade and all four back after the upgrade is the
 pass condition. Result: **PASS** (cycle clean, no residue, both version tables back at head).
 
-## 7. Round 2 verification (commit `c6706b3c`)
+## 8. Round 2 verification (commit `c6706b3c`)
 
 | | |
 |---|---|
