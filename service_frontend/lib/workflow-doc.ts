@@ -632,19 +632,29 @@ export function validateDefinition(
         'Stateful AI Agent outputs require serialized execution and a Correlation key.',
     });
   }
-  // Ask a question parks the run keyed by contact - two runs answering the
-  // same contact would race the one wait row (D-A5-7 / AC-WFP-06). Message
-  // text kept in parity with the backend `definition_issues` addition (plan
-  // 31 §2.1: "Ask a question requires serialized execution").
-  const hasAskQuestion = doc.nodes.some(
-    (node) => node.type === 'omnichannel.ask_question',
-  );
-  if (hasAskQuestion && (execution?.mode !== 'serialized' || !correlationKey)) {
-    issues.push({
-      level: 'error',
-      message:
-        'Ask a question requires serialized execution and a Correlation key.',
-    });
+  // Registry-driven parking rule (plan 31 S6, D-A5-7/AC-WFP-51/06,
+  // generalized off `ActionCatalogEntry.requiresSerialized` so a FUTURE
+  // parking action needs no second hardcoded check here): any action node
+  // that PARKS the run keyed by a contact needs serialized execution, or two
+  // runs answering the same contact would race the one wait row. Message
+  // text is pinned in parity with the backend `definition_issues`
+  // (`f"{label} requires serialized execution and a Correlation key."`) -
+  // see `lib/workflow-doc.serialized-parity.test.ts`.
+  if (execution?.mode !== 'serialized' || !correlationKey) {
+    const parkingLabels = new Set<string>();
+    for (const node of doc.nodes) {
+      if (node.kind !== 'action') continue;
+      const entry = catalogEntry(node.type);
+      if (entry?.kind === 'action' && entry.requiresSerialized) {
+        parkingLabels.add(entry.label);
+      }
+    }
+    for (const label of Array.from(parkingLabels).sort()) {
+      issues.push({
+        level: 'error',
+        message: `${label} requires serialized execution and a Correlation key.`,
+      });
+    }
   }
   // `workflow.trigger` self-trigger parity (plan 31 S3, AC-WFP-33/backend
   // `ActionError("A workflow cannot trigger itself.")`) - the drawer already

@@ -823,6 +823,7 @@ export const ACTION_CATALOG: ActionCatalogEntry[] = [
     category: 'Actions',
     module: 'omnichannel',
     ports: ['answer', 'timeout'],
+    requiresSerialized: true,
     fields: [
       {
         key: 'contactId',

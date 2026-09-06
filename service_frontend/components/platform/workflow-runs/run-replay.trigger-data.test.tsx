@@ -50,6 +50,7 @@ function run(): WorkflowRunDetail {
     correlationKey: null,
     error: null,
     createdAt: '2026-09-06T00:00:00Z',
+    pausedNodeId: null,
     triggerPayload: {},
     definition: {
       schemaVersion: 2,

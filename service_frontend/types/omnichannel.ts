@@ -828,6 +828,41 @@ export interface UpdateInboxViewInput {
   sortOrder?: number;
 }
 
+/**
+ * Business hours (plan 31 S6, D-A5-13/AC-WFP-55/63): a per-workspace weekly
+ * schedule + IANA timezone. A window whose `to` is lexically <= `from` is a
+ * valid OVERNIGHT window (ends the next day); `from === to` is rejected by
+ * the backend as a degenerate window.
+ */
+export const BUSINESS_HOURS_WEEKDAYS = [
+  'mon',
+  'tue',
+  'wed',
+  'thu',
+  'fri',
+  'sat',
+  'sun',
+] as const;
+export type BusinessHoursWeekday = (typeof BUSINESS_HOURS_WEEKDAYS)[number];
+
+export interface BusinessHoursWindow {
+  from: string; // HH:MM, 24h
+  to: string; // HH:MM, 24h
+}
+
+export type BusinessHoursWindows = Record<BusinessHoursWeekday, BusinessHoursWindow[]>;
+
+export interface BusinessHours {
+  workspaceId: string;
+  timezone: string | null;
+  windows: BusinessHoursWindows;
+}
+
+export interface UpdateBusinessHoursInput {
+  timezone: string;
+  windows: BusinessHoursWindows;
+}
+
 /** A published workflow the drawer's Shortcuts control may fire (AC-IVE-36). */
 export interface ShortcutItem {
   workflowId: string;

@@ -52,6 +52,7 @@ const RUN_RING: Record<WorkflowNodeRunStatus, string> = {
   running: 'ring-2 ring-amber-500 animate-pulse',
   skipped: 'ring-1 ring-muted-foreground/40 opacity-60',
   pending: 'ring-1 ring-muted-foreground/30',
+  waiting: 'ring-2 ring-sky-500',
 };
 
 export function WorkflowFlowNode({ data, selected }: NodeProps & { data: WorkflowNodeData }) {

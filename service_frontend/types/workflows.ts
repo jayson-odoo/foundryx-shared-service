@@ -230,6 +230,15 @@ export interface ActionCatalogEntry {
    * these (plan 31 D-A5-14); the canvas renders one labelled source handle
    * per port instead of the single `out` handle. */
   ports?: string[];
+  /** This action PARKS the run keyed by a contact (plan 31 D-A5-7,
+   * AC-WFP-51/06) - two runs answering the same contact would race the one
+   * wait row. `validateDefinition` (registry-driven, mirrors the backend's
+   * `ActionDef.requires_serialized` walk in `definition_issues`) blocks
+   * publish for any graph containing one of these unless
+   * `execution.mode = "serialized"` with a valid correlation key, using the
+   * SAME message the backend produces (`"{label} requires serialized
+   * execution and a Correlation key."`). */
+  requiresSerialized?: boolean;
 }
 
 /** The IF node (built-in, not a registered Trigger/Action - D8). Its config is
@@ -433,13 +442,22 @@ export type WorkflowRunStatus =
   | 'running'
   | 'success'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  /** Parked at an Ask a question / Wait / Business hours node (plan 31 S6,
+   * AC-WFP-65) - the node it is parked at is `pausedNodeId` on the run. */
+  | 'waiting';
 export type WorkflowNodeRunStatus =
   | 'pending'
   | 'running'
   | 'success'
   | 'failed'
-  | 'skipped';
+  | 'skipped'
+  /** Replay-only override (plan 31 S6, AC-WFP-65): the backend trace row for
+   * a parked node is `success` (it did complete its own work before asking
+   * the engine to suspend) - `RunReplay` re-labels the ONE node matching
+   * `run.pausedNodeId` while `run.status === 'waiting'` so it never reads as
+   * a phantom success or failure. */
+  | 'waiting';
 export type WorkflowRunTrigger = 'manual' | 'schedule' | 'event';
 
 export interface WorkflowRunListItem {
@@ -455,6 +473,9 @@ export interface WorkflowRunListItem {
   correlationKey: string | null;
   error: string | null;
   createdAt: string;
+  /** The node id this run is parked at while `status === 'waiting'`, else
+   * null (plan 31 S6, AC-WFP-65). */
+  pausedNodeId: string | null;
 }
 
 export interface WorkflowRunNode {

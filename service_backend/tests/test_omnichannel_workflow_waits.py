@@ -30,6 +30,7 @@ from modules.omnichannel.services.workflow_actions import (
     omnichannel_ask_question,
     omnichannel_wait,
 )
+from tests.conftest import ACTIVE_EMAIL, ACTIVE_PASSWORD
 from tests.test_omnichannel_conversations import _seed_thread
 from tests.test_omnichannel_webhooks import _channel_id, _process, _wa_payload
 from tests.test_omnichannel_workflow_parity_triggers import _runs_for
@@ -713,3 +714,38 @@ def test_waits_never_resolve_across_tenants(session_factory):
         assert _run_of(db, wf_id).status == RUN_WAITING
     finally:
         db.close()
+
+
+# ── Plan 31 S6 - `pausedNodeId` on the run wire (AC-WFP-65) ─────────────────
+def test_run_wire_carries_paused_node_id_while_waiting(client, session_factory):
+    """The Logs list/replay reads `status`/`pausedNodeId` straight off the run
+    list + detail responses - no second round trip to find the parked node."""
+    wf_id, _, _ = _park_via_inbound(session_factory)
+
+    login = client.post("/auth/login", json={"email": ACTIVE_EMAIL, "password": ACTIVE_PASSWORD})
+    assert login.status_code == 200, login.text
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    listed = client.get(f"/workflows/{wf_id}/runs", headers=headers)
+    assert listed.status_code == 200, listed.text
+    rows = listed.json()["data"]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "waiting"
+    assert rows[0]["pausedNodeId"] == "ask_1"
+
+    run_id = rows[0]["id"]
+    detail = client.get(f"/workflows/runs/{run_id}", headers=headers)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["pausedNodeId"] == "ask_1"
+
+
+def test_run_wire_pausednodeid_is_null_once_resumed(client, session_factory):
+    wf_id, contact_id, channel_id = _park_via_inbound(session_factory)
+    _inbound(session_factory, channel_id, wamid="wamid.s6-resume", text="Pro")
+
+    login = client.post("/auth/login", json={"email": ACTIVE_EMAIL, "password": ACTIVE_PASSWORD})
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    listed = client.get(f"/workflows/{wf_id}/runs", headers=headers)
+    row = listed.json()["data"][0]
+    assert row["status"] == "success"
+    assert row["pausedNodeId"] is None
