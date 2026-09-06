@@ -333,3 +333,382 @@ def test_a_failing_startup_sweep_never_blocks_boot(monkeypatch):
     monkeypatch.setattr(JobService, "fail_orphaned_running_jobs", boom, raising=False)
     with TestClient(app) as client:
         assert client.get("/docs").status_code in (200, 404)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Review round 1 (f2a9b5f3)
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.jobs.registry import JobHandlerDef, handler_for, register_job_handler  # noqa: E402
+from app.models.background_job import JOB_PENDING  # noqa: E402
+from modules.autocount.models import RUN_SUCCESS  # noqa: E402
+from tests.test_autocount_bulk_load import _config_row  # noqa: E402
+
+
+def _fake_handler(db, job):  # pragma: no cover - never run, registration only
+    return None
+
+
+_FAKE_NO_HEARTBEAT = JobHandlerDef("fake_no_heartbeat", _fake_handler, "Fake (no heartbeat)")
+
+
+def _heartbeat_of(session_factory, job_id: str):
+    s = session_factory()
+    try:
+        return s.execute(
+            sa.text("SELECT heartbeat_at FROM background_jobs WHERE id = :i"), {"i": job_id}
+        ).scalar()
+    finally:
+        s.close()
+
+
+# ── B1: a stale PENDING in-flight job is not an orphan; the tick skips ──────
+
+
+def test_a_stale_pending_in_flight_job_is_not_swept_and_the_tick_skips(session_factory):
+    """Only RUNNING jobs can be orphaned (a pending job has no worker to
+    lose). Today ``first_unfinished`` returns the pending job, the sweep
+    releases nothing, and the tick fires anyway - a proven duplicate."""
+    db = session_factory()
+    company = _sched_company(db)
+    _task(db, company, next_incremental_at=NOW - timedelta(minutes=1))
+    pending = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID, type=AUTOCOUNT_SYNC, status=JOB_PENDING,
+        payload_json={"companyId": company.id, "entityType": ENTITY_CUSTOMER},
+        created_at=NOW - timedelta(minutes=20),
+    )
+    db.add(pending)
+    db.commit()
+
+    result = sweep_etl_tasks(db, now=NOW)
+    db.expire_all()
+
+    assert result == {"fired": 0, "skipped": 1, "failed": 0}
+    assert db.get(BackgroundJob, pending.id).status == JOB_PENDING
+    assert len(_jobs_for(db, company.id, ENTITY_CUSTOMER)) == 1
+    db.close()
+
+
+# ── B2: one heartbeat per push chunk ────────────────────────────────────────
+
+
+def test_write_batch_calls_on_chunk_once_per_chunk():
+    import httpx
+
+    from modules.autocount.canonical.masters import CanonicalSupplier
+    from modules.autocount.sinks_sorento import SorentoSink
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        import json as _json
+
+        records = _json.loads(request.content)["records"]
+        return httpx.Response(200, json={
+            "summary": {"total": len(records), "created": len(records), "updated": 0,
+                        "failed": 0, "retryable": 0},
+            "records": [
+                {"source_ref": r["source_ref"], "outcome": "created", "entity_id": "x"}
+                for r in records
+            ],
+        })
+
+    sink = SorentoSink(
+        base_url="http://x", api_key="k", entity_type="supplier",
+        transport=httpx.MockTransport(respond), batch_size=3,
+    )
+    records = [
+        CanonicalSupplier(source_ref=f"AED:{i}", source_doc_no=f"C{i}", code=f"C{i}", name="N", is_active=True)
+        for i in range(7)
+    ]
+    beats: List[int] = []
+    results = sink.write_batch(records, request_id="t", on_chunk=lambda: beats.append(1))
+    assert len(results) == 7
+    assert len(beats) == 3  # chunks of 3 / 3 / 1
+
+
+def test_a_push_of_seven_rows_in_chunks_of_three_heartbeats_at_least_three_times(
+    session_factory, monkeypatch, consumer
+):
+    """The push side of a run is the other multi-minute stretch: with the
+    ingest batch size at 3 and 7 staged rows, the job must heartbeat once per
+    chunk (observed as calls into ``JobService.heartbeat`` for THIS job), not
+    once per push."""
+    monkeypatch.setattr(settings, "autocount_page_size", 100, raising=False)
+    monkeypatch.setattr(settings, "autocount_run_time_budget_seconds", 600, raising=False)
+    monkeypatch.setattr(settings, "autocount_sink_batch_size", 3, raising=False)
+
+    company_id, _sql_id, engine = _make_rig(session_factory)
+    _insert_rows(engine, _rows(7))
+
+    beats: List[str] = []
+    original = JobService.heartbeat
+
+    def counting(self, job_id, *, now=None):
+        beats.append(str(job_id))
+        return original(self, job_id, now=now)
+
+    monkeypatch.setattr(JobService, "heartbeat", counting)
+
+    db = session_factory()
+    job = _run(db, company_id, RUN_MODE_MANUAL)
+    assert job.status == JOB_DONE, job.error
+    pushes = [r for r in consumer.requests if r["path"].endswith("/customers")]
+    assert len(pushes) == 3, "7 rows at batch size 3 must be 3 ingest POSTs"
+    # One page beat + at least one beat per chunk.
+    assert beats.count(job.id) >= 4, f"heartbeats for the job: {beats.count(job.id)}"
+    db.close()
+
+
+# ── B3: only heartbeat-declaring job types are swept ────────────────────────
+
+
+def test_autocount_sync_declares_heartbeats():
+    assert handler_for(AUTOCOUNT_SYNC).heartbeats is True
+
+
+def test_sweep_ignores_job_types_that_do_not_declare_heartbeats(db):
+    """A type that never beats (storage migration, meetings STT) has no
+    liveness signal to judge - reaping it by age would kill legitimate long
+    runs. Only a ``JobHandlerDef(heartbeats=True)`` type is swept."""
+    register_job_handler(_FAKE_NO_HEARTBEAT)
+    assert getattr(_FAKE_NO_HEARTBEAT, "heartbeats", None) is False
+    now = datetime.now(timezone.utc)
+    fake = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID, type=_FAKE_NO_HEARTBEAT.type, status=JOB_RUNNING,
+        started_at=now - timedelta(hours=2),
+    )
+    db.add(fake)
+    db.commit()
+    ours = _job(db, status=JOB_RUNNING, started_ago=timedelta(hours=2), heartbeat_ago=None, now=now)
+
+    assert JobService(db).fail_orphaned_running_jobs(older_than=THRESHOLD) == 1
+    db.expire_all()
+    assert db.get(BackgroundJob, fake.id).status == JOB_RUNNING
+    assert db.get(BackgroundJob, ours.id).status == JOB_FAILED
+
+
+# ── S4: the startup sweep is behind a settings flag ─────────────────────────
+
+
+@pytest.mark.parametrize("enabled", [False, True], ids=["off", "on"])
+def test_startup_sweep_follows_the_settings_flag(monkeypatch, enabled):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    calls: List[dict] = []
+
+    def recorder(self, *, older_than=None, now=None, job_id=None):
+        calls.append({"older_than": older_than})
+        return 0
+
+    monkeypatch.setattr(JobService, "fail_orphaned_running_jobs", recorder)
+    # The field may not exist on this HEAD: force it onto the live settings
+    # object past pydantic's field check, restore afterwards.
+    had = "background_job_orphan_sweep_on_startup" in settings.__dict__
+    previous = settings.__dict__.get("background_job_orphan_sweep_on_startup")
+    object.__setattr__(settings, "background_job_orphan_sweep_on_startup", enabled)
+    try:
+        with TestClient(app):
+            pass
+    finally:
+        if had:
+            object.__setattr__(settings, "background_job_orphan_sweep_on_startup", previous)
+        else:
+            settings.__dict__.pop("background_job_orphan_sweep_on_startup", None)
+
+    assert bool(calls) is enabled, (
+        f"startup sweep {'ran' if calls else 'did not run'} with the flag {enabled}"
+    )
+
+
+# ── S5: a heartbeat that stamps nothing means the job is gone - bail ────────
+
+
+def test_a_run_whose_job_was_failed_elsewhere_stops_before_the_next_page(
+    session_factory, monkeypatch, consumer
+):
+    """Mirror of the abort test: the job is flipped to ``failed`` on another
+    session while page 2's SELECT runs (an orphan sweep that judged an
+    unusually slow page as dead). The loop must stop before page 3 and must
+    not overwrite the terminal status with ``done``."""
+    monkeypatch.setattr(settings, "autocount_page_size", 2, raising=False)
+    monkeypatch.setattr(settings, "autocount_run_time_budget_seconds", 600, raising=False)
+
+    company_id, _sql_id, engine = _make_rig(session_factory)
+    _insert_rows(engine, _rows(6))  # 3 pages of 2
+
+    calls = {"n": 0}
+    other = session_factory()
+
+    def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        if "debtor" not in statement.lower():
+            return
+        calls["n"] += 1
+        if calls["n"] == 2:
+            job_id = other.execute(
+                sa.text(
+                    "SELECT id FROM background_jobs WHERE tenant_id = :t "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"t": DEFAULT_TENANT_ID},
+            ).scalar()
+            other.execute(
+                sa.text("UPDATE background_jobs SET status = :s, error = :e WHERE id = :i"),
+                {"s": JOB_FAILED, "e": INTERRUPTED, "i": job_id},
+            )
+            other.commit()
+
+    sa.event.listen(engine, "before_cursor_execute", before_cursor_execute)
+    try:
+        db = session_factory()
+        job = _run(db, company_id, RUN_MODE_MANUAL)
+        run = _run_row(db, company_id, job.id)
+
+        assert job.status == JOB_FAILED, "the terminal status set elsewhere must survive"
+        assert job.error == INTERRUPTED
+        assert run.outcome != RUN_SUCCESS
+        assert run.rows_scanned <= 4, "page 3 must never be read"
+        assert calls["n"] <= 2
+        db.close()
+    finally:
+        sa.event.remove(engine, "before_cursor_execute", before_cursor_execute)
+        other.close()
+
+
+# ── S6: a raising module hook never loses the job's failed write ────────────
+
+
+def test_a_raising_module_hook_runs_inside_a_savepoint_and_the_job_still_fails(db, monkeypatch):
+    import app.jobs.service as job_service_module
+
+    seen = {"nested": None}
+
+    def raising_hook(session, job):
+        seen["nested"] = session.in_nested_transaction()
+        raise RuntimeError("module bookkeeping exploded")
+
+    monkeypatch.setattr(
+        job_service_module, "_orphan_hooks", lambda: [("broken_module", raising_hook)]
+    )
+    now = datetime.now(timezone.utc)
+    stale = _job(db, status=JOB_RUNNING, started_ago=timedelta(hours=1), heartbeat_ago=None, now=now)
+
+    assert JobService(db).fail_orphaned_running_jobs(older_than=THRESHOLD) == 1
+    db.expire_all()
+    assert db.get(BackgroundJob, stale.id).status == JOB_FAILED
+    assert seen["nested"] is True, (
+        "the hook must run inside a SAVEPOINT so a failing statement in it "
+        "cannot poison the sweep's transaction on Postgres"
+    )
+
+
+# ── S7: on_job_orphaned is tenant-scoped ────────────────────────────────────
+
+
+def test_on_job_orphaned_ignores_a_run_row_of_another_tenant_with_the_same_job_id(db):
+    from modules.autocount.bootstrap import on_job_orphaned
+
+    now = datetime.now(timezone.utc)
+    job = _job(db, status=JOB_FAILED, started_ago=timedelta(hours=1), heartbeat_ago=None, now=now)
+    job.error = INTERRUPTED
+    db.commit()
+    mine = _open_run(db, job, started_at=now - timedelta(hours=1))
+    theirs = AcSyncRun(
+        tenant_id="tenant-other-orphan", company_id="co-x", entity_type=ENTITY_CUSTOMER,
+        job_id=job.id, mode=RUN_MODE_INCREMENTAL, started_at=now - timedelta(hours=1),
+    )
+    db.add(theirs)
+    db.commit()
+
+    on_job_orphaned(db, job)
+    db.commit()
+    db.expire_all()
+
+    assert db.get(AcSyncRun, mine.id).outcome == RUN_FAILED
+    other = db.get(AcSyncRun, theirs.id)
+    assert other.finished_at is None and other.outcome is None
+
+
+# ── S8: the first beat lands BEFORE page-1 extraction ───────────────────────
+
+
+def test_the_first_heartbeat_lands_before_the_first_page_is_read(session_factory, monkeypatch, consumer):
+    monkeypatch.setattr(settings, "autocount_page_size", 2, raising=False)
+    monkeypatch.setattr(settings, "autocount_run_time_budget_seconds", 600, raising=False)
+
+    company_id, _sql_id, engine = _make_rig(session_factory)
+    _insert_rows(engine, _rows(2))
+
+    seen: List[Optional[str]] = []
+
+    def before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+        if "debtor" not in statement.lower():
+            return
+        job_id = None
+        s = session_factory()
+        try:
+            row = s.execute(
+                sa.text(
+                    "SELECT id, heartbeat_at FROM background_jobs WHERE status = :s "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"s": JOB_RUNNING},
+            ).first()
+        finally:
+            s.close()
+        seen.append(row[1] if row else None)
+
+    sa.event.listen(engine, "before_cursor_execute", before_cursor_execute)
+    try:
+        db = session_factory()
+        job = _run(db, company_id, RUN_MODE_MANUAL)
+        assert job.status == JOB_DONE, job.error
+        assert seen, "the page SELECT was never observed"
+        assert seen[0] is not None, "no heartbeat before the first page's SELECT"
+        db.close()
+    finally:
+        sa.event.remove(engine, "before_cursor_execute", before_cursor_execute)
+
+
+# ── S9: the non-paged sql_db path beats before its push ─────────────────────
+
+
+def test_a_non_paged_sql_db_run_heartbeats_before_its_push(session_factory, monkeypatch, consumer):
+    """A ``sql_db`` task with NO watermark column takes the older single-fetch
+    path; it must still beat at least once before the push so a long extract
+    plus push is never judged dead by the sweep."""
+    monkeypatch.setattr(settings, "autocount_run_time_budget_seconds", 600, raising=False)
+
+    company_id, _sql_id, engine = _make_rig(session_factory)
+    _insert_rows(engine, _rows(3))
+    db = session_factory()
+    config = _config_row(db, company_id)
+    config.source_config = {**config.source_config, "watermarkColumn": None}
+    db.commit()
+
+    observed: List[Optional[str]] = []
+    original_upsert = consumer._upsert
+
+    def observing_upsert(body):
+        s = session_factory()
+        try:
+            observed.append(
+                s.execute(
+                    sa.text(
+                        "SELECT heartbeat_at FROM background_jobs WHERE status = :s "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    {"s": JOB_RUNNING},
+                ).scalar()
+            )
+        finally:
+            s.close()
+        return original_upsert(body)
+
+    consumer._upsert = observing_upsert
+
+    job = _run(db, company_id, RUN_MODE_MANUAL)
+    assert job.status == JOB_DONE, job.error
+    assert observed, "no push happened"
+    assert observed[0] is not None, "no heartbeat before the first push"
+    db.close()
