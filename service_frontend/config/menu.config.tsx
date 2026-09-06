@@ -274,6 +274,12 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/user-management/roles',
         permission: 'roles.read',
       },
+      {
+        title: 'Teams',
+        path: '/user-management/teams',
+        permission: 'teams.read',
+        termKey: 'team',
+      },
       // Permissions/Account/Logs/Settings entries removed in sprint-2/06 -
       // Metronic demo residue, the routes never existed (404 on click).
     ],
@@ -435,6 +441,12 @@ export const MENU_MEGA: MenuConfig = [
                 path: '/user-management/roles',
                 permission: 'roles.read',
               },
+              {
+                title: 'Teams',
+                path: '/user-management/teams',
+                permission: 'teams.read',
+                termKey: 'team',
+              },
             ],
           },
         ],
@@ -594,6 +606,12 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Roles',
         path: '/user-management/roles',
         permission: 'roles.read',
+      },
+      {
+        title: 'Teams',
+        path: '/user-management/teams',
+        permission: 'teams.read',
+        termKey: 'team',
       },
     ],
   },

@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
+
 from sqlalchemy.orm import Session
 
 from app.jobs.repository import BackgroundJobRepository
@@ -81,6 +83,7 @@ from ..sinks_sorento import (
     SorentoSinkError,
     sorento_supported_entities_label,
     sorento_supports_entity,
+    describe_consumer_failure,
 )
 from ..sync import AUTOCOUNT_SYNC
 from .company_service import AutocountServiceError, CompanyService
@@ -773,13 +776,22 @@ class SyncService:
         _rows, records, _failures = self._rehydrate_pushable(pending)
         try:
             result = sink.dry_run(records)
-        except SorentoSinkError as exc:
+        except (SorentoSinkError, httpx.HTTPError) as exc:
             # The gate must SHOW this and refuse to offer approval (plan §D4) -
-            # an operator must never approve blind. Nothing was written.
+            # an operator must never approve blind. Nothing was written. The
+            # message quotes what the consumer said (or why it was
+            # unreachable - the sink does not wrap transport faults) through
+            # the SAME helper the activation preview uses, so both gates word
+            # a failure identically (prod 2026-09-06).
+            line, status, detail = describe_consumer_failure(exc, sink=sink)
+            logger.warning(
+                "autocount approve-gate dry run failed: company_id=%s job_id=%s status=%s detail=%s",
+                company_id, job_id, status, detail,
+            )
             raise PreviewFailed(
                 "The dry run against the consumer failed, so no prediction is "
                 "available and this batch cannot be approved yet. Nothing was "
-                "written - resolve the consumer error first."
+                f"written - resolve the consumer error first. {line}"
             ) from exc
 
         return {

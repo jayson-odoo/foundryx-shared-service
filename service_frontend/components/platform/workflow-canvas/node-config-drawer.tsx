@@ -1107,6 +1107,21 @@ export function NodeConfigDrawer({
       );
     }
 
+    if (field.type === 'team') {
+      const teamOptions = (metadata.teams ?? []).map((t) => ({ value: t.id, label: t.name }));
+      return wrap(
+        <SearchSelect
+          options={teamOptions}
+          value={typeof value === 'string' && value ? value : null}
+          onChange={(v) => onConfigChange(node.id, { [field.key]: v })}
+          ariaLabel={field.label}
+          placeholder="Choose a team…"
+          searchPlaceholder="Search teams…"
+          disabled={!editing}
+        />,
+      );
+    }
+
     if (field.type === 'outputSchema') {
       return wrap(
         <OutputParamsEditor

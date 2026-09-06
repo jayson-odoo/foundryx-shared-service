@@ -13,6 +13,11 @@
  * registered `inbox_views.delete` handler and a `deferredToast` (the same
  * countdown the Resource shell's row actions use) replaces it while it
  * counts down.
+ *
+ * Plan 28 (roadmap A8, D-A8-4) folds Team Inbox into this SAME rail as a
+ * third section (My teams, each with a nested Unassigned row, plus an "All
+ * teams" group for `conversations.assign` holders) rather than a parallel
+ * `TeamRail` component living beside it - one rail, one selection model.
  */
 import { useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
@@ -32,14 +37,16 @@ import { useCan } from '@/hooks/use-can';
 import { useDeferredAction } from '@/hooks/use-deferred-action';
 import type { ConversationFilters } from '@/hooks/use-conversations';
 import { useInboxViews } from '@/hooks/use-inbox-views';
+import { useMyTeams } from '@/hooks/use-my-teams';
 import { useStatusGraph } from '@/hooks/use-status-engine';
+import { useTeams } from '@/hooks/use-teams';
 import { deferredDoneMessage, presentContinuous } from '@/lib/deferred-verb';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import type { InboxView } from '@/types/omnichannel';
 
 import { CONTACT_LIFECYCLE_ENTITY } from '../../settings/workspaces/components/workspace-lifecycle-tab';
-import { buildRailEntries, type InboxRailEntry, type RailStage } from './inbox-rail-entries';
+import { buildRailEntries, railKeyForTeam, type InboxRailEntry, type RailStage } from './inbox-rail-entries';
 import { InboxViewDialog } from './inbox-view-dialog';
 import { useInboxRailSelection } from './use-inbox-rail-selection';
 
@@ -60,10 +67,19 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
   const { data: session } = useSession();
   const currentUserId = session?.user?.id ?? null;
   const canManageShared = can('inbox_views.manage');
+  // `GET /teams` is gated `teams.read` server-side - the "All teams" group
+  // (browsing every team in the tenant, not just the caller's own) can only
+  // ever show for a caller who actually holds that permission (review round
+  // 1, finding 4/5/6). An agent with only `conversations.assign` still sees
+  // their OWN teams via `useMyTeams()` (no `teams.read` required there).
+  const canBrowseAllTeams = can('teams.read');
   // Scoped machine - never fire before the workspace id (its scope) resolves,
   // or the backend 422s "Workspace is required for this entity" on mount.
   const lifecycleGraph = useStatusGraph(workspaceId ? CONTACT_LIFECYCLE_ENTITY : null, workspaceId ?? undefined);
   const { views, create, update, refresh } = useInboxViews(workspaceId);
+  const { teams: myTeams } = useMyTeams();
+  // Never call `GET /teams` for a caller without `teams.read` - it would 403.
+  const { teams: allTeams } = useTeams({ enabled: canBrowseAllTeams });
 
   const stages = useMemo<RailStage[]>(
     () =>
@@ -72,7 +88,15 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
         .map((s) => ({ id: s.id, label: s.label, color: s.color })),
     [lifecycleGraph.graph],
   );
-  const entries = useMemo(() => buildRailEntries(stages, views), [stages, views]);
+  const otherTeams = useMemo(() => {
+    if (!canBrowseAllTeams) return [];
+    const mine = new Set(myTeams.map((t) => t.id));
+    return allTeams.filter((t) => !mine.has(t.id));
+  }, [canBrowseAllTeams, myTeams, allTeams]);
+  const entries = useMemo(
+    () => buildRailEntries(stages, views, { mine: myTeams, other: otherTeams }),
+    [stages, views, myTeams, otherTeams],
+  );
   const { selectedKey, select } = useInboxRailSelection(filters, setFilters, stages, views, workspaceId);
 
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -175,6 +199,9 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
       channelIds: filters.channelIds,
       unreplied: filters.unreplied,
       sort: filters.sort,
+      // AC-TEM-46 - a saved view captures the rail's currently-selected team
+      // scope (if any), so re-selecting the view restores it too.
+      teamIds: filters.teamId ? [filters.teamId] : undefined,
     }),
     [filters],
   );
@@ -185,6 +212,12 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
       { label: 'Lifecycle', options: entries.filter((e) => e.kind === 'lifecycle').map(entryToOption) },
       ...(entries.some((e) => e.kind === 'view')
         ? [{ label: 'Views', options: entries.filter((e) => e.kind === 'view').map(entryToOption) }]
+        : []),
+      ...(entries.some((e) => e.kind === 'team' && e.scope === 'mine')
+        ? [{ label: 'My teams', options: entries.filter((e) => e.kind === 'team' && e.scope === 'mine').map(entryToOption) }]
+        : []),
+      ...(entries.some((e) => e.kind === 'team' && e.scope === 'other')
+        ? [{ label: 'All teams', options: entries.filter((e) => e.kind === 'team' && e.scope === 'other').map(entryToOption) }]
         : []),
     ];
     return (
@@ -258,6 +291,87 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
                 </button>
               ))}
           </nav>
+        </div>
+      )}
+
+      {(myTeams.length > 0 || otherTeams.length > 0) && (
+        <div>
+          {myTeams.length > 0 && (
+            <p className="mb-1 px-2.5 text-xs font-semibold text-muted-foreground uppercase">My teams</p>
+          )}
+          <nav className="flex flex-col gap-0.5">
+            {myTeams.map((team) => (
+              <div key={team.id}>
+                <button
+                  type="button"
+                  onClick={() =>
+                    select({ kind: 'team', key: railKeyForTeam(team.id, false), teamId: team.id, unassigned: false, label: team.name, scope: 'mine' })
+                  }
+                  className={cn(
+                    PRESSED_CLASS,
+                    'flex w-full items-center rounded-md px-2.5 py-1.5 text-start text-sm transition-colors hover:bg-accent',
+                    selectedKey === railKeyForTeam(team.id, false) && 'bg-accent font-medium text-accent-foreground',
+                  )}
+                  data-testid={`rail-${railKeyForTeam(team.id, false)}`}
+                >
+                  <span className="truncate">{team.name}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    select({ kind: 'team', key: railKeyForTeam(team.id, true), teamId: team.id, unassigned: true, label: `${team.name} - Unassigned`, scope: 'mine' })
+                  }
+                  className={cn(
+                    PRESSED_CLASS,
+                    'flex w-full items-center rounded-md py-1 ps-6 pe-2.5 text-start text-xs text-muted-foreground transition-colors hover:bg-accent',
+                    selectedKey === railKeyForTeam(team.id, true) && 'bg-accent font-medium text-foreground',
+                  )}
+                  data-testid={`rail-${railKeyForTeam(team.id, true)}`}
+                >
+                  Unassigned
+                </button>
+              </div>
+            ))}
+          </nav>
+          {otherTeams.length > 0 && (
+            <>
+              <p className="mt-2 mb-1 px-2.5 text-xs font-semibold text-muted-foreground uppercase">All teams</p>
+              <nav className="flex flex-col gap-0.5">
+                {otherTeams.map((team) => (
+                  <div key={team.id}>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        select({ kind: 'team', key: railKeyForTeam(team.id, false), teamId: team.id, unassigned: false, label: team.name, scope: 'other' })
+                      }
+                      className={cn(
+                        PRESSED_CLASS,
+                        'flex w-full items-center rounded-md px-2.5 py-1.5 text-start text-sm transition-colors hover:bg-accent',
+                        selectedKey === railKeyForTeam(team.id, false) && 'bg-accent font-medium text-accent-foreground',
+                      )}
+                      data-testid={`rail-${railKeyForTeam(team.id, false)}`}
+                    >
+                      <span className="truncate">{team.name}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        select({ kind: 'team', key: railKeyForTeam(team.id, true), teamId: team.id, unassigned: true, label: `${team.name} - Unassigned`, scope: 'other' })
+                      }
+                      className={cn(
+                        PRESSED_CLASS,
+                        'flex w-full items-center rounded-md py-1 ps-6 pe-2.5 text-start text-xs text-muted-foreground transition-colors hover:bg-accent',
+                        selectedKey === railKeyForTeam(team.id, true) && 'bg-accent font-medium text-foreground',
+                      )}
+                      data-testid={`rail-${railKeyForTeam(team.id, true)}`}
+                    >
+                      Unassigned
+                    </button>
+                  </div>
+                ))}
+              </nav>
+            </>
+          )}
         </div>
       )}
 

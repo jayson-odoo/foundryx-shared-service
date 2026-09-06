@@ -259,6 +259,32 @@ def _document_types_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
     return DocumentRepository(db).get_type(tenant_id, entity_id) is not None
 
 
+def _teams_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
+    """Review round 1, finding 3 - teams have no soft-trash (a team is either
+    active or inactive, never trashed) so Delete rides the SAME grace-window
+    engine every other hard-destructive delete does, instead of the plain
+    ask-once `confirm` carve-out this used before. `TeamService.delete`
+    already runs the reference-guard check (409-shaped `TeamInUse` on the
+    synchronous route) - here it becomes a `failed` deferred row with a
+    counts-formatted message (`onFailed`/`error_text`, never a bare
+    `team_in_use` token) instead of an HTTP 409."""
+    from app.services.team_service import TeamInUse, TeamNotFound, TeamService
+
+    try:
+        TeamService(db).delete(entity_id, tenant_id)
+    except TeamNotFound as exc:
+        raise DeferredTargetGone("Team no longer exists.") from exc
+    except TeamInUse as exc:
+        detail = ", ".join(f"{n} {source}" for source, n in exc.counts.items()) or "other records"
+        raise ValueError(f"This team is still assigned to {detail} and cannot be deleted.") from exc
+
+
+def _teams_delete_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    from app.repositories.team_repository import TeamRepository
+
+    return TeamRepository(db).get(entity_id, tenant_id) is not None
+
+
 def _jobs_abort(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
     from app.storage_migration.service import StorageMigrationService
 
@@ -515,6 +541,15 @@ TENANT_MODULES_DEACTIVATE = DeferredActionDef(
     execute=_tenant_modules_deactivate,
     exists=_tenant_modules_exists,
 )
+TEAMS_DELETE = DeferredActionDef(
+    key="teams.delete",
+    entity_type="team",
+    permission="teams.manage",
+    window="destructive",  # no soft-trash for teams (D-A8-15/19)
+    label="Delete",
+    execute=_teams_delete,
+    exists=_teams_delete_exists,
+)
 
 _ALL = (
     USERS_TRASH,
@@ -538,6 +573,7 @@ _ALL = (
     JOBS_COMPLETE,
     EMAIL_OUTBOX_CANCEL,
     TENANT_MODULES_DEACTIVATE,
+    TEAMS_DELETE,
 )
 
 

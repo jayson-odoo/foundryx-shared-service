@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
 import sqlalchemy as sa
 from cryptography.fernet import InvalidToken
 from sqlalchemy.orm import Session
@@ -183,7 +184,26 @@ class EtlStateError(AutocountServiceError):
 class PreviewUnavailable(AutocountServiceError):
     """The dry run itself failed (a transport / contract fault talking to the
     consumer). The gate must SHOW this and refuse to offer Activate - nobody
-    activates blind. Nothing was written either way."""
+    activates blind. Nothing was written either way.
+
+    ``message`` is what the operator reads (the router's 502 ``detail``): the
+    generic sentence PLUS what the consumer said (``Consumer said: HTTP <n>
+    <snippet>``) or why it could not be reached (``Consumer unreachable:
+    <ExcClass>: <text>``). ``status_code`` / ``consumer_detail`` keep the
+    parts separately for logs and tests. Prod 2026-09-06: the fixed sentence
+    alone left the operator no way to tell a 504 from an unknown SO failure.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        consumer_detail: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.consumer_detail = consumer_detail
 
 
 class EtlAnchorError(AutocountServiceError):
@@ -504,6 +524,34 @@ def validate_source_config(
         "reconcileAt": at,
     }
     return clean, errors
+
+
+_PREVIEW_FAILED = (
+    "The dry run against the consumer failed, so no prediction is available "
+    "and this task cannot be activated yet. Nothing was written - resolve the "
+    "consumer error first."
+)
+
+
+def _preview_unavailable(
+    exc: BaseException, *, sink: Any, company_id: str, entity_type: str
+) -> PreviewUnavailable:
+    """Build the operator-facing ``PreviewUnavailable`` for a failed dry run
+    and log it (WARNING, one line, with the parts a follow-up needs). The
+    wording of the consumer line is ``sinks_sorento.describe_consumer_failure``
+    - shared with the approve gate (``SyncService``) so both say the same
+    thing. Imported lazily like every other ``sinks_sorento`` use in this
+    module."""
+    from ..sinks_sorento import describe_consumer_failure
+
+    line, status, detail = describe_consumer_failure(exc, sink=sink)
+    logger.warning(
+        "autocount preview dry run failed: company_id=%s entity_type=%s status=%s detail=%s",
+        company_id, entity_type, status, detail,
+    )
+    return PreviewUnavailable(
+        f"{_PREVIEW_FAILED} {line}", status_code=status, consumer_detail=detail
+    )
 
 
 class EtlService:
@@ -1258,11 +1306,15 @@ class EtlService:
             result = sink.dry_run([r for r in records if r is not None])
         except SinkAnchorError as exc:
             raise EtlAnchorError(exc.code, exc.sorento_message) from exc
-        except SorentoSinkError as exc:
-            raise PreviewUnavailable(
-                "The dry run against the consumer failed, so no prediction is "
-                "available and this task cannot be activated yet. Nothing was "
-                "written - resolve the consumer error first."
+        except (SorentoSinkError, httpx.HTTPError) as exc:
+            # The operator must be able to tell WHAT the consumer said (a 504
+            # from its proxy, a 500 with a body, a refused connection) - the
+            # generic sentence alone was useless twice on prod, 2026-09-06.
+            # ``httpx.HTTPError`` is caught here as well because the sink does
+            # NOT wrap transport faults; before this they escaped as a bare
+            # 500 instead of a 502 that names the fault.
+            raise _preview_unavailable(
+                exc, sink=sink, company_id=company_id, entity_type=entity_type
             ) from exc
 
         config.last_preview_at = datetime.now(timezone.utc)

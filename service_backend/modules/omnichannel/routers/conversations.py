@@ -100,6 +100,7 @@ def list_threads(
     lifecycle_stage_ids: Optional[str] = Query(None, alias="lifecycleStageIds"),
     tag_ids: Optional[str] = Query(None, alias="tagIds"),
     channel_ids: Optional[str] = Query(None, alias="channelIds"),
+    team_id: Optional[str] = Query(None, alias="teamId"),
     unreplied: Optional[bool] = Query(None),
     sort: Optional[str] = Query(
         None, pattern="^(newest|oldest|unreplied_first|longest_waiting)$"
@@ -228,6 +229,12 @@ def list_threads(
         ),
         unreplied=unreplied if unreplied is not None else view_kwargs.get("unreplied"),
         sort=sort if sort is not None else view_kwargs.get("sort"),
+        # AC-TEM-46 (review round 1, finding 9) - the explicit `teamId` query
+        # param always overrides a saved view's `teamIds` (AC-IVE-17's same
+        # override rule); a view's `teamIds` only applies when the caller
+        # sent no explicit `teamId` at all.
+        team_id=team_id,
+        team_ids=None if team_id is not None else view_kwargs.get("team_ids"),
         page=page,
         page_size=page_size,
     )
@@ -298,11 +305,17 @@ def patch_thread(
             status_code=422,
             detail={"fieldErrors": {"phone": "Phone is not editable."}},
         )
-    wants_assign = "assignedUserId" in sent
+    wants_assign = "assignedUserId" in sent or "assignedTeamId" in sent
     wants_lifecycle = payload.status is not None or payload.priority is not None
     wants_profile = bool(sent & _PROFILE_KEYS)
     if not (wants_assign or wants_lifecycle or wants_profile):
         raise HTTPException(status_code=400, detail="Nothing to update")
+    if "assignedTeamId" in sent and principal.is_embed:
+        # D-A8-13 - teams are a native-only surface; an embed/external-agent
+        # token never sees this key at all.
+        raise HTTPException(
+            status_code=403, detail="Teams are not available for this token."
+        )
     if wants_assign:
         principal.require(native_perm="conversations.assign", embed_cap="assign")
     if wants_lifecycle:
@@ -325,7 +338,8 @@ def patch_thread(
         return ConversationService(db).patch_thread(
             contact_id,
             principal.tenant_id,
-            assigned_user_id=payload.assignedUserId if wants_assign else ...,
+            assigned_user_id=payload.assignedUserId if "assignedUserId" in sent else ...,
+            assigned_team_id=payload.assignedTeamId if "assignedTeamId" in sent else ...,
             status=payload.status,
             priority=payload.priority,
             first_name=payload.firstName if "firstName" in sent else ...,
@@ -343,6 +357,8 @@ def patch_thread(
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
     except InvalidPatch as exc:
+        if exc.field:
+            raise HTTPException(status_code=422, detail={"fieldErrors": {exc.field: exc.message}})
         raise HTTPException(status_code=422, detail=exc.message)
     except ProfilePatchError as exc:
         raise HTTPException(status_code=422, detail={"fieldErrors": exc.errors})

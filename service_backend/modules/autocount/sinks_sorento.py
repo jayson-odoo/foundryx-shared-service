@@ -37,12 +37,13 @@ transaction and the exactly-once guarantee.
 from __future__ import annotations
 
 import json
+import re
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
@@ -198,7 +199,29 @@ def contract_major(version: Any, *, default: Optional[int] = None) -> Optional[i
 class SorentoSinkError(Exception):
     """A transport- or contract-level failure that is not per-record. The whole
     batch is unresolved; the caller returns it to review rather than marking any
-    record pushed."""
+    record pushed.
+
+    ``status_code`` / ``body`` (both optional, ``None`` when the failure was
+    not an HTTP answer) carry what the consumer actually said, so a caller
+    that must SHOW the failure (``EtlService.preview_task`` -> 502) can quote
+    it instead of a fixed sentence - prod 2026-09-06: an operator saw "the
+    dry run failed" twice (a 504 and an unknown SO failure) with no way to
+    tell what Sorento had answered. ``str(exc)`` is unchanged for every
+    existing caller; ``body`` is the SAME bounded, key-free snippet the
+    message already embeds (``_safe_body``), never the request, never the
+    URL beyond its path.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        body: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
 
 
 class SinkAnchorError(SorentoSinkError):
@@ -223,6 +246,9 @@ class SinkUnknownEntity(SorentoSinkError):
     non-200 (a genuine outage/misconfiguration): the caller retries later
     rather than treating it as a defect."""
 
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status_code=404)
+
 
 class SorentoRateLimited(SorentoSinkError):
     """HTTP 429. Carries the vendor's ``Retry-After`` so the caller can wait the
@@ -230,7 +256,10 @@ class SorentoRateLimited(SorentoSinkError):
 
     def __init__(self, retry_after: int) -> None:
         self.retry_after = retry_after
-        super().__init__(f"Sorento rate-limited the push; retry after {retry_after}s.")
+        super().__init__(
+            f"Sorento rate-limited the push; retry after {retry_after}s.",
+            status_code=429,
+        )
 
 
 @dataclass
@@ -328,6 +357,25 @@ class SorentoSink:
         self._timeout = httpx.Timeout(float(timeout), connect=SINK_CONNECT_TIMEOUT_SECONDS)
         self._transport = transport
         self._max_rate_limit_waits = max_rate_limit_waits
+
+    # ── operator-facing text ────────────────────────────────────────────────
+
+    _REDACT_MIN_KEY_LEN = 8
+
+    def redact(self, text: str) -> str:
+        """``text`` with this sink's API key replaced by ``[redacted]``.
+
+        For anything that is about to be SHOWN or LOGGED (the preview's 502
+        detail, the approve gate's message): the sink's own error strings
+        never embed the key, but a consumer body could echo it back, so it is
+        scrubbed defensively. Keys shorter than 8 characters are not replaced
+        (a 1-3 character "key" would blank out ordinary words); such a key
+        is a misconfiguration the connection Test already refuses.
+        """
+        key = self._api_key or ""
+        if len(key) < self._REDACT_MIN_KEY_LEN:
+            return text
+        return text.replace(key, "[redacted]")
 
     # ── projection ──────────────────────────────────────────────────────────
 
@@ -431,7 +479,9 @@ class SorentoSink:
             detail = _safe_body(response)
             raise SorentoSinkError(
                 f"Sorento returned HTTP {response.status_code} for "
-                f"{path}: {detail}"
+                f"{path}: {detail}",
+                status_code=response.status_code,
+                body=detail,
             )
 
     def _post(self, records: List[Dict[str, Any]], *, dry_run: bool) -> Dict[str, Any]:
@@ -798,6 +848,74 @@ def _safe_body(response: httpx.Response) -> str:
         return json.dumps(response.json())[:500]
     except (ValueError, TypeError):
         return (response.text or "")[:500]
+
+
+_CONSUMER_SNIPPET_MAX = 300
+_URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
+
+
+_HTTP_STATUS_RE = re.compile(r"\bHTTP (\d{3})\b")
+
+
+def describe_consumer_failure(
+    exc: BaseException, *, sink: Optional[Any] = None
+) -> Tuple[str, Optional[int], str]:
+    """The operator-facing account of a failed dry run / push:
+    ``(line, status_code, detail)``.
+
+    Shared by ``EtlService.preview_task`` (activation preview -> 502) and
+    ``SyncService``'s approve-gate dry run (-> 502) so the two never word
+    the same failure differently (prod 2026-09-06: a fixed generic sentence
+    left the operator unable to tell a 504 from an unknown SO failure).
+
+    Built from STATUS + captured BODY, never from an error string that might
+    embed a header or URL:
+
+    * a TRANSPORT error (``httpx.HTTPError`` - the sink does not wrap these,
+      so the caller catches them beside ``SorentoSinkError``) ->
+      ``Consumer unreachable: <Class>: <text>``, status ``None``;
+    * a ``SorentoSinkError`` carrying ``status_code`` (any non-200 answer,
+      a 429, an ``UNKNOWN_ENTITY`` 404) -> ``Consumer said: HTTP <n>
+      <captured body>``;
+    * a ``SorentoSinkError`` WITHOUT the attribute but whose text names an
+      ``HTTP <n>`` (an older sink, a test double) -> ``Consumer said: HTTP
+      <n>`` and nothing else - the text is not trusted onto the surface;
+    * a ``SorentoSinkError`` with no HTTP answer at all (an unroutable
+      entity, a record without a projection - the sink's own key-free
+      strings) -> ``Consumer error: <text>``.
+
+    ``detail`` is whitespace-collapsed, capped at exactly
+    ``_CONSUMER_SNIPPET_MAX`` characters (after ``_safe_body``'s own 500),
+    scrubbed through the sink's public ``redact`` when it has one (never a
+    private attribute), and any ``scheme://...`` token is replaced - the
+    sink's own strings carry only the request PATH and this keeps a consumer
+    body from re-introducing a URL.
+    """
+    if isinstance(exc, httpx.HTTPError):
+        status: Optional[int] = None
+        raw = f"{type(exc).__name__}: {exc}"
+        prefix = "Consumer unreachable: "
+    else:
+        status = getattr(exc, "status_code", None)
+        body = getattr(exc, "body", None)
+        if status is not None:
+            raw = body or ""
+            prefix = f"Consumer said: HTTP {status} "
+        else:
+            match = _HTTP_STATUS_RE.search(str(exc))
+            if match:
+                status = int(match.group(1))
+                raw = ""
+                prefix = f"Consumer said: HTTP {status} "
+            else:
+                raw = str(exc)
+                prefix = "Consumer error: "
+    detail = " ".join(str(raw).split())
+    redact = getattr(sink, "redact", None)
+    if callable(redact):
+        detail = redact(detail)
+    detail = _URL_RE.sub("[url]", detail)[:_CONSUMER_SNIPPET_MAX]
+    return f"{prefix}{detail}".rstrip(), status, detail
 
 
 def sorento_sink_from_connection(
