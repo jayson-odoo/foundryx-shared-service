@@ -204,17 +204,64 @@ def test_replace_mapping_with_a_disabled_required_row_persists_nothing(db, trans
     assert after == before
 
 
-def test_simulate_rejects_a_draft_whose_required_field_is_only_a_disabled_row(db, transports):
-    """Simulate must reject exactly what the save gate rejects - a preview of
-    a mapping that would 422 the instant it was saved is a foolproof-UI
-    violation, and here it would preview a record the wire never carries."""
+def test_simulate_previews_a_disabled_required_row_as_absent_never_as_enabled(db, transports):
+    """Simulate writes nothing, so the save gates alone close the is_active
+    hole (the sprint-5/02 partial-draft preview contract stands: a draft
+    previews even when it would not yet save). What simulate MUST do is
+    honour the draft row's own ``is_enabled`` (kill test K4): a disabled
+    ``is_active`` previews exactly as it would push - ABSENT from the
+    projected fields and from the payload - never as if it were enabled."""
     company = _company(db, transports)
-    with pytest.raises(AutocountServiceError) as exc:
-        CompanyService(db).simulate_mapping(
-            DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, _supplier(),
-            _master_rows_with_disabled_is_active(),
+    svc = CompanyService(db)
+
+    result = svc.simulate_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, _supplier(IsActive="T"),
+        _master_rows_with_disabled_is_active(),
+    )
+    projected = {f["canonicalField"] for f in result["headerFields"]}
+    assert "is_active" not in projected
+    assert "is_active" not in (result["record"] or {})
+    # The rest of the draft still previews.
+    assert {"code", "name"} <= projected
+
+    # Control: the SAME draft with the row enabled projects the field.
+    enabled = [
+        MappingWriteRow(
+            row.source_path, row.transform, row.sorento_field, is_enabled=True,
         )
-    assert "is_active" in str(exc.value)
+        for row in _master_rows_with_disabled_is_active()
+    ]
+    control = svc.simulate_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, _supplier(IsActive="T"), enabled
+    )
+    assert "is_active" in {f["canonicalField"] for f in control["headerFields"]}
+    assert control["record"]["is_active"] is True
+
+
+def test_replace_mapping_rejects_a_required_line_field_present_only_as_a_disabled_row(db, transports):
+    """The line-scope twin of the header gate (kill test S2): a document
+    draft whose required LINE target (``qty_ordered``) carries
+    ``isEnabled: false`` is dropped by the engine on the wire, so the save
+    must count only ENABLED line rows as coverage."""
+    from modules.autocount.canonical.documents import ENTITY_SALES_ORDER
+
+    from tests.test_autocount_pipeline import _document_entity_config
+
+    company = _company(db, transports)
+    _document_entity_config(db, company, ENTITY_SALES_ORDER)
+    rows = [
+        MappingWriteRow(source_path="DocNo", transform="string", sorento_field="so_number"),
+        MappingWriteRow(source_path="Status", transform="string", sorento_field="status"),
+        MappingWriteRow(source_path="DtlKey", transform="string", sorento_field="source_ref", scope="line"),
+        MappingWriteRow(source_path="ItemAutoKey", transform="ref_product", sorento_field="product_ref", scope="line"),
+        MappingWriteRow(
+            source_path="Qty", transform="decimal", sorento_field="qty_ordered", scope="line",
+            is_enabled=False,
+        ),
+    ]
+    with pytest.raises(AutocountServiceError) as exc:
+        CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, company.id, ENTITY_SALES_ORDER, rows)
+    assert "qty_ordered" in str(exc.value)
 
 
 # ── (5) the sweep is scoped to CUSTOMER rows ────────────────────────────────

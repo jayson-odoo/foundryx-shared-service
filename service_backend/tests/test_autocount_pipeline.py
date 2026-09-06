@@ -2683,7 +2683,10 @@ def test_a_debtor_row_maps_to_a_canonical_customer_with_its_extra_fields():
     assert record.source_ref == "AED_VSOFT:9"
     assert record.phone_number == "+60123456789"
     assert record.tax_id == "IG12345678900"
-    assert record.credit_limit == Decimal("25000.00000000")
+    # Sorento contract 2.1 (sprint-5/04): ``credit_limit`` is gone from the
+    # seed, the accepted targets AND the model - a dead attribute must not
+    # creep back as a place for a stale mapping row to land.
+    assert not hasattr(record, "credit_limit")
 
 
 def test_a_master_record_has_no_lines_attribute_to_half_fill():
