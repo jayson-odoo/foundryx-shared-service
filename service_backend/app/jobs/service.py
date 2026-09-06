@@ -245,6 +245,16 @@ class JobService:
         # 45-minute meetings transcription) must never be swept.
         beating_types = types_that_heartbeat()
         if not beating_types:
+            # S15 (review round 2): a sweep that runs before `load_modules`
+            # registers any `heartbeats` job type finds nothing to judge and
+            # silently no-ops - which looks identical to "nothing is stuck"
+            # from the caller's side. Self-report so a mis-ordered startup
+            # sweep (or a module that forgot to declare `heartbeats=True`)
+            # is visible in the logs rather than inferred from a stuck job.
+            logger.warning(
+                "fail_orphaned_running_jobs: no job type declares heartbeats - "
+                "sweep is a no-op (modules not loaded yet?)"
+            )
             return 0
         query = self.db.query(BackgroundJob).filter(
             BackgroundJob.status == JOB_RUNNING,
