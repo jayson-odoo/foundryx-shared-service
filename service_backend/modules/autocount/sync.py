@@ -724,9 +724,12 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         # advances only on a clean batch.
         if result.cursor is not None:
             watermark_row.cursor_json = result.cursor
-        watermark_row.consecutive_failures = 0
-        watermark_row.last_error = None
-        watermark_row.last_success_at = datetime.now(timezone.utc)
+        # S13 (review round 2, fix/job-lease-orphan-sweep): the HEALTH fields
+        # (`consecutive_failures`, `last_error`, `last_success_at`) are stamped
+        # AFTER the push (if any) is known to have finished without a lost
+        # lease, not here alongside the retry position - see the stamp beside
+        # `run.outcome = RUN_SUCCESS` below. A run swept mid-push must not
+        # read the entity as healthy while its own job ends FAILED.
     else:
         # D18: a failed document HOLDS the watermark for the entity, so the next
         # run re-reads the same window and the document gets another chance
@@ -800,6 +803,14 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         config.last_run_error = None
         config.last_run_error_code = None
     config.last_run_at = datetime.now(timezone.utc)
+
+    # S13: the push (if any) is known to have finished without a lost lease
+    # by this point (the leaseLost branch above already returned) - it is
+    # now safe to stamp the entity healthy for a clean batch.
+    if failed_count == 0:
+        watermark_row.consecutive_failures = 0
+        watermark_row.last_error = None
+        watermark_row.last_success_at = datetime.now(timezone.utc)
 
     run.outcome = RUN_SUCCESS
     run.truncated = False
@@ -1565,13 +1576,12 @@ def _run_paged_sql_db(
         CURSOR_MARK: top_mark,
         "lastKey": top_last_key,
     }
-    watermark_row.consecutive_failures = 0
-    watermark_row.last_success_at = datetime.now(timezone.utc)
-    watermark_row.last_error = (
-        f"{total_failed} record(s) failed to map; see staged records"
-        if total_failed
-        else None
-    )
+    # S13 (review round 2, fix/job-lease-orphan-sweep): the HEALTH fields
+    # (`consecutive_failures`, `last_error`, `last_success_at`) are stamped
+    # AFTER the push (if any) is known to have finished without a lost lease
+    # - see beside `run.outcome = RUN_SUCCESS` below - never here alongside
+    # the retry position. A run swept mid-push must not leave the entity
+    # reading healthy while its own job ends FAILED.
     # S10 (fix/job-lease-orphan-sweep): COMMIT the watermark/cursor advance
     # before the push begins. The S2 BLOCKER 1 invariant is that a failing
     # sink must NOT discard this advance (the fetch succeeded; the staged rows
@@ -1617,6 +1627,17 @@ def _run_paged_sql_db(
         config.last_run_error = None
         config.last_run_error_code = None
     config.last_run_at = datetime.now(timezone.utc)
+
+    # S13: the push (if any) is known to have finished without a lost lease
+    # by this point (the leaseLost branch above already returned) - it is
+    # now safe to stamp the entity's health.
+    watermark_row.consecutive_failures = 0
+    watermark_row.last_success_at = datetime.now(timezone.utc)
+    watermark_row.last_error = (
+        f"{total_failed} record(s) failed to map; see staged records"
+        if total_failed
+        else None
+    )
 
     run.outcome = RUN_SUCCESS
     run.truncated = truncated
