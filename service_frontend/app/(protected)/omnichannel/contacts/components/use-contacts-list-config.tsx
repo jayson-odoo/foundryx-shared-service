@@ -15,6 +15,7 @@ import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import type { ResourceAction, ResourceListConfig } from '@/components/platform/resource-list';
 import { useDatetime } from '@/hooks/use-datetime';
 import type { LifecycleStageOption } from '@/hooks/use-contact-lifecycle-stages';
+import { useContactFilterFields } from '@/hooks/use-contact-filter-fields';
 import { contactService } from '@/services/contact-service';
 import { ExportPendingError } from '@/lib/service-errors';
 import type {
@@ -24,7 +25,7 @@ import type {
   ContactTag,
   WorkspaceMember,
 } from '@/types/omnichannel';
-import type { FilterFieldDef, FilterFieldType, FilterGroup } from '@/types/resource';
+import type { FilterGroup } from '@/types/resource';
 import { ContactChannelsCell } from './contact-channels-cell';
 import { ContactLifecycleCell } from './contact-lifecycle-cell';
 import { ContactTagsCell } from './contact-tags-cell';
@@ -33,30 +34,6 @@ import { segmentOptions } from './segment-picker';
 import { exportPendingToast } from './export-pending-toast';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
-
-const PRIORITY_OPTIONS = [
-  { label: 'Low', value: 'LOW' },
-  { label: 'Medium', value: 'MEDIUM' },
-  { label: 'High', value: 'HIGH' },
-  { label: 'Urgent', value: 'URGENT' },
-];
-
-/** `customFields.<key>` filter type derived from the field's registered type
- *  (AC-CTM-04) - the shell only knows text/enum/date/bool, so `number`/`time`
- *  map to the closest usable operator set (documented deviation, no numeric
- *  range or time-of-day filter in this slice). */
-function customFieldFilterType(field: ContactField): FilterFieldType {
-  switch (field.type) {
-    case 'list':
-      return 'enum';
-    case 'checkbox':
-      return 'bool';
-    case 'date':
-      return 'date';
-    default:
-      return 'text';
-  }
-}
 
 export interface UseContactsListConfigParams {
   workspaceId: string;
@@ -95,49 +72,7 @@ export function useContactsListConfig({
   const { formatDate, formatDateTime } = useDatetime();
   const router = useRouter();
 
-  const filterFields = useMemo<FilterFieldDef[]>(() => {
-    const system: FilterFieldDef[] = [
-      { field: 'name', label: 'Name', type: 'text' },
-      { field: 'phone', label: 'Phone', type: 'text' },
-      { field: 'email', label: 'Email', type: 'text' },
-      { field: 'language', label: 'Language', type: 'text' },
-      { field: 'countryCode', label: 'Country', type: 'text' },
-      { field: 'priority', label: 'Priority', type: 'enum', options: PRIORITY_OPTIONS },
-      {
-        field: 'assignee',
-        label: 'Assignee',
-        type: 'enum',
-        options: [
-          { label: 'Unassigned', value: 'unassigned' },
-          ...members.map((m) => ({ label: m.name ?? m.email, value: m.userId })),
-        ],
-      },
-      { field: 'channelType', label: 'Channel', type: 'enum', options: channelTypeOptions },
-      {
-        field: 'lifecycle',
-        label: 'Lifecycle',
-        type: 'enum',
-        options: stages.map((s) => ({ label: s.label, value: s.key })),
-      },
-      {
-        field: 'tags',
-        label: 'Tags',
-        type: 'enum',
-        options: tags.map((t) => ({ label: `${t.emoji ? `${t.emoji} ` : ''}${t.name}`, value: t.id })),
-      },
-      { field: 'lastMessageAt', label: 'Last message', type: 'date' },
-      { field: 'createdAt', label: 'Created', type: 'date' },
-    ];
-    const custom: FilterFieldDef[] = fields
-      .filter((f) => f.visibility === 'always')
-      .map((f) => ({
-        field: `customFields.${f.key}`,
-        label: f.label,
-        type: customFieldFilterType(f),
-        options: f.type === 'list' ? (f.options ?? []).map((o) => ({ label: o, value: o })) : undefined,
-      }));
-    return [...system, ...custom];
-  }, [members, channelTypeOptions, stages, tags, fields]);
+  const filterFields = useContactFilterFields({ tags, fields, stages, members, channelTypeOptions });
 
   return useMemo<ResourceListConfig<ContactListItem>>(() => {
     const columns: ColumnDef<ContactListItem>[] = [

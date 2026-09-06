@@ -466,7 +466,11 @@ export type ConversationSocketEvent =
       reactorType: 'CONTACT' | 'AGENT';
       emoji: string;
       removed: boolean;
-    };
+    }
+  // Plan 29 (A4) S3 - published on every broadcast state/count change
+  // (created, scheduled, sending, each chunk's count advance, terminal);
+  // best-effort (a dead Redis never fails the send job, AC-BRD-45).
+  | { type: 'broadcast.updated'; broadcastId: string; status: BroadcastStatus; counts: BroadcastCounts };
 
 /** Result of an agent reaction (POST …/react). */
 export interface ReactionResult {
@@ -666,6 +670,121 @@ export interface UpdateContactSegmentInput {
   name?: string;
   description?: string | null;
   filter?: FilterGroup;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 29 - Omnichannel Broadcasts v1 (roadmap A4). See
+// documentation/plans/sprint-4/29-omnichannel-broadcasts.md §5.2.
+// ---------------------------------------------------------------------------
+
+export type BroadcastStatus = 'DRAFT' | 'SCHEDULED' | 'SENDING' | 'SENT' | 'CANCELLED' | 'FAILED';
+
+/** How one WhatsApp template parameter slot is filled (D-A4-4 - structured,
+ *  never a merge-string micro-render; anti-SSTI by construction). */
+export type TemplateBinding =
+  | { source: 'static'; text: string }
+  | { source: 'contactField'; field: string; fallback: string };
+
+/** `TemplateBinding.field` whitelist (plan §5.2). */
+export const CONTACT_FIELD_BINDING_OPTIONS: { label: string; value: string }[] = [
+  { label: 'First name', value: 'firstName' },
+  { label: 'Last name', value: 'lastName' },
+  { label: 'Phone', value: 'phone' },
+  { label: 'Email', value: 'email' },
+  { label: 'Language', value: 'language' },
+  { label: 'Country code', value: 'countryCode' },
+  { label: 'Lifecycle stage', value: 'lifecycle' },
+];
+
+/** The audience CONFIGURATION - exactly one of a saved segment, an inline
+ *  filter, or an explicit contact-id list. Never a stored recipient list
+ *  until send time (D-A4-2). The three unused branches are `null` on the
+ *  real wire (`BroadcastAudienceOut` always emits all four keys), not an
+ *  absent key - `| null` here (and in `broadcast-schema.ts`'s zod shape)
+ *  matches that, so a real saved broadcast loaded back into the builder
+ *  validates instead of failing closed on "Expected string, received null"
+ *  (plan 29 S4 real-data wiring bug). */
+export interface BroadcastAudience {
+  kind: 'segment' | 'filter' | 'contacts';
+  segmentId?: string | null;
+  segmentName?: string | null;
+  filter?: FilterGroup | null;
+  contactIds?: string[] | null;
+}
+
+export interface BroadcastBindings {
+  header: TemplateBinding[];
+  body: TemplateBinding[];
+  buttons: TemplateBinding[];
+}
+
+export interface BroadcastCounts {
+  total: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  failed: number;
+  skipped: number;
+}
+
+export interface Broadcast {
+  id: string;
+  workspaceId: string;
+  name: string;
+  labels: string[];
+  channelId: string;
+  channelName: string;
+  audience: BroadcastAudience;
+  templateId: string;
+  templateName: string;
+  templateLanguage: string;
+  bindings: BroadcastBindings;
+  status: BroadcastStatus;
+  statusLabel: string;
+  scheduledAt: string | null; // ISO
+  startedAt: string | null; // ISO
+  finishedAt: string | null; // ISO
+  counts: BroadcastCounts;
+  jobId: string | null;
+  error: string | null;
+  createdByUserId: string | null;
+  createdByName: string | null;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+}
+
+export interface CreateBroadcastInput {
+  name: string;
+  labels?: string[];
+  channelId: string;
+  audience: BroadcastAudience;
+  templateId: string;
+  bindings: BroadcastBindings;
+  scheduledAt?: string | null;
+}
+
+export type UpdateBroadcastInput = Partial<CreateBroadcastInput>;
+
+export type BroadcastRecipientState = 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'skipped';
+
+export type BroadcastSkipReason =
+  | 'no_identity'
+  | 'duplicate'
+  | 'channel_inactive'
+  | 'cancelled'
+  | 'missing_variable';
+
+export interface BroadcastRecipient {
+  id: string;
+  contactId: string;
+  contactName: string;
+  phone: string | null;
+  state: BroadcastRecipientState;
+  skipReason?: BroadcastSkipReason;
+  errorCode?: string;
+  errorText?: string;
+  messageId?: string;
+  attemptedAt: string | null; // ISO
 }
 
 /** Create-form payload (D-A2-4) - `phone` is required + create-only; every

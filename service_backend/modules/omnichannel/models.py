@@ -128,6 +128,11 @@ class Channel(OmniBase):
     profile_website_2 = Column(String, nullable=True)
     profile_picture_url = Column(String, nullable=True)  # display-only (upload BL-108)
     profile_synced_at = Column(UTCDateTime(), nullable=True)
+    # Plan 29 (A4, D-A4-12) - a per-channel broadcast pacing tier; NULL falls
+    # back to the conservative global default (`settings.
+    # omnichannel_broadcast_rate_per_second`). Wired up by S2's chunk pacing;
+    # the column ships in S1 so the migration + create_all mirror land once.
+    broadcast_rate_per_second = Column(Integer, nullable=True)
     is_trashed = Column(Boolean, nullable=False, default=False)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
@@ -501,6 +506,121 @@ class WhatsappTemplate(OmniBase):
     last_synced_at = Column(UTCDateTime(), nullable=True)
     media_sample_key = Column(String, nullable=True)  # storage key for a draft media-header sample
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
+class Broadcast(OmniBase):
+    """A named, scheduled-or-immediate one-way send of ONE approved WhatsApp
+    template to a resolved audience on ONE channel (plan 29, roadmap A4).
+
+    The audience is stored as CONFIGURATION only (D-A4-2) - `audience_kind`
+    picks exactly one of `audience_segment_id` / `audience_filter_json` /
+    `audience_contact_ids_json`; it is snapshotted into `BroadcastRecipient`
+    rows only at SEND time (S2). Lifecycle rides the module's lightweight
+    `statuses` table under the NEW scope `BROADCAST` (D-A4-3), not the core
+    status engine - `status_id` is machine-driven, never tenant-edited.
+    Counts are denormalized (D-A4-11), recomputed set-based from a live
+    aggregate over `broadcast_recipients`. `job_id`/`created_by_user_id` are
+    plain indexed columns pointing at CORE rows (`background_jobs`, `users`) -
+    no cross-schema FK (the BL-030 pattern)."""
+
+    __tablename__ = "broadcasts"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    labels_json = Column(JSON(none_as_null=True), nullable=True)  # string[] (D-A4-21)
+
+    # Plain indexed column pointing at `channels.id` - no FK (BL-030). A
+    # channel hard-delete must not be blocked by a historical broadcast.
+    channel_id = Column(String, nullable=False, index=True)
+
+    # ── audience CONFIGURATION (D-A4-2) - exactly one branch is populated ──
+    audience_kind = Column(String, nullable=False)  # segment | filter | contacts
+    # Plain indexed column pointing at `contact_segments.id` - no FK (BL-030).
+    # A segment delete must not be blocked by a historical broadcast.
+    audience_segment_id = Column(String, nullable=True, index=True)
+    audience_filter_json = Column(JSON(none_as_null=True), nullable=True)
+    audience_contact_ids_json = Column(JSON(none_as_null=True), nullable=True)
+
+    # Plain indexed column pointing at `whatsapp_templates.id` - no FK
+    # (BL-030). A template delete must not be blocked by a historical
+    # broadcast; `template_name`/`template_language` below are denormalized
+    # for exactly this reason.
+    template_id = Column(String, nullable=False, index=True)
+    # Denormalized at save (the template row may change/disappear later; the
+    # list must not join it) - mirrors the `WorkspaceItem`/`ChannelItem`
+    # denormalization convention already used across this module.
+    template_name = Column(String, nullable=False)
+    template_language = Column(String, nullable=True)
+
+    # Structured {header:[], body:[], buttons:[]} TemplateBinding slots
+    # (D-A4-4) - never a merge-string; anti-SSTI by construction.
+    bindings_json = Column(JSON(none_as_null=True), nullable=True)
+
+    status_id = Column(String, ForeignKey("statuses.id"), nullable=False, index=True)
+    scheduled_at = Column(UTCDateTime(), nullable=True)
+    started_at = Column(UTCDateTime(), nullable=True)
+    finished_at = Column(UTCDateTime(), nullable=True)
+
+    total_count = Column(Integer, nullable=False, default=0)
+    sent_count = Column(Integer, nullable=False, default=0)
+    delivered_count = Column(Integer, nullable=False, default=0)
+    read_count = Column(Integer, nullable=False, default=0)
+    failed_count = Column(Integer, nullable=False, default=0)
+    skipped_count = Column(Integer, nullable=False, default=0)
+
+    job_id = Column(String, nullable=True)  # public.background_jobs.id (S2)
+    error = Column(Text, nullable=True)
+    created_by_user_id = Column(String, nullable=True)  # public.users.id, no FK
+
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_broadcasts_tenant_ws_status_scheduled",
+            "tenant_id", "workspace_id", "status_id", "scheduled_at",
+        ),
+    )
+
+
+class BroadcastRecipient(OmniBase):
+    """One audience member's send ledger row for a broadcast (plan 29, roadmap
+    A4) - materialized ONLY at SEND time (S2's snapshot phase, tested in
+    isolation in S1 via `services/broadcast_audience.snapshot_audience`).
+    `UNIQUE(broadcast_id, contact_id)` is the idempotency backstop S2's atomic
+    per-recipient claim relies on (a resumed/retried snapshot or send never
+    double-writes or double-sends). `message_id` is a plain indexed column
+    pointing at `conversation_messages.id` (no cross-schema FK, BL-030)."""
+
+    __tablename__ = "broadcast_recipients"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    broadcast_id = Column(String, ForeignKey("broadcasts.id"), nullable=False, index=True)
+    # Plain indexed column pointing at `contacts.id` - no FK (BL-030). A
+    # contact hard-delete must not be blocked by a historical broadcast.
+    contact_id = Column(String, nullable=False, index=True)
+    message_id = Column(String, nullable=True, index=True)
+
+    # queued | sent | delivered | read | failed | skipped
+    state = Column(String, nullable=False, default="queued")
+    # no_identity | duplicate | channel_inactive | cancelled | missing_variable
+    skip_reason = Column(String, nullable=True)
+    error_code = Column(String, nullable=True)
+    error_text = Column(Text, nullable=True)
+
+    attempts = Column(Integer, nullable=False, default=0)
+    attempted_at = Column(UTCDateTime(), nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("broadcast_id", "contact_id", name="uq_broadcast_recipient"),
+        Index("ix_broadcast_recipients_tenant_broadcast_state", "tenant_id", "broadcast_id", "state"),
+    )
 
 
 class WorkspaceApiKey(OmniBase):

@@ -127,6 +127,7 @@ class MessageService:
         *,
         actor_user_id: Optional[str],
         external_agent_id: Optional[str],
+        is_agent_reply: bool = True,
     ) -> None:
         """Maintains `last_message_at` (every send) + `last_agent_message_at`
         (plan 27 A3, AC-IVE-11/12 - the ONE outbound seam) and writes ONE
@@ -134,6 +135,17 @@ class MessageService:
         three bare `contact.last_message_at = now` assignments (send_message /
         send_media / `_structured_row`) - NEVER called by `add_internal_note`
         (a SYSTEM note is never a reply).
+
+        `is_agent_reply=False` (plan 29 D-A4-15, review round 1 B2) - a
+        broadcast send routes through this SAME path on purpose (no second
+        outbound path), but a broadcast is NOT a reply in a conversation: it
+        must write NO `conversation_events` row (AC-BRD-43) AND must NOT
+        advance `last_agent_message_at` - `unreplied` is defined as
+        `last_agent_message_at < last_incoming_message_at` (plan 27
+        AC-IVE-11/12), so advancing it here would silently mark every
+        contact "replied" and empty the agent team's Unreplied inbox view on
+        every broadcast blast. Only `last_message_at` advances (the message
+        really is in the thread - real contact activity, just not a reply).
 
         B20 (round-3 codex triage) - the SELECT (`is_first_reply_pending`)
         then INSERT (`event_service.record`) is a check-then-write race: two
@@ -148,8 +160,9 @@ class MessageService:
                 Contact.id == contact.id, Contact.tenant_id == contact.tenant_id
             ).with_for_update().first()
         contact.last_message_at = now
-        contact.last_agent_message_at = now
-        if event_service.is_first_reply_pending(self.db, contact):
+        if is_agent_reply:
+            contact.last_agent_message_at = now
+        if is_agent_reply and event_service.is_first_reply_pending(self.db, contact):
             payload = None
             if contact.last_incoming_message_at is not None:
                 incoming = contact.last_incoming_message_at
@@ -287,7 +300,14 @@ class MessageService:
         external_agent_id: Optional[str] = None,
         channel_id_override: Optional[str] = None,
         sandbox_only: bool = False,
+        metadata_extra: Optional[Dict[str, Any]] = None,
     ) -> MessageItem:
+        """``metadata_extra`` (plan 29 D-A4-19, additive) is merged into the
+        stored ``metadata_json`` next to the ``WORKFLOW_TEST_METADATA_KEY``
+        branch - broadcasts stamp ``{"broadcast": {"id", "recipientId"}}`` so a
+        crash between this commit and the recipient-row update can be
+        adopted-by-marker later, and the inbox can label a broadcast bubble
+        (BL-SS-091). Every existing caller omits it (no behaviour change)."""
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
             raise ThreadNotFound()
@@ -296,6 +316,9 @@ class MessageService:
         if sandbox_only:
             metadata = dict(metadata or {})
             metadata[WORKFLOW_TEST_METADATA_KEY] = {SANDBOX_ONLY_KEY: True}
+        if metadata_extra:
+            metadata = dict(metadata or {})
+            metadata.update(metadata_extra)
 
         message_type = (payload.messageType or "TEXT").upper()
         payload_json: Optional[Dict[str, Any]] = None
@@ -407,7 +430,8 @@ class MessageService:
         )
         self.db.add(row)
         self._mark_agent_message(
-            contact, now, actor_user_id=actor_user_id, external_agent_id=external_agent_id
+            contact, now, actor_user_id=actor_user_id, external_agent_id=external_agent_id,
+            is_agent_reply=not (metadata_extra and metadata_extra.get("broadcast")),
         )
         self.db.commit()
         self.db.refresh(row)
