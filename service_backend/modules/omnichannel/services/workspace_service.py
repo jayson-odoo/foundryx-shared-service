@@ -123,6 +123,11 @@ class WorkspaceService:
         from .lifecycle_service import materialize_for_workspace
 
         materialize_for_workspace(self.db, ws)
+        # Seed the four default close reasons, same unit of work (plan 27 A3,
+        # S2, AC-IVE-27) - a workspace never exists without them either.
+        from .close_reason_service import CloseReasonService
+
+        CloseReasonService(self.db).seed_for_workspace(ws.id, tenant_id)
         self.db.commit()
         self.db.refresh(ws)
         return self._items([ws], tenant_id)[0]

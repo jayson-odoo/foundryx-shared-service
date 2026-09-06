@@ -206,6 +206,9 @@ def create_schema_and_tables(engine: Engine) -> None:
                 ("language", "VARCHAR"),
                 ("country_code", "VARCHAR"),
                 ("lifecycle_status_id", "VARCHAR"),
+                # Plan 27 A3 (D-A3-12) - the ONE outbound seam's denormalized
+                # column; `create_all` never ALTERs an existing table.
+                ("last_agent_message_at", "TIMESTAMPTZ"),
             ]
             for col, coltype in _contact_cols:
                 conn.execute(
@@ -218,6 +221,12 @@ def create_schema_and_tables(engine: Engine) -> None:
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_omni_contacts_lifecycle_status_id "
                     f'ON "{OMNI_SCHEMA}".contacts (lifecycle_status_id)'
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_contacts_last_agent_message_at "
+                    f'ON "{OMNI_SCHEMA}".contacts (last_agent_message_at)'
                 )
             )
             # contact_fields.key / contact_tags.name → per-workspace UNIQUE
@@ -377,6 +386,29 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "WHERE phone_number_id IS NOT NULL AND is_trashed = false"
                 )
             )
+            # Plan 27 A3 (S2, round-3 codex triage B7) - per-workspace
+            # case-insensitive name uniqueness for close_reasons/inbox_views.
+            # `create_all` (above) never emits these (neither model declares
+            # them as a SQLAlchemy `Index` - they're functional `lower(name)`
+            # indexes) and, on a fresh DB, `create_all` running BEFORE the
+            # per-module Alembic detection makes this module's tables look
+            # "already exist" - so 0009a's migration SQL never runs
+            # (`run_module_migrations` stamps head, no DDL). Mirror them here
+            # so a create_all-first fresh install still gets the DB backstop
+            # `close_reason_service`/`inbox_view_service` rely on for their
+            # check-then-insert race (B17/B18 fixes below).
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_close_reasons_workspace_name "
+                    f'ON "{OMNI_SCHEMA}".close_reasons (workspace_id, lower(name))'
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_inbox_views_workspace_name "
+                    f'ON "{OMNI_SCHEMA}".inbox_views (workspace_id, lower(name))'
+                )
+            )
 
 
 def install(engine: Engine, db: Session) -> None:
@@ -391,7 +423,8 @@ def install(engine: Engine, db: Session) -> None:
 
 def install_tenant(db: Session, tenant_id: str) -> None:
     """Per-tenant seed: statuses + the default 'General' workspace (+ its
-    lifecycle graph, plan 25 S2, AC-CDM-14). Idempotent.
+    lifecycle graph, plan 25 S2, AC-CDM-14) + the plan 27 A3 conversation-
+    events backfill (AC-IVE-12). Idempotent.
 
     Review round 1, finding 17: the pre-existing-workspace branch used to
     early-return with NOTHING materialized - a tenant that already had a
@@ -401,8 +434,10 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     is idempotent + covers EVERY workspace (not just the default one) + stamps
     every `lifecycle_status_id IS NULL` contact, so calling it unconditionally
     before returning makes `install_tenant` self-healing on every call,
-    including this one."""
-    from .services import lifecycle_service
+    including this one. `event_service.backfill_tenant` is the same
+    self-healing shape for `conversation_events`/`last_agent_message_at` - a
+    no-op on a tenant with zero contacts (the fresh-workspace branch)."""
+    from .services import close_reason_service, event_service, lifecycle_service
 
     statuses.ensure_statuses(db, tenant_id)
     exists = (
@@ -412,6 +447,8 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     )
     if exists:
         lifecycle_service.backfill_tenant(db, tenant_id)
+        event_service.backfill_tenant(db, tenant_id)
+        close_reason_service.CloseReasonService(db).backfill_tenant(tenant_id)
         return
     ws = Workspace(
         tenant_id=tenant_id,
@@ -423,6 +460,10 @@ def install_tenant(db: Session, tenant_id: str) -> None:
     db.add(ws)
     db.flush()
     lifecycle_service.materialize_for_workspace(db, ws)
+    # Plan 27 A3, S2 (AC-IVE-27): the seeded close reasons for a NEW workspace,
+    # same unit of work as its create.
+    close_reason_service.CloseReasonService(db).seed_for_workspace(ws.id, tenant_id)
+    event_service.backfill_tenant(db, tenant_id)
 
 
 def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
@@ -437,24 +478,48 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     that already has a graph, or a contact that already carries a stage, is
     skipped) so re-running ``update`` (or a tenant already on 0.2.0 running it
     again) is a safe no-op.
+
+    0.2.0 -> 0.3.0 (plan 27 A3, S1, AC-IVE-12): every contact with NO
+    `conversation_events` yet is backfilled (`opened`/`closed`/`assigned`) and
+    `last_agent_message_at` is filled from AGENT-message history -
+    `event_service.backfill_tenant` is idempotent the same way, so it is
+    called unconditionally (never gated on `from_version`, matching the
+    lifecycle backfill above) - safe to re-run for a tenant already on 0.3.0.
+
+    0.3.0 -> 0.3.1 (plan 27 A3, S2, AC-IVE-27): every workspace with NO close
+    reasons yet gets the four seeded defaults - `close_reason_service.
+    backfill_tenant` is idempotent the same way (a workspace already carrying
+    any reason is skipped), called unconditionally so it also self-heals a
+    tenant that somehow reaches this hook more than once.
+
     ``AppStoreService.update()`` already re-grants this module's permission
     catalog rows (incl. the plan 26 S1 ``segments.manage``/``contacts.import``/
-    ``contacts.export`` keys) to the tenant's Admin role after this hook
-    returns - no grant-sweep code needed here.
+    ``contacts.export`` keys AND the plan 27 A3 ``close_reasons.manage``/
+    ``inbox_views.manage``/``conversations.shortcut`` keys, AC-IVE-41) to the
+    tenant's Admin role after this hook returns - no grant-sweep code needed
+    here.
 
-    0.2.0 -> 0.4.0 (plan 26 S1; nit 17 fix - no `0.3.0` ever shipped on this
-    branch, the manifest went straight 0.2.0 -> 0.4.0): `phone_digits`
-    (D-A2-9) - the Postgres-wide `regexp_replace` sweep in
-    `create_schema_and_tables` already runs on every boot, but that ALTER
-    path is dialect-gated (Postgres only) and idempotent-but-global;
-    re-running the portable per-tenant backfill here too is a cheap,
-    dialect-agnostic self-healing pass (matches the
-    `lifecycle_service.backfill_tenant` self-healing pattern above).
+    0.2.0 -> 0.4.0 (plan 26 S1 + plan 27 A3 merged; nit 17 fix - no `0.3.0`
+    ever shipped on the plan-26 branch, so this hook must run BOTH lanes'
+    backfills unconditionally, idempotently, for a tenant landing on 0.4.0
+    from any earlier version):
+    - `phone_digits` (D-A2-9) - the Postgres-wide `regexp_replace` sweep in
+      `create_schema_and_tables` already runs on every boot, but that ALTER
+      path is dialect-gated (Postgres only) and idempotent-but-global;
+      re-running the portable per-tenant backfill here too is a cheap,
+      dialect-agnostic self-healing pass (matches the
+      `lifecycle_service.backfill_tenant` self-healing pattern above).
+    - `conversation_events`/`last_agent_message_at` (plan 27 A3 S1, AC-IVE-12)
+      and the seeded close reasons per workspace (plan 27 A3 S2, AC-IVE-27) -
+      both idempotent, called unconditionally so re-running `update` (or a
+      tenant already fully migrated) is a safe no-op.
     """
     from .repositories.contact_repository import ContactRepository
-    from .services import lifecycle_service
+    from .services import close_reason_service, event_service, lifecycle_service
 
     lifecycle_service.backfill_tenant(db, tenant_id)
+    event_service.backfill_tenant(db, tenant_id)
+    close_reason_service.CloseReasonService(db).backfill_tenant(tenant_id)
     ContactRepository(db).backfill_phone_digits(tenant_id)
     db.flush()
 
@@ -498,13 +563,34 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     "Demo WhatsApp" channel so outbound sends hit the adapter's stub, never the
     real Graph API. Idempotent (keys on the fixed contact ids). Called by the
     dev seed scripts only - never in prod bootstrap.
+
+    Pre-merge follow-up (plan 27): the fixed literal ids this function seeds
+    (``chn-demo``, ``cnt-001``..``005``) are shared verbatim across every call
+    site - the dev seed scripts only ever call this with ``DEFAULT_TENANT_ID``.
+    A second tenant would collide on those SAME ids (unique-constraint or
+    silent cross-tenant reads via an unscoped lookup), so this is gated to the
+    default tenant rather than left to half-write cross-tenant rows the first
+    time someone calls it differently.
     """
     from datetime import datetime, timedelta, timezone
+
+    from app.models import DEFAULT_TENANT_ID
 
     from .models import Channel, Contact, ContactChannelIdentity, ConversationMessage, QuickReply, WhatsappTemplate
     from .security import encrypt_credentials
 
-    if db.query(Contact).filter(Contact.id == "cnt-001").first():
+    if tenant_id != DEFAULT_TENANT_ID:
+        raise ValueError(
+            "seed_demo_conversations: dev seed supports the default tenant only "
+            f"(got tenant_id={tenant_id!r})"
+        )
+
+    # B8 (round-3 codex triage): scope the idempotency check by tenant_id -
+    # `cnt-001` is a fixed literal id shared by every call site's dev seed
+    # data, so a bare id check finds ANOTHER tenant's already-seeded contact
+    # and wrongly skips seeding (and the backfill call below) for THIS
+    # tenant when more than one tenant runs the dev seed.
+    if db.query(Contact).filter(Contact.id == "cnt-001", Contact.tenant_id == tenant_id).first():
         return
 
     now = datetime.now(timezone.utc)
@@ -516,7 +602,7 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     if ws is None:
         return
 
-    channel = db.query(Channel).filter(Channel.id == "chn-demo").first()
+    channel = db.query(Channel).filter(Channel.id == "chn-demo", Channel.tenant_id == tenant_id).first()
     if channel is None:
         channel = Channel(
             id="chn-demo",
@@ -648,4 +734,13 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
         QuickReply(tenant_id=tenant_id, workspace_id=ws.id, shortcut="/hours", body="Our office hours are Mon-Fri 9am-6pm (MYT)."),
         QuickReply(tenant_id=tenant_id, workspace_id=ws.id, shortcut="/payment", body="You can pay via bank transfer or card - the link is in your invoice email."),
     ])
+    db.flush()
+
+    # Review round 1 (finding 3): the demo threads must carry the events the
+    # real inbox always writes (AC-IVE-03 names this seed for Unreplied/
+    # Longest-waiting evidence) - `backfill_tenant` is idempotent, so this is
+    # safe alongside any future real backfill of the same tenant.
+    from .services import event_service
+
+    event_service.backfill_tenant(db, tenant_id)
     db.commit()

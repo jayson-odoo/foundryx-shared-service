@@ -12,10 +12,10 @@ from sqlalchemy.orm import Session
 
 from app.models.status import Status as CoreStatus
 from app.models.user import User
-from ..models import Channel, Contact, ConversationMessage, Status
+from ..models import Channel, Contact, ContactTag, ConversationMessage, Status
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import ContactLifecycleSummary, ContactTagRefItem, MessageItem, ReplyRefItem, ThreadItem
-from . import realtime, statuses
+from . import event_service, realtime, statuses
 from .contact_tag_service import ContactTagService
 from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
 from .lifecycle_service import fireable_moves as _lifecycle_fireable_moves
@@ -28,14 +28,33 @@ class ThreadNotFound(Exception):
     pass
 
 
+class InvalidThreadFilter(Exception):
+    """A thread-list filter combination the router can't reject by pattern
+    alone (round-3 codex triage B10/B11) - 422, never a silently-wrong
+    result set."""
+
+
 class InvalidPatch(Exception):
     def __init__(self, message: str):
         super().__init__(message)
         self.message = message
 
 
+class ThreadAlreadyClosed(Exception):
+    """The thread targeted by `close_thread` is already CLOSED (review round
+    1, finding 13) - the supplied reason/note would otherwise be silently
+    dropped by a no-op `patch_thread` call. Reopen first to change a reason."""
+
+    pass
+
+
 VALID_THREAD_STATUS = {"OPEN", "SNOOZED", "CLOSED"}
 VALID_PRIORITY = {"LOW", "MEDIUM", "HIGH", "URGENT"}
+
+# The workflow-engine `WorkflowEntity.entity_type` a contact registers as
+# (`modules/omnichannel/workflow_nodes.py`) - the shortcut routes below always
+# fire against THIS entity type, never a client-supplied one.
+SHORTCUT_ENTITY_TYPE = "omnichannel_contact"
 
 
 def contact_display_name(c: Contact) -> str:
@@ -49,7 +68,7 @@ class ConversationService:
         self.repo = ContactRepository(db)
 
     # ── Lookups ──────────────────────────────────────────────────────────────
-    def _status_keys(self, tenant_id: str) -> Dict[str, str]:
+    def status_keys(self, tenant_id: str) -> Dict[str, str]:
         rows = (
             self.db.query(Status)
             .filter(Status.tenant_id == tenant_id, Status.scope == "THREAD")
@@ -166,7 +185,7 @@ class ConversationService:
         ids = [c.id for c in contacts]
         previews = self.repo.previews_for(ids, tenant_id)
         unread = self.repo.unread_counts_for(contacts, tenant_id)
-        status_keys = self._status_keys(tenant_id)
+        status_keys = self.status_keys(tenant_id)
         names = self._user_names([c.assigned_user_id for c in contacts], tenant_id)
         agents = self._external_agents(
             [c.assigned_external_agent_id for c in contacts], tenant_id
@@ -300,6 +319,54 @@ class ConversationService:
         rows, total = self.repo.list_threads(tenant_id, **filters)
         return self._thread_items(rows, tenant_id), total
 
+    def assert_explicit_filters_valid(
+        self,
+        *,
+        tenant_id: str,
+        workspace_id: Optional[str],
+        tag_ids: Optional[List[str]],
+        channel_ids: Optional[List[str]],
+    ) -> None:
+        """B11 (round-3 codex triage) - a tag/channel id foreign to this
+        tenant (or, when a workspace is scoped, foreign to that workspace)
+        422s instead of silently narrowing the EXISTS predicate to zero
+        matching rows with no signal to the caller that the id itself was
+        bogus. Validate EXPLICIT (this-request) query params only -
+        deliberately NOT run against a saved view's EXPANDED filter
+        (`InboxViewService.expand`): a view's ids are already validated
+        against the workspace at save/update time
+        (`InboxViewService._validate_filter_ids`); if a tag/channel is later
+        hard-deleted, the view should keep degrading gracefully (the repo's
+        EXISTS predicate just narrows to fewer/zero matches) rather than the
+        WHOLE saved view starting to 422 forever the moment one referenced id
+        goes stale. A fresh, explicitly-supplied bogus id in THIS request has
+        no such excuse - reject it loudly instead of silently returning an
+        empty/unfiltered set. (The companion `assignee="user"` check - B10 -
+        runs in the router on the MERGED effective pair instead, since either
+        half of that pair may independently come from the view.)"""
+        if tag_ids:
+            self._assert_ids_in_scope(ContactTag, tag_ids, tenant_id, workspace_id, "tagIds")
+        if channel_ids:
+            self._assert_ids_in_scope(Channel, channel_ids, tenant_id, workspace_id, "channelIds")
+
+    def _assert_ids_in_scope(
+        self, model, ids: List[str], tenant_id: str, workspace_id: Optional[str], field: str
+    ) -> None:
+        query = self.db.query(model.id).filter(model.tenant_id == tenant_id, model.id.in_(ids))
+        if workspace_id:
+            query = query.filter(model.workspace_id == workspace_id)
+        found = {row[0] for row in query.all()}
+        if found != set(ids):
+            raise InvalidThreadFilter(f"{field} contains an unknown id.")
+
+    def assert_contact_exists(self, contact_id: str, tenant_id: str) -> None:
+        """Tenant-scoped existence-only gate (round-3 codex triage B13) - for
+        callers that need the uniform 404 but not a full `ThreadItem` (e.g.
+        `list_events`), so a router never reaches through `.repo` directly
+        (router = HTTP + Pydantic only)."""
+        if self.repo.get_by_id(contact_id, tenant_id) is None:
+            raise ThreadNotFound()
+
     def get_thread(self, contact_id: str, tenant_id: str) -> ThreadItem:
         c = self.repo.get_by_id(contact_id, tenant_id)
         if c is None:
@@ -318,16 +385,27 @@ class ConversationService:
 
     # ── Lifecycle (plan 25 S2) ───────────────────────────────────────────────
     def move_lifecycle(
-        self, contact_id: str, tenant_id: str, to_status_id: str, actor: Optional[User] = None
+        self,
+        contact_id: str,
+        tenant_id: str,
+        to_status_id: str,
+        actor: Optional[User] = None,
+        *,
+        attributed_actor_id: Optional[str] = None,
     ) -> ThreadItem:
         """Move a contact's lifecycle stage (AC-CDM-17). Raises
         `LifecycleStageNotFound` / the `status_machine` errors on failure - the
         router maps them to 404/403/409; nothing is written on any of them
-        (the executor validates before it ever calls `setattr`)."""
+        (the executor validates before it ever calls `setattr`).
+
+        B19 - `actor` authorizes (EFFECTIVE user under impersonation);
+        `attributed_actor_id` (the REAL admin) is who the written
+        `lifecycle_changed` event attributes to - see `lifecycle_service.move`'s
+        docstring for the full split."""
         c = self.repo.get_by_id(contact_id, tenant_id)
         if c is None:
             raise ThreadNotFound()
-        _lifecycle_move(self.db, c, to_status_id, actor=actor)
+        _lifecycle_move(self.db, c, to_status_id, actor=actor, attributed_actor_id=attributed_actor_id)
         self.db.commit()
         self.db.refresh(c)
         item = self.thread_item(c)
@@ -409,8 +487,11 @@ class ConversationService:
         custom_fields: Optional[dict] = ...,
         tag_ids: Optional[list] = ...,
         lifecycle_status_id: Optional[str] = ...,
+        close_reason_id: Optional[str] = None,
+        note: Optional[str] = None,
         actor: Optional[User] = None,
         actor_id: Optional[str] = None,
+        actor_external_agent_id: Optional[str] = None,
         external_connection_id: Optional[str] = None,
     ) -> ThreadItem:
         c = self.repo.get_by_id(contact_id, tenant_id)
@@ -418,6 +499,8 @@ class ConversationService:
             raise ThreadNotFound()
 
         if assigned_user_id is not ...:
+            prev_user_id = c.assigned_user_id
+            prev_external_agent_id = c.assigned_external_agent_id
             if external_connection_id is not None:
                 # Embed principal: the assignee id is an EXTERNAL agent id - it
                 # must belong to the token's connection (a token can only assign
@@ -445,10 +528,66 @@ class ConversationService:
                 c.assigned_user_id = assigned_user_id
                 c.assigned_external_agent_id = None
 
+            # `assigned`/`unassigned` events (plan 27 A3, AC-IVE-06) - a
+            # re-send of the SAME assignee writes nothing.
+            prev_assignee = prev_user_id or prev_external_agent_id
+            new_assignee = c.assigned_user_id or c.assigned_external_agent_id
+            if new_assignee != prev_assignee:
+                if new_assignee:
+                    kind = "user" if c.assigned_user_id else "external_agent"
+                    event_service.record(
+                        self.db, c, "assigned",
+                        actor=actor, actor_id=actor_id,
+                        external_agent_id=actor_external_agent_id,
+                        from_value=prev_assignee, to_value=new_assignee,
+                        payload={"assigneeKind": kind},
+                    )
+                else:
+                    event_service.record(
+                        self.db, c, "unassigned",
+                        actor=actor, actor_id=actor_id,
+                        external_agent_id=actor_external_agent_id,
+                        from_value=prev_assignee,
+                    )
+
         if status is not None:
             if status not in VALID_THREAD_STATUS:
                 raise InvalidPatch(f"Invalid thread status: {status}")
-            c.status_id = statuses.status_id_for(self.db, tenant_id, "THREAD", status)
+            new_status_id = statuses.status_id_for(self.db, tenant_id, "THREAD", status)
+            if new_status_id != c.status_id:
+                # `closed`/`reopened`/`snoozed`/`unsnoozed` (plan 27 A3,
+                # AC-IVE-05) - resolve the PREVIOUS key before overwriting so
+                # OPEN<-CLOSED (reopened) and OPEN<-SNOOZED (unsnoozed) stay
+                # distinguishable; a PATCH that re-sends the current status
+                # never reaches here (`new_status_id == c.status_id` above).
+                prev_status_id = c.status_id
+                prev_key = self.status_keys(tenant_id).get(prev_status_id)
+                event_type: Optional[str] = None
+                if status == "CLOSED":
+                    event_type = "closed"
+                elif status == "SNOOZED":
+                    event_type = "snoozed"
+                elif status == "OPEN":
+                    if prev_key == "CLOSED":
+                        event_type = "reopened"
+                    elif prev_key == "SNOOZED":
+                        event_type = "unsnoozed"
+                c.status_id = new_status_id
+                if event_type:
+                    # `close_thread` (plan 27 A3, S2) reuses THIS write - it
+                    # calls `patch_thread(status="CLOSED", close_reason_id=,
+                    # note=)` rather than duplicating the closed-event insert;
+                    # `close_reason_id`/`note` are only ever non-None here when
+                    # `event_type == "closed"` (a plain status PATCH never
+                    # sets them).
+                    event_service.record(
+                        self.db, c, event_type,
+                        actor=actor, actor_id=actor_id,
+                        external_agent_id=actor_external_agent_id,
+                        from_value=prev_status_id, to_value=new_status_id,
+                        close_reason_id=close_reason_id if event_type == "closed" else None,
+                        note=note if event_type == "closed" else None,
+                    )
 
         if priority is not None:
             if priority not in VALID_PRIORITY:
@@ -502,3 +641,81 @@ class ConversationService:
         # webhooks (Slice 4) - the ONE shared publisher (finding 1).
         self._publish_contact_updated(c, item, tenant_id)
         return item
+
+    # ── Close with reason (plan 27 A3, S2) ──────────────────────────────────
+    def close_thread(
+        self,
+        contact_id: str,
+        tenant_id: str,
+        *,
+        close_reason_id: str,
+        note: Optional[str] = None,
+        actor: Optional[User] = None,
+        actor_id: Optional[str] = None,
+        actor_external_agent_id: Optional[str] = None,
+    ) -> ThreadItem:
+        """`POST /{id}/close` (AC-IVE-28/29). Validates the reason BEFORE
+        touching the thread (nothing is written on a bad reason), then
+        delegates entirely to `patch_thread`'s existing `closed` write - this
+        never duplicates that event insert, it just carries the reason + note
+        through to it. Reopening afterwards keeps the full history (D-A3-3).
+
+        Review round 1, finding 13: an ALREADY-CLOSED thread raises
+        `ThreadAlreadyClosed` (409) rather than silently accepting - and
+        dropping - the supplied reason/note (`patch_thread`'s `closed` write
+        is a no-op when the status doesn't change). Reopen then close again
+        to change a reason."""
+        c = self.repo.get_by_id(contact_id, tenant_id)
+        if c is None:
+            raise ThreadNotFound()
+        if self.status_keys(tenant_id).get(c.status_id) == "CLOSED":
+            raise ThreadAlreadyClosed()
+
+        from .close_reason_service import CloseReasonService
+
+        # Raises CloseReasonNotFound (missing/foreign workspace or tenant) or
+        # CloseReasonInactive - both propagate to the router untouched; the
+        # thread stays open on either.
+        reason = CloseReasonService(self.db).get_active(close_reason_id, c.workspace_id, tenant_id)
+
+        return self.patch_thread(
+            contact_id,
+            tenant_id,
+            status="CLOSED",
+            close_reason_id=reason.id,
+            note=(note or "").strip() or None,
+            actor=actor,
+            actor_id=actor_id,
+            actor_external_agent_id=actor_external_agent_id,
+        )
+
+    # ── Shortcuts (plan 27 A3, S3 - D-A3-5/D-A3-10) ────────────────────────
+    def list_shortcuts(self, contact_id: str, tenant_id: str) -> List[Dict[str, str]]:
+        """Published `entity.shortcut` workflows bound to `omnichannel_contact`
+        (AC-IVE-36) - a thin tenant-scoped contact check + a delegate to the
+        GENERIC core `WorkflowService.list_shortcuts` (never re-implemented
+        here)."""
+        c = self.repo.get_by_id(contact_id, tenant_id)
+        if c is None:
+            raise ThreadNotFound()
+
+        from app.services.workflow_service import WorkflowService
+
+        return WorkflowService(self.db).list_shortcuts(tenant_id, SHORTCUT_ENTITY_TYPE)
+
+    def run_shortcut(self, contact_id: str, tenant_id: str, workflow_id: str, actor: Optional[User]):
+        """Fire a shortcut against this contact (AC-IVE-37/38) - resolves the
+        contact tenant-scoped, then delegates entirely to the core
+        `WorkflowService.run_shortcut` (the SAME `create_run_for_event` path
+        the CRUD event bus uses, D-A3-10). Raises `ThreadNotFound` /
+        `ShortcutNotFound` / `ShortcutCodeNotAuthorized` (core) - the router
+        maps all of them to the documented status codes."""
+        c = self.repo.get_by_id(contact_id, tenant_id)
+        if c is None:
+            raise ThreadNotFound()
+
+        from app.services.workflow_service import WorkflowService
+
+        return WorkflowService(self.db).run_shortcut(
+            tenant_id, workflow_id, SHORTCUT_ENTITY_TYPE, c, actor
+        )

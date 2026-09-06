@@ -24,6 +24,13 @@ class SerializedCoordinationUnavailable(RuntimeError):
     """Redis could not safely coordinate a serialized scope."""
 
 
+class CorrelationKeyUnresolved(RuntimeError):
+    """`execution.mode="serialized"` but the correlation key template
+    resolved to blank against this run's trigger context. Raised by
+    `resolve_correlation_key` (never a bare `RuntimeError`) so callers can
+    catch it specifically without also swallowing an unrelated bug."""
+
+
 class LeaseClient(Protocol):
     def acquire(self, key: str, token: str, ttl_seconds: int) -> bool: ...
 

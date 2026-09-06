@@ -109,6 +109,18 @@ export const TRIGGER_CATALOG: TriggerCatalogEntry[] = [
   },
   {
     kind: 'trigger',
+    type: 'entity.shortcut',
+    label: 'Shortcut',
+    description: 'Fires when an agent runs this workflow as a shortcut on a record.',
+    icon: 'Zap',
+    category: 'Triggers',
+    fields: [
+      { key: 'entityType', label: 'Entity', type: 'entity', required: true, entityFilter: 'shortcut' },
+    ],
+    outputs: ENTITY_TRIGGER_OUTPUTS,
+  },
+  {
+    kind: 'trigger',
     type: 'schedule.cron',
     label: 'Schedule',
     description: 'Runs on a recurring schedule in a chosen timezone.',

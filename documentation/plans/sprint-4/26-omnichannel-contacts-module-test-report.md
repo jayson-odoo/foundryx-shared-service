@@ -243,7 +243,7 @@ Inbox list). Live-reprod fixed: `AC-CTM-13`'s detail-form Edit-toggle-absence ch
 blocked by the AC-CTM-22 defect, is unblocked now too (not re-run live this round; covered by the
 new unit test + the unchanged frontend permission gating already verified in the original run).
 
-Backlog: **BL-SS-075** added for the tester's second finding ("Contacts list renders blank when
+Backlog: **BL-SS-081** added for the tester's second finding ("Contacts list renders blank when
 workspace resolution 403s for a role lacking `workspaces.read`", D-A2-10 inherited-from-A1 gap) -
 not fixed this round, logged per the coordinator's instruction.
 
@@ -265,7 +265,7 @@ below), the legacy `phone_digits IS NULL` fallback mirrored in the importer's un
 (finding 7), `ClampedText` in the segments dialog (finding 8), `ExportRowCapExceeded` translated in
 the router instead of raised from the service (finding 9), bulk-failure reasons now name the
 record (finding 10), `cf_*` import columns now derive `enum`/`boolean`/`decimal` types from the
-field registry (finding 12), backlog row `BL-SS-074` (finding 13), `ContactExportRequest.columns`
+field registry (finding 12), backlog row `BL-SS-080` (finding 13), `ContactExportRequest.columns`
 capped + validated against a whitelist incl. registered `customFields.<key>` (finding 14), the
 tags export/import delimiter aligned on `,` both sides. Nits: unresolved-update-row now logs a
 warning (15), dead `except InvalidPatch` removed (16), the `0.3.0` docstring typo fixed (17), `neq`

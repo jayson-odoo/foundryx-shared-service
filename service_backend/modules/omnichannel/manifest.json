@@ -93,6 +93,14 @@
       "prefix": "/omnichannel/workspaces"
     },
     {
+      "name": "close_reasons",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
+      "name": "inbox_views",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
       "name": "webhooks_subs",
       "prefix": "/omnichannel"
     },

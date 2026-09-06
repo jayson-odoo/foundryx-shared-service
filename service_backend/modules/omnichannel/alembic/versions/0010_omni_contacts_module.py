@@ -5,21 +5,22 @@ and `contacts.phone_digits` (normalized digits mirror of `phone`, D-A2-9) +
 backfills every existing row. Idempotent guards (inspector checks), mirrors
 `0008_omni_contact_model`'s style. Revision id <= 32 chars.
 
-NOTE for the merging agent: this branch's manifest was at 0.2.0 when this
-migration was authored; `down_revision` is pinned to 0008 because a sibling
-lane (A3) owns 0009 (`omni_conversation_events`) on a different branch/
-worktree. Whichever side merges second must rebase this migration's
-`down_revision` onto 0009 so the chain stays linear.
+Merge note (resolved 2026-09-06): this branch's manifest was at 0.2.0 when
+this migration was authored; `down_revision` was originally pinned to 0008
+because a sibling lane (A3) owned 0009 (`omni_conversation_events`) +
+0009a (`omni_inbox_views`) on a different branch/worktree. This lane (A2)
+merged second, so `down_revision` is rebased onto A3's chain tip (0009a) to
+keep the module's Alembic history linear (exactly one head).
 
 Revision ID: 0010_omni_contacts_module
-Revises: 0008_omni_contact_model
+Revises: 0009a_omni_inbox_views
 Create Date: 2026-09-06
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "0010_omni_contacts_module"
-down_revision = "0008_omni_contact_model"
+down_revision = "0009a_omni_inbox_views"
 branch_labels = None
 depends_on = None
 

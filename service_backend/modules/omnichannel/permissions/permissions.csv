@@ -19,3 +19,6 @@ contact_tags,Contact Tags,manage,Manage,Create/edit/delete contact tags
 segments,Contact Segments,manage,Manage,Create/edit/delete saved contact segments
 contacts,Contacts,import,Import,Bulk import contacts via the import wizard
 contacts,Contacts,export,Export,Export contacts to CSV
+close_reasons,Close Reasons,manage,Manage,Create/edit/delete/deactivate conversation close reasons
+inbox_views,Saved Inbox Views,manage,Manage,Create/edit/delete shared inbox views (own views need only conversations.read)
+conversations,Conversations,shortcut,Run shortcut,Run a Shortcut workflow from a conversation

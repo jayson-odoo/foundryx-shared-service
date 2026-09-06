@@ -20,7 +20,7 @@ Reuses the S1/S2 seams throughout - never a second way to write a contact:
     (silent - the import engine's OWN `trigger_automations` gate owns event
     emission via `entity.created`/`entity.updated`, not this module).
 
-Column-set gap (flagged, see the coder handoff; tracked as BL-SS-074): the
+Column-set gap (flagged, see the coder handoff; tracked as BL-SS-080): the
 core import engine's ``ImporterDef.columns`` is a STATIC tuple resolved once
 at process boot, but `cf_<fieldKey>` columns are per-WORKSPACE data unknown
 at boot time. This importer uses the new `ImporterDef.dynamic_columns`/
@@ -29,7 +29,7 @@ resolved from the job's own `context_json` (`workspaceId`) wherever a job
 exists (`_prepare`, `preview`, `commit_job`). The pre-upload `GET /config`/
 `GET /template` screens have no job yet and so still see only the static 10
 columns - a future frontend change threading `?context=` through those two
-routes closes that gap (BL-SS-074); until then `cf_<fieldKey>` columns are
+routes closes that gap (BL-SS-080); until then `cf_<fieldKey>` columns are
 fully functional once mapped (Test + Import), just not offered by the
 "Download template" column picker.
 """

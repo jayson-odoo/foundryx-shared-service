@@ -41,7 +41,7 @@ from .message_service import (
     template_body_text,
     template_variable_count,
 )
-from . import idempotency, statuses
+from . import event_service, idempotency, statuses
 
 if TYPE_CHECKING:  # forward ref used in a signature below
     from ..schemas import ThreadItem
@@ -529,6 +529,10 @@ class PublicGatewayService:
             lifecycle_status_id=initial_status_id(self.db, tenant_id, workspace_id),
         )
         self.db.add(contact)
+        self.db.flush()
+        # `opened` event (plan 27 A3, AC-IVE-03) - SAME unit of work as the
+        # contact create, before the commit below.
+        event_service.record(self.db, contact, "opened", to_value=contact.status_id)
         self.db.commit()
         self.db.refresh(contact)
         return contact
