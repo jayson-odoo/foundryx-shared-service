@@ -83,6 +83,39 @@ def test_a_connection_with_no_version_key_stays_on_contract_1():
     assert sink.contract_version == 1
 
 
+def test_a_stored_dotted_version_yields_its_major_on_the_sink():
+    """``"2.0"`` is major 2 - the factory must parse a version, never
+    ``int()`` the raw string (ValueError on the dotted form)."""
+    sink = sorento_sink_from_connection(
+        {"baseUrl": "http://sorento.test", "sorentoContractVersion": "2.0"},
+        {"apiKey": "k"}, entity_type="supplier", company_code="C1",
+    )
+    assert sink.contract_version == 2
+
+
+def test_an_unparseable_stored_version_falls_back_to_1_without_raising():
+    sink = sorento_sink_from_connection(
+        {"baseUrl": "http://sorento.test", "sorentoContractVersion": "abc"},
+        {"apiKey": "k"}, entity_type="supplier", company_code="C1",
+    )
+    assert sink.contract_version == 1
+
+
+def test_fetch_contract_parses_a_dotted_advertised_version_to_its_major():
+    """The only pre-existing ``fetch_contract`` case serves the int ``2``
+    (test_autocount_document_mapping); a 2.1 Sorento answers ``"2.1"``."""
+    from modules.autocount.sinks_sorento import SorentoSink
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"version": "2.1"})
+    )
+    sink = SorentoSink(
+        base_url="http://sorento.test", api_key="k", entity_type="supplier",
+        transport=transport,
+    )
+    assert sink.fetch_contract() == 2
+
+
 # ── (3) the edit form's partial PATCH keeps baseUrl ─────────────────────────
 
 
@@ -136,8 +169,14 @@ def test_test_refuses_a_chosen_major_above_the_advertised_major_naming_both():
 
 
 def test_test_passes_when_advertised_2_1_and_chosen_2():
+    """The pass must be a VERIFIED pass (review B1): the message names the
+    advertised ``2.1``, never the advisory "could not be verified" wording an
+    unparseable advertised version would fall back to - that path also says
+    ok=True and would let a bad parser hide behind this test."""
     result = _test({"baseUrl": "http://sorento.test", "sorentoContractVersion": "2"}, "2.1")
     assert result.ok is True, result.message
+    assert "2.1" in result.message
+    assert "could not be verified" not in result.message
 
 
 def test_test_passes_when_the_chosen_version_is_below_the_advertised_one():
