@@ -128,7 +128,7 @@ def db(session_factory):
         session.close()
 
 
-def test_all_eight_omnichannel_keys_registered(db):
+def test_all_ten_omnichannel_keys_registered(db):
     for key in (
         "channels.disconnect",
         "channels.delete",
@@ -138,6 +138,8 @@ def test_all_eight_omnichannel_keys_registered(db):
         "quick_replies.delete",
         "api_keys.revoke",
         "workspaces.trash",
+        "close_reasons.delete",
+        "inbox_views.delete",
     ):
         assert deferred_action_for(key).key == key
 
@@ -296,6 +298,177 @@ def test_workspaces_trash_fails_when_the_workspace_is_gone_by_commit_time(db):
     assert committed.status == "failed"
     assert committed.error_text
     assert db.get(Workspace, ws_id) is None
+
+
+# ── Plan 27 review round 1 frontend follow-up: close_reasons.delete +
+# inbox_views.delete migrated onto the deferred-actions engine ─────────────
+
+
+def test_close_reasons_delete(db):
+    from modules.omnichannel.models import CloseReason
+
+    admin = _admin(db)
+    ws_id = _default_workspace_id(db)
+    reasons = db.query(CloseReason).filter(CloseReason.workspace_id == ws_id).all()
+    reason = next(r for r in reasons if r.name == "Others")
+
+    result = _park_and_lapse(db, admin, "close_reasons.delete", "close_reason", reason.id)
+    assert result.status == "committed"
+    assert db.get(CloseReason, reason.id) is None
+
+
+def test_close_reasons_delete_fails_when_referenced(db, client, session_factory):
+    """D-A3-13: a reason referenced by a closed conversation stays 409'd at
+    the router AND fails loudly (never silently no-ops) via the deferred
+    commit - the UI only offers Delete while `usesCount == 0`, so this only
+    fires if the reason picks up a reference DURING the countdown."""
+    from modules.omnichannel.models import CloseReason
+    from tests.test_omnichannel_conversations import _seed_thread
+
+    admin = _admin(db)
+    ws_id = _default_workspace_id(db)
+    reasons = db.query(CloseReason).filter(CloseReason.workspace_id == ws_id).all()
+    reason = reasons[0]
+
+    svc = PendingActionService(db)
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key="close_reasons.delete", entity_type="close_reason", entity_id=reason.id,
+    )
+    pa = db.get(PendingAction, row.id)
+    pa.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+
+    # A conversation closes with this reason WHILE the countdown is open
+    # (own session/commit, mirrors every other cross-session seed in this
+    # suite - `_seed_thread` closes its own session).
+    cid = _seed_thread(session_factory, status_key="OPEN", messages=[{"body": "hi"}])
+    h = _auth(client)
+    client.post(f"/omnichannel/contacts/{cid}/close", headers=h, json={"closeReasonId": reason.id})
+
+    committed = svc.commit_one(row)
+    assert committed.status == "failed"
+    assert committed.error_text
+    assert db.get(CloseReason, reason.id) is not None
+
+
+def test_inbox_views_delete_own_view_needs_only_conversations_read(db):
+    from modules.omnichannel.models import InboxView
+    from modules.omnichannel.schemas import InboxViewCreate
+    from modules.omnichannel.services.inbox_view_service import InboxViewService
+
+    admin = _admin(db)
+    ws_id = _default_workspace_id(db)
+    view = InboxViewService(db).create(
+        ws_id, DEFAULT_TENANT_ID, admin.id, InboxViewCreate(name="Mine", isShared=False)
+    )
+
+    result = _park_and_lapse(db, admin, "inbox_views.delete", "inbox_view", view.id)
+    assert result.status == "committed"
+    assert db.get(InboxView, view.id) is None
+
+
+def test_inbox_views_delete_shared_view_requires_manage(db, client, session_factory):
+    """AC-IVE-19: a caller without `inbox_views.manage` may commit-delete
+    their OWN view but never a SHARED one or someone else's - the countdown
+    can start (park only checks the wider `conversations.read`), but the
+    commit fails loudly rather than silently deleting it."""
+    from modules.omnichannel.models import InboxView
+    from modules.omnichannel.schemas import InboxViewCreate
+    from modules.omnichannel.services.inbox_view_service import InboxViewService
+    from tests.test_omnichannel_inbox_views import _limited_role_auth
+
+    admin = _admin(db)
+    ws_id = _default_workspace_id(db)
+    shared_view = InboxViewService(db).create(
+        ws_id, DEFAULT_TENANT_ID, admin.id, InboxViewCreate(name="Shared", isShared=True)
+    )
+
+    _h_limited, limited_user_id = _limited_role_auth(
+        client, session_factory, keys=["conversations.read"], email="ive-deferred-noperm@example.com"
+    )
+    noperm = db.query(User).filter(User.id == limited_user_id).first()
+
+    result = _park_and_lapse(db, noperm, "inbox_views.delete", "inbox_view", shared_view.id)
+    assert result.status == "failed"
+    assert result.error_text
+    assert db.get(InboxView, shared_view.id) is not None
+
+
+# ── Round-3 codex triage B9: commit-time authorization uses the EFFECTIVE
+# user (park's `actor`), never the REAL actor (`requested_by_id`) - matches
+# the house impersonation rule and closes the round-2 documented gap. ──────
+def test_inbox_views_delete_own_view_authorizes_as_effective_user_under_impersonation(db):
+    """A platform admin impersonating a tenant user parks with `actor` =
+    the impersonated (effective) owner but `requested_by_id` = the real
+    admin's OWN id (a different, non-tenant-scoped user). The commit must
+    authorize (and delete) as the EFFECTIVE owner - never 404/403 just
+    because the real actor id doesn't resolve in this tenant."""
+    from app.models import PLATFORM_TENANT_ID
+    from modules.omnichannel.models import InboxView
+    from modules.omnichannel.schemas import InboxViewCreate
+    from modules.omnichannel.services.inbox_view_service import InboxViewService
+
+    owner = _admin(db)
+    ws_id = _default_workspace_id(db)
+    view = InboxViewService(db).create(
+        ws_id, DEFAULT_TENANT_ID, owner.id, InboxViewCreate(name="Mine (impersonated)", isShared=False)
+    )
+
+    real_admin = (
+        db.query(User)
+        .filter(User.tenant_id == PLATFORM_TENANT_ID, User.email == "platform@example.com")
+        .first()
+    )
+    assert real_admin is not None and real_admin.id != owner.id
+
+    svc = PendingActionService(db)
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=owner, requested_by_id=real_admin.id,
+        action_key="inbox_views.delete", entity_type="inbox_view", entity_id=view.id,
+    )
+    assert row.payload_json["_effectiveUserId"] == owner.id
+    pa = db.get(PendingAction, row.id)
+    pa.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+
+    result = svc.commit_one(row)
+    assert result.status == "committed"
+    assert db.get(InboxView, view.id) is None
+
+
+def test_inbox_views_delete_shared_view_still_requires_manage_under_impersonation(db, client, session_factory):
+    """The impersonation fix must not become a bypass: an EFFECTIVE user
+    without `inbox_views.manage` still cannot commit-delete a SHARED view,
+    even though `requested_by_id` (the real actor) is a full admin."""
+    from modules.omnichannel.models import InboxView
+    from modules.omnichannel.schemas import InboxViewCreate
+    from modules.omnichannel.services.inbox_view_service import InboxViewService
+    from tests.test_omnichannel_inbox_views import _limited_role_auth
+
+    admin = _admin(db)
+    ws_id = _default_workspace_id(db)
+    shared_view = InboxViewService(db).create(
+        ws_id, DEFAULT_TENANT_ID, admin.id, InboxViewCreate(name="Shared 2", isShared=True)
+    )
+
+    _h_limited, limited_user_id = _limited_role_auth(
+        client, session_factory, keys=["conversations.read"], email="ive-deferred-noperm2@example.com"
+    )
+    noperm = db.query(User).filter(User.id == limited_user_id).first()
+
+    svc = PendingActionService(db)
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=noperm, requested_by_id=admin.id,
+        action_key="inbox_views.delete", entity_type="inbox_view", entity_id=shared_view.id,
+    )
+    pa = db.get(PendingAction, row.id)
+    pa.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+
+    result = svc.commit_one(row)
+    assert result.status == "failed"
+    assert db.get(InboxView, shared_view.id) is not None
 
 
 # ── T5 fix round 2, S4: module gating - a tenant with omnichannel INACTIVE

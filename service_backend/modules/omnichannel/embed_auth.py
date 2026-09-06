@@ -122,6 +122,22 @@ class ConversationPrincipal:
                 detail=f"Missing permission: {native_perm}",
             )
 
+    def require_native(self, native_perm: str) -> None:
+        """Gate a route with NO embed equivalent AT ALL - any embed token is
+        refused regardless of its caps (plan sprint-4/27 AC-IVE-40: the
+        shortcut list/run routes are not part of the embed widget's surface -
+        no embed cap grants them, ever)."""
+        if self.is_embed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This action is not available to embedded/federated callers.",
+            )
+        if native_perm not in self.permission_keys:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Missing permission: {native_perm}",
+            )
+
     def require(self, *, native_perm: str, embed_cap: str) -> None:
         """Gate a mutation: embed → the cap must be present; native → the
         permission must be held. Backend is the boundary (AC-11H-11)."""
@@ -291,12 +307,16 @@ def resolve_native_actor(principal: ConversationPrincipal, db: Session) -> Optio
 def resolve_effective_actor(principal: ConversationPrincipal, db: Session) -> Optional[User]:
     """B5: the EFFECTIVE-user counterpart to `resolve_native_actor`, for the
     ONE use that is an AUTHORIZATION check, not attribution -
-    `status_machine.transition`'s edge-role/rule-condition gate (`move_lifecycle`
-    / `lifecycle_moves`, and the lifecycle sub-move inside `patch_thread`).
-    Under impersonation this is the TARGET (matches `permission_keys`, which
-    already reads the target's grants) - `resolve_native_actor` stays the real
-    admin for attribution (entity-event actor facts, `actor_id`). Tenant-scoped
-    (polymorphic stored-id rule); embed has no native actor at all."""
+    `status_machine.transition`'s edge-role/rule-condition gate for the
+    contact's lifecycle STAGE (`move_lifecycle` / `get_lifecycle_moves`).
+    `patch_thread`'s `status`/`priority` fields move the THREAD's own
+    open/snoozed/closed status, a separate concept from the lifecycle stage,
+    and resolve their actor via `resolve_native_actor` (attribution), not this
+    function. Under impersonation this is the TARGET (matches
+    `permission_keys`, which already reads the target's grants) -
+    `resolve_native_actor` stays the real admin for attribution (entity-event
+    actor facts, `actor_id`). Tenant-scoped (polymorphic stored-id rule);
+    embed has no native actor at all."""
     if principal.is_embed or not principal.effective_user_id:
         return None
     return (

@@ -177,6 +177,11 @@ class Contact(OmniBase):
     # When an agent last opened the thread - unreadCount = inbound newer than
     # this (plan 05; added Phase B, idempotent ALTER in bootstrap.install).
     agent_last_read_at = Column(UTCDateTime(), nullable=True)
+    # Plan 27 A3 (D-A3-12): the ONE outbound seam (`MessageService._mark_agent_
+    # message`) stamps this on every AGENT send - text/media/structured, NEVER
+    # an internal note. Powers the Unreplied filter + Longest-waiting sort +
+    # first-agent-reply detection without a per-row correlated subquery.
+    last_agent_message_at = Column(UTCDateTime(), nullable=True, index=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -259,6 +264,101 @@ class ContactTagLink(OmniBase):
 
     __table_args__ = (
         UniqueConstraint("contact_id", "tag_id", name="uq_contact_tag_link"),
+    )
+
+
+class CloseReason(OmniBase):
+    """A per-workspace close reason (plan 27 A3, S2 - D-A3-3). Referenced by
+    `ConversationEvent.close_reason_id` on `closed` events, never stored on
+    the thread row (reopening keeps history). Name uniqueness (per workspace,
+    case-insensitive) is app-enforced, same convention as `ContactTag.name`/
+    `ContactField.key`. A reason referenced by any event cannot be deleted
+    (409 `close_reason_in_use`, D-A3-13) - `is_active=false` (Deactivate) is
+    the UI answer instead, so history keeps resolving its name forever."""
+
+    __tablename__ = "close_reasons"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class InboxView(OmniBase):
+    """A saved inbox view (plan 27 A3, S2 - D-A3-2). NOT a rule-engine tree -
+    `filter_json` is a typed `InboxViewFilter` (Pydantic `extra="forbid"`)
+    resolved server-side by `inbox_view_service.expand()`. `owner_user_id` is
+    always server-resolved (never client input); a personal view (`is_shared`
+    false) is editable by its owner with only `conversations.read` (D-A3-11) -
+    `inbox_views.manage` is required only for a SHARED view or someone else's.
+    `segment_id` is reserved for A2 (`contact_segments`) - unused, always NULL
+    until that lane merges (D-A3-17)."""
+
+    __tablename__ = "inbox_views"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    owner_user_id = Column(String, nullable=False, index=True)
+    is_shared = Column(Boolean, nullable=False, default=False)
+    filter_json = Column(JSON(none_as_null=True), nullable=True)
+    segment_id = Column(String, nullable=True)  # reserved, unused until A2
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ConversationEvent(OmniBase):
+    """Append-only conversation-lifecycle audit trail (plan 27 A3, S1 - roadmap
+    D9 `omni_conversation_events`). Every writer inserts on the SAME session
+    and unit of work as the mutation that caused it (never a post-commit hook,
+    never its own commit) - `services/event_service.py record()` is the ONE
+    seam every caller goes through (AC-IVE-02).
+
+    ``event_type`` in {opened, closed, reopened, snoozed, unsnoozed, assigned,
+    unassigned, first_agent_reply, lifecycle_changed, comment_added}.
+    ``from_value``/``to_value`` are polymorphic per event type (a THREAD status
+    id, a core lifecycle status id, a user/external-agent id) - resolved to a
+    display label TENANT-SCOPED at read time (never an unscoped lookup, the
+    polymorphic stored-id house rule), never branched on in code.
+    ``close_reason_id`` FKs to ``close_reasons.id`` (plan 27 A3 slice S2 -
+    S1 reserved the column, always NULL until S2's `close_thread`).
+    """
+
+    __tablename__ = "conversation_events"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    contact_id = Column(String, ForeignKey("contacts.id"), nullable=False, index=True)
+    event_type = Column(String, nullable=False)
+    actor_user_id = Column(String, nullable=True)
+    actor_external_agent_id = Column(String, nullable=True)
+    from_value = Column(String, nullable=True)
+    to_value = Column(String, nullable=True)
+    # `close_reasons.id` - plan 27 A3 S2. Nullable (only `closed` events set
+    # it); the migration ALTERs this FK in for existing deployments.
+    close_reason_id = Column(String, ForeignKey("close_reasons.id"), nullable=True)
+    note = Column(Text, nullable=True)
+    payload_json = Column(JSON(none_as_null=True), nullable=True)
+    # Explicit (never server_default) - µs precision so rapid same-second
+    # writes (e.g. an assign immediately followed by a status change) still
+    # order correctly, matching every other append-only row in this module.
+    created_at = Column(UTCDateTime(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_conv_events_ws_created", "tenant_id", "workspace_id", "created_at"),
+        Index("ix_conv_events_contact_created", "tenant_id", "contact_id", "created_at"),
+        Index("ix_conv_events_type_created", "tenant_id", "event_type", "created_at"),
     )
 
 

@@ -221,6 +221,30 @@ def _register_core() -> None:
             ],
         )
     )
+    # Plan sprint-4/27 (A3, D-A3-5/D-A3-10) - a GENERIC "run this workflow
+    # against ONE record" trigger, fired from that record's own UI (an agent
+    # clicking Shortcuts on the omnichannel conversation drawer is the first
+    # consumer). Any entity that opts in via `WorkflowEntity.supports_shortcut`
+    # may use it - the `entityFilter="shortcut"` restricts the entity picker
+    # to those entities the same way `entity.status_changed` restricts to
+    # status-engine entities. A shortcut always executes the PUBLISHED version
+    # through `create_run_for_event` (never the draft) - see `WorkflowService.
+    # run_shortcut` + `app/workflow_engine/entity_events.py`.
+    register_trigger(
+        TriggerDef(
+            key="entity.shortcut",
+            label="Shortcut",
+            description="Fires when an agent runs this workflow as a shortcut on a record.",
+            icon="Zap",
+            category="Triggers",
+            fields=[
+                NodeField(
+                    key="entityType", label="Entity", type="entity", required=True, entity_filter="shortcut"
+                )
+            ],
+            outputs=_ENTITY_TRIGGER_OUTPUTS,
+        )
+    )
     register_trigger(
         TriggerDef(
             key="schedule.cron",

@@ -1005,7 +1005,11 @@ export function NodeConfigDrawer({
 
     if (field.type === 'entity') {
       const options = metadata.entities
-        .filter((e) => (field.entityFilter === 'status' ? e.hasStatus : true))
+        .filter((e) => {
+          if (field.entityFilter === 'status') return e.hasStatus;
+          if (field.entityFilter === 'shortcut') return e.supportsShortcut;
+          return true;
+        })
         .map((e) => ({ value: e.type, label: e.label }));
       return wrap(
         <SearchSelect

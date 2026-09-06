@@ -99,12 +99,16 @@ def resolve_correlation_key(doc: Any, ctx: Dict[str, Any]) -> Optional[str]:
     on ``WorkflowRun`` when it adds keyed dispatch. Parallel definitions return
     ``None`` and retain their existing behavior.
     """
+    from app.workflow_engine.serialization import CorrelationKeyUnresolved
+
     execution = getattr(doc, "execution", None)
     if execution is None or execution.mode != "serialized":
         return None
     resolved = render_field(execution.correlationKey, ctx).strip()
     if not resolved:
-        raise RuntimeError("Serialized execution requires a non-empty Correlation key.")
+        raise CorrelationKeyUnresolved(
+            "Serialized execution requires a non-empty Correlation key."
+        )
     return resolved
 
 
