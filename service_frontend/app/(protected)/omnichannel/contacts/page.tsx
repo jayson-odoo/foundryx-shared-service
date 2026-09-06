@@ -7,7 +7,7 @@
  * tenant has more than one workspace (the segment control already occupies
  * the list toolbar).
  */
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { LoaderCircleIcon } from 'lucide-react';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
@@ -39,6 +39,14 @@ interface PendingAction {
   reload: () => void;
 }
 
+/** Finding 10 (review round 1): a bulk failure reason names the record by
+ * its display NAME, never a bare UUID - the dialog already holds the
+ * selected rows. */
+function nameForId(rows: ContactListItem[]): (id: string) => string {
+  const byId = new Map(rows.map((r) => [r.id, r.name]));
+  return (id) => byId.get(id) ?? id;
+}
+
 export default function ContactsPage() {
   const { can } = useCan();
   const { workspaceId, workspaces, ready, setWorkspaceId } = useActiveWorkspace();
@@ -46,7 +54,7 @@ export default function ContactsPage() {
     segments,
     create: createSegment,
     update: updateSegment,
-    remove: removeSegment,
+    refresh: refreshSegments,
   } = useContactSegments(workspaceId);
   const { tags } = useContactTags(workspaceId);
   const { fields } = useContactFields(workspaceId);
@@ -75,12 +83,29 @@ export default function ContactsPage() {
   const [saveSegmentOpen, setSaveSegmentOpen] = useState(false);
   const [manageSegmentsOpen, setManageSegmentsOpen] = useState(false);
 
-  const actions = useContactActions({
-    onBulkAssign: (rows, reload) => setAssignPending({ rows, reload }),
-    onAddTags: (rows, reload) => setTagsPending({ rows, reload, mode: 'add' }),
-    onRemoveTags: (rows, reload) => setTagsPending({ rows, reload, mode: 'remove' }),
-    onMoveLifecycle: (rows, reload) => setLifecyclePending({ rows, reload }),
-  });
+  // Finding 7 (review round 1): stable callback identities - a fresh object
+  // literal (with fresh arrow functions) on every render used to recompute
+  // `actions` -> `config`/`config.fetcher` downstream, and
+  // `useResourceList`'s fetch effect keys off `fetcher` identity, so the
+  // list refetched on every render instead of only on an actual query
+  // change. `setState` setters are already stable, so these need no deps.
+  const onBulkAssign = useCallback(
+    (rows: ContactListItem[], reload: () => void) => setAssignPending({ rows, reload }),
+    [],
+  );
+  const onAddTags = useCallback(
+    (rows: ContactListItem[], reload: () => void) => setTagsPending({ rows, reload, mode: 'add' }),
+    [],
+  );
+  const onRemoveTags = useCallback(
+    (rows: ContactListItem[], reload: () => void) => setTagsPending({ rows, reload, mode: 'remove' }),
+    [],
+  );
+  const onMoveLifecycle = useCallback(
+    (rows: ContactListItem[], reload: () => void) => setLifecyclePending({ rows, reload }),
+    [],
+  );
+  const actions = useContactActions({ onBulkAssign, onAddTags, onRemoveTags, onMoveLifecycle });
 
   const config = useContactsListConfig({
     workspaceId: workspaceId ?? '',
@@ -159,7 +184,7 @@ export default function ContactsPage() {
           filterFields={config.filterFields}
           onRename={(id, name) => updateSegment(id, { name })}
           onEditFilter={(id, filter) => (filter ? updateSegment(id, { filter }) : Promise.resolve())}
-          onDelete={(id) => removeSegment(id)}
+          onDeleted={() => void refreshSegments()}
         />
 
         <BulkAssignDialog
@@ -170,7 +195,7 @@ export default function ContactsPage() {
           onConfirm={async (assigneeUserId) => {
             if (!assignPending) return;
             const result = await bulk.assign(assignPending.rows.map((r) => r.id), assigneeUserId);
-            reportBulkResult(result, 'assigned');
+            reportBulkResult(result, 'assigned', nameForId(assignPending.rows));
             assignPending.reload();
           }}
         />
@@ -184,7 +209,7 @@ export default function ContactsPage() {
           onConfirm={async (mode, tagIds) => {
             if (!tagsPending) return;
             const result = await bulk.tags(tagsPending.rows.map((r) => r.id), mode, tagIds);
-            reportBulkResult(result, mode === 'add' ? 'tagged' : 'untagged');
+            reportBulkResult(result, mode === 'add' ? 'tagged' : 'untagged', nameForId(tagsPending.rows));
             tagsPending.reload();
           }}
         />
@@ -197,7 +222,7 @@ export default function ContactsPage() {
           onConfirm={async (toStatusId) => {
             if (!lifecyclePending) return;
             const result = await bulk.lifecycle(lifecyclePending.rows.map((r) => r.id), toStatusId);
-            reportBulkResult(result, 'moved');
+            reportBulkResult(result, 'moved', nameForId(lifecyclePending.rows));
             lifecyclePending.reload();
           }}
         />

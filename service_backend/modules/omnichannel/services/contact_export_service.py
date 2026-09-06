@@ -12,14 +12,15 @@ the terminal step (AC-CTM-40, mirrors `app/storage_migration/service.py`'s
 """
 from __future__ import annotations
 
+import codecs
 import csv
 import io
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-from fastapi import HTTPException, status as http_status
 from sqlalchemy.orm import Session
 
+from app.import_engine.sanitize import sanitize_cell
 from app.jobs.registry import JobHandlerDef, register_job_handler
 from app.jobs.service import JobService
 from app.models.background_job import JOB_ABORTED, JOB_DONE, BackgroundJob
@@ -28,10 +29,12 @@ from app.schemas.filters import FilterGroup
 from app.services.storage import storage_for_tenant
 
 from ..models import Contact
-from ..schemas import ContactExportRequest
+from ..schemas import EXPORT_COLUMN_IDS, ContactExportRequest
+from .contact_field_service import ContactFieldService
 from .contact_list_service import ContactListService
 from .contact_tag_service import ContactTagService
 from .conversation_service import ConversationService
+from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
 
 logger = logging.getLogger("foundryx.omnichannel.export")
 
@@ -58,6 +61,7 @@ _COLUMN_LABELS: Dict[str, str] = {
     "lastMessageAt": "Last message",
     "createdAt": "Created",
 }
+assert set(_COLUMN_LABELS) == EXPORT_COLUMN_IDS  # ONE whitelist (`schemas.py`), never forked
 
 
 class ExportRowCapExceeded(Exception):
@@ -67,6 +71,31 @@ class ExportRowCapExceeded(Exception):
         self.cap = cap
 
 
+class UnknownExportColumn(Exception):
+    """Finding 14 - a `customFields.<key>` column that passed the pydantic
+    format check but isn't actually registered for THIS workspace (the
+    key format is validated at the wire; the registered-key check needs DB
+    + workspace context, so it lives here, not in the schema)."""
+
+    def __init__(self, columns: List[str]):
+        super().__init__(f"Unknown export column(s): {', '.join(columns)}.")
+        self.columns = columns
+
+
+def _validate_custom_field_columns(
+    db: Session, tenant_id: str, workspace_id: str, columns: List[str]
+) -> None:
+    requested = {c for c in columns if c.startswith("customFields.")}
+    if not requested:
+        return
+    registered = {
+        f"customFields.{f.key}" for f in ContactFieldService(db).list(workspace_id, tenant_id)
+    }
+    unknown = sorted(c for c in requested if c not in registered)
+    if unknown:
+        raise UnknownExportColumn(unknown)
+
+
 def create_export_job(
     db: Session, tenant_id: str, workspace_id: str, actor_user_id: Optional[str], req: ContactExportRequest
 ) -> BackgroundJob:
@@ -74,6 +103,7 @@ def create_export_job(
     exceeds `EXPORT_MAX_ROWS` - the plan's cap, applied synchronously so the
     caller gets an immediate, clear rejection rather than a job that runs for
     a while and then fails (AC-CTM-39's "clear message" choice)."""
+    _validate_custom_field_columns(db, tenant_id, workspace_id, req.columns)
     list_service = ContactListService(db)
     query = list_service.query_for_export(
         tenant_id, workspace_id,
@@ -82,11 +112,7 @@ def create_export_job(
     )
     count = query.count()
     if count > EXPORT_MAX_ROWS:
-        raise HTTPException(
-            http_status.HTTP_422_UNPROCESSABLE_ENTITY,
-            f"This export would include {count} contacts, over the {EXPORT_MAX_ROWS}-row limit. "
-            "Narrow the filter or segment and try again.",
-        )
+        raise ExportRowCapExceeded(count, EXPORT_MAX_ROWS)
 
     columns = [_ID_COLUMN] + [c for c in req.columns if c != _ID_COLUMN]
     payload = {
@@ -105,17 +131,44 @@ def create_export_job(
 
 
 def _csv_value(value) -> str:
-    if value is None:
-        return ""
-    return str(value)
+    """Spreadsheet-formula-injection-safe cell (Blocker 1) - `first_name`/
+    `last_name` originate from inbound WhatsApp `profile_name`, attacker-
+    controlled free text. Every cell we write goes through the SAME sanitizer
+    the import engine uses on its own generated files (`phone` gets a leading
+    `'` too; `_normalize_phone` on re-import strips non-digits so the quote
+    round-trips clean, AC-CTM-42)."""
+    return sanitize_cell(value)
 
 
-def _lifecycle_labels(db: Session, contacts: List[Contact]) -> Dict[str, str]:
-    ids = {c.lifecycle_status_id for c in contacts if c.lifecycle_status_id}
-    if not ids:
+def _lifecycle_labels(
+    db: Session, contacts: List[Contact], tenant_id: str
+) -> Dict[Tuple[str, str], str]:
+    """Batched `(workspace_id, lifecycle_status_id) -> label`, tenant +
+    entity-type + workspace(scope_id) scoped in ONE query (finding 4 - mirrors
+    `conversation_service._lifecycle_map`'s polymorphic-stored-id guard: the
+    lifecycle machine is scoped PER WORKSPACE, so a status id belonging to
+    another workspace of the same tenant must never resolve here)."""
+    pairs = {(c.workspace_id, c.lifecycle_status_id) for c in contacts if c.lifecycle_status_id}
+    if not pairs:
         return {}
-    rows = db.query(CoreStatus.id, CoreStatus.label).filter(CoreStatus.id.in_(ids)).all()
-    return {r[0]: r[1] for r in rows}
+    status_ids = {sid for _, sid in pairs}
+    rows = (
+        db.query(CoreStatus)
+        .filter(
+            CoreStatus.id.in_(status_ids),
+            CoreStatus.tenant_id == tenant_id,
+            CoreStatus.entity_type == LIFECYCLE_ENTITY_TYPE,
+        )
+        .all()
+    )
+    by_id = {s.id: s for s in rows}
+    result: Dict[Tuple[str, str], str] = {}
+    for workspace_id, status_id in pairs:
+        s = by_id.get(status_id)
+        if s is None or s.scope_id != workspace_id:
+            continue
+        result[(workspace_id, status_id)] = s.label
+    return result
 
 
 def _column_value(
@@ -125,12 +178,14 @@ def _column_value(
     tags_by_contact: Dict[str, List[dict]],
     channels_by_contact: Dict[str, List[dict]],
     assignee_names: Dict[str, str],
-    lifecycle_labels: Dict[str, str],
+    lifecycle_labels: Dict[Tuple[str, str], str],
 ) -> str:
     if col == "id":
         return contact.id
     if col == "name":
-        return " ".join(p for p in (contact.first_name, contact.last_name) if p) or ""
+        return _csv_value(
+            " ".join(p for p in (contact.first_name, contact.last_name) if p) or ""
+        )
     if col == "firstName":
         return _csv_value(contact.first_name)
     if col == "lastName":
@@ -144,13 +199,21 @@ def _column_value(
     if col == "countryCode":
         return _csv_value(contact.country_code)
     if col == "lifecycle":
-        return lifecycle_labels.get(contact.lifecycle_status_id or "", "")
+        if not contact.lifecycle_status_id:
+            return ""
+        return _csv_value(
+            lifecycle_labels.get((contact.workspace_id, contact.lifecycle_status_id), "")
+        )
     if col == "tags":
-        return "; ".join(t["name"] for t in tags_by_contact.get(contact.id, []))
+        # `,` on BOTH sides of the export<->import round-trip (AC-CTM-42) -
+        # the importer splits tags on `,` (`,`-delimited was the promoted
+        # review finding; `csv.writer` quotes the joined cell so a literal
+        # comma inside a tag name still round-trips).
+        return _csv_value(",".join(t["name"] for t in tags_by_contact.get(contact.id, [])))
     if col == "assignee":
-        return assignee_names.get(contact.assigned_user_id or "", "")
+        return _csv_value(assignee_names.get(contact.assigned_user_id or "", ""))
     if col == "channel":
-        return "; ".join(c["name"] for c in channels_by_contact.get(contact.id, []))
+        return _csv_value("; ".join(c["name"] for c in channels_by_contact.get(contact.id, [])))
     if col == "lastMessageAt":
         return contact.last_message_at.isoformat().replace("+00:00", "Z") if contact.last_message_at else ""
     if col == "createdAt":
@@ -192,7 +255,7 @@ def run_contacts_export(db: Session, job: BackgroundJob) -> None:
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow([_COLUMN_LABELS.get(c, c) for c in columns])
+    writer.writerow([sanitize_cell(_COLUMN_LABELS.get(c, c)) for c in columns])
 
     repo = list_service.repo
     tags_svc = ContactTagService(db)
@@ -207,7 +270,7 @@ def run_contacts_export(db: Session, job: BackgroundJob) -> None:
         tags_by_contact = tags_svc.refs_for_contacts(ids, tenant_id)
         channels_by_contact = repo.channels_for_contacts(ids, tenant_id)
         assignee_names = conv._user_names([c.assigned_user_id for c in batch], tenant_id)
-        lifecycle_labels = _lifecycle_labels(db, batch)
+        lifecycle_labels = _lifecycle_labels(db, batch, tenant_id)
         for c in batch:
             writer.writerow(
                 [
@@ -233,7 +296,10 @@ def run_contacts_export(db: Session, job: BackgroundJob) -> None:
     if _aborted(db, job.id):
         return
 
-    content = ("﻿" + buf.getvalue()).encode("utf-8")  # UTF-8 BOM (plan §5.4)
+    # Nit 20 (review round 1): `codecs.BOM_UTF8` (a real byte constant), not a
+    # literal BOM character embedded in the source string - the latter is
+    # invisible in a diff/editor and some tools normalize/strip it on save.
+    content = codecs.BOM_UTF8 + buf.getvalue().encode("utf-8")  # plan §5.4
     file_key = storage_for_tenant(db, tenant_id).save(
         f"exports/{job.id}/contacts.csv", content, "text/csv"
     )

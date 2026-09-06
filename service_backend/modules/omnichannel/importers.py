@@ -20,19 +20,20 @@ Reuses the S1/S2 seams throughout - never a second way to write a contact:
     (silent - the import engine's OWN `trigger_automations` gate owns event
     emission via `entity.created`/`entity.updated`, not this module).
 
-Column-set gap (flagged, see the coder handoff): the core import engine's
-``ImporterDef.columns`` is a STATIC tuple resolved once at process boot, but
-`cf_<fieldKey>` columns are per-WORKSPACE data unknown at boot time. This
-importer uses the new `ImporterDef.dynamic_columns`/`effective_columns`
-extension point (additive to `app/import_engine`, S3) - resolved from the
-job's own `context_json` (`workspaceId`) wherever a job exists (`_prepare`,
-`preview`, `commit_job`). The pre-upload `GET /config`/`GET /template`
-screens have no job yet and so still see only the static 10 columns - a
-future frontend change threading `?context=` through those two routes closes
-that gap; until then `cf_<fieldKey>` columns are fully functional once
-mapped (Test + Import), just not offered by the "Download template" column
-picker. Logged as a backlog follow-up, not silently worked around.
+Column-set gap (flagged, see the coder handoff; tracked as BL-SS-074): the
+core import engine's ``ImporterDef.columns`` is a STATIC tuple resolved once
+at process boot, but `cf_<fieldKey>` columns are per-WORKSPACE data unknown
+at boot time. This importer uses the new `ImporterDef.dynamic_columns`/
+`effective_columns` extension point (additive to `app/import_engine`, S3) -
+resolved from the job's own `context_json` (`workspaceId`) wherever a job
+exists (`_prepare`, `preview`, `commit_job`). The pre-upload `GET /config`/
+`GET /template` screens have no job yet and so still see only the static 10
+columns - a future frontend change threading `?context=` through those two
+routes closes that gap (BL-SS-074); until then `cf_<fieldKey>` columns are
+fully functional once mapped (Test + Import), just not offered by the
+"Download template" column picker.
 """
+import logging
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -43,6 +44,7 @@ from app.import_engine.registry import ImportColumn, ImporterDef, register_impor
 from .db import OMNI_SCHEMA  # noqa: F401 - re-exported for symmetry with sibling modules
 from .models import Contact
 from .phone import digits_only
+from .repositories.workspace_repository import WorkspaceRepository
 from .services import statuses
 from .services.contact_field_service import ContactFieldService, _validate_typed_value
 from .services.contact_profile_service import _UNSET, _COUNTRY_RE, _LANGUAGE_RE, MAX_LANGUAGE_LEN, ContactProfileService
@@ -55,6 +57,7 @@ ENTITY_TYPE = "omnichannel_contacts"  # plural (AC-CTM-34) - distinct from the
 # below bridges the two so `trigger_automations` fires the RIGHT triggers.
 WORKFLOW_ENTITY_TYPE = "omnichannel_contact"
 MODULE_NAME = "omnichannel"
+logger = logging.getLogger("foundryx.omnichannel.importer")
 _PRIORITY_OPTIONS = [{"value": v, "label": v.title()} for v in ("LOW", "MEDIUM", "HIGH", "URGENT")]
 
 CF_PREFIX = "cf_"
@@ -146,14 +149,49 @@ def _distinct_cf_keys(columns: Tuple[ImportColumn, ...]) -> List[str]:
 # ── dynamic columns (per-workspace registered custom fields) ───────────────
 
 
+def _cf_import_type(field) -> Tuple[str, Optional[list]]:
+    """Derive the import engine's `ImportColumn.type` from the custom
+    field's own registered type (finding 12, review round 1) - every
+    `cf_*` column used to be typed `"string"` regardless, which offered no
+    in-file dropdown for a `list` field and no boolean/decimal coercion for
+    `checkbox`/`number`. Returns `(type, options)`.
+
+    `checkbox` -> `boolean` and `list` -> `enum` (options = the SAME list
+    `field.options_json` stores, so the core engine's own membership check
+    matches `_validate_typed_value`'s later re-check exactly) are safe
+    end-to-end: `_convert_cf_value` downstream re-runs `coerce_boolean` on an
+    already-bool value idempotently, and `coerce_enum` returns the SAME
+    canonical string `_validate_typed_value`'s `list` branch expects.
+    `number` -> `decimal` is safe too (`float(Decimal(...))` downstream).
+
+    `date`/`time`/`email`/`url`/`text` stay `"string"` (documented, not
+    silently worked around): the import engine's `"date"` `ColumnType`
+    coerces to a python `date` OBJECT, but `custom_fields_json` is a JSON
+    column expecting `_validate_typed_value`'s `"date"` branch to see a
+    `"YYYY-MM-DD"` STRING - a `date` object neither serializes cleanly nor
+    passes that `isinstance(value, str)` check. No `ColumnType` in the
+    core registry matches the `time`/`email`/`url` formats either; the
+    module's own format-specific validators already re-check the raw
+    string cell regardless, so keeping `"string"` here is correct, not a
+    stopgap."""
+    if field.type == "checkbox":
+        return "boolean", None
+    if field.type == "list":
+        return "enum", list(field.options_json or [])
+    if field.type == "number":
+        return "decimal", None
+    return "string", None
+
+
 def _dynamic_cf_columns(db: Session, tenant_id: str, context: dict) -> List[ImportColumn]:
     workspace_id = context.get("workspaceId")
     if not workspace_id:
         return []
-    return [
-        ImportColumn(key=f"{CF_PREFIX}{f.key}", label=f.label, type="string")
-        for f in ContactFieldService(db).list(workspace_id, tenant_id)
-    ]
+    columns = []
+    for f in ContactFieldService(db).list(workspace_id, tenant_id):
+        col_type, options = _cf_import_type(f)
+        columns.append(ImportColumn(key=f"{CF_PREFIX}{f.key}", label=f.label, type=col_type, options=options))
+    return columns
 
 
 # ── existing_ids (workspace-scoped, plan 26 S3 extension point) ────────────
@@ -180,6 +218,12 @@ def _validate_contact_prepared(
     workspace_id = context.get("workspaceId")
     if not workspace_id:
         return [{"row": None, "column": "workspaceId", "message": "Workspace context is required."}]
+    # Finding 5: `context.workspaceId` is caller-authored (the import upload
+    # body) and was NEVER checked against the caller's own tenant - a job
+    # created against another tenant's workspace id would validate/commit
+    # rows into it. Tenant-scoped resolve (the polymorphic stored-id rule).
+    if WorkspaceRepository(db).get_by_id(workspace_id, tenant_id) is None:
+        return [{"row": None, "column": "workspaceId", "message": "Workspace not found."}]
 
     errors: List[dict] = []
 
@@ -212,6 +256,24 @@ def _validate_contact_prepared(
             .all()
         )
         existing_set = {r[0] for r in existing}
+        # Finding 6: mirror `ContactRepository.find_by_phone_digits`'s legacy
+        # fallback - a row inserted before this module stamped `phone_digits`
+        # (or a pre-existing test fixture) has `phone_digits IS NULL`, and a
+        # bare `.in_()` on the indexed column would miss it, letting the
+        # importer create a genuine duplicate the manual-create/stitch paths
+        # would have caught. Bounded scan (same shape as the repository).
+        legacy = (
+            db.query(Contact.phone)
+            .filter(
+                Contact.tenant_id == tenant_id,
+                Contact.workspace_id == workspace_id,
+                Contact.phone_digits.is_(None),
+                Contact.phone.isnot(None),
+            )
+            .all()
+        )
+        existing_set.update(digits_only(r[0]) for r in legacy)
+        existing_set.discard("")
         for d, row in seen.items():
             if d in existing_set:
                 errors.append(
@@ -374,7 +436,21 @@ def _update_contacts(db: Session, tenant_id: str, rows: List[dict], ctx: dict) -
             .first()
         )
         if contact is None:
-            continue  # foreign-workspace id under-scoped by existing_ids - silently skipped, never written
+            # Nit 15 (review round 1): `update_rows` (`app/import_engine/
+            # registry.py`) has NO per-row error-return channel - it's typed
+            # `-> List[str]`, and `run_commit`'s `job.errors_json` is fed
+            # ONLY from the Test-phase `_prepare` errors, never from this
+            # function (the core convention `core_importers._update_users`
+            # follows too - it doesn't even check existence). A row reaching
+            # here with no matching contact means `existing_ids_ctx` somehow
+            # under-scoped (should be unreachable - defense in depth); log
+            # loudly rather than a bare silent skip so an ops investigation
+            # has a trail, since the job's own summary can't surface it.
+            logger.warning(
+                "contacts import update: row id %s not found in workspace %s tenant %s - skipped",
+                r.get("id"), workspace_id, tenant_id,
+            )
+            continue
         stage = _match_stage(stages, r.get("lifecycle")) if r.get("lifecycle") else None
         custom_fields = _build_custom_fields(fields, r)
         tag_ids = _row_tag_ids(r, name_to_id)

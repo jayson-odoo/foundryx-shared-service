@@ -442,11 +442,13 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     ``contacts.export`` keys) to the tenant's Admin role after this hook
     returns - no grant-sweep code needed here.
 
-    0.2.0/0.3.0 -> 0.4.0 (plan 26 S1): `phone_digits` (D-A2-9) - the Postgres-
-    wide `regexp_replace` sweep in `create_schema_and_tables` already runs on
-    every boot, but that ALTER path is dialect-gated (Postgres only) and
-    idempotent-but-global; re-running the portable per-tenant backfill here
-    too is a cheap, dialect-agnostic self-healing pass (matches the
+    0.2.0 -> 0.4.0 (plan 26 S1; nit 17 fix - no `0.3.0` ever shipped on this
+    branch, the manifest went straight 0.2.0 -> 0.4.0): `phone_digits`
+    (D-A2-9) - the Postgres-wide `regexp_replace` sweep in
+    `create_schema_and_tables` already runs on every boot, but that ALTER
+    path is dialect-gated (Postgres only) and idempotent-but-global;
+    re-running the portable per-tenant backfill here too is a cheap,
+    dialect-agnostic self-healing pass (matches the
     `lifecycle_service.backfill_tenant` self-healing pattern above).
     """
     from .repositories.contact_repository import ContactRepository

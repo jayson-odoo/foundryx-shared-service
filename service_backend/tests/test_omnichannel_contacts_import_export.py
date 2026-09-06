@@ -112,11 +112,43 @@ def test_drift_guard_columns_subset_of_writable_plus_documented_exceptions():
         if col.key in exceptions:
             continue
         assert col.attr in wf.writable, f"{col.key} (attr={col.attr}) not in writable whitelist"
-    # cf_<key> columns are dynamic (per-workspace registry) - assert the naming
-    # contract holds for a synthetic one instead of a static column.
-    from modules.omnichannel.importers import CF_PREFIX
 
-    assert "cf_company".startswith(CF_PREFIX)
+    # Nit 22 (review round 1, AC-CTM-38): the OLD assertion here
+    # (`"cf_company".startswith(CF_PREFIX)`) was a tautology - a hardcoded
+    # literal string checked against a prefix constant, proving nothing
+    # about the ACTUAL dynamic cf_* columns or how they're whitelisted.
+    # `custom_fields_json` (the attr every `cf_<key>` column ultimately
+    # writes into via `ContactProfileService.patch`) is DELIBERATELY absent
+    # from `wf.writable` - documented here, not a silent gap - because
+    # custom fields ride their OWN per-key whitelist
+    # (`ContactFieldService`'s registered-field-type registry).
+    assert "custom_fields_json" not in wf.writable
+
+
+def test_drift_guard_cf_columns_use_the_field_registrys_own_type(client, session_factory):
+    """The REAL "whitelist property" for `cf_<key>` columns (AC-CTM-38, tying
+    into finding 12): a dynamic column's TYPE/OPTIONS come from the field's
+    OWN registration, so an out-of-whitelist value 422s naming the allowed
+    set - proving the per-key registry (not `wf.writable`, which doesn't
+    cover custom fields at all) is the real gate. `_dynamic_cf_columns`
+    NEVER offers a column for a key that isn't currently registered (a
+    deleted/renamed field simply drops out of `effective_columns`), so an
+    "unregistered key" cell can't even enter a prepared row through the
+    normal upload+map flow - the registry IS the whitelist."""
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    client.post(
+        f"{_base(ws)}/contact-fields", headers=h,
+        json={"key": "tier", "label": "Tier", "type": "list", "options": ["Bronze", "Gold"]},
+    )
+
+    content = _csv_bytes([["phone", "cf_tier"], ["+60 19-000 0001", "Platinum"]])
+    job_id = _upload(client, h, content, ws).json()["jobId"]
+    _map(client, h, job_id, {"phone": "phone", "cf_tier": "cf_tier"})
+    job = client.get(f"/imports/{job_id}", headers=h).json()
+    assert job["invalidRows"] == 1
+    err = next(e for e in job["errors"] if e["column"] == "cf_tier")
+    assert "Bronze" in err["message"] and "Gold" in err["message"]
 
 
 def test_import_columns_match_documented_set():
@@ -126,6 +158,56 @@ def test_import_columns_match_documented_set():
         "id", "phone", "firstName", "lastName", "email", "language",
         "countryCode", "priority", "lifecycle", "tags",
     }
+
+
+def test_dynamic_cf_columns_derive_type_from_the_field_registry(client, session_factory):
+    """Finding 12 (review round 1): a `cf_*` column's `ImportColumn.type` is
+    no longer a blanket `"string"` - `list` -> `enum` (options = the field's
+    OWN registered options, so a bad value 422s naming the allowed set) and
+    `checkbox` -> `boolean`; `date`/`email`/`url`/`text` stay `string`
+    (documented, not silently worked around)."""
+    from app.import_engine.registry import get_importer
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    client.post(
+        f"{_base(ws)}/contact-fields", headers=h,
+        json={"key": "plan", "label": "Plan", "type": "list", "options": ["Free", "Pro"]},
+    )
+    client.post(
+        f"{_base(ws)}/contact-fields", headers=h,
+        json={"key": "vip", "label": "VIP", "type": "checkbox"},
+    )
+
+    importer = get_importer(ENTITY_TYPE)
+    db = session_factory()
+    dynamic = {
+        c.key: c for c in importer.effective_columns(db, DEFAULT_TENANT_ID, {"workspaceId": ws})
+    }
+    db.close()
+    assert dynamic["cf_plan"].type == "enum"
+    assert dynamic["cf_plan"].options == ["Free", "Pro"]
+    assert dynamic["cf_vip"].type == "boolean"
+
+    # A value outside the registered options 422s naming the allowed set -
+    # NOT a generic "Unknown custom field"/format error.
+    content = _csv_bytes([["phone", "cf_plan"], ["+60 18-000 0001", "Enterprise"]])
+    job_id = _upload(client, h, content, ws).json()["jobId"]
+    _map(client, h, job_id, {"phone": "phone", "cf_plan": "cf_plan"})
+    job = client.get(f"/imports/{job_id}", headers=h).json()
+    assert job["invalidRows"] == 1
+    err = next(e for e in job["errors"] if e["column"] == "cf_plan")
+    assert "Free" in err["message"] and "Pro" in err["message"]
+
+    # A valid option round-trips to the SAME canonical string the field
+    # stores (case-insensitive match -> canonical value).
+    content2 = _csv_bytes([["phone", "cf_plan", "cf_vip"], ["+60 18-000 0002", "pro", "yes"]])
+    job_id2 = _upload(client, h, content2, ws).json()["jobId"]
+    _map(client, h, job_id2, {"phone": "phone", "cf_plan": "cf_plan", "cf_vip": "cf_vip"})
+    assert _commit(client, h, job_id2).status_code == 200
+    data = client.get(f"{_base(ws)}/contacts", headers=h).json()["data"]
+    row = next(c for c in data if c["phone"] == "+60180000002")
+    assert row["customFields"] == {"plan": "Pro", "vip": True}
 
 
 # ── AC-CTM-35/36: Test phase errors, zero writes ────────────────────────────
@@ -186,6 +268,57 @@ def test_validate_duplicate_phone_in_file_and_table(client, session_factory):
     assert cols == {"phone"}
     before = client.get(f"{_base(ws)}/contacts", headers=h).json()["total"]
     assert before == 1  # Test phase wrote NOTHING
+
+
+def test_validate_duplicate_phone_against_unstamped_legacy_row(client, session_factory):
+    """Finding 6: a row inserted before `phone_digits` was stamped (or a
+    pre-existing fixture) has `phone_digits IS NULL` - the Test-phase
+    uniqueness check must still catch a duplicate against it (mirrors
+    `ContactRepository.find_by_phone_digits`'s own legacy fallback), so
+    manual create/import agree on what counts as a duplicate."""
+    from modules.omnichannel.models import Contact
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+
+    db = session_factory()
+    legacy = Contact(
+        tenant_id=DEFAULT_TENANT_ID, workspace_id=ws,
+        first_name="Legacy", phone="+60 16-333 4444", phone_digits=None,
+    )
+    db.add(legacy)
+    db.commit()
+    db.close()
+
+    content = _csv_bytes([["phone", "firstName"], ["+60 16-333 4444", "New"]])
+    job_id = _upload(client, h, content, ws).json()["jobId"]
+    _map(client, h, job_id, _ident(["phone", "firstName"]))
+    job = client.get(f"/imports/{job_id}", headers=h).json()
+    assert job["invalidRows"] == 1
+    assert job["errors"][0]["column"] == "phone"
+
+
+def test_validate_rejects_foreign_tenant_workspace_context(client, session_factory):
+    """Finding 5: `context.workspaceId` is caller-authored and must be
+    tenant-scoped before ANY row validates/writes - a job authored by tenant
+    A but pointed at tenant B's workspace id must aggregate-fail, never
+    validate/commit into it."""
+    from tests.test_omnichannel_contacts_module import _other_tenant_auth
+
+    h = _auth(client)
+    h_other = _other_tenant_auth(client, session_factory, slug="other-ctm-import-ctx")
+    foreign_ws = _workspace_id(client, h_other)
+
+    content = _csv_bytes([["phone", "firstName"], ["+60 17-000 0001", "Foreign"]])
+    job_id = _upload(client, h, content, foreign_ws).json()["jobId"]
+    _map(client, h, job_id, _ident(["phone", "firstName"]))
+    job = client.get(f"/imports/{job_id}", headers=h).json()
+    assert job["invalidRows"] == 1
+    assert job["errors"][0]["column"] == "workspaceId"
+
+    commit_res = _commit(client, h, job_id)
+    assert commit_res.status_code == 200
+    assert not commit_res.json().get("createdIds")
 
 
 def test_validate_unknown_lifecycle_stage(client, session_factory):
@@ -435,6 +568,39 @@ def test_export_honours_ids_selection_over_filter(client, session_factory):
     assert rows[1][0] == a
 
 
+def test_export_columns_reject_unknown_id_and_cap(client, session_factory):
+    """Finding 14: an unknown column id 422s at the wire (never a silent
+    blank cell from `_column_value`'s catch-all), and the column LIST is
+    capped."""
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    _seed_contact(session_factory, ws, first="A")
+
+    res = client.post(
+        f"{_base(ws)}/contacts/export", headers=h, json={"columns": ["name", "notAColumn"]}
+    )
+    assert res.status_code == 422
+
+    res2 = client.post(f"{_base(ws)}/contacts/export", headers=h, json={"columns": ["name"] * 51})
+    assert res2.status_code == 422
+
+    # A well-FORMED but UNREGISTERED customFields.<key> also 422s (registered-
+    # key check, DB + workspace scoped - lives in `create_export_job`).
+    res3 = client.post(
+        f"{_base(ws)}/contacts/export", headers=h, json={"columns": ["name", "customFields.notRegistered"]}
+    )
+    assert res3.status_code == 422
+
+    # A REGISTERED customFields.<key> is accepted.
+    client.post(
+        f"{_base(ws)}/contact-fields", headers=h, json={"key": "budget", "label": "Budget", "type": "number"}
+    )
+    res4 = client.post(
+        f"{_base(ws)}/contacts/export", headers=h, json={"columns": ["name", "customFields.budget"]}
+    )
+    assert res4.status_code == 201
+
+
 def test_export_row_cap_422(client, session_factory, monkeypatch):
     from modules.omnichannel.services import contact_export_service as svc
 
@@ -449,6 +615,9 @@ def test_export_row_cap_422(client, session_factory, monkeypatch):
 
 
 def test_export_download_uniform_404_before_done_and_wrong_tenant(client, session_factory):
+    from modules.omnichannel.models import Workspace
+    from modules.omnichannel.services import statuses
+
     h = _auth(client)
     ws = _workspace_id(client, h)
     _seed_contact(session_factory, ws, first="A")
@@ -461,6 +630,22 @@ def test_export_download_uniform_404_before_done_and_wrong_tenant(client, sessio
     h2 = _other_tenant_auth(client, session_factory, slug="other-ctm-export")
     ws2 = _workspace_id(client, h2)
     assert client.get(f"{_base(ws2)}/contacts/export/{job_id}/file", headers=h2).status_code == 404
+
+    # A DIFFERENT workspace of the SAME tenant (nit 22) - the job is
+    # workspace-scoped, not just tenant-scoped.
+    db = session_factory()
+    other_ws = Workspace(
+        tenant_id=DEFAULT_TENANT_ID, name="Export Second WS",
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "WORKSPACE", "ACTIVE"),
+    )
+    db.add(other_ws)
+    db.commit()
+    other_ws_id = other_ws.id
+    db.close()
+    assert (
+        client.get(f"{_base(other_ws_id)}/contacts/export/{job_id}/file", headers=h).status_code
+        == 404
+    )
 
 
 def test_export_cooperative_cancel_stops_before_file(client, session_factory):
@@ -496,3 +681,105 @@ def test_export_permission_gate_403(client, session_factory):
     ws = _workspace_id(client, h)
     res = client.post(f"{_base(ws)}/contacts/export", headers=h_none, json={"columns": ["name"]})
     assert res.status_code == 403
+
+
+# ── Review round 1, Blocker 1 + promoted tags delimiter: CSV formula-
+# injection sanitize + an ACTUAL re-import round-trip (AC-CTM-42) ───────────
+
+
+def test_export_sanitizes_formula_cells_and_round_trips_via_reimport(client, session_factory):
+    """`firstName`/`lastName` come from inbound WhatsApp `profile_name` -
+    attacker-controlled free text. A cell that starts with `= + - @` must be
+    written prefixed with `'` (Excel/Sheets formula-injection guard); `phone`
+    always starts with `+` so it ALWAYS gets the guard too - re-importing the
+    exact downloaded file must still resolve to the SAME digits
+    (`_normalize_phone` strips non-digit characters, quote included). Tags
+    export/import on the SAME `,` delimiter (promoted finding) - the full
+    tag set must survive the round-trip."""
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    cid = _seed_contact(
+        session_factory, ws, first="=2+5(evil)", last="+SUM(A1:A9)",
+        phone="+60 24-555 0001", tag_names=["VIP", "Ops"],
+    )
+
+    res = client.post(
+        f"{_base(ws)}/contacts/export", headers=h,
+        json={"columns": ["id", "firstName", "lastName", "phone", "tags"]},
+    )
+    job_id = res.json()["jobId"]
+    job = client.get(f"/jobs/{job_id}", headers=h).json()
+    assert job["status"] == "done"
+
+    download = client.get(f"{_base(ws)}/contacts/export/{job_id}/file", headers=h)
+    text = download.content.decode("utf-8-sig")
+    rows = list(csv.reader(io.StringIO(text)))
+    header, row = rows[0], rows[1]
+    assert header == ["ID", "First name", "Last name", "Phone", "Tags"]
+    assert row[0] == cid
+    assert row[1] == "'=2+5(evil)"  # sanitized - literal text, never a formula
+    assert row[2] == "'+SUM(A1:A9)"
+    assert row[3].startswith("'+")  # every phone starts with `+` - always guarded
+    tag_set = set(row[4].split(","))
+    assert tag_set == {"VIP", "Ops"}
+
+    # Re-import the EXACT downloaded file - `phone` is deliberately NEVER
+    # rewritten by an update_only row (AC-CTM-37 - see `_update_contacts`), so
+    # the phone-normalization round-trip is exercised the way it actually
+    # happens in the wild: a CREATE row from a re-uploaded export (`id`
+    # present in the file but left UNMAPPED - never mapped to the system `id`
+    # column - so create_only sees no id and makes a NEW contact) into a
+    # SECOND workspace (the ORIGINAL workspace already holds this exact
+    # phone, and the duplicate-phone table check would otherwise reject the
+    # row - itself proof the normalization round-trips identically, asserted
+    # separately below).
+    from modules.omnichannel.models import Workspace
+    from modules.omnichannel.services import statuses as omni_statuses
+
+    db_ws = session_factory()
+    ws2 = Workspace(
+        tenant_id=DEFAULT_TENANT_ID, name="Reimport WS",
+        status_id=omni_statuses.status_id_for(db_ws, DEFAULT_TENANT_ID, "WORKSPACE", "ACTIVE"),
+    )
+    db_ws.add(ws2)
+    db_ws.commit()
+    ws2_id = ws2.id
+    db_ws.close()
+
+    job_id_dup = _upload(client, h, download.content, ws, mode="create_only").json()["jobId"]
+    _map(
+        client, h, job_id_dup,
+        {"First name": "firstName", "Last name": "lastName", "Phone": "phone", "Tags": "tags"},
+    )
+    dup_job = client.get(f"/imports/{job_id_dup}", headers=h).json()
+    assert dup_job["invalidRows"] == 1  # SAME digits as the seeded contact -> dup rejected
+    assert dup_job["errors"][0]["column"] == "phone"
+
+    job_id2 = _upload(client, h, download.content, ws2_id, mode="create_only").json()["jobId"]
+    _map(
+        client, h, job_id2,
+        {"First name": "firstName", "Last name": "lastName", "Phone": "phone", "Tags": "tags"},
+    )
+    commit_res = _commit(client, h, job_id2)
+    assert commit_res.status_code == 200
+    new_id = commit_res.json()["createdIds"][0]
+    assert new_id != cid
+
+    from modules.omnichannel.models import Contact, ContactTag, ContactTagLink
+
+    db = session_factory()
+    row_db = db.query(Contact).filter(Contact.id == new_id).first()
+    # `_normalize_phone` -> digits_only strips the leading `'` (AND the `+`,
+    # AND the spaces/dashes) then re-prepends `+` - the round-trip restores
+    # the SAME number the ORIGINAL contact was seeded with.
+    assert row_db.phone == "+60245550001"
+    assert row_db.phone_digits == "60245550001"
+    tag_names = {
+        t.name
+        for t in db.query(ContactTag)
+        .join(ContactTagLink, ContactTagLink.tag_id == ContactTag.id)
+        .filter(ContactTagLink.contact_id == new_id)
+        .all()
+    }
+    assert tag_names == {"VIP", "Ops"}  # the full tag set survives the round-trip
+    db.close()

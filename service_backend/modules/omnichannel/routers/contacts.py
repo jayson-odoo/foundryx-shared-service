@@ -7,11 +7,10 @@ logic here (Router -> Service -> Repository).
 S1 shipped the list read (AC-CTM-14..23); S2 adds create + the three bulk
 routes on this SAME router file (plan §4, AC-CTM-24..33) - reads stay gated
 `contacts.read`, writes `contacts.manage`."""
-import io
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -39,7 +38,12 @@ from ..services.contact_admin_service import (
     ContactAdminService,
     ContactCreateError,
 )
-from ..services.contact_export_service import EXPORT_JOB_TYPE, create_export_job
+from ..services.contact_export_service import (
+    EXPORT_JOB_TYPE,
+    ExportRowCapExceeded,
+    UnknownExportColumn,
+    create_export_job,
+)
 from ..services.contact_list_service import DEFAULT_PAGE_SIZE, ContactListService
 from ..services.contact_segment_service import SegmentNotFound
 from ..services.workspace_service import WorkspaceService
@@ -186,6 +190,14 @@ def export_contacts(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Segment not found.")
     except FilterError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+    except ExportRowCapExceeded as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"This export would include {exc.count} contacts, over the {exc.cap}-row limit. "
+            "Narrow the filter or segment and try again.",
+        )
+    except UnknownExportColumn as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
     return {"jobId": job.id}
 
 
@@ -212,15 +224,12 @@ def download_contacts_export(
     ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Export not found.")
 
-    store = storage_for_tenant(db, current_user.tenant_id)
-    kind, value = store.resolve(job.result_json["fileKey"])
-    if kind == "path":
-        with open(value, "rb") as fh:
-            content = fh.read()
-    else:
-        import urllib.request
-
-        content = urllib.request.urlopen(value).read()  # noqa: S310 (own storage)
+    try:
+        location, value = storage_for_tenant(db, current_user.tenant_id).resolve(
+            job.result_json["fileKey"]
+        )
+    except Exception:  # noqa: BLE001 - unresolvable key (connection gone)
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Export not found.")
 
     filename = f"contacts-export-{job.created_at:%Y%m%d-%H%M%S}.csv"
     headers = {
@@ -229,4 +238,6 @@ def download_contacts_export(
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "private, max-age=0, no-store",
     }
-    return StreamingResponse(io.BytesIO(content), media_type="text/csv", headers=headers)
+    if location in ("presigned", "url"):
+        return RedirectResponse(value, headers=headers)
+    return FileResponse(value, media_type="text/csv", headers=headers)

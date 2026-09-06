@@ -84,7 +84,11 @@ def _generic_text_clause(expr, cond: FilterCondition, *, name: str):
     if op == "eq":
         return expr == val
     if op == "neq":
-        return expr != val
+        # Nit 19 (review round 1): SQL's three-valued logic means a bare
+        # `expr != val` EXCLUDES a NULL row (`NULL != val` is NULL, not
+        # TRUE) - but a contact with no value for this column trivially IS
+        # "not equal to X", so NULLs must match too.
+        return or_(expr.is_(None), expr != val)
     if op == "in":
         values = val if isinstance(val, list) else [val]
         return expr.in_(values)

@@ -369,7 +369,9 @@ function columnValue(row: ContactListItem, colId: string): string {
     case 'lifecycle':
       return row.lifecycle?.label ?? '';
     case 'tags':
-      return row.tags.map((t) => t.name).join('; ');
+      // `,` to match the backend export (tags round-trip through the importer,
+      // which splits on `,` - keep both sides on the same delimiter).
+      return row.tags.map((t) => t.name).join(',');
     case 'assignee':
       return row.assignedUserName ?? '';
     case 'channel':

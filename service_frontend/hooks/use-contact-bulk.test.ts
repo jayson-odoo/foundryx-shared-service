@@ -59,6 +59,30 @@ describe('reportBulkResult', () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
+  it('finding 10: maps a failure id to its display NAME when a nameFor resolver is given', () => {
+    const result: BulkResult = {
+      ok: [],
+      failed: [{ id: 'cnt-2', error: 'No move from Won.' }],
+    };
+    reportBulkResult(result, 'moved', (id) => (id === 'cnt-2' ? 'Ann Lee' : id));
+    expect(toast.error).toHaveBeenCalledWith(
+      'Could not update 1 contact.',
+      expect.objectContaining({ description: 'Ann Lee: No move from Won.' }),
+    );
+  });
+
+  it('falls back to the raw id when no nameFor resolver is given', () => {
+    const result: BulkResult = {
+      ok: [],
+      failed: [{ id: 'cnt-2', error: 'No move from Won.' }],
+    };
+    reportBulkResult(result, 'moved');
+    expect(toast.error).toHaveBeenCalledWith(
+      'Could not update 1 contact.',
+      expect.objectContaining({ description: 'cnt-2: No move from Won.' }),
+    );
+  });
+
   it('renders an error (never a bare "something went wrong") when every record failed', () => {
     const result: BulkResult = {
       ok: [],

@@ -272,6 +272,36 @@ def test_filter_system_fields(client, session_factory):
     assert [c["id"] for c in res.json()["data"]] == [target]
 
 
+def test_generic_text_clause_neq_includes_null_rows(client, session_factory):
+    """Nit 19 (review round 1): SQL three-valued logic means a bare
+    `expr != val` excludes a NULL row (`NULL != val` is NULL, not TRUE) - a
+    contact with no value AT ALL for the column trivially IS "not equal to
+    X" and must match `neq` too. Unit-tested directly against
+    `_generic_text_clause` (the module's own `"name"` field always passes it
+    a `coalesce(...)`-wrapped, never-NULL expression, so an HTTP-level
+    round-trip through `name` can never exercise the NULL branch)."""
+    from modules.omnichannel.models import Contact
+    from modules.omnichannel.services.contact_filters import _generic_text_clause
+    from app.schemas.filters import FilterCondition
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    other = _seed_contact(session_factory, ws, first="Someone", last=None)
+    no_value = _seed_contact(session_factory, ws, first=None, last=None)
+    _seed_contact(session_factory, ws, first="Amelia", last=None)
+
+    cond = FilterCondition(kind="condition", field="firstName", operator="neq", value="Amelia")
+    clause = _generic_text_clause(Contact.first_name, cond, name="firstName")
+
+    db = session_factory()
+    ids = {
+        r[0]
+        for r in db.query(Contact.id).filter(Contact.id.in_([other, no_value]), clause).all()
+    }
+    db.close()
+    assert ids == {other, no_value}
+
+
 def test_filter_unknown_field_422(client):
     h = _auth(client)
     ws = _workspace_id(client, h)
@@ -613,6 +643,25 @@ def test_permission_gates_403(client, session_factory):
     assert client.get(f"{_base(ws)}/contacts", headers=h_read).status_code == 200
     assert client.get(f"{_base(ws)}/contact-segments", headers=h_read).status_code == 200
     assert client.post(f"{_base(ws)}/contact-segments", headers=h_read, json={"name": "x"}).status_code == 403
+
+
+def test_contact_detail_read_accepts_contacts_read_alone(client, session_factory):
+    """AC-CTM-22 (phase-2 fix): the Contacts module's detail page reuses the
+    A1 inbox routes `GET /omnichannel/contacts/{id}` (`contact-service.real.ts
+    get`) and `.../messages` (the embedded `<ConversationDrawer>`) - a role
+    holding ONLY `contacts.read` (no `conversations.read`) must still be able
+    to open a contact's own detail page, even though it stays refused on the
+    shared Inbox LIST (`GET /omnichannel/contacts` bare, `conversations.read`
+    only - `contacts.read` must not silently grant Inbox visibility)."""
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    cid = _seed_contact(session_factory, ws, first="Amelia")
+
+    h_read = _read_only_auth(client, session_factory, email="ctm-detail-readonly@example.com")
+    assert client.get(f"/omnichannel/contacts/{cid}", headers=h_read).status_code == 200
+    assert client.get(f"/omnichannel/contacts/{cid}/messages", headers=h_read).status_code == 200
+    # The shared Inbox LIST stays conversations.read-only.
+    assert client.get("/omnichannel/contacts", headers=h_read).status_code == 403
 
 
 def _other_tenant_auth(client, session_factory, slug="other-ctm"):

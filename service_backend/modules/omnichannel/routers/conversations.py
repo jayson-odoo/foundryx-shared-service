@@ -108,7 +108,10 @@ def get_thread(
     principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> ThreadItem:
-    principal.require_read()
+    # AC-CTM-22 (phase-2 fix): a per-record read, reused by the Contacts
+    # module's detail page (`contact-service.real.ts get`) - `contacts.read`
+    # alone must be enough, not just `conversations.read`.
+    principal.require_read_or_contacts()
     enforce_thread_access(db, principal, contact_id)
     try:
         return ConversationService(db).get_thread(contact_id, principal.tenant_id)
@@ -122,7 +125,9 @@ def list_messages(
     principal: ConversationPrincipal = Depends(get_conversation_principal),
     db: Session = Depends(get_db),
 ) -> List[MessageItem]:
-    principal.require_read()
+    # AC-CTM-22 (phase-2 fix): the Contacts detail page's Conversation tab
+    # (`<ConversationDrawer compact>`) calls this too - same "or" gate.
+    principal.require_read_or_contacts()
     enforce_thread_access(db, principal, contact_id)
     try:
         return ConversationService(db).list_messages(contact_id, principal.tenant_id)

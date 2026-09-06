@@ -64,6 +64,7 @@ vi.mock('@/hooks/use-contact-segments', () => ({
     create: vi.fn(),
     update: vi.fn(),
     remove: vi.fn(),
+    refresh: vi.fn(),
   }),
 }));
 vi.mock('@/hooks/use-contact-tags', () => ({ useContactTags: () => ({ tags: [] }) }));

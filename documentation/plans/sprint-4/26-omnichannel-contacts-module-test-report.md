@@ -59,7 +59,7 @@ via source-code confirmation, neither is a tester-setup mistake):
 | AC-CTM-19 | [BE] | PASS | `test_channels_resolved_from_identities_never_fabricated` |
 | AC-CTM-20 | [BE] | PASS | `test_segment_crud_and_uniqueness`, `test_segment_save_time_validation_rejects_unknown_field`, `test_segment_cap_100_per_workspace` |
 | AC-CTM-21 | [BE] | PASS | `test_segment_apply_ands_with_ad_hoc_filter`, `test_segment_belonging_to_another_workspace_is_404` |
-| AC-CTM-22 | [BE] | **FAIL** | `test_permission_gates_403` / `test_tenant_isolation_uniform_404` cover the NEW list+segment routes correctly (both PASS), but they do NOT cover the pre-existing A1 single-contact detail route the module's detail PAGE reuses (`GET /omnichannel/contacts/{id}`), which is gated by `conversations.read` - a key DIFFERENT from `contacts.read`. Live repro: role with `contacts.read`+`workspaces.read` only -> `GET /omnichannel/contacts/{id}` -> **403** ("Missing permission: conversations.read") -> frontend renders "Contact not found." (`29-viewer-detail-no-edit-1280.png`, network trace in `README.md` step 22). This breaks the AC's own promise ("list + detail reads require contacts.read"). Tenant-isolation half of this AC (uniform 404 cross-tenant) is separately confirmed PASS via the curl probes below |
+| AC-CTM-22 | [BE] | **PASS (round 1 fix)** | Originally **FAIL** (see "Defect 1" below, kept for history) - `GET /omnichannel/contacts/{id}` / `.../messages` required `conversations.read`, not `contacts.read`. Fixed via `ConversationPrincipal.require_read_or_contacts()` (`embed_auth.py`); new test `test_omnichannel_contacts_module.py::test_contact_detail_read_accepts_contacts_read_alone` (a `contacts.read`-only role gets 200 on detail+messages, 403 on the bare Inbox list). `test_permission_gates_403` / `test_tenant_isolation_uniform_404` still cover the list+segment routes. Tenant-isolation half of this AC (uniform 404 cross-tenant) confirmed PASS via the curl probes below |
 | AC-CTM-23 | [BE] | PASS | `test_list_resolution_is_batched_not_per_row` |
 | AC-CTM-24 | [BE] | PASS | `test_create_happy_path`, `test_create_sets_explicit_lifecycle_stage`; **E2E** `02`/`04` (3 real creates, initial stage + OPEN/MEDIUM implied by thread defaults) |
 | AC-CTM-25 | [BE] | PASS | `test_create_phone_required_422`, `test_create_phone_no_digits_422`, `test_create_duplicate_phone_422_nothing_written`; **E2E** `05-duplicate-phone-422-1280.png` |
@@ -221,3 +221,89 @@ works exactly as specified.
 
 None deferred outright - both findings above are reported as defects (one FAIL, one backlog
 candidate) rather than skipped verifications.
+
+## Round 1 fixes (review round 1, 2026-09-06)
+
+Opus returned REQUEST CHANGES on `d302ea7..1b2ae72` (2 blockers, findings 4-14, 8 nits). All fixed
+and re-verified in the same worktree/lane (`:8005`/`:3004`, DB `foundryx_service_s26`), plus two
+additional items the tester's own AC-CTM-22/backlog findings above surfaced. Fixed in the commit
+immediately following `3d4504a` (this evidence commit) on `sprint-4/26-contacts-module` - see
+`git log` for the exact SHA (`fix(omnichannel): plan 26 review round 1 - ...`).
+
+**AC-CTM-22 is now PASS.** `ConversationPrincipal.require_read_or_contacts()` (new,
+`modules/omnichannel/embed_auth.py`) accepts `contacts.read` as an alternative to
+`conversations.read` for the two per-record reads the Contacts detail page reuses -
+`GET /omnichannel/contacts/{id}` (`get_thread`) and `GET /omnichannel/contacts/{id}/messages`
+(`list_messages`), both in `modules/omnichannel/routers/conversations.py`. The shared Inbox LIST
+(`GET /omnichannel/contacts` bare, `list_threads`) deliberately stays `conversations.read`-only -
+`contacts.read` must not silently grant Inbox visibility. New test:
+`tests/test_omnichannel_contacts_module.py::test_contact_detail_read_accepts_contacts_read_alone`
+(a role holding ONLY `contacts.read` gets 200 on the detail + messages routes, 403 on the bare
+Inbox list). Live-reprod fixed: `AC-CTM-13`'s detail-form Edit-toggle-absence check, previously
+blocked by the AC-CTM-22 defect, is unblocked now too (not re-run live this round; covered by the
+new unit test + the unchanged frontend permission gating already verified in the original run).
+
+Backlog: **BL-SS-075** added for the tester's second finding ("Contacts list renders blank when
+workspace resolution 403s for a role lacking `workspaces.read`", D-A2-10 inherited-from-A1 gap) -
+not fixed this round, logged per the coordinator's instruction.
+
+**Blockers fixed:**
+- CSV formula-injection sanitize (`contact_export_service.py _csv_value` now calls the import
+  engine's `sanitize_cell`, applied to every cell AND the header row; `phone`'s leading `+` is
+  itself a guarded prefix, `_normalize_phone` strips it cleanly on re-import).
+- Segment delete migrated to the deferred grace-window engine (`contact_segments.delete`,
+  `deferred_actions.py`) - `manage-segments-dialog.tsx` rewritten to use
+  `useDeferredAction`/`deferredToast` instead of a hand-rolled `AlertDialog`. AC-CTM-06 amended;
+  new decisions D-A2-17/D-A2-18 in the plan file.
+- Export download route rebuilt on the `documents.py`/`forms.py` `RedirectResponse`/`FileResponse`
+  precedent (no more raw `urlopen`/whole-file `read()`).
+
+**Findings 4-14 + tags delimiter + nits 15-22:** all addressed - scoped lifecycle-label lookups
+(finding 4), tenant-scoped `workspaceId` validation in the importer (finding 5, live-reproduced
+below), the legacy `phone_digits IS NULL` fallback mirrored in the importer's uniqueness check
+(finding 6), stable `useContactActions` callbacks fixing an unbounded per-render list refetch
+(finding 7), `ClampedText` in the segments dialog (finding 8), `ExportRowCapExceeded` translated in
+the router instead of raised from the service (finding 9), bulk-failure reasons now name the
+record (finding 10), `cf_*` import columns now derive `enum`/`boolean`/`decimal` types from the
+field registry (finding 12), backlog row `BL-SS-074` (finding 13), `ContactExportRequest.columns`
+capped + validated against a whitelist incl. registered `customFields.<key>` (finding 14), the
+tags export/import delimiter aligned on `,` both sides. Nits: unresolved-update-row now logs a
+warning (15), dead `except InvalidPatch` removed (16), the `0.3.0` docstring typo fixed (17), `neq`
+now includes NULL rows (19), the export BOM uses `codecs.BOM_UTF8` (20), "View Jobs" navigates via
+the Next router (21), a multi-batch bulk-failure test + a non-tautological drift-guard assertion
+added (22). See the coder's Phase 1 report for the full per-finding FIXED/CHANGED-APPROACH list;
+one item (a genuinely interleaved mid-run bulk-cancellation test) was not added - the export job's
+own cooperative-cancel test already covers the pattern this engine uses.
+
+**Live probes (this round, via `agent-browser` session `s26b` + direct API calls against the
+rebuilt `:8005`/`:3004`):**
+- Deferred segment delete: clicked Delete on a real segment - a "Deleting in 9s…Cancel" toast
+  appeared immediately (no confirm dialog), the row dimmed/disabled, and it committed to
+  "Segment deleted." with the row removed from the list. Checked at 1280px and 375px (both clean,
+  no overflow).
+- Export: created a contact with `firstName="=2+5(evil)"`, `lastName="+SUM(A1:A9)"`,
+  `phone="+60 24-777 0099"`; exported `id,firstName,lastName,phone` - the downloaded CSV (200,
+  `Content-Security-Policy: sandbox`, `nosniff`, `no-store`) shows every cell prefixed `'`
+  (`'=2+5(evil)`, `'+SUM(A1:A9)`, `'+60 24-777 0099`).
+- Tag round-trip: tagged the same contact with 2 tags, exported `id,firstName,tags` (cell =
+  `"CleanProbeTag,Follow up"`, comma-delimited), removed both tags, re-imported the EXACT
+  downloaded file (`update_only`, `id`-matched) - both tags restored exactly.
+- Foreign `workspaceId` import context: uploaded a valid file with
+  `context={"workspaceId":"not-a-real-workspace-id"}` - Test phase returned the aggregate
+  `{"row": null, "column": "workspaceId", "message": "Workspace not found."}`, zero rows validated.
+- UI export button click (Contacts list, real click) - job created, dialog closed cleanly, no
+  console errors (backend contract already proven via the API probes above).
+
+**Suite counts (this round):**
+- Backend targeted (`test_omnichannel_contacts_module.py` + `_contacts_admin.py` +
+  `_contacts_import_export.py` + `_import_engine.py` + `_api_gateway.py` + `_deferred_actions.py`):
+  **191 passed**.
+- Backend full (`pytest -q`, whole repo): **2936 passed, 1 skipped, 18 deselected** in 1576s
+  (up from the original run's 2926 passed - the new/updated tests this round net +10).
+- Frontend (`npx vitest run`): **266 test files, 2022 tests passed** (up from 264/2018).
+- `npx eslint` on every touched file: 0 errors (6 pre-existing warnings, unrelated lines).
+
+**Residue note:** the live-probe contact (`firstName="'=2+5(evil)"`, searchable by `evil`) could not
+be cleaned up - the Contacts module ships no delete/merge/block action in this slice (D-A2-15), so
+it remains in the shared `default` tenant like the tester's own `CleanProbe`/`S4Smoke*` residue rows
+already did.

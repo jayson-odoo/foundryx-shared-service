@@ -23,6 +23,14 @@ export interface ContactActionCallbacks {
 }
 
 export function useContactActions(callbacks: ContactActionCallbacks): ResourceAction<ContactListItem>[] {
+  // Depend on the INDIVIDUAL callbacks, not the `callbacks` object itself
+  // (finding 7, review round 1) - the caller passes a fresh object literal
+  // every render, so a dependency on `callbacks` recomputed this array (and
+  // therefore `config`/`config.fetcher` downstream) on every render, and
+  // `useResourceList`'s fetch effect keys off `fetcher` identity - one
+  // extra network fetch per render. The caller now memoizes each callback
+  // with `useCallback`, so THESE deps are actually stable.
+  const { onBulkAssign, onAddTags, onRemoveTags, onMoveLifecycle } = callbacks;
   return useMemo<ResourceAction<ContactListItem>[]>(
     () => [
       {
@@ -31,7 +39,7 @@ export function useContactActions(callbacks: ContactActionCallbacks): ResourceAc
         icon: UserPlus2,
         permission: 'contacts.manage',
         surfaces: { row: true, bulk: true },
-        run: (rows, rt) => callbacks.onBulkAssign(rows, rt.reload),
+        run: (rows, rt) => onBulkAssign(rows, rt.reload),
       },
       {
         id: 'add-tags',
@@ -39,7 +47,7 @@ export function useContactActions(callbacks: ContactActionCallbacks): ResourceAc
         icon: Tag,
         permission: 'contacts.manage',
         surfaces: { row: true, bulk: true },
-        run: (rows, rt) => callbacks.onAddTags(rows, rt.reload),
+        run: (rows, rt) => onAddTags(rows, rt.reload),
       },
       {
         id: 'remove-tags',
@@ -48,7 +56,7 @@ export function useContactActions(callbacks: ContactActionCallbacks): ResourceAc
         permission: 'contacts.manage',
         surfaces: { row: true, bulk: true },
         isVisible: (rows) => rows.some((r) => r.tags.length > 0),
-        run: (rows, rt) => callbacks.onRemoveTags(rows, rt.reload),
+        run: (rows, rt) => onRemoveTags(rows, rt.reload),
       },
       {
         id: 'move-lifecycle',
@@ -56,9 +64,9 @@ export function useContactActions(callbacks: ContactActionCallbacks): ResourceAc
         icon: Workflow,
         permission: 'contacts.manage',
         surfaces: { row: true, bulk: true },
-        run: (rows, rt) => callbacks.onMoveLifecycle(rows, rt.reload),
+        run: (rows, rt) => onMoveLifecycle(rows, rt.reload),
       },
     ],
-    [callbacks],
+    [onBulkAssign, onAddTags, onRemoveTags, onMoveLifecycle],
   );
 }

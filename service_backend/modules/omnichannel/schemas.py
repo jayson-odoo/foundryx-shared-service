@@ -478,6 +478,24 @@ class BulkLifecycleRequest(ApiModel):
     toStatusId: str
 
 
+# The STATIC export column whitelist (finding 14, review round 1) - the
+# single source of truth `contact_export_service._COLUMN_LABELS` keys off
+# too (imported from here, never duplicated). `customFields.<key>` is the
+# one DYNAMIC (per-workspace) shape - matched by pattern here (a save-time
+# 422 on a malformed key), then checked against the workspace's ACTUALLY
+# registered fields in the service layer (`create_export_job`), which is the
+# only place with DB + workspace context.
+EXPORT_COLUMN_IDS = frozenset(
+    {
+        "id", "name", "firstName", "lastName", "phone", "email", "language",
+        "countryCode", "lifecycle", "tags", "assignee", "channel",
+        "lastMessageAt", "createdAt",
+    }
+)
+MAX_EXPORT_COLUMNS = 50
+_CUSTOM_FIELD_COLUMN_RE = re.compile(r"^customFields\.[A-Za-z0-9_]+$")
+
+
 class ContactExportRequest(ApiModel):
     """Export job request (plan 26 S3, D-A2-6a). An explicit `ids` selection
     WINS over search/filter/segment/sort (`ContactListService.query_for_
@@ -490,6 +508,26 @@ class ContactExportRequest(ApiModel):
     segment: Optional[str] = None
     sortBy: Optional[str] = None
     sortDir: Optional[Literal["asc", "desc"]] = None
+
+    @field_validator("columns")
+    @classmethod
+    def _validate_columns(cls, v: List[str]) -> List[str]:
+        """Finding 14: cap + reject an unknown column id at the wire boundary
+        instead of the export silently rendering a blank cell for it
+        (`_column_value`'s catch-all). `customFields.<key>` format is
+        checked here (no DB in a pydantic validator); whether `<key>` is
+        actually REGISTERED for this workspace is re-checked in
+        `create_export_job` (DB + workspace-scoped)."""
+        if not v:
+            raise ValueError("At least one column is required.")
+        if len(v) > MAX_EXPORT_COLUMNS:
+            raise ValueError(f"At most {MAX_EXPORT_COLUMNS} columns.")
+        unknown = [
+            c for c in v if c not in EXPORT_COLUMN_IDS and not _CUSTOM_FIELD_COLUMN_RE.match(c)
+        ]
+        if unknown:
+            raise ValueError(f"Unknown export column(s): {', '.join(unknown)}.")
+        return v
 
 
 class ContactSegmentItem(ApiModel):

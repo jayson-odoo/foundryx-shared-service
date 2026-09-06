@@ -12,13 +12,23 @@ import { toast } from '@/lib/toast';
 import { contactService } from '@/services/contact-service';
 import type { BulkResult } from '@/types/omnichannel';
 
-export function reportBulkResult(result: BulkResult, verbPast: string): void {
+export function reportBulkResult(
+  result: BulkResult,
+  verbPast: string,
+  /** Finding 10 (review round 1): a failure's `id` is a bare UUID with no
+   * meaning to the user - the caller already holds the selected ROWS (the
+   * dialogs that call this), so it can resolve id -> display name. Falls
+   * back to the raw id only when a row can't be found (defensive). */
+  nameFor?: (id: string) => string,
+): void {
   const okCount = result.ok.length;
   if (result.failed.length === 0) {
     toast.success(`${okCount} contact${okCount === 1 ? '' : 's'} ${verbPast}.`);
     return;
   }
-  const reasons = result.failed.map((f) => `${f.id}: ${f.error}`).join('\n');
+  const reasons = result.failed
+    .map((f) => `${nameFor ? nameFor(f.id) : f.id}: ${f.error}`)
+    .join('\n');
   if (okCount > 0) {
     toast.warning(`${okCount} ${verbPast}, ${result.failed.length} failed.`, {
       description: reasons,

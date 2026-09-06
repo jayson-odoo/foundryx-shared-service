@@ -284,7 +284,7 @@ export function useContactsListConfig({
             sortDir: q.sort?.desc ? 'desc' : 'asc',
           });
         } catch (error) {
-          if (error instanceof ExportPendingError) exportPendingToast();
+          if (error instanceof ExportPendingError) exportPendingToast(router.push);
           throw error;
         }
       },

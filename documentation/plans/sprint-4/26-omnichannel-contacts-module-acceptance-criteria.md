@@ -62,13 +62,19 @@ IDs: `AC-CTM-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   `SearchSelect` (All contacts + one entry per segment, resolved for the active workspace); switching
   segment clears row selection and re-queries; the selected segment id rides `ListQuery.segment`.
 - **AC-CTM-06 [FE]** Given a user with `segments.manage`, then the list offers "Save as segment" for
-  the current filter tree (name dialog) and a segment manage dialog (rename, edit filter, delete)
-  with a confirmation on delete; without `segments.manage` neither control renders.
+  the current filter tree (name dialog) and a segment manage dialog (rename, edit filter, delete);
+  without `segments.manage` neither control renders. **Amended 2026-09-06 (review round 1):** delete
+  goes through the deferred grace window (`contact_segments.delete`, `useDeferredAction` +
+  `deferredToast`) - no confirmation dialog; Cancel withdraws it while the window is open, matching
+  every other destructive action in this module (a hand-rolled `AlertDialog` here was a
+  design-language hard-fail).
 - **AC-CTM-07 [FE]** Given a row click, then `/omnichannel/contacts/{id}` opens as a Resource **form**
-  (read by default, global Edit toggle, dirty-guard, circular `N / M` record-nav carried from the
-  list ctx) with tabs **Details** (reusing the A1 `contact-details-form`, `lifecycle-move` and
-  `tag-chips` components) and **Conversation** (mounting the existing `<ConversationDrawer>`);
-  no second chat implementation is written.
+  (dirty-guard, circular `N / M` record-nav carried from the list ctx) with tabs **Details** (reusing
+  the A1 `contact-details-form`, `lifecycle-move` and `tag-chips` components) and **Conversation**
+  (mounting the existing `<ConversationDrawer>`); no second chat implementation is written. **Amended
+  2026-09-06 (review round 1):** the detail page reuses the A1 contact panel's per-section edit
+  affordances (each gated `contacts.manage`) - there is no outer global Edit toggle, since that would
+  be a second, redundant way to enter edit mode over the same fields.
 - **AC-CTM-08 [FE]** Given "Add contact", then the create route renders the same Resource form with
   First name, Last name, Phone (required, create only), Email, Language, Country, Lifecycle stage
   (defaulted to the workspace initial stage), Tags and every registered custom field with a typed
@@ -91,8 +97,10 @@ IDs: `AC-CTM-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   field `list` = the field's registered options - and no instructional / how-to copy is rendered on
   any of these surfaces.
 - **AC-CTM-13 [FE]** Given a user without `contacts.manage`, then Add contact, the bulk actions, the
-  Edit toggle on the detail form and Import are not rendered (`useCan` is UX only, the API stays the
-  real gate); the list itself still reads with `contacts.read`.
+  detail form's per-section edit affordances (Details/lifecycle/tags) and Import are not rendered
+  (`useCan` is UX only, the API stays the real gate); the list itself still reads with `contacts.read`.
+  **Amended 2026-09-06 (review round 1):** "the Edit toggle on the detail form" -> "the detail form's
+  per-section edit affordances" (see AC-CTM-07's amendment - there is no outer Edit toggle).
 
 ## Slice 1 - Backend: list, filter, sort, segments
 

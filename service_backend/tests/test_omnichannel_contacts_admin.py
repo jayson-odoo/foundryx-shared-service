@@ -256,6 +256,40 @@ def test_bulk_assign_partial_failure_isolated(client, session_factory):
     db.close()
 
 
+def test_bulk_assign_spans_multiple_batches_failure_in_second_batch(client, session_factory, monkeypatch):
+    """Nit 22 (review round 1, AC-CTM-32): a request spanning MORE than one
+    `BULK_BATCH_SIZE` chunk, with the failing id in the SECOND batch - the
+    first batch's successes must commit independently (per-batch `commit()`,
+    never all-or-nothing across the whole id set)."""
+    from modules.omnichannel.services import contact_admin_service as svc
+
+    monkeypatch.setattr(svc, "BULK_BATCH_SIZE", 2)
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    a = _seed_contact(session_factory, ws, first="A")
+    b = _seed_contact(session_factory, ws, first="B")
+    c = _seed_contact(session_factory, ws, first="C")
+    me = client.get("/auth/me", headers=h).json()
+
+    # batch 1 = [a, b] (both valid), batch 2 = [c, bogus] (one fails).
+    res = client.post(
+        f"{_base(ws)}/contacts/bulk/assign",
+        headers=h,
+        json={"ids": [a, b, c, "bogus-id"], "assigneeUserId": me["id"]},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert set(body["ok"]) == {a, b, c}
+    assert body["failed"] == [{"id": "bogus-id", "error": "not_found"}]
+
+    from modules.omnichannel.models import Contact
+
+    db = session_factory()
+    for cid in (a, b, c):
+        assert db.query(Contact).filter(Contact.id == cid).first().assigned_user_id == me["id"]
+    db.close()
+
+
 def test_bulk_assign_unassign_with_null(client, session_factory):
     h = _auth(client)
     ws = _workspace_id(client, h)

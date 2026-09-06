@@ -39,7 +39,7 @@ from .contact_field_service import ContactFieldService
 from .contact_list_service import ContactListService
 from .contact_profile_service import _UNSET, ContactProfileService, ProfilePatchError
 from .contact_tag_service import ContactTagService, TagValidationError
-from .conversation_service import ConversationService, InvalidPatch
+from .conversation_service import ConversationService
 from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
 from .lifecycle_service import LifecycleStageNotFound, initial_status_id
 from .lifecycle_service import move as lifecycle_move
@@ -247,14 +247,15 @@ class ContactAdminService:
                 if assignee_error:
                     failed.append(BulkFailure(id=cid, error=assignee_error))
                     continue
-                try:
-                    with self.db.begin_nested():
-                        contact.assigned_user_id = assignee_user_id
-                        contact.assigned_external_agent_id = None
-                        self.db.flush()
-                except InvalidPatch as exc:  # pragma: no cover - guarded above
-                    failed.append(BulkFailure(id=cid, error=exc.message))
-                    continue
+                # Nit 16 (review round 1): a plain attribute assignment can
+                # never raise `InvalidPatch` (that's `ContactProfileService.
+                # patch`'s own exception) - `assignee_error` above is the
+                # ONLY failure mode for this write, already checked and
+                # `continue`d on. The dead `try/except InvalidPatch` (pragma:
+                # no cover - it never ran) is gone.
+                contact.assigned_user_id = assignee_user_id
+                contact.assigned_external_agent_id = None
+                self.db.flush()
                 ok.append(cid)
                 changed.append(contact)
             self.db.commit()
