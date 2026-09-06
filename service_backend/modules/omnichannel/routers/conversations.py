@@ -464,8 +464,11 @@ def run_shortcut(
             status_code=409,
             detail="This workflow's published version has an unauthorized Code node.",
         )
-    except ShortcutSerializationConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+    except ShortcutSerializationConflict:
+        raise HTTPException(
+            status_code=409,
+            detail="This workflow is serialized and its correlation key could not be resolved.",
+        )
     return ShortcutRunResponse(runId=run.id, status=run.status)
 
 

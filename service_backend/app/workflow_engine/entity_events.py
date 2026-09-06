@@ -463,7 +463,10 @@ def create_run_for_event(
 
     version = (
         session.query(WorkflowVersion)
-        .filter(WorkflowVersion.id == wf.current_version_id)
+        .filter(
+            WorkflowVersion.id == wf.current_version_id,
+            WorkflowVersion.workflow_id == wf.id,
+        )
         .first()
     )
     if version is None:
@@ -498,8 +501,16 @@ def create_run_for_event(
     session.add(run)
     session.flush()
 
-    if not settings.celery_task_always_eager:
-        session.commit()
+    if settings.celery_task_always_eager:
+        # Eager mode IS execution (inline, on this session) - a run row here
+        # has not been separately committed durable, so an executor crash
+        # must propagate: swallowing it would let `run_shortcut` hand back a
+        # `runId` for a row whose transaction then rolls back, and tests/dev
+        # would silently lose real executor failures.
+        dispatch_persisted_run(session, run)
+        return run
+
+    session.commit()
     try:
         dispatch_persisted_run(session, run)
     except Exception:  # noqa: BLE001 - B4 (round-3 codex triage): the run row
@@ -508,9 +519,9 @@ def create_run_for_event(
         # propagate: the shortcut route has no try/except for it and would
         # 500 while leaving the committed run stranded, and a client retry
         # would then create a SECOND run for the same click. Leave the run
-        # Pending (a redrive/backoff mechanism or manual re-dispatch handles
-        # it later), log, and return the already-created run untouched -
-        # never re-raise, never delete it.
+        # Pending - it stays Pending for manual re-dispatch; no automatic
+        # redrive exists for un-correlated runs (BL-SS-078) - log, and return
+        # the already-created run untouched, never re-raise, never delete it.
         logger.exception(
             "workflow %s: dispatch failed for run %s; run stays Pending", wf.id, run.id
         )

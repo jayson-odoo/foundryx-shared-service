@@ -301,6 +301,10 @@ def move(
     )
     from . import event_service
 
+    # Neither arg supplied (a system/automated move, e.g. a scheduled or
+    # platform-admin-triggered transition with no resolvable native actor)
+    # leaves `event_actor_id` None - an honest "unattributed" event, never a
+    # guessed actor.
     event_actor_id = attributed_actor_id if attributed_actor_id is not None else (
         actor.id if actor is not None else None
     )

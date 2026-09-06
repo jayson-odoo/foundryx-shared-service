@@ -460,6 +460,22 @@ def test_seed_demo_conversations_backfills_events(session_factory):
     db.close()
 
 
+# ── pre-merge follow-up item 4: dev seed is gated to the default tenant ─────
+def test_seed_demo_conversations_refuses_a_non_default_tenant(session_factory):
+    """`seed_demo_conversations` writes fixed literal ids (`chn-demo`,
+    `cnt-001`..`005`) shared verbatim across every call site's dev seed data -
+    a second tenant would collide on those SAME ids. The dormant multi-tenant
+    path must fail LOUDLY (a clear ``ValueError``) instead of half-writing
+    cross-tenant rows or silently resolving the DEFAULT tenant's `chn-demo`
+    channel via an unscoped lookup."""
+    from modules.omnichannel import bootstrap
+
+    db = session_factory()
+    with pytest.raises(ValueError, match="default tenant only"):
+        bootstrap.seed_demo_conversations(db, "some-other-tenant-id")
+    db.close()
+
+
 def test_backfill_tenant_is_batched_not_n_plus_one(session_factory):
     """Review round 1, finding 4: `backfill_tenant` must run a small CONSTANT
     number of SELECTs against `conversation_events`/`conversation_messages`

@@ -498,11 +498,27 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     "Demo WhatsApp" channel so outbound sends hit the adapter's stub, never the
     real Graph API. Idempotent (keys on the fixed contact ids). Called by the
     dev seed scripts only - never in prod bootstrap.
+
+    Pre-merge follow-up (plan 27): the fixed literal ids this function seeds
+    (``chn-demo``, ``cnt-001``..``005``) are shared verbatim across every call
+    site - the dev seed scripts only ever call this with ``DEFAULT_TENANT_ID``.
+    A second tenant would collide on those SAME ids (unique-constraint or
+    silent cross-tenant reads via an unscoped lookup), so this is gated to the
+    default tenant rather than left to half-write cross-tenant rows the first
+    time someone calls it differently.
     """
     from datetime import datetime, timedelta, timezone
 
+    from app.models import DEFAULT_TENANT_ID
+
     from .models import Channel, Contact, ContactChannelIdentity, ConversationMessage, QuickReply, WhatsappTemplate
     from .security import encrypt_credentials
+
+    if tenant_id != DEFAULT_TENANT_ID:
+        raise ValueError(
+            "seed_demo_conversations: dev seed supports the default tenant only "
+            f"(got tenant_id={tenant_id!r})"
+        )
 
     # B8 (round-3 codex triage): scope the idempotency check by tenant_id -
     # `cnt-001` is a fixed literal id shared by every call site's dev seed
@@ -521,7 +537,7 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     if ws is None:
         return
 
-    channel = db.query(Channel).filter(Channel.id == "chn-demo").first()
+    channel = db.query(Channel).filter(Channel.id == "chn-demo", Channel.tenant_id == tenant_id).first()
     if channel is None:
         channel = Channel(
             id="chn-demo",

@@ -507,11 +507,20 @@ def test_run_shortcut_serialized_execution_unresolved_key_is_conflict(session_fa
     assert db.query(WorkflowRun).count() == before
 
 
-# ── round-3 codex triage B4: a dispatch-side failure AFTER the run is
-# committed durable-Pending must never propagate (500 + a client retry
-# duplicating the run) - it stays Pending, logged, run returned ────────────
-def test_run_shortcut_survives_a_dispatch_failure(session_factory, monkeypatch):
+# ── round-3 codex triage B4 (pre-merge follow-up item 1): a dispatch-side
+# failure in the NON-EAGER path happens AFTER the run is committed
+# durable-Pending, so it must never propagate (500 + a client retry
+# duplicating the run) - it stays Pending, logged, run returned. The EAGER
+# path is different: `dispatch_persisted_run` there IS execution (inline,
+# same session, run row not yet durably committed on its own), so an
+# executor crash must propagate - swallowing it would let a caller (e.g.
+# `run_shortcut`) hand back a `runId` for a row whose transaction then rolls
+# back, and tests/dev would silently lose real executor failures ─────────
+def test_run_shortcut_survives_a_dispatch_failure_when_not_eager(session_factory, monkeypatch):
     import app.workflow_engine.serialization as serialization_mod
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "celery_task_always_eager", False)
 
     def _boom(*args, **kwargs):
         raise RuntimeError("broker unavailable")
@@ -528,3 +537,25 @@ def test_run_shortcut_survives_a_dispatch_failure(session_factory, monkeypatch):
     assert run is not None
     assert run.status == RUN_PENDING
     assert db.query(WorkflowRun).filter(WorkflowRun.id == run.id).count() == 1
+
+
+def test_run_shortcut_propagates_an_executor_crash_when_eager(session_factory, monkeypatch):
+    """The default test settings are eager (`settings.celery_task_always_eager
+    = True`, conftest) - the guard around `dispatch_persisted_run` must NOT
+    swallow an exception raised in this mode, since eager dispatch IS
+    execution on this session."""
+    import app.workflow_engine.serialization as serialization_mod
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("executor crashed")
+
+    monkeypatch.setattr(serialization_mod, "dispatch_persisted_run", _boom)
+
+    db = session_factory()
+    admin = _actor(db)
+    wf = _publish_workflow(db, actor=admin, actor_id=admin.id, name="Eager crash")
+    rec = _make_record(db, name="Acme Co")
+    db.commit()
+
+    with pytest.raises(RuntimeError, match="executor crashed"):
+        WorkflowService(db).run_shortcut(DEFAULT_TENANT_ID, wf.id, ENTITY_TYPE, rec, admin)

@@ -561,17 +561,21 @@ class WorkflowService:
             build_shortcut_event,
             create_run_for_event,
         )
+        from app.workflow_engine.serialization import CorrelationKeyUnresolved
 
         ev = build_shortcut_event(self.db, entity_type, scoped_record, tenant_id=tenant_id, actor=actor)
         try:
             run = create_run_for_event(self.db, wf, ev, depth=0)
         except CodeNotAuthorized as exc:
             raise ShortcutCodeNotAuthorized() from exc
-        except RuntimeError as exc:
-            # B2 - an unresolved serialized `execution.correlationKey` raises a
-            # bare RuntimeError from `assign_run_correlation` before any run is
-            # persisted; surface it as a conflict like the manual `run()` path
-            # above does, never an opaque 500.
+        except CorrelationKeyUnresolved as exc:
+            # B2 - an unresolved serialized `execution.correlationKey` raises
+            # the typed `CorrelationKeyUnresolved` from `assign_run_correlation`
+            # before any run is persisted; surface it as a conflict like the
+            # manual `run()` path above does, never an opaque 500. Catching the
+            # typed error (not bare `RuntimeError`) means an unrelated bug in
+            # `create_run_for_event` still propagates as a 500 instead of
+            # being mistaken for a serialization conflict.
             raise ShortcutSerializationConflict(str(exc)) from exc
         if run is None:
             # Defensive - the version raced a concurrent unpublish between the

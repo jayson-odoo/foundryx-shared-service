@@ -212,6 +212,52 @@ def test_run_shortcut_rejects_code_node_without_authorization(client, session_fa
     assert res.status_code == 409
 
 
+# ── pre-merge follow-up item 3: typed correlation error -> fixed 409 text ──
+def test_run_shortcut_serialized_unresolved_key_returns_fixed_message(client, session_factory):
+    """An unresolved `execution.mode="serialized"` correlation key is a 409
+    with a FIXED message - the router no longer echoes the raw exception text
+    (`str(exc)`) to the caller."""
+    cid = _seed_thread(session_factory, name="Serialized shortcut target")
+    db = session_factory()
+    doc = _doc()
+    doc["execution"] = {"mode": "serialized", "correlationKey": "{{ trigger.record.missingField }}"}
+    wf = _publish_shortcut_workflow(db, name="Serialized shortcut", draft=doc)
+    wf_id = wf.id
+    db.close()
+
+    h = _auth(client)
+    res = client.post(f"/omnichannel/contacts/{cid}/shortcuts/{wf_id}", headers=h)
+    assert res.status_code == 409
+    assert res.json()["detail"] == (
+        "This workflow is serialized and its correlation key could not be resolved."
+    )
+
+
+def test_run_shortcut_unrelated_runtime_error_is_not_mistaken_for_a_conflict(
+    client, session_factory, monkeypatch
+):
+    """A bare `RuntimeError` raised anywhere else in the shortcut path must
+    NOT be caught as a serialization conflict - the router narrows its catch
+    to the typed `ShortcutSerializationConflict`, so an unrelated bug still
+    surfaces as an unhandled error (500) rather than a misleading 409."""
+    from modules.omnichannel.services.conversation_service import ConversationService
+
+    cid = _seed_thread(session_factory, name="Unrelated crash target")
+    db = session_factory()
+    wf = _publish_shortcut_workflow(db, name="Crash shortcut")
+    wf_id = wf.id
+    db.close()
+
+    def _boom(self, contact_id, tenant_id, workflow_id, actor):
+        raise RuntimeError("unrelated bug")
+
+    monkeypatch.setattr(ConversationService, "run_shortcut", _boom)
+
+    h = _auth(client)
+    with pytest.raises(RuntimeError, match="unrelated bug"):
+        client.post(f"/omnichannel/contacts/{cid}/shortcuts/{wf_id}", headers=h)
+
+
 # ── AC-IVE-42: tenant isolation ──────────────────────────────────────────────
 def test_shortcut_routes_tenant_isolation(client, session_factory):
     cid = _seed_thread(session_factory, name="Isolated target")

@@ -144,7 +144,9 @@ class MessageService:
         exercise the race anyway) so a concurrent sender blocks until this
         transaction commits, then re-checks against the now-committed state."""
         if self.db.bind is not None and self.db.bind.dialect.name == "postgresql":
-            self.db.query(Contact.id).filter(Contact.id == contact.id).with_for_update().first()
+            self.db.query(Contact.id).filter(
+                Contact.id == contact.id, Contact.tenant_id == contact.tenant_id
+            ).with_for_update().first()
         contact.last_message_at = now
         contact.last_agent_message_at = now
         if event_service.is_first_reply_pending(self.db, contact):
