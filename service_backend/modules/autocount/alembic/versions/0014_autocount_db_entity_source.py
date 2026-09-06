@@ -1,4 +1,4 @@
-"""autocount point a DB company's never-run entity configs at sql_db (0.6.0)
+"""autocount repair a DB company's never-run entity configs: sql_db, GRN deleted (0.6.0)
 
 Prod incident 2026-09-06: ``seed_company_defaults`` seeded the vendor-API
 entity set onto EVERY company on the App Store Update reseed, so a DATABASE
@@ -10,8 +10,10 @@ empty, the operator adds entities); this migration runs
 company to repair what the old seed produced: a DB company's
 ``ac_entity_config`` still at ``autocount_read`` that never ran
 (``last_run_at IS NULL`` and no ``ac_watermark`` row with a
-``last_modified_at``) becomes ``sql_db``; anything with run history is left
-to the operator. Idempotent.
+``last_modified_at``) becomes ``sql_db`` - except ``goods_received_note``,
+which is DELETED together with its ``ac_field_mapping`` rows (GRN has no
+database task; a flipped row would only show a dead Configure control).
+Anything with run history is left to the operator. Idempotent.
 
 Delivered twice on purpose (same as 0013): this revision covers a deploy,
 ``bootstrap.update_tenant`` covers the App Store 0.5.0 -> 0.6.0 update path.

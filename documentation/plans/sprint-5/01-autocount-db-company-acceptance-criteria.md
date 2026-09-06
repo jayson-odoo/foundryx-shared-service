@@ -73,7 +73,9 @@ succeeds (no error surfaced; the operator's `name` label is untouched).
 
 ### AC-01-05 `[BE]` No API-shaped seeds for a DB company
 **Given** a DB company is created
-**Then** NO `ac_entity_config` rows and NO `ac_field_mapping` rows are seeded
+**Then** NO `ac_entity_config` rows and NO `ac_field_mapping` rows are seeded, and on every later
+`seed_company_defaults` call, including the App Store update loop (`update_tenant`), still nothing
+is seeded onto it
 **And** an API company still seeds exactly `SEEDED_ENTITIES` as before (regression pin).
 
 ### AC-01-06 `[BE]` Activity log

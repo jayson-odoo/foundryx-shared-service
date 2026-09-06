@@ -1092,10 +1092,12 @@ class CompanyService:
         # company API-sourced rows, and the entities list hid "Change source"
         # for it - no UI way out). ``update_tenant`` loops EVERY company, so
         # this guard is what keeps every later upgrade from seeding onto a DB
-        # company. Tenant-scoped resolution; a company whose connection no
-        # longer resolves reads as 'api' (AC-01-07) and is seeded as before.
+        # company. Tenant-scoped resolution; a company id that does not
+        # resolve in this tenant seeds nothing (never seed onto a guess); a
+        # company whose CONNECTION no longer resolves reads as 'api'
+        # (AC-01-07) and is seeded as before.
         company = self.companies.get(tenant_id, company_id)
-        if company is not None and self.source_kind_for(tenant_id, company) == SOURCE_KIND_DB:
+        if company is None or self.source_kind_for(tenant_id, company) == SOURCE_KIND_DB:
             return
         for entity_type in SEEDED_ENTITIES:
             defaults = ENTITY_DEFAULTS[entity_type]
