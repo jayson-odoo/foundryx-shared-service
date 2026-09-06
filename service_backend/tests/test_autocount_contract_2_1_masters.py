@@ -76,14 +76,16 @@ def test_customer_sink_fields_do_not_carry_credit_limit():
 
 
 def test_customer_sink_payload_has_no_credit_limit_key_even_when_set():
+    """``credit_limit`` is no longer a model attribute (review round 3): a
+    stale ``CreditLimit -> credit_limit`` mapping row can only land in
+    ``extras``, and extras never cross the wire."""
     customer = CanonicalCustomer(
         source_ref="AED_VSOFT:3", source_doc_no="300-O002", code="300-O002",
         name="OW PIN BOON", phone_number="012-3456789", tax_id="TIN1",
-        credit_limit=Decimal("25000"), is_active=True,
+        is_active=True, extras={"credit_limit": Decimal("25000")},
     )
-    # The attribute itself may stay (a mapping row can still populate it for
-    # staging/diffing); it just must never reach Sorento.
-    assert customer.credit_limit == Decimal("25000")
+    assert not hasattr(customer, "credit_limit")
+    assert customer.extras["credit_limit"] == Decimal("25000")
     payload = customer.sink_payload()
     assert "credit_limit" not in payload
     assert payload["phone_number"] == "012-3456789"

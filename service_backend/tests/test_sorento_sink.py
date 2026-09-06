@@ -11,7 +11,6 @@ The HTTP boundary is faked with ``httpx.MockTransport`` - the sink builds its ow
 from __future__ import annotations
 
 import json
-from decimal import Decimal
 from typing import Any, Dict, List
 
 import httpx
@@ -95,7 +94,6 @@ def test_customer_projection_carries_its_extra_fields():
                        entity_type="customer", transport=rec.transport())
     customer = _customer()
     customer.phone_number = "012-3456789"
-    customer.credit_limit = Decimal("25000")
     sink.write_batch([customer], request_id="t")
 
     sent = json.loads(rec.requests[0].content)["records"][0]

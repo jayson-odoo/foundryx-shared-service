@@ -4393,22 +4393,30 @@ def test_a_formula_output_is_coerced_to_the_target_type():
 
 
 def test_a_formula_decimal_output_reaches_a_decimal_field():
-    """A number-producing formula lands as a Decimal on the customer credit
-    limit (coerce_output routes it through t_decimal)."""
+    """A number-producing formula lands as a Decimal on a decimal canonical
+    field (coerce_output routes it through t_decimal). The product's
+    ``list_price`` is the decimal master field that still exists - the
+    customer's ``credit_limit`` left the model under Sorento contract 2.1."""
     from decimal import Decimal
 
+    from modules.autocount.canonical.masters import ENTITY_PRODUCT, CanonicalProduct
+
     rows = [
-        _MappingRow("AccNo", "code", "string", SCOPE_HEADER, is_required=True),
-        _MappingRow("CompanyName", "name", "string", SCOPE_HEADER, is_required=True),
+        _MappingRow("Code", "code", "string", SCOPE_HEADER, is_required=True),
+        _MappingRow("Description", "name", "string", SCOPE_HEADER, is_required=True),
         _MappingRow(
-            "CreditLimit", "credit_limit", "string", SCOPE_HEADER,
+            "Price", "list_price", "string", SCOPE_HEADER,
             formula="number(value)",
         ),
     ]
-    engine = MappingEngine(rows, entity_type=ENTITY_CUSTOMER, database_name="AED_VSOFT")
-    mapped = engine.map_document(_customer(CreditLimit="30000.0"))
-    assert mapped.ok
-    assert mapped.record.credit_limit == Decimal("30000")
+    engine = MappingEngine(rows, entity_type=ENTITY_PRODUCT, database_name="AED_VSOFT")
+    mapped = engine.map_document(
+        {"Code": "P-001", "Description": "Widget", "Price": "30000.0", "Data": [{"AutoKey": 7}]}
+    )
+    assert mapped.ok, mapped.errors
+    assert isinstance(mapped.record, CanonicalProduct)
+    assert isinstance(mapped.record.list_price, Decimal)
+    assert mapped.record.list_price == Decimal("30000")
 
 
 def test_a_runtime_formula_error_names_the_field():
