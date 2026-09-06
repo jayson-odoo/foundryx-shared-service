@@ -175,13 +175,17 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
   // doesn't hold - `useTeams` is only fetched for a `teams.read` holder;
   // `useMyTeams` (no `teams.read` required) always resolves so ANY caller
   // with `conversations.assign` can still assign to a team they belong to
-  // (review round 1, finding 4/5/6). Union + dedupe by id.
+  // (review round 1, finding 4/5/6). Union + dedupe by id. Review round 2
+  // N1: only ACTIVE teams are offered - `PATCH {assignedTeamId}` 422s on an
+  // inactive team (`GET /teams` lists inactive teams and `/teams/mine` has
+  // no is_active filter, so both sources are filtered here).
   const canReadAllTeams = useCan().can('teams.read');
   const { teams: allTeams } = useTeams({ enabled: canReadAllTeams });
   const { teams: myTeams } = useMyTeams();
   const teams = useMemo(() => {
-    const byId = new Map(allTeams.map((t) => [t.id, { id: t.id, name: t.name }]));
-    for (const t of myTeams) {
+    const byId = new Map<string, { id: string; name: string }>();
+    for (const t of [...allTeams, ...myTeams]) {
+      if (!t.isActive) continue;
       if (!byId.has(t.id)) byId.set(t.id, { id: t.id, name: t.name });
     }
     return Array.from(byId.values());

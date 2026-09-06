@@ -39,6 +39,22 @@ vi.mock('@/hooks/use-teams', () => ({
   }),
 }));
 
+// Review round 2, N1: `/teams/mine` carries inactive teams too (no
+// is_active filter server-side) - the union must drop them, or a click
+// 422s on the PATCH.
+vi.mock('@/hooks/use-my-teams', () => ({
+  useMyTeams: () => ({
+    teams: [
+      { id: 'team-1', name: 'Support', isActive: true, memberCount: 0, members: [] },
+      { id: 'team-mine-2', name: 'Retention', isActive: true, memberCount: 1, members: [] },
+      { id: 'team-old', name: 'Legacy Desk', isActive: false, memberCount: 1, members: [] },
+    ],
+    isLoading: false,
+    error: null,
+    reload: vi.fn(),
+  }),
+}));
+
 const toastError = vi.fn();
 vi.mock('@/lib/toast', () => ({
   toast: { success: vi.fn(), error: (...args: unknown[]) => toastError(...args), info: vi.fn(), warning: vi.fn() },
@@ -72,6 +88,23 @@ describe('ConversationDrawer - Teams group (plan 28)', () => {
     await waitFor(() =>
       expect(patchContactMock).toHaveBeenCalledWith('cnt-001', { assignedTeamId: 'team-1' }),
     );
+  });
+
+  it('N1: unions my teams with all teams, deduped, and never offers an INACTIVE team', async () => {
+    const user = userEvent.setup();
+    render(<ConversationDrawer contactId="cnt-001" />);
+
+    await waitFor(() => expect(screen.getByTestId('assign-trigger')).toBeInTheDocument());
+    await user.click(screen.getByTestId('assign-trigger'));
+    expect(await screen.findByText('Teams')).toBeInTheDocument();
+
+    // team-1 comes from BOTH sources - rendered once.
+    expect(screen.getAllByTestId('assign-team-team-1')).toHaveLength(1);
+    // my-teams-only active team is offered.
+    expect(screen.getByTestId('assign-team-team-mine-2')).toHaveTextContent('Retention');
+    // inactive team from /teams/mine is NOT offered.
+    expect(screen.queryByTestId('assign-team-team-old')).not.toBeInTheDocument();
+    expect(screen.queryByText('Legacy Desk')).not.toBeInTheDocument();
   });
 
   it('reverts (no state change) and toasts the server message on a failed assign', async () => {

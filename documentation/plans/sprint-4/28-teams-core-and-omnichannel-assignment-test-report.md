@@ -213,3 +213,58 @@ Legend: PASS / FAIL / DEFERRED. "E2E n" = screenshot `n` in
 - **Multi-tab WebSocket reconciliation** of `contact.updated` for a team assignment was not re-verified with a second concurrent browser tab. The single-tab path was verified end to end (row + drawer header updated off the one PATCH response, no refresh), and the publish path is covered by the existing pipeline, but the cross-session push itself was not independently observed this run.
 - **The uncommitted fix round.** Everything in this report describes `7814fcf`. The 40 modified files in the working tree at the time of writing (team service/repository/schemas, the deferred-action handlers, the rail, `use-teams-list-config.tsx`, `use-team-actions.tsx`, the inbox view service) are **not** covered here and need their own pass.
 - **Team delete as a deferred action.** At `7814fcf` the delete is the disclosed plain-confirm `AlertDialog` carve-out, which is what E2E 22 records. `app/deferred_actions/handlers.py`, `use-team-actions.tsx` and `lib/deferred-verb.ts` are modified in the uncommitted fix round, so the deferred-action variant is unverified.
+
+## 7. Alembic up/down/up transcript (review round 1 finding 12 / round 2)
+
+Real run on the lane DB (`foundryx_service_s28`) by the round-2 coder, 2026-09-06, from
+`.claude/worktrees/s28/service_backend` with
+`DATABASE_URL=postgresql://foundryx:foundryx@localhost:5432/foundryx_service_s28` and
+`PYTHONPATH=.` exported. Core = `alembic` CLI (`alembic/env.py` reads `settings.database_url`);
+module = the same `alembic.command` calls `app/module_platform/migrations.py::run_module_migrations`
+issues, driven from a small script (`/tmp/s28_module_mig.py`) that builds the identical `Config`
+(`script_location=modules/omnichannel/alembic`, version table
+`app_omnichannel.alembic_version_omnichannel`, `target_metadata=_module_metadata("omnichannel")`)
+so `downgrade` can be exercised (the loader only ever runs `upgrade head`/`stamp`). Order: module
+down -> core down -> core up -> module up (the module column/table hold plain string ids, no
+cross-schema FK, so either order works; this one mirrors a real rollback). The `:8007` backend was
+restarted afterwards (PID 64904 -> 24933, cwd-verified) because the cycle drops and recreates the
+`teams`/`team_members`/`team_assignment_settings` tables and the `contacts.assigned_team_id`
+column (existing rows in those are lost - expected for a down/up on a lane DB).
+
+Migrations under test: core `teams_core_s428` (`alembic/versions/teams_core_s428_teams_core.py`,
+down_revision `b7c1d2e3f4a5`) and module `0011_omni_team_assignment`
+(`modules/omnichannel/alembic/versions/0011_omni_team_assignment.py`, down_revision
+`0010_omni_contacts_module`). Both were head before and after.
+
+```text
+$ alembic current (core)
+teams_core_s428 (head)
+
+$ python /tmp/s28_module_mig.py current (omnichannel, version table app_omnichannel.alembic_version_omnichannel)
+0011_omni_team_assignment (head)
+
+$ psql schema check (before)
+teams|team_members|app_omnichannel.team_assignment_settings|1
+
+$ python /tmp/s28_module_mig.py downgrade 0010_omni_contacts_module
+0010_omni_contacts_module
+
+$ alembic downgrade b7c1d2e3f4a5 (core)
+INFO  [alembic.runtime.migration] Running downgrade teams_core_s428 -> b7c1d2e3f4a5, Teams (core) - plan 28 S1, roadmap A8 D-A8-1.
+
+$ psql schema check (after down)
+<absent>|<absent>|<absent>|0
+
+$ alembic upgrade head (core)
+INFO  [alembic.runtime.migration] Running upgrade b7c1d2e3f4a5 -> teams_core_s428, Teams (core) - plan 28 S1, roadmap A8 D-A8-1.
+
+$ python /tmp/s28_module_mig.py upgrade head
+0011_omni_team_assignment (head)
+
+$ psql schema check (after up)
+teams|team_members|app_omnichannel.team_assignment_settings|1
+```
+
+Schema-check columns: `teams | team_members | team_assignment_settings | contacts.assigned_team_id
+column count`. `<absent>`/`0` after the downgrade and all four back after the upgrade is the
+pass condition. Result: **PASS** (cycle clean, no residue, both version tables back at head).

@@ -230,9 +230,16 @@ IDs: `AC-TEM-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   a user without `teams.read` sees it in none of the three surfaces.
 - **AC-TEM-42 [FE]** Given a user with `teams.read` but not `teams.manage`, then the list and form
   render read-only (no Add, no row actions, no Save) via `useCan`, and a delete blocked by a
-  reference guard surfaces the per-source counts in the confirmation dialog with no destructive call
-  fired. No instructional or hint copy appears on any Teams surface, and no tenant-facing string
+  reference guard surfaces the per-source counts as the FAILED deferred-action toast's message.
+  No instructional or hint copy appears on any Teams surface, and no tenant-facing string
   says "Dreamz".
+  - **Amended 2026-09-06 (review round 1, finding 3; round 2 N2):** team delete is a deferred
+    action (`teams.delete`, destructive grace window), not a confirmation dialog. The destructive
+    call fires at COMMIT (end of the window, or "run now"); a reference-guard hit (`TeamInUse`)
+    lands as a `failed` pending-action row whose `error_text` carries the per-source counts
+    ("This team is still assigned to 3 contacts and cannot be deleted."), surfaced by the shared
+    deferred toast's `onFailed`. Nothing is deleted on a guard hit, and Cancel inside the window
+    fires no call at all.
 - **AC-TEM-43 [FE]** Given every Teams surface, then it is verified at ~375px AND ~1280px: the list
   scrolls without horizontal overflow, the form fields stack, and the MultiSelect popover stays
   inside the viewport at both widths.
@@ -241,9 +248,14 @@ IDs: `AC-TEM-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
 
 - **AC-TEM-44 [FE]** Given the plan-27 inbox view rail at >= 1024px, then it gains a **Teams**
   section listing the caller's teams (from `GET /teams/mine`) plus an **All teams** entry for holders
-  of `conversations.assign`; each team entry has a nested **Unassigned** entry; selecting one sets
+  of `teams.read`; each team entry has a nested **Unassigned** entry; selecting one sets
   `?team=<id>` (plus `&assignee=unassigned`) in the URL so a reload restores it. Below 1024px the
   same entries appear inside the plan-27 View `SearchSelect` - no new layout is introduced.
+  - **Amended 2026-09-06 (review round 1, finding 4/5/6; round 2 N3):** "All teams" was originally
+    pinned to `conversations.assign`, but its data source `GET /teams` is gated `teams.read`
+    server-side, so the group is gated on `teams.read` (never offer a control that will 403).
+    `conversations.assign` still gates the assign WRITE (`PATCH {assignedTeamId}`, the drawer's
+    Teams group), and "My teams" (`GET /teams/mine`, authenticated-only) needs neither.
 - **AC-TEM-45 [FE]** Given the conversation drawer assignee dropdown, then it gains a **Teams** group
   under the existing member list; picking a team sends `assignedTeamId` and the header then shows the
   team name plus the resolved member, or the team name plus "Unassigned" when no member was eligible.

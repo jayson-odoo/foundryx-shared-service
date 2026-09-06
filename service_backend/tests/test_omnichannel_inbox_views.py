@@ -752,6 +752,23 @@ def test_inbox_view_team_ids_saved_validated_and_expanded(client, session_factor
     )
     assert bad.status_code == 422
 
+    # Review round 2, N6: a REAL team id from ANOTHER tenant is rejected the
+    # same way (tenant-scoped `team.resolve@1`), and nothing is written.
+    h_other = _other_tenant_auth(client, session_factory, slug="other-ive-teamids")
+    foreign_team = client.post(
+        "/teams", headers=h_other, json={"name": "Foreign Team", "members": []}
+    ).json()
+    assert "id" in foreign_team, foreign_team
+    before = len(client.get(f"{_base(ws)}/inbox-views", headers=h).json())
+    foreign = client.post(
+        f"{_base(ws)}/inbox-views",
+        headers=h,
+        json={"name": "Foreign Team View", "isShared": False, "filter": {"teamIds": [foreign_team["id"]]}},
+    )
+    assert foreign.status_code == 422
+    assert "teams" in foreign.json()["detail"]["fieldErrors"]["filter"]
+    assert len(client.get(f"{_base(ws)}/inbox-views", headers=h).json()) == before
+
     view = client.post(
         f"{_base(ws)}/inbox-views",
         headers=h,

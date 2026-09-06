@@ -617,7 +617,15 @@ def test_team_settings_crud_and_gates(client, session_factory):
     reader = _grant_only(
         client, session_factory, "reader@foundryx.io", keys=["conversations.read"]
     )
-    assert client.get(f"/omnichannel/workspaces/{ws}/team-settings", headers=reader).status_code == 200
+    reader_res = client.get(f"/omnichannel/workspaces/{ws}/team-settings", headers=reader)
+    assert reader_res.status_code == 200
+    # Review round 2, N7: the reader's BODY carries the team row (not just a
+    # 200 with an empty list) - `least_open` as configured above.
+    reader_rows = {r["teamId"]: r for r in reader_res.json()}
+    assert team["id"] in reader_rows
+    assert reader_rows[team["id"]]["teamName"] == "Settings Team"
+    assert reader_rows[team["id"]]["strategy"] == "least_open"
+    assert reader_rows[team["id"]]["isConfigured"] is True
     res = client.put(
         f"/omnichannel/workspaces/{ws}/team-settings/{team['id']}",
         headers=reader,

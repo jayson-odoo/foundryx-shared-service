@@ -101,7 +101,12 @@ def list_settings_for_display(db: Session, tenant_id: str, workspace_id: str) ->
     a caller holding only `conversations.assign` (this route's OWN gate)
     couldn't populate the tab. Returns
     `[{team_id, team_name, strategy, last_assigned_user_id, updated_at,
-    is_configured}]`, `updated_at` is `None` for a never-configured team."""
+    is_configured}]`, `updated_at` is `None` for a never-configured team.
+
+    A DEACTIVATED team's configured row is NOT deleted - it persists in
+    `team_assignment_settings` (strategy + round-robin cursor survive a
+    reactivation) but is hidden from the tab while the team is inactive
+    (review round 2, N8)."""
     teams = team_directory.list_active(db, tenant_id)
     by_team = {
         row.team_id: row
