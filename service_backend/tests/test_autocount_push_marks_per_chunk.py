@@ -310,3 +310,182 @@ def test_the_run_item_exposes_requests_requests_failed_and_first_failure():
 
     fields = set(SyncRunItem.model_fields)
     assert {"requests", "requestsFailed", "firstFailure"} <= fields, sorted(fields)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Transient 5xx retry (root cause: Sorento's nginx answers 502 on ~1 in 25
+#  requests; every failed prod run carries "Sorento returned HTTP 502 ... nginx")
+# ═══════════════════════════════════════════════════════════════════════════
+
+NGINX_502 = "<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center><hr><center>nginx</center></body></html>"
+
+
+@pytest.fixture
+def no_sleep(monkeypatch) -> List[float]:
+    slept: List[float] = []
+    monkeypatch.setattr("modules.autocount.sinks_sorento.time.sleep", slept.append)
+    return slept
+
+
+def _sequenced(script: Dict[int, object]):
+    """A responder keyed by POST number: an int is an HTTP status (5xx/4xx
+    with an nginx-style body), ``"ok"`` (or an unlisted call) answers created."""
+    calls = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        step = script.get(calls["n"], "ok")
+        if isinstance(step, int):
+            return httpx.Response(step, text=NGINX_502.replace("502 Bad Gateway", f"{step} Gateway"))
+        return _ok(request)
+
+    return responder, calls
+
+
+def test_retry_attempts_setting_defaults_to_3(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.delenv("AUTOCOUNT_SINK_RETRY_ATTEMPTS", raising=False)
+    assert Settings().autocount_sink_retry_attempts == 3
+
+
+# ── (f) a 502 then 200 on retry is a delivered chunk ────────────────────────
+
+
+def test_a_502_answered_200_on_retry_marks_the_chunk_pushed(session_factory, transports, sorento_sink, no_sleep):
+    db = session_factory()
+    company = _rig(db, transports)
+    job = _done_job(db, company)
+    _stage(db, company, job, REFS)
+
+    # POST 1 = chunk 1 ok; POST 2 = chunk 2 -> 502; POST 3 = chunk 2 retry ok; POST 4 = chunk 3 ok.
+    responder, calls = _sequenced({2: 502})
+    sorento_sink.responder = responder
+    summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, job_id=job.id)
+
+    assert set(_statuses(session_factory, company.id).values()) == {STAGED_PUSHED}
+    assert summary["pushed"] == 7
+    assert summary["requestsFailed"] == 0
+    assert summary.get("error") is None, summary
+    assert summary["requests"] >= 3, summary
+    assert calls["n"] == 4, "one retry: four POSTs for three chunks"
+    # Every chunk was offered exactly once per attempt - the retried chunk
+    # carried the SAME rows both times.
+    offered = _offered(sorento_sink.requests)
+    assert offered[1] == offered[2] == set(REFS[3:6])
+    db.close()
+
+
+# ── (g) the attempt cap fails ONLY that chunk; later chunks still go out ────
+
+
+def test_a_502_at_the_attempt_cap_fails_only_that_chunk_and_the_push_continues(
+    session_factory, transports, sorento_sink, no_sleep, monkeypatch
+):
+    monkeypatch.setattr(settings, "autocount_sink_retry_attempts", 3, raising=False)
+    db = session_factory()
+    company = _rig(db, transports)
+    job = _done_job(db, company)
+    _stage(db, company, job, REFS)
+
+    # chunk 1 ok (POST 1); chunk 2 -> 502 x3 (POSTs 2-4); chunk 3 ok (POST 5).
+    responder, calls = _sequenced({2: 502, 3: 502, 4: 502})
+    sorento_sink.responder = responder
+    summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, job_id=job.id)
+
+    statuses = _statuses(session_factory, company.id)
+    assert [statuses[r] for r in REFS[:3]] == [STAGED_PUSHED] * 3, statuses
+    assert [statuses[r] for r in REFS[3:6]] == [STAGED] * 3, statuses
+    assert statuses[REFS[6]] == STAGED_PUSHED, "a later chunk is still attempted after a transient failure"
+    assert summary["pushed"] == 4
+    assert summary["requestsFailed"] == 1
+    assert "HTTP 502" in str(summary["firstFailure"])
+    assert summary["error"], "the failed chunk still surfaces as the run error"
+    assert calls["n"] == 5, "3 attempts on chunk 2 + chunk 1 + chunk 3"
+    db.close()
+
+
+def test_a_4xx_still_ends_the_push_without_retry(session_factory, transports, sorento_sink, no_sleep):
+    """A 4xx is not transient: one attempt, that chunk fails, and the push
+    ends there (chunk 3 is not attempted) - the pre-fix posture for anything
+    that is not a 5xx blip."""
+    db = session_factory()
+    company = _rig(db, transports)
+    job = _done_job(db, company)
+    _stage(db, company, job, REFS)
+
+    responder, calls = _sequenced({2: 400})
+    sorento_sink.responder = responder
+    summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, job_id=job.id)
+
+    statuses = _statuses(session_factory, company.id)
+    assert [statuses[r] for r in REFS[:3]] == [STAGED_PUSHED] * 3, statuses
+    assert [statuses[r] for r in REFS[3:]] == [STAGED] * 4, statuses
+    assert calls["n"] == 2, "no retry on a 4xx and no further chunk"
+    assert summary["requestsFailed"] == 1
+    assert "HTTP 400" in str(summary["firstFailure"])
+    assert no_sleep == []
+    db.close()
+
+
+# ── (h) retry only 502/503/504; a 500 is one attempt; backoff bounded ───────
+
+
+@pytest.mark.parametrize("status", [502, 503, 504])
+def test_transient_statuses_are_retried(session_factory, transports, sorento_sink, no_sleep, status):
+    db = session_factory()
+    company = _rig(db, transports)
+    job = _done_job(db, company)
+    _stage(db, company, job, REFS[:3])  # one chunk
+
+    responder, calls = _sequenced({1: status})
+    sorento_sink.responder = responder
+    summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, job_id=job.id)
+
+    assert calls["n"] == 2, f"HTTP {status} must be retried once"
+    assert summary["pushed"] == 3 and summary["requestsFailed"] == 0
+    db.close()
+
+
+def test_a_500_is_not_retried(session_factory, transports, sorento_sink, no_sleep):
+    db = session_factory()
+    company = _rig(db, transports)
+    job = _done_job(db, company)
+    _stage(db, company, job, REFS)
+
+    responder, calls = _sequenced({2: 500})
+    sorento_sink.responder = responder
+    summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, job_id=job.id)
+
+    statuses = _statuses(session_factory, company.id)
+    assert [statuses[r] for r in REFS[:3]] == [STAGED_PUSHED] * 3
+    assert [statuses[r] for r in REFS[3:6]] == [STAGED] * 3
+    assert summary["requestsFailed"] == 1
+    assert "HTTP 500" in str(summary["firstFailure"])
+    # Chunk 2 was attempted exactly once: POSTs = chunk 1 + chunk 2 (+ chunk 3
+    # if the loop continues past a non-transient chunk fault - either way no
+    # second attempt on chunk 2).
+    assert offered_count(sorento_sink.requests, set(REFS[3:6])) == 1
+    assert no_sleep == []
+    db.close()
+
+
+def offered_count(requests: List[httpx.Request], refs: Set[str]) -> int:
+    return sum(1 for chunk in _offered(requests) if chunk == refs)
+
+
+def test_backoff_is_bounded_across_the_attempt_cap(session_factory, transports, sorento_sink, no_sleep, monkeypatch):
+    monkeypatch.setattr(settings, "autocount_sink_retry_attempts", 3, raising=False)
+    db = session_factory()
+    company = _rig(db, transports)
+    job = _done_job(db, company)
+    _stage(db, company, job, REFS[:3])
+
+    responder, calls = _sequenced({1: 502, 2: 502, 3: 502})
+    sorento_sink.responder = responder
+    SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, job_id=job.id)
+
+    assert calls["n"] == 3
+    assert no_sleep, "a retry must back off, never hammer nginx immediately"
+    assert sum(no_sleep) <= 10.0, f"backoff for three attempts must stay bounded: {no_sleep}"
+    db.close()
