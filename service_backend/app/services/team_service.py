@@ -51,6 +51,18 @@ def _clean_description(description: Optional[str]) -> Optional[str]:
     return cleaned or None
 
 
+def _is_name_conflict(exc: IntegrityError) -> bool:
+    """Only the case-insensitive-name unique index (`ix_teams_tenant_name_lower`
+    on Postgres; `_validate_name`'s pre-check is what actually enforces it on
+    the sqlite test path, which carries no such index) means "name already
+    exists". A `team_members` constraint hit (`uq_team_members_team_user`) is
+    a DIFFERENT failure - genuine duplicates within the payload are already
+    422'd by `_validate_members` before any DB call, so this is a real,
+    unexpected write conflict and must never be mislabeled as a name clash."""
+    message = str(getattr(exc, "orig", exc) or exc).lower()
+    return "team_members" not in message
+
+
 class TeamService:
     def __init__(self, db: Session):
         self.db = db
@@ -154,10 +166,33 @@ class TeamService:
         return resolved
 
     def _apply_members(self, team: Team, resolved: List[dict]) -> None:
-        team.members = [
-            TeamMember(tenant_id=team.tenant_id, user_id=m["user_id"], role=m["role"])
-            for m in resolved
-        ]
+        """Diff the member set in place - remove missing, add new, update role
+        changes for retained rows - rather than blind delete-all + insert.
+
+        A blind `team.members = [...]` replace marks every EXISTING row as an
+        orphan (deleted) and appends brand-new `TeamMember` rows (fresh ids)
+        for the WHOLE incoming set. SQLAlchemy's unit-of-work has no ordering
+        dependency between those deletes and inserts (no FK relates them), so
+        it can emit the INSERT for a retained `(team_id, user_id)` pair before
+        the DELETE of its old row and trip `uq_team_members_team_user` - which
+        the old blanket `except IntegrityError` then mis-reported as a NAME
+        collision. Diffing means a retained pair is never deleted at all.
+        """
+        incoming = {m["user_id"]: m["role"] for m in resolved}
+        existing = {m.user_id: m for m in team.members}
+
+        for user_id, member in list(existing.items()):
+            if user_id not in incoming:
+                team.members.remove(member)
+
+        for user_id, role in incoming.items():
+            member = existing.get(user_id)
+            if member is None:
+                team.members.append(
+                    TeamMember(tenant_id=team.tenant_id, user_id=user_id, role=role)
+                )
+            elif member.role != role:
+                member.role = role
 
     # ---- writes ----
 
@@ -183,8 +218,10 @@ class TeamService:
         self._apply_members(team, resolved_members)
         try:
             self.teams.add(team)
-        except IntegrityError:
+        except IntegrityError as exc:
             self.teams.rollback()
+            if not _is_name_conflict(exc):
+                raise
             raise TeamValidationError(
                 {"name": "A team with this name already exists."}
             )
@@ -215,8 +252,10 @@ class TeamService:
             self._apply_members(team, resolved_members)
         try:
             return self.teams.save(team)
-        except IntegrityError:
+        except IntegrityError as exc:
             self.teams.rollback()
+            if not _is_name_conflict(exc):
+                raise
             raise TeamValidationError(
                 {"name": "A team with this name already exists."}
             )

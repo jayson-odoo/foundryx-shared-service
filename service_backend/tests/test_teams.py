@@ -231,6 +231,88 @@ def test_update_replaces_membership_set_atomically_and_rolls_back_on_bad_member(
     assert unchanged["members"][0]["userId"] == u2
 
 
+def test_patch_diffs_members_retain_plus_role_change_plus_add_plus_remove(
+    client, session_factory
+):
+    """The bug repro (S5 wire coder): a PATCH that RETAINS an existing
+    `(team_id, user_id)` pair used to blind delete-all + insert the whole
+    membership set, tripping `uq_team_members_team_user` on the retained
+    pair and mis-reporting it as a 422 name collision. One PATCH that keeps
+    one member (role changed), adds a new one, and drops a third must 200
+    with exactly the final set."""
+    h = _auth(client)
+    keep = _user(session_factory, "keep@foundryx.io")
+    drop = _user(session_factory, "drop@foundryx.io")
+    add = _user(session_factory, "add@foundryx.io")
+
+    team = client.post(
+        "/teams",
+        headers=h,
+        json={
+            "name": "DiffTeam",
+            "members": [
+                {"userId": keep, "role": "member"},
+                {"userId": drop, "role": "member"},
+            ],
+        },
+    ).json()
+
+    updated = client.patch(
+        f"/teams/{team['id']}",
+        headers=h,
+        json={
+            "members": [
+                {"userId": keep, "role": "lead"},
+                {"userId": add, "role": "member"},
+            ]
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    body = updated.json()
+    assert body["memberCount"] == 2
+    by_user = {m["userId"]: m["role"] for m in body["members"]}
+    assert by_user == {keep: "lead", add: "member"}
+    assert drop not in by_user
+
+    # Persisted, not just returned - re-fetch confirms.
+    fetched = client.get(f"/teams/{team['id']}", headers=h).json()
+    assert {m["userId"]: m["role"] for m in fetched["members"]} == {keep: "lead", add: "member"}
+
+
+def test_patch_duplicate_member_in_payload_still_rejects_with_members_field_error(
+    client, session_factory
+):
+    h = _auth(client)
+    uid = _user(session_factory, "patchdup@foundryx.io")
+    team = client.post(
+        "/teams", headers=h, json={"name": "PatchDupTeam", "members": [{"userId": uid, "role": "member"}]}
+    ).json()
+
+    res = client.patch(
+        f"/teams/{team['id']}",
+        headers=h,
+        json={
+            "members": [
+                {"userId": uid, "role": "member"},
+                {"userId": uid, "role": "lead"},
+            ]
+        },
+    )
+    assert res.status_code == 422
+    assert "members" in res.json()["detail"]["fieldErrors"]
+
+
+def test_patch_name_collision_still_reports_name_field_error(client, session_factory):
+    h = _auth(client)
+    _user(session_factory, "namecollision@foundryx.io")
+    client.post("/teams", headers=h, json={"name": "TakenName", "members": []})
+    team = client.post("/teams", headers=h, json={"name": "RenameMe", "members": []}).json()
+
+    res = client.patch(f"/teams/{team['id']}", headers=h, json={"name": "takenname"})
+    assert res.status_code == 422
+    assert "name" in res.json()["detail"]["fieldErrors"]
+
+
 def test_is_active_false_still_readable_and_editable(client):
     h = _auth(client)
     team = client.post(
