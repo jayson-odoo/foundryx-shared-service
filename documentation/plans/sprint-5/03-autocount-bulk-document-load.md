@@ -356,6 +356,34 @@
   whole batch. Low priority, out of this round's scope (the concurrent path already parallelises
   the handshakes rather than serialising them, which is most of the win) - tracked for later.
 
+**Prod fix (fix/push-marks-per-chunk, 2026-09-07) - supersedes round 6's S5b "unchanged
+all-or-nothing" ruling:**
+- **The ALL-OR-NOTHING contract that round 6 deliberately kept is the prod bug.** Sorento's
+  `api_call_log` over 6h of the sales_order task: ~657 requests x 200 = ~131k offers for 23k
+  distinct SOs (~5 offers per document) - a lone 502 from Sorento's OWN nginx (upstream
+  momentarily unreachable, never reaching their app) on roughly 1 in 25 chunk POSTs discarded
+  every OTHER chunk's already-delivered verdict too, so the next run re-offered rows Sorento had
+  already accepted `created`/`updated`. `write_batch`/`delete_batch` now take an `on_chunk`
+  callback invoked once per chunk as it resolves; `SyncService._auto_push_upserts`/`_auto_push_
+  deletes` mark + COMMIT that chunk immediately, so a LATER chunk's fault can never undo an
+  EARLIER chunk's delivery. A TRANSIENT 5xx (502/503/504 only, `settings.
+  autocount_sink_retry_attempts`, default 3, bounded backoff via `time.sleep`) is retried in
+  place; a chunk that still fails after exhausting its attempts fails ONLY that chunk and the
+  loop continues to later chunks - a plain 500 (still a guard-rail error until the companion
+  Sorento fix lands), a 4xx, an anchor error or a bare transport fault is NOT retried and stops
+  the whole push immediately, unchanged from round 6's posture for those cases. The summary (and
+  `ac_sync_run.requests`/`requests_failed`/`first_failure`, migration `0015`) now accounts for
+  how many chunk POSTs a run made and which one failed first - the Runs list previously showed
+  `pushed_count 0` / `error NULL` with no way to tell a chunk-level fault had even happened.
+  `ac_staged_record.last_offered_at` (same migration) + `list_pending_for_entity`'s `last_offered_at`
+  NULLS-FIRST ordering guard against a permanently-`retryable` head of the oldest-first queue
+  starving fresh rows behind it forever, now that a partial-batch outcome is common rather than
+  rare. **Merge order: fix/job-lease-orphan-sweep (adds its OWN `write_batch(on_chunk=)` for a
+  liveness heartbeat, in review, not yet merged at the time of this fix) must merge FIRST** - the
+  two `on_chunk` shapes need folding into one signature (this lane's carries `(chunk_records,
+  chunk_results_or_None, error_or_None)`; job-lease's is a zero-arg heartbeat tick) with the
+  heartbeat folded into the richer callback, not the other way round.
+
 ### 2.2 Run loop, change-only staging, watermark (`sync.py`)
 
 `run_autocount_sync`, sql_db branch with a watermark column:
@@ -610,3 +638,11 @@ parallel at the end. Live load = AC-03-22/23 on the real company and `ac_sim`.
 - BL-SS-096 `SorentoSink.write_batch` opens a fresh `httpx.Client` per chunk - a TLS handshake
   per chunk instead of one connection-pooled client reused across the whole batch (review round
   7 polish; see the round 7 amendment above).
+- BL-SS-129 `test_auto_push_one_failing_chunk_keeps_the_other_chunks_verdicts_at_any_concurrency`
+  (round6b) flakes ~30-40% under concurrency 3 - the shared fixture's 30 staged rows share one
+  `created_at` (SQLite second resolution), so the "second chunk" assumption depends on an
+  effectively-random UUID tie-break. Reported, not fixed (tests are the tester's) - see the fix
+  above's amendment.
+- BL-SS-130 Fixed by this lane (fix/push-marks-per-chunk) - see `documentation/backlogs/
+  backlog.md` for the full prod-numbers writeup; superseded round 6's "unchanged all-or-nothing"
+  ruling.
