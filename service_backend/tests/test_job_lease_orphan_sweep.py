@@ -715,3 +715,163 @@ def test_a_non_paged_sql_db_run_heartbeats_before_its_push(session_factory, monk
     assert observed, "no push happened"
     assert observed[0] is not None, "no heartbeat before the first push"
     db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Review round 2 (575b84c1): S13 / S14
+# ═══════════════════════════════════════════════════════════════════════════
+
+from modules.autocount.sql_source.source import CURSOR_MARK  # noqa: E402
+from tests.test_autocount_bulk_load import _watermark_row  # noqa: E402
+
+SENTINEL_SUCCESS_AT = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+
+def _fail_running_job_elsewhere(session_factory) -> None:
+    other = session_factory()
+    try:
+        job_id = other.execute(
+            sa.text(
+                "SELECT id FROM background_jobs WHERE status = :s "
+                "ORDER BY created_at DESC LIMIT 1"
+            ),
+            {"s": JOB_RUNNING},
+        ).scalar()
+        other.execute(
+            sa.text("UPDATE background_jobs SET status = :s, error = :e WHERE id = :i"),
+            {"s": JOB_FAILED, "e": INTERRUPTED, "i": job_id},
+        )
+        other.commit()
+    finally:
+        other.close()
+
+
+# ── S14: a batch-level sink fault never discards the committed advance ──────
+
+
+def test_a_batch_level_sink_error_on_push_leaves_the_watermark_advance_committed(
+    session_factory, monkeypatch, consumer
+):
+    """S10 direction pinned: the cursor/high-water mark is committed BEFORE
+    the push, so a consumer that answers a batch-level error (or dies) can
+    never make the next run re-extract the same window; the staged rows are
+    the retry unit."""
+    import httpx
+
+    monkeypatch.setattr(settings, "autocount_page_size", 100, raising=False)
+    monkeypatch.setattr(settings, "autocount_run_time_budget_seconds", 600, raising=False)
+
+    from modules.autocount.models import AcWatermark as _AcWatermark
+
+    company_id, _sql_id, engine = _make_rig(session_factory)
+    _insert_rows(engine, _rows(5))
+
+    # Eager mode runs the handler on THIS session, so the run's own session
+    # is inspectable from inside the push: when the first POST goes out, the
+    # watermark advance must already be COMMITTED - i.e. not sitting in the
+    # session's pending (dirty) state where a process death mid-push would
+    # lose it. (A fresh-session read-back cannot tell on the StaticPool rig:
+    # every session shares one connection and sees uncommitted state.)
+    db = session_factory()
+    observed = {"watermark_pending_at_first_push": None}
+
+    def failing_upsert(body):
+        if observed["watermark_pending_at_first_push"] is None:
+            observed["watermark_pending_at_first_push"] = any(
+                isinstance(obj, _AcWatermark) for obj in list(db.dirty) + list(db.new)
+            )
+        return httpx.Response(500, json={"message": "Internal server error"})
+
+    consumer._upsert = failing_upsert
+    job = _run(db, company_id, RUN_MODE_MANUAL)
+    assert job.status != JOB_RUNNING
+    db.close()
+
+    assert observed["watermark_pending_at_first_push"] is not None, "the push never happened"
+    assert observed["watermark_pending_at_first_push"] is False, (
+        "the watermark advance was still uncommitted on the run's session when "
+        "the first push went out - a crash mid-push would re-extract the window"
+    )
+
+    fresh = session_factory()
+    try:
+        watermark = _watermark_row(fresh, company_id)
+        assert watermark.last_modified_at is not None, "the high-water mark was not committed"
+        assert (watermark.cursor_json or {}).get(CURSOR_MARK) is not None
+        assert (
+            fresh.query(AcStagedRecord)
+            .filter(AcStagedRecord.company_id == company_id, AcStagedRecord.status == STAGED)
+            .count()
+            == 5
+        ), "the staged rows are the retry unit and must survive the sink fault"
+    finally:
+        fresh.close()
+
+
+# ── S13: a lost lease mid-push must not read as a healthy sync ──────────────
+
+
+def test_a_lost_lease_mid_push_advances_the_retry_position_but_not_the_health_fields(
+    session_factory, monkeypatch, consumer
+):
+    """The pre-push commit may carry ONLY the retry position (cursor /
+    ``last_modified_at``). ``last_success_at``, ``consecutive_failures`` and
+    ``last_error`` are the stale-sync signal an operator reads - they may
+    only move once the push has actually resolved. A job swept as an orphan
+    (failed elsewhere) between two push chunks must leave them exactly as
+    they were."""
+    monkeypatch.setattr(settings, "autocount_page_size", 100, raising=False)
+    monkeypatch.setattr(settings, "autocount_run_time_budget_seconds", 600, raising=False)
+    monkeypatch.setattr(settings, "autocount_sink_batch_size", 3, raising=False)
+
+    company_id, _sql_id, engine = _make_rig(session_factory)
+    _insert_rows(engine, _rows(2))
+
+    db = session_factory()
+    first = _run(db, company_id, RUN_MODE_MANUAL)
+    assert first.status == JOB_DONE, first.error
+    watermark = _watermark_row(db, company_id)
+    mark_before = watermark.last_modified_at
+    assert mark_before is not None
+    # Sentinel health values - anything the run writes here is detectable.
+    watermark.last_success_at = SENTINEL_SUCCESS_AT
+    watermark.consecutive_failures = 3
+    watermark.last_error = "sentinel: earlier failure"
+    db.commit()
+    db.close()
+
+    # Seven NEW rows (distinct keys, later marks): 3 chunks of 3 / 3 / 1.
+    _insert_rows(
+        engine,
+        [(f"300-C{i:04d}", f"Late {i}", f"l{i}@x.com", f"2026-08-01 01:{i:02d}:00") for i in range(7)],
+    )
+
+    original_upsert = consumer._upsert
+    pushes = {"n": 0}
+
+    def flipping_upsert(body):
+        pushes["n"] += 1
+        if pushes["n"] == 1:
+            # The orphan sweep (another process) fails the job while the
+            # first chunk is on the wire.
+            _fail_running_job_elsewhere(session_factory)
+        return original_upsert(body)
+
+    consumer._upsert = flipping_upsert
+
+    db = session_factory()
+    second = _run(db, company_id, RUN_MODE_MANUAL)
+    assert second.status == JOB_FAILED, "the sweep's verdict must stand"
+    assert second.error == INTERRUPTED
+    assert pushes["n"] < 3, "the push must stop at the chunk boundary after the lost lease"
+    db.close()
+
+    fresh = session_factory()
+    try:
+        after = _watermark_row(fresh, company_id)
+        assert after.last_modified_at > mark_before, "the retry position must have advanced"
+        assert after.last_success_at == SENTINEL_SUCCESS_AT
+        assert after.consecutive_failures == 3
+        assert after.last_error == "sentinel: earlier failure"
+    finally:
+        fresh.close()
