@@ -29,6 +29,7 @@ from ..schemas import (
     BroadcastRecipientItem,
     BroadcastSendRequest,
     BroadcastUpdate,
+    SendMessageRequest,
 )
 from . import realtime
 from .broadcast_audience import preview_count as _preview_count
@@ -550,53 +551,84 @@ class BroadcastService:
             self.db.refresh(row)
             return self._hydrate([row], tenant_id, id_to_key, id_to_label)[0]
 
-        claimed = self.repo.claim_status(
-            row.id, tenant_id,
-            from_status_ids=[key_to_id["DRAFT"], key_to_id["SCHEDULED"]],
-            to_status_id=key_to_id["SENDING"],
-        )
-        if not claimed:
+        if not start_scheduled_broadcast(self.db, row, actor_user_id=actor_user_id):
+            # Lost the atomic claim to a concurrent caller (a second /send
+            # click, or the beat tick racing this same request) - the plan's
+            # named seam is shared verbatim, so both callers get the SAME
+            # "second one loses" guarantee (AC-BRD-26).
             raise BroadcastStatusConflict("broadcast_already_sending")
         self.db.refresh(row)
-        row.started_at = datetime.now(timezone.utc)
-        row.finished_at = None
-        row.scheduled_at = None
-        row.error = None
-        self.db.flush()
-        emit_entity_event(
-            self.db, "omnichannel_broadcast", "updated", row, tenant_id=tenant_id, actor_id=actor_user_id
-        )
-        self.db.commit()
-
-        from app.jobs.service import JobService
-
-        from .broadcast_send_service import SEND_JOB_TYPE
-
-        job = JobService(self.db).create_and_enqueue(
-            type=SEND_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
-            payload={"broadcastId": row.id},
-        )
-        row.job_id = job.id
-        self.db.commit()
-        self.db.refresh(row)
-        # `create_and_enqueue` already RAN the job to completion in eager
-        # dev/test (synchronous, same session) - `row.status_id` may already
-        # be a terminal state by the time we get here, never assume it is
-        # still SENDING (a stale "SENDING" publish after the job's own
-        # "SENT" publish would flicker a live UI backwards).
-        realtime.publish(
-            workspace_id,
-            {
-                "type": "broadcast.updated",
-                "broadcastId": row.id,
-                "status": id_to_key.get(row.status_id, "SENDING"),
-                "counts": {
-                    "total": row.total_count, "sent": row.sent_count, "delivered": row.delivered_count,
-                    "read": row.read_count, "failed": row.failed_count, "skipped": row.skipped_count,
-                },
-            },
-        )
         return self._hydrate([row], tenant_id, id_to_key, id_to_label)[0]
+
+    # ── test-send (plan 29 S2b, D-A4-18, AC-BRD-41) ─────────────────────────
+    def test_send(
+        self, broadcast_id: str, tenant_id: str, workspace_id: str, contact_id: str,
+        *, actor_user_id: Optional[str],
+    ) -> str:
+        """Send exactly ONE message to `contact_id` through the SAME send
+        path with the broadcast's currently-saved template + bindings. Works
+        regardless of the broadcast's current status (a test send previews
+        what a real send would do, it isn't part of the campaign) - creates
+        NO `broadcast_recipients` row and touches no counts or status
+        (D-A4-18: a test send is a message, not a campaign event). Raises
+        `BroadcastNotFound` for an unknown broadcast/contact (404) and
+        `BroadcastValidationError` when the bindings cannot resolve for this
+        contact or the send itself is rejected (422)."""
+        row = self._row_or_404(broadcast_id, tenant_id, workspace_id)
+        contact = (
+            self.db.query(Contact)
+            .filter(Contact.id == contact_id, Contact.tenant_id == tenant_id, Contact.workspace_id == workspace_id)
+            .first()
+        )
+        if contact is None:
+            raise BroadcastNotFound()
+
+        from app.models.status import Status as CoreStatus
+
+        from .broadcast_bindings import SkipMissingVariable
+        from .broadcast_bindings import resolve as resolve_bindings
+        from .conversation_service import ThreadNotFound
+        from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
+        from .message_service import MessageService, SendRejected
+
+        lifecycle_label: Optional[str] = None
+        if contact.lifecycle_status_id:
+            found = (
+                self.db.query(CoreStatus.label)
+                .filter(
+                    CoreStatus.id == contact.lifecycle_status_id,
+                    CoreStatus.tenant_id == tenant_id,
+                    CoreStatus.entity_type == LIFECYCLE_ENTITY_TYPE,
+                    CoreStatus.scope_id == workspace_id,
+                )
+                .first()
+            )
+            lifecycle_label = found[0] if found else None
+
+        bindings = BroadcastBindings.model_validate(row.bindings_json or {"header": [], "body": [], "buttons": []})
+        try:
+            values = resolve_bindings(bindings, contact, lifecycle_label=lifecycle_label)
+        except SkipMissingVariable as exc:
+            raise BroadcastValidationError(
+                {"contactId": f'Could not resolve the "{exc.field}" template variable for this contact.'}
+            )
+
+        req = SendMessageRequest(
+            messageType="TEMPLATE",
+            templateId=row.template_id,
+            templateHeaderVariables=values["header"],
+            templateVariables=values["body"],
+            templateButtonVariables=values["buttons"],
+        )
+        try:
+            item = MessageService(self.db).send_message(
+                contact.id, tenant_id, actor_user_id, req,
+                channel_id_override=row.channel_id,
+                metadata_extra={"broadcast": {"id": row.id, "test": True}},
+            )
+        except (SendRejected, ThreadNotFound) as exc:
+            raise BroadcastValidationError({"contactId": str(exc)})
+        return item.id
 
     def cancel(self, broadcast_id: str, tenant_id: str, workspace_id: str) -> BroadcastItem:
         """AC-BRD-40: SCHEDULED -> CANCELLED immediately, no send ever
@@ -656,3 +688,74 @@ class BroadcastService:
             },
         )
         return self._hydrate([row], tenant_id, id_to_key, id_to_label)[0]
+
+
+# ── shared DRAFT|SCHEDULED -> SENDING seam (plan 29 S2b) ────────────────────
+def start_scheduled_broadcast(
+    db: Session, broadcast: Broadcast, *, actor_user_id: Optional[str] = None
+) -> bool:
+    """The seam `BroadcastService.send()`'s immediate branch AND the
+    `omnichannel.broadcasts_due` beat tick (AC-BRD-42) both call - claims
+    DRAFT|SCHEDULED -> SENDING atomically, creates + enqueues the ONE
+    `background_jobs` row, stamps it back on the broadcast, and publishes.
+
+    Returns False when the atomic claim is lost (the broadcast already left
+    DRAFT/SCHEDULED - a concurrent /send call, a concurrent tick, or a tick
+    racing a manual send): the caller decides what that means (`send()`
+    raises `BroadcastStatusConflict`; the tick just skips it - another
+    caller already started it, never a second job)."""
+    tenant_id = broadcast.tenant_id
+    repo = BroadcastRepository(db)
+    rows = db.query(Status).filter(Status.tenant_id == tenant_id, Status.scope == "BROADCAST").all()
+    key_to_id = {r.key: r.id for r in rows}
+    id_to_key = {r.id: r.key for r in rows}
+
+    claimed = repo.claim_status(
+        broadcast.id, tenant_id,
+        from_status_ids=[key_to_id["DRAFT"], key_to_id["SCHEDULED"]],
+        to_status_id=key_to_id["SENDING"],
+    )
+    if not claimed:
+        return False
+
+    db.refresh(broadcast)
+    broadcast.started_at = datetime.now(timezone.utc)
+    broadcast.finished_at = None
+    broadcast.scheduled_at = None
+    broadcast.error = None
+    db.flush()
+    emit_entity_event(
+        db, "omnichannel_broadcast", "updated", broadcast, tenant_id=tenant_id, actor_id=actor_user_id
+    )
+    db.commit()
+
+    from app.jobs.service import JobService
+
+    from .broadcast_send_service import SEND_JOB_TYPE
+
+    job = JobService(db).create_and_enqueue(
+        type=SEND_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
+        payload={"broadcastId": broadcast.id},
+    )
+    broadcast.job_id = job.id
+    db.commit()
+    db.refresh(broadcast)
+    # `create_and_enqueue` already RAN the job to completion in eager
+    # dev/test (synchronous, same session) - `broadcast.status_id` may
+    # already be a terminal state by the time we get here, never assume it
+    # is still SENDING (a stale "SENDING" publish after the job's own "SENT"
+    # publish would flicker a live UI backwards).
+    realtime.publish(
+        broadcast.workspace_id,
+        {
+            "type": "broadcast.updated",
+            "broadcastId": broadcast.id,
+            "status": id_to_key.get(broadcast.status_id, "SENDING"),
+            "counts": {
+                "total": broadcast.total_count, "sent": broadcast.sent_count,
+                "delivered": broadcast.delivered_count, "read": broadcast.read_count,
+                "failed": broadcast.failed_count, "skipped": broadcast.skipped_count,
+            },
+        },
+    )
+    return True

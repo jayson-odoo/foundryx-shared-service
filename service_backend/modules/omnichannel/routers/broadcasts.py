@@ -4,10 +4,10 @@
 (Router -> Service -> Repository).
 
 Reads gated `broadcasts.read`; create/update/delete/duplicate gated
-`broadcasts.manage`; send/schedule/cancel/test-send (S2) will be gated
-`broadcasts.send`. Every route is tenant + workspace scoped; an unknown
-workspace/broadcast/segment/contact/channel/template is a uniform 404 (never
-403, never a peek at another tenant's data, AC-BRD-24).
+`broadcasts.manage`; send/schedule/cancel/test-send gated `broadcasts.send`.
+Every route is tenant + workspace scoped; an unknown workspace/broadcast/
+segment/contact/channel/template is a uniform 404 (never 403, never a peek
+at another tenant's data, AC-BRD-24).
 
 Deviation from plan §5.1 (flagged, see the S1 report): the audience preview
 is `POST .../broadcasts/audience-preview` with the full `BroadcastAudience`
@@ -36,6 +36,8 @@ from ..schemas import (
     BroadcastListResponse,
     BroadcastRecipientListResponse,
     BroadcastSendRequest,
+    BroadcastTestSendRequest,
+    BroadcastTestSendResponse,
     BroadcastUpdate,
 )
 from ..services.broadcast_service import (
@@ -201,6 +203,27 @@ def send_broadcast(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {"fieldErrors": exc.errors})
     except BroadcastStatusConflict as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, {"reason": exc.reason})
+
+
+@router.post("/{ws_id}/broadcasts/{broadcast_id}/test-send", response_model=BroadcastTestSendResponse)
+def test_send_broadcast(
+    ws_id: str,
+    broadcast_id: str,
+    body: BroadcastTestSendRequest,
+    current_user: User = Depends(require_permission("broadcasts.send")),
+    actor_user_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> BroadcastTestSendResponse:
+    WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
+    try:
+        message_id = BroadcastService(db).test_send(
+            broadcast_id, current_user.tenant_id, ws_id, body.contactId, actor_user_id=actor_user_id
+        )
+    except BroadcastNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Broadcast or contact not found.")
+    except BroadcastValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {"fieldErrors": exc.errors})
+    return BroadcastTestSendResponse(messageId=message_id)
 
 
 @router.post("/{ws_id}/broadcasts/{broadcast_id}/cancel", response_model=BroadcastItem)

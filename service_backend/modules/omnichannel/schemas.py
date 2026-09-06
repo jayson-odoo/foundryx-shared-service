@@ -693,6 +693,18 @@ class AudiencePreviewResponse(ApiModel):
     count: int
 
 
+class BroadcastTestSendRequest(ApiModel):
+    """Plan 29 S2b, AC-BRD-41 - ONE explicit contact, never a recipient
+    picker over the audience (D-A4-18: a test send is a message, not a
+    campaign event)."""
+
+    contactId: str
+
+
+class BroadcastTestSendResponse(ApiModel):
+    messageId: str
+
+
 class BroadcastRecipientItem(ApiModel):
     id: str
     contactId: str

@@ -17,11 +17,14 @@ Cooperative cancellation (D-A4-14, AC-BRD-40): every chunk boundary re-reads
 the broadcast's OWN status with a fresh scalar query (never the possibly-
 stale ORM attribute) before touching a single recipient.
 
-Receipts / the crash-window reconciler / the scheduled beat tick / test-send
-are S2b (this slice deliberately stops at send + cancel).
+Receipts (`broadcast_receipts.record_delivery`, called from `send_runner` +
+`inbound_service`) / the crash-window reconciler (`reconcile_broadcast`) /
+the scheduled beat tick (`run_due_broadcasts`, wired as `omnichannel.
+broadcasts_due` on the workflow worker's beat) / test-send
+(`BroadcastService.test_send`) are plan 29 S2b (AC-BRD-36..42).
 """
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -57,6 +60,11 @@ logger = logging.getLogger("foundryx.omnichannel.broadcasts")
 
 SEND_JOB_TYPE = "omnichannel.broadcast_send"
 CHUNK_SIZE = 100
+# A SENDING broadcast whose row hasn't moved (recompute_counts touches
+# `updated_at` on every chunk boundary) in this long is treated as STUCK by
+# the beat tick (S2b) - a crashed chunk chain that never scheduled its next
+# link. Reconciled the same way job-end finalize reconciles (AC-BRD-38).
+STUCK_SENDING_MINUTES = 15
 
 
 class PreflightFailed(Exception):
@@ -388,17 +396,26 @@ def run_one_chunk(
     return repo.has_dispatchable_recipients(broadcast.tenant_id, broadcast.id)
 
 
-def finalize_broadcast(db: Session, broadcast: Broadcast, job: BackgroundJob) -> None:
-    """Plan §5.4 step 4 (send + cancel half - reconcile() is S2b). Every
-    recipient has reached a terminal-for-dispatch state (or the broadcast was
-    cancelled mid-run, already handled at the last chunk boundary) - flip the
-    broadcast to its final state, emit the completion event, finish the job."""
+def finalize_broadcast(db: Session, broadcast: Broadcast, job: Optional[BackgroundJob] = None) -> None:
+    """Plan §5.4 step 4. Every recipient has reached a terminal-for-dispatch
+    state (or the broadcast was cancelled mid-run, already handled at the
+    last chunk boundary) - resolve any crash-window ambiguity first
+    (`reconcile_broadcast`, AC-BRD-38), then flip the broadcast to its final
+    state, emit the completion event, finish the job.
+
+    `job` is Optional (S2b): the normal job-driven path always passes one;
+    the beat tick's stuck-SENDING repair (`run_due_broadcasts`) may finalize
+    a broadcast whose job row is missing/unreachable - it still needs the
+    broadcast itself to reach a terminal state, it just skips the JobService
+    bookkeeping."""
     db.refresh(broadcast)
+    reconcile_broadcast(db, broadcast)
     recompute_counts(db, broadcast)
     current_status = _current_status_key(db, broadcast)
     if current_status == "CANCELLED":
         db.commit()
-        JobService(db).finish(job, status=JOB_DONE, result=_result_dict(broadcast, cancelled=True))
+        if job is not None:
+            JobService(db).finish(job, status=JOB_DONE, result=_result_dict(broadcast, cancelled=True))
         _publish(broadcast, "CANCELLED")
         return
 
@@ -412,8 +429,130 @@ def finalize_broadcast(db: Session, broadcast: Broadcast, job: BackgroundJob) ->
         extra={"status": "SENT", "counts": _counts_dict(broadcast)},
     )
     db.commit()
-    JobService(db).finish(job, status=JOB_DONE, result=_result_dict(broadcast, cancelled=False))
+    if job is not None:
+        JobService(db).finish(job, status=JOB_DONE, result=_result_dict(broadcast, cancelled=False))
     _publish(broadcast, "SENT")
+
+
+# ── crash-window reconciler (plan 29 S2b, AC-BRD-38) ────────────────────────
+def reconcile_broadcast(db: Session, broadcast: Broadcast) -> int:
+    """Resolve every AMBIGUOUS recipient: claimed (`attempted_at` set) but
+    still `queued` - the crash window between a message's own commit and the
+    recipient-row update (F6). For each, ADOPT a matching outbound TEMPLATE
+    message for that contact created at/after the claim if one carries this
+    broadcast's marker (`-> sent` + `message_id`); otherwise mark
+    `failed/send_result_unknown`. NEVER re-sends. Returns the count resolved
+    (0 = nothing ambiguous, the common case - this runs on every normal
+    `finalize_broadcast` too, so it must be cheap when there is nothing to
+    do)."""
+    ambiguous = (
+        db.query(BroadcastRecipient)
+        .filter(
+            BroadcastRecipient.tenant_id == broadcast.tenant_id,
+            BroadcastRecipient.broadcast_id == broadcast.id,
+            BroadcastRecipient.state == "queued",
+            BroadcastRecipient.attempted_at.isnot(None),
+        )
+        .all()
+    )
+    if not ambiguous:
+        return 0
+
+    contact_ids = [r.contact_id for r in ambiguous]
+    earliest_claim = min(r.attempted_at for r in ambiguous)
+    candidates = (
+        db.query(ConversationMessage)
+        .filter(
+            ConversationMessage.tenant_id == broadcast.tenant_id,
+            ConversationMessage.contact_id.in_(contact_ids),
+            ConversationMessage.message_type == "TEMPLATE",
+            ConversationMessage.created_at >= earliest_claim,
+        )
+        .order_by(ConversationMessage.created_at.asc())
+        .all()
+    )
+    # First matching TEMPLATE message per contact carrying THIS broadcast's
+    # marker (`UNIQUE(broadcast_id, contact_id)` makes contact_id an exact
+    # key - a broadcast never has two recipients for the same contact).
+    adopted_by_contact: Dict[str, ConversationMessage] = {}
+    for msg in candidates:
+        marker = (msg.metadata_json or {}).get("broadcast") if msg.metadata_json else None
+        if not marker or marker.get("id") != broadcast.id or marker.get("test"):
+            continue
+        adopted_by_contact.setdefault(msg.contact_id, msg)
+
+    resolved = 0
+    for recipient in ambiguous:
+        msg = adopted_by_contact.get(recipient.contact_id)
+        if msg is not None and msg.created_at >= recipient.attempted_at:
+            recipient.state = "sent"
+            recipient.message_id = msg.id
+        else:
+            recipient.state = "failed"
+            recipient.error_code = "send_result_unknown"
+            recipient.error_text = (
+                "Send outcome could not be confirmed after an interruption; no matching message was found."
+            )
+        resolved += 1
+    db.commit()
+    return resolved
+
+
+# ── scheduled-broadcast beat tick (plan 29 S2b, AC-BRD-42) ──────────────────
+def run_due_broadcasts(db: Session) -> Dict[str, int]:
+    """The `omnichannel.broadcasts_due` beat-tick body (registered on the
+    workflow worker's beat, the `webhooks.retry_due` precedent for a module
+    task string in the core schedule). Tenant-agnostic SCAN, per-row tenant
+    scoping inside `start_scheduled_broadcast`/`reconcile_broadcast` (exactly
+    like `webhook_delivery.run_due_deliveries`):
+
+    (a) claims + enqueues every SCHEDULED broadcast whose `scheduledAt` has
+        passed - a downtime gap still fires every one of them, each exactly
+        once (the atomic status-claim inside `start_scheduled_broadcast`
+        means two ticks, or a tick racing a manual Send, can only start it
+        once);
+    (b) reconciles any broadcast stuck in SENDING beyond
+        `STUCK_SENDING_MINUTES` (a crashed chunk chain that left ambiguous
+        claimed recipients) and finalizes it IF no genuinely-dispatchable
+        (still-queued, unclaimed) recipient remains - a broadcast whose
+        chunk chain is merely slow (real work still queued) is left alone,
+        never prematurely finished.
+    """
+    from .broadcast_service import start_scheduled_broadcast
+
+    now = datetime.now(timezone.utc)
+    started = 0
+    due = (
+        db.query(Broadcast)
+        .join(Status, Status.id == Broadcast.status_id)
+        .filter(Status.tenant_id == Broadcast.tenant_id, Status.scope == "BROADCAST", Status.key == "SCHEDULED")
+        .filter(Broadcast.scheduled_at.isnot(None), Broadcast.scheduled_at <= now)
+        .all()
+    )
+    for broadcast in due:
+        if start_scheduled_broadcast(db, broadcast):
+            started += 1
+
+    reconciled = 0
+    finalized = 0
+    stuck_cutoff = now - timedelta(minutes=STUCK_SENDING_MINUTES)
+    stuck = (
+        db.query(Broadcast)
+        .join(Status, Status.id == Broadcast.status_id)
+        .filter(Status.tenant_id == Broadcast.tenant_id, Status.scope == "BROADCAST", Status.key == "SENDING")
+        .filter(Broadcast.updated_at <= stuck_cutoff)
+        .all()
+    )
+    repo = BroadcastRepository(db)
+    for broadcast in stuck:
+        reconciled += reconcile_broadcast(db, broadcast)
+        db.refresh(broadcast)
+        if repo.has_dispatchable_recipients(broadcast.tenant_id, broadcast.id):
+            continue  # real work still queued - not our job to resume it here
+        job = JobService(db).repo.get_unscoped(broadcast.job_id) if broadcast.job_id else None
+        finalize_broadcast(db, broadcast, job)
+        finalized += 1
+    return {"started": started, "reconciled": reconciled, "finalized": finalized}
 
 
 def run_broadcast_send(db: Session, job: BackgroundJob) -> None:
