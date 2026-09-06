@@ -202,3 +202,156 @@ AC-TEM-50).
 No JavaScript console errors surfaced at any step. The only non-2xx
 responses were the deliberately provoked ones (the 409 delete guard, the
 validation 422s) plus the agent's spurious `GET /teams` 403 noted above.
+
+---
+
+# Round 2 - re-run on the fix commit `c6706b3c`
+
+Recorded 2026-09-06 21:2x-21:5x local. Sessions `s28t2` (tenant Admin),
+`s28t2a` (P28 Agent 1), `s28t2b` (P28 Agent 2). Closed individually, never
+`close --all`.
+
+## Provenance
+
+| | |
+|---|---|
+| Commit under test | **`c6706b3c`** (round 1 `0e5dfbb3` + round 2 `c6706b3c` on top of the round-1 evidence commit `8f3dd01b`); worktree clean at start |
+| Backend | `:8007` PID 24933, rebuilt by the coordinator on `c6706b3c` (s28 DB override + CORS regex for `:3006`); log `/private/tmp/s28-uvicorn-round2.log` |
+| Frontend | `:3006` PID 27764, fresh `.next` build of `c6706b3c`; cwd verified = `.claude/worktrees/s28/service_frontend` |
+| Not restarted / not rebuilt | nothing - both PIDs unchanged throughout |
+
+The round-1 provenance caveat (servers predating the fix-round edits) is
+**resolved**: this run is on the committed fix and a build of it.
+
+## What survived the migration down/up cycle (and what was recreated)
+
+Tenants `p28-1788683909` / `p28b-1788683909`, all five users, the workspace
+`General` (+ members), the five threads `c1..c5`, the workspace API key and
+the admin JWT all survived. **All `teams` / `team_members` rows and every
+`assigned_team_id` were gone**, as the coder warned. Recreated with the
+round-2 stamp `1788700982`:
+
+- `R2 Support 1788700982` - Agent 1 (member), Agent 2 (lead); later Agent 2
+  removed so Agent 2 becomes a no-teams user for the hidden-heading check.
+- `R2 Dormant 1788700982` - Agent 1 only; deactivated for the inactive-team
+  checks. **Accidentally deleted** mid-run (see step 5), replaced by
+  `R2 Dormant2 1788700982` (same shape, deactivated).
+- `R2 Throwaway 1788700982` - no members; the Cancel-case target.
+
+Setup (sanctioned, outside the flow under test): the P28 Agent role gained
+`conversations.assign` (so the drawer's Teams group - gated on that key -
+renders for an agent who belongs to an inactive team, the brief's exact
+case) and `workspaces.read` (the agent's Inbox made no thread-list request
+at all without it - `GET /omnichannel/workspaces` 403 - which is a
+test-role artefact; round 1 never opened a thread as the agent). `teams.read`
+was never granted to any agent.
+
+## Run log
+
+1. **33** Teams -> Filters -> `Name` `contains` `ZZZ-nomatch` -> Apply. The
+   refetch is now `GET /teams?...&filter={"kind":"group","combinator":"and",
+   "rules":[{"kind":"condition","field":"name","operator":"contains","value":
+   "ZZZ-nomatch"}]}` and the list reads "No data available" (AC-TEM-39).
+2. **35** Filters -> field `Active`, operator `is no` -> Apply ->
+   `filter=...{"field":"isActive","operator":"is_false"}...` -> only the
+   deactivated `R2 Dormant` remains. Curl: an unknown field ->
+   `422 {"detail":"field not filterable: bogusField"}`; a malformed value ->
+   `422 Invalid filter.`; `isActive eq false` and `name contains "R2 Support"`
+   each return exactly the expected row.
+3. **34** Signed in as Agent 1 (no `teams.read`): Inbox rail shows **MY
+   TEAMS only**, no ALL TEAMS, and the backend log shows ONLY
+   `GET /teams/mine 200` - the round-1 `GET /teams` 403 chatter is gone
+   (AC-TEM-44 amended). `GET /teams/mine` now returns members as
+   `{userId, name, role}` - **no `email`** (round-1 D3 resolved).
+4. **22 (replaces the round-1 22)** Teams -> row Actions -> Delete on
+   `R2 Dormant`: **no AlertDialog**; a toast "Deleting in 9s | Cancel"
+   appears (deferred action, destructive window).
+5. My Cancel click missed the window (screenshot + eval overhead ran past
+   10s), so this first attempt **committed**: `pending_actions` row
+   `teams.delete` = `committed`, the team 404s, and the backend log shows
+   **zero HTTP `DELETE /teams`** - the delete runs inside the deferred
+   commit. Unintended, but it is direct evidence of "the destructive call
+   fires at COMMIT". The Cancel case was then redone properly:
+6. **36** Delete on `R2 Throwaway` with the Cancel click inside the same
+   eval chain 1.2s after Delete: toast "Deleting in 9s | Cancel" ->
+   Cancel -> toast gone, `pending_actions` row = **`cancelled`**, the team
+   still `GET`s 200, still zero `DELETE /teams`. **Cancel fires nothing.**
+7. **23 (replaces the round-1 23)** `R2 Support` made referenced three ways
+   (a `PUT team-settings` row, a saved view with `teamIds`, threads c1+c2
+   assigned) -> Delete -> let the 10s window commit -> toast **"This team
+   is still assigned to 2 conversations and cannot be deleted."**,
+   `pending_actions` = `failed` with that `error_text`, team still 200
+   (AC-TEM-42 amended). Note: the reference guard registers exactly ONE
+   source - `register_reference_guard("team", "conversations", ...)` in
+   `modules/omnichannel/bootstrap.py:120` - so "2 conversations" IS the
+   complete per-source output; team-settings rows and saved-view `teamIds`
+   are not guard sources (see the integrity check below).
+8. **37** Agent 1 (now holding `conversations.assign`, member of the
+   inactive `R2 Dormant2`) -> thread Ana -> assignee dropdown -> Teams group
+   lists **`R2 Support` only**; the inactive team the agent belongs to is
+   absent (round 2 N1).
+9. **38** Admin -> Inbox -> rail `R2 Support` (`?team=<id>`) -> **Save
+   view** "R2 Team view 1788700982" -> `POST inbox-views 201` and the
+   stored filter carries `"teamIds": ["ce431a47-..."]`. Reload -> click
+   **All** (`?view=all`, no team) -> click the saved view -> URL regains
+   `&team=ce431a47-...`, the list shows exactly Ana + Ben, and the request
+   is `GET /omnichannel/contacts?...&viewId=...&teamId=ce431a47-...`
+   (AC-TEM-46). Curl: a cross-tenant team id in `teamIds` -> `422
+   {"fieldErrors":{"filter":"One or more teams do not belong to this
+   tenant."}}`; an unknown key still `422 extra_forbidden`; a legacy filter
+   with no `teamIds` still saves 201.
+10. **39** Agent 1 (no `teams.read`) -> Omnichannel -> Workspaces -> General
+    -> **Team assignment** tab: `GET .../team-settings 200` and the tab
+    lists **every ACTIVE team** - `R2 Throwaway` (Round robin,
+    `isConfigured: false`, `updatedAt: null`) and `R2 Support` (Least open
+    threads, `isConfigured: true`, timestamp); the inactive `R2 Dormant2` is
+    absent. The same user's `GET /teams` is 403, so the tab is populated
+    without it (AC-TEM-28 amended).
+11. **41** Agent 2 (removed from every team) -> Inbox: neither "MY TEAMS"
+    nor "ALL TEAMS" renders; `/teams/mine` 200 with an empty list
+    (AC-TEM-44 amended, hidden heading).
+12. **40, 42** Workflows -> New workflow -> palette search "assign" ->
+    **Assign Conversation** with `lucide-user-round-cog` (not the Zap
+    fallback). Click it -> node on canvas -> drawer: Contact, **Assign to**
+    = `A user | A team | Unassign`; choose `A team` -> **Team** ("Choose a
+    team...") and **Strategy** appear; the Team picker lists only the two
+    ACTIVE teams (round-1 D1 resolved).
+13. **43-46** 375px pass: Agent 1's View SearchSelect carries the "My teams"
+    group with each team plus its "- Unassigned" entry; Teams list Filters
+    no-match at 375 (filter param present, list empties); the deferred
+    toast at 375 measures 16..359 inside 375 with Cancel -> `cancelled`;
+    the Team assignment tab at 375. Every 375 page reports
+    `scrollWidth == clientWidth == 375`.
+
+## Post-delete integrity check (not an AC - for the reviewer)
+
+After clearing c1/c2 and deleting `R2 Support` for real (`DELETE /teams`
+204; the plain HTTP route still exists alongside the deferred action):
+`GET team-settings` no longer lists it; the two saved views **retain the
+dangling `teamIds`** but `GET inbox-views` is 200 and loading the view
+returns an empty page (200) - graceful, no cleanup.
+
+## Observations (not defects against the amended UAC)
+
+- The rail's **My teams** (and the 375 View select) lists a team the agent
+  belongs to even when that team is **inactive** (`R2 Dormant`,
+  `R2 Dormant2`). Round 2 scoped active-only to assignment *targets* (the
+  drawer and the workflow picker); a rail entry is a read filter over
+  threads still carrying that team, so this may be intended - flagging it
+  for the reviewer to rule on.
+- For the admin's 375 Teams pass I typed the list URL once
+  (`open .../user-management/teams`) instead of clicking from `/` - every
+  other move in both rounds is a real click.
+
+## Suites (round 2)
+
+- Targeted backend: `tests/test_teams.py tests/test_omnichannel_team_assignment.py
+  tests/test_omnichannel_inbox_views.py tests/test_deferred_actions.py` ->
+  **159 passed** (329s). The full suite was NOT re-run (coder ran 3136 on
+  `0e5dfbb3`; round 2 was targeted).
+- Full vitest: **2184 passed, 2 failed** (293 files, 178s). The two -
+  `account/components/timezone-card.test.tsx` (9.8s) and
+  `resource-form/resource-form.deferred.test.tsx` (a grace-window countdown
+  test) - **both pass in isolation (6/6)**; neither is a Teams file. Round
+  1's `inbox-view-rail.test.tsx` flake passed this time. Same class as
+  round-1 D5: load-sensitive timers under full-suite CPU contention.

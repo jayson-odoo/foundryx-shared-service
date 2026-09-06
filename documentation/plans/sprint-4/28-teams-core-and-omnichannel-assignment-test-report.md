@@ -21,7 +21,7 @@ Contract: `28-teams-core-and-omnichannel-assignment-acceptance-criteria.md`
 tenant-subdomain request from `p28-<ts>.localhost:3006` was CORS-blocked. One
 restart with the explicit regex, cwd-verified against the s28 worktree.
 
-**Build provenance caveat (load-bearing).** A concurrent fix-round coder
+**Build provenance caveat (round 1; RESOLVED by round 2 below).** A concurrent fix-round coder
 modified product source in this worktree at **16:57**, after the servers under
 test were started (16:37) and after the pytest run was launched. Those changes
 are uncommitted and are NOT in the running build or in the suite result. Every
@@ -120,7 +120,7 @@ Legend: PASS / FAIL / DEFERRED. "E2E n" = screenshot `n` in
 | AC-TEM-25 | BE | PASS | `test_team_plus_user_requires_membership`, `test_user_only_not_member_of_current_team_clears_team`, `test_user_only_still_member_of_current_team_keeps_team`. Live: team + non-member user -> 422 `{"fieldErrors":{"assignedUserId":"User is not a member of this team."}}`; user-only assign to a member kept the team. |
 | AC-TEM-26 | BE | PASS | `test_team_null_user_sets_team_unassigned`, `test_null_team_clears_team_keeps_user`. **E2E 25**: the drawer exposes separate **Unassign** (clears user, team stays) and **Clear team** (clears team, user stays) items; both verified against the API. |
 | AC-TEM-27 | BE | PASS | `test_embed_principal_cannot_send_team`. |
-| AC-TEM-28 | BE | PASS | `test_team_settings_crud_and_gates`. **E2E 09/13**: unconfigured team defaults to Round robin; switching to Least open fires `PUT .../team-settings/{teamId}` 200 and persists. |
+| AC-TEM-28 | BE | PASS (amended) | `test_team_settings_crud_and_gates`, `test_team_settings_lists_every_active_team`. Round 1 E2E 09/13: default Round robin, `PUT` persists Least open. **Round 2 E2E 39/46**: as Agent 1 (`conversations.read`, NO `teams.read`; `GET /teams` 403) the Team assignment tab lists EVERY active team - `R2 Throwaway` `isConfigured:false` / `updatedAt:null`, `R2 Support` `isConfigured:true` + timestamp - and the inactive `R2 Dormant2` is absent. |
 | AC-TEM-29 | BE | PASS | `test_thread_item_team_fields_batched`. E2E 15: every list row carries the team name; the list render made one batched call. |
 | AC-TEM-30 | BE | PASS | `test_team_id_list_filter`. **E2E 15**: rail click -> `GET /omnichannel/contacts?...&teamId=<id>` -> exactly the 3 team threads (c4/c5 excluded). Live: `teamId` + `assignee=unassigned` returned exactly the team's Unassigned thread; a foreign team id returned an empty page, not a 404. |
 
@@ -146,19 +146,19 @@ Legend: PASS / FAIL / DEFERRED. "E2E n" = screenshot `n` in
 
 | ID | Tag | Result | Evidence |
 |---|---|---|---|
-| AC-TEM-39 | FE | **FAIL** (filter clause only) | Columns are exactly Name / Description / Members / Status / Created and row click opens the form (E2E 04). Search and sort ARE server-served (`&search=`, `sort_by`/`sort_dir` observed). **Filters is a no-op**: applying `Name contains "ZZZ-no-match"` refetches as `GET /teams?page=0&page_size=25&sort_by=name&sort_dir=asc` with no filter param and the non-matching row stays (E2E 08). Known review finding, under repair in the uncommitted fix round; reported as **D2**. |
+| AC-TEM-39 | FE | PASS (round 2) | Columns / row click / search / sort as in round 1 (E2E 04). **Round 2 E2E 33/35/44**: Filters is now server-served - `Name contains "ZZZ-nomatch"` refetches with `filter={"kind":"group",...,"field":"name","operator":"contains"...}` and the list empties; `Active is no` sends `operator:"is_false"` and returns only the deactivated team; at 375 the same. Curl: unknown field -> `422 field not filterable: bogusField`; malformed -> `422 Invalid filter.`. Round-1 D2 closed. |
 | AC-TEM-40 | FE | PASS | `use-team-form.test.tsx`, `team-form-fields.test.tsx`. E2E 05: Leads is **disabled with "Add members first"** until Members are picked and then offers only the selected Members. Dirty-guard clause: no AlertDialog fires on Cancel or on navigating away - but the **Users reference form behaves identically** (verified side by side), so this is shell-wide behaviour on this build, not a Teams regression. |
 | AC-TEM-41 | FE | PASS | E2E 03: Teams sits next to Roles in the sidebar. As P28 Agent 1 (no `teams.read`) a DOM sweep found **zero** `/user-management/teams` links in the sidebar and zero in the mega menu. |
-| AC-TEM-42 | FE | PASS | E2E 31/32: as the `teams.read`-only user the list has no "Add team" and no row Actions cell, and the detail page reports `editBtn:false, saveBtn:false, actionsBtn:false, editableInputs:0`. A guard-blocked delete surfaces the per-source count with no destructive effect (E2E 23). No instructional copy and no stale-brand string on any Teams surface (the AC-TEM-42 white-label clause); pinned by `lib/white-label.guard.test.ts`. |
+| AC-TEM-42 | FE | PASS (amended) | Read-only rendering unchanged from round 1 (E2E 31/32: no Add, no row Actions, no Edit/Save, zero editable inputs). **Round 2 E2E 22/23/36/45 (22/23 replace the round-1 dialog shots)**: delete is a deferred action - no AlertDialog, a "Deleting in 9s / Cancel" toast; Cancel inside the window -> `pending_actions` row `cancelled`, team still 200, zero `DELETE /teams`; a guard hit at commit -> `failed` row with `error_text` "This team is still assigned to 2 conversations and cannot be deleted." surfaced as the toast, nothing deleted. An unintended first attempt that ran past the window proved the commit path (row `committed`, team 404, still no HTTP DELETE - the delete runs inside the commit). |
 | AC-TEM-43 | FE | PASS | E2E 27/28/29: list and detail at 375px both report `scrollWidth == clientWidth == 375`; the Members MultiSelect popover measures left 37 / right 253 in a 375 viewport - fully clamped. |
 
 ### Slice G - frontend: Team Inbox + assign-to-team
 
 | ID | Tag | Result | Evidence |
 |---|---|---|---|
-| AC-TEM-44 | FE | PASS | `inbox-view-rail.test.tsx` Teams block, `inbox-rail-entries.test.ts`, `use-inbox-rail-selection.test.ts`. E2E 10: MY TEAMS + ALL TEAMS with nested Unassigned, ALL TEAMS gated on `conversations.assign` (absent for the agent, E2E 17). E2E 15/16: selection sets `?team=` (+`&assignee=unassigned`) and both survive a reload. E2E 19/20: below 1024px the same entries appear in the View SearchSelect under a "My teams" group - no new layout. |
+| AC-TEM-44 | FE | PASS (amended) | Round-1 E2E 10/15/16/19/20 stand for the entries, `?team=`/`&assignee=unassigned` and the 375 View select. **Round 2 E2E 34/41/43**: as an agent WITHOUT `teams.read` the rail shows My teams only, no All teams, and the log carries ONLY `GET /teams/mine 200` (round-1 D4 403 chatter gone); as an agent on no teams the MY TEAMS heading is hidden entirely; `/teams/mine` members carry no `email` (round-1 D3 closed). Observation: My teams lists an INACTIVE team the agent belongs to - see round-2 observations. |
 | AC-TEM-45 | FE | PASS | `conversation-drawer.teams.test.tsx`. E2E 11: the assignee dropdown gains a **Teams** group under the member list; picking it sends `assignedTeamId` and the header reads "Support 1788683909 - P28 Agent 1". E2E 24/25 cover the "team + Unassigned" header when no member is eligible. |
-| AC-TEM-46 | FE | **DEFERRED** | At `7814fcf` the running backend rejects `teamIds`: `POST .../inbox-views {"filter":{"teamIds":[...]}}` -> 422 `extra_forbidden`. `extra="forbid"` still 422s a genuinely unknown key and a legacy view with no `teamIds` still saves 201, so the back-compat half holds. The uncommitted fix round adds `teamIds` to `InboxViewFilter` with tenant-scoped save-time validation; per the brief this is deferred to that round rather than failed. |
+| AC-TEM-46 | FE | PASS (round 2) | `test_inbox_view_team_ids_validated_tenant_scoped` (round 2). **E2E 38**: rail `R2 Support` -> Save view -> stored filter `"teamIds":["ce431a47-..."]`; reload -> click All (`?view=all`, no team) -> click the view -> `&team=ce431a47-...` returns, list = exactly the team threads, request carries `viewId` + `teamId`. Curl: cross-tenant id -> `422 {"fieldErrors":{"filter":"One or more teams do not belong to this tenant."}}`; unknown key still `422 extra_forbidden`; legacy filter still 201. Post-delete: a view keeps a dangling id but still loads (empty page) - observation. |
 | AC-TEM-47 | FE | PASS | E2E 11/12/14: the thread row, the drawer header and the rail bucket all update off the single PATCH response with no manual refresh. `use-conversations.test.ts` covers the optimistic-revert-on-422 path; live 422s (inactive team, non-member user) left the UI on the server state with the server message surfaced. |
 | AC-TEM-48 | FE | PASS | E2E 18/19/20 at 375px, E2E 10/15 at 1280px; `scrollWidth == clientWidth == 375` on the inbox. Plan-23 hard-fails: `lib/white-label.guard.test.ts` and the inventory tests are green in the vitest run. |
 
@@ -173,27 +173,27 @@ Legend: PASS / FAIL / DEFERRED. "E2E n" = screenshot `n` in
 
 | Result | Count | IDs |
 |---|---|---|
-| PASS | 48 | all except the two below |
-| FAIL | 1 | AC-TEM-39 (Filters clause) |
-| DEFERRED | 1 | AC-TEM-46 |
+| PASS | 50 | all (round 2 on `c6706b3c`; round 1 on `7814fcf` was 48 / 1 FAIL / 1 DEFERRED) |
+| FAIL | 0 | - |
+| DEFERRED | 0 | - |
 
 ## 4. Defects
 
-**D1 - `omnichannel.assign_conversation` is unreachable from the workflow editor.** NEW.
+**D1 - `omnichannel.assign_conversation` is unreachable from the workflow editor.** CLOSED in round 1 (`0e5dfbb3`), verified round 2 E2E 40/42.
 - Registered backend-side at `service_backend/modules/omnichannel/workflow_nodes.py:212` with the full field set, but **absent from `service_frontend/lib/workflow-catalog.ts`**, which carries the other three omnichannel nodes (`omnichannel.message_received` line 149, `omnichannel.get_contact` line 340, `omnichannel.send_message` line 368).
 - Repro: sign in as the tenant Admin -> Workflows -> New workflow -> palette search "assign" -> no results; search "conversation" -> only "Send Message". Expanding ACTIONS lists 13 entries, none of them Assign Conversation.
 - Impact: a tenant cannot build the plan's headline automation through the UI. The action is only invocable by writing the node into `draftDefinition` over the API (which is how E2E 24 was produced).
 - `lib/workflow-catalog.ts` is **not** among the concurrent fix round's modified files, so this is an open gap rather than work already in flight.
 - Backlog candidate: plan 28 range (082-091); main's numbering is authoritative at merge.
 
-**D2 - Teams list Filters does not reach the API.** Known review finding, under repair.
+**D2 - Teams list Filters does not reach the API.** CLOSED, verified round 2 E2E 33/35/44.
 - Repro: Teams -> Filters -> `Name` `contains` `ZZZ-no-match` -> Apply. The list refetches as `GET /teams?page=0&page_size=25&sort_by=name&sort_dir=asc` (no filter param) and the non-matching row remains visible. `search` and `sort` on the same list are correctly server-served.
 - Breaks the "filter ... served by the API" clause of AC-TEM-39. Evidence E2E 08.
 
-**D3 - `GET /teams/mine` returns member email addresses.** Known review finding, under repair.
+**D3 - `GET /teams/mine` returns member email addresses.** CLOSED, verified round 2 (members are `{userId,name,role}`).
 - Repro: as P28 Agent 1 (holds neither `teams.read` nor `teams.manage`), `GET /teams/mine` returns 200 with each member's `email` populated. The endpoint exists precisely so an inbox agent can render the rail without `teams.read`, so it should not carry PII the caller is not entitled to.
 
-**D4 - the agent's inbox rail fires a `teams.read`-gated call it cannot make.** Known review finding, under repair.
+**D4 - the agent's inbox rail fires a `teams.read`-gated call it cannot make.** CLOSED, verified round 2 E2E 34 (only `/teams/mine` in the log).
 - Repro: as P28 Agent 1, opening the Inbox issues `GET /teams?page=0&page_size=200&...` which **403s** (twice per load), alongside the successful `GET /teams/mine`. The surface degrades correctly (MY TEAMS still renders, ALL TEAMS is correctly hidden), so this is wasted requests and log noise rather than a broken screen.
 
 **D5 - `inbox-view-rail.test.tsx` deferred-action test is load-sensitive.** Test infrastructure.
@@ -203,7 +203,7 @@ Legend: PASS / FAIL / DEFERRED. "E2E n" = screenshot `n` in
 
 ## 5. Deferred
 
-**AC-TEM-46 - saved inbox views cannot store a team scope (at `7814fcf`).**
+**AC-TEM-46 - saved inbox views cannot store a team scope (at `7814fcf`).** RESOLVED in round 2 - see the round-2 section; kept for the record.
 - Observed: `POST /omnichannel/workspaces/{ws}/inbox-views` with `{"filter":{"teamIds":[<valid team>]}}` -> **422 `extra_forbidden`** on `body.filter.teamIds`. The same 422 shape is returned for a genuinely unknown key (`bogusKey`), and a legacy filter with no `teamIds` still saves **201**, so the `extra="forbid"` and back-compat halves of the AC hold.
 - Reason for DEFERRED rather than FAIL: the concurrent fix round has already added `teamIds: Optional[List[str]]` to `InboxViewFilter` (`modules/omnichannel/schemas.py`, with a comment citing AC-TEM-46 and tenant-scoped validation via `team.resolve@1`), together with `services/inbox_view_service.py` changes. That work is uncommitted and therefore absent from the build under test. Per the brief, this is deferred to the fix round for re-verification.
 - Re-verify after the fix round lands: save a view with a valid `teamIds`, confirm a foreign/unknown team id is rejected tenant-scoped, confirm an unknown key still 422s, and confirm pre-existing views still load.
@@ -268,3 +268,28 @@ teams|team_members|app_omnichannel.team_assignment_settings|1
 Schema-check columns: `teams | team_members | team_assignment_settings | contacts.assigned_team_id
 column count`. `<absent>`/`0` after the downgrade and all four back after the upgrade is the
 pass condition. Result: **PASS** (cycle clean, no residue, both version tables back at head).
+
+## 7. Round 2 verification (commit `c6706b3c`)
+
+| | |
+|---|---|
+| Commit under test | **`c6706b3c`** = round 1 `0e5dfbb3` + round 2 `c6706b3c`, on top of the round-1 evidence commit `8f3dd01b`; worktree clean |
+| Servers | backend `:8007` PID 24933 and frontend `:3006` PID 27764, both rebuilt by the coordinator on `c6706b3c` and left untouched (nothing restarted or rebuilt by this run); frontend cwd verified as the s28 worktree |
+| Browser | `agent-browser` sessions `s28t2` / `s28t2a` / `s28t2b`, real clicks from `/` (one disclosed typed URL for the admin 375 pass), 1280 and 375 |
+| Evidence | `28-evidence/E2E/` 22, 23 (replaced), 33-46 (new) + the README "Round 2" run log |
+| Targeted backend | `test_teams.py`, `test_omnichannel_team_assignment.py`, `test_omnichannel_inbox_views.py`, `test_deferred_actions.py` -> **159 passed** (330s). Full suite not re-run per the brief (coder: 3136 on `0e5dfbb3`). |
+| Full vitest | **2184 passed, 2 failed** (293 files). `timezone-card.test.tsx` and `resource-form.deferred.test.tsx` both **pass in isolation (6/6)**; neither is a Teams file; the round-1 `inbox-view-rail` flake passed this time. Same D5 class (timer tests under full-suite load). |
+
+The lane DB lost every `teams`/`team_members` row and every `assigned_team_id` in the migration cycle (as warned); tenants, users, threads, workspace and API key survived. Teams were recreated with the stamp `1788700982`. Two setup grants to the purpose-built P28 Agent role: `conversations.assign` (so the drawer's Teams group renders for the inactive-team check) and `workspaces.read` (without it the agent's Inbox never requested the thread list - a test-role artefact). `teams.read` was never granted to an agent.
+
+| Fix surface (brief item) | Result | Evidence |
+|---|---|---|
+| 1. Teams list Filters server-served; unknown field 422 | PASS | E2E 33/35/44; curl `field not filterable: bogusField` |
+| 2. Team delete = deferred action; Cancel fires nothing; guard hit = `failed` toast with counts | PASS | E2E 22/23/36/45; `pending_actions` rows `cancelled` / `failed` / (unintended) `committed` |
+| 3. Team assignment tab as `conversations.read`-only user lists every ACTIVE team with `isConfigured` | PASS | E2E 39/46; curl rows `(Throwaway, round_robin, False, None)`, `(Support, least_open, True, ts)` |
+| 4. Agent rail: My teams only, no All teams, no 403 chatter; heading hidden with no teams | PASS | E2E 34/41/43; log shows only `/teams/mine 200` |
+| 5. Saved view with a team: save, reload, restores; cross-tenant id 422 | PASS | E2E 38; curl 422 `One or more teams do not belong to this tenant.` |
+| 6. Palette "assign" -> Assign Conversation with its icon; drawer mode + team/strategy | PASS | E2E 40/42; `lucide-user-round-cog`; Team picker = active teams only |
+| Drawer Teams group excludes an inactive team the agent belongs to | PASS | E2E 37 |
+
+Observations for the reviewer (not defects against the amended UAC): (a) the rail's My teams and the 375 View select still list an INACTIVE team the agent belongs to - round 2 scoped active-only to assignment targets, so this may be intended; (b) after a real delete, saved views keep the dangling `teamIds` yet still load (empty page, 200) - graceful, no cleanup; (c) the reference guard has exactly one registered source (`conversations`), so team-settings rows and saved views never block a delete.
