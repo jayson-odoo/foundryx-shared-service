@@ -3862,7 +3862,10 @@ def test_mapping_view_customer_offers_the_extra_master_fields(db, transports):
     company = _company(db, transports)
     view = CompanyService(db).mapping_view(DEFAULT_TENANT_ID, company.id, ENTITY_CUSTOMER)
     accepted = {f.field for f in view.sorento_fields}
-    assert {"phone_number", "credit_limit", "tax_id"} <= accepted
+    assert {"phone_number", "tax_id"} <= accepted
+    # Sorento 2.1 rejects customers.credit_limit (extra="forbid") - it must
+    # not be offered as a mapping target either.
+    assert "credit_limit" not in accepted
 
 
 def test_mapping_view_unknown_entity_is_a_clean_not_found(db, transports):
