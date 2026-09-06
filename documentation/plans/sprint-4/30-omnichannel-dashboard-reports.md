@@ -10,8 +10,9 @@
 > `agent-browser --session s30`. Each worktree gets its OWN `npm ci` (never a shared
 > `node_modules`). The main checkout carries the user's unrelated wip - never build there.
 > **Runs beside:** plan 28 (A8 teams, migration `0012` / manifest `0.6.0`) and plan 29 (A4
-> broadcasts, migration `0011` / manifest `0.5.0`). A9 takes manifest `0.4.1` and, by default, NO
-> migration (see D-A9-14).
+> broadcasts, migration `0011` / manifest `0.5.0`). A9 stays on manifest `0.4.0` (amended
+> 2026-09-06, D-A9-10 - reusing core `reports.*` permission keys means no new grantable module key
+> and no version bump) and, by default, NO migration (see D-A9-14).
 
 ## 1. Why
 
@@ -60,11 +61,11 @@ without a special case.
 | Filter validation | `services/report_filters.py` (new) | `ReportQuery` dataclass; validates `tz` via `zoneinfo`, `from`/`to`, `granularity`, `userId` (tenant-scoped), `channelId` (workspace-scoped), `groupBy` (per-report whitelist), `teamId` (422 while `team_column()` is None). REUSES `contact_filters.CONTACT_FILTER_COLUMNS` for any contact-side predicate - never a second map |
 | Team seam | `services/report_filters.py team_column()` | `getattr(Contact, "assigned_team_id", None)`; returns `None` until plan 28 lands. Every report reads the dimension through this one accessor (D-A9-13) |
 | Export | `services/report_export_service.py` (new) | `JobHandlerDef(type="omnichannel.report_export", ...)` via `app/jobs/registry.register_job_handler`; row stream -> `sanitize_cell` -> CSV -> `storage_for_tenant(db, tenant).save(...)`; `result_json = {fileKey, rowCount, columns}`; job status re-read per batch (cooperative abort). Copies `services/contact_export_service.py` structure, does not re-invent it |
-| Router | `routers/reports.py` (new) | HTTP + Pydantic only. Reads gated `require_permission("conversation_reports.read")`, exports `conversation_reports.export`; `WorkspaceService(db).get_or_404(ws_id, tenant_id)` first line of every handler |
+| Router | `routers/reports.py` (new) | HTTP + Pydantic only. Reads gated `require_permission("reports.read")`, exports `require_permission("reports.export")` (**amended 2026-09-06** - see D-A9-10); `WorkspaceService(db).get_or_404(ws_id, tenant_id)` first line of every handler |
 | Schemas | `modules/omnichannel/schemas.py` | `DashboardResponse`, `ReportMetaResponse`, `ReportResponse`, `ReportBucket`, `ReportSeries`, `ReportRow` variants, `ReportExportRequest`. Datetime-bearing schemas inherit `ApiModel`; wire is camelCase via `validation_alias` |
-| Permissions | `modules/omnichannel/permissions/permissions.csv` | `conversation_reports,Conversation Reports,read,Read,...` and `...,export,Export,...`. **NOT** `reports.*` - see D-A9-10 |
-| Manifest | `modules/omnichannel/manifest.json` | version `0.4.0 -> 0.4.1`; new router entry `{"name": "reports", "prefix": "/omnichannel/workspaces"}` |
-| Tenant hook | `modules/omnichannel/bootstrap.py update_tenant` | a no-op guard branch for `0.4.0 -> 0.4.1` (permission grants come from `AppStoreService.update()`); no data work, no migration |
+| Permissions | `modules/omnichannel/permissions/permissions.csv` | **No new rows (amended 2026-09-06, D-A9-10).** The module CSV declares nothing for reports; both routes reuse the core `reports.read`/`reports.export` keys, already granted to every tenant Admin |
+| Manifest | `modules/omnichannel/manifest.json` | **Stays `0.4.0` (amended 2026-09-06).** The `reports` router entry was already added at that version by S1; reusing core permission keys means there is no new grantable module key to version-gate, so S3 adds no bump either |
+| Tenant hook | `modules/omnichannel/bootstrap.py update_tenant` | **No new guard branch needed (amended 2026-09-06).** No manifest bump, no new permission rows to sync/grant - `sweep_tenant_admin_grants`/`tenant_admin_grant` already cover the core `reports.*` keys for every existing tenant |
 | Test fixture | `service_backend/tests/omnichannel_report_fixture.py` (new) | `seed_report_fixture(db, tenant_id, workspace_id) -> FixtureIds` producing EXACTLY the UAC fixture table; imported by every report test |
 
 Reused unchanged: `services/event_service.py` (`_label_map` batching pattern for tenant-scoped id
@@ -87,7 +88,7 @@ resolution), `services/lifecycle_service.py stages_for_workspace`, `services/con
 | Service trio | `services/omnichannel-report-service.{ts,mock,real}.ts` |
 | Hooks | `hooks/use-report-meta.ts`, `hooks/use-omnichannel-dashboard.ts`, `hooks/use-omnichannel-report.ts` |
 | Types | `types/omnichannel.ts` += `ReportMeta`, `ReportDescriptor`, `ReportBucket`, `ReportSeries`, `ReportResponse`, `DashboardResponse`, `ReportFilters` |
-| Menu | `config/menu.config.tsx` - Dashboard (before Inbox) + Reports (after Contacts) in ALL THREE arrays, tagged `module: 'omnichannel'` + `permission: 'conversation_reports.read'` |
+| Menu | `config/menu.config.tsx` - Dashboard (before Inbox) + Reports (after Contacts) in ALL THREE arrays, tagged `module: 'omnichannel'` + `permission: 'reports.read'` (**amended 2026-09-06** - see D-A9-10) |
 
 Reused unchanged: `components/platform/resource-list`, `search-select`, `page-header`,
 `components/common/container`, `components/common/require-permission`, `components/ui/{card,
@@ -108,11 +109,11 @@ tabs,popover,calendar,skeleton,chart}`, `hooks/use-can.ts`, `hooks/use-datetime.
 | D-A9-7 | Out of scope: custom report builder, scheduled report emails, team presence, broadcast reports, lifecycle funnel / time-in-stage / contacts-added (reports v2) | Main session |
 | **D-A9-8** | **Bucket edges are computed in Python from `zoneinfo`; aggregation is conditional `SUM(CASE ...)` over those edges in ONE SQL pass.** No `date_trunc`, no `strftime`, no dialect branch | Planner. `date_trunc(... AT TIME ZONE ...)` is Postgres-only, so the pytest suite (SQLite) could only ever test a fallback - and the ACs demand exact numbers from the real code path. Python edges are also DST-correct by construction (a London day bucket is 23h wide because `zoneinfo` says so) and cost one bounded `CASE` list, capped at 120 buckets |
 | **D-A9-9** | **Percentiles, medians and durations are computed in Python** over a bounded single-column projection (`REPORT_MAX_SAMPLE_ROWS = 100_000`, 422 beyond); counts and sums stay in SQL | Planner. `percentile_cont` is Postgres-only; timestamp subtraction is dialect-specific. One reduction path means one set of numbers to test. The cap is the same fail-fast shape A2's export cap uses |
-| **D-A9-10** | **Permission keys are `conversation_reports.read` / `conversation_reports.export`, NOT `reports.read` / `reports.export`** | Planner, and this is a hard blocker not a style call. Core already declares `reports.read` + `reports.export` (`app/permissions/permissions.csv` L39-40, unused by any route today) and `Permission.key` is globally UNIQUE while `PermissionRepository.sync` is delete-by-module. Declaring them in the module CSV would raise `IntegrityError` on install and, if it ever got past that, delete core's rows plus every role grant on uninstall. Same shape as the existing `templates` vs `wa_templates` collision. Flagged to the user (§8.1) |
+| **D-A9-10** | **Permission keys are the CORE `reports.read` / `reports.export` - the module declares NO `conversation_reports.*` rows.** (**Amended 2026-09-06 by the main session, final** - superseding the planner's original "declare `conversation_reports.*`" draft below.) | Planner's original reasoning stands (core already declares `reports.read`/`reports.export`, `app/permissions/permissions.csv` L39-40; `Permission.key` is globally UNIQUE and `PermissionRepository.sync` is delete-by-module, so a module row of the same name would `IntegrityError` at install and, worse, delete core's rows + every grant at uninstall - same shape as the `templates` vs `wa_templates` collision) but the CONCLUSION flips: rather than mint a parallel `conversation_reports.*` pair, S1/S2/S3 REUSE the core keys directly (`require_permission("reports.read"/"reports.export")`). Reasons: (1) "Conversation Reports" is not a materially different resource from core "Reports & Analytics" - both core rows were seeded unused specifically for a future reports feature, and this IS that feature; (2) reuse needs zero new CSV rows, zero manifest version bump, zero `update_tenant` guard branch, and zero grant-sweep migration, because `tenant_admin_grant`/`sweep_tenant_admin_grants` already grant every core key (including these two, previously dormant) to every tenant Admin; (3) a module-scoped pair would still need its own grant-sweep the day it ships, for zero practical isolation benefit (both keys gate the SAME ten routes either way). Trade-off accepted: uninstalling the omnichannel module can never revoke reports access (the keys are core, not module-owned) - acceptable since nothing else currently uses them and a future SECOND module wanting its own reports surface reuses the same two keys rather than forking a per-module resource name (documented here so nobody re-forks `conversation_reports.*` later) |
 | **D-A9-11** | A bucket's `key` is already LOCAL (`2026-03-01`, `2026-03-01T09`, `2026-W10`, `2026-03`); the client formats the axis label from the key and never re-applies a timezone. Only `startsAt` / `endsAt` are UTC instants | Planner. The classic bug in this feature class is double conversion: the server buckets in Asia/Kuala_Lumpur, then `useDatetime` shifts the label again. A local key cannot be shifted twice |
 | **D-A9-12** | The `conversations`, `responses`, `resolutions` and `assignments` reports read only `conversation_events` (well indexed by A3). The `messages` report joins `conversation_messages -> contacts`, whose only usable index is `contact_id`; ship an INDEX-ONLY migration adding `ix_conv_messages_tenant_created (tenant_id, created_at)` if S2 measures a seq scan on a seeded 100k-row table, otherwise defer | Planner. `conversation_messages` is the largest table in the module and the one report that touches it is the one most likely to time out first |
 | **D-A9-13** | Team is an OPTIONAL dimension read through ONE `team_column()` accessor that returns `None` until plan 28 lands; `reports/meta` advertises `dimensions.team.available` and the frontend hides the control accordingly; `teamId` / `groupBy=team` are 422 until then | Planner + brief. A8 turns the dimension on by adding the column - no report SQL changes |
-| **D-A9-14** | Manifest `0.4.0 -> 0.4.1`, new `reports` router, NO Alembic migration by default. If D-A9-12's index ships, the revision takes the next free number at MERGE time (reserve `0013`) and rebases its `down_revision` onto whatever is head then | Planner. A4 claims `0011` / `0.5.0` and A8 `0012` / `0.6.0` off the same `main`; a duplicated parent is a merge break git cannot see (the D-A3-16 lesson) |
+| **D-A9-14** | Manifest stays `0.4.0` (**amended 2026-09-06, D-A9-10** - superseding the planner's original `0.4.0 -> 0.4.1`, since reusing core permission keys leaves no new grantable module key to version-gate), new `reports` router, NO Alembic migration by default. If D-A9-12's index ships, the revision takes the next free number at MERGE time (reserve `0013`) and rebases its `down_revision` onto whatever is head then | Planner (manifest-bump clause superseded by the main session). A4 claims `0011` / `0.5.0` and A8 `0012` / `0.6.0` off the same `main`; a duplicated parent is a merge break git cannot see (the D-A3-16 lesson) |
 | **D-A9-15** | Charts render through the EXISTING `components/ui/chart.tsx` (shadcn + recharts), not `apexcharts`. A new `components/platform/date-range-picker` is built from existing `Popover` + `Calendar` primitives | Planner. Both libraries are already in `package.json`; apex is used by exactly one demo page behind `dynamic ssr:false`, while `chart.tsx` already wires `ChartConfig` colours to CSS variables (so brand tokens win) and needs no client-only shim. A4 broadcasts will reuse the same date-range control |
 | **D-A9-16** | Every report is workspace-scoped (`/omnichannel/workspaces/{wsId}/...`), workspace resolved on the client exactly like Contacts (default first, header `SearchSelect` only when the tenant has more than one) | Planner. Matches A2's D-A2-10 and A2/A3's route shape; a tenant-wide "all workspaces" roll-up is a backlog item |
 
@@ -138,7 +139,7 @@ tabs,popover,calendar,skeleton,chart}`, `hooks/use-can.ts`, `hooks/use-datetime.
 | **S0 FE mock** | types, `omnichannel-report-service` trio (mock returns EXACTLY the UAC fixture numbers), `lib/duration.ts`, `date-range-picker`, `report-filter-bar` + URL sync, `report-chart` adapter, dashboard page + its five cards, reports page + picker + all seven report renderers (assignment log and users as embedded `ResourceList`), menu entries in all three arrays, vitest for every new component; agent-browser smoke at 375 + 1280 against the mock | **L** | 41-46, 48-50, 52 |
 | **S1 BE aggregation + dashboard** | `report_windows.py`, `report_queries.py`, `report_stats.py`, `report_filters.py` (+ `team_column`), `report_service.dashboard`, `GET .../dashboard`, the shared test fixture, pytest incl. the two-dialect golden compile and the DST test | **M** | 01-16, 51 (partial) |
 | **S2 BE reports + assignment log** | the seven report builders + `GET .../reports/meta` + `GET .../reports/{key}`, `groupBy` whitelists, pagination + stable tiebreaks, the D-A9-12 index measurement (and the index-only migration only if it is needed), pytest | **L** | 17-32, 51 (partial) |
-| **S3 BE export + permissions** | `report_export_service.py` (job handler, CSV, cap, cooperative abort), the two export routes, permissions CSV + manifest `0.4.1` + `update_tenant` guard, pytest | **M** | 33-40, 47 (backend half), 51 (partial) |
+| **S3 BE export + permissions** | `report_export_service.py` (job handler, CSV, cap, cooperative abort), the two export routes, pytest. **No permissions-CSV/manifest/`update_tenant` change (amended 2026-09-06, D-A9-10)** - both export routes reuse the core `reports.export` key | **M** | 33-40, 47 (backend half), 51 (partial) |
 | **S4 Wire + E2E** | swap mocks for real at the service boundary (one line per method in `*.real.ts`), export poll-then-Jobs fallback against the real job, responsive pass at 375 + 1280 on both pages, recorded agent-browser evidence run, Test Execution Report | **M** | 47, 49, 53-55 |
 | **Review** | `reviewer` agent on **Opus** (ten new routes, a PII-egress CSV path, and an aggregation layer that must not leak a cross-tenant name through a polymorphic actor id), then `/codex-review` | - | - |
 
@@ -152,14 +153,14 @@ before S3 (the export streams the same builders). S0 is independent and can star
 ```
 GET  /omnichannel/workspaces/{wsId}/dashboard
        ?from=YYYY-MM-DD&to=YYYY-MM-DD&tz=<IANA>&granularity=&userId=&channelId=&teamId=
-       -> DashboardResponse                                   (conversation_reports.read)
+       -> DashboardResponse                                   (reports.read - amended 2026-09-06, D-A9-10)
 
 GET  /omnichannel/workspaces/{wsId}/reports/meta
        -> { reports: ReportDescriptor[], granularities: [...], dimensions: { team: {available} } }
 
 GET  /omnichannel/workspaces/{wsId}/reports/{reportKey}
        ?from&to&tz&granularity&userId&channelId&teamId&groupBy&page&pageSize
-       -> ReportResponse                                      (conversation_reports.read)
+       -> ReportResponse                                      (reports.read - amended 2026-09-06, D-A9-10)
 
 POST /omnichannel/workspaces/{wsId}/reports/{reportKey}/export
        { from, to, tz, granularity?, userId?, channelId?, groupBy? }  -> { jobId }   (…export)
@@ -336,18 +337,20 @@ and unit-testable before any endpoint exists. S4's swap is one line per method i
 
 ## 8. Flagged for the user (planner deviations from the 2026-09-06 decision set)
 
-1. **Permission keys are `conversation_reports.read` / `conversation_reports.export`, not
-   `reports.read` / `reports.export` (D-A9-10) - BLOCKING if reverted.** Core already declares
-   both of those keys (`service_backend/app/permissions/permissions.csv` lines 39-40, currently
-   unused by any route), `Permission.key` is globally unique, and
-   `PermissionRepository.sync(module, rows)` selects existing rows BY MODULE and deletes the ones a
-   module stops declaring. Declaring `reports.read` in the omnichannel CSV therefore inserts a
-   duplicate unique key (`IntegrityError` at install) and, on uninstall, would delete core's rows
-   and every role grant hanging off them. The alternative that keeps your literal key names is to
-   REUSE the core keys (declare nothing, just `require_permission("reports.read")`) - that works
-   today and every tenant Admin already holds them, but it permanently blurs a core resource with
-   a module feature and leaves the keys behind after uninstall. Say the word and S3 switches to
-   reuse in one line.
+1. **RESOLVED 2026-09-06 (main session, final): reuse the CORE `reports.read` / `reports.export`
+   keys - the module declares NO `conversation_reports.*` rows.** The planner's original flag stood
+   at "declare `conversation_reports.read`/`.export`" for the reason still true today (core already
+   declares both keys, `service_backend/app/permissions/permissions.csv` lines 39-40, previously
+   unused by any route; `Permission.key` is globally unique and `PermissionRepository.sync(module,
+   rows)` selects existing rows BY MODULE and deletes the ones a module stops declaring, so a
+   module-CSV `reports.read` row would `IntegrityError` at install and, on uninstall, delete core's
+   rows and every grant hanging off them). The main session picked the REUSE alternative instead:
+   `require_permission("reports.read"/"reports.export")` directly, no module CSV rows, no manifest
+   bump, no grant sweep - every tenant Admin already holds both core keys via
+   `tenant_admin_grant`/`sweep_tenant_admin_grants`. Accepted trade-off: uninstalling omnichannel
+   can never revoke reports access (the keys are core-owned, not module-owned) - fine today since
+   nothing else consumes them, and the next module wanting a reports surface reuses the SAME two
+   keys rather than minting its own resource name. S1/S2/S3 all ship this way; see D-A9-10.
 2. **The `dataviz` skill is not installed in this environment.** No `~/.claude/skills/dataviz*`
    and nothing chart-related in `docs/reference/frontend-design-language.md`. §3.1 encodes the
    palette / form rules explicitly instead, derived from the house design mandates (brand tokens,

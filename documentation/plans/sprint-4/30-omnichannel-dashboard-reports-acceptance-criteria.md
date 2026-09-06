@@ -203,7 +203,8 @@ messages: C6 at 180s). Resolution sample `[3600, 3600, 10800, 14400, 37800, 5184
 - **AC-RPT-17 [BE]** Given `GET /omnichannel/workspaces/{wsId}/reports/meta`, then it returns the
   seven report descriptors (`conversations`, `responses`, `resolutions`, `messages`, `users`,
   `leaderboard`, `assignments`) each with `key`, `label`, `supportsGroupBy`, `exportable`, plus
-  `granularities` and `dimensions` (`team.available`), gated by `conversation_reports.read`.
+  `granularities` and `dimensions` (`team.available`), gated by the core `reports.read` key
+  (amended 2026-09-06 - see AC-RPT-37).
 - **AC-RPT-18 [BE]** Given `reports/conversations` on the fixture range, then `series` =
   `[{key: "opened", points: [2,2,1,0,1,1,0]}, {key: "closed", points: [1,2,1,1,0,1,0]},
   {key: "reopened", points: [0,0,0,1,0,0,0]}]` and `totals` = `{opened: 7, closed: 6, reopened: 1}`.
@@ -259,12 +260,18 @@ messages: C6 at 180s). Resolution sample `[3600, 3600, 10800, 14400, 37800, 5184
   a report that does not declare it, then 422 naming the accepted values (the whitelist is the same
   list `reports/meta` publishes - one source, never forked).
 - **AC-RPT-30 [BE]** Given a `channelId` filter, then it is validated against the workspace's own
-  channels (a channel of another workspace or tenant is a 422) and applied in SQL to the message
-  and event queries alike.
-- **AC-RPT-31 [BE]** Given every report route, then it requires `conversation_reports.read`, is
-  tenant-scoped from the JWT and workspace-scoped from the path, and a caller from tenant B asking
-  for tenant A's `wsId` gets a uniform 404 for every one of the seven reports plus `meta` plus the
-  dashboard.
+  channels for EVERY report (a channel of another workspace or tenant is a 422 regardless of
+  report key), but only APPLIED in SQL for the `messages` report - the one report shape that
+  carries a channel dimension (`conversation_messages.channel_id`); `conversation_events` has no
+  channel column, so `channelId` is accepted-and-a-no-op for every other report rather than
+  misrepresenting history through the contact's CURRENT channel identity (amended 2026-09-06 - the
+  S2 coder flagged the original wording, "applied... to the message and event queries alike", as
+  inaccurate against the shipped `CHANNEL_FILTERED_REPORTS = {"messages"}` rule in
+  `report_service.py`; this is the corrected, shipped behaviour, not a new decision).
+- **AC-RPT-31 [BE]** Given every report route, then it requires the core `reports.read` key
+  (amended 2026-09-06 - see AC-RPT-37), is tenant-scoped from the JWT and workspace-scoped from
+  the path, and a caller from tenant B asking for tenant A's `wsId` gets a uniform 404 for every
+  one of the seven reports plus `meta` plus the dashboard.
 - **AC-RPT-32 [BE]** Given the report services, then they REUSE `contact_filters.py`'s whitelisted
   column map and `lifecycle_service.stages_for_workspace` rather than forking a second map, and no
   report builds SQL from a client string (all identifiers come from server-side constants).
@@ -280,42 +287,63 @@ messages: C6 at 180s). Resolution sample `[3600, 3600, 10800, 14400, 37800, 5184
   columns}` and `GET .../reports/{reportKey}/export/{jobId}/file` streams `text/csv` with
   `Content-Disposition: attachment`, `Content-Security-Policy: default-src 'none'; sandbox`,
   `X-Content-Type-Options: nosniff` and `Cache-Control: private, max-age=0, no-store`, requiring
-  the caller's bearer + `conversation_reports.export`; a job of another tenant, another workspace,
-  another type, or one not yet DONE returns a uniform 404 (the A2 `download_contacts_export`
-  precedent, copied not re-invented).
+  the caller's bearer + the core `reports.export` key (amended 2026-09-06 - see AC-RPT-37); a job
+  of another tenant, another workspace, another report key, another job type, or one not yet DONE
+  returns a uniform 404 (the A2 `download_contacts_export` precedent, copied not re-invented).
 - **AC-RPT-35 [BE]** Given the CSV, then every cell goes through `app.import_engine.sanitize
   sanitize_cell` (spreadsheet-formula injection: contact names originate from inbound WhatsApp
-  profile names), the header row carries human labels, the first data column identifies the row
-  (bucket key, user id or event id depending on the report), and every timestamp is rendered in the
-  requested `tz` with the offset appended so a spreadsheet reader is not silently in UTC.
+  profile names) INCLUDING every header cell, the header row carries human labels sourced from the
+  same series labels / column maps the read route already returns (never a second hardcoded list),
+  and every timestamp column (bucket `startsAt`/`endsAt`, the assignment log's `createdAt`) is
+  rendered in the requested `tz` with the offset appended (`YYYY-MM-DD HH:MM:SS +08:00`) so a
+  spreadsheet reader is not silently in UTC; the two report shapes with no per-record `rows`
+  (`conversations`, and `messages` when not grouped by channel) export one row per bucket instead,
+  reusing the SAME `buckets`/`series` the chart renders - never a second query path.
 - **AC-RPT-36 [BE]** Given an export whose row count would exceed 50000, then the POST fails FAST
-  with 422 naming the count and the cap, before any job row is created.
-- **AC-RPT-37 [BE]** Given permissions, then the module CSV adds `conversation_reports.read` and
-  `conversation_reports.export` (resource label "Conversation Reports"); the module MUST NOT
-  declare `reports.read` / `reports.export` because core already owns those globally-unique keys
-  (`app/permissions/permissions.csv` lines 39-40) and `PermissionRepository.sync` is
-  delete-by-module on a unique key - declaring them would raise on insert and, worse, delete core's
-  rows and their grants on uninstall.
-- **AC-RPT-38 [BE]** Given the manifest bumps `0.4.0 -> 0.4.1` with the new `reports` router
-  declared and NO Alembic migration, then `update_tenant` runs a no-op version guard for that step,
-  `AppStoreService.update()` grants the two new keys to each tenant's Admin role, and re-running is
-  idempotent.
-- **AC-RPT-39 [BE]** Given a user holding `conversations.read` but NOT `conversation_reports.read`,
+  with 422 naming the count and the cap, before any job row is created; the count comes from the
+  SAME report builder the read route calls (a paginated report's `total`, an unpaginated report's
+  row count), never a second query.
+- **AC-RPT-37 [BE]** **Amended 2026-09-06 (main session, final - supersedes the original text
+  below).** Given permissions, then BOTH export routes are gated by the CORE `reports.export` key
+  and the read routes (dashboard, `meta`, all seven reports) stay gated by the core `reports.read`
+  key from S1/S2 - the module declares NO `conversation_reports.*` permission rows, no manifest
+  version bump, and no `update_tenant` grant-sweep guard. *Original text (superseded, kept for
+  history): "the module CSV adds `conversation_reports.read` and `conversation_reports.export`...
+  the module MUST NOT declare `reports.read`/`reports.export` because core already owns those
+  globally-unique keys and `PermissionRepository.sync` is delete-by-module on a unique key -
+  declaring them would raise on insert and, worse, delete core's rows and their grants on
+  uninstall." The collision risk described is real and is exactly why the FINAL decision reuses
+  the core keys directly rather than minting a colliding or parallel pair - see plan D-A9-10.*
+- **AC-RPT-38 [BE]** **Amended 2026-09-06 (supersedes the original manifest-bump text).** Given the
+  reused-core-key decision, then the manifest stays at `0.4.0` (the `reports` router was already
+  added at that version in S1), there is no new `update_tenant` guard branch, and no grant-sweep
+  migration is needed - `sweep_tenant_admin_grants`/`tenant_admin_grant` already grant every core
+  key (including the two previously-dormant `reports.*` rows) to every tenant's Admin role. Proven
+  by a live `GET /auth/me` check for the demo tenant Admin showing both `reports.read` and
+  `reports.export` in `permissions[]`, plus a pytest asserting the same for a freshly-provisioned
+  tenant.
+- **AC-RPT-39 [BE]** Given a user holding `conversations.read` but NOT the core `reports.read` key,
   then every dashboard, report, meta and export route returns 403 (not 404, not data); given
-  `conversation_reports.read` but not `.export`, then the read routes work and both export routes
-  return 403.
-- **AC-RPT-40 [BE]** Given a tenant is uninstalled from the module, then its
+  `reports.read` but not `reports.export`, then the read routes work and both export routes return
+  403 (amended 2026-09-06 - key names updated per AC-RPT-37; the crafted-role mechanism is
+  unchanged).
+- **AC-RPT-40 [BE]** **Amended 2026-09-06 (supersedes the original text below).** Given a tenant is
+  uninstalled from the omnichannel module, then NO permission row is touched at all - the module
+  declares no `reports.*`/`conversation_reports.*` rows of its own, so `PermissionRepository.sync`
+  has nothing module-owned to delete-by-module here; the core `reports.read`/`reports.export` rows
+  and every tenant's grants on them persist untouched (proven by a pytest that installs, uninstalls,
+  and re-checks the core permission catalog is unchanged). *Original text (superseded): "then its
   `conversation_reports.*` permission rows and their role grants are removed with the module and no
-  core permission row is touched.
+  core permission row is touched" - moot once no module-owned rows exist to remove.*
 
 ## Slice S0 / S4 - Frontend
 
-- **AC-RPT-41 [FE]** Given the omnichannel module is active and the user holds
-  `conversation_reports.read`, then a **Dashboard** entry (before Inbox) and a **Reports** entry
-  (after Contacts) exist in the omnichannel block of ALL THREE menu arrays (`MENU_SIDEBAR`,
-  `MENU_MEGA`, `MENU_MEGA_MOBILE`), each tagged `module: 'omnichannel'` +
-  `permission: 'conversation_reports.read'`; a tenant without the module or a user without the key
-  sees neither, in every menu surface.
+- **AC-RPT-41 [FE]** Given the omnichannel module is active and the user holds the core
+  `reports.read` key (amended 2026-09-06 - see AC-RPT-37), then a **Dashboard** entry (before
+  Inbox) and a **Reports** entry (after Contacts) exist in the omnichannel block of ALL THREE menu
+  arrays (`MENU_SIDEBAR`, `MENU_MEGA`, `MENU_MEGA_MOBILE`), each tagged `module: 'omnichannel'` +
+  `permission: 'reports.read'`; a tenant without the module or a user without the key sees
+  neither, in every menu surface.
 - **AC-RPT-42 [FE]** Given `/omnichannel/dashboard`, then it resolves the workspace exactly like
   Contacts (`useActiveWorkspace`, default first, a header `SearchSelect` only when the tenant has
   more than one workspace), shows the four state tiles, the lifecycle stage tiles, the opened vs
@@ -354,9 +382,10 @@ messages: C6 at 180s). Resolution sample `[3600, 3600, 10800, 14400, 37800, 5184
   horizontal page scroll), the filter bar collapses its controls onto full-width rows, and the
   report tables scroll inside their own container; given `~1280px`, then tiles sit four across and
   charts fill the card. Both widths are verified on every surface, not sampled.
-- **AC-RPT-50 [FE]** Given a user without `conversation_reports.read` who navigates directly to
-  `/omnichannel/dashboard` or `/omnichannel/reports`, then the page renders the standard
-  `RequirePermission` denial, not a broken shell and not a partial render of another tenant's data.
+- **AC-RPT-50 [FE]** Given a user without the core `reports.read` key (amended 2026-09-06 - see
+  AC-RPT-37) who navigates directly to `/omnichannel/dashboard` or `/omnichannel/reports`, then the
+  page renders the standard `RequirePermission` denial, not a broken shell and not a partial render
+  of another tenant's data.
 
 ## Slice S4 - Tests + evidence
 
@@ -384,8 +413,9 @@ messages: C6 at 180s). Resolution sample `[3600, 3600, 10800, 14400, 37800, 5184
   -> open it and confirm the header row and one known row. Repeat the whole journey at 375px.
 - **AC-RPT-54 [E2E]** Same run: a second tenant's token against tenant A's `wsId` returns 404 for
   the dashboard, `meta`, all seven reports and the export file route (API probe recorded in the run
-  log); a user whose role lacks `conversation_reports.read` sees no Dashboard / Reports menu entry
-  in the sidebar, the desktop mega menu or the mobile mega menu.
+  log); a user whose role lacks the core `reports.read` key (amended 2026-09-06 - see AC-RPT-37)
+  sees no Dashboard / Reports menu entry in the sidebar, the desktop mega menu or the mobile mega
+  menu.
 - **AC-RPT-55 [T]** The Test Execution Report
   (`documentation/plans/sprint-4/30-omnichannel-dashboard-reports-test-report.md`, the
   `AI_Agent_Orchestration_Guide.md` §6 format) is keyed to these ids with PASS / FAIL / DEFERRED

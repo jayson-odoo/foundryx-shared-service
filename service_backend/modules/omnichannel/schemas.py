@@ -1335,3 +1335,24 @@ class ReportResponse(ApiModel):
     page: Optional[int] = None
     pageSize: Optional[int] = None
     total: Optional[int] = None
+
+
+# ── Plan 30 - S3 report export (plan §5.1/§5.4, D-A9-4) ─────────────────────
+class ReportExportRequest(ApiModel):
+    """`POST .../reports/{reportKey}/export` body - the SAME filter shape the
+    read route accepts as query params (plan §5.1), carried as JSON so the
+    job payload can echo it verbatim. `groupBy`/`teamId` are validated the
+    SAME way the read route validates them (`report_export_service` calls
+    the ONE `report_service.report`/`build_query` gate - never a second
+    validation path)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_: str = Field(alias="from")
+    to: str
+    tz: str
+    granularity: Optional[str] = None
+    userId: Optional[str] = None
+    channelId: Optional[str] = None
+    teamId: Optional[str] = None
+    groupBy: Optional[str] = None
