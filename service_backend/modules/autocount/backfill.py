@@ -50,50 +50,24 @@ def default_schema(bind: Any) -> Optional[str]:
 
 def existing_columns(
     bind: Any, table: str, *, schema: Optional[str]
-) -> Optional[frozenset]:
-    """The column names ``table`` ACTUALLY HAS on the connection in front of
-    us right now, or ``None`` when the table does not exist at all yet.
+) -> Optional[frozenset[str]]:
+    """The columns ``table`` actually has on the live connection, or ``None``
+    when the table does not exist yet.
 
-        !!  Prod incident, 2026-09-06 - "a backfill runs at ANY point in
-            history, not just the day it was written."  !!
-    Every backfill in this file is called from TWO very different places: a
-    module Alembic migration (which by definition runs on a schema stuck at
-    THAT migration's own down_revision - every LATER migration's columns are
-    still missing) and ``update_tenant`` at HEAD (where every column already
-    exists). A prod deploy stuck mid-chain (App Store showed 0.1.0, stamp
-    stuck before 0007) proved a backfill written only for the HEAD shape is
-    unsafe at any earlier stamp: 0007/0008's ``backfill_etl_defaults`` named
-    ``ac_sync_run.added_count``/``updated_count`` - columns 0008 itself adds
-    - so replaying 0001->head on a fresh Postgres died in 0007 with
-    ``column "added_count" does not exist``, ``bootstrap_modules`` swallowed
-    the failure, and the container went "healthy" on a module stuck at 0.1.0.
-    A backfill must check what is ACTUALLY there before writing to it -
-    inspecting the live connection (never the ORM model, which always
-    reflects the code's current HEAD shape regardless of what migration is
-    running) is the only source of truth that stays correct at every stamp.
+    A backfill runs at ANY stamp (its migration's own down_revision, or HEAD
+    via ``update_tenant``), so it must ask the connection what is there -
+    never the ORM model, which always reflects code HEAD. Incident and rule:
+    ``documentation/engineering/storage-and-background-jobs.md`` (2026-09-06).
 
-    ``bind`` is whatever the caller already has in hand - a plain
-    ``Connection`` (Alembic's ``op.get_bind()``) or a ``Session``
-    (``update_tenant``'s ``db``) - so a ``Session`` is unwrapped to its OWN
-    current connection (``Session.connection()``), never to its engine:
-    ``sa.inspect(engine)`` checks a SECOND connection out of the pool, so the
-    inspection runs outside the session's transaction (blind to anything it
-    has not committed yet) and, under the suite's StaticPool SQLite where
-    both are the same DBAPI connection, returning that checkout to the pool
-    ROLLS BACK the session's uncommitted writes - a second sweep pass then
-    "touched" the same row again. Inspecting the session's connection keeps
-    the check inside the same transaction on every backend.
+    A ``Session`` is unwrapped to ``session.connection()``, NOT ``get_bind()``:
+    inspecting the engine checks out a SECOND pooled connection, blind to the
+    session's uncommitted work, and under StaticPool SQLite its return to the
+    pool rolls the session's pending writes back.
 
-    ``schema=None`` (the SQLite test path) ALSO checks every other schema
-    the connection knows about, not only the default one: conftest's
-    ``ac_``-prefixed tables live in an ATTACHED SQLite database (``omni``)
-    via ``schema_translate_map``, never in ``main`` - a raw, unqualified
-    ``UPDATE ac_company ...`` still finds them (SQLite's own name-resolution
-    searches every attached database), but ``Inspector.has_table(table,
-    schema=None)`` only looks at ``main`` and would otherwise report every
-    module table permanently missing under test, defeating every backfill
-    the moment this tolerance check shipped. Postgres never hits this branch
-    - every real caller passes the actual ``app_autocount`` schema.
+    ``schema=None`` (SQLite tests) also searches the attached schemas:
+    conftest puts the module tables in an attached database via
+    ``schema_translate_map`` and ``has_table(schema=None)`` looks at ``main``
+    only. Postgres callers always pass ``app_autocount``.
     """
     connectable = bind.connection() if hasattr(bind, "get_bind") else bind
     inspector = sa.inspect(connectable)

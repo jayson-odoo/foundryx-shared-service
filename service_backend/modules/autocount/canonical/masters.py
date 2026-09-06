@@ -169,11 +169,11 @@ class CanonicalCustomer(CanonicalMaster):
     No ``country`` source exists on Debtor, and ``registration_number`` exists on
     Creditor but not Debtor - both omitted rather than invented.
 
-    ``credit_limit`` stays a real model attribute (a mapping row can still map
-    ``CreditLimit`` onto it for staging/diffing) but is DELIBERATELY absent
-    from ``SINK_FIELDS`` (Sorento contract 2.1, D15). Sorento's
-    ``CanonicalCustomer`` on ``feat/ingest-parity`` (ref 39ddd8c0a, their PR
-    #699) sets ``extra="forbid"`` and does not declare ``credit_limit`` at all
+    ``credit_limit`` is GONE from this model (Sorento contract 2.1, D15): not a
+    sink field, not an accepted mapping target, not seeded - nothing could
+    populate it, so a dead attribute was removed rather than kept "for
+    staging". Sorento's ``CanonicalCustomer`` on ``feat/ingest-parity`` (ref
+    39ddd8c0a, their PR #699) sets ``extra="forbid"`` and does not declare it
     - a field-named 422 the moment it crosses the wire. Proven against
     Sorento's LOCAL ingest-parity lane (:8042, build b1c01aa2f), NOT Sorento
     main: 27/27 SIM customers failed there. Sorento main still declares
@@ -185,7 +185,6 @@ class CanonicalCustomer(CanonicalMaster):
     entity_type: str = ENTITY_CUSTOMER
 
     phone_number: Optional[str] = None
-    credit_limit: Optional[Decimal] = None
     tax_id: Optional[str] = None
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (

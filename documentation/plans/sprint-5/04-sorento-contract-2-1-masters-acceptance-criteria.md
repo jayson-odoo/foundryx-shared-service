@@ -70,9 +70,11 @@ A test must fail if the `update_tenant` wiring is removed (kill-test M4 of revie
 
 **AC-04-05 [BE] A required target present only as a disabled row fails the save.**
 Given a mapping draft where a required target (e.g. `is_active`) exists only with `isEnabled: false`,
-When the mapping PUT (or the draft engine rows for a scope) is evaluated,
+When the mapping PUT is evaluated,
 Then the request is rejected as missing the required field instead of silently dropping it from the
 wire (under Sorento main `is_active` defaults True, so an absent key would silently activate the record).
+Simulate previews a disabled required row as absent and never rejects (it writes nothing; a partial
+draft must still preview, sprint-5/02 contract).
 
 **AC-04-06 [BE] Behaviour-neutral on Sorento 1.x/2.0.**
 Given a Sorento that still declares `credit_limit` / `payment_terms_*` and reads an absent key as None,
