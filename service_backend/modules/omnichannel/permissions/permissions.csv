@@ -22,3 +22,6 @@ contacts,Contacts,export,Export,Export contacts to CSV
 close_reasons,Close Reasons,manage,Manage,Create/edit/delete/deactivate conversation close reasons
 inbox_views,Saved Inbox Views,manage,Manage,Create/edit/delete shared inbox views (own views need only conversations.read)
 conversations,Conversations,shortcut,Run shortcut,Run a Shortcut workflow from a conversation
+broadcasts,Broadcasts,read,Read,View WhatsApp broadcast campaigns and their recipients
+broadcasts,Broadcasts,manage,Manage,Create/edit/duplicate/delete broadcast campaigns
+broadcasts,Broadcasts,send,Send,Send/schedule/cancel/test-send a broadcast campaign
