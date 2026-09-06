@@ -107,6 +107,18 @@ def register_engine_entities() -> None:
 
     register_contacts_export_handler()
 
+    # Reference guard for core team delete (plan 28 S2, AC-TEM-16, D-A8-15) -
+    # the FIRST production consumer of `app/module_platform/reference_guards.
+    # py`. Core asks "is this team referenced?" before DELETE /teams/{id};
+    # this module answers with a tenant-scoped count of contacts holding that
+    # `assigned_team_id`, never touching core - it registers a CALLBACK core
+    # invokes, no cross-module import in the other direction.
+    from .services.team_directory import count_conversations_for_team
+
+    from app.module_platform import register_reference_guard
+
+    register_reference_guard("team", "conversations", count_conversations_for_team)
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""
@@ -409,6 +421,30 @@ def create_schema_and_tables(engine: Engine) -> None:
                     f'ON "{OMNI_SCHEMA}".inbox_views (workspace_id, lower(name))'
                 )
             )
+            # Team assignment (plan 28 S2, D-A8-3) - idempotent add for
+            # existing deployments (per-module Alembic migration 0011 is the
+            # real fix for a Postgres-tracked deploy; this covers the
+            # create_all path). `team_assignment_settings` itself is a NEW
+            # table so `create_all` above already created it - only its
+            # unique index needs its own statement (same as contact_segments).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contacts '
+                    "ADD COLUMN IF NOT EXISTS assigned_team_id VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_contacts_assigned_team_id "
+                    f'ON "{OMNI_SCHEMA}".contacts (assigned_team_id)'
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_team_assignment_settings_ws_team "
+                    f'ON "{OMNI_SCHEMA}".team_assignment_settings (workspace_id, team_id)'
+                )
+            )
 
 
 def install(engine: Engine, db: Session) -> None:
@@ -513,6 +549,12 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
       and the seeded close reasons per workspace (plan 27 A3 S2, AC-IVE-27) -
       both idempotent, called unconditionally so re-running `update` (or a
       tenant already fully migrated) is a safe no-op.
+
+    0.4.0 -> 0.5.0 (plan 28 S2, AC-TEM-18): `contacts.assigned_team_id` is a
+    NEW nullable column and `team_assignment_settings` a NEW empty table -
+    both read back correctly as-is with zero backfill (a tenant landing here
+    simply has no thread assigned to a team yet, which is a valid state, not
+    a gap to repair).
     """
     from .repositories.contact_repository import ContactRepository
     from .services import close_reason_service, event_service, lifecycle_service

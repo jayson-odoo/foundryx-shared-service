@@ -15,7 +15,7 @@ from app.models.user import User
 from ..models import Channel, Contact, ContactTag, ConversationMessage, Status
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import ContactLifecycleSummary, ContactTagRefItem, MessageItem, ReplyRefItem, ThreadItem
-from . import event_service, realtime, statuses
+from . import event_service, realtime, statuses, team_assignment_service, team_directory
 from .contact_tag_service import ContactTagService
 from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
 from .lifecycle_service import fireable_moves as _lifecycle_fireable_moves
@@ -35,9 +35,12 @@ class InvalidThreadFilter(Exception):
 
 
 class InvalidPatch(Exception):
-    def __init__(self, message: str):
+    def __init__(self, message: str, field: Optional[str] = None):
         super().__init__(message)
         self.message = message
+        # AC-TEM-19/25 - when set, the router renders `422
+        # {fieldErrors: {field: message}}` instead of a bare string detail.
+        self.field = field
 
 
 class ThreadAlreadyClosed(Exception):
@@ -196,6 +199,11 @@ class ConversationService:
         tag_refs = ContactTagService(self.db).refs_for_contacts(ids, tenant_id)
         lifecycle_map = self._lifecycle_map(contacts, tenant_id)
         field_registry = self._field_registry(contacts, tenant_id)
+        # AC-TEM-29 - ONE batched `teams.list@1` call per page render (never
+        # N `resolve` calls); a stale/deleted/foreign team id renders `None`.
+        team_names = team_directory.names(
+            self.db, tenant_id, [c.assigned_team_id for c in contacts]
+        )
 
         items: List[ThreadItem] = []
         for c in contacts:
@@ -232,6 +240,8 @@ class ConversationService:
                     assignedUserName=assigned_name,
                     assignedExternalAgentId=c.assigned_external_agent_id,
                     assignedAvatarUrl=assigned_avatar,
+                    assignedTeamId=c.assigned_team_id,
+                    assignedTeamName=team_names.get(c.assigned_team_id) if c.assigned_team_id else None,
                     status=status_keys.get(c.status_id, "OPEN"),
                     priority=c.priority or "MEDIUM",
                     channelId=channel_id,
@@ -469,6 +479,19 @@ class ConversationService:
             raise ThreadNotFound()
         return _lifecycle_fireable_moves(self.db, c, actor=actor)
 
+    def _validated_native_user_id(self, user_id: str, tenant_id: str) -> str:
+        """Tenant-scoped existence gate for an explicit native `assignedUserId`
+        (used by every branch of the team/user assignment logic below) - 422
+        `{fieldErrors: {assignedUserId: ...}}` on a foreign/unknown id."""
+        user = (
+            self.db.query(User)
+            .filter(User.id == user_id, User.tenant_id == tenant_id)
+            .first()
+        )
+        if user is None:
+            raise InvalidPatch("Assignee not found in this tenant.", field="assignedUserId")
+        return user_id
+
     # ── Patch (assign / lifecycle / priority / profile) ─────────────────────
     def patch_thread(
         self,
@@ -476,6 +499,7 @@ class ConversationService:
         tenant_id: str,
         *,
         assigned_user_id: Optional[str] = ...,
+        assigned_team_id: Optional[str] = ...,
         status: Optional[str] = None,
         priority: Optional[str] = None,
         first_name: Optional[str] = ...,
@@ -498,13 +522,23 @@ class ConversationService:
         if c is None:
             raise ThreadNotFound()
 
-        if assigned_user_id is not ...:
+        if assigned_user_id is not ... or assigned_team_id is not ...:
             prev_user_id = c.assigned_user_id
             prev_external_agent_id = c.assigned_external_agent_id
+            prev_team_id = c.assigned_team_id
+            assigned_via = "manual"
+
             if external_connection_id is not None:
                 # Embed principal: the assignee id is an EXTERNAL agent id - it
                 # must belong to the token's connection (a token can only assign
                 # to its own consumer's agents; cross-consumer is impossible).
+                # Teams are a native-only surface (D-A8-13) - the router already
+                # 403s an embed token that sends `assignedTeamId` before this
+                # call is ever reached; this is defense-in-depth only.
+                if assigned_team_id is not ...:
+                    raise InvalidPatch(
+                        "Teams are not available for this token.", field="assignedTeamId"
+                    )
                 if assigned_user_id is not None:
                     from .external_agent_service import ExternalAgentService
 
@@ -516,39 +550,131 @@ class ConversationService:
                 # Federated + native assignees are mutually exclusive.
                 c.assigned_external_agent_id = assigned_user_id
                 c.assigned_user_id = None
+
+                # `assigned`/`unassigned` events (plan 27 A3, AC-IVE-06) - a
+                # re-send of the SAME assignee writes nothing. Teams never
+                # touch the embed path, so `assigneeKind` stays the original
+                # user/external_agent vocabulary here.
+                prev_assignee = prev_user_id or prev_external_agent_id
+                new_assignee = c.assigned_user_id or c.assigned_external_agent_id
+                if new_assignee != prev_assignee:
+                    if new_assignee:
+                        kind = "user" if c.assigned_user_id else "external_agent"
+                        event_service.record(
+                            self.db, c, "assigned",
+                            actor=actor, actor_id=actor_id,
+                            external_agent_id=actor_external_agent_id,
+                            from_value=prev_assignee, to_value=new_assignee,
+                            payload={"assigneeKind": kind},
+                        )
+                    else:
+                        event_service.record(
+                            self.db, c, "unassigned",
+                            actor=actor, actor_id=actor_id,
+                            external_agent_id=actor_external_agent_id,
+                            from_value=prev_assignee,
+                        )
             else:
-                if assigned_user_id is not None:
-                    user = (
-                        self.db.query(User)
-                        .filter(User.id == assigned_user_id, User.tenant_id == tenant_id)
-                        .first()
-                    )
-                    if user is None:
-                        raise InvalidPatch("Assignee not found in this tenant.")
-                c.assigned_user_id = assigned_user_id
+                # Native path - the four assignee combinations (§5.2,
+                # AC-TEM-19..27). `team_sent`/`user_sent` distinguish "this
+                # key was omitted" (leave that side alone) from an explicit
+                # value (including explicit `null`, which clears that side
+                # only) via the `...` sentinel already used everywhere else
+                # in this method.
+                team_sent = assigned_team_id is not ...
+                user_sent = assigned_user_id is not ...
+                new_user_id = prev_user_id
+                new_team_id = prev_team_id
+
+                if team_sent and assigned_team_id is None:
+                    # `assignedTeamId: null` clears the team; the user side
+                    # only changes if EXPLICITLY sent too.
+                    new_team_id = None
+                    if user_sent:
+                        new_user_id = (
+                            None
+                            if assigned_user_id is None
+                            else self._validated_native_user_id(assigned_user_id, tenant_id)
+                        )
+                elif team_sent:  # assigned_team_id is a real id
+                    if not team_directory.validate_assignable(self.db, tenant_id, assigned_team_id):
+                        raise InvalidPatch(
+                            "Team not found or inactive.", field="assignedTeamId"
+                        )
+                    new_team_id = assigned_team_id
+                    if user_sent:
+                        if assigned_user_id is None:
+                            # `<id>` + `null` - team assigned, user cleared
+                            # (Team Unassigned).
+                            new_user_id = None
+                        else:
+                            # `<id>` + `<user>` - the explicit user wins over
+                            # the strategy IFF they are a member of THAT team.
+                            roster = team_directory.members(self.db, tenant_id, assigned_team_id) or []
+                            if assigned_user_id not in {m["userId"] for m in roster}:
+                                raise InvalidPatch(
+                                    "User is not a member of this team.",
+                                    field="assignedUserId",
+                                )
+                            new_user_id = self._validated_native_user_id(assigned_user_id, tenant_id)
+                    else:
+                        # `<id>` alone - pick by the team's persisted strategy.
+                        # An empty roster is a SUCCESS (D-A8-11): team assigned,
+                        # user stays NULL (Team Unassigned).
+                        new_user_id = team_assignment_service.assign(self.db, c, assigned_team_id)
+                        assigned_via = "team_strategy"
+                else:
+                    # Team omitted - `user_sent` is guaranteed True here (the
+                    # outer `if` requires at least one of the two sent).
+                    if assigned_user_id is None:
+                        # `null` alone - clear the user, keep the team.
+                        new_user_id = None
+                    else:
+                        new_user_id = self._validated_native_user_id(assigned_user_id, tenant_id)
+                        # Assigning a user who is NOT a member of the
+                        # CURRENTLY assigned team clears the team (D-A8-12).
+                        if prev_team_id:
+                            roster = team_directory.members(self.db, tenant_id, prev_team_id) or []
+                            if new_user_id not in {m["userId"] for m in roster}:
+                                new_team_id = None
+
+                c.assigned_user_id = new_user_id
+                c.assigned_team_id = new_team_id
                 c.assigned_external_agent_id = None
 
-            # `assigned`/`unassigned` events (plan 27 A3, AC-IVE-06) - a
-            # re-send of the SAME assignee writes nothing.
-            prev_assignee = prev_user_id or prev_external_agent_id
-            new_assignee = c.assigned_user_id or c.assigned_external_agent_id
-            if new_assignee != prev_assignee:
-                if new_assignee:
-                    kind = "user" if c.assigned_user_id else "external_agent"
-                    event_service.record(
-                        self.db, c, "assigned",
-                        actor=actor, actor_id=actor_id,
-                        external_agent_id=actor_external_agent_id,
-                        from_value=prev_assignee, to_value=new_assignee,
-                        payload={"assigneeKind": kind},
+                # `assigned`/`unassigned` events (plan 27 A3, AC-IVE-06; plan
+                # 28 S2, AC-TEM-31) - a re-send of the SAME team AND the SAME
+                # assignee writes nothing. "assigned" fires whenever the
+                # thread ends up owned by a user and/or a team; "unassigned"
+                # only when it ends up owned by NEITHER.
+                if (new_user_id, new_team_id) != (prev_user_id, prev_team_id):
+                    user_changed = new_user_id != prev_user_id
+                    team_changed = new_team_id != prev_team_id
+                    change = "both" if (user_changed and team_changed) else (
+                        "team" if team_changed else "user"
                     )
-                else:
-                    event_service.record(
-                        self.db, c, "unassigned",
-                        actor=actor, actor_id=actor_id,
-                        external_agent_id=actor_external_agent_id,
-                        from_value=prev_assignee,
-                    )
+                    team_name = (
+                        team_directory.resolve(self.db, tenant_id, new_team_id) or {}
+                    ).get("name") if new_team_id else None
+                    payload = {"teamId": new_team_id, "teamName": team_name, "assignedVia": assigned_via, "change": change}
+                    if new_user_id or new_team_id:
+                        if new_user_id:
+                            payload["assigneeKind"] = "user"
+                        event_service.record(
+                            self.db, c, "assigned",
+                            actor=actor, actor_id=actor_id,
+                            external_agent_id=actor_external_agent_id,
+                            from_value=prev_user_id, to_value=new_user_id,
+                            payload=payload,
+                        )
+                    else:
+                        event_service.record(
+                            self.db, c, "unassigned",
+                            actor=actor, actor_id=actor_id,
+                            external_agent_id=actor_external_agent_id,
+                            from_value=prev_user_id,
+                            payload=payload,
+                        )
 
         if status is not None:
             if status not in VALID_THREAD_STATUS:

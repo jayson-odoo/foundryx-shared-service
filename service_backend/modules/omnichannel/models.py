@@ -167,6 +167,12 @@ class Contact(OmniBase):
     # str, no FK (mirrors ``assigned_user_id`` - external_agent lives in this
     # schema but the no-FK convention keeps the assignee columns symmetric).
     assigned_external_agent_id = Column(String, nullable=True, index=True)
+    # A CORE `public.teams` id (plan 28 S2, D-A8-3) - plain indexed String, NO
+    # cross-schema FK (the `lifecycle_status_id`/BL-030 pattern). Validated at
+    # save through the teams capability (`team_directory.validate_assignable`)
+    # and resolved tenant-scoped at read (`team_directory.names`); a foreign or
+    # unknown id must never resolve to another tenant's team.
+    assigned_team_id = Column(String, nullable=True, index=True)
     status_id = Column(String, ForeignKey("statuses.id"), nullable=True)
     priority = Column(String, nullable=False, default="MEDIUM")
     # ── Contact data model (plan 25 S1/S2) ──────────────────────────────────
@@ -298,6 +304,35 @@ class ContactSegment(OmniBase):
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class TeamAssignmentSetting(OmniBase):
+    """Per (workspace, CORE team id) assignment strategy (plan 28 S2, D-A8-3).
+
+    `team_id` is a plain indexed String holding a core `teams.id` - no
+    cross-schema FK, same convention as `Contact.assigned_team_id`. Row is
+    created lazily on first read/write (`team_assignment_service.
+    _get_or_create_settings`), default `strategy="round_robin"`.
+    `last_assigned_user_id` is the persisted round-robin cursor (D-A8-8) -
+    locked `FOR UPDATE` on Postgres for the duration of a pick (D-A8-9), a
+    no-op on the sqlite test path."""
+
+    __tablename__ = "team_assignment_settings"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    team_id = Column(String, nullable=False, index=True)
+    strategy = Column(String, nullable=False, default="round_robin")
+    last_assigned_user_id = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "team_id", name="uq_team_assignment_settings_ws_team"),
     )
 
 

@@ -382,6 +382,12 @@ class ThreadItem(ApiModel):
     # name/avatar from whichever assignee column is set.
     assignedExternalAgentId: Optional[str] = None
     assignedAvatarUrl: Optional[str] = None
+    # A CORE `public.teams` id (plan 28 S2, D-A8-3) - resolved tenant-scoped
+    # through the teams capability, batched per page. A foreign/deleted team
+    # id (or the capability not being registered, AC-TEM-15) renders
+    # `assignedTeamName: null`, never another tenant's team name.
+    assignedTeamId: Optional[str] = None
+    assignedTeamName: Optional[str] = None
     status: str  # OPEN | SNOOZED | CLOSED
     priority: str
     channelId: Optional[str] = None
@@ -605,6 +611,22 @@ class CloseReasonUpdate(ApiModel):
     isActive: Optional[bool] = None
 
 
+class TeamAssignmentSettingItem(ApiModel):
+    """The per-(workspace, CORE team) pick-strategy row (plan 28 S2,
+    AC-TEM-28). `teamName` resolves through the teams capability (null on a
+    foreign/deleted team, same rule as `ThreadItem.assignedTeamName`)."""
+
+    teamId: str
+    teamName: Optional[str] = None
+    strategy: str  # round_robin | least_open
+    lastAssignedUserId: Optional[str] = None
+    updatedAt: datetime
+
+
+class TeamAssignmentSettingUpdate(ApiModel):
+    strategy: str  # round_robin | least_open
+
+
 class ShortcutItem(ApiModel):
     """A published `entity.shortcut` workflow bound to `omnichannel_contact`
     the drawer's Shortcuts control may fire (AC-IVE-36)."""
@@ -689,6 +711,9 @@ class ThreadPatch(ApiModel):
     panel must render phone read-only."""
 
     assignedUserId: Optional[str] = None
+    # A CORE team id, or explicit `null` to clear it (plan 28 S2) - native-
+    # only (an embed/external-agent token gets 403, D-A8-13).
+    assignedTeamId: Optional[str] = None
     status: Optional[str] = None  # OPEN | SNOOZED | CLOSED
     priority: Optional[str] = None  # LOW | MEDIUM | HIGH | URGENT
     firstName: Optional[str] = None

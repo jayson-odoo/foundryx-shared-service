@@ -766,8 +766,10 @@ def test_new_permissions_granted_to_existing_tenant_admin_on_update(client, sess
 
     db2 = session_factory()
     module, new_state = AppStoreService(db2).update(DEFAULT_TENANT_ID, "omnichannel")
-    assert module.version == "0.4.0"
-    assert new_state.installed_version == "0.4.0"
+    # Manifest is now 0.5.0 (plan 28 S2, team assignment) - bump alongside
+    # every module version change so this test tracks the CURRENT manifest.
+    assert module.version == "0.5.0"
+    assert new_state.installed_version == "0.5.0"
     db2.close()
 
     h = _auth(client)
