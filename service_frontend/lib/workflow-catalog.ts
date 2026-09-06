@@ -598,48 +598,6 @@ export const ACTION_CATALOG: ActionCatalogEntry[] = [
   // ---- plan 31 (omnichannel workflow parity) - simple steps ----
   {
     kind: 'action',
-    type: 'omnichannel.assign_conversation',
-    label: 'Assign conversation',
-    description: 'Assign, round-robin, or unassign a conversation.',
-    icon: 'UserRoundCog',
-    category: 'Actions',
-    module: 'omnichannel',
-    fields: [
-      {
-        key: 'contactId',
-        label: 'Contact',
-        type: 'text',
-        required: true,
-        mergeable: true,
-        placeholder: '{{ trigger.contact.id }}',
-      },
-      { key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace', required: true },
-      {
-        key: 'mode',
-        label: 'Assign mode',
-        type: 'select',
-        required: true,
-        options: [
-          { value: 'user', label: 'Specific user' },
-          { value: 'round_robin', label: 'Round robin' },
-          { value: 'unassign', label: 'Unassign' },
-        ],
-      },
-      {
-        key: 'userId',
-        label: 'User',
-        type: 'omnichannelMember',
-        required: true,
-        showWhen: { field: 'mode', value: 'user' },
-      },
-    ],
-    outputs: [
-      { key: 'assignedUserId', label: 'Assigned user id' },
-      { key: 'assigned', label: 'Assigned' },
-    ],
-  },
-  {
-    kind: 'action',
     type: 'omnichannel.add_tag',
     label: 'Add tag',
     description: 'Add a tag to a contact.',
@@ -1038,6 +996,70 @@ export const ACTION_CATALOG: ActionCatalogEntry[] = [
       { key: 'body', label: 'Body' },
       { key: 'json', label: 'JSON (dotted path)' },
       { key: 'durationMs', label: 'Duration (ms)' },
+    ],
+  },
+  {
+    // Plan 28 S3 (roadmap A8, D-A8-5) - mirrors the backend ActionDef in
+    // `modules/omnichannel/workflow_nodes.py` field-for-field (tester D1: the
+    // backend registered it, the palette could not find it). `teamId` is the
+    // generic `team` field type (core `team_capabilities.py` option provider).
+    // Plan 31 (A5) merge folds in a THIRD `round_robin` mode - picks across
+    // the CONTACT'S OWN workspace roster; no extra config field (the
+    // workspace is resolved from the contact at run time).
+    kind: 'action',
+    type: 'omnichannel.assign_conversation',
+    label: 'Assign Conversation',
+    description:
+      "Assign a conversation to a user, a team, round-robin across the contact's own workspace, or unassign it.",
+    icon: 'UserRoundCog',
+    category: 'Actions',
+    module: 'omnichannel',
+    fields: [
+      {
+        key: 'contactId',
+        label: 'Contact',
+        type: 'text',
+        required: true,
+        mergeable: true,
+        placeholder: '{{ trigger.contact.id }}',
+      },
+      {
+        key: 'mode',
+        label: 'Assign to',
+        type: 'select',
+        required: true,
+        options: [
+          { value: 'user', label: 'A user' },
+          { value: 'team', label: 'A team' },
+          { value: 'round_robin', label: 'Round robin' },
+          { value: 'unassign', label: 'Unassign' },
+        ],
+      },
+      {
+        key: 'userId',
+        label: 'User',
+        type: 'text',
+        required: true,
+        mergeable: true,
+        showWhen: { field: 'mode', value: 'user' },
+      },
+      { key: 'teamId', label: 'Team', type: 'team', required: true, showWhen: { field: 'mode', value: 'team' } },
+      {
+        key: 'strategy',
+        label: 'Strategy',
+        type: 'select',
+        showWhen: { field: 'mode', value: 'team' },
+        options: [
+          { value: 'default', label: "Team's saved strategy" },
+          { value: 'round_robin', label: 'Round robin' },
+          { value: 'least_open', label: 'Least open' },
+        ],
+      },
+    ],
+    outputs: [
+      { key: 'assignedUserId', label: 'Assigned user id' },
+      { key: 'assignedTeamId', label: 'Assigned team id' },
+      { key: 'assigned', label: 'Assigned' },
     ],
   },
   {

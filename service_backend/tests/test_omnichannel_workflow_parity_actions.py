@@ -114,7 +114,7 @@ def test_assign_conversation_user_mode(session_factory):
         out = omnichannel_assign_conversation(
             db, DEFAULT_TENANT_ID, {"contactId": cid, "mode": "user", "userId": member_id}, {}
         )
-        assert out == {"assignedUserId": member_id, "assigned": True}
+        assert out == {"assignedUserId": member_id, "assignedTeamId": None, "assigned": True}
         from modules.omnichannel.models import Contact
 
         contact = db.query(Contact).filter(Contact.id == cid).first()
@@ -206,7 +206,7 @@ def test_assign_conversation_round_robin_empty_roster_succeeds_no_op(session_fac
         out = omnichannel_assign_conversation(
             db, DEFAULT_TENANT_ID, {"contactId": cid, "mode": "round_robin"}, {}
         )
-        assert out == {"assignedUserId": None, "assigned": False}
+        assert out == {"assignedUserId": None, "assignedTeamId": None, "assigned": False}
     finally:
         db.close()
 
@@ -218,7 +218,7 @@ def test_assign_conversation_unassign(session_factory):
         out = omnichannel_assign_conversation(
             db, DEFAULT_TENANT_ID, {"contactId": cid, "mode": "unassign"}, {}
         )
-        assert out == {"assignedUserId": None, "assigned": False}
+        assert out == {"assignedUserId": None, "assignedTeamId": None, "assigned": False}
         from modules.omnichannel.models import Contact
 
         contact = db.query(Contact).filter(Contact.id == cid).first()

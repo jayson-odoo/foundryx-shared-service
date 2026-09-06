@@ -107,6 +107,32 @@ def register_engine_entities() -> None:
 
     register_contacts_export_handler()
 
+    # Reference guard for core team delete (plan 28 S2, AC-TEM-16, D-A8-15) -
+    # the FIRST production consumer of `app/module_platform/reference_guards.
+    # py`. Core asks "is this team referenced?" before DELETE /teams/{id};
+    # this module answers with a tenant-scoped count of contacts holding that
+    # `assigned_team_id`, never touching core - it registers a CALLBACK core
+    # invokes, no cross-module import in the other direction.
+    from .services.team_directory import count_conversations_for_team
+
+    from app.module_platform import register_reference_guard
+
+    register_reference_guard("team", "conversations", count_conversations_for_team)
+
+    # Broadcast send job handler (plan 29 S2a, AC-BRD-50) - same reasoning as
+    # the contacts-export handler above: ANY process that never imports this
+    # module leaves `omnichannel.broadcast_send` an unknown job type.
+    from .services.broadcast_send_service import register_broadcast_send_handler
+
+    register_broadcast_send_handler()
+
+    # Report CSV export job handler (plan 30 S3, AC-RPT-33) - same reasoning
+    # as the contacts export handler above: any process (API or a real
+    # Celery worker) that dispatches this job type must have imported it.
+    from .services.report_export_service import register_report_export_handler
+
+    register_report_export_handler()
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""
@@ -419,6 +445,41 @@ def create_schema_and_tables(engine: Engine) -> None:
                     f'ON "{OMNI_SCHEMA}".inbox_views (workspace_id, lower(name))'
                 )
             )
+            # Team assignment (plan 28 S2, D-A8-3) - idempotent add for
+            # existing deployments (per-module Alembic migration 0011 is the
+            # real fix for a Postgres-tracked deploy; this covers the
+            # create_all path). `team_assignment_settings` itself is a NEW
+            # table so `create_all` above already created it - only its
+            # unique index needs its own statement (same as contact_segments).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contacts '
+                    "ADD COLUMN IF NOT EXISTS assigned_team_id VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_contacts_assigned_team_id "
+                    f'ON "{OMNI_SCHEMA}".contacts (assigned_team_id)'
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_team_assignment_settings_ws_team "
+                    f'ON "{OMNI_SCHEMA}".team_assignment_settings (workspace_id, team_id)'
+                )
+            )
+            # Plan 29 (A4, D-A4-12) - `channels.broadcast_rate_per_second`.
+            # `broadcasts`/`broadcast_recipients` are brand-new tables already
+            # created by `create_all` above (per-module Alembic migration 0011
+            # is the real fix for a Postgres-tracked deploy; this covers the
+            # create_all path for a fresh install).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS broadcast_rate_per_second INTEGER"
+                )
+            )
             # Business hours (plan sprint-4/31 S5, D-A5-13) - idempotent add
             # for existing deployments (module Alembic 0016 is the real fix
             # for a Postgres-tracked deploy; this covers the `create_all` path).
@@ -539,13 +600,29 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
       both idempotent, called unconditionally so re-running `update` (or a
       tenant already fully migrated) is a safe no-op.
 
-    0.4.0 -> 0.4.5 (plan sprint-4/31 S1): adds `workflow_contact_fires`
-    (migration `0013_omni_workflow_fires`) - a brand-new, empty-until-written
-    table with no existing rows to backfill.
+    0.4.0 -> 0.5.0 (plan 29 S1, AC-BRD-16): the NEW `BROADCAST` status scope
+    (`statuses.DEFAULT_STATUSES`) needs seeding for every tenant that
+    installed before this slice - `ensure_statuses` is idempotent (only
+    inserts scope/key pairs that don't already exist), so calling it here
+    unconditionally is a safe no-op for a tenant already carrying it.
+
+    0.5.0 -> 0.6.0 (plan 28 S2, AC-TEM-18): `contacts.assigned_team_id` is a
+    NEW nullable column and `team_assignment_settings` a NEW empty table -
+    both read back correctly as-is with zero backfill (a tenant landing here
+    simply has no thread assigned to a team yet, which is a valid state, not
+    a gap to repair).
+
+    0.6.0 -> 0.7.0 (plan sprint-4/31, S1-S5): adds `workflow_contact_fires`
+    (migration `0013_omni_workflow_fires`), `workspaces.round_robin_cursor`
+    (`0014_omni_round_robin_cursor`), `workflow_waits` (`0015_omni_workflow_
+    waits`) and `omnichannel_settings.business_hours_json`/`business_timezone`
+    (`0016_omni_business_hours`) - every one a brand-new, empty-until-written
+    table or a nullable column with no existing rows to backfill.
     """
     from .repositories.contact_repository import ContactRepository
     from .services import close_reason_service, event_service, lifecycle_service
 
+    statuses.ensure_statuses(db, tenant_id)
     lifecycle_service.backfill_tenant(db, tenant_id)
     event_service.backfill_tenant(db, tenant_id)
     close_reason_service.CloseReasonService(db).backfill_tenant(tenant_id)

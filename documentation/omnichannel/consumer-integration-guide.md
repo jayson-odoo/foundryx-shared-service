@@ -10,6 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
+> | **2026-09-06** | **Team assignment** (plan 28). Both contact shapes gain `assignedTeamId`/`assignedTeamName` (a core Team, resolved tenant-scoped; `null` on a foreign/deleted team) - present on `GET /contacts`, `GET /contacts/{identifier}`, and the `contact` object inside `contact.updated` webhook deliveries. `PATCH /api/v1/omnichannel/contacts/{identifier}` accepts `assignedTeamId` **by id only** (never by name): alone it auto-picks a member by the team's strategy, with `assignedUserId` it sets both (the user must be a team member), `null` clears the team. Unknown/foreign/inactive team → `422 invalid_request`. `sender.teamId` on the rio message shape stays `null` (unrelated, message-level concept, out of scope). Non-breaking - existing fields are unchanged. |
 > | **2026-09-05** | **Contact data model: typed custom fields, tags, and a lifecycle stage** (plan 25). Both contact shapes gain `language`, `countryCode`, `customFields` (default) / `custom_fields` (rio), `tags`, and `lifecycle` - previously `null`/`[]` rio placeholders now carry real values. `PATCH /api/v1/omnichannel/contacts/{identifier}` accepts all four for writes: `tags` REPLACES the set by NAME (auto-creating unknown names in your workspace); `lifecycle` moves the contact by stage KEY or LABEL through the workspace's lifecycle graph (409 `lifecycle_move_not_allowed` with no edge). Non-breaking - existing fields are unchanged. |
 > | **2026-08-09 (b)** | **The documented shape is the DEFAULT again.** `/api/v1` read endpoints return `MessageItem`/`ThreadItem` in the envelopes this guide always described; the respond.io shape moved behind **`?format=rio`** (§6b). If you built to this guide before 2026-07-11, **you need no change at all** - your original code is correct again. Same release: self-serve **webhook registration on `/api/v1`** (§7), and the Rio contact shape gained the fields it was missing (`priority`, `unreadCount`, `lastMessagePreview`, …). |
 > | **2026-08-09 (a)** | **§6 / §6a / §9 corrected to the deployed contract.** The read endpoints have returned respond.io-shaped objects since 2026-07-11; this guide still described the pre-2026-07-11 shape. §9 now documents both families and §9.3 is an old→new field map. Same release restored `timestamp` on every message and added `cswExpiresAt`, `message.payload`, `message.size`, `reactions[]` and `replyTo` to the read shapes. Webhooks (§7) are unchanged throughout. |
@@ -373,13 +374,19 @@ Partial - only fields you send change. Send `assignedUserId` as `null` to unassi
 
 ```json
 { "firstName": "Jayson", "lastName": "Teh",
-  "priority": "HIGH", "assignedUserId": "…", "customFields": { "orderId": "ORD0001" },
+  "priority": "HIGH", "assignedUserId": "…", "assignedTeamId": "…",
+  "customFields": { "orderId": "ORD0001" },
   "language": "en-US", "countryCode": "MY",
   "tags": ["VIP", "Wholesale"], "lifecycle": "hot_lead" }
 ```
 
 Assign a conversation to an agent by setting `assignedUserId`; unassign by sending it as `null`. Unknown assignee → `422 invalid_request`.
 
+* **`assignedTeamId`** - a **core Team id, by ID only** (never by name - a team is never auto-created from this API). Assign the conversation to a team by sending its id; unassign the team by sending `null` (this keeps the current `assignedUserId` untouched). An unknown, foreign, or inactive team id → `422 invalid_request` with `details: {"assignedTeamId": "Team not found or inactive."}`. The four ways `assignedTeamId` and `assignedUserId` interact in one PATCH:
+  * `assignedTeamId` alone → the conversation is assigned to the team and a member is picked automatically by that team's strategy (round robin / least open); a team with no eligible member is still a success (`assignedUserId` stays `null` - "Team Unassigned").
+  * `assignedTeamId` **and** `assignedUserId` together → both are set directly (no automatic pick) - but the user MUST be a member of that team, else `422 invalid_request` with `details: {"assignedUserId": "User is not a member of this team."}`.
+  * `assignedTeamId` **and** `assignedUserId: null` → the team is set, the user is cleared (Team Unassigned).
+  * `assignedUserId` alone (no `assignedTeamId`) → the user is set; if they are not a member of the conversation's CURRENTLY assigned team, the team is cleared too.
 * **`language`** - a BCP-47 tag (≤ 16 characters). **`countryCode`** - an ISO-3166 alpha-2 code (case-insensitive on write, always upper-cased on read). Either 422s if malformed.
 * **`customFields`** - values are validated against your workspace's custom-field registry (configured in the Foundryx dashboard): unknown key or a value that fails its field's type → `422 invalid_request` with `details` keyed `customFields.<key>`, and **nothing is written**. Send the whole `customFields` value as `null` to clear EVERY registered field's value at once (each cleared key appears in the webhook's `contact.updated` diff and the next `GET` shows `customFields: {}`); send an object with one key set to `null` to clear just that key (partial merge - other keys untouched); keys you omit are left unchanged.
 * **`tags`** - a list of tag **names**, and **REPLACES the whole set** (not a merge). An unknown name is auto-created in your workspace (so you never need a separate "create tag" call first). `null` clears every tag.
@@ -459,7 +466,7 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
 | `message.inbound` | The user sends you a message (any type) |
 | `message.status` | A message you sent changes state (SENT/DELIVERED/READ/FAILED) |
 | `message.reaction` | A reaction is added/removed on a message |
-| `contact.updated` | A thread is assigned / status / priority changes, or its fields / tags / lifecycle stage change |
+| `contact.updated` | A thread is assigned (to a user and/or a **team**) / status / priority changes, or its fields / tags / lifecycle stage change |
 
 ### The envelope
 
@@ -494,7 +501,7 @@ Foundryx POSTs a **signed JSON envelope** to each callback URL you registered fo
   ```json
   { "targetMessageId":"8dbc5265-…", "reactorType":"CONTACT", "emoji":"❤️", "removed":false }
   ```
-* `**contact.updated**` - `id` = `{contactId}:{timestamp}:{suffix}` (`suffix` is a short random hex segment, not epoch-derived - two updates to the same contact within the same second still get distinct ids, so a dedup-on-`id` consumer never drops the second one as a replay of the first). Fires on assignment / status / priority changes AND on any `language`/`countryCode`/`customFields`/`tags`/`lifecycle` change - always the full current `ThreadItem`, never a diff.
+* `**contact.updated**` - `id` = `{contactId}:{timestamp}:{suffix}` (`suffix` is a short random hex segment, not epoch-derived - two updates to the same contact within the same second still get distinct ids, so a dedup-on-`id` consumer never drops the second one as a replay of the first). Fires on assignment (user and/or **team** - `assignedTeamId`/`assignedTeamName` ride the same `ThreadItem`) / status / priority changes AND on any `language`/`countryCode`/`customFields`/`tags`/`lifecycle` change - always the full current `ThreadItem`, never a diff.
 
   ```json
   { "contact": { /* ThreadItem (§9.1) */ } }
@@ -697,6 +704,7 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "language": "en-US",           // BCP-47 tag, or null
   "countryCode": "MY",           // ISO-3166 alpha-2, upper-cased, or null
   "assignedUserId": null, "assignedUserName": null,
+  "assignedTeamId": null, "assignedTeamName": null,  // a core Team id/name, or null
   "status": "OPEN",             // OPEN | SNOOZED | CLOSED
   "priority": "MEDIUM",
   "channelId": "…", "channelType": "WHATSAPP",
@@ -791,14 +799,16 @@ The `?format=rio` rendering of a contact. "The contact IS the thread."
   "language": "en-US", "countryCode": "MY",
   "tags": ["VIP"],                       // bare names, not the {id,name,emoji,color} objects the default shape uses
   "lifecycle": "🔥 Hot Lead",            // the stage's LABEL text (emoji included), or null
-  "isBlocked": false
+  "isBlocked": false,
+  "assignedTeamId": null, "assignedTeamName": null   // Foundryx extension - core Team id/name, or null
 }
 ```
 
 * **`cswExpiresAt` decides free-form vs template** - if it is in the past or `null`, a free-form send will be refused with `409 csw_window_closed` and only an approved template re-engages. This is a Foundryx field with no respond.io equivalent, so it follows the house ISO-8601 `Z` convention rather than the epoch ints beside it.
 * `custom_fields` and `created_at` are **snake_case on purpose** - respond.io spells them that way and this object mirrors respond.io exactly. Everything else is camelCase.
 * `language`, `countryCode` mirror the default shape exactly (same values, same rules). `tags` is a bare list of NAMES (not the `{id,name,emoji,color}` objects the default shape carries - respond.io has no id/emoji/color concept for tags). `lifecycle` collapses the default shape's `{statusId,key,label,...}` object down to just the stage's **label text** (the emoji lives in the label, e.g. `"🔥 Hot Lead"`) - if you need the stable `key` or the won/lost flags, use the default shape. `isBlocked` is a respond.io concept we do not model - always `false`.
-* `priority`, `channelId`, `channelType`, `unreadCount`, `lastMessageAt`, `lastIncomingMessageAt` and `lastMessagePreview` are **Foundryx extensions** on this shape (respond.io has no equivalent). They are carried so `?format=rio` loses nothing versus the default - an inbox list needs `unreadCount` and `lastMessagePreview`.
+* `priority`, `channelId`, `channelType`, `unreadCount`, `lastMessageAt`, `lastIncomingMessageAt`, `lastMessagePreview`, `assignedTeamId` and `assignedTeamName` are **Foundryx extensions** on this shape (respond.io has no equivalent). They are carried so `?format=rio` loses nothing versus the default - an inbox list needs `unreadCount` and `lastMessagePreview`. `assignedTeamId`/`assignedTeamName` are a core Team - BY ID ONLY on write (§6a); `assignedTeamName` is `null` on a foreign/deleted team, same as the default shape.
+* **`sender.teamId`** on a `MessageObject` (§9.2 above) is deliberately always `null` - it is a message-level concept (which team sent this specific message) distinct from the conversation-level `assignedTeamId` here, and is out of scope.
 
 ---
 
@@ -837,6 +847,7 @@ Only needed if you use `?format=rio`, or are porting a respond.io integration on
 | `avatarUrl` | `profilePic` |
 | `status` (UPPER) | `status` (lower) |
 | `assignedUserId` / `assignedUserName` | `assignee.id` / `assignee.firstName` |
+| `assignedTeamId` / `assignedTeamName` | `assignedTeamId` / `assignedTeamName` (same - Foundryx extension, no respond.io equivalent) |
 | `language`, `countryCode` | same |
 | `customFields` (`{key: value}`) | `custom_fields` (`[{name, value}]`, snake_case) |
 | `tags` (`[{id,name,emoji,color}]`) | `tags` (bare `[name]`) |
@@ -864,7 +875,7 @@ All errors: `{ "error": { "code": "...", "message": "...", "details"?: ... } }`.
 |----|----|----|
 | `invalid_api_key` | 401 | Missing/bad/revoked key. |
 | `service_not_enabled` | 403 | Omnichannel not active for your tenant - contact the operator. |
-| `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, or `lifecycle` - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
+| `invalid_request` | 422 | Malformed body / failed validation (`details` has specifics). On a contact PATCH, `details` is a `{field: message}` map keyed `language`, `countryCode`, `customFields.<key>`, `tags`, `lifecycle`, `assignedTeamId` (unknown/foreign/inactive team) or `assignedUserId` (not a member of the team you sent) - identifies exactly which part of the payload failed. **Nothing is written on this error**, even the parts of the payload that were valid. |
 | `invalid_recipient` | 422 | `to` isn't a usable phone number. |
 | `no_active_channel` | 409 | The workspace has no connected number. |
 | `template_not_found` | 422 | No APPROVED template matches `name`/`id`. |
@@ -1149,7 +1160,7 @@ Filter by **source**, **status**, **time**, or **workspace**; search by request 
 | GET | `/api/v1/omnichannel/templates` | List approved templates | `{data[]}` |
 | GET | `/api/v1/omnichannel/contacts` | List contacts (filters + paging) | `{data[], total, page, pageSize}` of `ThreadItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}` | Get a contact | `ThreadItem` |
-| PATCH | `/api/v1/omnichannel/contacts/{identifier}` | Update contact (name/priority/assignee/language/countryCode/customFields/tags/lifecycle) | `ThreadItem` |
+| PATCH | `/api/v1/omnichannel/contacts/{identifier}` | Update contact (name/priority/assignee/team/language/countryCode/customFields/tags/lifecycle) | `ThreadItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}/messages` | Message history | `{contactId, data[], nextBefore}` of `MessageItem` |
 | GET | `/api/v1/omnichannel/contacts/{identifier}/messages/{messageId}` | Get one message | `MessageItem` |
 | POST | `/api/v1/omnichannel/contacts/{identifier}/conversation/open` | Open conversation | `ThreadItem` |

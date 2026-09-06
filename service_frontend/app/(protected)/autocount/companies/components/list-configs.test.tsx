@@ -57,6 +57,8 @@ describe('companies list config', () => {
         sinkConnectionId: null,
         sorentoCompanyCode: null,
         createdAt: null,
+        sourceKind: 'api',
+        documentPrerequisites: [],
       }),
     ).toBe('/autocount/companies/c1');
   });

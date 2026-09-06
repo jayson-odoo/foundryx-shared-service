@@ -44,6 +44,14 @@ from .lifecycle_service import LifecycleStageNotFound
 from .lifecycle_service import move as lifecycle_move
 from .message_service import MessageService, SendRejected
 
+# plan 28 S3 (§5.5, AC-TEM-32) - the `mode` config value -> the exact
+# assignment shape passed to `ConversationService.patch_thread`. `round_robin`
+# folded in at the plan 31 (A5) merge: A8's mode dropdown gains a THIRD path
+# alongside `user`/`team`/`unassign` - picks across the CONTACT'S OWN
+# workspace roster (orthogonal to `team`'s own round_robin/least_open
+# STRATEGY, which only applies once a team is selected).
+ASSIGN_MODES = ("user", "team", "round_robin", "unassign")
+
 
 class ActionError(Exception):
     """A node failed - halts the run (D14)."""
@@ -231,33 +239,55 @@ def _advance_round_robin_cursor(db: Session, workspace: Workspace, chosen: str) 
 def omnichannel_assign_conversation(
     db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """AC-WFP-23: assign to a specific user, round-robin across the contact's
-    OWN workspace members, or unassign - every path through `patch_thread` so
-    the conversation event/realtime/webhook match the UI exactly.
+    """`omnichannel.assign_conversation` (plan 28 S3, A8, D-A8-5, AC-TEM-32;
+    folded with plan 31's A5 `round_robin` mode at the merge, AC-WFP-23/24).
 
-    NOTE for the A8 merge (plan 28, `omnichannel.assign_conversation`): this
-    key/field set (`contactId`/`workspaceId`/`mode`/`userId`, modes `user` |
-    `round_robin` | `unassign`) is defined here because A8 has not merged onto
-    this base - if A8 lands first, EXTEND its action with the `round_robin`
-    mode instead of a second action (`team` mode stays A8's). The `workspaceId`
-    config field is author-facing only (FE always shows it, unlike the plan's
-    `show_when`) - runtime picks the contact's OWN `workspace_id` as the
-    authoritative round-robin scope, never the picker's stale copy."""
+    Routes through the ONE `ConversationService.patch_thread` write seam - the
+    identical realtime push, consumer webhook and `conversation_events` row
+    every other assignment path gets. `assigned_via_override="workflow"` +
+    the run's ids (from `_workflow.workflowId`/`_workflow.runId`, set by the
+    executor for every node - see `executor.py`) attribute the event to this
+    run rather than to a human actor (D-A8 pinned decision: `actor=None`,
+    never the workflow's publishing user).
+
+    `round_robin` (A5) picks across the CONTACT'S OWN workspace roster -
+    orthogonal to `team`'s own `round_robin`/`least_open` STRATEGY, which only
+    applies once a team is selected. The workspace scope is resolved from the
+    CONTACT at run time (never a stale config field) so the pick always
+    follows the contact's CURRENT roster, and the cursor advances only on a
+    successful assign (plan 31 S3 review nit - an `InvalidPatch` must not
+    silently skip a member who was never actually assigned)."""
     _require_module_active(db, tenant_id)
-    contact = _load_contact(db, tenant_id, config, ctx)
-    mode = str(config.get("mode") or "user")
+    contact_id = _contact_id(config, ctx)
+    mode = config.get("mode")
+    if mode not in ASSIGN_MODES:
+        raise ActionError("Assignment mode is not configured.")
 
-    if mode == "unassign":
-        try:
-            ConversationService(db).patch_thread(
-                contact.id, tenant_id, assigned_user_id=None, actor=None,
-                assigned_via_override="workflow",
-            )
-        except InvalidPatch as exc:
-            raise ActionError(str(exc)) from exc
-        return {"assignedUserId": None, "assigned": False}
-
-    if mode == "round_robin":
+    kwargs: Dict[str, Any] = {
+        "assigned_via_override": "workflow",
+        "workflow_id": ctx.get("_workflow.workflowId"),
+        "workflow_run_id": ctx.get("_workflow.runId"),
+    }
+    workspace: Optional[Workspace] = None
+    if mode == "user":
+        user_id = render_field(config.get("userId"), ctx).strip()
+        if not user_id:
+            raise ActionError("User is empty after merging.")
+        kwargs["assigned_user_id"] = user_id
+    elif mode == "team":
+        team_id = config.get("teamId")
+        if not team_id:
+            raise ActionError("Team is not configured.")
+        kwargs["assigned_team_id"] = team_id
+        # "default" (the picker's own sentinel, §5.5) means "use the team's
+        # saved strategy" - `patch_thread`/`team_assignment_service.pick`
+        # already treat `strategy_override=None` that way, so only a REAL
+        # override value is forwarded.
+        strategy = config.get("strategy")
+        if strategy and strategy != "default":
+            kwargs["strategy_override"] = strategy
+    elif mode == "round_robin":
+        contact = _load_contact(db, tenant_id, config, ctx)
         workspace = (
             db.query(Workspace)
             .filter(Workspace.id == contact.workspace_id, Workspace.tenant_id == tenant_id)
@@ -266,30 +296,34 @@ def omnichannel_assign_conversation(
         chosen = _round_robin_pick(db, tenant_id, workspace) if workspace is not None else None
         if chosen is None:
             # AC-WFP-24: an empty roster never fails an automation.
-            return {"assignedUserId": None, "assigned": False}
-        try:
-            ConversationService(db).patch_thread(
-                contact.id, tenant_id, assigned_user_id=chosen, actor=None,
-                assigned_via_override="workflow",
-            )
-        except InvalidPatch as exc:
-            raise ActionError(str(exc)) from exc
-        # Cursor advances ONLY on a successful assign (plan 31 S3 review nit).
-        _advance_round_robin_cursor(db, workspace, chosen)
-        return {"assignedUserId": chosen, "assigned": True}
+            return {"assignedUserId": None, "assignedTeamId": None, "assigned": False}
+        kwargs["assigned_user_id"] = chosen
+    else:  # "unassign" - clears both sides unconditionally (§5.2 table).
+        kwargs["assigned_user_id"] = None
+        kwargs["assigned_team_id"] = None
 
-    # mode == "user"
-    user_id = str(config.get("userId") or "").strip()
-    if not user_id:
-        raise ActionError("User is not configured.")
     try:
-        ConversationService(db).patch_thread(
-            contact.id, tenant_id, assigned_user_id=user_id, actor=None,
-            assigned_via_override="workflow",
-        )
+        item = ConversationService(db).patch_thread(contact_id, tenant_id, **kwargs)
+    except ThreadNotFound as exc:
+        raise ActionError("Contact not found.") from exc
     except InvalidPatch as exc:
-        raise ActionError(str(exc)) from exc
-    return {"assignedUserId": user_id, "assigned": True}
+        # `exc.message` never embeds the raw id (D-A8-5 pinned wording -
+        # "Team not found or inactive." / "Assignee not found in this
+        # tenant." / "User is not a member of this team.").
+        raise ActionError(exc.message) from exc
+
+    if mode == "round_robin" and workspace is not None and kwargs.get("assigned_user_id"):
+        _advance_round_robin_cursor(db, workspace, kwargs["assigned_user_id"])
+
+    return {
+        "assignedUserId": item.assignedUserId,
+        "assignedTeamId": item.assignedTeamId,
+        # AC-TEM-35: `assigned` tracks whether a USER ended up owning the
+        # thread - a team assignment with an empty roster is still a SUCCESS
+        # (D-A8-11), just with `assigned = false` (the team is set, no user
+        # is), never an ActionError.
+        "assigned": bool(item.assignedUserId),
+    }
 
 
 # ── omnichannel.add_tag / omnichannel.remove_tag (AC-WFP-25) ────────────────

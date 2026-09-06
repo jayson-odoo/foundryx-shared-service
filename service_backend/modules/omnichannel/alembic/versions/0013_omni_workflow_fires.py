@@ -8,14 +8,14 @@ Idempotent guard (inspector check), mirrors `0010_omni_contacts_module`'s
 style. Revision id <= 32 chars.
 
 Down-revision note: this lane (S31) branched at `58759ed`, where the module
-head was `0010_omni_contacts_module`. Plan 29 (A4) and plan 28 (A8) are
-expected to add their own `0011`/`0012` revisions on sibling branches - the
-merge step must renumber/rebase this file's `down_revision` onto whichever of
-those lands first (same rebase-the-chain-tip pattern `0010`'s own docstring
-used for A2 vs A3).
+head was `0010_omni_contacts_module`. Re-parented at the plan 31 merge onto
+`0012_omni_team_assignment` (plan 29/A4 landed `0011_omni_broadcasts`, plan
+28/A8 landed `0012_omni_team_assignment` - both merged to main before this
+branch did, same rebase-the-chain-tip pattern `0010`'s own docstring used for
+A2 vs A3).
 
 Revision ID: 0013_omni_workflow_fires
-Revises: 0010_omni_contacts_module
+Revises: 0012_omni_team_assignment
 Create Date: 2026-09-06
 """
 from alembic import op
@@ -26,7 +26,7 @@ import sqlalchemy as sa
 import app.models.utc_datetime  # noqa: F401
 
 revision = "0013_omni_workflow_fires"
-down_revision = "0010_omni_contacts_module"
+down_revision = "0012_omni_team_assignment"
 branch_labels = None
 depends_on = None
 

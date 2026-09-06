@@ -63,6 +63,8 @@ export const WORKFLOW_NODE_ICONS: Record<string, LucideIcon> = {
   ArrowLeftRight,
   MessageCircle,
   UserRound,
+  // Plan 28 - omnichannel.assign_conversation (review round 2, N5).
+  UserRoundCog,
   Send,
   Sparkles,
   // plan 31 (omnichannel workflow parity)
@@ -71,7 +73,6 @@ export const WORKFLOW_NODE_ICONS: Record<string, LucideIcon> = {
   UserCheck,
   Tag,
   Megaphone,
-  UserRoundCog,
   MessageSquareText,
   HelpCircle,
   Clock,

@@ -121,7 +121,11 @@ const STRING_ESCAPES: Record<string, string> = {
   t: '\t',
 };
 const NUMBER_RE = /^[0-9]+(?:\.[0-9]+)?/;
-const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*/;
+// Dotted identifiers (`lines.count`) are allowed at the TOKEN level so a
+// document header formula can reference a line aggregate (sprint-5/02,
+// AC-02-07/20) - whether a given name actually resolves is a PARSE-time
+// concern (see `knownVariables` below), never a tokenizer concern.
+const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_.]*/;
 
 function tokenize(source: string): Token[] {
   const tokens: Token[] = [];
@@ -219,6 +223,7 @@ function scanString(source: string, start: number): [string, number] {
 type Node =
   | { kind: 'lit'; value: FormulaValue }
   | { kind: 'value' }
+  | { kind: 'var'; name: string }
   | { kind: 'unary'; op: '-' | 'not'; operand: Node }
   | { kind: 'binary'; op: string; left: Node; right: Node }
   | { kind: 'call'; name: string; args: Node[] };
@@ -342,6 +347,24 @@ export const FUNCTION_CATALOG: readonly FunctionDef[] = [
     description: 'Returns x, or fallback when x is null.',
     example: 'default(value, "N/A")', minArgs: 2, maxArgs: 2,
   },
+  // sprint-5/02 (AC-02-09) - a document filter/status formula's building
+  // blocks (`not(startswith(upper(trim(DocNo)), "SPO-"))`); the FE catalog
+  // mirror the backend `formula.py` gains in the same slice.
+  {
+    name: 'startswith', category: 'String', signature: 'startswith(text, prefix)',
+    args: [
+      { name: 'text', description: 'the text to check' },
+      { name: 'prefix', description: 'the prefix to look for' },
+    ],
+    description: 'True when text starts with prefix.',
+    example: 'startswith(upper(value), "SPO-") → true', minArgs: 2, maxArgs: 2,
+  },
+  {
+    name: 'coalesce', category: 'Logical', signature: 'coalesce(a, b, ...)',
+    args: [{ name: '...', description: 'two or more values, checked in order' }],
+    description: 'Returns the first argument that is not null.',
+    example: 'coalesce(UDF_Currency, CurrencyCode, "CNY")', minArgs: 2, maxArgs: null,
+  },
 ];
 
 const FUNCTION_BY_NAME: Record<string, FunctionDef> = Object.fromEntries(
@@ -423,7 +446,18 @@ export const TRANSFORM_PRESET: Record<string, string> = {
 class Parser {
   private pos = 0;
   private depth = 0;
-  constructor(private readonly tokens: Token[]) {}
+  constructor(
+    private readonly tokens: Token[],
+    /**
+     * Named variables this formula's CALLER accepts beyond the single
+     * `value` (sprint-5/02, AC-02-07/20): a document header/line row's
+     * Variables panel offers its own columns + `lines.*` aggregates. Any
+     * bare identifier NOT in this set still fails exactly as before -
+     * `foo + 1` stays a parse error (parity matrix pinned) UNLESS the
+     * caller explicitly widens the set.
+     */
+    private readonly knownVariables: ReadonlySet<string> = new Set(),
+  ) {}
 
   private peek(): Token {
     return this.tokens[this.pos];
@@ -551,6 +585,13 @@ class Parser {
       if (['and', 'or', 'not'].includes(name)) {
         throw new FormulaParseError(`Unexpected operator '${name}'.`);
       }
+      // A known variable NOT immediately followed by '(' is a fact reference
+      // (e.g. `Cancelled`, `lines.open_count`) - resolved against the eval
+      // facts bag, never against `value`. Peek without consuming twice.
+      if (this.knownVariables.has(name) && this.tokens[this.pos + 1]?.kind !== '(') {
+        this.advance();
+        return { kind: 'var', name };
+      }
       this.advance();
       if (this.peek().kind !== '(') {
         throw new FormulaParseError(
@@ -610,9 +651,23 @@ export interface ParsedFormula {
   ast: Node;
 }
 
-/** Parse + validate; throws `FormulaParseError` on any invalid formula (the
- * client save gate, mirrors the server 422). */
-export function parseFormula(formula: string): ParsedFormula {
+/** A formula's named-variable universe (sprint-5/02) - a plain array/Set of
+ *  the identifiers `{kind:'var'}` may resolve to, beyond `value`. */
+export type FormulaVariables = ReadonlySet<string> | readonly string[];
+
+function toVariableSet(vars: FormulaVariables | undefined): ReadonlySet<string> {
+  if (!vars) return new Set();
+  return vars instanceof Set ? vars : new Set(vars);
+}
+
+/**
+ * Parse + validate; throws `FormulaParseError` on any invalid formula (the
+ * client save gate, mirrors the server 422). `knownVariables` (sprint-5/02,
+ * AC-02-20) widens the grammar for THIS call only - omitted, a bare
+ * identifier other than `value` is still an "Unknown name" parse error
+ * (the golden parity matrix's `foo + 1` case is unaffected).
+ */
+export function parseFormula(formula: string, knownVariables?: FormulaVariables): ParsedFormula {
   if (typeof formula !== 'string' || formula.trim() === '') {
     throw new FormulaParseError('The formula must not be empty.');
   }
@@ -620,14 +675,14 @@ export function parseFormula(formula: string): ParsedFormula {
     throw new FormulaParseError(`The formula exceeds the ${MAX_FORMULA_LEN}-character limit.`);
   }
   const tokens = tokenize(formula);
-  const ast = new Parser(tokens).parse();
+  const ast = new Parser(tokens, toVariableSet(knownVariables)).parse();
   return { source: formula.trim(), ast };
 }
 
 /** Parse for the side effect; returns the error message or null. */
-export function validateFormula(formula: string): string | null {
+export function validateFormula(formula: string, knownVariables?: FormulaVariables): string | null {
   try {
-    parseFormula(formula);
+    parseFormula(formula, knownVariables);
     return null;
   } catch (err) {
     if (err instanceof FormulaError) return err.message;
@@ -813,6 +868,7 @@ const EAGER_FUNCS: Record<string, (a: FormulaValue[]) => FormulaValue> = {
   bool: (a) => toBool(a[0]),
   parseDate: (a) => parseDateValue(a[0], a[1]),
   formatDate: (a) => formatDateValue(a[0], a[1]),
+  startswith: (a) => stringify(a[0]).startsWith(stringify(a[1])),
 };
 
 function typeName(v: FormulaValue): string {
@@ -860,19 +916,21 @@ function toBoolStrict(v: FormulaValue): boolean {
   throw new FormulaRuntimeError(`Expected a true/false value, got ${typeName(v)}.`);
 }
 
-function evalNode(node: Node, value: FormulaValue): FormulaValue {
+function evalNode(node: Node, value: FormulaValue, facts: Record<string, unknown>): FormulaValue {
   switch (node.kind) {
     case 'lit':
       return node.value;
     case 'value':
       return value;
+    case 'var':
+      return toFormulaValue(facts[node.name]);
     case 'unary':
-      if (node.op === 'not') return !toBoolStrict(evalNode(node.operand, value));
-      return -toNumber(evalNode(node.operand, value), 'negation');
+      if (node.op === 'not') return !toBoolStrict(evalNode(node.operand, value, facts));
+      return -toNumber(evalNode(node.operand, value, facts), 'negation');
     case 'binary':
-      return evalBinary(node, value);
+      return evalBinary(node, value, facts);
     case 'call':
-      return evalCall(node, value);
+      return evalCall(node, value, facts);
     default:
       throw new FormulaRuntimeError('Corrupt formula node.');
   }
@@ -881,13 +939,18 @@ function evalNode(node: Node, value: FormulaValue): FormulaValue {
 function evalBinary(
   node: { op: string; left: Node; right: Node },
   value: FormulaValue,
+  facts: Record<string, unknown>,
 ): FormulaValue {
   const op = node.op;
-  if (op === 'and') return toBoolStrict(evalNode(node.left, value)) && toBoolStrict(evalNode(node.right, value));
-  if (op === 'or') return toBoolStrict(evalNode(node.left, value)) || toBoolStrict(evalNode(node.right, value));
+  if (op === 'and') {
+    return toBoolStrict(evalNode(node.left, value, facts)) && toBoolStrict(evalNode(node.right, value, facts));
+  }
+  if (op === 'or') {
+    return toBoolStrict(evalNode(node.left, value, facts)) || toBoolStrict(evalNode(node.right, value, facts));
+  }
 
-  const left = evalNode(node.left, value);
-  const right = evalNode(node.right, value);
+  const left = evalNode(node.left, value, facts);
+  const right = evalNode(node.right, value, facts);
   if (op === '==') return valuesEqual(left, right);
   if (op === '!=') return !valuesEqual(left, right);
   if (['<', '<=', '>', '>='].includes(op)) return compare(op, left, right);
@@ -905,26 +968,51 @@ function evalBinary(
   throw new FormulaRuntimeError(`Unknown operator '${op}'.`);
 }
 
-function evalCall(node: { name: string; args: Node[] }, value: FormulaValue): FormulaValue {
+function evalCall(
+  node: { name: string; args: Node[] },
+  value: FormulaValue,
+  facts: Record<string, unknown>,
+): FormulaValue {
   const name = node.name;
   if (name === 'if') {
-    const cond = toBoolStrict(evalNode(node.args[0], value));
-    return cond ? evalNode(node.args[1], value) : evalNode(node.args[2], value);
+    const cond = toBoolStrict(evalNode(node.args[0], value, facts));
+    return cond ? evalNode(node.args[1], value, facts) : evalNode(node.args[2], value, facts);
   }
   if (name === 'default') {
-    const first = evalNode(node.args[0], value);
-    return first !== null ? first : evalNode(node.args[1], value);
+    const first = evalNode(node.args[0], value, facts);
+    return first !== null ? first : evalNode(node.args[1], value, facts);
+  }
+  if (name === 'coalesce') {
+    // Short-circuit, left to right - mirrors `default`'s lazy branch so a
+    // later argument (e.g. a literal fallback) is never evaluated needlessly.
+    let last: FormulaValue = null;
+    for (const arg of node.args) {
+      last = evalNode(arg, value, facts);
+      if (last !== null) return last;
+    }
+    return last;
   }
   const impl = EAGER_FUNCS[name];
   if (!impl) throw new FormulaRuntimeError(`Unknown function '${name}'.`);
-  return impl(node.args.map((arg) => evalNode(arg, value)));
+  return impl(node.args.map((arg) => evalNode(arg, value, facts)));
 }
 
-/** Evaluate `formula` with the input `value`. Throws `FormulaParseError` /
- * `FormulaRuntimeError` (fail closed). */
-export function evaluateFormula(formula: string | ParsedFormula, value: unknown): FormulaValue {
-  const parsed = typeof formula === 'string' ? parseFormula(formula) : formula;
-  return evalNode(parsed.ast, toFormulaValue(value));
+/**
+ * Evaluate `formula` with the input `value`. Throws `FormulaParseError` /
+ * `FormulaRuntimeError` (fail closed). `facts` (sprint-5/02) resolves any
+ * `{kind:'var'}` node the formula's OWN `parseFormula(formula, knownVariables)`
+ * call was parsed with - a plain `evaluateFormula(formula, value)` call (no
+ * facts) behaves exactly as before, since a formula with no known variables
+ * never parses one.
+ */
+export function evaluateFormula(
+  formula: string | ParsedFormula,
+  value: unknown,
+  facts: Record<string, unknown> = {},
+): FormulaValue {
+  const parsed =
+    typeof formula === 'string' ? parseFormula(formula, Object.keys(facts)) : formula;
+  return evalNode(parsed.ast, toFormulaValue(value), facts);
 }
 
 /** A JSON-safe projection for the wire (FormulaDate → ISO; integer number → int). */
@@ -939,11 +1027,20 @@ export interface FormulaTestResult {
   error: string | null;
 }
 
-/** Live preview for the builder's Testing tab (AC-16-20): a value in → output
- * or a named error, never a blank. */
-export function testFormula(formula: string, value: unknown): FormulaTestResult {
+/**
+ * Live preview for the builder's Testing tab (AC-16-20): a value in → output
+ * or a named error, never a blank. `facts` (sprint-5/02) is the mock
+ * Simulate feature's escape hatch for a document row's named-variable
+ * formula - the Testing tab itself never passes it (hidden while a Variables
+ * panel is offered, see `AutocountFormulaBuilder`).
+ */
+export function testFormula(
+  formula: string,
+  value: unknown,
+  facts: Record<string, unknown> = {},
+): FormulaTestResult {
   try {
-    return { ok: true, output: resultToJson(evaluateFormula(formula, value)), error: null };
+    return { ok: true, output: resultToJson(evaluateFormula(formula, value, facts)), error: null };
   } catch (err) {
     if (err instanceof FormulaError) return { ok: false, output: null, error: err.message };
     throw err;

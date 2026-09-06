@@ -29,7 +29,7 @@ import { integrationService } from '@/services/integration-service';
 import { useDatetime } from '@/hooks/use-datetime';
 import type { Connection, IntegrationProvider, ProviderField } from '@/types/integration';
 import { CONNECTION_STATUS_REGISTRY } from './connection-status';
-import { dependentDefault, type ConnectionFormValues } from './connection-schema';
+import { dependentDefault, type ConnectionFormValues, storedOrEffective } from './connection-schema';
 
 const TYPE_LABELS: Record<string, string> = {
   email: 'Email',
@@ -83,7 +83,9 @@ function ProviderFieldRow({
   connection: Connection | null;
 }) {
   if (!editing) {
-    const value = f.secret ? undefined : (connection?.config[f.key] ?? '');
+    // Same resolution as the edit prefill (`storedOrEffective`): a legacy
+    // Sorento connection reads "1 (legacy)" here too, never "-".
+    const value = f.secret ? undefined : storedOrEffective(f, connection?.config ?? {});
     return (
       <FormRow label={f.label}>
         {f.secret ? (

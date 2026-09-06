@@ -81,10 +81,13 @@ export function useAutocountRunsListConfig(
               Running
             </Badge>
           )}
-          {/* A truncated sync must never read as a complete one (AC-13-46). */}
+          {/* A truncated sync must never read as a complete one (AC-13-46).
+              "Partial, continues" (plan sprint-5/03 AC-03-21) - a paged run
+              cut by the budget resumes on the next tick; the label must not
+              read like a stalled/failed run needing operator action. */}
           {r.truncated && (
             <Badge variant="warning" appearance="light" size="sm">
-              Truncated
+              Partial, continues
             </Badge>
           )}
           {variant === 'task' &&

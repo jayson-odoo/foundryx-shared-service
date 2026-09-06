@@ -153,7 +153,9 @@ export function PreviewPanel({
           <TriangleAlert />
         </AlertIcon>
         <AlertTitle>Dry run failed</AlertTitle>
-        <AlertDescription>{error}</AlertDescription>
+        {/* The message now quotes the consumer's answer (a bounded body
+            snippet), which can be one long unbroken token - wrap it. */}
+        <AlertDescription className="break-words">{error}</AlertDescription>
       </Alert>
     );
   }

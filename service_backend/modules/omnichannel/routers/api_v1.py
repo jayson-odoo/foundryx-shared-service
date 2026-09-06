@@ -224,7 +224,8 @@ def update_contact(
     keys untouched); omit ``customFields`` entirely to leave it unchanged.
     ``tags`` (names, auto-created if unknown) REPLACES the set; ``lifecycle``
     (a stage key or label) moves the contact along the workspace's lifecycle
-    graph."""
+    graph. ``assignedTeamId`` is a CORE team id, BY ID ONLY (never by name);
+    an unknown/foreign/inactive id is a `422 invalid_request`."""
     sent = payload.model_fields_set
     _S = ...  # sentinel = "not provided"
     return PublicGatewayService(db).update_contact(
@@ -233,6 +234,7 @@ def update_contact(
         last_name=payload.lastName if "lastName" in sent else _S,
         priority=payload.priority if "priority" in sent else None,
         assigned_user_id=payload.assignedUserId if "assignedUserId" in sent else _S,
+        assigned_team_id=payload.assignedTeamId if "assignedTeamId" in sent else _S,
         custom_fields=payload.customFields if "customFields" in sent else _S,
         language=payload.language if "language" in sent else _S,
         country_code=payload.countryCode if "countryCode" in sent else _S,

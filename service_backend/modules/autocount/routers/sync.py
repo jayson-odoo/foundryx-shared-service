@@ -3,6 +3,8 @@
 "Sync now" is MANUAL this slice (no scheduling, no beat entry) - see
 ``services/sync_service.py`` for why.
 """
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
@@ -10,8 +12,10 @@ from app.database import get_db
 from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
+from ..presets import list_mapping_presets
 from ..schemas import (
     ApprovalResponse,
+    MappingPresetOut,
     PreviewResponse,
     StagedListResponse,
     StagedRecordItem,
@@ -25,6 +29,7 @@ from ..schemas import (
 from ..services import (
     AutocountServiceError,
     CompanyNotFound,
+    CompanyService,
     EntityNotConfigured,
     JobNotFound,
     NotAwaitingApproval,
@@ -222,3 +227,26 @@ def discard(
     except AutocountServiceError as exc:
         _raise(exc)
     return ApprovalResponse(jobId=job_id, result=result)
+
+
+@router.get("/presets/{entity_type}", response_model=List[MappingPresetOut])
+def get_mapping_presets(
+    entity_type: str,
+    company_id: str = Query(..., alias="companyId"),
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+) -> List[MappingPresetOut]:
+    """The mapping editor's "Use preset" action (sprint-5/02 S3, AC-02-16) -
+    the documented AutoCount SQL pack for a document entity, database-
+    substituted for THIS company. Empty list for a non-document entity or a
+    document family with no registered preset (foolproof-UI: the frontend
+    only offers "Use preset" when this returns something). Reuses
+    ``autocount.companies.manage`` - same gate as every other mapping action.
+    """
+    try:
+        company = CompanyService(db).get(current_user.tenant_id, company_id)
+    except AutocountServiceError as exc:
+        _raise(exc)
+        raise AssertionError("unreachable")  # for the type checker
+    presets = list_mapping_presets(entity_type, company.database_name)
+    return [MappingPresetOut(**preset) for preset in presets]

@@ -12,6 +12,7 @@ import {
   KeyRound,
   MessageCircle,
   Settings as SettingsIcon,
+  Shuffle,
   Tag,
   Users as UsersIcon,
 } from 'lucide-react';
@@ -28,6 +29,7 @@ import { WorkspaceContactFieldsTab } from './workspace-contact-fields-tab';
 import { WorkspaceTagsTab } from './workspace-tags-tab';
 import { WorkspaceCloseReasonsTab } from './workspace-close-reasons-tab';
 import { WorkspaceBusinessHoursTab, type BusinessHoursController } from './workspace-business-hours-tab';
+import { WorkspaceTeamSettingsTab } from './workspace-team-settings-tab';
 import { useWorkspaceActions } from './use-workspace-actions';
 import { useCan } from '@/hooks/use-can';
 import { workspaceFormHref, workspaceFormPath, workspacesListPath } from './paths';
@@ -229,6 +231,12 @@ export function useWorkspaceForm(
               label: 'Close reasons',
               icon: CircleSlash,
               render: () => <WorkspaceCloseReasonsTab workspaceId={workspace?.id ?? null} creating={creating} />,
+            },
+            {
+              id: 'team-assignment',
+              label: 'Team assignment',
+              icon: Shuffle,
+              render: () => <WorkspaceTeamSettingsTab workspaceId={workspace?.id ?? null} creating={creating} />,
             },
           ]
         : []),

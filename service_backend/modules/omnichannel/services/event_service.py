@@ -192,17 +192,23 @@ def _emit_workflow_event(
         }
     elif event_type in ("assigned", "unassigned"):
         action = "conversation_assigned"
-        assignee_kind = (payload or {}).get("assigneeKind")
-        if assignee_kind == "external_agent":
-            assigned_via = "external"
-        elif assignee_kind == "workflow":
-            # plan sprint-4/31 S2 (`omnichannel.assign_conversation`) stamps
-            # this via `patch_thread`'s `assigned_via_override` - lets
-            # `trigger.assignedVia` distinguish an automated assign from a
-            # manual one on the `omnichannel.conversation_assigned` trigger.
-            assigned_via = "workflow"
+        p = payload or {}
+        if "assignedVia" in p:
+            # Native path (plan 28 S3/A8 team assignment, folded with plan
+            # 31/A5's `round_robin` mode at the merge): `patch_thread` already
+            # computed the authoritative value for this SAME payload dict
+            # ("manual" / "team_strategy" / whatever `assigned_via_override`
+            # stamped, e.g. "workflow") - trust it directly rather than
+            # re-inferring from `assigneeKind`, which the native path only
+            # ever sets to "user" (never "team"/"workflow"/"team_strategy"),
+            # so the old inference below silently collapsed every non-user
+            # native assign to "manual".
+            assigned_via = p["assignedVia"]
         else:
-            assigned_via = "manual"
+            # Embed path (external-agent assignment via a consumer API key) -
+            # its payload never carries `assignedVia`, only `assigneeKind`.
+            assignee_kind = p.get("assigneeKind")
+            assigned_via = "external" if assignee_kind == "external_agent" else "manual"
         extra = {
             "assigneeUserId": to_value if event_type == "assigned" else None,
             "previousAssigneeUserId": from_value,

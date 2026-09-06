@@ -117,9 +117,29 @@ class CanonicalMaster(CanonicalRecord):
     def sink_payload(self) -> Dict[str, Any]:
         """Exactly the keys Sorento defines - provenance and locally-useful
         fields (``source_system``, ``entity_type``, ``last_modified``,
-        ``extras``) stripped."""
+        ``extras``) stripped.
+
+        A ``None``-valued key is OMITTED, never sent as ``null`` (Sorento
+        contract 2.1, ``PLAN-autocount-cross-repo-contract.md`` section 10):
+        under 2.1's ``model_fields_set`` writer a MASTER's ``null`` means
+        "clear this field" and an absent key means "leave it alone", so
+        every product shipping ``"list_price": null`` and every customer
+        ``"credit_limit": null`` on every push WOULD clear whatever Sorento
+        holds the moment 2.1 answers the contract endpoint. On Sorento main
+        (1.x/2.0) omitting the key changes nothing: an absent key still reads
+        as None and the writer blind-SETs NULL either way, so this is
+        behaviour-neutral there and bites only under 2.1. A falsy but
+        NOT-None value (``0``, ``""``, ``False``) is a real value and stays.
+        Documents are OUT OF SCOPE for this rule - a document's own
+        ``sink_payload`` (``documents.py``) is untouched and keeps sending
+        ``status`` and friends as-is.
+        """
         data = self.model_dump(mode="json")
-        return {key: data[key] for key in self.SINK_FIELDS if key in data}
+        return {
+            key: data[key]
+            for key in self.SINK_FIELDS
+            if key in data and data[key] is not None
+        }
 
 
 class CanonicalSupplier(CanonicalMaster):
@@ -148,12 +168,23 @@ class CanonicalCustomer(CanonicalMaster):
 
     No ``country`` source exists on Debtor, and ``registration_number`` exists on
     Creditor but not Debtor - both omitted rather than invented.
+
+    ``credit_limit`` is GONE from this model (Sorento contract 2.1, D15): not a
+    sink field, not an accepted mapping target, not seeded - nothing could
+    populate it, so a dead attribute was removed rather than kept "for
+    staging". Sorento's ``CanonicalCustomer`` on ``feat/ingest-parity`` (ref
+    39ddd8c0a, their PR #699) sets ``extra="forbid"`` and does not declare it
+    - a field-named 422 the moment it crosses the wire. Proven against
+    Sorento's LOCAL ingest-parity lane (:8042, build b1c01aa2f), NOT Sorento
+    main: 27/27 SIM customers failed there. Sorento main still declares
+    ``credit_limit`` / ``payment_terms_*`` and treats null like absent, so
+    dropping the key is neutral there - which is why the removal is
+    unconditional (the ESB stops sending it BEFORE Sorento removes it).
     """
 
     entity_type: str = ENTITY_CUSTOMER
 
     phone_number: Optional[str] = None
-    credit_limit: Optional[Decimal] = None
     tax_id: Optional[str] = None
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
@@ -163,7 +194,6 @@ class CanonicalCustomer(CanonicalMaster):
         "name",
         "email",
         "phone_number",
-        "credit_limit",
         "tax_id",
         "is_active",
     )

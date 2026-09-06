@@ -48,6 +48,7 @@ from app.models.role import Role, user_roles
 from app.models.user import User, UserStatus
 from app.models.view_preference import UserViewPreference
 from app.models.terminology import TerminologyOverride
+from app.models.team import TEAM_MEMBER_ROLES, Team, TeamMember
 from app.models.import_job import ImportJob, ImportSettings
 from app.models.background_job import (
     JOB_ABORTED,

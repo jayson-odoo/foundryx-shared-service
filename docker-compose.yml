@@ -49,6 +49,14 @@ x-backend-env: &backend-env
   PLATFORM_SMTP_PASSWORD: ${PLATFORM_SMTP_PASSWORD:-}
   PLATFORM_SMTP_FROM_EMAIL: ${PLATFORM_SMTP_FROM_EMAIL:-}
   PLATFORM_SMTP_FROM_NAME: ${PLATFORM_SMTP_FROM_NAME:-Foundryx EMS}
+  # AutoCount ESB -> Sorento sink (module autocount). This block is an explicit
+  # allow-list with no env_file, so a setting missing here NEVER reaches the
+  # container (batch-size lane review, 2026-09-06). Defaults match app/config.py.
+  # Settings is an import-time singleton: a change needs the containers
+  # RECREATED (`docker compose up -d`), a `restart` keeps the old environment.
+  AUTOCOUNT_SINK_BATCH_SIZE: ${AUTOCOUNT_SINK_BATCH_SIZE:-200}
+  AUTOCOUNT_SINK_TIMEOUT_SECONDS: ${AUTOCOUNT_SINK_TIMEOUT_SECONDS:-300}
+  AUTOCOUNT_SINK_CONCURRENCY: ${AUTOCOUNT_SINK_CONCURRENCY:-1}
 
 x-backend-base: &backend-base
   image: ${IMAGE_REPO:-jayson1004/foundryx-shared-service}:backend-${IMAGE_TAG:-latest}
@@ -61,6 +69,13 @@ x-backend-base: &backend-base
     redis:
       condition: service_started
   restart: unless-stopped
+  # `host.docker.internal` -> the compose network gateway (the HOST). Backend +
+  # workers dial host-side relays through it (e.g. the socat relay that carries
+  # the Sorento AutoCount SQL connection over the host's ZeroTier link - see
+  # documentation/ops/sorento-sql-relay.md). A NAME, so the integration config
+  # never embeds a Docker-assigned IP.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   # NOTE: the `backend` network alias is added ONLY on the API colors below, not
   # here - otherwise the workers/beat would also answer to `backend:8001` and the
   # frontend's BACKEND_API_URL could resolve to a process with no HTTP server.
@@ -257,3 +272,12 @@ volumes:
 networks:
   foundryx_ss_network:
     driver: bridge
+    # PINNED so a `docker compose down` / network recreate yields the SAME
+    # gateway (172.21.0.1). Host-side services bind to that gateway (the
+    # Sorento SQL relay) and its firewall rule is keyed on this subnet - a
+    # Docker-chosen pool address would silently move both. Matches the subnet
+    # prod was already given by the default pool (verified 2026-09-04).
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+          gateway: 172.21.0.1

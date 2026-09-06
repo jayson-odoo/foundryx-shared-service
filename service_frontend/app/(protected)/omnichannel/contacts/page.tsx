@@ -7,7 +7,7 @@
  * tenant has more than one workspace (the segment control already occupies
  * the list toolbar).
  */
-import { Fragment, useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useState } from 'react';
 import { LoaderCircleIcon } from 'lucide-react';
 import { Container } from '@/components/common/container';
 import { Button } from '@/components/ui/button';
@@ -22,8 +22,8 @@ import { useContactTags } from '@/hooks/use-contact-tags';
 import { useContactFields } from '@/hooks/use-contact-fields';
 import { useContactLifecycleStages } from '@/hooks/use-contact-lifecycle-stages';
 import { useWorkspaceMembers } from '@/hooks/use-workspace-members';
+import { useChannelTypeOptions } from '@/hooks/use-channel-type-options';
 import { useContactBulk, reportBulkResult } from '@/hooks/use-contact-bulk';
-import { channelService } from '@/services/channel-service';
 import type { ContactListItem } from '@/types/omnichannel';
 import type { FilterGroup } from '@/types/resource';
 import { BulkAssignDialog } from './components/bulk-assign-dialog';
@@ -67,18 +67,7 @@ export default function ContactsPage() {
   // countdown/poll/refresh survives "Manage segments" closing mid-window.
   const segmentDelete = useSegmentDeleteController(() => void refreshSegments());
 
-  const [channelTypeOptions, setChannelTypeOptions] = useState<{ label: string; value: string }[]>([]);
-  useEffect(() => {
-    if (!workspaceId) return;
-    channelService
-      .listByWorkspace(workspaceId)
-      .then((channels) => {
-        const seen = new Set<string>();
-        for (const c of channels) seen.add(c.channelType);
-        setChannelTypeOptions(Array.from(seen).map((v) => ({ label: v, value: v })));
-      })
-      .catch(() => setChannelTypeOptions([]));
-  }, [workspaceId]);
+  const channelTypeOptions = useChannelTypeOptions(workspaceId);
 
   const [currentFilter, setCurrentFilter] = useState<FilterGroup | null>(null);
 

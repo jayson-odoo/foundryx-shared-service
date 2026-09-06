@@ -4,7 +4,7 @@ keys by the services before constructing these models.
 """
 import re
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -382,6 +382,12 @@ class ThreadItem(ApiModel):
     # name/avatar from whichever assignee column is set.
     assignedExternalAgentId: Optional[str] = None
     assignedAvatarUrl: Optional[str] = None
+    # A CORE `public.teams` id (plan 28 S2, D-A8-3) - resolved tenant-scoped
+    # through the teams capability, batched per page. A foreign/deleted team
+    # id (or the capability not being registered, AC-TEM-15) renders
+    # `assignedTeamName: null`, never another tenant's team name.
+    assignedTeamId: Optional[str] = None
+    assignedTeamName: Optional[str] = None
     status: str  # OPEN | SNOOZED | CLOSED
     priority: str
     channelId: Optional[str] = None
@@ -552,6 +558,189 @@ class ContactSegmentUpdate(ApiModel):
     name: Optional[str] = None
     description: Optional[str] = None
     filter: Optional[FilterGroup] = None
+
+
+# ── Broadcasts (plan 29, roadmap A4) ─────────────────────────────────────────
+# See documentation/plans/sprint-4/29-omnichannel-broadcasts.md §5.2. Mirrors
+# service_frontend/types/omnichannel.ts (S0 mock contract) verbatim.
+class TemplateBindingStatic(ApiModel):
+    """Verbatim text - no token syntax allowed (D-A4-4, anti-SSTI by
+    construction: the server never renders a tenant string as a template)."""
+
+    source: Literal["static"]
+    text: str
+
+
+class TemplateBindingContactField(ApiModel):
+    """Reads a whitelisted contact field, falling back when empty (D-A4-5:
+    the fallback is REQUIRED, so an empty-parameter send is unreachable)."""
+
+    source: Literal["contactField"]
+    field: str
+    fallback: str
+
+
+TemplateBinding = Annotated[
+    Union[TemplateBindingStatic, TemplateBindingContactField],
+    Field(discriminator="source"),
+]
+
+# `TemplateBinding.field` whitelist (plan §5.2) - the fixed contact fields
+# plus `customFields.<key>` where `<key>` is REGISTERED on the workspace
+# (checked in `services/broadcast_bindings.py`, not here - no DB in a schema).
+BROADCAST_FIELD_BINDING_OPTIONS = frozenset(
+    {"firstName", "lastName", "phone", "email", "language", "countryCode", "lifecycle"}
+)
+_CUSTOM_FIELD_BINDING_RE = re.compile(r"^customFields\.[A-Za-z0-9_]+$")
+
+
+class BroadcastBindings(ApiModel):
+    header: List[TemplateBinding] = []
+    body: List[TemplateBinding] = []
+    buttons: List[TemplateBinding] = []
+
+
+class BroadcastAudienceIn(ApiModel):
+    """Exactly one of `segmentId` / `filter` / `contactIds` must be set,
+    matching `kind` (D-A4-2 - configuration only, never a stored list).
+
+    `filter` is a RAW dict here, not a typed `FilterGroup` (post-approval
+    fix, O-5): a typed nested model with `extra="forbid"` rejects a stray
+    filter key during FastAPI's automatic body validation, BEFORE the
+    router function ever runs - the caller gets pydantic's raw
+    `{"detail": [{"type": "extra_forbidden", ...}]}` shape instead of the
+    uniform `{"fieldErrors"}` 422 every other broadcast validation error
+    uses. `BroadcastService` re-validates it into a real `FilterGroup`
+    (`_parse_audience_filter`) inside the service layer, where a bad shape
+    can be turned into `{"fieldErrors": {"audience.filter": "..."}}` like
+    every other audience error (same path as the empty-group guard, D-4)."""
+
+    kind: Literal["segment", "filter", "contacts"]
+    segmentId: Optional[str] = None
+    filter: Optional[Dict[str, Any]] = None
+    contactIds: Optional[List[str]] = None
+
+
+class BroadcastAudienceOut(ApiModel):
+    kind: Literal["segment", "filter", "contacts"]
+    segmentId: Optional[str] = None
+    segmentName: Optional[str] = None
+    filter: Optional[FilterGroup] = None
+    contactIds: Optional[List[str]] = None
+
+
+class BroadcastCounts(ApiModel):
+    total: int
+    sent: int
+    delivered: int
+    read: int
+    failed: int
+    skipped: int
+
+
+class BroadcastItem(ApiModel):
+    id: str
+    workspaceId: str
+    name: str
+    labels: List[str] = []
+    channelId: str
+    channelName: str
+    audience: BroadcastAudienceOut
+    templateId: str
+    templateName: str
+    templateLanguage: Optional[str] = None
+    bindings: BroadcastBindings
+    status: Literal["DRAFT", "SCHEDULED", "SENDING", "SENT", "CANCELLED", "FAILED"]
+    statusLabel: str
+    scheduledAt: Optional[datetime] = None
+    startedAt: Optional[datetime] = None
+    finishedAt: Optional[datetime] = None
+    counts: BroadcastCounts
+    jobId: Optional[str] = None
+    error: Optional[str] = None
+    createdByUserId: Optional[str] = None
+    createdByName: Optional[str] = None
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class BroadcastListResponse(ApiModel):
+    data: List[BroadcastItem]
+    total: int
+    page: int
+
+
+class BroadcastCreate(ApiModel):
+    name: str
+    labels: Optional[List[str]] = None
+    channelId: str
+    audience: BroadcastAudienceIn
+    templateId: str
+    bindings: BroadcastBindings
+    scheduledAt: Optional[datetime] = None
+
+
+class BroadcastUpdate(ApiModel):
+    """Partial update (`model_fields_set` drives which fields apply) - the
+    service enforces the status-gated write rules (AC-BRD-21: DRAFT only,
+    except `scheduledAt` which may also change while SCHEDULED)."""
+
+    name: Optional[str] = None
+    labels: Optional[List[str]] = None
+    channelId: Optional[str] = None
+    audience: Optional[BroadcastAudienceIn] = None
+    templateId: Optional[str] = None
+    bindings: Optional[BroadcastBindings] = None
+    scheduledAt: Optional[datetime] = None
+
+
+class BroadcastSendRequest(ApiModel):
+    """`scheduledAt` unset/None = send now (-> SENDING); a future instant ->
+    SCHEDULED (plan 29 S2, matches the S0 frontend contract - `services/
+    broadcast-service.ts send(workspaceId, id, scheduledAt?)`)."""
+
+    scheduledAt: Optional[datetime] = None
+
+
+class AudiencePreviewRequest(ApiModel):
+    audience: BroadcastAudienceIn
+
+
+class AudiencePreviewResponse(ApiModel):
+    count: int
+
+
+class BroadcastTestSendRequest(ApiModel):
+    """Plan 29 S2b, AC-BRD-41 - ONE explicit contact, never a recipient
+    picker over the audience (D-A4-18: a test send is a message, not a
+    campaign event)."""
+
+    contactId: str
+
+
+class BroadcastTestSendResponse(ApiModel):
+    messageId: str
+
+
+class BroadcastRecipientItem(ApiModel):
+    id: str
+    contactId: str
+    contactName: str
+    phone: Optional[str] = None
+    state: Literal["queued", "sent", "delivered", "read", "failed", "skipped"]
+    skipReason: Optional[str] = None
+    errorCode: Optional[str] = None
+    errorText: Optional[str] = None
+    messageId: Optional[str] = None
+    attemptedAt: Optional[datetime] = None
+
+
+class BroadcastRecipientListResponse(ApiModel):
+    data: List[BroadcastRecipientItem]
+    total: int
+    page: int
+
+
 # ── Conversation events (plan 27 A3, S1) ─────────────────────────────────────
 class ConversationEventItem(ApiModel):
     """One append-only `conversation_events` row (AC-IVE-13). `fromLabel`/
@@ -605,6 +794,28 @@ class CloseReasonUpdate(ApiModel):
     isActive: Optional[bool] = None
 
 
+class TeamAssignmentSettingItem(ApiModel):
+    """The per-(workspace, CORE team) pick-strategy row (plan 28 S2,
+    AC-TEM-28). `teamName` resolves through the teams capability (null on a
+    foreign/deleted team, same rule as `ThreadItem.assignedTeamName`).
+
+    Review round 1, finding 4/5/6: `GET .../team-settings` now returns one
+    row per ACTIVE core team (not just previously-configured ones), so
+    `updatedAt` is `None`/`isConfigured` is `false` for a team that has never
+    had its strategy set."""
+
+    teamId: str
+    teamName: Optional[str] = None
+    strategy: str  # round_robin | least_open
+    lastAssignedUserId: Optional[str] = None
+    updatedAt: Optional[datetime] = None
+    isConfigured: bool = False
+
+
+class TeamAssignmentSettingUpdate(ApiModel):
+    strategy: str  # round_robin | least_open
+
+
 class ShortcutItem(ApiModel):
     """A published `entity.shortcut` workflow bound to `omnichannel_contact`
     the drawer's Shortcuts control may fire (AC-IVE-36)."""
@@ -647,6 +858,12 @@ class InboxViewFilter(ApiModel):
     unreplied: Optional[bool] = None
     sort: Optional[Literal["newest", "oldest", "unreplied_first", "longest_waiting"]] = None
     segmentId: Optional[str] = None
+    # AC-TEM-46 (plan 28, roadmap A8, review round 1 finding 9) - a Team
+    # Inbox scope a saved view can pin. Validated tenant-scoped at save time
+    # via the core `team.resolve@1` capability (`_validate_filter_ids`
+    # below); views saved before this slice have no `teamIds` key and keep
+    # working unchanged (`None` = no team scope, not "every team").
+    teamIds: Optional[List[str]] = None
 
 
 class InboxViewItem(ApiModel):
@@ -689,6 +906,9 @@ class ThreadPatch(ApiModel):
     panel must render phone read-only."""
 
     assignedUserId: Optional[str] = None
+    # A CORE team id, or explicit `null` to clear it (plan 28 S2) - native-
+    # only (an embed/external-agent token gets 403, D-A8-13).
+    assignedTeamId: Optional[str] = None
     status: Optional[str] = None  # OPEN | SNOOZED | CLOSED
     priority: Optional[str] = None  # LOW | MEDIUM | HIGH | URGENT
     firstName: Optional[str] = None
@@ -953,6 +1173,9 @@ class PublicContactUpdateRequest(ApiModel):
     lastName: Optional[str] = None
     priority: Optional[str] = None  # LOW|MEDIUM|HIGH|URGENT
     assignedUserId: Optional[str] = None
+    # A CORE `public.teams` id, or explicit `null` to clear it (plan 28 S4).
+    # BY ID ONLY - never by name, never auto-creating a team (D-A8-6).
+    assignedTeamId: Optional[str] = None
     customFields: Optional[dict] = None
     language: Optional[str] = None
     countryCode: Optional[str] = None
@@ -1021,6 +1244,13 @@ class RioContactItem(BaseModel):
     lastMessageAt: Optional[str] = None
     lastIncomingMessageAt: Optional[str] = None
     lastMessagePreview: Optional[str] = None
+    # A CORE `public.teams` id/name (plan 28 S4, D-A8-6). respond.io has no
+    # team field on a contact - kept here as a Foundryx extension so this
+    # shape stays lossless versus the internal `ThreadItem` (a consumer has
+    # no other read source for it). Null on a foreign/deleted team or when
+    # the teams capability is not registered, same rule as `ThreadItem`.
+    assignedTeamId: Optional[str] = None
+    assignedTeamName: Optional[str] = None
 
 
 class RioContactListResponse(BaseModel):
@@ -1043,6 +1273,9 @@ class RioMessageStatus(BaseModel):
 class RioMessageSender(BaseModel):
     source: str                       # user | contact | system
     userId: Optional[str] = None
+    # Deliberately ALWAYS null (plan 28, D-A8-6 flag 8) - a message-level team
+    # concept (which team sent this) is a second, distinct notion from the
+    # thread-level `assignedTeamId` on the contact and is out of scope here.
     teamId: Optional[str] = None
 
 
@@ -1221,3 +1454,155 @@ class EmbedRotateSecretResponse(ApiModel):
 
 class EmbedOriginsUpdate(ApiModel):
     allowedOrigins: List[str]
+
+
+# ── Plan 30 - Dashboard + Reports v1 (roadmap A9) ────────────────────────────
+# No new fact tables (D-A9-1) - every shape below is an aggregate over
+# `conversation_events` + `conversation_messages` + `contacts`. Mirrors
+# `service_frontend/types/omnichannel.ts` (the S0 mock's own contract).
+
+
+class ReportBucketItem(ApiModel):
+    """A bucket's `key` is already LOCAL (D-A9-11: `2026-03-01`,
+    `2026-03-01T09`, `2026-W10`, `2026-03`) - the client formats the axis
+    label from it and NEVER re-applies a timezone. Only `startsAt`/`endsAt`
+    are UTC instants."""
+
+    key: str
+    startsAt: datetime
+    endsAt: datetime
+
+
+class ReportSeriesItem(ApiModel):
+    key: str
+    label: str
+    points: List[int]
+
+
+class DurationStatsItem(ApiModel):
+    """Response-time / resolution-time reduction (Python-side, D-A9-9)."""
+
+    medianSeconds: Optional[int] = None
+    p90Seconds: Optional[int] = None
+    averageSeconds: Optional[int] = None
+    sampleCount: int
+    # How many datapoints were derived from messages rather than the
+    # `first_agent_reply` event (D-A9-6) - carried for support, never
+    # rendered as on-screen caveat copy (plan §8.1 item 10).
+    derivedFromMessages: Optional[int] = None
+
+
+class DashboardLifecycleStageItem(ApiModel):
+    statusId: str
+    key: str
+    label: str
+    color: Optional[str] = None
+    sortOrder: int
+    count: int
+    percent: float
+
+
+class DashboardTopAgentItem(ApiModel):
+    userId: str
+    name: str
+    closedCount: int
+    medianResponseSeconds: Optional[int] = None
+
+
+class DashboardTiles(ApiModel):
+    open: int
+    assigned: int
+    unassigned: int
+    snoozed: int
+
+
+class DashboardSeries(ApiModel):
+    opened: List[int]
+    closed: List[int]
+
+
+class ReportRange(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_: str = Field(alias="from")
+    to: str
+
+
+class DashboardResponse(ApiModel):
+    timezone: str
+    range: ReportRange
+    granularity: str
+    buckets: List[ReportBucketItem]
+    tiles: DashboardTiles
+    lifecycle: List[DashboardLifecycleStageItem]
+    series: DashboardSeries
+    responseTotals: DurationStatsItem
+    resolutionTotals: DurationStatsItem
+    topAgents: List[DashboardTopAgentItem]
+
+
+class ReportDimensionAvailability(ApiModel):
+    available: bool
+
+
+class ReportDimensions(ApiModel):
+    team: ReportDimensionAvailability
+
+
+class ReportDescriptorItem(ApiModel):
+    key: str
+    label: str
+    supportsGroupBy: List[str]
+    paginated: bool
+    exportable: bool
+
+
+class ReportMetaResponse(ApiModel):
+    reports: List[ReportDescriptorItem]
+    granularities: List[str]
+    dimensions: ReportDimensions
+
+
+# ── Plan 30 - S2 the seven report builders + assignment log ─────────────────
+# `rows`/`totals` are per-report shapes (plan §5.2 table) - kept as plain
+# JSON-safe dict/list here rather than a per-report Pydantic union so ONE
+# envelope serves all seven `reportKey`s (mirrors `types/omnichannel.ts`
+# `ReportResponse<TRow, TTotals>`, which is generic for the same reason).
+# Every datetime a row carries (only the assignment log's `createdAt`) is
+# pre-formatted to a Z-suffixed ISO string by the service BEFORE it lands in
+# this dict - `ApiModel`'s wildcard datetime serializer only nets top-level
+# fields, never a `datetime` nested inside a `Dict[str, Any]` (see its own
+# docstring caveat), so a raw `datetime` must never be placed in `rows` here.
+class ReportResponse(ApiModel):
+    reportKey: str
+    timezone: str
+    range: ReportRange
+    granularity: str
+    buckets: List[ReportBucketItem]
+    series: List[ReportSeriesItem]
+    rows: List[Dict[str, Any]]
+    totals: Dict[str, Any]
+    page: Optional[int] = None
+    pageSize: Optional[int] = None
+    total: Optional[int] = None
+
+
+# ── Plan 30 - S3 report export (plan §5.1/§5.4, D-A9-4) ─────────────────────
+class ReportExportRequest(ApiModel):
+    """`POST .../reports/{reportKey}/export` body - the SAME filter shape the
+    read route accepts as query params (plan §5.1), carried as JSON so the
+    job payload can echo it verbatim. `groupBy`/`teamId` are validated the
+    SAME way the read route validates them (`report_export_service` calls
+    the ONE `report_service.report`/`build_query` gate - never a second
+    validation path)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_: str = Field(alias="from")
+    to: str
+    tz: str
+    granularity: Optional[str] = None
+    userId: Optional[str] = None
+    channelId: Optional[str] = None
+    teamId: Optional[str] = None
+    groupBy: Optional[str] = None

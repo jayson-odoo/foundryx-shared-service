@@ -1,6 +1,6 @@
 import { renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AutocountEntityConfig } from '@/types/autocount';
+import type { AutocountEntityConfig, AutocountSourceKind } from '@/types/autocount';
 import { parseSyncSummary } from '@/types/autocount';
 import type { ListQuery } from '@/types/resource';
 
@@ -42,11 +42,16 @@ const onConfigureMapping = vi.fn();
 const onConfigureTask = vi.fn();
 const onChangeSource = vi.fn();
 
-function config(entities: AutocountEntityConfig[], companyActive = true) {
+function config(
+  entities: AutocountEntityConfig[],
+  companyActive = true,
+  sourceKind: AutocountSourceKind = 'api',
+) {
   return renderHook(() =>
     useAutocountEntitiesListConfig({
       entities,
       companyActive,
+      sourceKind,
       onSync,
       onEditLookback,
       onRefetch,
@@ -187,14 +192,47 @@ describe('entity source (plan 22 S2, AC-22-08)', () => {
     expect(onConfigureTask).toHaveBeenCalledWith(row);
   });
 
-  it('offers the guarded "Change source" on every row, gated on manage', () => {
+  it('offers the guarded "Change source" on every API-company row, gated on manage', () => {
     const c = config([entity()]);
     const change = c.actions.find((a) => a.id === 'change-source')!;
     expect(change.permission).toBe('autocount.companies.manage');
-    expect(change.isVisible).toBeUndefined();
+    expect(change.isVisible?.([entity()])).toBe(true);
     const row = entity();
     change.run([row], { reload: vi.fn() });
     expect(onChangeSource).toHaveBeenCalledWith(row);
+  });
+});
+
+describe('DB company - API-only actions hidden (plan sprint-5/01, AC-01-18)', () => {
+  const dbRow = entity({ entityType: 'customer', sourceImpl: 'sql_db', watermarkAt: null });
+
+  it('never offers "Edit first-run window" nor "Change source" on a DB company', () => {
+    const c = config([dbRow], true, 'db');
+    const edit = c.actions.find((a) => a.id === 'edit-lookback')!;
+    const change = c.actions.find((a) => a.id === 'change-source')!;
+    // Even before the first sync (where an API row WOULD offer the window edit).
+    expect(edit.isVisible?.([dbRow])).toBe(false);
+    expect(change.isVisible?.([dbRow])).toBe(false);
+  });
+
+  it('keeps configure-task, sync-now, configure-mapping and refetch-history on a DB company', () => {
+    const synced = { ...dbRow, watermarkAt: '2026-08-30T00:00:00Z' };
+    const c = config([synced], true, 'db');
+    const ids = c.actions.map((a) => a.id);
+    expect(ids).toEqual(
+      expect.arrayContaining(['configure-task', 'sync-now', 'configure-mapping', 'refetch-history']),
+    );
+    expect(c.actions.find((a) => a.id === 'configure-task')!.isVisible?.([synced])).toBe(true);
+    expect(c.actions.find((a) => a.id === 'refetch-history')!.isVisible?.([synced])).toBe(true);
+    expect(c.actions.find((a) => a.id === 'configure-mapping')!.isVisible).toBeUndefined();
+    expect(c.actions.find((a) => a.id === 'sync-now')!.isDisabled?.([synced])).toBe(false);
+  });
+
+  it('an API company\'s rows are unchanged (regression pin)', () => {
+    const apiRow = entity({ watermarkAt: null });
+    const c = config([apiRow], true, 'api');
+    expect(c.actions.find((a) => a.id === 'edit-lookback')!.isVisible?.([apiRow])).toBe(true);
+    expect(c.actions.find((a) => a.id === 'change-source')!.isVisible?.([apiRow])).toBe(true);
   });
 });
 
@@ -238,5 +276,35 @@ describe('sync summary parsing (the zero-record case)', () => {
     const odd = parseSyncSummary({ fetched: 'many', staged: null })!;
     expect(odd.fetched).toBe(0);
     expect(odd.staged).toBe(0);
+  });
+});
+
+// fix/db-company-seed-source: a DB company can carry a row stranded on the
+// vendor-API source (seeded before the seed followed the source kind). The
+// only way out is "Change source", so it must be offered PER ROW - on the
+// stranded row - never hidden for the whole company.
+describe('DB company - "Change source" is per row, offered on a stranded API-sourced row', () => {
+  const stranded = entity({ entityType: 'customer', sourceImpl: 'autocount_read', watermarkAt: null });
+  const dbSourced = entity({ entityType: 'supplier', sourceImpl: 'sql_db', watermarkAt: null });
+
+  it('offers "Change source" on a DB company row still at autocount_read', () => {
+    const c = config([stranded, dbSourced], true, 'db');
+    const change = c.actions.find((a) => a.id === 'change-source')!;
+    expect(change.isVisible?.([stranded])).toBe(true);
+    change.run([stranded], { reload: vi.fn() });
+    expect(onChangeSource).toHaveBeenCalledWith(stranded);
+  });
+
+  it('keeps "Change source" hidden on a DB company row already at sql_db', () => {
+    const c = config([stranded, dbSourced], true, 'db');
+    const change = c.actions.find((a) => a.id === 'change-source')!;
+    expect(change.isVisible?.([dbSourced])).toBe(false);
+  });
+
+  it('an API company offers "Change source" on every row regardless of sourceImpl (regression pin)', () => {
+    const c = config([stranded, dbSourced], true, 'api');
+    const change = c.actions.find((a) => a.id === 'change-source')!;
+    expect(change.isVisible?.([stranded])).toBe(true);
+    expect(change.isVisible?.([dbSourced])).toBe(true);
   });
 });

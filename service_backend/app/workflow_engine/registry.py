@@ -180,6 +180,29 @@ def register_action(defn: ActionDef) -> None:
     _ACTIONS[defn.key] = defn
 
 
+# ---- generic NodeField option providers (plan 28, roadmap A8, BL-090) ----
+# A `NodeField.type` -> resolver seam so the canvas can render a searchable
+# picker for a field type WITHOUT any consumer (core or module) special-casing
+# `if module == "..."`. Whoever owns the underlying data registers itself here
+# once (e.g. core teams registers "team" from `team_capabilities.py`); any
+# action/trigger that declares a field of that `type` gets the same options
+# resolution for free - the pattern `omnichannel.assign_conversation`'s
+# `teamId` field uses today, and the one a future core-entity assignment
+# (BL-090) or another module's picker can reuse without touching this file.
+OptionProvider = Callable[[Session, str], List[Dict[str, Any]]]
+
+_OPTION_PROVIDERS: Dict[str, OptionProvider] = {}
+
+
+def register_option_provider(field_type: str, provider: OptionProvider) -> None:
+    _OPTION_PROVIDERS[field_type] = provider
+
+
+def get_option_provider(field_type: str) -> Optional[OptionProvider]:
+    _ensure_core()
+    return _OPTION_PROVIDERS.get(field_type)
+
+
 def get_trigger(key: str) -> Optional[TriggerDef]:
     _ensure_core()
     return _TRIGGERS.get(key)

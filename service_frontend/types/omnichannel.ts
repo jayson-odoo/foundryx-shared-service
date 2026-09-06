@@ -216,6 +216,15 @@ export interface ConversationThread {
   avatarUrl: string | null;
   assignedUserId: string | null;
   assignedUserName: string | null;
+  /**
+   * Assigned CORE team (plan 28, roadmap A8) - a plain indexed id into
+   * `public.teams`, no cross-schema FK (mirrors `lifecycle_status_id`/
+   * BL-030), resolved tenant-scoped by the backend on every read.
+   * `assignedTeamName` is null for a foreign/stale/deleted id - never a
+   * guess.
+   */
+  assignedTeamId?: string | null;
+  assignedTeamName?: string | null;
   status: ThreadStatus;
   priority: ThreadPriority;
   /** Channel the latest message arrived on (drives the thread-list icon). */
@@ -452,6 +461,9 @@ export interface ThreadListQuery {
   unreplied?: boolean;
   sort?: ThreadSort;
   viewId?: string | null;
+  /** Team Inbox filter (plan 28, S2) - `GET /omnichannel/contacts` filters
+   *  server-side on `assigned_team_id`. */
+  teamId?: string | null;
 }
 
 /** Realtime events fanned out per workspace (WS in Phase B; mock emitter in A). */
@@ -466,7 +478,11 @@ export type ConversationSocketEvent =
       reactorType: 'CONTACT' | 'AGENT';
       emoji: string;
       removed: boolean;
-    };
+    }
+  // Plan 29 (A4) S3 - published on every broadcast state/count change
+  // (created, scheduled, sending, each chunk's count advance, terminal);
+  // best-effort (a dead Redis never fails the send job, AC-BRD-45).
+  | { type: 'broadcast.updated'; broadcastId: string; status: BroadcastStatus; counts: BroadcastCounts };
 
 /** Result of an agent reaction (POST …/react). */
 export interface ReactionResult {
@@ -618,6 +634,10 @@ export interface PatchContactInput {
   countryCode?: string | null;
   customFields?: Record<string, string | number | boolean | null>;
   tagIds?: string[];
+  /** Assign (or clear, `null`) a CORE team on this thread (plan 28, roadmap
+   *  A8) - rides the same `PATCH /omnichannel/contacts/{id}` the rest of this
+   *  input does; native-only (403 for an embed/external-agent token). */
+  assignedTeamId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +686,121 @@ export interface UpdateContactSegmentInput {
   name?: string;
   description?: string | null;
   filter?: FilterGroup;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 29 - Omnichannel Broadcasts v1 (roadmap A4). See
+// documentation/plans/sprint-4/29-omnichannel-broadcasts.md §5.2.
+// ---------------------------------------------------------------------------
+
+export type BroadcastStatus = 'DRAFT' | 'SCHEDULED' | 'SENDING' | 'SENT' | 'CANCELLED' | 'FAILED';
+
+/** How one WhatsApp template parameter slot is filled (D-A4-4 - structured,
+ *  never a merge-string micro-render; anti-SSTI by construction). */
+export type TemplateBinding =
+  | { source: 'static'; text: string }
+  | { source: 'contactField'; field: string; fallback: string };
+
+/** `TemplateBinding.field` whitelist (plan §5.2). */
+export const CONTACT_FIELD_BINDING_OPTIONS: { label: string; value: string }[] = [
+  { label: 'First name', value: 'firstName' },
+  { label: 'Last name', value: 'lastName' },
+  { label: 'Phone', value: 'phone' },
+  { label: 'Email', value: 'email' },
+  { label: 'Language', value: 'language' },
+  { label: 'Country code', value: 'countryCode' },
+  { label: 'Lifecycle stage', value: 'lifecycle' },
+];
+
+/** The audience CONFIGURATION - exactly one of a saved segment, an inline
+ *  filter, or an explicit contact-id list. Never a stored recipient list
+ *  until send time (D-A4-2). The three unused branches are `null` on the
+ *  real wire (`BroadcastAudienceOut` always emits all four keys), not an
+ *  absent key - `| null` here (and in `broadcast-schema.ts`'s zod shape)
+ *  matches that, so a real saved broadcast loaded back into the builder
+ *  validates instead of failing closed on "Expected string, received null"
+ *  (plan 29 S4 real-data wiring bug). */
+export interface BroadcastAudience {
+  kind: 'segment' | 'filter' | 'contacts';
+  segmentId?: string | null;
+  segmentName?: string | null;
+  filter?: FilterGroup | null;
+  contactIds?: string[] | null;
+}
+
+export interface BroadcastBindings {
+  header: TemplateBinding[];
+  body: TemplateBinding[];
+  buttons: TemplateBinding[];
+}
+
+export interface BroadcastCounts {
+  total: number;
+  sent: number;
+  delivered: number;
+  read: number;
+  failed: number;
+  skipped: number;
+}
+
+export interface Broadcast {
+  id: string;
+  workspaceId: string;
+  name: string;
+  labels: string[];
+  channelId: string;
+  channelName: string;
+  audience: BroadcastAudience;
+  templateId: string;
+  templateName: string;
+  templateLanguage: string;
+  bindings: BroadcastBindings;
+  status: BroadcastStatus;
+  statusLabel: string;
+  scheduledAt: string | null; // ISO
+  startedAt: string | null; // ISO
+  finishedAt: string | null; // ISO
+  counts: BroadcastCounts;
+  jobId: string | null;
+  error: string | null;
+  createdByUserId: string | null;
+  createdByName: string | null;
+  createdAt: string; // ISO
+  updatedAt: string; // ISO
+}
+
+export interface CreateBroadcastInput {
+  name: string;
+  labels?: string[];
+  channelId: string;
+  audience: BroadcastAudience;
+  templateId: string;
+  bindings: BroadcastBindings;
+  scheduledAt?: string | null;
+}
+
+export type UpdateBroadcastInput = Partial<CreateBroadcastInput>;
+
+export type BroadcastRecipientState = 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'skipped';
+
+export type BroadcastSkipReason =
+  | 'no_identity'
+  | 'duplicate'
+  | 'channel_inactive'
+  | 'cancelled'
+  | 'missing_variable';
+
+export interface BroadcastRecipient {
+  id: string;
+  contactId: string;
+  contactName: string;
+  phone: string | null;
+  state: BroadcastRecipientState;
+  skipReason?: BroadcastSkipReason;
+  errorCode?: string;
+  errorText?: string;
+  messageId?: string;
+  attemptedAt: string | null; // ISO
 }
 
 /** Create-form payload (D-A2-4) - `phone` is required + create-only; every
@@ -799,6 +934,10 @@ export interface InboxViewFilter {
   unreplied?: boolean;
   sort?: ThreadSort;
   segmentId?: string | null;
+  /** AC-TEM-46 (plan 28, roadmap A8) - a Team Inbox scope a saved view can
+   *  pin; validated tenant-scoped at save time. Views saved before this
+   *  slice have no `teamIds` key and keep working unchanged. */
+  teamIds?: string[];
 }
 
 /** A saved inbox view (AC-IVE-18/19). Own views need only `conversations.read`
@@ -874,3 +1013,240 @@ export interface ShortcutRunResult {
   runId: string;
   status: string;
 }
+
+// ---------------------------------------------------------------------------
+// Plan 28 (roadmap A8) - per-team assignment-pick strategy, one row per
+// (workspace, team). See `documentation/plans/sprint-4/28-teams-core-and-
+// omnichannel-assignment.md` §5.2 (AC-TEM-28).
+// ---------------------------------------------------------------------------
+
+export type TeamAssignmentStrategy = 'round_robin' | 'least_open';
+
+/** A team's assignment-pick strategy within one workspace - one row per
+ *  ACTIVE core team (review round 1, finding 4/5/6: the backend now returns
+ *  the full active-team roster merged with any configured settings, so this
+ *  is the ONLY source the tab needs - no separate `GET /teams` call). A
+ *  never-configured team defaults to `round_robin`/`isConfigured: false`/
+ *  `updatedAt: null`. */
+export interface TeamAssignmentSetting {
+  teamId: string;
+  teamName: string | null;
+  strategy: TeamAssignmentStrategy;
+  lastAssignedUserId: string | null;
+  updatedAt: string | null; // ISO, null when never configured
+  isConfigured: boolean;
+}
+// Plan 30 - Dashboard + Reports v1 (roadmap A9). See
+// documentation/plans/sprint-4/30-omnichannel-dashboard-reports.md §5.
+// No new fact tables - every shape below is an aggregate over
+// `conversation_events` + `conversation_messages` + `contacts` (D-A9-1).
+// ---------------------------------------------------------------------------
+
+export type ReportGranularity = 'hour' | 'day' | 'week' | 'month';
+
+export type ReportKey =
+  | 'conversations'
+  | 'responses'
+  | 'resolutions'
+  | 'messages'
+  | 'users'
+  | 'leaderboard'
+  | 'assignments';
+
+/**
+ * A bucket's `key` is already LOCAL (D-A9-11: `2026-03-01`, `2026-03-01T09`,
+ * `2026-W10`, `2026-03`) - the client formats the axis label from the key and
+ * NEVER re-applies a timezone. Only `startsAt`/`endsAt` are UTC instants.
+ */
+export interface ReportBucket {
+  key: string;
+  startsAt: string; // ISO Z
+  endsAt: string; // ISO Z
+}
+
+/** One named series, points aligned to `buckets` by index. */
+export interface ReportSeries {
+  key: string;
+  label: string;
+  points: number[];
+}
+
+/** Response-time / resolution-time reduction (Python-side, D-A9-9). */
+export interface DurationStats {
+  medianSeconds: number | null;
+  p90Seconds: number | null;
+  averageSeconds: number | null;
+  sampleCount: number;
+  /** How many datapoints were derived from messages rather than the
+   *  `first_agent_reply` event (D-A9-6) - carried for support, never
+   *  rendered as on-screen caveat copy (D10 of the plan's flagged list). */
+  derivedFromMessages?: number;
+}
+
+/** One lifecycle stage tile on the dashboard. */
+export interface DashboardLifecycleStage {
+  statusId: string;
+  key: string;
+  label: string;
+  color: string | null;
+  sortOrder: number;
+  count: number;
+  percent: number;
+}
+
+/** One row of the dashboard's "top agents" list. */
+export interface DashboardTopAgent {
+  userId: string;
+  name: string;
+  closedCount: number;
+  medianResponseSeconds: number | null;
+}
+
+export interface DashboardResponse {
+  timezone: string;
+  range: { from: string; to: string };
+  granularity: ReportGranularity;
+  buckets: ReportBucket[];
+  tiles: { open: number; assigned: number; unassigned: number; snoozed: number };
+  lifecycle: DashboardLifecycleStage[];
+  series: { opened: number[]; closed: number[] };
+  responseTotals: DurationStats;
+  resolutionTotals: DurationStats;
+  topAgents: DashboardTopAgent[];
+}
+
+/** The catalog entry `reports/meta` publishes for one report. */
+export interface ReportDescriptor {
+  key: ReportKey;
+  label: string;
+  supportsGroupBy: string[];
+  paginated: boolean;
+  exportable: boolean;
+}
+
+export interface ReportMeta {
+  reports: ReportDescriptor[];
+  granularities: ReportGranularity[];
+  dimensions: { team: { available: boolean } };
+}
+
+/** The query every dashboard/report call sends (D-A9-13: `teamId` stays out
+ *  until plan 28 lands - `reports/meta.dimensions.team.available` gates it). */
+export interface ReportFilters {
+  from: string; // YYYY-MM-DD, inclusive
+  to: string; // YYYY-MM-DD, inclusive
+  tz: string; // IANA, always `useDatetime().timeZone`
+  granularity?: ReportGranularity;
+  userId?: string | null;
+  channelId?: string | null;
+  groupBy?: string | null;
+}
+
+/** `reports/responses` distribution row (no `groupBy`). */
+export interface ResponseBucketRow {
+  bucket: string;
+  label: string;
+  count: number;
+  percent: number;
+}
+
+/** `reports/responses?groupBy=user` / `reports/resolutions?groupBy=user` row. */
+export interface DurationByUserRow {
+  userId: string;
+  name: string;
+  sampleCount: number;
+  medianSeconds: number | null;
+  p90Seconds: number | null;
+  averageSeconds: number | null;
+}
+
+/** `reports/resolutions` close-reason breakdown row (no `groupBy`). */
+export interface CloseReasonRow {
+  closeReasonId: string | null;
+  name: string | null;
+  count: number;
+  percent: number;
+}
+
+/** `reports/messages?groupBy=channel` row. */
+export interface MessageChannelRow {
+  channelId: string;
+  name: string;
+  channelType: ChannelType;
+  incoming: number;
+  outgoing: number;
+}
+
+/** `reports/users` (and the `reports/leaderboard` base) row. */
+export interface UserReportRow {
+  userId: string;
+  name: string;
+  teamName: string | null;
+  assignedCount: number;
+  closedCount: number;
+  uniqueContacts: number;
+  messagesSent: number;
+  commentsCount: number;
+  medianFirstResponseSeconds: number | null;
+  medianResolutionSeconds: number | null;
+}
+
+/** `reports/leaderboard` row - `reports/users` rows plus a dense rank. */
+export interface LeaderboardRow extends UserReportRow {
+  rank: number;
+}
+
+/** `reports/assignments` paginated log row. */
+export interface AssignmentLogRow {
+  id: string;
+  createdAt: string; // ISO Z
+  contactId: string;
+  contactName: string;
+  eventType: 'assigned' | 'unassigned';
+  previousAssigneeId: string | null;
+  previousAssigneeName: string | null;
+  assignedToId: string | null;
+  assignedToName: string | null;
+  source: 'workflow' | 'api' | 'agent';
+  actorUserId: string | null;
+  actorName: string | null;
+}
+
+export interface ConversationsReportTotals {
+  opened: number;
+  closed: number;
+  reopened: number;
+}
+export interface MessagesReportTotals {
+  incoming: number;
+  outgoing: number;
+}
+export interface UsersReportTotals {
+  userCount: number;
+}
+export interface AssignmentsReportTotals {
+  assigned: number;
+  unassigned: number;
+}
+
+/**
+ * The generic report envelope (plan §5.2). `TRow`/`TTotals` are supplied per
+ * report so every renderer works with a concrete shape - never `any`.
+ */
+export interface ReportResponse<TRow = object, TTotals = object> {
+  reportKey: ReportKey;
+  timezone: string;
+  range: { from: string; to: string };
+  granularity: ReportGranularity;
+  buckets: ReportBucket[];
+  series: ReportSeries[];
+  rows: TRow[];
+  totals: TTotals;
+  page?: number;
+  pageSize?: number;
+  total?: number;
+}
+
+/** `POST .../reports/{reportKey}/export` request body (mirrors the read
+ *  filters, D-A9-4). */
+export type ReportExportRequest = ReportFilters;

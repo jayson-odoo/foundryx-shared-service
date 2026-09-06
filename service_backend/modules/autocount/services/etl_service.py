@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
 import sqlalchemy as sa
 from cryptography.fernet import InvalidToken
 from sqlalchemy.orm import Session
@@ -34,10 +35,12 @@ from ..canonical.documents import (
     DOCUMENT_ENTITY_TYPES,
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
+    ENTITY_SHIPPING_ORDER,
     LINE_QUERY_DOC_KEY_PARAM,
     is_document_entity,
 )
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
+from ..formula import FormulaError, known_filter_variables, parse_formula
 from ..canonical.masters import (
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
@@ -59,8 +62,10 @@ from ..models import (
 from ..repositories import (
     ConnectionRepository,
     EntityConfigRepository,
+    RowHashRepository,
     SyncJobRepository,
     SyncRunRepository,
+    WatermarkRepository,
 )
 from ..sources import INITIAL_LOAD_FULL
 from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
@@ -81,13 +86,20 @@ from ..sql_source.runtime import (
     sanitize_error,
     secrets_of,
 )
-from ..sql_source.source import build_document_header_wrap, build_incremental_wrap
+from ..sql_source.source import (
+    CURSOR_MARK,
+    build_document_header_wrap,
+    build_incremental_wrap,
+)
 from .company_service import (
+    SOURCE_KIND_DB,
     AutocountServiceError,
     CompanyService,
     ConnectionNotFound,
     EntityConfigNotFound,
 )
+from ..presets import seed_document_mapping
+from ..mapping import SCOPE_HEADER, SCOPE_LINE
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -110,6 +122,7 @@ ETL_ENTITY_TYPES = (
     ENTITY_SALES_AGENT,
     ENTITY_SALES_ORDER,
     ENTITY_PURCHASE_ORDER,
+    ENTITY_SHIPPING_ORDER,
     ENTITY_GOODS_RECEIVED_NOTE,
 )
 
@@ -171,7 +184,26 @@ class EtlStateError(AutocountServiceError):
 class PreviewUnavailable(AutocountServiceError):
     """The dry run itself failed (a transport / contract fault talking to the
     consumer). The gate must SHOW this and refuse to offer Activate - nobody
-    activates blind. Nothing was written either way."""
+    activates blind. Nothing was written either way.
+
+    ``message`` is what the operator reads (the router's 502 ``detail``): the
+    generic sentence PLUS what the consumer said (``Consumer said: HTTP <n>
+    <snippet>``) or why it could not be reached (``Consumer unreachable:
+    <ExcClass>: <text>``). ``status_code`` / ``consumer_detail`` keep the
+    parts separately for logs and tests. Prod 2026-09-06: the fixed sentence
+    alone left the operator no way to tell a 504 from an unknown SO failure.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        consumer_detail: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.consumer_detail = consumer_detail
 
 
 class EtlAnchorError(AutocountServiceError):
@@ -197,6 +229,10 @@ class EtlTaskView:
     # The SAVED query's result column names, from the validation preview every
     # PUT runs - so the Mapping tab offers them without re-running the query.
     result_columns: List[str] = field(default_factory=list)
+    # The SAVED lineQuery's result columns (sprint-5/02, AC-02-06) - the
+    # Mapping tab's Line-fields source picker + save-time gate. Empty until
+    # the line query has previewed clean at least once.
+    line_result_columns: List[str] = field(default_factory=list)
     # The activate-once gate (AC-22-18). CLEARED by every config save: a
     # preview of a superseded query must never unlock Activate.
     last_preview_at: Optional[datetime] = None
@@ -210,6 +246,8 @@ class EtlTaskView:
     # ── schedule (plan 22 S3, AC-22-12/13) ───────────────────────────────────
     next_incremental_at: Optional[datetime] = None
     next_reconcile_at: Optional[datetime] = None
+    # ── continuation (plan sprint-5/03 S1/S4, AC-03-03/21) ───────────────────
+    initial_load: Optional[Dict[str, Any]] = None
 
 
 def default_source_config(entity_type: str, *, today: Optional[date] = None) -> Dict[str, Any]:
@@ -226,9 +264,13 @@ def default_source_config(entity_type: str, *, today: Optional[date] = None) -> 
         "comparedColumns": [],
         "fromDate": (today or date.today()).isoformat() if document else None,
         "docDateColumn": None,
-        "lineKeyColumn": None,
-        "lineProductColumn": None,
-        "lineWarehouseColumn": None,
+        # sprint-5/02 (AC-02-11) - a document task's optional header filter,
+        # authored ONLY via the AutocountFormulaBuilder (never a free-text
+        # field). The three line/ref column pickers this slot used to sit
+        # beside (`lineKeyColumn`/`lineProductColumn`/`lineWarehouseColumn`)
+        # are GONE - a document's line fields are persisted `ac_field_mapping`
+        # rows now (AC-02-01), not source_config picks.
+        "filterFormula": None,
         "incrementalMinutes": DEFAULT_INCREMENTAL_MINUTES,
         "reconcileMode": RECONCILE_MODE_DAILY_AT,
         "reconcileHours": None,
@@ -259,6 +301,21 @@ def _clean_int(value: Any) -> Optional[int]:
     return None
 
 
+# A document task's row-hash population (`ac_row_hash`) is a diff baseline
+# for the *exact* set of headers `query`+`fromDate`+`filterFormula` can ever
+# return. Narrowing any of these (or `keyColumns`, which changes what a hash
+# row's own identity even means) makes a header that merely fell OUT of the
+# new, narrower scope look identical - to the next reconcile's `known -
+# current_refs` diff - to one AutoCount genuinely deleted (F1, sprint-5/02
+# review round). Schedule-only fields (interval/reconcile timing) never
+# change what the task's population IS, so they are deliberately excluded -
+# clearing hashes on every save would defeat the whole point of reconcile
+# (every save would re-add everything as a fresh "ADD", masking real edits).
+POPULATION_DEFINING_KEYS = frozenset(
+    {"fromDate", "query", "lineQuery", "keyColumns", "filterFormula"}
+)
+
+
 def validate_source_config(
     entity_type: str,
     raw: Dict[str, Any],
@@ -273,11 +330,13 @@ def validate_source_config(
     against it; a pick with no preview to check against is an error on the
     query, not a silent accept.
 
-    ``line_columns`` (plan 22 S5, documents only) = the SAME shape from a
-    FRESH preview of ``lineQuery`` (a sample ``:doc_key`` bound) - the line-
-    column pickers (``lineKeyColumn``/``lineProductColumn``/
-    ``lineWarehouseColumn``) are checked against it exactly like the header
-    pickers are checked against ``columns``.
+    ``line_columns`` (plan 22 S5, documents only) - the SAME shape from a
+    FRESH preview of ``lineQuery`` (a sample ``:doc_key`` bound). Accepted for
+    call-site compatibility with ``EtlService.update_task`` (which still
+    stores it on the task as ``line_result_columns``, AC-02-06); no longer
+    used to validate the removed line/ref column pickers (sprint-5/02,
+    AC-02-05 - a document's line fields are persisted ``ac_field_mapping``
+    rows now, validated by ``CompanyService.replace_mapping``, not here).
 
     Returns ``(clean, field_errors)``. Pure - no DB, no source. The caller
     (``EtlService.update_task``) resolves the connection, runs both previews
@@ -293,6 +352,21 @@ def validate_source_config(
     key_columns = _clean_list(raw.get("keyColumns"))
     watermark = str(raw.get("watermarkColumn") or "").strip() or None
     compared = _clean_list(raw.get("comparedColumns"))
+
+    #     !!  BL-SS-087 - THE WATERMARK COLUMN CAN NEVER DOUBLE AS A KEY
+    #         COLUMN.  !!
+    # A value that is GUARANTEED to change on every update (that is the
+    # entire point of a watermark) can never also be part of what makes a
+    # row the "same" row - a task saved with keyColumns=["AutoKey",
+    # "LastModified"] mints a "new" ref on every reconcile for the same
+    # real-world record (the ac_sim ref-drift finding). Checked unconditional
+    # of whether the query has ever previewed - this is a pure config-shape
+    # defect, not a column-existence question.
+    if watermark is not None and watermark in key_columns:
+        errors["keyColumns"] = (
+            "The watermark column cannot be part of the key - refs would "
+            "change on every update."
+        )
 
     # ── columns vs the fresh preview ─────────────────────────────────────────
     picked = bool(key_columns or watermark or compared)
@@ -316,12 +390,34 @@ def validate_source_config(
     # Compared columns never include a key (a key change is a new record).
     compared = [c for c in compared if c not in key_columns]
 
-    # ── documents: line query + from-date + line/ref columns (S5) ────────────
+    # ── documents: line query + from-date + filter formula (S5, sprint-5/02) ─
     from_date: Optional[str] = None
     doc_date_column: Optional[str] = None
-    line_key_column: Optional[str] = None
-    line_product_column: Optional[str] = None
-    line_warehouse_column: Optional[str] = None
+    # Never blank-required (a document with no filter simply stages every
+    # header, today's behaviour).
+    filter_formula = str(raw.get("filterFormula") or "").strip() or None
+    if document and filter_formula:
+        #     !!  A FILTER FORMULA MUST PARSE AGAINST WHAT IT WILL RUN OVER.  !!
+        # (F2/B3, sprint-5/02 review round - the security review's SHOULD-FIX
+        # F2 and the code review's B3.) `evaluate_row_filter` used to fail
+        # OPEN silently on any parse error, citing THIS check as the reason
+        # it was safe to - except this check never existed, so an
+        # unparseable or unknown-variable filter saved clean and silently
+        # kept every header, forever, with no visible sign the PO/SPO split
+        # (or any other filter) was disabled. Parsed here with the SAME
+        # fold-matched known-variable set `evaluate_row_filter` resolves at
+        # run time (`known_filter_variables`), so a save-time PASS here is a
+        # genuine guarantee the run-time filter can resolve every name it
+        # references.
+        if columns is None:
+            errors["filterFormula"] = (
+                "Test a query first - the filter is checked against its result."
+            )
+        else:
+            try:
+                parse_formula(filter_formula, known_filter_variables(filter_formula, columns))
+            except FormulaError as exc:
+                errors["filterFormula"] = str(exc)
     if document:
         raw_from = str(raw.get("fromDate") or "").strip()
         if not raw_from:
@@ -383,27 +479,6 @@ def validate_source_config(
                 "docDateColumn", f"'{doc_date_column}' is not in the query result."
             )
 
-        line_key_column = str(raw.get("lineKeyColumn") or "").strip() or None
-        line_product_column = str(raw.get("lineProductColumn") or "").strip() or None
-        line_warehouse_column = str(raw.get("lineWarehouseColumn") or "").strip() or None
-        if line_key_column is None:
-            errors.setdefault("lineKeyColumn", "Choose the line query's key column.")
-        if line_product_column is None:
-            errors.setdefault("lineProductColumn", "Choose the line query's product column.")
-        picked_line = bool(line_key_column or line_product_column or line_warehouse_column)
-        if picked_line and line_query and "lineQuery" not in errors and line_columns is None:
-            errors.setdefault(
-                "lineQuery", "Test the line query first - the picked columns are checked against its result."
-            )
-        elif line_columns is not None:
-            for field, value in (
-                ("lineKeyColumn", line_key_column),
-                ("lineProductColumn", line_product_column),
-                ("lineWarehouseColumn", line_warehouse_column),
-            ):
-                if value is not None and value not in line_columns:
-                    errors.setdefault(field, f"'{value}' is not in the line query result.")
-
     # ── schedule floors (AC-22-12) ───────────────────────────────────────────
     minutes = _clean_int(raw.get("incrementalMinutes"))
     floor = MIN_INCREMENTAL_MINUTES if watermark else MIN_INCREMENTAL_MINUTES_NO_WATERMARK
@@ -442,15 +517,41 @@ def validate_source_config(
         "comparedColumns": compared,
         "fromDate": from_date if document else None,
         "docDateColumn": doc_date_column if document else None,
-        "lineKeyColumn": line_key_column if document else None,
-        "lineProductColumn": line_product_column if document else None,
-        "lineWarehouseColumn": line_warehouse_column if document else None,
+        "filterFormula": filter_formula if document else None,
         "incrementalMinutes": minutes,
         "reconcileMode": mode,
         "reconcileHours": hours,
         "reconcileAt": at,
     }
     return clean, errors
+
+
+_PREVIEW_FAILED = (
+    "The dry run against the consumer failed, so no prediction is available "
+    "and this task cannot be activated yet. Nothing was written - resolve the "
+    "consumer error first."
+)
+
+
+def _preview_unavailable(
+    exc: BaseException, *, sink: Any, company_id: str, entity_type: str
+) -> PreviewUnavailable:
+    """Build the operator-facing ``PreviewUnavailable`` for a failed dry run
+    and log it (WARNING, one line, with the parts a follow-up needs). The
+    wording of the consumer line is ``sinks_sorento.describe_consumer_failure``
+    - shared with the approve gate (``SyncService``) so both say the same
+    thing. Imported lazily like every other ``sinks_sorento`` use in this
+    module."""
+    from ..sinks_sorento import describe_consumer_failure
+
+    line, status, detail = describe_consumer_failure(exc, sink=sink)
+    logger.warning(
+        "autocount preview dry run failed: company_id=%s entity_type=%s status=%s detail=%s",
+        company_id, entity_type, status, detail,
+    )
+    return PreviewUnavailable(
+        f"{_PREVIEW_FAILED} {line}", status_code=status, consumer_detail=detail
+    )
 
 
 class EtlService:
@@ -638,6 +739,10 @@ class EtlService:
             result_columns=[
                 str(c) for c in ((config.result_columns if config is not None else None) or [])
             ],
+            line_result_columns=[
+                str(c)
+                for c in ((config.line_result_columns if config is not None else None) or [])
+            ],
             last_preview_at=config.last_preview_at if config is not None else None,
             last_preview_failed_count=(
                 config.last_preview_failed_count if config is not None else None
@@ -653,7 +758,42 @@ class EtlService:
             next_reconcile_at=(
                 config.next_reconcile_at if config is not None else None
             ),
+            initial_load=self._initial_load(company_id, entity_type, config),
         )
+
+    def _initial_load(
+        self, company_id: str, entity_type: str, config: Optional[AcEntityConfig]
+    ) -> Optional[Dict[str, Any]]:
+        """The paged pass in progress, if any (plan sprint-5/03, AC-03-21) -
+        derived straight from ``AcWatermark.cursor_json["pass"]``, never a
+        second source of truth. A task never configured (or a company whose
+        watermark row was never created because it has never run) has none.
+        """
+        if config is None:
+            return None
+        watermark = WatermarkRepository(self.db).get(config.tenant_id, company_id, entity_type)
+        if watermark is None:
+            return None
+        cursor = watermark.cursor_json if isinstance(watermark.cursor_json, dict) else {}
+        pass_state = cursor.get("pass")
+        # ``None`` once no pass is OPEN (AC-03-21) - never configured, a
+        # guard failure cleared it, or the last one simply completed. The
+        # underlying ``cursor_json.pass.complete`` flag is left ``true``
+        # rather than removed (``sync.py``'s run loop) so a later run of the
+        # SAME mode is provably starting a FRESH pass, not resuming a
+        # finished one - this is just the second reader of that one flag.
+        if not isinstance(pass_state, dict) or pass_state.get("complete"):
+            return None
+        return {
+            "complete": bool(pass_state.get("complete")),
+            "pagesDone": int(pass_state.get("pagesDone") or 0),
+            # Scoped to the pass itself, not the shared top-level cursor
+            # mark (``sync.py``'s run loop writes both) - a stale mark left
+            # by a DIFFERENT, already-finished pass kind must never read as
+            # this pass's progress.
+            "lastMark": pass_state.get("mark"),
+            "kind": pass_state.get("kind"),
+        }
 
     def _probe_incremental_wrap(
         self, engine, secrets: List[str], query: str, watermark_column: str
@@ -736,6 +876,25 @@ class EtlService:
         errors: Dict[str, str] = {}
 
         connection_id = str(raw.get("connectionId") or "").strip() or None
+        if self.companies.source_kind_for(tenant_id, company) == SOURCE_KIND_DB:
+            #     !!  A DB COMPANY READS ONLY FROM ITS OWN CONNECTION.  !!
+            # (Plan sprint-5/01 AC-01-09/10.) Its identity IS that
+            # connection's database, so the editor never offers a picker: an
+            # omitted id is FILLED with the company connection, a different
+            # one is a per-field 422 (no confirm-and-proceed). And GRN has no
+            # Sorento path and an API-only envelope - not addable here.
+            if entity_type == ENTITY_GOODS_RECEIVED_NOTE:
+                raise AutocountServiceError(
+                    f"'{entity_type}' is not available on a database company."
+                )
+            if connection_id is None:
+                connection_id = company.connection_id
+                raw = {**raw, "connectionId": connection_id}
+            elif connection_id != company.connection_id:
+                errors["connectionId"] = (
+                    "A database company reads only from its own connection."
+                )
+                connection_id = None
         conn: Optional[Connection] = None
         if connection_id:
             try:
@@ -834,6 +993,15 @@ class EtlService:
             raise EtlValidationError(errors)
 
         config = self.configs.get(tenant_id, company_id, entity_type)
+        # Captured BEFORE `config.source_config` is overwritten below - the F1
+        # re-baseline check needs the OLD population-defining values to
+        # compare against the new ones. `None` for a brand-new task (nothing
+        # to compare, no hashes could possibly exist yet either).
+        previous_source_config: Optional[Dict[str, Any]] = (
+            dict(config.source_config)
+            if config is not None and isinstance(config.source_config, dict)
+            else None
+        )
         if config is None:
             # A row that exists ONLY for the DB path is born on the DB source.
             # Existing rows (API-path entities) keep their source_impl - the
@@ -851,12 +1019,106 @@ class EtlService:
                 )
             )
         config.source_config = clean
+        #     !!  A NARROWED POPULATION MUST RE-BASELINE, NEVER DELETE.  !!
+        # (F1, sprint-5/02 review round - BLOCKER.) A document task's
+        # `ac_row_hash` rows are a diff baseline for the set `query` +
+        # `fromDate` + `filterFormula` + `keyColumns` can return. Changing any
+        # of THOSE (never a schedule-only field) means every existing hash is
+        # a baseline for a population that no longer exists - clearing them
+        # here forces the next fetch to `upsert_many` a FRESH baseline (every
+        # in-scope header stages as an ADD, never a phantom DELETE for one
+        # that merely fell outside the new scope).
+        if is_document_entity(entity_type) and previous_source_config is not None:
+            narrowed = any(
+                previous_source_config.get(key) != clean.get(key)
+                for key in POPULATION_DEFINING_KEYS
+            )
+            if narrowed:
+                RowHashRepository(self.db).clear_all(tenant_id, company_id, entity_type)
+        #     !!  A keyColumns CHANGE IS AN IDENTITY CHANGE, EVERY ENTITY -
+        #         NOT JUST A DOCUMENT'S NARROWED POPULATION (S2, review
+        #         round 5).  !!
+        # `source_ref`'s own scheme is BUILT FROM `keyColumns` - changing it
+        # (grown, shrunk, or a same-count rename) makes every EXISTING
+        # `ac_row_hash` ref read as "not seen this pass" under the NEW
+        # scheme on the very next reconcile, which would stage a PHANTOM
+        # DELETE for every one of them (the rows are all still genuinely
+        # there; only their COMPUTED ref changed). A master has no
+        # `fromDate`/`filterFormula` scope to narrow, so the document-only
+        # block above never covered it at all - this one is entity-
+        # agnostic and fires independently (a document whose `keyColumns`
+        # changes trips BOTH; `clear_all` is idempotent, so that costs
+        # nothing extra).
+        key_columns_changed = (
+            previous_source_config is not None
+            and previous_source_config.get("keyColumns") != clean.get("keyColumns")
+        )
+        if key_columns_changed:
+            RowHashRepository(self.db).clear_all(tenant_id, company_id, entity_type)
+        #     !!  A MID-PASS WATERMARK-COLUMN OR POPULATION EDIT MUST CLEAR
+        #         ANY OPEN PAGED PASS (F4, review round 2) - EVERY ENTITY,
+        #         NOT JUST DOCUMENTS.  !!
+        # A paged pass's own resume position (``cursor_json["pass"]["mark"]``)
+        # is a value under the OLD comparison - a new watermark column (or a
+        # narrower/wider population, which changes what the SAME column even
+        # means) makes that stored position meaningless to reuse.
+        # ``PageCursor.from_watermark_row`` already refuses to resume a pass
+        # whose stored column no longer matches (F4's other half, the RUN-time
+        # backstop); this is the SAVE-time half, so a mismatched pass never
+        # even sits there looking resumable in the meantime. Any ``sql_db``
+        # entity can be paged (a watermark column, not documents alone), so
+        # this check is deliberately NOT gated on ``is_document_entity``.
+        if previous_source_config is not None:
+            key_or_watermark_changed = (
+                key_columns_changed
+                or previous_source_config.get("watermarkColumn") != clean.get("watermarkColumn")
+            )
+            population_changed = any(
+                previous_source_config.get(key) != clean.get(key)
+                for key in POPULATION_DEFINING_KEYS
+            ) or key_or_watermark_changed
+            if population_changed:
+                watermark_row = WatermarkRepository(self.db).get(
+                    tenant_id, company_id, entity_type
+                )
+                if (
+                    watermark_row is not None
+                    and isinstance(watermark_row.cursor_json, dict)
+                    and (
+                        watermark_row.cursor_json.get("pass") is not None
+                        or key_or_watermark_changed
+                    )
+                ):
+                    #     !!  A keyColumns/watermarkColumn CHANGE ALSO
+                    #         CLEARS THE TOP-LEVEL sqlWatermark/lastKey (S2,
+                    #         review round 5) - NOT JUST `pass`.  !!
+                    # The top-level pair is the PUBLIC, monotonic position a
+                    # fresh incremental/manual pass resumes from
+                    # (`PageCursor.from_watermark_row`'s fresh-pass branch)
+                    # - it is just as stale as `pass`'s own position once
+                    # the column it was recorded against, or the KEY SHAPE
+                    # it was seeked with, no longer applies. A schedule-only
+                    # or narrower-scope-only edit (no key/watermark change)
+                    # still clears `pass` (an open resume position is stale
+                    # either way) but leaves the top-level pair alone - a
+                    # merely narrower population does not change what the
+                    # SAME column/key means. Fresh dict (SQLAlchemy misses
+                    # in-place JSON mutation).
+                    updates = {**watermark_row.cursor_json, "pass": None}
+                    if key_or_watermark_changed:
+                        updates[CURSOR_MARK] = None
+                        updates["lastKey"] = None
+                    watermark_row.cursor_json = updates
         # The validation preview already proved what this query returns, so its
         # column names are stored (AC-22-09/11) - the Mapping tab's source
         # picker reads them instead of re-running the query per keystroke.
         # ``None`` (no query / no connection) clears them rather than leaving a
         # stale list pointing at a query that no longer exists.
         config.result_columns = list(columns) if columns is not None else None
+        # The SAME "test then pick" discipline as `result_columns`, for the
+        # LINE query (sprint-5/02, AC-02-06) - the Mapping tab's Line-fields
+        # source picker + save-time gate read this.
+        config.line_result_columns = list(line_columns) if line_columns is not None else None
         #     !!  EVERY SAVE INVALIDATES THE ACTIVATION GATE (AC-22-18).  !!
         # A dry run proves what a SPECIFIC query would deliver. Editing the
         # query, the keys or the compared columns and keeping the old stamp
@@ -872,6 +1134,34 @@ class EtlService:
             config.next_incremental_at, config.next_reconcile_at = self.next_run_times(
                 clean, now=datetime.now(timezone.utc)
             )
+        #     !!  A DOCUMENT'S FIRST CLEAN SAVE SEEDS ITS PRESET MAPPING.  !!
+        # (sprint-5/02, AC-02-16.) Only when the header query previewed
+        # successfully (`columns is not None` - never seed rows referencing a
+        # query that has not even proven it runs) AND the entity's mapping is
+        # still completely empty (an operator who already started mapping,
+        # or a second save, is never re-seeded - the DB stays the one source
+        # of truth, same rule `seed_company_defaults` already follows for
+        # masters). A row whose source column the query does not (yet) return
+        # is seeded `is_enabled=False` rather than omitted.
+        if is_document_entity(entity_type) and columns is not None:
+            mappings = self.companies.mappings
+            header_empty = (
+                mappings.count(tenant_id, company_id, entity_type, scope=SCOPE_HEADER) == 0
+            )
+            line_empty = (
+                mappings.count(tenant_id, company_id, entity_type, scope=SCOPE_LINE) == 0
+            )
+            # Per SCOPE, not "whole mapping empty" (hotfix after the live proof):
+            # migration 0010 backfilled line rows onto existing document tasks,
+            # which left their never-mapped HEADER un-seedable forever.
+            if header_empty or line_empty:
+                seed_document_mapping(
+                    self.db, tenant_id, company_id, entity_type,
+                    header_columns=columns,
+                    line_columns=line_columns,
+                    seed_header=header_empty,
+                    seed_line=line_empty,
+                )
         self.db.commit()
         self.db.refresh(config)
         return self._task_view(company_id, entity_type, config)
@@ -956,6 +1246,14 @@ class EtlService:
 
         On success ``last_preview_at`` is stamped, which is the ONLY thing that
         unlocks Activate (AC-22-18).
+
+        The returned dict may carry a ``warnings`` key (sprint-5/02, AC-02-12/14)
+        - non-blocking, omitted entirely when there is nothing to report:
+        ``overlappingDocuments`` (this run's own headers also known to a
+        SIBLING document task on the same company - e.g. a PO/SPO split gone
+        wrong) and ``contractVersionMismatch`` (Sorento's own advertised
+        ``/contract`` version is HIGHER than this connection's configured
+        one - advisory only, never auto-applied).
         """
         from ..sinks_sorento import SinkAnchorError, SorentoSinkError
 
@@ -963,13 +1261,27 @@ class EtlService:
         self._require_runnable(config)
 
         sink = self.companies.sink_for_company(tenant_id, company, entity_type)
-        if not hasattr(sink, "dry_run"):
+        previewable = hasattr(sink, "dry_run")
+        records: List[Any] = []
+        current_refs: List[str] = []
+        page_complete: Optional[bool] = None
+        # AC-02-12 - the overlap warning needs THIS run's own fetched refs,
+        # which requires actually reading the source; that is worth doing
+        # even for a document with no consumer wired up yet (an operator
+        # commonly builds the sibling PO/SPO tasks before pointing either at
+        # Sorento), so this extraction is NOT gated on ``previewable``.
+        if previewable or is_document_entity(entity_type):
+            records, current_refs, page_complete = self._extract_and_map(
+                tenant_id, company, config, entity_type
+            )
+
+        if not previewable:
             # A logging-sink company has no consumer to ask. Reported honestly
             # rather than as a failure - and deliberately NOT stamped, so the
             # activation gate stays shut (a DB task auto-pushes; activating one
             # with nowhere to push would be a task that runs and delivers
             # nothing, forever).
-            return self._task_view(company_id, entity_type, config), {
+            payload: Dict[str, Any] = {
                 "previewable": False,
                 "sink": sink.name,
                 "reason": (
@@ -977,17 +1289,32 @@ class EtlService:
                     "nothing to dry-run. Point the company at Sorento first."
                 ),
             }
+            warnings = self._preview_warnings(
+                tenant_id, company_id, entity_type, current_refs, sink, config
+            )
+            # AC-03-14 (F1, review round 2) - a watermarked task's preview
+            # covers only its FIRST page; when more of the population
+            # remains beyond it, the caller must be told this is a partial
+            # look, not the whole thing.
+            if page_complete is False:
+                warnings["pagedPreview"] = True
+            if warnings:
+                payload["warnings"] = warnings
+            return self._task_view(company_id, entity_type, config), payload
 
-        records = self._extract_and_map(tenant_id, company, config, entity_type)
         try:
             result = sink.dry_run([r for r in records if r is not None])
         except SinkAnchorError as exc:
             raise EtlAnchorError(exc.code, exc.sorento_message) from exc
-        except SorentoSinkError as exc:
-            raise PreviewUnavailable(
-                "The dry run against the consumer failed, so no prediction is "
-                "available and this task cannot be activated yet. Nothing was "
-                "written - resolve the consumer error first."
+        except (SorentoSinkError, httpx.HTTPError) as exc:
+            # The operator must be able to tell WHAT the consumer said (a 504
+            # from its proxy, a 500 with a body, a refused connection) - the
+            # generic sentence alone was useless twice on prod, 2026-09-06.
+            # ``httpx.HTTPError`` is caught here as well because the sink does
+            # NOT wrap transport faults; before this they escaped as a bare
+            # 500 instead of a 502 that names the fault.
+            raise _preview_unavailable(
+                exc, sink=sink, company_id=company_id, entity_type=entity_type
             ) from exc
 
         config.last_preview_at = datetime.now(timezone.utc)
@@ -999,7 +1326,14 @@ class EtlService:
         config.last_preview_failed_count = int(result.summary.get("failed") or 0)
         self.db.commit()
         self.db.refresh(config)
-        return self._task_view(company_id, entity_type, config), {
+
+        warnings = self._preview_warnings(
+            tenant_id, company_id, entity_type, current_refs, sink, config
+        )
+        if page_complete is False:
+            warnings["pagedPreview"] = True
+
+        payload = {
             "previewable": True,
             "sink": sink.name,
             "summary": result.summary,
@@ -1015,6 +1349,74 @@ class EtlService:
                 for p in result.predictions
             ],
         }
+        if warnings:
+            payload["warnings"] = warnings
+        return self._task_view(company_id, entity_type, config), payload
+
+    def _preview_warnings(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        current_refs: List[str],
+        sink: Any,
+        config: Any = None,
+    ) -> Dict[str, Any]:
+        """The activation preview's non-blocking warnings (sprint-5/02,
+        AC-02-12/14; SF2 review round) - computed the same way whether or not
+        the company has a real consumer wired up yet (see the two call sites
+        in ``preview_task``)."""
+        from ..sinks_sorento import SorentoSink
+
+        warnings: Dict[str, Any] = {}
+        # SF2 (final reviewer pass) - `validate_source_config` blocks a NEW
+        # watermark-inside-keyColumns save going forward, but an EXISTING
+        # task saved before that guard existed can carry the bad shape in
+        # the DB right now (the live Sorento product-master task did). The
+        # activation preview surfaces it as a non-blocking warning naming
+        # the offending column, so the operator notices and fixes it.
+        raw_source_config = getattr(config, "source_config", None) or {}
+        watermark_column = raw_source_config.get("watermarkColumn")
+        key_columns = raw_source_config.get("keyColumns") or []
+        if watermark_column and watermark_column in key_columns:
+            warnings["watermarkInKey"] = watermark_column
+        if is_document_entity(entity_type) and current_refs:
+            overlaps = self._overlapping_documents(
+                tenant_id, company_id, entity_type, current_refs
+            )
+            if overlaps:
+                warnings["overlappingDocuments"] = overlaps
+        if isinstance(sink, SorentoSink):
+            advertised = sink.fetch_contract()
+            if advertised is not None and advertised > sink.contract_version:
+                warnings["contractVersionMismatch"] = {
+                    "configured": sink.contract_version,
+                    "advertised": advertised,
+                }
+        return warnings
+
+    def _overlapping_documents(
+        self, tenant_id: str, company_id: str, entity_type: str, current_refs: List[str],
+    ) -> List[Dict[str, Any]]:
+        """AC-02-12: which of THIS run's own headers are also known to a
+        SIBLING document task on the same company (a PO/SPO filter-formula
+        split that lets a DocKey through to both sides, most likely) -
+        non-blocking, purely informational."""
+        from ..repositories import RowHashRepository
+
+        refs = set(current_refs)
+        if not refs:
+            return []
+        hashes = RowHashRepository(self.db)
+        overlaps: List[Dict[str, Any]] = []
+        for other in DOCUMENT_ENTITY_TYPES:
+            if other == entity_type:
+                continue
+            other_refs = set(hashes.all_hashes(tenant_id, company_id, other))
+            shared = sorted(refs & other_refs)
+            if shared:
+                overlaps.append({"entityType": other, "sourceRefs": shared})
+        return overlaps
 
     def _extract_and_map(self, tenant_id: str, company, config, entity_type: str):
         """Run the saved query and map every row - NO staging, NO hash writes.
@@ -1022,6 +1424,22 @@ class EtlService:
         Deferred import: the DB source imports the mapping + repository layers,
         and importing it at module level here would make this service part of
         that cycle for no benefit.
+
+        Returns ``(mapped_records, current_refs, page_complete)`` -
+        ``page_complete`` is ``None`` for a non-watermarked (unpaged) task,
+        and a bool for a watermarked one (see below).
+
+        !!  A WATERMARKED TASK'S PREVIEW READS AT MOST ONE PAGE (F1, review
+            round 2 BLOCKER).  !!
+        The OLD code always called the UNPAGED ``fetch_changes`` here, which
+        for a document task means "read the WHOLE from-date window, then run
+        one ``lineQuery`` per header, in ONE HTTP request" - a task with
+        148k headers issues 148k statements inside a single preview call.
+        Reusing the SAME paging primitive a real run uses (``fetch_page``,
+        one call, a fresh ``PageCursor``) caps a preview to exactly what a
+        real run's FIRST page would read - correct, since the preview's own
+        purpose (AC-22-18's activation gate) is to prove the shape of what
+        will be pushed, not to enumerate the whole population.
         """
         from ..mapping import (
             MappingEngine,
@@ -1030,7 +1448,7 @@ class EtlService:
             flat_profile,
         )
         from ..sources import SourceContext, Watermark
-        from ..sql_source.source import SqlDbSource
+        from ..sql_source.source import PageCursor, SqlDbSource
 
         source = SqlDbSource(
             SourceContext(
@@ -1046,10 +1464,30 @@ class EtlService:
             # recorded their hashes.
             persist_hashes=False,
         )
+        page_complete: Optional[bool] = None
         try:
-            # ``Watermark()`` = no mark, so this is the INITIAL LOAD - which is
-            # exactly what the activation gate is meant to show (AC-22-18).
-            result = source.fetch_changes(Watermark())
+            if source.watermark_column:
+                page = source.fetch_page(PageCursor())
+                #     !!  PREVIEW MAPS EVERY CANDIDATE, NOT JUST CHANGED ONES
+                #         (R2-S1, review round 3).  !!
+                # ``page.records`` is CHANGE-ONLY by design (D2) - a preview
+                # run right after a real run has already hashed the page, so
+                # every row reads as unchanged and ``page.records`` is
+                # empty, reporting "total: 0" for a task that plainly has
+                # rows. ``page.preview_records`` carries every candidate on
+                # the page regardless of changed/unchanged status; the RUN
+                # loop (``sync.py``) keeps using ``page.records`` unchanged.
+                raw_records = page.preview_records
+                current_refs = list(page.hashes)
+                page_complete = page.complete
+            else:
+                # ``Watermark()`` = no mark, so this is the INITIAL LOAD -
+                # exactly what the activation gate is meant to show
+                # (AC-22-18). Only reachable for a task with no watermark
+                # column configured at all, which has no page concept.
+                result = source.fetch_changes(Watermark())
+                raw_records = result.records
+                current_refs = list(result.current_refs)
         finally:
             source.close()
 
@@ -1066,13 +1504,12 @@ class EtlService:
                 f"'{entity_type}' is not yet extractable via a database task - "
                 "its AutoCount mapping is not implemented yet."
             ) from exc
-        # A document's LINE rows are code-generated from its source_config
-        # (plan 22 S5's "FIXED column-name convention", ``mapping.
-        # document_line_rows``), never read from ``ac_field_mapping`` -
-        # ``mapping_rows`` stays HEADER-only, same as before this slice.
-        # ``build_mapping_rows_for_run`` is the ONE gate for this (S5 review
-        # NIT - shared with ``sync.py``'s real-run path so the two can never
-        # drift). This method only ever runs against a freshly-built
+        # ``mapping_rows`` returns BOTH scopes (header AND line, sprint-5/02) -
+        # a document's line fields are real, persisted, operator-editable
+        # ``ac_field_mapping`` rows now, not a code-generated fixed-column
+        # convention. ``build_mapping_rows_for_run`` is the ONE gate here (S5
+        # review NIT - shared with ``sync.py``'s real-run path so the two can
+        # never drift). This method only ever runs against a freshly-built
         # ``SqlDbSource`` above - always the DB source, never the API path.
         rows = build_mapping_rows_for_run(
             entity_type,
@@ -1086,8 +1523,14 @@ class EtlService:
             profile=profile,
             database_name=company.database_name,
         )
-        mapped = [engine.map_document(record.raw) for record in result.records]
-        return [m.record for m in mapped if m.ok]
+        mapped = [engine.map_document(record.raw) for record in raw_records]
+        # ``current_refs`` (sprint-5/02, AC-02-12) is returned alongside the
+        # mapped records so ``preview_task`` can cross-check this run's own
+        # fetched headers against a SIBLING document task's known refs
+        # (the overlap warning) without re-reading the source a second time.
+        # ``page_complete`` (F1, review round 2) lets ``preview_task`` warn
+        # when this preview covers only PART of the population.
+        return [m.record for m in mapped if m.ok], current_refs, page_complete
 
     def activate_task(self, tenant_id: str, company_id: str, entity_type: str) -> EtlTaskView:
         """draft|paused → active (AC-22-18).
@@ -1128,9 +1571,14 @@ class EtlService:
         # read from the vendor API would auto-push records the operator
         # previewed from a different source entirely.
         config.source_impl = SOURCE_IMPL_SQL_DB
-        config.next_incremental_at, config.next_reconcile_at = self.next_run_times(
+        _, config.next_reconcile_at = self.next_run_times(
             config.source_config or {}, now=now
         )
+        # plan sprint-5/03 §2.4 - the initial (paged) pass starts on the
+        # FIRST tick after activation, not after a full ``incrementalMinutes``
+        # wait: 148k SO headers finish in hours unattended only if the sweep
+        # fires immediately.
+        config.next_incremental_at = now
         self.db.commit()
         self.db.refresh(config)
         return self._task_view(company_id, entity_type, config)

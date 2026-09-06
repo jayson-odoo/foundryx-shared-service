@@ -122,10 +122,11 @@ def workflow_metadata(
     db: Session = Depends(get_db),
 ) -> dict:
     """Triggerable entities + statuses + record fields for the editor pickers."""
-    can_read_ai_agents = "ai_agents.read" in effective_permission_keys(current_user)
+    keys = effective_permission_keys(current_user)
     return WorkflowService(db).metadata(
         current_user.tenant_id,
-        include_ai_agents=can_read_ai_agents,
+        include_ai_agents="ai_agents.read" in keys,
+        include_teams="teams.read" in keys,
     )
 
 

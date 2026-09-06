@@ -5,6 +5,14 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Sorento's per-request ingest ceiling (`MAX_BATCH` on their side): the hard
+# upper bound for `autocount_sink_batch_size`. Lives here (not in the module)
+# because the validator below needs it and core config must not import from
+# `modules/`; `modules/autocount/sinks_sorento.py` re-exports it under the
+# same name.
+SORENTO_MAX_BATCH = 1000
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables (.env)."""
 
@@ -231,6 +239,11 @@ class Settings(BaseSettings):
     # mediaUrl is an ABSOLUTE, HMAC-signed, time-limited link that opens in a raw
     # browser click (no Authorization header). TTL below (seconds).
     media_signed_url_ttl_seconds: int = 3600
+    # Conservative fallback pacing for a broadcast send chunk (plan 29 S2,
+    # D-A4-12) when the channel carries no `broadcast_rate_per_second` of its
+    # own - Meta's per-number quality-rating throttling makes a slow default
+    # safer than a fast one.
+    omnichannel_broadcast_rate_per_second: int = 10
     # Meta webhook verify-token for the GET handshake (set the same value in
     # the Meta app's webhook config).
     meta_webhook_verify_token: str = "foundryx-omnichannel-verify"
@@ -291,6 +304,110 @@ class Settings(BaseSettings):
     # Abandoned-checkout reaper: a Pending gateway payment with no webhook older
     # than this is swept to Expired (frees the buyer to re-pay, AC-07-33).
     payment_checkout_ttl_minutes: int = 60
+
+    # ── AutoCount bulk document load (plan sprint-5/03) ─────────────────────
+    # Paged extraction: `sync.py`'s run loop reads these AT CALL TIME (never
+    # cached at import time), so an operator can retune a running deployment
+    # without a restart and a test can monkeypatch the shared singleton. A
+    # page is `AUTOCOUNT_PAGE_SIZE` header rows in one statement; a run stops
+    # starting new pages once `AUTOCOUNT_RUN_TIME_BUDGET_SECONDS` has elapsed
+    # and finishes the page in flight (AC-03-06). Refused BELOW the floor at
+    # startup - never silently clamped, which would look like a working
+    # config while quietly extracting the whole 306k-header table per page.
+    autocount_page_size: int = 2000
+    autocount_run_time_budget_seconds: int = 600
+    # The Sorento sink's own HTTP client timeout (round 5) - a 1,000-record
+    # document batch with lines can genuinely take Sorento longer than the
+    # OLD hard-coded 30s to ingest, which recorded a push FAILURE while
+    # Sorento was still processing it (the batch itself was fine). Read at
+    # CALL time by `sorento_sink_from_connection` (never cached at import
+    # time), same "retune a running deployment without a restart" contract
+    # as `autocount_page_size`. Floored at 30s - the sink's own CONNECT
+    # timeout stays short regardless (a dead endpoint should fail fast);
+    # this setting only widens the read/write/pool budget.
+    autocount_sink_timeout_seconds: int = 300
+    # A page's changed-header LINE fetch, one connection each, sequential
+    # (S5, plan sprint-5/03 performance round) - a live pass over ZeroTier
+    # (~25ms RTT) spent ~60s per page on 2,000 sequential line queries.
+    # Read at CALL time by `SqlDbSource._attach_lines` (never cached), same
+    # "retune without a restart" contract as `autocount_page_size`. Bounded
+    # 1..8 - `workers=1` is the exact old sequential loop (no thread pool at
+    # all); the source engine's own pool (`pool_size`, `runtime.py`) is
+    # bumped to fit the configured worker count plus the page's own header
+    # connection, so a high worker count can never starve the pool.
+    autocount_line_fetch_workers: int = 4
+    # The sink's chunked push, up to N POSTs in flight (S5b, same
+    # performance round) - `SorentoSink.write_batch` keeps its EXISTING
+    # all-or-nothing contract at every concurrency: one chunk failing
+    # discards every chunk's verdict, exactly like the fully sequential
+    # loop always has. Default 1 (byte-identical to today, same request
+    # order) - an operator raises it only once the RECEIVING side (Sorento)
+    # has confirmed it can take concurrent batches. Bounded 1..4.
+    autocount_sink_concurrency: int = 1
+    # Records per Sorento ingest POST (2026-09-06 prod incident: a 1,000-record
+    # purchase_order batch with per-record supplier back-create ran past
+    # Sorento production nginx's 60s proxy timeout and came back 504; Sorento
+    # asked for 200 per document ingest and a configurable size). Read at
+    # CALL time by `sorento_sink_from_connection` (same "retune without a
+    # restart" contract as `autocount_sink_timeout_seconds`), so it applies to
+    # the next push. Bounded 1..`SORENTO_MAX_BATCH` - the ceiling is Sorento's
+    # own per-request limit and cannot be raised from here.
+    autocount_sink_batch_size: int = 200
+
+    @field_validator("autocount_page_size")
+    @classmethod
+    def _autocount_page_size_floor(cls, v: int) -> int:
+        if v < 100:
+            raise ValueError(
+                "autocount_page_size must be at least 100 rows."
+            )
+        return v
+
+    @field_validator("autocount_run_time_budget_seconds")
+    @classmethod
+    def _autocount_run_time_budget_floor(cls, v: int) -> int:
+        if v < 30:
+            raise ValueError(
+                "autocount_run_time_budget_seconds must be at least 30 seconds."
+            )
+        return v
+
+    @field_validator("autocount_sink_timeout_seconds")
+    @classmethod
+    def _autocount_sink_timeout_floor(cls, v: int) -> int:
+        if v < 30:
+            raise ValueError(
+                "autocount_sink_timeout_seconds must be at least 30 seconds."
+            )
+        return v
+
+    @field_validator("autocount_line_fetch_workers")
+    @classmethod
+    def _autocount_line_fetch_workers_bounds(cls, v: int) -> int:
+        if v < 1 or v > 8:
+            raise ValueError(
+                "autocount_line_fetch_workers must be between 1 and 8."
+            )
+        return v
+
+    @field_validator("autocount_sink_concurrency")
+    @classmethod
+    def _autocount_sink_concurrency_bounds(cls, v: int) -> int:
+        if v < 1 or v > 4:
+            raise ValueError(
+                "autocount_sink_concurrency must be between 1 and 4."
+            )
+        return v
+
+    @field_validator("autocount_sink_batch_size")
+    @classmethod
+    def _autocount_sink_batch_size_bounds(cls, v: int) -> int:
+        if v < 1 or v > SORENTO_MAX_BATCH:
+            raise ValueError(
+                f"autocount_sink_batch_size must be between 1 and {SORENTO_MAX_BATCH} "
+                f"(Sorento's per-request ingest ceiling)."
+            )
+        return v
 
 
 settings = Settings()

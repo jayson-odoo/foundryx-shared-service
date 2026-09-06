@@ -274,6 +274,12 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/user-management/roles',
         permission: 'roles.read',
       },
+      {
+        title: 'Teams',
+        path: '/user-management/teams',
+        permission: 'teams.read',
+        termKey: 'team',
+      },
       // Permissions/Account/Logs/Settings entries removed in sprint-2/06 -
       // Metronic demo residue, the routes never existed (404 on click).
     ],
@@ -315,6 +321,14 @@ export const MENU_SIDEBAR: MenuConfig = [
     module: 'omnichannel',
     children: [
       {
+        // Dashboard (plan 30, roadmap A9) - AC-RPT-41. Permission key is the
+        // existing CORE `reports.read` (main-session override of the
+        // planner's D-A9-10 `conversation_reports.read`).
+        title: 'Dashboard',
+        path: '/omnichannel/dashboard',
+        permission: 'reports.read',
+      },
+      {
         title: 'Inbox',
         path: '/omnichannel/inbox',
         permission: 'conversations.read',
@@ -324,6 +338,19 @@ export const MENU_SIDEBAR: MenuConfig = [
         title: 'Contacts',
         path: '/omnichannel/contacts',
         permission: 'contacts.read',
+      },
+      {
+        // Broadcasts (plan 29, roadmap A4) - after Contacts (its audience
+        // picker consumes A2's segments).
+        title: 'Broadcasts',
+        path: '/omnichannel/broadcasts',
+        permission: 'broadcasts.read',
+      },
+      {
+        // Reports (plan 30, roadmap A9) - AC-RPT-41.
+        title: 'Reports',
+        path: '/omnichannel/reports',
+        permission: 'reports.read',
       },
       {
         title: 'Channels',
@@ -414,6 +441,12 @@ export const MENU_MEGA: MenuConfig = [
                 path: '/user-management/roles',
                 permission: 'roles.read',
               },
+              {
+                title: 'Teams',
+                path: '/user-management/teams',
+                permission: 'teams.read',
+                termKey: 'team',
+              },
             ],
           },
         ],
@@ -437,18 +470,26 @@ export const MENU_MEGA: MenuConfig = [
           },
         ],
       },
-      // Omnichannel (D-A2-16, plan 26) - closes a pre-existing gap verified
-      // 2026-09-06: this DESKTOP mega menu had NO Omnichannel entry at all
-      // (only the sidebar copy was tagged), so a tenant without the module
-      // saw the Apps menu missing the section, but a page-URL guess would
-      // have 403'd correctly - the fix here is purely additive parity with
-      // the sidebar, same module + per-child permission tags.
+      // Omnichannel (D-A2-16, plan 26; extended plan 29) - closes a
+      // pre-existing gap verified 2026-09-06: this DESKTOP mega menu had NO
+      // Omnichannel entry at all (only the sidebar copy was tagged), so a
+      // tenant without the module saw the Apps menu missing the section, but
+      // a page-URL guess would have 403'd correctly - the fix here is purely
+      // additive parity with the sidebar, same module + per-child permission
+      // tags (Inbox, Contacts, Broadcasts, Channels, Workspaces, Media
+      // limits, Quick replies, Embed access).
       {
         title: 'Omnichannel',
         module: 'omnichannel',
         children: [
           {
             children: [
+              {
+                // Dashboard (plan 30, roadmap A9) - AC-RPT-41.
+                title: 'Dashboard',
+                path: '/omnichannel/dashboard',
+                permission: 'reports.read',
+              },
               {
                 title: 'Inbox',
                 path: '/omnichannel/inbox',
@@ -458,6 +499,17 @@ export const MENU_MEGA: MenuConfig = [
                 title: 'Contacts',
                 path: '/omnichannel/contacts',
                 permission: 'contacts.read',
+              },
+              {
+                title: 'Broadcasts',
+                path: '/omnichannel/broadcasts',
+                permission: 'broadcasts.read',
+              },
+              {
+                // Reports (plan 30, roadmap A9) - AC-RPT-41.
+                title: 'Reports',
+                path: '/omnichannel/reports',
+                permission: 'reports.read',
               },
               {
                 title: 'Channels',
@@ -555,6 +607,12 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         path: '/user-management/roles',
         permission: 'roles.read',
       },
+      {
+        title: 'Teams',
+        path: '/user-management/teams',
+        permission: 'teams.read',
+        termKey: 'team',
+      },
     ],
   },
   {
@@ -573,15 +631,22 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
       },
     ],
   },
-  // Omnichannel (D-A2-16, plan 26) - closes a pre-existing gap verified
-  // 2026-09-06: the mobile mega menu had NO Omnichannel block at all, so a
-  // tenant on a phone had no path to Inbox/Contacts/Channels/etc from this
-  // menu surface.
+  // Omnichannel (D-A2-16, plan 26; extended plan 29) - closes a
+  // pre-existing gap verified 2026-09-06: the mobile mega menu had NO
+  // Omnichannel block at all, so a tenant on a phone had no path to
+  // Inbox/Contacts/Broadcasts/Channels/etc from this menu surface. Same
+  // module + per-child permission tags, mirroring MENU_SIDEBAR/MENU_MEGA.
   {
     title: 'Omnichannel',
     icon: MessageSquare,
     module: 'omnichannel',
     children: [
+      {
+        // Dashboard (plan 30, roadmap A9) - AC-RPT-41.
+        title: 'Dashboard',
+        path: '/omnichannel/dashboard',
+        permission: 'reports.read',
+      },
       {
         title: 'Inbox',
         path: '/omnichannel/inbox',
@@ -591,6 +656,17 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Contacts',
         path: '/omnichannel/contacts',
         permission: 'contacts.read',
+      },
+      {
+        title: 'Broadcasts',
+        path: '/omnichannel/broadcasts',
+        permission: 'broadcasts.read',
+      },
+      {
+        // Reports (plan 30, roadmap A9) - AC-RPT-41.
+        title: 'Reports',
+        path: '/omnichannel/reports',
+        permission: 'reports.read',
       },
       {
         title: 'Channels',

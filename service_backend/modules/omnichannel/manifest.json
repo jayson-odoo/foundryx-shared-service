@@ -1,6 +1,6 @@
 {
   "module_name": "omnichannel",
-  "version": "0.4.5",
+  "version": "0.7.0",
   "author": "Foundryx",
   "title": "Omnichannel",
   "description": "WhatsApp Business messaging \u2014 connect numbers via Meta Embedded Signup, manage workspaces and channels.",
@@ -93,11 +93,23 @@
       "prefix": "/omnichannel/workspaces"
     },
     {
+      "name": "broadcasts",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
       "name": "close_reasons",
       "prefix": "/omnichannel/workspaces"
     },
     {
       "name": "inbox_views",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
+      "name": "team_settings",
+      "prefix": "/omnichannel/workspaces"
+    },
+    {
+      "name": "reports",
       "prefix": "/omnichannel/workspaces"
     },
     {

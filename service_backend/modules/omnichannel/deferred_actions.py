@@ -25,6 +25,7 @@ API_KEYS_MANAGE = "api_keys.manage"
 SEGMENTS_MANAGE = "segments.manage"
 CONVERSATIONS_READ = "conversations.read"
 CLOSE_REASONS_MANAGE = "close_reasons.manage"
+BROADCASTS_MANAGE = "broadcasts.manage"
 
 
 # ---- channels --------------------------------------------------------------
@@ -293,6 +294,55 @@ CONTACT_SEGMENTS_DELETE = DeferredActionDef(
 )
 
 
+# ---- broadcasts (plan 29, review round 1 - S1) -----------------------------
+#
+# `entity_id` is the bare broadcast id (globally unique PK) - mirrors
+# `contact_segment`/`close_reason` above. A DRAFT-only guard already lives in
+# `BroadcastService.delete` (`BroadcastStatusConflict`); a broadcast that left
+# Draft between park and commit (e.g. the scheduled tick fired it) must fail
+# the commit loudly, same as every other entity in this file.
+
+
+def _broadcast_row(db: Session, tenant_id: str, entity_id: str):
+    from .models import Broadcast
+
+    return (
+        db.query(Broadcast)
+        .filter(Broadcast.id == entity_id, Broadcast.tenant_id == tenant_id)
+        .first()
+    )
+
+
+def _broadcasts_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    return _broadcast_row(db, tenant_id, entity_id) is not None
+
+
+def _broadcasts_delete(db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str) -> None:
+    from .services.broadcast_service import BroadcastNotFound, BroadcastService, BroadcastStatusConflict
+
+    row = _broadcast_row(db, tenant_id, entity_id)
+    if row is None:
+        raise ValueError("Broadcast no longer exists.")
+    try:
+        BroadcastService(db).delete(entity_id, tenant_id, row.workspace_id)
+    except BroadcastNotFound:
+        raise ValueError("Broadcast no longer exists.")
+    except BroadcastStatusConflict:
+        raise ValueError("This broadcast can no longer be deleted (it is no longer a draft).")
+
+
+BROADCASTS_DELETE = DeferredActionDef(
+    key="broadcasts.delete",
+    module="omnichannel",
+    entity_type="broadcast",
+    permission=BROADCASTS_MANAGE,
+    window="destructive",
+    label="Delete",
+    execute=_broadcasts_delete,
+    exists=_broadcasts_exists,
+)
+
+
 # ---- workspaces -------------------------------------------------------------
 
 
@@ -462,6 +512,7 @@ _ALL = (
     WORKSPACES_TRASH,
     CLOSE_REASONS_DELETE,
     INBOX_VIEWS_DELETE,
+    BROADCASTS_DELETE,
 )
 
 

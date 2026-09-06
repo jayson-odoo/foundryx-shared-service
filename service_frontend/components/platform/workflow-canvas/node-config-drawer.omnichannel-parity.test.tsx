@@ -202,11 +202,10 @@ describe('NodeConfigDrawer - boolean flags render as a checkbox (AC-WFP-02)', ()
 });
 
 describe('NodeConfigDrawer - show_when clears hidden dependents (AC-WFP-04)', () => {
-  it('switching assign mode away from "user" clears the chosen user', async () => {
+  it('switching assign mode away from "user" clears the chosen user (plan 31 A5 merge: "team"/"round_robin" folded into A8\'s "Assign to" field, teamId/strategy clear too since they are also mode-scoped dependents)', async () => {
     const user = userEvent.setup();
     const onConfigChange = vi.fn();
     const { doc, node } = docWith('omnichannel.assign_conversation', {
-      workspaceId: 'ws-1',
       mode: 'user',
       userId: 'user-1',
     });
@@ -221,11 +220,13 @@ describe('NodeConfigDrawer - show_when clears hidden dependents (AC-WFP-04)', ()
         onDelete={vi.fn()}
       />,
     );
-    await user.click(screen.getByLabelText('Assign mode'));
+    await user.click(screen.getByLabelText('Assign to'));
     await user.click(screen.getByText('Round robin'));
     expect(onConfigChange).toHaveBeenCalledWith(node.id, {
       mode: 'round_robin',
       userId: '',
+      teamId: '',
+      strategy: '',
     });
   });
 
