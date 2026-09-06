@@ -171,6 +171,24 @@ ANCHOR_ERROR_CODES = frozenset(
 )
 
 
+def contract_major(version: Any, *, default: Optional[int] = None) -> Optional[int]:
+    """The MAJOR of a Sorento contract version as the ``/contract`` endpoint
+    or the connection config states it: ``2`` / ``2.0`` / ``"2"`` / ``"2.1"``
+    all mean major 2. ``None`` / blank / anything that is not a version
+    yields ``default`` (``None`` unless the caller says what an absent
+    version means - ``fetch_contract`` says 1, the provider's ``test()``
+    resolves an absent config key to 1 before calling). Shared by the sink
+    (advisory mismatch warning) and the provider (Test verdict) so the two
+    can never parse the same answer differently.
+    """
+    if isinstance(version, bool) or version is None:
+        return default
+    if isinstance(version, (int, float)):
+        return int(version)
+    head = str(version).strip().split(".", 1)[0]
+    return int(head) if head.isdigit() else default
+
+
 class SorentoSinkError(Exception):
     """A transport- or contract-level failure that is not per-record. The whole
     batch is unresolved; the caller returns it to review rather than marking any
@@ -539,10 +557,11 @@ class SorentoSink:
             body = response.json()
             if not isinstance(body, dict):
                 return None
-            version = body.get("version")
-            if isinstance(version, bool) or not isinstance(version, (int, float)):
-                return None
-            return int(version)
+            # ``{"version": 2}`` (contract 2) or ``{"version": "2.1"}`` (2.1,
+            # a STRING - a point release of the same major); majors only. A
+            # contract endpoint that answers but names no version is a
+            # contract-1 Sorento.
+            return contract_major(body.get("version"), default=1)
         except Exception:  # noqa: BLE001 - advisory only, must never propagate
             return None
 
@@ -800,8 +819,17 @@ def sorento_sink_from_connection(
         # it without a code change.
         timeout=settings.autocount_sink_timeout_seconds,
         transport=transport,
-        # AC-02-14 - the connection's own authoritative gate. Default 1 (pre-
-        # addendum) so an existing connection with no such key configured
-        # behaves exactly as it always has.
-        contract_version=int(config.get("sorentoContractVersion") or 1),
+        # AC-02-14 - the connection's own authoritative gate. The integrations
+        # form stores the select's value as the STRING "1" / "2"; ``int`` on
+        # ``contract_major`` resolves "2" (and a hand-set "2.0") to 2; a
+        # value that is not a version at all ("abc" - the config PATCH merges
+        # verbatim, nothing validates it against the select's options) falls
+        # back to 1 instead of raising ValueError inside ``sink_for_company``.
+        # Default 1 (pre-addendum) so an existing connection with no such key
+        # configured behaves exactly as it always has - there is deliberately
+        # NO backfill of this key: an existing tenant opts into contract 2 by
+        # picking it on the connection's edit form (Settings > Integrations >
+        # Sorento), where the provider's Test then checks the choice against
+        # the contract Sorento advertises.
+        contract_version=contract_major(config.get("sorentoContractVersion"), default=1) or 1,
     )

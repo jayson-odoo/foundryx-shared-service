@@ -13,6 +13,9 @@
 > consumer connection, so v1 Sorento never receives an unknown key (`extra="forbid"` stays).
 > Please expose the version you implement (e.g. `GET /api/v1/external/contract` →
 > `{"version": 2}`) or tell us the release tag so we can flip the gate.
+> *(2026-09-06 update: Sorento answers `"version": "2.1"` - a string point release; the ESB
+> compares MAJORS only, and the gate is the connection's own `sorentoContractVersion`, see
+> section 11.)*
 
 ## 1. Accept code+name fallbacks and back-create masters (parity with the upload)
 
@@ -175,9 +178,18 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
 - v2 hooks: plan-exception batch, CRM-raised PO supersede, order-inquiry relink run on ingest;
   `planning_change` batches deferred (Sorento-side parity gap); SPO close-by-absence is the ESB's
   via reconcile -> `/ingest/shipping_orders/deletions`.
-- `GET /api/v1/external/contract` -> `{"version": 2, "entities": [...]}`, permission
-  `integration.contract.read` granted with `scm.sales_orders.edit`. The ESB reads `version` at
-  sink construction and gates v2 fields on `>= 2`.
+- `GET /api/v1/external/contract` -> `{"version": <v>, "entities": [...]}`, permission
+  `integration.contract.read` granted with `scm.sales_orders.edit`. `version` was the integer `2`
+  at contract 2 and is the STRING `"2.1"` from the ingest-parity release (a point release of the
+  same major - section 10 of Sorento's cross-repo contract). Revised 2026-09-06
+  (`fix/sorento-contract-version-field`): the ESB compares MAJORS only (`2` vs `"2.1"` agree); a 200
+  that names no `version` reads as major 1; the endpoint is ADVISORY - the gate for v2 fields is the
+  connection's own `sorentoContractVersion` (a select on the Sorento connection form, `1 (legacy)` /
+  `2`, new connections default to `2`, an existing connection with no stored value runs at 1 until
+  edited), and `SorentoSink.fetch_contract` only feeds a non-blocking preview warning when Sorento
+  advertises a HIGHER major than the connection is set to. The connection's Test refuses the
+  opposite case (chosen major above the advertised one: "Sorento advertises contract 1; choose
+  version 1 or upgrade Sorento"); a Sorento with no contract endpoint at all is reported, not failed.
 - Sorento UAC/plan: `documentation/plans/autocount/autocount-document-ingest-v2-acceptance-criteria.md`
   (AC-V0..V6) + `PLAN-autocount-document-ingest-v2.md` (D1-D9, S0-S6) on sorento-crm main.
 

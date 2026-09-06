@@ -228,12 +228,14 @@ Via `agent-browser` (headless), Part A live proof:
 
 ## Foolproof-UI / friction notes
 
-- **`sorentoContractVersion` has no UI** - it is a connection-config field only settable via the
-  API/database (the local proof set it directly). A tenant wanting to opt into v2 fields once
-  Sorento's fix lands has no way to do so from the Integrations UI. Candidate: expose it as a
-  field on the Sorento connection's edit form once the Sorento addendum's items are resolved and
-  the flip is safe to offer (currently deliberately hidden - BL-SS-084 gates the PRODUCTION
-  default, but even opt-in per-tenant needs a control).
+- **`sorentoContractVersion` has no UI** - RESOLVED 2026-09-06 (`fix/sorento-contract-version-field`):
+  the Sorento connection form now carries a required "Contract version" select (`1 (legacy)` / `2`,
+  new connections default to `2`; an existing connection with no stored value keeps behaving as `1`
+  until the operator picks one on the edit form - no backfill), and the connection's Test compares
+  the chosen major against `GET /api/v1/external/contract` (a version newer than Sorento advertises
+  fails the test naming both; a legacy Sorento with no contract endpoint is reported, not failed).
+  Originally: a connection-config field only settable via the API/database (the local proof set it
+  directly); BL-SS-084 still gates the PRODUCTION flip, but the per-tenant opt-in now has a control.
 - **The date-spinbutton "From date" field is only keyboard-drivable (ArrowUp/ArrowDown), not
   type-to-set**, when driven by `agent-browser`'s browser automation - a real `<input
   type="date">` element (confirmed reading the component source), so this is a headless-CLI
