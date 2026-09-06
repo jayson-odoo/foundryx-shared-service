@@ -73,10 +73,23 @@ class TransientSendError(Exception):
     transient failures)."""
 
 
+def _record_broadcast_receipt(db: Session, row: ConversationMessage) -> None:
+    """Plan 29 S2b (D-A4-10) - a lazily-imported, fully failure-isolated hook
+    into `broadcast_receipts.record_delivery`. A broadcast bug must NEVER
+    break an outbound send; called AFTER the row's own commit."""
+    try:
+        from .broadcast_receipts import record_delivery
+
+        record_delivery(db, row)
+    except Exception:  # noqa: BLE001 - never let a broadcast bug break a send
+        logger.exception("broadcast receipt hook failed for message %s", row.id)
+
+
 def _fail(db: Session, row: ConversationMessage, message: str) -> str:
     row.delivery_status = "FAILED"
     row.error_message = message
     db.commit()
+    _record_broadcast_receipt(db, row)
     _publish_status(db, row)
     return "FAILED"
 
@@ -278,5 +291,6 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
     row.external_message_id = result.get("external_message_id")
     row.delivery_status = "SENT"
     db.commit()
+    _record_broadcast_receipt(db, row)
     _publish_status(db, row)
     return "SENT"

@@ -439,6 +439,16 @@ class InboundService:
             msg.delivery_status = new_status
         self.db.commit()
 
+        # Broadcast receipt hook (plan 29 S2b, D-A4-10) - AFTER this commit,
+        # BEFORE the consumer-webhook enqueue below. A broadcast bug must
+        # NEVER break the inbound webhook pipeline.
+        try:
+            from .broadcast_receipts import record_delivery
+
+            record_delivery(self.db, msg)
+        except Exception:  # noqa: BLE001
+            logger.exception("broadcast receipt hook failed for message %s", msg.id)
+
         contact = self.repo.get_by_id(msg.contact_id, channel.tenant_id)
         if contact is not None:
             realtime.publish(

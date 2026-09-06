@@ -334,6 +334,13 @@ export const MENU_SIDEBAR: MenuConfig = [
         permission: 'contacts.read',
       },
       {
+        // Broadcasts (plan 29, roadmap A4) - after Contacts (its audience
+        // picker consumes A2's segments).
+        title: 'Broadcasts',
+        path: '/omnichannel/broadcasts',
+        permission: 'broadcasts.read',
+      },
+      {
         // Reports (plan 30, roadmap A9) - AC-RPT-41.
         title: 'Reports',
         path: '/omnichannel/reports',
@@ -451,12 +458,14 @@ export const MENU_MEGA: MenuConfig = [
           },
         ],
       },
-      // Omnichannel (D-A2-16, plan 26) - closes a pre-existing gap verified
-      // 2026-09-06: this DESKTOP mega menu had NO Omnichannel entry at all
-      // (only the sidebar copy was tagged), so a tenant without the module
-      // saw the Apps menu missing the section, but a page-URL guess would
-      // have 403'd correctly - the fix here is purely additive parity with
-      // the sidebar, same module + per-child permission tags.
+      // Omnichannel (D-A2-16, plan 26; extended plan 29) - closes a
+      // pre-existing gap verified 2026-09-06: this DESKTOP mega menu had NO
+      // Omnichannel entry at all (only the sidebar copy was tagged), so a
+      // tenant without the module saw the Apps menu missing the section, but
+      // a page-URL guess would have 403'd correctly - the fix here is purely
+      // additive parity with the sidebar, same module + per-child permission
+      // tags (Inbox, Contacts, Broadcasts, Channels, Workspaces, Media
+      // limits, Quick replies, Embed access).
       {
         title: 'Omnichannel',
         module: 'omnichannel',
@@ -478,6 +487,11 @@ export const MENU_MEGA: MenuConfig = [
                 title: 'Contacts',
                 path: '/omnichannel/contacts',
                 permission: 'contacts.read',
+              },
+              {
+                title: 'Broadcasts',
+                path: '/omnichannel/broadcasts',
+                permission: 'broadcasts.read',
               },
               {
                 // Reports (plan 30, roadmap A9) - AC-RPT-41.
@@ -599,10 +613,11 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
       },
     ],
   },
-  // Omnichannel (D-A2-16, plan 26) - closes a pre-existing gap verified
-  // 2026-09-06: the mobile mega menu had NO Omnichannel block at all, so a
-  // tenant on a phone had no path to Inbox/Contacts/Channels/etc from this
-  // menu surface.
+  // Omnichannel (D-A2-16, plan 26; extended plan 29) - closes a
+  // pre-existing gap verified 2026-09-06: the mobile mega menu had NO
+  // Omnichannel block at all, so a tenant on a phone had no path to
+  // Inbox/Contacts/Broadcasts/Channels/etc from this menu surface. Same
+  // module + per-child permission tags, mirroring MENU_SIDEBAR/MENU_MEGA.
   {
     title: 'Omnichannel',
     icon: MessageSquare,
@@ -623,6 +638,11 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Contacts',
         path: '/omnichannel/contacts',
         permission: 'contacts.read',
+      },
+      {
+        title: 'Broadcasts',
+        path: '/omnichannel/broadcasts',
+        permission: 'broadcasts.read',
       },
       {
         // Reports (plan 30, roadmap A9) - AC-RPT-41.

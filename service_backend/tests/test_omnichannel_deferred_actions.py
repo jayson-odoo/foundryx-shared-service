@@ -121,6 +121,31 @@ def _make_contact_segment(db, ws_id, name="VIPs"):
     return row
 
 
+def _make_broadcast(db, ws_id, channel_id, template_id, *, key="DRAFT", name="Test Broadcast"):
+    """Review round 1, S1 - `broadcasts.delete` is a deferred action. Built
+    directly via the ORM (mirrors `_make_contact_segment` above) rather than
+    the create endpoint, so a test can also construct a NON-draft row to
+    prove the DRAFT-only guard fails the commit (not just the park)."""
+    from modules.omnichannel.models import Broadcast
+    from modules.omnichannel.services import statuses
+
+    row = Broadcast(
+        tenant_id=DEFAULT_TENANT_ID,
+        workspace_id=ws_id,
+        name=name,
+        channel_id=channel_id,
+        audience_kind="contacts",
+        audience_contact_ids_json=[],
+        template_id=template_id,
+        template_name="tpl",
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "BROADCAST", key),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def _park_and_lapse(db, admin, action_key, entity_type, entity_id, payload=None):
     svc = PendingActionService(db)
     row = svc.park(
@@ -155,6 +180,7 @@ def test_all_registered_omnichannel_keys_registered(db):
         "workspaces.trash",
         "close_reasons.delete",
         "inbox_views.delete",
+        "broadcasts.delete",
     ):
         assert deferred_action_for(key).key == key
 
@@ -287,6 +313,74 @@ def test_contact_segments_missing_target_404_at_park(client):
         },
     )
     assert res.status_code == 404
+
+
+def test_broadcasts_delete(db):
+    """Review round 1, S1 - `broadcasts.delete` is a deferred action (was a
+    plain immediate `run` in S0/S4, a D2/D13 violation for a destructive
+    verb). `entity_id` is the bare broadcast id (globally unique PK) - the
+    handler resolves its owning workspace from the row itself."""
+    ws_id = _default_workspace_id(db)
+    admin = _admin(db)
+    channel = _make_channel(db, ws_id, "Broadcast channel")
+    template = _make_wa_template(db, channel.id)
+    broadcast = _make_broadcast(db, ws_id, channel.id, template.id)
+
+    result = _park_and_lapse(db, admin, "broadcasts.delete", "broadcast", broadcast.id)
+    assert result.status == "committed"
+
+    from modules.omnichannel.models import Broadcast
+
+    assert db.get(Broadcast, broadcast.id) is None
+
+
+def test_broadcasts_missing_target_404_at_park(client):
+    h = _auth(client)
+    res = client.post(
+        "/api/v1/pending-actions",
+        headers=h,
+        json={
+            "actionKey": "broadcasts.delete",
+            "entityType": "broadcast",
+            "entityId": "no-such-broadcast",
+        },
+    )
+    assert res.status_code == 404
+
+
+def test_broadcasts_delete_fails_when_no_longer_draft_by_commit_time(db):
+    """A broadcast that left DRAFT between park and commit (e.g. the
+    scheduled tick fired it) must fail the commit loudly rather than
+    silently deleting a broadcast that is no longer editable - mirrors
+    `test_workspaces_trash_fails_when_the_workspace_is_gone_by_commit_time`
+    below."""
+    ws_id = _default_workspace_id(db)
+    admin = _admin(db)
+    channel = _make_channel(db, ws_id, "Broadcast channel 2")
+    template = _make_wa_template(db, channel.id)
+    broadcast = _make_broadcast(db, ws_id, channel.id, template.id)
+
+    svc = PendingActionService(db)
+    row = svc.park(
+        tenant_id=DEFAULT_TENANT_ID, actor=admin, requested_by_id=admin.id,
+        action_key="broadcasts.delete", entity_type="broadcast", entity_id=broadcast.id,
+    )
+
+    from modules.omnichannel.models import Broadcast, Status
+
+    b = db.get(Broadcast, broadcast.id)
+    b.status_id = (
+        db.query(Status.id)
+        .filter(Status.tenant_id == DEFAULT_TENANT_ID, Status.scope == "BROADCAST", Status.key == "SENT")
+        .scalar()
+    )
+    pa = db.get(PendingAction, row.id)
+    pa.commit_at = _now() - timedelta(seconds=1)
+    db.commit()
+
+    result = svc.commit_one(row)
+    assert result.status == "failed"
+    assert db.get(Broadcast, broadcast.id) is not None  # never deleted
 
 
 def test_api_keys_revoke(db):
