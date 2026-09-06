@@ -628,6 +628,12 @@ class OmnichannelSettings(OmniBase):
     audio_max_bytes = Column(Integer, nullable=True)
     document_max_bytes = Column(Integer, nullable=True)
     sticker_max_bytes = Column(Integer, nullable=True)
+    # Business hours (plan sprint-4/31 S5, D-A5-13/F6) - the SAME per-workspace
+    # + tenant-default (workspace_id NULL) row this table already uses for
+    # media caps; two new columns, not a new table (D-A5-13's "waste"
+    # rationale). Shape: `{"mon": [{"from": "09:00", "to": "18:00"}], ...}`.
+    business_hours_json = Column(JSON(none_as_null=True), nullable=True)
+    business_timezone = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False

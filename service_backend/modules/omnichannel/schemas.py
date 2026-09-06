@@ -821,6 +821,23 @@ class OmnichannelSettingsResponse(ApiModel):
     effective: dict  # {IMAGE: {maxBytes, ceilingBytes, acceptedMimes}, ...}
 
 
+# ── Business hours (plan sprint-4/31 S5, D-A5-13) ────────────────────────────
+class BusinessHoursUpdate(ApiModel):
+    """`timezone` = an IANA name; `windows` = {mon: [{from,to}], ..., sun: []}
+    (§5.4 - overnight windows where `to` <= `from` are valid). Validated
+    server-side (`business_hours.validate_timezone`/`validate_windows`) - the
+    router maps a `BusinessHoursValidationError` to a 422 `{fieldErrors}`."""
+
+    timezone: str
+    windows: dict
+
+
+class BusinessHoursResponse(ApiModel):
+    workspaceId: str
+    timezone: Optional[str] = None
+    windows: dict
+
+
 # ── Public gateway API keys (plan sprint-1/01 Slice 3) ───────────────────────
 class ApiKeyItem(ApiModel):
     id: str

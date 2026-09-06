@@ -244,16 +244,27 @@ class WorkflowService:
 
     @staticmethod
     def assert_code_permitted(actor: Optional[User], doc: Any) -> None:
-        """``workflows.code`` gates adding/editing/publishing/running a graph
-        that carries a Code node (AC-SAR-68). ``actor=None`` = system path."""
-        from app.workflow_engine.schemas import has_code_nodes
+        """Every ``ActionDef.permission`` a node in ``doc`` declares gates
+        adding/editing/publishing/running that graph (AC-SAR-68, AC-WFP-61;
+        plan sprint-4/31 S5 generalizes this beyond ``workflows.code`` -
+        closes BL-SS-121, one seam for any current or future gated action -
+        e.g. ``workflows.http`` on ``http.request``). ``actor=None`` = system
+        path (an event/scheduled trigger has no live actor; ``code.run``
+        keeps its own separate ``code_authorized_by`` publish-time stamp for
+        that path - see ``entity_events.create_run_for_event``)."""
+        from app.workflow_engine.schemas import required_node_permissions
 
-        if actor is None or not has_code_nodes(doc):
+        if actor is None:
+            return
+        required = required_node_permissions(doc)
+        if not required:
             return
         from app.dependencies import effective_permission_keys
 
-        if "workflows.code" not in effective_permission_keys(actor):
-            raise WorkflowPermissionError("Missing permission: workflows.code")
+        have = effective_permission_keys(actor)
+        missing = sorted(perm for perm in required if perm not in have)
+        if missing:
+            raise WorkflowPermissionError(f"Missing permission: {missing[0]}")
 
     def create(self, tenant_id: str, *, name: str, description: str, draft: Dict[str, Any], actor_id: str, actor: Optional[User] = None) -> Workflow:
         parse_definition(draft)  # shape gate (422 on malformed)
@@ -338,10 +349,15 @@ class WorkflowService:
         doc = validate_definition(wf.draft_definition_json, workflow_id=wf.id)
         from app.workflow_engine.schemas import has_code_nodes
 
+        # Generalized permission gate (plan sprint-4/31 S5, closes BL-SS-121):
+        # ANY node whose ActionDef declares a `permission` - not only
+        # `code.run` - must be checked at publish, so `http.request`'s
+        # `workflows.http` (AC-WFP-61) is enforced here too, not only at
+        # create/update/manual-run.
+        self.assert_code_permitted(actor, doc)
         code_bearing = has_code_nodes(doc)
         code_authorized_by = None
         if code_bearing:
-            self.assert_code_permitted(actor, doc)
             from app.workflow_engine.code_runner import code_runner_available
 
             if not code_runner_available():

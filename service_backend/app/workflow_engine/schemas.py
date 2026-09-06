@@ -306,6 +306,24 @@ def has_code_nodes(doc: Any) -> bool:
     return False
 
 
+def required_node_permissions(doc: Any) -> set:
+    """Every distinct ``ActionDef.permission`` a node in this doc requires
+    (plan sprint-4/31 S5, closes BL-SS-121 - the generalized form of the
+    ``workflows.code`` gate). ``workflows.code`` and ``workflows.http`` both
+    resolve through this one seam now; a future ActionDef declaring
+    ``permission`` needs NO change here."""
+    from app.workflow_engine.registry import get_action
+
+    nodes = doc.nodes if isinstance(doc, WorkflowDefinitionModel) else (doc or {}).get("nodes") or []
+    perms: set = set()
+    for node in nodes:
+        node_type = node.type if isinstance(node, WorkflowNodeModel) else (node or {}).get("type")
+        action = get_action(node_type) if node_type else None
+        if action is not None and action.permission:
+            perms.add(action.permission)
+    return perms
+
+
 def _node_label(node: WorkflowNodeModel) -> str:
     """The node's display name - the user-set config.name, else the catalog
     label (mirror of the frontend nodeDisplayName)."""

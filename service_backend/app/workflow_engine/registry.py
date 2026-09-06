@@ -656,6 +656,80 @@ def _register_core() -> None:
         )
     )
 
+    # ---- http.request (plan sprint-4/31 S5, AC-WFP-57..62, gated workflows.http) ----
+    from app.workflow_engine.actions.http_actions import http_request
+
+    register_action(
+        ActionDef(
+            key="http.request",
+            label="HTTP request",
+            description="Call an external HTTPS endpoint and capture the response.",
+            icon="Globe",
+            category="Actions",
+            executor=http_request,
+            # D-A5-12: an API-key-free outbound HTTP call is the same blast
+            # radius as a Code node - gated the same way (`workflows.code`).
+            permission="workflows.http",
+            fields=[
+                NodeField(
+                    key="method",
+                    label="Method",
+                    type="select",
+                    required=True,
+                    options=[
+                        {"value": "GET", "label": "GET"},
+                        {"value": "POST", "label": "POST"},
+                        {"value": "PUT", "label": "PUT"},
+                        {"value": "PATCH", "label": "PATCH"},
+                        {"value": "DELETE", "label": "DELETE"},
+                    ],
+                ),
+                NodeField(key="url", label="URL", type="text", required=True, mergeable=True),
+                # Deliberately NOT `mergeable=True` (plan risk "Header
+                # secrets") - the generic `_node_input_json` trace helper only
+                # renders fields flagged mergeable, so header VALUES never
+                # reach the run trace even though the executor merge-renders
+                # them at request time (AC-WFP-59).
+                NodeField(key="headers", label="Headers", type="keyValue"),
+                NodeField(
+                    key="bodyMode",
+                    label="Body",
+                    type="select",
+                    options=[
+                        {"value": "none", "label": "No body"},
+                        {"value": "json", "label": "JSON"},
+                        {"value": "text", "label": "Text"},
+                    ],
+                ),
+                NodeField(
+                    key="body",
+                    label="Body content",
+                    type="textarea",
+                    mergeable=True,
+                    show_when=("bodyMode", ("json", "text")),
+                ),
+                NodeField(
+                    key="timeoutSeconds",
+                    label="Timeout (seconds)",
+                    type="select",
+                    options=[
+                        {"value": "5", "label": "5"},
+                        {"value": "10", "label": "10"},
+                        {"value": "20", "label": "20"},
+                        {"value": "30", "label": "30"},
+                    ],
+                ),
+            ],
+            outputs=[
+                NodeOutput("statusCode", "Status code"),
+                NodeOutput("ok", "Ok"),
+                NodeOutput("body", "Body"),
+                NodeOutput("json", "JSON (dotted path)"),
+                NodeOutput("durationMs", "Duration (ms)"),
+            ],
+        )
+    )
+
     # ---- Sandboxed Code action (sprint-4/19 S4) ----
     from app.workflow_engine.actions.code_actions import code_run
 
@@ -667,6 +741,16 @@ def _register_core() -> None:
             icon="Code2",
             category="Actions",
             executor=code_run,
+            # Plan sprint-4/31 S5 (closes BL-SS-121): `workflows.code` now
+            # flows through the SAME generic `ActionDef.permission` seam
+            # `http.request`'s `workflows.http` uses - `assert_code_permitted`/
+            # `required_node_permissions` no longer special-case `code.run` by
+            # name. The `code_authorized_by` publish-time stamp (below, via
+            # `has_code_nodes`) is a SEPARATE, additional Code-only mechanism
+            # (it also captures runner-health-at-publish-time for the
+            # event/scheduled-trigger path, which a permission check alone
+            # cannot) - not replaced by this.
+            permission="workflows.code",
             fields=[
                 NodeField(key="language", label="Language", type="select", required=True, options=[{"value": "python", "label": "Python"}]),
                 NodeField(key="source", label="Python", type="code", required=True),

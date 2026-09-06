@@ -419,6 +419,21 @@ def create_schema_and_tables(engine: Engine) -> None:
                     f'ON "{OMNI_SCHEMA}".inbox_views (workspace_id, lower(name))'
                 )
             )
+            # Business hours (plan sprint-4/31 S5, D-A5-13) - idempotent add
+            # for existing deployments (module Alembic 0016 is the real fix
+            # for a Postgres-tracked deploy; this covers the `create_all` path).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".omnichannel_settings '
+                    "ADD COLUMN IF NOT EXISTS business_hours_json JSON"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".omnichannel_settings '
+                    "ADD COLUMN IF NOT EXISTS business_timezone VARCHAR"
+                )
+            )
 
 
 def install(engine: Engine, db: Session) -> None:

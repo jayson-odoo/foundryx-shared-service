@@ -634,3 +634,42 @@ def omnichannel_wait(
             "resumeAt": deadline.isoformat().replace("+00:00", "Z"),
         }
     )
+
+
+# ── omnichannel.business_hours (plan sprint-4/31 S5, AC-WFP-56) ─────────────
+
+
+def omnichannel_business_hours(
+    db: Session, tenant_id: str, config: Dict[str, Any], ctx: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Branch by whether "now" falls inside the workspace's configured
+    business hours (workspace row -> tenant default -> fails loudly rather
+    than guessing, AC-WFP-56). A registry-driven BRANCHING action (D-A5-14) -
+    the executor's generic `ports`/`branch` seam, no special case here."""
+    from .business_hours import MissingBusinessHours, evaluate
+
+    _require_module_active(db, tenant_id)
+    workspace_id = render_field(config.get("workspaceId"), ctx).strip()
+    if not workspace_id:
+        raise ActionError("Workspace is empty after merging.")
+    workspace = (
+        db.query(Workspace)
+        .filter(
+            Workspace.id == workspace_id,
+            Workspace.tenant_id == tenant_id,
+            Workspace.is_trashed.is_(False),
+        )
+        .first()
+    )
+    if workspace is None:
+        raise ActionError("Workspace not found.")
+    try:
+        is_open, tzname, checked_at = evaluate(db, tenant_id, workspace_id)
+    except MissingBusinessHours as exc:
+        raise ActionError(str(exc)) from exc
+    return {
+        "isOpen": is_open,
+        "checkedAt": checked_at.isoformat().replace("+00:00", "Z"),
+        "timezone": tzname,
+        "branch": "inside" if is_open else "outside",
+    }

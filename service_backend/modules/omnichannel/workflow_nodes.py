@@ -15,6 +15,7 @@ from .services.workflow_actions import (
     omnichannel_add_tag,
     omnichannel_ask_question,
     omnichannel_assign_conversation,
+    omnichannel_business_hours,
     omnichannel_close_conversation,
     omnichannel_get_contact,
     omnichannel_open_conversation,
@@ -1101,5 +1102,26 @@ def register_omnichannel_workflow_nodes() -> None:
                 ),
             ],
             outputs=[NodeOutput("resumedAt", "Resumed at")],
+        )
+    )
+    # ── plan sprint-4/31 S5 (A5b business hours) ─────────────────────────────
+    register_action(
+        ActionDef(
+            key="omnichannel.business_hours",
+            label="Business hours",
+            description="Branch the flow by whether a workspace is inside its business hours.",
+            icon="Clock3",
+            category="Logic",
+            module=MODULE_NAME,
+            executor=omnichannel_business_hours,
+            ports=("inside", "outside"),
+            fields=[
+                NodeField(key="workspaceId", label="Workspace", type="omnichannelWorkspace", required=True),
+            ],
+            outputs=[
+                NodeOutput("isOpen", "Is open"),
+                NodeOutput("checkedAt", "Checked at"),
+                NodeOutput("timezone", "Timezone"),
+            ],
         )
     )
