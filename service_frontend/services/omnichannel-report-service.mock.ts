@@ -1,6 +1,8 @@
 /**
- * S0 MOCK - swap to real in S4 (plan 30). Frontend-first scaffolding behind
- * the `omnichannel-report-service` boundary. Reproduces the seeded UAC
+ * Frontend-first scaffolding behind the `omnichannel-report-service`
+ * boundary (plan 30 S0), kept as the fixture for `omnichannel-report-
+ * service.mock.test.ts` after S4 bound the real backend. Reproduces the
+ * seeded UAC
  * fixture (`30-omnichannel-dashboard-reports-acceptance-criteria.md` §"Seeded
  * report fixture") - an in-memory event/message log bucketed with the SAME
  * shape of algorithm the backend will use (D-A9-8: bucket edges resolved in

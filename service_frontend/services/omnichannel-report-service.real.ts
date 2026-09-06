@@ -1,8 +1,7 @@
 /**
  * Real dashboard + reports service (plan 30 S4) - talks to the S1-S3 backend
- * routes documented on `omnichannel-report-service.ts`. Not wired yet (S0 is
- * frontend-mock only, this file exists so the barrel type-checks and the S4
- * swap is a one-line change); every method mirrors `ContactService`'s real
+ * routes documented on `omnichannel-report-service.ts`. Bound as the barrel's
+ * default export since S4; every method mirrors `ContactService`'s real
  * implementation shape (plan 26) - a query-string builder + `apiFetch`, and
  * `exportReport` polling `/jobs/{id}` before resolving the CSV text.
  */

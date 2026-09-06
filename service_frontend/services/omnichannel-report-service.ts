@@ -1,9 +1,10 @@
 /**
  * Omnichannel dashboard + reports service (plan 30, roadmap A9). UI -> hook
- * -> service -> lib/api-client. S0 binds the MOCK implementation (returning
- * the UAC fixture's numbers for the canonical range/tz so the whole UI is
- * buildable + testable before any endpoint exists, plan §5.5); S4 swaps this
- * one export to `.real` - no other file changes.
+ * -> service -> lib/api-client. S0 built the MOCK implementation (returning
+ * the UAC fixture's numbers for the canonical range/tz so the whole UI was
+ * buildable + testable before any endpoint existed, plan §5.5); S4 binds the
+ * REAL backend (S1-S3, live on the workspace-scoped routes below) - no other
+ * file changes.
  *
  * The interface IS the backend contract (plan §5.1):
  *
@@ -23,7 +24,7 @@
  * instead of a bare failure - never a silent one.
  */
 import type { DashboardResponse, ReportExportRequest, ReportFilters, ReportKey, ReportMeta, ReportResponse } from '@/types/omnichannel';
-import { mockOmnichannelReportService } from './omnichannel-report-service.mock';
+import { realOmnichannelReportService } from './omnichannel-report-service.real';
 
 /** `reports/{key}` read query - the base filters plus the two paginated
  *  reports' page params (ignored server-side by non-paginated reports). */
@@ -49,5 +50,6 @@ export interface OmnichannelReportService {
   exportReport(workspaceId: string, reportKey: ReportKey, filters: ReportExportRequest): Promise<string>;
 }
 
-// S0 MOCK - swap to real in S4 (plan 30).
-export const omnichannelReportService: OmnichannelReportService = mockOmnichannelReportService;
+// Real backend (plan 30 S4) - routes landed S1 (dashboard) / S2 (the seven
+// reports + assignment log) / S3 (export job + authed file route).
+export const omnichannelReportService: OmnichannelReportService = realOmnichannelReportService;
