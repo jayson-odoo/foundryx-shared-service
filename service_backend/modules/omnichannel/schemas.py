@@ -677,6 +677,14 @@ class BroadcastUpdate(ApiModel):
     scheduledAt: Optional[datetime] = None
 
 
+class BroadcastSendRequest(ApiModel):
+    """`scheduledAt` unset/None = send now (-> SENDING); a future instant ->
+    SCHEDULED (plan 29 S2, matches the S0 frontend contract - `services/
+    broadcast-service.ts send(workspaceId, id, scheduledAt?)`)."""
+
+    scheduledAt: Optional[datetime] = None
+
+
 class AudiencePreviewRequest(ApiModel):
     audience: BroadcastAudienceIn
 

@@ -231,6 +231,11 @@ class Settings(BaseSettings):
     # mediaUrl is an ABSOLUTE, HMAC-signed, time-limited link that opens in a raw
     # browser click (no Authorization header). TTL below (seconds).
     media_signed_url_ttl_seconds: int = 3600
+    # Conservative fallback pacing for a broadcast send chunk (plan 29 S2,
+    # D-A4-12) when the channel carries no `broadcast_rate_per_second` of its
+    # own - Meta's per-number quality-rating throttling makes a slow default
+    # safer than a fast one.
+    omnichannel_broadcast_rate_per_second: int = 10
     # Meta webhook verify-token for the GET handshake (set the same value in
     # the Meta app's webhook config).
     meta_webhook_verify_token: str = "foundryx-omnichannel-verify"

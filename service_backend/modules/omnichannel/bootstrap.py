@@ -107,6 +107,13 @@ def register_engine_entities() -> None:
 
     register_contacts_export_handler()
 
+    # Broadcast send job handler (plan 29 S2a, AC-BRD-50) - same reasoning as
+    # the contacts-export handler above: ANY process that never imports this
+    # module leaves `omnichannel.broadcast_send` an unknown job type.
+    from .services.broadcast_send_service import register_broadcast_send_handler
+
+    register_broadcast_send_handler()
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""

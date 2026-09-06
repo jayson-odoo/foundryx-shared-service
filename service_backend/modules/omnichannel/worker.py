@@ -80,6 +80,51 @@ def omnichannel_send_message(message_id: str, trace_id: Optional[str] = None) ->
         db.close()
 
 
+@celery_app.task(name="omnichannel.broadcast_chunk")
+def broadcast_chunk(job_id: str) -> None:
+    """One CHAINED link in a broadcast send job's chunk loop (plan 29 S2,
+    D-A4-7/AC-BRD-30) - at most one chunk per broadcast is ever in flight.
+    Re-schedules itself with a rate-derived countdown while dispatchable
+    recipients remain; finalizes the broadcast once none do. Eager dev/tests
+    never reach this task - the job handler loops the same chunk function
+    (`broadcast_send_service.run_one_chunk`) inline instead."""
+    from app.database import SessionLocal
+    from app.jobs.service import JobService
+    from app.models.background_job import JOB_FAILED
+    from modules.omnichannel.models import Broadcast
+    from modules.omnichannel.services.broadcast_send_service import (
+        CHUNK_SIZE,
+        channel_or_none,
+        compute_chunk_pacing,
+        finalize_broadcast,
+        rate_for_channel,
+        run_one_chunk,
+    )
+
+    db = SessionLocal()
+    try:
+        job = JobService(db).repo.get_unscoped(job_id)
+        if job is None:
+            return
+        broadcast_id = (job.payload_json or {}).get("broadcastId")
+        broadcast = (
+            db.query(Broadcast)
+            .filter(Broadcast.id == broadcast_id, Broadcast.tenant_id == job.tenant_id)
+            .first()
+        )
+        if broadcast is None:
+            JobService(db).finish(job, status=JOB_FAILED, error="Broadcast not found.")
+            return
+        more = run_one_chunk(db, broadcast, job)
+        if more:
+            delay = compute_chunk_pacing(CHUNK_SIZE, rate_for_channel(channel_or_none(db, broadcast)))
+            broadcast_chunk.apply_async((job_id,), countdown=max(1, int(delay)) if delay else 1)
+        else:
+            finalize_broadcast(db, broadcast, job)
+    finally:
+        db.close()
+
+
 @celery_app.task(name="omnichannel.deliver_webhook")
 def deliver_webhook(delivery_id: str) -> str:
     """Deliver one consumer-webhook row. On a retryable failure it reschedules

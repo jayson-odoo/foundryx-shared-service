@@ -27,8 +27,10 @@ from ..schemas import (
     BroadcastCreate,
     BroadcastItem,
     BroadcastRecipientItem,
+    BroadcastSendRequest,
     BroadcastUpdate,
 )
+from . import realtime
 from .broadcast_audience import preview_count as _preview_count
 from .broadcast_bindings import BindingValidationError, validate_bindings
 from .contact_filters import validate_filter_tree
@@ -504,3 +506,153 @@ class BroadcastService:
         self.db.commit()
         self.db.refresh(dup)
         return self._hydrate([dup], tenant_id, id_to_key, id_to_label)[0]
+
+    # ── send / schedule / cancel (plan 29 S2a) ──────────────────────────────
+    def send(
+        self, broadcast_id: str, tenant_id: str, workspace_id: str, payload: BroadcastSendRequest,
+        *, actor_user_id: Optional[str],
+    ) -> BroadcastItem:
+        """AC-BRD-26: no `scheduledAt` -> DRAFT|SCHEDULED -> SENDING under an
+        atomic claim, ONE `background_jobs` row created + enqueued, its id
+        stored on the broadcast; a future `scheduledAt` -> SCHEDULED, no job
+        yet. A second concurrent call loses the atomic claim -> 409, never a
+        second job."""
+        row = self._row_or_404(broadcast_id, tenant_id, workspace_id)
+        key_to_id, id_to_key, id_to_label = self._status_maps(tenant_id)
+        current = id_to_key.get(row.status_id)
+        if current not in ("DRAFT", "SCHEDULED"):
+            raise BroadcastStatusConflict(
+                "broadcast_already_sending" if current == "SENDING" else "broadcast_not_editable"
+            )
+
+        scheduled_at = payload.scheduledAt
+        if scheduled_at is not None:
+            errors: Dict[str, str] = {}
+            self._validate_schedule(scheduled_at, errors)
+            if errors:
+                raise BroadcastValidationError(errors)
+
+            claimed = self.repo.claim_status(
+                row.id, tenant_id,
+                from_status_ids=[key_to_id["DRAFT"], key_to_id["SCHEDULED"]],
+                to_status_id=key_to_id["SCHEDULED"],
+            )
+            if not claimed:
+                raise BroadcastStatusConflict("broadcast_already_sending")
+            self.db.refresh(row)
+            row.scheduled_at = scheduled_at
+            row.error = None
+            self.db.flush()
+            emit_entity_event(
+                self.db, "omnichannel_broadcast", "updated", row, tenant_id=tenant_id, actor_id=actor_user_id
+            )
+            self.db.commit()
+            self.db.refresh(row)
+            return self._hydrate([row], tenant_id, id_to_key, id_to_label)[0]
+
+        claimed = self.repo.claim_status(
+            row.id, tenant_id,
+            from_status_ids=[key_to_id["DRAFT"], key_to_id["SCHEDULED"]],
+            to_status_id=key_to_id["SENDING"],
+        )
+        if not claimed:
+            raise BroadcastStatusConflict("broadcast_already_sending")
+        self.db.refresh(row)
+        row.started_at = datetime.now(timezone.utc)
+        row.finished_at = None
+        row.scheduled_at = None
+        row.error = None
+        self.db.flush()
+        emit_entity_event(
+            self.db, "omnichannel_broadcast", "updated", row, tenant_id=tenant_id, actor_id=actor_user_id
+        )
+        self.db.commit()
+
+        from app.jobs.service import JobService
+
+        from .broadcast_send_service import SEND_JOB_TYPE
+
+        job = JobService(self.db).create_and_enqueue(
+            type=SEND_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
+            payload={"broadcastId": row.id},
+        )
+        row.job_id = job.id
+        self.db.commit()
+        self.db.refresh(row)
+        # `create_and_enqueue` already RAN the job to completion in eager
+        # dev/test (synchronous, same session) - `row.status_id` may already
+        # be a terminal state by the time we get here, never assume it is
+        # still SENDING (a stale "SENDING" publish after the job's own
+        # "SENT" publish would flicker a live UI backwards).
+        realtime.publish(
+            workspace_id,
+            {
+                "type": "broadcast.updated",
+                "broadcastId": row.id,
+                "status": id_to_key.get(row.status_id, "SENDING"),
+                "counts": {
+                    "total": row.total_count, "sent": row.sent_count, "delivered": row.delivered_count,
+                    "read": row.read_count, "failed": row.failed_count, "skipped": row.skipped_count,
+                },
+            },
+        )
+        return self._hydrate([row], tenant_id, id_to_key, id_to_label)[0]
+
+    def cancel(self, broadcast_id: str, tenant_id: str, workspace_id: str) -> BroadcastItem:
+        """AC-BRD-40: SCHEDULED -> CANCELLED immediately, no send ever
+        happens. SENDING -> CANCELLED now; the running job's next chunk
+        checkpoint (D-A4-14) sees it, sweeps remaining `queued` recipients to
+        `skipped/cancelled`, and finalizes. SENT/FAILED/CANCELLED -> 409."""
+        row = self._row_or_404(broadcast_id, tenant_id, workspace_id)
+        key_to_id, id_to_key, id_to_label = self._status_maps(tenant_id)
+        current = id_to_key.get(row.status_id)
+        if current not in ("SCHEDULED", "SENDING"):
+            raise BroadcastStatusConflict("broadcast_not_cancellable")
+
+        claimed = self.repo.claim_status(
+            row.id, tenant_id, from_status_ids=[key_to_id[current]], to_status_id=key_to_id["CANCELLED"]
+        )
+        if not claimed:
+            raise BroadcastStatusConflict("broadcast_not_cancellable")
+        self.db.refresh(row)
+
+        if current == "SCHEDULED":
+            # No job ever ran - finalize the counts/finished_at here directly
+            # (the SENDING path's finalize happens inside the job's own next
+            # chunk checkpoint instead).
+            from .broadcast_audience import recompute_counts
+
+            recompute_counts(self.db, row)
+            row.finished_at = datetime.now(timezone.utc)
+            self.db.flush()
+            emit_entity_event(self.db, "omnichannel_broadcast", "updated", row, tenant_id=tenant_id)
+            emit_entity_event(
+                self.db, "omnichannel_broadcast", "completed", row, tenant_id=tenant_id,
+                extra={
+                    "status": "CANCELLED",
+                    "counts": {
+                        "total": row.total_count, "sent": row.sent_count, "delivered": row.delivered_count,
+                        "read": row.read_count, "failed": row.failed_count, "skipped": row.skipped_count,
+                    },
+                },
+            )
+            self.db.commit()
+        else:
+            self.db.flush()
+            emit_entity_event(self.db, "omnichannel_broadcast", "updated", row, tenant_id=tenant_id)
+            self.db.commit()
+
+        self.db.refresh(row)
+        realtime.publish(
+            workspace_id,
+            {
+                "type": "broadcast.updated",
+                "broadcastId": row.id,
+                "status": "CANCELLED",
+                "counts": {
+                    "total": row.total_count, "sent": row.sent_count, "delivered": row.delivered_count,
+                    "read": row.read_count, "failed": row.failed_count, "skipped": row.skipped_count,
+                },
+            },
+        )
+        return self._hydrate([row], tenant_id, id_to_key, id_to_label)[0]

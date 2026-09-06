@@ -127,6 +127,7 @@ class MessageService:
         *,
         actor_user_id: Optional[str],
         external_agent_id: Optional[str],
+        record_first_reply: bool = True,
     ) -> None:
         """Maintains `last_message_at` (every send) + `last_agent_message_at`
         (plan 27 A3, AC-IVE-11/12 - the ONE outbound seam) and writes ONE
@@ -134,6 +135,13 @@ class MessageService:
         three bare `contact.last_message_at = now` assignments (send_message /
         send_media / `_structured_row`) - NEVER called by `add_internal_note`
         (a SYSTEM note is never a reply).
+
+        `record_first_reply=False` (plan 29 D-A4-15) - a broadcast send routes
+        through this SAME path on purpose (no second outbound path), but a
+        broadcast is not a conversation: it must write NO `conversation_events`
+        row (AC-BRD-43). `last_message_at`/`last_agent_message_at` still
+        advance either way - that bookkeeping is real contact activity, not a
+        conversation-timeline event.
 
         B20 (round-3 codex triage) - the SELECT (`is_first_reply_pending`)
         then INSERT (`event_service.record`) is a check-then-write race: two
@@ -149,7 +157,7 @@ class MessageService:
             ).with_for_update().first()
         contact.last_message_at = now
         contact.last_agent_message_at = now
-        if event_service.is_first_reply_pending(self.db, contact):
+        if record_first_reply and event_service.is_first_reply_pending(self.db, contact):
             payload = None
             if contact.last_incoming_message_at is not None:
                 incoming = contact.last_incoming_message_at
@@ -287,7 +295,14 @@ class MessageService:
         external_agent_id: Optional[str] = None,
         channel_id_override: Optional[str] = None,
         sandbox_only: bool = False,
+        metadata_extra: Optional[Dict[str, Any]] = None,
     ) -> MessageItem:
+        """``metadata_extra`` (plan 29 D-A4-19, additive) is merged into the
+        stored ``metadata_json`` next to the ``WORKFLOW_TEST_METADATA_KEY``
+        branch - broadcasts stamp ``{"broadcast": {"id", "recipientId"}}`` so a
+        crash between this commit and the recipient-row update can be
+        adopted-by-marker later, and the inbox can label a broadcast bubble
+        (BL-SS-091). Every existing caller omits it (no behaviour change)."""
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
             raise ThreadNotFound()
@@ -296,6 +311,9 @@ class MessageService:
         if sandbox_only:
             metadata = dict(metadata or {})
             metadata[WORKFLOW_TEST_METADATA_KEY] = {SANDBOX_ONLY_KEY: True}
+        if metadata_extra:
+            metadata = dict(metadata or {})
+            metadata.update(metadata_extra)
 
         message_type = (payload.messageType or "TEXT").upper()
         payload_json: Optional[Dict[str, Any]] = None
@@ -407,7 +425,8 @@ class MessageService:
         )
         self.db.add(row)
         self._mark_agent_message(
-            contact, now, actor_user_id=actor_user_id, external_agent_id=external_agent_id
+            contact, now, actor_user_id=actor_user_id, external_agent_id=external_agent_id,
+            record_first_reply=not (metadata_extra and metadata_extra.get("broadcast")),
         )
         self.db.commit()
         self.db.refresh(row)

@@ -35,6 +35,7 @@ from ..schemas import (
     BroadcastItem,
     BroadcastListResponse,
     BroadcastRecipientListResponse,
+    BroadcastSendRequest,
     BroadcastUpdate,
 )
 from ..services.broadcast_service import (
@@ -178,6 +179,44 @@ def duplicate_broadcast(
         )
     except BroadcastNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Broadcast not found.")
+
+
+@router.post("/{ws_id}/broadcasts/{broadcast_id}/send", response_model=BroadcastItem)
+def send_broadcast(
+    ws_id: str,
+    broadcast_id: str,
+    body: BroadcastSendRequest,
+    current_user: User = Depends(require_permission("broadcasts.send")),
+    actor_user_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> BroadcastItem:
+    WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
+    try:
+        return BroadcastService(db).send(
+            broadcast_id, current_user.tenant_id, ws_id, body, actor_user_id=actor_user_id
+        )
+    except BroadcastNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Broadcast not found.")
+    except BroadcastValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {"fieldErrors": exc.errors})
+    except BroadcastStatusConflict as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"reason": exc.reason})
+
+
+@router.post("/{ws_id}/broadcasts/{broadcast_id}/cancel", response_model=BroadcastItem)
+def cancel_broadcast(
+    ws_id: str,
+    broadcast_id: str,
+    current_user: User = Depends(require_permission("broadcasts.send")),
+    db: Session = Depends(get_db),
+) -> BroadcastItem:
+    WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
+    try:
+        return BroadcastService(db).cancel(broadcast_id, current_user.tenant_id, ws_id)
+    except BroadcastNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Broadcast not found.")
+    except BroadcastStatusConflict as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"reason": exc.reason})
 
 
 @router.get("/{ws_id}/broadcasts/{broadcast_id}/recipients", response_model=BroadcastRecipientListResponse)

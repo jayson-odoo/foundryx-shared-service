@@ -1,22 +1,24 @@
-"""Broadcast template-variable bindings - SAVE-TIME validation only (plan 29
-S1). Bindings are STRUCTURED (`{source: 'static', text}` or
-`{source: 'contactField', field, fallback}`, D-A4-4) - never a merge-string
-render, so the server never renders a tenant string as a template at all.
+"""Broadcast template-variable bindings (plan 29, roadmap A4). Bindings are
+STRUCTURED (`{source: 'static', text}` or `{source: 'contactField', field,
+fallback}`, D-A4-4) - never a merge-string render, so the server never
+renders a tenant string as a template at all.
 `template_engine.merge.collect_tokens` is reused only as the guard that a
 `static` text carries no `{{ }}` token syntax (anti-SSTI by construction).
 
-`resolve()` (turning a binding + a live `Contact` row into the actual Meta
-parameter values, with sanitization + the `missing_variable` skip) is S2's
-job (the send path) - this module intentionally stops at validation.
-"""
+S1 shipped save-time `validate_bindings`. S2 (this slice) adds `resolve()` -
+turning a binding + a live `Contact` row into the actual Meta parameter
+VALUES, with sanitization + the `missing_variable` skip (AC-BRD-34)."""
+import re
 from typing import Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
+from ..models import Contact
 from ..schemas import (
     BROADCAST_FIELD_BINDING_OPTIONS,
     _CUSTOM_FIELD_BINDING_RE,
     BroadcastBindings,
+    TemplateBinding,
     TemplateBindingContactField,
     TemplateBindingStatic,
 )
@@ -101,3 +103,83 @@ def validate_bindings(
     _validate_group("buttons", bindings.buttons, shape.button_url_var_count, registered_keys, errors)
     if errors:
         raise BindingValidationError(errors)
+
+
+# ── send-time resolution (plan 29 S2, AC-BRD-34) ────────────────────────────
+class SkipMissingVariable(Exception):
+    """A `contactField` binding resolved empty AND its (save-time-required)
+    fallback was ALSO empty - a state the save-time gate normally makes
+    unreachable (D-A4-5), kept only as defence-in-depth. The send job catches
+    this and marks the recipient `skipped/missing_variable` (AC-BRD-34) rather
+    than emitting a blank Meta parameter."""
+
+    def __init__(self, field: Optional[str] = None):
+        super().__init__(f"Binding resolved empty: {field}")
+        self.field = field
+
+
+# Meta rejects a parameter carrying a newline/tab, a run of 4+ spaces, or an
+# excessive length - sanitize EVERY emitted parameter (static text included -
+# a tenant can still type a stray newline into a static slot).
+_CONTROL_WS_RE = re.compile(r"[\n\r\t]")
+_LONG_RUN_RE = re.compile(r" {4,}")
+MAX_PARAM_LEN = 1024
+
+
+def _sanitize_param(value: str) -> str:
+    value = _CONTROL_WS_RE.sub(" ", value or "")
+    value = _LONG_RUN_RE.sub(" ", value)
+    value = value.strip()
+    if len(value) > MAX_PARAM_LEN:
+        value = value[:MAX_PARAM_LEN].rstrip()
+    return value
+
+
+def _field_value(field: str, contact: Contact, lifecycle_label: Optional[str]) -> Optional[str]:
+    if field == "firstName":
+        return contact.first_name
+    if field == "lastName":
+        return contact.last_name
+    if field == "phone":
+        return contact.phone
+    if field == "email":
+        return contact.email
+    if field == "language":
+        return contact.language
+    if field == "countryCode":
+        return contact.country_code
+    if field == "lifecycle":
+        return lifecycle_label
+    if _CUSTOM_FIELD_BINDING_RE.match(field or ""):
+        key = field.split(".", 1)[1]
+        return (contact.custom_fields_json or {}).get(key)
+    return None
+
+
+def _resolve_one(binding: TemplateBinding, contact: Contact, lifecycle_label: Optional[str]) -> str:
+    if isinstance(binding, TemplateBindingStatic):
+        value = binding.text or ""
+    else:  # TemplateBindingContactField
+        raw = (_field_value(binding.field, contact, lifecycle_label) or "").strip()
+        value = raw if raw else (binding.fallback or "")
+    sanitized = _sanitize_param(value)
+    if not sanitized:
+        field = binding.field if isinstance(binding, TemplateBindingContactField) else None
+        raise SkipMissingVariable(field)
+    return sanitized
+
+
+def resolve(
+    bindings: BroadcastBindings, contact: Contact, *, lifecycle_label: Optional[str] = None
+) -> Dict[str, List[str]]:
+    """Turn a saved `BroadcastBindings` + a live `Contact` into the actual
+    Meta parameter VALUES for header/body/buttons - never a rendered tenant
+    string (D-A4-4 holds at send time too: this is a whitelisted-field READ +
+    fallback + sanitize, not a template engine). Raises `SkipMissingVariable`
+    on the FIRST slot that resolves empty with no fallback (AC-BRD-34) - the
+    whole recipient is skipped, never a partially-filled send."""
+    return {
+        "header": [_resolve_one(b, contact, lifecycle_label) for b in bindings.header],
+        "body": [_resolve_one(b, contact, lifecycle_label) for b in bindings.body],
+        "buttons": [_resolve_one(b, contact, lifecycle_label) for b in bindings.buttons],
+    }
