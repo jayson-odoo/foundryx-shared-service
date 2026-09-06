@@ -2595,7 +2595,10 @@ def test_the_canonical_supplier_claims_only_what_sorento_persists():
     """AC-14-13. Sorento ACCEPTS seven address fields on ``CanonicalSupplier``
     and ``_supplier_columns`` writes none of them, so sending them would have us
     report a sync that did not happen."""
-    payload = CanonicalSupplier(source_ref="AED:1", code="400-A", name="A").sink_payload()
+    payload = CanonicalSupplier(
+        source_ref="AED:1", source_doc_no="400-A", code="400-A", name="A",
+        email="a@example.my", is_active=True,
+    ).sink_payload()
     assert set(payload) == {
         "source_ref",
         "source_doc_no",
@@ -2604,6 +2607,11 @@ def test_the_canonical_supplier_claims_only_what_sorento_persists():
         "email",
         "is_active",
     }
+    # Sorento 2.1: a None-valued key is OMITTED (null = clear, absent = leave
+    # alone), so a supplier with nothing but the required fields sends only
+    # those - never "email": null.
+    sparse = CanonicalSupplier(source_ref="AED:1", code="400-A", name="A").sink_payload()
+    assert set(sparse) == {"source_ref", "code", "name"}
 
 
 def test_no_payment_terms_field_exists_on_either_master():
