@@ -16,13 +16,12 @@ Two security invariants every method honours:
 from __future__ import annotations
 
 import logging
-
-import httpx
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
 import sqlalchemy as sa
 from cryptography.fernet import InvalidToken
 from sqlalchemy.orm import Session
@@ -532,60 +531,26 @@ _PREVIEW_FAILED = (
     "and this task cannot be activated yet. Nothing was written - resolve the "
     "consumer error first."
 )
-_CONSUMER_SNIPPET_MAX = 300
-_URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
-
-
-def _consumer_snippet(text: Optional[str], *, api_key: Optional[str]) -> str:
-    """Whitespace-collapsed, bounded, key-free excerpt of what the consumer
-    answered. The sink's own strings already carry only the request PATH
-    (never the full URL or the key); the key is redacted again here
-    defensively, so a body that echoed it back could still never reach the
-    operator or the log line."""
-    collapsed = " ".join((text or "").split())
-    if api_key:
-        collapsed = collapsed.replace(api_key, "[redacted]")
-    # Never a full URL either (a consumer body or a transport error text may
-    # echo one back): keep the scheme-less remainder out of the operator line.
-    collapsed = _URL_RE.sub("[url]", collapsed)
-    return collapsed[:_CONSUMER_SNIPPET_MAX]
 
 
 def _preview_unavailable(
-    exc: Exception, *, api_key: Optional[str], company_id: str, entity_type: str
+    exc: BaseException, *, sink: Any, company_id: str, entity_type: str
 ) -> PreviewUnavailable:
     """Build the operator-facing ``PreviewUnavailable`` for a failed dry run
-    and log it (WARNING, one line, with the parts a follow-up needs).
+    and log it (WARNING, one line, with the parts a follow-up needs). The
+    wording of the consumer line is ``sinks_sorento.describe_consumer_failure``
+    - shared with the approve gate (``SyncService``) so both say the same
+    thing. Imported lazily like every other ``sinks_sorento`` use in this
+    module."""
+    from ..sinks_sorento import describe_consumer_failure
 
-    * ``SorentoSinkError`` carrying ``status_code`` -> ``Consumer said: HTTP
-      <n> <body snippet>`` (the body, when the sink captured one; else the
-      error's own text).
-    * Anything else - a sink error with no HTTP answer behind it (the sink
-      wraps transport faults this way, ``__cause__`` = the httpx error; an
-      unroutable entity or a record with no projection has no cause) ->
-      ``Consumer unreachable: <ExcClass>: <text>``, naming the httpx class
-      when there is one.
-    """
-    status = getattr(exc, "status_code", None)
-    if status is not None:
-        body = getattr(exc, "body", None)
-        detail = _consumer_snippet(body if body else str(exc), api_key=api_key)
-        consumer = f"Consumer said: HTTP {status} {detail}".rstrip()
-    else:
-        # Name the TRANSPORT class the operator can act on (``ConnectError``,
-        # ``ReadTimeout``): the sink wraps it as a status-less
-        # ``SorentoSinkError`` whose ``__cause__`` is the httpx error.
-        cause = exc.__cause__ if isinstance(exc.__cause__, httpx.HTTPError) else exc
-        detail = _consumer_snippet(f"{type(cause).__name__}: {cause}", api_key=api_key)
-        consumer = f"Consumer unreachable: {detail}"
+    line, status, detail = describe_consumer_failure(exc, sink=sink)
     logger.warning(
         "autocount preview dry run failed: company_id=%s entity_type=%s status=%s detail=%s",
         company_id, entity_type, status, detail,
     )
     return PreviewUnavailable(
-        f"{_PREVIEW_FAILED} {consumer}",
-        status_code=status,
-        consumer_detail=detail,
+        f"{_PREVIEW_FAILED} {line}", status_code=status, consumer_detail=detail
     )
 
 
@@ -1345,13 +1310,11 @@ class EtlService:
             # The operator must be able to tell WHAT the consumer said (a 504
             # from its proxy, a 500 with a body, a refused connection) - the
             # generic sentence alone was useless twice on prod, 2026-09-06.
-            # A transport error is caught here too: the sink does not wrap
-            # them, and before this they surfaced as a bare 500.
+            # ``httpx.HTTPError`` is caught here as well because the sink does
+            # NOT wrap transport faults; before this they escaped as a bare
+            # 500 instead of a 502 that names the fault.
             raise _preview_unavailable(
-                exc,
-                api_key=getattr(sink, "_api_key", None),
-                company_id=company_id,
-                entity_type=entity_type,
+                exc, sink=sink, company_id=company_id, entity_type=entity_type
             ) from exc
 
         config.last_preview_at = datetime.now(timezone.utc)
