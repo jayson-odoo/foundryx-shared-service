@@ -177,6 +177,120 @@ def backfill_disable_credit_limit_mapping_rows(
     return result.rowcount or 0
 
 
+def backfill_db_company_entity_sources(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
+) -> int:
+    """Repair a DATABASE company's stranded, never-run ``autocount_read``
+    entity configs: flip them to ``sql_db``, except ``goods_received_note``,
+    which is DELETED (config + its ``ac_field_mapping`` rows). Returns the
+    number of rows repaired (flipped + deleted configs).
+
+    Prod incident 2026-09-06: ``seed_company_defaults`` seeded the vendor-API
+    entity set onto EVERY company on the App Store Update reseed, so a company
+    whose source connection is the ``sql_database`` provider got API-sourced
+    Customer/Supplier/GRN rows, and the entities list (which hid "Change
+    source" on a DB company, AC-01-18) left no UI way out. The seed now stops
+    at a DB company (D13: born empty); this sweep repairs what it already
+    produced, on the SAME predicate for both actions - a DB company's config
+    still at ``autocount_read`` that has NEVER RUN (``last_run_at IS NULL``
+    and no ``ac_watermark`` row carrying a ``last_modified_at``, the
+    pipeline's own "has run" markers):
+
+    * supplier / customer (any entity with a database task) -> ``sql_db``;
+    * ``goods_received_note`` -> DELETED, mapping rows first, because GRN has
+      NO database task at all (``update_task`` answers "not available on a
+      database company", so a flipped GRN row would only show a dead
+      Configure control the operator can never use).
+
+    A row with any run history is left to the operator, who can now reach
+    "Change source" on it. Idempotent; across ALL tenants/companies; does
+    **not** commit.
+
+    The company's provider comes from core ``connections`` - a READ-ONLY,
+    tenant-matched join (``cn.tenant_id = co.tenant_id``, never a bare id
+    lookup). The module never alters a core table; a SELECT against one is
+    fine. Only the MODULE tables are schema-qualified: core ``connections``
+    resolves through the search path on Postgres and lives in ``main`` on the
+    SQLite test rig, so it stays unqualified on both.
+
+    Runs at ANY module stamp (module Alembic 0014 and ``update_tenant`` both
+    call it), so every table/column it names is checked on the live
+    connection first (``existing_columns``) and it degrades to a no-op.
+    """
+    needed = {
+        "ac_entity_config": {"id", "tenant_id", "company_id", "entity_type", "source_impl", "last_run_at"},
+        "ac_company": {"id", "tenant_id", "connection_id"},
+        "ac_watermark": {"tenant_id", "company_id", "entity_type", "last_modified_at"},
+        "ac_field_mapping": {"tenant_id", "company_id", "entity_type"},
+    }
+    for table, columns in needed.items():
+        have = existing_columns(bind, table, schema=schema)
+        if have is None or not columns <= have:
+            return 0
+    core_have = existing_columns(bind, "connections", schema=None)
+    if core_have is None or not {"id", "tenant_id", "provider"} <= core_have:
+        return 0
+    prefix = f'"{schema}".' if schema else ""
+
+    # The shared predicate over an ``ac_entity_config`` row aliased ``c``:
+    # never-run, still API-sourced, on a company whose source connection is
+    # the sql_database provider (tenant-matched at every hop).
+    stranded = (
+        "c.source_impl = :api "
+        "AND c.last_run_at IS NULL "
+        "AND c.company_id IN ("
+        f"  SELECT co.id FROM {prefix}ac_company co "
+        "  JOIN connections cn "
+        "    ON cn.id = co.connection_id AND cn.tenant_id = co.tenant_id "
+        "  WHERE cn.provider = :provider AND co.tenant_id = c.tenant_id"
+        ") "
+        "AND NOT EXISTS ("
+        f"  SELECT 1 FROM {prefix}ac_watermark w "
+        "  WHERE w.tenant_id = c.tenant_id "
+        "    AND w.company_id = c.company_id "
+        "    AND w.entity_type = c.entity_type "
+        "    AND w.last_modified_at IS NOT NULL"
+        ")"
+    )
+    params = {"api": "autocount_read", "provider": "sql_database", "grn": "goods_received_note"}
+
+    # 1) GRN: mapping rows first (no FK to lean on), then the config itself.
+    bind.execute(
+        sa.text(
+            f"DELETE FROM {prefix}ac_field_mapping "
+            f"WHERE entity_type = :grn AND EXISTS ("
+            f"  SELECT 1 FROM {prefix}ac_entity_config c "
+            f"  WHERE c.entity_type = :grn "
+            f"    AND c.tenant_id = {prefix}ac_field_mapping.tenant_id "
+            f"    AND c.company_id = {prefix}ac_field_mapping.company_id "
+            f"    AND {stranded}"
+            f")"
+        ),
+        params,
+    )
+    deleted = bind.execute(
+        sa.text(
+            f"DELETE FROM {prefix}ac_entity_config "
+            f"WHERE entity_type = :grn AND id IN ("
+            f"  SELECT c.id FROM {prefix}ac_entity_config c WHERE c.entity_type = :grn AND {stranded}"
+            f")"
+        ),
+        params,
+    ).rowcount or 0
+
+    # 2) Everything else: point it at the database task it should have had.
+    flipped = bind.execute(
+        sa.text(
+            f"UPDATE {prefix}ac_entity_config SET source_impl = :sql_db "
+            f"WHERE entity_type <> :grn AND id IN ("
+            f"  SELECT c.id FROM {prefix}ac_entity_config c WHERE c.entity_type <> :grn AND {stranded}"
+            f")"
+        ),
+        {**params, "sql_db": "sql_db"},
+    ).rowcount or 0
+    return flipped + deleted
+
+
 def backfill_entity_config_defaults(
     bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
 ) -> int:

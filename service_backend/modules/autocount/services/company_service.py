@@ -1084,6 +1084,21 @@ class CompanyService:
         truth for mapping: the defaults are never re-applied, so an operator's
         edits are never silently reverted by a deploy.
         """
+        # D13 (plan sprint-5/01): a DATABASE company is born EMPTY - the
+        # operator adds entities from the entities list, each already
+        # `sql_db`. The seeded set (GRN/supplier/customer) exists for a vendor-
+        # API company only, so seeding it onto a DB company is always wrong
+        # (prod incident 2026-09-06: the App Store Update reseed gave a DB
+        # company API-sourced rows, and the entities list hid "Change source"
+        # for it - no UI way out). ``update_tenant`` loops EVERY company, so
+        # this guard is what keeps every later upgrade from seeding onto a DB
+        # company. Tenant-scoped resolution; a company id that does not
+        # resolve in this tenant seeds nothing (never seed onto a guess); a
+        # company whose CONNECTION no longer resolves reads as 'api'
+        # (AC-01-07) and is seeded as before.
+        company = self.companies.get(tenant_id, company_id)
+        if company is None or self.source_kind_for(tenant_id, company) == SOURCE_KIND_DB:
+            return
         for entity_type in SEEDED_ENTITIES:
             defaults = ENTITY_DEFAULTS[entity_type]
             if self.configs.get(tenant_id, company_id, entity_type) is None:
@@ -1096,7 +1111,7 @@ class CompanyService:
                         # batches before anything reaches a consumer (plan §9).
                         # Masters especially - they OVERWRITE live data.
                         sync_mode=SYNC_MODE_SCHEDULED_REVIEW,
-                        source_impl="autocount_read",
+                        source_impl=SOURCE_IMPL_AUTOCOUNT_READ,
                         envelope=defaults.envelope,
                         initial_load=defaults.initial_load,
                         record_cap=defaults.record_cap,

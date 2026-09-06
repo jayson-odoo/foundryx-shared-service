@@ -73,7 +73,9 @@ succeeds (no error surfaced; the operator's `name` label is untouched).
 
 ### AC-01-05 `[BE]` No API-shaped seeds for a DB company
 **Given** a DB company is created
-**Then** NO `ac_entity_config` rows and NO `ac_field_mapping` rows are seeded
+**Then** NO `ac_entity_config` rows and NO `ac_field_mapping` rows are seeded, and on every later
+`seed_company_defaults` call, including the App Store update loop (`update_tenant`), still nothing
+is seeded onto it
 **And** an API company still seeds exactly `SEEDED_ENTITIES` as before (regression pin).
 
 ### AC-01-06 `[BE]` Activity log
@@ -167,9 +169,15 @@ those already configured; `goods_received_note` is absent
 
 ### AC-01-18 `[FE]` API-only actions hidden
 **Given** a DB company's entity rows
-**Then** `edit-lookback` and `change-source` are not rendered (row menu and bulk)
+**Then** `edit-lookback` is not rendered (row menu and bulk), and `change-source` is not rendered
+for a `sql_db` row
 **And** `configure-task`, `sync-now`, `configure-mapping`, `refetch-history` remain
 **And** an API company's rows are unchanged.
+*Revised 2026-09-06 (`fix/db-company-seed-source`, prod incident): `change-source` is judged per
+ROW - it IS rendered for an `autocount_read` row on a DB company (a row the old hardcoded seed
+should never have produced), because hiding it left the operator no UI way back to `sql_db`. The
+seed now returns early for a DB company (D13: born empty) and backfill 0014 / App Store 0.6.0 repairs the
+stranded never-run rows, so on a healthy DB company every row is `sql_db` and the action stays hidden as before.*
 
 ### AC-01-19 `[FE]` Task editor: connection locked
 **Given** the task editor (Query tab) for an entity on a DB company

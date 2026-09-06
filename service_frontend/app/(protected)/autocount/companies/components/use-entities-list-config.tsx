@@ -108,9 +108,15 @@ export function useAutocountEntitiesListConfig({
   const { formatDateTime } = useDatetime();
 
   return useMemo<ResourceListConfig<AutocountEntityConfig>>(() => {
-    // The first-run window and the source switch are vendor-API concepts; a
-    // DB company's entities never had either (AC-01-18).
+    // The first-run window is a vendor-API concept; a DB company's entities
+    // never had one (AC-01-18). The source switch is judged PER ROW below:
+    // hidden only for a `sql_db` row on a DB company (the one shape that has
+    // nowhere to go), shown on every API-company row AND on an
+    // `autocount_read` row that a DB company should never have carried
+    // (the 2026-09-06 reseed bug) - otherwise there is no UI way out of it.
     const apiBacked = sourceKind !== 'db';
+    const canChangeSource = (rows: AutocountEntityConfig[]) =>
+      apiBacked || rows[0]?.sourceImpl === 'autocount_read';
     const actions: ResourceAction<AutocountEntityConfig>[] = [
       {
         id: 'sync-now',
@@ -195,7 +201,7 @@ export function useAutocountEntitiesListConfig({
         icon: ArrowLeftRight,
         surfaces: { row: true },
         permission: AC_COMPANIES_MANAGE,
-        isVisible: () => apiBacked,
+        isVisible: canChangeSource,
         run: (rows) => {
           const row = rows[0];
           if (row) onChangeSource(row);
