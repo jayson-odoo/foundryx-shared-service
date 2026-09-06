@@ -776,6 +776,15 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         delete_failed_count = len(push_summary.get("deleteFailures") or [])
         if delete_failed_count:
             run.failed_count = (run.failed_count or 0) + delete_failed_count
+        # Push request accounting (fix/push-marks-per-chunk, prod 2026-09-07):
+        # an operator reading the Runs list saw `pushed_count 0` / `error
+        # NULL` with no way to tell a lone chunk-level fault happened - the
+        # summary carried it, the RUN ROW never did.
+        run.requests = int(push_summary.get("requests") or 0)
+        run.requests_failed = int(push_summary.get("requestsFailed") or 0)
+        run.first_failure = push_summary.get("firstFailure")
+        if push_summary.get("error"):
+            run.error = push_summary["error"]
     else:
         config.last_run_error = None
         config.last_run_error_code = None
@@ -1543,6 +1552,12 @@ def _run_paged_sql_db(
         delete_failed_count = len(push_summary.get("deleteFailures") or [])
         if delete_failed_count:
             run.failed_count = (run.failed_count or 0) + delete_failed_count
+        # Push request accounting (fix/push-marks-per-chunk, prod 2026-09-07):
+        # persisted on the RUN ROW, not just the job's result JSON - the Runs
+        # list has no other place to show a chunk-level push fault.
+        run.requests = int(push_summary.get("requests") or 0)
+        run.requests_failed = int(push_summary.get("requestsFailed") or 0)
+        run.first_failure = push_summary.get("firstFailure")
     else:
         config.last_run_error = None
         config.last_run_error_code = None
@@ -1580,7 +1595,12 @@ def _run_paged_sql_db(
         if next_incremental is not None:
             config.next_incremental_at = datetime.now(timezone.utc)
     else:
-        run.error = None
+        # A push fault (fix/push-marks-per-chunk) is still the reason THIS
+        # run did not fully succeed even though the fetch itself is not
+        # truncated - carry it onto the run row rather than wiping it back
+        # to `None` (prod finding 2026-09-07: `pushed_count 0` / `error NULL`
+        # with no way to tell a chunk-level fault happened).
+        run.error = push_summary.get("error") if push_summary else None
 
     record_activity(
         db, tenant_id=tenant_id, operation=f"sync {entity_type}", status=ACTIVITY_SUCCESS,

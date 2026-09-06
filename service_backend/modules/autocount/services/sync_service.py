@@ -15,6 +15,7 @@ kind of bug.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -535,11 +536,20 @@ class SyncService:
         """
         summary: Dict[str, Any] = {
             "pushed": 0,
+            "quarantined": 0,
             "pushFailures": [],
             "delivered": False,
             "autoPushed": True,
             "error": None,
             "errorCode": None,
+            # ── chunk-level request accounting (fix/push-marks-per-chunk,
+            # prod finding 2026-09-07: a lone 502 from Sorento's own nginx on
+            # 1 of 25 chunk POSTs discarded a whole clean run - marks are now
+            # per-chunk, so the run needs its own account of how many
+            # requests it made and which one failed first) ─────────────────
+            "requests": 0,
+            "requestsFailed": 0,
+            "firstFailure": None,
             # ── delete-push verdicts (plan 22 S3, AC-22-21) ──────────────────
             "deletedHandled": 0,
             "deleteFailures": [],
@@ -557,6 +567,15 @@ class SyncService:
         )
         if not pending:
             return summary
+
+        # Starvation guard (fix/push-marks-per-chunk, AC-style prod finding):
+        # stamp every offered row NOW, committed BEFORE the sink is ever
+        # called - so a permanently ``retryable`` head's OWN offer is
+        # recorded even if the push that follows fails outright, and
+        # ``list_pending_for_entity``'s ``last_offered_at`` NULLS FIRST
+        # ordering gives a never-offered row priority on the very next run.
+        self.staged.mark_offered(pending, now=datetime.now(timezone.utc))
+        self.db.commit()
 
         # A reconcile delete intent carries NO canonical payload (op='delete',
         # models.py) - it must never reach `_rehydrate_pushable`, which would
@@ -580,6 +599,28 @@ class SyncService:
         self.db.commit()
         return summary
 
+    def _account_failure(
+        self, summary: Dict[str, Any], exc: BaseException, *, sink: EntitySink
+    ) -> None:
+        """Chunk-level push-failure accounting shared by every failure path
+        (fix/push-marks-per-chunk, prod finding 2026-09-07): counts this as
+        ONE request/failure and records the FIRST failure's status + a
+        bounded snippet (``describe_consumer_failure`` style - status +
+        message, never the request/URL) - later failures in the SAME
+        ``auto_push`` call (a transient chunk fails, the loop continues, a
+        LATER chunk then hits a stopping fault) still bump the counters but
+        never overwrite the first one, matching ``firstFailure``'s name."""
+        summary["requests"] = int(summary.get("requests") or 0) + 1
+        summary["requestsFailed"] = int(summary.get("requestsFailed") or 0) + 1
+        try:
+            line, status, _detail = describe_consumer_failure(exc, sink=sink)
+        except Exception:  # noqa: BLE001 - never let the describer break accounting
+            line, status = str(exc)[:300], None
+        if not summary.get("firstFailure"):
+            summary["firstFailure"] = {"status": status, "message": line[:300]}
+        if not summary.get("error"):
+            summary["error"] = line[:2000]
+
     def _auto_push_upserts(
         self,
         pending: List[AcStagedRecord],
@@ -588,40 +629,39 @@ class SyncService:
         job_id: str,
         summary: Dict[str, Any],
     ) -> bool:
-        """The upsert half of ``auto_push``. Returns ``False`` on a BATCH-level
-        fault (``summary["error"]`` already set) - the caller returns the
-        summary immediately without committing, same as before this method was
-        split out."""
+        """The upsert half of ``auto_push``. Marks + COMMITS per CHUNK as the
+        sink resolves each one (fix/push-marks-per-chunk, prod finding
+        2026-09-07: one ``write_batch`` call for up to 5,000 rows applied NO
+        verdict at all on a single chunk-level fault, so a lone Sorento nginx
+        502 discarded 24 other already-delivered chunks and the next run
+        re-offered everything). Returns ``False`` only on a STOPPING fault
+        (``summary["error"]`` already set) - the caller skips the delete half
+        and the redundant final commit, same as before this method was
+        split out. A TRANSIENT chunk fault that exhausted its retries
+        (``SorentoSink._post_with_retry``) does NOT stop the push - that
+        chunk's rows stay STAGED and every other chunk still resolves; this
+        method still returns ``True``."""
         rows, records, failures = self._rehydrate_pushable(pending)
-        pushed: List[AcStagedRecord] = []
-        quarantined: List[AcStagedRecord] = []
-        try:
-            #     !!  NO ROLLBACK HERE - THIS METHOD DOES NOT OWN THE SESSION.  !!
-            # ``auto_push`` runs INSIDE the caller's (``run_autocount_sync``)
-            # still-open session, which already carries an UNCOMMITTED
-            # watermark/cursor advance from the fetch that just succeeded
-            # (S2 review BLOCKER 1). A bare ``self.db.rollback()`` on a sink
-            # failure discarded that advance too, making a failing sink (e.g.
-            # a wrong ``sorento_company_code``) pin the task at a full
-            # initial extract forever. The sink call below writes NOTHING
-            # local (it is a network round-trip; the only local writes are
-            # the ``staged.mark(...)`` calls AFTER this block, once results
-            # are known) - so there is nothing of ITS OWN to roll back here.
-            # (A ``begin_nested()`` savepoint was tried first, but
-            # ``begin_nested()`` autoflushes pending session state - including
-            # the caller's watermark write - INTO the savepoint, so a later
-            # rollback-to-savepoint reverted it anyway; a bare try/except with
-            # no rollback at all is the correct fix, not just the simpler one.)
-            if hasattr(sink, "write_batch"):
-                results = sink.write_batch(records, request_id=str(job_id)) if records else []
-            else:
-                results = [
-                    sink.write(record, request_id=f"{job_id}:{row.id}")
-                    for row, record in zip(rows, records)
-                ]
-            for row, result in zip(rows, results):
+        by_ref = {row.source_ref: row for row in rows}
+
+        def apply_chunk(
+            chunk_records: Any,
+            chunk_results: Optional[List[WriteResult]],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                self._account_failure(summary, error, sink=sink)
+                return
+            summary["requests"] = int(summary.get("requests") or 0) + 1
+            chunk_pushed: List[AcStagedRecord] = []
+            chunk_quarantined: List[AcStagedRecord] = []
+            for record, result in zip(chunk_records, chunk_results or []):
+                ref = getattr(record, "source_ref", "")
+                row = by_ref.get(ref)
+                if row is None:
+                    continue
                 if result.ok:
-                    pushed.append(row)
+                    chunk_pushed.append(row)
                     summary["delivered"] = summary["delivered"] or result.delivered
                     continue
                 failures.append({"sourceRef": row.source_ref, "error": result.message})
@@ -634,33 +674,68 @@ class SyncService:
                 # customer code already linked to another source in Sorento).
                 # Quarantining matches D13's "FAILED is never pushable".
                 if result.outcome and result.outcome != "retryable":
-                    quarantined.append(row)
+                    chunk_quarantined.append(row)
+            if chunk_pushed:
+                self.staged.mark(
+                    chunk_pushed, status=STAGED_PUSHED, pushed_at=datetime.now(timezone.utc)
+                )
+            if chunk_quarantined:
+                self.staged.mark(chunk_quarantined, status=STAGED_FAILED)
+            if chunk_pushed or chunk_quarantined:
+                # COMMIT per chunk - not the caller's final commit - so a
+                # LATER chunk's fault (or a lease lost mid-push) can never
+                # undo THIS chunk's already-delivered rows.
+                self.db.commit()
+            summary["pushed"] = int(summary.get("pushed") or 0) + len(chunk_pushed)
+            summary["quarantined"] = int(summary.get("quarantined") or 0) + len(chunk_quarantined)
+
+        try:
+            #     !!  NO ROLLBACK HERE - THIS METHOD DOES NOT OWN THE SESSION.  !!
+            # ``auto_push`` runs INSIDE the caller's (``run_autocount_sync``)
+            # still-open session, which already carries an UNCOMMITTED
+            # watermark/cursor advance from the fetch that just succeeded
+            # (S2 review BLOCKER 1). A bare ``self.db.rollback()`` on a sink
+            # failure discarded that advance too, making a failing sink (e.g.
+            # a wrong ``sorento_company_code``) pin the task at a full
+            # initial extract forever. The sink call below writes NOTHING
+            # local of its own (it is a network round-trip; the only local
+            # writes are the ``staged.mark(...)`` calls inside ``apply_chunk``,
+            # each already committed by the time this ``try`` could ever
+            # roll it back).
+            if records and hasattr(sink, "write_batch"):
+                kwargs: Dict[str, Any] = {}
+                if "on_chunk" in inspect.signature(sink.write_batch).parameters:
+                    kwargs["on_chunk"] = apply_chunk
+                    sink.write_batch(records, request_id=str(job_id), **kwargs)
+                else:
+                    # No per-chunk callback on this sink - one synthetic
+                    # "chunk" covering the whole batch (the old all-or-nothing
+                    # shape, still correct for a sink that cannot report less).
+                    apply_chunk(records, sink.write_batch(records, request_id=str(job_id)), None)
+            elif records:
+                # Per-record path (the slice-1 logging no-op sink) - one
+                # synthetic chunk per record, so a raise mid-loop still keeps
+                # every already-written row PUSHED and committed.
+                for row, record in zip(rows, records):
+                    result = sink.write(record, request_id=f"{job_id}:{row.id}")
+                    apply_chunk([record], [result], None)
         except SinkAnchorError as exc:
             # TASK-level, never per record (Appendix A6): the company anchor is
             # wrong, so no record was even looked at. Everything stays STAGED.
+            self._account_failure(summary, exc, sink=sink)
             summary["error"] = exc.sorento_message
             summary["errorCode"] = exc.code
             return False
         except SorentoSinkError as exc:
-            summary["error"] = str(exc)[:2000]
+            self._account_failure(summary, exc, sink=sink)
             return False
         except Exception as exc:  # noqa: BLE001 - a run must never die on delivery
             logger.exception("autocount auto-push failed for job %s", job_id)
-            summary["error"] = f"The push failed before the consumer resolved it: {exc}"[:2000]
+            self._account_failure(summary, exc, sink=sink)
             return False
 
-        self.staged.mark(pushed, status=STAGED_PUSHED, pushed_at=datetime.now(timezone.utc))
-        if quarantined:
-            self.staged.mark(quarantined, status=STAGED_FAILED)
-        # Commit the marks (and whatever the caller left pending - the
-        # watermark advance rides the SAME commit, plan-22 S2 NIT). The
-        # OUTER `auto_push` commits once, after upserts AND deletes both
-        # resolve, so a batch-level fault in either half never commits a
-        # half-finished push.
-        summary["pushed"] = len(pushed)
-        summary["quarantined"] = len(quarantined)
         summary["pushFailures"] = failures
-        if failures:
+        if failures and not summary.get("error"):
             # Repeated delivery failures must surface on the task, never
             # silently (AC-22-19) - the first one names itself.
             summary["error"] = str(failures[0].get("error") or "")[:2000]
@@ -684,52 +759,80 @@ class SyncService:
         add); ``failed`` quarantines it (D13's rule, mirrored for deletes); no
         verdict at all (an unrecognised outcome, or a sink with no delete
         support) leaves the row STAGED to retry next run - the same
-        ``retryable`` posture an upsert gets. Returns ``False`` on a
-        BATCH-level fault, same contract as the upsert half."""
+        ``retryable`` posture an upsert gets.
+
+        Marks + COMMITS per CHUNK exactly like the upsert half
+        (fix/push-marks-per-chunk) - a fault on a LATER deletions chunk can
+        never undo an earlier one's already-handled refs. Returns ``False``
+        only on a STOPPING fault, same contract as the upsert half."""
+        by_ref = {row.source_ref: row for row in pending}
+
+        def apply_chunk(
+            chunk_refs: List[str],
+            chunk_records: Optional[List[Dict[str, Any]]],
+            error: Optional[BaseException],
+        ) -> None:
+            if error is not None:
+                self._account_failure(summary, error, sink=sink)
+                return
+            summary["requests"] = int(summary.get("requests") or 0) + 1
+            by_verdict = {str(r.get("source_ref") or ""): r for r in (chunk_records or [])}
+            handled: List[AcStagedRecord] = []
+            failed: List[AcStagedRecord] = []
+            for ref in chunk_refs:
+                row = by_ref.get(ref)
+                if row is None:
+                    continue
+                outcome = str((by_verdict.get(ref) or {}).get("outcome") or "")
+                if outcome in ("deleted", "deactivated", "not_found"):
+                    handled.append(row)
+                elif outcome == "failed":
+                    failed.append(row)
+                # else: no / unrecognised verdict → leave STAGED, retry next run.
+            if handled:
+                self.staged.mark(handled, status=STAGED_PUSHED, pushed_at=datetime.now(timezone.utc))
+            if failed:
+                self.staged.mark(failed, status=STAGED_FAILED)
+            if handled or failed:
+                self.db.commit()
+            if handled:
+                RowHashRepository(self.db).delete_many(
+                    tenant_id, company_id, entity_type, [row.source_ref for row in handled]
+                )
+                self.db.commit()
+            summary["deletedHandled"] = int(summary.get("deletedHandled") or 0) + len(handled)
+            if failed:
+                summary["deleteFailures"] = (summary.get("deleteFailures") or []) + [
+                    {"sourceRef": row.source_ref, "error": "the consumer rejected this delete"}
+                    for row in failed
+                ]
+
         refs = [row.source_ref for row in pending]
         try:
-            result = sink.delete_batch(refs) if hasattr(sink, "delete_batch") else None
+            if hasattr(sink, "delete_batch"):
+                kwargs: Dict[str, Any] = {}
+                if "on_chunk" in inspect.signature(sink.delete_batch).parameters:
+                    kwargs["on_chunk"] = apply_chunk
+                    sink.delete_batch(refs, **kwargs)
+                else:
+                    result = sink.delete_batch(refs)
+                    apply_chunk(refs, (result or {}).get("records") or [], None)
+            # else: no delete support on this sink at all - every ref stays
+            # STAGED, same posture as a `retryable` upsert.
         except SinkAnchorError as exc:
+            self._account_failure(summary, exc, sink=sink)
             summary["error"] = exc.sorento_message
             summary["errorCode"] = exc.code
             return False
         except SorentoSinkError as exc:
-            summary["error"] = str(exc)[:2000]
+            self._account_failure(summary, exc, sink=sink)
             return False
         except Exception as exc:  # noqa: BLE001 - a run must never die on delivery
             logger.exception("autocount auto-push delete failed for %s/%s", company_id, entity_type)
-            summary["error"] = f"The delete push failed before the consumer resolved it: {exc}"[:2000]
+            self._account_failure(summary, exc, sink=sink)
             return False
 
-        if result is None:
-            # No delete support on this sink at all - every ref stays STAGED,
-            # same posture as a `retryable` upsert.
-            return True
-
-        by_ref = {str(r.get("source_ref") or ""): r for r in (result.get("records") or [])}
-        handled: List[AcStagedRecord] = []
-        failed: List[AcStagedRecord] = []
-        for row in pending:
-            outcome = str((by_ref.get(row.source_ref) or {}).get("outcome") or "")
-            if outcome in ("deleted", "deactivated", "not_found"):
-                handled.append(row)
-            elif outcome == "failed":
-                failed.append(row)
-            # else: no / unrecognised verdict → leave STAGED, retry next run.
-
-        self.staged.mark(handled, status=STAGED_PUSHED, pushed_at=datetime.now(timezone.utc))
-        if failed:
-            self.staged.mark(failed, status=STAGED_FAILED)
-        if handled:
-            RowHashRepository(self.db).delete_many(
-                tenant_id, company_id, entity_type, [row.source_ref for row in handled]
-            )
-        summary["deletedHandled"] = len(handled)
-        summary["deleteFailures"] = [
-            {"sourceRef": row.source_ref, "error": "the consumer rejected this delete"}
-            for row in failed
-        ]
-        if failed and not summary["error"]:
+        if summary.get("deleteFailures") and not summary.get("error"):
             summary["error"] = summary["deleteFailures"][0]["error"]
         return True
 
