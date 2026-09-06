@@ -3,38 +3,24 @@
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Pencil, Trash2 } from 'lucide-react';
-import { toast } from '@/lib/toast';
-import { ApiError } from '@/lib/api-client';
 import type { ResourceAction } from '@/components/platform/resource-list';
-import { teamService } from '@/services/team-service';
 import type { Team } from '@/types/team';
 import { teamFormHref } from './paths';
-
-/** Structured 409 body a blocked delete carries (§5.1 `409 body`). */
-interface TeamInUseDetail {
-  error?: string;
-  counts?: Record<string, number>;
-}
-
-function formatCounts(counts: Record<string, number> | undefined): string {
-  const entries = Object.entries(counts ?? {});
-  if (!entries.length) return 'other records';
-  return entries.map(([source, n]) => `${n} ${source}`).join(', ');
-}
 
 /**
  * The Team action registry (Users clone, D-A8-2) - Edit + Delete, surfaced in
  * the row "…" menu, the bulk toolbar, and the form "…" menu.
  *
- * Delete has NO soft-trash (D-A8-15/19 - a team is either active or inactive,
- * never trashed) so the grace-window `deferred` engine doesn't apply, and it
- * is the FIRST production use of a core reference guard (409 `team_in_use`
- * with per-source counts, §3.1) - a concept `ResourceAction.confirm`'s typed
- * carve-out list (`confirm-carve-outs.inventory.test.ts`) didn't have a slot
- * for yet, so this stays a PLAIN `confirm` (ask once) + the blocked-count
- * detail surfaces via `toast.error` after the attempt (no destructive call
- * fires when blocked - AC-TEM-42). Flagged for the reviewer/user in the S0
- * report rather than silently reusing an unrelated carve-out.
+ * Teams have NO soft-trash (D-A8-15/19 - a team is either active or inactive,
+ * never trashed), but Delete is still a hard-destructive mutation, so it
+ * rides the SAME grace-window `deferred` engine every other hard delete does
+ * (review round 1, finding 3 - the earlier plain `confirm` ask-once carve-out
+ * was an unregistered escape hatch, not a disclosed one). The registered
+ * `teams.delete` handler (`app/deferred_actions/handlers.py`) calls
+ * `TeamService.delete`, which still runs the reference-guard check (a team
+ * assigned to live conversations 409s on the SYNCHRONOUS route) - here it
+ * surfaces as a `failed` countdown with a counts-formatted message via the
+ * shell's `onFailed` toast, never a raw `team_in_use` token.
  */
 export function useTeamActions(): ResourceAction<Team>[] {
   const router = useRouter();
@@ -59,33 +45,12 @@ export function useTeamActions(): ResourceAction<Team>[] {
         tone: 'destructive',
         permission: 'teams.manage',
         surfaces: { row: true, bulk: true, form: true },
-        confirm: {
-          title: 'Delete this team?',
-          description: 'This cannot be undone. A team still assigned to conversations cannot be deleted.',
-          confirmLabel: 'Delete',
-        },
-        run: async (rows, rt) => {
-          let deleted = 0;
-          const blocked: string[] = [];
-          for (const team of rows) {
-            try {
-              await teamService.remove(team.id);
-              deleted += 1;
-            } catch (e) {
-              if (e instanceof ApiError && e.status === 409) {
-                const detail = e.detail as TeamInUseDetail | undefined;
-                blocked.push(`"${team.name}" is in use by ${formatCounts(detail?.counts)}`);
-              } else {
-                toast.error(e instanceof Error ? e.message : `Could not delete "${team.name}".`);
-              }
-            }
-          }
-          if (deleted > 0) toast.success(`Deleted ${deleted} team(s).`);
-          if (blocked.length > 0) {
-            toast.error(`Could not delete: ${blocked.join('; ')}. Reassign them first.`);
-          }
-          rt.reload();
-        },
+        // Grace-window deferred action (sprint-4/23 T5, D2) - no confirm
+        // dialog, no `run` (the registered `teams.delete` handler commits it
+        // server-side); the form surface's commit navigates via
+        // ResourceForm's own `backHref`-aware handler (AC-DLA-30), row/bulk
+        // stay put + reload.
+        deferred: { actionKey: 'teams.delete', entityType: 'team' },
       },
     ],
     [router],

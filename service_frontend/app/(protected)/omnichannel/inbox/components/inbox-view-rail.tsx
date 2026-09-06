@@ -67,17 +67,19 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
   const { data: session } = useSession();
   const currentUserId = session?.user?.id ?? null;
   const canManageShared = can('inbox_views.manage');
-  // conversations.assign gates the "All teams" group below (plan 28,
-  // mirrors the retired standalone TeamRail's privilege check) - anyone can
-  // find THEIR OWN teams, but browsing every team in the tenant is an
-  // assign-adjacent privilege.
-  const canBrowseAllTeams = can('conversations.assign');
+  // `GET /teams` is gated `teams.read` server-side - the "All teams" group
+  // (browsing every team in the tenant, not just the caller's own) can only
+  // ever show for a caller who actually holds that permission (review round
+  // 1, finding 4/5/6). An agent with only `conversations.assign` still sees
+  // their OWN teams via `useMyTeams()` (no `teams.read` required there).
+  const canBrowseAllTeams = can('teams.read');
   // Scoped machine - never fire before the workspace id (its scope) resolves,
   // or the backend 422s "Workspace is required for this entity" on mount.
   const lifecycleGraph = useStatusGraph(workspaceId ? CONTACT_LIFECYCLE_ENTITY : null, workspaceId ?? undefined);
   const { views, create, update, refresh } = useInboxViews(workspaceId);
   const { teams: myTeams } = useMyTeams();
-  const { teams: allTeams } = useTeams();
+  // Never call `GET /teams` for a caller without `teams.read` - it would 403.
+  const { teams: allTeams } = useTeams({ enabled: canBrowseAllTeams });
 
   const stages = useMemo<RailStage[]>(
     () =>
@@ -197,6 +199,9 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
       channelIds: filters.channelIds,
       unreplied: filters.unreplied,
       sort: filters.sort,
+      // AC-TEM-46 - a saved view captures the rail's currently-selected team
+      // scope (if any), so re-selecting the view restores it too.
+      teamIds: filters.teamId ? [filters.teamId] : undefined,
     }),
     [filters],
   );
@@ -291,7 +296,9 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
 
       {(myTeams.length > 0 || otherTeams.length > 0) && (
         <div>
-          <p className="mb-1 px-2.5 text-xs font-semibold text-muted-foreground uppercase">My teams</p>
+          {myTeams.length > 0 && (
+            <p className="mb-1 px-2.5 text-xs font-semibold text-muted-foreground uppercase">My teams</p>
+          )}
           <nav className="flex flex-col gap-0.5">
             {myTeams.map((team) => (
               <div key={team.id}>

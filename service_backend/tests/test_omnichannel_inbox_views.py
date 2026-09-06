@@ -724,6 +724,58 @@ def test_view_id_expansion_and_override(client, session_factory):
     assert replied in ids2
 
 
+def test_inbox_view_team_ids_saved_validated_and_expanded(client, session_factory):
+    """AC-TEM-46 (review round 1, finding 9) - `InboxViewFilter.teamIds` is
+    validated tenant-scoped via `team.resolve@1` at save time, and the
+    thread-list `viewId` expansion filters by that team (unless an explicit
+    `teamId` query param overrides it - AC-IVE-17's same rule)."""
+    from modules.omnichannel.models import Contact
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+
+    team = client.post("/teams", headers=h, json={"name": "Saved View Team", "members": []}).json()
+    other_team = client.post("/teams", headers=h, json={"name": "Other Saved Team", "members": []}).json()
+
+    on_team = _seed_thread(session_factory, phone="+60155100001", messages=[{"body": "hi"}])
+    off_team = _seed_thread(session_factory, phone="+60155100002", messages=[{"body": "hi"}])
+    db = session_factory()
+    db.query(Contact).filter(Contact.id == on_team).update({"assigned_team_id": team["id"]})
+    db.commit()
+    db.close()
+
+    # Unknown team id is rejected at save.
+    bad = client.post(
+        f"{_base(ws)}/inbox-views",
+        headers=h,
+        json={"name": "Bad Team View", "isShared": False, "filter": {"teamIds": ["nope"]}},
+    )
+    assert bad.status_code == 422
+
+    view = client.post(
+        f"{_base(ws)}/inbox-views",
+        headers=h,
+        json={"name": "Team View", "isShared": False, "filter": {"teamIds": [team["id"]]}},
+    ).json()
+    assert view["filter"]["teamIds"] == [team["id"]]
+
+    res = client.get(
+        "/omnichannel/contacts", headers=h, params={"viewId": view["id"], "workspaceId": ws}
+    )
+    ids = {t["id"] for t in res.json()["data"]}
+    assert on_team in ids
+    assert off_team not in ids
+
+    # Explicit teamId overrides the view's stored teamIds.
+    res2 = client.get(
+        "/omnichannel/contacts",
+        headers=h,
+        params={"viewId": view["id"], "workspaceId": ws, "teamId": other_team["id"]},
+    )
+    ids2 = {t["id"] for t in res2.json()["data"]}
+    assert on_team not in ids2
+
+
 def test_view_id_unknown_or_cross_tenant_404(client, session_factory):
     h = _auth(client)
     res = client.get("/omnichannel/contacts", headers=h, params={"viewId": "nope"})

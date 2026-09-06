@@ -12,7 +12,7 @@
  *
  * `team-service.mock.ts` is retained for component/hook tests only.
  */
-import type { CreateTeamInput, Team, UpdateTeamInput } from '@/types/team';
+import type { CreateTeamInput, MyTeam, Team, UpdateTeamInput } from '@/types/team';
 import type { ListQuery, ListResult } from '@/types/resource';
 import { realTeamService } from './team-service.real';
 
@@ -22,8 +22,9 @@ export interface TeamService {
   /** Record-nav: the team at `index` within the ordered query, plus the total. */
   getAt(query: ListQuery, index: number): Promise<{ team: Team | null; total: number }>;
   /** The caller's own teams (AC-TEM-08/16 - no `teams.read` required backend-
-   *  side; the mock has no permission concept so this is just a member filter). */
-  mine(): Promise<Team[]>;
+   *  side; the mock has no permission concept so this is just a member filter).
+   *  Trimmed shape (review round 1, finding 7) - no member emails. */
+  mine(): Promise<MyTeam[]>;
   create(input: CreateTeamInput): Promise<Team>;
   update(id: string, input: UpdateTeamInput): Promise<Team>;
   /** 409 `{error:"team_in_use", counts}` when a reference guard reports usage

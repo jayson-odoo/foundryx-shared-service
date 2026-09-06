@@ -19,6 +19,8 @@ __all__ = [
     "TeamNeighborResponse",
     "TeamCreate",
     "TeamUpdate",
+    "MyTeamMemberRef",
+    "MyTeamItem",
 ]
 
 
@@ -27,6 +29,30 @@ class TeamMemberRef(ApiModel):
     name: str
     email: str
     role: str
+
+
+class MyTeamMemberRef(ApiModel):
+    """`GET /teams/mine` member shape (review round 1, finding 7) - NO email.
+    That route is authenticated-only (no `teams.read`), so it must never
+    leak teammates' email addresses to a caller who only holds the plain
+    `teams.of_user@1`-equivalent self-read - `TeamMemberRef` (the admin
+    shape) carries `email` and is reserved for `teams.read` holders."""
+
+    userId: str
+    name: str
+    role: str
+
+
+class MyTeamItem(ApiModel):
+    """Trimmed `GET /teams/mine` team shape - `{id, name, isActive,
+    memberCount, members}`, no `description`/`sortOrder`/timestamps and no
+    member emails (finding 7)."""
+
+    id: str
+    name: str
+    isActive: bool
+    memberCount: int = 0
+    members: List[MyTeamMemberRef] = []
 
 
 class TeamMemberInput(ApiModel):
@@ -49,6 +75,7 @@ class TeamItem(ApiModel):
 class TeamListResponse(ApiModel):
     data: List[TeamItem]
     total: int
+    page: int = 0
 
 
 class TeamNeighborResponse(ApiModel):

@@ -15,8 +15,18 @@ from app.models.user import User
 from app.module_platform import reference_counts
 from app.repositories.team_repository import TeamRepository
 from app.repositories.user_repository import UserRepository
+from app.schemas.filters import FilterGroup
+from app.services.filter_translator import translate_filter
 
 TEAM_NAME_MAX_LENGTH = 120
+
+# Whitelisted filter columns for the teams list (field -> column). Mirrors
+# `FILTER_FIELDS` in `use-teams-list-config.tsx` - keep the two in sync.
+_TEAM_FILTER_COLUMNS = {
+    "name": Team.name,
+    "description": Team.description,
+    "isActive": Team.is_active,
+}
 
 
 class TeamServiceError(Exception):
@@ -80,7 +90,9 @@ class TeamService:
         search: Optional[str] = None,
         sort_by: Optional[str] = None,
         sort_dir: str = "asc",
+        filter_group: Optional[FilterGroup] = None,
     ) -> Tuple[List[Team], int]:
+        clause = translate_filter(filter_group, _TEAM_FILTER_COLUMNS)
         return self.teams.list(
             tenant_id,
             page=page,
@@ -88,6 +100,7 @@ class TeamService:
             search=search,
             sort_by=sort_by,
             sort_dir=sort_dir,
+            filter_clause=clause,
         )
 
     def get(self, team_id: str, tenant_id: str = DEFAULT_TENANT_ID) -> Team:
@@ -104,6 +117,7 @@ class TeamService:
         search: Optional[str] = None,
         sort_by: Optional[str] = None,
         sort_dir: str = "asc",
+        filter_group: Optional[FilterGroup] = None,
     ) -> Tuple[Optional[Team], int]:
         rows, total = self.list(
             tenant_id,
@@ -112,6 +126,7 @@ class TeamService:
             search=search,
             sort_by=sort_by,
             sort_dir=sort_dir,
+            filter_group=filter_group,
         )
         return (rows[0] if rows else None), total
 
@@ -133,13 +148,24 @@ class TeamService:
             raise TeamValidationError({"name": "A team with this name already exists."})
         return trimmed
 
-    def _validate_members(self, members, tenant_id: str) -> List[dict]:
+    def _validate_members(
+        self, members, tenant_id: str, retained_user_ids: Optional[set] = None
+    ) -> List[dict]:
         """Every entry must resolve to a user of the SAME tenant, and that
         tenant must not be the platform tenant (AC-TEM-03: no platform-tenant
         user is ever a team member, even on a platform-tenant-owned team -
         teams are a per-Service operator/agent concept, not the operator
         console). Duplicate userId across the payload is also invalid (a lead
-        is always ALSO a member row - one row, one role)."""
+        is always ALSO a member row - one row, one role).
+
+        `retained_user_ids` (review round 1, design note accepted + narrowed):
+        the ids ALREADY on the team - a trashed user among those passes (a
+        rename PATCH that re-submits the unchanged roster must not 422 on a
+        member who was trashed after joining); a trashed user among the
+        NEWLY ADDED ids is rejected exactly like a foreign/unknown id.
+        `eligible_members` stays the enforcement point that keeps a trashed
+        retained member out of actual assignment."""
+        retained = retained_user_ids or set()
         if not members:
             return []
         if tenant_id == PLATFORM_TENANT_ID:
@@ -157,7 +183,12 @@ class TeamService:
             if entry.userId in seen:
                 raise TeamValidationError({"members": "Each member may only appear once."})
             seen.add(entry.userId)
-            user = self.users.get_by_id(entry.userId, tenant_id, include_trashed=True)
+            # amended 2026-09-06 (review round 1): a trashed user can never be
+            # newly ADDED to a team - only a RETAINED id may resolve through
+            # `include_trashed=True`.
+            user = self.users.get_by_id(
+                entry.userId, tenant_id, include_trashed=entry.userId in retained
+            )
             if user is None or user.tenant_id != tenant_id:
                 raise TeamValidationError(
                     {"members": "One of the selected members is invalid."}
@@ -248,7 +279,9 @@ class TeamService:
         if sort_order is not None:
             team.sort_order = sort_order
         if members is not None:
-            resolved_members = self._validate_members(members, tenant_id)
+            resolved_members = self._validate_members(
+                members, tenant_id, retained_user_ids={m.user_id for m in team.members}
+            )
             self._apply_members(team, resolved_members)
         try:
             return self.teams.save(team)

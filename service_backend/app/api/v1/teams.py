@@ -7,13 +7,17 @@ tenant-scoped via the JWT user - never a query param or body value.
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_permission
 from app.models.team import Team
 from app.models.user import User
+from app.schemas.filters import FilterGroup
 from app.schemas.team import (
+    MyTeamItem,
+    MyTeamMemberRef,
     TeamCreate,
     TeamItem,
     TeamListResponse,
@@ -21,6 +25,7 @@ from app.schemas.team import (
     TeamNeighborResponse,
     TeamUpdate,
 )
+from app.services.filter_translator import FilterError
 from app.services.team_service import (
     TeamInUse,
     TeamNotFound,
@@ -29,6 +34,15 @@ from app.services.team_service import (
 )
 
 router = APIRouter()
+
+
+def _parse_filter(raw: Optional[str]) -> Optional[FilterGroup]:
+    if not raw:
+        return None
+    try:
+        return FilterGroup.model_validate_json(raw)
+    except ValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Invalid filter.") from exc
 
 
 def _item(team: Team) -> TeamItem:
@@ -69,17 +83,22 @@ def list_teams(
     search: Optional[str] = None,
     sort_by: Optional[str] = None,
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
+    filter: Optional[str] = None,
 ) -> TeamListResponse:
     service = TeamService(db)
-    rows, total = service.list(
-        current_user.tenant_id,
-        page=page,
-        page_size=page_size,
-        search=search,
-        sort_by=sort_by,
-        sort_dir=sort_dir,
-    )
-    return TeamListResponse(data=[_item(t) for t in rows], total=total)
+    try:
+        rows, total = service.list(
+            current_user.tenant_id,
+            page=page,
+            page_size=page_size,
+            search=search,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            filter_group=_parse_filter(filter),
+        )
+    except FilterError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
+    return TeamListResponse(data=[_item(t) for t in rows], total=total, page=page)
 
 
 @router.get("/at", response_model=TeamNeighborResponse)
@@ -90,23 +109,54 @@ def team_at(
     search: Optional[str] = None,
     sort_by: Optional[str] = None,
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
+    filter: Optional[str] = None,
 ) -> TeamNeighborResponse:
     service = TeamService(db)
-    team, total = service.get_at(
-        index, current_user.tenant_id, search=search, sort_by=sort_by, sort_dir=sort_dir
-    )
+    try:
+        team, total = service.get_at(
+            index,
+            current_user.tenant_id,
+            search=search,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            filter_group=_parse_filter(filter),
+        )
+    except FilterError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
     return TeamNeighborResponse(team=_item(team) if team else None, total=total)
 
 
-@router.get("/mine", response_model=List[TeamItem])
+def _my_item(team: Team) -> MyTeamItem:
+    """Trimmed shape (review round 1, finding 7) - no email, no description/
+    sortOrder/timestamps. `/teams/mine` is authenticated-only (no
+    `teams.read`), so it must never leak teammates' email addresses to every
+    signed-in user."""
+    members = [
+        MyTeamMemberRef(
+            userId=m.user_id,
+            name=(m.user.name or m.user.email) if m.user else "",
+            role=m.role,
+        )
+        for m in team.members
+    ]
+    return MyTeamItem(
+        id=team.id,
+        name=team.name,
+        isActive=team.is_active,
+        memberCount=len(members),
+        members=members,
+    )
+
+
+@router.get("/mine", response_model=List[MyTeamItem])
 def my_teams(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> List[TeamItem]:
+) -> List[MyTeamItem]:
     """AC-TEM-08/16 - only the caller's own teams; authenticated-only (no
     `teams.read`) so an inbox agent can render the Team rail."""
     service = TeamService(db)
-    return [_item(t) for t in service.mine(current_user)]
+    return [_my_item(t) for t in service.mine(current_user)]
 
 
 @router.get("/{team_id}", response_model=TeamItem)

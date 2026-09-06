@@ -2,21 +2,21 @@
 
 /**
  * Per-team assignment-strategy state (plan 28, roadmap A8, AC-TEM-28) - backs
- * the workspace "Team assignment" tab. `GET .../team-settings` only returns
- * rows that have EVER been configured or assigned in this workspace, so this
- * hook merges it onto the tenant's full ACTIVE team catalog (`useTeams`) -
- * every active team gets a row, defaulting to `round_robin` when unconfigured
- * (mirrors the backend's own "no row = round_robin" default, AC-TEM-28).
+ * the workspace "Team assignment" tab. `GET .../team-settings` now returns
+ * one row per ACTIVE core team (resolved via the module's `team_directory.
+ * list_active`, no `teams.read` permission needed) already merged with this
+ * workspace's configured strategy rows - a never-configured team defaults to
+ * `round_robin` server-side (review round 1, finding 4/5/6). This hook no
+ * longer calls `useTeams()` (`GET /teams`, gated `teams.read`) to build the
+ * roster - a caller holding only `conversations.read`/`conversations.assign`
+ * can now populate the whole tab.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
-import { useTeams } from '@/hooks/use-teams';
 import { teamSettingsService } from '@/services/team-settings-service';
 import type { TeamAssignmentSetting, TeamAssignmentStrategy } from '@/types/omnichannel';
 
-export interface TeamSettingsRow extends TeamAssignmentSetting {
-  isConfigured: boolean;
-}
+export type TeamSettingsRow = TeamAssignmentSetting;
 
 export interface UseTeamSettingsResult {
   rows: TeamSettingsRow[];
@@ -27,15 +27,14 @@ export interface UseTeamSettingsResult {
 }
 
 export function useTeamSettings(workspaceId: string | null): UseTeamSettingsResult {
-  const { teams, isLoading: teamsLoading } = useTeams();
-  const [settings, setSettings] = useState<TeamAssignmentSetting[]>([]);
+  const [rows, setRows] = useState<TeamSettingsRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
   const load = useCallback(() => {
     if (!workspaceId) {
-      setSettings([]);
+      setRows([]);
       setIsLoading(false);
       return;
     }
@@ -43,7 +42,7 @@ export function useTeamSettings(workspaceId: string | null): UseTeamSettingsResu
     setError(null);
     teamSettingsService
       .list(workspaceId)
-      .then(setSettings)
+      .then(setRows)
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Could not load team assignment settings.'))
       .finally(() => setIsLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -51,36 +50,18 @@ export function useTeamSettings(workspaceId: string | null): UseTeamSettingsResu
 
   useEffect(load, [load]);
 
-  const rows = useMemo<TeamSettingsRow[]>(() => {
-    const byTeam = new Map(settings.map((s) => [s.teamId, s]));
-    return teams.map((team) => {
-      const configured = byTeam.get(team.id);
-      return {
-        teamId: team.id,
-        teamName: team.name,
-        strategy: configured?.strategy ?? 'round_robin',
-        lastAssignedUserId: configured?.lastAssignedUserId ?? null,
-        updatedAt: configured?.updatedAt ?? team.updatedAt,
-        isConfigured: !!configured,
-      };
-    });
-  }, [teams, settings]);
-
   const setStrategy = useCallback(
     async (teamId: string, strategy: TeamAssignmentStrategy) => {
       if (!workspaceId) return;
       const updated = await teamSettingsService.setStrategy(workspaceId, teamId, strategy);
-      setSettings((prev) => {
-        const rest = prev.filter((s) => s.teamId !== teamId);
-        return [...rest, updated];
-      });
+      setRows((prev) => prev.map((r) => (r.teamId === teamId ? updated : r)));
     },
     [workspaceId],
   );
 
   return {
     rows,
-    isLoading: isLoading || teamsLoading,
+    isLoading,
     error,
     setStrategy,
     reload: () => setNonce((n) => n + 1),

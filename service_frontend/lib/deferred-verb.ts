@@ -81,6 +81,9 @@ export const ENTITY_NOUNS: Record<string, { singular: string; plural: string }> 
   // migrated onto the deferred-actions engine.
   close_reason: { singular: 'close reason', plural: 'close reasons' },
   inbox_view: { singular: 'view', plural: 'views' },
+  // Plan 28 (roadmap A8) review round 1, finding 3 - team delete migrated
+  // onto the deferred-actions engine.
+  team: { singular: 'team', plural: 'teams' },
 };
 
 function capitalize(word: string): string {

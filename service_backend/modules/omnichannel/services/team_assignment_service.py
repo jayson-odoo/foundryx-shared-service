@@ -75,9 +75,10 @@ def _get_or_create_settings(
 
 
 def list_settings(db: Session, tenant_id: str, workspace_id: str) -> List[TeamAssignmentSetting]:
-    """Every configured-or-assigned-to row in this workspace (AC-TEM-28's
-    list route) - NOT the team catalog (`GET /teams` is), just the rows that
-    exist so far."""
+    """Every configured-or-assigned-to row in this workspace - just the rows
+    that exist so far. Superseded as the team-settings ROUTE's source by
+    `list_settings_for_display` below (review round 1, finding 4/5/6); kept
+    as the plain settings-row accessor other call sites still want."""
     return (
         db.query(TeamAssignmentSetting)
         .filter(
@@ -89,16 +90,40 @@ def list_settings(db: Session, tenant_id: str, workspace_id: str) -> List[TeamAs
     )
 
 
-def settings_for(
-    db: Session, tenant_id: str, workspace_id: str, team_id: str
-) -> TeamAssignmentSetting:
-    """Read accessor for the team-settings routes (AC-TEM-28) - default
-    `round_robin` when no row exists yet, materializing (+ COMMITTING) one
-    lazily on first read so a later PATCH-driven `pick()` has a row to lock.
-    Own transaction (the router does no DB logic of its own)."""
-    row = _get_or_create_settings(db, tenant_id, workspace_id, team_id)
-    db.commit()
-    return row
+def list_settings_for_display(db: Session, tenant_id: str, workspace_id: str) -> List[dict]:
+    """The team-settings tab's ACTUAL list source (review round 1, finding
+    4/5/6): one row per ACTIVE core team, resolved through
+    `team_directory.list_active` (capability `teams.list@1` - no
+    `teams.read` permission needed), merged with this workspace's configured
+    `TeamAssignmentSetting` rows. Before this, the route only returned rows
+    that had EVER been configured, so the frontend had to separately call
+    `GET /teams` (gated `teams.read`) to render the full pickable roster -
+    a caller holding only `conversations.assign` (this route's OWN gate)
+    couldn't populate the tab. Returns
+    `[{team_id, team_name, strategy, last_assigned_user_id, updated_at,
+    is_configured}]`, `updated_at` is `None` for a never-configured team."""
+    teams = team_directory.list_active(db, tenant_id)
+    by_team = {
+        row.team_id: row
+        for row in db.query(TeamAssignmentSetting).filter(
+            TeamAssignmentSetting.tenant_id == tenant_id,
+            TeamAssignmentSetting.workspace_id == workspace_id,
+        )
+    }
+    out: List[dict] = []
+    for team in teams:
+        configured = by_team.get(team["id"])
+        out.append(
+            {
+                "team_id": team["id"],
+                "team_name": team["name"],
+                "strategy": configured.strategy if configured else DEFAULT_STRATEGY,
+                "last_assigned_user_id": configured.last_assigned_user_id if configured else None,
+                "updated_at": configured.updated_at if configured else None,
+                "is_configured": configured is not None,
+            }
+        )
+    return out
 
 
 def set_strategy(
@@ -113,14 +138,19 @@ def set_strategy(
 
 def eligible_members(db: Session, tenant_id: str, workspace_id: str, team_id: str) -> List[str]:
     """AC-TEM-23 / D-A8-10 - team member AND `WorkspaceMember` of THIS
-    workspace AND core `User.status == ACTIVE`; sorted by user id ascending
-    (D-A8-8's deterministic order)."""
+    workspace AND core `User.status == ACTIVE` AND NOT trashed (amended
+    2026-09-06 (review round 1): a trashed user can linger on a team's
+    member list - the roster read is not the enforcement point (`TeamService.
+    update` blocks NEW trashed additions instead) - so eligibility must
+    exclude them explicitly here too; sorted by user id ascending (D-A8-8's
+    deterministic order)."""
     roster = team_directory.members(db, tenant_id, team_id)
     if not roster:
         return []
     user_ids = [m["userId"] for m in roster]
-    ws_repo = WorkspaceRepository(db)
-    ws_member_ids = {uid for uid in user_ids if ws_repo.member_exists(workspace_id, uid)}
+    # Review round 1, finding 10 - ONE batched membership query instead of
+    # one `member_exists` call per roster member.
+    ws_member_ids = WorkspaceRepository(db).member_ids_subset(workspace_id, user_ids)
     if not ws_member_ids:
         return []
     active_ids = {
@@ -130,6 +160,7 @@ def eligible_members(db: Session, tenant_id: str, workspace_id: str, team_id: st
             User.tenant_id == tenant_id,
             User.id.in_(ws_member_ids),
             User.status == UserStatus.ACTIVE.value,
+            User.is_trashed.is_(False),
         )
         .all()
     }
@@ -147,6 +178,7 @@ def _open_counts(db: Session, tenant_id: str, workspace_id: str, user_ids: List[
         .filter(
             Contact.tenant_id == tenant_id,
             Contact.workspace_id == workspace_id,
+            ThreadStatus.tenant_id == tenant_id,
             ThreadStatus.scope == "THREAD",
             ThreadStatus.key == "OPEN",
             Contact.assigned_user_id.in_(user_ids),

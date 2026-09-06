@@ -8,17 +8,17 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { teamService } from '@/services/team-service';
-import type { Team } from '@/types/team';
+import type { MyTeam } from '@/types/team';
 
 export interface UseMyTeamsResult {
-  teams: Team[];
+  teams: MyTeam[];
   isLoading: boolean;
   error: string | null;
   reload: () => void;
 }
 
 export function useMyTeams(): UseMyTeamsResult {
-  const [teams, setTeams] = useState<Team[]>([]);
+  const [teams, setTeams] = useState<MyTeam[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);

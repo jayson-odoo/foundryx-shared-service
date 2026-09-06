@@ -15,7 +15,7 @@
  */
 import { apiFetch } from '@/lib/api-client';
 import type { ListQuery, ListResult } from '@/types/resource';
-import type { CreateTeamInput, Team, UpdateTeamInput } from '@/types/team';
+import type { CreateTeamInput, MyTeam, Team, UpdateTeamInput } from '@/types/team';
 import type { TeamService } from './team-service';
 
 const SORT_ID_MAP: Record<string, string> = {
@@ -31,6 +31,7 @@ function listParams(query: ListQuery): URLSearchParams {
     p.set('sort_by', SORT_ID_MAP[query.sort.id] ?? query.sort.id);
     p.set('sort_dir', query.sort.desc ? 'desc' : 'asc');
   }
+  if (query.filter) p.set('filter', JSON.stringify(query.filter));
   return p;
 }
 
@@ -42,6 +43,7 @@ function navParams(query: ListQuery, index: number): URLSearchParams {
     p.set('sort_by', SORT_ID_MAP[query.sort.id] ?? query.sort.id);
     p.set('sort_dir', query.sort.desc ? 'desc' : 'asc');
   }
+  if (query.filter) p.set('filter', JSON.stringify(query.filter));
   return p;
 }
 
@@ -58,7 +60,7 @@ export const realTeamService: TeamService = {
     );
   },
   mine() {
-    return apiFetch<Team[]>('/teams/mine');
+    return apiFetch<MyTeam[]>('/teams/mine');
   },
   create(input: CreateTeamInput) {
     return apiFetch<Team>('/teams', { method: 'POST', body: JSON.stringify(input) });

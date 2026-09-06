@@ -8,8 +8,9 @@ import type { TeamAssignmentSetting, TeamAssignmentStrategy } from '@/types/omni
 import { realTeamSettingsService } from './team-settings-service.real';
 
 export interface TeamSettingsService {
-  /** One row per team that has ever been configured or assigned in this
-   *  workspace - NOT the team catalog (`GET /teams` is). */
+  /** One row per ACTIVE core team (review round 1, finding 4/5/6) - already
+   *  merged with this workspace's configured strategy rows server-side, so
+   *  no separate `GET /teams` call is needed to populate the tab. */
   list(workspaceId: string): Promise<TeamAssignmentSetting[]>;
   /** 404 when the team id fails `team.resolve@1` (unknown, foreign-tenant,
    *  deleted, or the capability not registered). */

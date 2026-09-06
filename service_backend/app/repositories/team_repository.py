@@ -36,12 +36,16 @@ class TeamRepository:
         search: Optional[str] = None,
         sort_by: Optional[str] = None,
         sort_dir: str = "asc",
+        filter_clause=None,
     ) -> Tuple[List[Team], int]:
         q = self.db.query(Team).filter(Team.tenant_id == tenant_id)
 
         if search and search.strip():
             term = f"%{search.strip()}%"
             q = q.filter(or_(Team.name.ilike(term), Team.description.ilike(term)))
+
+        if filter_clause is not None:
+            q = q.filter(filter_clause)
 
         total = q.count()
 

@@ -12,7 +12,7 @@
 import { ApiError } from '@/lib/api-client';
 import { userService } from '@/services/user-service';
 import type { ListQuery, ListResult } from '@/types/resource';
-import type { CreateTeamInput, Team, TeamMemberRef, UpdateTeamInput } from '@/types/team';
+import type { CreateTeamInput, MyTeam, Team, TeamMemberRef, UpdateTeamInput } from '@/types/team';
 import type { User } from '@/types/user';
 import { delay, runQuery, type QueryAdapter } from './mock-query';
 import type { TeamService } from './team-service';
@@ -187,7 +187,7 @@ export const mockTeamService: TeamService = {
     return delay({ team: data[index] ?? null, total });
   },
 
-  async mine(): Promise<Team[]> {
+  async mine(): Promise<MyTeam[]> {
     await ensureSeeded();
     let users: User[] = [];
     try {
@@ -197,7 +197,17 @@ export const mockTeamService: TeamService = {
     }
     const demo = users.find((u) => u.email.toLowerCase() === DEMO_EMAIL);
     if (!demo) return delay([]);
-    return delay(rows.filter((r) => r.members.some((m) => m.userId === demo.id)));
+    // Trimmed shape (review round 1, finding 7) - no member emails.
+    const mine = rows.filter((r) => r.members.some((m) => m.userId === demo.id));
+    return delay(
+      mine.map((r) => ({
+        id: r.id,
+        name: r.name,
+        isActive: r.isActive,
+        memberCount: r.memberCount,
+        members: r.members.map((m) => ({ userId: m.userId, name: m.name, role: m.role })),
+      })),
+    );
   },
 
   async create(input: CreateTeamInput): Promise<Team> {

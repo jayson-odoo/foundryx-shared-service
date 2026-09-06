@@ -27,6 +27,18 @@ def _to_item(row, team_name) -> TeamAssignmentSettingItem:
         strategy=row.strategy,
         lastAssignedUserId=row.last_assigned_user_id,
         updatedAt=row.updated_at,
+        isConfigured=True,
+    )
+
+
+def _display_item(d: dict) -> TeamAssignmentSettingItem:
+    return TeamAssignmentSettingItem(
+        teamId=d["team_id"],
+        teamName=d["team_name"],
+        strategy=d["strategy"],
+        lastAssignedUserId=d["last_assigned_user_id"],
+        updatedAt=d["updated_at"],
+        isConfigured=d["is_configured"],
     )
 
 
@@ -36,14 +48,17 @@ def list_team_settings(
     current_user: User = Depends(require_any_permission("conversations.read")),
     db: Session = Depends(get_db),
 ) -> List[TeamAssignmentSettingItem]:
-    """One row per team that has EVER been configured or assigned in this
-    workspace (a team with no row yet simply defaults to `round_robin` and is
-    surfaced lazily by the PUT/GET-one path - this list is not the team
-    catalog, `GET /teams` is)."""
+    """One row per ACTIVE core team (review round 1, finding 4/5/6, amended
+    from "every configured-or-assigned-to row"): resolved through
+    `team_directory.list_active` (capability `teams.list@1`, no `teams.read`
+    permission needed) and merged with this workspace's `TeamAssignmentSetting`
+    rows - a never-configured team defaults to `round_robin`/`isConfigured:
+    false`. There is no GET-one route, only this list and the PUT below; this
+    list is now effectively the ACTIVE team catalog for this purpose (unlike
+    `GET /teams`, which is gated `teams.read` and includes inactive teams)."""
     WorkspaceService(db).get_or_404(ws_id, current_user.tenant_id)
-    rows = team_assignment_service.list_settings(db, current_user.tenant_id, ws_id)
-    names = team_directory.names(db, current_user.tenant_id, [r.team_id for r in rows])
-    return [_to_item(r, names.get(r.team_id)) for r in rows]
+    rows = team_assignment_service.list_settings_for_display(db, current_user.tenant_id, ws_id)
+    return [_display_item(r) for r in rows]
 
 
 @router.put("/{ws_id}/team-settings/{team_id}", response_model=TeamAssignmentSettingItem)

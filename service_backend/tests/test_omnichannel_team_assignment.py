@@ -342,6 +342,67 @@ def test_ineligible_members_never_picked(client, session_factory):
     assert res.json()["assignedUserId"] == eligible
 
 
+def test_trashed_member_never_picked_even_when_status_active(client, session_factory):
+    """Review round 1, finding 2 - AC-TEM-23 amended: `User.status == ACTIVE`
+    is not enough, a trashed user must be excluded too (a trashed row can
+    linger on a team's roster; `TeamService.update` blocks NEW trashed
+    additions, but `eligible_members` is the actual enforcement point for
+    assignment)."""
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    trashed = _user(session_factory, "trashedagent@foundryx.io")
+    _add_workspace_member(session_factory, ws, trashed)
+    eligible = _user(session_factory, "stillEligible@foundryx.io")
+    _add_workspace_member(session_factory, ws, eligible)
+    team = _create_team(client, h, "Trashed Eligibility Team", member_ids=[trashed, eligible])
+
+    db = session_factory()
+    trashed_row = db.query(User).filter(User.id == trashed).first()
+    trashed_row.is_trashed = True
+    db.commit()
+    db.close()
+
+    cid = _seed_contact(session_factory, ws)
+    res = client.patch(
+        f"/omnichannel/contacts/{cid}", headers=h, json={"assignedTeamId": team["id"]}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["assignedUserId"] == eligible
+
+
+def test_eligible_members_batches_the_workspace_membership_check(client, session_factory):
+    """Review round 1, finding 10 - `eligible_members` issues ONE batched
+    `WorkspaceMember.user_id.in_(...)` query for the whole roster, not one
+    `member_exists` call per member."""
+    from modules.omnichannel.services import team_assignment_service
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    members = [_user(session_factory, f"batchroster{i}@foundryx.io") for i in range(5)]
+    for uid in members:
+        _add_workspace_member(session_factory, ws, uid)
+    team = _create_team(client, h, "Batched Roster Team", member_ids=members)
+
+    db = session_factory()
+    engine = session_factory.kw["bind"]
+    membership_selects = {"n": 0}
+
+    def _before(conn, cursor, statement, *a):
+        if "workspace_members" in statement and statement.lstrip().upper().startswith("SELECT"):
+            membership_selects["n"] += 1
+
+    event.listen(engine, "before_cursor_execute", _before)
+    try:
+        eligible = team_assignment_service.eligible_members(db, DEFAULT_TENANT_ID, ws, team["id"])
+    finally:
+        event.remove(engine, "before_cursor_execute", _before)
+    db.close()
+
+    assert sorted(eligible) == sorted(members)
+    # ONE membership query for 5 roster members, not 5.
+    assert membership_selects["n"] == 1
+
+
 # ── AC-TEM-24: empty roster is a SUCCESS ─────────────────────────────────────
 def test_empty_roster_team_assigned_user_null(client, session_factory):
     h = _auth(client)
@@ -508,9 +569,15 @@ def test_team_settings_crud_and_gates(client, session_factory):
     ws = _workspace_id(client, h)
     team = _create_team(client, h, "Settings Team")
 
-    # No row yet -> empty list.
+    # Review round 1, finding 4/5/6: the list is now every ACTIVE core team
+    # (not just previously-configured rows) - a never-configured team
+    # defaults to round_robin/isConfigured false.
     listed = client.get(f"/omnichannel/workspaces/{ws}/team-settings", headers=h).json()
-    assert listed == []
+    assert len(listed) == 1
+    assert listed[0]["teamId"] == team["id"]
+    assert listed[0]["strategy"] == "round_robin"
+    assert listed[0]["isConfigured"] is False
+    assert listed[0]["updatedAt"] is None
 
     # Unknown strategy -> 422.
     res = client.put(
@@ -540,8 +607,13 @@ def test_team_settings_crud_and_gates(client, session_factory):
     listed = client.get(f"/omnichannel/workspaces/{ws}/team-settings", headers=h).json()
     assert len(listed) == 1
     assert listed[0]["teamId"] == team["id"]
+    assert listed[0]["strategy"] == "least_open"
+    assert listed[0]["isConfigured"] is True
+    assert listed[0]["updatedAt"] is not None
 
-    # Read gate: conversations.read; write gate: conversations.assign.
+    # Read gate: conversations.read; write gate: conversations.assign - NOT
+    # `teams.read` (finding 4/5/6 - a reader without `teams.read` still sees
+    # the full active roster).
     reader = _grant_only(
         client, session_factory, "reader@foundryx.io", keys=["conversations.read"]
     )

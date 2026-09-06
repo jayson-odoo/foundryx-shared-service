@@ -99,3 +99,46 @@ describe('useTeamForm - load failure classification (plan 28)', () => {
     );
   });
 });
+
+describe('useTeamForm - review round 1, nit 18: 422 fieldErrors map onto RHF fields', () => {
+  it('a name collision 422 sets the RHF name field error', async () => {
+    teamServiceCreate.mockRejectedValueOnce(
+      new ApiError('Please fix the highlighted fields.', 422, null, {
+        fieldErrors: { name: 'A team with this name already exists.' },
+      }),
+    );
+    const { result } = renderHook(() => useTeamForm(undefined, true));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    result.current.form.setValue('name', 'Sales');
+    const ok = await result.current.config?.onSave();
+
+    expect(ok).toBe(false);
+    // `getFieldState` reads RHF's LIVE internal formState directly (unlike
+    // `form.formState.errors`, whose exposed Proxy only refreshes on a
+    // React re-render of a component that actually reads it - nothing in
+    // this bare-hook render does) - the correct way to assert a `setError`
+    // took effect outside of a mounted consumer.
+    expect(result.current.form.getFieldState('name').error?.message).toBe(
+      'A team with this name already exists.',
+    );
+  });
+
+  it('an invalid-member 422 sets the RHF memberIds field error', async () => {
+    teamServiceCreate.mockRejectedValueOnce(
+      new ApiError('Please fix the highlighted fields.', 422, null, {
+        fieldErrors: { members: 'One of the selected members is invalid.' },
+      }),
+    );
+    const { result } = renderHook(() => useTeamForm(undefined, true));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    result.current.form.setValue('name', 'Support');
+    const ok = await result.current.config?.onSave();
+
+    expect(ok).toBe(false);
+    expect(result.current.form.getFieldState('memberIds').error?.message).toBe(
+      'One of the selected members is invalid.',
+    );
+  });
+});

@@ -54,7 +54,6 @@ const CARVE_OUTS = [
   'app/(protected)/platform/tenants/components/use-tenant-actions.tsx',
   'app/(protected)/user-management/users/components/use-user-actions.tsx',
   'app/(protected)/documents/shares/page.tsx',
-  'app/(protected)/user-management/teams/components/use-team-actions.tsx',
 ];
 
 /**
@@ -150,12 +149,6 @@ const DISCLOSED_PLAIN_CONFIRMS: { file: string; count: number; reason: string }[
     count: 1,
     reason:
       'operator-console Deactivate acts on ANOTHER tenant (cross-tenant) - outside the deferred-actions engine\'s own-tenant scope (`PendingAction` is keyed to the actor\'s JWT tenant). The storefront (own-tenant) Deactivate uses `deferred` (T5 fix round 2, S2).',
-  },
-  {
-    file: 'app/(protected)/user-management/teams/components/use-team-actions.tsx',
-    count: 1,
-    reason:
-      'Team delete (plan 28, roadmap A8) - a hard delete guarded by a NEW core reference guard (D-A8-15, `app/module_platform/reference_guards.py`\'s first production consumer); a team has no soft-trash/lifecycle concept (D-A8-19) so the grace-window `deferred` engine has nothing to park. The blocked-count detail (409 `team_in_use`) surfaces via `toast.error` after the attempt rather than a second dialog state - flagged for the reviewer in the S0 report.',
   },
 ];
 

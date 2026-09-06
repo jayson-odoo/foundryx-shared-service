@@ -229,7 +229,12 @@ def list_threads(
         ),
         unreplied=unreplied if unreplied is not None else view_kwargs.get("unreplied"),
         sort=sort if sort is not None else view_kwargs.get("sort"),
+        # AC-TEM-46 (review round 1, finding 9) - the explicit `teamId` query
+        # param always overrides a saved view's `teamIds` (AC-IVE-17's same
+        # override rule); a view's `teamIds` only applies when the caller
+        # sent no explicit `teamId` at all.
         team_id=team_id,
+        team_ids=None if team_id is not None else view_kwargs.get("team_ids"),
         page=page,
         page_size=page_size,
     )

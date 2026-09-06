@@ -24,17 +24,12 @@ import { teamFormPath, teamNewPath } from './paths';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
+// Whitelist mirrors the backend's `_TEAM_FILTER_COLUMNS`
+// (`app/services/team_service.py`) - keep the two in sync.
 const FILTER_FIELDS: FilterFieldDef[] = [
   { field: 'name', label: 'Name', type: 'text' },
-  {
-    field: 'status',
-    label: 'Status',
-    type: 'enum',
-    options: [
-      { label: 'Active', value: 'active' },
-      { label: 'Inactive', value: 'inactive' },
-    ],
-  },
+  { field: 'description', label: 'Description', type: 'text' },
+  { field: 'isActive', label: 'Active', type: 'bool' },
 ];
 
 /** Teams list config (plan 28, D-A8-2) - a literal Resource-shell clone of
@@ -111,7 +106,10 @@ export function useTeamsListConfig(): ResourceListConfig<Team> {
           <StatusBadge status={teamStatus(row.original.isActive)} registry={TEAM_STATUS_REGISTRY} />
         ),
         size: 120,
-        enableSorting: true,
+        // No backend sort column for `status` (`_SORT_COLUMNS` only knows
+        // name/sortOrder/createdAt) - keep sortable columns limited to ones
+        // the server can actually order by.
+        enableSorting: false,
       },
       {
         id: 'created',

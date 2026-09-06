@@ -153,7 +153,10 @@ export function expandViewFilter(view: InboxView): Partial<ConversationFilters> 
     unreplied: f.unreplied ?? false,
     sort: f.sort ?? 'newest',
     viewId: view.id,
-    teamId: null,
+    // AC-TEM-46 (review round 1, finding 9) - restore the view's saved team
+    // scope (the rail only ever selects ONE team at a time, so the first id
+    // in `teamIds` is the one that was active when the view was saved).
+    teamId: f.teamIds?.[0] ?? null,
   };
 }
 

@@ -37,6 +37,25 @@ export interface TeamMemberInput {
   role: TeamMemberRole;
 }
 
+/** `GET /teams/mine` member shape (review round 1, finding 7) - NO `email`.
+ * That route is authenticated-only (no `teams.read`), so it must never leak
+ * teammates' email addresses to every signed-in user. */
+export interface MyTeamMemberRef {
+  userId: string;
+  name: string;
+  role: TeamMemberRole;
+}
+
+/** Trimmed `GET /teams/mine` team shape - no `description`/`sortOrder`/
+ * timestamps and no member emails. */
+export interface MyTeam {
+  id: string;
+  name: string;
+  isActive: boolean;
+  memberCount: number;
+  members: MyTeamMemberRef[];
+}
+
 export interface CreateTeamInput {
   name: string;
   description?: string | null;

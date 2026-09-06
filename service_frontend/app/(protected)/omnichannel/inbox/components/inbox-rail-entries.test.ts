@@ -162,6 +162,16 @@ describe('expandViewFilter', () => {
     const v = view({ filter: { assignee: 'user', assigneeUserIds: ['usr-x'] } });
     expect(expandViewFilter(v).assignee).toBe('all');
   });
+
+  it('AC-TEM-46: restores the saved team scope from filter.teamIds (first id)', () => {
+    const v = view({ filter: { teamIds: ['team-1'] } });
+    expect(expandViewFilter(v).teamId).toBe('team-1');
+  });
+
+  it('AC-TEM-46: a view saved before teamIds existed has no team scope', () => {
+    const v = view({ filter: {} });
+    expect(expandViewFilter(v).teamId).toBeNull();
+  });
 });
 
 describe('parseRailKey', () => {

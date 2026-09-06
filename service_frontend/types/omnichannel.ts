@@ -461,8 +461,8 @@ export interface ThreadListQuery {
   unreplied?: boolean;
   sort?: ThreadSort;
   viewId?: string | null;
-  /** Team Inbox filter (plan 28) - the real backend gains this in S2; the S0
-   *  mock overlay filters the fetched page client-side in the meantime. */
+  /** Team Inbox filter (plan 28, S2) - `GET /omnichannel/contacts` filters
+   *  server-side on `assigned_team_id`. */
   teamId?: string | null;
 }
 
@@ -815,6 +815,10 @@ export interface InboxViewFilter {
   unreplied?: boolean;
   sort?: ThreadSort;
   segmentId?: string | null;
+  /** AC-TEM-46 (plan 28, roadmap A8) - a Team Inbox scope a saved view can
+   *  pin; validated tenant-scoped at save time. Views saved before this
+   *  slice have no `teamIds` key and keep working unchanged. */
+  teamIds?: string[];
 }
 
 /** A saved inbox view (AC-IVE-18/19). Own views need only `conversations.read`
@@ -864,14 +868,17 @@ export interface ShortcutRunResult {
 
 export type TeamAssignmentStrategy = 'round_robin' | 'least_open';
 
-/** A team's assignment-pick strategy within one workspace. A team with no
- *  row yet simply defaults to `round_robin` (this list is lazily populated
- *  by the settings tab from `GET /teams`, NOT the source of the team
- *  catalog). */
+/** A team's assignment-pick strategy within one workspace - one row per
+ *  ACTIVE core team (review round 1, finding 4/5/6: the backend now returns
+ *  the full active-team roster merged with any configured settings, so this
+ *  is the ONLY source the tab needs - no separate `GET /teams` call). A
+ *  never-configured team defaults to `round_robin`/`isConfigured: false`/
+ *  `updatedAt: null`. */
 export interface TeamAssignmentSetting {
   teamId: string;
   teamName: string | null;
   strategy: TeamAssignmentStrategy;
   lastAssignedUserId: string | null;
-  updatedAt: string; // ISO
+  updatedAt: string | null; // ISO, null when never configured
+  isConfigured: boolean;
 }

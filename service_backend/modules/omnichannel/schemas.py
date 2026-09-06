@@ -614,13 +614,19 @@ class CloseReasonUpdate(ApiModel):
 class TeamAssignmentSettingItem(ApiModel):
     """The per-(workspace, CORE team) pick-strategy row (plan 28 S2,
     AC-TEM-28). `teamName` resolves through the teams capability (null on a
-    foreign/deleted team, same rule as `ThreadItem.assignedTeamName`)."""
+    foreign/deleted team, same rule as `ThreadItem.assignedTeamName`).
+
+    Review round 1, finding 4/5/6: `GET .../team-settings` now returns one
+    row per ACTIVE core team (not just previously-configured ones), so
+    `updatedAt` is `None`/`isConfigured` is `false` for a team that has never
+    had its strategy set."""
 
     teamId: str
     teamName: Optional[str] = None
     strategy: str  # round_robin | least_open
     lastAssignedUserId: Optional[str] = None
-    updatedAt: datetime
+    updatedAt: Optional[datetime] = None
+    isConfigured: bool = False
 
 
 class TeamAssignmentSettingUpdate(ApiModel):
@@ -669,6 +675,12 @@ class InboxViewFilter(ApiModel):
     unreplied: Optional[bool] = None
     sort: Optional[Literal["newest", "oldest", "unreplied_first", "longest_waiting"]] = None
     segmentId: Optional[str] = None
+    # AC-TEM-46 (plan 28, roadmap A8, review round 1 finding 9) - a Team
+    # Inbox scope a saved view can pin. Validated tenant-scoped at save time
+    # via the core `team.resolve@1` capability (`_validate_filter_ids`
+    # below); views saved before this slice have no `teamIds` key and keep
+    # working unchanged (`None` = no team scope, not "every team").
+    teamIds: Optional[List[str]] = None
 
 
 class InboxViewItem(ApiModel):

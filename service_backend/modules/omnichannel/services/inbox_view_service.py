@@ -25,6 +25,7 @@ from app.models.user import User
 
 from ..models import Channel, ContactTag, InboxView
 from ..schemas import InboxViewFilter
+from . import team_directory
 
 MAX_VIEWS_PER_WORKSPACE = 50
 
@@ -181,6 +182,17 @@ class InboxViewService:
                 raise InboxViewValidationError(
                     "One or more assignees do not belong to this tenant.", "filter"
                 )
+        if filt.teamIds:
+            # AC-TEM-46 - each team id resolves through the core teams
+            # capability (`team.resolve@1`, tenant-scoped) - the module's
+            # ONLY door to core teams, same as every other team touchpoint
+            # in this module. Workspace-scoping doesn't apply (teams are
+            # tenant-wide, not per-workspace).
+            for team_id in filt.teamIds:
+                if team_directory.resolve(self.db, tenant_id, team_id) is None:
+                    raise InboxViewValidationError(
+                        "One or more teams do not belong to this tenant.", "filter"
+                    )
 
     def create(
         self, workspace_id: str, tenant_id: str, owner_user_id: str, payload
@@ -286,6 +298,8 @@ class InboxViewService:
             out["tag_ids"] = list(filt.tagIds)
         if filt.channelIds:
             out["channel_ids"] = list(filt.channelIds)
+        if filt.teamIds:
+            out["team_ids"] = list(filt.teamIds)
         if filt.priority is not None:
             out["priority"] = None if filt.priority == "ALL" else filt.priority
         if filt.unreplied is not None:

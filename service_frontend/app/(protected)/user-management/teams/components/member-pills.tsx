@@ -15,8 +15,10 @@ function MemberBadge({ member }: { member: TeamMemberRef }) {
 }
 
 /**
- * Team members as pills; em-dash when none. Width-aware "+N" popover for the
- * list's Members column, same pattern as `RolesCell` (Users clone, D-A8-2).
+ * Team members as pills for the Teams list's Members column; a hyphen
+ * placeholder when there are none. Width-aware "+N" popover via
+ * `OverflowPills`, the same pattern the Users list's `RolesCell`
+ * (`role-pills.tsx`) uses for its Roles column.
  */
 export function MemberPills({ members }: { members: TeamMemberRef[] }) {
   if (!members.length) return <span className="text-muted-foreground">-</span>;

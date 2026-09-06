@@ -388,6 +388,65 @@ export const ACTION_CATALOG: ActionCatalogEntry[] = [
     ],
   },
   {
+    // Plan 28 S3 (roadmap A8, D-A8-5) - mirrors the backend ActionDef in
+    // `modules/omnichannel/workflow_nodes.py` field-for-field (tester D1: the
+    // backend registered it, the palette could not find it). `teamId` is the
+    // generic `team` field type (core `team_capabilities.py` option provider).
+    kind: 'action',
+    type: 'omnichannel.assign_conversation',
+    label: 'Assign Conversation',
+    description: 'Assign a conversation to a user, a team, or unassign it.',
+    icon: 'UserRoundCog',
+    category: 'Actions',
+    module: 'omnichannel',
+    fields: [
+      {
+        key: 'contactId',
+        label: 'Contact',
+        type: 'text',
+        required: true,
+        mergeable: true,
+        placeholder: '{{ trigger.contact.id }}',
+      },
+      {
+        key: 'mode',
+        label: 'Assign to',
+        type: 'select',
+        required: true,
+        options: [
+          { value: 'user', label: 'A user' },
+          { value: 'team', label: 'A team' },
+          { value: 'unassign', label: 'Unassign' },
+        ],
+      },
+      {
+        key: 'userId',
+        label: 'User',
+        type: 'text',
+        required: true,
+        mergeable: true,
+        showWhen: { field: 'mode', value: 'user' },
+      },
+      { key: 'teamId', label: 'Team', type: 'team', required: true, showWhen: { field: 'mode', value: 'team' } },
+      {
+        key: 'strategy',
+        label: 'Strategy',
+        type: 'select',
+        showWhen: { field: 'mode', value: 'team' },
+        options: [
+          { value: 'default', label: "Team's saved strategy" },
+          { value: 'round_robin', label: 'Round robin' },
+          { value: 'least_open', label: 'Least open' },
+        ],
+      },
+    ],
+    outputs: [
+      { key: 'assignedUserId', label: 'Assigned user id' },
+      { key: 'assignedTeamId', label: 'Assigned team id' },
+      { key: 'assigned', label: 'Assigned' },
+    ],
+  },
+  {
     kind: 'action',
     type: 'ai_agent.run',
     label: 'AI Agent',

@@ -98,9 +98,10 @@ function renderRail(
   setFilters: (patch: Partial<ConversationFilters>) => void = vi.fn(),
 ) {
   const refresh = vi.fn();
+  const create = vi.fn().mockResolvedValue(view());
   useInboxViewsMock.mockReturnValue({
     views,
-    create: vi.fn(),
+    create,
     update: vi.fn(),
     refresh,
   });
@@ -108,7 +109,7 @@ function renderRail(
   render(
     <InboxViewRail workspaceId="wsp-001" filters={filters} setFilters={setFilters} variant="sidebar" />,
   );
-  return { refresh };
+  return { refresh, create };
 }
 
 /** Open a view's manage menu and click Delete - the delete flow is a
@@ -177,6 +178,13 @@ describe('InboxViewRail - delete is a deferred action (review round 2)', () => {
 
   it('Delete parks `inbox_views.delete` via the pending-actions service - no confirm dialog (finding 4)', async () => {
     withSession('usr-owner', []);
+    // Tester D5 (plan 28 round 1): this test only asserts the PARKED state,
+    // so it must not race the beforeEach's 50ms window against the hook's
+    // 1s poll tick (under CPU load the window expired and the mock had
+    // already committed before `current()` was read). A 10s window makes
+    // the parked read deterministic; the commit-path tests below keep the
+    // tiny window on purpose.
+    setMockWindowSeconds('destructive', 10);
     renderRail([view({ id: 'view-1', ownerUserId: 'usr-owner' })]);
 
     await openMenuAndDelete('view-1');
@@ -310,7 +318,7 @@ describe('InboxViewRail - Teams (plan 28, D-A8-4)', () => {
     renderRail([], DEFAULT_FILTERS, setFilters);
 
     expect(screen.getByTestId('rail-team:team-1')).toHaveTextContent('Sales');
-    // Not privileged (no conversations.assign) - no "All teams" group.
+    // Not privileged (no teams.read) - no "All teams" group.
     expect(screen.queryByText('All teams')).not.toBeInTheDocument();
 
     const user = userEvent.setup();
@@ -325,8 +333,8 @@ describe('InboxViewRail - Teams (plan 28, D-A8-4)', () => {
     );
   });
 
-  it('shows an All teams group for conversations.assign holders (a team not the caller\'s own)', () => {
-    withSession('usr-1', ['conversations.assign']);
+  it('shows an All teams group for teams.read holders (a team not the caller\'s own)', () => {
+    withSession('usr-1', ['teams.read']);
     useMyTeamsMock.mockReturnValue({
       teams: [{ id: 'team-1', name: 'Sales' }], isLoading: false, error: null, reload: vi.fn(),
     });
@@ -339,7 +347,7 @@ describe('InboxViewRail - Teams (plan 28, D-A8-4)', () => {
     expect(screen.getByTestId('rail-team:team-2')).toHaveTextContent('Support');
   });
 
-  it('hides the "All teams" group without conversations.assign, even when other teams exist', () => {
+  it('hides the "All teams" group without teams.read, even when other teams exist', () => {
     withSession('usr-1', []);
     useMyTeamsMock.mockReturnValue({
       teams: [{ id: 'team-1', name: 'Sales' }], isLoading: false, error: null, reload: vi.fn(),
@@ -363,5 +371,34 @@ describe('InboxViewRail - Teams (plan 28, D-A8-4)', () => {
     });
     renderRail([], { ...DEFAULT_FILTERS, teamId: 'team-1', assignee: 'unassigned' });
     expect(screen.getByTestId('rail-team:team-1:unassigned')).toHaveClass('bg-accent');
+  });
+
+  it('review round 1, finding 8: hides the "My teams" heading when the caller has no teams of their own, even with an All teams group', () => {
+    withSession('usr-1', ['teams.read']);
+    useMyTeamsMock.mockReturnValue({ teams: [], isLoading: false, error: null, reload: vi.fn() });
+    useTeamsMock.mockReturnValue({
+      teams: [{ id: 'team-1', name: 'Sales' }], isLoading: false, error: null, reload: vi.fn(),
+    });
+    renderRail([]);
+    expect(screen.queryByText('My teams')).not.toBeInTheDocument();
+    expect(screen.getByText('All teams')).toBeInTheDocument();
+  });
+
+  it('review round 1, finding 9: saving a view while a team is selected captures teamIds', async () => {
+    withSession('usr-1', []);
+    useMyTeamsMock.mockReturnValue({
+      teams: [{ id: 'team-1', name: 'Sales' }], isLoading: false, error: null, reload: vi.fn(),
+    });
+    useTeamsMock.mockReturnValue({ teams: [], isLoading: false, error: null, reload: vi.fn() });
+    const { create } = renderRail([], { ...DEFAULT_FILTERS, teamId: 'team-1' });
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('save-view-trigger'));
+    await user.type(await screen.findByTestId('inbox-view-name'), 'My Team View');
+    await user.click(screen.getByTestId('inbox-view-submit'));
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ filter: expect.objectContaining({ teamIds: ['team-1'] }) }),
+    );
   });
 });

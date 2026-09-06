@@ -343,6 +343,151 @@ def test_list_search_sort_pagination(client):
     page0 = client.get("/teams?page=0&page_size=1", headers=h).json()
     assert len(page0["data"]) == 1
     assert page0["total"] >= 3
+    assert page0["page"] == 0
+
+
+# ── review round 1, blocker 1: server-side filter over the whitelisted
+# {name, description, isActive} column map ─────────────────────────────────
+
+
+def _filter_condition(field, operator, value):
+    return {"kind": "condition", "field": field, "operator": operator, "value": value}
+
+
+def test_list_filter_by_name_contains(client):
+    import json
+
+    h = _auth(client)
+    client.post("/teams", headers=h, json={"name": "FilterAlpha", "members": []})
+    client.post("/teams", headers=h, json={"name": "FilterBeta", "members": []})
+
+    tree = {
+        "kind": "group",
+        "combinator": "and",
+        "rules": [_filter_condition("name", "contains", "Alpha")],
+    }
+    res = client.get(f"/teams?filter={json.dumps(tree)}", headers=h)
+    assert res.status_code == 200
+    names = [t["name"] for t in res.json()["data"]]
+    assert "FilterAlpha" in names
+    assert "FilterBeta" not in names
+
+
+def test_list_filter_by_description_and_is_active(client):
+    import json
+
+    h = _auth(client)
+    client.post(
+        "/teams",
+        headers=h,
+        json={"name": "FilterDescActive", "description": "billing team", "isActive": True, "members": []},
+    )
+    client.post(
+        "/teams",
+        headers=h,
+        json={"name": "FilterDescInactive", "description": "billing team", "isActive": False, "members": []},
+    )
+
+    desc_tree = {
+        "kind": "group",
+        "combinator": "and",
+        "rules": [_filter_condition("description", "contains", "billing")],
+    }
+    res = client.get(f"/teams?filter={json.dumps(desc_tree)}", headers=h).json()
+    names = {t["name"] for t in res["data"]}
+    assert {"FilterDescActive", "FilterDescInactive"} <= names
+
+    active_tree = {
+        "kind": "group",
+        "combinator": "and",
+        "rules": [_filter_condition("isActive", "is_true", None)],
+    }
+    active_res = client.get(f"/teams?filter={json.dumps(active_tree)}", headers=h).json()
+    active_names = {t["name"] for t in active_res["data"]}
+    assert "FilterDescActive" in active_names
+    assert "FilterDescInactive" not in active_names
+
+
+def test_list_filter_unknown_field_is_422(client):
+    import json
+
+    h = _auth(client)
+    tree = {
+        "kind": "group",
+        "combinator": "and",
+        "rules": [_filter_condition("email", "eq", "x")],
+    }
+    res = client.get(f"/teams?filter={json.dumps(tree)}", headers=h)
+    assert res.status_code == 422
+
+
+def test_list_filter_malformed_json_is_422(client):
+    h = _auth(client)
+    res = client.get("/teams?filter=not-json", headers=h)
+    assert res.status_code == 422
+
+
+# ── review round 1, blocker 2: a trashed user can never be ADDED as a member
+# (`_validate_members` no longer resolves with `include_trashed=True`) ───────
+
+
+def test_trashed_user_cannot_be_added_as_a_new_member(client, session_factory):
+    h = _auth(client)
+    uid = _user(session_factory, "trashee@foundryx.io")
+    db = session_factory()
+    user = db.query(User).filter(User.id == uid).first()
+    user.is_trashed = True
+    db.commit()
+    db.close()
+
+    res = client.post(
+        "/teams", headers=h, json={"name": "TrashedMemberTeam", "members": [{"userId": uid, "role": "member"}]}
+    )
+    assert res.status_code == 422
+    assert "members" in res.json()["detail"]["fieldErrors"]
+
+
+def test_retained_trashed_member_survives_rename_but_new_trashed_add_is_422(client, session_factory):
+    """Review round 1 design note (accepted, narrowed): the trashed guard
+    applies ONLY to newly added ids. A PATCH that renames a team and
+    re-submits its unchanged roster - one member trashed AFTER joining -
+    must return 200 (the retained id passes); a PATCH that ADDS a trashed
+    user must 422 with `fieldErrors.members`."""
+    h = _auth(client)
+    keeper = _user(session_factory, "keeper-later-trashed@foundryx.io")
+    newcomer = _user(session_factory, "newcomer-trashed@foundryx.io")
+    team = client.post(
+        "/teams", headers=h, json={"name": "RosterTeam", "members": [{"userId": keeper, "role": "member"}]}
+    ).json()
+    assert client.get(f"/teams/{team['id']}", headers=h).status_code == 200
+
+    db = session_factory()
+    for uid in (keeper, newcomer):
+        db.query(User).filter(User.id == uid).first().is_trashed = True
+    db.commit()
+    db.close()
+
+    # Rename + unchanged roster (keeper now trashed) -> 200, roster intact.
+    res = client.patch(
+        f"/teams/{team['id']}",
+        headers=h,
+        json={"name": "RosterTeam Renamed", "members": [{"userId": keeper, "role": "lead"}]},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["name"] == "RosterTeam Renamed"
+    assert [m["userId"] for m in res.json()["members"]] == [keeper]
+    assert res.json()["members"][0]["role"] == "lead"
+
+    # Adding a trashed NEW user -> 422 on members, nothing written.
+    res2 = client.patch(
+        f"/teams/{team['id']}",
+        headers=h,
+        json={"members": [{"userId": keeper, "role": "member"}, {"userId": newcomer, "role": "member"}]},
+    )
+    assert res2.status_code == 422
+    assert "members" in res2.json()["detail"]["fieldErrors"]
+    after = client.get(f"/teams/{team['id']}", headers=h).json()
+    assert [m["userId"] for m in after["members"]] == [keeper]
 
 
 # ── mine / tenant isolation ──────────────────────────────────────────────────
@@ -371,6 +516,36 @@ def test_mine_returns_only_callers_teams_no_teams_read_needed(client, session_fa
     h2 = _auth(client, email=email, password=password)
     assert client.get("/teams/mine", headers=h2).status_code == 200
     assert client.get("/teams", headers=h2).status_code == 403
+
+
+def test_mine_response_has_no_member_emails(client, session_factory):
+    """Review round 1, finding 7 - `/teams/mine` is authenticated-only (no
+    `teams.read`), so its member rows must never carry `email` even though
+    the admin `GET /teams` shape does."""
+    h = _auth(client)
+    me = client.get("/auth/me", headers=h).json()
+    other = _user(session_factory, "trimmedmate@foundryx.io")
+    team = client.post(
+        "/teams",
+        headers=h,
+        json={
+            "name": "TrimmedMineTeam",
+            "members": [
+                {"userId": me["id"], "role": "lead"},
+                {"userId": other, "role": "member"},
+            ],
+        },
+    ).json()
+    assert any("email" in m for m in team["members"])  # admin shape still has it
+
+    mine = client.get("/teams/mine", headers=h).json()
+    mine_team = next(t for t in mine if t["id"] == team["id"])
+    assert mine_team["memberCount"] == 2
+    assert mine_team["isActive"] is True
+    assert "description" not in mine_team
+    for m in mine_team["members"]:
+        assert "email" not in m
+        assert set(m.keys()) == {"userId", "name", "role"}
 
 
 def _provision_other_tenant(session_factory, slug="other-teams"):

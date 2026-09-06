@@ -99,8 +99,12 @@ IDs: `AC-TEM-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
 - **AC-TEM-14 [BE]** Given `teams.members@1` called with a team of the caller's tenant, then it
   returns `[{userId, role, name}]` resolved tenant-scoped; called with an unknown, deleted or
   foreign-tenant team id it returns `None` and never another tenant's users. `team.resolve@1` returns
-  `{id, name, isActive}` or `None` under the same rules, and the omnichannel module validates
-  `assigned_team_id` through `validate_soft_ref(db, tenant_id, SoftRef("core", "team", id))`.
+  `{id, name, isActive}` or `None` under the same rules. Amended 2026-09-06 (review round 1): the
+  omnichannel module's actual save-time gate is `team_directory.validate_assignable` (`modules/
+  omnichannel/services/team_directory.py`) - it resolves the SoftRef via `resolve_soft_ref` (through
+  `team_directory.resolve`) AND additionally requires `isActive` (`resolve_active`), so a valid-but-
+  inactive team is rejected at save just like an unknown/foreign one; it does not call the generic
+  `validate_soft_ref` helper directly.
 - **AC-TEM-15 [BE]** Given the teams capability is NOT registered (a boot path that never ran the
   core registration), then every omnichannel team code path degrades instead of failing: no 500, the
   team pickers return empty, an attempt to set `assignedTeamId` returns 422, and an already stored
@@ -137,7 +141,9 @@ IDs: `AC-TEM-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   workspaces and other tenants are excluded); ties are broken by the same deterministic order the
   round-robin uses and the cursor still advances.
 - **AC-TEM-23 [BE]** Given a team member who is not a `WorkspaceMember` of the contact's workspace, or
-  whose core user is not `ACTIVE`, then no strategy ever picks them, in either strategy.
+  whose core user is not `ACTIVE`, then no strategy ever picks them, in either strategy. Amended
+  2026-09-06 (review round 1): "active" means core `User.status == ACTIVE` **AND** `User.is_trashed
+  is False` - a trashed user is never eligible even if their status column still reads `ACTIVE`.
 - **AC-TEM-24 [BE]** Given a team with NO eligible member, when a thread is assigned to it, then the
   call succeeds (200), the thread is stored team-assigned with `assigned_user_id` NULL, and it appears
   in that team's Unassigned queue. This is not an error path.
@@ -155,7 +161,11 @@ IDs: `AC-TEM-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   `PUT /omnichannel/workspaces/{wsId}/team-settings/{teamId} {strategy}`, then read requires
   `conversations.read`, write requires `conversations.assign`, the default when no row exists is
   `round_robin`, a strategy outside the enum returns 422, and a team id that fails `team.resolve@1`
-  returns 404.
+  returns 404. Amended 2026-09-06 (review round 1, finding 4/5/6): the GET now returns one row per
+  ACTIVE core team (resolved via `team_directory.list_active`, capability `teams.list@1` - no
+  `teams.read` permission needed), not just previously-configured rows, so a `conversations.read`
+  holder without `teams.read` can still populate the full team-assignment tab; each row carries
+  `isConfigured` and a nullable `updatedAt` (null for a never-configured team).
 - **AC-TEM-29 [BE]** Given any thread read (list, detail, gateway, webhook payload), then
   `ThreadItem` carries `assignedTeamId` and `assignedTeamName`; the name is resolved through the
   tenant-scoped capability in ONE batched call per list render, and a stale, deleted or foreign team
@@ -240,6 +250,17 @@ IDs: `AC-TEM-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
 - **AC-TEM-46 [FE]** Given a saved inbox view, then `InboxViewFilter` gains `teamIds?: [id]`
   validated against the tenant at save time; views saved before this slice keep working unchanged and
   `extra="forbid"` still 422s an unknown key.
+  - **Implementation note (review round 1, finding 9):** each id validates through the module's
+    `team_directory.resolve` (core `team.resolve@1`, tenant-scoped) in `InboxViewService.
+    _validate_filter_ids`, mirroring every other embedded id on this filter. `ContactRepository.
+    list_threads` gains `team_ids: Optional[List[str]]` alongside the existing singular `team_id`
+    (an `IN` filter, mutually exclusive with the singular one); the thread-list route merges them
+    with the SAME override rule AC-IVE-17 uses for every other dimension - an explicit `?teamId=`
+    query param always wins, a saved view's `teamIds` only applies when none was sent. The rail
+    captures the currently-selected team (if any) into `teamIds: [teamId]` when a view is saved
+    (the rail only ever selects ONE team at a time - `teamIds` is plural for forward-compatibility,
+    not because the UI can pick several today), and `expandViewFilter` restores `filters.teamId`
+    from `teamIds[0]` on reload/re-selection.
 - **AC-TEM-47 [FE]** Given a team assign, then the thread row, the rail counts (if present) and the
   drawer header update over the existing `contact.updated` WS push with no manual refresh; a 422
   reverts the optimistic state and shows the server message.

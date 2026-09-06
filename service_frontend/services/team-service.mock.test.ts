@@ -26,11 +26,17 @@ describe('mockTeamService (plan 28)', () => {
     expect(withDemo).toHaveLength(2);
   });
 
-  it('mine() returns only the teams the demo user belongs to', async () => {
+  it('mine() returns only the teams the demo user belongs to (trimmed shape, no email)', async () => {
     const { mockTeamService } = await import('./team-service.mock');
     const mine = await mockTeamService.mine();
     expect(mine.length).toBe(2);
-    expect(mine.every((t) => t.members.some((m) => m.email === 'demo@example.com'))).toBe(true);
+    expect(mine.every((t) => t.members.some((m) => m.userId === 'u2'))).toBe(true);
+    for (const t of mine) {
+      expect(t).not.toHaveProperty('description');
+      for (const m of t.members) {
+        expect(m).not.toHaveProperty('email');
+      }
+    }
   });
 
   it('rejects a blank name with a 422 fieldErrors.name', async () => {

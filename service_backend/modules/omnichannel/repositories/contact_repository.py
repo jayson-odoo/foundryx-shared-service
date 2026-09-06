@@ -49,6 +49,7 @@ class ContactRepository:
         me_user_id: Optional[str] = None,
         me_external_agent_id: Optional[str] = None,
         team_id: Optional[str] = None,
+        team_ids: Optional[List[str]] = None,
         status_key: Optional[str] = None,  # OPEN | SNOOZED | CLOSED | None=ALL
         status_keys: Optional[List[str]] = None,  # a saved view's multi-status filter
         priority: Optional[str] = None,
@@ -71,6 +72,12 @@ class ContactRepository:
             # here (that would be an existence oracle) - it just narrows to
             # zero matching rows, same as every other id filter on this list.
             q = q.filter(Contact.assigned_team_id == team_id)
+        elif team_ids:
+            # AC-TEM-46 (review round 1, finding 9) - a saved view's
+            # `teamIds` (plural) filter, mutually exclusive with the
+            # singular explicit `team_id` above (the router merges the two,
+            # explicit always wins).
+            q = q.filter(Contact.assigned_team_id.in_(team_ids))
         if assignee == "me":
             # "Mine" resolves to the CALLER's identity - a federated (embed) agent
             # matches on the external-agent column, a native user on the user column.

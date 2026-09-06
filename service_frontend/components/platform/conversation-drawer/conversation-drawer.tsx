@@ -36,9 +36,11 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useCan } from '@/hooks/use-can';
 import { useCloseReasons } from '@/hooks/use-close-reasons';
 import { useMediaQuery } from '@/hooks/use-media-query';
 import { useMessages } from '@/hooks/use-messages';
+import { useMyTeams } from '@/hooks/use-my-teams';
 import { useTeams } from '@/hooks/use-teams';
 import { useThreadEvents } from '@/hooks/use-thread-events';
 import { conversationService } from '@/services/conversation-service';
@@ -168,8 +170,22 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [replyTo, setReplyTo] = useState<ConversationMessage | null>(null);
-  // Team Inbox (plan 28, S0 mock) - the assignee dropdown's Teams group.
-  const { teams } = useTeams();
+  // Team Inbox (plan 28) - the assignee dropdown's Teams group. `GET /teams`
+  // is gated `teams.read`, which a plain Agent (`conversations.assign` only)
+  // doesn't hold - `useTeams` is only fetched for a `teams.read` holder;
+  // `useMyTeams` (no `teams.read` required) always resolves so ANY caller
+  // with `conversations.assign` can still assign to a team they belong to
+  // (review round 1, finding 4/5/6). Union + dedupe by id.
+  const canReadAllTeams = useCan().can('teams.read');
+  const { teams: allTeams } = useTeams({ enabled: canReadAllTeams });
+  const { teams: myTeams } = useMyTeams();
+  const teams = useMemo(() => {
+    const byId = new Map(allTeams.map((t) => [t.id, { id: t.id, name: t.name }]));
+    for (const t of myTeams) {
+      if (!byId.has(t.id)) byId.set(t.id, { id: t.id, name: t.name });
+    }
+    return Array.from(byId.values());
+  }, [allTeams, myTeams]);
   const handleAssignTeam = useCallback(
     (teamId: string | null) => {
       assignTeam(teamId).catch((e: unknown) => {

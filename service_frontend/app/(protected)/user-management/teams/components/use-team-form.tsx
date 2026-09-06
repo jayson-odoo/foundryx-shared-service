@@ -64,6 +64,14 @@ export function useTeamForm(teamId: string | undefined, initialEditing: boolean)
   });
 
   // Load the tenant's users once - the Members/Leads picker's option set.
+  // Review round 1, nit 17: `MultiSelect` (`components/platform/multi-
+  // select`) has no remote-search mode yet (neither does `SearchSelect` -
+  // both are client-side-filter-only over a fixed option array), so this is
+  // a documented CAP at 200 users, not a search-as-you-type fetch. A tenant
+  // with more than 200 users would silently lose the tail of the option
+  // list here; widening this into a proper remote-search picker is future
+  // work (would need a new `MultiSelect` async-options mode), not a one-line
+  // fix in this file.
   useEffect(() => {
     userService
       .list({ page: 0, pageSize: 200, sort: null })
@@ -130,17 +138,36 @@ export function useTeamForm(teamId: string | undefined, initialEditing: boolean)
           isActive: values.isActive,
           members: toMembersPayload(values),
         };
-        if (creating) {
-          const created = await teamService.create(payload);
-          toast.success('Team created.');
-          router.push(teamFormPath(created.id));
-        } else {
-          const updated = await teamService.update(teamId, payload);
-          setTeam(updated);
-          form.reset(toFormValues(updated));
-          toast.success('Team updated.');
+        try {
+          if (creating) {
+            const created = await teamService.create(payload);
+            toast.success('Team created.');
+            router.push(teamFormPath(created.id));
+          } else {
+            const updated = await teamService.update(teamId, payload);
+            setTeam(updated);
+            form.reset(toFormValues(updated));
+            toast.success('Team updated.');
+          }
+          ok = true;
+        } catch (e) {
+          // Review round 1, nit 18 - a 422 `{fieldErrors}` maps onto the RHF
+          // field it names (inline highlight, matches every other RHF form
+          // in the app - see `inbox-view-dialog.tsx`) instead of only a
+          // generic toast.
+          if (e instanceof ApiError && e.status === 422) {
+            const fieldErrors = (e.detail as { fieldErrors?: Record<string, string> } | undefined)
+              ?.fieldErrors;
+            if (fieldErrors?.name) form.setError('name', { message: fieldErrors.name });
+            if (fieldErrors?.members) form.setError('memberIds', { message: fieldErrors.members });
+            if (!fieldErrors?.name && !fieldErrors?.members) {
+              toast.error(e.message || 'Please fix the highlighted fields.');
+            }
+          } else {
+            toast.error(e instanceof Error ? e.message : 'Could not save the team.');
+          }
+          ok = false;
         }
-        ok = true;
       })();
       return ok;
     };
