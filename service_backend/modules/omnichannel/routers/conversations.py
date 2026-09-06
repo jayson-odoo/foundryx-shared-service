@@ -61,10 +61,15 @@ from ..services.contact_profile_service import ProfilePatchError
 from ..services.conversation_service import (
     ConversationService,
     InvalidPatch,
+    InvalidThreadFilter,
     ThreadAlreadyClosed,
     ThreadNotFound,
 )
-from ..services.inbox_view_service import InboxViewNotFound, InboxViewService
+from ..services.inbox_view_service import (
+    InboxViewNotFound,
+    InboxViewService,
+    InboxViewValidationError,
+)
 from ..services.lifecycle_service import LifecycleStageNotFound
 from ..services.media_pipeline import META_CEILINGS, MediaRejected
 from ..services.message_service import MessageService, SendRejected
@@ -124,11 +129,39 @@ def list_threads(
             status_code=422, detail="Contact segments are not available yet."
         )
 
+    # Round-3 codex triage B10/B11 - `tag_ids`/`channel_ids` are validated
+    # against the tenant/workspace ONLY when EXPLICIT (this-request), never a
+    # saved view's already-validated expansion (see
+    # `assert_explicit_filters_valid`'s docstring for why - a view's stored
+    # ids were validated at save time and should keep degrading gracefully
+    # if one is later deleted, not 422 the whole view forever). `assignee`
+    # can't use the same explicit-only rule: `assigneeUserIds` may legitimately
+    # come from the VIEW while only `assignee` itself is overridden (AC-IVE-17
+    # overrides each dimension independently) - that check runs below on the
+    # MERGED effective pair once the view is expanded.
+    explicit_tag_ids = _csv(tag_ids) if tag_ids is not None else None
+    explicit_channel_ids = _csv(channel_ids) if channel_ids is not None else None
+    try:
+        ConversationService(db).assert_explicit_filters_valid(
+            tenant_id=principal.tenant_id,
+            workspace_id=workspace_id,
+            tag_ids=explicit_tag_ids,
+            channel_ids=explicit_channel_ids,
+        )
+    except InvalidThreadFilter as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
     view_kwargs: dict = {}
     if view_id:
         try:
+            # B12 (round-3 codex triage) - visibility ("is this MY personal
+            # view") is an ownership/"me" check, not attribution - authorize
+            # as the EFFECTIVE user (impersonation target when active), per
+            # the house rule (`resolve_effective_actor`'s own docstring makes
+            # the same distinction for the lifecycle move). `actor_user_id`
+            # stays reserved for attribution (entity-event actor, writes).
             view = InboxViewService(db).get_visible(
-                view_id, principal.tenant_id, principal.actor_user_id
+                view_id, principal.tenant_id, principal.effective_user_id
             )
         except InboxViewNotFound:
             raise HTTPException(status_code=404, detail="View not found")
@@ -140,7 +173,15 @@ def list_threads(
         # adopts the view's own workspace.
         if workspace_id != view.workspace_id:
             raise HTTPException(status_code=404, detail="View not found")
-        view_kwargs = InboxViewService(db).expand(view)
+        try:
+            view_kwargs = InboxViewService(db).expand(view)
+        except InboxViewValidationError:
+            # B18 - a view carrying a (pre-guard-era, or planted) segmentId
+            # 422s the same way an explicit `?segmentId=` query param does,
+            # rather than silently expanding into "no filter".
+            raise HTTPException(
+                status_code=422, detail="Contact segments are not available yet."
+            )
 
     final_status_key = None
     final_status_keys = view_kwargs.get("status_keys")
@@ -148,16 +189,25 @@ def list_threads(
         final_status_key = None if thread_status == "ALL" else thread_status
         final_status_keys = None
 
+    final_assignee = assignee if assignee is not None else view_kwargs.get("assignee", "all")
+    final_assignee_user_ids = (
+        _csv(assignee_user_ids) if assignee_user_ids is not None else view_kwargs.get("assignee_user_ids")
+    )
+    # B10 - validated on the EFFECTIVE (merged) pair, since either half may
+    # independently come from the view (see the comment above).
+    if final_assignee == "user" and not final_assignee_user_ids:
+        raise HTTPException(
+            status_code=422, detail="assigneeUserIds is required when assignee=user."
+        )
+
     items, total = ConversationService(db).list_threads(
         principal.tenant_id,
         workspace_id=workspace_id,
-        assignee=assignee if assignee is not None else view_kwargs.get("assignee", "all"),
-        assignee_user_ids=(
-            _csv(assignee_user_ids)
-            if assignee_user_ids is not None
-            else view_kwargs.get("assignee_user_ids")
-        ),
-        me_user_id=principal.actor_user_id,
+        assignee=final_assignee,
+        assignee_user_ids=final_assignee_user_ids,
+        # B12 - "Mine" is a "me" check, not attribution: the EFFECTIVE user
+        # (the impersonation target when active), same reasoning as above.
+        me_user_id=principal.effective_user_id,
         me_external_agent_id=principal.external_agent_id,
         status_key=final_status_key,
         status_keys=final_status_keys,
@@ -172,9 +222,9 @@ def list_threads(
             if lifecycle_stage_ids is not None
             else view_kwargs.get("lifecycle_stage_ids")
         ),
-        tag_ids=_csv(tag_ids) if tag_ids is not None else view_kwargs.get("tag_ids"),
+        tag_ids=explicit_tag_ids if tag_ids is not None else view_kwargs.get("tag_ids"),
         channel_ids=(
-            _csv(channel_ids) if channel_ids is not None else view_kwargs.get("channel_ids")
+            explicit_channel_ids if channel_ids is not None else view_kwargs.get("channel_ids")
         ),
         unreplied=unreplied if unreplied is not None else view_kwargs.get("unreplied"),
         sort=sort if sort is not None else view_kwargs.get("sort"),
@@ -346,8 +396,9 @@ def list_events(
     tenant contact_id is a uniform 404, never a 403."""
     principal.require_read()
     enforce_thread_access(db, principal, contact_id)
-    contact = ConversationService(db).repo.get_by_id(contact_id, principal.tenant_id)
-    if contact is None:
+    try:
+        ConversationService(db).assert_contact_exists(contact_id, principal.tenant_id)
+    except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
     rows, total = event_service.list_for_contact(
         db, contact_id, principal.tenant_id, page=page, page_size=page_size
@@ -394,7 +445,11 @@ def run_shortcut(
     Code-node the publisher never authorized is a 409, not a run."""
     principal.require_native("conversations.shortcut")
     enforce_thread_access(db, principal, contact_id)
-    from app.services.workflow_service import ShortcutCodeNotAuthorized, ShortcutNotFound
+    from app.services.workflow_service import (
+        ShortcutCodeNotAuthorized,
+        ShortcutNotFound,
+        ShortcutSerializationConflict,
+    )
 
     try:
         run = ConversationService(db).run_shortcut(
@@ -409,6 +464,8 @@ def run_shortcut(
             status_code=409,
             detail="This workflow's published version has an unauthorized Code node.",
         )
+    except ShortcutSerializationConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     return ShortcutRunResponse(runId=run.id, status=run.status)
 
 
@@ -435,7 +492,13 @@ def move_lifecycle(
     actor = resolve_effective_actor(principal, db)
     try:
         return ConversationService(db).move_lifecycle(
-            contact_id, principal.tenant_id, payload.toStatusId, actor=actor
+            contact_id,
+            principal.tenant_id,
+            payload.toStatusId,
+            actor=actor,
+            # B19 - the written `lifecycle_changed` event attributes to the
+            # REAL admin, never the effective (impersonated target) user.
+            attributed_actor_id=principal.actor_user_id,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")

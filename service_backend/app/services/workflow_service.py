@@ -96,6 +96,14 @@ class ShortcutCodeNotAuthorized(WorkflowError):
     never re-implemented here."""
 
 
+class ShortcutSerializationConflict(WorkflowError):
+    """The workflow's `execution.mode="serialized"` correlation key could not
+    be resolved from the shortcut's trigger context (plan sprint-4/27 round-3
+    codex triage B2) - a conflict, not a run, mirroring `run()`'s manual-run
+    handling of the same `RuntimeError` from `assign_run_correlation`. No run
+    is persisted (the error raises before `session.add(run)`)."""
+
+
 class WorkflowService:
     def __init__(self, db: Session):
         self.db = db
@@ -506,7 +514,32 @@ class WorkflowService:
         bus uses - so the fail-closed Code-node authorization gate,
         correlation-key assignment and serialized dispatch are inherited, not
         re-implemented (D-A3-10; reviewer: reject a duplicated `WorkflowRun(...)`
-        construction here)."""
+        construction here).
+
+        (Round-3 codex triage B1) `entity_type` is generic caller input - this
+        method is documented as usable by ANY `WorkflowEntity.supports_shortcut`
+        entity, so it must not trust it blindly: resolve the entity from the
+        registry and reject anything that never opted in (even if a workflow
+        somehow got denormalized to that `trigger_entity_type` - `publish()`
+        does not itself validate the trigger's entity against the registry).
+        The record is then RELOADED tenant-scoped via the entity's own
+        `load_record` rather than trusting the caller's object - defense in
+        depth so a future caller can't hand this generic function a
+        wrong-tenant record by mistake (the one current caller,
+        `ConversationService.run_shortcut`, already loads tenant-scoped, but
+        this function must hold the line on its own)."""
+        from app.workflow_engine.entities import get_workflow_entity, load_record
+
+        entity = get_workflow_entity(entity_type)
+        if entity is None or not entity.supports_shortcut:
+            raise ShortcutNotFound()
+        record_id = getattr(record, "id", None)
+        if not record_id:
+            raise ShortcutNotFound()
+        scoped_record = load_record(self.db, entity, tenant_id, record_id)
+        if scoped_record is None:
+            raise ShortcutNotFound()
+
         wf = (
             self.db.query(Workflow)
             .filter(
@@ -529,11 +562,17 @@ class WorkflowService:
             create_run_for_event,
         )
 
-        ev = build_shortcut_event(self.db, entity_type, record, tenant_id=tenant_id, actor=actor)
+        ev = build_shortcut_event(self.db, entity_type, scoped_record, tenant_id=tenant_id, actor=actor)
         try:
             run = create_run_for_event(self.db, wf, ev, depth=0)
         except CodeNotAuthorized as exc:
             raise ShortcutCodeNotAuthorized() from exc
+        except RuntimeError as exc:
+            # B2 - an unresolved serialized `execution.correlationKey` raises a
+            # bare RuntimeError from `assign_run_correlation` before any run is
+            # persisted; surface it as a conflict like the manual `run()` path
+            # above does, never an opaque 500.
+            raise ShortcutSerializationConflict(str(exc)) from exc
         if run is None:
             # Defensive - the version raced a concurrent unpublish between the
             # lookup above and here; same uniform outcome as "not published".

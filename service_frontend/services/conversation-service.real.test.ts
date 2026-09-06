@@ -72,17 +72,34 @@ describe('realConversationService.listThreads', () => {
     expect(url).toContain('unreplied=true');
   });
 
-  it('sends an EXPLICIT status=ALL when a view is active and Show reads All (review round 2, finding 1)', async () => {
+  it('sends an EXPLICIT status=ALL when the user picked All via the filter bar (review round 2, finding 1)', async () => {
     apiFetch.mockResolvedValue({ data: [] });
 
     // A saved view stores a `statuses` filter server-side; the backend
     // treats an absent `status` param as "keep the view's value" and an
-    // explicit `ALL` as "clear it" - so the bar reading "All" must send
+    // explicit `ALL` as "clear it" - so a USER-DRIVEN "All" pick must send
     // status=ALL, or the view's stored statuses silently win (AC-IVE-17).
-    await service.listThreads({ ...BASE_QUERY, viewId: 'view-1', status: 'ALL' });
+    await service.listThreads({
+      ...BASE_QUERY, viewId: 'view-1', status: 'ALL', statusExplicit: true,
+    });
 
     const url = apiFetch.mock.calls[0][0] as string;
     expect(url).toContain('status=ALL');
+  });
+
+  // F2 (round-3 codex triage) - the SAME `status: 'ALL'` value, but because a
+  // MULTI-status saved view collapsed to it (`expandViewFilter`), not a user
+  // pick, must be OMITTED - sending it would clear the view's real
+  // multi-status filter the instant the view is selected.
+  it('omits status when a multi-status view collapses to All (not a user override)', async () => {
+    apiFetch.mockResolvedValue({ data: [] });
+
+    await service.listThreads({
+      ...BASE_QUERY, viewId: 'view-1', status: 'ALL', statusExplicit: false,
+    });
+
+    const url = apiFetch.mock.calls[0][0] as string;
+    expect(url).not.toContain('status=');
   });
 
   it('sends an EXPLICIT priority=ALL when a view is active and Priority reads All (review round 2, finding 1)', async () => {
@@ -101,6 +118,7 @@ describe('realConversationService.listThreads', () => {
       ...BASE_QUERY,
       viewId: 'view-1',
       status: 'OPEN',
+      statusExplicit: true,
       priority: 'HIGH',
     });
 

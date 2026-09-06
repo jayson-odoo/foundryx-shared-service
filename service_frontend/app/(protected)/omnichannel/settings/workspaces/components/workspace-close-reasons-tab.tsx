@@ -19,9 +19,16 @@ import { Card, CardContent } from '@/components/ui/card';
 import { ResourceList } from '@/components/platform/resource-list';
 import { useCan } from '@/hooks/use-can';
 import { useCloseReasons } from '@/hooks/use-close-reasons';
+import { ApiError } from '@/lib/api-client';
+import { toast } from '@/lib/toast';
 import type { CloseReason } from '@/types/omnichannel';
 import { CloseReasonDialog } from './close-reason-dialog';
 import { useCloseReasonList } from './use-close-reason-list';
+
+function describeError(error: unknown): string {
+  if (error instanceof ApiError) return error.message;
+  return 'Something went wrong. Please try again.';
+}
 
 export function WorkspaceCloseReasonsTab({ workspaceId, creating }: { workspaceId: string | null; creating: boolean }) {
   const { can } = useCan();
@@ -38,8 +45,21 @@ export function WorkspaceCloseReasonsTab({ workspaceId, creating }: { workspaceI
     setEditingReason(reason);
     setDialogOpen(true);
   }, []);
+  // F6 (round-3 codex triage) - `update()` re-throws on failure (it has no
+  // internal try/catch, see `useCloseReasons`); the Resource shell's
+  // `ActionMenu` awaits a non-deferred action's `run` with NO catch of its
+  // own EITHER (every other action self-handles its errors, e.g. an edit
+  // dialog's inline form error) - a bare `void update(...)` here silently
+  // swallowed a Deactivate/Activate failure with zero user feedback (an
+  // unhandled promise rejection in the console, the row unchanged, no toast).
   const onSetActive = useCallback(
-    (reason: CloseReason, isActive: boolean) => void update(reason.id, { isActive }),
+    async (reason: CloseReason, isActive: boolean) => {
+      try {
+        await update(reason.id, { isActive });
+      } catch (error) {
+        toast.error(describeError(error));
+      }
+    },
     [update],
   );
 

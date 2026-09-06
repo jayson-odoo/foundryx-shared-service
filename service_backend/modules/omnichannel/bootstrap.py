@@ -341,6 +341,29 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "WHERE phone_number_id IS NOT NULL AND is_trashed = false"
                 )
             )
+            # Plan 27 A3 (S2, round-3 codex triage B7) - per-workspace
+            # case-insensitive name uniqueness for close_reasons/inbox_views.
+            # `create_all` (above) never emits these (neither model declares
+            # them as a SQLAlchemy `Index` - they're functional `lower(name)`
+            # indexes) and, on a fresh DB, `create_all` running BEFORE the
+            # per-module Alembic detection makes this module's tables look
+            # "already exist" - so 0009a's migration SQL never runs
+            # (`run_module_migrations` stamps head, no DDL). Mirror them here
+            # so a create_all-first fresh install still gets the DB backstop
+            # `close_reason_service`/`inbox_view_service` rely on for their
+            # check-then-insert race (B17/B18 fixes below).
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_close_reasons_workspace_name "
+                    f'ON "{OMNI_SCHEMA}".close_reasons (workspace_id, lower(name))'
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_inbox_views_workspace_name "
+                    f'ON "{OMNI_SCHEMA}".inbox_views (workspace_id, lower(name))'
+                )
+            )
 
 
 def install(engine: Engine, db: Session) -> None:
@@ -481,7 +504,12 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     from .models import Channel, Contact, ContactChannelIdentity, ConversationMessage, QuickReply, WhatsappTemplate
     from .security import encrypt_credentials
 
-    if db.query(Contact).filter(Contact.id == "cnt-001").first():
+    # B8 (round-3 codex triage): scope the idempotency check by tenant_id -
+    # `cnt-001` is a fixed literal id shared by every call site's dev seed
+    # data, so a bare id check finds ANOTHER tenant's already-seeded contact
+    # and wrongly skips seeding (and the backfill call below) for THIS
+    # tenant when more than one tenant runs the dev seed.
+    if db.query(Contact).filter(Contact.id == "cnt-001", Contact.tenant_id == tenant_id).first():
         return
 
     now = datetime.now(timezone.utc)

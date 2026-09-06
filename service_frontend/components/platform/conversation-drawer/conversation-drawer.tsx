@@ -54,7 +54,9 @@ import { CloseThreadDialog } from './close-thread-dialog';
 import { Composer } from './composer';
 import { ContactPanel } from './contact-panel';
 import { useDatetime } from '@/hooks/use-datetime';
+import { ApiError } from '@/lib/api-client';
 import { dateKey, parseUtc } from '@/lib/datetime';
+import { toast } from '@/lib/toast';
 import { MessageBubble } from './message-bubble';
 import { ShortcutMenu } from './shortcut-menu';
 import { THREAD_PRIORITY_REGISTRY, THREAD_STATUS_REGISTRY } from './thread-status';
@@ -141,6 +143,22 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
   const { events, reload: reloadEvents } = useThreadEvents(contactId);
   const { reasons: closeReasons } = useCloseReasons(thread?.workspaceId ?? null);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
+
+  // F8 (round-3 codex triage) - `setStatus` (`useMessages`) has no internal
+  // try/catch - it re-throws (matching `CloseThreadDialog`'s own `onClose`,
+  // which the dialog awaits inside ITS OWN try/catch). Reopen has no dialog
+  // wrapping it, so a bare `void setStatus('OPEN').then(reloadEvents)`
+  // dropped any rejection (a 409 the record raced into, a network blip) with
+  // zero user feedback - the button visibly does nothing, no toast, no retry
+  // cue.
+  const reopenThread = useCallback(async () => {
+    try {
+      await setStatus('OPEN');
+      await reloadEvents();
+    } catch (error) {
+      toast.error(error instanceof ApiError ? error.message : 'Could not reopen this conversation.');
+    }
+  }, [setStatus, reloadEvents]);
 
   const { timeZone, formatTime } = useDatetime();
   const [tab, setTab] = useState<'messages' | 'activities'>('messages');
@@ -389,7 +407,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
             <Button
               variant="outline"
               size="sm"
-              onClick={() => void setStatus('OPEN').then(reloadEvents)}
+              onClick={() => void reopenThread()}
               data-testid="thread-reopen"
             >
               Reopen

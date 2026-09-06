@@ -18,6 +18,7 @@ the thread-list route's `viewId` expansion.
 from typing import Dict, List, Optional
 
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.user import User
@@ -119,6 +120,16 @@ class InboxViewService:
         """Every id embedded in the filter must belong to THIS workspace/
         tenant (the polymorphic stored-id rule, validated at save time) -
         422s otherwise, nothing is written (AC-IVE-18)."""
+        # B18 (round-3 codex triage) - `segmentId` is a reserved seam for A2
+        # (D-A3-17); the thread-list route already 422s a query-param
+        # `segmentId` with this exact message. A saved view must reject it
+        # the SAME way at save time (not silently accept + discard it on
+        # `expand()`, which would let a view LOOK like it filters by segment
+        # while quietly doing nothing).
+        if filt.segmentId is not None:
+            raise InboxViewValidationError(
+                "Contact segments are not available yet.", "filter"
+            )
         if filt.lifecycleStageIds:
             from .lifecycle_service import stages_for_workspace
 
@@ -200,7 +211,16 @@ class InboxViewService:
             sort_order=count,
         )
         self.db.add(row)
-        self.db.commit()
+        try:
+            self.db.commit()
+        except IntegrityError:
+            # B17 (round-3 codex triage) - a concurrent create with the same
+            # (workspace, name) can land BETWEEN `_find_by_name` and this
+            # commit (`uq_inbox_views_workspace_name` then rejects it).
+            # Translate to the same typed validation error the pre-check
+            # raises (A1 tags precedent), never a 500.
+            self.db.rollback()
+            raise InboxViewValidationError("A view with this name already exists.")
         self.db.refresh(row)
         return row
 
@@ -222,7 +242,13 @@ class InboxViewService:
             row.filter_json = payload.filter.model_dump(exclude_none=True)
         if "sortOrder" in sent and payload.sortOrder is not None:
             row.sort_order = payload.sortOrder
-        self.db.commit()
+        try:
+            self.db.commit()
+        except IntegrityError:
+            # B17 - same race as `create`, for a RENAME landing on a name a
+            # concurrent request just took.
+            self.db.rollback()
+            raise InboxViewValidationError("A view with this name already exists.")
         self.db.refresh(row)
         return row
 
@@ -235,8 +261,18 @@ class InboxViewService:
     def expand(self, view: InboxView) -> Dict:
         """Map a saved view's stored filter to `ContactRepository.list_
         threads` kwargs. Only keys the filter actually set are returned -
-        the caller layers explicit query-param overrides on top."""
+        the caller layers explicit query-param overrides on top.
+
+        B18 - defense-in-depth mirror of the save-time `segmentId` rejection
+        above: a row planted/left over from before that guard existed must
+        not silently expand into "no filter" (looking like it scopes by
+        segment while doing nothing) - raises the same
+        `InboxViewValidationError` the router maps to the identical 422."""
         filt = InboxViewFilter(**(view.filter_json or {}))
+        if filt.segmentId is not None:
+            raise InboxViewValidationError(
+                "Contact segments are not available yet.", "filter"
+            )
         out: Dict = {}
         if filt.statuses:
             out["status_keys"] = list(filt.statuses)

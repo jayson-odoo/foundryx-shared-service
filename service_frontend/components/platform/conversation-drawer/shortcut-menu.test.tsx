@@ -35,7 +35,12 @@ describe('ShortcutMenu', () => {
     withPermissions([]);
     listShortcutsMock.mockResolvedValue([{ workflowId: 'wf-1', name: 'Send NPS survey' }]);
     const { container } = render(<ShortcutMenu contactId="cnt-001" />);
-    await waitFor(() => expect(listShortcutsMock).toHaveBeenCalled());
+    // F9 (round-3 codex triage): without the permission, `listShortcuts` must
+    // never even be CALLED - the old code fetched first and gated the render
+    // after, guaranteeing a 403 request on every conversation a non-shortcut
+    // agent opened.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(listShortcutsMock).not.toHaveBeenCalled();
     expect(container).toBeEmptyDOMElement();
   });
 

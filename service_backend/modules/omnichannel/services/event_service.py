@@ -149,7 +149,18 @@ def _label_map(db: Session, tenant_id: str, events: List[ConversationEvent]) -> 
     value a `from_value`/`to_value` can hold: a THREAD status id, a core
     lifecycle status id, a native user id, or an external-agent id. ids are
     UUIDs (collision-free across these concepts), so a single merged map is
-    safe and far simpler than branching per `event_type`."""
+    safe and far simpler than branching per `event_type`.
+
+    B16 (round-3 codex triage) - the lifecycle branch additionally constrains
+    by `entity_type` + `scope_id` (workspace), mirroring `ConversationService.
+    _lifecycle_map`'s own precedent/comment: the lifecycle status machine is
+    SCOPED per workspace, so a status id that happens to belong to another
+    workspace of the SAME tenant (or a different scoped entity entirely) must
+    not resolve and render its label here (the polymorphic stored-id rule -
+    never resolve a stored id by bare tenant+id alone). All `events` passed in
+    are for ONE contact (`list_for_contact`'s caller), hence one workspace."""
+    from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
+
     ids = set()
     for e in events:
         if e.from_value:
@@ -158,6 +169,7 @@ def _label_map(db: Session, tenant_id: str, events: List[ConversationEvent]) -> 
             ids.add(e.to_value)
     if not ids:
         return {}
+    workspace_ids = {e.workspace_id for e in events if e.workspace_id}
 
     labels: Dict[str, str] = {}
     for s in (
@@ -168,10 +180,15 @@ def _label_map(db: Session, tenant_id: str, events: List[ConversationEvent]) -> 
         labels[s.id] = s.label
     remaining = ids - set(labels)
 
-    if remaining:
+    if remaining and workspace_ids:
         for s in (
             db.query(CoreStatus)
-            .filter(CoreStatus.tenant_id == tenant_id, CoreStatus.id.in_(remaining))
+            .filter(
+                CoreStatus.tenant_id == tenant_id,
+                CoreStatus.entity_type == LIFECYCLE_ENTITY_TYPE,
+                CoreStatus.scope_id.in_(workspace_ids),
+                CoreStatus.id.in_(remaining),
+            )
             .all()
         ):
             labels[s.id] = s.label
@@ -222,12 +239,20 @@ def to_items(
 
     value_labels = _label_map(db, tenant_id, events)
 
+    # B16 - close reasons are per-workspace (never a two-tier NULL-tenant
+    # row like statuses); scope by workspace too, not bare tenant+id, for the
+    # same reason as the lifecycle branch above.
+    workspace_ids = {e.workspace_id for e in events if e.workspace_id}
     reason_ids = {e.close_reason_id for e in events if e.close_reason_id}
     reason_names: Dict[str, str] = {}
-    if reason_ids:
+    if reason_ids and workspace_ids:
         for r in (
             db.query(CloseReason)
-            .filter(CloseReason.tenant_id == tenant_id, CloseReason.id.in_(reason_ids))
+            .filter(
+                CloseReason.tenant_id == tenant_id,
+                CloseReason.workspace_id.in_(workspace_ids),
+                CloseReason.id.in_(reason_ids),
+            )
             .all()
         ):
             reason_names[r.id] = r.name

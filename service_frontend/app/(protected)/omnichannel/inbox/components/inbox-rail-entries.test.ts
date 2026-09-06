@@ -51,14 +51,31 @@ describe('buildRailEntries', () => {
 describe('railSelectionPatch', () => {
   it('a default entry resets lifecycle/view selection', () => {
     expect(railSelectionPatch({ kind: 'default', key: 'me', label: 'Mine' })).toEqual({
-      assignee: 'me', lifecycleStageIds: [], viewId: null,
+      assignee: 'me', lifecycleStageIds: [], tagIds: [], channelIds: [], viewId: null,
     });
   });
 
   it('a lifecycle entry filters to that ONE stage and resets assignee/view', () => {
     expect(
       railSelectionPatch({ kind: 'lifecycle', key: railKeyForStage('stg-1'), stageId: 'stg-1', label: 'X', color: null }),
-    ).toEqual({ assignee: 'all', lifecycleStageIds: ['stg-1'], viewId: null });
+    ).toEqual({ assignee: 'all', lifecycleStageIds: ['stg-1'], tagIds: [], channelIds: [], viewId: null });
+  });
+
+  // F1 (round-3 codex triage): tagIds/channelIds are VIEW-ONLY dimensions -
+  // leaving a saved view for any rail entry must clear them, or the view's
+  // narrowing keeps silently applying with no UI left to show/clear it.
+  it('a default entry clears a previously-active view\'s tag/channel filters', () => {
+    const patch = railSelectionPatch({ kind: 'default', key: 'all', label: 'All' });
+    expect(patch.tagIds).toEqual([]);
+    expect(patch.channelIds).toEqual([]);
+  });
+
+  it('a lifecycle entry clears a previously-active view\'s tag/channel filters', () => {
+    const patch = railSelectionPatch({
+      kind: 'lifecycle', key: railKeyForStage('stg-1'), stageId: 'stg-1', label: 'X', color: null,
+    });
+    expect(patch.tagIds).toEqual([]);
+    expect(patch.channelIds).toEqual([]);
   });
 });
 
@@ -77,6 +94,7 @@ describe('expandViewFilter', () => {
     expect(expandViewFilter(v)).toEqual({
       assignee: 'me',
       status: 'OPEN',
+      statusExplicit: false,
       priority: 'ALL',
       lifecycleStageIds: ['stg-1'],
       tagIds: ['tag-1'],
@@ -90,6 +108,16 @@ describe('expandViewFilter', () => {
   it('collapses a multi-status filter to ALL (today\'s list route is single-value)', () => {
     const v = view({ filter: { statuses: ['OPEN', 'SNOOZED'] } });
     expect(expandViewFilter(v).status).toBe('ALL');
+  });
+
+  // F2 (round-3 codex triage) - the collapse above must NEVER be sent to the
+  // server as an explicit override (it would clear the view's real
+  // multi-status filter) - `statusExplicit` stays false for every expansion,
+  // single-status or multi-status alike.
+  it('always marks the expanded status as NOT explicit (never a user override)', () => {
+    expect(expandViewFilter(view({ filter: { statuses: ['OPEN'] } })).statusExplicit).toBe(false);
+    expect(expandViewFilter(view({ filter: { statuses: ['OPEN', 'SNOOZED'] } })).statusExplicit).toBe(false);
+    expect(expandViewFilter(view({ filter: {} })).statusExplicit).toBe(false);
   });
 
   it('collapses assignee "user" (specific ids) to "all" (no per-user list param yet)', () => {

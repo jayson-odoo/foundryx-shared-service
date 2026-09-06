@@ -103,8 +103,33 @@ def upgrade() -> None:
     # FK reserved by S1 - add it now that close_reasons exists. Every existing
     # `close_reason_id` value is NULL (S2 is the first writer), so this can
     # never fail on live data.
-    existing_fks = {fk["name"] for fk in inspector.get_foreign_keys("conversation_events", schema=SCHEMA)}
-    if "fk_conv_events_close_reason" not in existing_fks:
+    #
+    # Round-3 codex triage B6: detect by (columns, referred table), NOT by
+    # constraint NAME - `install()`'s `create_schema_and_tables` runs
+    # `OmniBase.metadata.create_all` on EVERY boot BEFORE this per-module
+    # Alembic detection (`_bootstrap_one_module`). On a deployment mid-upgrade
+    # (an `alembic_version_omnichannel` row already at 0008, `conversation_
+    # events` not created yet), that `create_all` call fresh-creates
+    # `conversation_events` complete with the model's embedded
+    # `ForeignKey("close_reasons.id")` - under a Postgres AUTO-GENERATED name
+    # (`..._close_reason_id_fkey`), not this migration's literal
+    # `fk_conv_events_close_reason`. A name-only check misses that constraint
+    # and adds a SECOND, redundant FK on the same column/target; downgrade
+    # then can't drop the auto-named one at all (it only knows its own
+    # literal name). Detecting by the real (columns, table) shape is
+    # name-agnostic on both sides.
+    existing_fks = inspector.get_foreign_keys("conversation_events", schema=SCHEMA)
+
+    def _find_close_reason_fk(fks):
+        for fk in fks:
+            if (
+                list(fk.get("constrained_columns") or []) == ["close_reason_id"]
+                and fk.get("referred_table") == "close_reasons"
+            ):
+                return fk
+        return None
+
+    if _find_close_reason_fk(existing_fks) is None:
         op.create_foreign_key(
             "fk_conv_events_close_reason",
             "conversation_events",
@@ -136,9 +161,22 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        "fk_conv_events_close_reason", "conversation_events", schema=SCHEMA, type_="foreignkey"
-    )
+    # B6 - drop by the ACTUAL constraint (columns, referred table), whatever
+    # its name (this migration's `fk_conv_events_close_reason` OR the
+    # auto-generated `..._close_reason_id_fkey` `create_all` may have left in
+    # place - see the upgrade()-side comment). Conditional: nothing to drop on
+    # a deployment that never created the column's FK at all.
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    for fk in inspector.get_foreign_keys("conversation_events", schema=SCHEMA):
+        if (
+            list(fk.get("constrained_columns") or []) == ["close_reason_id"]
+            and fk.get("referred_table") == "close_reasons"
+            and fk.get("name")
+        ):
+            op.drop_constraint(
+                fk["name"], "conversation_events", schema=SCHEMA, type_="foreignkey"
+            )
     op.execute(f'DROP INDEX IF EXISTS "{SCHEMA}".uq_inbox_views_workspace_name')
     op.drop_table("inbox_views", schema=SCHEMA)
     op.execute(f'DROP INDEX IF EXISTS "{SCHEMA}".uq_close_reasons_workspace_name')

@@ -7,6 +7,7 @@ inbox sorts/filters on.
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
+import sqlalchemy as sa
 from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
@@ -64,18 +65,30 @@ class ContactRepository:
         if assignee == "me":
             # "Mine" resolves to the CALLER's identity - a federated (embed) agent
             # matches on the external-agent column, a native user on the user column.
+            # B10 (round-3 codex triage): neither identity resolved is a
+            # false predicate, never "no filter" (would silently return
+            # every thread in the workspace instead of the caller's own).
             if me_external_agent_id:
                 q = q.filter(Contact.assigned_external_agent_id == me_external_agent_id)
             elif me_user_id:
                 q = q.filter(Contact.assigned_user_id == me_user_id)
+            else:
+                q = q.filter(sa.false())
         elif assignee == "unassigned":
             # Unassigned = neither a native user NOR a federated agent owns it.
             q = q.filter(
                 Contact.assigned_user_id.is_(None),
                 Contact.assigned_external_agent_id.is_(None),
             )
-        elif assignee == "user" and assignee_user_ids:
-            q = q.filter(Contact.assigned_user_id.in_(assignee_user_ids))
+        elif assignee == "user":
+            # B10: an empty/omitted `assignee_user_ids` must never fall
+            # through to "no predicate" (every thread, regardless of
+            # assignee) - the service/router 422s this case (AC-IVE-*), this
+            # is the repo's own defense-in-depth false predicate.
+            if assignee_user_ids:
+                q = q.filter(Contact.assigned_user_id.in_(assignee_user_ids))
+            else:
+                q = q.filter(sa.false())
         if status_keys:
             q = q.join(Status, Contact.status_id == Status.id).filter(Status.key.in_(status_keys))
         elif status_key:
@@ -85,9 +98,16 @@ class ContactRepository:
         if lifecycle_stage_ids:
             q = q.filter(Contact.lifecycle_status_id.in_(lifecycle_stage_ids))
         if tag_ids:
+            # B11 (round-3 codex triage): the correlated `contact_id ==
+            # Contact.id` already pins the EXISTS to the ONE already
+            # tenant-scoped outer Contact row (no cross-tenant match is
+            # possible via that correlation alone), but the link row itself
+            # ALSO carries `tenant_id` - filter it explicitly so this query
+            # never depends solely on the correlation for its tenant safety.
             tag_match = (
                 self.db.query(ContactTagLink.id)
                 .filter(
+                    ContactTagLink.tenant_id == tenant_id,
                     ContactTagLink.contact_id == Contact.id,
                     ContactTagLink.tag_id.in_(tag_ids),
                 )
@@ -98,6 +118,7 @@ class ContactRepository:
             channel_match = (
                 self.db.query(ContactChannelIdentity.id)
                 .filter(
+                    ContactChannelIdentity.tenant_id == tenant_id,
                     ContactChannelIdentity.contact_id == Contact.id,
                     ContactChannelIdentity.channel_id.in_(channel_ids),
                 )

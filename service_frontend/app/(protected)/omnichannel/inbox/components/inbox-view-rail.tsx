@@ -73,7 +73,7 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
     [lifecycleGraph.graph],
   );
   const entries = useMemo(() => buildRailEntries(stages, views), [stages, views]);
-  const { selectedKey, select } = useInboxRailSelection(filters, setFilters, stages, views);
+  const { selectedKey, select } = useInboxRailSelection(filters, setFilters, stages, views, workspaceId);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingView, setEditingView] = useState<InboxView | null>(null);
@@ -107,15 +107,21 @@ export function InboxViewRail({ workspaceId, filters, setFilters, variant = 'sid
   });
 
   const deleteView = async (view: InboxView) => {
-    // Review round 2 (finding 3): ONE `useDeferredAction` instance serves
-    // every row - `start()` overwrites `parkedRef`, so deleting view A then
-    // view B inside the grace window would leave A's toast live with an
-    // `onCancel` that (after the overwrite) actually cancels B. Settle any
-    // already-active delete's TOAST before starting the next one (matches
-    // the engine's one-visible-countdown model) - A's own pending action
-    // still resolves server-side on its own countdown, it is just no longer
-    // the one this toast/hook instance is tracking.
-    settleActiveDelete();
+    // Round-3 codex triage F3 (supersedes review round 2, finding 3): ONE
+    // `useDeferredAction` instance serves every row - `start()` OVERWRITES
+    // `parkedRef` wholesale, so a settle-then-overwrite here would silently
+    // stop polling/refreshing/toasting for the FIRST delete the instant a
+    // SECOND one starts (its server-side action still resolves, but this
+    // component never learns it did, so the rail never auto-refreshes it
+    // away). Refuse a second delete while one is still counting down instead
+    // - the safest option (no change to the shared engine hook's contract,
+    // and the first delete keeps its full toast/poll/fallback intact).
+    const active = activeDeleteToastRef.current;
+    if (active) {
+      if (active.viewId === view.id) return; // already parked - a double click is a no-op
+      toast.error(`Finish deleting "${active.name}" first.`);
+      return;
+    }
     const toastId = `pending-action-inbox-view-${view.id}`;
     try {
       const { commitAt, windowSeconds, parkedEntityIds } = await deferred.start('inbox_views.delete', {

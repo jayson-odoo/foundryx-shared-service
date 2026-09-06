@@ -46,7 +46,7 @@ export function InboxFilterBar({ filters, setFilters, className }: InboxFilterBa
       <SearchSelect
         options={SHOW_OPTIONS}
         value={filters.status}
-        onChange={(v) => setFilters({ status: v as ThreadStatus | 'ALL' })}
+        onChange={(v) => setFilters({ status: v as ThreadStatus | 'ALL', statusExplicit: true })}
         ariaLabel="Show"
         className="w-28"
       />

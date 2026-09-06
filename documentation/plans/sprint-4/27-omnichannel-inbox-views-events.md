@@ -369,3 +369,16 @@ coder that closed the findings above - queued here for the next frontend pass on
    caller used it); `close-thread-dialog.tsx`'s Reason `<Label>` no longer carries a `htmlFor`
    pointing at nothing (`SearchSelect`'s trigger is a button, not a native input - its own
    `ariaLabel` already names it for assistive tech).
+
+### Review round 3 (2026-09-06, codex triage)
+
+Cross-model (Codex) triage of 32 candidate findings after two Opus rounds passed the branch - 29
+REAL (fixed test-first), 3 false positives (with code evidence), 1 residual gap deferred to
+BL-SS-077 (backlog section only). Full verdict list + suite counts + live probes:
+`27-omnichannel-inbox-views-events-test-report.md`, "Addendum - round 3 (codex triage)". Notable
+generic (non-omnichannel) fixes riding along, all backward-compatible for every other caller:
+`app/services/workflow_service.py` (`run_shortcut`'s entity-registry + tenant-scoped reload guard,
+serialized-execution conflict mapping), `app/workflow_engine/entity_events.py`
+(`create_run_for_event`'s dispatch-failure isolation), `app/deferred_actions/service.py`
+(`park()` now stamps the EFFECTIVE user id into the payload for any consumer that needs it at
+commit time, alongside the existing REAL-actor `requested_by_id`).

@@ -69,6 +69,29 @@ describe('ActivityFeed', () => {
     expect(screen.queryByTestId('event-comment_added')).not.toBeInTheDocument();
   });
 
+  // F7 (round-3 codex triage) - a lexicographic string sort misorders ISO
+  // timestamps with different fractional-second precision. Python's
+  // `isoformat()` drops the fractional part ENTIRELY at exactly-zero
+  // microseconds, so a same-second-but-LATER event with a fractional part
+  // (`.5` = 500ms) can carry a STRING that sorts BEFORE a same-second
+  // whole-second event with no fractional part at all ('.' < 'Z'
+  // character-by-character) even though it happened after.
+  it('sorts by numeric epoch, not ISO string, across mixed fractional-second precision', () => {
+    const messages = [note('m1', '2026-01-01T10:00:00.500000Z', 'Later note (fractional seconds)')];
+    const events = [
+      event('e1', '2026-01-01T10:00:00Z', { eventType: 'opened', actorName: null }),
+    ];
+    render(<ActivityFeed messages={messages} events={events} contactName="Sarah" formatTime={formatTime} />);
+    const feed = screen.getByTestId('activity-feed');
+    const text = feed.textContent ?? '';
+    // The whole-second event (no fractional part, numerically EARLIER) must
+    // render BEFORE the .5s-later note - a lexicographic sort gets this
+    // backwards (the '.' character sorts before 'Z').
+    expect(text.indexOf('Conversation opened')).toBeLessThan(
+      text.indexOf('Later note (fractional seconds)'),
+    );
+  });
+
   it('renders a close event with its reason', () => {
     render(
       <ActivityFeed

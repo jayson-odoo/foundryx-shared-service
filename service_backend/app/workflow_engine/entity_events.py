@@ -500,7 +500,20 @@ def create_run_for_event(
 
     if not settings.celery_task_always_eager:
         session.commit()
-    dispatch_persisted_run(session, run)
+    try:
+        dispatch_persisted_run(session, run)
+    except Exception:  # noqa: BLE001 - B4 (round-3 codex triage): the run row
+        # is ALREADY COMMITTED durable Pending by this point (non-eager path)
+        # - a broker-down `.delay()` (or any dispatch-side error) must not
+        # propagate: the shortcut route has no try/except for it and would
+        # 500 while leaving the committed run stranded, and a client retry
+        # would then create a SECOND run for the same click. Leave the run
+        # Pending (a redrive/backoff mechanism or manual re-dispatch handles
+        # it later), log, and return the already-created run untouched -
+        # never re-raise, never delete it.
+        logger.exception(
+            "workflow %s: dispatch failed for run %s; run stays Pending", wf.id, run.id
+        )
     return run
 
 

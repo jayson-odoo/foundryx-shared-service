@@ -43,16 +43,17 @@ vi.mock('@/services/pending-actions-service', () => ({
 
 // `deferredToast`/`dismissDeferredToast` AND `toast.success`/`toast.error`
 // all go through `sonner` directly - mock it once so both are observable.
-const { customMock, dismissMock } = vi.hoisted(() => ({
+const { customMock, dismissMock, errorMock } = vi.hoisted(() => ({
   customMock: vi.fn((_render: unknown, options: { id: string }) => options.id),
   dismissMock: vi.fn(),
+  errorMock: vi.fn(),
 }));
 vi.mock('sonner', () => ({
   toast: {
     custom: customMock,
     dismiss: dismissMock,
     success: vi.fn(),
-    error: vi.fn(),
+    error: errorMock,
     info: vi.fn(),
     warning: vi.fn(),
     message: vi.fn(),
@@ -156,6 +157,7 @@ describe('InboxViewRail - delete is a deferred action (review round 2)', () => {
     setMockWindowSeconds('destructive', 0.05);
     customMock.mockClear();
     dismissMock.mockClear();
+    errorMock.mockClear();
     // `?view=` written by a prior test's `writeUrlKey` call would otherwise
     // leak into this one (jsdom's `window.location` persists across tests
     // in the same file) and trigger `useInboxRailSelection`'s own
@@ -189,7 +191,9 @@ describe('InboxViewRail - delete is a deferred action (review round 2)', () => {
       await new Promise((resolve) => setTimeout(resolve, 1300));
     });
 
-    expect(setFilters).toHaveBeenCalledWith({ assignee: 'all', lifecycleStageIds: [], viewId: null });
+    expect(setFilters).toHaveBeenCalledWith({
+      assignee: 'all', lifecycleStageIds: [], tagIds: [], channelIds: [], viewId: null,
+    });
     // The URL falls back to the All rail entry's key too (never left
     // pointing at the deleted view).
     expect(new URLSearchParams(window.location.search).get('view')).toBe('all');
@@ -213,13 +217,15 @@ describe('InboxViewRail - delete is a deferred action (review round 2)', () => {
     expect(setFilters).not.toHaveBeenCalled();
   }, 10_000);
 
-  it('starting a second delete settles the first toast - Undo on the second cancels only the second (finding 3)', async () => {
+  it('refuses a second delete while the first is still counting down (round-3 codex triage F3, supersedes review round 2 finding 3)', async () => {
     withSession('usr-owner', []);
-    // This test asserts view-1's park is STILL pending at the end (never
-    // touched by view-2's cancel) - a long window keeps it from
-    // auto-committing under real-clock system load mid-assertion (unlike
-    // the commit-focused tests above, this one deliberately never lets the
-    // window lapse).
+    // F3: ONE `useDeferredAction` instance serves every row - `start()`
+    // OVERWRITES `parkedRef` wholesale, so settling-then-overwriting (the
+    // OLD behavior) would silently stop polling/refreshing/toasting for
+    // view-1 the instant view-2's delete started (view-1's server-side
+    // action still resolves, but this component would never learn it did).
+    // The safe fix refuses the second start outright - the first toast
+    // stays untouched and view-1's park is unaffected.
     setMockWindowSeconds('destructive', 10);
     renderRail([
       view({ id: 'view-1', ownerUserId: 'usr-owner' }),
@@ -228,33 +234,29 @@ describe('InboxViewRail - delete is a deferred action (review round 2)', () => {
 
     await openMenuAndDelete('view-1');
     expect(customMock).toHaveBeenCalledTimes(1);
-    const [, firstOptions] = customMock.mock.calls[0] as [unknown, { id: string }];
-    expect(dismissMock).not.toHaveBeenCalled();
 
     await openMenuAndDelete('view-2');
 
-    // Starting the second delete settled (dismissed) the first toast...
-    expect(dismissMock).toHaveBeenCalledWith(firstOptions.id);
-    // ...and rendered a NEW toast for the second view.
-    expect(customMock).toHaveBeenCalledTimes(2);
-    const [secondRender, secondOptions] = customMock.mock.calls[1] as [
-      () => { props: { onCancel: () => void } },
-      { id: string },
-    ];
-    expect(secondOptions.id).not.toBe(firstOptions.id);
+    // The second delete never started - no new toast, the first is
+    // untouched, and the user is told why.
+    expect(customMock).toHaveBeenCalledTimes(1);
+    expect(dismissMock).not.toHaveBeenCalled();
+    expect(errorMock.mock.calls[0][0]).toContain('Finish deleting');
 
-    // Undo on the SECOND toast cancels ONLY view-2's parked action - view-1's
-    // is untouched (still parked, resolves on its own countdown).
-    const secondElement = secondRender();
+    const view1State = await mockPendingActionsService.current('inbox_view', 'view-1');
+    expect(view1State.pending?.actionKey).toBe('inbox_views.delete');
+    const view2State = await mockPendingActionsService.current('inbox_view', 'view-2');
+    expect(view2State.pending).toBeNull();
+
+    // Undo on the (only) first toast still cancels view-1 cleanly.
+    const [firstRender] = customMock.mock.calls[0] as [() => { props: { onCancel: () => void } }, { id: string }];
+    const firstElement = firstRender();
     await act(async () => {
-      secondElement.props.onCancel();
+      firstElement.props.onCancel();
       await Promise.resolve();
       await Promise.resolve();
     });
-
-    const view2State = await mockPendingActionsService.current('inbox_view', 'view-2');
-    expect(view2State.lastOutcome?.status).toBe('cancelled');
-    const view1State = await mockPendingActionsService.current('inbox_view', 'view-1');
-    expect(view1State.pending?.actionKey).toBe('inbox_views.delete');
+    const cancelledView1 = await mockPendingActionsService.current('inbox_view', 'view-1');
+    expect(cancelledView1.lastOutcome?.status).toBe('cancelled');
   });
 });

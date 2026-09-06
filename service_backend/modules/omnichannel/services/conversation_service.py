@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models.status import Status as CoreStatus
 from app.models.user import User
-from ..models import Channel, Contact, ConversationMessage, Status
+from ..models import Channel, Contact, ContactTag, ConversationMessage, Status
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import ContactLifecycleSummary, ContactTagRefItem, MessageItem, ReplyRefItem, ThreadItem
 from . import event_service, realtime, statuses
@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 
 class ThreadNotFound(Exception):
     pass
+
+
+class InvalidThreadFilter(Exception):
+    """A thread-list filter combination the router can't reject by pattern
+    alone (round-3 codex triage B10/B11) - 422, never a silently-wrong
+    result set."""
 
 
 class InvalidPatch(Exception):
@@ -313,6 +319,54 @@ class ConversationService:
         rows, total = self.repo.list_threads(tenant_id, **filters)
         return self._thread_items(rows, tenant_id), total
 
+    def assert_explicit_filters_valid(
+        self,
+        *,
+        tenant_id: str,
+        workspace_id: Optional[str],
+        tag_ids: Optional[List[str]],
+        channel_ids: Optional[List[str]],
+    ) -> None:
+        """B11 (round-3 codex triage) - a tag/channel id foreign to this
+        tenant (or, when a workspace is scoped, foreign to that workspace)
+        422s instead of silently narrowing the EXISTS predicate to zero
+        matching rows with no signal to the caller that the id itself was
+        bogus. Validate EXPLICIT (this-request) query params only -
+        deliberately NOT run against a saved view's EXPANDED filter
+        (`InboxViewService.expand`): a view's ids are already validated
+        against the workspace at save/update time
+        (`InboxViewService._validate_filter_ids`); if a tag/channel is later
+        hard-deleted, the view should keep degrading gracefully (the repo's
+        EXISTS predicate just narrows to fewer/zero matches) rather than the
+        WHOLE saved view starting to 422 forever the moment one referenced id
+        goes stale. A fresh, explicitly-supplied bogus id in THIS request has
+        no such excuse - reject it loudly instead of silently returning an
+        empty/unfiltered set. (The companion `assignee="user"` check - B10 -
+        runs in the router on the MERGED effective pair instead, since either
+        half of that pair may independently come from the view.)"""
+        if tag_ids:
+            self._assert_ids_in_scope(ContactTag, tag_ids, tenant_id, workspace_id, "tagIds")
+        if channel_ids:
+            self._assert_ids_in_scope(Channel, channel_ids, tenant_id, workspace_id, "channelIds")
+
+    def _assert_ids_in_scope(
+        self, model, ids: List[str], tenant_id: str, workspace_id: Optional[str], field: str
+    ) -> None:
+        query = self.db.query(model.id).filter(model.tenant_id == tenant_id, model.id.in_(ids))
+        if workspace_id:
+            query = query.filter(model.workspace_id == workspace_id)
+        found = {row[0] for row in query.all()}
+        if found != set(ids):
+            raise InvalidThreadFilter(f"{field} contains an unknown id.")
+
+    def assert_contact_exists(self, contact_id: str, tenant_id: str) -> None:
+        """Tenant-scoped existence-only gate (round-3 codex triage B13) - for
+        callers that need the uniform 404 but not a full `ThreadItem` (e.g.
+        `list_events`), so a router never reaches through `.repo` directly
+        (router = HTTP + Pydantic only)."""
+        if self.repo.get_by_id(contact_id, tenant_id) is None:
+            raise ThreadNotFound()
+
     def get_thread(self, contact_id: str, tenant_id: str) -> ThreadItem:
         c = self.repo.get_by_id(contact_id, tenant_id)
         if c is None:
@@ -331,16 +385,27 @@ class ConversationService:
 
     # ── Lifecycle (plan 25 S2) ───────────────────────────────────────────────
     def move_lifecycle(
-        self, contact_id: str, tenant_id: str, to_status_id: str, actor: Optional[User] = None
+        self,
+        contact_id: str,
+        tenant_id: str,
+        to_status_id: str,
+        actor: Optional[User] = None,
+        *,
+        attributed_actor_id: Optional[str] = None,
     ) -> ThreadItem:
         """Move a contact's lifecycle stage (AC-CDM-17). Raises
         `LifecycleStageNotFound` / the `status_machine` errors on failure - the
         router maps them to 404/403/409; nothing is written on any of them
-        (the executor validates before it ever calls `setattr`)."""
+        (the executor validates before it ever calls `setattr`).
+
+        B19 - `actor` authorizes (EFFECTIVE user under impersonation);
+        `attributed_actor_id` (the REAL admin) is who the written
+        `lifecycle_changed` event attributes to - see `lifecycle_service.move`'s
+        docstring for the full split."""
         c = self.repo.get_by_id(contact_id, tenant_id)
         if c is None:
             raise ThreadNotFound()
-        _lifecycle_move(self.db, c, to_status_id, actor=actor)
+        _lifecycle_move(self.db, c, to_status_id, actor=actor, attributed_actor_id=attributed_actor_id)
         self.db.commit()
         self.db.refresh(c)
         item = self.thread_item(c)

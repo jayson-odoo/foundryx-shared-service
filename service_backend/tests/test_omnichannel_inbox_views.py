@@ -5,6 +5,7 @@ test seams (`_seed_thread`, `_auth`) rather than duplicating fixture setup.
 """
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from sqlalchemy.sql import func
 
 from app.models import DEFAULT_TENANT_ID, User, UserStatus
@@ -148,6 +149,43 @@ def test_close_reason_delete_in_use_409_deactivate_ok(client, session_factory):
     assert deactivate.status_code == 200
     assert deactivate.json()["isActive"] is False
     assert deactivate.json()["usesCount"] == 1
+
+
+# ── Round-3 codex triage B14: a conversation closes with this reason BETWEEN
+# the pre-check and the delete commit - IntegrityError, not a 500 ──────────
+def test_close_reason_delete_race_is_409_not_500(session_factory):
+    from sqlalchemy.exc import IntegrityError
+
+    from modules.omnichannel.models import Workspace
+    from modules.omnichannel.services.close_reason_service import (
+        CloseReasonInUse,
+        CloseReasonService,
+    )
+
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.is_default.is_(True)).first()
+    svc = CloseReasonService(db)
+    reasons = svc.list(ws.id, DEFAULT_TENANT_ID)
+    reason = reasons[0]
+
+    real_commit = db.commit
+    calls = {"n": 0}
+
+    def fake_commit(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise IntegrityError("delete", {}, Exception("fk violation"))
+        return real_commit(*a, **kw)
+
+    db.commit = fake_commit
+    try:
+        with pytest.raises(CloseReasonInUse):
+            svc.delete(reason.id, ws.id, DEFAULT_TENANT_ID)
+    finally:
+        db.commit = real_commit
+
+    # The row survives - the rollback undid the ORM-side delete too.
+    assert svc.get(reason.id, ws.id, DEFAULT_TENANT_ID) is not None
 
 
 # ── AC-IVE-28/29: close route ────────────────────────────────────────────────
@@ -458,6 +496,77 @@ def test_thread_list_assignee_user_mode(client, session_factory):
     assert other_thread not in ids
 
 
+# ── Round-3 codex triage B10: `assignee=user` with no ids is a 422, never
+# "every thread regardless of assignee" ─────────────────────────────────────
+def test_thread_list_assignee_user_without_ids_is_422(client, session_factory):
+    _seed_thread(session_factory, phone="+60144000003", messages=[{"body": "hi"}])
+    h = _auth(client)
+
+    res = client.get("/omnichannel/contacts", headers=h, params={"assignee": "user"})
+    assert res.status_code == 422
+
+    res2 = client.get(
+        "/omnichannel/contacts", headers=h, params={"assignee": "user", "assigneeUserIds": ""}
+    )
+    assert res2.status_code == 422
+
+
+# ── Round-3 codex triage B11: a tag/channel id foreign to the tenant is a
+# 422, never a silently-empty result set ────────────────────────────────────
+def test_thread_list_foreign_tag_id_is_422(client, session_factory):
+    _seed_thread(session_factory, phone="+60144000004", messages=[{"body": "hi"}])
+    h = _auth(client)
+
+    res = client.get("/omnichannel/contacts", headers=h, params={"tagIds": "not-a-real-tag-id"})
+    assert res.status_code == 422
+
+
+def test_thread_list_view_with_since_deleted_tag_degrades_not_422(client, session_factory):
+    """A saved view's stored `tagIds` were already validated at save time -
+    if the tag is later hard-deleted, the view keeps degrading gracefully
+    (the repo's EXISTS predicate narrows to zero matches) rather than 422ing
+    forever. Only a FRESH, explicitly-supplied bogus id (the tests above)
+    is rejected."""
+    from modules.omnichannel.models import ContactTag
+    from modules.omnichannel.schemas import InboxViewCreate
+    from modules.omnichannel.services.contact_tag_service import ContactTagService
+    from modules.omnichannel.services.inbox_view_service import InboxViewService
+
+    _seed_thread(session_factory, phone="+60144000006", messages=[{"body": "hi"}])
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+
+    db = session_factory()
+    admin = db.query(User).filter(User.email == ACTIVE_EMAIL).first()
+    tag = ContactTag(tenant_id=DEFAULT_TENANT_ID, workspace_id=ws, name="Temp")
+    db.add(tag)
+    db.flush()
+    view = InboxViewService(db).create(
+        ws, DEFAULT_TENANT_ID, admin.id,
+        InboxViewCreate(name="Stale tag view", isShared=False, filter={"tagIds": [tag.id]}),
+    )
+    db.commit()
+    view_id = view.id
+    ContactTagService(db).delete(tag.id, ws, DEFAULT_TENANT_ID)
+    db.close()
+
+    res = client.get(
+        "/omnichannel/contacts", headers=h, params={"viewId": view_id, "workspaceId": ws}
+    )
+    assert res.status_code == 200
+    assert res.json()["data"] == []
+
+
+def test_thread_list_foreign_channel_id_is_422(client, session_factory):
+    _seed_thread(session_factory, phone="+60144000005", messages=[{"body": "hi"}])
+    h = _auth(client)
+
+    res = client.get(
+        "/omnichannel/contacts", headers=h, params={"channelIds": "not-a-real-channel-id"}
+    )
+    assert res.status_code == 422
+
+
 # ── AC-IVE-18/19: saved-view CRUD + typed filter + permission split ─────────
 def test_inbox_view_create_read_own(client):
     h = _auth(client)
@@ -663,6 +772,86 @@ def test_segment_id_not_available(client):
     h = _auth(client)
     res = client.get("/omnichannel/contacts", headers=h, params={"segmentId": "seg-1"})
     assert res.status_code == 422
+
+
+# ── Round-3 codex triage B18: a saved view carrying `segmentId` 422s at
+# save AND at expansion - never silently discarded ─────────────────────────
+def test_inbox_view_segment_id_rejected_at_create(client):
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    res = client.post(
+        f"{_base(ws)}/inbox-views",
+        headers=h,
+        json={"name": "Segment view", "isShared": False, "filter": {"segmentId": "seg-1"}},
+    )
+    assert res.status_code == 422
+
+
+def test_inbox_view_segment_id_rejected_at_expansion(client, session_factory):
+    """A row that predates the save-time guard (or is otherwise planted) must
+    still 422 on expansion, not silently ignore `segmentId`."""
+    from modules.omnichannel.models import InboxView
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+
+    db = session_factory()
+    admin = db.query(User).filter(User.email == ACTIVE_EMAIL).first()
+    row = InboxView(
+        tenant_id=DEFAULT_TENANT_ID, workspace_id=ws, name="Legacy segment view",
+        owner_user_id=admin.id, is_shared=False, filter_json={"segmentId": "seg-1"},
+    )
+    db.add(row)
+    db.commit()
+    view_id = row.id
+    db.close()
+
+    res = client.get(
+        "/omnichannel/contacts", headers=h, params={"viewId": view_id, "workspaceId": ws}
+    )
+    assert res.status_code == 422
+
+
+# ── Round-3 codex triage B17: a name-uniqueness race is a 422, never a 500 ──
+def test_inbox_view_create_race_is_422_not_500(session_factory):
+    from sqlalchemy.exc import IntegrityError
+
+    from modules.omnichannel.schemas import InboxViewCreate
+    from modules.omnichannel.services.inbox_view_service import (
+        InboxViewService,
+        InboxViewValidationError,
+    )
+
+    db = session_factory()
+    ws = _workspace_id_direct(db)
+    admin = db.query(User).filter(User.email == ACTIVE_EMAIL).first()
+    svc = InboxViewService(db)
+    svc._find_by_name = lambda *a, **k: None
+
+    real_commit = db.commit
+    calls = {"n": 0}
+
+    def fake_commit(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise IntegrityError("insert", {}, Exception("duplicate key value"))
+        return real_commit(*a, **kw)
+
+    db.commit = fake_commit
+    try:
+        with pytest.raises(InboxViewValidationError):
+            svc.create(ws, DEFAULT_TENANT_ID, admin.id, InboxViewCreate(name="Racy View", isShared=False))
+    finally:
+        db.commit = real_commit
+
+    from modules.omnichannel.models import InboxView
+
+    assert (
+        db.query(InboxView.id)
+        .filter(InboxView.workspace_id == ws, InboxView.name == "Racy View")
+        .count()
+        == 0
+    )
 
 
 # ── AC-IVE-41/42: permission CSV + tenant isolation on every new route ──────
@@ -992,3 +1181,60 @@ def test_migration_0009a_declares_created_updated_defaults(monkeypatch):
             assert col.server_default is not None, (
                 f"{table_name}.{col_name} must carry server_default=sa.func.now()"
             )
+
+
+# ── Round-3 codex triage B12: saved-view visibility ("me" ownership) and
+# `assignee=me` authorize as the EFFECTIVE user under impersonation, not the
+# real admin's attribution id ────────────────────────────────────────────────
+def test_view_and_assignee_me_resolve_as_effective_user_under_impersonation(client, session_factory):
+    from app.models import Role
+    from app.repositories.permission_repository import PermissionRepository
+    from modules.omnichannel.schemas import InboxViewCreate
+    from modules.omnichannel.services.inbox_view_service import InboxViewService
+
+    h = _auth(client)
+    ws = _workspace_id(client, h)
+    mine = _seed_thread(session_factory, phone="+60166000001", messages=[{"body": "hi"}])
+
+    db = session_factory()
+    role = Role(tenant_id=DEFAULT_TENANT_ID, name="Impersonated Agent (IVE B12)")
+    role.permissions = PermissionRepository(db).get_by_keys(["conversations.read"])
+    db.add(role)
+    db.flush()
+    target = User(
+        tenant_id=DEFAULT_TENANT_ID, email="ive-b12-target@example.com", name="Target Agent",
+        password=hash_password("Password123!"), status=UserStatus.ACTIVE.value,
+    )
+    target.roles = [role]
+    db.add(target)
+    db.flush()
+    target_id = target.id
+
+    from modules.omnichannel.models import Contact
+
+    db.query(Contact).filter(Contact.id == mine).first().assigned_user_id = target_id
+
+    personal_view = InboxViewService(db).create(
+        ws, DEFAULT_TENANT_ID, target_id, InboxViewCreate(name="Target's own", isShared=False)
+    )
+    view_id = personal_view.id
+    db.commit()
+    db.close()
+
+    start = client.post("/impersonation/start", headers=h, json={"targetUserId": target_id})
+    assert start.status_code == 200, start.text
+    headers = {**h, "X-Impersonate-User-Id": target_id}
+
+    # `viewId` expansion: the view is owned by the EFFECTIVE user (the
+    # impersonated target) - if the bug regresses (checked against the real
+    # admin's id instead) this 404s.
+    res = client.get(
+        "/omnichannel/contacts", headers=headers, params={"viewId": view_id, "workspaceId": ws}
+    )
+    assert res.status_code == 200, res.text
+
+    # `assignee=me` resolves to the EFFECTIVE user's assigned threads.
+    res2 = client.get("/omnichannel/contacts", headers=headers, params={"assignee": "me"})
+    assert res2.status_code == 200
+    ids2 = {t["id"] for t in res2.json()["data"]}
+    assert mine in ids2

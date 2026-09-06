@@ -6,7 +6,7 @@
  * the thread list and the reusable <ConversationDrawer>. Workspace-scoped;
  * gated by conversations.read.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 
 import { Container } from '@/components/common/container';
@@ -54,6 +54,12 @@ export default function InboxPage() {
     return () => window.removeEventListener('popstate', sync);
   }, []);
 
+  // F5 (round-3 codex triage) - whether the CURRENTLY open thread was opened
+  // by an in-app click (a real history entry exists for the pre-open "list"
+  // state, so the device's native Back can simply pop it) vs a deep link
+  // (page loaded directly at `?thread=`, no such entry to pop back TO).
+  const openedViaClickRef = useRef(false);
+
   const openThread = useCallback((id: string | null) => {
     setSelectedId(id);
     const url = new URL(window.location.href);
@@ -62,7 +68,32 @@ export default function InboxPage() {
     // Same thread re-click = no history spam; a new thread = a back-navigable entry.
     if (id !== new URLSearchParams(window.location.search).get('thread')) {
       window.history.pushState(null, '', url);
+      if (id) openedViaClickRef.current = true;
     }
+  }, []);
+
+  // F5 - the mobile "Back to conversations" control. Closing a thread by
+  // PUSHING a fresh no-thread entry (the old behavior, same code path as
+  // opening a thread) left the browser's OWN back button one tap short of
+  // leaving the inbox: [list] -> [thread] -> [list, via this button] means a
+  // native Back press lands back on [thread] - REOPENING the very
+  // conversation the user just backed out of. For an app-opened thread,
+  // `history.back()` pops the entry `openThread` pushed, landing correctly
+  // on the ORIGINAL [list] state with no extra entry (the `popstate`
+  // listener syncs `selectedId` from the URL, so no manual state set here).
+  // A deep-linked thread (no prior in-app "list" entry exists to pop back
+  // to) falls back to `replaceState`, swapping the URL in place instead of
+  // navigating the tab away from the inbox entirely.
+  const backToList = useCallback(() => {
+    if (openedViaClickRef.current) {
+      openedViaClickRef.current = false;
+      window.history.back();
+      return;
+    }
+    setSelectedId(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete('thread');
+    window.history.replaceState(null, '', url);
   }, []);
 
   // Below `lg` the shell shows ONE pane: the list (with the View select +
@@ -119,7 +150,7 @@ export default function InboxPage() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => openThread(null)}
+                    onClick={backToList}
                     aria-label="Back to conversations"
                     data-testid="inbox-back"
                   >

@@ -24,11 +24,19 @@ export interface ShortcutMenuProps {
 
 export function ShortcutMenu({ contactId }: ShortcutMenuProps) {
   const { can } = useCan();
-  const { shortcuts, isRunning, run } = useShortcuts(contactId);
+  const hasPermission = can('conversations.shortcut');
+  // F9 (round-3 codex triage) - `useShortcuts` fetches unconditionally on
+  // every `contactId` (its effect has no permission awareness at all); the
+  // OLD code called it BEFORE the permission guard below, so a caller
+  // WITHOUT `conversations.shortcut` still fired a guaranteed-403 request on
+  // every conversation opened. `useShortcuts` already treats a null contact
+  // as "nothing to fetch" - pass `null` instead of `contactId` whenever the
+  // permission is absent, rather than adding a separate `enabled` param.
+  const { shortcuts, isRunning, run } = useShortcuts(hasPermission ? contactId : null);
   const [value, setValue] = useState<string | null>(null);
   const router = useRouter();
 
-  if (!can('conversations.shortcut') || shortcuts.length === 0) return null;
+  if (!hasPermission || shortcuts.length === 0) return null;
 
   const options: SearchSelectOption[] = shortcuts.map((s) => ({ label: s.name, value: s.workflowId }));
 

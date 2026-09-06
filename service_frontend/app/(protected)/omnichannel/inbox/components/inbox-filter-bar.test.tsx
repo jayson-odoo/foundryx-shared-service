@@ -14,13 +14,13 @@ describe('InboxFilterBar', () => {
     expect(screen.getByRole('combobox', { name: 'Priority filter' })).toBeInTheDocument();
   });
 
-  it('picking a Show option patches status', async () => {
+  it('picking a Show option patches status AND marks it an explicit user override (F2)', async () => {
     const setFilters = vi.fn();
     const user = userEvent.setup();
     render(<InboxFilterBar filters={DEFAULT_FILTERS} setFilters={setFilters} />);
     await user.click(screen.getByRole('combobox', { name: 'Show' }));
     await user.click(await screen.findByText('Open'));
-    expect(setFilters).toHaveBeenCalledWith({ status: 'OPEN' });
+    expect(setFilters).toHaveBeenCalledWith({ status: 'OPEN', statusExplicit: true });
   });
 
   it('picking a Sort option patches sort', async () => {

@@ -28,6 +28,14 @@ import { useConversationSocket } from './use-conversation-socket';
 export interface ConversationFilters {
   assignee: 'all' | 'me' | 'unassigned';
   status: ThreadStatus | 'ALL';
+  /** F2 (round-3 codex triage) - true ONLY when the user picked `status` via
+   *  the filter bar's own control; false when it reads 'ALL' because a
+   *  multi-status saved view collapsed into that single-value display
+   *  (`expandViewFilter`). The service only sends `status` as an explicit
+   *  override (clearing the view's stored value server-side) when this is
+   *  true - otherwise it is omitted so the view's real multi-status set
+   *  applies server-side. */
+  statusExplicit: boolean;
   priority: ThreadPriority | 'ALL';
   search: string;
   /** View-rail dimensions (plan 27). */
@@ -54,6 +62,7 @@ export interface UseConversationsResult {
 export const DEFAULT_FILTERS: ConversationFilters = {
   assignee: 'all',
   status: 'ALL',
+  statusExplicit: false,
   priority: 'ALL',
   search: '',
   lifecycleStageIds: [],
@@ -75,11 +84,32 @@ export function useConversations(workspaceId: string | null | undefined): UseCon
   const [filters, setFiltersState] = useState<ConversationFilters>(DEFAULT_FILTERS);
   const fetchSeq = useRef(0);
 
+  // F10 (round-3 codex triage) - EVERY view-rail dimension carried in
+  // `filters` (lifecycleStageIds/tagIds/channelIds/viewId) is scoped to the
+  // PREVIOUS workspace. Without a reset, switching workspaces re-fetches
+  // with the OLD workspace's ids against the NEW one: a `viewId` from
+  // another workspace 404s the whole list outright (the router's own
+  // cross-workspace guard), and a stale tag/channel id now 422s under B11's
+  // validation - either way the list breaks instead of showing the new
+  // workspace's "All" state. `rawThreads` is reset too so a broken/slow new
+  // fetch never leaves the OLD workspace's rows on screen looking current.
+  // Reset happens DURING RENDER (the sanctioned "derived state from a
+  // changed prop" pattern - React re-renders before committing/running
+  // effects) so `load()`'s effect below never fires with the stale
+  // workspaceId+filters combination even transiently.
+  const prevWorkspaceIdRef = useRef(workspaceId);
+  if (prevWorkspaceIdRef.current !== workspaceId) {
+    prevWorkspaceIdRef.current = workspaceId;
+    if (filters !== DEFAULT_FILTERS) setFiltersState(DEFAULT_FILTERS);
+    setRawThreads([]);
+  }
+
   const query = useMemo<ThreadListQuery>(
     () => ({
       workspaceId: workspaceId ?? undefined,
       assignee: filters.assignee,
       status: filters.status,
+      statusExplicit: filters.statusExplicit,
       priority: filters.priority,
       search: filters.search || undefined,
       lifecycleStageIds: filters.lifecycleStageIds,

@@ -123,4 +123,48 @@ describe('InboxPage - responsive single-pane switch (D-A3-15)', () => {
     expect(screen.getByTestId('pick-thread')).toBeInTheDocument();
     expect(screen.queryByTestId('conversation-drawer')).not.toBeInTheDocument();
   });
+
+  // F5 (round-3 codex triage) - the OLD back control PUSHED a fresh no-thread
+  // entry (same code path as opening a thread): [list] -> [thread] -> [list,
+  // via this button] left the DEVICE's native Back one tap short of leaving
+  // the inbox (it would land back on [thread], reopening the very
+  // conversation the user just backed out of). For an app-opened thread, the
+  // fix pops the entry via `history.back()` instead of pushing a new one.
+  it('an app-opened thread is closed via history.back(), never a fresh pushState (F5)', async () => {
+    setup();
+    useMediaQueryMock.mockReturnValue(false);
+    const user = userEvent.setup();
+    const backSpy = vi.spyOn(window.history, 'back');
+    render(<InboxPage />);
+
+    await user.click(await screen.findByTestId('pick-thread'));
+    const pushSpy = vi.spyOn(window.history, 'pushState');
+    await user.click(screen.getByTestId('inbox-back'));
+
+    expect(backSpy).toHaveBeenCalledTimes(1);
+    expect(pushSpy).not.toHaveBeenCalled();
+    backSpy.mockRestore();
+    pushSpy.mockRestore();
+  });
+
+  // F5 - a DEEP LINK straight to a thread (no prior in-app "list" entry to
+  // pop back to) must not call `history.back()` (that would navigate the tab
+  // away from the inbox entirely) - it swaps the URL in place instead.
+  it('a deep-linked thread is closed via replaceState, never history.back() (F5)', async () => {
+    setup();
+    useMediaQueryMock.mockReturnValue(false);
+    window.history.replaceState(null, '', '/?thread=cnt-deep-link');
+    const user = userEvent.setup();
+    const backSpy = vi.spyOn(window.history, 'back');
+    const replaceSpy = vi.spyOn(window.history, 'replaceState');
+    render(<InboxPage />);
+
+    await user.click(await screen.findByTestId('inbox-back'));
+
+    expect(backSpy).not.toHaveBeenCalled();
+    expect(replaceSpy).toHaveBeenCalled();
+    expect(new URLSearchParams(window.location.search).get('thread')).toBeNull();
+    backSpy.mockRestore();
+    replaceSpy.mockRestore();
+  });
 });

@@ -258,7 +258,12 @@ def find_stage_by_key_or_label(
 
 
 def move(
-    db: Session, contact: Contact, to_status_id: str, actor: Optional[User] = None
+    db: Session,
+    contact: Contact,
+    to_status_id: str,
+    actor: Optional[User] = None,
+    *,
+    attributed_actor_id: Optional[str] = None,
 ) -> StatusTransition:
     """Move `contact` along a defined edge - delegates entirely to the shared
     executor (edge graph, role auth, notifications, the generic
@@ -275,7 +280,18 @@ def move(
     in the SAME unit of work - this is the ONE move seam shared by
     `ConversationService.move_lifecycle`, `patch_thread`'s `lifecycle_status_id`
     branch, and the gateway PATCH, so every caller is covered without a
-    separate writer per route."""
+    separate writer per route.
+
+    B19 (round-3 codex triage) - `actor` authorizes the move (`status_machine.
+    transition`'s edge-role/rule-condition gate reads it; under impersonation
+    this is the EFFECTIVE user, matching `resolve_effective_actor`'s own
+    house-rule split). The event's ACTOR is attribution, not authorization -
+    it must be the REAL admin under impersonation, never the target. Callers
+    that already resolve a real actor id separately from the authorizing
+    `actor` (e.g. `ConversationService.move_lifecycle` under impersonation)
+    pass it via `attributed_actor_id`; callers with no such split (`actor` IS
+    already the real actor, e.g. `patch_thread`'s lifecycle branch) omit it
+    and this falls back to `actor.id` - unchanged behavior for them."""
     if get_scope_status(db, ENTITY_TYPE, contact.tenant_id, contact.workspace_id, to_status_id) is None:
         raise LifecycleStageNotFound()
     from_status_id = contact.lifecycle_status_id
@@ -285,8 +301,11 @@ def move(
     )
     from . import event_service
 
+    event_actor_id = attributed_actor_id if attributed_actor_id is not None else (
+        actor.id if actor is not None else None
+    )
     event_service.record(
-        db, contact, "lifecycle_changed", actor=actor,
+        db, contact, "lifecycle_changed", actor_id=event_actor_id,
         from_value=from_status_id, to_value=to_status_id,
     )
     return result

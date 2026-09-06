@@ -278,3 +278,345 @@ Frontend: Test Files  268 passed (268)
 Backend (tests/test_omnichannel_deferred_actions.py only - full suite unaffected, comment-only
 change): 17 passed
 ```
+
+## Addendum - round 3 (codex triage)
+
+Cross-model (Codex) review of the branch after two Opus review rounds passed it, surfacing 32
+CANDIDATE findings (B1-B20 backend, F1-F12 frontend). Triaged test-first; verdicts below. Lane:
+worktree `.claude/worktrees/s27`, backend `:8006` (PID 52635 after restart), frontend `:3005`
+(PID 53658 after a clean rebuild), DB `foundryx_service_s27`.
+
+**Commit:** one commit on top of `432e947` - `fix(omnichannel): plan 27 round 3 - codex triage:
+impersonation semantics, assignee guards, scoped resolution, shortcut entity check, view override
+tracking, drawer races` (see the branch tip for the hash).
+
+### Verdicts
+
+**Backend**
+
+- **B1 - REAL (fixed in `service_backend/app/services/workflow_service.py`).** `WorkflowService.
+  run_shortcut` now resolves the `WorkflowEntity` and requires `supports_shortcut` before anything
+  else, then reloads the record tenant-scoped via `entities.load_record` rather than trusting the
+  caller's object - defense-in-depth for the generic function (the one real caller, omnichannel's
+  `ConversationService.run_shortcut`, already loaded tenant-scoped, but the shared function must
+  hold that line on its own). Tests: `test_run_shortcut_rejects_entity_without_supports_shortcut`,
+  `test_run_shortcut_rejects_unregistered_entity_type`,
+  `test_run_shortcut_reloads_record_tenant_scoped` (`tests/test_workflow_shortcuts.py`).
+- **B2 - REAL (fixed, same file).** An unresolved `execution.mode="serialized"` correlation key
+  raised a bare `RuntimeError` straight through `run_shortcut` (the manual `run()` path already
+  catches this and maps to a `WorkflowError` 409). Added `ShortcutSerializationConflict` and a
+  matching `except RuntimeError` in `run_shortcut`, mapped to 409 in
+  `modules/omnichannel/routers/conversations.py`. Test:
+  `test_run_shortcut_serialized_execution_unresolved_key_is_conflict`.
+- **B3 - FALSE POSITIVE (evidence: `app/workflow_engine/entity_events.py` `create_run_for_event`).**
+  The published-version lookup filters `WorkflowVersion.id == wf.current_version_id` only, but
+  `WorkflowVersion.id` is a UUID surrogate key never shared across workflows, and `wf` (from
+  `run_shortcut`'s own tenant-scoped query, or `_match_and_enqueue`'s candidate query) is read in
+  the SAME session/transaction with no interleaving commit before this lookup runs - SQLAlchemy's
+  `expire_on_commit` default would force a fresh reload of `wf` on the very next attribute access
+  after any commit anyway. Joining on `workflow_id` cannot change which row resolves.
+- **B4 - REAL (fixed in `app/workflow_engine/entity_events.py`).** In the non-eager path,
+  `dispatch_persisted_run` ran AFTER the run row was already committed durable-Pending; an
+  unhandled dispatch error (e.g. a broker-down `.delay()`) propagated straight through
+  `create_run_for_event` - the CRUD bus survives it via `_dispatch`'s own broad `except Exception`,
+  but `run_shortcut` has no such wrapper and would 500 while leaving the committed run stranded (a
+  client retry then double-parks). Wrapped the dispatch call in its own try/except - logs, leaves
+  the run Pending, returns it unchanged. Test:
+  `test_run_shortcut_survives_a_dispatch_failure` (mocks `serialization.dispatch_persisted_run` to
+  raise).
+- **B5 - FALSE POSITIVE (evidence: `modules/omnichannel/services/event_service.py list_for_contact`).**
+  Filters by `tenant_id` + the caller-supplied `contact_id` only, but `contact_id` is a UUID PK
+  already tenant-validated by the router (`ConversationService.assert_contact_exists`, added for
+  B13 below) before this function ever runs - adding `workspace_id` would be pure redundancy
+  (the same row set, since one `contact_id` selects exactly one contact) with zero functional
+  effect.
+- **B6 - REAL (fixed in `modules/omnichannel/alembic/versions/0009a_omni_inbox_views.py`).**
+  `install()`'s `create_schema_and_tables` runs `OmniBase.metadata.create_all` on EVERY boot,
+  BEFORE the per-module Alembic stamp-vs-upgrade detection (`_bootstrap_one_module`). On a
+  deployment mid-upgrade (an `alembic_version_omnichannel` row already at 0008, `conversation_
+  events` not created yet), that `create_all` call fresh-creates `conversation_events` complete
+  with the model's embedded `ForeignKey("close_reasons.id")` under a Postgres AUTO-GENERATED
+  constraint name, not this migration's literal `fk_conv_events_close_reason` - a name-only check
+  missed it, adding a second redundant FK on upgrade, and `downgrade()` could only ever drop its
+  own literal name. Detection is now by (columns, referred table) on both `upgrade()`/`downgrade()`,
+  name-agnostic. Verified against the live s27 DB (`\d app_omnichannel.conversation_events`) -
+  this lane's DB went through the real incremental migration path (no duplicate FK present); the
+  fix is defense-in-depth for the `create_all`-races-Alembic deployment shape.
+- **B7 - REAL (fixed in `modules/omnichannel/bootstrap.py create_schema_and_tables`).** Verified
+  the ordering IS the established module pattern (`install()` -> `create_all` -> per-module
+  Alembic stamp-or-upgrade, matching 0004/0008's own precedent, per-tenant data backfill still
+  handled correctly by `install_tenant`/`update_tenant`'s Python-level idempotent calls regardless
+  of which DDL path ran) - so per the brief's own conditional, the fix is to the MIRROR, not the
+  ordering. `create_schema_and_tables` did not mirror 0009a's two functional `lower(name)` unique
+  indexes (`uq_close_reasons_workspace_name`, `uq_inbox_views_workspace_name`) - neither model
+  declares them as a SQLAlchemy `Index`, so `create_all` never emits them, and on a fresh DB the
+  stamp-path means 0009a's migration SQL never runs either. Added matching idempotent
+  `CREATE UNIQUE INDEX IF NOT EXISTS` statements to `create_schema_and_tables`, mirroring the
+  existing `uq_channels_phone_number_id` precedent in the same function. Verified live: both
+  indexes already present on this lane's DB (`\d app_omnichannel.close_reasons` / `.inbox_views`).
+- **B8 - REAL (fixed narrowly, in `modules/omnichannel/bootstrap.py seed_demo_conversations`).**
+  The idempotency check `Contact.id == "cnt-001"` was unscoped by `tenant_id` - scoped it. Verified
+  the two actual call sites (`scripts/bootstrap_db.py`, `scripts/init_db.py`) both always pass
+  `DEFAULT_TENANT_ID`, so this is defense-in-depth today, not an active bug; the function ALSO
+  hardcodes literal ids (`cnt-001..005`, `tpl-001..003`, `chn-demo`) that would collide (a PK clash,
+  or worse a cross-tenant channel reuse for `chn-demo` specifically) if ever called for a second
+  tenant - that deeper design gap is out of scope for a dev-only seed script fix and is logged as
+  **BL-SS-077** below (backlog section only, not backlog.md).
+- **B9 - REAL (fixed in `app/deferred_actions/service.py PendingActionService.park` +
+  `modules/omnichannel/deferred_actions.py _inbox_views_delete`).** The round-2 comment on this
+  exact line already documented the gap: `_inbox_views_delete` authorized against
+  `requested_by_id` (the REAL actor, correct for audit) instead of the EFFECTIVE user, so a
+  cross-tenant impersonator's own view-ownership check 404'd/403'd for an action the impersonated
+  target was always allowed. `park()` now stamps `payload["_effectiveUserId"] = actor.id`
+  SERVER-SIDE (after copying whatever client payload was sent, so it can never be spoofed) -
+  generic to EVERY deferred action, not just this one; `_inbox_views_delete` reads it with a
+  fallback to `actor_user_id` for callers that never split the two identities.  Tests:
+  `test_inbox_views_delete_own_view_authorizes_as_effective_user_under_impersonation`,
+  `test_inbox_views_delete_shared_view_still_requires_manage_under_impersonation`
+  (`tests/test_omnichannel_deferred_actions.py`) - both exercise `PendingActionService.park`/
+  `commit_one` directly with a real impersonation-style actor/requested_by split.
+- **B10 - REAL (fixed in `modules/omnichannel/repositories/contact_repository.py list_threads` +
+  `services/conversation_service.py` + `routers/conversations.py`).** `assignee == "user"` with an
+  empty/omitted `assignee_user_ids` fell through to NO predicate (every thread, any assignee) - the
+  SAME bug shape for `assignee == "me"` with neither identity resolved. Both branches now apply a
+  false predicate (`sa.false()`) instead of skipping the filter; the router additionally 422s
+  `assignee=user` with no ids on the MERGED effective pair (assignee/assigneeUserIds may
+  independently come from a saved view, AC-IVE-17). Tests:
+  `test_thread_list_assignee_user_without_ids_is_422` (`tests/test_omnichannel_inbox_views.py`).
+- **B11 - REAL (fixed, same files).** Tag/channel `EXISTS` subqueries gained an explicit
+  `tenant_id` predicate on the link row itself (defense-in-depth alongside the already-tenant-
+  scoped correlation - never rely solely on the correlation for tenant safety). A foreign tag/
+  channel id now 422s via `ConversationService.assert_explicit_filters_valid`, called on EXPLICIT
+  query params ONLY (never a saved view's already-validated, possibly-since-stale expansion - a
+  hard-deleted tag must keep degrading a view gracefully, not 422 it forever). The status-key join
+  (`Status.id == Contact.status_id`) is intentionally left as an exact-id join with no added
+  `tenant_id` filter - adding one would be redundant (same reasoning as B3/B5) and would actively
+  BREAK platform-tier (`tenant_id IS NULL`) status rows. Tests:
+  `test_thread_list_foreign_tag_id_is_422`, `test_thread_list_foreign_channel_id_is_422`,
+  `test_thread_list_view_with_since_deleted_tag_degrades_not_422` (the graceful-degradation
+  regression guard) in `tests/test_omnichannel_inbox_views.py`.
+- **B12 - REAL (fixed in `modules/omnichannel/routers/conversations.py list_threads`).** Saved-view
+  visibility (`InboxViewService.get_visible`'s ownership check) and `assignee=me` both used
+  `principal.actor_user_id` (the REAL admin under impersonation, per `ConversationPrincipal`'s own
+  docstring) where the house rule calls for the EFFECTIVE user (ownership/"me" is authorization,
+  not attribution - matches `resolve_effective_actor`'s existing split for the lifecycle move).
+  Both switched to `principal.effective_user_id`. Test:
+  `test_view_and_assignee_me_resolve_as_effective_user_under_impersonation` - real impersonation
+  session via `/impersonation/start`, mutation-verified (reverting the fix makes the view 404
+  under impersonation).
+- **B13 - REAL (fixed in `modules/omnichannel/services/conversation_service.py` +
+  `routers/conversations.py list_events`).** The router reached `ConversationService(db).repo.
+  get_by_id(...)` directly - added `ConversationService.assert_contact_exists` (a thin
+  tenant-scoped existence check, mirrors the pattern already used by `list_messages`) and the
+  router now calls that instead of touching `.repo`.
+- **B14 - REAL (fixed in `modules/omnichannel/services/close_reason_service.py delete`).** A
+  conversation could close with a reason BETWEEN the pre-check `in_use` query and the delete
+  commit; the FK violation surfaced as an unhandled `IntegrityError` -> 500. Wrapped the commit in
+  try/except, translating to the same `CloseReasonInUse` the pre-check raises. Test:
+  `test_close_reason_delete_race_is_409_not_500` (monkeypatches `db.commit` to raise once, same
+  pattern as the existing A1 tag-race tests).
+- **B15 - FALSE POSITIVE (evidence: `event_service.list_for_contact`, same reasoning as B5).**
+  Duplicate framing of the same pagination function - `contact_id` already pins the row set to one
+  tenant-validated contact; no `workspace_id` predicate is needed for correctness.
+- **B16 - REAL (fixed in `modules/omnichannel/services/event_service.py _label_map` + `to_items`).**
+  The lifecycle-status branch resolved `CoreStatus` by bare `tenant_id` + `id` with no `entity_
+  type`/`scope_id` (workspace) constraint - the lifecycle machine is a SCOPED status entity
+  (`ConversationService._lifecycle_map`'s own precedent/comment: "a status id that happens to exist
+  for another workspace of the same tenant must NOT resolve"). Close-reason labels had the
+  matching gap (bare `tenant_id` + `id`, no `workspace_id`). Both now constrain by workspace
+  (derived from the batch's own events, since `to_items` always renders ONE contact's events = one
+  workspace). Existing `test_lifecycle_changed_event`/assignment-label tests in
+  `tests/test_omnichannel_conversation_events.py` continue to pass unmodified (confirms no
+  regression to the happy path).
+- **B17 - REAL (fixed in `modules/omnichannel/services/inbox_view_service.py create`/`update`).**
+  Same check-then-insert/rename race class as A1's tag service - wrapped both commits in
+  try/except `IntegrityError`, translating to `InboxViewValidationError` (the A1 tags precedent).
+  Test: `test_inbox_view_create_race_is_422_not_500`.
+- **B18 - REAL (fixed in `inbox_view_service.py _validate_filter_ids` + `expand()` +
+  `routers/conversations.py`).** `InboxViewFilter.segmentId` was accepted at save time and
+  silently discarded on expansion. Save now rejects any non-null `segmentId` with the SAME message
+  the query-param path uses ("Contact segments are not available yet."); `expand()` re-checks it
+  as defense-in-depth for a pre-guard-era or planted row, raising the same error, mapped to 422 by
+  the router. Tests: `test_inbox_view_segment_id_rejected_at_create`,
+  `test_inbox_view_segment_id_rejected_at_expansion`.
+- **B19 - REAL (fixed in `modules/omnichannel/services/lifecycle_service.py move` +
+  `ConversationService.move_lifecycle` + the router).** The `lifecycle_changed` event's actor was
+  the EFFECTIVE user (needed for `status_machine.transition`'s own authorization, B5's prior fix)
+  instead of the REAL admin for attribution. `move()` gained an `attributed_actor_id` param
+  (defaults to `actor.id` when omitted, so `patch_thread`'s lifecycle branch - where `actor` is
+  ALREADY the real actor - is unaffected); the router's `move_lifecycle` route now passes
+  `principal.actor_user_id` explicitly. Test:
+  `test_move_lifecycle_impersonation_attributes_event_to_real_admin`
+  (`tests/test_omnichannel_contact_data_model.py`), mutation-verified.
+- **B20 - REAL (fixed in `modules/omnichannel/services/message_service.py _mark_agent_message`).**
+  The `is_first_reply_pending` SELECT then `event_service.record(..., "first_agent_reply", ...)`
+  INSERT is a check-then-write race under concurrent sends for the same contact. Added a
+  Postgres-only `SELECT ... FOR UPDATE` row lock on the contact before the check (dialect-guarded,
+  no-op on the SQLite test engine - the same pattern `serialization.touch_run_heartbeat` already
+  uses). **Not independently pytest-verified**: the test suite runs on SQLite (single connection,
+  no real row-locking, no threads), so the guard's SQL branch is untested by `pytest`; the existing
+  sequential `test_first_agent_reply_once_per_open_cycle` still passes unmodified (no regression
+  to normal, non-concurrent behavior). Live-probed at the dialect-check level, not with genuine
+  concurrent traffic (out of scope for a `curl` probe) - flagged as unverified below.
+
+**Frontend**
+
+- **F1 - REAL (fixed in `inbox-rail-entries.ts railSelectionPatch`).** Leaving a saved view for
+  All/Mine/Unassigned/a lifecycle stage cleared `lifecycleStageIds` but not `tagIds`/`channelIds` -
+  both are VIEW-ONLY dimensions (no filter-bar control for either), so a stale narrowing kept
+  silently applying with no UI left to show or clear it. Both cases now clear all three. Tests in
+  `inbox-rail-entries.test.ts`.
+- **F2 - REAL (fixed, interacting with round 2's fix as flagged).** Added `ConversationFilters.
+  statusExplicit` (true ONLY on a genuine filter-bar pick); `expandViewFilter` always sets it
+  `false` (a multi-status view's `ALL` collapse is never mistaken for a user override);
+  `threadQueryString` sends `status` while a view is active ONLY when `statusExplicit` is true,
+  otherwise omits it so the server applies the view's real (possibly multi-status) filter.
+  Round-2's single-status/explicit-All cases still pass (updated to set `statusExplicit: true`,
+  matching a genuine bar pick); new case covers the multi-status-collapse-not-explicit path.
+- **F3 - REAL (fixed in `inbox-view-rail.tsx deleteView` - the SAFEST of the brief's two options).**
+  `useDeferredAction`'s `parkedRef` is one-per-hook-instance; `start()` overwrites it wholesale, so
+  round 2's settle-then-overwrite silently stopped polling/refreshing/toasting for the FIRST
+  delete once a second one started (server-side it still resolved, but the UI never learned it
+  did). Chose "refuse a second start while one is parked" over "track parks per row" - zero change
+  to the shared engine hook's contract. A second delete on a DIFFERENT view now shows "Finish
+  deleting "X" first." and does not touch the first; a double-click on the SAME view is a no-op.
+  Test (replaces the round-2 "settles the first toast" test, which asserted the now-superseded
+  behavior): `refuses a second delete while the first is still counting down`.
+- **F4 - REAL (fixed in `use-inbox-rail-selection.ts`).** `restoredRef` was "done" for the hook's
+  whole lifetime - a workspace switch (same mounted rail, new stages/views) never re-attempted
+  `?view=` restoration. Added a `restoredForWorkspaceRef` tracking which workspace was last
+  restored FOR, resetting the guard on change. An unknown/stale rail key (lifecycle or view) now
+  normalizes to All in BOTH the URL and the filter state, instead of a silent no-op that strands
+  the address bar on a dead key. New dedicated `use-inbox-rail-selection.test.ts` (4 cases,
+  mutation-verified for the workspace-switch case).
+- **F5 - REAL (fixed in `inbox/page.tsx`).** The mobile "Back to conversations" control PUSHED a
+  fresh no-thread history entry (the same code path as opening a thread): `[list] -> [thread] ->
+  [list, via this button]` left the device's native Back one tap short of leaving the inbox (it
+  would land back on `[thread]`, reopening the very conversation just backed out of). An
+  `openedViaClickRef` now tracks whether the open thread was reached by an in-app click (a real
+  poppable entry exists) - Back calls `history.back()` for that case, `replaceState` for a
+  deep-linked thread (no prior list entry to pop to). Two new tests in `page.test.tsx`, both
+  asserting on `history.back`/`pushState`/`replaceState` spies (not jsdom navigation state, which
+  doesn't model this distinction well).
+- **F6 - REAL (fixed in `workspace-close-reasons-tab.tsx onSetActive`).** `void update(...)`
+  discarded a Deactivate/Activate rejection - `update()` re-throws (no internal catch) and the
+  Resource shell's `ActionMenu` awaits a non-deferred action's `run` with no catch of its own
+  either (every OTHER action self-handles its errors). Wrapped in try/catch + `toast.error`. New
+  `workspace-close-reasons-tab.test.tsx` (2 cases, mutation-verified).
+- **F7 - REAL (fixed in `activity-feed.tsx`).** `.sort((a,b) => a.createdAt.localeCompare(...))` is
+  a lexicographic string sort - Python's `isoformat()` drops the fractional part entirely at
+  exactly-zero microseconds, so `"...:00Z"` vs `"...:00.500000Z"` compares '.' (0x2E) against 'Z'
+  (0x5A) and sorts the LATER (.5s) timestamp FIRST. Switched to numeric epoch via `lib/datetime.ts
+  parseUtc(...).getTime()` (unparsable sorts last, never throws). New regression case + mutation-
+  verified.
+- **F8 - REAL (fixed in `conversation-drawer.tsx`).** `void setStatus('OPEN').then(reloadEvents)`
+  discarded a Reopen rejection (`setStatus` has no internal catch, matching `CloseThreadDialog`'s
+  own `onClose` which IS awaited inside a try/catch by the dialog - Reopen has no dialog wrapping
+  it). Extracted a `reopenThread` callback with try/catch + `toast.error`. New test in
+  `conversation-drawer.test.tsx`, mutation-verified (also fixed one pre-existing new-test-only tsc
+  error: `toast.error`'s mock needs a truthy return, not `void`).
+- **F9 - REAL (fixed in `shortcut-menu.tsx`).** `useShortcuts(contactId)` fetched unconditionally
+  BEFORE the `can('conversations.shortcut')` gate below it - every agent without the permission
+  fired a guaranteed-403 request on every conversation opened. `useShortcuts` already treats a
+  null contact as "nothing to fetch" - now called with `hasPermission ? contactId : null`. Updated
+  the existing "renders nothing without the permission" test to assert `listShortcuts` is NEVER
+  called (previously asserted the opposite - the old buggy behavior).
+- **F10 - REAL (fixed in `hooks/use-conversations.ts`).** Every view-rail filter dimension
+  (`lifecycleStageIds`/`tagIds`/`channelIds`/`viewId`) is scoped to the PREVIOUS workspace; a
+  switch never reset them, so the new workspace's request carried the old one's ids - a stale
+  `viewId` 404s outright (the router's cross-workspace guard) and a stale tag/channel id now 422s
+  under B11's new validation. Reset happens DURING RENDER (the sanctioned "derived state from a
+  changed prop" pattern) so `load()`'s effect never fires with the stale combination even
+  transiently; `rawThreads` is cleared the same way so a slow/broken new fetch never leaves the
+  OLD workspace's rows looking current. New `hooks/use-conversations.test.ts` (2 cases, both
+  mutation-verified).
+- **F11 - REAL (fixed in `hooks/use-messages.ts`).** `addNote`/`send`/`sendTemplate`/`sendMedia`/
+  `runStructured` (interactive/location/contacts)/`react` all called `setMessages(...)`
+  unconditionally after their `await` - a note/message/reaction started for contact A that
+  resolves after the user switched to contact B could append into B's (already reloaded) message
+  list. Added `guardMessagesUpdate` (the SAME `activeContactIdRef` staleness check
+  `commitThreadIfActive` already uses for thread-level fields) and applied it to every one of
+  those six functions' post-await `setMessages` calls. Test:
+  `F11: a slow addNote for the PREVIOUS contact does not land in the newly selected contact's
+  messages`, mutation-verified.
+- **F12 - REAL (fixed, same file, the initial-load effect).** The `Promise.all([getThread,
+  listMessages])` `.then()` did `setMessages(msgs)` - a blind overwrite. A WS `message.created` for
+  the SAME (new) contact can land while this fetch is still in flight, because the socket
+  subscription is keyed on `thread?.workspaceId`, which stays live across a same-workspace contact
+  switch (the OLD contact's thread object persists until the NEW one's `Promise.all` resolves) -
+  `onEvent` is already re-scoped to the new `contactId` by then and appends the live message, which
+  the blind overwrite then silently dropped. Two changes made this safe: (1) `setMessages([])` now
+  runs SYNCHRONOUSLY when `contactId` changes (previously only on a falsy id), so `messages` is
+  scoped to ONLY the new contactId for the whole duration of its own fetch; (2) the `.then()` now
+  merges the REST snapshot with any ids not already in it (`prev` filtered against `msgs`'s id set)
+  instead of overwriting. Test: `F12: a WS message landing during the initial fetch is merged, not
+  dropped` - required a REAL wait for the mock's ~150ms `getThread` delay (an initial `waitFor` on
+  `thread?.id` was a false signal, since `onEvent`'s OWN `message.created` handler also calls
+  `setThread`, independent of the fetch's own `.then()`); mutation-verified.
+
+### Suite counts
+
+```
+Backend targeted (before round 3): 161 passed (test_omnichannel_inbox_views/conversation_events/
+deferred_actions/shortcuts, test_workflow_shortcuts, test_workflow_triggers, test_module_platform)
+Backend targeted (after round 3):  277 passed (adds the new B1/B2/B4/B9/B10/B11/B14/B17/B18/B19
+cases across test_workflow_shortcuts.py, test_omnichannel_deferred_actions.py,
+test_omnichannel_inbox_views.py, test_omnichannel_contact_data_model.py)
+Backend full suite (before round 3, per round-2's own report): 2934 passed, 1 skipped, 18 deselected
+Backend full suite (after round 3): 2951 passed, 1 skipped, 18 deselected (1603.70s) - zero failures,
+zero regressions
+
+Frontend (before round 3): 268 files, 2045 passed
+Frontend (after round 3):  271 files, 2063 passed - zero failures, zero regressions
+```
+
+`npx eslint` on every file touched this round: 0 errors. `npx tsc --noEmit`: one NEW error
+introduced by this round's own test file (`conversation-drawer.test.tsx` - a `toast.error` mock
+needed a non-`void` return type), fixed; every other `tsc --noEmit` error in the repo is
+pre-existing and untouched by this round's diff (verified by `git status` - none of those files
+appear in this round's changeset). `grep` for em/en dashes across every changed file: clean.
+
+### Live probes (backend `:8006`, real `curl` against `demo@example.com`)
+
+- `GET /omnichannel/contacts?assignee=user` (no `assigneeUserIds`) -> **422**
+  `{"detail":"assigneeUserIds is required when assignee=user."}`.
+- `GET /omnichannel/contacts?tagIds=not-a-real-tag` -> **422**
+  `{"detail":"tagIds contains an unknown id."}`.
+- `POST /omnichannel/workspaces/{id}/inbox-views` with `filter.segmentId` set -> **422**
+  `{"detail":{"fieldErrors":{"filter":"Contact segments are not available yet."}}}`.
+- `POST /omnichannel/contacts/{id}/shortcuts/{unknown-workflow-id}` -> **404**
+  `{"detail":"Shortcut not found"}` (the uniform-404 contract holds end to end; the specific
+  "entity without `supports_shortcut`" branch inside `run_shortcut` has no separate public route to
+  probe live - the SAME endpoint is hardcoded to `omnichannel_contact`, which DOES opt in - so B1's
+  registry-level guard is covered by its own pytest unit tests against `WorkflowService.
+  run_shortcut` directly, not this live probe).
+- Impersonated `assignee=me`: **not independently live-probed** - creating a fresh target user via
+  the live API left it in `INVITED` status (a `PATCH .../status=ACTIVE` did not flip it, and
+  `ImpersonationService.start` refuses an inactive target), so the HTTP round-trip could not be
+  completed in this session; B12/B19 are instead verified by `pytest` tests that construct a real
+  `ImpersonationSession` row (`/impersonation/start`) end to end through the SAME
+  `get_conversation_principal`/`resolve_effective_actor` code path the live route uses, both
+  mutation-verified (reverting either fix makes its test fail). Probe artifacts (`Probe B12 Agent
+  <ts>` role, two `probe-b12*@example.com` users) were soft-trashed after the session; the
+  temporary assignment on `cnt-001` was reverted.
+
+### Anything unverified
+
+- **B20** (message-service row lock) has no pytest coverage of the actual concurrent-write path
+  (SQLite test engine, single connection) and was not live-probed with genuine concurrent traffic
+  (would need two simultaneous real sends against the same contact, out of scope for a `curl`
+  session) - the dialect-guard code path itself is exercised (falls through as a no-op on SQLite,
+  confirmed by the unmodified sequential test still passing) but the actual lock's race-prevention
+  is unverified end-to-end.
+- **Impersonated `assignee=me` live HTTP round-trip** - see the live-probes note above; covered by
+  pytest instead.
+
+### Backlog (source: this plan, round 3 - not written to `documentation/backlogs/backlog.md`)
+
+- **BL-SS-077** - `modules/omnichannel/bootstrap.py seed_demo_conversations` hardcodes global
+  literal ids (`cnt-001..005`, `tpl-001..003`, `chn-demo`) that collide (a PK clash for contacts/
+  templates, a cross-tenant CHANNEL reuse for `chn-demo` specifically) if the function is ever
+  called for a second tenant. Today both call sites (`scripts/bootstrap_db.py`,
+  `scripts/init_db.py`) always pass `DEFAULT_TENANT_ID`, so this is dormant - low priority, dev-only
+  seed tooling, not customer-facing. Fix = per-tenant-unique ids (or a tenant-suffixed id scheme)
+  the day this seed is ever wired to a second demo tenant.

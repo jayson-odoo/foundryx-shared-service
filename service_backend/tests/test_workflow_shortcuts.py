@@ -15,7 +15,7 @@ from sqlalchemy import Column, String
 
 from app.database import Base
 from app.models import DEFAULT_TENANT_ID, User
-from app.models.workflow import RUN_SUCCESS, WorkflowRun, WorkflowVersion
+from app.models.workflow import RUN_PENDING, RUN_SUCCESS, WorkflowRun, WorkflowVersion
 from app.services.workflow_service import (
     ShortcutCodeNotAuthorized,
     ShortcutNotFound,
@@ -423,3 +423,108 @@ def test_shortcut_run_respects_loop_guard_depth(session_factory):
     assert len(child_runs) == 1
     assert child_runs[0].depth == 1
     assert child_runs[0].triggered_by_run_id is not None
+
+
+# ── round-3 codex triage B1: `run_shortcut` must not trust `entity_type` +
+# `record` blindly - it resolves the WorkflowEntity and requires
+# `supports_shortcut`, then RELOADS the record tenant-scoped rather than
+# trusting the caller's object ────────────────────────────────────────────
+NO_OPT_ENTITY_TYPE = "wf_shortcut_target_no_opt"
+
+register_workflow_entity(
+    WorkflowEntity(
+        entity_type=NO_OPT_ENTITY_TYPE,
+        label="Shortcut Target (no opt-in)",
+        model=WfShortcutTarget,
+        fact_attrs=("name", "note"),
+        writable=frozenset({"note"}),
+        supports_shortcut=False,
+    ),
+    register_facts=False,
+)
+
+
+def test_run_shortcut_rejects_entity_without_supports_shortcut(session_factory):
+    """Even though `publish()` denormalizes ANY `entityType` onto
+    `trigger_entity_type` with no registry check, `run_shortcut` refuses an
+    entity that never opted in via `supports_shortcut=True` - defense in
+    depth against a future caller (or a hand-crafted definition) targeting a
+    non-shortcut entity."""
+    db = session_factory()
+    admin = _actor(db)
+    wf = _publish_workflow(
+        db, actor=admin, actor_id=admin.id, name="No opt-in target",
+        entity_type=NO_OPT_ENTITY_TYPE, draft=_doc(NO_OPT_ENTITY_TYPE),
+    )
+    rec = _make_record(db)
+    db.commit()
+    with pytest.raises(ShortcutNotFound):
+        WorkflowService(db).run_shortcut(DEFAULT_TENANT_ID, wf.id, NO_OPT_ENTITY_TYPE, rec, admin)
+
+
+def test_run_shortcut_rejects_unregistered_entity_type(session_factory):
+    db = session_factory()
+    admin = _actor(db)
+    rec = _make_record(db)
+    db.commit()
+    with pytest.raises(ShortcutNotFound):
+        WorkflowService(db).run_shortcut(DEFAULT_TENANT_ID, "does-not-exist", "not_an_entity", rec, admin)
+
+
+def test_run_shortcut_reloads_record_tenant_scoped(session_factory):
+    """A record belonging to a DIFFERENT tenant than the one authorizing the
+    run must never be operated on, even if the caller (by bug or malice)
+    hands it straight to `run_shortcut` - the generic core function reloads
+    it tenant-scoped via `load_record` rather than trusting the object."""
+    db = session_factory()
+    admin = _actor(db)
+    wf = _publish_workflow(db, actor=admin, actor_id=admin.id, name="Tenant guard", tenant_id=DEFAULT_TENANT_ID)
+    foreign_rec = _make_record(db, tenant_id="some-other-tenant-id", name="Foreign")
+    db.commit()
+
+    with pytest.raises(ShortcutNotFound):
+        WorkflowService(db).run_shortcut(DEFAULT_TENANT_ID, wf.id, ENTITY_TYPE, foreign_rec, admin)
+    db.refresh(foreign_rec)
+    assert foreign_rec.note is None  # never touched
+
+
+# ── round-3 codex triage B2: an unresolved serialized correlation key is a
+# 409 conflict, never an opaque 500, and persists no run ────────────────────
+def test_run_shortcut_serialized_execution_unresolved_key_is_conflict(session_factory):
+    from app.services.workflow_service import ShortcutSerializationConflict
+
+    db = session_factory()
+    admin = _actor(db)
+    doc = _doc()
+    doc["execution"] = {"mode": "serialized", "correlationKey": "{{ trigger.record.missingField }}"}
+    wf = _publish_workflow(db, actor=admin, actor_id=admin.id, name="Serialized shortcut", draft=doc)
+    rec = _make_record(db, name="Acme Co")
+    db.commit()
+
+    before = db.query(WorkflowRun).count()
+    with pytest.raises(ShortcutSerializationConflict):
+        WorkflowService(db).run_shortcut(DEFAULT_TENANT_ID, wf.id, ENTITY_TYPE, rec, admin)
+    assert db.query(WorkflowRun).count() == before
+
+
+# ── round-3 codex triage B4: a dispatch-side failure AFTER the run is
+# committed durable-Pending must never propagate (500 + a client retry
+# duplicating the run) - it stays Pending, logged, run returned ────────────
+def test_run_shortcut_survives_a_dispatch_failure(session_factory, monkeypatch):
+    import app.workflow_engine.serialization as serialization_mod
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("broker unavailable")
+
+    monkeypatch.setattr(serialization_mod, "dispatch_persisted_run", _boom)
+
+    db = session_factory()
+    admin = _actor(db)
+    wf = _publish_workflow(db, actor=admin, actor_id=admin.id, name="Dispatch failure")
+    rec = _make_record(db, name="Acme Co")
+    db.commit()
+
+    run = WorkflowService(db).run_shortcut(DEFAULT_TENANT_ID, wf.id, ENTITY_TYPE, rec, admin)
+    assert run is not None
+    assert run.status == RUN_PENDING
+    assert db.query(WorkflowRun).filter(WorkflowRun.id == run.id).count() == 1

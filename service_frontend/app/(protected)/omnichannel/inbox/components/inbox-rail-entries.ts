@@ -65,13 +65,26 @@ function singleStatus(statuses: ThreadStatus[] | undefined): ThreadStatus | 'ALL
 /** The filter patch a rail entry applies - selecting ANY entry resets the
  *  other rail-driven dimensions (assignee/lifecycle/view are mutually
  *  exclusive), but leaves Show/Sort/Unreplied untouched EXCEPT when a saved
- *  view is chosen, which restores its own stored values (AC-IVE-17). */
+ *  view is chosen, which restores its own stored values (AC-IVE-17).
+ *
+ *  F1 (round-3 codex triage): `tagIds`/`channelIds` are VIEW-ONLY dimensions
+ *  (`ConversationFilters`'s own comment - there is no filter-bar control for
+ *  either, only a saved view can set them via `expandViewFilter`). Leaving a
+ *  view for All/Mine/Unassigned/a lifecycle stage must clear them too, or a
+ *  view's tag/channel narrowing keeps silently applying with no UI left to
+ *  show or clear it (a hidden-filter foolproof-UI violation). */
 export function railSelectionPatch(entry: InboxRailEntry): Partial<ConversationFilters> {
   switch (entry.kind) {
     case 'default':
-      return { assignee: entry.key, lifecycleStageIds: [], viewId: null };
+      return { assignee: entry.key, lifecycleStageIds: [], tagIds: [], channelIds: [], viewId: null };
     case 'lifecycle':
-      return { assignee: 'all', lifecycleStageIds: [entry.stageId], viewId: null };
+      return {
+        assignee: 'all',
+        lifecycleStageIds: [entry.stageId],
+        tagIds: [],
+        channelIds: [],
+        viewId: null,
+      };
     case 'view':
       return { viewId: entry.viewId };
   }
@@ -85,6 +98,11 @@ export function expandViewFilter(view: InboxView): Partial<ConversationFilters> 
   return {
     assignee: f.assignee === 'user' ? 'all' : (f.assignee ?? 'all'),
     status: singleStatus(f.statuses),
+    // F2 - this value came from the VIEW (possibly a lossy multi-status
+    // collapse to 'ALL'), never a user override - the service omits `status`
+    // from the request while this is false, so the server applies the
+    // view's own (possibly multi-status) stored filter instead of "All".
+    statusExplicit: false,
     priority: f.priority ?? 'ALL',
     lifecycleStageIds: f.lifecycleStageIds ?? [],
     tagIds: f.tagIds ?? [],

@@ -9,7 +9,7 @@
  */
 import { Fragment, useMemo } from 'react';
 
-import { dateKey } from '@/lib/datetime';
+import { dateKey, parseUtc } from '@/lib/datetime';
 import type { ConversationEvent, ConversationMessage } from '@/types/omnichannel';
 
 import { dayLabel } from './conversation-drawer';
@@ -71,7 +71,15 @@ export function ActivityFeed({ messages, events, contactName, formatTime, timeZo
     const eventRows: FeedRow[] = events
       .filter((e) => e.eventType !== 'comment_added')
       .map((event) => ({ kind: 'event', createdAt: event.createdAt, event }));
-    return [...notes, ...eventRows].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    // F7 (round-3 codex triage) - a lexicographic string sort misorders ISO
+    // timestamps with different fractional-second precision (e.g. Python's
+    // `isoformat()` drops the fractional part entirely at exactly-zero
+    // microseconds: `"...:00Z"` vs `"...:00.500000Z"` - the '.' (0x2E) sorts
+    // BEFORE 'Z' (0x5A) character-by-character, so the LATER (.5s) timestamp
+    // would sort FIRST). Compare the actual numeric epoch instead
+    // (`parseUtc` - unparsable/missing sorts last, never crashes the feed).
+    const epoch = (iso: string): number => parseUtc(iso)?.getTime() ?? Number.POSITIVE_INFINITY;
+    return [...notes, ...eventRows].sort((a, b) => epoch(a.createdAt) - epoch(b.createdAt));
   }, [messages, events]);
 
   if (rows.length === 0) {

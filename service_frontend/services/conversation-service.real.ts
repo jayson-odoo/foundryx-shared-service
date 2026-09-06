@@ -52,11 +52,25 @@ function threadQueryString(query: ThreadListQuery): string {
   if (query.assignee && query.assignee !== 'all') params.set('assignee', query.assignee);
   // Review round 2 (finding 1): when a saved view is active, the backend
   // treats an ABSENT param as "use the view's stored value" and an EXPLICIT
-  // `ALL` as "clear it" - so `status`/`priority` must always be sent while
-  // `viewId` is set, even when the bar reads "All", or the view's stored
-  // filter silently wins over an explicit "All" selection (AC-IVE-17).
+  // `ALL` as "clear it" - so `priority` must always be sent while `viewId`
+  // is set, even when the bar reads "All", or the view's stored filter
+  // silently wins over an explicit "All" selection (AC-IVE-17). `priority`
+  // is always single-value both sides, so there is no ambiguity to track.
+  //
+  // F2 (round-3 codex triage): `status` can't use the same blanket rule -
+  // a saved view's `statuses` is a LIST, and a MULTI-status view collapses
+  // to the single-value 'ALL' display (`expandViewFilter`) with NO user
+  // action involved. Round 2's fix sent `status=ALL` unconditionally
+  // whenever a view was active, which cleared that multi-status view's real
+  // server-side filter the instant it was selected. Gate on `statusExplicit`
+  // (true only when the FILTER BAR itself set `status`) - an explicit choice
+  // (including an explicit "All") still overrides the view; a value that
+  // merely reads "All" because of the collapse is omitted so the server
+  // applies the view's own stored (possibly multi-status) filter.
   if (query.viewId) {
-    params.set('status', query.status && query.status !== 'ALL' ? query.status : 'ALL');
+    if (query.statusExplicit) {
+      params.set('status', query.status && query.status !== 'ALL' ? query.status : 'ALL');
+    }
     params.set('priority', query.priority && query.priority !== 'ALL' ? query.priority : 'ALL');
   } else {
     if (query.status && query.status !== 'ALL') params.set('status', query.status);

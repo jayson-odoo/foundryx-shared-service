@@ -181,7 +181,16 @@ class CloseReasonService:
         if in_use is not None:
             raise CloseReasonInUse()
         self.db.delete(row)
-        self.db.commit()
+        try:
+            self.db.commit()
+        except IntegrityError:
+            # B14 (round-3 codex triage) - a concurrent close-with-this-reason
+            # can land BETWEEN the `in_use` check above and this commit (the
+            # FK `fk_conv_events_close_reason` then rejects the delete).
+            # Translate to the same typed 409 the pre-commit check raises,
+            # never an opaque 500.
+            self.db.rollback()
+            raise CloseReasonInUse()
 
     # ── seeding (AC-IVE-27) ──────────────────────────────────────────────────
     def seed_for_workspace(self, workspace_id: str, tenant_id: str) -> None:

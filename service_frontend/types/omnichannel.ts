@@ -441,6 +441,8 @@ export interface ThreadListQuery {
   workspaceId?: string;
   assignee?: 'all' | 'me' | 'unassigned';
   status?: ThreadStatus | 'ALL';
+  /** F2 (round-3 codex triage) - see `ConversationFilters.statusExplicit`. */
+  statusExplicit?: boolean;
   priority?: ThreadPriority | 'ALL';
   search?: string;
   lifecycleStageIds?: string[];

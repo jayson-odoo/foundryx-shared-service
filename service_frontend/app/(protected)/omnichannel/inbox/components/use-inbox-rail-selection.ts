@@ -51,8 +51,17 @@ export function useInboxRailSelection(
   setFilters: (patch: Partial<ConversationFilters>) => void,
   stages: RailStage[],
   views: InboxView[],
+  workspaceId: string | null,
 ): UseInboxRailSelectionResult {
   const restoredRef = useRef(false);
+  // F4 (round-3 codex triage) - `restoredRef` used to be "done for the hook's
+  // whole lifetime": once the FIRST workspace's `?view=` restored, a later
+  // workspace switch (same mounted component, new `stages`/`views` for the
+  // new workspace) never re-ran the restoration, and a `?view=` left over
+  // from the OLD workspace stayed stuck unresolved against the NEW
+  // workspace's data. Track which workspace we last restored FOR and reset
+  // the guard when it changes.
+  const restoredForWorkspaceRef = useRef<string | null>(null);
 
   const select = useCallback(
     (entry: InboxRailEntry) => {
@@ -70,6 +79,10 @@ export function useInboxRailSelection(
   // Restore from `?view=` once the data it might reference (stages/views) has
   // loaded - a reload must land on the same rail entry (AC-IVE-20).
   useEffect(() => {
+    if (restoredForWorkspaceRef.current !== workspaceId) {
+      restoredRef.current = false;
+      restoredForWorkspaceRef.current = workspaceId;
+    }
     if (restoredRef.current) return;
     const raw = currentUrlKey();
     if (!raw) {
@@ -78,14 +91,20 @@ export function useInboxRailSelection(
     }
     const parsed = parseRailKey(raw);
     if (parsed.kind === 'default') {
-      setFilters({ assignee: parsed.value as ConversationFilters['assignee'], lifecycleStageIds: [], viewId: null });
+      setFilters({ assignee: parsed.value as ConversationFilters['assignee'], lifecycleStageIds: [], tagIds: [], channelIds: [], viewId: null });
       restoredRef.current = true;
       return;
     }
     if (parsed.kind === 'lifecycle') {
       if (stages.length === 0) return; // wait for the graph to load
       if (stages.some((s) => s.id === parsed.value)) {
-        setFilters({ assignee: 'all', lifecycleStageIds: [parsed.value], viewId: null });
+        setFilters({ assignee: 'all', lifecycleStageIds: [parsed.value], tagIds: [], channelIds: [], viewId: null });
+      } else {
+        // F4 - an unknown/stale lifecycle key normalizes to All, both the
+        // URL and the displayed selection, instead of leaving the address
+        // bar pointing at a key nothing in the rail highlights.
+        setFilters(railSelectionPatch({ kind: 'default', key: 'all', label: 'All' }));
+        writeUrlKey('all');
       }
       restoredRef.current = true;
       return;
@@ -93,10 +112,18 @@ export function useInboxRailSelection(
     // saved view
     if (views.length === 0) return; // wait for views to load
     const view = views.find((v) => v.id === parsed.value);
-    if (view) setFilters(expandViewFilter(view));
+    if (view) {
+      setFilters(expandViewFilter(view));
+    } else {
+      // F4 - same normalization for a deleted/foreign saved-view id: fall
+      // back to All (URL + filters) rather than a silent no-op that leaves
+      // the URL stuck on a view id the rail can never highlight again.
+      setFilters(railSelectionPatch({ kind: 'default', key: 'all', label: 'All' }));
+      writeUrlKey('all');
+    }
     restoredRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stages, views]);
+  }, [stages, views, workspaceId]);
 
   return { selectedKey: selectedRailKey(filters), select };
 }

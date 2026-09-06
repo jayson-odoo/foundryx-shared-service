@@ -133,7 +133,18 @@ class MessageService:
         `first_agent_reply` event per open cycle (AC-IVE-07). Replaces the
         three bare `contact.last_message_at = now` assignments (send_message /
         send_media / `_structured_row`) - NEVER called by `add_internal_note`
-        (a SYSTEM note is never a reply)."""
+        (a SYSTEM note is never a reply).
+
+        B20 (round-3 codex triage) - the SELECT (`is_first_reply_pending`)
+        then INSERT (`event_service.record`) is a check-then-write race: two
+        concurrent sends for the SAME contact can both see "pending" before
+        either commits, writing TWO `first_agent_reply` events for one open
+        cycle. Lock the contact row first (Postgres `FOR UPDATE`; a no-op
+        query on SQLite, where the test suite's single-threaded session can't
+        exercise the race anyway) so a concurrent sender blocks until this
+        transaction commits, then re-checks against the now-committed state."""
+        if self.db.bind is not None and self.db.bind.dialect.name == "postgresql":
+            self.db.query(Contact.id).filter(Contact.id == contact.id).with_for_update().first()
         contact.last_message_at = now
         contact.last_agent_message_at = now
         if event_service.is_first_reply_pending(self.db, contact):
