@@ -167,6 +167,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
        time.
     """
     from .backfill import (
+        backfill_disable_credit_limit_mapping_rows,
         backfill_entity_config_defaults,
         backfill_etl_defaults,
         backfill_sink_impl_defaults,
@@ -184,6 +185,12 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # 0.3.0 → plan 22: every pre-existing task/staged/run row gets its ETL
     # defaults (draft / upsert / manual) on a create_all-first host too.
     backfill_etl_defaults(db, schema=schema)
+    # sprint-5/04 (Sorento contract 2.1): an ENABLED customer row saved before
+    # ``credit_limit`` left ``CanonicalCustomer.SINK_FIELDS`` is a dead row
+    # (mapped, never sent). Disable it so the table matches the accepted
+    # target set. Module Alembic 0013 does the same on deploy; this covers the
+    # App Store 0.4.0 -> 0.5.0 update path (idempotent either way).
+    backfill_disable_credit_limit_mapping_rows(db, schema=schema)
 
     service = CompanyService(db)
     page = 0

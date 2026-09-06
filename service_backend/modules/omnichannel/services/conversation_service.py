@@ -493,6 +493,12 @@ class ConversationService:
         actor_id: Optional[str] = None,
         actor_external_agent_id: Optional[str] = None,
         external_connection_id: Optional[str] = None,
+        # Plan 30 (roadmap A9), AC-RPT-27: the assignment log derives `source`
+        # from `payload_json.source` rather than inferring it - the public
+        # gateway (the only current caller with no acting user) passes "api";
+        # every other caller keeps the default "agent". A future
+        # `omnichannel.assign_contact` workflow action would pass "workflow".
+        assignment_source: str = "agent",
     ) -> ThreadItem:
         c = self.repo.get_by_id(contact_id, tenant_id)
         if c is None:
@@ -540,7 +546,7 @@ class ConversationService:
                         actor=actor, actor_id=actor_id,
                         external_agent_id=actor_external_agent_id,
                         from_value=prev_assignee, to_value=new_assignee,
-                        payload={"assigneeKind": kind},
+                        payload={"assigneeKind": kind, "source": assignment_source},
                     )
                 else:
                     event_service.record(
@@ -548,6 +554,7 @@ class ConversationService:
                         actor=actor, actor_id=actor_id,
                         external_agent_id=actor_external_agent_id,
                         from_value=prev_assignee,
+                        payload={"source": assignment_source},
                     )
 
         if status is not None:

@@ -97,9 +97,10 @@ def test_unit_of_measure_sink_payload_carries_decimal_places():
         source_ref=f"{DB}:1", source_doc_no="PCS", code="PCS", name="Pieces",
         decimal_places=2, description=None, is_active=True,
     )
+    # Sorento 2.1: the None-valued ``description`` is omitted, not sent as null.
     assert rec.sink_payload() == {
         "source_ref": f"{DB}:1", "source_doc_no": "PCS", "code": "PCS",
-        "name": "Pieces", "decimal_places": 2, "description": None, "is_active": True,
+        "name": "Pieces", "decimal_places": 2, "is_active": True,
     }
 
 
