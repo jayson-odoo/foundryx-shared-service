@@ -43,7 +43,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
@@ -493,7 +493,12 @@ class SorentoSink:
 
     # ── dry run (AC-14-20/21) ────────────────────────────────────────────────
 
-    def dry_run(self, records: Sequence[CanonicalRecord]) -> DryRunResult:
+    def dry_run(
+        self,
+        records: Sequence[CanonicalRecord],
+        *,
+        on_chunk: Optional[Callable[[], None]] = None,
+    ) -> DryRunResult:
         """Ask Sorento what a push WOULD do, writing nothing.
 
         The prediction is authoritative because Sorento runs its real resolution
@@ -512,6 +517,8 @@ class SorentoSink:
         # gate un-passable on precisely the companies that most need it.
         for start in range(0, len(projected), self.batch_size):
             body = self._post(projected[start : start + self.batch_size], dry_run=True)
+            if on_chunk is not None:
+                on_chunk()
             for key, value in (body.get("summary") or {}).items():
                 if isinstance(value, int):
                     summary[key] = summary.get(key, 0) + value
@@ -556,7 +563,11 @@ class SorentoSink:
     # ── deletions (Appendix A4/A6, consumed by S3's delete intents) ──────────
 
     def delete_batch(
-        self, source_refs: Sequence[str], *, dry_run: bool = False
+        self,
+        source_refs: Sequence[str],
+        *,
+        dry_run: bool = False,
+        on_chunk: Optional[Callable[[], None]] = None,
     ) -> Dict[str, Any]:
         """``POST /api/v1/external/ingest/{entity}/deletions``.
 
@@ -592,11 +603,15 @@ class SorentoSink:
                 results.extend(
                     {"source_ref": ref, "outcome": "retryable"} for ref in chunk
                 )
+                if on_chunk is not None:
+                    on_chunk()
                 continue
             for key, value in (body.get("summary") or {}).items():
                 if isinstance(value, int):
                     summary[key] = summary.get(key, 0) + value
             results.extend(body.get("records") or [])
+            if on_chunk is not None:
+                on_chunk()
         return {"dry_run": dry_run, "summary": summary, "records": results}
 
     # ── contract (addendum section 11/12, AC-02-14) ──────────────────────────
@@ -631,10 +646,19 @@ class SorentoSink:
     # ── real push (AC-14-16/18) ──────────────────────────────────────────────
 
     def write_batch(
-        self, records: Sequence[CanonicalRecord], *, request_id: str
+        self,
+        records: Sequence[CanonicalRecord],
+        *,
+        request_id: str,
+        on_chunk: Optional[Callable[[], None]] = None,
     ) -> List[WriteResult]:
         """Deliver a batch and return one ``WriteResult`` per input record, in
-        order. Chunks at the vendor batch ceiling.
+        order. Chunks at the configured batch size (ceiling: the vendor's).
+
+        ``on_chunk`` (fix/job-lease-orphan-sweep) is called once per chunk
+        as its verdict arrives - the caller's job heartbeat - so an
+        unbounded push is not one silent stretch; an exception it raises
+        propagates like a chunk failure (no verdict reaches the caller).
 
         A record's ``delivered`` is True only for a ``created``/``updated``
         outcome - Sorento's own verdict, never inferred from the HTTP status.
@@ -668,9 +692,13 @@ class SorentoSink:
         if concurrency == 1:
             #     !!  BYTE-IDENTICAL TO BEFORE S5b - ONE POST AT A TIME, THE
             #         SAME ORDER.  !!
-            bodies = [
-                self._post(self._to_records(chunk), dry_run=False) for chunk in chunks
-            ]
+            bodies = []
+            for chunk in chunks:
+                bodies.append(self._post(self._to_records(chunk), dry_run=False))
+                # Liveness (fix/job-lease-orphan-sweep): one callback per
+                # chunk VERDICT, so a long push beats as it progresses.
+                if on_chunk is not None:
+                    on_chunk()
         else:
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 futures = [
@@ -681,6 +709,8 @@ class SorentoSink:
                 try:
                     for future in futures:
                         bodies.append(future.result())
+                        if on_chunk is not None:
+                            on_chunk()
                 except BaseException:
                     # A chunk failed - never submit/await anything further
                     # than the context manager already will: cancel every

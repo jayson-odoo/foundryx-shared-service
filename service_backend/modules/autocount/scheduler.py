@@ -33,6 +33,7 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.jobs.service import JobService
+from app.models.background_job import JOB_RUNNING
 from app.models.module import MODULE_STATUS_ACTIVE, Module, TenantModule
 from app.models.status import Status
 from app.models.tenant import Tenant
@@ -57,15 +58,6 @@ logger = logging.getLogger("foundryx.autocount")
 # guard fire on EVERY tick - 1440 skip rows/day and no signal an operator can
 # act on. Past this age the tick is treated as STALE rather than merely
 # in-flight: bounded, one-time, visible.
-# Kept as an importable name for callers/tests that reference it; the LIVE
-# threshold is ``settings.background_job_orphan_after_minutes`` read per tick
-# (``_orphan_after()``), since fix/job-lease-orphan-sweep: an in-flight job
-# this stale is SWEPT (failed + its run row closed) and the tick proceeds -
-# it is no longer a 60-minute "JOB_STUCK" pause that only a human could lift
-# (prod incident 2026-09-07: a deploy drain killed a PO run mid-flight).
-STALE_JOB_AFTER = timedelta(minutes=15)
-
-
 def _orphan_after() -> timedelta:
     from app.config import settings
 
@@ -238,7 +230,7 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         tenant_id, AUTOCOUNT_SYNC, company_id, entity_type
     )
     if in_flight is not None:
-        # Liveness, not age (fix/job-lease-orphan-sweep): a job whose worker
+        # Liveness, not age (fix/job-lease-orphan-sweep): a RUNNING job whose worker
         # has not heart-beaten (legacy/pre-checkpoint: not started) for
         # ``background_job_orphan_after_minutes`` is ORPHANED - a deploy
         # drain or a crash left ``running`` behind (prod 2026-09-07, PO sync).
@@ -247,15 +239,24 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         # flight, instead of the old 60-minute JOB_STUCK pause that only a
         # human with SQL could lift. A FRESH in-flight job still skips the
         # tick below (overlap guard, AC-22-14).
+        # Only a RUNNING job can be an orphan - a PENDING one of any age is a
+        # backlogged queue, and running the tick over it would duplicate the
+        # work when it finally starts. And the tick proceeds ONLY when the
+        # sweep actually failed that job (== 1): a job that beat again in
+        # between, or that another process already swept, is not ours to
+        # run over.
         last_alive = in_flight.heartbeat_at or in_flight.started_at or in_flight.created_at
         stale = last_alive is not None and (now - last_alive) > _orphan_after()
-        if stale:
-            swept = JobService(db).fail_orphaned_running_jobs(
+        if (
+            in_flight.status == JOB_RUNNING
+            and stale
+            and JobService(db).fail_orphaned_running_jobs(
                 older_than=_orphan_after(), now=now, job_id=in_flight.id
-            )
+            ) == 1
+        ):
             logger.warning(
-                "autocount scheduler swept orphaned job %s for %s/%s (%d failed); proceeding",
-                in_flight.id, company_id, entity_type, swept,
+                "autocount scheduler swept orphaned job %s for %s/%s; proceeding with the tick",
+                in_flight.id, company_id, entity_type,
             )
             in_flight = None
     if in_flight is not None:

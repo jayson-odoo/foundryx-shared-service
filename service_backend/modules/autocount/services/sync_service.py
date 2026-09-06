@@ -15,10 +15,11 @@ kind of bug.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Callable, Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -31,6 +32,8 @@ from app.models.background_job import (
     JOB_NEEDS_REVIEW,
     JOB_RUNNING,
     BackgroundJob,
+    JOB_ABORTED,
+    JOB_FAILED,
 )
 
 from ..activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS, record_activity
@@ -124,6 +127,17 @@ class NotAwaitingApproval(AutocountServiceError):
 class PushFailed(AutocountServiceError):
     """The push raised part-way through. The batch is back in ``needs_review``
     and is re-approvable - it is NOT stranded and NOT silently half-delivered."""
+
+
+class JobLeaseLost(RuntimeError):
+    """A push heartbeat found its job no longer RUNNING (orphan-swept or
+    aborted mid-push): stop at the chunk boundary, write nothing more."""
+
+    def __init__(self, job_id: str) -> None:
+        super().__init__(
+            f"Interrupted: job {job_id} is no longer running (swept or aborted); "
+            "the push stopped at a chunk boundary."
+        )
 
 
 class PreviewFailed(AutocountServiceError):
@@ -580,6 +594,35 @@ class SyncService:
         self.db.commit()
         return summary
 
+    def _chunk_beat(self, job_id: str) -> Callable[[], None]:
+        """The per-chunk heartbeat for a push. Best-effort on failure (a
+        beat that errors is logged, the push continues); a beat that lands
+        on ZERO rows is a FENCE - the job is re-read fresh and, if it is no
+        longer RUNNING (swept as an orphan, aborted), ``JobLeaseLost`` stops
+        the push at this chunk boundary (S5). A 0-row beat on a still-RUNNING
+        row (Postgres ``SKIP LOCKED``) is not a fence."""
+        jid = str(job_id)
+
+        def beat() -> None:
+            try:
+                alive = self.jobs.heartbeat(jid)
+            except Exception:  # noqa: BLE001 - advisory, never fails the push
+                logger.warning("auto_push: heartbeat for job %s failed", jid, exc_info=True)
+                return
+            if alive:
+                return
+            status = self.jobs.fresh_status(jid)
+            # The lost lease is the sweep's own verdict: ``failed``. An
+            # operator ABORT mid-push is left to the run's existing abort
+            # bookkeeping (checked between pages / before finish, never
+            # mid-chunk - pre-existing behaviour); PENDING (a push driven
+            # before its claim), DONE (a push re-driven under a finished job,
+            # as the round-6b suite does) or an unknown id are still ours.
+            if status == JOB_FAILED:
+                raise JobLeaseLost(jid)
+
+        return beat
+
     def _auto_push_upserts(
         self,
         pending: List[AcStagedRecord],
@@ -612,15 +655,20 @@ class SyncService:
             # the caller's watermark write - INTO the savepoint, so a later
             # rollback-to-savepoint reverted it anyway; a bare try/except with
             # no rollback at all is the correct fix, not just the simpler one.)
-            # Liveness (fix/job-lease-orphan-sweep): one heartbeat per push
-            # batch, best-effort, in the job service's own short transaction
-            # - a large batch is the other multi-minute stretch of a run.
-            try:
-                self.jobs.heartbeat(str(job_id))
-            except Exception:  # noqa: BLE001 - advisory, never fails the push
-                logger.warning("auto_push: heartbeat for job %s failed", job_id, exc_info=True)
+            # Liveness (fix/job-lease-orphan-sweep): the sink calls back once
+            # per CHUNK verdict and we heartbeat then - a large push is the
+            # other multi-minute stretch of a run. The callback raises
+            # ``JobLeaseLost`` when the beat lands on a job that is no longer
+            # running (swept / aborted): the push stops at the chunk boundary
+            # and nothing further is marked, caught below.
             if hasattr(sink, "write_batch"):
-                results = sink.write_batch(records, request_id=str(job_id)) if records else []
+                kwargs: Dict[str, Any] = {}
+                if "on_chunk" in inspect.signature(sink.write_batch).parameters:
+                    kwargs["on_chunk"] = self._chunk_beat(job_id)
+                results = (
+                    sink.write_batch(records, request_id=str(job_id), **kwargs)
+                    if records else []
+                )
             else:
                 results = [
                     sink.write(record, request_id=f"{job_id}:{row.id}")
@@ -642,6 +690,13 @@ class SyncService:
                 # Quarantining matches D13's "FAILED is never pushable".
                 if result.outcome and result.outcome != "retryable":
                     quarantined.append(row)
+        except JobLeaseLost as exc:
+            # The job is no longer ours (swept as an orphan, or aborted) -
+            # stop at the chunk boundary, write nothing more; the caller
+            # bails without overwriting the terminal status.
+            summary["leaseLost"] = True
+            summary["error"] = str(exc)
+            return False
         except SinkAnchorError as exc:
             # TASK-level, never per record (Appendix A6): the company anchor is
             # wrong, so no record was even looked at. Everything stays STAGED.
@@ -695,7 +750,19 @@ class SyncService:
         BATCH-level fault, same contract as the upsert half."""
         refs = [row.source_ref for row in pending]
         try:
-            result = sink.delete_batch(refs) if hasattr(sink, "delete_batch") else None
+            result = None
+            if hasattr(sink, "delete_batch"):
+                kwargs: Dict[str, Any] = {}
+                if "on_chunk" in inspect.signature(sink.delete_batch).parameters:
+                    kwargs["on_chunk"] = self._chunk_beat(job_id)
+                result = sink.delete_batch(refs, **kwargs)
+        except JobLeaseLost as exc:
+            # The job is no longer ours (swept as an orphan, or aborted) -
+            # stop at the chunk boundary, write nothing more; the caller
+            # bails without overwriting the terminal status.
+            summary["leaseLost"] = True
+            summary["error"] = str(exc)
+            return False
         except SinkAnchorError as exc:
             summary["error"] = exc.sorento_message
             summary["errorCode"] = exc.code

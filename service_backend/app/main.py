@@ -43,6 +43,10 @@ from app.module_loader import load_modules
 from app.services.email_dispatcher import start_dispatcher, stop_dispatcher
 
 
+class _SweepDisabled(Exception):
+    """``background_job_orphan_sweep_on_startup`` is off - skip, silently."""
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # Derived / computed status (sprint-4/03) - register the re-eval subscriber
@@ -79,6 +83,9 @@ async def lifespan(_: FastAPI):
         from app.database import SessionLocal
         from app.jobs.service import sweep_orphaned_jobs
 
+        if not settings.background_job_orphan_sweep_on_startup:
+            raise _SweepDisabled()
+
         _db = SessionLocal()
         try:
             _swept = sweep_orphaned_jobs(_db)
@@ -88,6 +95,8 @@ async def lifespan(_: FastAPI):
             logging.getLogger("foundryx.jobs").warning(
                 "startup orphan sweep failed %d job(s) left running by a previous process", _swept
             )
+    except _SweepDisabled:
+        pass
     except Exception:  # noqa: BLE001 - startup must not die on the sweep
         logging.getLogger("foundryx.jobs").exception("startup orphan sweep failed")
     # Email outbox dispatcher (plan 09 §5) - daemon thread, gated by an

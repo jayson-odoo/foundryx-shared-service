@@ -180,6 +180,9 @@ class Settings(BaseSettings):
     # legitimate gap between checkpoints (one page or one push batch); the
     # floor is 5 so a slow-but-alive page can never be reaped mid-flight.
     background_job_orphan_after_minutes: int = 15
+    # Run the orphan sweep in the API process lifespan. Off for a process
+    # that must never touch job state at boot (a one-off script, a rig).
+    background_job_orphan_sweep_on_startup: bool = True
 
     # ── Platform LLM default (Phase B-i slice 1) ───────────────────────────
     # Env-seeds the PLATFORM tenant's LLM connection, exactly like

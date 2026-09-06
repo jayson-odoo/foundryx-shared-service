@@ -14,11 +14,14 @@ module contract is complete from day one.
 """
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, core never imported at runtime here
+    from app.models.background_job import BackgroundJob
 
 from app.repositories.permission_repository import PermissionRepository
 from app.services.permission_service import load_csv
@@ -215,7 +218,9 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     db.flush()
 
 
-def on_job_orphaned(db: Session, job: Any) -> None:
+def on_job_orphaned(
+    db: Session, job: "BackgroundJob", *, now: Optional[datetime] = None
+) -> None:
     """Core's orphan sweep (``JobService.fail_orphaned_running_jobs``) just
     failed ``job``; close THIS module's bookkeeping for it.
 
@@ -233,10 +238,15 @@ def on_job_orphaned(db: Session, job: Any) -> None:
 
     if getattr(job, "type", None) != AUTOCOUNT_SYNC:
         return
-    now = datetime.now(timezone.utc)
+    # The sweep's own clock, so the run's ``finished_at`` equals the job's.
+    now = now or datetime.now(timezone.utc)
     open_runs = (
         db.query(AcSyncRun)
-        .filter(AcSyncRun.job_id == job.id, AcSyncRun.finished_at.is_(None))
+        .filter(
+            AcSyncRun.tenant_id == job.tenant_id,
+            AcSyncRun.job_id == job.id,
+            AcSyncRun.finished_at.is_(None),
+        )
         .all()
     )
     for run in open_runs:

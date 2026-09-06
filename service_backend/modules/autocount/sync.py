@@ -404,6 +404,10 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         )
         return
 
+    # S9 (fix/job-lease-orphan-sweep): the non-paged path has no page loop, so
+    # it beats once before extraction and once before the push.
+    _heartbeat(service, job.id)
+
     try:
         result: FetchResult = source.fetch_changes(watermark)
     except AutoCountError as exc:
@@ -750,9 +754,25 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     ):
         from .services.sync_service import SyncService
 
+        # S9/S10: the pre-push beat, and the fetch's bookkeeping committed
+        # before the push begins (same reasoning as the paged path).
+        db.commit()
+        fence = _lease_status(service, job.id)
+        if fence is not None and fence != JOB_ABORTED:
+            db.rollback()
+            logger.warning(
+                "autocount sync stopped before push: job %s is no longer running", job.id
+            )
+            return
         push_summary = SyncService(db).auto_push(
             tenant_id, company_id, entity_type, job_id=job.id
         )
+        if push_summary.get("leaseLost"):
+            db.rollback()
+            logger.warning(
+                "autocount sync stopped mid-push: job %s is no longer running", job.id
+            )
+            return
         pushed_count = int(push_summary.get("pushed") or 0)
         run.pushed_count = pushed_count
         # A delivery failure surfaces ON THE TASK (AC-22-19) - never silently.
@@ -1160,10 +1180,21 @@ def _run_paged_sql_db(
     pass_last_key: Any = cursor.last_key
     cumulative_rows_scanned = pass_rows_scanned_before
     aborted_flag = False
+    lease_lost = False
     page = None
 
     try:
         while True:
+            # S8: a beat BEFORE the page's SELECT (the first one lands before
+            # page 1), and the fence with it - a job failed elsewhere (swept as
+            # an orphan, aborted) stops here, before another page is read.
+            fence = _lease_status(service, job.id)
+            if fence == JOB_ABORTED:
+                aborted_flag = True
+                break
+            if fence is not None:
+                lease_lost = True
+                break
             try:
                 page = source.fetch_page(cursor)
             except SqlDeleteGuardExceeded as exc:
@@ -1289,7 +1320,6 @@ def _run_paged_sql_db(
             )
 
             pages_done += 1
-            _heartbeat(service, job.id)
             total_rows_scanned += page.rows_scanned
             total_added += page.added
             total_updated += page.updated
@@ -1365,8 +1395,15 @@ def _run_paged_sql_db(
             run.failed_count = total_failed
             db.commit()
 
-            if _aborted(db, job.id):
+            # The post-page beat and fence, AFTER this page's commit so an
+            # in-flight page is always delivered exactly once (the abort
+            # tests pin this); an abort takes the existing ``_abort`` path.
+            fence = _lease_status(service, job.id)
+            if fence == JOB_ABORTED or _aborted(db, job.id):
                 aborted_flag = True
+                break
+            if fence is not None:
+                lease_lost = True
                 break
             if page.complete:
                 break
@@ -1382,6 +1419,18 @@ def _run_paged_sql_db(
     finally:
         source.close()
 
+    if lease_lost:
+        # The job is no longer ours - swept as an orphan or aborted on another
+        # session. Its terminal status (and, for a sweep, its closed run row)
+        # must stand: discard this run's uncommitted work and leave WITHOUT
+        # writing an outcome or a job status. Committed pages stay committed
+        # (their staged rows re-offer on the next run, the watermark held).
+        db.rollback()
+        logger.warning(
+            "autocount sync stopped: job %s is no longer running (swept or aborted); "
+            "nothing further written", job.id,
+        )
+        return
     if aborted_flag:
         _abort(db, service, run, started)
         return
@@ -1523,6 +1572,16 @@ def _run_paged_sql_db(
         if total_failed
         else None
     )
+    # S10 (fix/job-lease-orphan-sweep): COMMIT the watermark/cursor advance
+    # before the push begins. The S2 BLOCKER 1 invariant is that a failing
+    # sink must NOT discard this advance (the fetch succeeded; the staged rows
+    # are the retry unit, re-offered next run) - so committing it here keeps
+    # that invariant exactly and additionally makes it true across a crash
+    # or a deploy drain mid-push. It also means the push's per-chunk
+    # heartbeats (their own short transaction) run while this session holds
+    # no uncommitted advance - on the StaticPool test rig, where both share
+    # one connection, a beat can no longer commit half a run by accident.
+    db.commit()
 
     # ── auto-push (plan 22 §2.6, unchanged contract) ─────────────────────────
     pushed_count = 0
@@ -1533,6 +1592,16 @@ def _run_paged_sql_db(
         push_summary = SyncService(db).auto_push(
             tenant_id, company_id, entity_type, job_id=job.id
         )
+        if push_summary.get("leaseLost"):
+            # A push-chunk heartbeat found the job no longer RUNNING (swept
+            # or aborted mid-push): the terminal status stands, nothing
+            # further is written (S5, same rule as the page fence above).
+            db.rollback()
+            logger.warning(
+                "autocount sync stopped mid-push: job %s is no longer running; "
+                "nothing further written", job.id,
+            )
+            return
         pushed_count = int(push_summary.get("pushed") or 0)
         run.pushed_count = pushed_count
         config.last_run_error = push_summary.get("error")
@@ -1746,16 +1815,37 @@ def _stage_deletes(
     return count
 
 
-def _heartbeat(service: JobService, job_id: str) -> None:
-    """Best-effort liveness stamp (fix/job-lease-orphan-sweep): once per page
-    and once per push batch, in the job service's OWN short transaction -
-    never this run's session, which holds uncommitted state. A failure to
-    heartbeat is logged and must NEVER fail the run; the only consequence of
-    a missed beat is that the orphan sweep judges the job by its last one."""
+def _heartbeat(service: JobService, job_id: str) -> bool:
+    """Best-effort liveness stamp (fix/job-lease-orphan-sweep): before and
+    after every page, before extraction and before the push on the non-paged
+    path, and per push chunk (through the sink callback) - always in the job
+    service's OWN short transaction, never this run's session. A failure to
+    heartbeat is logged and must NEVER fail the run. Returns ``True`` when a
+    RUNNING row was stamped; ``False`` (0 rows) is a FENCE the caller checks
+    with ``_lease_lost`` - the job may have been swept or aborted under us."""
     try:
-        service.heartbeat(job_id)
+        return service.heartbeat(job_id)
     except Exception:  # noqa: BLE001 - liveness is advisory, the run is not
         logger.warning("autocount sync: heartbeat for job %s failed", job_id, exc_info=True)
+        return True
+
+
+def _lease_status(service: JobService, job_id: str) -> Optional[str]:
+    """Heartbeat fence (S5). Beats; ``None`` while the job is still ours. A
+    beat that stamped ZERO rows means either the row is locked (Postgres
+    ``SKIP LOCKED``, still RUNNING - ``None`` too) or the job is no longer
+    RUNNING: then the FRESH status is returned so the caller can tell an
+    operator ABORT (the existing ``_abort`` bookkeeping records the run as
+    ABORTED, never touching the job) from a job failed elsewhere (an orphan
+    sweep - stop cleanly, write nothing, the terminal status stands)."""
+    if _heartbeat(service, job_id):
+        return None
+    status = service.fresh_status(job_id)
+    # The fence is the sweep's own verdict (``failed``) or an operator abort.
+    # RUNNING = ``SKIP LOCKED``; PENDING (a push driven before its claim),
+    # DONE (a push re-driven under a finished job - the round-6b suite does
+    # exactly that) or an unknown id are never a reason to stop.
+    return status if status in (JOB_FAILED, JOB_ABORTED) else None
 
 
 def _fail(
@@ -1819,7 +1909,11 @@ def _abort(db: Session, service: JobService, run: AcSyncRun, started: float) -> 
 
 # ── boot registration (idempotent) ────────────────────────────────────────────
 # The SAME def object re-registers cleanly (the registry tolerates identity).
-_HANDLER_DEF = JobHandlerDef(AUTOCOUNT_SYNC, run_autocount_sync, "AutoCount sync")
+# ``heartbeats=True``: this handler beats at every checkpoint (page / push
+# chunk), so the orphan sweep may fail a RUNNING sync whose beat went stale.
+_HANDLER_DEF = JobHandlerDef(
+    AUTOCOUNT_SYNC, run_autocount_sync, "AutoCount sync", heartbeats=True
+)
 
 
 def register_autocount_sync_handler() -> None:

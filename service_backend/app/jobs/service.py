@@ -8,6 +8,7 @@ and continues.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Optional
@@ -16,7 +17,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.jobs.registry import handler_for
+from app.jobs.registry import handler_for, types_that_heartbeat
 from app.jobs.repository import BackgroundJobRepository
 from app.models.background_job import (
     JOB_FAILED,
@@ -195,6 +196,18 @@ class JobService:
         with bind.begin() as conn:
             return conn.execute(stmt).rowcount > 0
 
+    def fresh_status(self, job_id: str) -> Optional[str]:
+        """The job's status re-read FRESH from the DB (a scalar query, so a
+        stale in-memory ``job`` object is bypassed) - for the heartbeat
+        fences: a 0-row beat on a row that is still RUNNING is Postgres
+        ``SKIP LOCKED``, not a lost lease."""
+        return (
+            self.db.query(BackgroundJob.status).filter(BackgroundJob.id == job_id).scalar()
+        )
+
+    def is_running(self, job_id: str) -> bool:
+        return self.fresh_status(job_id) == JOB_RUNNING
+
     def fail_orphaned_running_jobs(
         self,
         *,
@@ -211,10 +224,11 @@ class JobService:
         task for a run that will never finish (prod 2026-09-07, PO sync).
 
         Each orphan is marked ``failed`` with ``ORPHANED_ERROR`` and a
-        ``finished_at``; then every installed module's ``on_job_orphaned(db,
-        job)`` hook (discovered like ``install_tenant``, through
-        ``modules.<name>.bootstrap``) may close its OWN bookkeeping for that
-        job - core never imports a module. The module decides by ``job.type``
+        ``finished_at``; then every on-disk module's ``on_job_orphaned(db,
+        job, now=)`` hook (discovered like ``install_tenant``, through
+        ``modules.<name>.bootstrap``, whether or not the module is installed
+        for that tenant) may close its OWN bookkeeping for that job - core
+        never imports a module. The module decides by ``job.type``
         (autocount closes the open ``ac_sync_run`` row; staged rows are left
         alone so the next run re-offers them). A hook failure is logged and
         never blocks the sweep. Idempotent: a job already failed is not
@@ -226,8 +240,15 @@ class JobService:
             minutes=settings.background_job_orphan_after_minutes
         )
         cutoff = current - threshold
+        # Only a type that DECLARED it beats can be judged by a stale beat
+        # (``JobHandlerDef.heartbeats``) - a long job of a silent type (a
+        # 45-minute meetings transcription) must never be swept.
+        beating_types = types_that_heartbeat()
+        if not beating_types:
+            return 0
         query = self.db.query(BackgroundJob).filter(
             BackgroundJob.status == JOB_RUNNING,
+            BackgroundJob.type.in_(beating_types),
             func.coalesce(
                 BackgroundJob.heartbeat_at,
                 BackgroundJob.started_at,
@@ -251,8 +272,18 @@ class JobService:
                 (job.heartbeat_at or job.started_at or job.created_at),
             )
             for module_name, hook in hooks:
+                # A SAVEPOINT per hook: a failing hook rolls back only its
+                # own writes, so on Postgres it cannot leave the session in
+                # the aborted state that would poison the sweep's commit.
                 try:
-                    hook(self.db, job)
+                    with self.db.begin_nested():
+                        # ``now=`` only when the hook takes it (the sweep's
+                        # clock, so run and job timestamps agree); the
+                        # minimal contract stays ``hook(db, job)``.
+                        if "now" in inspect.signature(hook).parameters:
+                            hook(self.db, job, now=current)
+                        else:
+                            hook(self.db, job)
                 except Exception:  # noqa: BLE001 - one module must not block the sweep
                     logger.exception(
                         "module '%s' on_job_orphaned failed for job %s", module_name, job.id
