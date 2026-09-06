@@ -612,6 +612,13 @@ class SyncService:
             # the caller's watermark write - INTO the savepoint, so a later
             # rollback-to-savepoint reverted it anyway; a bare try/except with
             # no rollback at all is the correct fix, not just the simpler one.)
+            # Liveness (fix/job-lease-orphan-sweep): one heartbeat per push
+            # batch, best-effort, in the job service's own short transaction
+            # - a large batch is the other multi-minute stretch of a run.
+            try:
+                self.jobs.heartbeat(str(job_id))
+            except Exception:  # noqa: BLE001 - advisory, never fails the push
+                logger.warning("auto_push: heartbeat for job %s failed", job_id, exc_info=True)
             if hasattr(sink, "write_batch"):
                 results = sink.write_batch(records, request_id=str(job_id)) if records else []
             else:

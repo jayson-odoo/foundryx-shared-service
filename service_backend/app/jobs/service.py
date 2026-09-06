@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Iterable, Optional
 
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -161,6 +162,104 @@ class JobService:
             job.finished_at = datetime.now(timezone.utc)
         self.db.commit()
 
+    # ── liveness (fix/job-lease-orphan-sweep) ────────────────────────────────
+
+    ORPHANED_ERROR = (
+        "Interrupted: the worker stopped (deploy or crash) before this run "
+        "finished; the next run re-offers its staged rows"
+    )
+
+    def heartbeat(self, job_id: str, *, now: Optional[datetime] = None) -> bool:
+        """Stamp ``heartbeat_at`` on a RUNNING job in its OWN short transaction.
+
+        Same shape as ``workflow_engine.serialization.touch_run_heartbeat``:
+        one UPDATE on a connection taken straight from the session's bind,
+        never the run's session - the run holds uncommitted state (a watermark
+        advance, staged rows) that must stay uncommitted until the run decides.
+        On Postgres the row is skipped rather than waited on. Returns True when
+        a row was stamped. Callers treat it as best-effort (a failed heartbeat
+        is logged, never allowed to fail the run).
+        """
+        table = BackgroundJob.__table__
+        bind = self.db.get_bind()
+        target = select(table.c.id).where(
+            table.c.id == job_id, table.c.status == JOB_RUNNING
+        )
+        if bind.dialect.name == "postgresql":
+            target = target.with_for_update(skip_locked=True)
+        stmt = (
+            update(table)
+            .where(table.c.id == target.scalar_subquery())
+            .values(heartbeat_at=now or datetime.now(timezone.utc))
+        )
+        with bind.begin() as conn:
+            return conn.execute(stmt).rowcount > 0
+
+    def fail_orphaned_running_jobs(
+        self,
+        *,
+        older_than: Optional[timedelta] = None,
+        now: Optional[datetime] = None,
+        job_id: Optional[str] = None,
+    ) -> int:
+        """Fail every RUNNING job whose worker is gone. Returns how many.
+
+        "Gone" = ``coalesce(heartbeat_at, started_at, created_at)`` older than
+        ``older_than`` (default ``settings.background_job_orphan_after_minutes``).
+        A deploy's 30s drain or a crash leaves ``running`` behind - the status
+        is not rolled back on death - and every scheduler tick then skips the
+        task for a run that will never finish (prod 2026-09-07, PO sync).
+
+        Each orphan is marked ``failed`` with ``ORPHANED_ERROR`` and a
+        ``finished_at``; then every installed module's ``on_job_orphaned(db,
+        job)`` hook (discovered like ``install_tenant``, through
+        ``modules.<name>.bootstrap``) may close its OWN bookkeeping for that
+        job - core never imports a module. The module decides by ``job.type``
+        (autocount closes the open ``ac_sync_run`` row; staged rows are left
+        alone so the next run re-offers them). A hook failure is logged and
+        never blocks the sweep. Idempotent: a job already failed is not
+        matched again. ``job_id`` narrows the sweep to one job (the scheduler
+        sweeps exactly the stale in-flight job it would otherwise skip for).
+        """
+        current = now or datetime.now(timezone.utc)
+        threshold = older_than or timedelta(
+            minutes=settings.background_job_orphan_after_minutes
+        )
+        cutoff = current - threshold
+        query = self.db.query(BackgroundJob).filter(
+            BackgroundJob.status == JOB_RUNNING,
+            func.coalesce(
+                BackgroundJob.heartbeat_at,
+                BackgroundJob.started_at,
+                BackgroundJob.created_at,
+            )
+            < cutoff,
+        )
+        if job_id is not None:
+            query = query.filter(BackgroundJob.id == job_id)
+        orphans = query.all()
+        if not orphans:
+            return 0
+        hooks = list(_orphan_hooks())
+        for job in orphans:
+            job.status = JOB_FAILED
+            job.error = self.ORPHANED_ERROR
+            job.finished_at = current
+            logger.error(
+                "background job %s (%s, tenant %s) orphaned: no heartbeat since %s; failed",
+                job.id, job.type, job.tenant_id,
+                (job.heartbeat_at or job.started_at or job.created_at),
+            )
+            for module_name, hook in hooks:
+                try:
+                    hook(self.db, job)
+                except Exception:  # noqa: BLE001 - one module must not block the sweep
+                    logger.exception(
+                        "module '%s' on_job_orphaned failed for job %s", module_name, job.id
+                    )
+        self.db.commit()
+        return len(orphans)
+
     # ── retention ─────────────────────────────────────────────────────────────
 
     def prune(self, *, now: Optional[datetime] = None) -> int:
@@ -214,3 +313,28 @@ def run_job(db: Session, job_id: str) -> Optional[BackgroundJob]:
 def prune_jobs(db: Session, *, now: Optional[datetime] = None) -> int:
     """Beat housekeeping - delete terminal jobs past the retention window."""
     return JobService(db).prune(now=now)
+
+
+def _orphan_hooks() -> Iterable[tuple]:
+    """``(module_name, hook)`` for every on-disk module whose bootstrap
+    exposes ``on_job_orphaned`` - the same discovery ``AppStoreService`` uses
+    for ``install_tenant``; imported lazily so the jobs core stays free of the
+    module loader at import time."""
+    from app.module_loader import discover_manifests
+    from app.services.app_store_service import module_hooks
+
+    for manifest in discover_manifests():
+        name = manifest["module_name"]
+        hooks = module_hooks(name)
+        hook = getattr(hooks, "on_job_orphaned", None) if hooks else None
+        if callable(hook):
+            yield name, hook
+
+
+def sweep_orphaned_jobs(db: Session) -> int:
+    """Startup entry point: fail every orphaned RUNNING job (see
+    ``JobService.fail_orphaned_running_jobs``) with the configured threshold
+    passed explicitly. Returns the count."""
+    return JobService(db).fail_orphaned_running_jobs(
+        older_than=timedelta(minutes=settings.background_job_orphan_after_minutes)
+    )

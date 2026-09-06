@@ -1289,6 +1289,7 @@ def _run_paged_sql_db(
             )
 
             pages_done += 1
+            _heartbeat(service, job.id)
             total_rows_scanned += page.rows_scanned
             total_added += page.added
             total_updated += page.updated
@@ -1743,6 +1744,18 @@ def _stage_deletes(
             count += 1
     db.commit()
     return count
+
+
+def _heartbeat(service: JobService, job_id: str) -> None:
+    """Best-effort liveness stamp (fix/job-lease-orphan-sweep): once per page
+    and once per push batch, in the job service's OWN short transaction -
+    never this run's session, which holds uncommitted state. A failure to
+    heartbeat is logged and must NEVER fail the run; the only consequence of
+    a missed beat is that the orphan sweep judges the job by its last one."""
+    try:
+        service.heartbeat(job_id)
+    except Exception:  # noqa: BLE001 - liveness is advisory, the run is not
+        logger.warning("autocount sync: heartbeat for job %s failed", job_id, exc_info=True)
 
 
 def _fail(

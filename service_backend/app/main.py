@@ -1,4 +1,5 @@
 """FastAPI application factory and router wiring."""
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -70,6 +71,25 @@ async def lifespan(_: FastAPI):
     from app.services.team_capabilities import ensure_team_capabilities
 
     ensure_team_capabilities()
+    # Orphaned-job sweep (fix/job-lease-orphan-sweep, prod 2026-09-07): a job
+    # left RUNNING by the previous process (deploy drain, crash) is failed
+    # here so the scheduler stops skipping its task forever. Guarded like the
+    # other startup hooks - a sweep failure must never keep the app down.
+    try:
+        from app.database import SessionLocal
+        from app.jobs.service import sweep_orphaned_jobs
+
+        _db = SessionLocal()
+        try:
+            _swept = sweep_orphaned_jobs(_db)
+        finally:
+            _db.close()
+        if _swept:
+            logging.getLogger("foundryx.jobs").warning(
+                "startup orphan sweep failed %d job(s) left running by a previous process", _swept
+            )
+    except Exception:  # noqa: BLE001 - startup must not die on the sweep
+        logging.getLogger("foundryx.jobs").exception("startup orphan sweep failed")
     # Email outbox dispatcher (plan 09 §5) - daemon thread, gated by an
     # explicit settings flag (conftest turns it off; tests drive
     # dispatch_pending() directly against their own session).

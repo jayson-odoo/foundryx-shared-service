@@ -13,6 +13,7 @@ job handler are filled in by later slices - the hooks are wired now so the
 module contract is complete from day one.
 """
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 from sqlalchemy import text
@@ -211,6 +212,39 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         page += 1
         if (page * 50) >= total:
             break
+    db.flush()
+
+
+def on_job_orphaned(db: Session, job: Any) -> None:
+    """Core's orphan sweep (``JobService.fail_orphaned_running_jobs``) just
+    failed ``job``; close THIS module's bookkeeping for it.
+
+    Only an ``autocount_sync`` job is ours. Its open ``ac_sync_run`` row(s)
+    (``job_id`` match, ``finished_at IS NULL``) get ``outcome=FAILED``, the
+    same "Interrupted" error, ``finished_at`` and a ``duration_ms`` from their
+    own ``started_at`` - the Runs list then shows what happened instead of a
+    run that is forever in progress. Staged rows are deliberately untouched:
+    the watermark HELD, so the next run re-reads the window and re-offers
+    them (prod incident 2026-09-07, PO sync killed by a deploy drain). No
+    commit here - the sweep owns the transaction.
+    """
+    from .models import RUN_FAILED, AcSyncRun
+    from .sync import AUTOCOUNT_SYNC
+
+    if getattr(job, "type", None) != AUTOCOUNT_SYNC:
+        return
+    now = datetime.now(timezone.utc)
+    open_runs = (
+        db.query(AcSyncRun)
+        .filter(AcSyncRun.job_id == job.id, AcSyncRun.finished_at.is_(None))
+        .all()
+    )
+    for run in open_runs:
+        run.outcome = RUN_FAILED
+        run.error = getattr(job, "error", None) or "Interrupted: the worker stopped before this run finished."
+        run.finished_at = now
+        started = run.started_at
+        run.duration_ms = int((now - started).total_seconds() * 1000) if started else 0
     db.flush()
 
 
