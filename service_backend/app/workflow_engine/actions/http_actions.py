@@ -226,6 +226,13 @@ def http_request(
         # `HTTPError`) is what h11 raises for an illegal header value, and its
         # message ECHOES the raw value - without this, a value that never
         # reaches `input_json` could still leak via `WorkflowRunNode.error`.
+        # A plain `str.replace` scrub relies on the value here being the
+        # SAME string that could appear verbatim in `exc` - it works because
+        # every value already passed the CRLF/length pre-check above (line
+        # ~88) unmodified (h11 raises on the raw value, not a mutated copy);
+        # if that pre-check ever normalizes/truncates a value before this
+        # point, this scrub would need to replace on the ORIGINAL, not the
+        # checked one.
         message = f"Request failed: {type(exc).__name__}: {exc}"
         for secret_value in headers.values():
             if secret_value:

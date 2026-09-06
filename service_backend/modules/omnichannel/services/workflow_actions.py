@@ -564,7 +564,7 @@ def omnichannel_ask_question(
     # LOSER raises here and never sends a question, instead of sending one the
     # contact can never resume.
     try:
-        waits.open_wait(
+        wait_row = waits.open_wait(
             db,
             tenant_id=tenant_id,
             run_id=run_id,
@@ -582,10 +582,25 @@ def omnichannel_ask_question(
     # Template mode sends the approved template as authored (Meta owns the
     # body) - the numbered choice list is a TEXT-mode affordance only; either
     # way the answer matcher accepts the label or its number.
-    item = _send_configured_message(
-        db, tenant_id, config, ctx, contact_id=contact.id,
-        text_override=sent_text if str(config.get("mode") or "text") != "template" else None,
-    )
+    try:
+        item = _send_configured_message(
+            db, tenant_id, config, ctx, contact_id=contact.id,
+            text_override=sent_text if str(config.get("mode") or "text") != "template" else None,
+        )
+    except Exception:
+        # Belt-and-braces (plan 31 review round 2, B2): a failed send must
+        # never leave the JUST-OPENED wait row queued in this transaction.
+        # `run_workflow`'s generic terminal-branch cleanup
+        # (`app.workflow_engine.parking.run_wait_cleanup`) already drops every
+        # wait row for a run that ends failed/succeeded, so this is
+        # defense-in-depth for any caller that invokes this action outside
+        # that walk.
+        from ..models import WorkflowWait
+
+        db.query(WorkflowWait).filter(WorkflowWait.id == wait_row.id).delete(
+            synchronize_session=False
+        )
+        raise
     db.commit()
 
     raise WorkflowPaused(

@@ -11,9 +11,11 @@ import pytest
 
 from app.models import DEFAULT_TENANT_ID
 from app.models.workflow import (
+    NODE_FAILED,
     NODE_SKIPPED,
     NODE_SUCCESS,
     RUN_CANCELLED,
+    RUN_FAILED,
     RUN_PENDING,
     RUN_SUCCESS,
     RUN_WAITING,
@@ -24,6 +26,7 @@ from app.models.workflow import (
 from app.services.workflow_service import WorkflowService
 from app.workflow_engine.schemas import WorkflowValidationError, validate_definition
 from modules.omnichannel.models import ConversationMessage, WorkflowWait
+from modules.omnichannel.services import workflow_actions
 from modules.omnichannel.services import workflow_waits as waits
 from modules.omnichannel.services.workflow_actions import (
     ActionError,
@@ -842,3 +845,50 @@ def test_run_wire_pausednodeid_is_null_once_resumed(client, session_factory):
     row = listed.json()["data"][0]
     assert row["status"] == "success"
     assert row["pausedNodeId"] is None
+
+
+# ── review round 2 B2: a failed send must never orphan the wait row ────────
+def test_ask_question_send_failure_fails_the_run_and_drops_the_wait_row(
+    session_factory, monkeypatch
+):
+    """Regression for review round 2 B2: `open_wait` now runs BEFORE the send
+    (plan 31 review round 1 nit, closing the concurrent-race window), so a
+    failed send (closed CSW window, unapproved template, a Meta 4xx) used to
+    leave an ORPHAN `question` wait row on a run that ends `failed` and will
+    NEVER resume it - locking the contact out of every future Ask node until
+    the deadline. `run_workflow`'s generic terminal-branch cleanup must drop
+    it."""
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("Meta rejected the send")
+
+    monkeypatch.setattr(workflow_actions, "_send_configured_message", _boom)
+
+    _seed_thread(session_factory, messages=[])
+    channel_id = _channel_id(session_factory)
+    db = session_factory()
+    try:
+        wf = _publish_doc(db, _ask_doc())
+        wf_id = wf.id
+    finally:
+        db.close()
+
+    _inbound(session_factory, channel_id, wamid="wamid.s4-b2-send-fail", text="hi")
+
+    db = session_factory()
+    try:
+        run = _run_of(db, wf_id)
+        assert run.status == RUN_FAILED
+        assert run.finished_at is not None
+        assert run.paused_node_id is None
+        assert run.resume_state_json is None
+        rows = {rn.node_id: rn for rn in run.nodes}
+        assert rows["ask_1"].status == NODE_FAILED
+        # Downstream (answered/gaveup) never got a trace row - they were
+        # skipped as part of the same failed pass.
+        assert "answered" not in rows or rows["answered"].status == NODE_SKIPPED
+        assert "gaveup" not in rows or rows["gaveup"].status == NODE_SKIPPED
+        # The whole point: no orphan wait row survives the failed run.
+        assert _wait_rows(db) == []
+    finally:
+        db.close()

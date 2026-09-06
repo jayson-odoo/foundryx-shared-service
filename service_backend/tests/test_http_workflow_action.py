@@ -555,3 +555,65 @@ def test_http_boundary_returns_403_without_workflows_http(client, session_factor
     assert denied.status_code == 403 and "workflows.http" in denied.json()["detail"]
     body["draftDefinition"] = {"schemaVersion": 2, "nodes": [{"id": "trigger", "kind": "trigger", "type": "manual", "config": {}, "position": {}}], "edges": []}
     assert client.post("/workflows", json=body, headers=hdrs).status_code in (200, 201)
+
+
+# ── review round 2 SF1: `_redact_config` list-branch fail-closed shapes ────
+
+
+SECRET = "SEKRIT"
+
+
+@pytest.mark.parametrize(
+    "shape_name,headers_value",
+    [
+        ("canonical_kv", [{"key": "Authorization", "value": SECRET}]),
+        ("alt_row_key", [{"name": "Authorization", "val": SECRET}]),
+        ("list_of_scalars", [SECRET]),
+        ("nested_dict_value_not_a_list", {"key": SECRET}),
+        ("scalar", SECRET),
+        ("nested_under_canonical_value", [{"key": "Authorization", "value": {"nested": SECRET}}]),
+    ],
+)
+def test_redact_config_list_branch_fails_closed_over_every_row_shape(shape_name, headers_value):
+    """Regression for review round 2 SF1: the list branch used to mask ONLY a
+    row that HAPPENED to already carry a literal ``"value"`` key - any other
+    shape (an alt row key, a bare scalar row, a value that isn't a list at
+    all) fell through unmasked. Every one of the six shapes the reviewer
+    probed must come out with the secret nowhere in the redacted config."""
+    import json
+
+    from app.workflow_engine.executor import _redact_config
+    from app.workflow_engine.registry import get_action
+
+    action = get_action("http.request")
+    config = {
+        "method": "GET",
+        "url": "https://api.example.com/ping",
+        "headers": headers_value,
+    }
+    redacted = _redact_config(config, action)
+    dumped = json.dumps(redacted)
+    assert SECRET not in dumped, f"{shape_name} leaked: {dumped}"
+
+    if shape_name == "canonical_kv":
+        assert redacted["headers"] == [{"key": "Authorization", "value": "***"}]
+    elif shape_name == "nested_under_canonical_value":
+        assert redacted["headers"] == [{"key": "Authorization", "value": "***"}]
+    elif shape_name in ("alt_row_key", "list_of_scalars"):
+        assert redacted["headers"] == ["***"]
+    else:
+        assert redacted["headers"] == "***"
+
+
+def test_redact_config_never_mutates_the_original_config_dict():
+    """The deep-copy contract: masking must not leak back into the run's OWN
+    ``config`` (the next node execution, or a later trace read, must still
+    see the real value the author configured)."""
+    from app.workflow_engine.executor import _redact_config
+    from app.workflow_engine.registry import get_action
+
+    action = get_action("http.request")
+    original = {"method": "GET", "url": "https://api.example.com/ping",
+                "headers": [{"key": "Authorization", "value": SECRET}]}
+    _redact_config(original, action)
+    assert original["headers"][0]["value"] == SECRET

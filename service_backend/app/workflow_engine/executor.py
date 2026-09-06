@@ -13,6 +13,7 @@ state on ``workflow_runs.resume_state_json`` and ``resume_run`` re-enters it
 through the EXISTING dispatch, so serialized runs keep their FIFO ordering and
 Redis lease semantics unchanged.
 """
+import copy
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -32,7 +33,10 @@ from app.models.workflow import (
     WorkflowRunNode,
 )
 from app.workflow_engine.context import build_initial_context, render_field, set_node_output
-from app.workflow_engine.parking import WorkflowPaused  # re-exported (plan 31 §5.6)
+from app.workflow_engine.parking import (  # re-exported (plan 31 §5.6)
+    WorkflowPaused,
+    run_wait_cleanup,
+)
 from app.workflow_engine.registry import get_action, matches_show_when
 from app.workflow_engine.schemas import (
     WorkflowNodeModel,
@@ -243,9 +247,15 @@ def _redact_config(config: Optional[Dict[str, Any]], action) -> Dict[str, Any]:
     field (list of ``{key, value}`` rows) keeps its keys and masks each row's
     ``value``; any other shape masks the whole value. This runs BEFORE the raw
     config ever reaches ``input_json`` - the trace never carries the secret,
-    not even transiently."""
-    import copy
+    not even transiently.
 
+    List rows fail CLOSED (plan 31 review round 2, SF1): only the CANONICAL
+    ``{"key": ..., "value": ...}`` row shape gets the key-preserved partial
+    mask - a row shaped ANY other way (an alt key like ``val``, a bare scalar,
+    a nested dict) is masked WHOLESALE (the whole row becomes ``"***"``)
+    rather than assumed safe to pass through. The old code only masked rows
+    that happened to already carry a literal ``"value"`` key, so
+    ``[{"name": ..., "val": "SEKRIT"}]`` and ``["SEKRIT"]`` leaked untouched."""
     out: Dict[str, Any] = copy.deepcopy(config or {})
     if action is None:
         return out
@@ -254,9 +264,14 @@ def _redact_config(config: Optional[Dict[str, Any]], action) -> Dict[str, Any]:
             continue
         value = out.get(fld.key)
         if isinstance(value, list):
+            masked: List[Any] = []
             for row in value:
                 if isinstance(row, dict) and "value" in row:
                     row["value"] = "***"
+                    masked.append(row)
+                else:
+                    masked.append("***")
+            out[fld.key] = masked
         elif value is not None:
             out[fld.key] = "***"
     return out
@@ -549,6 +564,14 @@ def run_workflow(db: Session, run_id: str) -> WorkflowRun:
             run.finished_at = _now()
             run.paused_node_id = None
             run.resume_state_json = None
+            # B2 (plan 31 review round 2): a node can OPEN a module wait row
+            # (e.g. omnichannel's Ask a question) before its own send fails,
+            # leaving an orphan wait pointed at a run that will never resume
+            # it - the contact stays locked out of every Ask node until the
+            # deadline. Any run reaching a REAL terminal state (failed or
+            # succeeded, never `waiting`) must drop its own wait rows first,
+            # same seam `cancel_parked_run` uses - generic, no module import.
+            run_wait_cleanup(db, run)
         db.commit()
         db.refresh(run)
     finally:
