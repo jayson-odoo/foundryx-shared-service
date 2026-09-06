@@ -410,15 +410,16 @@ def test_an_archived_tenants_task_is_never_swept(session_factory):
 # ── S3: stuck-job starvation ────────────────────────────────────────────────
 
 
-def test_a_stale_stuck_job_stamps_the_error_once_and_stops_flooding_skip_rows(
+def test_a_stale_stuck_job_is_released_and_the_tick_fires_instead_of_pausing(
     session_factory,
 ):
-    """A job wedged 'running' forever must not produce a skip row on every
-    tick (1440/day, no operator signal). Past `STALE_JOB_AFTER` it stamps
-    `config.last_run_error` ONCE and every later tick is a silent no-op -
-    ticking three times in a row must still leave exactly ONE skip run row."""
-    from modules.autocount.scheduler import STALE_JOB_AFTER
-
+    """Superseded 60-minute JOB_STUCK pause (prod incident 2026-09-07): a job
+    wedged ``running`` by a deploy/crash is now RELEASED by the orphan sweep
+    (``JobService.fail_orphaned_running_jobs``, same 15-minute lease as the
+    startup sweep) and the tick FIRES - never a JOB_STUCK stamp, never a
+    "paused until resolved" skip row. Detailed release assertions live in
+    ``tests/test_job_lease_orphan_sweep.py``; this pins the scheduler side
+    of the old behaviour's removal."""
     db = session_factory()
     company = _company(db)
     config = _task(db, company, next_incremental_at=NOW - timedelta(minutes=1))
@@ -427,37 +428,24 @@ def test_a_stale_stuck_job_stamps_the_error_once_and_stops_flooding_skip_rows(
         type=AUTOCOUNT_SYNC,
         status="running",
         payload_json={"companyId": company.id, "entityType": ENTITY_CUSTOMER},
-        started_at=NOW - STALE_JOB_AFTER - timedelta(minutes=1),
+        started_at=NOW - timedelta(minutes=61),
     )
     db.add(stuck_job)
     db.commit()
 
-    first = sweep_etl_tasks(db, now=NOW)
-    # Re-arm the due time for two MORE real ticks (a recurring beat) - the
-    # SAME stuck job is still in flight both times.
-    config.next_incremental_at = NOW - timedelta(minutes=1)
-    db.commit()
-    second = sweep_etl_tasks(db, now=NOW)
-    config.next_incremental_at = NOW - timedelta(minutes=1)
-    db.commit()
-    third = sweep_etl_tasks(db, now=NOW)
+    result = sweep_etl_tasks(db, now=NOW)
 
-    assert first == {"fired": 0, "skipped": 1, "failed": 0}
-    assert second == {"fired": 0, "skipped": 1, "failed": 0}
-    assert third == {"fired": 0, "skipped": 1, "failed": 0}
-    # No flood: the second and third ticks are silent no-ops (still counted
-    # as skipped by the sweep's own accounting, but write nothing new).
+    assert result == {"fired": 1, "skipped": 0, "failed": 0}
+    db.refresh(stuck_job)
+    assert stuck_job.status == "failed"
     runs = (
         db.query(AcSyncRun)
         .filter(AcSyncRun.tenant_id == DEFAULT_TENANT_ID, AcSyncRun.company_id == company.id)
         .all()
     )
-    assert len(runs) == 1
-    assert "appears stuck" in (runs[0].skip_reason or "")
-
+    assert all("appears stuck" not in (r.skip_reason or "") for r in runs)
     db.refresh(config)
-    assert config.last_run_error and "appears stuck" in config.last_run_error
-    assert config.last_run_error_code == "JOB_STUCK"
+    assert config.last_run_error_code != "JOB_STUCK"
 
 
 def test_a_fresh_overlap_still_writes_one_skip_row_per_tick(session_factory):
