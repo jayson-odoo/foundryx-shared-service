@@ -110,10 +110,16 @@ export interface WorkflowCanvasProps {
   debug?: WorkflowDebugBundle | null;
 }
 
-/** Branch-port edge styling - green true / red false (D8 IF node). */
+/** Branch-port edge styling - green true / red false (D8 IF node), extended
+ * (plan 31 D-A5-14) with the same labelled-handle convention for Ask a
+ * question (answer/timeout) and Business hours (inside/outside). */
 const BRANCH_EDGE: Record<string, { label: string; stroke: string }> = {
   true: { label: 'True', stroke: '#16a34a' },
   false: { label: 'False', stroke: '#dc2626' },
+  answer: { label: 'Answer', stroke: '#2563eb' },
+  timeout: { label: 'Timeout', stroke: '#d97706' },
+  inside: { label: 'Inside hours', stroke: '#16a34a' },
+  outside: { label: 'Outside hours', stroke: '#64748b' },
 };
 
 function CanvasDropZone({ children }: { children: React.ReactNode }) {

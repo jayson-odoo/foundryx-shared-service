@@ -6,7 +6,12 @@
  * /workflow-metadata` in workflow-metadata-service.ts.
  */
 import { CODE_CAPABILITIES_FALLBACK } from '@/components/platform/workflow-canvas/code-editor';
-import type { WorkflowMetadata, WorkflowTriggerableEntity } from '@/types/workflows';
+import type {
+  WorkflowMetadata,
+  WorkflowOmnichannelWorkspace,
+  WorkflowRefOption,
+  WorkflowTriggerableEntity,
+} from '@/types/workflows';
 import { delay } from './mock-query';
 
 const ENTITIES: WorkflowTriggerableEntity[] = [
@@ -118,6 +123,68 @@ const FORMS = [
   },
 ];
 
+// Plan 31 (omnichannel workflow parity) - S0 MOCK. The registry-driven
+// triggers/steps and the `GET /workflows/metadata` additions land in S1/S2;
+// until then `workflow-metadata-service.ts` merges this in behind the real
+// call so the palette/pickers are usable on the mock. Swap to real in S3.
+const OMNICHANNEL_WORKSPACES: WorkflowOmnichannelWorkspace[] = [
+  {
+    id: 'ws-demo',
+    name: 'General',
+    contactTags: [
+      { id: 'tag-vip', name: 'VIP' },
+      { id: 'tag-lead', name: 'Lead' },
+    ],
+    contactFields: [
+      { key: 'company', label: 'Company', type: 'string' },
+      { key: 'orderCount', label: 'Order count', type: 'number' },
+    ],
+    lifecycleStages: [
+      { id: 'stage-new', name: 'New' },
+      { id: 'stage-qualified', name: 'Qualified' },
+      { id: 'stage-customer', name: 'Customer' },
+    ],
+    closeReasons: [
+      { id: 'reason-resolved', name: 'Resolved', isActive: true },
+      { id: 'reason-spam', name: 'Spam', isActive: true },
+      { id: 'reason-legacy', name: 'Legacy', isActive: false },
+    ],
+    members: [{ id: 'user-demo', name: 'Demo Admin' }],
+    templates: [
+      { id: 'tpl-welcome', name: 'welcome_message', status: 'APPROVED' },
+      { id: 'tpl-order-update', name: 'order_update', status: 'PENDING' },
+    ],
+  },
+  {
+    id: 'ws-sales',
+    name: 'Sales',
+    contactTags: [{ id: 'tag-hot', name: 'Hot lead' }],
+    contactFields: [{ key: 'dealSize', label: 'Deal size', type: 'number' }],
+    lifecycleStages: [
+      { id: 'stage-prospect', name: 'Prospect' },
+      { id: 'stage-won', name: 'Won' },
+    ],
+    closeReasons: [{ id: 'reason-lost', name: 'Lost', isActive: true }],
+    members: [{ id: 'user-demo', name: 'Demo Admin' }],
+    templates: [{ id: 'tpl-followup', name: 'sales_followup', status: 'APPROVED' }],
+  },
+];
+
+const WORKFLOWS: WorkflowRefOption[] = [
+  { id: 'wf-onboarding', name: 'Contact onboarding' },
+  { id: 'wf-nurture', name: 'Lead nurture' },
+];
+
+/** ONLY the plan-31 additions - merged over the real metadata response
+ * (`workflow-metadata-service.ts`, `// S0 MOCK - swap to real in S3`). */
+export const mockOmnichannelWorkflowMetadata: Pick<
+  WorkflowMetadata,
+  'omnichannelWorkspaces' | 'workflows'
+> = {
+  omnichannelWorkspaces: OMNICHANNEL_WORKSPACES,
+  workflows: WORKFLOWS,
+};
+
 export const mockWorkflowMetadataService = {
   getMetadata(): Promise<WorkflowMetadata> {
     return delay(
@@ -129,6 +196,7 @@ export const mockWorkflowMetadataService = {
         codeCapabilities: CODE_CAPABILITIES_FALLBACK,
         omnichannelChannels: [{ id: 'chn-demo', name: 'Demo channel' }],
         aiAgents: [{ id: 'agent-demo', name: 'Demo classifier', model: 'stub' }],
+        ...mockOmnichannelWorkflowMetadata,
       },
       120,
     );

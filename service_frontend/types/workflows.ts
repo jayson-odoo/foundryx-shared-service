@@ -33,6 +33,7 @@ export type WorkflowNodeConfig = Record<
   | string[]
   | WorkflowManualInput[]
   | WorkflowFieldAssignment[]
+  | WorkflowKeyValue[]
   | WorkflowAiOutputParam[]
   | WorkflowCodeInput[]
   | WorkflowCodeOutputParam[]
@@ -52,6 +53,14 @@ export interface WorkflowManualInput {
 export interface WorkflowFieldAssignment {
   field: string;
   /** Merge-templated literal written to the field. */
+  value: string;
+}
+
+/** One `key ← value` row shared by the HTTP request node's headers and the
+ * Send message / Ask a question template-variable editors (plan 31 §5.3). */
+export interface WorkflowKeyValue {
+  key: string;
+  /** Merge-templated literal. */
   value: string;
 }
 
@@ -133,15 +142,40 @@ export interface NodeFieldDef {
     | 'agentNode'
     | 'code'
     | 'codeInputs'
-    | 'codeCapabilities';
+    | 'codeCapabilities'
+    // Boolean flags render as a labelled checkbox (no bare `<Select>` for a
+    // plain yes/no toggle - matches the existing OutputParamsEditor pattern).
+    | 'boolean'
+    // Omnichannel-scoped pickers (plan 31 §5.2/§5.3) - each except
+    // `omnichannelWorkspace` reads its options from the workspace chosen via
+    // this node's `workspaceId` config (AC-WFP-03: disabled + empty until a
+    // workspace is chosen).
+    | 'omnichannelWorkspace'
+    | 'omnichannelTag'
+    | 'omnichannelContactField'
+    | 'omnichannelLifecycleStage'
+    | 'omnichannelCloseReason'
+    | 'omnichannelMember'
+    /** Approved WhatsApp template picker (send/ask template mode). */
+    | 'whatsappTemplate'
+    /** Per-placeholder mergeable values for a chosen WhatsApp template. */
+    | 'templateParams'
+    /** Ask a question's `choice` answer-type option list (capped at 10). */
+    | 'choiceList'
+    /** `workflow.trigger`'s target-workflow picker. */
+    | 'workflowRef'
+    /** Generic key/value rows (the HTTP request node's headers). */
+    | 'keyValue';
   required?: boolean;
   placeholder?: string;
   /** For `select` - static options (dynamic ones resolve in Phase B). */
   options?: { value: string; label: string }[];
   /** Whether the dynamic-content picker attaches to this field. */
   mergeable?: boolean;
-  /** Conditional: only shown/required when config[field] === value. */
-  showWhen?: { field: string; value: string };
+  /** Conditional: only shown/required when config[field] matches `value`
+   * (one literal, or one of several - e.g. the HTTP body field shown for
+   * BOTH `json` and `text` body modes). */
+  showWhen?: { field: string; value: string | string[] };
   /** For `entity` - restrict the picker (e.g. only status-engine entities, or
    * only entities that opt into the `entity.shortcut` trigger). */
   entityFilter?: 'status' | 'shortcut';
@@ -190,6 +224,11 @@ export interface ActionCatalogEntry {
   permission?: string;
   /** Owning module - see `TriggerCatalogEntry.module`. */
   module?: string;
+  /** Non-empty = a branching action (Ask a question, Business hours) - the
+   * executor's `kind === 'if'` port rule generalizes to any action declaring
+   * these (plan 31 D-A5-14); the canvas renders one labelled source handle
+   * per port instead of the single `out` handle. */
+  ports?: string[];
 }
 
 /** The IF node (built-in, not a registered Trigger/Action - D8). Its config is
@@ -247,6 +286,30 @@ export interface WorkflowFormOption {
   fields: { key: string; label: string }[];
 }
 
+/** One tenant-scoped omnichannel workspace's picker options for the plan-31
+ * trigger/step catalog (`GET /workflows/metadata` §5.7) - a workspace-scoped
+ * picker (tag/field/stage/reason/member/template) reads ONLY the array under
+ * the workspace chosen on that node's `workspaceId` config (AC-WFP-03). */
+export interface WorkflowOmnichannelWorkspace {
+  id: string;
+  name: string;
+  contactTags: { id: string; name: string }[];
+  contactFields: { key: string; label: string; type: RuleFactType }[];
+  lifecycleStages: { id: string; name: string }[];
+  closeReasons: { id: string; name: string; isActive: boolean }[];
+  members: { id: string; name: string }[];
+  /** Every template regardless of Meta review status - pickers filter to
+   * `status === 'APPROVED'` themselves (foolproof-UI). */
+  templates: { id: string; name: string; status: string }[];
+}
+
+/** A tenant workflow selectable by `workflow.trigger`'s `workflowId` (plan 31
+ * §5.3) - backs the `workflowRef` field type. */
+export interface WorkflowRefOption {
+  id: string;
+  name: string;
+}
+
 /** Tenant-resolved metadata the editor needs to configure slice-09 nodes -
  * `GET /workflow-metadata` in Phase B (mock in Phase A). */
 export interface WorkflowMetadata {
@@ -259,6 +322,12 @@ export interface WorkflowMetadata {
   /** Tenant's active omnichannel channels - backs the omnichannel trigger's
    * channel picker (plan sprint-4/17). */
   omnichannelChannels?: { id: string; name: string }[];
+  /** Tenant's omnichannel workspaces with their tags/fields/stages/reasons/
+   * members/templates (plan 31 §5.7). S0: mocked behind the metadata service
+   * boundary; S1/S3 wire the real `GET /workflows/metadata` addition. */
+  omnichannelWorkspaces?: WorkflowOmnichannelWorkspace[];
+  /** Tenant workflows selectable by `workflow.trigger` (plan 31 §5.3). */
+  workflows?: WorkflowRefOption[];
   /** Tenant's enabled AI agents - backs the AI Agent action's agent picker
    * (plan sprint-4/17). */
   aiAgents?: { id: string; name: string; model: string }[];

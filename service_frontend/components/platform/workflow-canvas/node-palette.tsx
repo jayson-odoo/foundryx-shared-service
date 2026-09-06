@@ -106,14 +106,20 @@ export function NodePalette({ hasTrigger, disabled, onAdd, canCode = true }: Nod
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const { isActive } = useInstalledModules();
 
-  const sections: PaletteSection[] = useMemo(
-    () => [
+  // Logic = the IF node + any action catalogued under the "Logic" category
+  // (Wait, Business hours - D-A5-19) - flow-control actions live with the
+  // other branching/pausing primitive, not buried in the long Actions list.
+  const sections: PaletteSection[] = useMemo(() => {
+    const actions = visibleEntries(ACTION_CATALOG, isActive);
+    return [
       { title: 'Triggers', entries: visibleEntries(TRIGGER_CATALOG, isActive), itemsDisabled: hasTrigger },
-      { title: 'Logic', entries: IF_CATALOG },
-      { title: 'Actions', entries: visibleEntries(ACTION_CATALOG, isActive) },
-    ],
-    [hasTrigger, isActive],
-  );
+      {
+        title: 'Logic',
+        entries: [...IF_CATALOG, ...actions.filter((e) => e.category === 'Logic')],
+      },
+      { title: 'Actions', entries: actions.filter((e) => e.category !== 'Logic') },
+    ];
+  }, [hasTrigger, isActive]);
 
   const q = query.trim().toLowerCase();
   const searching = q.length > 0;

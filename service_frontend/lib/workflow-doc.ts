@@ -66,6 +66,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Does `config[showWhen.field]` match a `showWhen` clause? Mirrors the
+ * backend `NodeField.show_when` (plan 31 §5.1) - `value` is one literal or a
+ * list of literals (the HTTP body field shows for BOTH `json` and `text`). */
+export function matchesShowWhen(
+  config: Record<string, unknown>,
+  showWhen: { field: string; value: string | string[] } | undefined,
+): boolean {
+  if (!showWhen) return true;
+  const current = config[showWhen.field];
+  if (Array.isArray(showWhen.value)) {
+    return typeof current === 'string' && showWhen.value.includes(current);
+  }
+  return current === showWhen.value;
+}
+
 export function outputParamIssues(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [
@@ -248,8 +263,64 @@ function defaultConfig(type: string): WorkflowNodeConfig {
   // Omnichannel + AI Agent nodes (plan sprint-4/17).
   if (type === 'omnichannel.message_received') return { channelId: null };
   if (type === 'omnichannel.get_contact') return { contactId: '' };
-  if (type === 'omnichannel.send_message')
-    return { contactId: '', message: '' };
+  if (type === 'omnichannel.send_message' || type === 'omnichannel.ask_question') {
+    const base: WorkflowNodeConfig = {
+      contactId: '',
+      mode: 'text',
+      message: '',
+    };
+    if (type === 'omnichannel.ask_question') {
+      return {
+        ...base,
+        answerType: 'text',
+        choices: [],
+        retryLimit: '1',
+        retryMessage: '',
+        timeoutValue: '1',
+        timeoutUnit: 'hours',
+      };
+    }
+    return base;
+  }
+  // Omnichannel conversation/contact triggers + simple steps (plan 31).
+  if (
+    type === 'omnichannel.conversation_opened' ||
+    type === 'omnichannel.conversation_closed' ||
+    type === 'omnichannel.conversation_assigned' ||
+    type === 'omnichannel.contact_tag_added' ||
+    type === 'omnichannel.contact_tag_removed' ||
+    type === 'omnichannel.lifecycle_changed' ||
+    type === 'omnichannel.broadcast_completed'
+  ) {
+    return { workspaceId: '' };
+  }
+  if (type === 'omnichannel.contact_field_changed')
+    return { workspaceId: '', fieldKey: '', newValue: '' };
+  if (type === 'omnichannel.assign_conversation')
+    return { contactId: '', workspaceId: '', mode: 'user', userId: '' };
+  if (type === 'omnichannel.add_tag' || type === 'omnichannel.remove_tag')
+    return { contactId: '', workspaceId: '', tagId: '' };
+  if (type === 'omnichannel.update_field')
+    return { contactId: '', workspaceId: '', fieldKey: '', value: '', clear: false };
+  if (type === 'omnichannel.update_lifecycle')
+    return { contactId: '', workspaceId: '', toStageId: '' };
+  if (type === 'omnichannel.open_conversation') return { contactId: '' };
+  if (type === 'omnichannel.close_conversation')
+    return { contactId: '', workspaceId: '', closeReasonId: '', note: '' };
+  if (type === 'omnichannel.add_comment') return { contactId: '', body: '' };
+  if (type === 'omnichannel.wait') return { waitValue: '5', waitUnit: 'minutes' };
+  if (type === 'omnichannel.business_hours') return { workspaceId: '' };
+  if (type === 'workflow.trigger')
+    return { workflowId: '', contactId: '', payload: '' };
+  if (type === 'http.request')
+    return {
+      method: 'GET',
+      url: '',
+      headers: [],
+      bodyMode: 'none',
+      body: '',
+      timeoutSeconds: '10',
+    };
   if (type === 'ai_agent.run')
     return { agentId: '', instructions: '', inputText: '', outputParams: [] };
   if (type === 'ai_agent.clear_state') return { agentNodeId: '' };
@@ -540,6 +611,20 @@ export function validateDefinition(
         'Stateful AI Agent outputs require serialized execution and a Correlation key.',
     });
   }
+  // Ask a question parks the run keyed by contact - two runs answering the
+  // same contact would race the one wait row (D-A5-7 / AC-WFP-06). Message
+  // text kept in parity with the backend `definition_issues` addition (plan
+  // 31 §2.1: "Ask a question requires serialized execution").
+  const hasAskQuestion = doc.nodes.some(
+    (node) => node.type === 'omnichannel.ask_question',
+  );
+  if (hasAskQuestion && (execution?.mode !== 'serialized' || !correlationKey)) {
+    issues.push({
+      level: 'error',
+      message:
+        'Ask a question requires serialized execution and a Correlation key.',
+    });
+  }
   if (trigger && doc.edges.some((e) => e.target === trigger.id)) {
     issues.push({
       level: 'error',
@@ -599,10 +684,7 @@ export function validateDefinition(
     const entry = catalogEntry(n.type);
     if (!entry) continue;
     for (const field of entry.fields) {
-      if (
-        field.showWhen &&
-        n.config[field.showWhen.field] !== field.showWhen.value
-      ) {
+      if (field.showWhen && !matchesShowWhen(n.config, field.showWhen)) {
         continue; // hidden field - don't require it
       }
       if (field.required) {
