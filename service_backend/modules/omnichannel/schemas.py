@@ -4,7 +4,7 @@ keys by the services before constructing these models.
 """
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -552,6 +552,189 @@ class ContactSegmentUpdate(ApiModel):
     name: Optional[str] = None
     description: Optional[str] = None
     filter: Optional[FilterGroup] = None
+
+
+# ── Broadcasts (plan 29, roadmap A4) ─────────────────────────────────────────
+# See documentation/plans/sprint-4/29-omnichannel-broadcasts.md §5.2. Mirrors
+# service_frontend/types/omnichannel.ts (S0 mock contract) verbatim.
+class TemplateBindingStatic(ApiModel):
+    """Verbatim text - no token syntax allowed (D-A4-4, anti-SSTI by
+    construction: the server never renders a tenant string as a template)."""
+
+    source: Literal["static"]
+    text: str
+
+
+class TemplateBindingContactField(ApiModel):
+    """Reads a whitelisted contact field, falling back when empty (D-A4-5:
+    the fallback is REQUIRED, so an empty-parameter send is unreachable)."""
+
+    source: Literal["contactField"]
+    field: str
+    fallback: str
+
+
+TemplateBinding = Annotated[
+    Union[TemplateBindingStatic, TemplateBindingContactField],
+    Field(discriminator="source"),
+]
+
+# `TemplateBinding.field` whitelist (plan §5.2) - the fixed contact fields
+# plus `customFields.<key>` where `<key>` is REGISTERED on the workspace
+# (checked in `services/broadcast_bindings.py`, not here - no DB in a schema).
+BROADCAST_FIELD_BINDING_OPTIONS = frozenset(
+    {"firstName", "lastName", "phone", "email", "language", "countryCode", "lifecycle"}
+)
+_CUSTOM_FIELD_BINDING_RE = re.compile(r"^customFields\.[A-Za-z0-9_]+$")
+
+
+class BroadcastBindings(ApiModel):
+    header: List[TemplateBinding] = []
+    body: List[TemplateBinding] = []
+    buttons: List[TemplateBinding] = []
+
+
+class BroadcastAudienceIn(ApiModel):
+    """Exactly one of `segmentId` / `filter` / `contactIds` must be set,
+    matching `kind` (D-A4-2 - configuration only, never a stored list).
+
+    `filter` is a RAW dict here, not a typed `FilterGroup` (post-approval
+    fix, O-5): a typed nested model with `extra="forbid"` rejects a stray
+    filter key during FastAPI's automatic body validation, BEFORE the
+    router function ever runs - the caller gets pydantic's raw
+    `{"detail": [{"type": "extra_forbidden", ...}]}` shape instead of the
+    uniform `{"fieldErrors"}` 422 every other broadcast validation error
+    uses. `BroadcastService` re-validates it into a real `FilterGroup`
+    (`_parse_audience_filter`) inside the service layer, where a bad shape
+    can be turned into `{"fieldErrors": {"audience.filter": "..."}}` like
+    every other audience error (same path as the empty-group guard, D-4)."""
+
+    kind: Literal["segment", "filter", "contacts"]
+    segmentId: Optional[str] = None
+    filter: Optional[Dict[str, Any]] = None
+    contactIds: Optional[List[str]] = None
+
+
+class BroadcastAudienceOut(ApiModel):
+    kind: Literal["segment", "filter", "contacts"]
+    segmentId: Optional[str] = None
+    segmentName: Optional[str] = None
+    filter: Optional[FilterGroup] = None
+    contactIds: Optional[List[str]] = None
+
+
+class BroadcastCounts(ApiModel):
+    total: int
+    sent: int
+    delivered: int
+    read: int
+    failed: int
+    skipped: int
+
+
+class BroadcastItem(ApiModel):
+    id: str
+    workspaceId: str
+    name: str
+    labels: List[str] = []
+    channelId: str
+    channelName: str
+    audience: BroadcastAudienceOut
+    templateId: str
+    templateName: str
+    templateLanguage: Optional[str] = None
+    bindings: BroadcastBindings
+    status: Literal["DRAFT", "SCHEDULED", "SENDING", "SENT", "CANCELLED", "FAILED"]
+    statusLabel: str
+    scheduledAt: Optional[datetime] = None
+    startedAt: Optional[datetime] = None
+    finishedAt: Optional[datetime] = None
+    counts: BroadcastCounts
+    jobId: Optional[str] = None
+    error: Optional[str] = None
+    createdByUserId: Optional[str] = None
+    createdByName: Optional[str] = None
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class BroadcastListResponse(ApiModel):
+    data: List[BroadcastItem]
+    total: int
+    page: int
+
+
+class BroadcastCreate(ApiModel):
+    name: str
+    labels: Optional[List[str]] = None
+    channelId: str
+    audience: BroadcastAudienceIn
+    templateId: str
+    bindings: BroadcastBindings
+    scheduledAt: Optional[datetime] = None
+
+
+class BroadcastUpdate(ApiModel):
+    """Partial update (`model_fields_set` drives which fields apply) - the
+    service enforces the status-gated write rules (AC-BRD-21: DRAFT only,
+    except `scheduledAt` which may also change while SCHEDULED)."""
+
+    name: Optional[str] = None
+    labels: Optional[List[str]] = None
+    channelId: Optional[str] = None
+    audience: Optional[BroadcastAudienceIn] = None
+    templateId: Optional[str] = None
+    bindings: Optional[BroadcastBindings] = None
+    scheduledAt: Optional[datetime] = None
+
+
+class BroadcastSendRequest(ApiModel):
+    """`scheduledAt` unset/None = send now (-> SENDING); a future instant ->
+    SCHEDULED (plan 29 S2, matches the S0 frontend contract - `services/
+    broadcast-service.ts send(workspaceId, id, scheduledAt?)`)."""
+
+    scheduledAt: Optional[datetime] = None
+
+
+class AudiencePreviewRequest(ApiModel):
+    audience: BroadcastAudienceIn
+
+
+class AudiencePreviewResponse(ApiModel):
+    count: int
+
+
+class BroadcastTestSendRequest(ApiModel):
+    """Plan 29 S2b, AC-BRD-41 - ONE explicit contact, never a recipient
+    picker over the audience (D-A4-18: a test send is a message, not a
+    campaign event)."""
+
+    contactId: str
+
+
+class BroadcastTestSendResponse(ApiModel):
+    messageId: str
+
+
+class BroadcastRecipientItem(ApiModel):
+    id: str
+    contactId: str
+    contactName: str
+    phone: Optional[str] = None
+    state: Literal["queued", "sent", "delivered", "read", "failed", "skipped"]
+    skipReason: Optional[str] = None
+    errorCode: Optional[str] = None
+    errorText: Optional[str] = None
+    messageId: Optional[str] = None
+    attemptedAt: Optional[datetime] = None
+
+
+class BroadcastRecipientListResponse(ApiModel):
+    data: List[BroadcastRecipientItem]
+    total: int
+    page: int
+
+
 # ── Conversation events (plan 27 A3, S1) ─────────────────────────────────────
 class ConversationEventItem(ApiModel):
     """One append-only `conversation_events` row (AC-IVE-13). `fromLabel`/

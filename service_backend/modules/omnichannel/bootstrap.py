@@ -107,6 +107,13 @@ def register_engine_entities() -> None:
 
     register_contacts_export_handler()
 
+    # Broadcast send job handler (plan 29 S2a, AC-BRD-50) - same reasoning as
+    # the contacts-export handler above: ANY process that never imports this
+    # module leaves `omnichannel.broadcast_send` an unknown job type.
+    from .services.broadcast_send_service import register_broadcast_send_handler
+
+    register_broadcast_send_handler()
+
     # Report CSV export job handler (plan 30 S3, AC-RPT-33) - same reasoning
     # as the contacts export handler above: any process (API or a real
     # Celery worker) that dispatches this job type must have imported it.
@@ -416,6 +423,17 @@ def create_schema_and_tables(engine: Engine) -> None:
                     f'ON "{OMNI_SCHEMA}".inbox_views (workspace_id, lower(name))'
                 )
             )
+            # Plan 29 (A4, D-A4-12) - `channels.broadcast_rate_per_second`.
+            # `broadcasts`/`broadcast_recipients` are brand-new tables already
+            # created by `create_all` above (per-module Alembic migration 0011
+            # is the real fix for a Postgres-tracked deploy; this covers the
+            # create_all path for a fresh install).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS broadcast_rate_per_second INTEGER"
+                )
+            )
 
 
 def install(engine: Engine, db: Session) -> None:
@@ -520,10 +538,17 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
       and the seeded close reasons per workspace (plan 27 A3 S2, AC-IVE-27) -
       both idempotent, called unconditionally so re-running `update` (or a
       tenant already fully migrated) is a safe no-op.
+
+    0.4.0 -> 0.5.0 (plan 29 S1, AC-BRD-16): the NEW `BROADCAST` status scope
+    (`statuses.DEFAULT_STATUSES`) needs seeding for every tenant that
+    installed before this slice - `ensure_statuses` is idempotent (only
+    inserts scope/key pairs that don't already exist), so calling it here
+    unconditionally is a safe no-op for a tenant already carrying it.
     """
     from .repositories.contact_repository import ContactRepository
     from .services import close_reason_service, event_service, lifecycle_service
 
+    statuses.ensure_statuses(db, tenant_id)
     lifecycle_service.backfill_tenant(db, tenant_id)
     event_service.backfill_tenant(db, tenant_id)
     close_reason_service.CloseReasonService(db).backfill_tenant(tenant_id)
