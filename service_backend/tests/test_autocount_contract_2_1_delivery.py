@@ -128,9 +128,12 @@ def test_revision_0013_exists_and_chains_onto_0012():
     assert "backfill_disable_credit_limit_mapping_rows" in path.read_text()
 
 
-def test_module_migration_history_has_a_single_head_ending_at_0013():
+def test_module_migration_history_has_a_single_head_reaching_back_through_0013():
     """A dangling ``down_revision`` splits the history into two heads and the
-    upgrade fails on a live deploy - invisible to pytest otherwise."""
+    upgrade fails on a live deploy - invisible to pytest otherwise. The head
+    is whatever the NEWEST revision file declares (so the next revision does
+    not break this test again); walking down from it must pass through the
+    0013 revision, which must still chain onto 0012."""
     files = sorted(VERSIONS_DIR.glob("*.py"))
     revisions = {}
     for path in files:
@@ -139,10 +142,25 @@ def test_module_migration_history_has_a_single_head_ending_at_0013():
     referenced = {down for down in revisions.values() if down}
     heads = sorted(rev for rev in revisions if rev not in referenced)
     assert len(heads) == 1, f"module history has {len(heads)} heads: {heads}"
-    assert heads[0].startswith("0013_"), f"head is {heads[0]}, expected the 0013 revision"
-    assert revisions[heads[0]] == PREVIOUS_REVISION
     for down in referenced:
         assert down in revisions, f"down_revision '{down}' names no revision file"
+
+    newest_revision, _ = _revision_ids(files[-1])
+    assert heads[0] == newest_revision, (
+        f"head is {heads[0]} but the newest file declares {newest_revision}"
+    )
+
+    # Walk the chain from the head down to the baseline; 0013 must be on it
+    # and still chain onto 0012.
+    chain = []
+    cursor = heads[0]
+    while cursor:
+        assert cursor not in chain, f"cycle in module history at {cursor}"
+        chain.append(cursor)
+        cursor = revisions[cursor]
+    thirteen = [rev for rev in chain if rev.startswith("0013_")]
+    assert thirteen, f"the 0013 revision is not on the chain: {chain}"
+    assert revisions[thirteen[0]] == PREVIOUS_REVISION
 
 
 # ── (3) seed + source catalog no longer carry credit_limit ─────────────────
