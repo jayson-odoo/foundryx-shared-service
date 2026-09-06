@@ -67,7 +67,11 @@ export function dependentDefault(
 export const SORENTO_CONTRACT_VERSION_KEY = 'sorentoContractVersion';
 const SORENTO_CONTRACT_VERSION_EFFECTIVE = '1';
 
-function storedOrEffective(f: ProviderField, config: Record<string, string>): string {
+/** The value a field SHOWS for an existing connection: the stored one, else
+ *  the effective fallback above (Sorento contract version only), else blank.
+ *  Used by both the edit prefill and the read-mode row so the two modes never
+ *  disagree about what the connection runs at. */
+export function storedOrEffective(f: ProviderField, config: Record<string, string>): string {
   const stored = config[f.key];
   if (stored !== undefined) return stored;
   return f.key === SORENTO_CONTRACT_VERSION_KEY ? SORENTO_CONTRACT_VERSION_EFFECTIVE : '';

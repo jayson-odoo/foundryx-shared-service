@@ -5,6 +5,7 @@ import {
   defaultsForProvider,
   dependentDefault,
   requiredFieldErrors,
+  storedOrEffective,
   toConnectionInput,
   valuesForConnection,
 } from './connection-schema';
@@ -175,5 +176,22 @@ describe('Sorento contract version on edit (fix/sorento-contract-version-field)'
   it('the fallback is scoped to that key - other missing fields stay blank', () => {
     const values = valuesForConnection(r2, { provider: 'r2', name: 'R2', config: { bucket: 'b' } });
     expect(values.config).toEqual({ accountId: '', bucket: 'b', cdnBaseUrl: '' });
+  });
+});
+
+describe('storedOrEffective (read mode and edit prefill share one resolution)', () => {
+  const version = sorento.fields.find((f) => f.key === 'sorentoContractVersion') as ProviderField;
+  const baseUrl = sorento.fields.find((f) => f.key === 'baseUrl') as ProviderField;
+
+  it('a legacy connection reads "1" for the contract version, never blank', () => {
+    expect(storedOrEffective(version, { baseUrl: 'https://s' })).toBe('1');
+    expect(version.options?.find((o) => o.value === storedOrEffective(version, {}))?.label).toBe(
+      '1 (legacy)',
+    );
+  });
+
+  it('a stored value wins, and other fields stay blank when missing', () => {
+    expect(storedOrEffective(version, { sorentoContractVersion: '2' })).toBe('2');
+    expect(storedOrEffective(baseUrl, {})).toBe('');
   });
 });

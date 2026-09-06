@@ -821,11 +821,15 @@ def sorento_sink_from_connection(
         transport=transport,
         # AC-02-14 - the connection's own authoritative gate. The integrations
         # form stores the select's value as the STRING "1" / "2"; ``int`` on
-        # it resolves "2" to 2. Default 1 (pre-addendum) so an existing
-        # connection with no such key configured behaves exactly as it always
-        # has - there is deliberately NO backfill of this key: an existing
-        # tenant opts into contract 2 by picking it on the connection's edit
-        # form (Settings > Integrations > Sorento), where the provider's Test
-        # then checks the choice against the contract Sorento advertises.
-        contract_version=int(config.get("sorentoContractVersion") or 1),
+        # ``contract_major`` resolves "2" (and a hand-set "2.0") to 2; a
+        # value that is not a version at all ("abc" - the config PATCH merges
+        # verbatim, nothing validates it against the select's options) falls
+        # back to 1 instead of raising ValueError inside ``sink_for_company``.
+        # Default 1 (pre-addendum) so an existing connection with no such key
+        # configured behaves exactly as it always has - there is deliberately
+        # NO backfill of this key: an existing tenant opts into contract 2 by
+        # picking it on the connection's edit form (Settings > Integrations >
+        # Sorento), where the provider's Test then checks the choice against
+        # the contract Sorento advertises.
+        contract_version=contract_major(config.get("sorentoContractVersion"), default=1) or 1,
     )

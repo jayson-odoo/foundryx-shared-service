@@ -60,7 +60,6 @@ _PROBE_REF = "__probe__"
 # failure.
 _CONTRACT_PATH = "/api/v1/external/contract"
 CONTRACT_VERSION_KEY = "sorentoContractVersion"
-CONTRACT_VERSION_OPTIONS = ("1", "2")
 
 
 class SorentoProvider:
@@ -232,8 +231,11 @@ class SorentoProvider:
                     f"contract 2 has no such endpoint)."
                 ),
             )
-        advertised_major = contract_major(advertised)
-        if chosen_major > (advertised_major or 0):
+        # ``advertised`` is only set once it parsed (the None branch above
+        # returned), so this is an int; clamped to 1 so the message can never
+        # offer "version 0".
+        advertised_major = max(contract_major(advertised) or 1, 1)
+        if chosen_major > advertised_major:
             return TestResult(
                 ok=False,
                 message=(
