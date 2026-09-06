@@ -1649,3 +1649,100 @@ class MigrationPreflight(ApiModel):
     targetChannels: List[MigrationTargetChannel]
     targetStages: List[MigrationTargetStage]
     warnings: List[str]
+
+
+# ── Plan 33 S2 - migration job (plan §5.2, AC-MIG-18..29) ───────────────────
+class MigrationChannelMapEntry(ApiModel):
+    sourceChannelId: str
+    targetChannelId: Optional[str] = None  # None = "Skip this channel" (AC-MIG-04)
+
+
+class MigrationUserMapEntry(ApiModel):
+    sourceUserId: str
+    targetUserId: Optional[str] = None
+
+
+class MigrationTeamMapEntry(ApiModel):
+    sourceTeamId: str
+    targetTeamId: Optional[str] = None
+
+
+class MigrationLifecycleMapEntry(ApiModel):
+    sourceLabel: str
+    targetStatusId: Optional[str] = None  # None = unmapped, allowed (AC-MIG-06)
+
+
+class MigrationJobCreate(ApiModel):
+    """`POST /omnichannel/migration/jobs` body (§5.2). `messagesSince` stays a
+    plain `Optional[str]` (not `datetime`) so a malformed value is a HOUSE
+    `{fieldErrors: {messagesSince: ...}}` 422 the service raises itself,
+    never FastAPI's own un-housed pydantic-datetime 422 shape - the plan's
+    §5.2 422-paths list treats it exactly like `connectionId`/`workspaceId`."""
+
+    connectionId: str
+    workspaceId: str
+    mode: Literal["dry_run", "run"]
+    source: Literal["api", "csv"] = "api"
+    channelMap: List[MigrationChannelMapEntry] = []
+    userMap: List[MigrationUserMapEntry] = []
+    teamMap: List[MigrationTeamMapEntry] = []
+    lifecycleMap: List[MigrationLifecycleMapEntry] = []
+    messagesSince: Optional[str] = None
+    contactsOnly: bool = False
+
+
+class MigrationEntityCounts(ApiModel):
+    fetched: int = 0
+    wouldCreate: int = 0
+    wouldUpdate: int = 0
+    wouldSkip: int = 0
+    errors: int = 0
+
+
+class MigrationReport(ApiModel):
+    entities: Dict[str, MigrationEntityCounts]
+    messagesWithInferredTimestamp: int = 0
+    blockers: List[str] = []
+    samples: Dict[str, List[dict]]
+
+
+class MigrationFailureRow(ApiModel):
+    entity: str
+    sourceId: str
+    sourceLabel: str
+    reason: str
+    action: str
+
+
+class MigrationJobItem(ApiModel):
+    """Read shape for the list + detail routes (§5.2) - built by
+    `MigrationService._to_item` from a `background_jobs` row (never
+    `from_attributes`, since `mode`/`source`/`spaceLabel`/`workspaceName`/
+    `report`/`failure*` are all derived from `payload_json`/`cursor_json`/
+    `result_json`, not native columns)."""
+
+    id: str
+    mode: str
+    source: str
+    connectionId: str
+    spaceLabel: str
+    workspaceId: str
+    workspaceName: str
+    status: str
+    progressTotal: int
+    progressDone: int
+    progressFailed: int
+    entityCounts: Optional[Dict[str, int]] = None
+    report: Optional[MigrationReport] = None
+    failureCount: int = 0
+    failureSample: List[MigrationFailureRow] = []
+    startedAt: Optional[datetime] = None
+    finishedAt: Optional[datetime] = None
+    createdAt: datetime
+    actorUserName: Optional[str] = None
+
+
+class MigrationJobListResponse(ApiModel):
+    data: List[MigrationJobItem]
+    total: int
+    page: int

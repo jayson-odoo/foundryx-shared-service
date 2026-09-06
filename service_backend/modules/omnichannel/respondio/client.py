@@ -229,17 +229,40 @@ class RespondIoClient:
         json_body: Optional[Dict[str, Any]] = None,
         limit: int = 100,
     ) -> Iterator[Dict[str, Any]]:
+        for items, _next_cursor in self._paginated_pages(
+            method, path, params=params, json_body=json_body, limit=limit
+        ):
+            for item in items:
+                yield item
+
+    def _paginated_pages(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+        limit: int = 100,
+        start_cursor: Optional[str] = None,
+    ) -> Iterator[tuple]:
+        """PAGE-granular walk (plan 33 S2, AC-MIG-22): yields
+        ``(items, next_cursor)`` per page instead of flattening - the job
+        service checkpoints ``cursor_json`` after EVERY page using the
+        ``next_cursor`` this yields, and a crash-resume passes its last stored
+        cursor back in as ``start_cursor`` to continue without re-walking
+        already-processed pages. ``next_cursor`` is ``None`` on the LAST page
+        (mirrors the vendor's own ``pagination.next`` absence)."""
         base_params = dict(params or {})
         base_params["limit"] = limit
-        cursor: Optional[str] = None
+        cursor: Optional[str] = start_cursor
         while True:
             page_params = dict(base_params)
             if cursor:
                 page_params["cursorId"] = cursor
             data = self._request(method, path, params=page_params, json_body=json_body)
-            for item in data.get("items") or []:
-                yield item
+            items = data.get("items") or []
             cursor = ((data.get("pagination") or {}).get("next")) or None
+            yield items, cursor
             if not cursor:
                 break
 
@@ -269,15 +292,38 @@ class RespondIoClient:
         filter_: Optional[Dict[str, Any]] = None,
         limit: int = 100,
     ) -> Iterator[Dict[str, Any]]:
-        """``POST /contact/list`` - the contacts walk (S2) AND the preflight's
-        read-only distinct-lifecycle pass (S1). ``timezone`` is REQUIRED by
-        the vendor (plan §5.1)."""
+        """``POST /contact/list`` - the preflight's read-only distinct-
+        lifecycle pass (S1). ``timezone`` is REQUIRED by the vendor
+        (plan §5.1). S2's resumable contacts WALK uses
+        ``list_contacts_pages`` below instead (page-granular, resumable)."""
         body: Dict[str, Any] = {"timezone": timezone}
         if search:
             body["search"] = search
         if filter_:
             body["filter"] = filter_
         return self._paginated("POST", "/contact/list", json_body=body, limit=limit)
+
+    def list_contacts_pages(
+        self,
+        *,
+        timezone: str,
+        search: Optional[str] = None,
+        filter_: Optional[Dict[str, Any]] = None,
+        limit: int = 100,
+        start_cursor: Optional[str] = None,
+    ) -> Iterator[tuple]:
+        """``POST /contact/list``, PAGE-granular (plan 33 S2, AC-MIG-22) -
+        yields ``(items, next_cursor)`` so the migration job can write
+        ``cursor_json`` after EVERY page and crash-resume from
+        ``start_cursor`` without re-processing an already-completed page."""
+        body: Dict[str, Any] = {"timezone": timezone}
+        if search:
+            body["search"] = search
+        if filter_:
+            body["filter"] = filter_
+        return self._paginated_pages(
+            "POST", "/contact/list", json_body=body, limit=limit, start_cursor=start_cursor
+        )
 
 
 def _clamp_rps(value: float) -> float:

@@ -145,6 +145,13 @@ def register_engine_entities() -> None:
 
     register_provider(RespondIoProvider())
 
+    # respond.io migration job handler (plan 33 S2, AC-MIG-19) - same
+    # reasoning as the contacts-export handler above: ANY process (API or a
+    # real Celery worker) that dispatches this job type must have imported it.
+    from .services.migration_service import register_migration_job_handler
+
+    register_migration_job_handler()
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""
@@ -482,6 +489,35 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS broadcast_rate_per_second INTEGER"
                 )
             )
+            # Plan 33 S2 (respond.io migration, D-A6-3) - `migrated_from`
+            # descriptive markers. `migration_refs` itself is a brand-new
+            # table already created by `create_all` above (per-module Alembic
+            # migration 0016 is the real fix for a Postgres-tracked deploy;
+            # this covers the create_all path for a fresh install).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contacts '
+                    "ADD COLUMN IF NOT EXISTS migrated_from VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_contacts_migrated_from "
+                    f'ON "{OMNI_SCHEMA}".contacts (migrated_from)'
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".conversation_messages '
+                    "ADD COLUMN IF NOT EXISTS migrated_from VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_conv_messages_migrated_from "
+                    f'ON "{OMNI_SCHEMA}".conversation_messages (migrated_from)'
+                )
+            )
 
 
 def install(engine: Engine, db: Session) -> None:
@@ -606,6 +642,15 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     actually delivers the new keys to an already-provisioned tenant's Admin
     role - the manifest version bump above is what makes that call fire at
     all (`update()` refuses when `installed_version` already matches).
+
+    Still 0.7.0 (plan 33 S2, AC-MIG-18): `migration_refs` is a brand-new,
+    always-empty-until-a-migration-runs table and `contacts`/
+    `conversation_messages.migrated_from` are new nullable columns - both
+    read back correctly as-is with zero backfill (no tenant has ever run a
+    migration before this column existed, so there is nothing to repair).
+    `uninstall_tenant`'s generic per-table `tenant_id`-scoped delete loop
+    already covers `migration_refs` for free (AC-MIG-54) - it needs no
+    dedicated cleanup line here.
     """
     from .repositories.contact_repository import ContactRepository
     from .services import close_reason_service, event_service, lifecycle_service
