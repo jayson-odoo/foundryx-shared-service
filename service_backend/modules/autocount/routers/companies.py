@@ -503,6 +503,9 @@ def _raise_task(exc: Exception):
             },
         )
     if isinstance(exc, PreviewUnavailable):
+        # ``message`` already carries what the consumer said (HTTP status +
+        # bounded body snippet) or why it was unreachable - the operator
+        # reads exactly that as the 502 ``detail`` (prod 2026-09-06).
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.message
         )

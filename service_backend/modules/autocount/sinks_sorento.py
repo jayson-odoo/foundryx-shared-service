@@ -192,7 +192,29 @@ def contract_major(version: Any, *, default: Optional[int] = None) -> Optional[i
 class SorentoSinkError(Exception):
     """A transport- or contract-level failure that is not per-record. The whole
     batch is unresolved; the caller returns it to review rather than marking any
-    record pushed."""
+    record pushed.
+
+    ``status_code`` / ``body`` (both optional, ``None`` when the failure was
+    not an HTTP answer) carry what the consumer actually said, so a caller
+    that must SHOW the failure (``EtlService.preview_task`` -> 502) can quote
+    it instead of a fixed sentence - prod 2026-09-06: an operator saw "the
+    dry run failed" twice (a 504 and an unknown SO failure) with no way to
+    tell what Sorento had answered. ``str(exc)`` is unchanged for every
+    existing caller; ``body`` is the SAME bounded, key-free snippet the
+    message already embeds (``_safe_body``), never the request, never the
+    URL beyond its path.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        body: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
 
 
 class SinkAnchorError(SorentoSinkError):
@@ -383,8 +405,18 @@ class SorentoSink:
 
         waits = 0
         while True:
-            with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
-                response = client.post(url, params=params, json=body, headers=headers)
+            try:
+                with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
+                    response = client.post(url, params=params, json=body, headers=headers)
+            except httpx.HTTPError as exc:
+                # A transport fault (refused, DNS, read timeout) used to escape
+                # as a raw httpx error and surface as a bare 500 upstream
+                # (prod 2026-09-06). Wrapped with NO status - "unreachable" is
+                # a different verdict from "answered badly" - and with only
+                # the exception class + text (never the URL, never the key).
+                raise SorentoSinkError(
+                    f"Sorento unreachable: {type(exc).__name__}: {exc}"
+                ) from exc
 
             if response.status_code == 200:
                 return response.json()
@@ -418,7 +450,9 @@ class SorentoSink:
             detail = _safe_body(response)
             raise SorentoSinkError(
                 f"Sorento returned HTTP {response.status_code} for "
-                f"{path}: {detail}"
+                f"{path}: {detail}",
+                status_code=response.status_code,
+                body=detail,
             )
 
     def _post(self, records: List[Dict[str, Any]], *, dry_run: bool) -> Dict[str, Any]:

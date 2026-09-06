@@ -16,6 +16,8 @@ Two security invariants every method honours:
 from __future__ import annotations
 
 import logging
+
+import httpx
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -183,7 +185,26 @@ class EtlStateError(AutocountServiceError):
 class PreviewUnavailable(AutocountServiceError):
     """The dry run itself failed (a transport / contract fault talking to the
     consumer). The gate must SHOW this and refuse to offer Activate - nobody
-    activates blind. Nothing was written either way."""
+    activates blind. Nothing was written either way.
+
+    ``message`` is what the operator reads (the router's 502 ``detail``): the
+    generic sentence PLUS what the consumer said (``Consumer said: HTTP <n>
+    <snippet>``) or why it could not be reached (``Consumer unreachable:
+    <ExcClass>: <text>``). ``status_code`` / ``consumer_detail`` keep the
+    parts separately for logs and tests. Prod 2026-09-06: the fixed sentence
+    alone left the operator no way to tell a 504 from an unknown SO failure.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        consumer_detail: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.consumer_detail = consumer_detail
 
 
 class EtlAnchorError(AutocountServiceError):
@@ -504,6 +525,68 @@ def validate_source_config(
         "reconcileAt": at,
     }
     return clean, errors
+
+
+_PREVIEW_FAILED = (
+    "The dry run against the consumer failed, so no prediction is available "
+    "and this task cannot be activated yet. Nothing was written - resolve the "
+    "consumer error first."
+)
+_CONSUMER_SNIPPET_MAX = 300
+_URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
+
+
+def _consumer_snippet(text: Optional[str], *, api_key: Optional[str]) -> str:
+    """Whitespace-collapsed, bounded, key-free excerpt of what the consumer
+    answered. The sink's own strings already carry only the request PATH
+    (never the full URL or the key); the key is redacted again here
+    defensively, so a body that echoed it back could still never reach the
+    operator or the log line."""
+    collapsed = " ".join((text or "").split())
+    if api_key:
+        collapsed = collapsed.replace(api_key, "[redacted]")
+    # Never a full URL either (a consumer body or a transport error text may
+    # echo one back): keep the scheme-less remainder out of the operator line.
+    collapsed = _URL_RE.sub("[url]", collapsed)
+    return collapsed[:_CONSUMER_SNIPPET_MAX]
+
+
+def _preview_unavailable(
+    exc: Exception, *, api_key: Optional[str], company_id: str, entity_type: str
+) -> PreviewUnavailable:
+    """Build the operator-facing ``PreviewUnavailable`` for a failed dry run
+    and log it (WARNING, one line, with the parts a follow-up needs).
+
+    * ``SorentoSinkError`` carrying ``status_code`` -> ``Consumer said: HTTP
+      <n> <body snippet>`` (the body, when the sink captured one; else the
+      error's own text).
+    * Anything else - a sink error with no HTTP answer behind it (the sink
+      wraps transport faults this way, ``__cause__`` = the httpx error; an
+      unroutable entity or a record with no projection has no cause) ->
+      ``Consumer unreachable: <ExcClass>: <text>``, naming the httpx class
+      when there is one.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        body = getattr(exc, "body", None)
+        detail = _consumer_snippet(body if body else str(exc), api_key=api_key)
+        consumer = f"Consumer said: HTTP {status} {detail}".rstrip()
+    else:
+        # Name the TRANSPORT class the operator can act on (``ConnectError``,
+        # ``ReadTimeout``): the sink wraps it as a status-less
+        # ``SorentoSinkError`` whose ``__cause__`` is the httpx error.
+        cause = exc.__cause__ if isinstance(exc.__cause__, httpx.HTTPError) else exc
+        detail = _consumer_snippet(f"{type(cause).__name__}: {cause}", api_key=api_key)
+        consumer = f"Consumer unreachable: {detail}"
+    logger.warning(
+        "autocount preview dry run failed: company_id=%s entity_type=%s status=%s detail=%s",
+        company_id, entity_type, status, detail,
+    )
+    return PreviewUnavailable(
+        f"{_PREVIEW_FAILED} {consumer}",
+        status_code=status,
+        consumer_detail=detail,
+    )
 
 
 class EtlService:
@@ -1258,11 +1341,17 @@ class EtlService:
             result = sink.dry_run([r for r in records if r is not None])
         except SinkAnchorError as exc:
             raise EtlAnchorError(exc.code, exc.sorento_message) from exc
-        except SorentoSinkError as exc:
-            raise PreviewUnavailable(
-                "The dry run against the consumer failed, so no prediction is "
-                "available and this task cannot be activated yet. Nothing was "
-                "written - resolve the consumer error first."
+        except (SorentoSinkError, httpx.HTTPError) as exc:
+            # The operator must be able to tell WHAT the consumer said (a 504
+            # from its proxy, a 500 with a body, a refused connection) - the
+            # generic sentence alone was useless twice on prod, 2026-09-06.
+            # A transport error is caught here too: the sink does not wrap
+            # them, and before this they surfaced as a bare 500.
+            raise _preview_unavailable(
+                exc,
+                api_key=getattr(sink, "_api_key", None),
+                company_id=company_id,
+                entity_type=entity_type,
             ) from exc
 
         config.last_preview_at = datetime.now(timezone.utc)
