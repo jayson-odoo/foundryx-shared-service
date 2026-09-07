@@ -1660,7 +1660,14 @@ def _run_paged_sql_db(
     run.finished_at = datetime.now(timezone.utc)
     run.duration_ms = int((time.monotonic() - started) * 1000)
     if truncated:
-        run.error = f"Budget reached after page {pages_done}; continues on the next tick."
+        budget_note = f"Budget reached after page {pages_done}; continues on the next tick."
+        # S1 (fix/push-marks-per-chunk review round 2): APPEND the push's own
+        # error rather than replacing the budget note with it - a truncated
+        # pass and a chunk-level push fault are two independent reasons this
+        # run did not fully succeed, and an operator needs both, not
+        # whichever one this branch happened to write last.
+        push_error = push_summary.get("error") if push_summary else None
+        run.error = f"{budget_note} {push_error}" if push_error else budget_note
         # The initial (or continuing) pass resumes on the VERY NEXT sweep
         # tick, not after a full `incrementalMinutes` wait (D3 - 148k SO
         # headers must finish in hours unattended, not overnight-per-page).
