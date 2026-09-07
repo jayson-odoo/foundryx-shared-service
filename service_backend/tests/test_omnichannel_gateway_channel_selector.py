@@ -472,7 +472,8 @@ def test_message_received_trigger_declares_the_channel_type_field():
 
     trig = get_trigger("omnichannel.message_received")
     field = next(f for f in trig.fields if f.key == "channelType")
-    assert {o["value"] for o in field.options} == {"WHATSAPP", "FACEBOOK", "INSTAGRAM"}
+    # Plan 34 / A7b S6 (AC-WEB-61) adds WEBCHAT to this same static list.
+    assert {o["value"] for o in field.options} == {"WHATSAPP", "FACEBOOK", "INSTAGRAM", "WEBCHAT"}
     assert field.required is False
 
 

@@ -105,8 +105,7 @@ export interface ComposerProps {
    * never locks anything. Pre-computed by the drawer (which already owns the
    * `useDatetime`/`nowTick` clock) so this component stays free of a
    * session/timezone dependency; `null` = never seen yet, `undefined`/absent
-   * for every other channel type. S0 MOCK - the underlying field lands on
-   * the wire in slice S3.
+   * for every other channel type. Wired to the real field since slice S3.
    */
   visitorPresence?: { online: boolean; label: string } | null;
   templates: WhatsAppTemplate[];

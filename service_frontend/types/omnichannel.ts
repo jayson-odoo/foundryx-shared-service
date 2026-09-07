@@ -328,8 +328,7 @@ export interface ConversationThread {
    * instant (plan 34 / A7b, D-A7B-19) - the presence fact that stands in for
    * a messaging window on a `WEBCHAT` thread (which has none, D-A7B-18).
    * Null for every other channel type and for a web chat visitor never seen.
-   * S0 MOCK - the backend wire field lands in plan 34 slice S3; mocked ahead
-   * of it here so the drawer's presence marker has real data to render.
+   * Wired to the real `ThreadItem.visitorLastSeenAt` field since slice S3.
    */
   visitorLastSeenAt?: string | null; // ISO
   lastIncomingMessageAt: string | null; // ISO

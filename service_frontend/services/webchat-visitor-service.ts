@@ -6,14 +6,11 @@
  * token as a Bearer header the caller supplies explicitly - there is no
  * ambient session for this trio to read.
  *
- * S4 MOCK - bound to `.mock` here, mirroring `webchat-service.ts`'s own S0
- * comment exactly: the backend endpoints this trio calls
- * (`POST/GET .../session`, `POST/GET .../messages`, the visitor WS) are
- * live on :8014 as of S2/S3, but the OFFICIAL swap to `.real` happens in S6
- * (AC-WEB-63) alongside the admin trio, at this ONE export - no call site
- * changes. (S4's own live-verify evidence flips this export to
- * `realWebchatVisitorService` locally for the recorded run and reverts it
- * before commit - see the S4 commit body.)
+ * Plan 34 / A7b, S6 (AC-WEB-63) - bound to `realWebchatVisitorService`
+ * below, the OFFICIAL swap alongside the admin trio at this ONE export - no
+ * call site changes. (S4's own live-verify evidence flipped this export
+ * locally for a recorded run and reverted it before commit - see the S4
+ * commit body; this is the first time the flip is permanent.)
  */
 import type {
   PostVisitorMessageInput,
@@ -21,7 +18,7 @@ import type {
   VisitorMessagesPage,
   WebchatSessionResult,
 } from '@/types/omnichannel';
-import { mockWebchatVisitorService } from './webchat-visitor-service.mock';
+import { realWebchatVisitorService } from './webchat-visitor-service.real';
 
 export interface WebchatVisitorService {
   /** Mint a fresh session, or renew/resume one from a stored token
@@ -51,5 +48,4 @@ export interface WebchatVisitorService {
   ): () => void;
 }
 
-// S4 MOCK - swap to real in S6 (AC-WEB-63).
-export const webchatVisitorService: WebchatVisitorService = mockWebchatVisitorService;
+export const webchatVisitorService: WebchatVisitorService = realWebchatVisitorService;

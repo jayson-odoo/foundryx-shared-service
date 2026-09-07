@@ -4,12 +4,8 @@
  * signing secret. Mirrors `channel-service.ts`'s trio shape (`.mock`/`.real`,
  * one boundary swap).
  *
- * S0 MOCK - bound to `.mock` here because the backend endpoints this trio
- * calls (`POST /omnichannel/onboarding/webchat/connect`,
- * `GET/PUT /omnichannel/channels/{id}/widget`,
- * `POST /omnichannel/channels/{id}/widget/rotate-secret`) land in plan 34
- * slice S1. Swap the export below to `realWebchatService` in slice S6
- * (AC-WEB-63) - no other call site changes.
+ * Plan 34 / A7b, S6 (AC-WEB-63) - bound to `realWebchatService` below, the
+ * one service-boundary swap `mockWebchatService` served during S0/S4/S5.
  */
 import type {
   ConnectWebchatInput,
@@ -19,7 +15,7 @@ import type {
   UpdateWebchatConfigInput,
   WebchatConfig,
 } from '@/types/omnichannel';
-import { mockWebchatService } from './webchat-service.mock';
+import { realWebchatService } from './webchat-service.real';
 
 export interface WebchatService {
   /** Provision a new `WEBCHAT` channel (AC-WEB-18). Returns the widget secret
@@ -37,5 +33,4 @@ export interface WebchatService {
   signOutVisitors(channelId: string): Promise<SignOutVisitorsResult>;
 }
 
-// S0 MOCK - swap to real in S6 (AC-WEB-63).
-export const webchatService: WebchatService = mockWebchatService;
+export const webchatService: WebchatService = realWebchatService;

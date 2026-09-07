@@ -155,10 +155,21 @@ class PublicGatewayService:
         miss is a `422 invalid_recipient` and NEVER creates a contact (we
         cannot fabricate an identity Meta will accept). ``id:<contactId>``
         resolves an existing workspace contact the same way. A bare value or
-        ``phone:`` keeps the unchanged phone resolve-or-create behaviour."""
+        ``phone:`` keeps the unchanged phone resolve-or-create behaviour.
+
+        ``webchat:<value>`` (plan 34 / A7b, AC-WEB-58) follows the identical
+        psid:/igsid: rule: EXISTING identity only, never created. ``value``
+        is the identity's own `external_user_id` verbatim, which on a
+        WEBCHAT channel already carries its own `visitor:`/`host:` namespace
+        prefix (`webchat_visitor_service`/`webchat_service`) - splitting on
+        the FIRST colon only (below) leaves that inner prefix intact, so a
+        caller passes `webchat:visitor:<visitorId>` or
+        `webchat:host:<userRef>` exactly as it would read the value off
+        `GET .../contacts` (no second encoding to invent, no new decoding
+        rule to document)."""
         ident = (to or "").strip()
         lower = ident.lower()
-        if lower.startswith("psid:") or lower.startswith("igsid:"):
+        if lower.startswith("psid:") or lower.startswith("igsid:") or lower.startswith("webchat:"):
             external_user_id = ident.split(":", 1)[1].strip()
             if not external_user_id:
                 raise ApiError(422, "invalid_recipient", "A recipient identifier is required.")
@@ -322,6 +333,7 @@ class PublicGatewayService:
             cswExpiresAt=_iso_z(thread.cswExpiresAt),
             windowExpiresAt=_iso_z(thread.windowExpiresAt),
             humanAgentExpiresAt=_iso_z(thread.humanAgentExpiresAt),
+            visitorLastSeenAt=_iso_z(thread.visitorLastSeenAt),
             priority=thread.priority,
             channelId=thread.channelId,
             channelType=thread.channelType,

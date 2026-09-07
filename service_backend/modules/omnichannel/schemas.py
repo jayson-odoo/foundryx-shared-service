@@ -1530,7 +1530,12 @@ class RioContactItem(BaseModel):
     humanAgentExpiresAt: Optional[str] = None
     priority: Optional[str] = None            # LOW | MEDIUM | HIGH | URGENT
     channelId: Optional[str] = None
-    channelType: Optional[str] = None         # WHATSAPP | FACEBOOK | INSTAGRAM
+    channelType: Optional[str] = None         # WHATSAPP | FACEBOOK | INSTAGRAM | WEBCHAT
+    # Plan 34 (A7b, D-A7B-19) - the same presence fact as `ThreadItem.
+    # visitorLastSeenAt` (losslessness rule, AC-WEB-59): null on every
+    # channel type but WEBCHAT, and null on a WEBCHAT contact until the
+    # visitor's first session/message/socket connect.
+    visitorLastSeenAt: Optional[str] = None
     unreadCount: int = 0
     lastMessageAt: Optional[str] = None
     lastIncomingMessageAt: Optional[str] = None
@@ -1614,7 +1619,7 @@ class RioMessageItem(BaseModel):
     channelMessageId: Optional[str] = None   # the provider's id (wamid)
     contactId: str
     channelId: Optional[str] = None
-    channelType: Optional[str] = None  # WHATSAPP | FACEBOOK | INSTAGRAM
+    channelType: Optional[str] = None  # WHATSAPP | FACEBOOK | INSTAGRAM | WEBCHAT
     traffic: str                      # incoming | outgoing
     # Epoch seconds the message was created - populated for INCOMING as well as
     # outgoing. `status[].timestamp` only exists once a delivery receipt lands

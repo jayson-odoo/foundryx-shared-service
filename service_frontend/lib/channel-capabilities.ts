@@ -60,12 +60,12 @@ export interface ChannelCapabilities {
 }
 
 export const CHANNEL_CAPABILITIES: Record<ChannelType, ChannelCapabilities> = {
-  // S0 MOCK - swap to real in S6 (plan 34 / A7b): parity-pinned against
-  // `messaging_policy.CAPABILITIES["WEBCHAT"]` / `POLICIES["WEBCHAT"]` once
-  // S1 lands (§5.5). No external provider on the far side (D-A7B-1), so
-  // there is no messaging window at all - `reengageMode: 'none'` is the
-  // record every gate in this file already understands (composer lock,
-  // window banner) via the existing `reengageMode` checks, no new branch.
+  // Plan 34 / A7b: parity-pinned against `messaging_policy.
+  // CAPABILITIES["WEBCHAT"]` / `POLICIES["WEBCHAT"]` (§5.5). No external
+  // provider on the far side (D-A7B-1), so there is no messaging window at
+  // all - `reengageMode: 'none'` is the record every gate in this file
+  // already understands (composer lock, window banner) via the existing
+  // `reengageMode` checks, no new branch.
   WEBCHAT: {
     channelType: 'WEBCHAT',
     label: 'Web chat',
