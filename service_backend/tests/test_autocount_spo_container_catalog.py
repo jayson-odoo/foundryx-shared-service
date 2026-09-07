@@ -60,6 +60,7 @@ from modules.autocount.services.company_service import (
 )
 from modules.autocount.sql_source.runtime import RUNTIME
 from tests.test_autocount_document_mapping import (
+    _auth,
     _company,
     _document_config,
     _source_engine,
@@ -236,7 +237,11 @@ def test_saving_the_spo_mapping_with_the_ref_row_keeps_it(session_factory):
 def test_saving_the_spo_mapping_without_the_ref_row_removes_it(session_factory):
     """Deliverable rows follow replace semantics (AC-15-41): an operator who
     drops the Ref row and saves gets exactly that - no stale row lingers as
-    if it were provenance."""
+    if it were provenance.
+
+    Pre-fix finding (origin/main 148a2552): this SAME sweep is what removes
+    the backfilled row when the editor omits it because the catalog projected
+    it as not delivered - see the editor-shaped round trip below."""
     db, company = _spo_task(session_factory, database="AED_CAT_DROP")
     try:
         service = CompanyService(db)
@@ -261,6 +266,126 @@ def test_saving_the_spo_mapping_without_the_ref_row_removes_it(session_factory):
         assert sorted(r.canonical_field for r in header) == ["spo_number", "status"]
     finally:
         db.close()
+        RUNTIME.dispose_all()
+
+
+PRESET_HEADER_ROWS = [
+    ("DocNo", "spo_number", "string", True),
+    ("CreditorAutoKey", "supplier_ref", "ref_supplier", False),
+    ("DocDate", "issue_date", "date", False),
+    ("ExpectedDate", "expected_date", "date", False),
+    ("CurrencyCode", "currency", "string", False),
+    ("Cancelled", "status", "string", True),
+    ("CreditorCode", "supplier_code", "string", False),
+    ("CreditorName", "supplier_name", "string", False),
+    ("SalesAgent", "agent_code", "string", False),
+    ("Ref", "container_number", "string", False),
+]
+
+
+def _prod_shaped_spo_task(session_factory, *, database: str):
+    """The ten header rows a prod SPO task carries after 0016: the nine
+    preset rows plus the backfilled ``Ref -> container_number``."""
+    db = session_factory()
+    engine = _source_engine([], {})
+    conn = _sql_connection(db, engine, database=database, name=f"src {database}")
+    company = _company(db, conn.id, database=database, name=f"{database} Co")
+    config = _document_config(db, company, conn.id, ENTITY_SHIPPING_ORDER)
+    config.result_columns = ["DocKey", "LastModified"] + [row[0] for row in PRESET_HEADER_ROWS]
+    db.commit()
+    for order, (source_path, canonical_field, transform, required) in enumerate(PRESET_HEADER_ROWS):
+        db.add(AcFieldMapping(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+            entity_type=ENTITY_SHIPPING_ORDER, scope=SCOPE_HEADER,
+            source_path=source_path, canonical_field=canonical_field, transform=transform,
+            is_required=required, is_enabled=True, sort_order=order,
+        ))
+    db.commit()
+    company_id = company.id
+    db.close()
+    return company_id
+
+
+def _header_rows(db, company_id: str):
+    return sorted(
+        row.canonical_field
+        for row in db.query(AcFieldMapping).filter(
+            AcFieldMapping.company_id == company_id,
+            AcFieldMapping.entity_type == ENTITY_SHIPPING_ORDER,
+            AcFieldMapping.scope == SCOPE_HEADER,
+        )
+    )
+
+
+def _editor_payload(view: dict) -> list:
+    """Exactly what the Mapping tab submits (``use-mapping-draft.ts``
+    ``splitMappingRows`` + ``toWrite``): every header row the view projects
+    WITH a ``sorentoField``; a row projected as not delivered
+    (``sorentoField: null``) is filed under provenance and never sent."""
+    return [
+        {
+            "sourcePath": row["sourcePath"], "transform": row["transform"],
+            "formula": row.get("formula"), "sorentoField": row["sorentoField"],
+            "scope": "header", "isEnabled": row["isEnabled"],
+        }
+        for row in view["rows"]
+        if row["scope"] == "header" and row["sorentoField"]
+    ]
+
+
+def test_editor_shaped_put_round_trip_keeps_the_backfilled_ref_row(client, session_factory):
+    """The Mapping tab's real save: GET the view, submit every row it shows
+    as deliverable, PUT. On the pre-fix catalog the Ref row is projected
+    ``sorentoField: null``, so the editor omits it and the header sweep
+    (``delete_unknown``) DELETES it with a 200 - replayed and observed on
+    origin/main 148a2552: the ten rows became nine. Once the catalog offers
+    ``container_number`` the row is in the payload and survives."""
+    company_id = _prod_shaped_spo_task(session_factory, database="AED_CAT_RT")
+    try:
+        headers = _auth(client)
+        url = f"/autocount/companies/{company_id}/entities/{ENTITY_SHIPPING_ORDER}/mapping"
+        view = client.get(url, headers=headers).json()
+        ref = [row for row in view["rows"] if row["sourcePath"] == "Ref"]
+        assert ref and ref[0]["sorentoField"] == "container_number", ref
+
+        payload = _editor_payload(view)
+        assert len(payload) == 10, [row["sorentoField"] for row in payload]
+        response = client.put(url, headers=headers, json={"rows": payload, "lineRows": []})
+        assert response.status_code == 200, response.text
+
+        db = session_factory()
+        assert _header_rows(db, company_id) == sorted(row[1] for row in PRESET_HEADER_ROWS)
+        db.close()
+        after = [row for row in response.json()["rows"] if row["sourcePath"] == "Ref"]
+        assert after and after[0]["sorentoField"] == "container_number" and after[0]["isEnabled"]
+    finally:
+        RUNTIME.dispose_all()
+
+
+def test_a_refused_save_deletes_nothing(client, session_factory):
+    """The one protection that holds BEFORE and AFTER the catalog fix: the
+    PUT guard (AC-15-42) raises inside the row loop, before
+    ``delete_by_canonical``/``delete_unknown`` run, so a refused save is
+    atomic - every stored header row, the backfilled Ref row included,
+    survives a 422 untouched. (Pre-fix, a payload that named
+    ``container_number`` itself was refused this way.)"""
+    company_id = _prod_shaped_spo_task(session_factory, database="AED_CAT_422")
+    try:
+        headers = _auth(client)
+        url = f"/autocount/companies/{company_id}/entities/{ENTITY_SHIPPING_ORDER}/mapping"
+        payload = [
+            {"sourcePath": "DocNo", "transform": "string", "sorentoField": "spo_number"},
+            {"sourcePath": "Cancelled", "transform": "string", "sorentoField": "status"},
+            {"sourcePath": "Ref", "transform": "string", "sorentoField": "not_a_sorento_field"},
+        ]
+        response = client.put(url, headers=headers, json={"rows": payload, "lineRows": []})
+        assert response.status_code == 422, response.text
+        assert "not_a_sorento_field" in response.text
+
+        db = session_factory()
+        assert _header_rows(db, company_id) == sorted(row[1] for row in PRESET_HEADER_ROWS)
+        db.close()
+    finally:
         RUNTIME.dispose_all()
 
 
