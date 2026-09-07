@@ -1,151 +1,313 @@
-# Sprint 4 · Plan 33 - Omnichannel respond.io Migration Tool · Test Execution Report
+# Sprint 4 - Plan 33 - Omnichannel respond.io Migration Tool - Independent Test Execution Report
 
-**Branch:** `sprint-4/33-respondio-migration` (worktree `.claude/worktrees/s33`)
-**Slice under test:** S6 "Wire + E2E + runbook" (AC-MIG-56..61), with a re-spot-check of
-AC-MIG-01..10 now that the real routes replace the S0 mock.
-**Environment:** backend `:8012` (Postgres `foundryx_service_s33`, `ENVIRONMENT=development`,
-`CELERY_TASK_ALWAYS_EAGER=true`, `CORS_ORIGIN_REGEX` widened for tenant subdomains on `:3010`),
-frontend `:3010` (prod build, `rm -rf .next && npm run build` then `npx next start -p 3010`).
-**Tester (this coder, S6):** `python -m pytest -q` (targeted, migration files only - the tester
-agent runs the full suite next) + `npx vitest run` (migration files) + `agent-browser`
-(sessions `s33c2`/`s33c3`/`s33c4`, real clicks, no Playwright).
+> **This report REPLACES the coder's own `33-omnichannel-respondio-migration-test-report.md`.**
+> It is an INDEPENDENT verification run by the tester agent, not a re-statement of the coder's own
+> S6 evidence. The coder's per-slice notes are kept as an appendix (section 9) for reference where
+> they add detail this run did not re-derive from scratch (e.g. exact pytest counts per slice).
+
+**Branch:** `sprint-4/33-respondio-migration` **HEAD:** `d550b6f3d35c94082f830a725ef582565accce7a`
+**Worktree:** `.claude/worktrees/s33` (never the main checkout)
+**Lane:** backend `:8012` (Postgres `foundryx_service_s33`), frontend `:3010` (prod build, `next-server`
+owned by this worktree, confirmed via `lsof -p $(lsof -ti :3010) | grep cwd`)
+**Contract:** `documentation/plans/sprint-4/33-omnichannel-respondio-migration-acceptance-criteria.md`
+(61 ACs), `33-omnichannel-respondio-migration.md` (plan, decisions D-A6-1..24, section 4 slices,
+section 7 prerequisites, section 9 risks), `documentation/omnichannel/respondio-cutover-runbook.md`.
+**Format:** `AI_Agent_Orchestration_Guide.md` section 6, adapted to this repo's established
+AC-id-keyed table convention (the same shape every prior plan's test report in this repo uses);
+explicit User-Story/Scenario/Steps/Expected/Actual narrative given for the two `[E2E]` AC ids
+(59, 60) per the guide's literal table shape.
 
 ## Result summary
 
 | Gate | Result |
 |---|---|
-| Targeted backend suite (`-k "respondio_migration"`) | **95 passed**, 0 failed (S1: 19, S2+S6: 25, S3: 17, S4: 15, S5: 19) |
-| Targeted frontend suite (migration files) | **61 tests passed**, 10 files |
-| `npx eslint` (every touched/new file) | **0 errors** (3 pre-existing-pattern a11y warnings on the new upload dropzone, identical to `import-modal.tsx`'s own unfixed warnings) |
-| `npx tsc --noEmit` | **0 NEW errors** (4 pre-existing errors elsewhere in the repo, unrelated to this slice, unchanged before/after) |
-| `[E2E]` AC-MIG-59 (CSV-mode full journey) | **PASS** - `33-evidence/S6/01`-`09`, `19`-`20` |
-| `[E2E]` AC-MIG-60 (re-run/abort/RBAC/isolation) | **PASS** - `33-evidence/S6/09`-`16` |
-| Responsive 375px + 1280px | **PASS** - `05`, `17`, `18` at 375px; every other screenshot at 1280px |
-| White-label | **FAIL found + FIXED this slice** - see AC-MIG-10 below |
+| Full backend suite (`python -m pytest -q`, ONE run) | **3707 passed, 11 failed, 1 skipped, 18 deselected** in 2279.84s. **All 11 failures are a pre-existing full-suite-order flake, NOT a plan-33 regression** - see "Full-suite failure triage" below. Zero failures among any `test_omnichannel_respondio_migration*.py` file. |
+| Full frontend suite (`npm test` = `vitest run`, ONE run) | **335 files, 2548 tests, all PASSED.** 2 unrelated "Unhandled Rejection" warnings from AutoCount task-editor test files (pre-existing `undici`/RHF interaction, not touched by this slice) - did not fail any test. |
+| `[E2E]` AC-MIG-59 (CSV-mode full journey, dedicated tenant, real clicks) | **PASS**, with one functional defect found live - see Defect 2 |
+| `[E2E]` AC-MIG-60 (re-run/abort/RBAC/isolation) | **PASS** |
+| Responsive 375px + 1280px | **PASS** - verified at both viewports on every new/changed surface touched this run |
+| Independent defects found this run (not in the coder's own report) | **2** - see "Defects found" below |
 
-**Two genuine gaps this slice's own re-check and live run caught (not previously flagged, both
-fixed in this commit):**
-1. **White-label hard-fail** - the S0 setup-form subtitle read "...onto a **Foundryx**
-   workspace"; the live run against a real tenant is what surfaced it (a mock-only QA pass
-   never renders literal "Foundryx" copy on a branded page the way a real page does). Fixed
-   in `migration-form-view.tsx`; re-verified live post-fix (`19-whitelabel-fix-verified-1280.png`).
-2. **AC-MIG-08's milestone log was never wired end to end** - `JobService.log()` had written
-   `background_jobs.logs_json` since S2, but neither the schema nor the detail page ever
-   surfaced it. Added `MigrationJobItem.logs` (detail-read only) + a `Logs` card (verbatim
-   `jobs/[id]/page.tsx` clone); pinned by a new pytest
-   (`test_get_job_surfaces_milestone_log_list_does_not`) and live-verified
-   (`20-logs-card-1280.png`).
+Evidence directory (this tester's own, independent of the coder's S0/S6 dirs):
+`documentation/plans/sprint-4/33-evidence/E2E/` (25 screenshots + `README.md` with every setup
+call verbatim).
 
-Also found and closed this slice: **AC-MIG-02's server-side search/sort/filter had never
-actually been wired** (S2 shipped pagination + the status segment only) - a search box and
-sortable columns that silently no-op against the real backend would have been a foolproof-UI
-violation this slice's own live run would have caught. `MigrationService.list_jobs` now
-resolves search/sort/the Filter popover in Python over the tenant's job set (bounded;
-`MAX_LIST_SCAN_JOBS`), pinned by `test_list_jobs_search_sort_and_filter`. Backlogged for a
-real DB-level implementation if job volume ever grows: **BL-SS-130**.
+## Defects found (independent finding, both reproduced and root-caused)
 
-## Per-AC results (`33-omnichannel-respondio-migration-acceptance-criteria.md`)
+### Defect 1 - LOW severity, not reachable via any real UI/API flow demonstrated in this run
 
-### Slice S0 - re-spot-checked now that the real routes replace the mock
+`GET /omnichannel/migration/jobs` (list) and the per-job read 500 with an unhandled
+`pydantic_core.ValidationError` ("Input should be a valid string [type=string_type,
+input_value=None...]") when a job row's `payload_json.connectionId` is JSON `null`.
+`MigrationJobItem.connectionId` (`schemas.py:1789`) is typed plain `str`, and
+`migration_service.py:1435`'s `_to_item` reads it with `payload.get("connectionId", "")` - a
+default that only fires when the KEY IS ABSENT, not when it is present-and-`None`. Every REAL
+create path is safe: `create_job` (`migration_service.py:1233`) always stores `payload.connectionId
+or ""`, so a genuine CSV-mode job (no connection at all) persists `""`, never `null` - confirmed
+by querying every job this run created (`psql ... payload_json->'connectionId'` on 7 rows: all
+either a real connection id or the empty string `""`, never JSON `null`). The 500 was reached only
+through a hand-built probe row (documented in the E2E README) that initially used a literal
+Python `None`; corrected to `""` (matching the real contract) once found, and the rest of the run
+used the corrected row. **Recommendation:** either type `MigrationJobItem.connectionId:
+Optional[str] = None` (matching the request-side `MigrationJobCreate.connectionId`) or change the
+read-side default to `payload.get("connectionId") or ""` (both, defensively, since the read
+already tolerates a missing key). Not a customer-reachable regression as shipped; a genuine
+defensive-coding gap that would 500 the whole list if any future write path (a data migration,
+a manual fix script, an older pre-`or ""` row) ever produces a literal `null`.
+
+### Defect 2 - FUNCTIONAL, reproducible via real UI clicks, affects migrated customer data
+
+**CSV-mode migration jobs silently ignore the CSV file's own `Lifecycle` column.** Every CSV-mode
+contact lands on the target workspace's INITIAL lifecycle stage, regardless of what its `Lifecycle`
+cell says - with ZERO blocker, warning, or report signal telling the operator this happened.
+
+**Repro (this tester's own run, and independently reproduced in the coder's own S6 evidence
+screenshot):**
+1. Upload a CSV with a `Lifecycle` column carrying two distinct, both-VALID target stage labels
+   (this run used "New Lead" and "Customer" - the fresh tenant's own default lifecycle stages,
+   confirmed via `GET /omnichannel/workspaces/{ws}/lifecycle`: `new_lead` (isInitial:true),
+   `hot_lead`, `payment`, `customer`, `cold_lead`).
+2. Run the migration (dry run then Start, or Start directly).
+3. Open Omnichannel > Contacts: EVERY migrated contact shows "New Lead" (the INITIAL stage),
+   including the row whose CSV cell read "Customer".
+4. Confirmed via API, not just the UI: `GET /omnichannel/contacts?search=Bob` ->
+   `lifecycle.key: "new_lead"` for the contact whose CSV `Lifecycle` value was "Customer".
+5. The coder's own `33-evidence/S6/08-contacts-list-migrated-1280.png` shows the IDENTICAL
+   symptom (Ada/Bob/Carl all "New Lead") despite the coder's own test-report prose claiming
+   differentiated "New Lead/Customer lifecycle" outcomes - the coder's own screenshot contradicts
+   their report text, meaning this was already reproducible in the coder's own evidence and went
+   unnoticed.
+
+**Root cause:** `MigrationWriter.write_contact` (`modules/omnichannel/services/migration_writer.py`,
+around line 628) resolves a contact's lifecycle stage ONLY via `self.lifecycle_map`, a dict built
+EXCLUSIVELY from the operator-submitted `payload.lifecycleMap` (API-mode's Lifecycle mapping
+section, `migration_service.py` around line 1953). CSV mode's setup form has NO Lifecycle mapping
+section at all (Channels/People/Lifecycle sections are deliberately hidden in CSV mode, confirmed
+live: `06-csv-mode-1280.png` shows only Source/Target/Review), so `payload.lifecycleMap` is always
+`[]` for a CSV job, `self.lifecycle_map` is always `{}`, and EVERY CSV contact with a non-empty
+`Lifecycle` cell fails the map lookup and falls through to
+`contact.lifecycle_status_id = mapped or self.initial_lifecycle_status_id` - the INITIAL stage.
+Separately, the phase-loop counter that WOULD have surfaced this as the existing
+"N contact(s) have no lifecycle mapping and will land with no lifecycle stage" blocker
+(`migration_service.py` around line 726, driven by a `lifecycle_unmapped` counter) is only
+incremented in the API-mode phase loop (around line 2265: `if outcome.lifecycle_unmapped:
+lifecycle_unmapped += 1`); the SEPARATE CSV-mode contacts loop (around line 555-625) never checks
+`outcome.lifecycle_unmapped` at all, so the blocker never fires for CSV jobs either.
+
+This contradicts two written contracts:
+- The plan's own section 5.6 CSV column table: `"Lifecycle -> lifecycle -> resolver matches an
+  existing stage by key or label"` - describing direct key/label resolution against the target
+  workspace's OWN stages, which is simply not implemented for CSV mode.
+- The runbook's own section 3 step 2: `"A lifecycle-mapping blocker (\"N contacts have no
+  lifecycle mapping\") means those contacts land with no lifecycle stage - map the label or accept
+  the gap."` - CSV-mode contacts do NOT land with "no lifecycle stage" (they land on the INITIAL
+  stage), and the blocker never appears for CSV jobs regardless of how many contacts' labels fail
+  to resolve.
+
+**No existing AC explicitly names this exact scenario** (AC-MIG-06's "lands with no lifecycle,
+reported as a blocker" language is scoped to the API-mode Lifecycle SearchSelect section; AC-MIG-
+46/47/48 require CSV mode to hand off contacts to the writer with the same idempotency and to
+state the media/identity/history blockers up front, which it does), so this is reported as an
+independent finding rather than a hard FAIL against a specific numbered AC - but it is a genuine,
+reproducible defect that will silently mis-stage every CSV-migrated contact whose source label
+differs from the target's initial stage, with no operator-visible signal. **Recommended fix
+options:** (a) give CSV mode a Lifecycle SearchSelect mapping section too (mirroring API mode,
+built from the distinct `Lifecycle` values observed in the uploaded file - the same "observed
+labels" pattern preflight already uses for API mode), or (b) implement the plan's own stated
+"resolver matches an existing stage by key or label" direct match for CSV mode and wire the
+existing `lifecycle_unmapped` counter into the CSV-mode contacts loop so an unresolvable label is
+at minimum reported as a blocker even without an operator mapping step.
+
+## Full-suite failure triage (backend)
+
+The full run reported 11 failures, all outside `omnichannel_respondio_migration*`:
+`test_omnichannel_media_backfill.py::test_media_sample_key_registered_and_drift_clean`,
+`test_storage_migration.py` (8 tests), `test_storage_migration_registry.py::
+test_no_unregistered_storage_key_columns`, `test_worker_module_boot.py::
+test_boot_module_hooks_registers_module_workflow_nodes`.
+
+**Classified as a pre-existing full-suite-order flake, not a plan-33 regression:**
+- All 3 non-`test_storage_migration.py` failures pass cleanly in isolation
+  (`pytest tests/test_storage_migration_registry.py::test_no_unregistered_storage_key_columns
+  tests/test_omnichannel_media_backfill.py::test_media_sample_key_registered_and_drift_clean
+  tests/test_worker_module_boot.py::test_boot_module_hooks_registers_module_workflow_nodes` ->
+  3 passed).
+- `test_storage_migration.py`'s full 25 tests pass cleanly in isolation (25 passed, 16.98s).
+- Re-running the EXACT alphabetical neighborhood these files sit in during the full suite
+  (`test_omnichannel_reports_builders.py` through `test_storage_migration_registry.py`, 28 files
+  including all 5 `test_omnichannel_respondio_migration*.py` files) together in one pytest
+  invocation reproduced **615 passed, 0 failed** - the failure does not reproduce even with the
+  plan-33 files present, which rules out a plan-33-introduced pollution source specifically.
+  The failure is therefore something upstream in the FULL 3700+-test run's execution order/shared
+  state (a pre-existing class already tracked for a different pair of files as **BL-SS-126**,
+  "Full-suite timer flakes... pass in isolation and fail 1-2 times per full vitest run under CPU
+  load" - the backend analogue of the same phenomenon). No `test_omnichannel_respondio_migration*`
+  test failed in the full run, in isolation, or in the 28-file reproduction.
+
+## Per-AC results
+
+### Slice S0 - Frontend on the mock service (re-spot-checked against the REAL backend, S6 wiring)
 
 | AC | Tag | Result | Evidence |
 |---|---|---|---|
-| AC-MIG-01 | [FE] | PASS | Menu entry present in all 3 arrays, gated `module:'omnichannel'` + `permission:'omnichannel_migration.read'` (unchanged from S0, `config/menu.config.tsx`); live-confirmed present for the read-only RBAC probe user (`14-readonly-user-list-1280.png`) and for the tenant-A admin. Absence-for-no-module/no-key unchanged from S0's own evidence (this slice did not touch menu gating). |
-| AC-MIG-02 | [FE] | PASS | Resource shell clone of Users, exact column set (Source/Target workspace/Mode/Status/Progress/Contacts/Messages/Failures/Started/Finished) - `02-list-empty-1280.png`, `17-list-375.png`. Search/sort/Filter-popover WIRED THIS SLICE (see gap note above) - `test_list_jobs_search_sort_and_filter`. `viewKey: 'omnichannel.migration.list'` unchanged from S0. |
-| AC-MIG-03 | [FE] | PASS | `ResourceForm`, ordered sections Source/Target/(Channels/People/Lifecycle when API mode has data)/(Scope, API mode only)/Review; shell's global Edit toggle + dirty-guard AlertDialog inherited, unchanged from S0. Live: `03`-`09`. |
-| AC-MIG-04 | [FE] | PASS | `channel-map-row.tsx` unchanged from S0/S1; forced "Skip this channel" logic unit-verified by the mock's own seeded scenario (`respondio-migration-service.mock.test.ts` "preflight() surfaces at least one source channel with no compatible target"); not independently re-clicked live this slice (API-mode preflight against a rejected token returns zero source channels, so there was nothing to map live - see the deferred note below). |
-| AC-MIG-05 | [FE] | PASS | `user-map-row.tsx` unchanged from S0/S1; email-match prefill logic unit-covered by the mock test suite. |
-| AC-MIG-06 | [FE] | PASS | `lifecycle-map-row.tsx` unchanged from S0/S1; "never offers to create a stage" - the options list is built ONLY from `preflight.targetStages`, no create affordance exists in the component. |
-| AC-MIG-07 | [FE] | PASS | Live-verified repeatedly this run: `Start migration` stays disabled until the EXACT current mapping has a fresh `done` dry run (`04`->`06`: disabled->enabled the instant the dry run settles); re-locks immediately on a changed upload (`09`, a re-uploaded file with a different key). |
-| AC-MIG-08 | [FE] | PASS (gap fixed this slice - see above) | Progress bar + Details + counts-report `DataGrid` + failure `DataGrid` + Download + Actions-menu-gated-Abort + Logs card, all live: `07`, `10`-`13`, `20`. |
-| AC-MIG-09 | [FE] | PASS | Mock still tunes every state (`respondio-migration-service.mock.test.ts`, 13 tests: pending/running/needs_review/done/failed/aborted, the `dry_run_required`/`migration_in_progress` ledger) - survives as the frontend test fixture per AC-MIG-56's own instruction, no longer the shipped binding. |
-| AC-MIG-10 | [FE] | PASS (after the white-label fix) | 375px non-clipped (`05`, `17`, `18`); every dropdown is `SearchSelect` (Method, connection, workspace, channel/user/team/lifecycle rows, CSV header-map rows); no instructional copy added this slice; "Foundryx" leak found + fixed (see above), re-verified `document.body.innerText.includes('Foundryx') === false`. |
+| AC-MIG-01 | [FE] | **PASS** | Menu entry present in all 3 arrays (`config/menu.config.tsx` greps at lines 383/551/715, tagged `module:'omnichannel'` + `permission:'omnichannel_migration.read'`). Live-confirmed: present for tenant A admin AND the read-only RBAC probe (`20-readonly-user-list-1280.png`); **absent entirely for tenant B before module install** (grepped the accessibility snapshot - zero hits for "Omnichannel"/"Migration"); present after install (`23-tenant-b-empty-list-1280.png`'s own sidebar). |
+| AC-MIG-02 | [FE] | **PASS** | Resource shell clone of Users; exact column set Source/Target workspace/Mode/Status/Progress/Contacts/Messages/Failures/Started/Finished - `01-migration-list-empty-1280.png`, `13-migration-list-populated-1280.png` / `14-...-375.png` (non-clipped, columns scroll horizontally at 375px). |
+| AC-MIG-03 | [FE] | **PASS** | `ResourceForm`, ordered Source/Target/(Channels/People/Lifecycle when API mode has data)/Scope/Review; shell Edit toggle + dirty-guard AlertDialog confirmed live (Cancel on a form with an uploaded file triggered "Discard changes?", not a bespoke confirm). `04-new-migration-form-1280.png` through `07`. |
+| AC-MIG-04 | [FE] | **DEFERRED (stated)** | Live API-mode preflight against the (necessarily invalid, no real token available on this machine) connection resolved `apiAvailable:false` with ZERO source channels, so there was nothing to map live and the "forced Skip when no compatible target" rule could not be re-clicked. Covered by `services/respondio-migration-service.mock.test.ts` ("preflight() surfaces at least one source channel with no compatible target") and `channel-map-row.tsx`'s own options-list construction (reviewed: built only from compatible targets + an explicit Skip option, no free-text path exists). |
+| AC-MIG-05 | [FE] | **DEFERRED (stated)**, same reason as AC-MIG-04 | `user-map-row.tsx` reviewed: options are `SearchSelect` over the tenant's real users only, prefilled by email match; no free-text id entry exists in the component. |
+| AC-MIG-06 | [FE] | **PASS (component-level), FUNCTIONAL GAP found downstream - see Defect 2** | `lifecycle-map-row.tsx` reviewed: options built only from `preflight.targetStages`, no create affordance. The FRONTEND component itself satisfies the AC; the BACKEND's actual unmapped-label handling (in the CSV path specifically, which this AC does not directly govern) has the bug described in Defect 2. |
+| AC-MIG-07 | [FE] | **PASS** | Live-verified repeatedly: `Start migration` stayed disabled through the API-mode blocked-preflight state (`05`), flipped disabled->enabled the instant a fresh CSV dry run settled `done` (`07`->`09`/`11`), and re-locked on a changed mapping (curl-verified: a `run` with an unmatched mapping hash -> `409 dry_run_required`). |
+| AC-MIG-08 | [FE] | **PASS** | Progress bar + Details + Counts-report `DataGrid` + Failures `DataGrid` + Download CSV + Actions-menu-gated Abort, all live: `11`, `17`, `18`, `19`. Logs card present (`"No log entries yet."` shown on every job this run, since none produced a real milestone line under eager-mode single-page CSV runs - matches the coder's own documented gap of the same shape). |
+| AC-MIG-09 | [FE] | **PASS (frontend fixture only, per AC-MIG-56)** | Mock survives only as `*.mock.test.ts` (vitest run confirms `respondio-migration-service.mock.test.ts` still passes, 13 tests); no page imports it (`grep -rn "S0 MOCK"` across `service_frontend/` returned nothing live-relevant). |
+| AC-MIG-10 | [FE] | **PASS** | 375px non-clipped verified on every new/changed surface this run touched (`08`, `10` [mis-captured scroll position, see README], `12`, `14`, `22`, `24`); every dropdown is a `SearchSelect`/keyboard-typed combobox; no instructional copy observed; `document.body.innerText.includes('Foundryx')` checked manually on the setup form subtitle - reads "Map a respond.io space onto a workspace" (the coder's own white-label fix, confirmed still in place). |
 
-### Slices S1-S5 - unchanged this slice, targeted suite re-run green
+### Slice S1 - Connection provider and preflight
 
-| AC range | Tag | Result | Evidence |
+| AC | Tag | Result | Evidence |
 |---|---|---|---|
-| AC-MIG-11..17 (S1) | [BE]/[T] | PASS | `tests/test_omnichannel_respondio_migration.py`, 19 tests - unchanged, re-run green this slice. Live-reconfirmed this slice: `test_connection_test_401_reports_token_rejected_no_token_leak`'s exact assertion is what the REAL vendor call reproduced live (`01-integration-test-401-1280.png`, `03-api-mode-preflight-blocker-1280.png`). |
-| AC-MIG-18..29 (S2) | [BE]/[T] | PASS | `tests/test_omnichannel_respondio_migration_jobs.py`, 25 tests (24 from S2 + 1 new this slice, `test_gateway_contract_files_carry_no_migration_trace` moved here as the AC-MIG-55 home) - unchanged core logic, re-run green. Live-reconfirmed this slice: contacts-only dry run then real run (`06`, `07`), `migration_in_progress`/`dry_run_required` implicitly exercised by the Start-disabled-until-dry-run gate holding throughout. |
-| AC-MIG-30..38 (S3) | [BE]/[T] | PASS | `tests/test_omnichannel_respondio_migration_s3.py`, 17 tests - unchanged, re-run green. Not live-reconfirmed this slice (no valid respond.io token on this machine - identities/messages never run for a real API-mode job here; CSV mode does not exercise this phase at all, AC-MIG-48's own point). |
-| AC-MIG-39..45 (S4) | [BE]/[T] | PASS | `tests/test_omnichannel_respondio_migration_s4.py`, 15 tests - unchanged, re-run green. Same live-reconfirmation gap as S3 (no valid token). |
-| AC-MIG-46..49 (S5) | [BE]/[T] | PASS | `tests/test_omnichannel_respondio_migration_s5.py`, 19 tests - unchanged, re-run green. Live-reconfirmed THIS slice end to end: CSV upload (`04`), header map + alias fallback (`04` explicit map, `09` alias-fallback run), the three CSV-mode blockers stated up front on both the dry run and the real run (`06`, `07`), CSV-mode idempotent re-run (`09`). |
+| AC-MIG-11 | [BE] | **PASS** | `respond.io` provider present and selectable in the live Integrations "Connect integration" provider combobox (`02-integration-form-filled-1280.png`); fields `spaceLabel`/`timezone`/`requestsPerSecond` + secret `apiToken` rendered exactly as declared. |
+| AC-MIG-12 | [BE] | **PASS (pytest, not independently re-derived this run)** | `apiToken` never echoed on any read (spot-checked: the connection detail page never rendered the token value after Create). Blank-keeps-value and partial-merge behavior taken on trust from `tests/test_omnichannel_respondio_migration.py`'s own coverage (unchanged this slice, full-suite green). |
+| AC-MIG-13 | [BE] | **PASS** | Live `Test connection` against the REAL `https://api.respond.io/v2/space/channel` with a dummy token: genuine `401` mapped to "respond.io rejected this access token." - no vendor traceback/DSN/token fragment anywhere in the toast or (checked) the console - `03-integration-test-401-1280.png`. |
+| AC-MIG-14 | [BE] | **PASS** | Preflight resolved `apiAvailable:false` + a `warnings` array surfaced inline on the setup form's Source card (S6's own fix, live-reconfirmed); zero writes (no contact/job/connection row appeared from the preflight call alone, confirmed via the job list staying empty before the first `New migration` submit). |
+| AC-MIG-15 | [BE] | **PASS (pytest only)** | Not independently re-derivable live without a real respond.io token generating real rate-limit headers; taken on trust from the unchanged, full-suite-green `test_omnichannel_respondio_migration.py` throttle/backoff tests. |
+| AC-MIG-16 | [BE] | **PASS** | The live 401 mapped to a clean job/connection-test failure, never an unhandled 500 (confirmed via `agent-browser errors` returning empty and the toast showing the mapped message, not a stack trace). |
+| AC-MIG-17 | [T] | **PASS** | `test_omnichannel_respondio_migration.py`, unchanged, ran clean in the full suite this run. |
+
+### Slice S2 - Migration job, contacts phase, dry run
+
+| AC | Tag | Result | Evidence |
+|---|---|---|---|
+| AC-MIG-18 | [BE] | **PASS** | `app_omnichannel.migration_refs` present and functioning (re-run correctly resolved `0 would create / 3 would update` via a ref hit, not a fresh phone/email match - confirmed by `contacts.migrated_from`/re-run idempotency both working). Alembic revision is currently `0016_omni_migration_refs` with a GAP at 0013-0015 (0012 exists, 0016 next) - **the plan's own "Merge-renumber rule" (section 3) explicitly reserves this renumbering for whoever merges to `main`; not a defect in this slice, but a flagged pre-merge TODO** confirmed still outstanding. |
+| AC-MIG-19 | [BE] | **PASS** | Every job created this run went through `POST /omnichannel/migration/jobs` -> a real `background_jobs` row of type `omnichannel.respondio_migration` (confirmed via `psql`: 7 rows this run, all that type). |
+| AC-MIG-20 | [BE] | **PASS** | curl-verified directly: a `run`-mode create against a mapping with no matching prior dry run -> `409 {"reason":"dry_run_required"}`. Frontend Start-disabled state matched exactly (never enabled until the SAME mapping's dry run settled `done`). |
+| AC-MIG-21 | [BE] | **PASS** | curl-verified directly: flipped an existing job to `status=running` for the workspace, then a second `POST /jobs` -> `409 {"reason":"migration_in_progress"}`; reverted. |
+| AC-MIG-22..26 | [BE] | **PASS (pytest for the API-mode-specific mechanics; live-reconfirmed for the CSV-mode contacts phase)** | Contact creation, phone/email match ladder, custom fields (N/A in CSV mode - not exercised), tags (N/A in CSV mode), assignee (N/A in CSV mode - no assignee column in this migration tool's CSV path) all exercised live via the 3-row and re-run CSV jobs; cursor-walk/crash-resume specifically is API-mode-only (`GET /contact/list` pagination) and not reachable without a real token - pytest-only, unchanged, full-suite green. |
+| AC-MIG-27 | [BE] | **PASS (pytest, not independently re-derived)** | Dry-run write-absence taken on trust from the unchanged `test_omnichannel_respondio_migration_jobs.py` savepoint-fixture tests (full-suite green); indirectly corroborated live by the dry run NEVER changing the Contacts list count before Start was clicked. |
+| AC-MIG-28 | [BE] | **PASS (live for the cancel-route + UI transition; cursor-resume-after-abort is pytest-only, eager-mode makes it unobservable live)** | Abort on the hand-inserted `running` probe left it `Aborted` with `40/100 processed` intact - `19-aborted-job-1280.png`. Genuine crash-mid-flight resume-from-cursor: `CELERY_TASK_ALWAYS_EAGER=true` runs a job's whole handler inline before the creating request returns, so there is no way to interrupt a REAL run mid-page from a browser click (same documented limitation as the coder's own S6 run) - covered by `test_cooperative_abort_stops_before_next_page_and_resume_continues` (unchanged, full-suite green). |
+| AC-MIG-29 | [T] | **PASS** | `tests/test_omnichannel_respondio_migration_jobs.py`, ran clean in the full suite. |
+
+### Slice S3 - Channel identities and message history (API mode only - not reachable live, no valid token)
+
+| AC | Tag | Result | Evidence |
+|---|---|---|---|
+| AC-MIG-30..37 | [BE] | **DEFERRED (stated) - pytest only** | This machine has no valid respond.io Developer API token, so no API-mode job ever reaches the identities/messages phases (CSV mode explicitly never touches this code path either, AC-MIG-48's own point). Covered by `tests/test_omnichannel_respondio_migration_s3.py` (17 tests, unchanged, ran clean in the full suite this run): `test_identity_deriver_whatsapp_prefers_meta_then_contact_phone_then_none`, `test_identity_written_for_mapped_whatsapp_channel`, `test_underivable_identity_never_fabricates_and_message_channel_less_report` (identity derivation + skip rule); `test_timestamp_explicit_branch_uses_min_of_status_timestamps`, `test_timestamp_interpolated_branch_between_bracketing_anchors`, `test_timestamp_fallback_branch_when_no_bracket_exists`, `test_timestamp_one_sided_anchor_is_not_a_bracket_falls_back` (timestamp inference); `test_sender_mapping_user_mapped_and_every_other_source_records_sender_source`, `test_sender_user_source_unmapped_user_id_records_sender_source_too` (sender mapping, all six `sender.source` values); `test_message_type_map_every_branch_and_unmapped` (every message-type branch); `test_delivery_status_map_last_element_and_no_status_is_null` (delivery status); `test_per_contact_recompute_after_message_phase` (the per-contact recompute maths); `test_no_realtime_publish_or_entity_event_during_identities_or_messages`, `test_message_never_writes_external_message_id_and_channel_less_when_unmapped` (the no-publish/no-event/no-webhook invariant). |
+| AC-MIG-38 | [T] | **PASS** | Same file, ran clean in the full suite. |
+
+### Slice S4 - Media, derived events, quick replies (API mode only - not reachable live)
+
+| AC | Tag | Result | Evidence |
+|---|---|---|---|
+| AC-MIG-39..44 | [BE] | **DEFERRED (stated) - pytest only**, same reason as S3 | `tests/test_omnichannel_respondio_migration_s4.py` (15 tests, unchanged, ran clean): `test_media_fetched_sniffed_capped_and_stored_media_key_convention`, `test_media_oversize_skip_and_report_message_kept`, `test_media_sniff_mismatch_rejected`, `test_media_404_skip_and_report_never_aborts_job` (media cap/sniff/skip-report); `test_events_derivation_matrix`, `test_events_no_fan_out_no_workflow_trigger`, `test_a9_report_service_reads_migrated_events_on_original_dates` (derived events, original-date reporting - AC-MIG-43); `test_quick_replies_created_from_csv_and_idempotent_rerun`, `test_quick_reply_matches_existing_live_row_case_insensitive_never_duplicates` (quick-reply de-dup); `test_messages_since_floor_skips_older_messages_and_counts_them` (`messagesSince` date floor). |
+| AC-MIG-45 | [T] | **PASS** | Same file, ran clean in the full suite. |
+
+### Slice S5 - CSV fallback + failure export
+
+| AC | Tag | Result | Evidence |
+|---|---|---|---|
+| AC-MIG-46 | [BE] | **PASS** | Live: CSV mode's Source card offers the two upload dropzones (Contacts CSV required, Quick replies CSV optional) - `06-csv-mode-1280.png`; the contacts CSV path is handled by this tool's own writer per D-A6-18, NOT re-implementing the contacts importer's parsing (confirmed by code review: `read_rows` + this module's own header-map/alias logic, not a call into `ImporterDef("omnichannel_contacts")`). |
+| AC-MIG-47 | [BE] | **PASS for contacts-CSV mechanics (header map, sniffing, `migration_refs` idempotency); FUNCTIONAL GAP for the Lifecycle column specifically - Defect 2** | `read_rows`-backed upload (curl-verified 201 + row count + headers), operator header map honoured live (`07`), alias-fallback confirmed live on re-run (`15`), `migration_refs` idempotency confirmed live (0 creates on re-run, contact count stayed 3 via API). The Lifecycle column specifically does not resolve correctly - see Defect 2. |
+| AC-MIG-48 | [BE] | **PASS** | All THREE CSV-mode blockers (no message history, no channel identities, no media) stated up front on EVERY CSV dry run and real run this created, confirmed via `document.body.innerText` on `09`(text)/`11`/`15`/`16` and the raw `result_json.report.blockers` via `psql`. |
+| AC-MIG-49 | [T] | **PASS** | `tests/test_omnichannel_respondio_migration_s5.py` (19 tests, unchanged, ran clean in the full suite, including `test_failure_csv_round_trip_formula_guarded_and_empty_when_no_failures` - the exact `=SUM(...)` guard this run independently re-verified live via curl on a real download). |
 
 ### Cross-cutting - security, tenancy, permissions
 
 | AC | Tag | Result | Evidence |
 |---|---|---|---|
-| AC-MIG-50 | [BE] | PASS | `omnichannel_migration.read`/`.manage` CSV rows (S1), reads gated `.read` writes gated `.manage` throughout the router (unchanged); manifest version bump delivers the grant sweep to already-provisioned tenants (unchanged, S1). Live-reconfirmed this slice: the RBAC probe role/user (only `.read`) can list but gets `403` on create (`14`, `15`, plus a direct API probe: `GET /jobs` 200, `POST /jobs` 403). |
-| AC-MIG-51 | [BE] | PASS | Every route/service method resolves tenant from the JWT (never client input); `channelMap`/`userMap`/lifecycle re-validated at USE time (`_resolve_channel_map`/`_resolve_user_map`/`_validate_mapping`, unchanged S2). |
-| AC-MIG-52 | [BE] | PASS | `test_connection_resolution_is_tenant_scoped`, `test_preflight_unknown_connection_id_is_uniform_404` (S1, unchanged); live-reconfirmed this slice: tenant B (fresh, unrelated) never sees tenant A's connection or jobs (`16-tenant-b-empty-list-1280.png`). |
-| AC-MIG-53 | [BE] | PASS | `test_failures_csv_download_authed_private_no_store` (S2, unchanged) + S5's storage-backed version; live-reconfirmed this slice: `Download CSV` fires a real authed `GET .../failures.csv` (`200`), never a bare `<a href>` (`11-failures-download-clicked-1280.png`). |
-| AC-MIG-54 | [BE] | PASS | Not independently re-verified this slice (no module uninstall exercised in this lane's E2E run) - covered by the module's existing `uninstall_tenant` test suite (unchanged, out of this slice's touched-file set). |
-| AC-MIG-55 | [BE]/[T] | PASS | **New guard test this slice** - `test_gateway_contract_files_carry_no_migration_trace` (a content guard over `routers/api_v1.py` + the consumer guide, not a `git diff`, which would be flaky across a rebase/merge). `git diff` for this slice touches neither file (confirmed by inspection of the diff this coder produced). |
+| AC-MIG-50 | [BE] | **PASS** | `omnichannel_migration.read`/`.manage` CSV rows present (`modules/omnichannel/permissions/permissions.csv:28-29`); reads/.read, writes/.manage confirmed live via the RBAC probe: `GET /jobs` -> 200 as read-only, `POST /jobs` -> `403 {"detail":"Missing permission: omnichannel_migration.manage"}`. Manifest version genuinely bumped this slice (`0.6.0 -> 0.7.0`, confirmed via `git log -p` on `manifest.json`), delivering the grant sweep to already-provisioned tenants via `update_tenant` (taken on trust from the unchanged, full-suite-green module-install test suite - not independently re-derived by installing onto a PRE-EXISTING tenant with an older stamp, since both this run's tenants were provisioned fresh with the module already at 0.7.0). |
+| AC-MIG-51 | [BE] | **PASS** | Every route this run exercised resolved tenant from the JWT; re-validated an unrelated tenant's connection id at USE time (`GET .../preflight?connectionId=<tenant-A's id>` from tenant B's own token -> `404 "Connection not found."`, WITH a valid `workspaceId` supplied so this genuinely reached the tenant-scope check rather than tripping the required-param validator first, which was this run's own first attempt and is documented as a correction in the E2E README). |
+| AC-MIG-52 | [BE] | **PASS** | Tenant B: cannot read tenant A's connection (via preflight, 404), cannot reference it (never offered in tenant B's own connection picker, which is itself tenant-scoped by the existing Integrations list), cannot observe its existence (uniform 404 shape confirmed identical to a genuinely-missing id: `{"detail":"Connection not found."}` both times). |
+| AC-MIG-53 | [BE] | **PASS** | curl-verified directly on the probe job's failures.csv: `200`, `content-disposition: attachment`, `cache-control: private, no-store`, `content-security-policy: default-src 'none'; sandbox`, `x-content-type-options: nosniff`; gated by `omnichannel_migration.read` (the RBAC read-only probe user's own session could reach the job detail page, confirming the SAME permission gate the route itself requires); never a bearer-less link (the Download CSV control is a `<button>` dispatching an authed `fetch`, confirmed via `eval`, not a bare `<a href>`). |
+| AC-MIG-54 | [BE] | **PASS (pytest, not independently re-derived)** | Not exercised live this run (no module uninstall performed on either test tenant); taken on trust from the unchanged, full-suite-green module `uninstall_tenant` test suite. |
+| AC-MIG-55 | [BE]/[T] | **PASS** | `git diff main...HEAD` for this branch (spot-checked via `git log --stat` across all 8 slice commits) touches neither `modules/omnichannel/routers/api_v1.py` nor any `Rio*` schema nor `documentation/omnichannel/consumer-integration-guide.md`; the coder's own guard test `test_gateway_contract_files_carry_no_migration_trace` ran clean in the full suite this run. |
 
-### Slice S6 - wire, evidence, runbook, report
+### Slice S6 - Wire, evidence, runbook, report
 
 | AC | Tag | Result | Evidence |
 |---|---|---|---|
-| AC-MIG-56 | [FE] | PASS | Every mock call swapped to the real `api-client` call at the service boundary (`respondio-migration-service.ts` now binds `realRespondioMigrationService`); `uploadCsv`/`cancelJob` added to the interface + real impl; the mock survives ONLY as `*.mock.test.ts`'s fixture, imported by no page. `grep -rn "S0 MOCK"` is empty (the one remaining hit, a stale doc comment in `types/integration.ts`, was cleaned up too). |
-| AC-MIG-57 | [FE] | PASS | Detail page polls every 3s while `MIGRATION_JOB_IN_FLIGHT`, stops on a terminal status (unchanged `[jobId]/page.tsx` logic); Abort offered ONLY while in flight (`use-migration-actions.tsx isVisible`), takes effect immediately - the dedicated cancel route is a synchronous commit, confirmed live within the SAME poll cycle (`12`->`13`). |
-| AC-MIG-58 | [T] | PASS | Setup form schema (`migration-schema.test.ts`, 9 tests: required workspace, conditional connection/contactsCsvKey by source, channel-map completeness, hash stability INCLUDING the new CSV fields); Start-disabled-until-dry-run (`use-migration-form.test.tsx`, 10 tests, incl. the CSV-mapping-hash-changes-on-reupload case); status badge registry (`migration-status.test.ts`, unchanged, 2 tests); failure-table renderer (`migration-failures-table.test.tsx`, unchanged, 2 tests); `useCan` gating of Start/Abort (`use-migration-actions.test.tsx`, 7 NEW tests - permission tag, visibility matrix, no-deferred/no-confirm assertion, real cancel-route call + 409 mapping) + every mock service state (`respondio-migration-service.mock.test.ts`, 13 tests, unchanged). New this slice: `csv-upload-field.test.tsx` (4), `csv-header-map-section.test.tsx` (3), `respondio-migration-service.real.test.ts` (7, pins the exact routes/verbs incl. the dedicated cancel route), `migration-report-card.test.tsx` +1 (the `messagesSkippedBeforeFloor` note). **61 tests total, 10 files, all passing.** |
-| AC-MIG-59 | [E2E] | PASS | Recorded `agent-browser --session s33c2` run, real clicks from `/` (one documented exception: the initial tenant-subdomain login URL, the same S0-evidence-README convention), 1280 AND 375, dedicated timestamped tenant (`p33-mig-20260907t042326z`): sidebar to Omnichannel to Migration, New migration, respond.io connection with a dummy token, Test (real vendor 401), API-mode preflight blocker + Start disabled, switch to CSV mode, upload a 3-row CSV (`s33-contacts-20260907t042326z.csv`), map one column explicitly, Run dry run, counts report + 3 CSV blockers, Start migration (enabled only after the dry run), progress to Done, Contacts list shows the 3 migrated rows (also confirmed via a tenant-scoped API read: `total: 3`). Evidence `33-evidence/S6/01`-`09`, `19`-`20`, README with every setup call verbatim. **DEFERRED (stated, not silently missing):** the API-mode "migrated thread in the Inbox, no unread badge" clause needs a valid respond.io token this machine does not have - covered by S3/S4 pytest instead (cited above). |
-| AC-MIG-60 | [E2E] | PASS | Same run: re-running the identical CSV mapping reports `3 fetched / 0 would create / 3 would update` (`09`) and the persisted contact count stayed `3` after the matching real run (API-verified, not just the report); Abort on a fresh in-flight job (a hand-inserted `running` probe row, disclosed - this lane's `CELERY_TASK_ALWAYS_EAGER=true` makes a real job finish before the creating request even returns, so there is no naturally-observable in-flight window) leaves it `Aborted` with `40/100 processed` intact (`12`->`13`); a role holding only `omnichannel_migration.read` sees no Start control (no "New migration" button, no Actions column) and the API independently refuses `POST .../jobs` with `403` (`14`, `15`); a second freshly-provisioned tenant (`p33-migb-20260907t045000z`) sees `No data available` (`16`). **DEFERRED (stated):** genuine cursor-resume-after-a-crash-mid-flight is structurally unobservable under eager-mode execution from a browser click; covered by `test_cooperative_abort_stops_before_next_page_and_resume_continues`. |
-| AC-MIG-61 | [T] | PASS | This report; `documentation/omnichannel/respondio-cutover-runbook.md` shipped this slice (prerequisites, the WABA number move, dry-run-then-run procedure, CSV-mode limits, rollback notes); deferred items registered in `documentation/backlogs/backlog.md` as **BL-SS-129** (no real backend route for Retry/Complete-anyway on this job type - both dropped from the UI this slice rather than wired to the wrong backend) and **BL-SS-130** (list search/sort/filter is in-memory, bounded but not SQL-level). |
+| AC-MIG-56 | [FE] | **PASS** | Every surface this run touched rendered REAL data from the live backend (connections, jobs, contacts, RBAC state) - no mock-service artifact observed anywhere (no stubbed/static content, every count/status matched independently-queried API state). |
+| AC-MIG-57 | [FE] | **PASS** | The Done job's detail page showed final state immediately (eager-mode jobs finish before the creating request returns, so "polling while in flight" itself is not independently observable live this run beyond the coder's own S6 polling-code review); Abort took effect within the same interaction (`18`->`19`, no intermediate poll needed since the cancel route is a synchronous commit). |
+| AC-MIG-58 | [T] | **PASS** | Full `npm test` this run: 335 files / 2548 tests, all green, including every migration-specific file the coder's S6 report names (`migration-schema.test.ts`, `use-migration-form.test.tsx`, `migration-status.test.ts`, `migration-failures-table.test.tsx`, `use-migration-actions.test.tsx`, `respondio-migration-service.mock.test.ts`, `csv-upload-field.test.tsx`, `csv-header-map-section.test.tsx`, `respondio-migration-service.real.test.ts`, `migration-report-card.test.tsx`). |
+| AC-MIG-59 | [E2E] | **PASS** - see the dedicated User Story table below | `33-evidence/E2E/01` through `19`, `25`; README with every setup call verbatim |
+| AC-MIG-60 | [E2E] | **PASS** - see the dedicated User Story table below | Same evidence dir |
+| AC-MIG-61 | [T] | **PASS** | This report (replacing the coder's own); `documentation/omnichannel/respondio-cutover-runbook.md` verified present and complete (prerequisites, WABA number move ceremony, dry-run-then-run procedure, CSV-mode limits, rollback notes, out-of-scope statement); this run's own new findings (Defect 1, Defect 2, the alembic renumber-gap flag) registered below rather than silently dropped. |
 
-## Decisions this slice took where the plan/UAC were silent (also inline as code comments)
+## `[E2E]` AC-MIG-59 / AC-MIG-60 - explicit User Story format
 
-- **Abort is a plain immediate `run`, not a `DeferredActionButton`.** The S0 registry had
-  wired Abort to the generic `deferred: {actionKey:'jobs.abort'}` seam; that backend handler
-  (`app/deferred_actions/handlers.py _jobs_abort`) hardcodes `StorageMigrationService(db)
-  .abort(...)` - a DIFFERENT job type entirely, and every generic core `/jobs/{id}/{abort,
-  retry,complete}` route (`app/api/v1/jobs.py`) is the same way. Abort now calls the
-  DEDICATED `POST /omnichannel/migration/jobs/{id}/cancel` route directly via a plain `run`
-  handler (no confirm dialog either - not one of PRINCIPLES.md's named typed-confirm
-  carve-outs, and the dedicated route is a direct, no-undo commit, so a grace-window
-  `DeferredActionButton` would falsely promise a window that does not exist). Retry and
-  Complete-anyway are DROPPED entirely (no backend route exists for either on this job type;
-  `needs_review` is structurally unreachable from the real handler) - **BL-SS-129**.
-- **`MigrationService.list_jobs` gained search/sort/the Filter popover this slice** (S2 had
-  shipped pagination + the status segment only) - resolved in Python over the tenant's job
-  set rather than a SQL clause, because `spaceLabel`/`workspaceName`/`mode` live inside
-  `payload_json` with no native column, and a portable cross-dialect JSON-path clause (this
-  suite runs on in-memory SQLite, production on Postgres) was not worth building for a list
-  bounded by `migration_in_progress`'s own one-non-terminal-job-per-workspace guard -
-  **BL-SS-130** if that assumption ever breaks.
-- **CSV mode's Source card now surfaces `preflight.warnings` inline** (a genuine S0/S1 gap:
-  the field existed on the wire since S1 but nothing rendered it) - a `Blocked`/`Notice`
-  badge list under the connection picker, visible the moment preflight resolves
-  `apiAvailable:false` or returns any warning.
-- **The white-label subtitle fix** ("...onto a Foundryx workspace" -> "...onto a workspace")
-  is a one-line string change with no behavioural effect - included in this commit because
-  this slice's own live E2E run is what caught it.
-- **The milestone-log wiring** (`MigrationJobLogEntry` schema, `MigrationJobItem.logs`,
-  the detail page's `Logs` card) closes AC-MIG-08's own "the milestone log" clause, which had
-  never been implemented past `JobService.log()` writing `logs_json` - a straight omission
-  from S0 through S5, not a regression this slice introduced.
-- **CSV-mode header-map keys left "Not mapped" fall back to the backend's own
-  case-insensitive alias guess** (`_HEADER_ALIASES`) - the setup form does not pre-fill an
-  alias guess client-side (kept simple: what the operator sees mapped is exactly what they
-  chose; the backend's own fallback still applies underneath, exercised live in the re-run
-  scenario, AC-MIG-60's evidence item 7).
+| User Story | Scenario | Precondition | Steps | Expected Result | Actual Result | Remarks |
+|---|---|---|---|---|---|---|
+| **AC-MIG-59** | Operator runs a first-time CSV-mode migration end to end | Fresh tenant `t33-mig-20260907t061224z`, Omnichannel installed via real clicks, a respond.io connection created with a dummy token | 1. Sidebar: Omnichannel > Settings > Migration<br>2. New migration<br>3. Pick connection, Test (real 401)<br>4. Switch Method to CSV export<br>5. Upload a timestamped 3-row CSV<br>6. Map "First name" explicitly, leave rest "Not mapped"<br>7. Run dry run<br>8. Start migration<br>9. Sidebar: Omnichannel > Contacts | Dry run reports `3 fetched / 3 would create`, 3 CSV blockers stated; Start enabled only after dry run; real run reaches Done `3/3`; Contacts list shows all 3 migrated rows | Exactly as expected for counts/blockers/gating/Done state and Contacts presence. **Deviation found:** all 3 contacts' Lifecycle stage is WRONG (all "New Lead" instead of their CSV-specified values) - Defect 2 | **PASS** on every literal AC-MIG-59 clause (the AC does not itself assert lifecycle correctness); Defect 2 filed separately since it is a real gap a customer migration would hit |
+| **AC-MIG-60** | Re-run idempotency, abort, RBAC, tenant isolation all hold on the same migrated data | Same tenant, job from AC-MIG-59 already Done | 1. New migration > CSV mode > re-upload the SAME file, leave headers unmapped (alias fallback)<br>2. Dry run<br>3. Start<br>4. Confirm contact count via API<br>5. Open a hand-built `running` probe job, Actions > Abort<br>6. Log in as a `.read`-only user, attempt New migration + a raw POST<br>7. Provision tenant B, install Omnichannel, open Migration | Re-run reports `0 would create / 3 would update`; contact count stays 3; Abort leaves the job `Aborted` with partial counts intact; read-only user sees no Start control and the API 403s; tenant B sees zero of tenant A's jobs | Exactly as expected on every point; additionally curl-verified the two 409 guards (`dry_run_required`, `migration_in_progress`) and the uniform cross-tenant 404 shape (job id, connection id via preflight, failures.csv) | **PASS** |
 
-## Deferred items (registered in `documentation/backlogs/backlog.md`)
+## Setup calls outside the UI (verbatim, also in `33-evidence/E2E/README.md`)
 
-| ID | Title | Priority |
-|---|---|---|
-| BL-SS-129 | Migration Retry/Complete-anyway have no real backend route for this job type; build a dedicated `POST .../jobs/{id}/retry` if in-place retry is needed | Medium |
-| BL-SS-130 | Migration list search/sort/filter runs in Python, not SQL - revisit if job volume grows (ties to BL-SS-121, incremental top-up runs) | Low |
+See `documentation/plans/sprint-4/33-evidence/E2E/README.md` section "Setup calls outside the UI"
+for the full verbatim list (tenant provisioning via the operator API, the RBAC probe role/user,
+the two hand-inserted probe `background_jobs` rows and why eager-mode execution makes them
+necessary, the 2500-row CSV cap file, the PNG-named-.csv file, and the three curl-only guard
+checks). Not repeated here to avoid drift between the two documents; that file is the source of
+truth for exact request bodies.
 
-Both ids continue from this branch's `backlog.md` current max (`BL-SS-128`); the plan
-document's own §8 table reserved `BL-SS-120..129`, which had already collided with plans
-28/29's use of the same range in the merged `main` history - **flag both ids for renumbering
-at merge** per the plan's own merge-renumber convention.
+## What could not be verified (deferred, stated, not silently missing)
 
-## Full-suite runs (NOT run by this coder - the tester's next step per the brief)
+- **API-mode message-history migration into a live Inbox thread** (the identities/messages/media/
+  events phases) - this machine holds no valid respond.io Developer API token, so no API-mode job
+  can ever progress past the (correctly-blocked) preflight step. Covered entirely by
+  `tests/test_omnichannel_respondio_migration_s3.py` / `_s4.py` (cited by test name above), which
+  ran clean in the full suite this run.
+- **Genuine crash-mid-flight cursor resume** - `CELERY_TASK_ALWAYS_EAGER=true` runs a job's whole
+  handler inline before the creating request returns; there is no way to interrupt a REAL run
+  mid-page from a browser click in this lane. Covered by
+  `test_cooperative_abort_stops_before_next_page_and_resume_continues` (ran clean).
+- **AC-MIG-04/05's live "forced Skip" / "email-prefill" re-click** - the (necessarily invalid)
+  connection's preflight returns zero source channels/users, so there is nothing to click through
+  live; covered by the mock test suite and direct component review.
+- **AC-MIG-15's rate-limit header handling, AC-MIG-27's savepoint-rollback write-absence,
+  AC-MIG-54's uninstall sweep** - taken on trust from the unchanged, full-suite-green pytest
+  coverage rather than independently re-derived by this run (no real rate-limited API call, no
+  module uninstall performed on either test tenant this run).
+- **AC-MIG-50's manifest-version grant sweep for an ALREADY-provisioned tenant** - both this run's
+  tenants were provisioned fresh with the module already at its current version; the "existing
+  tenant silently gets the new permission via `update_tenant`" path itself was not independently
+  re-derived (taken on trust from the unchanged module-install test suite).
 
-This slice ran ONLY the targeted backend suite (`-k "respondio_migration"`, 95 passed) and the
-targeted frontend suite (migration files, 61 passed), per the S6 brief's explicit instruction
-("No full backend suite - the tester runs it next"). The full `pytest -q` / `npx vitest run`
-sweep, plus any residual cross-file interaction this coder's targeted runs cannot see, is the
-tester's own gate.
+## Independent findings beyond the AC checklist
+
+1. **Defect 1** and **Defect 2** above (full root-cause + repro in their own sections).
+2. **Alembic revision gap** (`0012` then `0016`, missing `0013`-`0015`) - explicitly a pre-merge
+   TODO per the plan's own "Merge-renumber rule" (section 3), not a defect in this slice; flagged
+   here so it is not lost before merge.
+3. Screenshots `09`/`10` in the evidence dir were captured at the pre-scroll viewport position
+   (identical to `07`/`08`) rather than the scrolled-down report section - the report CONTENT was
+   independently confirmed correct via `document.body.innerText` at the time and is visually
+   confirmed via `11` (the detail page's own Counts report card, same numbers) instead. Disclosed
+   rather than silently re-labeled.
+
+## Backlog registration
+
+Both defects are new findings from this independent run, not previously registered. Recommend the
+following additions to `documentation/backlogs/backlog.md` (left to the coder/reviewer to register
+formally, per this repo's convention that the tester reports and the coder/reviewer backlogs):
+
+- **CSV-mode migration jobs silently ignore the CSV `Lifecycle` column** (Defect 2 above) - every
+  CSV-migrated contact lands on the target workspace's INITIAL lifecycle stage regardless of its
+  CSV value, with no blocker/report signal. Priority: **Medium-High** (silently wrong customer
+  data on every CSV-mode migration that specifies a non-initial lifecycle stage). Source: this
+  report.
+- **`MigrationJobItem.connectionId` is typed non-Optional `str` while the read path's
+  `payload.get("connectionId", "")` does not coerce a stored `None`** (Defect 1 above) - a latent
+  500 landmine for any future write path that stores a literal JSON `null`. Priority: **Low**
+  (not reachable via any current real write path). Source: this report.
+
+## 9. Appendix - the coder's own S6 per-slice notes (kept for reference)
+
+The coder's own `33-omnichannel-respondio-migration-test-report.md` (now replaced by this file)
+recorded targeted-suite counts per slice (S1: 19, S2+S6: 25, S3: 17, S4: 15, S5: 19 - matching
+this run's full-suite file-by-file breakdown exactly), the two gaps they found and fixed in S6
+itself (the white-label subtitle leak, the missing milestone-log wiring), and the decisions taken
+where the plan/UAC were silent (Abort as a plain immediate `run` rather than a `DeferredAction`,
+in-Python list search/sort/filter rather than a SQL clause, CSV mode's alias-fallback convention).
+None of that detail is repeated here; see the coder's original evidence at
+`documentation/plans/sprint-4/33-evidence/S0/README.md` and `.../S6/README.md` for the narrative
+of how each slice was built. This report's own defects (1 and 2) were not present in, or were
+mis-characterized by, that original report - see the "Defects found" section above for exactly
+how each diverges from what the coder's own document claimed.
