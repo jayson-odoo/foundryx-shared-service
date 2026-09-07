@@ -325,11 +325,12 @@
   the exact same exception a purely sequential loop always raised;
   `SyncService._auto_push_upserts`'s existing generic `except Exception` handler (`"The push
   failed before the consumer resolved it"`) needed no changes at all. Concurrency 1 is
-  byte-identical to before this round (same request order, one POST in flight). Ops note:
-  default stays 1 - an operator raises `AUTOCOUNT_SINK_CONCURRENCY` only once the RECEIVING side
-  has confirmed it can take concurrent batches (a per-connection-serialised commit or an
-  aggressive rate limit on their end would turn "faster" into "more 429s/5xxs", the opposite of
-  the intent).
+  byte-identical to before this round (same request order, one POST in flight). Ops note
+  (superseded twice - see `fix/push-marks-per-chunk` and `feat/sink-concurrency-ui` below): the
+  code default (`app/config.py`) stays 1 for local dev; `AUTOCOUNT_SINK_CONCURRENCY` (env,
+  `docker-compose.yml`) is now the DEPLOYED default and ceiling, and a Sorento connection may
+  override it downward or upward within 1..4 from its own edit form for a specific tenant,
+  without a redeploy.
 
 **Review round 7 amendments (reviewer polish, no blocker):**
 - **Pool headroom for two concurrent paged tasks.** `runtime.py`'s `engine_for` now sizes
@@ -568,11 +569,18 @@ instance: the real company's SO/PO/SPO `lineQuery` were hand-edited to the same
   note: a slow-but-alive Sorento ingesting a large document batch used to record a push FAILURE
   at the old hard-coded 30s even though the batch itself was fine - retune
   `AUTOCOUNT_SINK_TIMEOUT_SECONDS` (default 300s, floor 30s) instead of changing code. S5b -
-  `write_batch` sends up to `settings.autocount_sink_concurrency` chunk POSTs with real overlap,
-  same all-or-nothing contract at every concurrency level; ops note: default stays 1
-  (byte-identical to the old fully sequential loop) - raise `AUTOCOUNT_SINK_CONCURRENCY` (max 4)
-  only once the RECEIVING side has confirmed it can take concurrent batches, since a rate limit
-  or per-connection-serialised commit on their end would turn "faster" into "more 429s/5xxs".
+  `write_batch` sends up to `settings.autocount_sink_concurrency` chunk POSTs with real overlap;
+  `fix/push-marks-per-chunk` (2026-09-07) replaced the all-or-nothing verdict with per-chunk
+  mark+commit (see that section above) and bumped `docker-compose.yml`'s DEPLOYED
+  `AUTOCOUNT_SINK_CONCURRENCY` default to 2, the ceiling Sorento agreed after they measured 4
+  async ingest workers at about 14s per 200-row batch on their end (#710); `app/config.py`'s own
+  code default stays 1 (local dev, byte-identical to the old fully sequential loop). Raise the
+  deployed default further only once a NEW measurement on Sorento's side agrees to it.
+  `feat/sink-concurrency-ui` (`sorento_provider.py`'s `sinkConcurrency` select,
+  `SorentoSink._resolve_concurrency`) then let a SINGLE tenant's Sorento connection override
+  that deployed default (1..4, clamped to the number of chunks) from its own edit form - an
+  operator raises it to drain a backlog and sets it back after, no deploy; an invalid stored
+  value falls back to the deployed default and logs one warning per sink instance, never raises.
   `fix/sorento-batch-size` (2026-09-06) - records per ingest POST are now
   `AUTOCOUNT_SINK_BATCH_SIZE` (default 200, bounded 1..1000 = Sorento's per-request ceiling,
   read at call time), after a 1,000-record purchase_order batch with per-record supplier
