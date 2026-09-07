@@ -73,6 +73,16 @@ class DocumentPreset:
 # fingerprint-agnostic.
 LINE_COUNT_FINGERPRINT_COLUMN = "LineCount"
 
+#     !!  ADDING A SELECTED COLUMN CHANGES THE ROW HASH (feat/spo-container-
+#         number).  !!
+# `_PO_HEADER_QUERY` now selects `h.Ref AS Ref` where it did not before; the
+# change-detection engine hashes a header row over its OWN `result_columns`
+# with no special knowledge of any one column (the same mechanism the
+# `LineCount` fingerprint above rides), so every EXISTING shipping_order
+# task re-stages every SPO once, as an update, the first run after this
+# lane's backfill adds `Ref` to its `result_columns` - intended, not a bug:
+# it is exactly how the newly-populated container number reaches Sorento.
+
 
 # ── Sales Order ───────────────────────────────────────────────────────────────
 #
