@@ -357,3 +357,52 @@ def test_terminology_filters_inactive_module_terms(client, session_factory):
     catalog = {i["key"]: i for i in client.get("/terminology/catalog", headers=h).json()}
     assert "omni_thing" in catalog  # omnichannel active
     assert "ghost_entity" not in catalog  # ghostmod not installed
+
+
+# ── Public CORS prefix registry (plan 34 review round 1, S9) ────────────────
+def test_public_cors_prefix_registry_is_module_owned_and_one_owner_per_prefix():
+    """Same shape and same rule as the capability registry: a module claims
+    its own prefix at boot, core hardcodes none, and two modules claiming the
+    same prefix is a LOUD boot error rather than a request-time surprise."""
+    from app.module_platform import (
+        DuplicatePublicCorsPrefix,
+        match_public_cors_prefix,
+        register_public_cors_prefix,
+    )
+
+    prefix = "/public/testmod/thing/"
+    register_public_cors_prefix(
+        prefix, provider_module="testmod", resolver=lambda path, origin: origin == "https://ok"
+    )
+    try:
+        entry = match_public_cors_prefix(prefix + "abc/session")
+        assert entry is not None and entry.provider_module == "testmod"
+        assert entry.resolver(prefix + "abc/session", "https://ok") is True
+        assert entry.resolver(prefix + "abc/session", "https://evil") is False
+        # A path outside every registered prefix matches nothing (the hot path).
+        assert match_public_cors_prefix("/auth/login") is None
+        # Re-registering by the same module is idempotent; another module is fatal.
+        register_public_cors_prefix(
+            prefix, provider_module="testmod", resolver=lambda path, origin: False
+        )
+        with pytest.raises(DuplicatePublicCorsPrefix):
+            register_public_cors_prefix(
+                prefix, provider_module="othermod", resolver=lambda path, origin: True
+            )
+    finally:
+        from app.module_platform.public_cors import _PREFIXES
+
+        _PREFIXES.pop(prefix, None)
+
+
+def test_public_cors_middleware_refuses_when_a_resolver_raises():
+    """A preflight must never 500 - a resolver that blows up refuses (and
+    logs) rather than propagating."""
+    from app.module_platform.public_cors import PublicCorsPrefix
+    from app.module_platform.public_cors_middleware import PublicCorsMiddleware
+
+    def _boom(path, origin):
+        raise RuntimeError("resolver exploded")
+
+    entry = PublicCorsPrefix("/public/testmod/thing/", "testmod", _boom)
+    assert PublicCorsMiddleware._allows(entry, "/public/testmod/thing/x", "https://ok") is False

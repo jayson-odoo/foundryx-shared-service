@@ -51,6 +51,27 @@ def register_capabilities() -> None:
     )
 
 
+def register_public_cors() -> None:
+    """Boot-time public-CORS registration (plan 34 review round 1, S9).
+    Idempotent. The public web chat visitor API's allowed origins are
+    per-CHANNEL tenant data, so core's `CORSMiddleware` (which knows only the
+    `CORS_ORIGINS` env) cannot answer a customer website's preflight for it -
+    the module hands over its own prefix and resolver instead of core
+    hardcoding either. Both live in the service layer; this is the wiring."""
+    from app.module_platform import register_public_cors_prefix
+
+    from .services.webchat_visitor_service import (
+        WEBCHAT_PUBLIC_PREFIX,
+        preflight_origin_allowed,
+    )
+
+    register_public_cors_prefix(
+        WEBCHAT_PUBLIC_PREFIX,
+        provider_module=MODULE_NAME,
+        resolver=preflight_origin_allowed,
+    )
+
+
 def register_engine_entities() -> None:
     """Boot-time engine registration (plan 11 D9). Idempotent - called by
     ``register_module_boot`` whenever the module is loaded.
@@ -650,6 +671,14 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ"
                 )
             )
+            # Unverified visitor pre-chat profile (plan 34 review round 1, B3 -
+            # module Alembic 0022). New, empty-until-used, no backfill.
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contact_channel_identities '
+                    "ADD COLUMN IF NOT EXISTS visitor_profile_json JSON"
+                )
+            )
 
 
 def install(engine: Engine, db: Session) -> None:
@@ -809,6 +838,11 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     valid state, not a gap to repair). No new permission keys either
     (D-A7B-28) - `channels.read`/`channels.manage` already cover every new
     route, so there is nothing for the post-hook grant sweep to deliver.
+    Review round 1 (B3) adds a fifth column in the same 0.10.0 release -
+    `contact_channel_identities.visitor_profile_json` (module Alembic
+    `0022_omni_webchat_profile`), also brand-new and empty-until-used, also
+    no backfill: no tenant has ever had a pre-chat submission before it
+    existed, so there is nothing to repair.
     """
     from .repositories.contact_repository import ContactRepository
     from .services import close_reason_service, event_service, lifecycle_service, messaging_policy

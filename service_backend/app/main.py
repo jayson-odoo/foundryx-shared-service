@@ -2,7 +2,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import (
@@ -133,59 +133,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Web chat's public visitor API (plan sprint-4/34 / A7b S2, D-A7B-4/AC-WEB-23)
-# carries NO cookie and must NEVER advertise `Access-Control-Allow-
-# Credentials` - but `CORSMiddleware` (above) stamps that header onto EVERY
-# response whose request carries an `Origin` header, UNCONDITIONALLY, before
-# it even checks whether the origin matches `cors_origins_list`/
-# `cors_origin_regex` (its `simple_response` applies `self.simple_headers` -
-# which bakes in `Access-Control-Allow-Credentials: true` whenever
-# `allow_credentials=True` - ahead of any origin-match check). Starlette's
-# `add_middleware` inserts at index 0 (LIFO), so registering THIS middleware
-# AFTER `CORSMiddleware` makes it the OUTER of the two - it runs (and can
-# still edit headers) AFTER `CORSMiddleware` has already added its stray
-# header, for this one public prefix only. Every other route's CORS
-# behaviour is completely unchanged.
+# Module-registered public CORS prefixes (plan sprint-4/34 review round 1,
+# S9). A module that mounts a `"public": true` router whose allowed origins
+# are TENANT data - a web chat channel's own `allowedOrigins`, which this
+# service's `CORS_ORIGINS` env knows nothing about - registers its prefix +
+# an origin resolver at boot (`register_public_cors_prefix`), and this ONE
+# generic, pure-ASGI middleware answers the preflight and strips the stray
+# `Access-Control-Allow-Credentials` that `CORSMiddleware` stamps on before
+# it even checks the origin. Core holds no module path constants; a request
+# outside every registered prefix is handed straight down untouched.
 #
-# Amended 2026-09-09 (BL-SS-183): the same middleware now ANSWERS the CORS
-# preflight for this one prefix. A customer website's origin lives on the
-# CHANNEL's allowlist, not in this service's own `CORS_ORIGINS` env, so
-# `CORSMiddleware` (which knows only the env list) answers the loader's
-# preflight with `400 Disallowed CORS origin` and the real POST never
-# leaves the browser. Being the OUTER middleware, this handler short-
-# circuits before `CORSMiddleware` ever sees the OPTIONS. The echo is not
-# allowlist-checked (middleware has no channel context and a preflight
-# carries no data): the ACTUAL response still only gets
-# `Access-Control-Allow-Origin` when the origin is on the channel's list
-# (`cors_headers_for`), and session start still answers an off-list origin
-# with the uniform 404 - so an off-list site learns and reads nothing.
-_WEBCHAT_PUBLIC_PREFIX = "/public/omnichannel/webchat/"
-_WEBCHAT_PREFLIGHT_HEADERS = {
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "authorization, content-type",
-    "Access-Control-Max-Age": "600",
-    "Vary": "Origin",
-}
+# Registered AFTER `CORSMiddleware`: `add_middleware` inserts at index 0
+# (LIFO), so this ends up OUTSIDE it - the only position from which it can
+# short-circuit an `OPTIONS` before `CORSMiddleware` refuses it, and edit the
+# header `CORSMiddleware` has already added.
+from app.module_platform.public_cors_middleware import PublicCorsMiddleware  # noqa: E402
 
-
-@app.middleware("http")
-async def _webchat_public_cors(request, call_next):
-    on_webchat_public = request.url.path.startswith(_WEBCHAT_PUBLIC_PREFIX)
-    if (
-        on_webchat_public
-        and request.method == "OPTIONS"
-        and "access-control-request-method" in request.headers
-    ):
-        headers = dict(_WEBCHAT_PREFLIGHT_HEADERS)
-        origin = request.headers.get("origin")
-        if origin:
-            headers["Access-Control-Allow-Origin"] = origin
-        return Response(status_code=204, headers=headers)
-    response = await call_next(request)
-    if on_webchat_public:
-        if "access-control-allow-credentials" in response.headers:
-            del response.headers["access-control-allow-credentials"]
-    return response
+app.add_middleware(PublicCorsMiddleware)
 
 # Frontend NextAuth calls ${BACKEND_API_URL}/auth/login
 app.include_router(auth.router, prefix="/auth", tags=["auth"])

@@ -200,6 +200,38 @@ def test_default_and_rio_shapes_carry_webchat_type_and_no_window(client, session
     assert web_rio["visitorLastSeenAt"] is not None
 
 
+def test_visitor_profile_is_lossless_on_both_read_shapes(client, session_factory):
+    """Review round 1 (B3) - the unverified pre-chat values a visitor typed
+    are on `ThreadItem.visitorProfile`, so both gateway shapes carry them
+    too (the losslessness rule): a consumer has no other read source, and
+    they are deliberately NOT the contact's own `phone`/`email`."""
+    ws = _default_workspace_id(session_factory)
+    widget_key, channel_id = _new_webchat_channel(client, name="Visitor Profile Shapes")
+    key = _key(client, ws)
+
+    token = _session(client, widget_key).json()["token"]
+    _post_message(
+        client, widget_key, token, text="hello there",
+        preChat={"name": "Ada", "email": "ada@example.com", "phone": "+1 555 000 1111"},
+    )
+
+    hdr = {"Authorization": f"Bearer {key}"}
+    default = client.get("/api/v1/omnichannel/contacts", headers=hdr).json()
+    web_thread = next(t for t in default["data"] if t["channelId"] == channel_id)
+    expected = {"name": "Ada", "email": "ada@example.com", "phone": "+1 555 000 1111"}
+    assert web_thread["visitorProfile"] == expected
+    assert web_thread["email"] is None
+    assert web_thread["phone"] is None
+
+    rio = client.get(
+        "/api/v1/omnichannel/contacts", headers=hdr, params={"format": "rio"}
+    ).json()
+    web_rio = next(i for i in rio["items"] if i["channelId"] == channel_id)
+    assert web_rio["visitorProfile"] == expected
+    assert web_rio["email"] is None
+    assert web_rio["phone"] is None
+
+
 def test_message_item_carries_webchat_channel_type_on_both_shapes(client, session_factory):
     ws = _default_workspace_id(session_factory)
     widget_key, channel_id = _new_webchat_channel(client, name="Message Shapes Chat")
@@ -254,6 +286,21 @@ def test_consumer_guide_documents_the_webchat_prefix_and_new_fields():
     assert "WEBCHAT" in guide
     # The explicit "no messaging window at all" statement (AC-WEB-60).
     assert "no messaging window" in guide.lower()
+    # Review round 1 (S5) - the `webchat:` row used to point integrators at
+    # §12, the AGENT-facing embed, which has a different secret
+    # (`embedSecret`), a different HMAC input and a different endpoint.
+    # §12a is the visitor widget's own section; the recipe has to be in it,
+    # spelled out, because a wrong hash fails SILENTLY by design
+    # (AC-WEB-56) and costs real debugging time.
+    assert "## 12a." in guide
+    assert "widgetSecret" in guide
+    assert "HMAC-SHA256(key = widgetSecret, msg = userRef)" in guide
+    assert "window.fxChatIdentity" in guide
+    assert "fxWebchat.identify(" in guide
+    assert "Allowed origins" in guide
+    # Review round 1 (B3) - the unverified pre-chat values are on both read
+    # shapes, so the guide documents what they are and what they are not.
+    assert "visitorProfile" in guide
 
 
 # ── AC-WEB-61: send_message action has no window refusal on a web chat contact ──

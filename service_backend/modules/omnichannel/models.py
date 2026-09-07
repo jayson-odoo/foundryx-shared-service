@@ -289,6 +289,17 @@ class ContactChannelIdentity(OmniBase):
     # inbound seams; the column ships in S1 so the migration + create_all
     # mirror land once, alongside the three sibling columns above.
     last_seen_at = Column(UTCDateTime(), nullable=True)
+    # Plan 34 review round 1 (B3) - values a WEB CHAT visitor typed into the
+    # pre-chat form: `{"name"?, "email"?, "phone"?}`, all optional, all
+    # UNVERIFIED and all attacker-choosable (the widget key is public page
+    # source). They live HERE, on the identity, precisely so they are NOT the
+    # contact's `email`/`phone`/`phone_digits` - those are inbound STITCH KEYS
+    # (`InboundService._resolve_contact` -> `find_by_phone_in_workspace`), and
+    # letting an anonymous internet caller write one let an attacker fuse
+    # their own web chat thread onto a victim's future WhatsApp conversation.
+    # Read-only on the agent side (`ThreadItem.visitorProfile`); nothing in
+    # the codebase ever looks a contact UP by these values.
+    visitor_profile_json = Column(JSON(none_as_null=True), nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
     __table_args__ = (

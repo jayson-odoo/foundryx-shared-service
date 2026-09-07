@@ -19,7 +19,7 @@ import { channelService } from '@/services/channel-service';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useCan } from '@/hooks/use-can';
 import { useWebchatConfig } from '@/hooks/use-webchat-config';
-import type { Channel } from '@/types/omnichannel';
+import type { Channel, WebchatConfig } from '@/types/omnichannel';
 import { workspaceFormPath } from '../../workspaces/components/paths';
 import { CHANNEL_STATUS_REGISTRY, CHANNEL_TYPE_LABELS } from './channel-status';
 import type { ChannelDetailValues } from './channel-schema';
@@ -31,20 +31,39 @@ export interface ConfigurationTabProps {
   channelId: string;
   /** Refresh the parent's channel state after a Sync / Test stamps new data. */
   onChannelSynced: (channel: Channel) => void;
+  /** The widget config the parent already fetched for a `WEBCHAT` channel
+   *  (review round 1, N3 - one GET per record, shared with the Widget tab). */
+  webchatConfig: WebchatConfig | null;
+  /** Refresh the parent's copy after the origins editor self-saves. */
+  onWebchatConfigSaved: (config: WebchatConfig) => void;
 }
 
 /**
  * Widget key + allowed-origins block for a `WEBCHAT` channel (plan 34 / A7b,
- * AC-WEB-03) - replaces the Meta-owned identity block. Self-contained: its
- * OWN `useWebchatConfig` read + the origins editor's OWN self-save (the same
- * component the embed settings screen uses, unmodified in this mode), so it
- * works regardless of the record's global Edit toggle - there is nothing
- * Meta-synced to gate here.
+ * AC-WEB-03) - replaces the Meta-owned identity block. The origins editor
+ * keeps its OWN self-save (the same component the embed settings screen
+ * uses, unmodified in that mode), so it works regardless of the record's
+ * global Edit toggle - there is nothing Meta-synced to gate here.
+ *
+ * Review round 1: the config comes from the PARENT's single fetch (N3 - the
+ * page used to GET the same record twice), and the editor is gated on
+ * `channels.manage` (S6 - `PUT /channels/{id}/widget` requires it, so a
+ * read-only user must never be offered a Save that can only 403).
  */
-function WebchatIdentityBlock({ channelId }: { channelId: string }) {
-  const { config, isLoading, save } = useWebchatConfig(channelId, true);
+function WebchatIdentityBlock({
+  channelId,
+  config,
+  canManage,
+  onSaved,
+}: {
+  channelId: string;
+  config: WebchatConfig | null;
+  canManage: boolean;
+  onSaved: (config: WebchatConfig) => void;
+}) {
+  const { save } = useWebchatConfig(channelId, false);
 
-  if (isLoading) {
+  if (!config) {
     return (
       <FormRow label="Widget key">
         <Skeleton className="h-4 w-48" />
@@ -55,17 +74,20 @@ function WebchatIdentityBlock({ channelId }: { channelId: string }) {
   return (
     <>
       <FormRow label="Widget key">
-        <SyncedValue value={config?.widgetKey} mono />
+        <SyncedValue value={config.widgetKey} mono />
       </FormRow>
-      {config && (
-        <FormRow label="Allowed origins">
-          <OriginsEditor
-            origins={config.allowedOrigins}
-            onSave={(origins) => save({ allowedOrigins: origins }).then(() => undefined)}
-            bare
-          />
-        </FormRow>
-      )}
+      <FormRow label="Allowed origins">
+        <OriginsEditor
+          origins={config.allowedOrigins}
+          onSave={
+            canManage
+              ? (origins) => save({ allowedOrigins: origins }).then(onSaved)
+              : undefined
+          }
+          readOnly={!canManage}
+          bare
+        />
+      </FormRow>
     </>
   );
 }
@@ -82,7 +104,15 @@ function SyncedValue({ value, mono }: { value: string | null | undefined; mono?:
  * workspace (link), active. Read-only synced (Meta-owned) identity block with a
  * "last synced" caption, plus Sync + Test Connection actions.
  */
-export function ConfigurationTab({ form, editing, channel, channelId, onChannelSynced }: ConfigurationTabProps) {
+export function ConfigurationTab({
+  form,
+  editing,
+  channel,
+  channelId,
+  onChannelSynced,
+  webchatConfig,
+  onWebchatConfigSaved,
+}: ConfigurationTabProps) {
   const { formatDate, formatDateTime } = useDatetime();
   const { can } = useCan();
   const canManage = can('channels.manage');
@@ -212,7 +242,12 @@ export function ConfigurationTab({ form, editing, channel, channelId, onChannelS
           // Plan 34 / A7b, AC-WEB-03 - the widget key + the origins editor
           // (self-save, unmodified, D-A7B-13) replace the Meta identity block
           // entirely: web chat has no external provider to mirror.
-          <WebchatIdentityBlock channelId={channelId} />
+          <WebchatIdentityBlock
+            channelId={channelId}
+            config={webchatConfig}
+            canManage={canManage}
+            onSaved={onWebchatConfigSaved}
+          />
         ) : (
           // Messenger/Instagram identity block (plan 32 / A7a, AC-CHN-05) -
           // the Page (or its linked Instagram account) is the routing key,

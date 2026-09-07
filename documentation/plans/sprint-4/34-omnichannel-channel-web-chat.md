@@ -147,7 +147,7 @@ action-menu,clamped-text}`, `lib/branding-tokens.ts`, `lib/motion.ts`, `lib/toas
 | D-A7B-5 | The visitor token is a signed JWT (`typ="webchat"`, 30 day expiry, sliding renewal inside the last 7 days) bound to tenant + channel + visitor id + contact id. Mass revocation is a per-channel `widget_token_epoch` integer compared on every use. There is NO visitor-token table | A table would need writes on every page view of every customer website - the highest-volume, lowest-value write in the system. A signed token plus an epoch counter gives issuance, expiry, binding and a "sign out all visitors" button for one integer column |
 | D-A7B-6 | Rotating the widget SECRET does not bump the epoch, and bumping the epoch does not rotate the secret. They are two separate admin actions | They answer two different questions ("the host's signing key leaked" vs "sign every visitor out"). Coupling them means an admin rotating a signing key silently drops every live chat |
 | D-A7B-7 | The contact and its identity are created LAZILY, on the visitor's FIRST message - never at session start | Otherwise every page view of a busy website creates a contact row, and the Contacts list, the segments, the dashboard counts and the reports all become noise within a day. It also makes the cheapest public endpoint (session start) a pure read |
-| D-A7B-8 | **A web chat visitor NEVER auto-stitches onto an existing contact from self-declared pre-chat data.** Pre-chat email / phone are written onto the visitor's OWN contact only, and only into fields that are empty | This is the sharp edge of the whole slice. Anyone can type a known customer's email into a pre-chat box; stitching on it would hand a stranger that customer's entire WhatsApp history through the widget. A7a's D-A7-4 refused merging on weaker grounds (no data); here we refuse on stronger ones (attacker-controlled data). Manual merge stays BL-SS-113 |
+| D-A7B-8 | **A web chat visitor NEVER auto-stitches onto an existing contact from self-declared pre-chat data.** *(Amended 2026-09-09 (review B3): pre-chat email / phone are no longer written onto the CONTACT at all. Only `name` still lands on the contact, write-if-empty; `email` and `phone` are stored as unverified, visitor-declared values on the `contact_channel_identities.visitor_profile_json` row and surfaced read-only as `ThreadItem.visitorProfile`. Reason: the decision only considered pre-chat as a LOOKUP key and forbade that. The reverse direction was open - writing an attacker-chosen phone onto `contacts.phone_digits` made it the key `InboundService._resolve_contact` stitches a first WhatsApp inbound on, so one unauthenticated POST with a victim's number would fuse the victim's future WhatsApp thread onto the attacker's web chat contact; `contacts.email` is the same class one step removed, since a workflow `email.send` would deliver to it.)* | This is the sharp edge of the whole slice. Anyone can type a known customer's email into a pre-chat box; stitching on it would hand a stranger that customer's entire WhatsApp history through the widget. A7a's D-A7-4 refused merging on weaker grounds (no data); here we refuse on stronger ones (attacker-controlled data). Manual merge stays BL-SS-113 |
 | D-A7B-9 | The ONLY sanctioned stitch is a **host identity assertion**: `{ userRef, hash }` where `hash` is HMAC-SHA256 of `userRef` keyed by the channel's own widget secret. Valid -> identity `host:<userRef>`. Missing or invalid -> silently ignored, session continues anonymously | This is the Intercom-style identity-verification contract and it is the only version that is safe: the customer's SERVER vouches for the identity with a secret the browser never has. Silent ignore (not an error) keeps the visitor experience intact when a customer misconfigures their hash - the failure is an admin problem, not a visitor's |
 | D-A7B-10 | The widget secret is **per channel**, Fernet-encrypted in the channel's existing `credentials_json`, revealed exactly once at connect and once per rotation | Reusing the plan-11H tenant-level `embedSecret` would couple web chat to a different feature's lifecycle and would give one secret authority over two unrelated surfaces. Per-channel matches where the allowed-origin list already lives |
 | D-A7B-11 | Allowed origins are enforced **server-side at session start** (a mismatch returns the uniform 404, never a 403) and again as `Content-Security-Policy: frame-ancestors` on the panel document. CORS echoes the exact allowlisted origin, never `*`, always with `Vary: Origin`. **Amended 2026-09-09 (BL-SS-183): session start is called by the LOADER, from the customer's own top-level document.** The panel-side check this decision originally implied was unenforceable: a fetch issued inside the panel iframe always carries the PANEL's origin, so the allowlist could not tell one customer website from another, and allowlisting the app's own origin to make it pass let every website embed that channel and let anyone open a chat by navigating straight to the panel URL (R6/R7 defeated). The loader's fetch carries the true embedding origin, browser-enforced and unforgeable from another site, so the check now means what it always said it meant | A 403 confirms the channel exists to an attacker who copied a snippet; a 404 tells them nothing. `frame-ancestors` is the mechanism for clickjacking here because `X-Frame-Options` cannot express a list |
@@ -162,7 +162,7 @@ action-menu,clamped-text}`, `lib/branding-tokens.ts`, `lib/motion.ts`, `lib/toas
 | D-A7B-20 | **Visitor uploads are DISABLED in v1** - there is no upload endpoint, multipart is refused, and the panel renders no attach control. Agent-to-visitor media IS supported, delivered as a signed short-TTL URL bound to the message id | Anonymous file ingest at internet scale is the single highest-risk thing this slice could add: quota, malware, storage cost and content liability, all for an actor we cannot identify. Removing the endpoint removes the whole class. BL-SS-160 |
 | D-A7B-21 | Visitor text is capped at 4096 characters with a typed 422; the server never truncates. The request body has a capped read | Matches the existing WhatsApp body cap so one constant governs both, and a cap that silently truncates loses a customer's actual words |
 | D-A7B-22 | Own throttle bucket `THROTTLE_SCOPE_WEBCHAT` with TWO key namespaces (`ip:<ip>` and `v:<visitorId>`), enforced before any database work on both public endpoints | The form-engine precedent (never share the login bucket). Two namespaces because one abusive visitor behind a corporate NAT must not throttle a whole office, and one abusive IP must not be evaded by minting fresh visitor ids |
-| D-A7B-23 | Pre-chat is a FIXED set of toggles (ask name / ask email / ask phone) plus an always-rendered off-screen honeypot. It is NOT a form-engine form | A form-engine form here would be authorable into states that make no sense in a 320px chat bubble (computed fields, tables, file uploads, pages) - a foolproof-UI violation - and it would double-store the visitor's name and email outside the contact record that A1 already owns. BL-SS-161 if a customer ever needs richer capture |
+| D-A7B-23 | Pre-chat is a FIXED set of toggles (ask name / ask email / ask phone) plus an always-rendered off-screen honeypot. It is NOT a form-engine form. *(Amended 2026-09-09 (review B3): the captured values are UNVERIFIED input from an anonymous internet caller, so where they are stored matters as much as how they are captured - `email`/`phone` land on the identity's `visitor_profile_json`, never on the contact's own matching columns. Amended 2026-09-09 (review S2): the honeypot response is byte-shaped identical to a real send - `201` with a synthetic `VisitorMessage` - because a `200 {ok:true}` told a bot which field was the trap on its very first request.)* | A form-engine form here would be authorable into states that make no sense in a 320px chat bubble (computed fields, tables, file uploads, pages) - a foolproof-UI violation - and it would double-store the visitor's name and email outside the contact record that A1 already owns. BL-SS-161 if a customer ever needs richer capture |
 | D-A7B-24 | Online / offline comes from the EXISTING `BusinessHoursService`; an unconfigured workspace resolves ONLINE. Offline changes only which greeting the panel shows - the message travels the identical path | A separate "offline message" entity would be a second inbound path that has to be re-implemented in reports, workflows and the gateway. The honest difference between online and offline is one string |
 | D-A7B-25 | The public path carries the **widget key only**, no tenant slug: `/public/omnichannel/webchat/{widgetKey}/...` and `/public/webchat/{widgetKey}` on the frontend (still under a LITERAL `public/` segment) | The form engine puts the tenant slug in the path because a form slug is human-authored and only unique per tenant. A widget key is machine-minted, globally unique and unguessable, so it needs no disambiguator - and a tenant slug pasted into every customer website's page source is a white-label leak. Deviation from the form-engine shape, flagged in section 9 |
 | D-A7B-26 | Visitor-authored text is NEVER rendered as HTML - text nodes only, in the panel AND in the agent inbox; links are linkified only after scheme validation | The only untrusted-content renderer in the product. This is the house anti-SSTI line applied on the client: no `dangerouslySetInnerHTML`, no markdown-to-HTML, no raw value into `href`/`src` |
@@ -249,9 +249,9 @@ POST  /public/omnichannel/webchat/{widgetKey}/messages              public + Bea
         the only authorization (BL-SS-183)
         body: { text: string (<=4096), preChat?: { name?, email?, phone? }, hp?: string }
         -> 201 VisitorMessage
-        -> 200 { ok: true } with NOTHING stored when hp is non-empty (honeypot)
+        -> 201 VisitorMessage (SYNTHETIC, nothing stored) when hp is non-empty (honeypot)
         -> 401 invalid/expired/wrong-channel/epoch-revoked token (one indistinguishable body)
-        -> 422 text_too_long | unsupported_content
+        -> 422 text_required | text_too_long | unsupported_content | invalid_request
         -> 429 with Retry-After
 
 GET   /public/omnichannel/webchat/{widgetKey}/messages?after=&limit= public + Bearer
@@ -280,6 +280,47 @@ preflight `400 Disallowed CORS origin` and the real POST would never leave the b
 preflight echo is not allowlist-checked (it carries no data); the actual response still only
 carries `Allow-Origin` for an allowlisted origin, and an off-list session start is still the
 uniform 404.
+
+Amended 2026-09-09 (review round 1). Six contract-visible changes on this surface:
+
+- **B1** - `status` is projected through an explicit allowlist (`SENT`/`DELIVERED`/`READ`/`FAILED`);
+  an in-flight `QUEUED`/`SENDING` (an agent reply committed but not yet sent by the Celery task) or
+  any unrecognized value reads `null`. Before, it was passed through raw and the wire model's
+  `Literal` raised inside the route - a **500 that took the visitor's whole transcript with it**,
+  permanently while the omnichannel worker was down. Invisible to pytest because every test runs
+  `CELERY_TASK_ALWAYS_EAGER`.
+- **B2** - the WS relay is CHANNEL-scoped as well as contact-scoped. One contact legitimately holds
+  identities on several channels and the room is per workspace, so the contact filter alone pushed
+  WhatsApp inbound and agent WhatsApp replies (including signed media URLs) to an open panel on a
+  public website, and made the socket deliver strictly more than the poll (AC-WEB-40).
+- **B3** - pre-chat `email`/`phone` never touch `contacts.email`/`phone`/`phone_digits`; they are
+  stored unverified on the identity and exposed read-only as `ThreadItem.visitorProfile` (and on
+  both gateway shapes, losslessness rule). See D-A7B-8.
+- **S1** - `token` and the message body's scalars are typed at the router (`{"token": 123}` and
+  `{"hp": 1}` used to raise `AttributeError` -> 500). A malformed session body is the uniform 404;
+  a malformed message body is `422 invalid_request` with `details.fieldErrors`. `identity` stays
+  permissive on purpose - AC-WEB-56 requires a malformed assertion to be silently ignored.
+- **S2** - the honeypot answers `201` with a synthetic `VisitorMessage` (fresh id, `direction:
+  "in"`, the submitted text, `status: null`) and validation runs BEFORE the trap check, so no
+  single request tells a bot which field is the trap.
+- **S8** - `GET /frame-policy` joins the webchat throttle bucket, but spends a token only on a
+  lookup that reached the database and resolved nothing (key enumeration): all legitimate traffic
+  arrives from the Next.js server's ONE IP, so counting it would let a busy deployment throttle its
+  own panels off the air. The origin lookup is cached 60s per widget key. **The staleness is
+  accepted, not invalidated:** an origin edit, a channel deactivation or a module switch-off can
+  take up to a minute to reach the `frame-ancestors` header and the preflight echo. Session start
+  re-reads the live channel row every time, so the worst case is a just-removed site that can still
+  FRAME the panel for up to 60s without being able to start a session inside it.
+- **S7** - the IP ceiling is 600 per 5 minutes (it counts page views of a customer's site, not
+  failed credentials, and the whole budget is one shared egress IP); a session start presenting a
+  token that VERIFIES against the channel spends no IP token at all; a 429 logs one warning
+  carrying a hashed IP tag, because the loader's failure is silent by design.
+- **S9** - the preflight handler is no longer a core constant. The module registers
+  `/public/omnichannel/webchat/` plus an origin resolver through
+  `app.module_platform.register_public_cors_prefix`, and ONE generic pure-ASGI middleware serves
+  every registered prefix. The echo IS allowlist-checked now (the resolver has channel context):
+  an off-list origin gets a `204` with no `Access-Control-Allow-Origin`; the app's own origin is
+  admitted for the Bearer-authed message routes, which preflight from inside the panel iframe.
 
 ### 5.3 The install snippet (what a customer pastes)
 
@@ -324,12 +365,20 @@ channels  += widget_key        String NULL, index
           += widget_token_epoch Integer NOT NULL DEFAULT 0
 
 contact_channel_identities
-          += last_seen_at      UTCDateTime NULL
+          += last_seen_at            UTCDateTime NULL
+          += visitor_profile_json    JSON(none_as_null=True) NULL   (review round 1, B3)
 ```
 
-No backfill is required: all four are new, empty-until-used, and meaningless for existing channel
+No backfill is required: all five are new, empty-until-used, and meaningless for existing channel
 types. The `create_schema_and_tables` `ADD COLUMN IF NOT EXISTS` mirror is mandatory (`create_all`
 never ALTERs an existing table).
+
+`visitor_profile_json` (module Alembic `0022_omni_webchat_profile`, chained on `0021_omni_webchat`,
+same 0.10.0 release) holds `{"name"?, "email"?, "phone"?}` - what a visitor typed into pre-chat.
+It exists precisely so those values are NOT the contact's own `email`/`phone`/`phone_digits`,
+which are the inbound stitch keys (D-A7B-8 as amended). Read-only on the agent side
+(`ThreadItem.visitorProfile`, and both gateway shapes); nothing anywhere looks a contact up by
+them.
 
 ### 5.5 The window policy row and the third `authorize` branch
 
@@ -518,6 +567,21 @@ This slice ships the first unauthenticated WRITE surface in the omnichannel Serv
   is added to the seeded channel's allowlist; the off-list journey (AC-WEB-66) uses `127.0.0.1:3012`,
   which is a DIFFERENT origin to a browser and therefore a true negative test.
 
+### Residual risk accepted (review 2026-09-09)
+
+The round-1 reviewer named six residual risks that are NOT being fixed in this plan. They are recorded
+here so a later reader does not rediscover them as findings, and so nobody mistakes any of them for a
+control that exists.
+
+| Id | Risk | Why it is accepted |
+|---|---|---|
+| RR1 | The visitor token rides the WebSocket URL query string and therefore lands in access logs and any proxy log. It is a 30-day credential | Browsers cannot set headers on a WebSocket handshake. The staff JWT on the same route has done this since plan 05, so this is precedent, not a regression; changing it is a platform-wide change to `/omnichannel/ws`, not a web chat one |
+| RR2 | **The origin allowlist is a browser-enforced control ONLY.** Any non-browser client that knows the public widget key can send `Origin: https://allowed.example` and open a full session | Inherent to an anonymous public chat widget: there is no secret a browser can hold that an attacker's script cannot also read. The allowlist stops one WEBSITE embedding another's channel; it is NOT an authorization boundary and must never be treated as one. The real controls are the throttle, the fail-closed projection, and the fact that a session grants nothing except a brand-new thread of its own |
+| RR3 | A host identity assertion has no expiry and no nonce - a leaked `{userRef, hash}` pair impersonates that customer's user until the widget secret is rotated (which invalidates every assertion at once, D-A7B-6) | Intercom and respond.io have the same property, and the dual-secret gap is already stated in `verify_host_identity`'s docstring. Adding expiry means adding a clock-skew contract to every integrator's server for a threat (a leaked per-user hash) that a rotation already answers |
+| RR4 | The dev seed ships a FIXED widget key and widget secret; a promoted dev database would carry a publicly-known identity-assertion signing key | Dev-gated on `settings.environment == "development"` in both `init_db` and `bootstrap_db`, matching the `chn-demo` precedent. Promoting a dev database to production is already a much larger incident than this |
+| RR5 | `GET /frame-policy` discloses a customer's exact allowed-origins list to anyone holding the widget key | Mirrors the plan-11H embed precedent. The list is not a secret: it is a set of public website origins, and the panel cannot render without the header |
+| RR6 | A tab left open past the token's 30-day expiry can never renew - only the LOADER mints, and it only runs on page load. The visitor sees "Could not send your message" until they reload | Decided deliberately in the BL-SS-183 fix (the loader owns minting, which is the whole reason the origin check became decidable). Backlogged as **BL-SS-184** rather than fixed here: a renewal path from inside the panel would need a second minting route whose origin check is undecidable again |
+
 ## 8. Backlog candidates (register on close; provisional ids from BL-SS-160)
 
 | Id | Title | Priority |
@@ -535,6 +599,7 @@ This slice ships the first unauthenticated WRITE surface in the omnichannel Serv
 | BL-SS-170 | Visitor context capture (page URL, referrer, UTM, user agent) written into A1 typed contact fields at session start, with an explicit per-channel opt-in | Medium |
 | BL-SS-171 | An installable npm loader package and platform install guides (WordPress, Shopify, Squarespace) mirroring respond.io's install matrix | Low |
 | BL-SS-172 | Rate-limit the loader route at the edge and add a per-channel session-creation ceiling, once real traffic exists | Low |
+| BL-SS-184 (provisional) | Renew an expired visitor token in a long-lived tab (review RR6): today only the loader mints, and it only runs on page load, so a tab open past the 30-day expiry can never recover without a reload | Low |
 
 ## 9. Flagged for the user
 

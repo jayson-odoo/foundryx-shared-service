@@ -125,6 +125,12 @@
     iframe.title = "Chat";
     iframe.setAttribute("allow", "clipboard-write");
     iframe.setAttribute("allowtransparency", "true");
+    /* Review round 1 (N8) - the customer's page URL (which can carry an order
+     * id, a search term, a session token in a query string) must not ride to
+     * the panel route as a Referer. `sandbox` is deliberately NOT set: the
+     * panel is same-origin with the app and sandboxing would cut it off from
+     * its own storage and its own scripts. */
+    iframe.setAttribute("referrerpolicy", "no-referrer");
 
     var style = iframe.style;
     style.position = "fixed";

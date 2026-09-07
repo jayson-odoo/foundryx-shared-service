@@ -74,7 +74,20 @@ class Settings(BaseSettings):
     # (`ip:<ip>`, `v:<visitorId>`) so a single busy office IP and a single
     # abusive visitor id are rate-limited independently. Window-throttle like
     # IP (no permanent lock - a public chat widget must self-heal).
-    throttle_webchat_max_fails: int = 60
+    #
+    # The IP ceiling is deliberately HIGH (review round 1, S7). Unlike every
+    # other bucket here, a "fail" is not a failed credential attempt: it is
+    # one ordinary page view of the customer's website (the loader starts a
+    # session on load) or one visitor message. The whole budget is shared by
+    # an entire egress IP - one NAT'd office, one school, one CGNAT range -
+    # and on 429 the loader renders nothing at all, so the customer sees the
+    # widget "randomly disappear" with no signal on the page. The per-visitor
+    # namespace (`v:<visitorId>`, unchanged) is the actual abuse control; the
+    # IP ceiling is the crude backstop against a single host minting fresh
+    # visitor ids. A session start that presents an ALREADY-VALID token for
+    # the channel (a page reload by a visitor who has been here before) does
+    # not spend an IP token at all - see `routers/webchat_public.py`.
+    throttle_webchat_max_fails: int = 600
     throttle_webchat_window_minutes: int = 5
     # Profile Portal email one-time-code TTL (short - emailed login fallback).
     profile_otp_ttl_minutes: int = 10

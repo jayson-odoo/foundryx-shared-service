@@ -47,14 +47,36 @@ class WsPrincipal:
     (never a live ORM row, which would be detached once `_authorize`'s own
     db session closes below) carrying just the one attribute
     `webchat_projection.visitor_frame` reads (`widget_config_json`), snapshot
-    at connect time."""
+    at connect time. `visitor_channel_id` is that channel's id, carried
+    separately (review round 1, B2) because every relayed frame must be
+    CHANNEL-scoped as well as contact-scoped - a contact can hold identities
+    on several channels at once and this room is per workspace."""
 
     principal_id: str
     scope_contact_id: Optional[str]
     visitor_channel: Optional[Any] = None
+    visitor_channel_id: Optional[str] = None
 
 
 router = APIRouter()
+
+# Plan 34 review round 1 (S4) - how often a LIVE visitor socket re-runs the
+# full `_authorize` check. The visitor principal used to be resolved once at
+# the handshake and never again, so an admin's "sign out all visitors" (an
+# epoch bump), a channel deactivation, a channel trash or a tenant block left
+# every already-open panel receiving agent replies until the visitor happened
+# to close the tab. Only the VISITOR branch is re-verified: the staff and
+# embed principals keep their existing (short-lived-token) behaviour, which
+# this slice is not the place to change.
+VISITOR_REVERIFY_SECONDS = 60.0
+
+
+def set_visitor_reverify_seconds(seconds: float) -> None:
+    """Test seam - shrink the interval so a test can prove an epoch bump
+    closes an ALREADY-OPEN socket without sleeping a minute."""
+    global VISITOR_REVERIFY_SECONDS
+    VISITOR_REVERIFY_SECONDS = seconds
+
 
 _async_client = None
 # Session factory seam: the WS handshake runs outside FastAPI's dependency
@@ -191,6 +213,7 @@ def _authorize(token: str, workspace_id: str) -> Optional[WsPrincipal]:
                 principal_id=claims.identity_key,
                 scope_contact_id=identity.contact_id,
                 visitor_channel=SimpleNamespace(widget_config_json=channel.widget_config_json),
+                visitor_channel_id=channel.id,
             )
         user = db.query(User).filter(User.id == payload.get("sub")).first()
         if (
@@ -290,7 +313,12 @@ async def conversation_socket(
                     frame = json.loads(data)
                 except (ValueError, TypeError):
                     continue
-                projected = visitor_frame(frame, principal.visitor_channel, scope_contact_id)
+                projected = visitor_frame(
+                    frame,
+                    principal.visitor_channel,
+                    scope_contact_id,
+                    principal.visitor_channel_id,
+                )
                 if projected is None:
                     continue
                 await websocket.send_text(
@@ -304,19 +332,45 @@ async def conversation_socket(
         while True:
             await websocket.receive_text()
 
+    async def revalidate_visitor():
+        """S4 (review round 1) - re-run the FULL visitor authorization on a
+        timer for the life of the socket: token signature/expiry/`typ`,
+        tenant + channel binding, the channel's `widget_token_epoch`, the
+        channel being active and untrashed, the module being active for the
+        tenant, and the tenant's own `signin_allowed`. `_authorize` IS all of
+        those checks (never a second, drifting copy), so this returns exactly
+        when the connection has stopped being authorized and the caller
+        closes 4403. Its `stamp_last_seen` side effect keeps a long-lived
+        panel's presence marker honest, which is the behaviour AC-WEB-42
+        wants anyway."""
+        while True:
+            await asyncio.sleep(VISITOR_REVERIFY_SECONDS)
+            if await asyncio.to_thread(_authorize, token, workspace_id) is None:
+                return
+
     forward = asyncio.create_task(forward_events())
     watcher = asyncio.create_task(watch_disconnect())
+    tasks = {forward, watcher}
+    revalidator = None
+    if principal.visitor_channel is not None:
+        revalidator = asyncio.create_task(revalidate_visitor())
+        tasks.add(revalidator)
     try:
-        done, pending = await asyncio.wait(
-            {forward, watcher}, return_when=asyncio.FIRST_COMPLETED
-        )
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
+        if revalidator is not None and revalidator in done and not revalidator.cancelled():
+            # Same close code the handshake refusal uses - the panel treats
+            # 4403 as permanent (no reconnect storm) and falls back to the
+            # poll, which re-checks the token on its own next call.
+            await websocket.close(code=4403)
     except WebSocketDisconnect:
         pass
     finally:
         forward.cancel()
         watcher.cancel()
+        if revalidator is not None:
+            revalidator.cancel()
         try:
             await pubsub.unsubscribe(channel_for(workspace_id))
             await pubsub.aclose()

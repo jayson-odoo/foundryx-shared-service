@@ -29,6 +29,15 @@ export interface OriginsEditorProps {
    *  (title/description) - for embedding inside another card/step that
    *  already has its own heading (the connect wizard). */
   bare?: boolean;
+  /**
+   * Read-only mode (plan 34 / A7b review round 1, S6): render the current
+   * list and nothing that can be clicked - no input, no remove, no save.
+   * The write endpoints behind both modes require `channels.manage` /
+   * `connections.manage`, so a read-only user must not be offered an action
+   * that can only end in a 403 toast (the foolproof-UI rule; frontend
+   * gating mirrors the backend permission and is UX only).
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -38,7 +47,7 @@ export interface OriginsEditorProps {
  * controlled/staged (`onChange`, the plan 34 connect wizard - no origins to
  * persist until the channel itself is created).
  */
-export function OriginsEditor({ origins, onSave, onChange, bare }: OriginsEditorProps) {
+export function OriginsEditor({ origins, onSave, onChange, bare, readOnly }: OriginsEditorProps) {
   const [list, setList] = useState<string[]>(origins);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -83,6 +92,22 @@ export function OriginsEditor({ origins, onSave, onChange, bare }: OriginsEditor
       setSaving(false);
     }
   };
+
+  const readOnlyBody = (
+    <div className="flex flex-col gap-4">
+      {list.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {list.map((origin) => (
+            <Badge key={origin} variant="secondary" appearance="outline" className="font-mono">
+              {origin}
+            </Badge>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">-</p>
+      )}
+    </div>
+  );
 
   const body = (
     <div className="flex flex-col gap-4">
@@ -140,7 +165,8 @@ export function OriginsEditor({ origins, onSave, onChange, bare }: OriginsEditor
     </div>
   );
 
-  if (bare) return body;
+  const content = readOnly ? readOnlyBody : body;
+  if (bare) return content;
 
   return (
     <Card>
@@ -152,7 +178,7 @@ export function OriginsEditor({ origins, onSave, onChange, bare }: OriginsEditor
           </CardDescription>
         </CardHeading>
       </CardHeader>
-      <CardContent className="py-1">{body}</CardContent>
+      <CardContent className="py-1">{content}</CardContent>
     </Card>
   );
 }

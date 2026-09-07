@@ -406,6 +406,17 @@ def test_loader_mints_the_session_itself_from_the_host_page(client):
     assert '"*"' not in body
 
 
+def test_loader_iframe_sends_no_referrer_to_the_panel(client):
+    """Review round 1 (N8) - the customer's page URL can carry an order id, a
+    search term or a session token in its query string; none of that should
+    ride to the panel route as a `Referer`. `sandbox` is deliberately absent
+    (the panel is same-origin with the app and needs its own storage)."""
+    h = _auth(client)
+    widget_key = _connect(client, h).json()["widgetKey"]
+    body = _js(client, widget_key).text
+    assert 'setAttribute("referrerpolicy", "no-referrer")' in body
+
+
 def test_loader_route_carries_no_tenant_identifying_strings(client):
     """AC-WEB-20 - the body contains the widget key and the panel origin and
     NOTHING else that is tenant-identifying: no tenant slug, no tenant name,

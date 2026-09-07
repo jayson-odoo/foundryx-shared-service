@@ -572,7 +572,9 @@ export function Composer({
           <span
             className={cn(
               'size-1.5 rounded-full',
-              visitorPresence?.online ? 'bg-green-500' : 'bg-muted-foreground/40',
+              // Design tokens, not a raw Tailwind palette colour (review
+              // round 1, N5) - `--success` is the house 'live/healthy' ink.
+              visitorPresence?.online ? 'bg-success' : 'bg-muted-foreground/40',
             )}
             aria-hidden="true"
           />

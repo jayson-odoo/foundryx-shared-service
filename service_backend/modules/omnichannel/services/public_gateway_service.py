@@ -334,6 +334,7 @@ class PublicGatewayService:
             windowExpiresAt=_iso_z(thread.windowExpiresAt),
             humanAgentExpiresAt=_iso_z(thread.humanAgentExpiresAt),
             visitorLastSeenAt=_iso_z(thread.visitorLastSeenAt),
+            visitorProfile=thread.visitorProfile,
             priority=thread.priority,
             channelId=thread.channelId,
             channelType=thread.channelType,

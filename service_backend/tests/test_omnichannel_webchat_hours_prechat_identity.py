@@ -94,10 +94,16 @@ def test_online_never_duplicates_the_hours_logic_workspace_wins_over_tenant_defa
 
 
 # ── AC-WEB-54: pre-chat write-if-empty, never a lookup/stitch ───────────────
-def test_pre_chat_writes_name_email_phone_onto_the_new_contact_when_empty(client, session_factory):
-    from modules.omnichannel.models import Contact
+# Amended 2026-09-09 (review round 1, B3): `name` still lands on the contact;
+# `email`/`phone` land on the IDENTITY as unverified visitor-declared values
+# and NEVER on `contacts.email`/`phone`/`phone_digits`, which are inbound
+# stitch keys an anonymous caller must not be able to set.
+def test_pre_chat_writes_name_onto_the_contact_and_email_phone_onto_the_identity(
+    client, session_factory
+):
+    from modules.omnichannel.models import Contact, ContactChannelIdentity
 
-    widget_key, _, _ = _new_channel(client, name="PreChat Chat")
+    widget_key, channel_id, _ = _new_channel(client, name="PreChat Chat")
     token = _session(client, widget_key).json()["token"]
     res = _post_message(
         client,
@@ -112,10 +118,151 @@ def test_pre_chat_writes_name_email_phone_onto_the_new_contact_when_empty(client
     contact = db.query(Contact).filter(Contact.tenant_id == DEFAULT_TENANT_ID).first()
     assert contact.first_name == "Ada"
     assert contact.last_name == "Lovelace"
-    assert contact.email == "ada@example.com"
-    assert contact.phone == "+1 555 000 1111"
-    assert contact.phone_digits == "15550001111"
+    # NOT stitch keys any more.
+    assert contact.email is None
+    assert contact.phone is None
+    assert contact.phone_digits is None
+    identity = (
+        db.query(ContactChannelIdentity)
+        .filter(ContactChannelIdentity.channel_id == channel_id)
+        .first()
+    )
+    assert identity.visitor_profile_json == {
+        "name": "Ada Lovelace",
+        "email": "ada@example.com",
+        "phone": "+1 555 000 1111",
+    }
     db.close()
+
+
+def test_pre_chat_phone_never_becomes_a_whatsapp_stitch_key(client, session_factory):
+    """The B3 attack in one test: anyone holding the public widget key (it is
+    in the customer's page source) posts ONE message carrying a VICTIM's
+    phone number. If that landed on `contacts.phone_digits`, the victim's
+    FIRST WhatsApp message to the business would stitch onto the attacker's
+    own web chat thread (`InboundService._resolve_contact` ->
+    `find_by_phone_in_workspace`), fusing the two conversations."""
+    from modules.omnichannel.models import Channel, Contact, Workspace
+    from modules.omnichannel.security import encrypt_credentials
+    from modules.omnichannel.services import statuses
+    from modules.omnichannel.services.inbound_service import InboundService
+
+    victim_phone = "+60123456789"
+    victim_wa_id = "60123456789"
+
+    widget_key, _channel_id, _ = _new_channel(client, name="Stitch Poison Chat")
+    token = _session(client, widget_key).json()["token"]
+    assert (
+        _post_message(
+            client, widget_key, token, text="I am the attacker",
+            preChat={"phone": victim_phone},
+        ).status_code
+        == 201
+    )
+
+    db = session_factory()
+    ws = (
+        db.query(Workspace)
+        .filter(Workspace.tenant_id == DEFAULT_TENANT_ID, Workspace.is_default.is_(True))
+        .first()
+    )
+    wa = Channel(
+        tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id, channel_type="WHATSAPP",
+        name="B3 WhatsApp", credentials_json=encrypt_credentials({"dev": True}),
+        phone_number_id="pn-b3-stitch", is_active=True,
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "CHANNEL", "ACTIVE"),
+    )
+    db.add(wa)
+    db.commit()
+    attacker_contact_id = (
+        db.query(Contact).filter(Contact.tenant_id == DEFAULT_TENANT_ID).first().id
+    )
+
+    InboundService(db).process_payload(
+        "pn-b3-stitch",
+        {
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "field": "messages",
+                            "value": {
+                                "metadata": {"phone_number_id": "pn-b3-stitch"},
+                                "contacts": [
+                                    {"wa_id": victim_wa_id, "profile": {"name": "Victim"}}
+                                ],
+                                "messages": [
+                                    {
+                                        "id": "wamid.b3.victim",
+                                        "from": victim_wa_id,
+                                        "type": "text",
+                                        "text": {"body": "hello, I need support"},
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                }
+            ]
+        },
+    )
+    db.commit()
+
+    contacts = db.query(Contact).filter(Contact.tenant_id == DEFAULT_TENANT_ID).all()
+    assert len(contacts) == 2, "the victim must get their OWN contact, never the attacker's"
+    victim = [c for c in contacts if c.id != attacker_contact_id][0]
+    assert victim.phone_digits == "60123456789"
+    attacker = [c for c in contacts if c.id == attacker_contact_id][0]
+    assert attacker.phone is None and attacker.phone_digits is None
+    db.close()
+
+
+def test_pre_chat_email_never_lands_on_the_contact_email_column(client, session_factory):
+    """`contacts.email` is what a workflow `email.send` delivers to - an
+    unverified, attacker-chosen address must never reach it from an
+    anonymous surface."""
+    from modules.omnichannel.models import Contact, ContactChannelIdentity
+
+    widget_key, channel_id, _ = _new_channel(client, name="Email Column Chat")
+    token = _session(client, widget_key).json()["token"]
+    assert (
+        _post_message(
+            client, widget_key, token, text="hi", preChat={"email": "victim@example.com"}
+        ).status_code
+        == 201
+    )
+
+    db = session_factory()
+    contact = db.query(Contact).filter(Contact.tenant_id == DEFAULT_TENANT_ID).first()
+    assert contact.email is None
+    identity = (
+        db.query(ContactChannelIdentity)
+        .filter(ContactChannelIdentity.channel_id == channel_id)
+        .first()
+    )
+    assert identity.visitor_profile_json == {"email": "victim@example.com"}
+    db.close()
+
+
+def test_visitor_profile_is_exposed_read_only_on_the_thread_item(client, session_factory):
+    """The values still have to reach an agent - read-only, clearly labelled
+    as visitor-provided, and never as the contact's own phone/email."""
+    widget_key, _channel_id, _ = _new_channel(client, name="Visitor Profile Chat")
+    token = _session(client, widget_key).json()["token"]
+    _post_message(
+        client, widget_key, token, text="hi",
+        preChat={"name": "Ada", "email": "ada@example.com", "phone": "+1 555 000 1111"},
+    )
+    h = _auth(client)
+    threads = client.get("/omnichannel/contacts", headers=h).json()["data"]
+    thread = threads[0]
+    assert thread["visitorProfile"] == {
+        "name": "Ada",
+        "email": "ada@example.com",
+        "phone": "+1 555 000 1111",
+    }
+    assert thread["email"] is None
+    assert thread["phone"] is None
 
 
 def test_pre_chat_never_overwrites_an_already_filled_field(client, session_factory):
@@ -141,9 +288,9 @@ def test_pre_chat_never_overwrites_an_already_filled_field(client, session_facto
 def test_pre_chat_fills_a_field_left_empty_by_an_earlier_message(client, session_factory):
     """Write-if-empty is honored on ANY message, not only the first - a
     field the visitor skipped in message 1 can still be captured later."""
-    from modules.omnichannel.models import Contact
+    from modules.omnichannel.models import Contact, ContactChannelIdentity
 
-    widget_key, _, _ = _new_channel(client, name="Fill Later Chat")
+    widget_key, channel_id, _ = _new_channel(client, name="Fill Later Chat")
     token = _session(client, widget_key).json()["token"]
     _post_message(client, widget_key, token, text="first", preChat={"name": "Ada"})
     res = _post_message(
@@ -154,7 +301,12 @@ def test_pre_chat_fills_a_field_left_empty_by_an_earlier_message(client, session
     db = session_factory()
     contact = db.query(Contact).filter(Contact.tenant_id == DEFAULT_TENANT_ID).first()
     assert contact.first_name == "Ada"
-    assert contact.email == "ada@example.com"
+    identity = (
+        db.query(ContactChannelIdentity)
+        .filter(ContactChannelIdentity.channel_id == channel_id)
+        .first()
+    )
+    assert identity.visitor_profile_json == {"name": "Ada", "email": "ada@example.com"}
     db.close()
 
 
@@ -171,6 +323,29 @@ def test_pre_chat_invalid_email_is_silently_dropped_message_still_lands(client, 
     db = session_factory()
     contact = db.query(Contact).filter(Contact.tenant_id == DEFAULT_TENANT_ID).first()
     assert contact.email is None
+    db.close()
+
+
+def test_pre_chat_invalid_email_is_not_stored_on_the_identity_either(
+    client, session_factory
+):
+    from modules.omnichannel.models import ContactChannelIdentity
+
+    widget_key, channel_id, _ = _new_channel(client, name="Bad Email Identity Chat")
+    token = _session(client, widget_key).json()["token"]
+    assert (
+        _post_message(
+            client, widget_key, token, text="hi", preChat={"email": "not-an-email"}
+        ).status_code
+        == 201
+    )
+    db = session_factory()
+    identity = (
+        db.query(ContactChannelIdentity)
+        .filter(ContactChannelIdentity.channel_id == channel_id)
+        .first()
+    )
+    assert identity.visitor_profile_json in (None, {})
     db.close()
 
 

@@ -22,11 +22,19 @@ session start (AC-WEB-55/56, D-A7B-9 - `identity_key` on the minted token IS
 the sanctioned stitch, never a lookup by pre-chat data), and pre-chat
 write-if-empty on the visitor's OWN already-resolved contact (AC-WEB-54,
 D-A7B-8 - never a lookup or merge against any OTHER contact).
+
+Amended 2026-09-09 (review round 1, B3): pre-chat `email`/`phone` no longer
+touch `contacts.email`/`phone`/`phone_digits` at all - those are INBOUND
+STITCH KEYS and this is an unauthenticated write. They are stored as
+unverified, visitor-declared values on the identity row
+(`contact_channel_identities.visitor_profile_json`) and surfaced read-only to
+agents as `ThreadItem.visitorProfile`. See `_apply_pre_chat`.
 """
 import json
 import logging
 import re
 from datetime import datetime, timezone
+from time import monotonic as _monotonic
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -133,6 +141,19 @@ def cors_headers_for(
     return headers
 
 
+# S8 (review round 1) - the frame-policy read is on the hot path of EVERY
+# panel request (the Next.js middleware calls it before rendering) and each
+# miss costs three DB queries in `resolve_live_channel`. One process-local
+# entry per widget key, `_ORIGINS_CACHE_TTL_SECONDS` old at most.
+_ORIGINS_CACHE_TTL_SECONDS = 60.0
+_origins_cache: Dict[str, Tuple[float, List[str]]] = {}
+
+
+def reset_origins_cache() -> None:
+    """Test seam / ops escape hatch - drop every cached origin list."""
+    _origins_cache.clear()
+
+
 def origins_for_frame_policy(db: Session, widget_key: str) -> List[str]:
     """S4 - the panel document's `Content-Security-Policy: frame-ancestors`
     source (D-A7B-11/AC-WEB-47), mirroring the plan-11H embed precedent's
@@ -140,12 +161,102 @@ def origins_for_frame_policy(db: Session, widget_key: str) -> List[str]:
     inactive/module-off/tenant-blocked all resolve to an EMPTY list (never a
     404 - this is a read the Next.js middleware makes on every panel request,
     so it stays uniform-by-shape rather than uniform-by-status-code) and a
-    read-only lookup, zero DB writes."""
+    read-only lookup, zero DB writes.
+
+    Cached for `_ORIGINS_CACHE_TTL_SECONDS` per widget key (review round 1,
+    S8). ACCEPTED STALENESS, documented rather than invalidated: an origin
+    added/removed in the dashboard, a channel deactivated, or the module
+    turned off can take up to a minute to reach the panel's
+    `frame-ancestors` header (and the preflight echo that shares this
+    lookup). Nothing security-critical rides on it alone - session start
+    re-reads the LIVE channel row on every call and answers an off-list
+    origin with the uniform 404 regardless of what this cache says, so the
+    worst case is a panel that a just-removed site can still FRAME for up to
+    60s without being able to start a session inside it."""
+    return resolve_frame_policy(db, widget_key)[0]
+
+
+# The manifest prefix `routers/webchat_public.py` is mounted on. Declared HERE
+# (not in core) - `bootstrap.register_public_cors` hands it to the module
+# platform's public-CORS registry at boot (plan 34 review round 1, S9).
+WEBCHAT_PUBLIC_PREFIX = "/public/omnichannel/webchat/"
+
+# The CORS preflight runs OUTSIDE FastAPI's dependency system (it is answered
+# by an ASGI middleware before routing), so it cannot take `Depends(get_db)`.
+# Same seam, same reason, as `routers/ws.py`'s handshake: tests inject their
+# sqlite session factory here.
+_preflight_session_factory = None
+
+
+def set_preflight_session_factory(factory) -> None:
+    """Test seam - `None` restores the app's own `SessionLocal`."""
+    global _preflight_session_factory
+    _preflight_session_factory = factory
+
+
+def preflight_origin_allowed(path: str, origin: str) -> bool:
+    """May this exact origin be echoed on a CORS preflight for this exact
+    public web chat path (plan 34 review round 1, S9)?
+
+    Exactly two origins ever may:
+
+    - the embedding CUSTOMER WEBSITE - an entry on the addressed channel's
+      own `allowedOrigins`. The loader's `POST /session` is issued from the
+      customer's top-level document (BL-SS-183), so its preflight carries
+      that origin, and core's `CORSMiddleware` (which knows only this
+      service's `CORS_ORIGINS` env) would refuse it with `400 Disallowed CORS
+      origin` before the real POST was ever sent.
+    - the APP's OWN origin - the panel iframe's Bearer-authed
+      `POST`/`GET /messages` are cross-origin to the backend and preflight
+      too.
+
+    This is NOT the authorization boundary: `start_session` re-reads the LIVE
+    channel row on every call and answers an off-list origin with the uniform
+    404 regardless. Refusing here only stops the browser sending the real
+    request at all. The lookup rides the same 60s per-widget-key cache the
+    frame-policy route uses, so a repeated preflight costs no query."""
+    if not origin:
+        return False
+    if origin == panel_origin():
+        return True
+    widget_key = path[len(WEBCHAT_PUBLIC_PREFIX):].split("/", 1)[0]
+    if not widget_key:
+        return False
+    from app.database import SessionLocal
+
+    db = (_preflight_session_factory or SessionLocal)()
+    try:
+        return origin in origins_for_frame_policy(db, widget_key)
+    finally:
+        db.close()
+
+
+def resolve_frame_policy(db: Session, widget_key: str) -> Tuple[List[str], bool]:
+    """`(allowedOrigins, unresolved_miss)` - the cached form
+    `origins_for_frame_policy` wraps.
+
+    `unresolved_miss` is True only when this call actually went to the
+    database AND the widget key resolved to nothing (unknown / trashed /
+    inactive / module off / tenant blocked). That is precisely the shape of
+    a key-enumeration probe, and it is the ONLY case the route spends a
+    throttle token on (review round 1, S8): the Next.js middleware calls
+    this route server-side on every panel request, so ALL legitimate traffic
+    arrives from ONE IP - counting it would let a busy deployment throttle
+    its own panels off the air."""
+    now = _monotonic()
+    hit = _origins_cache.get(widget_key)
+    if hit is not None and now - hit[0] < _ORIGINS_CACHE_TTL_SECONDS:
+        return list(hit[1]), False
     try:
         channel = resolve_live_channel(db, widget_key)
     except WebchatNotFound:
-        return []
-    return _allowed_origins(channel)
+        origins: List[str] = []
+        unresolved = True
+    else:
+        origins = _allowed_origins(channel)
+        unresolved = False
+    _origins_cache[widget_key] = (now, list(origins))
+    return list(origins), unresolved
 
 
 def resolve_live_channel(db: Session, widget_key: str) -> Channel:
@@ -265,10 +376,19 @@ class WebchatVisitorService:
         origin: Optional[str],
         token: Optional[str],
         identity: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """AC-WEB-23..25/28/29/55/56. Reads ONLY - mints/renews a token but
-        never writes a row (D-A7B-7: contact/identity creation is lazy, on
-        the FIRST message, never at session start).
+    ) -> Tuple[Dict[str, Any], bool]:
+        """AC-WEB-23..25/28/29/55/56. Returns `(payload, resumed)`, where
+        `resumed` is True iff the caller presented a token that VERIFIED
+        against this channel (a page reload by a visitor who has been here
+        before) - the router spends no IP throttle token on those (S7).
+
+        Creates no `contacts` and no `contact_channel_identities` row
+        (D-A7B-7: contact/identity creation is lazy, on the FIRST message,
+        never at session start) - which is what AC-WEB-25 is about. It is not
+        literally write-free (review round 1, N7): `stamp_last_seen` below
+        updates an EXISTING identity's `last_seen_at` for a returning
+        visitor, and the router's own throttle upserts an `auth_throttle`
+        row before calling this.
 
         `identity` is the raw `{userRef, hash}` dict straight off the wire;
         `webchat_service.verify_host_identity` is the ONLY place it is
@@ -351,18 +471,21 @@ class WebchatVisitorService:
         # no-op for a brand-new visitor (no identity row exists yet, D-A7B-7).
         stamp_last_seen(self.db, channel.id, identity_key)
 
-        return {
-            "token": new_token,
-            "expiresAt": expires_at,
-            "visitorId": visitor_id,
-            "workspaceId": channel.workspace_id,
-            "config": self._session_config(channel),
-            "online": _online(self.db, channel),  # AC-WEB-52/D-A7B-24
-            "messages": messages,
-        }
+        return (
+            {
+                "token": new_token,
+                "expiresAt": expires_at,
+                "visitorId": visitor_id,
+                "workspaceId": channel.workspace_id,
+                "config": self._session_config(channel),
+                "online": _online(self.db, channel),  # AC-WEB-52/D-A7B-24
+                "messages": messages,
+            },
+            claims is not None,
+        )
 
     def _session_config(self, channel: Channel) -> Dict[str, Any]:
-        cfg = WebchatService(self.db)._config_dict(channel)
+        cfg = WebchatService(self.db).config_dict(channel)
         branding = (
             self.db.query(TenantBranding)
             .filter(TenantBranding.tenant_id == channel.tenant_id)
@@ -400,14 +523,15 @@ class WebchatVisitorService:
     # ── messages: write ──────────────────────────────────────────────────
     def post_message(
         self, channel: Channel, claims: VisitorClaims, body: Dict[str, Any]
-    ) -> Tuple[Optional[Dict[str, Any]], bool]:
-        """Returns `(visitor_message_or_none, is_honeypot)`. A honeypot hit
-        stores NOTHING and returns `(None, True)` (AC-WEB-32); otherwise
-        `(projected_message, False)`."""
-        honeypot = (body.get("hp") or "").strip()
-        if honeypot:
-            return None, True
+    ) -> Dict[str, Any]:
+        """Returns the projected visitor message. A honeypot hit stores
+        NOTHING and returns a SYNTHETIC one (AC-WEB-32) - see below.
 
+        Amended 2026-09-09 (review round 1, S2): validation runs BEFORE the
+        honeypot check and there is no second return shape. A bot that filled
+        the trap now gets a byte-shaped-identical `201` with the message it
+        "sent", and a bot that also sent bad text gets the same 422 a human
+        would - so no single request tells it which field is the trap."""
         text = body.get("text")
         if not isinstance(text, str) or not text.strip():
             raise WebchatInvalidRequest("text_required", "A message needs some text.")
@@ -420,6 +544,23 @@ class WebchatVisitorService:
             raise WebchatInvalidRequest(
                 "unsupported_content", "This surface does not accept media."
             )
+
+        # AC-WEB-32 (the form-engine precedent) - a filled honeypot stores
+        # nothing at all: no contact, no identity, no message, no event, no
+        # presence stamp. The response is the SAME shape, the SAME status and
+        # the SAME key set a real send returns, built here rather than by a
+        # sibling schema, so the two can never drift apart.
+        if (body.get("hp") or "").strip():
+            return {
+                "id": str(uuid4()),
+                "direction": "in",
+                "text": text,
+                "media": None,
+                "quickReplies": None,
+                "agentName": None,
+                "createdAt": datetime.now(timezone.utc),
+                "status": None,
+            }
 
         # `claims.identity_key` is the ONLY identity this message is ever
         # attributed to - `visitor:<visitorId>` for an ordinary anonymous
@@ -463,20 +604,47 @@ class WebchatVisitorService:
         pre_chat = body.get("preChat")
         if isinstance(pre_chat, dict):
             contact = self.contacts.get_by_id(row.contact_id, channel.tenant_id)
-            if contact is not None and self._apply_pre_chat(contact, pre_chat):
+            identity = self.contacts.find_identity(channel.id, claims.identity_key)
+            if contact is not None and self._apply_pre_chat(contact, identity, pre_chat):
                 self.db.commit()
 
         # AC-WEB-42 - "message post" is the second of the three stamp points.
         # The identity now DEFINITELY exists (this call just created it on a
         # first message, or it already did) - unlike session start's no-op.
         stamp_last_seen(self.db, channel.id, claims.identity_key)
-        item = visitor_message_item(row, channel)
-        return item, False
+        return visitor_message_item(row, channel)
 
-    def _apply_pre_chat(self, contact: Contact, pre_chat: Dict[str, Any]) -> bool:
-        """AC-WEB-54/D-A7B-8 - write ONLY onto fields that are currently
-        empty on THIS contact; returns whether anything changed (so the
-        caller only commits when needed). Never a lookup, never a merge."""
+    def _apply_pre_chat(
+        self, contact: Contact, identity: Optional[Any], pre_chat: Dict[str, Any]
+    ) -> bool:
+        """AC-WEB-54/D-A7B-8, amended 2026-09-09 (review round 1, B3).
+        Returns whether anything changed (so the caller only commits when
+        needed). Never a lookup, never a merge - and, now, never a write to a
+        STITCH KEY.
+
+        Where each value goes and why:
+
+        - `name` -> `contacts.first_name`/`last_name`, write-if-both-empty,
+          exactly as before. A display name is not a stitch key: nothing in
+          the codebase resolves an inbound message to a contact by name, so
+          an attacker-supplied one is a cosmetic nuisance at worst, and an
+          agent needs it on the thread header.
+        - `email` and `phone` -> `identity.visitor_profile_json` ONLY, never
+          `contacts.email`/`contacts.phone`/`contacts.phone_digits`. Those
+          two columns ARE stitch keys: `InboundService._resolve_contact`
+          falls back to `find_by_phone_in_workspace(digits, ...)` when a
+          WhatsApp inbound carries no known WhatsApp identity, so an
+          anonymous caller who knows the public widget key (it is in the
+          customer's page source) could post one pre-chat message carrying a
+          VICTIM's phone number and have the victim's first WhatsApp
+          conversation stitched onto the attacker's own web chat thread.
+          `contacts.email` is the same class of problem one step removed: a
+          workflow `email.send` would deliver a tenant's mail to an
+          unverified, attacker-chosen address.
+
+        The stored values are surfaced read-only to agents as
+        `ThreadItem.visitorProfile`; nothing anywhere looks a contact UP by
+        them."""
         changed = False
         name = _clean_pre_chat_value("name", pre_chat.get("name"))
         if name and not contact.first_name and not contact.last_name:
@@ -484,14 +652,22 @@ class WebchatVisitorService:
             contact.first_name = first or None
             contact.last_name = last or None
             changed = True
-        email = _clean_pre_chat_value("email", pre_chat.get("email"))
-        if email and not contact.email:
-            contact.email = email
-            changed = True
-        phone = _clean_pre_chat_value("phone", pre_chat.get("phone"))
-        if phone and not contact.phone:
-            contact.phone = phone
-            contact.phone_digits = digits_only(phone)
+        if identity is None:  # pragma: no cover - the caller just created it
+            return changed
+        # A FRESH dict, never an in-place mutation: SQLAlchemy does not track
+        # mutations inside a plain JSON column (house rule).
+        profile = dict(identity.visitor_profile_json or {})
+        before = dict(profile)
+        for key in ("name", "email", "phone"):
+            value = _clean_pre_chat_value(key, pre_chat.get(key))
+            # Write-if-empty, same rule as the contact fields above: the
+            # FIRST value a visitor gives for a field is the one kept, so a
+            # later message cannot silently overwrite what the agent already
+            # read.
+            if value and not profile.get(key):
+                profile[key] = value
+        if profile != before:
+            identity.visitor_profile_json = profile
             changed = True
         return changed
 

@@ -357,10 +357,26 @@ class WebchatHostIdentity(BaseModel):
 
 class WebchatSessionRequest(ApiModel):
     """`POST /public/omnichannel/webchat/{widgetKey}/session` body (plan
-    §5.2). Every field optional - a brand-new visitor sends neither."""
+    §5.2). Every field optional - a brand-new visitor sends neither.
+
+    Two deliberately different strictnesses (review round 1, S1):
+
+    - `token` is typed. A non-string used to reach `decode_access_token(123)`
+      -> `AttributeError` -> 500 on an unauthenticated surface; it is now
+      just another session failure mode (the uniform 404).
+    - `identity` is `Any`. AC-WEB-56 requires a missing, malformed or
+      non-verifying host identity assertion to be SILENTLY IGNORED with the
+      session proceeding anonymously - never an error and never a
+      distinguishing response - so rejecting a wrong-shaped one at the
+      envelope would break the contract. `webchat_service.
+      verify_host_identity` is the ONE place it is inspected, and it already
+      returns `None` for every non-`{userRef: str, hash: str}` shape
+      (including a bare string or a list). `WebchatHostIdentity` stays the
+      documented shape of the field.
+    """
 
     token: Optional[str] = None
-    identity: Optional[WebchatHostIdentity] = None
+    identity: Optional[Any] = None
 
 
 class VisitorMessage(ApiModel):
@@ -416,14 +432,40 @@ class WebchatSessionResult(ApiModel):
 
 class WebchatMessageRequest(ApiModel):
     """`POST /public/omnichannel/webchat/{widgetKey}/messages` body (plan
-    §5.2). `preChat` values are written write-if-empty onto the visitor's
-    OWN already-resolved contact only (D-A7B-8/AC-WEB-54) - NEVER a lookup
-    or a stitch against any other contact. `hp` is the honeypot - a
-    legitimate visitor's browser never fills it in (AC-WEB-32)."""
+    §5.2). `hp` is the honeypot - a legitimate visitor's browser never fills
+    it in (AC-WEB-32).
+
+    `preChat` values are written write-if-empty (D-A7B-8/AC-WEB-54) - NEVER
+    a lookup or a stitch against any other contact. Since review round 1
+    (B3): `name` onto the visitor's OWN contact, `email`/`phone` onto their
+    identity's `visitor_profile_json` as unverified, visitor-declared values,
+    never onto `contacts.email`/`phone`/`phone_digits` (inbound stitch keys
+    an unauthenticated caller must not be able to set).
+
+    `Dict[str, Any]`, not `Dict[str, str]`, on purpose: AC-WEB-54 says a bad
+    pre-chat value is silently DROPPED, never rejected (the visitor cannot
+    see or fix the field any more), so type-checking happens value by value
+    in `_clean_pre_chat_value`, not at the envelope. `text`/`hp` are the
+    opposite: they are the request itself, so a non-string there is a
+    typed 422 rather than an `AttributeError` 500 (review round 1, S1)."""
 
     text: str
-    preChat: Optional[Dict[str, Optional[str]]] = None
+    preChat: Optional[Dict[str, Any]] = None
     hp: Optional[str] = None
+
+
+class VisitorProfile(ApiModel):
+    """What a WEB CHAT visitor typed into the pre-chat form - UNVERIFIED and
+    read-only (plan 34 review round 1, B3). Present on `ThreadItem` (and
+    therefore on both gateway contact shapes, per the losslessness rule) so
+    an agent can see the email/phone a visitor gave without those values
+    being written onto the contact's own `email`/`phone` columns, which are
+    inbound STITCH KEYS. Every field is optional and `null` on every channel
+    type but `WEBCHAT`."""
+
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
 
 
 class WebchatMessagesPage(ApiModel):
@@ -433,13 +475,6 @@ class WebchatMessagesPage(ApiModel):
 
     data: List[VisitorMessage]
     nextAfter: Optional[str] = None
-
-
-class WebchatHoneypotResult(ApiModel):
-    """The normal-looking success shape a honeypot hit gets back (AC-WEB-32 -
-    never tip off the bot that anything different happened)."""
-
-    ok: bool = True
 
 
 # ── Shared ──────────────────────────────────────────────────────────────────
@@ -673,6 +708,11 @@ class ThreadItem(ApiModel):
     # on a WEBCHAT thread until the visitor's first session/message/socket
     # connect. Also read on both gateway shapes (S6, the losslessness rule).
     visitorLastSeenAt: Optional[datetime] = None
+    # Plan 34 (A7b, review round 1 B3) - the UNVERIFIED name/email/phone a
+    # web chat visitor typed into pre-chat, read-only. Null on every channel
+    # type but WEBCHAT, and null on a WEBCHAT thread whose visitor was never
+    # asked (or never answered). Never a lookup key anywhere.
+    visitorProfile: Optional[VisitorProfile] = None
     lastIncomingMessageAt: Optional[datetime] = None
     lastMessageAt: Optional[datetime] = None
     lastMessagePreview: Optional[str] = None
@@ -1536,6 +1576,11 @@ class RioContactItem(BaseModel):
     # channel type but WEBCHAT, and null on a WEBCHAT contact until the
     # visitor's first session/message/socket connect.
     visitorLastSeenAt: Optional[str] = None
+    # Plan 34 (A7b, review round 1 B3) - the same UNVERIFIED pre-chat values
+    # as `ThreadItem.visitorProfile` (losslessness rule): a gateway consumer
+    # has no other read source for them, and they are deliberately NOT the
+    # contact's own `phone`/`email` above.
+    visitorProfile: Optional[VisitorProfile] = None
     unreadCount: int = 0
     lastMessageAt: Optional[str] = None
     lastIncomingMessageAt: Optional[str] = None

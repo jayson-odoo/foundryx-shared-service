@@ -17,7 +17,9 @@ import fakeredis.aioredis
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
+from app.models import DEFAULT_TENANT_ID
 from modules.omnichannel.routers import ws as ws_module
+from modules.omnichannel.schemas import SendMessageRequest
 from modules.omnichannel.services import realtime
 from tests.test_omnichannel_channels_webchat import _auth, _connect, _other_tenant_auth
 from tests.test_omnichannel_webchat_public import (
@@ -320,6 +322,190 @@ def test_ws_two_visitors_isolated_from_each_other(client, session_factory, _fake
         )
         frame = json.loads(sock_a.receive_text())
         assert frame["message"]["text"] == "Reply to A"
+
+
+# ── Review round 1, B2: the relay is CHANNEL-scoped, not only contact-scoped ─
+def _wa_inbound_payload(
+    *, pnid="pn-b2-relay", wa_from="60123456789", wamid="wamid.b2.inbound",
+    body="my WhatsApp message",
+):
+    return {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "metadata": {"phone_number_id": pnid},
+                            "contacts": [{"wa_id": wa_from, "profile": {"name": "WA User"}}],
+                            "messages": [
+                                {"id": wamid, "from": wa_from, "type": "text",
+                                 "text": {"body": body}}
+                            ],
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+
+
+def _add_whatsapp_identity(session_factory, contact_id, *, external_user_id, phone):
+    """Give an EXISTING web chat contact a second identity, on a WhatsApp
+    channel in the same workspace - the ordinary end state of "a visitor
+    chatted on the website, then messaged the same business on WhatsApp"
+    (`InboundService._resolve_contact` stitches onto the SAME contact)."""
+    from modules.omnichannel.models import Channel, Contact, ContactChannelIdentity, Workspace
+    from modules.omnichannel.phone import digits_only
+    from modules.omnichannel.security import encrypt_credentials
+    from modules.omnichannel.services import statuses
+
+    db = session_factory()
+    try:
+        contact = db.query(Contact).filter(Contact.id == contact_id).first()
+        ws = db.query(Workspace).filter(Workspace.id == contact.workspace_id).first()
+        wa = Channel(
+            tenant_id=contact.tenant_id, workspace_id=ws.id, channel_type="WHATSAPP",
+            name="B2 WhatsApp", credentials_json=encrypt_credentials({"dev": True}),
+            phone_number_id="pn-b2-relay", is_active=True,
+            status_id=statuses.status_id_for(db, contact.tenant_id, "CHANNEL", "ACTIVE"),
+        )
+        db.add(wa)
+        db.flush()
+        db.add(
+            ContactChannelIdentity(
+                tenant_id=contact.tenant_id, contact_id=contact.id, channel_id=wa.id,
+                external_user_id=external_user_id,
+            )
+        )
+        contact.phone = phone
+        contact.phone_digits = digits_only(phone)
+        db.commit()
+        return wa.id
+    finally:
+        db.close()
+
+
+def test_ws_visitor_never_receives_frames_from_another_channel_on_the_same_contact(
+    client, session_factory, _fake_redis
+):
+    """The realtime room is per WORKSPACE and the pre-filter is per CONTACT,
+    so before this fix every WhatsApp inbound and every agent WhatsApp reply
+    on a stitched contact - INCLUDING agent media, for which the projection
+    mints a signed URL the visitor's browser can fetch - was pushed live to a
+    still-open web chat panel on a public website. It also made the socket
+    deliver strictly MORE than the poll, which AC-WEB-40 says it must not."""
+    from modules.omnichannel.services.inbound_service import InboundService
+    from modules.omnichannel.services.message_service import MessageService
+
+    widget_key, _cid, workspace_id, _vid, token, contact_id = _bootstrap_thread(
+        client, session_factory, name="B2 Cross Channel"
+    )
+    wa_channel_id = _add_whatsapp_identity(
+        session_factory, contact_id, external_user_id="60123456789", phone="+60123456789"
+    )
+    h = _auth(client)
+
+    with client.websocket_connect(
+        f"/omnichannel/ws?workspaceId={workspace_id}&token={token}"
+    ) as sock:
+        db = session_factory()
+        try:
+            # 1. A WhatsApp INBOUND on the stitched contact - the real Meta
+            #    envelope through the UNCHANGED `InboundService` (which keys
+            #    on `phone_number_id`, not the channel id).
+            InboundService(db).process_payload("pn-b2-relay", _wa_inbound_payload())
+            # 2. An agent's WhatsApp TEXT reply on the same contact.
+            MessageService(db).send_message(
+                contact_id,
+                DEFAULT_TENANT_ID,
+                None,
+                SendMessageRequest(messageType="TEXT", body="whatsapp only reply"),
+                channel_id_override=wa_channel_id,
+                actor_is_human=True,
+            )
+            # 3. An agent's WhatsApp MEDIA reply - the signed-URL case.
+            MessageService(db).send_media(
+                contact_id,
+                DEFAULT_TENANT_ID,
+                "u-agent",
+                kind="IMAGE",
+                content=PNG,
+                filename="wa.png",
+                caption=None,
+                channel_id_override=wa_channel_id,
+                actor_is_human=True,
+            )
+        finally:
+            db.close()
+
+        # 4. The web chat reply - the ONLY frame this socket may ever see.
+        client.post(
+            f"/omnichannel/contacts/{contact_id}/messages",
+            headers=h,
+            json={"body": "web chat reply"},
+        )
+        frame = json.loads(sock.receive_text())
+        assert frame["message"]["text"] == "web chat reply"
+
+    # ... and the poll agrees exactly (AC-WEB-40): the WhatsApp rows are not
+    # in the visitor's history either.
+    history = _get_messages(client, widget_key, token).json()["data"]
+    assert "whatsapp only reply" not in json.dumps(history)
+    assert "my WhatsApp message" not in json.dumps(history)
+
+
+# ── Review round 1, S4: an epoch bump closes an ALREADY-OPEN socket ─────────
+def test_ws_visitor_socket_closes_when_the_epoch_is_bumped_while_open(
+    client, session_factory, _fake_redis
+):
+    """AC-WEB-28 amended: "sign out all visitors" reads to an admin as
+    immediate. Before this fix the visitor principal was resolved once at the
+    handshake and never re-checked, so an already-open panel kept receiving
+    agent replies until the visitor happened to close the tab."""
+    _wk, channel_id, workspace_id, _vid, token, _contact_id = _bootstrap_thread(
+        client, session_factory, name="S4 Revoke Live"
+    )
+    h = _auth(client)
+    ws_module.set_visitor_reverify_seconds(0.05)
+    try:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(
+                f"/omnichannel/ws?workspaceId={workspace_id}&token={token}"
+            ) as sock:
+                res = client.post(
+                    f"/omnichannel/channels/{channel_id}/widget/sign-out-visitors", headers=h
+                )
+                assert res.status_code == 200
+                sock.receive_text()  # blocks until the revalidator closes it
+    finally:
+        ws_module.set_visitor_reverify_seconds(60.0)
+    assert exc.value.code == 4403
+
+
+def test_ws_staff_socket_is_not_revalidated_on_a_timer(client, session_factory, _fake_redis):
+    """Only the VISITOR branch re-verifies (S4) - the staff/embed principals
+    keep their existing behaviour, which this slice is not the place to
+    change. Pinned so a later reader does not "generalize" it by accident."""
+    _wk, _cid, workspace_id, _vid, _token, contact_id = _bootstrap_thread(
+        client, session_factory, name="S4 Staff Untouched"
+    )
+    h = _auth(client)
+    staff_token = h["Authorization"].split(" ", 1)[1]
+    ws_module.set_visitor_reverify_seconds(0.05)
+    try:
+        with client.websocket_connect(
+            f"/omnichannel/ws?workspaceId={workspace_id}&token={staff_token}"
+        ) as sock:
+            client.post(
+                f"/omnichannel/contacts/{contact_id}/messages",
+                headers=h,
+                json={"body": "still connected"},
+            )
+            frame = json.loads(sock.receive_text())
+            assert frame["type"] == "message.created"
+    finally:
+        ws_module.set_visitor_reverify_seconds(60.0)
 
 
 # ── AC-WEB-42: last_seen_at / visitorLastSeenAt presence ────────────────────

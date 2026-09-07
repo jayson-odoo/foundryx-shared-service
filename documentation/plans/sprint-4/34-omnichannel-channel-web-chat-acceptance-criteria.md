@@ -170,7 +170,11 @@ IDs: `AC-WEB-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   (never `*`) and are authorized by the visitor token alone.
 - **AC-WEB-25 [BE]** Given a session start, then NO `contacts` row and NO
   `contact_channel_identities` row is created: a visitor id is minted into the token only. A
-  thousand page views produce zero database rows in either table.
+  thousand page views produce zero database rows in either table. Amended 2026-09-09 (review N7):
+  this is about the CONTACT GRAPH, and is met as written. The request is not literally write-free -
+  the throttle upserts one `auth_throttle` row per counted call, and a RETURNING visitor's existing
+  identity gets its `last_seen_at` stamped (AC-WEB-42). Since review S7, a session start presenting
+  a token that verifies against the channel spends no IP throttle token at all.
 - **AC-WEB-26 [BE]** Given `POST /public/omnichannel/webchat/{widgetKey}/messages` with a valid
   visitor token and a text body, then on the FIRST such message the contact and its
   `ContactChannelIdentity(channel_type WEBCHAT, external_user_id = "visitor:<visitorId>")` are
@@ -185,7 +189,13 @@ IDs: `AC-WEB-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   distinguishes the four cases.
 - **AC-WEB-28 [BE]** Given `channels.widget_token_epoch` is incremented (an admin "sign out all
   visitors" action), then every previously issued visitor token for that channel is refused on its
-  next use, and a fresh session start immediately succeeds.
+  next use, and a fresh session start immediately succeeds. Amended 2026-09-09 (review S4): this
+  now also covers ALREADY-OPEN WebSockets. The visitor principal used to be resolved once at the
+  handshake and never re-checked, so an open panel kept receiving agent replies until the visitor
+  closed the tab - which is not what "sign out all visitors" reads as to an admin. A live visitor
+  socket re-runs the FULL authorization (token, epoch, channel active/untrashed, module active,
+  tenant `signin_allowed`) every `VISITOR_REVERIFY_SECONDS` (60s, injectable for tests) and closes
+  `4403` on failure; the panel treats `4403` as permanent and falls back to the poll (review S3).
 - **AC-WEB-29 [BE]** Given a visitor token within 7 days of expiry presented at session start, then
   the response carries a renewed token bound to the SAME visitor id and contact; a token more than
   7 days from expiry is returned unchanged.
@@ -198,7 +208,13 @@ IDs: `AC-WEB-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   truncates. A body larger than the endpoint's read cap is refused without being buffered.
 - **AC-WEB-32 [BE]** Given a pre-chat submission whose honeypot field is non-empty, then the
   endpoint returns the normal success shape and stores NOTHING - no contact, no identity, no
-  message, no event (the form-engine precedent: never tip off the bot).
+  message, no event (the form-engine precedent: never tip off the bot). Amended 2026-09-09 (review
+  S2): "the normal success shape" is now enforced literally - `201` with a synthetic
+  `VisitorMessage` (fresh uuid, `direction: "in"`, the submitted text, `createdAt` now, `status:
+  null`), the same status code and the same key set a real send returns, and the ROUTER does not
+  branch on the honeypot at all so the two cannot drift. Validation runs BEFORE the trap check, so
+  an invalid body fails identically either way. The earlier `200 {"ok": true}` told a bot which
+  field was the trap on its first request; the test that pinned that shape pinned the defect.
 - **AC-WEB-33 [BE]** Given the public web chat surface, then there is NO upload endpoint of any
   kind: a multipart request to the message endpoint is refused, and a message body carrying a media
   reference is refused with a typed 422.
@@ -208,8 +224,14 @@ IDs: `AC-WEB-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   fields, close reasons, internal ids other than the message id, and any other contact's messages
   are ABSENT from every response.
 - **AC-WEB-35 [T]** Given the visitor projection, then it is fail-closed: a message kind, a sender
-  source or a realtime frame type it does not explicitly allow is DROPPED, and a test asserts that
-  adding an unknown value produces no visitor-visible output rather than passing it through.
+  source, a DELIVERY STATUS, a FRAME CHANNEL or a realtime frame type it does not explicitly allow
+  is DROPPED, and a test asserts that adding an unknown value produces no visitor-visible output
+  rather than passing it through. Amended 2026-09-09 (review B1/B2): two fields used to escape the
+  discipline. `status` was passed through raw, so an in-flight `QUEUED`/`SENDING` row failed the
+  wire model's `Literal` INSIDE the route and 500'd the whole transcript (an allowlist maps
+  unknown/in-flight to `null`). The frame's `channelId` was never checked, so frames from another
+  channel on the same contact were relayed (the frame must now match the visitor's own channel, and
+  a missing `channelId` is dropped).
 
 ## Slice S3 - Backend: outbound to the visitor and realtime
 
@@ -223,15 +245,26 @@ IDs: `AC-WEB-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   publish.
 - **AC-WEB-38 [BE]** Given the EXISTING conversation WebSocket endpoint, then it accepts a third
   principal type resolved from a visitor token (`typ="webchat"`), scoped to that visitor's single
-  contact; the frames it relays to that principal are passed through the visitor projection and a
-  frame for any other contact is never relayed.
+  contact AND to that visitor's own channel; the frames it relays to that principal are passed
+  through the visitor projection, and a frame for any other contact - or for any other CHANNEL on
+  the same contact - is never relayed. Amended 2026-09-09 (review B2): the channel half was
+  missing.
 - **AC-WEB-39 [T]** Given a visitor socket and a second visitor on the same channel, then a message
   sent by visitor B produces no frame on visitor A's socket, and an internal note added by an agent
-  on visitor A's own thread produces no frame on visitor A's socket.
+  on visitor A's own thread produces no frame on visitor A's socket. Amended 2026-09-09 (review
+  B2): a THIRD case is required, and is where it actually failed - given visitor A's contact also
+  holds a WhatsApp identity (the normal outcome once that person messages the business on WhatsApp
+  too), a WhatsApp inbound, an agent WhatsApp text reply and an agent WhatsApp MEDIA reply on that
+  same contact all produce no frame on the web chat socket, while the web chat reply still does.
 - **AC-WEB-40 [BE]** Given a visitor whose WebSocket cannot open or drops, then
   `GET .../messages?after=<lastSeenId>` returns exactly the messages the socket would have
   delivered, so polling is a complete fallback and is served by the SAME endpoint that serves
-  history (no third transport exists).
+  history (no third transport exists). Amended 2026-09-09 (review B1/B2): this was false in BOTH
+  directions - the poll 500'd on an in-flight delivery status (B1) and the socket delivered frames
+  from other channels that the poll never would (B2). Both are fixed, and the equality is now
+  asserted by test rather than by construction. Review S3 adds the other half of "cannot open": the
+  panel stops reconnecting on a permanent `4403` refusal (a revoked epoch, a dead channel, a
+  blocked tenant) and relies on the poll, instead of retrying every 3 seconds forever.
 - **AC-WEB-41 [BE]** Given an agent sends media on a `WEBCHAT` thread, then the visitor projection
   carries a signed, short-TTL media URL bound to that message id, generated by the EXISTING
   `signed_media_url` helper; a visitor token for a different contact cannot obtain such a URL, and a
@@ -292,9 +325,20 @@ IDs: `AC-WEB-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   instead of its online greeting and shows the pre-chat step if any pre-chat toggle is on; the
   message the visitor sends afterwards travels the SAME path as an online message - there is no
   separate offline-message entity anywhere.
-- **AC-WEB-54 [BE]** Given a pre-chat submission with name / email / phone, then those values are
-  written onto the resolved contact ONLY where the corresponding field is currently empty, and they
-  NEVER cause a lookup or merge against any other existing contact.
+- **AC-WEB-54 [BE]** Given a pre-chat submission with name / email / phone, then they are written
+  write-if-empty and NEVER cause a lookup or merge against any other existing contact. Amended
+  2026-09-09 (review B3): WHERE they are written now matters as much as whether. `name` goes onto
+  the visitor's OWN contact (`first_name`/`last_name`) as before - nothing resolves an inbound
+  message by name. `email` and `phone` go ONLY onto that identity's
+  `contact_channel_identities.visitor_profile_json`, as unverified visitor-declared values, and
+  NEVER onto `contacts.email`/`contacts.phone`/`contacts.phone_digits`. Reason: pre-chat is an
+  UNAUTHENTICATED write (the widget key is in the customer's page source) and `phone_digits` is
+  exactly the key `InboundService._resolve_contact` stitches a first WhatsApp inbound on - so the
+  old behaviour let anyone pre-create a contact carrying a victim's number and have the victim's
+  WhatsApp conversation fused onto it. Pinned by test: pre-chat phone X then a WhatsApp inbound
+  from X yields TWO distinct contacts, and a pre-chat email never reaches `contacts.email`. The
+  values are surfaced read-only to agents as `ThreadItem.visitorProfile` (and on both gateway
+  shapes, per the losslessness rule).
 - **AC-WEB-55 [BE]** Given a host identity assertion `{ userRef, hash }` whose HMAC verifies
   against the channel's widget secret, then the session resolves the identity
   `external_user_id = "host:<userRef>"` on that channel, reusing its contact when one exists and

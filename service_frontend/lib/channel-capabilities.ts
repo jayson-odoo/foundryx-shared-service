@@ -7,9 +7,16 @@
  *
  * Parity-pinned to the backend's authoritative `messaging_policy.CAPABILITIES`
  * / `messaging_policy.POLICIES` (`modules/omnichannel/services/
- * messaging_policy.py`, landing in S2) by a golden test once that module
- * exists - `channel-capabilities.test.ts` pins this side of the contract now
+ * messaging_policy.py`) by the golden test in `channel-capabilities.test.ts`
  * (D-A7-10: a UX-only mirror, never a new wire field).
+ *
+ * What "parity-pinned" does and does not mean (review round 1, N9): the
+ * backend record models `document`/`sticker`/`template`/`interactive_list`/
+ * `location`/`contacts`/`reaction_outbound` and the window policy. It does
+ * NOT model `image`/`video`/`audio`/`voice` at all - every implemented type
+ * carries those - so those four flags are this file's own UX detail and the
+ * golden test pins them here alone. The fields that DO exist on both sides
+ * must agree exactly.
  */
 import { CircleHelp, Facebook, Globe, Instagram, MessageCircle, type LucideIcon } from 'lucide-react';
 import type { ChannelType } from '@/types/omnichannel';
@@ -70,11 +77,21 @@ export const CHANNEL_CAPABILITIES: Record<ChannelType, ChannelCapabilities> = {
     channelType: 'WEBCHAT',
     label: 'Web chat',
     icon: Globe,
-    accentClassName: 'bg-[#6366F1]/10 text-[#6366F1]',
+    // Review round 1 (N5): the three Meta types echo a real external BRAND
+    // hex, which is the only reason a raw colour is defensible in this file.
+    // Web chat has no external provider (D-A7B-1) and therefore no brand to
+    // echo, so its chip rides design tokens like every other non-brand
+    // surface. The Meta hexes are deliberately left alone.
+    accentClassName: 'bg-secondary text-secondary-foreground',
     windowHours: 0,
     humanAgentHours: null,
     reengageMode: 'none',
-    media: { image: true, video: true, audio: true, voice: false, document: true, sticker: false },
+    // `voice` is TRUE (review round 1, N9): `messaging_policy.CAPABILITIES`
+    // does not model the audio kinds at all and `webchat_projection.
+    // _ALLOWED_MESSAGE_KINDS` includes `VOICE`, so a `false` here was a
+    // silent divergence from the backend the header comment claims parity
+    // with, not a deliberate restriction.
+    media: { image: true, video: true, audio: true, voice: true, document: true, sticker: false },
     quickReplies: true,
     list: false,
     location: false,

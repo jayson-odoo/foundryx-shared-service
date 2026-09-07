@@ -243,6 +243,8 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
             channel={channel}
             channelId={channelId}
             onChannelSynced={setChannel}
+            webchatConfig={webchatConfig}
+            onWebchatConfigSaved={setWebchatConfig}
           />
         ),
       },

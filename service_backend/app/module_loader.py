@@ -95,8 +95,9 @@ def load_modules(app: FastAPI) -> None:
 
 def register_module_boot(name: str) -> None:
     """Call a module's boot-time registration hooks if present: capabilities
-    (D5) + engine entities (status/fact/terminology/importer, plan 11 D9). Both
-    are idempotent - safe to call at every boot/bootstrap."""
+    (D5), engine entities (status/fact/terminology/importer, plan 11 D9), and
+    public CORS prefixes (plan 34 review round 1, S9). All are idempotent -
+    safe to call at every boot/bootstrap."""
     from app.services.app_store_service import module_hooks
 
     hooks = module_hooks(name)
@@ -106,6 +107,12 @@ def register_module_boot(name: str) -> None:
         hooks.register_capabilities()
     if hasattr(hooks, "register_engine_entities"):
         hooks.register_engine_entities()
+    # Public CORS prefixes (plan sprint-4/34 review round 1, S9) - a module
+    # whose `"public": true` router is called cross-origin from sites the
+    # CORE cannot know (they live in tenant data) registers its own prefix +
+    # origin resolver here, next to capabilities. Idempotent.
+    if hasattr(hooks, "register_public_cors"):
+        hooks.register_public_cors()
 
 
 def boot_module_hooks() -> None:

@@ -294,13 +294,14 @@ class ThrottleService:
     #
     # TWO independent key namespaces inside the ONE scope: `ip:<ip>` (the
     # cheap, zero-DB-dependent gate checked first on every request) and
-    # `v:<visitorId>` (checked once the caller's visitor id is known - the
-    # session endpoint before a token exists, and every message endpoint
-    # after Bearer verification). Either tripping refuses the request -
-    # a single abusive visitor id is caught on ITS OWN counter without
-    # waiting for a whole office's shared IP budget to exhaust, and a single
-    # IP minting fresh visitor ids to dodge the visitor bucket still trips
-    # the IP bucket.
+    # `v:<visitorId>` (checked on `POST /messages` ONLY, after Bearer
+    # verification resolves the visitor id - review round 1, N6: the session
+    # endpoint has no verified visitor id to key on at the point it
+    # throttles, so it checks the IP namespace alone). Either tripping
+    # refuses the request - a single abusive visitor id is caught on ITS OWN
+    # counter without waiting for a whole office's shared IP budget to
+    # exhaust, and a single IP minting fresh visitor ids to dodge the visitor
+    # bucket still trips the IP bucket.
 
     def enforce_webchat(self, *, ip: Optional[str] = None, visitor_id: Optional[str] = None) -> None:
         """Either or both of `ip`/`visitor_id` may be checked in one call -

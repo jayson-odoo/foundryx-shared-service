@@ -39,6 +39,32 @@ _ALLOWED_FRAME_TYPES = {"message.created"}
 
 _DIRECTION_BY_SENDER = {"CONTACT": "in", "AGENT": "out"}
 
+# Delivery statuses a visitor may ever see, mapped onto the wire vocabulary
+# `schemas.VisitorMessage.status` pins (review round 1, B1). The allowlist
+# lives HERE, not in the Pydantic `Literal`: `ConversationMessage.delivery_
+# status` also legitimately holds `QUEUED` (the instant an agent reply is
+# committed, before the Celery send task picks it up) and `SENDING`, and
+# passing either through raised a `ValidationError` INSIDE the public route -
+# a 500 that took the visitor's whole transcript with it, permanently while
+# the omnichannel worker was down. An in-flight or unrecognized status now
+# projects as `None` ("no receipt yet"), the same fail-closed discipline
+# sender type and message kind already follow (AC-WEB-35).
+_STATUS_BY_DELIVERY = {
+    "SENT": "sent",
+    "DELIVERED": "delivered",
+    "READ": "read",
+    "FAILED": "failed",
+}
+
+
+def _project_status(raw: Any) -> Optional[str]:
+    """The ONE place a stored/serialized delivery status becomes a visitor-
+    visible one. Anything not on `_STATUS_BY_DELIVERY` - `QUEUED`, `SENDING`,
+    `None`, a non-string, or a value some future provider adds - is `None`."""
+    if not isinstance(raw, str):
+        return None
+    return _STATUS_BY_DELIVERY.get(raw.strip().upper())
+
 
 def _agent_display_name(channel: Channel) -> str:
     cfg = channel.widget_config_json or {}
@@ -93,22 +119,36 @@ def visitor_message_item(
         "quickReplies": None,
         "agentName": _agent_display_name(channel) if direction == "out" else None,
         "createdAt": message.created_at,
-        "status": (message.delivery_status or "").lower() or None,
+        "status": _project_status(message.delivery_status),
     }
 
 
 def visitor_frame(
-    frame: Dict[str, Any], channel: Channel, contact_id: str
+    frame: Dict[str, Any], channel: Channel, contact_id: str, channel_id: str
 ) -> Optional[Dict[str, Any]]:
     """Project ONE realtime pub/sub frame for relay to a visitor's own
     socket (S3 wires the actual WS relay through this chokepoint - built now
     so AC-WEB-35's fail-closed test covers the frame-type case, not only the
     REST-read case). Any frame type not explicitly allowed, or one that does
-    not belong to THIS visitor's own contact, is dropped (R1)."""
+    not belong to THIS visitor's own contact ON THIS VISITOR'S OWN CHANNEL,
+    is dropped (R1).
+
+    `channel_id` (review round 1, B2) closes the gap the contact filter alone
+    left open: one contact can legitimately carry identities on several
+    channels (a visitor who also messages the business on WhatsApp stitches
+    onto the SAME contact), the realtime room is per WORKSPACE, and the REST
+    read has always filtered `ConversationMessage.channel_id == channel.id` -
+    so without this check the socket delivered strictly MORE than the poll
+    (AC-WEB-40), including agent WhatsApp replies and their signed media
+    URLs, to a browser sitting on a public website. Fail closed: a frame
+    whose `message.channelId` is missing or `None` is dropped, never relayed
+    on the assumption that it is ours."""
     if frame.get("type") not in _ALLOWED_FRAME_TYPES:
         return None
     message = frame.get("message") or {}
     if message.get("contactId") != contact_id:
+        return None
+    if not channel_id or message.get("channelId") != channel_id:
         return None
     sender_type = message.get("senderType")
     if sender_type not in _ALLOWED_SENDER_TYPES:
@@ -135,5 +175,5 @@ def visitor_frame(
         "quickReplies": None,
         "agentName": _agent_display_name(channel) if direction == "out" else None,
         "createdAt": message.get("createdAt"),
-        "status": (message.get("deliveryStatus") or "").lower() or None,
+        "status": _project_status(message.get("deliveryStatus")),
     }

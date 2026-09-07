@@ -23,6 +23,7 @@ import secrets as pysecrets
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -39,6 +40,7 @@ from ..schemas import (
     WebchatAppearance,
     WebchatConfig,
     WebchatConnectResult,
+    WebchatHostIdentity,
     WebchatPreChatToggles,
 )
 from ..security import decrypt_credentials, encrypt_credentials
@@ -98,7 +100,7 @@ def widget_secret_for(channel: Channel) -> Optional[str]:
     return creds.get("widgetSecret")
 
 
-def verify_host_identity(channel: Channel, identity: Optional[Dict[str, Any]]) -> Optional[str]:
+def verify_host_identity(channel: Channel, identity: Any) -> Optional[str]:
     """D-A7B-9/AC-WEB-55/56 - verify a host identity assertion
     `{userRef, hash}` against `channel`'s CURRENT widget secret:
     `hash == hex(HMAC-SHA256(userRef, secret))`, constant-time compared.
@@ -118,13 +120,21 @@ def verify_host_identity(channel: Channel, identity: Optional[Dict[str, Any]]) -
     honoring only the current secret matches "the epoch is a separate
     control from the secret" - a customer who wants zero-downtime secret
     rotation for identity assertions would need dual-secret support, which
-    is not built here (BL candidate, not required by any AC)."""
-    if not isinstance(identity, dict):
+    is not built here (BL candidate, not required by any AC).
+
+    `identity` arrives RAW off the wire (review round 1, S1): the session
+    body model deliberately types it `Any`, because AC-WEB-56 requires a
+    wrong-shaped assertion to be silently ignored rather than 422'd, and a
+    strict envelope would have made a typo in an integrator's payload an
+    error the visitor sees. The shape check is therefore HERE, through the
+    documented `WebchatHostIdentity` model - one declaration of the shape,
+    used, rather than a second hand-rolled copy of it (N1)."""
+    try:
+        assertion = WebchatHostIdentity.model_validate(identity)
+    except ValidationError:
         return None
-    user_ref = identity.get("userRef")
-    hash_hex = identity.get("hash")
-    if not isinstance(user_ref, str) or not isinstance(hash_hex, str):
-        return None
+    user_ref = assertion.userRef
+    hash_hex = assertion.hash
     if not _USER_REF_RE.fullmatch(user_ref):
         return None
     secret = widget_secret_for(channel)
@@ -151,7 +161,12 @@ class WebchatService:
         assert_webchat(c)
         return c
 
-    def _config_dict(self, channel: Channel) -> Dict[str, Any]:
+    def config_dict(self, channel: Channel) -> Dict[str, Any]:
+        """The channel's stored widget config merged over the house defaults -
+        the ONE place those defaults are applied. Public (review round 1, N2):
+        `webchat_visitor_service._session_config` builds the PUBLIC session
+        payload from it, and a sibling service reaching into a private method
+        is exactly how the two copies of a default drift apart."""
         cfg = channel.widget_config_json or {}
         appearance = {**DEFAULT_APPEARANCE, **(cfg.get("appearance") or {})}
         pre_chat = {**DEFAULT_PRE_CHAT, **(cfg.get("preChat") or {})}
@@ -164,7 +179,7 @@ class WebchatService:
         }
 
     def _to_config(self, channel: Channel) -> WebchatConfig:
-        cfg = self._config_dict(channel)
+        cfg = self.config_dict(channel)
         widget_key = channel.widget_key or ""
         return WebchatConfig(
             widgetKey=widget_key,
@@ -216,7 +231,7 @@ class WebchatService:
         self, channel_id: str, payload: UpdateWebchatConfigInput, tenant_id: str
     ) -> WebchatConfig:
         channel = self._channel(channel_id, tenant_id)
-        cfg = self._config_dict(channel)
+        cfg = self.config_dict(channel)
         if payload.allowedOrigins is not None:
             cfg["allowedOrigins"] = _validate_origins(payload.allowedOrigins)
         if payload.appearance is not None:

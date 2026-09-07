@@ -267,6 +267,17 @@ export type ThreadStatus = 'OPEN' | 'SNOOZED' | 'CLOSED';
 export type ThreadPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
 
 /**
+ * What a web chat visitor typed into the pre-chat form - UNVERIFIED,
+ * visitor-declared, read-only (plan 34 / A7b, review round 1 B3). Stored on
+ * the channel identity, never on the contact's own `email`/`phone` columns.
+ */
+export interface VisitorProfile {
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+}
+
+/**
  * A conversation thread = a contact + its thread metadata (mirrors backend
  * `contacts` - the contact IS the thread; messages hang off it).
  */
@@ -331,6 +342,15 @@ export interface ConversationThread {
    * Wired to the real `ThreadItem.visitorLastSeenAt` field since slice S3.
    */
   visitorLastSeenAt?: string | null; // ISO
+  /**
+   * The UNVERIFIED name / email / phone a web chat visitor typed into the
+   * pre-chat form (plan 34 / A7b, review round 1 B3). Read-only everywhere:
+   * they are deliberately NOT the contact's own `email`/`phone`, which are
+   * inbound stitch keys an anonymous caller must not be able to set. Null on
+   * every other channel type, and on a web chat thread whose visitor was
+   * never asked (or never answered).
+   */
+  visitorProfile?: VisitorProfile | null;
   lastIncomingMessageAt: string | null; // ISO
   lastMessageAt: string | null; // ISO
   /** Last visible message body (thread-list preview; server-computed). */

@@ -70,7 +70,18 @@ describe('CHANNEL_CAPABILITIES', () => {
     expect(c.contacts).toBe(false);
     expect(c.outboundReaction).toBe(false);
     expect(c.quickReplies).toBe(true);
-    expect(c.media).toEqual({ image: true, video: true, audio: true, voice: false, document: true, sticker: false });
+    // `voice: true` since review round 1 (N9) - `webchat_projection.
+    // _ALLOWED_MESSAGE_KINDS` includes `VOICE` and the backend capability
+    // record does not model the audio kinds at all, so `false` here was a
+    // silent divergence from the contract this table claims to mirror.
+    expect(c.media).toEqual({ image: true, video: true, audio: true, voice: true, document: true, sticker: false });
+  });
+
+  it('web chat uses design tokens for its chip, not a brand hex (N5)', () => {
+    // The three Meta types echo a real external brand colour, which is the
+    // only reason a raw hex is defensible here; web chat has no provider on
+    // the far side and therefore no brand to echo.
+    expect(channelCapabilities('WEBCHAT').accentClassName).not.toMatch(/#|bg-\[/);
   });
 
   it('an unmodelled channel type (no DB enum, BL-SS-122) falls back to a neutral UNKNOWN record instead of throwing', () => {
