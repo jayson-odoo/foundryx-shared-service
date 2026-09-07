@@ -473,6 +473,47 @@ def test_backfill_ignores_a_query_that_matches_another_companys_database(db):
     assert db.get(AcEntityConfig, config_id).source_config["query"] == stored
 
 
+def test_backfill_leaves_an_existing_purchase_order_task_completely_alone(db, caplog):
+    """A PO task shares the generic header query byte for byte with an SPO
+    task (same preset text, same company database) - the backfill must still
+    not touch it: no query rewrite, no ``Ref`` in ``result_columns``, no
+    mapping row, and no warning naming it either (it is not a customised
+    SPO query, it is simply not an SPO task)."""
+    helper = _backfill()
+    company = _api_company(db, database="AED_POONLY")
+    po = _document_config(
+        db, company, ENTITY_PURCHASE_ORDER,
+        query=OLD_PO_HEADER_QUERY.replace("{database}", "AED_POONLY"),
+    )
+    po_id = po.id
+    stored_query = po.source_config["query"]
+    stored_source = dict(po.source_config)
+    stored_columns = list(po.result_columns)
+    mapping_before = (
+        db.query(AcFieldMapping).filter(AcFieldMapping.company_id == company.id).count()
+    )
+    db.expire_all()
+
+    with caplog.at_level(logging.WARNING):
+        touched = helper(db, schema=None)
+    db.expire_all()
+
+    assert touched == 0, "a company with only a PO task must count as zero rows touched"
+    after = db.get(AcEntityConfig, po_id)
+    assert after.source_config["query"] == stored_query
+    assert after.source_config == stored_source
+    assert list(after.result_columns) == stored_columns
+    assert "Ref" not in after.result_columns
+    assert _ref_rows(db, company.id, ENTITY_PURCHASE_ORDER) == []
+    assert (
+        db.query(AcFieldMapping).filter(AcFieldMapping.company_id == company.id).count()
+        == mapping_before
+    )
+    assert not [r for r in caplog.records if po_id in r.getMessage()], (
+        "the backfill logged about a purchase_order task"
+    )
+
+
 def test_backfill_is_a_no_op_on_a_schema_that_predates_its_tables():
     """Runs at ANY module stamp (0016 and ``update_tenant`` both call it), so
     a bind without ``ac_field_mapping`` / without ``source_config`` must be a
