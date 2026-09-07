@@ -349,3 +349,32 @@ files). Frontend: `middleware.test.ts` (new, 4 passed); `npx eslint` 0 errors on
 `middleware.ts`/`middleware.test.ts`. Full detail and live-probe transcripts (601-probe curl loop,
 `psql auth_throttle` zero-rows check, the middleware CSP header for a known vs. unknown widget key):
 `34-evidence/R2/README.md`.
+
+## Review round 3 (2026-09-09) - fixes landed
+
+One blocker (a synchronous DB-touching resolver on the ASGI event loop, exposed by round 2's own
+throttle removal), one should-fix on the same cache's thread-safety, and two nits. Live-probe
+transcript: `34-evidence/R3/README.md`.
+
+| Finding | What it was | Fix | File(s) | Test(s) |
+|---|---|---|---|---|
+| B5 | `PublicCorsMiddleware.__call__` called the registered resolver directly, synchronously, on the ASGI event loop; a cache miss runs `resolve_live_channel`'s three DB queries there, and B4 (round 2) had already removed the only rate limit bounding how often an unauthenticated caller could force a miss - a sustained distinct-key probe could stall the worker's event loop for up to a connection-pool timeout once the pool exhausted | `PublicCorsMiddleware._allows` is now `async` and dispatches the resolver through `starlette.concurrency.run_in_threadpool`, keeping the existing broad `except` around it; `public_cors.py`'s provider contract docstring now says a resolver MAY do blocking I/O and is always run off the loop | `app/module_platform/public_cors_middleware.py`, `app/module_platform/public_cors.py` | `tests/test_module_platform.py::test_public_cors_middleware_resolver_runs_off_the_event_loop_and_fails_closed_on_error` (drives the middleware end-to-end with a hand-rolled ASGI scope, asserts the resolver's thread differs from the calling thread AND that a raising resolver still yields no `Access-Control-Allow-Origin`); `::test_public_cors_middleware_refuses_when_a_resolver_raises` updated for the new async signature; full regression `test_omnichannel_webchat_public.py` 53 passed (exercises the real preflight through `TestClient`) |
+| S-new-2 | `_origins_cache`'s check-then-act sequences (get -> expire -> del, set -> move_to_end -> evict) were not atomic, and the cache is genuinely touched from multiple thread contexts (the sync `frame_policy` route's threadpool threads, and the CORS middleware's resolver threads once B5 dispatches it off the loop) - a race could raise `KeyError` out of a route as a 500, or be silently swallowed inside the preflight resolver, refusing a legitimate origin | Every read/write of `_origins_cache` now runs inside one module-level `threading.Lock`; the whole get-or-expire-or-store sequence is a single critical section | `modules/omnichannel/services/webchat_visitor_service.py` | `tests/test_omnichannel_webchat_frame_policy.py::test_origins_cache_is_thread_safe_under_concurrent_hammering` (16 threads, near-zero TTL and a tiny cap to force constant expiry AND eviction, asserts nothing raised) |
+| N-new-5 | `middleware.ts` moved `await response.json()` outside the `try`, so a 200 with a non-JSON body (a captive proxy, a CDN error page) propagated out of `middleware()` as an uncaught error rather than failing closed | `json()` and the shape check are back inside a `try`, logged with the same "fetch failed" shape as the other two failure modes | `service_frontend/middleware.ts` | `service_frontend/middleware.test.ts::"emits frame-ancestors none, WITH a logged warning, on a 200 with a non-JSON body"` |
+| N-new-6 | A code comment and the `frame_policy` route docstring both claimed a distinct-key probe "can grow the cache but never the database load" - backwards: a distinct-key probe is precisely the case that always reaches the database, since the cache only absorbs REPEATED keys | Both rewritten to state repetition is what the cache absorbs, distinct-key volume is deliberately unbounded here, and point at `BL-SS-181` | `modules/omnichannel/services/webchat_visitor_service.py`, `modules/omnichannel/routers/webchat_public.py` | docstring/comment-only, no test |
+
+**Residual backlog rows amended/added:** BL-SS-181 amended to name `GET .../frame-policy` and the
+webchat CORS preflight explicitly as the two unauthenticated, unthrottled, three-query endpoints
+whose cache only helps the repeated-key case; BL-SS-190 (new - the origins cache is one unsegmented
+LRU pool, a sustained distinct-key probe evicts every legitimate positive entry); BL-SS-191 (new -
+revisit the 15s negative TTL / 60s staleness bound once BL-SS-188's cache-bust lands). Carried over
+unchanged: BL-SS-184, BL-SS-185..189.
+
+**Backend regression this round** (the touched files, each run alone): `test_module_platform.py` 18
+(was 17, +1), `test_omnichannel_webchat_frame_policy.py` 13 (was 12, +1),
+`test_omnichannel_webchat_public.py` 53 - **all green, 0 failures**. Frontend:
+`middleware.test.ts` 5 (was 4, +1); `npx eslint middleware.ts middleware.test.ts` 0 errors.
+Backend restarted on `:8014` per the lane's exact command with `DATABASE_URL` and `FRONTEND_URL`
+confirmed present in the running process's environment. Full detail and live-probe transcripts
+(preflight `curl` against an unknown key and the seeded `chn-demo-web` key): `34-evidence/R3/
+README.md`.

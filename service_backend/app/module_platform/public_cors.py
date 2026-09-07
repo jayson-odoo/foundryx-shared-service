@@ -22,11 +22,19 @@ Contract for a provider:
     )
 
 `resolver` answers ONE question - "may this exact origin be echoed back for a
-request on this exact path?" - and must be cheap (it runs on a preflight, which
-browsers repeat per unique path/method/header set once the `Max-Age` lapses)
-and total (never raises; a failure is `False`). A preflight carries no body and
-no credentials, so the echo discloses nothing beyond "this origin may talk to
-this path", which the real response would say anyway.
+request on this exact path?" - and must be total (never raises; a failure is
+`False`). A preflight carries no body and no credentials, so the echo
+discloses nothing beyond "this origin may talk to this path", which the real
+response would say anyway.
+
+The resolver runs on a preflight, which browsers repeat per unique
+path/method/header set once the `Max-Age` lapses, so it should still be
+cheap where it can be (e.g. a cache before any lookup) - but it is NOT
+required to be non-blocking: it MAY do blocking I/O (a DB lookup on a cache
+miss is the omnichannel web chat resolver's actual shape). `PublicCorsMiddleware`
+(B5, review round 3) always executes it in Starlette's threadpool
+(`starlette.concurrency.run_in_threadpool`), never directly on the ASGI event
+loop - a provider does not need to dispatch to a thread itself.
 """
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional

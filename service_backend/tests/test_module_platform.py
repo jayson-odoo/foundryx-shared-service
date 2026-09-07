@@ -397,7 +397,13 @@ def test_public_cors_prefix_registry_is_module_owned_and_one_owner_per_prefix():
 
 def test_public_cors_middleware_refuses_when_a_resolver_raises():
     """A preflight must never 500 - a resolver that blows up refuses (and
-    logs) rather than propagating."""
+    logs) rather than propagating.
+
+    `_allows` is `async` (B5, review round 3 - it dispatches the resolver
+    through Starlette's threadpool), so this drives it with `asyncio.run`
+    rather than calling it as a plain function."""
+    import asyncio
+
     from app.module_platform.public_cors import PublicCorsPrefix
     from app.module_platform.public_cors_middleware import PublicCorsMiddleware
 
@@ -405,4 +411,91 @@ def test_public_cors_middleware_refuses_when_a_resolver_raises():
         raise RuntimeError("resolver exploded")
 
     entry = PublicCorsPrefix("/public/testmod/thing/", "testmod", _boom)
-    assert PublicCorsMiddleware._allows(entry, "/public/testmod/thing/x", "https://ok") is False
+    allowed = asyncio.run(
+        PublicCorsMiddleware._allows(entry, "/public/testmod/thing/x", "https://ok")
+    )
+    assert allowed is False
+
+
+def test_public_cors_middleware_resolver_runs_off_the_event_loop_and_fails_closed_on_error():
+    """B5 (BLOCKING, review round 3) - `PublicCorsMiddleware.__call__` is an
+    `async` ASGI callable with nothing else dispatching a preflight to a
+    thread; the registered resolver may run blocking DB I/O on a cache miss
+    (the omnichannel web chat resolver's real shape), so it must NEVER be
+    invoked directly on the ASGI event loop - a single stalled resolver would
+    otherwise stall every other request the worker is serving, and B4 removed
+    the only rate limit that bounded how often an unauthenticated caller
+    could force a cache miss.
+
+    Drives the middleware end-to-end (not just `_allows`) with a hand-rolled
+    ASGI scope so a future refactor cannot silently move the dispatch back
+    onto the loop without this test noticing. `asyncio.run` runs its event
+    loop ON THE CALLING (test) THREAD, so "the event loop thread" here IS
+    `threading.current_thread()` captured before the call - the resolver
+    thread must differ from it."""
+    import asyncio
+    import threading
+
+    from app.module_platform import public_cors
+    from app.module_platform.public_cors import PublicCorsPrefix
+    from app.module_platform.public_cors_middleware import PublicCorsMiddleware
+
+    loop_thread = threading.current_thread()
+    seen: dict = {}
+
+    def _ok_resolver(path, origin):
+        seen["thread"] = threading.current_thread()
+        return origin == "https://ok"
+
+    def _boom_resolver(path, origin):
+        seen["thread"] = threading.current_thread()
+        raise RuntimeError("resolver exploded")
+
+    async def _dummy_app(scope, receive, send):
+        raise AssertionError("a preflight must be answered by the middleware, never forwarded")
+
+    async def _drive(entry, origin):
+        middleware = PublicCorsMiddleware(_dummy_app)
+        scope = {
+            "type": "http",
+            "method": "OPTIONS",
+            "path": entry.prefix + "x/session",
+            "headers": [
+                (b"origin", origin.encode("latin-1")),
+                (b"access-control-request-method", b"POST"),
+            ],
+        }
+
+        async def receive():
+            return {"type": "http.request"}
+
+        sent = []
+
+        async def send(message):
+            sent.append(message)
+
+        await middleware(scope, receive, send)
+        return sent
+
+    ok_prefix = "/public/testmod-b5-ok/thing/"
+    boom_prefix = "/public/testmod-b5-boom/thing/"
+    ok_entry = PublicCorsPrefix(ok_prefix, "testmod-b5-ok", _ok_resolver)
+    boom_entry = PublicCorsPrefix(boom_prefix, "testmod-b5-boom", _boom_resolver)
+    public_cors._PREFIXES[ok_prefix] = ok_entry
+    public_cors._PREFIXES[boom_prefix] = boom_entry
+    try:
+        sent = asyncio.run(_drive(ok_entry, "https://ok"))
+        start = next(m for m in sent if m["type"] == "http.response.start")
+        headers = dict(start["headers"])
+        assert headers.get(b"access-control-allow-origin") == b"https://ok"
+        assert seen["thread"] != loop_thread  # never on the loop thread
+
+        seen.clear()
+        sent = asyncio.run(_drive(boom_entry, "https://ok"))
+        start = next(m for m in sent if m["type"] == "http.response.start")
+        headers = dict(start["headers"])
+        assert b"access-control-allow-origin" not in headers  # fails closed
+        assert seen["thread"] != loop_thread
+    finally:
+        public_cors._PREFIXES.pop(ok_prefix, None)
+        public_cors._PREFIXES.pop(boom_prefix, None)

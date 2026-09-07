@@ -141,12 +141,18 @@ def frame_policy(widget_key: str, db: Session = Depends(get_db)) -> dict:
     - so counting on the caller's IP counts the Next.js server's ONE address,
     and an outsider spending 600 distinct-key misses against that shared
     budget put every tenant's widget behind `frame-ancestors 'none'` at once.
-    The cost problem the throttle was meant to solve is now the cache's job
-    instead: `resolve_frame_policy` bounds `_origins_cache` to a hard entry
-    cap with LRU eviction and gives an unresolved (enumeration) key a SHORTER
-    TTL than a resolved one (S-new-1), so a distinct-key probe can grow the
-    cache but never the database load, and never trips a shared counter that
-    a legitimate caller also spends from."""
+    Removing the throttle means this route (and the webchat CORS preflight,
+    which shares the same cache) is now unauthenticated AND unthrottled -
+    tracked explicitly as `BL-SS-181`.
+
+    Review round 3 (N-new-6): `resolve_frame_policy` bounds `_origins_cache`
+    to a hard entry cap with LRU eviction and gives an unresolved
+    (enumeration) key a SHORTER TTL than a resolved one (S-new-1), but that
+    ONLY helps a REPEATED key - it never trips a shared counter another
+    caller also spends from. A distinct-key probe (a different widget key on
+    every request) is a cache miss every single time and reaches the
+    three-query database lookup unbounded, by design; the cache is not a
+    rate limit and was never meant to be one. See `BL-SS-181`."""
     origins, _unresolved = resolve_frame_policy(db, widget_key)
     return {"allowedOrigins": origins}
 

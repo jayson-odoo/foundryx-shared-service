@@ -32,6 +32,8 @@ is what lets it short-circuit the preflight and edit the credentials header
 import logging
 from typing import Any, Dict, List, Tuple
 
+from starlette.concurrency import run_in_threadpool
+
 from app.module_platform.public_cors import match_public_cors_prefix
 
 logger = logging.getLogger(__name__)
@@ -69,7 +71,7 @@ class PublicCorsMiddleware:
         origin = _header(scope, b"origin")
         if scope.get("method") == "OPTIONS" and _header(scope, b"access-control-request-method"):
             headers = list(_PREFLIGHT_HEADERS)
-            if origin and self._allows(entry, scope.get("path") or "", origin):
+            if origin and await self._allows(entry, scope.get("path") or "", origin):
                 headers.append((b"access-control-allow-origin", origin.encode("latin-1")))
             await send({"type": "http.response.start", "status": 204, "headers": headers})
             await send({"type": "http.response.body", "body": b""})
@@ -88,11 +90,22 @@ class PublicCorsMiddleware:
         await self.app(scope, receive, send_wrapper)
 
     @staticmethod
-    def _allows(entry, path: str, origin: str) -> bool:
+    async def _allows(entry, path: str, origin: str) -> bool:
         """Total by contract - a resolver that raises refuses, and says so in
-        the log, rather than 500ing a preflight."""
+        the log, rather than 500ing a preflight.
+
+        B5 (review round 3): a resolver may run blocking I/O (a DB lookup on
+        a cache miss - see `preflight_origin_allowed`), and `__call__` is a
+        plain ASGI coroutine with nothing else dispatching it to a thread.
+        Every other DB-touching route in this app is a sync `def` FastAPI
+        route, which Starlette already runs in its threadpool for free; this
+        is the one place that would otherwise run on the event loop, so it
+        dispatches through the SAME threadpool explicitly. Without this, a
+        distinct-key probe (no rate limit bounds it - B4) could hold the
+        worker's event loop for a full connection-pool timeout once the pool
+        is exhausted, stalling every other request the worker serves."""
         try:
-            return bool(entry.resolver(path, origin))
+            return bool(await run_in_threadpool(entry.resolver, path, origin))
         except Exception:  # noqa: BLE001 - a preflight must never 500
             logger.exception(
                 "public CORS resolver for '%s' (%s) failed", entry.prefix, entry.provider_module

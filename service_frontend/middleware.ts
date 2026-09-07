@@ -22,13 +22,13 @@ export const config = {
 /**
  * Review round 2 (B4) - a THIS-REQUEST-ONLY fail-closed result, never a
  * cached/shared one: every call is independent, so one caller's failure can
- * never widen the blast radius to another widget key's request. The two
- * failure shapes are logged distinctly so an operator can tell "the backend
+ * never widen the blast radius to another widget key's request. The failure
+ * shapes are logged distinctly so an operator can tell "the backend
  * genuinely has no origins for this key" (silent - not an error, the normal
  * shape for an unknown key) from "the backend call itself failed" (a 5xx, a
- * 429, or a network error - logged, since a healthy caller answering 200
- * with an empty list is indistinguishable from an unreachable backend
- * without this).
+ * 429, a network error, or - review round 3, N-new-5 - a 200 whose body
+ * isn't the expected JSON shape at all; a healthy caller answering 200 with
+ * an empty list is indistinguishable from any of these without the logging).
  */
 async function fetchAllowedOrigins(url: string): Promise<string[]> {
   let response: Response;
@@ -42,8 +42,17 @@ async function fetchAllowedOrigins(url: string): Promise<string[]> {
     console.warn(`webchat frame-policy fetch failed: ${url} status=${response.status}`);
     return [];
   }
-  const body = (await response.json()) as { allowedOrigins?: string[] };
-  return Array.isArray(body.allowedOrigins) ? body.allowedOrigins : [];
+  // N-new-5 (review round 3): a 200 whose body is not the expected JSON shape
+  // (a captive proxy, a CDN error page, a content-type mismatch) must fail
+  // closed for THIS request the same way a non-2xx does, never propagate out
+  // of `middleware()` as an uncaught error.
+  try {
+    const body = (await response.json()) as { allowedOrigins?: string[] };
+    return Array.isArray(body.allowedOrigins) ? body.allowedOrigins : [];
+  } catch (err) {
+    console.warn(`webchat frame-policy fetch failed (bad body): ${url} status=${response.status}`, err);
+    return [];
+  }
 }
 
 export async function middleware(req: NextRequest): Promise<NextResponse> {

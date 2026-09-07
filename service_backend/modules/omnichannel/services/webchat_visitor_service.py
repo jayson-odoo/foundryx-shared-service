@@ -33,6 +33,7 @@ agents as `ThreadItem.visitorProfile`. See `_apply_pre_chat`.
 import json
 import logging
 import re
+import threading
 from collections import OrderedDict
 from datetime import datetime, timezone
 from time import monotonic as _monotonic
@@ -169,10 +170,23 @@ class _OriginsCacheEntry(NamedTuple):
 
 _origins_cache: "OrderedDict[str, _OriginsCacheEntry]" = OrderedDict()
 
+# S-new-2 (review round 3): this cache is genuinely touched from two thread
+# contexts - `resolve_frame_policy` from the sync `frame_policy` route
+# (Starlette threadpool threads) and `preflight_origin_allowed` from the CORS
+# middleware (Starlette threadpool threads too, once B5 dispatches the
+# resolver off the event loop). Individual `OrderedDict` ops are atomic under
+# the GIL, but the check-then-act sequences below (get -> expire -> del,
+# set -> move_to_end -> evict) are not, and this sits on the hot path of
+# every panel load. One module-level lock serializes the whole read-or-write
+# critical section - the section is pure in-memory work, so the lock costs
+# nothing and needs no per-call try/except KeyError reasoning.
+_origins_cache_lock = threading.Lock()
+
 
 def reset_origins_cache() -> None:
     """Test seam / ops escape hatch - drop every cached origin list."""
-    _origins_cache.clear()
+    with _origins_cache_lock:
+        _origins_cache.clear()
 
 
 def _cached_frame_policy(widget_key: str) -> Optional[Tuple[List[str], bool]]:
@@ -180,14 +194,15 @@ def _cached_frame_policy(widget_key: str) -> Optional[Tuple[List[str], bool]]:
     `Session` to be constructed (S-new-1: `preflight_origin_allowed` consults
     this before opening one). Returns `None` on a miss or an expired entry
     (the caller then does the real lookup and re-populates)."""
-    entry = _origins_cache.get(widget_key)
-    if entry is None:
-        return None
-    if _monotonic() >= entry.expires_at:
-        del _origins_cache[widget_key]
-        return None
-    _origins_cache.move_to_end(widget_key)
-    return list(entry.origins), entry.unresolved
+    with _origins_cache_lock:
+        entry = _origins_cache.get(widget_key)
+        if entry is None:
+            return None
+        if _monotonic() >= entry.expires_at:
+            _origins_cache.pop(widget_key, None)
+            return None
+        _origins_cache.move_to_end(widget_key)
+        return list(entry.origins), entry.unresolved
 
 
 def _store_frame_policy(widget_key: str, origins: List[str], unresolved: bool) -> None:
@@ -196,10 +211,13 @@ def _store_frame_policy(widget_key: str, origins: List[str], unresolved: bool) -
         if unresolved
         else _ORIGINS_CACHE_POSITIVE_TTL_SECONDS
     )
-    _origins_cache[widget_key] = _OriginsCacheEntry(_monotonic() + ttl, list(origins), unresolved)
-    _origins_cache.move_to_end(widget_key)
-    while len(_origins_cache) > _ORIGINS_CACHE_MAX_ENTRIES:
-        _origins_cache.popitem(last=False)
+    with _origins_cache_lock:
+        _origins_cache[widget_key] = _OriginsCacheEntry(
+            _monotonic() + ttl, list(origins), unresolved
+        )
+        _origins_cache.move_to_end(widget_key)
+        while len(_origins_cache) > _ORIGINS_CACHE_MAX_ENTRIES:
+            _origins_cache.popitem(last=False)
 
 
 def origins_for_frame_policy(db: Session, widget_key: str) -> List[str]:
@@ -300,10 +318,19 @@ def resolve_frame_policy(db: Session, widget_key: str) -> Tuple[List[str], bool]
     inactive / module off / tenant blocked) - precisely the shape of a
     key-enumeration probe. Review round 2 (B4/S-new-1): nothing spends a
     throttle token on this anymore (the route-level IP throttle was removed
-    - it counted the Next.js middleware's own shared IP, not the attacker);
-    the bounded cache with a shorter negative TTL is what keeps an
-    enumeration probe cheap instead. The cache is consulted before `db` is
-    touched at all, so a warm hit runs zero queries."""
+    - it counted the Next.js middleware's own shared IP, not the attacker).
+
+    Review round 3 (N-new-6): be precise about what the cache actually
+    bounds. It absorbs REPEATED lookups of the SAME widget key (a real
+    panel's repeat loads, or a prober retrying one key) - those cost zero
+    queries once warm. It does NOT bound DISTINCT-key volume: a probe that
+    sends a different key on every request is a cache miss every time, by
+    design, and reaches this function's three-query lookup unbounded. That is
+    accepted as a security matter (three indexed queries, and the caller
+    learns nothing `POST /session`'s 200-vs-404 didn't already tell them) but
+    it is a real cost, not a defence - see `BL-SS-181`, which names this
+    route and the webchat CORS preflight explicitly as the two unauthenticated,
+    unthrottled endpoints whose cache only helps the repeated-key case."""
     cached = _cached_frame_policy(widget_key)
     if cached is not None:
         return cached

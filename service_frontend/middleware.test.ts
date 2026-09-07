@@ -58,6 +58,19 @@ describe('middleware frame-ancestors (web chat panel)', () => {
     expect(warnSpy.mock.calls[0][0]).toContain('network');
   });
 
+  it('emits frame-ancestors none, WITH a logged warning, on a 200 with a non-JSON body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('<html>not json</html>', { status: 200 })),
+    );
+
+    const res = await middleware(requestFor('some-key'));
+
+    expect(res.headers.get('Content-Security-Policy')).toBe("frame-ancestors 'none'");
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('bad body');
+  });
+
   it('a failure for one key never poisons a later request for a known-good key', async () => {
     const fetchMock = vi
       .fn()

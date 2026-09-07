@@ -599,6 +599,22 @@ control that exists.
 | N-new-3 | `app/module_platform/public_cors.py`'s docstring pointed at the wrong file for `PublicCorsMiddleware` | Corrected to `app/module_platform/public_cors_middleware.py` |
 | N-new-4 | Migration `0022` added a fifth column while the manifest stayed `0.10.0`, so `update_tenant` never re-runs for a tenant already stamped there | Manifest bumped to `0.10.1`; `update_tenant`'s docstring records the bump as a no-op per tenant (the column already arrived via the module Alembic migration + `create_all` mirror inside `0.10.0`) |
 
+### Review round 3 fixes accepted (2026-09-09)
+
+| Id | Finding | Fix |
+|---|---|---|
+| B5 | `PublicCorsMiddleware.__call__` called the registered resolver directly on the ASGI event loop; a cache miss runs blocking DB I/O (`resolve_live_channel`, three queries), and B4 removed the only rate limit that bounded how often an unauthenticated caller could force a miss - a determined probe could stall the whole worker for up to a connection-pool timeout once the pool was exhausted | `PublicCorsMiddleware._allows` is now `async` and dispatches the resolver through `starlette.concurrency.run_in_threadpool`, keeping the existing broad `except`; `public_cors.py`'s provider contract docstring now states plainly that a resolver MAY do blocking I/O and is always executed off the loop |
+| S-new-2 | `_origins_cache`'s check-then-act sequences (get -> expire -> del, set -> move_to_end -> evict) were not atomic, and the cache is genuinely touched from multiple thread contexts (the sync `frame_policy` route's threadpool threads, and the CORS middleware's resolver threads) - a race could raise `KeyError` out of a route (a 500) or be swallowed inside the preflight resolver (a legitimate origin silently refused) | Every read/write of `_origins_cache` now runs inside one module-level `threading.Lock`; the whole get-or-expire-or-store sequence is a single critical section, so no per-call `try/except KeyError` is needed |
+| N-new-5 | `middleware.ts` moved `await response.json()` outside the `try`, so a 200 carrying a non-JSON body (a captive proxy, a CDN error page) propagated out of `middleware()` as an uncaught error instead of failing closed | The `json()` call and shape check are back inside a `try`, logged with the same "fetch failed" shape (`status=` style, `bad body` tag) as the other two failure modes |
+| N-new-6 | A code comment (`webchat_visitor_service.py`) and the `frame_policy` route docstring both claimed "a distinct-key probe can grow the cache but never the database load" - backwards: a distinct-key probe is exactly the case that always reaches the database, since the cache only absorbs REPEATED keys | Both rewritten to state the cache absorbs repetition only, that distinct-key volume is deliberately unbounded here (the throttle it replaced was keyed on the wrong address), and to point at `BL-SS-181` |
+
+### Residual risk accepted (review round 3, 2026-09-09)
+
+| Id | Risk | Why it is accepted |
+|---|---|---|
+| RR7 | `_origins_cache` is a single unsegmented LRU pool: a sustained distinct-key probe evicts every legitimate POSITIVE entry (cap 5000, oldest-evicted), degrading real panel loads back to three queries each until the probe stops | This is the pre-bounded-cache baseline, not a regression from round 2's fix - the cache was never a rate limit, only a memory bound. Backlogged as **BL-SS-190** (separate positive/negative pools) rather than fixed here |
+| RR8 | `GET .../frame-policy` and the webchat CORS preflight are unauthenticated and, since B4 removed the route-level IP throttle, unthrottled; the cache only bounds REPEATED-key cost, never distinct-key volume | Accepted as a security matter (three indexed queries per distinct key, no information disclosed beyond what `POST /session`'s 200-vs-404 already reveals) and explicitly the honest home of **BL-SS-181** (amended this round to name both routes) rather than a gap to close here |
+
 ## 8. Backlog candidates (register on close; provisional ids from BL-SS-160)
 
 | Id | Title | Priority |

@@ -246,6 +246,57 @@ def test_negative_cache_entry_expires_in_15_seconds_not_60(client, session_facto
         svc.reset_origins_cache()
 
 
+def test_origins_cache_is_thread_safe_under_concurrent_hammering(monkeypatch):
+    """S-new-2 (should-fix, review round 3) - `_cached_frame_policy`/
+    `_store_frame_policy` are touched from two thread contexts in production
+    (the sync `frame_policy` route's threadpool threads, and the CORS
+    middleware's resolver threads once B5 dispatches it off the loop). The
+    check-then-act sequences (get -> expire -> del, set -> move_to_end ->
+    evict) were not atomic before the round-3 lock: two threads racing the
+    same key's expiry could raise `KeyError` out of a route (a 500) or out of
+    a preflight resolver (silently refused, swallowed by `_allows`'s broad
+    except).
+
+    Sixteen threads hammer a small, overlapping key set with a near-zero TTL
+    (forces constant expiry) and a tiny cap (forces constant eviction) - the
+    two exact race windows the round-3 finding named. Pure in-memory calls,
+    no DB, no client fixture needed. The assertion is simply that nothing
+    raised."""
+    import threading
+
+    from modules.omnichannel.services import webchat_visitor_service as svc
+
+    svc.reset_origins_cache()
+    monkeypatch.setattr(svc, "_ORIGINS_CACHE_MAX_ENTRIES", 4)
+    monkeypatch.setattr(svc, "_ORIGINS_CACHE_POSITIVE_TTL_SECONDS", 0.0001)
+    monkeypatch.setattr(svc, "_ORIGINS_CACHE_NEGATIVE_TTL_SECONDS", 0.0001)
+
+    keys = [f"wk_thread_probe_{i}" for i in range(6)]
+    errors: list = []
+
+    def _hammer(worker_id: int) -> None:
+        try:
+            for i in range(500):
+                key = keys[(worker_id + i) % len(keys)]
+                svc._cached_frame_policy(key)
+                svc._store_frame_policy(key, [ORIGIN], unresolved=(i % 2 == 0))
+                svc._cached_frame_policy(key)
+        except Exception as exc:  # noqa: BLE001 - the test itself asserts on this list
+            errors.append(exc)
+
+    try:
+        threads = [threading.Thread(target=_hammer, args=(i,)) for i in range(16)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert errors == []
+        assert len(svc._origins_cache) <= 4
+    finally:
+        svc.reset_origins_cache()
+
+
 def test_preflight_cache_hit_opens_no_db_session(client, session_factory):
     """`preflight_origin_allowed` runs on the ASGI middleware's hot path
     before routing. On a warm cache it must answer without ever constructing
