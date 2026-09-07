@@ -227,7 +227,7 @@ _PO_HEADER_QUERY = (
     "h.PurchaseAgent AS SalesAgent, h.DocDate AS DocDate, "
     "CAST(l.FirstDeliveryDate AS date) AS ExpectedDate, h.Cancelled AS Cancelled, "
     "h.CreditorCode AS CreditorCode, h.CreditorName AS CreditorName, "
-    "h.CurrencyCode AS CurrencyCode, h.LastModified AS LastModified, "
+    "h.CurrencyCode AS CurrencyCode, h.LastModified AS LastModified, h.Ref AS Ref, "
     "l.LineCount AS LineCount, l.QtySum AS QtySum, l.TransferedSum AS TransferedSum, "
     "l.SubTotalSum AS SubTotalSum, l.MaxDtlKey AS MaxDtlKey "
     "FROM {database}.dbo.PO AS h "
@@ -339,6 +339,15 @@ SPO_PRESET = DocumentPreset(
         PresetField("CreditorCode", "supplier_code", "string"),
         PresetField("CreditorName", "supplier_name", "string"),
         PresetField("SalesAgent", "agent_code", "string"),
+        # feat/spo-container-number - AutoCount's generic `PO.Ref` is where
+        # Sorento's 68,519-allocation gap traces to: nothing selected it, so
+        # every SPO reached Sorento with no container. SPO-only (a PO is not
+        # a container booking) - PO_PRESET deliberately carries no row
+        # sourced from Ref. `PO.UDF_ShipOrder` ('T'/'F', a per-company UDF)
+        # would let a company route non-SPO-numbered documents through this
+        # same field too; that is a documented backlog follow-up
+        # (BL-SS-*, "PO.UDF_ShipOrder routing"), not built here.
+        PresetField("Ref", "container_number", "string"),
     ),
     line=(
         PresetField("DtlKey", "source_ref", "string", required=True),
