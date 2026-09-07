@@ -140,6 +140,15 @@ class JobLeaseLost(RuntimeError):
         )
 
 
+class _ChunkCommitFailed(RuntimeError):
+    """A chunk's own per-chunk COMMIT raised (S3, review round 2 - e.g. a
+    real NOT NULL violation flushed with the marks). Already rolled back
+    and accounted (``_account_failure``) by the time this is raised - the
+    caller's existing exception handling just needs to stop the push
+    without double-counting or leaving the session in ``PendingRollbackError``
+    for every later statement."""
+
+
 class PreviewFailed(AutocountServiceError):
     """The dry run itself failed (a transport / contract fault talking to the
     consumer). The gate must SHOW this and refuse to offer approval - an operator
@@ -635,6 +644,23 @@ class SyncService:
         if not summary.get("error"):
             summary["error"] = line[:2000]
 
+    def _commit_chunk(self, summary: Dict[str, Any], *, sink: EntitySink) -> None:
+        """COMMIT a chunk's marks, defensively (S3, review round 2). A real
+        flush/commit failure (a NOT NULL violation, a constraint fault) puts
+        SQLAlchemy's session into a state where every LATER statement raises
+        ``PendingRollbackError`` unless something calls ``rollback()`` first
+        - which would otherwise strand the caller (the run row itself could
+        never be written). Rolls back, accounts the failure exactly like a
+        chunk-level sink fault, and raises ``_ChunkCommitFailed`` so the
+        caller's existing exception handling stops the push with a USABLE
+        session, never a poisoned one."""
+        try:
+            self.db.commit()
+        except Exception as exc:  # noqa: BLE001 - a commit fault must never poison the caller's session
+            self.db.rollback()
+            self._account_failure(summary, exc, sink=sink)
+            raise _ChunkCommitFailed(str(exc)) from exc
+
     def _chunk_beat(self, job_id: str) -> Callable[[], None]:
         """The per-chunk heartbeat for a push (fix/job-lease-orphan-sweep).
         Called AFTER a chunk's own outcome is already durable (marked +
@@ -692,7 +718,16 @@ class SyncService:
         chunk's rows stay STAGED and every other chunk still resolves; this
         method still returns ``True``."""
         rows, records, failures = self._rehydrate_pushable(pending)
-        by_ref = {row.source_ref: row for row in rows}
+        # S4 (review round 2, defence in depth): a ``dict`` keyed by
+        # ``source_ref`` keeps only the LAST row for a duplicate ref, so a
+        # successful push marked one of the two rows and left the other a
+        # ghost, re-offered forever. ``records``/``chunk_results`` repeat a
+        # duplicated ref once PER physical row (``_rehydrate_pushable`` is
+        # 1:1 with ``pending``, never deduped), so popping one row per
+        # occurrence keeps every occurrence matched to its OWN row.
+        by_ref: Dict[str, List[AcStagedRecord]] = {}
+        for row in rows:
+            by_ref.setdefault(row.source_ref, []).append(row)
         beat = self._chunk_beat(job_id)
 
         def apply_chunk(
@@ -714,9 +749,10 @@ class SyncService:
             chunk_quarantined: List[AcStagedRecord] = []
             for record, result in zip(chunk_records, chunk_results or []):
                 ref = getattr(record, "source_ref", "")
-                row = by_ref.get(ref)
-                if row is None:
+                bucket = by_ref.get(ref)
+                if not bucket:
                     continue
+                row = bucket.pop(0)
                 if result.ok:
                     chunk_pushed.append(row)
                     summary["delivered"] = summary["delivered"] or result.delivered
@@ -741,8 +777,10 @@ class SyncService:
             if chunk_pushed or chunk_quarantined:
                 # COMMIT per chunk - not the caller's final commit - so a
                 # LATER chunk's fault (or a lost lease) can never undo THIS
-                # chunk's already-delivered rows.
-                self.db.commit()
+                # chunk's already-delivered rows. ``_commit_chunk`` (S3)
+                # rolls back and stops the push cleanly if the commit ITSELF
+                # fails, rather than leaving the session unusable.
+                self._commit_chunk(summary, sink=sink)
             summary["pushed"] = int(summary.get("pushed") or 0) + len(chunk_pushed)
             summary["quarantined"] = int(summary.get("quarantined") or 0) + len(chunk_quarantined)
             # Liveness (fix/job-lease-orphan-sweep): beat ONLY AFTER this
@@ -794,6 +832,10 @@ class SyncService:
             summary["leaseLost"] = True
             summary["error"] = str(exc)
             return False
+        except _ChunkCommitFailed:
+            # Already rolled back and accounted inside apply_chunk
+            # (S3) - stop the push, session is usable.
+            return False
         except SinkAnchorError as exc:
             # TASK-level, never per record (Appendix A6): the company anchor is
             # wrong, so no record was even looked at. Everything stays STAGED.
@@ -843,7 +885,15 @@ class SyncService:
         (fix/job-lease-orphan-sweep) AFTER its own marks are committed.
         Returns ``False`` only on a STOPPING fault, same contract as the
         upsert half."""
-        by_ref = {row.source_ref: row for row in pending}
+        # S4 (review round 2, defence in depth - mirrors the upsert half): a
+        # ``dict`` keyed by ``source_ref`` would keep only the LAST row for a
+        # duplicate ref. ``refs``/``chunk_refs`` repeat a duplicated ref once
+        # PER physical row (built straight from ``pending``, never deduped),
+        # so popping one row per occurrence keeps every occurrence matched
+        # to its OWN row.
+        by_ref: Dict[str, List[AcStagedRecord]] = {}
+        for row in pending:
+            by_ref.setdefault(row.source_ref, []).append(row)
         beat = self._chunk_beat(job_id)
 
         def apply_chunk(
@@ -860,9 +910,10 @@ class SyncService:
             handled: List[AcStagedRecord] = []
             failed: List[AcStagedRecord] = []
             for ref in chunk_refs:
-                row = by_ref.get(ref)
-                if row is None:
+                bucket = by_ref.get(ref)
+                if not bucket:
                     continue
+                row = bucket.pop(0)
                 outcome = str((by_verdict.get(ref) or {}).get("outcome") or "")
                 if outcome in ("deleted", "deactivated", "not_found"):
                     handled.append(row)
@@ -874,12 +925,14 @@ class SyncService:
             if failed:
                 self.staged.mark(failed, status=STAGED_FAILED)
             if handled or failed:
-                self.db.commit()
+                # ``_commit_chunk`` (S3) rolls back and stops the push
+                # cleanly if the commit ITSELF fails.
+                self._commit_chunk(summary, sink=sink)
             if handled:
                 RowHashRepository(self.db).delete_many(
                     tenant_id, company_id, entity_type, [row.source_ref for row in handled]
                 )
-                self.db.commit()
+                self._commit_chunk(summary, sink=sink)
             summary["deletedHandled"] = int(summary.get("deletedHandled") or 0) + len(handled)
             if failed:
                 summary["deleteFailures"] = (summary.get("deleteFailures") or []) + [
@@ -906,17 +959,9 @@ class SyncService:
             summary["leaseLost"] = True
             summary["error"] = str(exc)
             return False
-        except SinkAnchorError as exc:
-            self._account_failure(summary, exc, sink=sink)
-            summary["error"] = exc.sorento_message
-            summary["errorCode"] = exc.code
-            return False
-        except SorentoSinkError as exc:
-            self._account_failure(summary, exc, sink=sink)
-            return False
-        except Exception as exc:  # noqa: BLE001 - a run must never die on delivery
-            logger.exception("autocount auto-push delete failed for %s/%s", company_id, entity_type)
-            self._account_failure(summary, exc, sink=sink)
+        except _ChunkCommitFailed:
+            # Already rolled back and accounted inside apply_chunk
+            # (S3) - stop the push, session is usable.
             return False
         except SinkAnchorError as exc:
             self._account_failure(summary, exc, sink=sink)

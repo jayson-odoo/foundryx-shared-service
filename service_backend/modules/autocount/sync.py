@@ -1005,24 +1005,44 @@ def _stage_documents(
         diff = compute_diff(
             previous.canonical_json if previous is not None else None, canonical
         )
-        staged_repo.add(
-            AcStagedRecord(
-                tenant_id=tenant_id,
-                company_id=company_id,
-                entity_type=entity_type,
-                job_id=job.id,
-                source_ref=record.source_ref,
-                # From the MAPPED result, not ``record.doc_no``: the attribute
-                # name differs per entity (a master's is ``source_doc_no``), and
-                # reaching for the document one on a master silently yields None.
-                doc_no=mapped.doc_no,
-                source_last_modified=source_record.last_modified,
-                raw_json=raw_json,
-                canonical_json=canonical,
-                diff_json=diff,
-                status=STAGED,
-            )
+        # S4 (review round 2) - mirrors ``pending_delete_refs``'s dedup for
+        # deletes: a document already STAGED and unresolved from a prior run
+        # (most commonly ``retryable``, never pushed) that changes at source
+        # and is re-extracted must UPDATE that row in place, never insert a
+        # second one - a second row offers (and once pushed, delivers) the
+        # SAME document twice.
+        existing = staged_repo.list_staged_upserts(
+            tenant_id, company_id, entity_type, record.source_ref
         )
+        if existing:
+            for row in existing:
+                row.job_id = job.id
+                row.doc_no = mapped.doc_no
+                row.source_last_modified = source_record.last_modified
+                row.raw_json = raw_json
+                row.canonical_json = canonical
+                row.diff_json = diff
+                row.error = None
+        else:
+            staged_repo.add(
+                AcStagedRecord(
+                    tenant_id=tenant_id,
+                    company_id=company_id,
+                    entity_type=entity_type,
+                    job_id=job.id,
+                    source_ref=record.source_ref,
+                    # From the MAPPED result, not ``record.doc_no``: the
+                    # attribute name differs per entity (a master's is
+                    # ``source_doc_no``), and reaching for the document one on
+                    # a master silently yields None.
+                    doc_no=mapped.doc_no,
+                    source_last_modified=source_record.last_modified,
+                    raw_json=raw_json,
+                    canonical_json=canonical,
+                    diff_json=diff,
+                    status=STAGED,
+                )
+            )
         staged += 1
         service.advance(job, done=1)
         db.commit()

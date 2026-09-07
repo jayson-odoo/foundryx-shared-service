@@ -631,6 +631,31 @@ class StagedRecordRepository:
             row.last_offered_at = now
         self.db.flush()
 
+    def list_staged_upserts(
+        self, tenant_id: str, company_id: str, entity_type: str, source_ref: str
+    ) -> List[AcStagedRecord]:
+        """Every STILL-OPEN (``STAGED``) upsert row for this ref (S4, review
+        round 2) - mirrors ``pending_delete_refs``'s dedup-at-stage-time rule
+        for the upsert side. Re-extracting a document that is already
+        staged (unresolved from a prior run - most commonly a ``retryable``
+        verdict) must UPDATE the existing row(s) in place rather than insert
+        a second one, which would offer the same document twice and (once
+        pushed) leave a duplicate delivered. A list, not one row, so a
+        legacy duplicate (pre-dating this fix) is refreshed on every row
+        rather than only the row this query happens to pick."""
+        return (
+            self.db.query(AcStagedRecord)
+            .filter(
+                AcStagedRecord.tenant_id == tenant_id,
+                AcStagedRecord.company_id == company_id,
+                AcStagedRecord.entity_type == entity_type,
+                AcStagedRecord.source_ref == source_ref,
+                AcStagedRecord.op != STAGED_OP_DELETE,
+                AcStagedRecord.status == STAGED,
+            )
+            .all()
+        )
+
     def last_pushed(
         self, tenant_id: str, company_id: str, entity_type: str, source_ref: str
     ) -> Optional[AcStagedRecord]:
