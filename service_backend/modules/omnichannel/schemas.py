@@ -1689,6 +1689,15 @@ class MigrationJobCreate(ApiModel):
     lifecycleMap: List[MigrationLifecycleMapEntry] = []
     messagesSince: Optional[str] = None
     contactsOnly: bool = False
+    # S4 (AC-MIG-44, D-A6-19) - respond.io exposes NO snippets endpoint (F3),
+    # so quick replies ride a 2-column (`shortcut`, `body`) CSV the operator
+    # uploads alongside the job. A plain background-job JSON payload has no
+    # multipart slot, so the bytes travel base64-encoded (decoded once at
+    # phase time in `migration_service._process_quick_replies_csv`) - a
+    # deliberate, documented stopgap for S4's own scope; S5 (the CSV-fallback
+    # slice, which owns a proper upload surface) may replace this with a real
+    # file-upload route without changing the phase logic itself.
+    snippetsCsvBase64: Optional[str] = None
 
 
 class MigrationEntityCounts(ApiModel):
@@ -1702,6 +1711,11 @@ class MigrationEntityCounts(ApiModel):
 class MigrationReport(ApiModel):
     entities: Dict[str, MigrationEntityCounts]
     messagesWithInferredTimestamp: int = 0
+    # S4 (D-A6-22) - messages older than the job's `messagesSince` floor are
+    # excluded from the walk entirely (never written, never counted as an
+    # error) - this is how many were skipped that way, reported so the
+    # operator's volume estimate (plan §7 prerequisite 9) still reconciles.
+    messagesSkippedBeforeFloor: int = 0
     blockers: List[str] = []
     samples: Dict[str, List[dict]]
 

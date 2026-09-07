@@ -19,13 +19,13 @@ from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from sqlalchemy.exc import IntegrityError
 
 from ..models import Contact as ContactModel
-from ..models import ContactChannelIdentity, ContactField, ConversationMessage
+from ..models import ContactChannelIdentity, ContactField, ConversationMessage, QuickReply
 from ..phone import digits_only
 from ..repositories.contact_repository import ContactRepository
 from ..repositories.migration_ref_repository import MigrationRefRepository
@@ -33,6 +33,7 @@ from ..respondio.channel_map import derive_external_user_id
 from ..respondio.shapes import Contact as SourceContact
 from ..respondio.shapes import ContactChannel as SourceContactChannel
 from ..respondio.shapes import MessageItem as SourceMessageItem
+from . import event_service
 from .contact_field_service import (
     FIELD_KEY_RE,
     FIELD_TYPES,
@@ -44,12 +45,19 @@ from .contact_field_service import (
 )
 from .contact_profile_service import _UNSET, ContactProfileService, ProfilePatchError
 from .contact_tag_service import ContactTagService, TagValidationError
+from .migration_media import MediaFetchResult
 
 logger = logging.getLogger("foundryx.omnichannel.migration")
 
 ENTITY_CONTACT = "contact"
 ENTITY_IDENTITY = "identity"
 ENTITY_MESSAGE = "message"
+# S4 additions (AC-MIG-41/44) - `event` is keyed PER CONTACT (one ref covers
+# the whole derived-events set for that contact, D-A6-13); `quick_reply` is
+# keyed by the LOWERCASED shortcut (there is no vendor id - a CSV row IS the
+# record, D-A6-19).
+ENTITY_EVENT = "event"
+ENTITY_QUICK_REPLY = "quick_reply"
 
 # §5.4 - an unrecognised `attachment.type` still lands as a message (never
 # dropped, AC-MIG-35); DOCUMENT covers the vendor's own `file` value.
@@ -286,6 +294,7 @@ class MigrationWriter:
         source_field_defs: Dict[str, Dict[str, Any]],
         source: str = "respondio",
         writes_enabled: bool = True,
+        thread_closed_status_id: Optional[str] = None,
     ):
         self.db = db
         self.tenant_id = tenant_id
@@ -299,6 +308,10 @@ class MigrationWriter:
         # D-A6-14 ("the SAME handler").
         self.writes_enabled = writes_enabled
         self.thread_open_status_id = thread_open_status_id
+        # S4 (AC-MIG-41) - the derived `closed` event's `to_value`. Optional
+        # only so an existing S2/S3 caller that never reaches the events
+        # phase (a contactsOnly run) need not resolve it.
+        self.thread_closed_status_id = thread_closed_status_id
         self.initial_lifecycle_status_id = initial_lifecycle_status_id
         # sourceLabel(lower) -> targetStatusId, precomputed once by the
         # service from the job's `lifecycleMap` payload (D-A6-12: lifecycle
@@ -773,8 +786,6 @@ class MigrationWriter:
         way). `agent_last_read_at` is set to `last_message_at` so a backfilled
         thread never arrives as a wall of unread; `csw_expires_at` is
         deliberately left untouched (D-A6-8)."""
-        from sqlalchemy import case
-
         last_message_at, last_incoming_at, last_agent_at = (
             self.db.query(
                 func.max(ConversationMessage.created_at),
@@ -796,3 +807,196 @@ class MigrationWriter:
         contact.last_agent_message_at = last_agent_at
         contact.agent_last_read_at = last_message_at
         self.db.flush()
+
+    # ── S4 - media (AC-MIG-39/40) ────────────────────────────────────────────
+
+    def apply_media(self, message: ConversationMessage, result: MediaFetchResult) -> None:
+        """A successful `migration_media.fetch_and_store_media` result lands
+        on the ALREADY-WRITTEN message row (S3 staged it with `media_url` +
+        `payload_json.migration.pendingMedia`) - clears the pending/error
+        markers and sets the real `media_key`/`media_mime`/`media_size`.
+        Reassigns a FRESH dict for `payload_json` (the JSON-mutation house
+        gotcha - an in-place `dict.pop` on the same object is not tracked)."""
+        payload = dict(message.payload_json or {})
+        migration_meta = dict(payload.get("migration") or {})
+        migration_meta.pop("pendingMedia", None)
+        migration_meta.pop("mediaError", None)
+        if migration_meta:
+            payload["migration"] = migration_meta
+        else:
+            payload.pop("migration", None)
+        message.payload_json = payload or None
+        message.media_key = result.key
+        message.media_mime = result.mime
+        message.media_size = result.size
+        if result.filename:
+            message.media_filename = result.filename
+        self.db.flush()
+
+    def record_media_failure(self, message: ConversationMessage, reason: str) -> None:
+        """D-A6-7 - the message row survives with its caption/text and the
+        ORIGINAL `media_url` untouched; only the failure reason is recorded.
+        Deliberately does NOT clear `pendingMedia` - a future re-run of the
+        whole migration retries the fetch (BL-SS-124 is the standalone-retry
+        follow-up; this slice has no partial-retry mechanism)."""
+        payload = dict(message.payload_json or {})
+        migration_meta = dict(payload.get("migration") or {})
+        migration_meta["mediaError"] = reason
+        payload["migration"] = migration_meta
+        message.payload_json = payload
+        self.db.flush()
+
+    # ── S4 - derived conversation_events (AC-MIG-41/42) ─────────────────────
+
+    def write_derived_events(self, contact: ContactModel, source_contact: SourceContact) -> int:
+        """Derives up to 5 `conversation_events` rows from `contact`'s ALREADY
+        -migrated message history (never fetched - respond.io has no event/
+        assignment-log endpoint, D-A6-13), each carrying the SOURCE timestamp
+        (never `now()`, AC-MIG-42) and `payload_json.migration.derived = true`.
+        Returns the number of events actually written (0 when this contact
+        has no migrated messages at all - nothing to derive a timeline from).
+
+        `reopened`/`snoozed`/`unsnoozed`/`comment_added` are NEVER written -
+        the source exposes no data for them (D-A6-13/AC-MIG-42) - which is
+        also why there is only ever ONE `first_agent_reply` candidate per
+        contact (a single continuous cycle, not the live multi-cycle rule
+        `is_first_reply_pending` governs)."""
+        first_at, last_at, first_contact_at = (
+            self.db.query(
+                func.min(ConversationMessage.created_at),
+                func.max(ConversationMessage.created_at),
+                func.min(
+                    case((ConversationMessage.sender_type == "CONTACT", ConversationMessage.created_at))
+                ),
+            )
+            .filter(
+                ConversationMessage.tenant_id == self.tenant_id,
+                ConversationMessage.contact_id == contact.id,
+            )
+            .first()
+        )
+        if first_at is None:
+            return 0
+
+        written = 0
+        derived_payload = {"migration": {"derived": True}}
+
+        event_service.record(
+            self.db, contact, "opened",
+            to_value=self.thread_open_status_id, created_at=first_at, payload=dict(derived_payload),
+        )
+        written += 1
+
+        # first_agent_reply: the first AGENT message AT OR AFTER the first
+        # CONTACT message - never fabricated when the agent spoke first (no
+        # CONTACT message precedes it), which is not a "reply" to anything.
+        if first_contact_at is not None:
+            first_agent_at = (
+                self.db.query(func.min(ConversationMessage.created_at))
+                .filter(
+                    ConversationMessage.tenant_id == self.tenant_id,
+                    ConversationMessage.contact_id == contact.id,
+                    ConversationMessage.sender_type == "AGENT",
+                    ConversationMessage.created_at >= first_contact_at,
+                )
+                .scalar()
+            )
+            if first_agent_at is not None:
+                seconds = int((first_agent_at - first_contact_at).total_seconds())
+                event_service.record(
+                    self.db, contact, "first_agent_reply",
+                    created_at=first_agent_at,
+                    payload={**derived_payload, "responseSeconds": seconds},
+                )
+                written += 1
+
+        if (source_contact.status or "").strip().lower() == "close":
+            event_service.record(
+                self.db, contact, "closed",
+                to_value=self.thread_closed_status_id, created_at=last_at, payload=dict(derived_payload),
+            )
+            written += 1
+
+        if contact.assigned_user_id:
+            event_service.record(
+                self.db, contact, "assigned",
+                to_value=contact.assigned_user_id, created_at=last_at, payload=dict(derived_payload),
+            )
+            written += 1
+
+        # lifecycle_changed: only when THIS run's lifecycleMap is what set the
+        # contact's CURRENT stage (an equality check against the mapped value
+        # - `write_contact` never moves an existing stage, so a stage that
+        # does not match what this mapping would produce belongs to an
+        # earlier merge/live edit, not this migration).
+        source_label_lc = (source_contact.lifecycle or "").strip().lower()
+        mapped_status_id = self.lifecycle_map.get(source_label_lc) if source_label_lc else None
+        if mapped_status_id and contact.lifecycle_status_id == mapped_status_id:
+            event_service.record(
+                self.db, contact, "lifecycle_changed",
+                to_value=mapped_status_id, created_at=last_at, payload=dict(derived_payload),
+            )
+            written += 1
+
+        self.db.flush()
+        return written
+
+    # ── S4 - quick replies (AC-MIG-44) ───────────────────────────────────────
+
+    def write_quick_reply(self, shortcut: str, body: str) -> str:
+        """Find-or-create by SHORTCUT, case-insensitive, within the target
+        workspace - `migration_refs` is still the idempotency index (D-A6-3),
+        keyed by the lowercased shortcut (there is no vendor id to key on; a
+        CSV row IS the record, D-A6-19/AC-MIG-44). Returns "create" | "update"
+        (a live quick reply with the same shortcut already existed) |
+        "skip" (already migrated on a prior run)."""
+        key = shortcut.strip().lower()
+        existing_ref = self.refs.local_for_one(
+            self.tenant_id, self.workspace_id, self.source, ENTITY_QUICK_REPLY, key
+        )
+        if existing_ref is not None:
+            return "skip"
+
+        matched = (
+            self.db.query(QuickReply)
+            .filter(
+                QuickReply.tenant_id == self.tenant_id,
+                QuickReply.workspace_id == self.workspace_id,
+                func.lower(QuickReply.shortcut) == key,
+            )
+            .first()
+        )
+        if matched is not None:
+            self.refs.record(
+                self.tenant_id, self.workspace_id, self.source, ENTITY_QUICK_REPLY, key, matched.id
+            )
+            return "update"
+
+        row = QuickReply(
+            tenant_id=self.tenant_id, workspace_id=self.workspace_id,
+            shortcut=shortcut.strip(), body=body,
+        )
+        try:
+            with self.db.begin_nested():
+                self.db.add(row)
+                self.db.flush()
+        except IntegrityError:
+            self.db.expire_all()
+            winner = (
+                self.db.query(QuickReply)
+                .filter(
+                    QuickReply.tenant_id == self.tenant_id,
+                    QuickReply.workspace_id == self.workspace_id,
+                    func.lower(QuickReply.shortcut) == key,
+                )
+                .first()
+            )
+            if winner is None:  # pragma: no cover - defensive, should be unreachable
+                return "skip"
+            self.refs.record(
+                self.tenant_id, self.workspace_id, self.source, ENTITY_QUICK_REPLY, key, winner.id
+            )
+            return "update"
+
+        self.refs.record(self.tenant_id, self.workspace_id, self.source, ENTITY_QUICK_REPLY, key, row.id)
+        return "create"

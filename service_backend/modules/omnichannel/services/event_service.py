@@ -58,6 +58,7 @@ def record(
     close_reason_id: Optional[str] = None,
     note: Optional[str] = None,
     payload: Optional[dict] = None,
+    created_at: Optional[datetime] = None,
 ) -> ConversationEvent:
     """Write one event row for `contact`. Adds to `db` and flushes (so the row
     has an id + is visible to later queries in the SAME transaction) but never
@@ -67,7 +68,11 @@ def record(
     tenant-scoped BEFORE saving (AC-IVE-10): an id that does not belong to
     `contact.tenant_id` is dropped (stored as NULL) rather than trusted, so a
     forged/foreign id can never plant a cross-tenant name behind this row.
-    """
+
+    `created_at` (plan 33 S4, AC-MIG-42) - an explicit override for a
+    BACKFILLED event, which must carry the SOURCE timestamp, never `now()`.
+    Every live caller omits it and keeps getting the current instant; the
+    migration writer is the one caller that passes it."""
     resolved_actor_id: Optional[str] = None
     if actor is not None:
         resolved_actor_id = str(actor.id)
@@ -94,7 +99,7 @@ def record(
         close_reason_id=close_reason_id,
         note=note,
         payload_json=payload,
-        created_at=datetime.now(timezone.utc),
+        created_at=created_at or datetime.now(timezone.utc),
     )
     db.add(row)
     db.flush()

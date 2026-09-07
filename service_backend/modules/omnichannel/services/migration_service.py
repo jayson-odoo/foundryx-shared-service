@@ -4,6 +4,7 @@ orchestration, cursor writes, cooperative abort, dry-run gate, mapping hash,
 report assembly, plan §2.1) to this SAME file - kept together because S2's
 service reuses this one's connection/workspace resolution helpers.
 """
+import base64
 import csv
 import hashlib
 import io
@@ -16,6 +17,8 @@ from cryptography.fernet import InvalidToken
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.config import settings
+from app.import_engine import readers as csv_readers
 from app.import_engine.sanitize import sanitize_cell
 from app.jobs.registry import JobHandlerDef, register_job_handler
 from app.jobs.service import JobService
@@ -33,7 +36,7 @@ from app.models.user import User
 from app.secrets import decrypt_secret
 from app.status_engine.scoped import get_scope_status
 
-from ..models import Channel
+from ..models import Channel, ConversationMessage
 from ..models import Contact as ContactModel
 from ..repositories.migration_connection_repository import MigrationConnectionRepository
 from ..repositories.migration_ref_repository import MigrationRefRepository
@@ -55,10 +58,12 @@ from ..schemas import (
     MigrationTargetStage,
     WorkspaceItem,
 )
+from . import migration_media
 from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
 from .lifecycle_service import initial_status_id, stages_for_workspace
 from .migration_writer import (
     ENTITY_CONTACT,
+    ENTITY_EVENT,
     ENTITY_MESSAGE,
     MigrationWriter,
     resolve_message_timestamps,
@@ -83,6 +88,12 @@ MESSAGES_PAGE_LIMIT = 100
 # how many `migration_refs` rows are pulled per DB round-trip while walking
 # that per-contact loop, not the checkpoint unit itself.
 CONTACT_REF_BATCH = 25
+# S4's media phase walks EVERY migrated-message ref (most carry no media at
+# all) purely to check `payload_json.migration.pendingMedia`/media_key - a
+# smaller batch than `CONTACT_REF_BATCH` because each row that DOES owe media
+# costs a real network fetch, unlike the identities/messages phases' DB-only
+# per-contact work.
+MEDIA_REF_BATCH = 50
 MAX_REPORT_SAMPLES = 10
 MAX_FAILURE_ROWS_KEPT = 5000  # bounds background_jobs.result_json size (S3+ note below)
 
@@ -372,12 +383,16 @@ def _build_report(
     *,
     messages_with_inferred: int = 0,
     message_samples: Optional[List[dict]] = None,
+    messages_skipped_before_floor: int = 0,
 ) -> dict:
     contacts_c = counts.get("contacts") or {}
     fields_c = counts.get("fields") or {}
     tags_c = counts.get("tags") or {}
     identities_c = counts.get("identities") or {}
     messages_c = counts.get("messages") or {}
+    media_c = counts.get("media") or {}
+    events_c = counts.get("events") or {}
+    quick_replies_c = counts.get("quickReplies") or {}
     blockers: List[str] = []
     if lifecycle_unmapped:
         blockers.append(
@@ -424,12 +439,34 @@ def _build_report(
                 "wouldSkip": messages_c.get("skip", 0),
                 "errors": messages_c.get("errors", 0),
             },
-            # S4 phases - genuinely zero in S3 (never walked this run).
-            "media": _zero_counts(),
-            "events": _zero_counts(),
-            "quickReplies": _zero_counts(),
+            # S4 phases (AC-MIG-39..45) - genuinely zero for a dry run or a
+            # contactsOnly run (neither ever reaches these phases, mirroring
+            # S3's own identities/messages honesty note above); real counts
+            # once the media/events/quickReplies phases actually walk.
+            "media": {
+                "fetched": media_c.get("fetched", 0),
+                "wouldCreate": media_c.get("create", 0),
+                "wouldUpdate": 0,
+                "wouldSkip": media_c.get("skip", 0),
+                "errors": media_c.get("errors", 0),
+            },
+            "events": {
+                "fetched": events_c.get("fetched", 0),
+                "wouldCreate": events_c.get("create", 0),
+                "wouldUpdate": 0,
+                "wouldSkip": events_c.get("skip", 0),
+                "errors": events_c.get("errors", 0),
+            },
+            "quickReplies": {
+                "fetched": quick_replies_c.get("fetched", 0),
+                "wouldCreate": quick_replies_c.get("create", 0),
+                "wouldUpdate": quick_replies_c.get("update", 0),
+                "wouldSkip": quick_replies_c.get("skip", 0),
+                "errors": quick_replies_c.get("errors", 0),
+            },
         },
         "messagesWithInferredTimestamp": messages_with_inferred,
+        "messagesSkippedBeforeFloor": messages_skipped_before_floor,
         "blockers": blockers,
         "samples": {"contacts": samples, "messages": message_samples or []},
     }
@@ -653,6 +690,10 @@ class MigrationService:
             "messagesSince": parsed_messages_since,
             "contactsOnly": bool(payload.contactsOnly),
             "mappingHash": mapping_hash,
+            # S4 (AC-MIG-44) - carried through verbatim; empty/absent means
+            # "no snippets CSV supplied", a legitimate no-op for the
+            # quick_replies phase, not a validation error.
+            "snippetsCsvBase64": payload.snippetsCsvBase64,
             # Denormalized (the Broadcast-model convention, `models.py
             # template_name`) - a renamed/retired connection or workspace must
             # not blank out this job's history row.
@@ -839,13 +880,28 @@ def _process_contact_messages(
     message_counts: Dict[str, int],
     failures: List[dict],
     message_samples: List[dict],
-) -> int:
+    messages_since: Optional[datetime] = None,
+) -> Tuple[int, int]:
     """One contact's FULL message-history walk - buffered, sorted by
     `messageId`, timestamp-resolved as ONE unit (D-A6-9 needs the whole
     contact's history bracketed together). Shared by the real per-ref
-    "messages" phase AND the dry-run inline preview. Returns the number of
-    NEWLY inferred timestamps this call added (a plain `int` return, not a
-    shared counter - the caller accumulates it)."""
+    "messages" phase AND the dry-run inline preview. Returns
+    `(newly_inferred, newly_skipped_before_floor)` - plain ints, not shared
+    counters (the caller accumulates both).
+
+    `messages_since` (D-A6-22) is applied AFTER `resolve_message_timestamps`
+    runs on the FULL unfiltered set - the interpolation branch needs every
+    bracketing anchor regardless of the floor, so filtering first would let a
+    floored-out message silently change another message's inferred timestamp.
+    A message whose RESOLVED `created_at` falls before the floor is neither
+    written nor error-reported (an operator choice, not a failure) and is
+    never considered for `already_migrated` (a floored-out id has no ref
+    either way, so a re-run with the SAME floor floors it again identically -
+    the plan's own suggested "cheap early stop over a newest-first page" is
+    NOT implemented as a network-level short-circuit here, since the vendor
+    documents no page ordering guarantee to rely on for that; this filters
+    the fully-resolved, already-buffered set instead - equally correct,
+    slightly more network calls on a very old floor)."""
     identifier = f"id:{contact_external_id}"
     # D-A6-9's third fallback branch needs the SOURCE contact's own
     # `created_at` (a targeted re-fetch, plan §5.1) - falls back to the LOCAL
@@ -878,7 +934,7 @@ def _process_contact_messages(
                 "reason": exc.message, "action": "skipped",
             }
         )
-        return 0
+        return 0, 0
 
     parsed_items: List[SourceMessageItem] = []
     for raw in buffered_raw:
@@ -898,6 +954,18 @@ def _process_contact_messages(
     # resolved timestamp, which is derived FROM this order in the first place.
     parsed_items.sort(key=lambda m: m.messageId)
     resolved = resolve_message_timestamps(parsed_items, fallback_dt)
+
+    skipped_before_floor = 0
+    if messages_since is not None:
+        kept_items: List[SourceMessageItem] = []
+        kept_resolved: List[Tuple[datetime, bool]] = []
+        for item, (created_at, inferred) in zip(parsed_items, resolved):
+            if created_at < messages_since:
+                skipped_before_floor += 1
+                continue
+            kept_items.append(item)
+            kept_resolved.append((created_at, inferred))
+        parsed_items, resolved = kept_items, kept_resolved
 
     already = refs.already_migrated(
         tenant_id, workspace_id, RESPONDIO_PROVIDER, ENTITY_MESSAGE,
@@ -934,26 +1002,228 @@ def _process_contact_messages(
     # AC-MIG-37 - exactly ONE recompute per contact, after its WHOLE message
     # phase (this call covers every page for this contact - buffered above).
     writer.recompute_contact_timestamps(local_contact)
-    return newly_inferred
+    return newly_inferred, skipped_before_floor
+
+
+# ── S4 - media (AC-MIG-39/40) ────────────────────────────────────────────────
+
+_MEDIA_KINDS = ("IMAGE", "VIDEO", "AUDIO", "DOCUMENT")
+
+
+def _requires_media_fetch(message: ConversationMessage) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Returns `(url, declared_kind, filename_hint)`, or `(None, None, None)`
+    when this message owes no media fetch at all. Three sources, in order:
+
+    1. the PRIMARY `attachment` case - S3 flagged it with `payload_json.
+       migration.pendingMedia` and staged the URL on the LEGACY `media_url`
+       column; `declared_kind` is the message's own `message_type` (already
+       known - IMAGE/VIDEO/AUDIO/DOCUMENT).
+    2. a nested `email` attachment - S3 deliberately left this UNFLAGGED (see
+       `migration_writer._map_message_content`'s own comment): only the
+       FIRST attachment is fetched (mirrors the template header-only rule
+       below); `declared_kind` is None (resolved from the sniffed mime).
+    3. a nested `whatsapp_template` HEADER component carrying a media link -
+       also unflagged by S3, also kind-less up front.
+
+    `media_key` already set = already fetched on a prior run (idempotent,
+    AC-MIG-45) - checked FIRST so a re-run never re-derives a URL at all."""
+    if message.media_key:
+        return None, None, None
+    payload = message.payload_json or {}
+    migration_meta = payload.get("migration") or {}
+    if migration_meta.get("pendingMedia") and message.media_url:
+        declared_kind = message.message_type if message.message_type in _MEDIA_KINDS else None
+        return message.media_url, declared_kind, message.media_filename
+
+    email_attachments = (payload.get("email") or {}).get("attachments") or []
+    if email_attachments:
+        first = email_attachments[0] or {}
+        url = first.get("url")
+        if url:
+            return url, None, first.get("filename")
+
+    template = payload.get("template") or {}
+    for component in template.get("components") or []:
+        if str((component or {}).get("type") or "").upper() == "HEADER":
+            link = component.get("link") or component.get("url")
+            if link:
+                return link, None, None
+
+    return None, None, None
+
+
+def _process_message_media(
+    writer: MigrationWriter,
+    tenant_id: str,
+    workspace_id: str,
+    message: ConversationMessage,
+    media_counts: Dict[str, int],
+    failures: List[dict],
+    *,
+    http_client=None,
+) -> None:
+    """One message's media fetch (AC-MIG-39/40) - NEVER raises; a failure
+    keeps the message row exactly as written (D-A6-7) and is reported."""
+    url, declared_kind, filename_hint = _requires_media_fetch(message)
+    if not url:
+        # Nothing owed - not counted at all (mirrors the "unmapped source
+        # channel" pattern in the identities phase).
+        return
+    media_counts["fetched"] = media_counts.get("fetched", 0) + 1
+    result = migration_media.fetch_and_store_media(
+        writer.db, tenant_id=tenant_id, workspace_id=workspace_id, message_id=message.id,
+        url=url, filename=filename_hint, declared_kind=declared_kind, http_client=http_client,
+    )
+    if not result.ok:
+        media_counts["errors"] = media_counts.get("errors", 0) + 1
+        writer.record_media_failure(message, result.reason or "Media fetch failed.")
+        failures.append(
+            {
+                "entity": "media", "sourceId": message.id, "sourceLabel": message.media_filename or "",
+                "reason": result.reason or "Media fetch failed.", "action": "kept the message, skipped media",
+            }
+        )
+        return
+    media_counts["create"] = media_counts.get("create", 0) + 1
+    writer.apply_media(message, result)
+
+
+# ── S4 - derived conversation_events (AC-MIG-41/42) ─────────────────────────
+
+
+def _process_contact_events(
+    client: RespondIoClient,
+    writer: MigrationWriter,
+    refs: MigrationRefRepository,
+    tenant_id: str,
+    workspace_id: str,
+    local_contact: ContactModel,
+    contact_external_id: str,
+    event_counts: Dict[str, int],
+    failures: List[dict],
+) -> None:
+    """One contact's derived-events pass (AC-MIG-41). Idempotent via
+    `migration_refs` keyed PER CONTACT (D-A6-13) - a re-run skips the whole
+    set for a contact that already has a ref, never re-deriving (and never
+    re-fetching the source contact, which the ref check happens BEFORE)."""
+    existing_ref = refs.local_for_one(
+        tenant_id, workspace_id, RESPONDIO_PROVIDER, ENTITY_EVENT, contact_external_id
+    )
+    if existing_ref is not None:
+        event_counts["skip"] = event_counts.get("skip", 0) + 1
+        return
+
+    try:
+        raw_contact = client.get_contact(f"id:{contact_external_id}")
+        source_contact = Contact(**raw_contact)
+    except Exception as exc:  # noqa: BLE001 - never abort the job (RespondIoError or a malformed row)
+        event_counts["errors"] = event_counts.get("errors", 0) + 1
+        failures.append(
+            {
+                "entity": "events", "sourceId": contact_external_id, "sourceLabel": "",
+                "reason": f"could not re-fetch source contact for event derivation: {exc}",
+                "action": "skipped",
+            }
+        )
+        return
+
+    event_counts["fetched"] = event_counts.get("fetched", 0) + 1
+    written = writer.write_derived_events(local_contact, source_contact)
+    event_counts["create"] = event_counts.get("create", 0) + written
+    refs.record(tenant_id, workspace_id, RESPONDIO_PROVIDER, ENTITY_EVENT, contact_external_id, local_contact.id)
+
+
+# ── S4 - quick replies from a snippets CSV (AC-MIG-44) ──────────────────────
+
+
+def _process_quick_replies_csv(
+    writer: MigrationWriter, csv_base64: Optional[str], qr_counts: Dict[str, int], failures: List[dict]
+) -> None:
+    """Respond.io exposes no snippets endpoint (D-A6-19/F3) - this reads the
+    2-column (`shortcut`, `body`) CSV the operator uploaded alongside the job
+    (base64 in the payload, see `MigrationJobCreate.snippetsCsvBase64`'s own
+    docstring) through the SAME `app/import_engine/readers.py` sniff/cap the
+    rest of the platform's imports use. A no-op (zero counts) when no CSV was
+    supplied - not a failure, a legitimate "API-only, no snippets" run."""
+    if not csv_base64:
+        return
+    try:
+        content = base64.b64decode(csv_base64, validate=True)
+    except Exception:  # noqa: BLE001 - bad upload, never abort the job
+        failures.append(
+            {
+                "entity": "quickReplies", "sourceId": "", "sourceLabel": "",
+                "reason": "Could not decode the snippets CSV upload.", "action": "skipped",
+            }
+        )
+        return
+
+    fmt = csv_readers.sniff_format(content)
+    if fmt is None:
+        failures.append(
+            {
+                "entity": "quickReplies", "sourceId": "", "sourceLabel": "",
+                "reason": "Unsupported file format for the snippets CSV.", "action": "skipped",
+            }
+        )
+        return
+
+    headers, records = csv_readers.read_rows(content, fmt, None, settings.import_max_rows)
+    header_by_lower = {h.strip().lower(): h for h in headers}
+    shortcut_header = header_by_lower.get("shortcut")
+    body_header = header_by_lower.get("body")
+    if not shortcut_header or not body_header:
+        failures.append(
+            {
+                "entity": "quickReplies", "sourceId": "", "sourceLabel": "",
+                "reason": "The snippets CSV needs 'shortcut' and 'body' columns.", "action": "skipped",
+            }
+        )
+        return
+
+    for i, record in enumerate(records):
+        qr_counts["fetched"] = qr_counts.get("fetched", 0) + 1
+        shortcut = str(record.get(shortcut_header) or "").strip()
+        body = str(record.get(body_header) or "").strip()
+        if not shortcut or not body:
+            qr_counts["errors"] = qr_counts.get("errors", 0) + 1
+            failures.append(
+                {
+                    "entity": "quickReplies", "sourceId": str(i), "sourceLabel": shortcut or body,
+                    "reason": "Missing shortcut or body.", "action": "skipped",
+                }
+            )
+            continue
+        outcome = writer.write_quick_reply(shortcut, body)
+        qr_counts[outcome] = qr_counts.get(outcome, 0) + 1
 
 
 def run_migration_job(db: Session, job: BackgroundJob) -> None:
     """`omnichannel.respondio_migration` job handler. Phase order (D-A6-4):
-    contacts (S2) -> identities -> messages (S3) -> media/events/quick
-    replies (S4, not yet wired). Dry run and real run share this ONE code
-    path throughout (D-A6-14): every phase's per-unit write happens inside
-    its OWN SAVEPOINT (`db.begin_nested()`), COMMITTED (released into the
-    session's pending transaction) on a real run or unconditionally ROLLED
-    BACK on a dry run.
+    contacts (S2) -> identities -> messages (S3) -> media -> events ->
+    quick_replies (S4). Dry run and real run share this ONE code path
+    throughout (D-A6-14): every phase's per-unit write happens inside its OWN
+    SAVEPOINT (`db.begin_nested()`), COMMITTED (released into the session's
+    pending transaction) on a real run or unconditionally ROLLED BACK on a
+    dry run.
 
     The contacts phase checkpoints per respond.io PAGE (AC-MIG-22, unchanged
-    from S2). The identities/messages phases checkpoint per CONTACT instead
-    (a deliberate S3 deviation, documented on `CONTACT_REF_BATCH` above) -
-    D-A6-9's timestamp interpolation needs a whole contact's message history
-    bracketed together, so a contact's full message set is buffered, sorted
-    by `messageId` and timestamp-resolved as ONE unit before any row is
-    written; re-processing a contact from scratch after a crash is safe
-    because `migration_refs` makes every write idempotent."""
+    from S2). The identities/messages/media/events phases checkpoint per
+    CONTACT or per MESSAGE ref instead (a deliberate S3 deviation, documented
+    on `CONTACT_REF_BATCH`/`MEDIA_REF_BATCH` above) - D-A6-9's timestamp
+    interpolation needs a whole contact's message history bracketed together,
+    so a contact's full message set is buffered, sorted by `messageId` and
+    timestamp-resolved as ONE unit before any row is written; re-processing a
+    contact from scratch after a crash is safe because `migration_refs` makes
+    every write idempotent.
+
+    Like the identities/messages phases before them, media/events/quick_
+    replies (S4) are reached ONLY for a real, non-`contactsOnly` run - a dry
+    run and a `contactsOnly` run both `finish_done()` right after the
+    contacts loop below, so these three phases' report entities stay
+    genuinely zero (never walked) in either mode, exactly like S3 left
+    identities/messages zero for S2's dry runs (AC-MIG-27's "no media URL is
+    fetched" during a dry run is therefore structural, not a branch)."""
     service = JobService(db)
     tenant_id = job.tenant_id
     payload = job.payload_json or {}
@@ -1000,7 +1270,19 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     user_map = _resolve_user_map(db, tenant_id, payload)
 
     thread_open_id = status_id_for(db, tenant_id, "THREAD", "OPEN")
+    thread_closed_id = status_id_for(db, tenant_id, "THREAD", "CLOSED")
     initial_lifecycle_id = initial_status_id(db, tenant_id, workspace_id)
+
+    # D-A6-22 - the message-phase date floor (contacts are NEVER floored).
+    # Already parsed to an ISO string at create time (`_validate_mapping`);
+    # re-parsed to an aware-UTC `datetime` here once, not per message.
+    messages_since_raw = payload.get("messagesSince")
+    messages_since_dt: Optional[datetime] = None
+    if messages_since_raw:
+        try:
+            messages_since_dt = datetime.fromisoformat(str(messages_since_raw)).astimezone(timezone.utc)
+        except ValueError:
+            messages_since_dt = None
 
     try:
         source_field_defs: Dict[str, Dict[str, Any]] = {}
@@ -1019,6 +1301,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
         tenant_id=tenant_id,
         workspace_id=workspace_id,
         thread_open_status_id=thread_open_id,
+        thread_closed_status_id=thread_closed_id,
         initial_lifecycle_status_id=initial_lifecycle_id,
         lifecycle_map=lifecycle_map,
         source_field_defs=source_field_defs,
@@ -1035,9 +1318,15 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
         counts.get("identities") or {"fetched": 0, "create": 0, "update": 0, "skip": 0, "errors": 0}
     )
     message_counts = dict(counts.get("messages") or {"fetched": 0, "create": 0, "skip": 0, "errors": 0})
+    media_counts = dict(counts.get("media") or {"fetched": 0, "create": 0, "skip": 0, "errors": 0})
+    event_counts = dict(counts.get("events") or {"fetched": 0, "create": 0, "skip": 0, "errors": 0})
+    quick_reply_counts = dict(
+        counts.get("quickReplies") or {"fetched": 0, "create": 0, "update": 0, "skip": 0, "errors": 0}
+    )
     lifecycle_unmapped = int(counts.get("lifecycleUnmappedCount") or 0)
     assignee_unmatched = int(counts.get("assigneeUnmatchedCount") or 0)
     messages_inferred = int(counts.get("messagesWithInferredTimestamp") or 0)
+    messages_skipped_before_floor = int(counts.get("messagesSkippedBeforeFloor") or 0)
 
     prior_result = job.result_json or {}
     failures: List[dict] = list((prior_result.get("failures") or {}).get("rows") or [])
@@ -1049,6 +1338,8 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     contact_list_cursor = cursor.get("contactCursorId")
     identity_ref_cursor = cursor.get("identityCursorId")
     message_ref_cursor = cursor.get("messageCursorId")
+    media_ref_cursor = cursor.get("mediaCursorId")
+    event_ref_cursor = cursor.get("eventCursorId")
     phase = cursor.get("phase") or "contacts"
 
     def checkpoint(new_phase: str) -> None:
@@ -1057,9 +1348,13 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
         counts["tags"] = tag_counts
         counts["identities"] = identity_counts
         counts["messages"] = message_counts
+        counts["media"] = media_counts
+        counts["events"] = event_counts
+        counts["quickReplies"] = quick_reply_counts
         counts["lifecycleUnmappedCount"] = lifecycle_unmapped
         counts["assigneeUnmatchedCount"] = assignee_unmatched
         counts["messagesWithInferredTimestamp"] = messages_inferred
+        counts["messagesSkippedBeforeFloor"] = messages_skipped_before_floor
         service.set_cursor(
             job,
             {
@@ -1067,6 +1362,8 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
                 "contactCursorId": contact_list_cursor,
                 "identityCursorId": identity_ref_cursor,
                 "messageCursorId": message_ref_cursor,
+                "mediaCursorId": media_ref_cursor,
+                "eventCursorId": event_ref_cursor,
                 "counts": counts,
             },
         )
@@ -1079,6 +1376,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
         report = _build_report(
             counts, samples, lifecycle_unmapped,
             messages_with_inferred=messages_inferred, message_samples=message_samples,
+            messages_skipped_before_floor=messages_skipped_before_floor,
         )
         result = {
             "report": report,
@@ -1132,10 +1430,13 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
                             preview_contact = (
                                 db.query(ContactModel).filter(ContactModel.id == outcome.contact_id).first()
                             )
-                            messages_inferred += _process_contact_messages(
+                            newly_inferred, newly_skipped = _process_contact_messages(
                                 client, writer, refs, tenant_id, workspace_id, preview_contact, external_id,
                                 channel_map, user_map, message_counts, failures, message_samples,
+                                messages_since=messages_since_dt,
                             )
+                            messages_inferred += newly_inferred
+                            messages_skipped_before_floor += newly_skipped
                     except Exception as exc:  # noqa: BLE001 - per-row isolation (AC-MIG-27/29)
                         nested.rollback()
                         contact_counts["fetched"] += 1
@@ -1283,10 +1584,13 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
                     continue
 
                 nested = db.begin_nested()
-                messages_inferred += _process_contact_messages(
+                newly_inferred, newly_skipped = _process_contact_messages(
                     client, writer, refs, tenant_id, workspace_id, local_contact, ref.external_id,
                     channel_map, user_map, message_counts, failures, message_samples,
+                    messages_since=messages_since_dt,
                 )
+                messages_inferred += newly_inferred
+                messages_skipped_before_floor += newly_skipped
                 # This phase only runs for a REAL (non-dry) run - see the
                 # identities phase's identical comment above.
                 if dry_run:  # pragma: no cover - unreachable, see the comment above
@@ -1298,6 +1602,128 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
                 if _aborted(db, job.id):
                     service.log(job, "Aborted during the messages phase.")
                     return
+
+        phase = "media"
+        message_ref_cursor = None
+        checkpoint("media")
+        if _aborted(db, job.id):
+            service.log(job, "Aborted before the media phase.")
+            return
+
+    # ── phase 4 - media (S4, AC-MIG-39/40) ──────────────────────────────────
+    if phase == "media":
+        while True:
+            ref_batch = refs.paged(
+                tenant_id, workspace_id, RESPONDIO_PROVIDER, ENTITY_MESSAGE,
+                after_id=media_ref_cursor, limit=MEDIA_REF_BATCH,
+            )
+            if not ref_batch:
+                break
+            for ref in ref_batch:
+                media_ref_cursor = ref.id
+                message = (
+                    db.query(ConversationMessage)
+                    .filter(
+                        ConversationMessage.id == ref.local_id,
+                        ConversationMessage.tenant_id == tenant_id,
+                    )
+                    .first()
+                )
+                if message is None:  # the migrated row vanished after being written
+                    checkpoint("media")
+                    if _aborted(db, job.id):
+                        service.log(job, "Aborted during the media phase.")
+                        return
+                    continue
+
+                nested = db.begin_nested()
+                _process_message_media(writer, tenant_id, workspace_id, message, media_counts, failures)
+                # Media, like identities/messages, only runs for a REAL
+                # (non-dry) run - a dry run finishes right after the contacts
+                # loop, above (AC-MIG-27: no media URL is ever fetched there).
+                if dry_run:  # pragma: no cover - unreachable, see the comment above
+                    nested.rollback()
+                else:
+                    nested.commit()
+                service.advance(job, done=1)
+                checkpoint("media")
+                if _aborted(db, job.id):
+                    service.log(job, "Aborted during the media phase.")
+                    return
+
+        phase = "events"
+        media_ref_cursor = None
+        checkpoint("events")
+        if _aborted(db, job.id):
+            service.log(job, "Aborted before the events phase.")
+            return
+
+    # ── phase 5 - derived conversation_events (S4, AC-MIG-41/42) ────────────
+    if phase == "events":
+        while True:
+            ref_batch = refs.paged(
+                tenant_id, workspace_id, RESPONDIO_PROVIDER, ENTITY_CONTACT,
+                after_id=event_ref_cursor, limit=CONTACT_REF_BATCH,
+            )
+            if not ref_batch:
+                break
+            for ref in ref_batch:
+                event_ref_cursor = ref.id
+                local_contact = (
+                    db.query(ContactModel)
+                    .filter(
+                        ContactModel.id == ref.local_id,
+                        ContactModel.tenant_id == tenant_id,
+                        ContactModel.workspace_id == workspace_id,
+                    )
+                    .first()
+                )
+                if local_contact is None:
+                    checkpoint("events")
+                    if _aborted(db, job.id):
+                        service.log(job, "Aborted during the events phase.")
+                        return
+                    continue
+
+                nested = db.begin_nested()
+                _process_contact_events(
+                    client, writer, refs, tenant_id, workspace_id, local_contact, ref.external_id,
+                    event_counts, failures,
+                )
+                if dry_run:  # pragma: no cover - unreachable, see the comment above
+                    nested.rollback()
+                else:
+                    nested.commit()
+                service.advance(job, done=1)
+                checkpoint("events")
+                if _aborted(db, job.id):
+                    service.log(job, "Aborted during the events phase.")
+                    return
+
+        phase = "quick_replies"
+        event_ref_cursor = None
+        checkpoint("quick_replies")
+        if _aborted(db, job.id):
+            service.log(job, "Aborted before the quick_replies phase.")
+            return
+
+    # ── phase 6 - quick replies from a snippets CSV (S4, AC-MIG-44) ─────────
+    if phase == "quick_replies":
+        # A single bounded pass (`settings.import_max_rows`, not a paginated
+        # walk) - the whole point of a snippets CSV is that it is small; no
+        # separate resumability is needed beyond re-running the same CSV,
+        # which `write_quick_reply`'s own migration_refs check already makes
+        # idempotent (AC-MIG-44/45).
+        nested = db.begin_nested()
+        _process_quick_replies_csv(writer, payload.get("snippetsCsvBase64"), quick_reply_counts, failures)
+        if dry_run:  # pragma: no cover - unreachable, see the comment above
+            nested.rollback()
+        else:
+            nested.commit()
+        checkpoint("quick_replies")
+        if _aborted(db, job.id):
+            service.log(job, "Aborted during the quick_replies phase.")
+            return
 
     finish_done()
 
