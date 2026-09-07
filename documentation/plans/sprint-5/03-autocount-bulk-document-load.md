@@ -683,3 +683,82 @@ parallel at the end. Live load = AC-03-22/23 on the real company and `ac_sim`.
 - BL-SS-133 Fixed by this lane (fix/push-marks-per-chunk) - see `documentation/backlogs/
   backlog.md` for the full prod-numbers writeup; superseded round 6's "unchanged all-or-nothing"
   ruling. (Renumbered from BL-SS-130 for the same reason.)
+
+## 7. Addendum (feat/line-fingerprint-sweep) - the line fingerprint sweep
+
+**Prod finding.** SO419208 (DocKey 45672056) had a delivery transfer land after our initial
+staging. AutoCount updates `SODTL.TransferedQty` without ever bumping `SO.LastModified`, and the
+`SODTL` `Last*Modified` stamps are NULL, so a plain `LastModified > :since` incremental page
+(S1-S3 above) never re-selects that header at all - the CRM copy sat stale until the next daily
+reconcile fully re-read the table.
+
+**Mechanism.** Every `DocumentPreset` now also carries a `fingerprint_query`: a cheap
+`GROUP BY DocKey` over the LINE table (SO -> SODTL, PO/SPO -> PODTL), bounded by the same
+`from_date` floor the header wrap already applies, returning `LineCount`, `QtySum`,
+`TransferedSum`, `MaxDtlKey` per header. `sql_source.hashing.document_fingerprint` hashes those
+four values (sha256, numeric-decoding-stable so a driver returning `Decimal("10")` one tick and
+`10` the next never flaps) into one 64-hex string, stored per `(tenant, company, entity,
+source_ref)` in `ac_doc_fingerprint` - a table separate from `ac_row_hash` on purpose: it
+refreshes on every sweep tick regardless of whether the header's own compared columns changed.
+
+On an INCREMENTAL run only (never the initial load, never reconcile - both already have a
+complete, correct view), once the watermark-paged pass above finishes and
+`now - ac_watermark.last_fingerprint_sweep_at >= autocount_fingerprint_sweep_minutes` (default
+15, floor 1; NULL/missing = due), the sweep runs the fingerprint query exactly once and buckets
+every returned DocKey:
+
+- a **stored fingerprint that differs** - genuinely changed; its DocKey joins a **separate
+  keyed header re-fetch** (`SqlDbSource.fetch_by_keys`, chunked at `FINGERPRINT_KEY_CHUNK = 500`,
+  `build_keyed_header_wrap`) run AFTER the paged pass, never OR-ed into the paged wrap's own
+  `WHERE`/`ORDER BY` - that would disturb its seek order and resumability;
+- **no stored fingerprint, but the header is already known by row hash** - the first sweep ever
+  to see this document; its fingerprint is written straight from the value just computed
+  (seed only, never fetched - nothing about the document is actually new);
+  - **no stored fingerprint and no known row hash** - a genuinely new document; the plain
+  watermark pass already picks up anything with a recent `LastModified`, so the sweep does not
+  also re-fetch it (that would double-count `added`/`updated` against the page loop's own
+  numbers) - its fingerprint is simply left unset until some future run stages it.
+
+`fetch_by_keys` unconditionally stages every candidate it is given (it never re-applies
+`fetch_page`'s own unchanged-header-hash skip): the entire premise of the sweep is a header whose
+compared columns can legitimately stay byte-identical while its lines moved, so skipping on that
+comparison here would silently defeat it. The `ac_row_hash` value it writes is the ordinary
+PLAIN header hash - never mixed with the line fingerprint - so a later full-header pass (a
+genuine header edit, or reconcile's own full re-read, both computing the same plain formula)
+stays comparable to it; `ac_doc_fingerprint` (written from the value `fetch_fingerprints` already
+computed) is the sole record of line state (review round 2 fix - an earlier version of this
+lane mixed the fingerprint into `ac_row_hash`, which made the very next reconcile compute a
+DIFFERENT plain hash than what was stored and needlessly re-stage/re-push the identical document
+once).
+
+**Cost.** The fingerprint query is a full scan + hash aggregate over EVERY line row inside
+`from_date`, not a bounded page - on the live company that is 1.19M SODTL rows for `sales_order`
+alone, run up to 96 times a day per document entity (every `autocount_fingerprint_sweep_minutes`
+at the default 15) across three document entities (SO/PO/SPO), over the ZeroTier relay to the
+on-prem SQL server. Measured on AED_SORENTO (SO fingerprint query, `from_date` 2023-09-01, 1.19M
+SODTL rows): elapsed 0.54 s, CPU 5.99 s (parallel plan), 2026-09-07 ~11:00Z. PO/SPO not measured
+separately; PODTL is a fraction of SODTL, so its cost is lower. At 0.54 s elapsed per tick the
+default `autocount_fingerprint_sweep_minutes` interval (15) stands - well under the ~5 s
+threshold below. Mitigation knob: `AUTOCOUNT_FINGERPRINT_SWEEP_MINUTES` - raise to 30 or 60
+(still floor-1-enforced, never disabled outright) if a future measurement (a larger `from_date`
+window, a busier server) comes in above roughly 5 s per tick.
+
+**Blind spot (documented, accepted).** A change that leaves all four aggregates identical -
+same line count, same summed quantities, same max detail key (an in-place edit to a
+non-aggregated column, e.g. a warehouse or remark reassignment on an existing line) - is
+invisible to the fingerprint and waits for the next daily reconcile, exactly like every other
+gap this feature does not claim to close. BL-SS-146 below tracks widening the aggregate set.
+
+**Failure isolation.** A broken fingerprint query (typo'd table/column) or a failure of the
+keyed re-fetch itself fails only the sweep: a WARNING naming "fingerprint", whatever the paged
+pass already staged this run stands, and `last_fingerprint_sweep_at` is left untouched so the
+next tick retries rather than going quiet for a whole interval.
+
+**Reconcile.** A completed reconcile pass drops the `ac_doc_fingerprint` row of every vanished
+document alongside its `ac_row_hash` entry, on the same `stale` ref list, same tenant+company
+scope.
+
+Backlog:
+- BL-SS-146 Add `SubTotalSum` (or another money-bearing aggregate) to the fingerprint query if a
+  same-line-count, same-quantity edit that only changes price/discount needs to be caught by the
+  sweep rather than waiting for reconcile.

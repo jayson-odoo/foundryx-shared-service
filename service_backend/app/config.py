@@ -404,6 +404,18 @@ class Settings(BaseSettings):
     # how many TIMES a transient fault is retried, never how long any one
     # attempt can take.
     autocount_sink_retry_attempts: int = 3
+    # feat/line-fingerprint-sweep - how often an INCREMENTAL run also runs a
+    # document task's fingerprint query (never the initial load, never
+    # reconcile - a reconcile already re-hashes every header). Read at CALL
+    # time (same "retune without a restart" contract as the settings above);
+    # the gate is `now - AcWatermark.last_fingerprint_sweep_at >= this
+    # interval` (missing/NULL = due). Default 15 minutes: cheap enough to run
+    # often (one GROUP BY over the line table, bounded by the task's own
+    # `from_date`), not so often it competes with the incremental's own
+    # cadence for a task with a shorter `incrementalMinutes`. Floor 1 - zero
+    # would mean "every tick", which defeats the point of a separate
+    # interval from the incremental cadence.
+    autocount_fingerprint_sweep_minutes: int = 15
 
     @field_validator("background_job_orphan_after_minutes")
     @classmethod
@@ -474,6 +486,13 @@ class Settings(BaseSettings):
     def _autocount_sink_retry_attempts_bounds(cls, v: int) -> int:
         if v < 1 or v > 5:
             raise ValueError("autocount_sink_retry_attempts must be between 1 and 5.")
+        return v
+
+    @field_validator("autocount_fingerprint_sweep_minutes")
+    @classmethod
+    def _autocount_fingerprint_sweep_minutes_floor(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("autocount_fingerprint_sweep_minutes must be at least 1 minute.")
         return v
 
 

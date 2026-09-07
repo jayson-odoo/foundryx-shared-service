@@ -2,6 +2,7 @@
 from .autocount_repository import (
     CompanyRepository,
     ConnectionRepository,
+    DocFingerprintRepository,
     EntityConfigRepository,
     FieldMappingRepository,
     RowHashRepository,
@@ -14,6 +15,7 @@ from .autocount_repository import (
 __all__ = [
     "CompanyRepository",
     "ConnectionRepository",
+    "DocFingerprintRepository",
     "EntityConfigRepository",
     "FieldMappingRepository",
     "RowHashRepository",

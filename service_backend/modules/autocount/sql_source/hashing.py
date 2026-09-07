@@ -32,7 +32,7 @@ from datetime import date, datetime, time as dt_time, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, List, Mapping, Sequence
 
-__all__ = ["compared_columns_for", "normalize_value", "row_hash"]
+__all__ = ["compared_columns_for", "document_fingerprint", "normalize_value", "row_hash"]
 
 # Record separator between a name and its value, and between pairs. Chosen from
 # the ASCII control block so it can never appear in a column name.
@@ -109,6 +109,33 @@ def row_hash(row: Mapping[str, Any], compared_columns: Sequence[str]) -> str:
     for name in sorted(compared_columns):
         parts.append(str(name))
         parts.append(normalize_value(row.get(name)))
+    return hashlib.sha256(_RECORD.join(parts).encode("utf-8")).hexdigest()
+
+
+def document_fingerprint(values: Sequence[Any]) -> str:
+    """feat/line-fingerprint-sweep - sha256 hex over ``values`` (a document's
+    fingerprint-query aggregate row: ``LineCount``/``QtySum``/
+    ``TransferedSum``/``MaxDtlKey``, in SELECT order), each coerced through
+    the SAME numeric-decoding normalisation ``_numeric_token`` already gives
+    ``normalize_value``'s numeric branch - a driver returning ``10`` as an
+    ``int``, a ``Decimal("10")`` or the literal string ``"10"`` all hash to
+    one token, so a fingerprint never flaps between two ticks purely because
+    a connection pool handed back a different Python type for the same SQL
+    value (tester-flagged driver difference). ``MaxDtlKey`` is a genuine
+    STRING key (e.g. ``"D001-1"``) that never parses as a number - it falls
+    through to the same plain string tag ``_numeric_token`` already uses for
+    anything that is not a number, so it never collides with a numeric
+    token. ``None`` is its own token, distinct from every value AND from an
+    empty string.
+
+    Unlike ``row_hash``, values are NOT name-sorted - they arrive already
+    positioned by the fingerprint query's own ``SELECT`` list, and order is
+    part of the fingerprint (two documents whose aggregates merely swapped
+    columns must never fingerprint the same).
+    """
+    parts: List[str] = [
+        "\x00null" if value is None else _numeric_token(value) for value in values
+    ]
     return hashlib.sha256(_RECORD.join(parts).encode("utf-8")).hexdigest()
 
 
