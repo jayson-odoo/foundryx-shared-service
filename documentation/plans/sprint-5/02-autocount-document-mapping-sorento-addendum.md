@@ -194,9 +194,12 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   (AC-V0..V6) + `PLAN-autocount-document-ingest-v2.md` (D1-D9, S0-S6) on sorento-crm main.
 - Push concurrency (`feat/sink-concurrency-ui`, 2026-09-07): the Sorento connection form gained a
   second select, "Push concurrency" (`sinkConcurrency`, values `"1".."4"`, no stored default).
-  Unset means the platform's own deployed default (`AUTOCOUNT_SINK_CONCURRENCY`, 2 since
-  `fix/push-marks-per-chunk`); a stored value overrides it for THIS tenant's connection only, so
-  an operator can raise it to drain a backlog and set it back after, no deploy. Resolved inside
+  Unset means whatever the platform is actually running: the application default
+  (`app/config.py`'s `autocount_sink_concurrency`) is 1; the production `docker-compose.yml`
+  (`x-backend-env`) sets `AUTOCOUNT_SINK_CONCURRENCY` to 2 since PR #58, overridable per
+  environment via `.env`. A stored value on the connection overrides BOTH for THIS tenant only
+  (ceiling 4), so an operator can raise it to drain a backlog and set it back after, no deploy.
+  Resolved inside
   `SorentoSink._resolve_concurrency`, clamped to 1..4 and to the number of chunks in the push;
   an invalid stored value falls back to the platform default and logs one warning per sink
   instance rather than raising.
