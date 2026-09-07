@@ -76,6 +76,12 @@ Family is the ESB's job (each task filters by your `doc_family` rule, `SPO-` pre
 should still refuse an `SPO-` number arriving under `purchase_orders` (per-record `failed`) as a
 guard.
 
+`container_number` (feat/spo-container-number, 2026-09-07): AutoCount's generic `PO.Ref` column - raw text, max 100, on shipping_orders ingest only at contract 2.1+, never on purchase_orders.
+Sourced by `SPO_PRESET.header` (`Ref -> container_number`); `PO_PRESET` maps no such field, so a
+purchase-order payload never carries it at any version. Same absent-vs-null rule as every other
+field (section 11): omitted from the payload entirely when the AutoCount value is unset, never
+sent as an explicit `null` that would clear an already-stored container on Sorento's side.
+
 ## 4. SO↔PO dedication from `FromSODocList`
 
 `CanonicalPurchaseOrderLine.from_so_numbers?: list[str]` (+ on SPO lines). On write, call
