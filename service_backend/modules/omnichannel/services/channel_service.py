@@ -62,6 +62,7 @@ class ChannelService:
                 profileSyncedAt=c.profile_synced_at,
                 externalAccountId=c.external_account_id,
                 externalAccountName=c.external_account_name,
+                widgetKey=c.widget_key,
                 isTrashed=c.is_trashed,
                 createdAt=c.created_at,
                 updatedAt=c.updated_at,

@@ -103,6 +103,11 @@ class ChannelItem(ApiModel):
     # (which uses wabaId/phoneNumberId instead).
     externalAccountId: Optional[str] = None
     externalAccountName: Optional[str] = None
+    # Plan 34 (A7b, D-A7B-25) - the opaque widget key for a WEBCHAT channel;
+    # null on every other channel type. Not a secret (see `WebchatConnect
+    # Result`/`RotateWidgetSecretResult` for the widget SECRET, which never
+    # rides this object).
+    widgetKey: Optional[str] = None
     isTrashed: bool
     createdAt: datetime
     updatedAt: datetime
@@ -229,6 +234,113 @@ class MetaConnectRequest(ApiModel):
     channelType: Literal["FACEBOOK", "INSTAGRAM"]
     pageId: str
     igAccountId: Optional[str] = None
+
+
+# ── Web chat channel (plan 34 / A7b S1) - mirrors service_frontend/types/
+# omnichannel.ts §"Plan 34 / A7b" byte-for-byte (contract pinned by the S0
+# mock, see documentation/plans/sprint-4/
+# 34-omnichannel-channel-web-chat.md §5.1). ──────────────────────────────────
+class ConnectWebchatRequest(ApiModel):
+    """`POST /omnichannel/onboarding/webchat/connect` (AC-WEB-18)."""
+
+    name: str
+    workspaceId: str
+    allowedOrigins: List[str] = []
+
+
+class WebchatAppearance(BaseModel):
+    """Launcher side + header/agent-name appearance (AC-WEB-04)."""
+
+    accentColor: str
+    position: Literal["left", "right"]
+    headerTitle: str
+    agentDisplayName: str
+
+    @field_validator("accentColor")
+    @classmethod
+    def _accent_color(cls, v: str) -> str:
+        return _validate_hex_color(v)  # type: ignore[return-value]
+
+
+class WebchatAppearanceUpdate(BaseModel):
+    """Partial write - only the fields present are changed (mirrors
+    `UpdateWebchatConfigInput.appearance` on the wire)."""
+
+    accentColor: Optional[str] = None
+    position: Optional[Literal["left", "right"]] = None
+    headerTitle: Optional[str] = None
+    agentDisplayName: Optional[str] = None
+
+    @field_validator("accentColor")
+    @classmethod
+    def _accent_color(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_hex_color(v)
+
+
+class WebchatPreChatToggles(BaseModel):
+    """Fixed pre-chat capture toggles (D-A7B-23 - not a form-engine form)."""
+
+    askName: bool
+    askEmail: bool
+    askPhone: bool
+
+
+class WebchatPreChatTogglesUpdate(BaseModel):
+    askName: Optional[bool] = None
+    askEmail: Optional[bool] = None
+    askPhone: Optional[bool] = None
+
+
+class WebchatConfig(ApiModel):
+    """`GET/PUT /omnichannel/channels/{id}/widget` (plan §5.1). Never carries
+    the widget secret - that is revealed exactly once, by connect/rotate-
+    secret only."""
+
+    widgetKey: str
+    allowedOrigins: List[str]
+    tokenEpoch: int
+    appearance: WebchatAppearance
+    greeting: str
+    offlineGreeting: str
+    preChat: WebchatPreChatToggles
+    # The exact install snippet the backend serves for this channel - the
+    # Widget tab renders this verbatim (AC-WEB-05), never rebuilding it
+    # client-side.
+    snippet: str
+
+
+class UpdateWebchatConfigInput(ApiModel):
+    """`PUT /omnichannel/channels/{id}/widget` - every field optional so a
+    partial save never clobbers the rest (mirrors the channel profile
+    write-through PATCH shape)."""
+
+    allowedOrigins: Optional[List[str]] = None
+    appearance: Optional[WebchatAppearanceUpdate] = None
+    greeting: Optional[str] = None
+    offlineGreeting: Optional[str] = None
+    preChat: Optional[WebchatPreChatTogglesUpdate] = None
+
+
+class WebchatConnectResult(ChannelItem):
+    """`POST /omnichannel/onboarding/webchat/connect` result - the 201 body
+    IS a `ChannelItem`, plus the widget secret, revealed exactly once
+    (AC-WEB-18)."""
+
+    widgetSecret: str
+
+
+class RotateWidgetSecretResult(ApiModel):
+    """`POST /omnichannel/channels/{id}/widget/rotate-secret` result - the
+    new secret, revealed exactly once (AC-WEB-19)."""
+
+    widgetSecret: str
+
+
+class SignOutVisitorsResult(ApiModel):
+    """`POST /omnichannel/channels/{id}/widget/sign-out-visitors` result -
+    the secret is UNCHANGED (D-A7B-6); only the epoch moves."""
+
+    tokenEpoch: int
 
 
 # ── Shared ──────────────────────────────────────────────────────────────────

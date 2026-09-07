@@ -1,11 +1,12 @@
 """Channel adapter REGISTRY (plan 32 / A7a, D-A7-9).
 
 `get_adapter(channel_type)` resolves the concrete adapter for a channel type -
-`WHATSAPP` | `FACEBOOK` | `INSTAGRAM` (AC-CHN-15: an unknown type still
-raises). `adapters.whatsapp_cloud.get_adapter` stays as a thin re-export: eight
-existing modules import `get_adapter` off `whatsapp_cloud` directly, and
-rewriting those import sites inside a slice that is ALREADY refactoring the
-send path is pure risk for zero behaviour - the import sweep is BL-SS-115.
+`WHATSAPP` | `FACEBOOK` | `INSTAGRAM` | `WEBCHAT` (plan 34 / A7b, AC-WEB-12; an
+unknown type still raises). `adapters.whatsapp_cloud.get_adapter` stays as a
+thin re-export: eight existing modules import `get_adapter` off
+`whatsapp_cloud` directly, and rewriting those import sites inside a slice
+that is ALREADY refactoring the send path is pure risk for zero behaviour -
+the import sweep is BL-SS-115.
 """
 from typing import Optional
 
@@ -14,12 +15,14 @@ import httpx
 from .instagram import InstagramAdapter
 from .messenger import MessengerAdapter
 from .meta_graph import GraphRecorder
+from .webchat import WebChatAdapter
 from .whatsapp_cloud import WhatsAppCloudAdapter
 
 ADAPTERS = {
     "WHATSAPP": WhatsAppCloudAdapter,
     "FACEBOOK": MessengerAdapter,
     "INSTAGRAM": InstagramAdapter,
+    "WEBCHAT": WebChatAdapter,
 }
 
 

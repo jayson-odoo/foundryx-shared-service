@@ -22,3 +22,14 @@ class ChannelTypeUnsupported(Exception):
 def assert_whatsapp(channel: Channel) -> None:
     if channel.channel_type != "WHATSAPP":
         raise ChannelTypeUnsupported()
+
+
+def assert_webchat(channel: Channel) -> None:
+    """The mirror-image guard (plan 34 / A7b S1) - the widget config /
+    secret-rotate / sign-out-visitors routes are web-chat-only concepts with
+    no WhatsApp/Messenger/Instagram equivalent, so a non-WEBCHAT channel
+    refuses them with the SAME typed 409 rather than reading back an empty
+    widget key. `WebchatService._channel` is this module's single
+    channel-resolution point, mirroring `assert_whatsapp`'s callers."""
+    if channel.channel_type != "WEBCHAT":
+        raise ChannelTypeUnsupported()

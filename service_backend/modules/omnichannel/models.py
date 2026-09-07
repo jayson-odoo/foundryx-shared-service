@@ -145,6 +145,25 @@ class Channel(OmniBase):
     # omnichannel_broadcast_rate_per_second`). Wired up by S2's chunk pacing;
     # the column ships in S1 so the migration + create_all mirror land once.
     broadcast_rate_per_second = Column(Integer, nullable=True)
+    # ── Web chat widget (plan 34 / A7b S1, D-A7B-10/D-A7B-25) ───────────────
+    # The 32-char opaque key a customer's public website snippet carries -
+    # the ONLY channel-identifying value that leaves the backend on a public
+    # surface. NULL on every other channel type. Carries its OWN service-wide
+    # PARTIAL UNIQUE index over live rows (migration 0021), byte-for-byte the
+    # `phone_number_id`/`external_account_id` design: an unauthenticated
+    # loader request resolves the owning tenant by this id GLOBALLY, never
+    # from client-supplied content. index=True mirrors that for create_all.
+    widget_key = Column(String, nullable=True, index=True)
+    # Appearance/greetings/pre-chat toggles/allowed origins - everything a
+    # widget needs EXCEPT the secret (which stays in `credentials_json`,
+    # Fernet-encrypted, matching every other channel type's credential
+    # storage). `JSON(none_as_null=True)` per the house rule.
+    widget_config_json = Column(JSON(none_as_null=True), nullable=True)
+    # Mass-revocation counter (D-A7B-5/D-A7B-6) - bumped ONLY by "sign out all
+    # visitors"; every issued visitor token embeds the epoch it was minted
+    # against and is refused once this no longer matches. Rotating the widget
+    # SECRET never touches this column, and vice versa.
+    widget_token_epoch = Column(Integer, nullable=False, default=0)
     is_trashed = Column(Boolean, nullable=False, default=False)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
@@ -264,6 +283,12 @@ class ContactChannelIdentity(OmniBase):
     window_expires_at = Column(UTCDateTime(), nullable=True)
     human_agent_expires_at = Column(UTCDateTime(), nullable=True)
     last_inbound_at = Column(UTCDateTime(), nullable=True)
+    # Plan 34 (A7b S1, D-A7B-19) - a presence marker ("visitor closed the tab
+    # 12 minutes ago"), NOT a window/authorization fact. Meaningless-and-NULL
+    # for every other channel type (no backfill). Stamped by S3's outbound/
+    # inbound seams; the column ships in S1 so the migration + create_all
+    # mirror land once, alongside the three sibling columns above.
+    last_seen_at = Column(UTCDateTime(), nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
     __table_args__ = (

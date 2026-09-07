@@ -610,6 +610,46 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "  AND i.window_expires_at IS NULL"
                 )
             )
+            # Web chat widget (plan 34 / A7b S1, AC-WEB-16) - idempotent add
+            # for existing deployments (module Alembic 0021 is the real fix
+            # for a Postgres-tracked deploy; this covers the create_all path).
+            # No backfill: all four columns are new and empty-until-used.
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS widget_key VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS widget_config_json JSON"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS widget_token_epoch INTEGER NOT NULL DEFAULT 0"
+                )
+            )
+            # Mirrors migration 0021's fix (same reasoning as
+            # `uq_channels_external_account_id` above): only the PARTIAL
+            # UNIQUE index is created here - a plain index would carry a
+            # different name than `Channel.widget_key`'s `index=True`
+            # generates via `create_all`.
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_channels_widget_key "
+                    f'ON "{OMNI_SCHEMA}".channels (widget_key) '
+                    "WHERE widget_key IS NOT NULL AND is_trashed = false"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contact_channel_identities '
+                    "ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ"
+                )
+            )
 
 
 def install(engine: Engine, db: Session) -> None:
@@ -761,6 +801,14 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     in Postgres SQL for a tracked deploy; `messaging_policy.
     backfill_identity_windows` is the dialect-agnostic Python twin (mirrors
     `ContactRepository.backfill_phone_digits`) - idempotent, safe to re-run.
+
+    0.9.0 -> 0.10.0 (plan 34 S1, A7b, AC-WEB-16): `channels.widget_key`/
+    `widget_config_json`/`widget_token_epoch` and `contact_channel_
+    identities.last_seen_at` are brand-new, empty-until-used columns - no
+    backfill (a tenant landing here simply has no WEBCHAT channel yet, a
+    valid state, not a gap to repair). No new permission keys either
+    (D-A7B-28) - `channels.read`/`channels.manage` already cover every new
+    route, so there is nothing for the post-hook grant sweep to deliver.
     """
     from .repositories.contact_repository import ContactRepository
     from .services import close_reason_service, event_service, lifecycle_service, messaging_policy
