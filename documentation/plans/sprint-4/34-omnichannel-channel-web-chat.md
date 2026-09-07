@@ -29,19 +29,37 @@ with no messaging window at all, which is where a conversational workflow actual
 
 ## 2. Architecture
 
+> **Amended 2026-09-09 (BL-SS-183): the LOADER mints the session, the panel only consumes it.**
+> As first built, the panel called `POST /session` itself - but that fetch runs inside the panel
+> iframe, so the browser always stamps the PANEL's origin on it, never the embedding customer
+> site's. The allowlist could therefore never discriminate between websites, and the only value
+> that satisfied it (the app's own origin) let ANY site embed the widget and let anyone open a
+> working chat by navigating straight to the panel URL. The loader runs in the customer's own
+> top-level document, so its fetch carries the real, browser-enforced, unforgeable host origin.
+> The flow below is the corrected one.
+
 ```
 customer website (https://shop.acme.com)
   <script src="https://app.example/omnichannel/widget/<widgetKey>.js" async></script>
-        |  loader: ONE iframe + postMessage(resize|open|close|identify). No secret. No CSS injected.
-        v
+        |  loader (top-level page): POST /session with the stored token  ->  the ONLY caller whose
+        |  Origin is the customer's site. Visitor token in the HOST page's localStorage, namespaced
+        |  per widget key (= one visitor identity per website). Off-list / dead key -> uniform 404,
+        |  NO iframe is ever mounted.
+        v  on success: ONE iframe + postMessage(session|open|close), targetOrigin = the panel origin
   <iframe src="https://app.example/public/webchat/<widgetKey>">            PANEL (Next public route)
-        |  visitor token in the PANEL's own localStorage, sent as Authorization: Bearer
+        |  receives the session (validating event.source === window.parent), sends the token as
+        |  Authorization: Bearer. Never starts a session, never stores a token. No loader = a blank
+        |  panel that never chats.
         |  NO COOKIE ANYWHERE  => no ambient credential => no CSRF surface
         v
 FastAPI public router  /public/omnichannel/webchat/{widgetKey}/...
-  POST /session    origin allowlist -> throttle -> config + branding + online + visitor token
+  POST /session    origin allowlist (the LOADER's call) -> throttle -> config + branding + online
+                   + visitor token. The prefix answers its own CORS preflight (a customer origin is
+                   on the CHANNEL's list, never in the service's own CORS_ORIGINS env).
   POST /messages   throttle(ip, visitor) -> size cap -> honeypot -> WebChatAdapter.parse_inbound
   GET  /messages   history AND the poll fallback (ONE endpoint)
+                   Both are the PANEL's calls: Bearer-authorized, host allowlist NOT required, CORS
+                   echoes the app's own origin (never *).
         |
         v
 InboundService.process_payload                (UNCHANGED pipeline)
@@ -125,14 +143,14 @@ action-menu,clamped-text}`, `lib/branding-tokens.ts`, `lib/motion.ts`, `lib/toas
 | D-A7B-1 | Web chat is a channel TYPE on the A7a spine: one `ADAPTERS` row, one `POLICIES` row, one `CAPABILITIES` row, one `channel_addressing` branch. No parallel "live chat" model, no second conversation table, no second inbox | A7a paid for exactly this. A second model would fork the inbox, the reports, the workflow triggers and the gateway. The only genuinely new thing here is the public visitor surface |
 | D-A7B-2 | **Loader (vanilla JS served by FastAPI) + panel (React, Next public route in an iframe).** No React, no framework and no build step in the loader; no chat UI in the backend | The chat UI must reuse the design system, brand tokens, responsive rules and Vitest harness - that means Next. The loader must run inside arbitrary customer pages - that means tiny, dependency-free and framework-free. An iframe gives style isolation both ways and prevents the host page's JavaScript from reading the transcript out of the DOM |
 | D-A7B-3 | The loader is a real, hand-written file (`modules/omnichannel/widget/loader.js`) served with two plain string substitutions, NOT a bundler target and NOT a Python string | A bundler target adds a build artifact the backend has to ship; a Python string is untestable and unreadable. The loader's logic is thin enough that pytest covers the SERVED response (headers, caching, substitution, 404s) and the recorded browser journey covers the behaviour |
-| D-A7B-4 | **No cookie anywhere.** The visitor token lives in the PANEL's own `localStorage` and travels as an `Authorization: Bearer` header | A cookie set by the panel is a third-party cookie in the host page's context: blocked by Safari ITP and by Chrome's phase-out, so it would fail exactly where it matters. Partitioned `localStorage` gives the semantics we actually want (a visitor identity per website). And because there is no ambient credential, the public API has NO CSRF surface at all - which removes an entire class of bug from an unauthenticated write endpoint |
+| D-A7B-4 | **No cookie anywhere.** The visitor token travels as an `Authorization: Bearer` header. *(Amended 2026-09-09, BL-SS-183: it lives in the HOST page's `localStorage`, namespaced per widget key, written by the loader - which is the same "one visitor identity per website" semantics this decision wanted, reached without depending on partitioned third-party storage at all.)* | A cookie set by the panel is a third-party cookie in the host page's context: blocked by Safari ITP and by Chrome's phase-out, so it would fail exactly where it matters. Partitioned `localStorage` gives the semantics we actually want (a visitor identity per website). And because there is no ambient credential, the public API has NO CSRF surface at all - which removes an entire class of bug from an unauthenticated write endpoint |
 | D-A7B-5 | The visitor token is a signed JWT (`typ="webchat"`, 30 day expiry, sliding renewal inside the last 7 days) bound to tenant + channel + visitor id + contact id. Mass revocation is a per-channel `widget_token_epoch` integer compared on every use. There is NO visitor-token table | A table would need writes on every page view of every customer website - the highest-volume, lowest-value write in the system. A signed token plus an epoch counter gives issuance, expiry, binding and a "sign out all visitors" button for one integer column |
 | D-A7B-6 | Rotating the widget SECRET does not bump the epoch, and bumping the epoch does not rotate the secret. They are two separate admin actions | They answer two different questions ("the host's signing key leaked" vs "sign every visitor out"). Coupling them means an admin rotating a signing key silently drops every live chat |
 | D-A7B-7 | The contact and its identity are created LAZILY, on the visitor's FIRST message - never at session start | Otherwise every page view of a busy website creates a contact row, and the Contacts list, the segments, the dashboard counts and the reports all become noise within a day. It also makes the cheapest public endpoint (session start) a pure read |
 | D-A7B-8 | **A web chat visitor NEVER auto-stitches onto an existing contact from self-declared pre-chat data.** Pre-chat email / phone are written onto the visitor's OWN contact only, and only into fields that are empty | This is the sharp edge of the whole slice. Anyone can type a known customer's email into a pre-chat box; stitching on it would hand a stranger that customer's entire WhatsApp history through the widget. A7a's D-A7-4 refused merging on weaker grounds (no data); here we refuse on stronger ones (attacker-controlled data). Manual merge stays BL-SS-113 |
 | D-A7B-9 | The ONLY sanctioned stitch is a **host identity assertion**: `{ userRef, hash }` where `hash` is HMAC-SHA256 of `userRef` keyed by the channel's own widget secret. Valid -> identity `host:<userRef>`. Missing or invalid -> silently ignored, session continues anonymously | This is the Intercom-style identity-verification contract and it is the only version that is safe: the customer's SERVER vouches for the identity with a secret the browser never has. Silent ignore (not an error) keeps the visitor experience intact when a customer misconfigures their hash - the failure is an admin problem, not a visitor's |
 | D-A7B-10 | The widget secret is **per channel**, Fernet-encrypted in the channel's existing `credentials_json`, revealed exactly once at connect and once per rotation | Reusing the plan-11H tenant-level `embedSecret` would couple web chat to a different feature's lifecycle and would give one secret authority over two unrelated surfaces. Per-channel matches where the allowed-origin list already lives |
-| D-A7B-11 | Allowed origins are enforced **server-side at session start** (a mismatch returns the uniform 404, never a 403) and again as `Content-Security-Policy: frame-ancestors` on the panel document. CORS echoes the exact allowlisted origin, never `*`, always with `Vary: Origin` | A 403 confirms the channel exists to an attacker who copied a snippet; a 404 tells them nothing. `frame-ancestors` is the mechanism for clickjacking here because `X-Frame-Options` cannot express a list |
+| D-A7B-11 | Allowed origins are enforced **server-side at session start** (a mismatch returns the uniform 404, never a 403) and again as `Content-Security-Policy: frame-ancestors` on the panel document. CORS echoes the exact allowlisted origin, never `*`, always with `Vary: Origin`. **Amended 2026-09-09 (BL-SS-183): session start is called by the LOADER, from the customer's own top-level document.** The panel-side check this decision originally implied was unenforceable: a fetch issued inside the panel iframe always carries the PANEL's origin, so the allowlist could not tell one customer website from another, and allowlisting the app's own origin to make it pass let every website embed that channel and let anyone open a chat by navigating straight to the panel URL (R6/R7 defeated). The loader's fetch carries the true embedding origin, browser-enforced and unforgeable from another site, so the check now means what it always said it meant | A 403 confirms the channel exists to an attacker who copied a snippet; a 404 tells them nothing. `frame-ancestors` is the mechanism for clickjacking here because `X-Frame-Options` cannot express a list |
 | D-A7B-12 | The loader `.js` is origin-agnostic, cacheable (`max-age=300`) and carries no secret, no tenant slug, no tenant name, no branding and no origin list. All real configuration comes from the session endpoint, which enforces the origin | Varying a cacheable asset by `Origin` is a cache-poisoning footgun and CDNs get it wrong. Put the gate on the uncacheable endpoint and the asset stays boring |
 | D-A7B-13 | `_validate_origin` / `_validate_origins` are MOVED verbatim into `modules/omnichannel/origins.py` and re-imported by `embed_config_service.py` | Two origin validators in one module is exactly how a security control drifts. This is the same pure-move discipline A7a used for `meta_graph.py`, with the same rule: if a coder finds itself editing an embed test, the move stopped being pure |
 | D-A7B-14 | **Exact origins only in v1** - wildcard subdomains (`https://*.acme.com`) are rejected, as they are today | The existing validator rejects `*` deliberately, with a comment explaining that a wildcard fed into `frame-ancestors` silently broadens who may embed. Loosening it here would loosen it for the embed feature too. respond.io supports wildcards; we backlog it as its own considered change (BL-SS-162) |
@@ -213,7 +231,9 @@ GET   /omnichannel/widget/{widgetKey}.js                            public, cach
         404 uniform, for every failure mode
 
 POST  /public/omnichannel/webchat/{widgetKey}/session               public
-        headers: Origin (REQUIRED, must be allowlisted)
+        CALLED BY THE LOADER, from the customer's top-level page (BL-SS-183)
+        headers: Origin (REQUIRED, must be allowlisted; the browser stamps the
+                 embedding site's own origin - unforgeable from another site)
         body:    { token?: string, identity?: { userRef, hash } }
         -> 200 { token, expiresAt, visitorId,
                  config: { appearance, greeting, offlineGreeting, preChat,
@@ -224,6 +244,9 @@ POST  /public/omnichannel/webchat/{widgetKey}/session               public
         -> 429 with Retry-After
 
 POST  /public/omnichannel/webchat/{widgetKey}/messages              public + Bearer
+        CALLED BY THE PANEL, from inside the iframe - its Origin is the app's
+        own, so the channel's host allowlist does NOT gate it; the Bearer is
+        the only authorization (BL-SS-183)
         body: { text: string (<=4096), preChat?: { name?, email?, phone? }, hp?: string }
         -> 201 VisitorMessage
         -> 200 { ok: true } with NOTHING stored when hp is non-empty (honeypot)
@@ -244,10 +267,19 @@ VisitorMessage = { id, direction: 'in'|'out', text: string|null,
                    createdAt, status: 'sent'|'delivered'|'read'|'failed'|null }
 ```
 
-CORS on the two `/public/...` routes: `Access-Control-Allow-Origin` echoes the exact allowlisted
+CORS on the `/public/...` routes: `Access-Control-Allow-Origin` echoes the exact allowlisted
 origin, `Vary: Origin`, `Access-Control-Allow-Headers: authorization, content-type`, no
 `Allow-Credentials` (there is no cookie). The panel document is served with
 `Content-Security-Policy: frame-ancestors <allowed origins>`.
+
+Amended 2026-09-09 (BL-SS-183): the message routes additionally echo the APP's own origin (the
+panel's), never `*`; and the whole `/public/omnichannel/webchat/` prefix answers its own CORS
+preflight ahead of Starlette's `CORSMiddleware` - a customer's origin lives on the CHANNEL's
+allowlist, not in this service's `CORS_ORIGINS` env, so `CORSMiddleware` would answer the loader's
+preflight `400 Disallowed CORS origin` and the real POST would never leave the browser. The
+preflight echo is not allowlist-checked (it carries no data); the actual response still only
+carries `Allow-Origin` for an allowlisted origin, and an off-list session start is still the
+uniform 404.
 
 ### 5.3 The install snippet (what a customer pastes)
 
@@ -264,8 +296,23 @@ Optional, for a customer who authenticates their own users (D-A7B-9):
 ```
 
 The hash is computed on the customer's SERVER. The loader exposes `open()`, `close()`, `isOpen()`
-and `identify({userRef, hash})` on a single global, and validates the origin of every inbound
-`postMessage` before acting on it.
+and `identify({userRef, hash})` on a single global, and validates the origin AND the source window
+of every inbound `postMessage` before acting on it.
+
+Amended 2026-09-09 (BL-SS-183) - what the loader does, in order:
+1. read the visitor token from the HOST page's `localStorage` (`fx-webchat-token:<widgetKey>`; an
+   in-memory fallback when storage throws - AC-WEB-49), then `POST .../session` with
+   `{token?, identity?}` (`identity` from `window.fxChatIdentity` at boot, or `identify()` later);
+2. on a non-200 (off-list origin, dead key, network) do NOTHING - no iframe, no console noise;
+3. on 200 store the returned token, mount the ONE iframe, and on the panel's `ready` frame post
+   `{source:'fx-webchat-loader', type:'session', payload:<the whole session response>}` with
+   `targetOrigin` = the exact panel origin;
+4. `identify()` re-mints the session and re-posts the `session` frame; the panel tears its
+   transcript and transport down and rebuilds them for that new visitor.
+
+There is no token post-BACK from the panel: `POST /session` is the only endpoint that mints or
+renews a token, and only the loader calls it - so the panel never holds a token the loader does not
+already have. Sliding renewal (AC-WEB-29) happens on the loader's next page-load call.
 
 ### 5.4 Tables and columns
 
@@ -429,6 +476,12 @@ This slice ships the first unauthenticated WRITE surface in the omnichannel Serv
 - **R6 - clickjacking and widget theft.** Mitigation: server-side origin allowlist at session start
   returning the uniform 404, plus `frame-ancestors` on the panel. Test: an off-list origin gets the
   same 404 as an unknown key; the panel response carries `frame-ancestors`.
+  **Amended 2026-09-09 (BL-SS-183):** this mitigation only works because the LOADER makes that call
+  (see D-A7B-11). The pytest suite that "covered" it set `Origin` on the test client directly,
+  which a real browser can never be told to do for a same-document fetch - so it passed while the
+  live behaviour was broken. The regression tests now pin WHO may send which origin: a session
+  start carrying the PANEL's own origin is the uniform 404, and the message routes work from the
+  panel origin with no host allowlist entry at all.
 - **R7 - enumeration.** Mitigation: one uniform 404 for five distinct failure modes on the loader
   route and the session route. Test: byte-compare all five responses.
 - **R8 - denial of service and junk data.** Mitigation: throttle before any DB work with two key

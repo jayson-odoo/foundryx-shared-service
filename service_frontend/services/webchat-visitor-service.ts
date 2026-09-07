@@ -1,10 +1,16 @@
 /**
  * Web chat VISITOR service (plan 34 / A7b S4) - the panel's own boundary,
  * separate from the admin-side `webchat-service.ts` trio. Every call is
- * unauthenticated-by-cookie (D-A7B-4): `startSession` needs no token (or
- * replays a stored one for renewal), every other call carries the visitor
- * token as a Bearer header the caller supplies explicitly - there is no
- * ambient session for this trio to read.
+ * unauthenticated-by-cookie (D-A7B-4): the visitor token travels as a Bearer
+ * header the caller supplies explicitly - there is no ambient session for
+ * this trio to read.
+ *
+ * Amended 2026-09-09 (BL-SS-183): there is no `startSession` here. Session
+ * start is the LOADER's call (vanilla JS in the customer's own top-level
+ * page, `modules/omnichannel/widget/loader.js`), because only a fetch from
+ * that document carries the embedding website's `Origin` - the value the
+ * channel's allowlist is about. This trio only ever serves a session the
+ * loader already minted.
  *
  * Plan 34 / A7b, S6 (AC-WEB-63) - bound to `realWebchatVisitorService`
  * below, the OFFICIAL swap alongside the admin trio at this ONE export - no
@@ -16,14 +22,10 @@ import type {
   PostVisitorMessageInput,
   VisitorMessage,
   VisitorMessagesPage,
-  WebchatSessionResult,
 } from '@/types/omnichannel';
 import { realWebchatVisitorService } from './webchat-visitor-service.real';
 
 export interface WebchatVisitorService {
-  /** Mint a fresh session, or renew/resume one from a stored token
-   *  (AC-WEB-23..25/28/29/49/50). `token=null` for a brand-new visitor. */
-  startSession(widgetKey: string, token: string | null): Promise<WebchatSessionResult>;
   /** The ONE write on the visitor surface. Returns `null` when the honeypot
    *  fired (AC-WEB-32) - a real visitor's browser never triggers this. */
   sendMessage(

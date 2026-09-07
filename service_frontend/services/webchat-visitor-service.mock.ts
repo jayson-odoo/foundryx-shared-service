@@ -1,11 +1,12 @@
 /**
- * Mock web chat VISITOR service (plan 34 / A7b S4). Tunes the panel's
- * loading / empty / populated / sending / failed / offline states with no
- * backend (AC-WEB-10). Sessions are keyed by the OPAQUE token itself (a
- * fresh session mints `mock-visitor-token:<uuid>`) rather than a widget key
- * -> session map, so a stored-token replay (AC-WEB-29/49/50) behaves exactly
- * like the real JWT: present the same token back, get the same visitor/
- * contact/history back.
+ * Mock web chat VISITOR service (plan 34 / A7b S4). Tunes the panel's empty /
+ * populated / sending / failed / offline states with no backend (AC-WEB-10).
+ *
+ * Amended 2026-09-09 (BL-SS-183): there is no mock `startSession` - session
+ * start belongs to the LOADER now, so `mockWebchatSession()` builds the
+ * payload a loader would hand the panel over postMessage and the transcript
+ * calls resolve their session lazily from the opaque token they are given,
+ * exactly like the real JWT surface does.
  */
 import type {
   PostVisitorMessageInput,
@@ -31,7 +32,15 @@ function newId(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function defaultSessionResult(token: string, session: MockSession): WebchatSessionResult {
+function sessionFor(token: string): MockSession {
+  const existing = sessions.get(token);
+  if (existing) return existing;
+  const fresh: MockSession = { visitorId: newId('visitor'), contactId: null, messages: [] };
+  sessions.set(token, fresh);
+  return fresh;
+}
+
+function sessionResult(token: string, session: MockSession): WebchatSessionResult {
   return {
     token,
     expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
@@ -56,23 +65,21 @@ function defaultSessionResult(token: string, session: MockSession): WebchatSessi
   };
 }
 
-export const mockWebchatVisitorService: WebchatVisitorService = {
-  async startSession(_widgetKey: string, token: string | null): Promise<WebchatSessionResult> {
-    const existing = token ? sessions.get(token) : undefined;
-    const key: string = token && existing ? token : `mock-visitor-token:${newId('tok')}`;
-    const session: MockSession = existing ?? { visitorId: newId('visitor'), contactId: null, messages: [] };
-    if (!existing) sessions.set(key, session);
-    return delay(defaultSessionResult(key, session), 300);
-  },
+/** The payload the LOADER hands the panel on its `session` frame - the mock
+ *  stand-in for a real `POST /session` response (BL-SS-183). */
+export function mockWebchatSession(token?: string): WebchatSessionResult {
+  const key = token ?? `mock-visitor-token:${newId('tok')}`;
+  return sessionResult(key, sessionFor(key));
+}
 
+export const mockWebchatVisitorService: WebchatVisitorService = {
   async sendMessage(
     _widgetKey: string,
     token: string,
     input: PostVisitorMessageInput,
   ): Promise<VisitorMessage | null> {
     if ((input.hp ?? '').trim()) return delay(null, 150); // honeypot - AC-WEB-32
-    const session = sessions.get(token);
-    if (!session) throw new Error('Session not found');
+    const session = sessionFor(token);
     if (!session.contactId) session.contactId = newId('contact'); // lazy creation, D-A7B-7
 
     const message: VisitorMessage = {
@@ -103,7 +110,7 @@ export const mockWebchatVisitorService: WebchatVisitorService = {
       createdAt: new Date(Date.now() + 400).toISOString(),
       status: 'sent',
     };
-    setTimeout(() => session!.messages.push(reply), 500);
+    setTimeout(() => session.messages.push(reply), 500);
 
     return delay(message, 250);
   },
@@ -113,8 +120,7 @@ export const mockWebchatVisitorService: WebchatVisitorService = {
     token: string,
     after?: string | null,
   ): Promise<VisitorMessagesPage> {
-    const session = sessions.get(token);
-    if (!session) return delay({ data: [], nextAfter: null }, 150);
+    const session = sessionFor(token);
     const startIndex = after ? session.messages.findIndex((m) => m.id === after) + 1 : 0;
     return delay({ data: session.messages.slice(startIndex), nextAfter: null }, 150);
   },

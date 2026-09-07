@@ -372,12 +372,38 @@ def test_loader_route_serves_js_with_headers_and_substitutions(client):
     assert res.headers["x-content-type-options"] == "nosniff"
     assert res.headers["cache-control"] == "public, max-age=300"
     assert res.headers.get("etag")
-    # The two substitutions land as separate JS string literals (WIDGET_KEY /
-    # PANEL_ORIGIN) - the panel URL is concatenated in the BROWSER, not baked
-    # into the served source as one literal string.
+    # The three substitutions land as separate JS string literals (WIDGET_KEY
+    # / PANEL_ORIGIN / API_ORIGIN) - the panel and session URLs are
+    # concatenated in the BROWSER, not baked into the served source as one
+    # literal string.
     assert widget_key in res.text
     assert "/public/webchat/" in res.text
-    assert "http://localhost:3001" in res.text  # settings.frontend_url default
+    assert "http://localhost:3001" in res.text  # settings.frontend_url
+    assert "http://localhost:8001" in res.text  # settings.public_base_url
+    assert "__PANEL_ORIGIN__" not in res.text
+    assert "__API_ORIGIN__" not in res.text
+
+
+def test_loader_mints_the_session_itself_from_the_host_page(client):
+    """BL-SS-183 - the loader, not the panel, calls the session endpoint:
+    only a fetch issued by the customer's own top-level document carries
+    that document's origin, which is what the channel allowlist is about.
+    It also owns the visitor token, in the HOST page's storage, namespaced
+    per widget key (AC-WEB-49/50)."""
+    h = _auth(client)
+    widget_key = _connect(client, h).json()["widgetKey"]
+    body = _js(client, widget_key).text
+
+    assert "/public/omnichannel/webchat/" in body
+    assert "/session" in body
+    assert "fetch(" in body
+    assert "fx-webchat-token:" in body
+    assert "localStorage" in body
+    # The session payload reaches the panel over postMessage with the EXACT
+    # panel origin as targetOrigin - never a wildcard.
+    assert 'postMessage(' in body
+    assert "PANEL_ORIGIN" in body
+    assert '"*"' not in body
 
 
 def test_loader_route_carries_no_tenant_identifying_strings(client):

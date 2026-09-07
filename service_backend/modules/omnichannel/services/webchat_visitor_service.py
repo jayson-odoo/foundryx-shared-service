@@ -34,6 +34,7 @@ from fastapi import Request
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.tenant import Tenant
 from app.models.tenant_branding import TenantBranding
 from app.repositories.module_repository import ModuleRepository
@@ -101,13 +102,33 @@ def _allowed_origins(channel: Channel) -> List[str]:
     return cfg.get("allowedOrigins") or []
 
 
-def cors_headers_for(channel: Channel, origin: Optional[str]) -> Dict[str, str]:
+def panel_origin() -> str:
+    """The app's own origin - the one the PANEL iframe is served from, and
+    therefore the `Origin` its own fetches carry (BL-SS-183). Never a valid
+    value for session start (that call is the LOADER's, from the customer's
+    top-level document); the only valid value for the Bearer-authed message
+    routes, which only the panel ever calls."""
+    return settings.frontend_url.rstrip("/")
+
+
+def cors_headers_for(
+    channel: Channel, origin: Optional[str], *, allow_panel_origin: bool = False
+) -> Dict[str, str]:
     """The exact allowlisted origin, never `*` (D-A7B-11), always `Vary:
     Origin`, and no `Access-Control-Allow-Credentials` (there is no cookie -
     D-A7B-4). An origin NOT on the list gets no `Allow-Origin` at all - the
-    browser blocks the read regardless of the response body."""
+    browser blocks the read regardless of the response body.
+
+    Amended 2026-09-09 (BL-SS-183): `allow_panel_origin` widens the echo by
+    the app's OWN origin for the Bearer-authed message routes, which are
+    fetched from inside the panel iframe and therefore always carry the
+    panel's origin. The channel allowlist stays the only accepted set on
+    session start - the customer's website is the caller there, and that is
+    exactly the value the allowlist is about."""
     headers = {"Vary": "Origin"}
-    if origin and origin in _allowed_origins(channel):
+    if not origin:
+        return headers
+    if origin in _allowed_origins(channel) or (allow_panel_origin and origin == panel_origin()):
         headers["Access-Control-Allow-Origin"] = origin
     return headers
 

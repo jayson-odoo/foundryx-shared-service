@@ -1,18 +1,15 @@
 /**
  * Real web chat VISITOR service - talks to the public FastAPI surface
- * (plan 34 / A7b §5.2). NOT wired at runtime until slice S6 (AC-WEB-63);
- * `webchat-visitor-service.ts` binds `mockWebchatVisitorService` until then.
- * Written now (and used for S4's own live-verify evidence via a temporary
- * local export flip - see the S4 commit body) so the S6 swap is a one-line
- * export change, no call-site edits.
+ * (plan 34 / A7b §5.2), bound at the trio's one export since S6
+ * (AC-WEB-63).
  *
  * `publicFetch` (no session, no Bearer, no sign-out-on-401 - there is no
- * session to end) is the base; the visitor's own Bearer is attached by hand
- * on every call after `startSession`, exactly as the contract requires
- * (there is no cookie anywhere, D-A7B-4).
+ * session to end) is the base; the visitor's own Bearer - minted by the
+ * LOADER and handed to the panel over postMessage (BL-SS-183) - is attached
+ * by hand on every call (there is no cookie anywhere, D-A7B-4).
  */
 import { publicFetch } from '@/lib/api-client';
-import type { VisitorMessage, VisitorMessagesPage, WebchatSessionResult } from '@/types/omnichannel';
+import type { VisitorMessage, VisitorMessagesPage } from '@/types/omnichannel';
 import type { WebchatVisitorService } from './webchat-visitor-service';
 
 const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_API_URL ?? 'http://localhost:8000';
@@ -27,16 +24,6 @@ function isVisitorMessage(value: unknown): value is VisitorMessage {
 }
 
 export const realWebchatVisitorService: WebchatVisitorService = {
-  startSession(widgetKey, token) {
-    return publicFetch<WebchatSessionResult>(
-      `/public/omnichannel/webchat/${widgetKey}/session`,
-      {
-        method: 'POST',
-        body: JSON.stringify(token ? { token } : {}),
-      },
-    );
-  },
-
   async sendMessage(widgetKey, token, input) {
     const result = await publicFetch<Record<string, unknown>>(
       `/public/omnichannel/webchat/${widgetKey}/messages`,

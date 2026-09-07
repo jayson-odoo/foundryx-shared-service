@@ -598,3 +598,118 @@ def test_no_set_cookie_header_on_any_public_webchat_response(client):
     assert "set-cookie" not in msg_res.headers
     get_res = _get_messages(client, widget_key, token)
     assert "set-cookie" not in get_res.headers
+
+
+# ── BL-SS-183: the loader mints the session, the panel only consumes it ──────
+# The S2 suite above sets `Origin` on the test client directly, which a real
+# browser can never be told to do for a same-document fetch. These tests pin
+# WHO may legitimately send which origin, so the hole that shipped in S2 -
+# the panel calling `/session` itself, which forced the app's OWN origin onto
+# every channel allowlist - cannot come back unnoticed.
+def _panel_origin() -> str:
+    from modules.omnichannel.services.webchat_visitor_service import panel_origin
+
+    return panel_origin()
+
+
+def test_session_from_the_panels_own_origin_is_the_uniform_404(client):
+    """THE defect (BL-SS-183). A session start whose `Origin` is the app's
+    own origin - the ONLY value a fetch from inside the panel iframe can
+    ever carry - is refused exactly like an unknown key, because the app is
+    not on the channel's allowlist. This is what makes the allowlist mean
+    "which customer website", instead of "any website at all"."""
+    widget_key, _ = _new_channel(client)
+    res = _session(client, widget_key, origin=_panel_origin())
+    assert res.status_code == 404
+    assert res.json() == {"detail": "Not found."}
+    # (The app origin does carry an `Access-Control-Allow-Origin` here - it is
+    # in the service's own `CORS_ORIGINS` env for the rest of the app - but
+    # the readable body is the same uniform 404 as an unknown key, and no
+    # token exists to read.)
+
+
+def test_session_from_the_host_page_origin_succeeds_without_allowlisting_the_app(client):
+    """The other half: the LOADER's own origin (the customer's website) is
+    the only thing on the allowlist and it is enough. No app origin, no
+    panel origin - just the embedding site."""
+    widget_key, _ = _new_channel(client, allowed_origins=[ORIGIN])
+    res = _session(client, widget_key, origin=ORIGIN)
+    assert res.status_code == 200
+    assert res.headers.get("access-control-allow-origin") == ORIGIN
+    assert res.json()["token"]
+
+
+def test_message_routes_accept_the_panel_origin_and_no_origin_at_all(client):
+    """The panel's own calls: Bearer-authorized, fetched from inside the
+    iframe, so they carry the APP's origin (or none, same-origin). They must
+    not require the channel's host-page allowlist - and the echo is the
+    exact panel origin, never `*`, never with credentials."""
+    widget_key, _ = _new_channel(client)
+    token = _session(client, widget_key).json()["token"]
+    panel = _panel_origin()
+
+    posted = _post_message(client, widget_key, token, text="from the panel", origin=panel)
+    assert posted.status_code == 201
+    assert posted.headers.get("access-control-allow-origin") == panel
+    assert "Origin" in posted.headers.get("vary", "")
+    assert "access-control-allow-credentials" not in posted.headers
+
+    listed = _get_messages(client, widget_key, token, origin=panel)
+    assert listed.status_code == 200
+    assert listed.headers.get("access-control-allow-origin") == panel
+
+    no_origin = _get_messages(client, widget_key, token, origin=None)
+    assert no_origin.status_code == 200
+    assert "access-control-allow-origin" not in no_origin.headers
+
+
+def test_message_routes_do_not_echo_a_random_third_party_origin(client):
+    widget_key, _ = _new_channel(client)
+    token = _session(client, widget_key).json()["token"]
+    res = _get_messages(client, widget_key, token, origin="https://evil.example")
+    # The Bearer token is the credential, so the request is served - but the
+    # browser can never READ it from an origin we do not echo.
+    assert res.status_code == 200
+    assert "access-control-allow-origin" not in res.headers
+
+
+def test_cors_preflight_is_answered_for_a_channel_allowlisted_origin(client):
+    """A customer website lives on the CHANNEL's allowlist, never in this
+    service's `CORS_ORIGINS` env - so Starlette's own `CORSMiddleware` would
+    answer the loader's preflight with `400 Disallowed CORS origin` and the
+    real POST would never leave the browser. The webchat prefix answers its
+    own preflight ahead of it."""
+    widget_key, _ = _new_channel(client)
+    res = client.options(
+        SESSION_URL.format(key=widget_key),
+        headers={
+            "Origin": ORIGIN,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert res.status_code == 204
+    assert res.headers.get("access-control-allow-origin") == ORIGIN
+    assert "POST" in res.headers.get("access-control-allow-methods", "")
+    assert "authorization" in res.headers.get("access-control-allow-headers", "")
+    assert res.headers.get("vary") == "Origin"
+    assert "access-control-allow-credentials" not in res.headers
+
+
+def test_cors_preflight_never_admits_the_session_itself(client):
+    """The preflight echo is not allowlist-checked (a preflight carries no
+    data and middleware has no channel context) - so pin that the ACTUAL
+    call from that same off-list origin is still the uniform 404 with no
+    readable CORS header."""
+    widget_key, _ = _new_channel(client)
+    pre = client.options(
+        SESSION_URL.format(key=widget_key),
+        headers={
+            "Origin": "https://evil.example",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert pre.status_code == 204
+    real = _session(client, widget_key, origin="https://evil.example")
+    assert real.status_code == 404
+    assert "access-control-allow-origin" not in real.headers

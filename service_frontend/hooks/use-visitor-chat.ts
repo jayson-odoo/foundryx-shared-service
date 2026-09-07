@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/lib/api-client';
-import { readVisitorToken, writeVisitorToken } from '@/lib/webchat-visitor-storage';
+import { postToLoader, readLoaderFrame, sessionFromPayload } from '@/lib/webchat-panel-bridge';
 import { webchatVisitorService } from '@/services/webchat-visitor-service';
 import type {
   VisitorMessage,
@@ -10,7 +10,11 @@ import type {
   WebchatSessionResult,
 } from '@/types/omnichannel';
 
-export type VisitorChatPhase = 'loading' | 'ready' | 'error';
+/** `waiting` = no session yet (the loader has not handed one over, or there
+ *  is no loader at all - a directly navigated panel stays here forever and
+ *  renders nothing). There is no error phase: the panel issues no request
+ *  that can fail before it has a session. */
+export type VisitorChatPhase = 'waiting' | 'ready';
 
 export interface UseVisitorChatResult {
   phase: VisitorChatPhase;
@@ -38,15 +42,21 @@ function mergeMessages(existing: VisitorMessage[], incoming: VisitorMessage[]): 
 }
 
 /**
- * Visitor session + transcript + realtime for the web chat panel (plan 34 /
- * A7b S4). Owns session start (incl. stored-token replay, AC-WEB-29/49/50),
- * the send path, and the WebSocket-with-poll-fallback pair (D-A7B-16): the
- * socket only opens once a contact exists (S3 refuses the handshake
- * otherwise, 4403), and the poll timer runs whenever the socket is not
- * `'open'` so no message is ever missed regardless of which transport wins.
+ * Visitor transcript + realtime for the web chat panel (plan 34 / A7b S4,
+ * amended 2026-09-09 for BL-SS-183). Owns the send path and the
+ * WebSocket-with-poll-fallback pair (D-A7B-16): the socket only opens once a
+ * contact exists (S3 refuses the handshake otherwise, 4403), and the poll
+ * timer runs whenever the socket is not `'open'` so no message is ever
+ * missed regardless of which transport wins.
+ *
+ * It does NOT start the session and does NOT store the token: the LOADER
+ * mints the session from the customer's own top-level page (the only place a
+ * fetch carries the embedding website's `Origin`) and hands it over on the
+ * `session` frame. Everything after that - history, poll, socket, send -
+ * uses that Bearer exactly as before.
  */
 export function useVisitorChat(widgetKey: string): UseVisitorChatResult {
-  const [phase, setPhase] = useState<VisitorChatPhase>('loading');
+  const [phase, setPhase] = useState<VisitorChatPhase>('waiting');
   const [session, setSession] = useState<WebchatSessionResult | null>(null);
   const [messages, setMessages] = useState<VisitorMessage[]>([]);
   const [needsPreChat, setNeedsPreChat] = useState(false);
@@ -99,10 +109,10 @@ export function useVisitorChat(widgetKey: string): UseVisitorChatResult {
   }, [pollOnce]);
 
   /** Takes the session explicitly rather than reading `sessionRef` - the
-   *  initial-load call site fires synchronously inside the `startSession()`
-   *  `.then()`, BEFORE the `sessionRef` sync effect has run off the new
-   *  `setSession` (effects run after render, not inside a promise
-   *  callback), so a ref read there would still see `null`. */
+   *  adopt call site fires synchronously inside the loader-frame handler,
+   *  BEFORE the `sessionRef` sync effect has run off the new `setSession`
+   *  (effects run after render, not inside an event handler), so a ref read
+   *  there would still see `null`. */
   const connectRealtime = useCallback(
     (target: WebchatSessionResult) => {
       if (unsubscribeRef.current) return;
@@ -125,40 +135,53 @@ export function useVisitorChat(widgetKey: string): UseVisitorChatResult {
     [applyIncoming, startPolling, stopPolling],
   );
 
-  // Initial session start (AC-WEB-23/25/29/49/50) - stored-token replay when
-  // one exists, else a brand-new session. Runs once per widget key.
+  const closeTransport = useCallback(() => {
+    unsubscribeRef.current?.();
+    unsubscribeRef.current = null;
+    stopPolling();
+  }, [stopPolling]);
+
+  /** Adopt a session handed over by the loader. Called again on a re-mint
+   *  (the loader's `identify()`), which is a DIFFERENT visitor - so the
+   *  transcript and the transport are torn down and rebuilt, never merged. */
+  const adoptSession = useCallback(
+    (result: WebchatSessionResult) => {
+      closeTransport();
+      hasContactRef.current = result.messages.length > 0;
+      sessionRef.current = result;
+      messagesRef.current = result.messages;
+      setSession(result);
+      setMessages(result.messages);
+      setNeedsPreChat(
+        result.messages.length === 0 &&
+          (result.config.preChat.askName ||
+            result.config.preChat.askEmail ||
+            result.config.preChat.askPhone),
+      );
+      setPhase('ready');
+      if (hasContactRef.current) connectRealtime(result);
+    },
+    [closeTransport, connectRealtime],
+  );
+
+  // The session arrives from the LOADER (BL-SS-183), never from a fetch made
+  // here. `ready` is posted from inside this effect, AFTER the listener is
+  // attached, so the loader's reply can never race it. A panel with no
+  // loader (direct navigation) simply never hears back and stays `waiting`.
   useEffect(() => {
-    let cancelled = false;
-    setPhase('loading');
-    const storedToken = readVisitorToken(widgetKey);
-    webchatVisitorService
-      .startSession(widgetKey, storedToken)
-      .then((result) => {
-        if (cancelled) return;
-        writeVisitorToken(widgetKey, result.token);
-        hasContactRef.current = result.messages.length > 0;
-        setSession(result);
-        setMessages(result.messages);
-        setNeedsPreChat(
-          result.messages.length === 0 &&
-            (result.config.preChat.askName ||
-              result.config.preChat.askEmail ||
-              result.config.preChat.askPhone),
-        );
-        setPhase('ready');
-        if (hasContactRef.current) connectRealtime(result);
-      })
-      .catch(() => {
-        if (!cancelled) setPhase('error');
-      });
+    function onMessage(event: MessageEvent) {
+      const frame = readLoaderFrame(event);
+      if (!frame || frame.type !== 'session') return;
+      const result = sessionFromPayload(frame.payload);
+      if (result) adoptSession(result);
+    }
+    window.addEventListener('message', onMessage);
+    postToLoader('ready');
     return () => {
-      cancelled = true;
-      unsubscribeRef.current?.();
-      unsubscribeRef.current = null;
-      stopPolling();
+      window.removeEventListener('message', onMessage);
+      closeTransport();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [widgetKey]);
+  }, [adoptSession, closeTransport]);
 
   const send = useCallback(
     async (text: string, preChat?: WebchatPreChatValues) => {

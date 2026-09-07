@@ -2,7 +2,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1 import (
@@ -146,13 +146,43 @@ app.add_middleware(
 # still edit headers) AFTER `CORSMiddleware` has already added its stray
 # header, for this one public prefix only. Every other route's CORS
 # behaviour is completely unchanged.
+#
+# Amended 2026-09-09 (BL-SS-183): the same middleware now ANSWERS the CORS
+# preflight for this one prefix. A customer website's origin lives on the
+# CHANNEL's allowlist, not in this service's own `CORS_ORIGINS` env, so
+# `CORSMiddleware` (which knows only the env list) answers the loader's
+# preflight with `400 Disallowed CORS origin` and the real POST never
+# leaves the browser. Being the OUTER middleware, this handler short-
+# circuits before `CORSMiddleware` ever sees the OPTIONS. The echo is not
+# allowlist-checked (middleware has no channel context and a preflight
+# carries no data): the ACTUAL response still only gets
+# `Access-Control-Allow-Origin` when the origin is on the channel's list
+# (`cors_headers_for`), and session start still answers an off-list origin
+# with the uniform 404 - so an off-list site learns and reads nothing.
 _WEBCHAT_PUBLIC_PREFIX = "/public/omnichannel/webchat/"
+_WEBCHAT_PREFLIGHT_HEADERS = {
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "authorization, content-type",
+    "Access-Control-Max-Age": "600",
+    "Vary": "Origin",
+}
 
 
 @app.middleware("http")
-async def _strip_webchat_public_credentials_header(request, call_next):
+async def _webchat_public_cors(request, call_next):
+    on_webchat_public = request.url.path.startswith(_WEBCHAT_PUBLIC_PREFIX)
+    if (
+        on_webchat_public
+        and request.method == "OPTIONS"
+        and "access-control-request-method" in request.headers
+    ):
+        headers = dict(_WEBCHAT_PREFLIGHT_HEADERS)
+        origin = request.headers.get("origin")
+        if origin:
+            headers["Access-Control-Allow-Origin"] = origin
+        return Response(status_code=204, headers=headers)
     response = await call_next(request)
-    if request.url.path.startswith(_WEBCHAT_PUBLIC_PREFIX):
+    if on_webchat_public:
         if "access-control-allow-credentials" in response.headers:
             del response.headers["access-control-allow-credentials"]
     return response

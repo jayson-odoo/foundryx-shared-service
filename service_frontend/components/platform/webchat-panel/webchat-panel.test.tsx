@@ -58,6 +58,17 @@ async function openPanel() {
   await user.click(screen.getByTestId('webchat-launcher'));
 }
 
+describe('WebchatPanel with no loader session (BL-SS-183)', () => {
+  it('renders NOTHING - no launcher, no copy, no vendor string - until a session arrives', () => {
+    mockedUseVisitorChat.mockReturnValue(baseResult({ phase: 'waiting', session: null }));
+    const { container } = render(<WebchatPanel widgetKey="wk_test" />);
+    // This is exactly what a panel URL opened directly (no loader, so no
+    // token and no session ever started server-side) shows a stranger.
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByTestId('webchat-launcher')).not.toBeInTheDocument();
+  });
+});
+
 describe('WebchatPanel online/offline greeting (plan 34 / A7b S5, D-A7B-24/AC-WEB-52/53)', () => {
   it('shows the ONLINE greeting in the transcript when online is true', async () => {
     mockedUseVisitorChat.mockReturnValue(baseResult({ session: baseSession({ online: true }) }));

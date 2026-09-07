@@ -153,7 +153,8 @@ IDs: `AC-WEB-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
 
 ## Slice S2 - Backend: the public visitor API and inbound
 
-- **AC-WEB-23 [BE]** Given `POST /public/omnichannel/webchat/{widgetKey}/session` with an `Origin`
+- **AC-WEB-23 [BE]** Given `POST /public/omnichannel/webchat/{widgetKey}/session` - called by the
+  LOADER from the embedding page's own document (amended 2026-09-09, BL-SS-183) - with an `Origin`
   header on the channel's allowed list, then it returns the widget configuration a panel needs
   (appearance, greeting, offline greeting, pre-chat toggles, agent display name, branding token
   diff, tenant display name, `online` boolean) plus a visitor token; the response carries
@@ -161,7 +162,12 @@ IDs: `AC-WEB-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   `Access-Control-Allow-Credentials` absent, and `Vary: Origin`.
 - **AC-WEB-24 [BE]** Given the same request with an `Origin` that is NOT on the channel's list, or
   with no `Origin` header at all, then the response is the uniform 404 - identical to the unknown
-  key case, so an off-list website cannot even learn that the channel exists.
+  key case, so an off-list website cannot even learn that the channel exists. Amended 2026-09-09
+  (BL-SS-183): this explicitly includes the APP's OWN origin (the panel's), which is never on a
+  channel's allowlist - it is the value a fetch from inside the panel iframe would carry, and
+  accepting it would let any website embed any channel. The Bearer-authed message routes are the
+  panel's own calls and do NOT require a host-allowlisted origin; they echo the app's own origin
+  (never `*`) and are authorized by the visitor token alone.
 - **AC-WEB-25 [BE]** Given a session start, then NO `contacts` row and NO
   `contact_channel_identities` row is created: a visitor id is minted into the token only. A
   thousand page views produce zero database rows in either table.
@@ -242,27 +248,37 @@ IDs: `AC-WEB-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
 - **AC-WEB-44 [FE]** Given the panel route, then it lives at
   `app/(public)/public/webchat/[widgetKey]/page.tsx` - under a LITERAL `public/` path segment, not
   a bare route group - so it cannot collide with any protected dynamic route at build time.
-- **AC-WEB-45 [FE]** Given the loader running on an allowlisted host page, then it injects exactly
-  ONE `<iframe>` into the host document, sets its geometry through `iframe.style` properties only
-  (it injects no `<style>` element and no stylesheet into the host page), and resizes between the
-  launcher and open states in response to `postMessage` from the panel.
+- **AC-WEB-45 [FE]** Given the loader running on an allowlisted host page, then it mints the
+  visitor session itself (amended 2026-09-09, BL-SS-183 - its fetch is the only one carrying the
+  embedding site's origin), stores the token in the HOST page's storage namespaced per widget key,
+  injects exactly ONE `<iframe>` into the host document, sets its geometry through `iframe.style`
+  properties only (it injects no `<style>` element and no stylesheet into the host page), hands the
+  session to the panel over `postMessage` with the exact panel origin as target, and resizes
+  between the launcher and open states in response to `postMessage` from the panel. On a failed
+  session start (off-list origin, dead key) it injects NOTHING at all.
 - **AC-WEB-46 [FE]** Given the loader, then it exposes a minimal global with `open()`, `close()`,
-  `isOpen()` and an `identify({ userRef, hash })` call, and it validates every inbound
-  `postMessage` against the expected panel origin before acting on it.
+  `isOpen()` and an `identify({ userRef, hash })` call (which re-mints the session with that
+  assertion and re-hands it to the panel), and it validates every inbound `postMessage` against the
+  expected panel origin AND the iframe's own window before acting on it. The panel likewise accepts
+  a frame only from `window.parent` and structurally validates a session payload before using its
+  token (amended 2026-09-09, BL-SS-183).
 - **AC-WEB-47 [FE]** Given the panel, then it renders the greeting, the optional pre-chat step, the
   transcript and the composer using house primitives and brand tokens supplied by the session
   response; there is no "Foundryx" string, no vendor badge and no instructional copy; the panel
   document is served with `Content-Security-Policy: frame-ancestors` limited to the channel's
-  allowed origins.
+  allowed origins. Amended 2026-09-09 (BL-SS-183): with no session handed over - a panel URL opened
+  directly, with no loader - it renders NOTHING at all (no launcher, no copy, no error state) and
+  no session is ever started server-side.
 - **AC-WEB-48 [FE]** Given any visitor-authored text, then it is rendered as a text node in the
   panel and in the agent inbox - never through `dangerouslySetInnerHTML`, never as markdown-to-HTML,
   never into an `href`/`src` attribute without scheme validation.
-- **AC-WEB-49 [FE]** Given the panel on a browser where storage is unavailable (private mode,
-  blocked partitioned storage), then it falls back to an in-memory session for that tab and the
-  visitor can still chat; nothing throws and no error state is shown.
+- **AC-WEB-49 [FE]** Given a browser where storage is unavailable (private mode, blocked storage),
+  then the LOADER (amended 2026-09-09, BL-SS-183 - it owns the token now) falls back to an
+  in-memory token for that page and the visitor can still chat; nothing throws and no error state
+  is shown.
 - **AC-WEB-50 [FE]** Given two tabs of the same website, then both resolve the same visitor token
-  from the same partitioned storage and both render the same thread and receive the same live
-  messages.
+  from the same host-origin storage (amended 2026-09-09, BL-SS-183 - the loader's, per widget key)
+  and both render the same thread and receive the same live messages.
 - **AC-WEB-51 [FE]** Given the panel, then it is usable and non-clipped at 375px (where it fills
   the viewport) and at 1280px (where it is a bottom-anchored panel), and its quick-reply buttons
   render tappable at both widths.
@@ -325,7 +341,9 @@ IDs: `AC-WEB-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   thread appear live in the inbox and replies; the visitor sees the reply arrive WITHOUT reloading;
   the agent then sends an image and the visitor opens it.
 - **AC-WEB-66 [E2E]** Recorded agent-browser run: the same snippet loaded from an origin that is
-  NOT on the channel's allowlist never opens a chat (uniform 404 at session start), and a workspace
+  NOT on the channel's allowlist never opens a chat (uniform 404 at session start) while the
+  allowlisted host origin does, WITHOUT the app's own origin ever being added to that allowlist
+  (amended 2026-09-09, BL-SS-183), and a workspace
   with business hours set to a closed window shows the offline greeting while the visitor's message
   still lands in the inbox. Every created name is timestamped; evidence and a run log live under
   `documentation/plans/sprint-4/34-evidence/<slice>/`.

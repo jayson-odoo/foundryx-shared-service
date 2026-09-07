@@ -8,6 +8,13 @@ Router = HTTP + Pydantic only (layering rule). Every uniform-404/401/422/429
 decision and every DB read/write lives in
 `services/webchat_visitor_service.py`; `visitor_projection.py` is the only
 place a stored message becomes a `VisitorMessage`.
+
+Who calls what (amended 2026-09-09, BL-SS-183): `POST /session` is called by
+the LOADER from the customer's top-level page (that is the only way its
+`Origin` can carry the embedding website); `POST /messages`, `GET /messages`
+and the WS are called by the PANEL from inside the iframe, carry the app's
+own origin, and are authorized by the Bearer visitor token alone.
+`GET /frame-policy` is read server-side by the Next.js middleware.
 """
 from typing import Optional
 
@@ -85,7 +92,15 @@ async def start_session(
 ) -> WebchatSessionResult:
     """AC-WEB-23/24/25/28/29 - throttled BEFORE any database work (AC-WEB-30);
     origin-checked; mints or renews a visitor token; NEVER writes a row
-    (D-A7B-7)."""
+    (D-A7B-7).
+
+    Amended 2026-09-09 (BL-SS-183): the caller is the LOADER, running in the
+    customer's own top-level document, so the `Origin` header here really is
+    the embedding website's - the value the channel allowlist is about, and
+    one no other site can forge. The panel never calls this route: a fetch
+    from inside the iframe would always carry the PANEL's origin, which made
+    the check undecidable. The panel receives this response over
+    postMessage from the loader."""
     ip = client_ip(request)
     throttle = ThrottleService(db)
     try:
@@ -164,7 +179,7 @@ async def post_message(
         raise ApiError(status.HTTP_422_UNPROCESSABLE_ENTITY, exc.code, exc.message)
 
     origin = request.headers.get("origin")
-    for key, value in cors_headers_for(channel, origin).items():
+    for key, value in cors_headers_for(channel, origin, allow_panel_origin=True).items():
         response.headers[key] = value
 
     try:
@@ -204,7 +219,7 @@ def get_messages(
         raise _uniform_401()
 
     origin = request.headers.get("origin")
-    for key, value in cors_headers_for(channel, origin).items():
+    for key, value in cors_headers_for(channel, origin, allow_panel_origin=True).items():
         response.headers[key] = value
 
     data, next_after = service.history(channel, claims, after=after, limit=limit)

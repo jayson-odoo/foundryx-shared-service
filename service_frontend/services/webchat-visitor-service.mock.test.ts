@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { mockWebchatVisitorService } from './webchat-visitor-service.mock';
+import { mockWebchatSession, mockWebchatVisitorService } from './webchat-visitor-service.mock';
 
 /**
- * Mock web chat VISITOR service (plan 34 / A7b S4 - AC-WEB-10/23/25/26/32).
+ * Mock web chat VISITOR service (plan 34 / A7b S4 - AC-WEB-10/26/32).
+ * Session start is the LOADER's (BL-SS-183), so the mock's own entry point
+ * is `mockWebchatSession()` - the payload a loader hands the panel.
  */
 describe('mockWebchatVisitorService', () => {
-  it('startSession() with no token mints a brand-new session with empty history', async () => {
-    const result = await mockWebchatVisitorService.startSession('wk_test', null);
+  it('mockWebchatSession() builds the payload the loader hands over, with empty history', () => {
+    const result = mockWebchatSession();
     expect(result.token).toBeTruthy();
     expect(result.visitorId).toBeTruthy();
     expect(result.messages).toEqual([]);
@@ -14,15 +16,15 @@ describe('mockWebchatVisitorService', () => {
     expect(result.online).toBe(true);
   });
 
-  it('startSession() replays the SAME token back into the SAME session (AC-WEB-29/49/50)', async () => {
-    const first = await mockWebchatVisitorService.startSession('wk_test', null);
-    const replay = await mockWebchatVisitorService.startSession('wk_test', first.token);
+  it('the SAME token resolves the SAME visitor and history (AC-WEB-29/49/50)', () => {
+    const first = mockWebchatSession();
+    const replay = mockWebchatSession(first.token);
     expect(replay.token).toBe(first.token);
     expect(replay.visitorId).toBe(first.visitorId);
   });
 
   it('sendMessage() appends the visitor message and later a canned agent reply', async () => {
-    const session = await mockWebchatVisitorService.startSession('wk_test', null);
+    const session = mockWebchatSession();
     const sent = await mockWebchatVisitorService.sendMessage('wk_test', session.token, {
       text: 'Hello there',
     });
@@ -35,7 +37,7 @@ describe('mockWebchatVisitorService', () => {
   });
 
   it('sendMessage() with a filled honeypot returns null and stores nothing (AC-WEB-32)', async () => {
-    const session = await mockWebchatVisitorService.startSession('wk_test', null);
+    const session = mockWebchatSession();
     const result = await mockWebchatVisitorService.sendMessage('wk_test', session.token, {
       text: 'Hello there',
       hp: 'i-am-a-bot',
@@ -46,7 +48,7 @@ describe('mockWebchatVisitorService', () => {
   });
 
   it('listMessages() with `after` returns only messages past the cursor', async () => {
-    const session = await mockWebchatVisitorService.startSession('wk_test', null);
+    const session = mockWebchatSession();
     const first = await mockWebchatVisitorService.sendMessage('wk_test', session.token, {
       text: 'First',
     });

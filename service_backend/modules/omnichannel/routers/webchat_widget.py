@@ -6,10 +6,16 @@ a tenant from, so it re-applies its own module-active + tenant-lifecycle
 checks (mirrors `InboundService.process_payload`'s "the webhook router is
 mounted public - re-apply the module-active check here" note).
 
-Serves ONE static, hand-written JS file (`widget/loader.js`) with exactly two
-plain string substitutions - no Jinja/eval, no per-request template render.
-The response is origin-agnostic and cacheable (D-A7B-12): all real per-tenant
-configuration lives behind the (uncacheable) session endpoint slice S2 adds.
+Serves ONE static, hand-written JS file (`widget/loader.js`) with exactly
+three plain string substitutions - no Jinja/eval, no per-request template
+render. The response is origin-agnostic and cacheable (D-A7B-12): all real
+per-tenant configuration lives behind the (uncacheable) session endpoint
+slice S2 adds.
+
+Amended 2026-09-09 (BL-SS-183): the third substitution is the API origin -
+the LOADER, not the panel, calls the session endpoint, because only a fetch
+issued from the customer's own top-level document carries that document's
+origin on the `Origin` header. See `widget/loader.js`'s header comment.
 """
 import hashlib
 from pathlib import Path
@@ -66,8 +72,10 @@ def _resolve_live_channel(db: Session, widget_key: str) -> Channel:
 @router.get("/{widget_key}.js")
 def get_loader(widget_key: str, db: Session = Depends(get_db)) -> Response:
     _resolve_live_channel(db, widget_key)
-    body = _LOADER_TEMPLATE.replace("__WIDGET_KEY__", widget_key).replace(
-        "__PANEL_ORIGIN__", settings.frontend_url.rstrip("/")
+    body = (
+        _LOADER_TEMPLATE.replace("__WIDGET_KEY__", widget_key)
+        .replace("__PANEL_ORIGIN__", settings.frontend_url.rstrip("/"))
+        .replace("__API_ORIGIN__", settings.public_base_url.rstrip("/"))
     )
     etag = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
     return Response(

@@ -17,10 +17,37 @@
 | Frontend - lint (touched files) | `npx eslint services/webchat-service.ts services/webchat-visitor-service.ts types/omnichannel.ts components/platform/conversation-drawer/composer.tsx lib/channel-capabilities.ts` | **0 errors** (2 pre-existing a11y warnings, unrelated) |
 | Frontend - prod build | `rm -rf .next && npm run build` | **clean**, all routes compiled incl. `/public/webchat/[widgetKey]` |
 | E2E - live cross-origin embed | `agent-browser` recorded run, real clicks, 375px + 1280px | **PASS with ONE CRITICAL DEFECT FOUND** - see AC-WEB-66 and BL-SS-183 |
+| E2E - re-record after the BL-SS-183 fix (2026-09-09) | `agent-browser` recorded run, real clicks, 375px + 1280px, `34-evidence/S6-fix/` | **PASS** - allowlisted host origin chats, off-list origin injects nothing, direct panel navigation is blank and starts nothing |
 
 Machine-budget note: no whole-repo `pytest`/`vitest` run this pass (lane rule) - only the files above, one invocation at a time.
 
-## CRITICAL FINDING (read this before the AC table)
+## CRITICAL FINDING - RESOLVED 2026-09-09 (read this before the AC table)
+
+**Resolution.** Fixed on this branch by `fix(omnichannel): plan 34 loader-minted web chat session -
+closes BL-SS-183`: the LOADER (vanilla JS in the customer's own top-level document) now mints the
+session, keeps the visitor token in the HOST page's `localStorage` namespaced per widget key, and
+hands the whole session to the panel over `postMessage` with the exact panel origin as target; the
+panel never starts a session, never stores a token, and renders NOTHING without one (a directly
+navigated panel URL is a blank document that starts nothing server-side). `POST /session` keeps the
+channel allowlist - now decidable, because the caller's `Origin` really is the embedding website's
+and is unforgeable from another site - plus the uniform 404. The Bearer-authed message routes are
+the panel's own calls and echo only the app's own origin. The `/public/omnichannel/webchat/` prefix
+answers its own CORS preflight, since a customer origin lives on the CHANNEL allowlist and never in
+the service's `CORS_ORIGINS` env (Starlette's `CORSMiddleware` would otherwise reject the loader's
+preflight `400 Disallowed CORS origin`). Re-recorded evidence: `34-evidence/S6-fix/README.md` -
+AC-WEB-66's first half now passes for the RIGHT reason, with the app's own origin never added to the
+channel's allowlist. New regression tests pin WHO may send which origin (a session start carrying
+the PANEL's own origin is the uniform 404) instead of setting `Origin` freely on the test client.
+Backend re-run after the fix: `test_omnichannel_webchat_public.py` **39 passed**,
+`test_omnichannel_channels_webchat.py` **27 passed**,
+`test_omnichannel_webchat_hours_prechat_identity.py` **18 passed**,
+`test_omnichannel_webchat_outbound.py` **12 passed**,
+`test_omnichannel_webchat_frame_policy.py` **6 passed**,
+`test_omnichannel_gateway_webchat.py` **9 passed**. Frontend: `use-visitor-chat.test.ts` **12**,
+`lib/webchat-panel-bridge.test.ts` **8**, `components/platform/webchat-panel/` **19**,
+`services/webchat-visitor-service.mock.test.ts` **6**.
+
+The original finding, kept for the record:
 
 **BL-SS-183.** The web chat origin allowlist (D-A7B-11, AC-WEB-23/24) cannot discriminate between
 customer websites in a real browser: the panel's own `fetch()` call to `/session` always carries
@@ -83,8 +110,8 @@ Legend: **PASS** · **DEFERRED** (covered/authored, not independently re-execute
 
 | AC | Title | Status | Evidence |
 |---|---|---|---|
-| AC-WEB-23 | Session start returns config + token, correct CORS | **FAIL live / PASS pytest** | Pytest green (`test_omnichannel_webchat_public.py`); **live browser embed FAILS** - see BL-SS-183. The Origin the pytest client sets can never occur from a real cross-origin iframe embed |
-| AC-WEB-24 | Off-list/missing Origin -> uniform 404 | PASS (mechanism) / see BL-SS-183 for the corollary | `test_omnichannel_webchat_public.py`; live-confirmed the 404 fires (screenshot 19), but for the wrong discriminator (panel origin, not top-page origin) |
+| AC-WEB-23 | Session start (the LOADER's call) returns config + token, correct CORS | **PASS** (was FAIL live; fixed 2026-09-09) | `test_omnichannel_webchat_public.py` (39 passed) + live: `34-evidence/S6-fix/README.md` step 1 and the curl block. The caller is now the loader in the host page, so the `Origin` under test is the one a real embed actually sends |
+| AC-WEB-24 | Off-list/missing Origin -> uniform 404 (incl. the app's OWN origin) | **PASS** | `test_omnichannel_webchat_public.py::test_session_from_the_panels_own_origin_is_the_uniform_404` + `..._succeeds_without_allowlisting_the_app` + the message-route/preflight tests; live `34-evidence/S6-fix/README.md` steps 1, 7 |
 | AC-WEB-25 | Zero rows at session start | PASS (per S2 commit) | `test_omnichannel_webchat_public.py` |
 | AC-WEB-26 | First message creates contact+identity, full pipeline | PASS | Re-verified live in S6 E2E (screenshots 09-10; DB row confirmed via `psql`) |
 | AC-WEB-27 | Every query token-derived, cross-channel isolation | PASS (per S2 commit) | `test_omnichannel_webchat_public.py` |
@@ -115,12 +142,12 @@ Legend: **PASS** · **DEFERRED** (covered/authored, not independently re-execute
 | AC | Title | Status | Evidence |
 |---|---|---|---|
 | AC-WEB-44 | Panel route under literal `public/` segment | PASS | Build output confirms `/public/webchat/[widgetKey]`; live-verified |
-| AC-WEB-45 | Loader mounts ONE iframe via `iframe.style` only | PASS | Confirmed: `document.body.innerHTML` on the host page shows exactly one `<iframe>` with inline `style.*`, no `<style>` tag |
-| AC-WEB-46 | Loader global `open/close/isOpen/identify` | PASS (per S4 commit) | `use-visitor-chat.test.ts`, panel component tests |
-| AC-WEB-47 | Greeting/pre-chat/transcript/composer, no vendor copy, `frame-ancestors` | PASS | Live-verified: `curl -D-` on the panel route shows `content-security-policy: frame-ancestors http://localhost:3013`; screenshots show no "Foundryx" string anywhere |
+| AC-WEB-45 | Loader mints the session, owns the token, mounts ONE iframe via `iframe.style` only | **PASS** (amended 2026-09-09) | `test_omnichannel_channels_webchat.py::test_loader_mints_the_session_itself_from_the_host_page`; live: exactly one `<iframe>` with inline `style.*` and no `<style>` tag, `localStorage` on the HOST page holds `fx-webchat-token:<widgetKey>` and nothing else, and an off-list origin injects NO iframe at all (`34-evidence/S6-fix/README.md` steps 1, 6, 7) |
+| AC-WEB-46 | Loader global `open/close/isOpen/identify`; both sides validate every inbound frame | **PASS** (amended 2026-09-09) | Loader: origin + `iframe.contentWindow` checks, `identify()` re-mints and re-hands the session. Panel: `lib/webchat-panel-bridge.test.ts` (8 passed - source-window check, envelope check, structural session validation) and `use-visitor-chat.test.ts` (a session frame from any other window is ignored) |
+| AC-WEB-47 | Greeting/pre-chat/transcript/composer, no vendor copy, `frame-ancestors`, quiet with no session | PASS | Live-verified: `curl -D-` on the panel route shows `content-security-policy: frame-ancestors http://localhost:3013`; screenshots show no "Foundryx" string anywhere. Amended 2026-09-09: with no loader session the panel renders an EMPTY document (`document.body.innerText.trim().length === 0`, screenshot `S6-fix/shots/10-...`) and starts nothing server-side; `webchat-panel.test.tsx` pins it. Nit for the reviewer: a DIRECT navigation still shows `Foundryx` as the browser tab title (root app metadata, predates this fix; never visible to a framed visitor) |
 | AC-WEB-48 | Text-node-only rendering | PASS (per S4 commit) | `lib/linkify.test.ts`, `message-text.test.tsx` |
-| AC-WEB-49 | Storage-unavailable fallback | PASS (per S4 commit) | `use-visitor-chat.test.ts` |
-| AC-WEB-50 | Two tabs share the same visitor/thread | PASS (per S4 commit, by construction D-A7B-30) | Not re-driven this pass (no code touched) |
+| AC-WEB-49 | Storage-unavailable fallback | **PASS** (amended 2026-09-09 - the LOADER owns the token now) | `loader.js` `readToken`/`writeToken` try/catch with an in-memory fallback; the panel-side storage module is deleted (nothing to fall back FROM there any more) |
+| AC-WEB-50 | Two tabs share the same visitor/thread | **PASS** (by construction; amended 2026-09-09) | The token now lives in the HOST origin's `localStorage` keyed by widget key, so two tabs of the same website read the identical token. Live-confirmed single-tab equivalent: a host-page reload resumes the same thread from that storage (`34-evidence/S6-fix/README.md` step 6) |
 | AC-WEB-51 | 375/1280 usable | PASS | Re-verified live at both widths (screenshots 14, 17, 23) |
 
 ### Slice S5 - Backend hours + pre-chat + identity (52-57), commit `308a37d0`
@@ -145,8 +172,8 @@ Legend: **PASS** · **DEFERRED** (covered/authored, not independently re-execute
 | AC-WEB-62 | One verified `SOURCE_TO_CHANNEL_TYPE` row for respond.io's website-chat source | **DEFERRED** | No row added. Verified against the vendor's official `@respond-io/typescript-sdk` (`src/types/contact.ts`, `dev` branch, fetched live) - its `ChannelSource` union has NO website-chat member at all. No API token in this lane and the one sandbox workspace (plan 24) has no channel connected, so a live `GET /space/channel` value could not be obtained either. Filed as **BL-SS-182** (provisional numbering, see backlog) rather than guess |
 | AC-WEB-63 | Mock-to-real flip for both trios, every surface re-verified with real data | **PASS** | `services/webchat-service.ts` -> `realWebchatService`; `services/webchat-visitor-service.ts` -> `realWebchatVisitorService`. Every S0/S4 surface re-verified live this pass: wizard WEBCHAT branch (01), Widget tab + snippet + secret (02, 05), rate/sign-out routes exist (unchanged S1 routes, real service now calls them), channels list badge/filter (03-04), composer under `reengageMode:'none'` (11-13), the panel itself (06-23). `grep -rn "S0 MOCK\|S4 MOCK"` on the flipped files is empty |
 | AC-WEB-64 | E2E: connect + snippet + Web chat badge | **PASS** | `34-evidence/S6/README.md` steps 1-3, screenshots 01-05, 375px (04) + 1280px (01-03, 05) |
-| AC-WEB-65 | E2E: visitor journey, live reply, image | **PASS** | `34-evidence/S6/README.md` steps 4-8, screenshots 06-17 (1280px + 375px). Image rendered inline via a signed URL; no lightbox exists in the current code so "opens it" is satisfied by the image loading/displaying, not a separate viewer |
-| AC-WEB-66 | E2E: off-list origin never opens; offline greeting, message still lands | **FAIL (first half) / PASS (second half)** | First half: `34-evidence/S6/README.md` step 9 + the CRITICAL FINDING above and BL-SS-183 - the "off-list" test passes today for the wrong reason (the genuinely-allowed origin fails identically). Second half: PASS, screenshots 20-23, `34-evidence/S6/README.md` step 9b |
+| AC-WEB-65 | E2E: visitor journey, live reply, image | **PASS** | Image half: `34-evidence/S6/README.md` step 8, screenshots 15-17 (untouched by the fix). Core path RE-RECORDED after the BL-SS-183 fix: `34-evidence/S6-fix/README.md` steps 1-6, screenshots 01-08 + 11-12 (1280px + 375px) - send, live agent reply with no reload, reload resumes the same thread. No lightbox exists in the current code so "opens it" is satisfied by the image loading/displaying |
+| AC-WEB-66 | E2E: off-list origin never opens; offline greeting, message still lands | **PASS** (first half was FAIL; fixed and re-recorded 2026-09-09) | First half: `34-evidence/S6-fix/README.md` steps 1 and 7 - the allowlisted host origin `http://localhost:3013` chats normally while `http://127.0.0.1:3013` injects no widget at all, with the app's own origin never added to the channel's allowlist (screenshots 01, 09). Second half: PASS, unchanged - screenshots 20-23, `34-evidence/S6/README.md` step 9b |
 
 ## Deferred items registered this pass
 
