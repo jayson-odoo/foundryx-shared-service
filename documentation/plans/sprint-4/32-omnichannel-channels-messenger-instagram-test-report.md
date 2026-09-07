@@ -204,7 +204,7 @@ branch, slices S0-S6).
 Opus security review round 1 ran against `e4ac64ef` (diff `c6e92826..e4ac64ef`, the same HEAD this
 tester's pass verified: 63/63 AC-CHN ids PASS, whole-repo pytest 4034 passed). Fix round 1 addresses
 the review's 2 blockers, 8 should-fix items and the nit list; **commit under test:
-`5d6f9f9c` (`fix(omnichannel): plan 32 security review round 1 ...`), built on top of this tester's
+`b8bd3503` (`fix(omnichannel): plan 32 security review round 1 ...`), built on top of this tester's
 own commit `bee4a6f1`.** Blocker 3 (Alembic double-head against `origin/main`) and migration/manifest/
 backlog renumbering are explicitly OUT of scope for this round - the merge coder's job.
 
