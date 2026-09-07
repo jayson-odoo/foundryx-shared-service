@@ -348,13 +348,29 @@ class Settings(BaseSettings):
     # bumped to fit the configured worker count plus the page's own header
     # connection, so a high worker count can never starve the pool.
     autocount_line_fetch_workers: int = 4
-    # The sink's chunked push, up to N POSTs in flight (S5b, same
-    # performance round) - `SorentoSink.write_batch` keeps its EXISTING
-    # all-or-nothing contract at every concurrency: one chunk failing
-    # discards every chunk's verdict, exactly like the fully sequential
-    # loop always has. Default 1 (byte-identical to today, same request
-    # order) - an operator raises it only once the RECEIVING side (Sorento)
-    # has confirmed it can take concurrent batches. Bounded 1..4.
+    # The sink's chunked push, up to N POSTs in flight (S5b, same performance
+    # round). Concurrency 1 is byte-identical to the original fully
+    # sequential loop (same request order, one POST at a time) - the only
+    # thing concurrency changes.
+    #
+    # `fix/push-marks-per-chunk` (2026-09-07) replaced the ORIGINAL
+    # all-or-nothing contract with a per-chunk one: `write_batch`/
+    # `delete_batch` call `on_chunk` as each chunk resolves, and the caller
+    # (`SyncService`) marks + COMMITS that chunk immediately, so ONE failed
+    # chunk costs only that chunk - every sibling chunk's already-delivered
+    # verdict is durable and never re-offered. A raised setting therefore
+    # widens the blast radius of a single bad chunk hardly at all (still one
+    # chunk's rows, just possibly N of them retrying at once) rather than
+    # the old "one failure discards the whole batch" risk.
+    #
+    # The default stays 1 EVERYWHERE (this application default AND
+    # `docker-compose.yml`'s deployed `AUTOCOUNT_SINK_CONCURRENCY`) - a user
+    # ruling after Sorento accepted 2 as an achievable ceiling following
+    # their #710 capacity measurement: the platform-wide default is left
+    # alone and `feat/sink-concurrency-ui`'s per-connection "Push
+    # concurrency" field (`SorentoSink._resolve_concurrency`) is the ONE
+    # lever an operator raises, per tenant, from that Sorento connection's
+    # own edit form. Bounded 1..4 at every level.
     autocount_sink_concurrency: int = 1
     # Records per Sorento ingest POST (2026-09-06 prod incident: a 1,000-record
     # purchase_order batch with per-record supplier back-create ran past

@@ -325,11 +325,13 @@
   the exact same exception a purely sequential loop always raised;
   `SyncService._auto_push_upserts`'s existing generic `except Exception` handler (`"The push
   failed before the consumer resolved it"`) needed no changes at all. Concurrency 1 is
-  byte-identical to before this round (same request order, one POST in flight). Ops note:
-  default stays 1 - an operator raises `AUTOCOUNT_SINK_CONCURRENCY` only once the RECEIVING side
-  has confirmed it can take concurrent batches (a per-connection-serialised commit or an
-  aggressive rate limit on their end would turn "faster" into "more 429s/5xxs", the opposite of
-  the intent).
+  byte-identical to before this round (same request order, one POST in flight). Ops note
+  (superseded twice - see `fix/push-marks-per-chunk` and `feat/sink-concurrency-ui` below, and
+  the user's ruling after Sorento's #710 measurement): the default stays 1 EVERYWHERE - both
+  `app/config.py`'s `autocount_sink_concurrency` (local dev) and `docker-compose.yml`'s deployed
+  `AUTOCOUNT_SINK_CONCURRENCY` - and a Sorento connection's own "Push concurrency" field (1..4
+  ceiling) is the ONE lever an operator raises for a specific tenant, from its edit form, without
+  a redeploy.
 
 **Review round 7 amendments (reviewer polish, no blocker):**
 - **Pool headroom for two concurrent paged tasks.** `runtime.py`'s `engine_for` now sizes
@@ -568,15 +570,20 @@ instance: the real company's SO/PO/SPO `lineQuery` were hand-edited to the same
   note: a slow-but-alive Sorento ingesting a large document batch used to record a push FAILURE
   at the old hard-coded 30s even though the batch itself was fine - retune
   `AUTOCOUNT_SINK_TIMEOUT_SECONDS` (default 300s, floor 30s) instead of changing code. S5b -
-  `write_batch` sends up to `settings.autocount_sink_concurrency` chunk POSTs with real overlap;
-  per chunk fault handling is now fix/push-marks-per-chunk's per chunk mark and commit contract,
-  not the earlier all-or-nothing one. ops note: `app/config.py`'s own default stays 1 (local dev,
-  byte-identical to the old fully sequential loop); the deployed prod default
-  (`docker-compose.yml`'s `AUTOCOUNT_SINK_CONCURRENCY`) is 2 since fix/push-marks-per-chunk,
-  Sorento's agreed ceiling after they measured 4 async ingest workers at about 14s per 200 row
-  batch on their end (#710) - raise it further only once a NEW measurement on their side agrees
-  to it, since a rate limit or per-connection-serialised commit on their end would turn "faster"
-  into "more 429s/5xxs".
+  `write_batch` sends up to `settings.autocount_sink_concurrency` chunk POSTs with real overlap.
+  `fix/push-marks-per-chunk` (2026-09-07) replaced the all-or-nothing verdict with per-chunk
+  mark+commit (see that section above) - a raised concurrency no longer risks discarding a
+  sibling chunk's already-delivered verdict, only widening a single failed chunk's own blast
+  radius. `feat/sink-concurrency-ui` (`sorento_provider.py`'s `sinkConcurrency` select,
+  `SorentoSink._resolve_concurrency`) then made a Sorento connection's OWN edit form the lever,
+  not the deploy: an operator raises a tenant's push concurrency (1..4, clamped to the number of
+  chunks) to drain a backlog and sets it back after, no deploy; an invalid stored value falls
+  back to the default and logs one warning per sink instance, never raises. The default stays 1
+  EVERYWHERE - `app/config.py`'s `autocount_sink_concurrency` (byte-identical to the old fully
+  sequential loop) and `docker-compose.yml`'s deployed `AUTOCOUNT_SINK_CONCURRENCY` both - per the
+  user's ruling after Sorento measured 4 async ingest workers at about 14s per 200-row batch on
+  their end (#710) and accepted 2 as an achievable ceiling: the platform-wide default is left
+  alone and the per-connection override is the one place concurrency actually gets raised.
   `fix/sorento-batch-size` (2026-09-06) - records per ingest POST are now
   `AUTOCOUNT_SINK_BATCH_SIZE` (default 200, bounded 1..1000 = Sorento's per-request ceiling,
   read at call time), after a 1,000-record purchase_order batch with per-record supplier
