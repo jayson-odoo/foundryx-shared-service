@@ -226,7 +226,16 @@ def transition(
         tenant_id=notify_tenant_id,
         actor=actor,
         changes={"status": {"from": from_status_id, "to": to_status_id}},
-        extra={"from_status_id": from_status_id, "to_status_id": to_status_id},
+        # `to_status_label` (plan 31 S3 review SF-6): `edge.to_status` is
+        # already resolved here for the notification `context` above - a
+        # consumer's `context_extra` (e.g. omnichannel's
+        # `omnichannel.lifecycle_changed` trigger) can read the label straight
+        # off the event instead of a second tenant-scoped query.
+        extra={
+            "from_status_id": from_status_id,
+            "to_status_id": to_status_id,
+            "to_status_label": edge.to_status.label,
+        },
     )
 
     # Capture the event payload BEFORE commit - expire_on_commit would make

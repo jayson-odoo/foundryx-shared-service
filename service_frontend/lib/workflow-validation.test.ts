@@ -14,6 +14,12 @@ const codeNode = (id = 'code-1') => ({
   },
 });
 
+const httpNode = (id = 'http-1') => ({
+  ...createNode('http.request', { x: 0, y: 100 }),
+  id,
+  config: { method: 'GET', url: 'https://example.com' },
+});
+
 function workflow(
   definition: WorkflowDefinition,
   currentVersionId: string | null,
@@ -96,5 +102,34 @@ describe('workflowPublishIssue', () => {
         true,
       ),
     ).toContain('changed Code');
+  });
+
+  it('gates HTTP request publication by the workflows.http permission', () => {
+    const httpDefinition: WorkflowDefinition = {
+      schemaVersion: 2,
+      nodes: [
+        { ...createNode('manual', { x: 0, y: 0 }), id: 'trigger-1' },
+        httpNode(),
+      ],
+      edges: [
+        { id: 'edge-1', source: 'trigger-1', target: 'http-1', sourcePort: 'out' },
+      ],
+    };
+    expect(
+      workflowPublishIssue(
+        workflow(httpDefinition, null),
+        metadata,
+        true,
+        false,
+      ),
+    ).toContain('workflows.http');
+    expect(
+      workflowPublishIssue(
+        workflow(httpDefinition, null),
+        metadata,
+        true,
+        true,
+      ),
+    ).toBeNull();
   });
 });

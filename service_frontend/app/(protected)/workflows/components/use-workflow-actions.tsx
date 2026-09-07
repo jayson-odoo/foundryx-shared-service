@@ -29,6 +29,7 @@ export function useWorkflowActions(): ResourceAction<WorkflowListItem>[] {
   const router = useRouter();
   const { can } = useCan();
   const canCode = can('workflows.code');
+  const canHttp = can('workflows.http');
 
   return useMemo<ResourceAction<WorkflowListItem>[]>(
     () => [
@@ -58,7 +59,7 @@ export function useWorkflowActions(): ResourceAction<WorkflowListItem>[] {
             ]);
             for (const workflow of fullWorkflows) {
               if (!workflow) throw new Error('Workflow not found.');
-              const issue = workflowPublishIssue(workflow, metadata, canCode);
+              const issue = workflowPublishIssue(workflow, metadata, canCode, canHttp);
               if (issue) throw new Error(issue);
             }
             for (const w of rows) await workflowService.publish(w.id);
@@ -147,6 +148,6 @@ export function useWorkflowActions(): ResourceAction<WorkflowListItem>[] {
         deferred: { actionKey: 'workflows.delete', entityType: 'workflow' },
       },
     ],
-    [canCode, router],
+    [canCode, canHttp, router],
   );
 }

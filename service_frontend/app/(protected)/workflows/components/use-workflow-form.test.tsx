@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Workflow } from '@/types/workflows';
 import { useWorkflowForm } from './use-workflow-form';
 
-const { workflowService, workflowMetadataService } = vi.hoisted(() => ({
+const { workflowService, workflowMetadataService, toastError } = vi.hoisted(() => ({
   workflowService: {
     get: vi.fn(),
     update: vi.fn(),
@@ -13,6 +13,7 @@ const { workflowService, workflowMetadataService } = vi.hoisted(() => ({
     run: vi.fn(),
   },
   workflowMetadataService: { getMetadata: vi.fn() },
+  toastError: vi.fn(),
 }));
 
 vi.mock('@/services/workflow-service', () => ({ workflowService }));
@@ -20,17 +21,23 @@ vi.mock('@/services/workflow-metadata-service', () => ({
   workflowMetadataService,
 }));
 vi.mock('./use-workflow-actions', () => ({ useWorkflowActions: () => [] }));
+vi.mock('@/lib/toast', () => ({
+  toast: { error: toastError, success: vi.fn(), info: vi.fn(), warning: vi.fn() },
+}));
 vi.mock('./workflow-editor-tab', () => ({
   WorkflowEditorTab: ({
     onRun,
     onDocChange,
     doc,
+    catalogStatus,
   }: {
     onRun: () => void;
     onDocChange: (next: Workflow['draftDefinition']) => void;
     doc: Workflow['draftDefinition'];
+    catalogStatus?: string;
   }) => (
     <>
+      <span data-testid="catalog-status">{catalogStatus}</span>
       <button
         type="button"
         onClick={() => onDocChange({ ...doc, schemaVersion: doc.schemaVersion + 1 })}
@@ -229,5 +236,43 @@ describe('useWorkflowForm test-trigger routing', () => {
 
     await waitFor(() => expect(screen.getByLabelText('Workflow name')).toBeDisabled());
     await act(async () => resolveSave(WORKFLOW));
+  });
+});
+
+
+/**
+ * Plan 31 review round 2, R-2: the node palette gates on the metadata call, so
+ * the hook has to TRACK that call - a silent `.catch(() => undefined)` left the
+ * palette indistinguishable from "this tenant has no nodes".
+ */
+describe('useWorkflowForm node-catalog load state (R-2)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('reports the catalog as ready once the metadata call resolves', async () => {
+    workflowService.get.mockResolvedValue(WORKFLOW);
+    workflowService.listTemplateOptions.mockResolvedValue([]);
+    workflowMetadataService.getMetadata.mockResolvedValue({ entities: [] });
+
+    render(<Harness />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('catalog-status')).toHaveTextContent('ready'),
+    );
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('reports an error + toasts when the metadata call fails', async () => {
+    workflowService.get.mockResolvedValue(WORKFLOW);
+    workflowService.listTemplateOptions.mockResolvedValue([]);
+    workflowMetadataService.getMetadata.mockRejectedValue(new Error('boom'));
+
+    render(<Harness />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('catalog-status')).toHaveTextContent('error'),
+    );
+    expect(toastError).toHaveBeenCalledWith(
+      'Could not load the workflow node catalog.',
+    );
   });
 });

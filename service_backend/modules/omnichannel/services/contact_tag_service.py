@@ -45,6 +45,25 @@ class ContactTagService:
             .all()
         )
 
+    def names_for_ids(
+        self, workspace_id: str, tenant_id: str, tag_ids: set
+    ) -> Dict[str, str]:
+        """Tenant + workspace scoped id->name map (plan sprint-4/31, AC-WFP-11)
+        - backs the `contact_tag_added`/`_removed` triggers' `trigger.tagName`
+        output. A foreign/stale id simply has no entry (never resolved)."""
+        if not tag_ids:
+            return {}
+        rows = (
+            self.db.query(ContactTag.id, ContactTag.name)
+            .filter(
+                ContactTag.tenant_id == tenant_id,
+                ContactTag.workspace_id == workspace_id,
+                ContactTag.id.in_(tag_ids),
+            )
+            .all()
+        )
+        return {r.id: r.name for r in rows}
+
     def get(self, tag_id: str, workspace_id: str, tenant_id: str) -> ContactTag:
         row = (
             self.db.query(ContactTag)

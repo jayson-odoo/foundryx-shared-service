@@ -12,6 +12,7 @@ every stored id (`actorUserId`, `actorExternalAgentId`, `fromValue`/`toValue`)
 TENANT-SCOPED - the polymorphic stored-id house rule (AC-IVE-10): an
 unresolvable/foreign id renders as an empty label, never another tenant's name.
 """
+import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -24,6 +25,8 @@ from app.models.user import User
 from ..models import CloseReason, Contact, ConversationEvent, ConversationMessage
 from ..models import Status as ThreadStatus
 from ..schemas import ConversationEventItem
+
+logger = logging.getLogger(__name__)
 
 # The full event-type vocabulary (plan §Definitions) - kept here as the single
 # reference list; nothing in this module branches on membership except tests.
@@ -58,6 +61,7 @@ def record(
     close_reason_id: Optional[str] = None,
     note: Optional[str] = None,
     payload: Optional[dict] = None,
+    channel_id: Optional[str] = None,
 ) -> ConversationEvent:
     """Write one event row for `contact`. Adds to `db` and flushes (so the row
     has an id + is visible to later queries in the SAME transaction) but never
@@ -98,7 +102,129 @@ def record(
     )
     db.add(row)
     db.flush()
+    _emit_workflow_event(
+        db, contact, event_type,
+        actor=actor, actor_id=actor_id,
+        from_value=from_value, to_value=to_value,
+        close_reason_id=close_reason_id, note=note,
+        channel_id=channel_id, payload=payload,
+    )
     return row
+
+
+# ── workflow trigger emissions (plan sprint-4/31, D-A5-1/D-A5-2, F4) ────────
+# The event-type allowlist that grows NEW workflow-trigger emissions off this
+# ONE seam. Every other event type this module writes (snoozed, comment_added,
+# first_agent_reply, lifecycle_changed) emits nothing here - lifecycle_changed
+# already rides `status_machine.transition`'s own `entity.status_changed`
+# emission (D-A5-3) and tags/fields ride `ContactProfileService.patch`'s own
+# `updated` emission - this function must never grow into a second general
+# entity-event bus.
+_OPENED_LIKE_EVENT_TYPES = {"opened", "reopened", "unsnoozed"}
+
+
+def _close_reason_label(db: Session, tenant_id: str, close_reason_id: Optional[str]) -> Optional[str]:
+    if not close_reason_id:
+        return None
+    row = (
+        db.query(CloseReason.name)
+        .filter(CloseReason.id == close_reason_id, CloseReason.tenant_id == tenant_id)
+        .first()
+    )
+    return row[0] if row else None
+
+
+def _resolve_active_channel_id(db: Session, contact: Contact) -> Optional[str]:
+    """Plan 31 S3 review SF-1: `record()`'s callers (`patch_thread`'s manual
+    reopen/unsnooze, `omnichannel.open_conversation`) have no `channel_id` to
+    thread through - only the inbound webhook path does. Rather than make
+    every caller resolve it, fall back here to the contact's MOST RECENT
+    channel-bound message (tenant+contact scoped), so `trigger.channelId` and
+    the `omnichannel.conversation_opened` trigger's Channel filter work off
+    every "opened" path, not just inbound."""
+    row = (
+        db.query(ConversationMessage.channel_id)
+        .filter(
+            ConversationMessage.tenant_id == contact.tenant_id,
+            ConversationMessage.contact_id == contact.id,
+            ConversationMessage.channel_id.isnot(None),
+        )
+        .order_by(ConversationMessage.created_at.desc())
+        .first()
+    )
+    return row[0] if row else None
+
+
+def _emit_workflow_event(
+    db: Session,
+    contact: Contact,
+    event_type: str,
+    *,
+    actor: Optional[User],
+    actor_id: Optional[str],
+    from_value: Optional[str],
+    to_value: Optional[str],
+    close_reason_id: Optional[str],
+    note: Optional[str],
+    channel_id: Optional[str],
+    payload: Optional[dict],
+) -> None:
+    """AC-WFP-08/09/10: buffers `omnichannel_contact` `conversation_opened` /
+    `_closed` / `_assigned` for the three (previously silent) conversation-
+    lifecycle event types. Buffered only (`emit_entity_event`), never
+    dispatched here - the caller's own commit drains it through the existing
+    after-commit hook (AC-WFP-17), so a slow/broken workflow can never break
+    the request that called `record()`."""
+    action: Optional[str] = None
+    extra: dict = {}
+    if event_type in _OPENED_LIKE_EVENT_TYPES:
+        action = "conversation_opened"
+        resolved_channel_id = (
+            channel_id if channel_id is not None else _resolve_active_channel_id(db, contact)
+        )
+        extra = {"isReopen": event_type != "opened", "channelId": resolved_channel_id}
+    elif event_type == "closed":
+        action = "conversation_closed"
+        extra = {
+            "closeReasonId": close_reason_id,
+            "closeReasonLabel": _close_reason_label(db, contact.tenant_id, close_reason_id),
+            "note": note,
+        }
+    elif event_type in ("assigned", "unassigned"):
+        action = "conversation_assigned"
+        p = payload or {}
+        if "assignedVia" in p:
+            # Native path (plan 28 S3/A8 team assignment, folded with plan
+            # 31/A5's `round_robin` mode at the merge): `patch_thread` already
+            # computed the authoritative value for this SAME payload dict
+            # ("manual" / "team_strategy" / whatever `assigned_via_override`
+            # stamped, e.g. "workflow") - trust it directly rather than
+            # re-inferring from `assigneeKind`, which the native path only
+            # ever sets to "user" (never "team"/"workflow"/"team_strategy"),
+            # so the old inference below silently collapsed every non-user
+            # native assign to "manual".
+            assigned_via = p["assignedVia"]
+        else:
+            # Embed path (external-agent assignment via a consumer API key) -
+            # its payload never carries `assignedVia`, only `assigneeKind`.
+            assignee_kind = p.get("assigneeKind")
+            assigned_via = "external" if assignee_kind == "external_agent" else "manual"
+        extra = {
+            "assigneeUserId": to_value if event_type == "assigned" else None,
+            "previousAssigneeUserId": from_value,
+            "assignedVia": assigned_via,
+        }
+    if action is None:
+        return
+    try:
+        from app.workflow_engine.entity_events import emit_entity_event
+
+        emit_entity_event(
+            db, "omnichannel_contact", action, contact,
+            tenant_id=contact.tenant_id, actor=actor, actor_id=actor_id, extra=extra,
+        )
+    except Exception:  # noqa: BLE001 - AC-WFP-17: never break the triggering request
+        logger.exception("workflow event buffering failed for %s on contact %s", action, contact.id)
 
 
 def is_first_reply_pending(db: Session, contact: Contact) -> bool:

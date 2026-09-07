@@ -66,6 +66,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Does `config[showWhen.field]` match a `showWhen` clause? Mirrors the
+ * backend `NodeField.show_when` (plan 31 §5.1) - `value` is one literal or a
+ * list of literals (the HTTP body field shows for BOTH `json` and `text`).
+ *
+ * `siblingFields` (plan 31 S3 review SF-2) resolves the CONTROLLING field's
+ * default when its key is absent from `config` entirely - an absent
+ * controlling key falls back to that field's first declared option, so a
+ * node saved before the controlling field existed (e.g. a plan-17
+ * `omnichannel.send_message` node with no `mode` key) keeps its dependent
+ * field (Message) visible instead of being silently hidden. Callers that
+ * omit `siblingFields` keep the old strict-equality behaviour (an absent key
+ * never matches) - every in-repo call site now passes the catalog entry's
+ * `fields`. */
+export function matchesShowWhen(
+  config: Record<string, unknown>,
+  showWhen: { field: string; value: string | string[] } | undefined,
+  siblingFields?: readonly { key: string; options?: { value: string; label: string }[] }[],
+): boolean {
+  if (!showWhen) return true;
+  let current = config[showWhen.field];
+  if (!(showWhen.field in config) && siblingFields) {
+    const controlling = siblingFields.find((f) => f.key === showWhen.field);
+    current = controlling?.options?.[0]?.value;
+  }
+  if (Array.isArray(showWhen.value)) {
+    return typeof current === 'string' && showWhen.value.includes(current);
+  }
+  return current === showWhen.value;
+}
+
 export function outputParamIssues(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [
@@ -248,8 +278,64 @@ function defaultConfig(type: string): WorkflowNodeConfig {
   // Omnichannel + AI Agent nodes (plan sprint-4/17).
   if (type === 'omnichannel.message_received') return { channelId: null };
   if (type === 'omnichannel.get_contact') return { contactId: '' };
-  if (type === 'omnichannel.send_message')
-    return { contactId: '', message: '' };
+  if (type === 'omnichannel.send_message' || type === 'omnichannel.ask_question') {
+    const base: WorkflowNodeConfig = {
+      contactId: '',
+      mode: 'text',
+      message: '',
+    };
+    if (type === 'omnichannel.ask_question') {
+      return {
+        ...base,
+        answerType: 'text',
+        choices: [],
+        retryLimit: '1',
+        retryMessage: '',
+        timeoutValue: '1',
+        timeoutUnit: 'hours',
+      };
+    }
+    return base;
+  }
+  // Omnichannel conversation/contact triggers + simple steps (plan 31).
+  if (
+    type === 'omnichannel.conversation_opened' ||
+    type === 'omnichannel.conversation_closed' ||
+    type === 'omnichannel.conversation_assigned' ||
+    type === 'omnichannel.contact_tag_added' ||
+    type === 'omnichannel.contact_tag_removed' ||
+    type === 'omnichannel.lifecycle_changed' ||
+    type === 'omnichannel.broadcast_completed'
+  ) {
+    return { workspaceId: '' };
+  }
+  if (type === 'omnichannel.contact_field_changed')
+    return { workspaceId: '', fieldKey: '', newValue: '' };
+  if (type === 'omnichannel.assign_conversation')
+    return { contactId: '', workspaceId: '', mode: 'user', userId: '' };
+  if (type === 'omnichannel.add_tag' || type === 'omnichannel.remove_tag')
+    return { contactId: '', workspaceId: '', tagId: '' };
+  if (type === 'omnichannel.update_field')
+    return { contactId: '', workspaceId: '', fieldKey: '', value: '', clear: false };
+  if (type === 'omnichannel.update_lifecycle')
+    return { contactId: '', workspaceId: '', toStageId: '' };
+  if (type === 'omnichannel.open_conversation') return { contactId: '' };
+  if (type === 'omnichannel.close_conversation')
+    return { contactId: '', workspaceId: '', closeReasonId: '', note: '' };
+  if (type === 'omnichannel.add_comment') return { contactId: '', body: '' };
+  if (type === 'omnichannel.wait') return { waitValue: '5', waitUnit: 'minutes' };
+  if (type === 'omnichannel.business_hours') return { workspaceId: '' };
+  if (type === 'workflow.trigger')
+    return { workflowId: '', contactId: '', payload: '' };
+  if (type === 'http.request')
+    return {
+      method: 'GET',
+      url: '',
+      headers: [],
+      bodyMode: 'none',
+      body: '',
+      timeoutSeconds: '10',
+    };
   if (type === 'ai_agent.run')
     return { agentId: '', instructions: '', inputText: '', outputParams: [] };
   if (type === 'ai_agent.clear_state') return { agentNodeId: '' };
@@ -495,10 +581,16 @@ export interface DefinitionIssue {
 }
 
 /** Mirror of the backend `validate_definition` (D17) - surfaced live in the
- * editor so publish failures are visible before the click. */
+ * editor so publish failures are visible before the click. `currentWorkflowId`
+ * (the workflow being edited, absent while still unsaved/new) backs the
+ * `workflow.trigger` self-trigger parity check (plan 31 S3) - the backend
+ * `workflow_trigger` action already refuses this at RUN time
+ * ("A workflow cannot trigger itself."); this mirrors the SAME message at
+ * publish time so the author sees it before running. */
 export function validateDefinition(
   doc: WorkflowDefinition,
   metadata?: { codeRunnerAvailable?: boolean },
+  currentWorkflowId?: string,
 ): DefinitionIssue[] {
   void metadata;
   const issues: DefinitionIssue[] = [];
@@ -540,6 +632,47 @@ export function validateDefinition(
         'Stateful AI Agent outputs require serialized execution and a Correlation key.',
     });
   }
+  // Registry-driven parking rule (plan 31 S6, D-A5-7/AC-WFP-51/06,
+  // generalized off `ActionCatalogEntry.requiresSerialized` so a FUTURE
+  // parking action needs no second hardcoded check here): any action node
+  // that PARKS the run keyed by a contact needs serialized execution, or two
+  // runs answering the same contact would race the one wait row. Message
+  // text is pinned in parity with the backend `definition_issues`
+  // (`f"{label} requires serialized execution and a Correlation key."`) -
+  // see `lib/workflow-doc.serialized-parity.test.ts`.
+  if (execution?.mode !== 'serialized' || !correlationKey) {
+    const parkingLabels = new Set<string>();
+    for (const node of doc.nodes) {
+      if (node.kind !== 'action') continue;
+      const entry = catalogEntry(node.type);
+      if (entry?.kind === 'action' && entry.requiresSerialized) {
+        parkingLabels.add(entry.label);
+      }
+    }
+    for (const label of Array.from(parkingLabels).sort()) {
+      issues.push({
+        level: 'error',
+        message: `${label} requires serialized execution and a Correlation key.`,
+      });
+    }
+  }
+  // `workflow.trigger` self-trigger parity (plan 31 S3, AC-WFP-33/backend
+  // `ActionError("A workflow cannot trigger itself.")`) - the drawer already
+  // excludes the current workflow from the picker (foolproof-UI), but a
+  // config set before a rename/duplicate, or authored via the API, must still
+  // be caught before publish with the SAME message the run would fail with.
+  if (currentWorkflowId) {
+    for (const n of doc.nodes) {
+      if (n.type === 'workflow.trigger' && n.config.workflowId === currentWorkflowId) {
+        issues.push({
+          level: 'error',
+          message: 'A workflow cannot trigger itself.',
+          nodeId: n.id,
+        });
+      }
+    }
+  }
+
   if (trigger && doc.edges.some((e) => e.target === trigger.id)) {
     issues.push({
       level: 'error',
@@ -599,10 +732,7 @@ export function validateDefinition(
     const entry = catalogEntry(n.type);
     if (!entry) continue;
     for (const field of entry.fields) {
-      if (
-        field.showWhen &&
-        n.config[field.showWhen.field] !== field.showWhen.value
-      ) {
+      if (field.showWhen && !matchesShowWhen(n.config, field.showWhen, entry.fields)) {
         continue; // hidden field - don't require it
       }
       if (field.required) {

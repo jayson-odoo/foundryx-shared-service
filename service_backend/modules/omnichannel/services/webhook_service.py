@@ -8,15 +8,27 @@ delivery with it) and revealed to the consumer ONLY on create + rotate.
 Security invariants:
 - Every query is tenant-scoped; the channel must belong to the caller's tenant.
 - Callback URLs must be HTTPS and must not target private/loopback hosts (SSRF).
+
+SSRF guard (plan sprint-4/31 S5, D-A5-11/F5): the actual check moved VERBATIM
+to ``app/services/url_guard.py`` so the core ``http.request`` workflow action
+can share it without core importing a module - this file only DELEGATES and
+re-wraps the core error as this module's own ``WebhookError`` so every
+existing caller/test keeps working unchanged. ``socket``/``ipaddress`` stay
+imported here (not just re-exported) because they are the SAME stdlib module
+objects ``url_guard`` uses - a test monkeypatching ``webhook_service.socket``
+patches the one shared module, so the guard sees it wherever it runs.
 """
-import ipaddress
+import ipaddress  # noqa: F401 - kept for `ws.ipaddress`-shaped test access + parity
 import secrets
-import socket
+import socket  # noqa: F401 - `assert_deliverable`'s DNS guard is monkeypatched via this name
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
-from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
+
+from app.services.url_guard import UrlGuardError
+from app.services.url_guard import assert_deliverable as _core_assert_deliverable
+from app.services.url_guard import validate_public_https_url as _core_validate_url
 
 from ..models import Channel, WebhookDelivery, WebhookEndpoint
 from ..security import encrypt_secret
@@ -47,81 +59,25 @@ def _new_secret() -> str:
     return SECRET_SCHEME + secrets.token_urlsafe(32)
 
 
-def _is_blocked_ip(ip: ipaddress._BaseAddress) -> bool:
-    return (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
-
-
 def validate_callback_url(url: str, *, strict_dns: bool = False) -> str:
-    """HTTPS-only + block SSRF targets. Rejects private/loopback/link-local/
-    reserved IPs whether given as a literal, a numeric/hex-encoded IP, OR a
-    hostname that RESOLVES to one (e.g. an A record pointing at 169.254.169.254).
-    ``strict_dns`` also rejects a host we cannot resolve. REGISTRATION stays
-    lenient on purpose - a transient DNS failure must not reject a legitimate
-    callback, and making registration depend on live resolution breaks offline
-    CI. The authoritative guard is `assert_deliverable`, which runs with
-    ``strict_dns=True`` before EVERY delivery attempt, so an unresolvable or
-    internally-resolving host is simply never POSTed to."""
-    url = (url or "").strip()
-    parsed = urlparse(url)
-    if parsed.scheme != "https":
-        raise WebhookError("Callback URL must use https://.")
-    host = parsed.hostname
-    if not host:
-        raise WebhookError("Callback URL is missing a host.")
-    lowered = host.lower()
-    if lowered == "localhost" or lowered.endswith(".localhost") or lowered.endswith(".local"):
-        raise WebhookError("Callback URL cannot target localhost.")
-
-    # IP literal (dotted, numeric like 2130706433, or hex like 0x7f000001 - the
-    # latter two fail ip_address, so resolve them below).
+    """Delegates to the shared core guard (``app/services/url_guard.py``),
+    re-raising its ``UrlGuardError`` as this module's own ``WebhookError`` -
+    ``subject="Callback URL"`` keeps every pre-extraction 422 message
+    byte-identical (review S5; pinned by ``tests/test_omnichannel_consumer_
+    webhooks.py``)."""
     try:
-        ip = ipaddress.ip_address(host)
-        if _is_blocked_ip(ip):
-            raise WebhookError("Callback URL cannot target a private or reserved IP.")
-        return url
-    except ValueError:
-        pass
-
-    # Hostname (incl. numeric/hex forms): resolve + block if ANY address is
-    # internal.
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except (socket.gaierror, UnicodeError):
-        if strict_dns:
-            raise WebhookError("Could not resolve the callback host.")
-        return url
-    for info in infos:
-        addr = info[4][0]
-        try:
-            if _is_blocked_ip(ipaddress.ip_address(addr)):
-                raise WebhookError("Callback URL resolves to a private or reserved IP.")
-        except ValueError:
-            continue
-    return url
+        return _core_validate_url(url, strict_dns=strict_dns, subject="Callback URL")
+    except UrlGuardError as exc:
+        raise WebhookError(str(exc)) from exc
 
 
 def assert_deliverable(url: str) -> None:
-    """Re-check the target IMMEDIATELY before POSTing to it.
-
-    Registration-time validation is not sufficient alone: DNS can be re-pointed
-    afterwards (rebinding), and the callback URL is now settable by any
-    workspace-API-key holder - so a fail-open registration would otherwise let
-    an external caller aim the delivery worker at a link-local or RFC1918
-    address (a blind SSRF pivot into the deployment's network). Raises
-    `WebhookError`; the caller records a failed attempt and never sends.
-
-    NOT strict on resolution failure. Blocking an UNRESOLVABLE host buys no
-    security - there is nothing to connect to, and httpx fails on its own - but
-    it does turn every transient DNS blip into a refused delivery. What matters
-    is that a host resolving to an internal address is never POSTed to."""
-    validate_callback_url(url, strict_dns=False)
+    """Re-check the target IMMEDIATELY before POSTing to it (delegates to the
+    shared core guard - see its docstring for the full rationale)."""
+    try:
+        _core_assert_deliverable(url, subject="Callback URL")
+    except UrlGuardError as exc:
+        raise WebhookError(str(exc)) from exc
 
 
 def webhook_endpoint_item(row: "WebhookEndpoint"):

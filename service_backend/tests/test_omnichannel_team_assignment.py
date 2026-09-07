@@ -132,7 +132,7 @@ def test_manifest_version_and_model_shape(session_factory):
     manifest = json.loads(
         (Path(__file__).resolve().parents[1] / "modules" / "omnichannel" / "manifest.json").read_text()
     )
-    assert manifest["version"] == "0.6.0"
+    assert manifest["version"] == "0.7.0"  # plan 31 bump
     assert any(r["name"] == "team_settings" for r in manifest["routers"])
     assert hasattr(Contact, "assigned_team_id")
     assert TeamAssignmentSetting.__tablename__ == "team_assignment_settings"
@@ -834,7 +834,12 @@ def test_assign_conversation_action_registered_with_fields():
 
     assert by_key["contactId"].required and by_key["contactId"].mergeable
     assert by_key["mode"].required
-    assert {o["value"] for o in by_key["mode"].options} == {"user", "team", "unassign"}
+    # plan 31 A5 merge folds in a THIRD `round_robin` mode alongside A8's
+    # user/team/unassign - see test_omnichannel_workflow_parity_actions.py for
+    # its own dedicated coverage.
+    assert {o["value"] for o in by_key["mode"].options} == {
+        "user", "team", "round_robin", "unassign",
+    }
 
     assert by_key["userId"].show_when == ("mode", "user")
     assert by_key["userId"].mergeable

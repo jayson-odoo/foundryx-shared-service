@@ -76,6 +76,10 @@ class Workspace(OmniBase):
     status_id = Column(String, ForeignKey("statuses.id"), nullable=True)
     is_default = Column(Boolean, nullable=False, default=False)
     is_trashed = Column(Boolean, nullable=False, default=False)
+    # plan sprint-4/31 S2 (D-A5-15) - the `omnichannel.assign_conversation`
+    # round-robin mode's cursor (last-assigned member's user id, or NULL). No
+    # separate pointer table - one workspace, one cursor.
+    round_robin_cursor = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -779,6 +783,12 @@ class OmnichannelSettings(OmniBase):
     audio_max_bytes = Column(Integer, nullable=True)
     document_max_bytes = Column(Integer, nullable=True)
     sticker_max_bytes = Column(Integer, nullable=True)
+    # Business hours (plan sprint-4/31 S5, D-A5-13/F6) - the SAME per-workspace
+    # + tenant-default (workspace_id NULL) row this table already uses for
+    # media caps; two new columns, not a new table (D-A5-13's "waste"
+    # rationale). Shape: `{"mon": [{"from": "09:00", "to": "18:00"}], ...}`.
+    business_hours_json = Column(JSON(none_as_null=True), nullable=True)
+    business_timezone = Column(String, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -820,6 +830,77 @@ class ExternalAgent(OmniBase):
 
     __table_args__ = (
         UniqueConstraint("connection_id", "sub", name="uq_external_agent_conn_sub"),
+    )
+
+
+class WorkflowContactFire(OmniBase):
+    """Trigger-once-per-contact claim (plan sprint-4/31, D-A5-4). One row per
+    (tenant, workflow, contact) that has ALREADY fired a
+    `triggerOncePerContact` trigger for that workflow - a later matching event
+    for the same pair creates NO run. The unique constraint is the race-free
+    claim: two concurrent events insert-race to a single winner (a losing
+    `IntegrityError` is caught by `workflow_fire_store.claim_fire`, never
+    surfaced as a request error, AC-WFP-15). Survives unpublish/republish
+    (never touched by either); wiped by `uninstall_tenant`'s generic per-table
+    tenant sweep and by the `workflow` `deleted` event subscriber below."""
+
+    __tablename__ = "workflow_contact_fires"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workflow_id = Column(String, nullable=False, index=True)
+    contact_id = Column(String, nullable=False, index=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "workflow_id", "contact_id", name="uq_workflow_contact_fire"
+        ),
+    )
+
+
+class WorkflowWait(OmniBase):
+    """A parked workflow run's module-side index (plan sprint-4/31 S4, §5.4).
+
+    Core owns the park itself (`workflow_runs.status='waiting'` +
+    `resume_state_json`); THIS row is the omnichannel-specific index from a
+    contact (or just a deadline) back to that parked run, plus the answer spec
+    and retry counters an Ask-a-question step needs.
+
+    `kind='question'` rows carry `contact_id`/`workspace_id` and are UNIQUE per
+    (tenant, contact) - D-A5-9, one open question per contact. `kind='delay'`
+    rows (a plain Wait step) carry NEITHER: they have no contact, so their NULL
+    `contact_id` never collides with the unique constraint and a plain Wait can
+    never block (or be resumed by) an unrelated question.
+
+    `run_id`/`workflow_id` are core `public` row ids held as plain columns
+    (BL-030 - no cross-schema FK) and are ALWAYS resolved tenant-scoped.
+    """
+
+    __tablename__ = "workflow_waits"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, index=True)
+    contact_id = Column(String, ForeignKey("contacts.id"), nullable=True)
+    run_id = Column(String, nullable=False, index=True)
+    workflow_id = Column(String, nullable=False, index=True)
+    node_id = Column(String, nullable=False)
+    kind = Column(String, nullable=False, default="question")
+    # {answerType, choices[], retryLimit, retryMessage, question} - rendered at
+    # park time (the run context is not available when an inbound answer lands).
+    answer_spec_json = Column(JSON(none_as_null=True), nullable=True)
+    retry_count = Column(Integer, nullable=False, default=0)
+    deadline_at = Column(UTCDateTime(), nullable=False, index=True)
+    is_test = Column(Boolean, nullable=False, default=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "contact_id", name="uq_workflow_wait_contact"),
+        Index("ix_workflow_waits_due", "tenant_id", "deadline_at"),
     )
 
 

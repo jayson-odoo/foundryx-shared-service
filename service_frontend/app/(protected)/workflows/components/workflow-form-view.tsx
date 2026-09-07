@@ -29,6 +29,7 @@ export function WorkflowFormView({
     can('workflows.manage'),
     debugRunId,
     can('workflows.code'),
+    can('workflows.http'),
   );
 
   if (isLoading) {
