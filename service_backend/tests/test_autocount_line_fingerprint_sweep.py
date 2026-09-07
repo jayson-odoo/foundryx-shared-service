@@ -680,13 +680,24 @@ def test_a_delivery_that_leaves_the_header_untouched_is_restaged_by_the_sweep(ri
     ]
     assert keyed, [stmt for stmt, _ in rig.statements["header"]]
 
+    # The HEADER row genuinely did not change, so the header-hash table must
+    # say so: the sweep re-stages through the fingerprint, never by mixing
+    # line state into the header hash (round 2 - a mixed-in hash made every
+    # later reconcile see a "changed" header and re-push the document).
     hashes_after = rig.hashes()
-    assert hashes_after["D001"] != hashes_before["D001"]
+    assert hashes_after["D001"] == hashes_before["D001"], "header hash must stay plain"
     assert hashes_after["D002"] == hashes_before["D002"]
     fingerprints_after = rig.fingerprints()
     assert fingerprints_after["D001"] != fingerprints_before["D001"]
     assert fingerprints_after["D002"] == fingerprints_before["D002"]
     assert fingerprints_after["D003"] == fingerprints_before["D003"]
+
+    # And the proof that nothing leaked into the header diff: a reconcile with
+    # no source change after the sweep re-stage is quiet for D001.
+    job5, run5 = rig.run(RUN_MODE_RECONCILE)
+    assert run5.updated_count == 0 and run5.added_count == 0, (run5.updated_count, run5.added_count)
+    assert "D001" not in rig.staged(job5.id), sorted(rig.staged(job5.id))
+    assert rig.hashes()["D001"] == hashes_before["D001"]
 
 
 def test_a_new_document_and_a_fingerprint_change_stage_in_the_same_incremental_run(rig):
