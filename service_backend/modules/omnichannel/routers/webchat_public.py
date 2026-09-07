@@ -119,7 +119,7 @@ def _field_errors_of(exc: ValidationError) -> Dict[str, str]:
 
 
 @router.get("/{widget_key}/frame-policy")
-def frame_policy(widget_key: str, request: Request, db: Session = Depends(get_db)) -> dict:
+def frame_policy(widget_key: str, db: Session = Depends(get_db)) -> dict:
     """S4 (AC-WEB-47) - the panel document's `frame-ancestors` CSP source. The
     Next.js middleware (`middleware.ts`) reads this on every
     `/public/webchat/{widgetKey}` request and never renders the panel without
@@ -127,31 +127,27 @@ def frame_policy(widget_key: str, request: Request, db: Session = Depends(get_db
     (plan-11H): unknown/dead widget key -> empty list -> the middleware emits
     `frame-ancestors 'none'`.
 
-    Review round 1 (S8) - two changes, both about cost rather than
-    disclosure:
+    Review round 1 (S8) added a 60s per-widget-key cache
+    (`resolve_frame_policy`), so the common case costs zero DB queries
+    instead of three. **Accepted staleness, not invalidated:** an origin
+    edit, a channel deactivation or a module switch-off can take up to a
+    minute to reach this header. Session start re-reads the live channel row
+    on every call, so a stale allow here never lets anyone actually start a
+    chat from a de-listed site - it only lets that site keep FRAMING the
+    panel for up to a minute.
 
-    1. The lookup is CACHED for 60s per widget key
-       (`resolve_frame_policy`), so the common case costs zero DB queries
-       instead of three. **Accepted staleness, not invalidated:** an origin
-       edit, a channel deactivation or a module switch-off can take up to a
-       minute to reach this header. Session start re-reads the live channel
-       row on every call, so a stale allow here never lets anyone actually
-       start a chat from a de-listed site - it only lets that site keep
-       FRAMING the panel for up to a minute.
-    2. It joins the webchat throttle bucket, but spends a token ONLY on a
-       lookup that went to the database and resolved nothing - i.e. on key
-       enumeration. Legitimate traffic arrives from the Next.js server's
-       single IP, so counting it would let one busy deployment throttle its
-       own panels off the air."""
-    ip = client_ip(request)
-    throttle = ThrottleService(db)
-    try:
-        throttle.enforce_webchat(ip=ip)
-    except Throttled as exc:
-        raise _rate_limited(exc.retry_after_seconds, route="frame-policy", bucket="ip", key=ip)
-    origins, unresolved = resolve_frame_policy(db, widget_key)
-    if unresolved:
-        throttle.record_webchat(ip=ip)
+    Review round 2 (B4) REMOVED the IP throttle S8 also added here. The ONLY
+    caller of this route is the Next.js middleware - a server-to-server call
+    - so counting on the caller's IP counts the Next.js server's ONE address,
+    and an outsider spending 600 distinct-key misses against that shared
+    budget put every tenant's widget behind `frame-ancestors 'none'` at once.
+    The cost problem the throttle was meant to solve is now the cache's job
+    instead: `resolve_frame_policy` bounds `_origins_cache` to a hard entry
+    cap with LRU eviction and gives an unresolved (enumeration) key a SHORTER
+    TTL than a resolved one (S-new-1), so a distinct-key probe can grow the
+    cache but never the database load, and never trips a shared counter that
+    a legitimate caller also spends from."""
+    origins, _unresolved = resolve_frame_policy(db, widget_key)
     return {"allowedOrigins": origins}
 
 

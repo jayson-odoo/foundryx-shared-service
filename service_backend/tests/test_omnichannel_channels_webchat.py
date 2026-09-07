@@ -92,7 +92,7 @@ def test_manifest_version_bumped_and_widget_router_public():
     manifest = json.loads(
         (Path(__file__).resolve().parents[1] / "modules" / "omnichannel" / "manifest.json").read_text()
     )
-    assert manifest["version"] == "0.10.0"
+    assert manifest["version"] == "0.10.1"
     widget = next(r for r in manifest["routers"] if r["name"] == "webchat_widget")
     assert widget["prefix"] == "/omnichannel/widget"
     assert widget["public"] is True

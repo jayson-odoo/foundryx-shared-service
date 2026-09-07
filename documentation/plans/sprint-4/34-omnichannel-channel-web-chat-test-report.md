@@ -309,3 +309,43 @@ each run alone per the lane's memory-pressure rule): `test_omnichannel_webchat_p
 58 tests) all green; `npx eslint` 0 errors on the 12 round-1-touched non-test files (2 pre-existing
 `jsx-a11y` warnings on `composer.tsx`, unrelated categories); `npx tsc --noEmit` 0 errors in any
 plan-34 file. Full detail and live-probe transcripts: `34-evidence/R1/README.md`.
+
+---
+
+## Review round 2 (2026-09-09) - fixes landed
+
+One new blocker introduced by the S8 fix itself, one should-fix on the same seam, and four nits.
+Full live-probe transcripts: `34-evidence/R2/README.md`.
+
+| Finding | What it was | Fix | File(s) | Test(s) |
+|---|---|---|---|---|
+| B4 | `GET .../frame-policy`'s throttle was keyed on the caller's IP - but the route's ONLY caller is the Next.js middleware (a server-to-server call), so every legitimate request AND every attacker probe shared ONE IP. 600 distinct-key misses tripped the shared bucket and put `frame-ancestors 'none'` on EVERY tenant's panel at once | Throttle removed from `frame_policy` entirely; the bounded, split-TTL origins cache (S-new-1) absorbs the enumeration cost instead, with no shared counter one caller can trip on another's behalf. `middleware.ts` now distinguishes "backend answered with no origins" (silent) from "the backend call itself failed" (logged, per-request only - never a shared/poisoned state) | `modules/omnichannel/routers/webchat_public.py`, `service_frontend/middleware.ts` | `tests/test_omnichannel_webchat_frame_policy.py::test_frame_policy_records_no_throttle_rows_ever`, `::test_frame_policy_601_unknown_key_probes_never_break_a_known_good_key`; `service_frontend/middleware.test.ts` (4 new); live-reverified via curl (601-probe loop) + `psql auth_throttle`, `34-evidence/R2/README.md` |
+| S-new-1 | The CORS preflight path reached the same origins lookup through an ASGI middleware with NO throttle at all, an unbounded cache (every distinct widget key ever probed stayed cached forever), and a DB session opened before the cache was even consulted | `_origins_cache` is now a bounded LRU (hard cap 5000, oldest evicted) with a 15s TTL on an unresolved (enumeration-shaped) key vs 60s on a resolved one; both `resolve_frame_policy` and `preflight_origin_allowed` consult the cache before touching a `Session` | `modules/omnichannel/services/webchat_visitor_service.py` | `test_origins_cache_enforces_a_hard_cap_with_lru_eviction`, `test_negative_cache_entry_expires_in_15_seconds_not_60`, `test_preflight_cache_hit_opens_no_db_session` |
+| N-new-1 | The 60s WS re-verify stamped `last_seen_at`, so a visitor who opened the panel and walked away read "Online now" forever | `_authorize` takes a `stamp_presence` flag (default `True`); the background revalidator passes `False`. Connect, message post and the real handshake still stamp | `modules/omnichannel/routers/ws.py` | `tests/test_omnichannel_webchat_outbound.py::test_ws_visitor_revalidation_ticks_do_not_advance_last_seen_at` |
+| N-new-2 | Every visitor socket re-verified on the EXACT same interval with no jitter, so a connection burst re-verified in lockstep every minute | `_jittered_interval` applies +/-20% jitter to `VISITOR_REVERIFY_SECONDS`, computed once per socket at task start (pure function, unit-testable without a live socket) | `modules/omnichannel/routers/ws.py` | `tests/test_omnichannel_ws.py::test_jittered_interval_scales_within_the_documented_band`, `::test_jittered_interval_is_computed_once_per_socket_not_per_tick` |
+| N-new-3 | `app/module_platform/public_cors.py`'s docstring pointed at the wrong file for `PublicCorsMiddleware` (`app/middleware/public_cors.py`, which does not exist) | Corrected to `app/module_platform/public_cors_middleware.py` | `app/module_platform/public_cors.py` | docstring-only, no test |
+| N-new-4 | Migration `0022` added a fifth column while the manifest stayed `0.10.0`, so `update_tenant` never re-runs for a tenant already stamped there | Manifest bumped to `0.10.1`; `update_tenant`'s docstring records the bump as a no-op per tenant (the column already arrived via the module Alembic migration + `create_all` mirror inside `0.10.0`) | `modules/omnichannel/manifest.json`, `modules/omnichannel/bootstrap.py` | The four manifest version-pin tests (`test_omnichannel_channels_webchat.py`, `test_omnichannel_team_assignment.py`, `test_omnichannel_contacts_module.py`, `test_omnichannel_broadcasts.py`) updated to assert `0.10.1` |
+
+**Residual backlog rows added:** BL-SS-185 (unverified pre-chat `name` on `contacts.first_name`/
+`last_name`), BL-SS-186 (honeypot timing oracle), BL-SS-187 (no in-product `visitorProfile`
+promotion action), BL-SS-188 (frame-policy 60s staleness has no cache-bust on widget-config write),
+BL-SS-189 (host identity assertion has no expiry/nonce, single-secret rotation - carried over
+unchanged from round 1's RR3). The sixth residual named in review (WS re-verify interval/jitter/
+write cost) was FIXED in this round (N-new-1/N-new-2 above) rather than backlogged.
+
+**Environment note:** the lane's `.env` (symlinked to the main checkout's) points `DATABASE_URL` at
+the shared `foundryx_service` database, not the dedicated `foundryx_service_s34` this branch also
+has available - pre-existing state, not part of this round's diff. The shared database was several
+migrations behind this branch's head (unrelated pre-existing drift), which was brought current
+(`alembic upgrade head` + `run_module_migrations(engine, "omnichannel")`, both additive/idempotent)
+before restarting `:8014` for live verification. See `34-evidence/R2/README.md` for detail.
+
+**Backend regression this round** (the touched files, each run alone): `test_omnichannel_webchat_
+frame_policy.py` 12, `test_omnichannel_webchat_public.py` 53, `test_omnichannel_webchat_outbound.py`
+16, `test_omnichannel_ws.py` 5, `test_module_platform.py` 17, `test_omnichannel_channels_webchat.py`
+28, `test_omnichannel_contacts_module.py` 38, `test_omnichannel_broadcasts.py` 49,
+`test_omnichannel_team_assignment.py` 34 - **all green, 0 failures** (252 tests across the nine
+files). Frontend: `middleware.test.ts` (new, 4 passed); `npx eslint` 0 errors on
+`middleware.ts`/`middleware.test.ts`. Full detail and live-probe transcripts (601-probe curl loop,
+`psql auth_throttle` zero-rows check, the middleware CSP header for a known vs. unknown widget key):
+`34-evidence/R2/README.md`.

@@ -843,6 +843,14 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     `0022_omni_webchat_profile`), also brand-new and empty-until-used, also
     no backfill: no tenant has ever had a pre-chat submission before it
     existed, so there is nothing to repair.
+
+    0.10.0 -> 0.10.1 (review round 2, N-new-4): no schema or column change at
+    all - the bump exists ONLY so a tenant already stamped `installed_version
+    "0.10.0"` (this branch has never shipped outside it) re-runs this hook
+    once, which is a no-op per tenant for the reason above. Recorded here so
+    "a schema change bumps the version" stays legible to the next reader: the
+    B3 column truly did arrive inside 0.10.0's own migration + `create_all`
+    mirror, this bump is pure discipline, not a missed migration.
     """
     from .repositories.contact_repository import ContactRepository
     from .services import close_reason_service, event_service, lifecycle_service, messaging_policy

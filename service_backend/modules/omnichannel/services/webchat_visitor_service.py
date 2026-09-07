@@ -33,9 +33,10 @@ agents as `ThreadItem.visitorProfile`. See `_apply_pre_chat`.
 import json
 import logging
 import re
+from collections import OrderedDict
 from datetime import datetime, timezone
 from time import monotonic as _monotonic
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 from uuid import uuid4
 
 from fastapi import Request
@@ -144,14 +145,61 @@ def cors_headers_for(
 # S8 (review round 1) - the frame-policy read is on the hot path of EVERY
 # panel request (the Next.js middleware calls it before rendering) and each
 # miss costs three DB queries in `resolve_live_channel`. One process-local
-# entry per widget key, `_ORIGINS_CACHE_TTL_SECONDS` old at most.
-_ORIGINS_CACHE_TTL_SECONDS = 60.0
-_origins_cache: Dict[str, Tuple[float, List[str]]] = {}
+# entry per widget key.
+#
+# S-new-1 (review round 2) - the entry-count was unbounded and every TTL was
+# the same 60s, so a distinct-key enumeration probe (the same shape B4's
+# throttle removal now leans on the cache to absorb) grew the cache without
+# limit and kept every miss "warm" as long as a real hit. Bounded LRU
+# (`_ORIGINS_CACHE_MAX_ENTRIES`, oldest-evicted) caps the memory; an
+# unresolved lookup (unknown/trashed/inactive/module-off/tenant-blocked) gets
+# a SHORTER TTL than a resolved one, so a probe's own footprint clears itself
+# out four times faster than it can be refreshed for free, while a real
+# widget key's positive answer keeps its full 60s of staleness tolerance.
+_ORIGINS_CACHE_POSITIVE_TTL_SECONDS = 60.0
+_ORIGINS_CACHE_NEGATIVE_TTL_SECONDS = 15.0
+_ORIGINS_CACHE_MAX_ENTRIES = 5000
+
+
+class _OriginsCacheEntry(NamedTuple):
+    expires_at: float
+    origins: List[str]
+    unresolved: bool
+
+
+_origins_cache: "OrderedDict[str, _OriginsCacheEntry]" = OrderedDict()
 
 
 def reset_origins_cache() -> None:
     """Test seam / ops escape hatch - drop every cached origin list."""
     _origins_cache.clear()
+
+
+def _cached_frame_policy(widget_key: str) -> Optional[Tuple[List[str], bool]]:
+    """Cache-only read - NEVER touches the database, and never even needs a
+    `Session` to be constructed (S-new-1: `preflight_origin_allowed` consults
+    this before opening one). Returns `None` on a miss or an expired entry
+    (the caller then does the real lookup and re-populates)."""
+    entry = _origins_cache.get(widget_key)
+    if entry is None:
+        return None
+    if _monotonic() >= entry.expires_at:
+        del _origins_cache[widget_key]
+        return None
+    _origins_cache.move_to_end(widget_key)
+    return list(entry.origins), entry.unresolved
+
+
+def _store_frame_policy(widget_key: str, origins: List[str], unresolved: bool) -> None:
+    ttl = (
+        _ORIGINS_CACHE_NEGATIVE_TTL_SECONDS
+        if unresolved
+        else _ORIGINS_CACHE_POSITIVE_TTL_SECONDS
+    )
+    _origins_cache[widget_key] = _OriginsCacheEntry(_monotonic() + ttl, list(origins), unresolved)
+    _origins_cache.move_to_end(widget_key)
+    while len(_origins_cache) > _ORIGINS_CACHE_MAX_ENTRIES:
+        _origins_cache.popitem(last=False)
 
 
 def origins_for_frame_policy(db: Session, widget_key: str) -> List[str]:
@@ -163,16 +211,17 @@ def origins_for_frame_policy(db: Session, widget_key: str) -> List[str]:
     so it stays uniform-by-shape rather than uniform-by-status-code) and a
     read-only lookup, zero DB writes.
 
-    Cached for `_ORIGINS_CACHE_TTL_SECONDS` per widget key (review round 1,
-    S8). ACCEPTED STALENESS, documented rather than invalidated: an origin
-    added/removed in the dashboard, a channel deactivated, or the module
-    turned off can take up to a minute to reach the panel's
-    `frame-ancestors` header (and the preflight echo that shares this
-    lookup). Nothing security-critical rides on it alone - session start
-    re-reads the LIVE channel row on every call and answers an off-list
-    origin with the uniform 404 regardless of what this cache says, so the
-    worst case is a panel that a just-removed site can still FRAME for up to
-    60s without being able to start a session inside it."""
+    Cached for `_ORIGINS_CACHE_POSITIVE_TTL_SECONDS` per widget key (review
+    round 1, S8; bounded + split-TTL in review round 2, S-new-1). ACCEPTED
+    STALENESS, documented rather than invalidated: an origin added/removed in
+    the dashboard, a channel deactivated, or the module turned off can take
+    up to a minute to reach the panel's `frame-ancestors` header (and the
+    preflight echo that shares this lookup). Nothing security-critical rides
+    on it alone - session start re-reads the LIVE channel row on every call
+    and answers an off-list origin with the uniform 404 regardless of what
+    this cache says, so the worst case is a panel that a just-removed site
+    can still FRAME for up to 60s without being able to start a session
+    inside it."""
     return resolve_frame_policy(db, widget_key)[0]
 
 
@@ -213,8 +262,13 @@ def preflight_origin_allowed(path: str, origin: str) -> bool:
     This is NOT the authorization boundary: `start_session` re-reads the LIVE
     channel row on every call and answers an off-list origin with the uniform
     404 regardless. Refusing here only stops the browser sending the real
-    request at all. The lookup rides the same 60s per-widget-key cache the
-    frame-policy route uses, so a repeated preflight costs no query."""
+    request at all. The lookup rides the same bounded per-widget-key cache
+    the frame-policy route uses, so a repeated preflight costs no query.
+
+    S-new-1 (review round 2): the cache is consulted FIRST, before a DB
+    `Session` is even constructed - this runs on the ASGI middleware's hot
+    path for every preflight, so a cache hit (the overwhelming majority once
+    warm) opens no session and checks out no pooled connection at all."""
     if not origin:
         return False
     if origin == panel_origin():
@@ -222,11 +276,17 @@ def preflight_origin_allowed(path: str, origin: str) -> bool:
     widget_key = path[len(WEBCHAT_PUBLIC_PREFIX):].split("/", 1)[0]
     if not widget_key:
         return False
+    cached = _cached_frame_policy(widget_key)
+    if cached is not None:
+        origins, _unresolved = cached
+        return origin in origins
+
     from app.database import SessionLocal
 
     db = (_preflight_session_factory or SessionLocal)()
     try:
-        return origin in origins_for_frame_policy(db, widget_key)
+        origins, _unresolved = resolve_frame_policy(db, widget_key)
+        return origin in origins
     finally:
         db.close()
 
@@ -237,16 +297,16 @@ def resolve_frame_policy(db: Session, widget_key: str) -> Tuple[List[str], bool]
 
     `unresolved_miss` is True only when this call actually went to the
     database AND the widget key resolved to nothing (unknown / trashed /
-    inactive / module off / tenant blocked). That is precisely the shape of
-    a key-enumeration probe, and it is the ONLY case the route spends a
-    throttle token on (review round 1, S8): the Next.js middleware calls
-    this route server-side on every panel request, so ALL legitimate traffic
-    arrives from ONE IP - counting it would let a busy deployment throttle
-    its own panels off the air."""
-    now = _monotonic()
-    hit = _origins_cache.get(widget_key)
-    if hit is not None and now - hit[0] < _ORIGINS_CACHE_TTL_SECONDS:
-        return list(hit[1]), False
+    inactive / module off / tenant blocked) - precisely the shape of a
+    key-enumeration probe. Review round 2 (B4/S-new-1): nothing spends a
+    throttle token on this anymore (the route-level IP throttle was removed
+    - it counted the Next.js middleware's own shared IP, not the attacker);
+    the bounded cache with a shorter negative TTL is what keeps an
+    enumeration probe cheap instead. The cache is consulted before `db` is
+    touched at all, so a warm hit runs zero queries."""
+    cached = _cached_frame_policy(widget_key)
+    if cached is not None:
+        return cached
     try:
         channel = resolve_live_channel(db, widget_key)
     except WebchatNotFound:
@@ -255,7 +315,7 @@ def resolve_frame_policy(db: Session, widget_key: str) -> Tuple[List[str], bool]
     else:
         origins = _allowed_origins(channel)
         unresolved = False
-    _origins_cache[widget_key] = (now, list(origins))
+    _store_frame_policy(widget_key, origins, unresolved)
     return list(origins), unresolved
 
 

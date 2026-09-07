@@ -19,15 +19,31 @@ export const config = {
   matcher: ['/embed/omnichannel/:path*', '/public/webchat/:widgetKey*'],
 };
 
+/**
+ * Review round 2 (B4) - a THIS-REQUEST-ONLY fail-closed result, never a
+ * cached/shared one: every call is independent, so one caller's failure can
+ * never widen the blast radius to another widget key's request. The two
+ * failure shapes are logged distinctly so an operator can tell "the backend
+ * genuinely has no origins for this key" (silent - not an error, the normal
+ * shape for an unknown key) from "the backend call itself failed" (a 5xx, a
+ * 429, or a network error - logged, since a healthy caller answering 200
+ * with an empty list is indistinguishable from an unreachable backend
+ * without this).
+ */
 async function fetchAllowedOrigins(url: string): Promise<string[]> {
+  let response: Response;
   try {
-    const r = await fetch(url, { headers: { accept: 'application/json' } });
-    if (!r.ok) return [];
-    const body = (await r.json()) as { allowedOrigins?: string[] };
-    return Array.isArray(body.allowedOrigins) ? body.allowedOrigins : [];
-  } catch {
+    response = await fetch(url, { headers: { accept: 'application/json' } });
+  } catch (err) {
+    console.warn(`webchat frame-policy fetch failed (network): ${url}`, err);
     return [];
   }
+  if (!response.ok) {
+    console.warn(`webchat frame-policy fetch failed: ${url} status=${response.status}`);
+    return [];
+  }
+  const body = (await response.json()) as { allowedOrigins?: string[] };
+  return Array.isArray(body.allowedOrigins) ? body.allowedOrigins : [];
 }
 
 export async function middleware(req: NextRequest): Promise<NextResponse> {

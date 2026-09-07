@@ -10,8 +10,8 @@ Rather than teaching core a module's path (which is what the first cut of this
 did - a hardcoded `/public/omnichannel/webchat/` constant in `app/main.py`),
 the MODULE registers its prefix plus a resolver at boot, exactly like
 `register_capability`. Core keeps zero knowledge of any module's routes; the
-generic `PublicCorsMiddleware` (`app/middleware/public_cors.py`) walks this
-registry.
+generic `PublicCorsMiddleware` (`app/module_platform/public_cors_middleware.py`)
+walks this registry.
 
 Contract for a provider:
 

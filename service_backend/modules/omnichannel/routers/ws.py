@@ -16,6 +16,7 @@ fail-closed chokepoint the REST reads use (AC-WEB-38/39, R1/R2).
 import asyncio
 import json
 import logging
+import random
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -78,6 +79,16 @@ def set_visitor_reverify_seconds(seconds: float) -> None:
     VISITOR_REVERIFY_SECONDS = seconds
 
 
+# Review round 2 (N-new-2) - a socket that connects in the same burst as a
+# thousand others must not all re-verify (5+ queries plus an UPDATE/COMMIT)
+# in lockstep every `VISITOR_REVERIFY_SECONDS`. A pure function (rather than
+# inlining `random.uniform` in the loop) so it is unit-testable and so
+# "computed once per socket" is enforced by call-site discipline: it is
+# called exactly once, before `revalidate_visitor`'s `while True` starts.
+def _jittered_interval(seconds: float) -> float:
+    return seconds * random.uniform(0.8, 1.2)
+
+
 _async_client = None
 # Session factory seam: the WS handshake runs outside FastAPI's dependency
 # system, so tests inject their sqlite session factory here.
@@ -102,13 +113,24 @@ def set_async_redis(client) -> None:
     _async_client = client
 
 
-def _authorize(token: str, workspace_id: str) -> Optional[WsPrincipal]:
+def _authorize(
+    token: str, workspace_id: str, *, stamp_presence: bool = True
+) -> Optional[WsPrincipal]:
     """Resolve + authorize the WS caller synchronously. Returns `None` when
     the caller is not authorized (callers close the socket with 4403).
 
     Accepts the native staff JWT, an omnichannel embed access token
     (``typ="embed"``, plan 11H Slice 3), and a web chat visitor token
-    (``typ="webchat"``, plan 34 / A7b S3)."""
+    (``typ="webchat"``, plan 34 / A7b S3).
+
+    `stamp_presence` (review round 2, N-new-1) gates ONLY the visitor
+    branch's `stamp_last_seen` side effect. The initial handshake and every
+    real client-originated event (connect, message post) still stamp; the
+    periodic background re-verification (`revalidate_visitor`) passes
+    `stamp_presence=False` so a visitor who opens the panel and walks away
+    stops reading as "Online now" forever - the marker is meant to decay to
+    "Last seen ..." once nobody is actually there, and a timer that is not a
+    real presence signal must not keep refreshing it."""
     db = _session_factory()
     try:
         try:
@@ -208,7 +230,8 @@ def _authorize(token: str, workspace_id: str) -> Optional[WsPrincipal]:
                 # D-A7B-16) covers a visitor who opens the panel before their
                 # first message, and the panel reconnects once one exists.
                 return None
-            stamp_last_seen(db, channel.id, claims.identity_key)  # AC-WEB-42
+            if stamp_presence:
+                stamp_last_seen(db, channel.id, claims.identity_key)  # AC-WEB-42
             return WsPrincipal(
                 principal_id=claims.identity_key,
                 scope_contact_id=identity.contact_id,
@@ -340,12 +363,24 @@ async def conversation_socket(
         tenant, and the tenant's own `signin_allowed`. `_authorize` IS all of
         those checks (never a second, drifting copy), so this returns exactly
         when the connection has stopped being authorized and the caller
-        closes 4403. Its `stamp_last_seen` side effect keeps a long-lived
-        panel's presence marker honest, which is the behaviour AC-WEB-42
-        wants anyway."""
+        closes 4403.
+
+        Review round 2 (N-new-1): this call passes `stamp_presence=False` -
+        a timer firing is not a person being present, so it must not refresh
+        `last_seen_at` (the real client actions - connect, message post -
+        still do that, via `_authorize`'s default).
+
+        Review round 2 (N-new-2): the interval carries +/-20% jitter,
+        computed ONCE per socket (not per tick), so a burst of sockets that
+        all connected in the same second do not all re-verify - and all hit
+        the executor and the database - in lockstep every minute."""
+        interval = _jittered_interval(VISITOR_REVERIFY_SECONDS)
         while True:
-            await asyncio.sleep(VISITOR_REVERIFY_SECONDS)
-            if await asyncio.to_thread(_authorize, token, workspace_id) is None:
+            await asyncio.sleep(interval)
+            authorized = await asyncio.to_thread(
+                _authorize, token, workspace_id, stamp_presence=False
+            )
+            if authorized is None:
                 return
 
     forward = asyncio.create_task(forward_events())

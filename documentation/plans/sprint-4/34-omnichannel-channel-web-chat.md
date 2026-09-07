@@ -380,6 +380,12 @@ which are the inbound stitch keys (D-A7B-8 as amended). Read-only on the agent s
 (`ThreadItem.visitorProfile`, and both gateway shapes); nothing anywhere looks a contact up by
 them.
 
+Review round 2 (N-new-4): the manifest bumped `0.10.0 -> 0.10.1` even though this slice's own
+schema was already complete at `0.10.0` (the B3 column above shipped inside it). The bump is
+pure `update_tenant` discipline, not a missed migration - it exists so a tenant already stamped
+`installed_version "0.10.0"` (this branch never shipped outside it) still re-runs the hook once;
+`update_tenant`'s own docstring records the no-op reasoning at the `0.10.0 -> 0.10.1` entry.
+
 ### 5.5 The window policy row and the third `authorize` branch
 
 ```python
@@ -581,6 +587,17 @@ control that exists.
 | RR4 | The dev seed ships a FIXED widget key and widget secret; a promoted dev database would carry a publicly-known identity-assertion signing key | Dev-gated on `settings.environment == "development"` in both `init_db` and `bootstrap_db`, matching the `chn-demo` precedent. Promoting a dev database to production is already a much larger incident than this |
 | RR5 | `GET /frame-policy` discloses a customer's exact allowed-origins list to anyone holding the widget key | Mirrors the plan-11H embed precedent. The list is not a secret: it is a set of public website origins, and the panel cannot render without the header |
 | RR6 | A tab left open past the token's 30-day expiry can never renew - only the LOADER mints, and it only runs on page load. The visitor sees "Could not send your message" until they reload | Decided deliberately in the BL-SS-183 fix (the loader owns minting, which is the whole reason the origin check became decidable). Backlogged as **BL-SS-184** rather than fixed here: a renewal path from inside the panel would need a second minting route whose origin check is undecidable again |
+
+### Review round 2 fixes accepted (2026-09-09)
+
+| Id | Finding | Fix |
+|---|---|---|
+| B4 | The frame-policy IP throttle counted the Next.js middleware's ONE shared server IP; an outsider spending 600 distinct-key misses tripped it and put `frame-ancestors 'none'` on every tenant at once | The throttle is REMOVED from `GET .../frame-policy` entirely; the bounded, split-TTL origins cache (S-new-1) absorbs the same enumeration cost without a shared counter any caller can trip on another caller's behalf |
+| S-new-1 | The CORS preflight path reached the same lookup through an ASGI middleware with no throttle, an unbounded cache, and a DB session opened before the cache was even consulted | `_origins_cache` is now a bounded LRU (hard cap 5000, oldest evicted) with a 15s TTL on an unresolved (enumeration) key vs 60s on a resolved one; both `resolve_frame_policy` and `preflight_origin_allowed` check the cache before touching a `Session` |
+| N-new-1 | The 60s WS re-verify stamped `last_seen_at`, so a visitor who opened the panel and walked away read "Online now" forever | `_authorize` takes `stamp_presence` (default `True`); the background revalidator passes `False`. Connect, message post and the real handshake still stamp |
+| N-new-2 | Every visitor socket re-verified on the exact same interval with no jitter, so a connection burst re-verified in lockstep | The revalidator applies +/-20% jitter to `VISITOR_REVERIFY_SECONDS`, computed once per socket at task start |
+| N-new-3 | `app/module_platform/public_cors.py`'s docstring pointed at the wrong file for `PublicCorsMiddleware` | Corrected to `app/module_platform/public_cors_middleware.py` |
+| N-new-4 | Migration `0022` added a fifth column while the manifest stayed `0.10.0`, so `update_tenant` never re-runs for a tenant already stamped there | Manifest bumped to `0.10.1`; `update_tenant`'s docstring records the bump as a no-op per tenant (the column already arrived via the module Alembic migration + `create_all` mirror inside `0.10.0`) |
 
 ## 8. Backlog candidates (register on close; provisional ids from BL-SS-160)
 

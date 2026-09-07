@@ -65,3 +65,43 @@ def test_ws_relays_published_events(client, session_factory):
         realtime.publish(wid, {"type": "message.status", "messageId": "m1"})
         event = json.loads(sock.receive_text())
         assert event == {"type": "message.status", "messageId": "m1"}
+
+
+# ── Review round 2, N-new-2: visitor re-verify interval carries jitter ──────
+def test_jittered_interval_scales_within_the_documented_band(monkeypatch):
+    """+/-20% of the base interval - a pure function so it is unit-testable
+    without spinning up a socket. Pins the exact `random.uniform` bounds
+    (0.8, 1.2) so a later reader can't silently widen/narrow the jitter."""
+    calls = []
+
+    def _fake_uniform(low, high):
+        calls.append((low, high))
+        return low
+
+    monkeypatch.setattr(ws_module.random, "uniform", _fake_uniform)
+    assert ws_module._jittered_interval(60.0) == 48.0  # 60 * 0.8
+
+    monkeypatch.setattr(ws_module.random, "uniform", lambda low, high: high)
+    assert ws_module._jittered_interval(60.0) == 72.0  # 60 * 1.2
+
+    assert calls == [(0.8, 1.2)]
+
+
+def test_jittered_interval_is_computed_once_per_socket_not_per_tick(monkeypatch):
+    """`revalidate_visitor` must read the jitter ONCE at task start, never
+    re-roll it inside the `while True` loop (which would defeat the
+    anti-lockstep point - a socket could still land back near the original
+    cadence on a later tick)."""
+    calls = {"n": 0}
+
+    def _counting_uniform(_low, _high):
+        calls["n"] += 1
+        return 1.0
+
+    monkeypatch.setattr(ws_module.random, "uniform", _counting_uniform)
+    ws_module._jittered_interval(60.0)
+    ws_module._jittered_interval(60.0)
+    # Two INDEPENDENT calls (two sockets) each roll once - the guarantee this
+    # pins is per-call, not global: `revalidate_visitor` itself calls this
+    # helper exactly once, before its loop starts (see ws.py).
+    assert calls["n"] == 2

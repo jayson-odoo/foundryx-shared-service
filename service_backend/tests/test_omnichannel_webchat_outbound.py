@@ -10,6 +10,7 @@ isolation, staff-PII exclusion), and `last_seen_at`/`visitorLastSeenAt`
 presence stamped on session start / message post / WS connect.
 """
 import json
+import time
 from urllib.parse import urlsplit
 
 import fakeredis
@@ -506,6 +507,37 @@ def test_ws_staff_socket_is_not_revalidated_on_a_timer(client, session_factory, 
             assert frame["type"] == "message.created"
     finally:
         ws_module.set_visitor_reverify_seconds(60.0)
+
+
+# ── Review round 2, N-new-1: revalidation must NOT stamp presence ───────────
+def test_ws_visitor_revalidation_ticks_do_not_advance_last_seen_at(
+    client, session_factory, _fake_redis
+):
+    """The periodic background re-verification is a TIMER firing, not a real
+    person being present - it must not refresh `last_seen_at` (the marker
+    would otherwise read "Online now" forever for a visitor who opened the
+    panel and walked away). The connect-time authorization still stamps (a
+    real client action); only the RECURRING revalidation ticks after it must
+    not."""
+    _wk, channel_id, workspace_id, visitor_id, token, _contact_id = _bootstrap_thread(
+        client, session_factory, name="N-new-1 Presence"
+    )
+
+    ws_module.set_visitor_reverify_seconds(0.05)
+    try:
+        with client.websocket_connect(
+            f"/omnichannel/ws?workspaceId={workspace_id}&token={token}"
+        ):
+            time.sleep(0.1)  # let the connect-time stamp land
+            after_connect = _identity_for(session_factory, channel_id, visitor_id).last_seen_at
+            assert after_connect is not None
+
+            time.sleep(0.5)  # several revalidation ticks at ~0.05s (+/-20% jitter)
+            after_ticks = _identity_for(session_factory, channel_id, visitor_id).last_seen_at
+    finally:
+        ws_module.set_visitor_reverify_seconds(60.0)
+
+    assert after_ticks == after_connect
 
 
 # ── AC-WEB-42: last_seen_at / visitorLastSeenAt presence ────────────────────
