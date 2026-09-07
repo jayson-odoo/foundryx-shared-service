@@ -325,6 +325,41 @@ class RespondIoClient:
             "POST", "/contact/list", json_body=body, limit=limit, start_cursor=start_cursor
         )
 
+    # ── S3 - identities + message history (AC-MIG-30/32, plan §5.1) ─────────
+
+    def get_contact(self, identifier: str) -> Dict[str, Any]:
+        """``GET /contact/{identifier}`` - a targeted re-fetch (plan §5.1's
+        own "used for" note), consumed by the messages phase purely for the
+        source ``contact.created_at`` D-A6-9 fallback. A single-resource GET,
+        so (unlike every list call) this is NOT the ``{items,pagination}``
+        envelope - the object comes back bare."""
+        return self._request("GET", f"/contact/{identifier}")
+
+    def get_contact_channels(self, identifier: str) -> List[Dict[str, Any]]:
+        """``GET /contact/{identifier}/channels`` (AC-MIG-30) - the plan's own
+        contract table lists no pagination for this call (a contact's channel
+        count is small and bounded, unlike its message history), but every
+        OTHER list call in this API answers the same ``{items,...}`` envelope,
+        so this reads through the same envelope for consistency (S1's own
+        risk note: a shape mismatch is a fix here, not a redesign)."""
+        data = self._request("GET", f"/contact/{identifier}/channels")
+        return list(data.get("items") or [])
+
+    def list_messages_pages(
+        self,
+        identifier: str,
+        *,
+        limit: int = 100,
+        start_cursor: Optional[str] = None,
+    ) -> Iterator[tuple]:
+        """``GET /contact/{identifier}/message/list`` (AC-MIG-32), PAGE-
+        granular - mirrors ``list_contacts_pages`` exactly (yields
+        ``(items, next_cursor)`` so the messages phase can checkpoint and
+        crash-resume mid-contact)."""
+        return self._paginated_pages(
+            "GET", f"/contact/{identifier}/message/list", limit=limit, start_cursor=start_cursor
+        )
+
 
 def _clamp_rps(value: float) -> float:
     try:

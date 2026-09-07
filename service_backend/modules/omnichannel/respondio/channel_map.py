@@ -14,7 +14,9 @@ fabricated/guessed target type would silently misroute a real channel, which
 is worse than an honest skip (BL-SS-129 - re-verify this map against the
 vendor's live catalog on a schedule).
 """
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
+
+from ..phone import digits_only
 
 # Every respond.io ``ChannelSource`` value documented in the plan's §5.1
 # contract (mirrors the vendor SDK's ``src/types/common.ts``). Kept as a plain
@@ -74,3 +76,55 @@ def target_channel_type_for(source: str) -> Optional[str]:
     """The Foundryx ``channel_type`` a source value maps to, or ``None`` when
     it has no compatible target (D-A6-10)."""
     return SOURCE_TO_CHANNEL_TYPE.get(source)
+
+
+# ── S3 identity derivation (AC-MIG-30, D-A6-10) ─────────────────────────────
+#
+# The vendor's ``ContactChannel`` shape (plan §5.1) has no dedicated "external
+# user id" field - only a free-form ``meta`` bag, so the real per-channel
+# identifier has to be read out of it defensively per source family. Adding a
+# NEW compatible source (e.g. A7a's Messenger/Instagram) is ONE dict row here,
+# same as ``SOURCE_TO_CHANNEL_TYPE`` above - no schema change either way. A
+# source with no row here (or one whose row returns ``None`` for a given
+# contact) is SKIPPED and reported (never a fabricated id - D-A6-10) because a
+# fabricated ``external_user_id`` would poison the LIVE inbound stitch
+# (``inbound_service._resolve_contact`` / ``ContactRepository.find_identity``).
+_WHATSAPP_META_KEYS = ("phone", "wa_id", "waId", "number", "identifier")
+
+
+def _derive_whatsapp(meta: Optional[Dict[str, Any]], contact_phone: Optional[str]) -> Optional[str]:
+    """WhatsApp identity = the phone number, normalized to digits (the SAME
+    normalization the live stitch uses - ``phone.digits_only``, D-A6-10's
+    "WhatsApp now: phone -> phone_digits"). Prefers a per-channel value out of
+    ``meta`` (a contact can carry more than one WhatsApp channel, e.g. two
+    BSPs) and falls back to the contact's own ``phone`` only when ``meta``
+    carries none of the candidate keys."""
+    raw = None
+    for key in _WHATSAPP_META_KEYS:
+        candidate = (meta or {}).get(key)
+        if candidate:
+            raw = candidate
+            break
+    if not raw:
+        raw = contact_phone
+    digits = digits_only(str(raw)) if raw else ""
+    return digits or None
+
+
+# sourceChannelType (the SOURCE_TO_CHANNEL_TYPE value) -> deriver function.
+# Only WhatsApp is wired today (D-A6-10); a future channel family plugs in
+# with one more row, no schema change.
+IDENTITY_DERIVERS: Dict[str, Any] = {
+    "WHATSAPP": _derive_whatsapp,
+}
+
+
+def derive_external_user_id(
+    target_channel_type: str, meta: Optional[Dict[str, Any]], contact_phone: Optional[str]
+) -> Optional[str]:
+    """Real external id for a mapped channel, or ``None`` when it cannot be
+    derived (AC-MIG-30) - the caller must SKIP (never fabricate) on ``None``."""
+    deriver = IDENTITY_DERIVERS.get(target_channel_type)
+    if deriver is None:
+        return None
+    return deriver(meta, contact_phone)

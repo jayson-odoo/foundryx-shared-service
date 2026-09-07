@@ -34,10 +34,14 @@ from app.secrets import decrypt_secret
 from app.status_engine.scoped import get_scope_status
 
 from ..models import Channel
+from ..models import Contact as ContactModel
 from ..repositories.migration_connection_repository import MigrationConnectionRepository
+from ..repositories.migration_ref_repository import MigrationRefRepository
 from ..respondio.channel_map import target_channel_type_for
 from ..respondio.client import RespondIoClient, RespondIoError
 from ..respondio.shapes import Contact, CustomField, SpaceChannel, SpaceUser
+from ..respondio.shapes import ContactChannel as SourceContactChannel
+from ..respondio.shapes import MessageItem as SourceMessageItem
 from ..schemas import (
     MigrationJobCreate,
     MigrationJobItem,
@@ -53,7 +57,12 @@ from ..schemas import (
 )
 from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
 from .lifecycle_service import initial_status_id, stages_for_workspace
-from .migration_writer import MigrationWriter
+from .migration_writer import (
+    ENTITY_CONTACT,
+    ENTITY_MESSAGE,
+    MigrationWriter,
+    resolve_message_timestamps,
+)
 from .statuses import status_id_for
 from .workspace_service import WorkspaceNotFound, WorkspaceService
 
@@ -65,6 +74,15 @@ MIGRATION_JOB_TYPE = "omnichannel.respondio_migration"
 # `dry_run` of the SAME mapping inside this window.
 DRY_RUN_TTL_HOURS = 24
 CONTACTS_PAGE_LIMIT = 100
+MESSAGES_PAGE_LIMIT = 100
+# S3's identities/messages phases checkpoint PER CONTACT (D-A6-9's timestamp
+# interpolation needs a whole contact's message history bracketed together,
+# so buffering per-contact is a deliberate deviation from the plan's
+# suggested per-API-page granularity for THESE two phases only - the contacts
+# phase above still checkpoints per respond.io page). This constant is only
+# how many `migration_refs` rows are pulled per DB round-trip while walking
+# that per-contact loop, not the checkpoint unit itself.
+CONTACT_REF_BATCH = 25
 MAX_REPORT_SAMPLES = 10
 MAX_FAILURE_ROWS_KEPT = 5000  # bounds background_jobs.result_json size (S3+ note below)
 
@@ -347,10 +365,19 @@ def _zero_counts() -> Dict[str, int]:
     return {"fetched": 0, "wouldCreate": 0, "wouldUpdate": 0, "wouldSkip": 0, "errors": 0}
 
 
-def _build_report(counts: Dict[str, Any], samples: List[dict], lifecycle_unmapped: int) -> dict:
+def _build_report(
+    counts: Dict[str, Any],
+    samples: List[dict],
+    lifecycle_unmapped: int,
+    *,
+    messages_with_inferred: int = 0,
+    message_samples: Optional[List[dict]] = None,
+) -> dict:
     contacts_c = counts.get("contacts") or {}
     fields_c = counts.get("fields") or {}
     tags_c = counts.get("tags") or {}
+    identities_c = counts.get("identities") or {}
+    messages_c = counts.get("messages") or {}
     blockers: List[str] = []
     if lifecycle_unmapped:
         blockers.append(
@@ -380,17 +407,90 @@ def _build_report(counts: Dict[str, Any], samples: List[dict], lifecycle_unmappe
                 "wouldSkip": tags_c.get("matched", 0),
                 "errors": 0,
             },
-            # S3/S4 phases - genuinely zero in S2 (never walked this run).
-            "identities": _zero_counts(),
-            "messages": _zero_counts(),
+            # S3 - real counts when the identities/messages phases ran this
+            # job (contactsOnly=False); genuinely zero for a contacts-only run
+            # (S2's own shape, never walked).
+            "identities": {
+                "fetched": identities_c.get("fetched", 0),
+                "wouldCreate": identities_c.get("create", 0),
+                "wouldUpdate": identities_c.get("update", 0),
+                "wouldSkip": identities_c.get("skip", 0),
+                "errors": identities_c.get("errors", 0),
+            },
+            "messages": {
+                "fetched": messages_c.get("fetched", 0),
+                "wouldCreate": messages_c.get("create", 0),
+                "wouldUpdate": 0,
+                "wouldSkip": messages_c.get("skip", 0),
+                "errors": messages_c.get("errors", 0),
+            },
+            # S4 phases - genuinely zero in S3 (never walked this run).
             "media": _zero_counts(),
             "events": _zero_counts(),
             "quickReplies": _zero_counts(),
         },
-        "messagesWithInferredTimestamp": 0,
+        "messagesWithInferredTimestamp": messages_with_inferred,
         "blockers": blockers,
-        "samples": {"contacts": samples, "messages": []},
+        "samples": {"contacts": samples, "messages": message_samples or []},
     }
+
+
+def _resolve_channel_map(
+    db: Session, tenant_id: str, workspace_id: str, payload: Dict[str, Any]
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """``sourceChannelId(str) -> targetChannelId(str)``, re-validated tenant +
+    workspace scoped AT USE TIME (AC-MIG-51) - a channel deleted or moved
+    between save and run silently drops out of the map rather than crashing
+    the run. Also returns ``targetChannelId -> channel_type`` - the identity
+    deriver (D-A6-10) keys off the TARGET's real, current type, not whatever
+    the source declared at setup time."""
+    target_ids = {
+        str(entry.get("targetChannelId"))
+        for entry in payload.get("channelMap") or []
+        if entry.get("targetChannelId")
+    }
+    channel_type_by_target: Dict[str, str] = {}
+    if target_ids:
+        rows = (
+            db.query(Channel.id, Channel.channel_type)
+            .filter(
+                Channel.tenant_id == tenant_id,
+                Channel.workspace_id == workspace_id,
+                Channel.id.in_(target_ids),
+                Channel.is_trashed.is_(False),
+            )
+            .all()
+        )
+        channel_type_by_target = {r[0]: r[1] for r in rows}
+    channel_map: Dict[str, str] = {}
+    for entry in payload.get("channelMap") or []:
+        source_id = str(entry.get("sourceChannelId") or "")
+        target_id = entry.get("targetChannelId")
+        if source_id and target_id and target_id in channel_type_by_target:
+            channel_map[source_id] = target_id
+    return channel_map, channel_type_by_target
+
+
+def _resolve_user_map(db: Session, tenant_id: str, payload: Dict[str, Any]) -> Dict[str, str]:
+    """``sourceUserId(str) -> targetUserId(str)``, re-validated tenant-scoped
+    at USE time (AC-MIG-51/32) - consumed ONLY by the messages phase's sender
+    mapping; the contacts phase's assignee resolution is email-only and never
+    touches this map (D-A6-26)."""
+    target_ids = {
+        str(entry.get("targetUserId")) for entry in payload.get("userMap") or [] if entry.get("targetUserId")
+    }
+    valid_ids: set = set()
+    if target_ids:
+        valid_ids = {
+            r[0] for r in db.query(User.id).filter(User.tenant_id == tenant_id, User.id.in_(target_ids)).all()
+        }
+    user_map: Dict[str, str] = {}
+    for entry in payload.get("userMap") or []:
+        source_id = str(entry.get("sourceUserId") or "")
+        target_id = entry.get("targetUserId")
+        if source_id and target_id and target_id in valid_ids:
+            user_map[source_id] = target_id
+    return user_map
 
 
 def _aborted(db: Session, job_id: str) -> bool:
@@ -609,6 +709,7 @@ class MigrationService:
         cursor = job.cursor_json or {}
         counts = cursor.get("counts") or {}
         contacts_counts = counts.get("contacts") or {}
+        messages_counts = counts.get("messages") or {}
         result = job.result_json or {}
         report = result.get("report")
         failures = result.get("failures") or {}
@@ -638,7 +739,10 @@ class MigrationService:
             progressTotal=job.progress_total,
             progressDone=job.progress_done,
             progressFailed=job.progress_failed,
-            entityCounts={"contacts": contacts_counts.get("fetched", 0), "messages": 0},
+            entityCounts={
+                "contacts": contacts_counts.get("fetched", 0),
+                "messages": messages_counts.get("fetched", 0),
+            },
             report=report,
             failureCount=failures.get("rowCount", len(failure_rows)),
             failureSample=failure_rows[:50],
@@ -661,22 +765,202 @@ class MigrationService:
 # ── job handler (registered via register_job_handler, plan §5.2/§2.1) ──────
 
 
+def _process_contact_identities(
+    client: RespondIoClient,
+    writer: MigrationWriter,
+    contact_local_id: str,
+    contact_external_id: str,
+    channel_map: Dict[str, str],
+    channel_type_by_target: Dict[str, str],
+    contact_phone: Optional[str],
+    identity_counts: Dict[str, int],
+    failures: List[dict],
+) -> None:
+    """One contact's channel-identity walk (AC-MIG-30). Shared by the real
+    per-ref "identities" phase (walks `migration_refs`, resumable across a
+    crash) AND the dry-run inline preview inside the contacts loop (D-A6-14:
+    ONE code path - only the caller's transaction scope and iteration source
+    differ, never the write logic itself)."""
+    try:
+        raw_channels = client.get_contact_channels(f"id:{contact_external_id}")
+    except RespondIoError as exc:
+        identity_counts["errors"] = identity_counts.get("errors", 0) + 1
+        failures.append(
+            {
+                "entity": "identities", "sourceId": contact_external_id, "sourceLabel": "",
+                "reason": exc.message, "action": "skipped",
+            }
+        )
+        return
+    for raw_channel in raw_channels:
+        try:
+            source_channel = SourceContactChannel(**raw_channel)
+        except Exception as exc:  # noqa: BLE001 - malformed vendor row, never abort the job
+            identity_counts["fetched"] += 1
+            identity_counts["errors"] = identity_counts.get("errors", 0) + 1
+            failures.append(
+                {
+                    "entity": "identities", "sourceId": contact_external_id, "sourceLabel": "",
+                    "reason": f"malformed channel payload: {exc}", "action": "skipped",
+                }
+            )
+            continue
+        target_channel_id = channel_map.get(str(source_channel.id))
+        if target_channel_id is None:
+            continue  # unmapped source channel - not counted (an operator choice, not a failure)
+        identity_counts["fetched"] += 1
+        outcome = writer.write_identity(
+            contact_local_id, contact_external_id, source_channel, target_channel_id,
+            channel_type_by_target.get(target_channel_id, ""), contact_phone,
+        )
+        if outcome.kind == "skip":
+            identity_counts["skip"] = identity_counts.get("skip", 0) + 1
+            failures.append(
+                {
+                    "entity": "identities", "sourceId": contact_external_id,
+                    "sourceLabel": source_channel.name or "", "reason": outcome.reason or "",
+                    "action": "skipped",
+                }
+            )
+        else:
+            identity_counts[outcome.kind] = identity_counts.get(outcome.kind, 0) + 1
+
+
+def _process_contact_messages(
+    client: RespondIoClient,
+    writer: MigrationWriter,
+    refs: MigrationRefRepository,
+    tenant_id: str,
+    workspace_id: str,
+    local_contact: ContactModel,
+    contact_external_id: str,
+    channel_map: Dict[str, str],
+    user_map: Dict[str, str],
+    message_counts: Dict[str, int],
+    failures: List[dict],
+    message_samples: List[dict],
+) -> int:
+    """One contact's FULL message-history walk - buffered, sorted by
+    `messageId`, timestamp-resolved as ONE unit (D-A6-9 needs the whole
+    contact's history bracketed together). Shared by the real per-ref
+    "messages" phase AND the dry-run inline preview. Returns the number of
+    NEWLY inferred timestamps this call added (a plain `int` return, not a
+    shared counter - the caller accumulates it)."""
+    identifier = f"id:{contact_external_id}"
+    # D-A6-9's third fallback branch needs the SOURCE contact's own
+    # `created_at` (a targeted re-fetch, plan §5.1) - falls back to the LOCAL
+    # row's `created_at` only if even that call fails, rather than skipping
+    # the contact's history outright.
+    fallback_dt = local_contact.created_at
+    try:
+        raw_contact = client.get_contact(identifier)
+        source_created_at = raw_contact.get("created_at")
+        if source_created_at is not None:
+            fallback_dt = datetime.fromtimestamp(int(source_created_at), tz=timezone.utc)
+    except (RespondIoError, TypeError, ValueError) as exc:
+        failures.append(
+            {
+                "entity": "messages", "sourceId": contact_external_id, "sourceLabel": "",
+                "reason": f"could not re-fetch source contact for its created_at fallback: {exc}",
+                "action": "used local contact.created_at instead",
+            }
+        )
+
+    buffered_raw: List[dict] = []
+    try:
+        for page_items, _next in client.list_messages_pages(identifier, limit=MESSAGES_PAGE_LIMIT):
+            buffered_raw.extend(page_items)
+    except RespondIoError as exc:
+        message_counts["errors"] = message_counts.get("errors", 0) + 1
+        failures.append(
+            {
+                "entity": "messages", "sourceId": contact_external_id, "sourceLabel": "",
+                "reason": exc.message, "action": "skipped",
+            }
+        )
+        return 0
+
+    parsed_items: List[SourceMessageItem] = []
+    for raw in buffered_raw:
+        try:
+            parsed_items.append(SourceMessageItem(**raw))
+        except Exception as exc:  # noqa: BLE001 - malformed vendor row, never abort the job
+            message_counts["fetched"] = message_counts.get("fetched", 0) + 1
+            message_counts["errors"] = message_counts.get("errors", 0) + 1
+            failures.append(
+                {
+                    "entity": "messages", "sourceId": contact_external_id, "sourceLabel": "",
+                    "reason": f"malformed message payload: {exc}", "action": "skipped",
+                }
+            )
+
+    # Thread order ALWAYS follows the source messageId (D-A6-9) - never the
+    # resolved timestamp, which is derived FROM this order in the first place.
+    parsed_items.sort(key=lambda m: m.messageId)
+    resolved = resolve_message_timestamps(parsed_items, fallback_dt)
+
+    already = refs.already_migrated(
+        tenant_id, workspace_id, RESPONDIO_PROVIDER, ENTITY_MESSAGE,
+        [str(m.messageId) for m in parsed_items],
+    )
+
+    newly_inferred = 0
+    for item, (created_at, inferred) in zip(parsed_items, resolved):
+        message_counts["fetched"] = message_counts.get("fetched", 0) + 1
+        if str(item.messageId) in already:
+            message_counts["skip"] = message_counts.get("skip", 0) + 1
+            continue
+        target_channel_id = channel_map.get(str(item.channelId)) if item.channelId is not None else None
+        try:
+            writer.write_message(
+                local_contact.id, item, created_at,
+                timestamp_inferred=inferred, channel_id=target_channel_id, user_map=user_map,
+            )
+        except Exception as exc:  # noqa: BLE001 - per-row isolation (AC-MIG-29's pattern)
+            message_counts["errors"] = message_counts.get("errors", 0) + 1
+            failures.append(
+                {
+                    "entity": "messages", "sourceId": str(item.messageId), "sourceLabel": "",
+                    "reason": str(exc), "action": "skipped",
+                }
+            )
+            continue
+        message_counts["create"] = message_counts.get("create", 0) + 1
+        if inferred:
+            newly_inferred += 1
+        if len(message_samples) < MAX_REPORT_SAMPLES:
+            message_samples.append({"type": item.message.type, "action": "create"})
+
+    # AC-MIG-37 - exactly ONE recompute per contact, after its WHOLE message
+    # phase (this call covers every page for this contact - buffered above).
+    writer.recompute_contact_timestamps(local_contact)
+    return newly_inferred
+
+
 def run_migration_job(db: Session, job: BackgroundJob) -> None:
-    """`omnichannel.respondio_migration` job handler - S2 implements the
-    CONTACTS phase only (§2.1's later phases land in S3/S4 on this SAME
-    handler/writer). Dry run and real run share this ONE code path
-    (D-A6-14): each contact's write happens inside its OWN SAVEPOINT
-    (`db.begin_nested()`) which is COMMITTED (released into the page's
-    pending transaction) on a real run or unconditionally ROLLED BACK on a
-    dry run - the per-contact scope also isolates one bad row's failure from
-    the rest of an in-flight page (a flush error would otherwise poison the
-    whole session)."""
+    """`omnichannel.respondio_migration` job handler. Phase order (D-A6-4):
+    contacts (S2) -> identities -> messages (S3) -> media/events/quick
+    replies (S4, not yet wired). Dry run and real run share this ONE code
+    path throughout (D-A6-14): every phase's per-unit write happens inside
+    its OWN SAVEPOINT (`db.begin_nested()`), COMMITTED (released into the
+    session's pending transaction) on a real run or unconditionally ROLLED
+    BACK on a dry run.
+
+    The contacts phase checkpoints per respond.io PAGE (AC-MIG-22, unchanged
+    from S2). The identities/messages phases checkpoint per CONTACT instead
+    (a deliberate S3 deviation, documented on `CONTACT_REF_BATCH` above) -
+    D-A6-9's timestamp interpolation needs a whole contact's message history
+    bracketed together, so a contact's full message set is buffered, sorted
+    by `messageId` and timestamp-resolved as ONE unit before any row is
+    written; re-processing a contact from scratch after a crash is safe
+    because `migration_refs` makes every write idempotent."""
     service = JobService(db)
     tenant_id = job.tenant_id
     payload = job.payload_json or {}
     workspace_id = payload.get("workspaceId")
     connection_id = payload.get("connectionId")
     dry_run = payload.get("mode") == "dry_run"
+    contacts_only = bool(payload.get("contactsOnly"))
 
     connection = MigrationConnectionRepository(db).get_for_provider(
         tenant_id, connection_id, RESPONDIO_PROVIDER
@@ -700,8 +984,9 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     client = RespondIoClient.from_connection(config, credentials, on_milestone=milestone)
 
     # Re-validate every mapped id AT USE TIME, never trust save-time
-    # validation alone (AC-MIG-51) - a stage/channel deleted between create
-    # and run silently drops out of the map rather than crashing the run.
+    # validation alone (AC-MIG-51) - a stage/channel/user deleted between
+    # create and run silently drops out of the map rather than crashing the
+    # run.
     lifecycle_map: Dict[str, str] = {}
     for entry in payload.get("lifecycleMap") or []:
         target = entry.get("targetStatusId")
@@ -710,6 +995,9 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             continue
         if get_scope_status(db, LIFECYCLE_ENTITY_TYPE, tenant_id, workspace_id, target) is not None:
             lifecycle_map[source_label] = target
+
+    channel_map, channel_type_by_target = _resolve_channel_map(db, tenant_id, workspace_id, payload)
+    user_map = _resolve_user_map(db, tenant_id, payload)
 
     thread_open_id = status_id_for(db, tenant_id, "THREAD", "OPEN")
     initial_lifecycle_id = initial_status_id(db, tenant_id, workspace_id)
@@ -736,105 +1024,282 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
         source_field_defs=source_field_defs,
         writes_enabled=not dry_run,
     )
+    refs = MigrationRefRepository(db)
 
     cursor = job.cursor_json or {}
     counts: Dict[str, Any] = dict(cursor.get("counts") or {})
     contact_counts = dict(counts.get("contacts") or {"fetched": 0, "create": 0, "update": 0, "errors": 0})
     field_counts = dict(counts.get("fields") or {"fetched": 0, "create": 0, "matched": 0, "errors": 0})
     tag_counts = dict(counts.get("tags") or {"fetched": 0, "create": 0, "matched": 0})
+    identity_counts = dict(
+        counts.get("identities") or {"fetched": 0, "create": 0, "update": 0, "skip": 0, "errors": 0}
+    )
+    message_counts = dict(counts.get("messages") or {"fetched": 0, "create": 0, "skip": 0, "errors": 0})
     lifecycle_unmapped = int(counts.get("lifecycleUnmappedCount") or 0)
     assignee_unmatched = int(counts.get("assigneeUnmatchedCount") or 0)
+    messages_inferred = int(counts.get("messagesWithInferredTimestamp") or 0)
 
     prior_result = job.result_json or {}
     failures: List[dict] = list((prior_result.get("failures") or {}).get("rows") or [])
     samples: List[dict] = list((prior_result.get("report") or {}).get("samples", {}).get("contacts") or [])
+    message_samples: List[dict] = list(
+        (prior_result.get("report") or {}).get("samples", {}).get("messages") or []
+    )
 
-    start_cursor = cursor.get("contactCursorId")
+    contact_list_cursor = cursor.get("contactCursorId")
+    identity_ref_cursor = cursor.get("identityCursorId")
+    message_ref_cursor = cursor.get("messageCursorId")
+    phase = cursor.get("phase") or "contacts"
 
-    try:
-        for page_items, next_cursor in client.list_contacts_pages(
-            timezone=space_timezone, limit=CONTACTS_PAGE_LIMIT, start_cursor=start_cursor
-        ):
-            for raw in page_items:
-                external_id = str(raw.get("id", ""))
-                try:
-                    source_contact = Contact(**raw)
-                except Exception as exc:  # noqa: BLE001 - malformed vendor row, never abort the job
+    def checkpoint(new_phase: str) -> None:
+        counts["contacts"] = contact_counts
+        counts["fields"] = field_counts
+        counts["tags"] = tag_counts
+        counts["identities"] = identity_counts
+        counts["messages"] = message_counts
+        counts["lifecycleUnmappedCount"] = lifecycle_unmapped
+        counts["assigneeUnmatchedCount"] = assignee_unmatched
+        counts["messagesWithInferredTimestamp"] = messages_inferred
+        service.set_cursor(
+            job,
+            {
+                "phase": new_phase,
+                "contactCursorId": contact_list_cursor,
+                "identityCursorId": identity_ref_cursor,
+                "messageCursorId": message_ref_cursor,
+                "counts": counts,
+            },
+        )
+
+    def finish_done() -> None:
+        service.set_total(
+            job,
+            contact_counts.get("fetched", 0) + identity_counts.get("fetched", 0) + message_counts.get("fetched", 0),
+        )
+        report = _build_report(
+            counts, samples, lifecycle_unmapped,
+            messages_with_inferred=messages_inferred, message_samples=message_samples,
+        )
+        result = {
+            "report": report,
+            "failures": {"rowCount": len(failures), "rows": failures[:MAX_FAILURE_ROWS_KEPT]},
+        }
+        service.finish(job, status=JOB_DONE, result=result)
+
+    # ── phase 1 - contacts (S2, unchanged) ──────────────────────────────────
+    if phase == "contacts":
+        try:
+            for page_items, next_cursor in client.list_contacts_pages(
+                timezone=space_timezone, limit=CONTACTS_PAGE_LIMIT, start_cursor=contact_list_cursor
+            ):
+                for raw in page_items:
+                    external_id = str(raw.get("id", ""))
+                    try:
+                        source_contact = Contact(**raw)
+                    except Exception as exc:  # noqa: BLE001 - malformed vendor row, never abort the job
+                        contact_counts["fetched"] += 1
+                        contact_counts["errors"] = contact_counts.get("errors", 0) + 1
+                        failures.append(
+                            {
+                                "entity": "contacts", "sourceId": external_id, "sourceLabel": "",
+                                "reason": f"malformed contact payload: {exc}", "action": "skipped",
+                            }
+                        )
+                        service.advance(job, failed=1)
+                        continue
+
+                    nested = db.begin_nested()
+                    try:
+                        outcome = writer.write_contact(source_contact)
+                        # A dry run's per-contact SAVEPOINT is rolled back
+                        # unconditionally below, which means `migration_refs`
+                        # for "contact" never persists (AC-MIG-27's own
+                        # requirement) - so the SEPARATE identities/messages
+                        # phases (which walk that table) would have literally
+                        # nothing to iterate. For a dry run only, this SAME
+                        # per-contact savepoint ALSO previews this contact's
+                        # identities + messages inline (D-A6-14: still one
+                        # code path - `_process_contact_identities`/
+                        # `_process_contact_messages` are the exact same
+                        # functions the real phases below call), and the
+                        # whole thing rolls back together at the end.
+                        if dry_run and not contacts_only:
+                            _process_contact_identities(
+                                client, writer, outcome.contact_id, external_id,
+                                channel_map, channel_type_by_target, source_contact.phone,
+                                identity_counts, failures,
+                            )
+                            preview_contact = (
+                                db.query(ContactModel).filter(ContactModel.id == outcome.contact_id).first()
+                            )
+                            messages_inferred += _process_contact_messages(
+                                client, writer, refs, tenant_id, workspace_id, preview_contact, external_id,
+                                channel_map, user_map, message_counts, failures, message_samples,
+                            )
+                    except Exception as exc:  # noqa: BLE001 - per-row isolation (AC-MIG-27/29)
+                        nested.rollback()
+                        contact_counts["fetched"] += 1
+                        contact_counts["errors"] = contact_counts.get("errors", 0) + 1
+                        failures.append(
+                            {
+                                "entity": "contacts", "sourceId": external_id, "sourceLabel": "",
+                                "reason": str(exc), "action": "skipped",
+                            }
+                        )
+                        service.advance(job, failed=1)
+                        continue
+
+                    if dry_run:
+                        nested.rollback()  # D-A6-14: zero rows written anywhere
+                    else:
+                        nested.commit()  # releases the savepoint into the page's txn
+
                     contact_counts["fetched"] += 1
-                    contact_counts["errors"] = contact_counts.get("errors", 0) + 1
-                    failures.append(
-                        {
-                            "entity": "contacts", "sourceId": external_id, "sourceLabel": "",
-                            "reason": f"malformed contact payload: {exc}", "action": "skipped",
-                        }
+                    contact_counts[outcome.kind] = contact_counts.get(outcome.kind, 0) + 1
+                    field_counts["fetched"] = field_counts.get("fetched", 0) + outcome.fields_created + outcome.fields_matched
+                    field_counts["create"] = field_counts.get("create", 0) + outcome.fields_created
+                    field_counts["matched"] = field_counts.get("matched", 0) + outcome.fields_matched
+                    field_counts["errors"] = field_counts.get("errors", 0) + outcome.field_errors
+                    tag_counts["fetched"] = tag_counts.get("fetched", 0) + outcome.tags_created + outcome.tags_matched
+                    tag_counts["create"] = tag_counts.get("create", 0) + outcome.tags_created
+                    tag_counts["matched"] = tag_counts.get("matched", 0) + outcome.tags_matched
+                    if outcome.lifecycle_unmapped:
+                        lifecycle_unmapped += 1
+                    if outcome.assignee_unmatched:
+                        assignee_unmatched += 1
+                    if len(samples) < MAX_REPORT_SAMPLES:
+                        samples.append({"name": outcome.source_label, "action": outcome.kind})
+                    service.advance(job, done=1)
+
+                # Checkpoint cursor + running counts AFTER EVERY PAGE (AC-MIG-22).
+                contact_list_cursor = next_cursor
+                checkpoint("contacts")
+
+                # Cooperative abort (AC-MIG-28): re-read status FRESH before the
+                # next page/the terminal step - `set_cursor` already committed
+                # above, so a cancel committed on another session is visible here.
+                if _aborted(db, job.id):
+                    service.log(job, f"Aborted after {contact_counts.get('fetched', 0)} contacts.")
+                    return
+        except RespondIoError as exc:
+            service.log(job, f"respond.io error: {exc.message}", level="error")
+            service.finish(job, status=JOB_FAILED, error=f"respond.io error: {exc.message}")
+            return
+
+        if contacts_only or dry_run:
+            # A dry run never reaches the separate identities/messages phases
+            # below (their whole design depends on persisted `migration_refs`
+            # rows, which a dry run's per-contact rollback never leaves
+            # behind) - its identities/messages counts were already gathered
+            # INLINE above, per contact, in the SAME rolled-back savepoint.
+            finish_done()
+            return
+
+        phase = "identities"
+        checkpoint("identities")
+        if _aborted(db, job.id):
+            service.log(job, "Aborted before the identities phase.")
+            return
+
+    # ── phase 2 - channel identities (S3, AC-MIG-30/31) ─────────────────────
+    if phase == "identities":
+        while True:
+            ref_batch = refs.paged(
+                tenant_id, workspace_id, RESPONDIO_PROVIDER, ENTITY_CONTACT,
+                after_id=identity_ref_cursor, limit=CONTACT_REF_BATCH,
+            )
+            if not ref_batch:
+                break
+            for ref in ref_batch:
+                identity_ref_cursor = ref.id
+                local_contact = (
+                    db.query(ContactModel)
+                    .filter(
+                        ContactModel.id == ref.local_id,
+                        ContactModel.tenant_id == tenant_id,
+                        ContactModel.workspace_id == workspace_id,
                     )
-                    service.advance(job, failed=1)
+                    .first()
+                )
+                if local_contact is None:  # contact row vanished after being migrated
+                    checkpoint("identities")
+                    if _aborted(db, job.id):
+                        service.log(job, "Aborted during the identities phase.")
+                        return
                     continue
 
                 nested = db.begin_nested()
-                try:
-                    outcome = writer.write_contact(source_contact)
-                except Exception as exc:  # noqa: BLE001 - per-row isolation (AC-MIG-27/29)
+                _process_contact_identities(
+                    client, writer, local_contact.id, ref.external_id,
+                    channel_map, channel_type_by_target, local_contact.phone,
+                    identity_counts, failures,
+                )
+                # This phase only runs for a REAL (non-dry) run (a dry run
+                # finishes right after the contacts loop, above) - `commit`
+                # unconditionally, `rollback` is dead code kept only as a
+                # defensive mirror of every other phase's own pattern.
+                if dry_run:  # pragma: no cover - unreachable, see the comment above
                     nested.rollback()
-                    contact_counts["fetched"] += 1
-                    contact_counts["errors"] = contact_counts.get("errors", 0) + 1
-                    failures.append(
-                        {
-                            "entity": "contacts", "sourceId": external_id, "sourceLabel": "",
-                            "reason": str(exc), "action": "skipped",
-                        }
+                else:
+                    nested.commit()
+                service.advance(job, done=1)
+                checkpoint("identities")
+                if _aborted(db, job.id):
+                    service.log(job, "Aborted during the identities phase.")
+                    return
+
+        phase = "messages"
+        identity_ref_cursor = None
+        checkpoint("messages")
+        if _aborted(db, job.id):
+            service.log(job, "Aborted before the messages phase.")
+            return
+
+    # ── phase 3 - message history (S3, AC-MIG-32..37) ───────────────────────
+    if phase == "messages":
+        while True:
+            ref_batch = refs.paged(
+                tenant_id, workspace_id, RESPONDIO_PROVIDER, ENTITY_CONTACT,
+                after_id=message_ref_cursor, limit=CONTACT_REF_BATCH,
+            )
+            if not ref_batch:
+                break
+            for ref in ref_batch:
+                message_ref_cursor = ref.id
+                local_contact = (
+                    db.query(ContactModel)
+                    .filter(
+                        ContactModel.id == ref.local_id,
+                        ContactModel.tenant_id == tenant_id,
+                        ContactModel.workspace_id == workspace_id,
                     )
-                    service.advance(job, failed=1)
+                    .first()
+                )
+                if local_contact is None:
+                    checkpoint("messages")
+                    if _aborted(db, job.id):
+                        service.log(job, "Aborted during the messages phase.")
+                        return
                     continue
 
-                if dry_run:
-                    nested.rollback()  # D-A6-14: zero rows written anywhere
+                nested = db.begin_nested()
+                messages_inferred += _process_contact_messages(
+                    client, writer, refs, tenant_id, workspace_id, local_contact, ref.external_id,
+                    channel_map, user_map, message_counts, failures, message_samples,
+                )
+                # This phase only runs for a REAL (non-dry) run - see the
+                # identities phase's identical comment above.
+                if dry_run:  # pragma: no cover - unreachable, see the comment above
+                    nested.rollback()
                 else:
-                    nested.commit()  # releases the savepoint into the page's txn
-
-                contact_counts["fetched"] += 1
-                contact_counts[outcome.kind] = contact_counts.get(outcome.kind, 0) + 1
-                field_counts["fetched"] = field_counts.get("fetched", 0) + outcome.fields_created + outcome.fields_matched
-                field_counts["create"] = field_counts.get("create", 0) + outcome.fields_created
-                field_counts["matched"] = field_counts.get("matched", 0) + outcome.fields_matched
-                field_counts["errors"] = field_counts.get("errors", 0) + outcome.field_errors
-                tag_counts["fetched"] = tag_counts.get("fetched", 0) + outcome.tags_created + outcome.tags_matched
-                tag_counts["create"] = tag_counts.get("create", 0) + outcome.tags_created
-                tag_counts["matched"] = tag_counts.get("matched", 0) + outcome.tags_matched
-                if outcome.lifecycle_unmapped:
-                    lifecycle_unmapped += 1
-                if outcome.assignee_unmatched:
-                    assignee_unmatched += 1
-                if len(samples) < MAX_REPORT_SAMPLES:
-                    samples.append({"name": outcome.source_label, "action": outcome.kind})
+                    nested.commit()
                 service.advance(job, done=1)
+                checkpoint("messages")
+                if _aborted(db, job.id):
+                    service.log(job, "Aborted during the messages phase.")
+                    return
 
-            # Checkpoint cursor + running counts AFTER EVERY PAGE (AC-MIG-22).
-            counts["contacts"] = contact_counts
-            counts["fields"] = field_counts
-            counts["tags"] = tag_counts
-            counts["lifecycleUnmappedCount"] = lifecycle_unmapped
-            counts["assigneeUnmatchedCount"] = assignee_unmatched
-            service.set_cursor(job, {"phase": "contacts", "contactCursorId": next_cursor, "counts": counts})
-
-            # Cooperative abort (AC-MIG-28): re-read status FRESH before the
-            # next page/the terminal step - `set_cursor` already committed
-            # above, so a cancel committed on another session is visible here.
-            if _aborted(db, job.id):
-                service.log(job, f"Aborted after {contact_counts.get('fetched', 0)} contacts.")
-                return
-    except RespondIoError as exc:
-        service.log(job, f"respond.io error: {exc.message}", level="error")
-        service.finish(job, status=JOB_FAILED, error=f"respond.io error: {exc.message}")
-        return
-
-    service.set_total(job, contact_counts.get("fetched", 0))
-    report = _build_report(counts, samples, lifecycle_unmapped)
-    result = {
-        "report": report,
-        "failures": {"rowCount": len(failures), "rows": failures[:MAX_FAILURE_ROWS_KEPT]},
-    }
-    service.finish(job, status=JOB_DONE, result=result)
+    finish_done()
 
 
 MIGRATION_JOB_HANDLER_DEF = JobHandlerDef(MIGRATION_JOB_TYPE, run_migration_job, "respond.io migration")

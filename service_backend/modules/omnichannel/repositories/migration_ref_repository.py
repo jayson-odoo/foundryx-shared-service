@@ -123,3 +123,32 @@ class MigrationRefRepository:
             .all()
         )
         return [r[0] for r in rows]
+
+    def paged(
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        source: str,
+        entity_type: str,
+        *,
+        after_id: Optional[str],
+        limit: int,
+    ) -> List[MigrationRef]:
+        """Keyset pagination over ``MigrationRef.id`` (plan 33 S3) - the
+        identities/messages phases walk every "contact" ref this workspace has
+        EVER migrated (across job runs, not just this one), and a per-contact
+        checkpoint (``after_id`` = the last-processed ref's own id) is what
+        makes each phase resumable across a crash without re-processing an
+        already-completed contact. ``MigrationRef.id`` is a plain indexed
+        primary key - any STABLE total order works for keyset paging (the
+        rows are never updated in place, so lexical UUID order never skips or
+        duplicates a row), it does not need to reflect insertion time."""
+        q = self.db.query(MigrationRef).filter(
+            MigrationRef.tenant_id == tenant_id,
+            MigrationRef.workspace_id == workspace_id,
+            MigrationRef.source == source,
+            MigrationRef.entity_type == entity_type,
+        )
+        if after_id:
+            q = q.filter(MigrationRef.id > after_id)
+        return q.order_by(MigrationRef.id.asc()).limit(limit).all()
