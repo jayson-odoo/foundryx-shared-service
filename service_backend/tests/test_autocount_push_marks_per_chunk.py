@@ -151,13 +151,48 @@ def _count_commits(db) -> List[int]:
     return commits
 
 
+def _stub_heartbeat(monkeypatch, *, alive: bool = True) -> List[str]:
+    """B2 (review round 3): ``JobService.heartbeat`` commits through
+    ``bind.begin()`` - on the StaticPool SQLite rig that is the SAME
+    connection as the run session, so a beat would commit pending marks
+    whether or not ``_commit_chunk`` ran. Replace it with a recorder that
+    never touches the DB, so ``_commit_chunk`` is the only possible
+    committer. ``alive=False`` exercises the lease fence (``fresh_status``
+    still hits the DB read-only)."""
+    from app.jobs.service import JobService
+
+    beats: List[str] = []
+
+    def recorder(self, job_id, *, now=None):
+        beats.append(str(job_id))
+        return alive
+
+    monkeypatch.setattr(JobService, "heartbeat", recorder)
+    return beats
+
+
+def _commits_by_post(db, calls: Dict[str, int]) -> List[int]:
+    """Every Session ``after_commit`` on the run's session tagged with the
+    number of sink POSTs made so far - ``count(1)`` is "commits while chunk
+    1 was the latest chunk on the wire", i.e. chunk 1's own commit(s). The
+    pre-push ``mark_offered`` commit lands at index 0 and is excluded."""
+    import sqlalchemy as sa
+
+    tagged: List[int] = []
+    sa.event.listen(db, "after_commit", lambda session: tagged.append(calls["n"]))
+    return tagged
+
+
 REFS = [f"AED_VSOFT:{i}" for i in range(7)]  # chunks: 0-2 / 3-5 / 6
 
 
 # ── (a) chunk 2 answers 500 ─────────────────────────────────────────────────
 
 
-def test_a_500_on_chunk_two_keeps_chunk_one_pushed_and_committed(session_factory, transports, sorento_sink):
+def test_a_500_on_chunk_two_keeps_chunk_one_pushed_and_committed(
+    session_factory, transports, sorento_sink, monkeypatch
+):
+    _stub_heartbeat(monkeypatch)
     db = session_factory()
     company = _rig(db, transports)
     job = _done_job(db, company)
@@ -172,15 +207,16 @@ def test_a_500_on_chunk_two_keeps_chunk_one_pushed_and_committed(session_factory
         return _ok(request)
 
     sorento_sink.responder = responder
-    commits = _count_commits(db)
+    commits = _commits_by_post(db, calls)
     summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, job_id=job.id)
 
-    # B2: chunk 1's marks must survive a ROLLBACK of the run's session - i.e.
-    # they were committed when chunk 1 resolved, not left for a final commit.
-    assert len(commits) >= 1, "no Session commit happened while chunk 1 resolved"
+    # B2: with the heartbeat stubbed, ``_commit_chunk`` is the only thing that
+    # can commit between POST 1 and POST 2 - exactly once for chunk 1 - and
+    # chunk 1's marks must survive a ROLLBACK of the run's session.
     statuses = _statuses(session_factory, company.id, rollback=db)
     assert [statuses[r] for r in REFS[:3]] == [STAGED_PUSHED] * 3, statuses
     assert [statuses[r] for r in REFS[3:]] == [STAGED] * 4, statuses
+    assert commits.count(1) == 1, f"commits tagged by POST index: {commits}"
     assert summary["pushed"] == 3
     assert summary["requests"] == 2
     assert summary["requestsFailed"] == 1
@@ -233,7 +269,10 @@ def test_a_timeout_on_chunk_three_keeps_the_first_two_chunks_pushed(session_fact
 # ── (c) delete path parity ──────────────────────────────────────────────────
 
 
-def test_a_500_on_the_second_deletions_chunk_keeps_the_first_chunk_handled(session_factory, transports, sorento_sink):
+def test_a_500_on_the_second_deletions_chunk_keeps_the_first_chunk_handled(
+    session_factory, transports, sorento_sink, monkeypatch
+):
+    _stub_heartbeat(monkeypatch)
     db = session_factory()
     company = _rig(db, transports)
     job = _done_job(db, company)
@@ -249,13 +288,15 @@ def test_a_500_on_the_second_deletions_chunk_keeps_the_first_chunk_handled(sessi
         return _ok(request)
 
     sorento_sink.responder = responder
-    commits = _count_commits(db)
+    commits = _commits_by_post(db, calls)
     summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, job_id=job.id)
 
-    assert len(commits) >= 1, "no Session commit happened while deletions chunk 1 resolved"
+    # B2 + S7: exactly ONE commit for deletions chunk 1 (marks and the
+    # row-hash drop folded into one), and it survives a rollback.
     statuses = _statuses(session_factory, company.id, rollback=db)
     assert [statuses[r] for r in REFS[:3]] == [STAGED_PUSHED] * 3, statuses
     assert [statuses[r] for r in REFS[3:]] == [STAGED] * 4, statuses
+    assert commits.count(1) == 1, f"commits tagged by POST index: {commits}"
     assert summary["deletedHandled"] == 3
     assert summary["requests"] == 2
     assert summary["requestsFailed"] == 1
@@ -553,15 +594,27 @@ def _sequenced_upsert(consumer, script: Dict[int, int]):
 # ── B1: the paged run persists the accounting on the run row ────────────────
 
 
+@pytest.mark.parametrize("paged", [True, False], ids=["paged", "non-paged"])
 def test_a_paged_run_persists_error_requests_requests_failed_and_first_failure_on_the_run_row(
-    session_factory, monkeypatch, consumer, no_sleep
+    session_factory, monkeypatch, consumer, no_sleep, paged
 ):
+    """S6: BOTH run entry points - the paged sql_db loop and the older
+    single-fetch path (a sql_db task with no watermark column) - must stamp
+    the push accounting onto the run row."""
+    from tests.test_autocount_bulk_load import _config_row
+
     monkeypatch.setattr(settings, "autocount_page_size", 100, raising=False)
     monkeypatch.setattr(settings, "autocount_run_time_budget_seconds", 600, raising=False)
     monkeypatch.setattr(settings, "autocount_sink_retry_attempts", 3, raising=False)
 
     company_id, _sql_id, engine = _make_rig(session_factory)
     _insert_rows(engine, _rows(7))
+    if not paged:
+        setup = session_factory()
+        config = _config_row(setup, company_id)
+        config.source_config = {**config.source_config, "watermarkColumn": None}
+        setup.commit()
+        setup.close()
     # chunk 1 ok (POST 1); chunk 2 -> 502 x3 (POSTs 2-4, exhausted); chunk 3 ok (POST 5).
     calls = _sequenced_upsert(consumer, {2: 502, 3: 502, 4: 502})
 
@@ -852,7 +905,7 @@ def _fail_job_elsewhere(session_factory, job_id: str) -> None:
 
 
 def test_a_lost_lease_after_chunk_one_keeps_chunk_one_committed_and_stops_before_chunk_two(
-    session_factory, transports, sorento_sink
+    session_factory, transports, sorento_sink, monkeypatch
 ):
     """The per-chunk beat runs AFTER a chunk is marked + committed. The job
     is failed elsewhere (orphan sweep) while chunk 1 is on the wire: the beat
@@ -863,20 +916,27 @@ def test_a_lost_lease_after_chunk_one_keeps_chunk_one_committed_and_stops_before
     job = _done_job(db, company)
     _stage(db, company, job, REFS)
 
+    calls = {"n": 0}
+
     def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
         _fail_job_elsewhere(session_factory, job.id)
         return _ok(request)
 
     sorento_sink.responder = responder
-    commits = _count_commits(db)
+    # The beat itself never touches the DB (B2); the fence still fires from
+    # ``fresh_status`` reading the job failed elsewhere.
+    beats = _stub_heartbeat(monkeypatch, alive=False)
+    commits = _commits_by_post(db, calls)
     summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, job_id=job.id)
 
     assert len(sorento_sink.requests) == 1, "the push must stop before chunk 2"
     assert summary.get("leaseLost") is True, summary
-    assert len(commits) >= 1
+    assert beats, "the per-chunk beat never ran"
     statuses = _statuses(session_factory, company.id, rollback=db)
     assert [statuses[r] for r in REFS[:3]] == [STAGED_PUSHED] * 3, statuses
     assert [statuses[r] for r in REFS[3:]] == [STAGED] * 4, statuses
+    assert commits.count(1) == 1, f"commits tagged by POST index: {commits}"
     assert summary["pushed"] == 3
     db.close()
 
