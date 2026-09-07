@@ -1166,24 +1166,23 @@ def _run_fingerprint_sweep(
             )
             failed_ref_set = set(failed_refs)
             added, updated = page.added, page.updated
-            #     !!  THE STORED HASH FOLDS IN THE LINE FINGERPRINT (SO419208)
-            #         - THE HEADER'S OWN COMPARED COLUMNS GENUINELY DO NOT
-            #         CHANGE FOR EVERY DOCUMENT THIS METHOD RE-STAGES.  !!
+            #     !!  ``ac_row_hash`` STAYS THE PLAIN HEADER HASH - NEVER
+            #         MIXED WITH THE LINE FINGERPRINT (review round 2).  !!
             # A plain `row_hash(header, compared_columns)` is BY DESIGN
             # header-only (never sees lines) - the entire reason a sweep-
             # triggered restage exists is a document whose header hash
-            # stays byte-identical while its lines moved. Storing that
-            # unchanged plain value here would make this ref's `ac_row_hash`
-            # entry indistinguishable from before the restage even though
-            # its true state (header + lines) is not. The document's own
-            # ``LastModified`` never advances either (the same bug), so a
-            # PLAIN incremental page will never re-select this ref again to
-            # self-correct the mix-in later - only another sweep tick or a
-            # full reconcile (which always recomputes fresh) ever revisits
-            # it, so the mix-in is never a stale poison a later plain run
-            # could misread.
+            # stays byte-identical while its lines moved. `ac_doc_fingerprint`
+            # (upserted a few lines below, from the value already computed
+            # by `fetch_fingerprints`) is the SOLE record of line state; this
+            # write must stay comparable to whatever a later full-header
+            # pass (a genuine header edit, or reconcile's own full re-read)
+            # computes with the SAME plain formula, or that pass would
+            # wrongly see "changed" and needlessly re-stage/re-push an
+            # already-current document with an identical payload (review
+            # round 2 reproduction: sweep, then reconcile, updated 1 with
+            # no source change at all).
             changed_hashes = {
-                ref: f"{value}\x1efp:{fingerprints[ref][1]}"
+                ref: value
                 for ref, value in page.hashes.items()
                 if ref not in page.unchanged_refs and ref not in failed_ref_set
             }

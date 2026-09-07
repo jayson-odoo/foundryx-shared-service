@@ -722,21 +722,29 @@ every returned DocKey:
 `fetch_by_keys` unconditionally stages every candidate it is given (it never re-applies
 `fetch_page`'s own unchanged-header-hash skip): the entire premise of the sweep is a header whose
 compared columns can legitimately stay byte-identical while its lines moved, so skipping on that
-comparison here would silently defeat it. The `ac_row_hash` value it writes folds the line
-fingerprint into the stored hash (`"<header-hash>\x1efp:<fingerprint>"`) for exactly that reason
-- and because SO419208-shaped documents never re-enter a *plain* incremental page again (their
-`LastModified` never advances either), so nothing else could ever revisit that ref later to
-correct a plain hash back out of sync.
+comparison here would silently defeat it. The `ac_row_hash` value it writes is the ordinary
+PLAIN header hash - never mixed with the line fingerprint - so a later full-header pass (a
+genuine header edit, or reconcile's own full re-read, both computing the same plain formula)
+stays comparable to it; `ac_doc_fingerprint` (written from the value `fetch_fingerprints` already
+computed) is the sole record of line state (review round 2 fix - an earlier version of this
+lane mixed the fingerprint into `ac_row_hash`, which made the very next reconcile compute a
+DIFFERENT plain hash than what was stored and needlessly re-stage/re-push the identical document
+once).
 
-**Cost.** One `GROUP BY` over the line table per configured interval, bounded by `from_date` -
-the same order of magnitude as one page of the line-fetch work the paged pass already does, run
-at most once every `autocount_fingerprint_sweep_minutes`, not once per tick.
+**Cost.** The fingerprint query is a full scan + hash aggregate over EVERY line row inside
+`from_date`, not a bounded page - on the live company that is 1.19M SODTL rows for `sales_order`
+alone, run up to 96 times a day per document entity (every `autocount_fingerprint_sweep_minutes`
+at the default 15) across three document entities (SO/PO/SPO), over the ZeroTier relay to the
+on-prem SQL server. Measured on AED_SORENTO: `<N>` s for SO / `<N>` s for PO+SPO (`<UTC time>`
+- coordinator to fill from the operator's timing). Mitigation knob:
+`AUTOCOUNT_FINGERPRINT_SWEEP_MINUTES` - raise to 30 or 60 (still floor-1-enforced, never
+disabled outright) if the measured cost is above roughly 5 s per tick.
 
 **Blind spot (documented, accepted).** A change that leaves all four aggregates identical -
 same line count, same summed quantities, same max detail key (an in-place edit to a
 non-aggregated column, e.g. a warehouse or remark reassignment on an existing line) - is
 invisible to the fingerprint and waits for the next daily reconcile, exactly like every other
-gap this feature does not claim to close. BL-SS-134 below tracks widening the aggregate set.
+gap this feature does not claim to close. BL-SS-146 below tracks widening the aggregate set.
 
 **Failure isolation.** A broken fingerprint query (typo'd table/column) or a failure of the
 keyed re-fetch itself fails only the sweep: a WARNING naming "fingerprint", whatever the paged
