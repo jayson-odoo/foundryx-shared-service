@@ -8,9 +8,12 @@ base URL - `meta_graph.py`). Slice S1 shipped inbound parsing
 the connect flow - real `exchange_code` (Facebook Login for Business),
 `exchange_long_lived_token`, `list_pages` (`GET /me/accounts` + the linked IG
 account) and `subscribe_webhook`/`test_connection` against a live Meta app,
-orchestrated by `services/meta_connect_service.py`. `upload_media` stays a
-dev-safe placeholder (the real Graph attachment-upload call lands in plan 32
-S5, D-A7-11).
+orchestrated by `services/meta_connect_service.py`. Slice S5 completes the
+adapter: real `upload_media` (Attachment Upload API, upload BY ID, D-A7-11),
+`fetch_media_url` (the SSRF-guarded inbound CDN fetch, D-A7-12), rate-limit
+classification (`is_rate_limited_error` in `meta_graph.py`, AC-CHN-51) and
+the watermark/`mids` receipt application (`inbound_service._handle_status`,
+D-A7-22).
 
 Sources (cited per CLAUDE.md, section 10 of the plan):
 - Messenger Platform webhooks (object `page`, `entry[].messaging[]`,
@@ -33,17 +36,38 @@ Sources (cited per CLAUDE.md, section 10 of the plan):
   https://developers.facebook.com/docs/graph-api/reference/user/accounts/
 - `POST /{page-id}/subscribed_apps` (`subscribed_fields`):
   https://developers.facebook.com/docs/graph-api/reference/page/subscribed_apps/
+- Messenger Attachment Upload API (`POST /me/message_attachments`, multipart
+  `filedata` + a `message` JSON part naming the Meta attachment type,
+  `is_reusable`, response `attachment_id` - upload BY ID, D-A7-11):
+  https://developers.facebook.com/docs/messenger-platform/send-messages/saving-assets
+- `message_deliveries`/`message_reads` webhook payload shape (`mids`,
+  `watermark` in epoch MILLISECONDS - D-A7-22):
+  https://developers.facebook.com/docs/messenger-platform/reference/webhook-events/message-deliveries/
+  https://developers.facebook.com/docs/messenger-platform/reference/webhook-events/message-reads/
+- Graph API error handling / rate limiting (error codes 4/17/32/613, the
+  `X-Business-Use-Case-Usage` header - D-A7-12's sibling concern, AC-CHN-51):
+  https://developers.facebook.com/docs/graph-api/guides/error-handling
+  https://developers.facebook.com/docs/graph-api/overview/rate-limiting
 """
+import json
 import logging
 from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
 from app.config import settings
+from app.services.url_guard import UrlGuardError, assert_deliverable
 from .base import CodeExchangeError, ConnectionStatus, SendError
-from .meta_graph import MetaGraphMixin, _meta_error_detail
+from .meta_graph import MetaGraphMixin, _meta_error_detail, is_rate_limited_error
 
 logger = logging.getLogger(__name__)
+
+
+class _TransientFetchError(Exception):
+    """An inbound CDN fetch hop hit a transport error or a Meta-side 5xx -
+    retried once (bounded) by `fetch_media_url`, never surfaced past it."""
+
 
 # `subscribed_apps` fields this app asks a connected Page for (plan 32 S3,
 # D-A7-15). `message_echoes` is deliberately ABSENT (D-A7-23) - our own
@@ -86,6 +110,70 @@ _ATTACHMENT_TYPES = {
     "audio": "AUDIO",
     "file": "DOCUMENT",
 }
+
+# The house canonical type -> Meta attachment-upload/send ASSET_TYPE (D-A7-11,
+# also reused as the multipart upload's "message.attachment.type").
+_MIME_ATTACHMENT_TYPE = {"image": "image", "video": "video", "audio": "audio"}
+
+# Meta CDN host allowlist (D-A7-12/AC-CHN-47) - the domains an inbound
+# Messenger/Instagram attachment's `payload.url` is EVER hosted on. A URL
+# taken from a webhook payload and fetched server-side is an SSRF primitive
+# regardless of the payload's signature verification (the house rule from
+# `webhook_delivery.assert_deliverable`: re-validate before every fetch, not
+# only trust the source), so this allowlist is the FIRST gate - checked again
+# at EVERY redirect hop, not only on the original URL.
+# Source: https://developers.facebook.com/docs/messenger-platform/webhooks
+_CDN_HOST_SUFFIXES = ("fbcdn.net", "fbsbx.com", "cdninstagram.com")
+
+# Meta's own overall attachment ceiling ("Saving Assets" docs: 25MB overall) -
+# reused as the inbound fetch cap so a malicious or broken CDN response can
+# never make this adapter buffer an unbounded blob in memory; a stream that
+# exceeds it is abandoned mid-read (AC-CHN-46/47 "capped read").
+_MAX_FETCH_BYTES = 25 * 1024 * 1024
+_MAX_FETCH_REDIRECTS = 3
+_MAX_FETCH_ATTEMPTS = 2  # one bounded inline retry on a transient CDN hiccup
+
+# Mimes an inbound attachment fetch accepts after sniffing (AC-CHN-46 "images/
+# video/audio/pdf per the existing upload allowlist") - narrower than
+# `media_pipeline.detect_media_mime`'s full family (that helper also accepts
+# office/zip/text for OUTBOUND document uploads, which Meta never sends us
+# inbound on this surface).
+_ALLOWED_FETCH_MIME_PREFIXES = ("image/", "video/", "audio/")
+
+# Dev-safe magic recipient (AC-CHN-51) - a workflow/manual test can trigger the
+# transient rate-limit path with NO live Meta app by addressing this PSID; the
+# dev-stub `_send_impl`/`upload_media` raise the SAME `SendError(transient=
+# True)` a real Meta 613/429 would, so `send_runner`'s bounded backoff is
+# exercised end to end without a Meta app.
+DEV_RATE_LIMIT_PSID = "psid.dev-ratelimit"
+_DEV_RATE_LIMIT_MESSAGE = "Calls to this api have exceeded the rate limit."
+
+
+def _is_meta_cdn_host(host: Optional[str]) -> bool:
+    if not host:
+        return False
+    lowered = host.lower()
+    return any(lowered == suffix or lowered.endswith("." + suffix) for suffix in _CDN_HOST_SUFFIXES)
+
+
+def _is_allowed_fetch_mime(mime: Optional[str]) -> bool:
+    if not mime:
+        return False
+    return mime == "application/pdf" or mime.startswith(_ALLOWED_FETCH_MIME_PREFIXES)
+
+
+def _error_detail_with_usage(resp: httpx.Response) -> str:
+    """`_meta_error_detail` plus, on a throttling response, the
+    `X-Business-Use-Case-Usage` consumption snapshot Meta returns alongside
+    it (AC-CHN-51 "surfaces Meta's own reason") - appended here rather than
+    inside the shared `_meta_error_detail` so WhatsApp's error copy stays
+    byte-identical (AC-CHN-23)."""
+    detail = _meta_error_detail(resp)
+    if is_rate_limited_error(resp):
+        usage = resp.headers.get("x-business-use-case-usage")
+        if usage:
+            detail = f"{detail} (usage: {usage})"
+    return detail
 
 
 class MessengerAdapter(MetaGraphMixin):
@@ -243,22 +331,50 @@ class MessengerAdapter(MetaGraphMixin):
                 client.close()
 
     # ── Outbound (plan 32 S2 - window/addressing resolved by the caller;
-    #             media-by-id upload completed in plan 32 S5, D-A7-11) ───────
+    #             media-by-id upload is REAL as of plan 32 S5, D-A7-11) ───────
     def upload_media(
         self, credentials: Dict[str, Any], phone_number_id: str, content: bytes, mime: str
     ) -> str:
-        """Attachment upload-by-id (D-A7-11 - Meta's attachment upload
-        endpoint, never a public URL). Dev-safe stub: a fake id so the
-        generalized `send_runner` media branch runs end to end with no Meta
-        app; the real `POST /me/message_attachments` call lands in plan 32
-        S5."""
+        """Attachment upload-by-id (D-A7-11 - Meta's Attachment Upload API,
+        `POST /me/message_attachments`, never a public URL for Meta to
+        fetch): multipart `filedata` + a `message` part naming the Meta
+        asset type (`image`/`video`/`audio`, else `file` for documents) and
+        `is_reusable`. ``phone_number_id`` is the PAGE_ID whose access token
+        authorizes the call (`channel_addressing.sender_ref`), kept as the
+        uniform adapter param name. Dev-safe stub unchanged - a fake id so
+        `send_runner`'s media branch runs end to end with no Meta app.
+
+        Source: https://developers.facebook.com/docs/messenger-platform/send-messages/saving-assets
+        """
         if not self._configured or credentials.get("dev"):
             import uuid
 
             return f"media.dev-{uuid.uuid4().hex[:12]}"
-        raise NotImplementedError(
-            "Messenger attachment upload is implemented by plan 32 S5."
-        )
+        att_type = _MIME_ATTACHMENT_TYPE.get((mime or "").split("/")[0], "file")
+        message = json.dumps({"attachment": {"type": att_type, "payload": {"is_reusable": True}}})
+        client = self._http()
+        try:
+            resp = client.post(
+                f"{self._base}/me/message_attachments",
+                data={"message": message},
+                files={"filedata": ("upload", content, mime)},
+                headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
+            )
+            self._last_http_status = resp.status_code
+            if resp.status_code != 200:
+                raise SendError(
+                    _error_detail_with_usage(resp),
+                    transient=resp.status_code >= 500 or is_rate_limited_error(resp),
+                )
+            attachment_id = resp.json().get("attachment_id", "")
+            if not attachment_id:
+                raise SendError("Attachment upload returned no id.")
+            return attachment_id
+        except httpx.HTTPError as exc:
+            raise SendError(f"Could not reach Meta: {exc}", transient=True) from exc
+        finally:
+            if self._client is None:
+                client.close()
 
     def send(
         self,
@@ -315,6 +431,11 @@ class MessengerAdapter(MetaGraphMixin):
         if not self._configured or credentials.get("dev"):
             import uuid
 
+            # AC-CHN-51 dev-safe rate-limit rehearsal: a workflow/manual test
+            # addressing this magic PSID gets the SAME transient SendError a
+            # real Meta 613/429 would, with no live Meta app required.
+            if to == DEV_RATE_LIMIT_PSID:
+                raise SendError(_DEV_RATE_LIMIT_MESSAGE, transient=True)
             return {"external_message_id": f"m.dev-{uuid.uuid4().hex[:12]}", "dev": True}
 
         from ..services.structured import build_quick_replies
@@ -353,7 +474,14 @@ class MessengerAdapter(MetaGraphMixin):
             )
             self._last_http_status = resp.status_code
             if resp.status_code != 200:
-                raise SendError(_meta_error_detail(resp), transient=resp.status_code >= 500)
+                # AC-CHN-51: a Meta rate-limit/throttling error (code 4/17/32/
+                # 613, or a bare 429) is TRANSIENT regardless of HTTP status -
+                # `send_runner` requeues it for bounded backoff instead of
+                # stamping FAILED.
+                raise SendError(
+                    _error_detail_with_usage(resp),
+                    transient=resp.status_code >= 500 or is_rate_limited_error(resp),
+                )
             data = resp.json()
             return {"external_message_id": data.get("message_id", "")}
         except httpx.HTTPError as exc:
@@ -364,9 +492,95 @@ class MessengerAdapter(MetaGraphMixin):
 
     def fetch_media(self, credentials: Dict[str, Any], media_id: str) -> Optional[Dict[str, Any]]:
         # Messenger delivers a short-lived CDN URL inline on the attachment,
-        # never a media id to resolve - `fetch_media_url` (D-A7-12, the
-        # SSRF-guarded URL fetch) lands in plan 32 S5.
+        # never a media id to resolve - `fetch_media_url` below is the real
+        # inbound path (D-A7-12).
         return None
+
+    # ── Inbound media fetch (plan 32 S5, D-A7-12/AC-CHN-46/47) ──────────────
+    def fetch_media_url(self, credentials: Dict[str, Any], url: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Download an inbound Messenger/Instagram attachment from the short-
+        lived CDN URL Meta embeds in the webhook payload - a fetch target
+        taken from attacker-influenced payload data, so it is validated
+        BEFORE every attempt and re-validated at EVERY redirect hop: HTTPS
+        only, the Meta CDN host allowlist, the shared SSRF guard
+        (`url_guard.assert_deliverable`), a capped streaming read, and a
+        bounded redirect count (max `_MAX_FETCH_REDIRECTS`). Downloaded WITH
+        the page access token (AC-CHN-46). A URL failing validation, a
+        content sniff mismatch, or an oversize body returns `None`
+        immediately (a PERMANENT rejection - never retried, since retrying a
+        rejected host/type wastes a hop for no different outcome); a
+        transport error or a Meta-side 5xx is retried once (bounded inline
+        retry, AC-CHN-46 "a storage hiccup loses the media, never the
+        message"). Never raises - the caller stores the message without
+        media on any failure."""
+        if not url:
+            return None
+        if not self._configured or credentials.get("dev"):
+            # Dev-safe (same gate as every other Graph call in this module) -
+            # a dev/sandbox channel carries no real page token, so never
+            # attempt a real CDN fetch with one; the seeded demo threads stay
+            # network-free.
+            return None
+        headers = {"Authorization": f"Bearer {credentials.get('access_token', '')}"}
+        for attempt in range(_MAX_FETCH_ATTEMPTS):
+            try:
+                return self._fetch_media_once(url, headers)
+            except _TransientFetchError as exc:
+                if attempt + 1 >= _MAX_FETCH_ATTEMPTS:
+                    logger.warning("media URL fetch exhausted retries: %s", exc)
+                    return None
+                continue
+            except Exception:  # noqa: BLE001 - never raise into the inbound pipeline
+                logger.exception("media URL fetch failed")
+                return None
+        return None
+
+    def _fetch_media_once(self, url: str, headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
+        current = url
+        client = self._http()
+        try:
+            for _hop in range(_MAX_FETCH_REDIRECTS + 1):
+                parsed = urlparse(current)
+                if parsed.scheme != "https" or not _is_meta_cdn_host(parsed.hostname):
+                    return None  # AC-CHN-47: non-https / non-Meta-CDN target rejected
+                try:
+                    assert_deliverable(current, subject="Attachment URL")
+                except UrlGuardError:
+                    return None  # shared SSRF guard rejected the target
+                try:
+                    with client.stream("GET", current, headers=headers, follow_redirects=False) as resp:
+                        if resp.status_code in (301, 302, 303, 307, 308):
+                            location = resp.headers.get("location")
+                            if not location:
+                                return None
+                            current = urljoin(current, location)
+                            continue
+                        if resp.status_code >= 500:
+                            raise _TransientFetchError(f"Meta CDN returned {resp.status_code}")
+                        if resp.status_code != 200:
+                            return None
+                        buf = bytearray()
+                        for chunk in resp.iter_bytes():
+                            buf.extend(chunk)
+                            if len(buf) > _MAX_FETCH_BYTES:
+                                return None  # AC-CHN-47 "capped read" - truncated, unavailable
+                        content = bytes(buf)
+                except httpx.HTTPError as exc:
+                    raise _TransientFetchError(str(exc)) from exc
+                mime = None
+                try:
+                    from ..services.media_pipeline import detect_media_mime
+
+                    mime = detect_media_mime(content)
+                except Exception:  # noqa: BLE001 - a sniff hiccup is a rejection, not a crash
+                    mime = None
+                if not _is_allowed_fetch_mime(mime):
+                    return None  # sniff mismatch / not on the images+video+audio+pdf allowlist
+                return {"content": content, "mime_type": mime}
+            return None  # too many redirects
+        finally:
+            if self._client is None:
+                client.close()
 
     def list_templates(self, credentials: Dict[str, Any], waba_id: str) -> list:
         return []  # No message-template concept on Messenger/Instagram (D-A7-17).

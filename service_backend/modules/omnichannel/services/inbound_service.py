@@ -13,7 +13,8 @@ message stamps the identity's own re-engagement window via
 """
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
@@ -201,16 +202,28 @@ class InboundService:
                 }
 
         # Media (§4.2.4 / plan 12 AC-12-09): fetch via Graph + store by KEY.
-        # Dev/unconfigured → no key, the body/caption still lands.
+        # Dev/unconfigured → no key, the body/caption still lands. Plan 32 S5
+        # (D-A7-12/AC-CHN-46): Messenger/Instagram never carry a media id -
+        # the payload's `media_url` (a short-lived CDN link) is fetched
+        # through the SSRF-guarded `fetch_media_url` seam instead.
         media_key = None
         media_mime = event.get("media_mime")
         media_size = None
+        media_unavailable = False
         if event.get("media_id"):
             stored = self._store_media(channel, event["media_id"])
             if stored is not None:
                 media_key = stored["key"]
                 media_mime = stored.get("mime") or media_mime
                 media_size = stored.get("size")
+        elif event.get("media_url"):
+            stored = self._store_media_from_url(channel, event["media_url"])
+            if stored is not None:
+                media_key = stored["key"]
+                media_mime = stored.get("mime") or media_mime
+                media_size = stored.get("size")
+            else:
+                media_unavailable = True
 
         message_type = event.get("message_type") or "TEXT"
         # Unsupported inbound type → placeholder, never dropped (plan 12 AC-12-17).
@@ -235,7 +248,18 @@ class InboundService:
             media_filename=event.get("media_filename"),
             media_size=media_size,
             # Structured payload (interactive-reply / location / contacts, Slice 2).
-            payload_json=event.get("payload"),
+            # AC-CHN-46: a Messenger/Instagram `pendingMediaUrl` placeholder is
+            # CONSUMED here - a successful fetch clears it (the media_key
+            # carries the durable reference now); a failure replaces it with
+            # a `mediaUnavailable` marker rather than the now-expired CDN URL
+            # (persisting a short-lived link for a later retry is dead
+            # weight - `fetch_media_url` already retried once inline). The
+            # message still lands either way - never dropped.
+            payload_json=(
+                ({"mediaUnavailable": True} if media_unavailable else None)
+                if event.get("media_url")
+                else event.get("payload")
+            ),
             external_message_id=external_id,
             metadata_json=metadata,
             # Explicit (µs precision) - the DB server_default is second-granular
@@ -559,16 +583,118 @@ class InboundService:
             return None
         return {"key": key, "mime": mime, "size": len(content)}
 
+    def _store_media_from_url(self, channel: Channel, url: str) -> Optional[Dict[str, Any]]:
+        """Inbound Messenger/Instagram attachment (plan 32 S5, D-A7-12/
+        AC-CHN-46/47): the payload carries a short-lived CDN URL, not a media
+        id. Downloaded with the page token through `adapter.fetch_media_url`
+        (HTTPS + Meta CDN allowlist + the shared SSRF guard + capped read +
+        bounded redirects + a bounded inline retry, ALL enforced inside the
+        adapter that owns the CDN allowlist) then stored through the SAME
+        `storage_for_tenant` path as WhatsApp media - a storage hiccup loses
+        the media, never the message. Returns {key, mime, size} or None."""
+        from app.services.storage import storage_for_tenant
+
+        from ..security import decrypt_credentials
+
+        adapter = get_adapter(channel.channel_type)
+        fetch = getattr(adapter, "fetch_media_url", None)
+        if fetch is None:
+            return None
+        try:
+            credentials = decrypt_credentials(channel.credentials_json)
+        except Exception:  # noqa: BLE001 - bad/dev credentials: skip media, keep the message
+            return None
+        try:
+            blob = fetch(credentials, url)
+        except Exception:  # noqa: BLE001 - a fetch hiccup must never drop the message
+            logger.exception("media URL fetch failed for channel %s", channel.id)
+            return None
+        if not blob:
+            return None
+        content = blob["content"]
+        mime = blob.get("mime_type") or "application/octet-stream"
+        # Connection-driven storage (plan 06 D1). Best-effort: a storage hiccup
+        # (bad bucket creds, network) must not fail the task and drop the MESSAGE.
+        try:
+            key = storage_for_tenant(self.db, channel.tenant_id).save(
+                f"omnichannel/{channel.tenant_id}/{uuid4().hex}", content, mime
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("media store (url fetch) failed for channel %s", channel.id)
+            return None
+        return {"key": key, "mime": mime, "size": len(content)}
+
     # ── Delivery receipts ────────────────────────────────────────────────────
     def _handle_status(self, channel: Channel, event: Dict[str, Any]) -> bool:
-        external_id = event.get("external_message_id")
+        """Apply a `status` event to every message it targets. WhatsApp
+        (unchanged, AC-CHN-23): one `external_message_id` per webhook row.
+        Messenger/Instagram (plan 32 S5, D-A7-22): a `delivery`/`read`
+        webhook carries `mids[]` when Meta has them, else only a `watermark`
+        - every outbound message sent at or before that instant is a target.
+        Whatever the target set, EACH message goes through the same
+        `_apply_receipt` (rank-forward guard, broadcast hook, realtime
+        publish, consumer-webhook fan-out) - one path, never a second one for
+        the bulk case. Returns True iff at least one target actually moved."""
         new_status = event.get("status")
-        if not external_id or new_status not in ("SENT", "DELIVERED", "READ", "FAILED"):
+        if new_status not in ("SENT", "DELIVERED", "READ", "FAILED"):
             return False
-        msg = self.repo.get_message_by_external_id(external_id, channel.tenant_id)
-        if msg is None:
+        targets = self._resolve_status_targets(channel, event)
+        if not targets:
             return False
+        applied_any = False
+        for msg in targets:
+            if self._apply_receipt(channel, msg, new_status, event):
+                applied_any = True
+        return applied_any
 
+    def _resolve_status_targets(
+        self, channel: Channel, event: Dict[str, Any]
+    ) -> List[ConversationMessage]:
+        """WhatsApp/Messenger's per-message case: `external_message_id`
+        resolves ONE row (AC-CHN-23, byte-identical). Messenger/Instagram's
+        `mids[]` (AC-CHN-49 "by mids[] when present") resolves each mid
+        exactly. Otherwise (Messenger/Instagram with no mids) fall back to
+        the `watermark` (D-A7-22): resolve the sending identity by PSID/IGSID
+        (`event["from"]`) and target every outbound row on that thread sent
+        at or before the watermark instant."""
+        external_id = event.get("external_message_id")
+        if external_id:
+            msg = self.repo.get_message_by_external_id(external_id, channel.tenant_id)
+            return [msg] if msg is not None else []
+
+        mids = event.get("mids") or []
+        if mids:
+            seen: set = set()
+            targets: List[ConversationMessage] = []
+            for mid in mids:
+                msg = self.repo.get_message_by_external_id(mid, channel.tenant_id)
+                if msg is not None and msg.id not in seen:
+                    seen.add(msg.id)
+                    targets.append(msg)
+            return targets
+
+        watermark = event.get("watermark")
+        sender = event.get("from")
+        if watermark is None or not sender:
+            return []
+        identity = self.repo.find_identity(channel.id, sender)
+        if identity is None:
+            return []
+        try:
+            at = datetime.fromtimestamp(int(watermark) / 1000, tz=timezone.utc)
+        except (TypeError, ValueError, OSError):
+            return []  # malformed watermark - never crash the inbound pipeline
+        return self.repo.outbound_before_watermark(
+            identity.contact_id, channel.id, channel.tenant_id, at=at
+        )
+
+    def _apply_receipt(
+        self, channel: Channel, msg: ConversationMessage, new_status: str, event: Dict[str, Any]
+    ) -> bool:
+        """The ONE per-message receipt application (rank-forward guard +
+        commit + broadcast hook + realtime publish + consumer-webhook fan-out)
+        - shared verbatim by the single-`external_message_id` case AND every
+        message a watermark/`mids[]` receipt bulk-targets."""
         if new_status == "FAILED":
             msg.delivery_status = "FAILED"
             msg.error_code = event.get("error_code")
@@ -613,7 +739,7 @@ class InboundService:
             f"{msg.id}:{msg.delivery_status}",
             {
                 "messageId": msg.id,
-                "externalMessageId": external_id,
+                "externalMessageId": msg.external_message_id,
                 "contactId": msg.contact_id,
                 "deliveryStatus": msg.delivery_status,
                 "errorCode": msg.error_code,

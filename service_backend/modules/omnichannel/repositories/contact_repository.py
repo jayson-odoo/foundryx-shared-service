@@ -342,6 +342,28 @@ class ContactRepository:
             .first()
         )
 
+    def outbound_before_watermark(
+        self, contact_id: str, channel_id: str, tenant_id: str, *, at: datetime
+    ) -> List[ConversationMessage]:
+        """Messenger/Instagram `message_deliveries`/`message_reads` receipts
+        are WATERMARK-based (plan 32 / A7a, D-A7-22), not per-message: every
+        outbound row on this thread SENT AT OR BEFORE the watermark instant
+        is a receipt candidate. Sender-side only (never a `CONTACT` row) -
+        the caller re-checks each row's own status rank so a receipt still
+        only ever moves forward (a late `SENT` watermark after `READ` is a
+        no-op per row, never a regression)."""
+        return (
+            self.db.query(ConversationMessage)
+            .filter(
+                ConversationMessage.tenant_id == tenant_id,
+                ConversationMessage.contact_id == contact_id,
+                ConversationMessage.channel_id == channel_id,
+                ConversationMessage.sender_type != "CONTACT",
+                ConversationMessage.created_at <= at,
+            )
+            .all()
+        )
+
     # ── Reactions (plan 12 Slice 3) ─────────────────────────────────────────
     def set_reaction(
         self,

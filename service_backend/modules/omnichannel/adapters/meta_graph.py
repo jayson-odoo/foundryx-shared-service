@@ -48,6 +48,34 @@ class GraphCall:
 GraphRecorder = Callable[[GraphCall], None]
 
 
+# Meta throttling/rate-limit error codes (plan 32 S5, AC-CHN-51). Meta does
+# NOT reserve a 5xx status for these - a page or app quota breach still comes
+# back as HTTP 400 (sometimes 200) with one of these `error.code` values, or
+# occasionally a bare HTTP 429. Only Messenger/Instagram call
+# `is_rate_limited_error` (`adapters/messenger.py`) - WhatsApp's own transient
+# rule (`status_code >= 500`) stays byte-identical (AC-CHN-23).
+# Source (error codes 4 "API Too Many Calls", 17 "User request limit
+# reached", 32 "Page request limit reached", 613 "Calls to this api have
+# exceeded the rate limit"; the per-call `X-Business-Use-Case-Usage` header):
+# https://developers.facebook.com/docs/graph-api/guides/error-handling
+# https://developers.facebook.com/docs/graph-api/overview/rate-limiting
+_RATE_LIMIT_ERROR_CODES = {4, 17, 32, 613}
+
+
+def is_rate_limited_error(resp: "httpx.Response") -> bool:
+    """True when this Graph response is Meta throttling the call - a raw HTTP
+    429, or an `error.code` in `_RATE_LIMIT_ERROR_CODES` regardless of HTTP
+    status. Never raises - a malformed/non-JSON error body is simply "not a
+    rate limit" (the caller's normal error path still fires)."""
+    if resp.status_code == 429:
+        return True
+    try:
+        code = ((resp.json() or {}).get("error") or {}).get("code")
+    except ValueError:
+        return False
+    return code in _RATE_LIMIT_ERROR_CODES
+
+
 def _meta_error_detail(resp: "httpx.Response") -> str:
     """Assemble the most specific message Meta gives. ``error.message`` alone is
     often the generic title ("Invalid parameter"); the real reason lives in
