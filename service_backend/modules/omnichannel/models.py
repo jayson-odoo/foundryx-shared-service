@@ -194,6 +194,12 @@ class Contact(OmniBase):
     # carry duplicates (a unique index would fail the backfill migration).
     phone_digits = Column(String, nullable=True, index=True)
     avatar_url = Column(String, nullable=True)
+    # Descriptive marker only (plan 33 D-A6-3) - NEVER the idempotency key
+    # (that is `migration_refs`, below). Nullable/indexed; value e.g.
+    # "respondio". Set ONLY on a contact the migration itself CREATED - a
+    # pre-existing contact the migration MERGED into keeps its own history
+    # honest (it wasn't "migrated in", one of its rows was).
+    migrated_from = Column(String, nullable=True, index=True)
     # `none_as_null=True` (house rule) - without it a Python `None` assignment
     # stores a JSON `null` scalar instead of a SQL NULL, which then breaks
     # `jsonb_each`/`jsonb_typeof` on Postgres reads (review round 2, finding
@@ -516,6 +522,13 @@ class ConversationMessage(OmniBase):
     error_code = Column(String, nullable=True)
     error_message = Column(Text, nullable=True)
     metadata_json = Column(JSON, nullable=True)
+    # Descriptive marker only (plan 33 D-A6-3, S3+) - a migrated history row's
+    # `external_message_id` stays NULL (the GLOBAL wamid-dedupe unique, above,
+    # must never be overloaded with a source id); this column is what makes a
+    # migrated row self-describing without a join. Added in S2's migration
+    # alongside `contacts.migrated_from` (both land together, AC-MIG-18) even
+    # though S2 itself never writes a message row (S3 does).
+    migrated_from = Column(String, nullable=True, index=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
     @property
@@ -898,6 +911,43 @@ class WorkflowContactFire(OmniBase):
     )
 
 
+class MigrationRef(OmniBase):
+    """respond.io migration idempotency index (plan 33 S2, D-A6-3, §5.3).
+
+    ``(source external id) -> (Foundryx local id)`` per entity type. THE ONLY
+    idempotency key - a re-run skips every external id already present here
+    (``MigrationRefRepository.already_migrated``). Marker columns
+    (``contacts.migrated_from``, ``conversation_messages.migrated_from``) are
+    descriptive only, never consulted for skip-on-rerun logic.
+
+    ``entity_type`` in {contact, message, identity, tag, field, quick_reply,
+    user, channel, event} (plan §5.3) - S2 only ever writes "contact"; later
+    slices add the rest without a schema change.
+    """
+
+    __tablename__ = "migration_refs"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False, index=True)
+    source = Column(String, nullable=False)  # "respondio" (S5 CSV mode reuses "respondio" too)
+    entity_type = Column(String, nullable=False)
+    external_id = Column(String, nullable=False)  # stringified vendor id
+    local_id = Column(String, nullable=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "workspace_id", "source", "entity_type", "external_id",
+            name="uq_migration_refs_external",
+        ),
+        Index(
+            "ix_migration_refs_local",
+            "tenant_id", "workspace_id", "source", "entity_type", "local_id",
+        ),
+    )
+
+
 class WorkflowWait(OmniBase):
     """A parked workflow run's module-side index (plan sprint-4/31 S4, §5.4).
 
@@ -941,6 +991,45 @@ class WorkflowWait(OmniBase):
         UniqueConstraint("tenant_id", "contact_id", name="uq_workflow_wait_contact"),
         Index("ix_workflow_waits_due", "tenant_id", "deadline_at"),
     )
+
+
+class MigrationUpload(OmniBase):
+    """Tenant-scoped upload receipt for a migration CSV (plan 33 review round
+    1, finding B2). `upload_csv` used to hand the client a raw, unvalidated
+    storage key back (`MigrationUploadResult.key`), and `MigrationJobCreate.
+    contactsCsvKey`/`snippetsCsvKey` accepted ANY client-supplied string,
+    fetched straight off `storage_for_tenant(...).fetch(key)` with no
+    ownership or shape check - a client-controlled key is a path-traversal /
+    cross-tenant-blob read (the house "tenant-authored storage keys are
+    sanitised" rule, and the polymorphic-stored-id class this codebase has
+    been bitten by twice already).
+
+    This row is the fix: `upload_csv` persists ITS OWN key here and returns
+    an OPAQUE `id`; `MigrationJobCreate` now carries `contactsUploadId`/
+    `snippetsUploadId` instead, resolved tenant-scoped (`MigrationService.
+    _require_upload`) at job-create time - a foreign or unknown id reads back
+    as a uniform 404, exactly like `_require_connection`/`_require_workspace`.
+    The RESOLVED `storage_key` is what actually lands in the job's
+    `payload_json` (`contactsCsvKey`/`snippetsCsvKey`, unchanged internal
+    names) - the phase-processing code (`_process_csv_contacts`,
+    `_process_quick_replies_csv`) never changes, only the client-facing
+    wire contract does.
+
+    `workspace_id` is nullable - the setup form lets an operator upload a
+    CSV before picking a target workspace (informational only; ownership is
+    tenant-scoped, never workspace-scoped, at resolve time)."""
+
+    __tablename__ = "migration_uploads"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, index=True)
+    kind = Column(String, nullable=False)  # "contacts" | "snippets"
+    storage_key = Column(String, nullable=False)
+    row_count = Column(Integer, nullable=False, default=0)
+    headers_json = Column(JSON(none_as_null=True), nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
 
 class EmbedJti(OmniBase):

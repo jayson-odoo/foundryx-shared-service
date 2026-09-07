@@ -11,7 +11,7 @@ needs (`authorize`).
 
 Slice S1 (inbound) shipped `POLICIES` + `stamp_inbound_window` (the one seam
 every inbound path calls, AC-CHN-21) and `backfill_identity_windows` (the
-dialect-agnostic twin of migration `0017`'s Postgres backfill SQL, AC-CHN-14).
+dialect-agnostic twin of migration `0019`'s Postgres backfill SQL, AC-CHN-14).
 
 Slice S2 (outbound, AC-CHN-22..31) adds the OUTBOUND side: `authorize` is the
 ONE function every send path calls - it answers "may this message be sent on
@@ -83,7 +83,7 @@ def stamp_inbound_window(
 
 
 def backfill_identity_windows(db: Session, tenant_id: Optional[str] = None) -> int:
-    """Dialect-agnostic backfill twin of migration `0017`'s Postgres SQL sweep
+    """Dialect-agnostic backfill twin of migration `0019`'s Postgres SQL sweep
     (AC-CHN-14) - a plain Python loop so it runs identically under pytest's
     SQLite engine (the migration's raw `UPDATE ... FROM` is Postgres-only and
     never runs there - the same lesson `ContactRepository.

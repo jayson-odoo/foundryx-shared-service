@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Sequence, Tuple
 
-from sqlalchemy import Text, cast, nulls_first, or_, select, update
+from sqlalchemy import Text, cast, nulls_first, nulls_last, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.background_job import (
@@ -33,6 +33,7 @@ from ..models import (
     STAGED_OP_DELETE,
     STAGED_PUSHED,
     AcCompany,
+    AcDocFingerprint,
     AcEntityConfig,
     AcFieldMapping,
     AcRowHash,
@@ -579,15 +580,23 @@ class StagedRecordRepository:
         The per-JOB ``list_pending_for_job`` is untouched: the review gate is a
         per-batch decision and must not widen.
 
-        **Ordered ``last_offered_at`` NULLS FIRST, then oldest-first**
-        (fix/push-marks-per-chunk, prod finding 2026-09-07): a permanently
-        ``retryable`` head (a master its consumer keeps saying isn't synced
-        yet) sorts oldest-first FOREVER under a plain ``created_at`` order,
-        starving every row staged after it once the offer cap is below the
-        stuck count. Stamping ``last_offered_at`` on every offer
-        (``mark_offered``, called by the caller right after this read) and
-        sorting never-offered rows first means a fresh row is offered within
-        one extra tick even behind an arbitrarily large stuck head.
+        **Ordered ``last_offered_at`` NULLS FIRST, then newest-source-first,
+        then oldest-created-first** (fix/push-marks-per-chunk, prod finding
+        2026-09-07; feat/line-fingerprint-sweep adds the middle term): a
+        permanently ``retryable`` head (a master its consumer keeps saying
+        isn't synced yet) sorts oldest-first FOREVER under a plain
+        ``created_at`` order, starving every row staged after it once the
+        offer cap is below the stuck count. Stamping ``last_offered_at`` on
+        every offer (``mark_offered``, called by the caller right after this
+        read) and sorting never-offered rows first means a fresh row is
+        offered within one extra tick even behind an arbitrarily large stuck
+        head. Among never-offered rows (and, after a full sweep, among
+        re-offered ones too), ``source_last_modified`` DESC breaks the tie
+        so the sweep's own re-staged documents - which can land in any
+        ``created_at`` order relative to the normal paged pass - are still
+        offered newest-source-change-first; NULLS LAST keeps a row with no
+        source stamp (never fetched with a watermark column) from jumping
+        ahead of one that has a real, recent change.
         """
         parked = (
             self.db.query(BackgroundJob.id)
@@ -614,6 +623,7 @@ class StagedRecordRepository:
             )
             .order_by(
                 nulls_first(AcStagedRecord.last_offered_at.asc()),
+                nulls_last(AcStagedRecord.source_last_modified.desc()),
                 AcStagedRecord.created_at.asc(),
                 AcStagedRecord.id.asc(),
             )
@@ -1033,6 +1043,105 @@ class RowHashRepository:
             )
             .delete(synchronize_session=False)
         )
+        self.db.flush()
+        return deleted
+
+
+class DocFingerprintRepository:
+    """``ac_doc_fingerprint`` - the line-fingerprint sweep's own state
+    (feat/line-fingerprint-sweep). ONE row per document header ever seen
+    by a sweep, holding the sha256 of its own fingerprint query's ordered
+    aggregate values - a SEPARATE table from ``ac_row_hash``: this
+    refreshes on EVERY sweep tick regardless of whether the header's own
+    row hash changed. Every query scoped by (tenant, company, entity), the
+    same discipline as ``RowHashRepository`` above.
+    """
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def hashes_for(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+    ) -> dict[str, str]:
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        out: dict[str, str] = {}
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            rows = (
+                self.db.query(AcDocFingerprint.source_ref, AcDocFingerprint.fingerprint)
+                .filter(
+                    AcDocFingerprint.tenant_id == tenant_id,
+                    AcDocFingerprint.company_id == company_id,
+                    AcDocFingerprint.entity_type == entity_type,
+                    AcDocFingerprint.source_ref.in_(chunk),
+                )
+                .all()
+            )
+            out.update({ref: value for ref, value in rows})
+        return out
+
+    def upsert_many(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        fingerprints: dict[str, str],
+        *,
+        seen_at: datetime,
+    ) -> None:
+        """Write/refresh the fingerprint of every ref given. Set-based, same
+        shape as ``RowHashRepository.upsert_many``. Does not commit; the
+        caller owns the transaction."""
+        if not fingerprints:
+            return
+        existing = self.hashes_for(tenant_id, company_id, entity_type, list(fingerprints))
+        scope = {"tenant_id": tenant_id, "company_id": company_id, "entity_type": entity_type}
+        updates = [
+            {**scope, "source_ref": ref, "fingerprint": value, "seen_at": seen_at}
+            for ref, value in fingerprints.items()
+            if ref in existing
+        ]
+        inserts = [
+            {**scope, "source_ref": ref, "fingerprint": value, "seen_at": seen_at}
+            for ref, value in fingerprints.items()
+            if ref not in existing
+        ]
+        if updates:
+            self.db.bulk_update_mappings(AcDocFingerprint, updates)
+        if inserts:
+            self.db.bulk_insert_mappings(AcDocFingerprint, inserts)
+        self.db.flush()
+
+    def delete_many(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+    ) -> int:
+        """Drop the fingerprint rows for CONFIRMED-DELETED refs - the
+        reconcile-completion counterpart of ``RowHashRepository.
+        delete_many``, called on the SAME ``stale`` ref list so a vanished
+        document's fingerprint never outlives the document itself. Does not
+        commit; the caller owns the transaction."""
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        deleted = 0
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            deleted += (
+                self.db.query(AcDocFingerprint)
+                .filter(
+                    AcDocFingerprint.tenant_id == tenant_id,
+                    AcDocFingerprint.company_id == company_id,
+                    AcDocFingerprint.entity_type == entity_type,
+                    AcDocFingerprint.source_ref.in_(chunk),
+                )
+                .delete(synchronize_session=False)
+            )
         self.db.flush()
         return deleted
 

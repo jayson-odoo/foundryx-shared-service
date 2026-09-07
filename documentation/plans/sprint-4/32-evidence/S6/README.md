@@ -106,7 +106,7 @@ slice, reported here as actually observed.
    on ANY error (never flips `notFound`); only the channel fetch failing is a real 404. The
    pre-existing tab-filtering logic (`isWhatsApp` gating Templates/Profile) was already correct
    once the page could render. Reproduced on the SEEDED `chn-demo-ig` channel too (not new to the
-   channel I connected in this run), so it predates this slice - filed as **BL-SS-144** below with
+   channel I connected in this run), so it predates this slice - filed as **BL-SS-150** below with
    a fix already merged in this commit (screenshots 04/05 above are POST-fix).
 2. **Conversation drawer header badge always read "WhatsApp"** (`conversation-drawer.tsx`) -
    hardcoded `<Badge>WhatsApp</Badge>` regardless of `thread.channelType` (exactly the S0-S5

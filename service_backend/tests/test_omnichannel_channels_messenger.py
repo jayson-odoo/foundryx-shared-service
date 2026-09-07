@@ -15,7 +15,7 @@ from modules.omnichannel.services import realtime
 from tests.test_omnichannel_conversations import _auth
 from tests.test_omnichannel_contact_data_model import _other_tenant_auth
 
-ALEMBIC_REV = "0017_omni_meta_channels"
+ALEMBIC_REV = "0019_omni_meta_channels"
 
 
 @pytest.fixture(autouse=True)
@@ -84,11 +84,15 @@ def _messenger_payload(*, page_id="pg-701", psid="psid-1", mid="m.1", text="Hell
 
 
 # ── AC-CHN-13/14: migration + backfill ───────────────────────────────────────
-def test_migration_0017_revision_sanity():
+def test_migration_0019_revision_sanity():
     mod = importlib.import_module(f"modules.omnichannel.alembic.versions.{ALEMBIC_REV}")
     assert mod.revision == ALEMBIC_REV
     assert len(mod.revision) <= 32
-    assert mod.down_revision == "0016_omni_business_hours"
+    # Renumbered at merge (plan 32 into main, 2026-09-07): the module head
+    # main was on when this migration first landed as 0017 was
+    # `0016_omni_business_hours`; the merge re-chained it after plan 33's
+    # 0017/0018 (migration_refs/migration_uploads), which merged first.
+    assert mod.down_revision == "0018_omni_migration_uploads"
     assert callable(mod.upgrade) and callable(mod.downgrade)
 
 

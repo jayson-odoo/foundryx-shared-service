@@ -173,8 +173,12 @@ def test_grant_sweep_on_update(client, session_factory):
 
     db2 = session_factory()
     module, new_state = AppStoreService(db2).update(DEFAULT_TENANT_ID, "omnichannel")
-    assert module.version == "0.8.0"  # plan 32 bump
-    assert new_state.installed_version == "0.8.0"
+    # Plan 32 S1 bumped the manifest to 0.9.0 (plan 33 bumped it to 0.8.0
+    # first) - this test pins "the CURRENT manifest version", not a fixed
+    # string (updated the same way every prior version bump updated it
+    # before, e.g. plan 27/28/29/31/33).
+    assert module.version == "0.9.0"
+    assert new_state.installed_version == "0.9.0"
     db2.close()
 
     h = _auth(client)

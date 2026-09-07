@@ -181,9 +181,14 @@ describe('AC-DLA-48 loading.tsx inventory - every ResourceList/DataGrid/Resource
       // reads as "isList" to the JSX-tag scan, with no `ResourceForm` usage
       // to flip `isRecord`). Both render RecordPageSkeleton (their real
       // shape), asserted directly below instead of via the generic branch.
+      // Plan 33 S0 adds `omnichannel/settings/migration/[jobId]` to the
+      // same exception: the job detail page embeds `MigrationReportCard` +
+      // `MigrationFailuresTable`, each a small `DataGrid` (counts/failure
+      // rows), with no `ResourceForm` - the identical shape, not a new one.
       if (
         s.rel === path.join('app', '(protected)', 'imports', '[jobId]') ||
-        s.rel === path.join('app', '(protected)', 'jobs', '[id]')
+        s.rel === path.join('app', '(protected)', 'jobs', '[id]') ||
+        s.rel === path.join('app', '(protected)', 'omnichannel', 'settings', 'migration', '[jobId]')
       ) {
         const loadingPath = path.join(s.dir, 'loading.tsx');
         const mod = await import(/* @vite-ignore */ loadingPath);

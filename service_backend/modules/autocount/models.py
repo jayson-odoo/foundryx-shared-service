@@ -270,6 +270,34 @@ class AcRowHash(AutocountBase):
     last_seen_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
 
+class AcDocFingerprint(AutocountBase):
+    """feat/line-fingerprint-sweep - ONE row per document header ever seen by
+    an incremental sweep, holding the sha256 of its own fingerprint query's
+    ordered aggregate values (``sql_source.hashing.document_fingerprint``) -
+    never a copy of the row, mirroring ``AcRowHash``'s own shape and reason.
+
+    Distinct from ``AcRowHash``: the row hash covers the HEADER's own result
+    columns and only ever refreshes when a header is actually re-fetched; this
+    fingerprint is a cheap ``GROUP BY`` over the LINE table, computed on every
+    sweep tick REGARDLESS of whether the header changed, so it can flag a
+    line-only edit AutoCount never bumps the header's ``LastModified`` for
+    (prod finding SO419208 - ``SODTL.TransferedQty`` rising with no
+    ``SO.LastModified`` change).
+    """
+
+    __tablename__ = "ac_doc_fingerprint"
+    __table_args__ = (
+        Index("ix_ac_doc_fingerprint_scope", "tenant_id", "company_id", "entity_type"),
+    )
+
+    tenant_id = Column(String, primary_key=True)
+    company_id = Column(String, primary_key=True)
+    entity_type = Column(String, primary_key=True)
+    source_ref = Column(String, primary_key=True)
+    fingerprint = Column(String, nullable=False)
+    seen_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
 class AcWatermark(AutocountBase):
     """Per (company, entity) delta high-water mark.
 
@@ -297,6 +325,14 @@ class AcWatermark(AutocountBase):
     last_attempt_at = Column(UTCDateTime(), nullable=True)
     consecutive_failures = Column(Integer, nullable=False, default=0)
     last_error = Column(Text, nullable=True)
+    # feat/line-fingerprint-sweep - when the fingerprint sweep last ran
+    # SUCCESSFULLY for this (company, entity). NULL/missing = due (a task
+    # that has never swept, or whose last sweep errored, sweeps on its very
+    # next incremental run). Advances only on a clean sweep - a fingerprint
+    # query error leaves it untouched (the module docstring's "fails only
+    # the sweep" rule) so the next tick retries rather than waiting out a
+    # full interval on a query that is still broken.
+    last_fingerprint_sweep_at = Column(UTCDateTime(), nullable=True)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())

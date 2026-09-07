@@ -8,19 +8,19 @@ decrypts it, provisions the channel and stamps `consumed_at`. Brand new table
 (no existing-column ALTER), idempotent inspector guard, mirrors
 `0015_omni_workflow_waits`'s style. Revision id <= 32 chars.
 
-Revision ID: 0018_omni_meta_connect
-Revises: 0017_omni_meta_channels
+Revision ID: 0020_omni_meta_connect
+Revises: 0019_omni_meta_channels
 Create Date: 2026-09-07
 """
 from alembic import op
 import sqlalchemy as sa
 
 # UTCDateTime columns ride sa.DateTime(timezone=True) here (module-migration
-# convention, matching 0015/0017); import kept for parity with the house rule.
+# convention, matching 0015/0019); import kept for parity with the house rule.
 import app.models.utc_datetime  # noqa: F401
 
-revision = "0018_omni_meta_connect"
-down_revision = "0017_omni_meta_channels"
+revision = "0020_omni_meta_connect"
+down_revision = "0019_omni_meta_channels"
 branch_labels = None
 depends_on = None
 

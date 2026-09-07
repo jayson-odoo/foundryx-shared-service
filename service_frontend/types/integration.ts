@@ -17,7 +17,12 @@ export type IntegrationType =
   // Two categories, not one, because the one-active-per-type invariant must
   // let a tenant hold BOTH at once.
   | 'calendar'
-  | 'meeting_bot';
+  | 'meeting_bot'
+  // Plan 33 (roadmap A6): the respond.io migration source connection. A
+  // distinct type (D-A6-2, not reused `erp`/`consumer`) so a tenant can hold
+  // it alongside every other connection type without tripping the
+  // one-active-per-type index.
+  | 'migration';
 
 /** Connection health - UNVERIFIED until a test passes, ERROR on failures. */
 export type ConnectionStatus = 'ACTIVE' | 'UNVERIFIED' | 'ERROR';

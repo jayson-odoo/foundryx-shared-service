@@ -58,6 +58,14 @@ class DocumentPreset:
     filter_formula: Optional[str]
     header: Tuple[PresetField, ...]
     line: Tuple[PresetField, ...]
+    # feat/line-fingerprint-sweep - a cheap GROUP BY over the line table,
+    # scoped by the SAME header cut the fingerprint mismatch guard already
+    # rides (`from_date`, `ItemCode`/`Qty NOT NULL`), run on an interval by
+    # the incremental sweep to catch a line-only edit AutoCount never bumps
+    # the header's `LastModified` for (prod finding: `SODTL.TransferedQty`
+    # rising with no `SO.LastModified` change - see `sql_source/source.py`'s
+    # own sweep docstring for the full mechanism).
+    fingerprint_query: str = ""
 
 
 # ``LineCount`` fingerprint mismatch guard (S2, review round 4) - a plain
@@ -72,6 +80,16 @@ class DocumentPreset:
 # one reporting zero, is untouched by the guard - the engine itself stays
 # fingerprint-agnostic.
 LINE_COUNT_FINGERPRINT_COLUMN = "LineCount"
+
+#     !!  ADDING A SELECTED COLUMN CHANGES THE ROW HASH (feat/spo-container-
+#         number).  !!
+# `_PO_HEADER_QUERY` now selects `h.Ref AS Ref` where it did not before; the
+# change-detection engine hashes a header row over its OWN `result_columns`
+# with no special knowledge of any one column (the same mechanism the
+# `LineCount` fingerprint above rides), so every EXISTING shipping_order
+# task re-stages every SPO once, as an update, the first run after this
+# lane's backfill adds `Ref` to its `result_columns` - intended, not a bug:
+# it is exactly how the newly-populated container number reaches Sorento.
 
 
 # ── Sales Order ───────────────────────────────────────────────────────────────
@@ -153,6 +171,23 @@ _SO_LINE_QUERY = (
     "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
 )
 
+# feat/line-fingerprint-sweep - prod finding SO419208 (DocKey 45672056):
+# AutoCount updates `SODTL.TransferedQty` (a delivery transfer) WITHOUT
+# bumping `SO.LastModified`, so a plain `LastModified > :since` incremental
+# never sees the change and the CRM copy stays stale until the next daily
+# reconcile. A cheap `GROUP BY` over the line table, scoped by the SAME
+# `from_date`/`ItemCode`/`Qty NOT NULL` cuts the header's own OUTER APPLY
+# fingerprint already makes (so a pseudo-line/display-line can never move
+# this fingerprint either, the same live findings the header cuts closed),
+# run once per sweep interval to CATCH what the header hash cannot.
+_SO_FINGERPRINT_QUERY = (
+    "SELECT d.DocKey AS DocKey, COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
+    "SUM(d.TransferedQty) AS TransferedSum, MAX(d.DtlKey) AS MaxDtlKey "
+    "FROM {database}.dbo.SODTL AS d JOIN {database}.dbo.SO AS h ON h.DocKey = d.DocKey "
+    "WHERE h.DocDate >= :from_date AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL "
+    "GROUP BY d.DocKey"
+)
+
 SO_PRESET = DocumentPreset(
     label="AutoCount SO",
     header_query=_SO_HEADER_QUERY,
@@ -192,6 +227,7 @@ SO_PRESET = DocumentPreset(
         # preset row consuming it, line_number never reaches Sorento.
         PresetField("Seq", "line_number", "string"),
     ),
+    fingerprint_query=_SO_FINGERPRINT_QUERY,
 )
 
 
@@ -227,7 +263,7 @@ _PO_HEADER_QUERY = (
     "h.PurchaseAgent AS SalesAgent, h.DocDate AS DocDate, "
     "CAST(l.FirstDeliveryDate AS date) AS ExpectedDate, h.Cancelled AS Cancelled, "
     "h.CreditorCode AS CreditorCode, h.CreditorName AS CreditorName, "
-    "h.CurrencyCode AS CurrencyCode, h.LastModified AS LastModified, "
+    "h.CurrencyCode AS CurrencyCode, h.LastModified AS LastModified, h.Ref AS Ref, "
     "l.LineCount AS LineCount, l.QtySum AS QtySum, l.TransferedSum AS TransferedSum, "
     "l.SubTotalSum AS SubTotalSum, l.MaxDtlKey AS MaxDtlKey "
     "FROM {database}.dbo.PO AS h "
@@ -251,6 +287,17 @@ _PO_LINE_QUERY = (
     "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
     "LEFT JOIN {database}.dbo.Location AS w ON w.Location = d.Location "
     "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
+)
+
+# feat/line-fingerprint-sweep - the PO/PODTL equivalent of `_SO_FINGERPRINT_
+# QUERY` above (see that constant's own comment for the mechanism), shared
+# by PO and SPO exactly like their header/line queries already are.
+_PO_FINGERPRINT_QUERY = (
+    "SELECT d.DocKey AS DocKey, COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
+    "SUM(d.TransferedQty) AS TransferedSum, MAX(d.DtlKey) AS MaxDtlKey "
+    "FROM {database}.dbo.PODTL AS d JOIN {database}.dbo.PO AS h ON h.DocKey = d.DocKey "
+    "WHERE h.DocDate >= :from_date AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL "
+    "GROUP BY d.DocKey"
 )
 
 # addendum §3/§9 - a PO task filters OUT the SPO-numbered documents its
@@ -306,6 +353,7 @@ PO_PRESET = DocumentPreset(
         # preset row consuming it, line_number never reaches Sorento.
         PresetField("Seq", "line_number", "string"),
     ),
+    fingerprint_query=_PO_FINGERPRINT_QUERY,
 )
 
 # ── Shipping Order ────────────────────────────────────────────────────────────
@@ -339,6 +387,15 @@ SPO_PRESET = DocumentPreset(
         PresetField("CreditorCode", "supplier_code", "string"),
         PresetField("CreditorName", "supplier_name", "string"),
         PresetField("SalesAgent", "agent_code", "string"),
+        # feat/spo-container-number - AutoCount's generic `PO.Ref` is where
+        # Sorento's 68,519-allocation gap traces to: nothing selected it, so
+        # every SPO reached Sorento with no container. SPO-only (a PO is not
+        # a container booking) - PO_PRESET deliberately carries no row
+        # sourced from Ref. `PO.UDF_ShipOrder` ('T'/'F', a per-company UDF)
+        # would let a company route non-SPO-numbered documents through this
+        # same field too; that is a documented backlog follow-up
+        # (BL-SS-*, "PO.UDF_ShipOrder routing"), not built here.
+        PresetField("Ref", "container_number", "string"),
     ),
     line=(
         PresetField("DtlKey", "source_ref", "string", required=True),
@@ -356,6 +413,7 @@ SPO_PRESET = DocumentPreset(
         # preset row consuming it, line_number never reaches Sorento.
         PresetField("Seq", "line_number", "string"),
     ),
+    fingerprint_query=_PO_FINGERPRINT_QUERY,
 )
 
 DOCUMENT_PRESETS: Dict[str, DocumentPreset] = {
@@ -474,5 +532,9 @@ def list_mapping_presets(entity_type: str, database_name: str) -> List[Dict[str,
             "docDateColumn": preset.doc_date_column,
             "fromDate": preset.from_date or None,
             "filterFormula": preset.filter_formula,
+            "fingerprintQuery": (
+                preset.fingerprint_query.replace("{database}", database_name)
+                if preset.fingerprint_query else None
+            ),
         }
     ]

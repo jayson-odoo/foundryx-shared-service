@@ -27,8 +27,8 @@ SQLite branch mirrors ``0016`` for parity but this orchestrator already skips
 non-Postgres dialects entirely (module-platform.md), so it never runs under
 pytest (``conftest`` stays on ``create_all``).
 
-Revision ID: 0017_omni_meta_channels
-Revises: 0016_omni_business_hours
+Revision ID: 0019_omni_meta_channels
+Revises: 0018_omni_migration_uploads
 Create Date: 2026-09-07
 """
 from alembic import op
@@ -39,8 +39,8 @@ import sqlalchemy as sa
 # rule (CLAUDE.md: "add `import app.models.utc_datetime` by hand").
 import app.models.utc_datetime  # noqa: F401
 
-revision = "0017_omni_meta_channels"
-down_revision = "0016_omni_business_hours"
+revision = "0019_omni_meta_channels"
+down_revision = "0018_omni_migration_uploads"
 branch_labels = None
 depends_on = None
 

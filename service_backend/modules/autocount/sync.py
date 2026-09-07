@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -75,6 +75,7 @@ from .models import (
     ETL_STATUS_ACTIVE,
     RUN_ABORTED,
     RUN_FAILED,
+    RUN_MODE_INCREMENTAL,
     RUN_MODE_MANUAL,
     RUN_MODE_RECONCILE,
     RUN_SUCCESS,
@@ -89,6 +90,7 @@ from .models import (
 )
 from .repositories import (
     CompanyRepository,
+    DocFingerprintRepository,
     EntityConfigRepository,
     RowHashRepository,
     StagedRecordRepository,
@@ -1059,6 +1061,162 @@ def _stage_documents(
     return staged, failed, failed_refs
 
 
+def _run_fingerprint_sweep(
+    db: Session,
+    service: JobService,
+    job: BackgroundJob,
+    source,
+    engine: MappingEngine,
+    watermark_row: AcWatermark,
+    *,
+    tenant_id: str,
+    company_id: str,
+    entity_type: str,
+) -> Tuple[int, int, int, int]:
+    """The line-fingerprint sweep (feat/line-fingerprint-sweep) - INCREMENTAL
+    runs only, called once per run AFTER the watermark-paged pass above has
+    already committed. Returns ``(staged, failed, added, updated)`` to fold
+    into the run's own totals; a task with no ``fingerprint_query`` (predates
+    this lane, or never picked the preset), or one still inside its own
+    sweep interval, is a silent no-op - the caller's totals are untouched
+    either way.
+
+    Prod finding this exists for: SO419208 (DocKey 45672056) had a delivery
+    transfer after our initial staging. AutoCount updates
+    ``SODTL.TransferedQty`` WITHOUT bumping ``SO.LastModified``, and the
+    SODTL ``Last*Modified`` stamps are NULL, so a plain
+    ``LastModified > :since`` incremental never sees the change. The sweep
+    runs a CHEAP aggregate query over the line table (grouped by DocKey,
+    bounded by ``from_date`` - the same floor the header wrap already
+    applies) and compares its own sha to what was stored last tick; a
+    header whose four aggregates all stayed the same is this sweep's one
+    blind spot (waits for the daily reconcile, as documented in the
+    addendum) - accepted as the cost of not re-fetching lines to detect
+    quantity-only drift.
+
+    Bucketing, once ``source.fetch_fingerprints()`` returns
+    ``{ref: (key_value, fingerprint)}``:
+
+    * a ref with a STORED fingerprint that DIFFERS is genuinely changed -
+      its DocKey joins a keyed header re-fetch (``source.fetch_by_keys``,
+      chunked at ``FINGERPRINT_KEY_CHUNK``) as a SEPARATE pass, never
+      OR-ed into the paged wrap above (would disturb its seek order and
+      cursor semantics).
+    * a ref with NO stored fingerprint whose header is already known by
+      row hash (``ac_row_hash``) is a SEED ONLY - this is the first sweep
+      ever to run for an existing document, so its fingerprint is written
+      straight from the value just computed, never fetched (nothing about
+      the document itself is new).
+    * a ref with NEITHER a stored fingerprint NOR a known row hash is a
+      genuinely new document - the plain watermark pass above already
+      picks up anything with a recent ``LastModified``, so this sweep
+      does not ALSO re-fetch it (that would double-count `added`/
+      `updated` against the page loop's own numbers); its fingerprint is
+      simply left unset until it is staged by some future run, harmless
+      to retry.
+
+    A fingerprint-QUERY failure (a broken/missing table, a typo'd column)
+    or a failure of the keyed re-fetch itself fails ONLY this sweep - a
+    WARNING naming "fingerprint", the run's own outcome (and whatever the
+    paged pass above already staged) stands, and
+    ``last_fingerprint_sweep_at`` is left untouched so the NEXT tick tries
+    again rather than silently going quiet for
+    ``autocount_fingerprint_sweep_minutes``.
+    """
+    if not getattr(source, "fingerprint_query", None):
+        return 0, 0, 0, 0
+
+    now = datetime.now(timezone.utc)
+    interval = timedelta(minutes=settings.autocount_fingerprint_sweep_minutes)
+    last_swept = watermark_row.last_fingerprint_sweep_at
+    if last_swept is not None and (now - last_swept) < interval:
+        return 0, 0, 0, 0
+
+    try:
+        fingerprints = source.fetch_fingerprints()
+        if not fingerprints:
+            watermark_row.last_fingerprint_sweep_at = now
+            db.commit()
+            return 0, 0, 0, 0
+
+        fp_repo = DocFingerprintRepository(db)
+        hashes_repo = RowHashRepository(db)
+        refs = list(fingerprints)
+        stored = fp_repo.hashes_for(tenant_id, company_id, entity_type, refs)
+        known_row_hashes = hashes_repo.hashes_for(tenant_id, company_id, entity_type, refs)
+
+        changed_refs = [
+            ref for ref in refs
+            if stored.get(ref) is not None and stored[ref] != fingerprints[ref][1]
+        ]
+        seed_only = {
+            ref: fingerprints[ref][1]
+            for ref in refs
+            if stored.get(ref) is None and ref in known_row_hashes
+        }
+
+        staged = failed = added = updated = 0
+        if changed_refs:
+            key_values = [fingerprints[ref][0] for ref in changed_refs]
+            page = source.fetch_by_keys(key_values)
+            staged, failed, failed_refs = _stage_documents(
+                db, service, job, page.records, engine=engine,
+                tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
+                ref_fn=source.source_ref, check_abort=False,
+            )
+            failed_ref_set = set(failed_refs)
+            added, updated = page.added, page.updated
+            #     !!  ``ac_row_hash`` STAYS THE PLAIN HEADER HASH - NEVER
+            #         MIXED WITH THE LINE FINGERPRINT (review round 2).  !!
+            # A plain `row_hash(header, compared_columns)` is BY DESIGN
+            # header-only (never sees lines) - the entire reason a sweep-
+            # triggered restage exists is a document whose header hash
+            # stays byte-identical while its lines moved. `ac_doc_fingerprint`
+            # (upserted a few lines below, from the value already computed
+            # by `fetch_fingerprints`) is the SOLE record of line state; this
+            # write must stay comparable to whatever a later full-header
+            # pass (a genuine header edit, or reconcile's own full re-read)
+            # computes with the SAME plain formula, or that pass would
+            # wrongly see "changed" and needlessly re-stage/re-push an
+            # already-current document with an identical payload (review
+            # round 2 reproduction: sweep, then reconcile, updated 1 with
+            # no source change at all).
+            changed_hashes = {
+                ref: value
+                for ref, value in page.hashes.items()
+                if ref not in page.unchanged_refs and ref not in failed_ref_set
+            }
+            if changed_hashes:
+                hashes_repo.upsert_many(
+                    tenant_id, company_id, entity_type, changed_hashes, seen_at=now
+                )
+            if page.unchanged_refs:
+                hashes_repo.touch_seen(
+                    tenant_id, company_id, entity_type, page.unchanged_refs, seen_at=now
+                )
+            if failed_refs:
+                hashes_repo.delete_many(tenant_id, company_id, entity_type, failed_refs)
+            fp_writes = {
+                ref: fingerprints[ref][1] for ref in changed_refs if ref not in failed_ref_set
+            }
+            if fp_writes:
+                fp_repo.upsert_many(tenant_id, company_id, entity_type, fp_writes, seen_at=now)
+
+        if seed_only:
+            fp_repo.upsert_many(tenant_id, company_id, entity_type, seed_only, seen_at=now)
+
+        watermark_row.last_fingerprint_sweep_at = now
+        db.commit()
+        return staged, failed, added, updated
+    except Exception as exc:  # noqa: BLE001 - a broken sweep must never fail the run
+        db.rollback()
+        logger.warning(
+            "autocount fingerprint sweep failed for job %s (%s.%s): %s",
+            job.id, entity_type, company_id, exc,
+        )
+        return 0, 0, 0, 0
+
+
 def _run_paged_sql_db(
     db: Session,
     service: JobService,
@@ -1554,6 +1712,16 @@ def _run_paged_sql_db(
                 db, job, stale, tenant_id=tenant_id, company_id=company_id,
                 entity_type=entity_type, current_refs=current_refs,
             )
+            # A vanished document's fingerprint must not outlive the
+            # document itself (feat/line-fingerprint-sweep, A4) - the SAME
+            # ``stale`` ref list ``_stage_deletes`` just staged, so the
+            # scoping (tenant + company, via the shared ``entity_type``
+            # filter) is identical.
+            if stale:
+                DocFingerprintRepository(db).delete_many(
+                    tenant_id, company_id, entity_type, stale
+                )
+                db.commit()
             # The reconcile's OWN public position advances only NOW that the
             # whole pass has genuinely finished (F3, review round 2) - never
             # per page, and never past whatever an incremental tick may have
@@ -1578,6 +1746,23 @@ def _run_paged_sql_db(
         # pass), and ``EtlService._initial_load`` reads ``initialLoad`` as
         # ``None`` once ``complete`` is true (AC-03-21) - two different
         # readers of the one flag, not two sources of truth.
+
+    # ── line fingerprint sweep (feat/line-fingerprint-sweep) ────────────────
+    # INCREMENTAL only, and only once the paged pass above has genuinely
+    # finished this tick - never on the initial load (D2: change-only
+    # staging has no baseline to sweep against yet) and never on a
+    # reconcile (which already re-reads and re-diffs every header). A
+    # truncated pass (``page.complete`` False) defers to its own
+    # continuation tick, same as the reconcile-delete block above.
+    if mode == RUN_MODE_INCREMENTAL and page is not None and page.complete:
+        sweep_staged, sweep_failed, sweep_added, sweep_updated = _run_fingerprint_sweep(
+            db, service, job, source, engine, watermark_row,
+            tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
+        )
+        total_staged += sweep_staged
+        total_failed += sweep_failed
+        total_added += sweep_added
+        total_updated += sweep_updated
 
     run.fetched_count = total_staged + total_failed
     run.rows_scanned = total_rows_scanned

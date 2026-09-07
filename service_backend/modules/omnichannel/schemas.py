@@ -1688,3 +1688,242 @@ class ReportExportRequest(ApiModel):
     channelId: Optional[str] = None
     teamId: Optional[str] = None
     groupBy: Optional[str] = None
+
+
+# ── Plan 33 - respond.io migration, S1 preflight (plan §5.2, AC-MIG-14) ─────
+# Mirrors `service_frontend/types/respondio-migration.ts` exactly - S2 adds
+# the job-create/list/detail schemas alongside `MigrationService` (the phase
+# orchestrator) in the same slice that needs them.
+class MigrationSourceChannel(ApiModel):
+    id: str
+    name: str
+    source: str
+
+
+class MigrationSourceUser(ApiModel):
+    id: str
+    firstName: str
+    lastName: str
+    email: str
+    role: str
+    teamId: Optional[str] = None
+    teamName: Optional[str] = None
+
+
+class MigrationSourceTeam(ApiModel):
+    id: str
+    name: str
+
+
+class MigrationSourceField(ApiModel):
+    id: str
+    name: str
+    dataType: str
+
+
+class MigrationTargetChannel(ApiModel):
+    id: str
+    name: str
+    channelType: str
+
+
+class MigrationTargetStage(ApiModel):
+    statusId: str
+    label: str
+
+
+class MigrationPreflight(ApiModel):
+    apiAvailable: bool
+    spaceLabel: str
+    channels: List[MigrationSourceChannel]
+    users: List[MigrationSourceUser]
+    teams: List[MigrationSourceTeam]
+    fields: List[MigrationSourceField]
+    # Decision taken where the plan's §5.2 preflight response was silent (S0
+    # evidence README "what S1 must know"): AC-MIG-06 needs every OBSERVED
+    # source lifecycle label before any dry run exists, and none of the other
+    # preflight calls touch a contact - so this is filled by one read-only
+    # distinct-value pass over `contact.lifecycle` (zero writes, AC-MIG-14).
+    lifecycles: List[str]
+    targetChannels: List[MigrationTargetChannel]
+    targetStages: List[MigrationTargetStage]
+    warnings: List[str]
+
+
+# ── Plan 33 S2 - migration job (plan §5.2, AC-MIG-18..29) ───────────────────
+class MigrationChannelMapEntry(ApiModel):
+    sourceChannelId: str
+    targetChannelId: Optional[str] = None  # None = "Skip this channel" (AC-MIG-04)
+
+
+class MigrationUserMapEntry(ApiModel):
+    sourceUserId: str
+    targetUserId: Optional[str] = None
+
+
+class MigrationTeamMapEntry(ApiModel):
+    sourceTeamId: str
+    targetTeamId: Optional[str] = None
+
+
+class MigrationLifecycleMapEntry(ApiModel):
+    sourceLabel: str
+    targetStatusId: Optional[str] = None  # None = unmapped, allowed (AC-MIG-06)
+
+
+class MigrationJobCreate(ApiModel):
+    """`POST /omnichannel/migration/jobs` body (§5.2). `messagesSince` stays a
+    plain `Optional[str]` (not `datetime`) so a malformed value is a HOUSE
+    `{fieldErrors: {messagesSince: ...}}` 422 the service raises itself,
+    never FastAPI's own un-housed pydantic-datetime 422 shape - the plan's
+    §5.2 422-paths list treats it exactly like `connectionId`/`workspaceId`.
+
+    `extra="forbid"` (review round 1, finding B2) - the RETIRED free-string
+    `contactsCsvKey`/`snippetsCsvKey` fields must 422 (`extra_forbidden`)
+    rather than silently pass through and be ignored; a caller still on the
+    old contract needs a loud failure, not a job that quietly never reads a
+    contacts file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # S5 (D-A6-25 below): a CSV-mode job has no working respond.io API access
+    # at all, so `connectionId` is OPTIONAL - a customer with zero API access
+    # never created a connection row. When present (even in CSV mode, purely
+    # to carry `spaceLabel` for display), it is still resolved tenant-scoped
+    # exactly like an API-mode job (AC-MIG-51/52) - never a bare lookup.
+    connectionId: Optional[str] = None
+    workspaceId: str
+    mode: Literal["dry_run", "run"]
+    source: Literal["api", "csv"] = "api"
+    channelMap: List[MigrationChannelMapEntry] = []
+    userMap: List[MigrationUserMapEntry] = []
+    teamMap: List[MigrationTeamMapEntry] = []
+    lifecycleMap: List[MigrationLifecycleMapEntry] = []
+    messagesSince: Optional[str] = None
+    contactsOnly: bool = False
+    # S5 (AC-MIG-47, D-A6-25) - `source="csv"` reads this contacts export
+    # through `app/import_engine/readers.py read_rows`, mapped by
+    # `csvHeaderMap` (system field key -> the file's own header string; a
+    # key with no entry falls back to a case-insensitive alias guess,
+    # `migration_service._HEADER_ALIASES`).
+    #
+    # `contactsUploadId`/`snippetsUploadId` (review round 1, finding B2 -
+    # REPLACES the earlier `contactsCsvKey`/`snippetsCsvKey` free-string
+    # fields) are the OPAQUE id `POST /omnichannel/migration/uploads`
+    # returns (`kind=contacts`/`kind=snippets`) - never a raw storage key a
+    # client could substitute for path traversal or another tenant's blob.
+    # `MigrationService.create_job` resolves each id tenant-scoped
+    # (`_require_upload`, uniform 404 on foreign/unknown) and carries the
+    # RESOLVED storage key forward internally under the job payload's own
+    # `contactsCsvKey`/`snippetsCsvKey` keys - the phase-processing code
+    # never changes, only this wire contract does.
+    contactsUploadId: Optional[str] = None
+    csvHeaderMap: Dict[str, str] = {}
+    snippetsUploadId: Optional[str] = None
+
+
+class MigrationEntityCounts(ApiModel):
+    fetched: int = 0
+    wouldCreate: int = 0
+    wouldUpdate: int = 0
+    wouldSkip: int = 0
+    errors: int = 0
+
+
+class MigrationReport(ApiModel):
+    entities: Dict[str, MigrationEntityCounts]
+    messagesWithInferredTimestamp: int = 0
+    # S4 (D-A6-22) - messages older than the job's `messagesSince` floor are
+    # excluded from the walk entirely (never written, never counted as an
+    # error) - this is how many were skipped that way, reported so the
+    # operator's volume estimate (plan §7 prerequisite 9) still reconciles.
+    messagesSkippedBeforeFloor: int = 0
+    # S11 (review round 1) - contacts whose whole message history exceeded
+    # `MAX_MESSAGES_PER_CONTACT` and were skipped entirely (also surfaced as
+    # a human-readable `blockers` line).
+    messagesSkippedOverCap: int = 0
+    # Defect 2 fix (test report round 1) - CSV-mode's per-VALUE unmapped
+    # lifecycle tally (raw CSV value -> contact count), also surfaced as
+    # per-value `blockers` lines. Empty for API-mode jobs.
+    lifecycleUnmappedByValue: Dict[str, int] = {}
+    blockers: List[str] = []
+    samples: Dict[str, List[dict]]
+
+
+class MigrationFailureRow(ApiModel):
+    entity: str
+    sourceId: str
+    sourceLabel: str
+    reason: str
+    action: str
+
+
+class MigrationJobLogEntry(ApiModel):
+    """One milestone log line (`JobService.log()`'s `{ts, level, message}`
+    shape off `background_jobs.logs_json`) - S6 (AC-MIG-08) surfaces these on
+    the detail page; S0-S2 wrote them (rate-limit backoff, abort, page
+    milestones) but never plumbed them past `logs_json` itself."""
+
+    ts: datetime
+    level: str
+    message: str
+
+
+# ── Plan 33 S5 - CSV upload (plan §5.2 extension, AC-MIG-46..49) ────────────
+class MigrationUploadResult(ApiModel):
+    """`POST /omnichannel/migration/uploads` response - an OPAQUE receipt
+    `id` (review round 1, finding B2 - NEVER the raw storage key; see
+    `MigrationJobCreate.contactsUploadId`/`snippetsUploadId`'s own docstring)
+    the job payload then references, plus enough of the sniffed file (row
+    count + headers) for the setup form to render the header-mapping step
+    without a second round trip."""
+
+    id: str
+    rowCount: int
+    headers: List[str]
+
+
+class MigrationJobItem(ApiModel):
+    """Read shape for the list + detail routes (§5.2) - built by
+    `MigrationService._to_item` from a `background_jobs` row (never
+    `from_attributes`, since `mode`/`source`/`spaceLabel`/`workspaceName`/
+    `report`/`failure*` are all derived from `payload_json`/`cursor_json`/
+    `result_json`, not native columns)."""
+
+    id: str
+    mode: str
+    source: str
+    # Optional (test report Defect 1) - `payload.get("connectionId", "")`
+    # only defaults when the KEY IS ABSENT, not when it is present-and-JSON-
+    # `null` (every REAL create path stores `connectionId or ""`, so a
+    # genuine CSV-mode job never persists a literal `null` - this is a
+    # defensive-coding gap for a hand-built/legacy row, not a reachable
+    # regression). `Optional[str] = None` matches the request-side
+    # `MigrationJobCreate.connectionId` and never 500s the whole list route.
+    connectionId: Optional[str] = None
+    spaceLabel: str
+    workspaceId: str
+    workspaceName: str
+    status: str
+    progressTotal: int
+    progressDone: int
+    progressFailed: int
+    entityCounts: Optional[Dict[str, int]] = None
+    report: Optional[MigrationReport] = None
+    failureCount: int = 0
+    failureSample: List[MigrationFailureRow] = []
+    startedAt: Optional[datetime] = None
+    finishedAt: Optional[datetime] = None
+    createdAt: datetime
+    actorUserName: Optional[str] = None
+    # S6 (AC-MIG-08) - the milestone log the detail page renders. Omitted
+    # from the LIST read (`_to_item(..., include_logs=False)`) - a page of
+    # 25 jobs has no use for each row's own log line-by-line, and every
+    # abort/backoff/page-milestone line would bloat that response for free.
+    logs: List[MigrationJobLogEntry] = []
+
+
+class MigrationJobListResponse(ApiModel):
+    data: List[MigrationJobItem]
+    total: int
+    page: int

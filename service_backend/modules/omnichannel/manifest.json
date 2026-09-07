@@ -1,6 +1,6 @@
 {
   "module_name": "omnichannel",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "author": "Foundryx",
   "title": "Omnichannel",
   "description": "WhatsApp Business messaging \u2014 connect numbers via Meta Embedded Signup, manage workspaces and channels.",
@@ -25,6 +25,11 @@
     {
       "model": "WhatsappTemplate",
       "column": "media_sample_key",
+      "tenantColumn": "tenant_id"
+    },
+    {
+      "model": "MigrationUpload",
+      "column": "storage_key",
       "tenantColumn": "tenant_id"
     }
   ],
@@ -135,6 +140,10 @@
       "name": "ws",
       "prefix": "/omnichannel",
       "public": true
+    },
+    {
+      "name": "migration",
+      "prefix": "/omnichannel/migration"
     }
   ],
   "permissions_csv": "permissions/permissions.csv"

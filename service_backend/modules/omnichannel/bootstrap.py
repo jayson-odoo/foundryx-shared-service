@@ -72,6 +72,25 @@ def register_engine_entities() -> None:
             register_module_declared_locations(manifest)
             break
 
+    # Plan 33 S5 (D-A6-25) - the respond.io migration's uploaded-CSV keys
+    # (`contactsCsvKey`/`snippetsCsvKey`) and the failure-export key
+    # (`failures.fileKey`) live inside CORE `background_jobs.payload_json` /
+    # `.result_json`, not a column of this module's own models, so they
+    # cannot ride `manifest.json`'s `"storage_locations"` block (that path
+    # only imports from `modules.omnichannel.models`). Registered directly
+    # here instead - the generic JSON walker finds any `conn:`-prefixed
+    # string in either column regardless of `background_jobs.type`, so this
+    # is harmless (and free coverage) for every OTHER job type too.
+    from app.models.background_job import BackgroundJob
+    from app.storage_migration.registry import StorageKeyLoc, register_storage_key_location
+
+    register_storage_key_location(
+        StorageKeyLoc(model=BackgroundJob, json_column="payload_json", tenant_column="tenant_id", module=MODULE_NAME)
+    )
+    register_storage_key_location(
+        StorageKeyLoc(model=BackgroundJob, json_column="result_json", tenant_column="tenant_id", module=MODULE_NAME)
+    )
+
     # Workflow-engine trigger + actions (plan sprint-4/17) - registers into the
     # core registry's dict-backed catalog; idempotent like the rest of this hook.
     from .workflow_nodes import register_omnichannel_workflow_nodes
@@ -132,6 +151,25 @@ def register_engine_entities() -> None:
     from .services.report_export_service import register_report_export_handler
 
     register_report_export_handler()
+
+    # respond.io migration connection provider (plan 33 S1, D-A6-2, AC-MIG-11)
+    # - registers into the CORE `app.integrations` registry (the same
+    # `register_provider` seam `modules/autocount/bootstrap.py` uses), so
+    # `GET /integrations/providers` and `POST /integrations/connections` see
+    # `provider="respondio"` the moment this module is loaded, on every
+    # process (idempotent, keyed dict - re-registering replaces in place).
+    from app.integrations import register_provider
+
+    from .respondio_provider import RespondIoProvider
+
+    register_provider(RespondIoProvider())
+
+    # respond.io migration job handler (plan 33 S2, AC-MIG-19) - same
+    # reasoning as the contacts-export handler above: ANY process (API or a
+    # real Celery worker) that dispatches this job type must have imported it.
+    from .services.migration_service import register_migration_job_handler
+
+    register_migration_job_handler()
 
 
 def create_schema_and_tables(engine: Engine) -> None:
@@ -495,9 +533,38 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS business_timezone VARCHAR"
                 )
             )
+            # Plan 33 S2 (respond.io migration, D-A6-3) - `migrated_from`
+            # descriptive markers. `migration_refs` itself is a brand-new
+            # table already created by `create_all` above (per-module Alembic
+            # migration 0018 is the real fix for a Postgres-tracked deploy;
+            # this covers the create_all path for a fresh install).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contacts '
+                    "ADD COLUMN IF NOT EXISTS migrated_from VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_contacts_migrated_from "
+                    f'ON "{OMNI_SCHEMA}".contacts (migrated_from)'
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".conversation_messages '
+                    "ADD COLUMN IF NOT EXISTS migrated_from VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_conv_messages_migrated_from "
+                    f'ON "{OMNI_SCHEMA}".conversation_messages (migrated_from)'
+                )
+            )
             # Plan 32 S1 (A7a, D-A7-3/D-A7-5) - Messenger/Instagram routing
             # columns + the per-identity window columns (module Alembic
-            # 0017_omni_meta_channels is the real fix for a Postgres-tracked
+            # 0019_omni_meta_channels is the real fix for a Postgres-tracked
             # deploy; this covers the create_all path for a fresh install).
             conn.execute(
                 text(
@@ -511,7 +578,7 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS external_account_name VARCHAR"
                 )
             )
-            # Only the partial UNIQUE index - mirrors migration 0017's fix
+            # Only the partial UNIQUE index - mirrors migration 0019's fix
             # (security review round 1 nit): a separate plain index here
             # would carry a different name than the one `index=True`
             # generates via `create_all` for the same column.
@@ -667,13 +734,30 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     (`0016_omni_business_hours`) - every one a brand-new, empty-until-written
     table or a nullable column with no existing rows to backfill.
 
-    0.7.0 -> 0.8.0 (plan 32 S1, A7a, AC-CHN-14): `channels.external_account_id`/
+    0.7.0 -> 0.8.0 (plan 33 S1, AC-MIG-50): the NEW `omnichannel_migration`
+    permission resource (`read`/`manage`) needs no data backfill - it gates a
+    brand-new feature with no existing rows to repair. `AppStoreService.
+    update()`'s `_grant_admin` (called right after this hook returns) is what
+    actually delivers the new keys to an already-provisioned tenant's Admin
+    role - the manifest version bump above is what makes that call fire at
+    all (`update()` refuses when `installed_version` already matches).
+
+    Still 0.8.0 (plan 33 S2, AC-MIG-18): `migration_refs` is a brand-new,
+    always-empty-until-a-migration-runs table (migration `0017_omni_migration_
+    refs`) and `contacts`/`conversation_messages.migrated_from` are new
+    nullable columns - both read back correctly as-is with zero backfill (no
+    tenant has ever run a migration before this column existed, so there is
+    nothing to repair). `uninstall_tenant`'s generic per-table `tenant_id`-
+    scoped delete loop already covers `migration_refs` for free (AC-MIG-54) -
+    it needs no dedicated cleanup line here.
+
+    0.8.0 -> 0.9.0 (plan 32 S1, A7a, AC-CHN-14): `channels.external_account_id`/
     `_name` are new, empty-until-connected columns - no backfill. The three
     `contact_channel_identities` window columns DO need one: every existing
     WhatsApp identity is stamped from its contact's `csw_expires_at`/
     `last_incoming_message_at` so no pre-existing open thread loses its window
     once `messaging_policy` starts reading the identity column. The module
-    Alembic migration (`0017_omni_meta_channels`) already runs this same sweep
+    Alembic migration (`0019_omni_meta_channels`) already runs this same sweep
     in Postgres SQL for a tracked deploy; `messaging_policy.
     backfill_identity_windows` is the dialect-agnostic Python twin (mirrors
     `ContactRepository.backfill_phone_digits`) - idempotent, safe to re-run.

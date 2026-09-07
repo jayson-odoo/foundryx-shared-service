@@ -61,7 +61,9 @@ def record(
     close_reason_id: Optional[str] = None,
     note: Optional[str] = None,
     payload: Optional[dict] = None,
+    created_at: Optional[datetime] = None,
     channel_id: Optional[str] = None,
+    suppress_workflow_event: bool = False,
 ) -> ConversationEvent:
     """Write one event row for `contact`. Adds to `db` and flushes (so the row
     has an id + is visible to later queries in the SAME transaction) but never
@@ -71,7 +73,23 @@ def record(
     tenant-scoped BEFORE saving (AC-IVE-10): an id that does not belong to
     `contact.tenant_id` is dropped (stored as NULL) rather than trusted, so a
     forged/foreign id can never plant a cross-tenant name behind this row.
-    """
+
+    `created_at` (plan 33 S4, AC-MIG-42) - an explicit override for a
+    BACKFILLED event, which must carry the SOURCE timestamp, never `now()`.
+    Every live caller omits it and keeps getting the current instant; the
+    migration writer is the one caller that passes it.
+
+    `suppress_workflow_event` (plan 33 merge-with-sprint-4/31 fix, D-A6-8) -
+    `_emit_workflow_event` below is the plan sprint-4/31 seam that fires
+    `omnichannel_contact` `conversation_opened`/`_closed`/`_assigned`
+    workflow triggers for `opened`/`reopened`/`unsnoozed`/`closed`/
+    `assigned`/`unassigned` events; it did not exist when D-A6-8 (the
+    respond.io migration writer's hard "never fires a live seam" invariant)
+    was written, and the two share the exact same `record()` call. The
+    migration writer's derived-events backfill (`_backfill_contact_events`)
+    passes `suppress_workflow_event=True` on every call so a two-year
+    history import never queues 200k workflow runs; every OTHER caller
+    (live reopen/close/assign paths) omits it and keeps firing as before."""
     resolved_actor_id: Optional[str] = None
     if actor is not None:
         resolved_actor_id = str(actor.id)
@@ -98,17 +116,18 @@ def record(
         close_reason_id=close_reason_id,
         note=note,
         payload_json=payload,
-        created_at=datetime.now(timezone.utc),
+        created_at=created_at or datetime.now(timezone.utc),
     )
     db.add(row)
     db.flush()
-    _emit_workflow_event(
-        db, contact, event_type,
-        actor=actor, actor_id=actor_id,
-        from_value=from_value, to_value=to_value,
-        close_reason_id=close_reason_id, note=note,
-        channel_id=channel_id, payload=payload,
-    )
+    if not suppress_workflow_event:
+        _emit_workflow_event(
+            db, contact, event_type,
+            actor=actor, actor_id=actor_id,
+            from_value=from_value, to_value=to_value,
+            close_reason_id=close_reason_id, note=note,
+            channel_id=channel_id, payload=payload,
+        )
     return row
 
 
