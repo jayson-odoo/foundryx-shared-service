@@ -977,7 +977,17 @@ class SyncService:
         pending = self.staged.list_pending_for_job(tenant_id, company_id, job_id)
         _rows, records, _failures = self._rehydrate_pushable(pending)
         try:
-            result = sink.dry_run(records)
+            # Liveness (fix/job-lease-orphan-sweep): this gate runs INSIDE a
+            # real job (unlike EtlService's activation preview, which is a
+            # plain request with no job to beat for) - a large batch's dry
+            # run is the same multi-minute stretch a real push is, so it
+            # gets the SAME per-chunk heartbeat, zero-arg shape (dry_run
+            # never marks/commits anything, so there is nothing to sequence
+            # the beat after).
+            dry_run_kwargs: Dict[str, Any] = {}
+            if "on_chunk" in inspect.signature(sink.dry_run).parameters:
+                dry_run_kwargs["on_chunk"] = self._chunk_beat(job_id)
+            result = sink.dry_run(records, **dry_run_kwargs)
         except (SorentoSinkError, httpx.HTTPError) as exc:
             # The gate must SHOW this and refuse to offer approval (plan §D4) -
             # an operator must never approve blind. Nothing was written. The
