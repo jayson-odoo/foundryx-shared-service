@@ -148,6 +148,27 @@ def test_connect_instagram_uses_linked_account_id(client, session_factory):
     assert body["externalAccountName"] == "foundryx.events"
 
 
+def test_connect_instagram_page_without_linked_account_is_refused(client, session_factory):
+    """pg-703 has no `instagram_business_account` (server-derived
+    `_page_options` already excludes it from `/meta/pages` - D-A7-14/44). A
+    caller that connects it anyway, with no `igAccountId` on the request,
+    must be refused with no channel created - the server-derived page is the
+    only source of truth (security review round 1: server-derived IG
+    account id)."""
+    h = _auth(client)
+    ws = _default_workspace_id(client, h)
+    session_id = _pages(client, h, channel_type="INSTAGRAM").json()["sessionId"]
+    res = _connect(
+        client, h, session_id=session_id, workspace_id=ws, channel_type="INSTAGRAM",
+        page_id="pg-703",
+    )
+    assert res.status_code == 404
+
+    channels = client.get("/omnichannel/channels", headers=h).json()["data"]
+    assert not any(c["externalAccountId"] == "pg-703" for c in channels)
+    assert not any(c["channelType"] == "INSTAGRAM" for c in channels)
+
+
 def test_whatsapp_channel_external_account_fields_stay_null(client):
     h = _auth(client)
     ws = _default_workspace_id(client, h)

@@ -57,6 +57,7 @@ describe('CHANNEL_CAPABILITIES', () => {
   it('an unmodelled channel type (no DB enum, BL-SS-122) falls back to a neutral UNKNOWN record instead of throwing', () => {
     expect(() => channelCapabilities('TELEGRAM')).not.toThrow();
     const c = channelCapabilities('TELEGRAM');
+    expect(c.channelType).toBe('UNKNOWN');
     expect(c.icon).toBeDefined();
     expect(c.reengageMode).toBe('none');
     expect(c.template).toBe(false);

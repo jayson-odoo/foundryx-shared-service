@@ -31,7 +31,8 @@ export interface ChannelMediaCapabilities {
 }
 
 export interface ChannelCapabilities {
-  channelType: ChannelType;
+  /** 'UNKNOWN' on the neutral fallback record (BL-SS-122) - never a modelled type. */
+  channelType: ChannelType | 'UNKNOWN';
   label: string;
   icon: LucideIcon;
   /** Brand-ish accent used for the small channel-type icon chip. */
@@ -125,9 +126,7 @@ export const CHANNEL_TYPES: ChannelType[] = ['WHATSAPP', 'FACEBOOK', 'INSTAGRAM'
  * thread list or drawer over an unmodelled type.
  */
 const UNKNOWN_CAPABILITIES: ChannelCapabilities = {
-  // `channelType` is unread on this record (every call site already has the
-  // raw string it looked up) - 'WHATSAPP' is a type-shape placeholder only.
-  channelType: 'WHATSAPP',
+  channelType: 'UNKNOWN',
   label: 'Unknown',
   icon: CircleHelp,
   accentClassName: 'bg-mono/10 text-mono',
@@ -147,8 +146,10 @@ const UNKNOWN_CAPABILITIES: ChannelCapabilities = {
  * The one lookup every call site must go through instead of indexing
  * `CHANNEL_CAPABILITIES` directly - falls back to `UNKNOWN_CAPABILITIES`
  * rather than throwing when `channelType` is not one of the three modelled
- * types (a plain string on the wire, not a DB enum).
+ * types (a plain string on the wire, not a DB enum). The `(string & {})`
+ * union member keeps `ChannelType` autocomplete at call sites while still
+ * accepting an arbitrary wire string.
  */
-export function channelCapabilities(channelType: string): ChannelCapabilities {
+export function channelCapabilities(channelType: ChannelType | (string & {})): ChannelCapabilities {
   return CHANNEL_CAPABILITIES[channelType as ChannelType] ?? UNKNOWN_CAPABILITIES;
 }
