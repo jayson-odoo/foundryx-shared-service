@@ -375,3 +375,9 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   `CanonicalShippingOrder` does). Checked before shipping: `GET /api/v1/external/contract` on
   Sorento prod lists `container_number` under `fields_added.shipping_orders`, checked <UTC time>
   by the operator; Sorento build `<SHA>`.
+- 2026-09-07 (`fix/spo-container-catalog`, hotfix on the above): `mapping_catalog.py`'s per-document
+  fallback-field tuples (`_SO_FALLBACK_FIELDS`/`_PO_FALLBACK_FIELDS`/`_SPO_FALLBACK_FIELDS`) are
+  derived directly from each canonical class's own `FALLBACK_FIELDS` rather than hand-typed, so the
+  mapping editor's accepted-target list can never drift from what `sink_payload` actually gates
+  again - the gap this fix closed (`container_number` reaching `CanonicalShippingOrder.
+  FALLBACK_FIELDS` without the editor ever offering it as a mappable target, deployed in PR #59).
