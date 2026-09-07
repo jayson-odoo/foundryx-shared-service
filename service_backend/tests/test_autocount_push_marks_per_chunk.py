@@ -829,3 +829,79 @@ def test_a_transient_retry_does_not_re_enter_an_uncapped_429_wait(no_sleep, monk
     assert len(results) == 3 and all(r.delivered for r in results)
     assert calls["n"] == 3
     assert sum(no_sleep) <= 65.0, f"total wait must stay bounded: {no_sleep}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Composition with fix/job-lease-orphan-sweep (merged at 54102540)
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.jobs.service import JobService  # noqa: E402
+from app.models.background_job import JOB_FAILED  # noqa: E402
+
+
+def _fail_job_elsewhere(session_factory, job_id: str) -> None:
+    other = session_factory()
+    try:
+        other.execute(
+            sa.text("UPDATE background_jobs SET status = :s, error = :e WHERE id = :i"),
+            {"s": JOB_FAILED, "e": "swept", "i": job_id},
+        )
+        other.commit()
+    finally:
+        other.close()
+
+
+def test_a_lost_lease_after_chunk_one_keeps_chunk_one_committed_and_stops_before_chunk_two(
+    session_factory, transports, sorento_sink
+):
+    """The per-chunk beat runs AFTER a chunk is marked + committed. The job
+    is failed elsewhere (orphan sweep) while chunk 1 is on the wire: the beat
+    after chunk 1 raises JobLeaseLost, chunk 1's marks survive a rollback,
+    and chunk 2 is never offered."""
+    db = session_factory()
+    company = _rig(db, transports)
+    job = _done_job(db, company)
+    _stage(db, company, job, REFS)
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        _fail_job_elsewhere(session_factory, job.id)
+        return _ok(request)
+
+    sorento_sink.responder = responder
+    commits = _count_commits(db)
+    summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, job_id=job.id)
+
+    assert len(sorento_sink.requests) == 1, "the push must stop before chunk 2"
+    assert summary.get("leaseLost") is True, summary
+    assert len(commits) >= 1
+    statuses = _statuses(session_factory, company.id, rollback=db)
+    assert [statuses[r] for r in REFS[:3]] == [STAGED_PUSHED] * 3, statuses
+    assert [statuses[r] for r in REFS[3:]] == [STAGED] * 4, statuses
+    assert summary["pushed"] == 3
+    db.close()
+
+
+def test_the_approve_gate_dry_run_still_beats_the_job(session_factory, transports, sorento_sink, monkeypatch):
+    """After the merge the dry run must still carry a heartbeat callback -
+    a long preview is the other stretch where a worker can look dead."""
+    from tests.test_autocount_pipeline import _created, _staged_supplier_job
+
+    beats: List[str] = []
+    original = JobService.heartbeat
+
+    def counting(self, job_id, *, now=None):
+        beats.append(str(job_id))
+        return original(self, job_id, now=now)
+
+    monkeypatch.setattr(JobService, "heartbeat", counting)
+
+    db = session_factory()
+    company = _rig(db, transports)
+    job = _staged_supplier_job(db, company, refs=tuple(f"AED_VSOFT:{i}" for i in range(5)))
+    sorento_sink.responder = _created
+
+    result = SyncService(db).preview(DEFAULT_TENANT_ID, job.id)
+
+    assert result.get("previewable") is True, result
+    assert beats.count(job.id) > 0, "dry_run received no heartbeat callback"
+    db.close()
