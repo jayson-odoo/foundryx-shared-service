@@ -24,16 +24,16 @@ incident and the rule live there and in
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Dict, Optional
 
 import sqlalchemy as sa
-from sqlalchemy.orm import Session
 
 from .canonical.documents import ENTITY_SHIPPING_ORDER, is_document_entity
 from .db import AUTOCOUNT_SCHEMA
 from .envelopes import ENVELOPE_STATUS_DICT
 from .mapping import DOCUMENT_LINE_FIXED_FIELDS, SCOPE_HEADER, SCOPE_LINE
-from .models import AcCompany, AcEntityConfig, AcFieldMapping
+from .models import AcEntityConfig, AcFieldMapping
 from .sources import INITIAL_LOAD_WINDOWED
 
 logger = logging.getLogger("foundryx.autocount")
@@ -604,7 +604,8 @@ _SHIPPING_ORDER_BACKFILL_ENTITY_CONFIG_COLUMNS = {
 _SHIPPING_ORDER_BACKFILL_COMPANY_COLUMNS = {"id", "tenant_id", "database_name"}
 _SHIPPING_ORDER_BACKFILL_FIELD_MAPPING_COLUMNS = {
     "id", "tenant_id", "company_id", "entity_type", "scope", "source_path",
-    "canonical_field", "transform", "formula", "is_required", "is_enabled", "sort_order",
+    "canonical_field", "transform", "formula", "is_required", "is_enabled",
+    "is_source_owned", "sort_order",
 }
 
 
@@ -617,6 +618,24 @@ def backfill_shipping_order_container_number(
     that predates the tables/columns this touches (module Alembic 0016 and
     ``update_tenant`` both call it, so it must survive every stamp in the
     chain, not only the one it ships with).
+
+    Called UNCONDITIONALLY on every ``update_tenant`` run, like every other
+    backfill in this file - each check/write is idempotent (a mapping row
+    already there is skipped, a query already at the NEW text is skipped
+    silently), so re-running it costs a handful of no-op SELECTs, never a
+    duplicate row or a repeat warning.
+
+        !!  FROZEN ``sa.table`` ONLY - NEVER THE LIVE ORM MODEL.  !!
+    A prior incident (module Alembic 0006, documented in
+    ``documentation/engineering/storage-and-background-jobs.md``) queried
+    the live ``AcCompany`` model from INSIDE a migration and raised
+    ``UndefinedColumn`` on a fresh ``0001`` -> head replay once a LATER
+    migration added a column the model had already grown to expect. This
+    function is called from module Alembic 0016, so it selects/inserts/
+    updates through frozen ``sa.table`` snapshots naming only the columns
+    it actually touches (the ``_SHIPPING_ORDER_BACKFILL_*_COLUMNS`` sets
+    below, already used for the existence check) - safe at ANY later stamp,
+    no matter how many columns a future migration adds to these tables.
 
     Never a bare id lookup: a config's company is resolved WITH the config's
     OWN ``tenant_id`` (the polymorphic-target_id rule) before its
@@ -634,102 +653,145 @@ def backfill_shipping_order_container_number(
 
     from .presets import _PO_HEADER_QUERY
 
-    session = bind if isinstance(bind, Session) else Session(bind=bind)
-    owns_session = session is not bind
+    entity_config = sa.table(
+        "ac_entity_config",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("source_config", sa.JSON(none_as_null=True)),
+        sa.column("result_columns", sa.JSON(none_as_null=True)),
+        schema=schema,
+    )
+    company_table = sa.table(
+        "ac_company",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("database_name", sa.String),
+        schema=schema,
+    )
+    field_mapping = sa.table(
+        "ac_field_mapping",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("scope", sa.String),
+        sa.column("source_path", sa.String),
+        sa.column("canonical_field", sa.String),
+        sa.column("transform", sa.String),
+        sa.column("formula", sa.Text),
+        sa.column("is_required", sa.Boolean),
+        sa.column("is_enabled", sa.Boolean),
+        sa.column("is_source_owned", sa.Boolean),
+        sa.column("sort_order", sa.Integer),
+        schema=schema,
+    )
+
+    # Same unwrap ``existing_columns`` uses, and for the same reason - a
+    # ``Session.get_bind()`` checks out a SECOND pooled connection, blind to
+    # the session's own uncommitted work.
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
+
+    configs = connectable.execute(
+        sa.select(
+            entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+            entity_config.c.source_config, entity_config.c.result_columns,
+        ).where(entity_config.c.entity_type == ENTITY_SHIPPING_ORDER)
+    ).fetchall()
+
     touched = 0
-    try:
-        configs = (
-            session.query(AcEntityConfig)
-            .filter(AcEntityConfig.entity_type == ENTITY_SHIPPING_ORDER)
-            .all()
+    for config_id, tenant_id, company_id, source_config, result_columns in configs:
+        company_row = connectable.execute(
+            sa.select(company_table.c.database_name).where(
+                company_table.c.id == company_id,
+                company_table.c.tenant_id == tenant_id,
+            )
+        ).first()
+        if company_row is None or not company_row[0]:
+            continue
+        database_name = company_row[0]
+
+        # (a) the mapping row, independent of the query check below.
+        # Checked by `canonical_field` (the unique-constraint column), not
+        # `source_path` - an operator's own row targeting `container_number`
+        # from a different column still counts as "already there" and must
+        # never collide with a second insert.
+        has_ref_row = (
+            connectable.execute(
+                sa.select(field_mapping.c.id).where(
+                    field_mapping.c.tenant_id == tenant_id,
+                    field_mapping.c.company_id == company_id,
+                    field_mapping.c.entity_type == ENTITY_SHIPPING_ORDER,
+                    field_mapping.c.scope == SCOPE_HEADER,
+                    field_mapping.c.canonical_field == "container_number",
+                )
+            ).first()
+            is not None
         )
-        for config in configs:
-            company = (
-                session.query(AcCompany)
-                .filter(
-                    AcCompany.id == config.company_id,
-                    AcCompany.tenant_id == config.tenant_id,
+        if not has_ref_row:
+            sort_order = connectable.execute(
+                sa.select(sa.func.count())
+                .select_from(field_mapping)
+                .where(
+                    field_mapping.c.tenant_id == tenant_id,
+                    field_mapping.c.company_id == company_id,
+                    field_mapping.c.entity_type == ENTITY_SHIPPING_ORDER,
+                    field_mapping.c.scope == SCOPE_HEADER,
                 )
-                .one_or_none()
+            ).scalar() or 0
+            connectable.execute(
+                sa.insert(field_mapping).values(
+                    id=str(uuid.uuid4()),
+                    tenant_id=tenant_id,
+                    company_id=company_id,
+                    entity_type=ENTITY_SHIPPING_ORDER,
+                    scope=SCOPE_HEADER,
+                    source_path="Ref",
+                    canonical_field="container_number",
+                    transform="string",
+                    formula=None,
+                    is_required=False,
+                    is_enabled=True,
+                    # Not a NOT-NULL column DEFAULT at the database level
+                    # (`AcFieldMapping.is_source_owned`'s `default=True` is
+                    # ORM-side only) - a frozen `sa.table` insert must state
+                    # it explicitly or a strict backend (SQLite) rejects the
+                    # row outright.
+                    is_source_owned=True,
+                    sort_order=sort_order,
+                )
             )
-            if company is None or not company.database_name:
-                continue
+            touched += 1
 
-            # (a) the mapping row, independent of the query check below.
-            # Checked by `canonical_field` (the unique-constraint column),
-            # not `source_path` - an operator's own row targeting
-            # `container_number` from a different column still counts as
-            # "already there" and must never collide with a second insert.
-            has_ref_row = (
-                session.query(AcFieldMapping.id)
-                .filter(
-                    AcFieldMapping.tenant_id == config.tenant_id,
-                    AcFieldMapping.company_id == config.company_id,
-                    AcFieldMapping.entity_type == ENTITY_SHIPPING_ORDER,
-                    AcFieldMapping.scope == SCOPE_HEADER,
-                    AcFieldMapping.canonical_field == "container_number",
-                )
-                .first()
-                is not None
+        # (b) the header query, independent of (a) above.
+        source_config = source_config or {}
+        stored_query = source_config.get("query")
+        old_text = _OLD_PO_HEADER_QUERY_TEMPLATE.replace("{database}", database_name)
+        new_text = _PO_HEADER_QUERY.replace("{database}", database_name)
+        if stored_query == old_text:
+            fresh = dict(source_config)
+            fresh["query"] = new_text
+            columns_list = list(result_columns or [])
+            if "Ref" not in columns_list:
+                columns_list.append("Ref")
+            connectable.execute(
+                sa.update(entity_config)
+                .where(entity_config.c.id == config_id)
+                .values(source_config=fresh, result_columns=columns_list)
             )
-            if not has_ref_row:
-                sort_order = (
-                    session.query(AcFieldMapping)
-                    .filter(
-                        AcFieldMapping.tenant_id == config.tenant_id,
-                        AcFieldMapping.company_id == config.company_id,
-                        AcFieldMapping.entity_type == ENTITY_SHIPPING_ORDER,
-                        AcFieldMapping.scope == SCOPE_HEADER,
-                    )
-                    .count()
-                )
-                session.add(
-                    AcFieldMapping(
-                        tenant_id=config.tenant_id,
-                        company_id=config.company_id,
-                        entity_type=ENTITY_SHIPPING_ORDER,
-                        scope=SCOPE_HEADER,
-                        source_path="Ref",
-                        canonical_field="container_number",
-                        transform="string",
-                        is_required=False,
-                        is_enabled=True,
-                        sort_order=sort_order,
-                    )
-                )
-                touched += 1
-
-            # (b) the header query, independent of (a) above.
-            source_config = config.source_config or {}
-            stored_query = source_config.get("query")
-            old_text = _OLD_PO_HEADER_QUERY_TEMPLATE.replace(
-                "{database}", company.database_name
+            touched += 1
+        elif stored_query != new_text:
+            # Not the OLD preset (customised, or a sibling company's own
+            # substitution pasted in) AND not already the NEW preset
+            # (already migrated - silent, not a repeat warning every
+            # `update_tenant` call): left untouched, named so an operator
+            # can add `Ref` by hand.
+            logger.warning(
+                "Shipping-order task %s has a header query the "
+                "container_number backfill does not recognise as the "
+                "AutoCount SPO preset - left untouched. Add `Ref` to it "
+                "to pick up container numbers.",
+                config_id,
             )
-            new_text = _PO_HEADER_QUERY.replace("{database}", company.database_name)
-            if stored_query == old_text:
-                fresh = dict(source_config)
-                fresh["query"] = new_text
-                config.source_config = fresh
-                result_columns = list(config.result_columns or [])
-                if "Ref" not in result_columns:
-                    result_columns.append("Ref")
-                config.result_columns = result_columns
-                touched += 1
-            elif stored_query != new_text:
-                # Not the OLD preset (customised, or a sibling company's own
-                # substitution pasted in) AND not already the NEW preset
-                # (already migrated - silent, not a repeat warning every
-                # `update_tenant` call): left untouched, named so an
-                # operator can add `Ref` by hand.
-                logger.warning(
-                    "Shipping-order task %s has a header query the "
-                    "container_number backfill does not recognise as the "
-                    "AutoCount SPO preset - left untouched. Add `Ref` to it "
-                    "to pick up container numbers.",
-                    config.id,
-                )
-        session.flush()
-    finally:
-        if owns_session:
-            session.close()
     return touched

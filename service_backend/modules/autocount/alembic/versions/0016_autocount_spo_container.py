@@ -32,24 +32,36 @@ mechanism), so the very next run re-offers every SPO as an update carrying
 its container number. This is the intended one-time cost of picking up a
 column that was never selected before.
 
-    !!  ORM-LEVEL BACKFILL (matches 0010's own precedent).  !!
-``backfill_shipping_order_container_number`` builds/edits rows, not a bare
-column UPDATE - a natural ORM operation, run on a ``Session(bind=op.get_bind())``
-sharing Alembic's own transaction/connection so Alembic's own commit at the
-end is the only commit (the storage-migration lesson: a migration must
-never commit Alembic's own connection). The function is schema-tolerant on
-its own (``existing_columns`` first) - the module docstring's "test the
-FUNCTION directly" rule is why this is a plain function at all, not inline
-here.
+    !!  DEPLOY ORDER: SORENTO MUST ACCEPT ``container_number`` FIRST.  !!
+Every SPO re-stages on the first run after this deploy (above), and the
+whole re-staged family pushes with the NEW field on it. If the receiving
+Sorento does not yet accept ``container_number`` on shipping_orders ingest,
+``extra="forbid"`` there quarantines every one of them - see the addendum's
+change log for the proof this was checked before shipping.
 
-Revision ID: 0016_autocount_spo_container   (29 chars <= 32)
+    !!  FROZEN ``sa.table`` BACKFILL - NEVER THE LIVE ORM MODEL.  !!
+Unlike 0010's ``backfill_document_line_mapping_pickers`` (safe there only
+because every column it touches was guaranteed to exist by migration
+order - see that migration's own docstring), this one runs from module
+Alembic 0016 and must survive a FUTURE migration adding columns to
+``ac_entity_config``/``ac_company``/``ac_field_mapping`` on a fresh
+``0001`` -> head replay. ``backfill_shipping_order_container_number``
+therefore selects/inserts/updates through frozen ``sa.table`` snapshots
+naming only the columns it actually needs (the storage-migration lesson,
+``documentation/engineering/storage-and-background-jobs.md`` - module
+Alembic 0006 hit exactly this raising ``UndefinedColumn`` against the live
+ORM) and is schema-tolerant on its own (``existing_columns`` first) - the
+module docstring's "test the FUNCTION directly" rule is why this is a
+plain function at all, not inline here. It does not commit; Alembic's own
+connection/transaction owns that, as always.
+
+Revision ID: 0016_autocount_spo_container   (28 chars <= 32)
 Revises: 0015_autocount_run_requests
 Create Date: 2026-09-07
 """
 from typing import Sequence, Union
 
 from alembic import op
-from sqlalchemy.orm import Session
 
 from modules.autocount.backfill import backfill_shipping_order_container_number
 
@@ -64,12 +76,7 @@ def upgrade() -> None:
     if bind.dialect.name != "postgresql":
         return
 
-    session = Session(bind=bind)
-    try:
-        backfill_shipping_order_container_number(session, schema="app_autocount")
-        session.flush()
-    finally:
-        session.close()
+    backfill_shipping_order_container_number(bind, schema="app_autocount")
 
 
 def downgrade() -> None:
