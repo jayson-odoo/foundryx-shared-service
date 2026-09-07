@@ -958,9 +958,14 @@ def _decimalize(value: Any) -> Any:
 
 
 def _retry_after_seconds(response: httpx.Response) -> int:
+    """1..60s, whatever the header says - S5 (review round 2): an
+    uncooperative or misconfigured ``Retry-After`` (Sorento sent 3600 once)
+    must never park a chunk POST for an hour; 60s is already the
+    conservative default below, so capping the header at the same ceiling
+    keeps the ONE bound this method promises."""
     raw = response.headers.get("Retry-After", "")
     try:
-        return max(1, int(float(raw)))
+        return min(max(1, int(float(raw))), 60)
     except (TypeError, ValueError):
         # No/!int header - a conservative default beats hammering.
         return 60

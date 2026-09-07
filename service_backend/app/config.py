@@ -370,9 +370,23 @@ class Settings(BaseSettings):
     # POSTs, upstream momentarily unreachable, never reaching their app). A
     # plain 500 (still a guard-rail error until the companion Sorento fix
     # lands) or a 4xx is NEVER retried - only a 502/503/504 is. Read at CALL
-    # time by `SorentoSink._post_with_retry`. Bounded 1..5 - backoff between
-    # attempts is short (never more than a few seconds) so a stuck retry
-    # cannot itself run into the run's own time budget.
+    # time by `SorentoSink._post_with_retry`. Bounded 1..5.
+    #
+    #     !!  THE BACKOFF BETWEEN ATTEMPTS IS SHORT (1s/2s/4s...) - THE
+    #         DOMINANT WORST CASE PER CHUNK IS THE 429 WAIT INSIDE EACH
+    #         ATTEMPT, NOT THIS BACKOFF (S5, review round 2).  !!
+    # Each retry ATTEMPT is one `_call`, which internally loops on its own
+    # 429 handling up to `max_rate_limit_waits` times (default 2) at up to
+    # `_retry_after_seconds`'s 60s cap - so ONE attempt can itself take up to
+    # `max_rate_limit_waits * 60s` before it ever reaches the transient-5xx
+    # check this setting governs. Worst case for a whole chunk is therefore
+    # roughly `autocount_sink_retry_attempts * (max_rate_limit_waits * 60s)`
+    # plus the (small) backoff between attempts - at the defaults, up to
+    # ~6 minutes, not "a few seconds". A run's own time budget
+    # (`autocount_run_time_budget_seconds`) is what actually bounds a stuck
+    # chunk from running away with a whole tick; this setting only bounds
+    # how many TIMES a transient fault is retried, never how long any one
+    # attempt can take.
     autocount_sink_retry_attempts: int = 3
 
     @field_validator("background_job_orphan_after_minutes")
