@@ -925,14 +925,19 @@ class SyncService:
                 self.staged.mark(handled, status=STAGED_PUSHED, pushed_at=datetime.now(timezone.utc))
             if failed:
                 self.staged.mark(failed, status=STAGED_FAILED)
-            if handled or failed:
-                # ``_commit_chunk`` (S3) rolls back and stops the push
-                # cleanly if the commit ITSELF fails.
-                self._commit_chunk(summary, sink=sink)
             if handled:
                 RowHashRepository(self.db).delete_many(
                     tenant_id, company_id, entity_type, [row.source_ref for row in handled]
                 )
+            if handled or failed:
+                # ONE commit per chunk - the marks AND the row-hash drop
+                # together (S7, review round 3): two separate commits meant
+                # a failure in the SECOND one double-accounted the failure
+                # (``_account_failure`` ran twice for one POST) while
+                # rolling back only the hash deletion - the PUSHED marks
+                # from the FIRST commit stayed durable, an inconsistent
+                # half-applied chunk. ``_commit_chunk`` (S3) still rolls
+                # back and stops the push cleanly if THIS commit fails.
                 self._commit_chunk(summary, sink=sink)
             summary["deletedHandled"] = int(summary.get("deletedHandled") or 0) + len(handled)
             if failed:
