@@ -53,7 +53,11 @@ def _by_key(fields: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
 
 def test_fields_expose_the_contract_version_as_a_select_after_base_url():
     fields = SorentoProvider().fields()
-    assert [f["key"] for f in fields] == ["baseUrl", "sorentoContractVersion", "apiKey"]
+    keys = [f["key"] for f in fields]
+    # Intent: the contract version sits DIRECTLY after the base URL; later
+    # fields (apiKey, sinkConcurrency, ...) may follow in any order.
+    assert keys[:2] == ["baseUrl", "sorentoContractVersion"], keys
+    assert "apiKey" in keys
     assert _by_key(fields)["sorentoContractVersion"] == EXPECTED_FIELD
 
 
