@@ -738,9 +738,10 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     dev seed scripts only - never in prod bootstrap.
 
     Pre-merge follow-up (plan 27): the fixed literal ids this function seeds
-    (``chn-demo``, ``cnt-001``..``005``, and - plan 32 S1/S3 - ``chn-demo-fb``,
-    ``cnt-fb-001``/``002``) are shared verbatim across every call site - the
-    dev seed scripts only ever call this with ``DEFAULT_TENANT_ID``.
+    (``chn-demo``, ``cnt-001``..``005``, and - plan 32 S1/S3/S4 - ``chn-demo-fb``,
+    ``cnt-fb-001``/``002``, ``chn-demo-ig``, ``cnt-ig-001``/``002``) are shared
+    verbatim across every call site - the dev seed scripts only ever call this
+    with ``DEFAULT_TENANT_ID``.
     A second tenant would collide on those SAME ids (unique-constraint or
     silent cross-tenant reads via an unscoped lookup), so this is gated to the
     default tenant rather than left to half-write cross-tenant rows the first
@@ -898,6 +899,113 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
                 last_at = created
             contact.last_message_at = last_at
             contact.agent_last_read_at = fb_now
+        db.flush()
+
+    # Plan 32 S4 (A7a) - a dev-credentialed Instagram sandbox channel whose
+    # `external_account_id` is `pg-702`'s linked Instagram professional
+    # account (`_DEV_PAGES` in `adapters/messenger.py`, `ig-702`/
+    # `foundryx.concierge`) - the SAME canned identity the connect wizard
+    # would offer for that page, so a manual dev run and the wizard agree.
+    ig_channel = (
+        db.query(Channel).filter(Channel.id == "chn-demo-ig", Channel.tenant_id == tenant_id).first()
+    )
+    if ig_channel is None:
+        ig_channel = Channel(
+            id="chn-demo-ig",
+            tenant_id=tenant_id,
+            workspace_id=ws.id,
+            channel_type="INSTAGRAM",
+            name="Demo Instagram (sandbox)",
+            credentials_json=encrypt_credentials({"dev": True}),
+            external_account_id="ig-702",
+            external_account_name="foundryx.concierge",
+            is_active=True,
+            status_id=statuses.status_id_for(db, tenant_id, "CHANNEL", "ACTIVE"),
+        )
+        db.add(ig_channel)
+        db.flush()
+
+    # AC-CHN-38 - two seeded Instagram threads: one inside its 24h standard
+    # window, one whose standard AND human-agent windows have BOTH closed -
+    # so the E2E journey shows both composer states (open vs locked) with no
+    # Meta app. Own idempotency gate (keyed on a fixed contact id, mirroring
+    # `fb_seeded` above) so a tenant that ran this seed before S4 landed
+    # still gets the threads on its next call.
+    ig_seeded = bool(
+        db.query(Contact).filter(Contact.id == "cnt-ig-001", Contact.tenant_id == tenant_id).first()
+    )
+    if not ig_seeded:
+        from .services import lifecycle_service as _ig_lifecycle_service
+
+        ig_open_id = statuses.status_id_for(db, tenant_id, "THREAD", "OPEN")
+        ig_initial_lifecycle_id = _ig_lifecycle_service.initial_status_id(db, tenant_id, ws.id)
+        ig_now = datetime.now(timezone.utc)
+        ig_threads = [
+            # (contact id, name, IGSID, window still open?, messages: (sender, body, minutes_ago))
+            ("cnt-ig-001", "Maya Rivera", "igsid-demo-1", True, [
+                ("CONTACT", "Love the new collection! Is the tote still in stock?", 20),
+                ("AGENT", "Hi Maya! Yes, we have it in black and tan.", 15),
+            ]),
+            ("cnt-ig-002", "Priya Nair", "igsid-demo-2", False, [
+                ("CONTACT", "Do you ship internationally?", 60 * 24 * 9),
+            ]),
+        ]
+        for cid, name, igsid, window_open, msgs in ig_threads:
+            first, _, last = name.partition(" ")
+            contact = Contact(
+                id=cid,
+                tenant_id=tenant_id,
+                workspace_id=ws.id,
+                first_name=first,
+                last_name=last or None,
+                status_id=ig_open_id,
+                priority="MEDIUM",
+                lifecycle_status_id=ig_initial_lifecycle_id,
+            )
+            db.add(contact)
+            db.flush()
+            if window_open:
+                window_expires_at = ig_now + timedelta(hours=24)
+                human_agent_expires_at = ig_now + timedelta(hours=168)
+                last_inbound_at = ig_now
+            else:
+                # Both windows closed (AC-CHN-38 "expired") - the composer
+                # against this thread is locked for EVERY actor
+                # (`messaging_policy.authorize` raises `messaging_window_closed`).
+                window_expires_at = ig_now - timedelta(hours=200)
+                human_agent_expires_at = ig_now - timedelta(hours=1)
+                last_inbound_at = ig_now - timedelta(hours=200)
+            db.add(
+                ContactChannelIdentity(
+                    tenant_id=tenant_id,
+                    contact_id=cid,
+                    channel_id=ig_channel.id,
+                    external_user_id=igsid,
+                    profile_name=name,
+                    window_expires_at=window_expires_at,
+                    human_agent_expires_at=human_agent_expires_at,
+                    last_inbound_at=last_inbound_at,
+                ),
+            )
+            last_at = None
+            for i, (sender, body, minutes_ago) in enumerate(msgs):
+                created = ig_now - timedelta(minutes=minutes_ago)
+                db.add(
+                    ConversationMessage(
+                        tenant_id=tenant_id,
+                        contact_id=cid,
+                        channel_id=ig_channel.id,
+                        sender_type=sender,
+                        message_type="TEXT",
+                        body=body,
+                        external_message_id=f"m.demo-{cid}-{i}",
+                        delivery_status="READ" if sender == "AGENT" else None,
+                        created_at=created,
+                    )
+                )
+                last_at = created
+            contact.last_message_at = last_at
+            contact.agent_last_read_at = ig_now
         db.flush()
 
     if already_seeded:
