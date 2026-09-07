@@ -33,6 +33,7 @@ from ..models import (
     STAGED_OP_DELETE,
     STAGED_PUSHED,
     AcCompany,
+    AcDocFingerprint,
     AcEntityConfig,
     AcFieldMapping,
     AcRowHash,
@@ -1042,6 +1043,105 @@ class RowHashRepository:
             )
             .delete(synchronize_session=False)
         )
+        self.db.flush()
+        return deleted
+
+
+class DocFingerprintRepository:
+    """``ac_doc_fingerprint`` - the line-fingerprint sweep's own state
+    (feat/line-fingerprint-sweep). ONE row per document header ever seen
+    by a sweep, holding the sha256 of its own fingerprint query's ordered
+    aggregate values - a SEPARATE table from ``ac_row_hash``: this
+    refreshes on EVERY sweep tick regardless of whether the header's own
+    row hash changed. Every query scoped by (tenant, company, entity), the
+    same discipline as ``RowHashRepository`` above.
+    """
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def hashes_for(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+    ) -> dict[str, str]:
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        out: dict[str, str] = {}
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            rows = (
+                self.db.query(AcDocFingerprint.source_ref, AcDocFingerprint.fingerprint)
+                .filter(
+                    AcDocFingerprint.tenant_id == tenant_id,
+                    AcDocFingerprint.company_id == company_id,
+                    AcDocFingerprint.entity_type == entity_type,
+                    AcDocFingerprint.source_ref.in_(chunk),
+                )
+                .all()
+            )
+            out.update({ref: value for ref, value in rows})
+        return out
+
+    def upsert_many(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        fingerprints: dict[str, str],
+        *,
+        seen_at: datetime,
+    ) -> None:
+        """Write/refresh the fingerprint of every ref given. Set-based, same
+        shape as ``RowHashRepository.upsert_many``. Does not commit; the
+        caller owns the transaction."""
+        if not fingerprints:
+            return
+        existing = self.hashes_for(tenant_id, company_id, entity_type, list(fingerprints))
+        scope = {"tenant_id": tenant_id, "company_id": company_id, "entity_type": entity_type}
+        updates = [
+            {**scope, "source_ref": ref, "fingerprint": value, "seen_at": seen_at}
+            for ref, value in fingerprints.items()
+            if ref in existing
+        ]
+        inserts = [
+            {**scope, "source_ref": ref, "fingerprint": value, "seen_at": seen_at}
+            for ref, value in fingerprints.items()
+            if ref not in existing
+        ]
+        if updates:
+            self.db.bulk_update_mappings(AcDocFingerprint, updates)
+        if inserts:
+            self.db.bulk_insert_mappings(AcDocFingerprint, inserts)
+        self.db.flush()
+
+    def delete_many(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        source_refs: Sequence[str],
+    ) -> int:
+        """Drop the fingerprint rows for CONFIRMED-DELETED refs - the
+        reconcile-completion counterpart of ``RowHashRepository.
+        delete_many``, called on the SAME ``stale`` ref list so a vanished
+        document's fingerprint never outlives the document itself. Does not
+        commit; the caller owns the transaction."""
+        refs = [r for r in dict.fromkeys(source_refs) if r]
+        deleted = 0
+        for start in range(0, len(refs), _IN_CHUNK):
+            chunk = refs[start : start + _IN_CHUNK]
+            deleted += (
+                self.db.query(AcDocFingerprint)
+                .filter(
+                    AcDocFingerprint.tenant_id == tenant_id,
+                    AcDocFingerprint.company_id == company_id,
+                    AcDocFingerprint.entity_type == entity_type,
+                    AcDocFingerprint.source_ref.in_(chunk),
+                )
+                .delete(synchronize_session=False)
+            )
         self.db.flush()
         return deleted
 
