@@ -986,6 +986,7 @@ class MigrationWriter:
         event_service.record(
             self.db, contact, "opened",
             to_value=self.thread_open_status_id, created_at=first_at, payload=dict(derived_payload),
+            suppress_workflow_event=True,
         )
         written += 1
 
@@ -1010,6 +1011,7 @@ class MigrationWriter:
                     self.db, contact, "first_agent_reply",
                     created_at=first_agent_at,
                     payload={**derived_payload, "responseSeconds": seconds},
+                    suppress_workflow_event=True,
                 )
                 written += 1
 
@@ -1017,6 +1019,7 @@ class MigrationWriter:
             event_service.record(
                 self.db, contact, "closed",
                 to_value=self.thread_closed_status_id, created_at=last_at, payload=dict(derived_payload),
+                suppress_workflow_event=True,
             )
             written += 1
 
@@ -1024,6 +1027,7 @@ class MigrationWriter:
             event_service.record(
                 self.db, contact, "assigned",
                 to_value=contact.assigned_user_id, created_at=last_at, payload=dict(derived_payload),
+                suppress_workflow_event=True,
             )
             written += 1
 
@@ -1044,6 +1048,7 @@ class MigrationWriter:
             event_service.record(
                 self.db, contact, "lifecycle_changed",
                 to_value=mapped_status_id, created_at=last_at, payload=dict(derived_payload),
+                suppress_workflow_event=True,
             )
             written += 1
 

@@ -146,6 +146,15 @@ on the then-current `main`:
 5. Revision ids stay <= 32 chars, and grep ALL existing ids for a collision (some files declare
    `revision: str = ...`).
 
+**Merge resolution (final, not a placeholder):** `main`'s module Alembic head at merge time was
+`0016_omni_business_hours` (single core head too, from A8/A4/A5/A9). Renamed
+`0016_omni_migration_refs` -> `0017_omni_migration_refs` (`down_revision = "0016_omni_business_hours"`)
+and `0017_omni_migration_uploads` -> `0018_omni_migration_uploads`
+(`down_revision = "0017_omni_migration_refs"`) - one clean chain, no merge-revision file needed (only
+one lane held the module head at merge time). `manifest.json` `version` is `0.8.0` (main was already at
+`0.7.0`; A6 is the one minor bump on top). `update_tenant`'s branch is a tuple comparison,
+`if _v(from_version) < (0, 8, 0)`.
+
 ## 4. Slices (one Sonnet coder each, sequential on the branch)
 
 | Slice | Content | Size | AC ids |
@@ -416,29 +425,31 @@ refuses to enable "Run dry run" until the preflight confirms the first three.
 9. **Volume estimate.** Contact count and rough message count, so the dry run's numbers can be
    sanity-checked against what the customer believes they have.
 
-## 8. Backlog candidates (register on close; ids reserved from BL-SS-120)
+## 8. Backlog candidates
 
-| ID | Title | Priority |
-|---|---|---|
-| BL-SS-120 | Add `"migration"` to core `EXEMPT_FROM_ONE_PER_TYPE` so a tenant can hold several respond.io connections and migrate more than one space without retiring the first (core index change plus migration) | Low |
-| BL-SS-121 | Incremental top-up run: re-run a completed migration for messages newer than the last cursor, so the freeze window can be minutes instead of hours | Medium |
-| BL-SS-122 | Migrate internal comments once respond.io exposes a comment LIST endpoint (today only `POST /comments` exists) | Low |
-| BL-SS-123 | Migrate closing-note text and map respond.io conversation categories onto A3 close reasons (the `GET /space/closing_notes` map is best-effort in v1) | Low |
-| BL-SS-124 | Re-fetch failed media as a standalone retry job driven by the failure table, instead of re-running the whole migration | Medium |
-| BL-SS-125 | GC for migration failure-CSV blobs when their `background_jobs` row is pruned (the blob outlives the row - same gap as the contacts export, plan 26) | Low |
-| BL-SS-126 | Generic "external system migration" shell: A6's job + mapping + dry-run-report + failure-table pattern is the third `background_jobs` consumer with the same shape (storage migration, AutoCount ETL, this) | Low |
-| BL-SS-127 | Contact-merge history: respond.io merges contacts, and a merged source id currently resolves to one target with no record of the other | Low |
-| BL-SS-128 | Migrate blocked-contact flags once A6-era Foundryx has a block flag (B2 / G24) | Low |
-| BL-SS-129 | Re-verify `SOURCE_TO_CHANNEL_TYPE` against the vendor's live channel catalog on a schedule; a new respond.io channel source currently falls through to "Skip" silently rather than warning | Low |
+**Merge resolution (this is what actually landed in `backlog.md` - the numbers below are FINAL, not
+provisional):** `main`'s max at merge time was `BL-SS-145`. Three items registered for real, renumbered
+from there: `BL-SS-146` ("Migration Retry / Complete-anyway have no real backend route", surfaced
+during S6, not part of the original candidate list below), `BL-SS-147` ("Migration job-history search/
+sort/filter runs in Python", also an S6 finding), and `BL-SS-148` (the `SOURCE_TO_CHANNEL_TYPE`
+re-verify row from the original candidate list below - the ONE row from that list registered at merge,
+per the round-1 review nit's own instruction). `channel_map.py`'s own comment points at `BL-SS-148`.
 
-**Review round 1 nit - id collision (provisional, flagged for merge):** two DIFFERENT backlog items
-actually landed in `backlog.md` under `BL-SS-129`/`BL-SS-130` during the S6 close - "Retry route has
-no real backend route" and "job-history list search/sort/filter runs in Python" - NOT the
-`SOURCE_TO_CHANNEL_TYPE` re-verify row reserved above. The `SOURCE_TO_CHANNEL_TYPE` row was never
-actually registered. This whole table's ids are provisional against THIS lane's cut of `main`
-(worktree s33) - per the merge checklist (D-A6-21), whoever merges A6 must re-derive every id from
-`main`'s then-current max (139 at review time) rather than trust the numbers printed here, and
-should register the `SOURCE_TO_CHANNEL_TYPE` row for real at that point if it is still open.
+The remaining candidates below were never registered as real `backlog.md` rows (this plan's own S6
+close did not promote them, and the merge did not either - out of scope for a merge) and stay
+plan-file-only until a future close picks them up:
+
+| Title | Priority |
+|---|---|
+| Add `"migration"` to core `EXEMPT_FROM_ONE_PER_TYPE` so a tenant can hold several respond.io connections and migrate more than one space without retiring the first (core index change plus migration) | Low |
+| Incremental top-up run: re-run a completed migration for messages newer than the last cursor, so the freeze window can be minutes instead of hours | Medium |
+| Migrate internal comments once respond.io exposes a comment LIST endpoint (today only `POST /comments` exists) | Low |
+| Migrate closing-note text and map respond.io conversation categories onto A3 close reasons (the `GET /space/closing_notes` map is best-effort in v1) | Low |
+| Re-fetch failed media as a standalone retry job driven by the failure table, instead of re-running the whole migration | Medium |
+| GC for migration failure-CSV blobs when their `background_jobs` row is pruned (the blob outlives the row - same gap as the contacts export, plan 26) | Low |
+| Generic "external system migration" shell: A6's job + mapping + dry-run-report + failure-table pattern is the third `background_jobs` consumer with the same shape (storage migration, AutoCount ETL, this) | Low |
+| Contact-merge history: respond.io merges contacts, and a merged source id currently resolves to one target with no record of the other | Low |
+| Migrate blocked-contact flags once A6-era Foundryx has a block flag (B2 / G24) | Low |
 
 ## 9. Risks and mitigations
 
@@ -507,7 +518,8 @@ should register the `SOURCE_TO_CHANNEL_TYPE` row for real at that point if it is
 - **F5 - close reasons are best-effort.** `GET /space/closing_notes` returns
   `{category, description}` with no id we can key on, and the source contact object carries no
   closing-note reference. Backfilled `closed` events therefore set `close_reason_id` NULL. Mapping
-  categories onto A3 close reasons is BL-SS-123.
+  categories onto A3 close reasons is an unregistered candidate in section 8 ("Migrate closing-note
+  text and map respond.io conversation categories onto A3 close reasons").
 - **F6 - new permission resource rather than reusing `contacts.import`.** The brief left this open.
   I chose `omnichannel_migration.read` / `.manage` (D-A6-16): the job holds an external API token and
   writes six entity families, which is not what a contacts-import key is scoped for.

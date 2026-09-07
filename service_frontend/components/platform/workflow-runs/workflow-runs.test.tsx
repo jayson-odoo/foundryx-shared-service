@@ -56,6 +56,54 @@ describe('WorkflowRuns status filter', () => {
   });
 });
 
+describe('WorkflowRuns - Waiting (plan 31 S6, AC-WFP-65)', () => {
+  beforeEach(() => {
+    listRuns.mockResolvedValue({ data: [], total: 0 });
+    getRun.mockResolvedValue(null);
+  });
+
+  it('offers a Waiting segment in the status filter', async () => {
+    render(<WorkflowRuns workflowId="workflow-1" onDebugInEditor={vi.fn()} />);
+    await waitFor(() => expect(listRuns).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Filter runs by status' }));
+    fireEvent.click(screen.getByText('Waiting'));
+
+    await waitFor(() =>
+      expect(listRuns).toHaveBeenLastCalledWith('workflow-1', {
+        page: 0,
+        pageSize: 25,
+        segment: 'waiting',
+      }),
+    );
+  });
+
+  it('renders the Waiting badge for a parked run row', async () => {
+    listRuns.mockResolvedValue({
+      data: [
+        {
+          id: 'run-1',
+          status: 'waiting',
+          triggeredBy: 'event',
+          isTest: false,
+          actorName: 'System',
+          startedAt: '2026-08-30T00:00:00Z',
+          finishedAt: null,
+          durationMs: null,
+          versionNumber: 1,
+          correlationKey: null,
+          error: null,
+          createdAt: '2026-08-30T00:00:00Z',
+          pausedNodeId: 'ask_1',
+        },
+      ],
+      total: 1,
+    });
+    render(<WorkflowRuns workflowId="workflow-1" onDebugInEditor={vi.fn()} />);
+    expect(await screen.findByText('Waiting')).toBeInTheDocument();
+  });
+});
+
 describe('WorkflowRuns correlation key', () => {
   it('shows the snapshotted correlation key on a serialized run', async () => {
     listRuns.mockResolvedValue({

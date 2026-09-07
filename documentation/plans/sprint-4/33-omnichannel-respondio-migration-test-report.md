@@ -199,7 +199,7 @@ test_boot_module_hooks_registers_module_workflow_nodes`.
 
 | AC | Tag | Result | Evidence |
 |---|---|---|---|
-| AC-MIG-18 | [BE] | **PASS** | `app_omnichannel.migration_refs` present and functioning (re-run correctly resolved `0 would create / 3 would update` via a ref hit, not a fresh phone/email match - confirmed by `contacts.migrated_from`/re-run idempotency both working). Alembic revision is currently `0016_omni_migration_refs` with a GAP at 0013-0015 (0012 exists, 0016 next) - **the plan's own "Merge-renumber rule" (section 3) explicitly reserves this renumbering for whoever merges to `main`; not a defect in this slice, but a flagged pre-merge TODO** confirmed still outstanding. |
+| AC-MIG-18 | [BE] | **PASS** | `app_omnichannel.migration_refs` present and functioning (re-run correctly resolved `0 would create / 3 would update` via a ref hit, not a fresh phone/email match - confirmed by `contacts.migrated_from`/re-run idempotency both working). Alembic revision renamed at merge to `0017_omni_migration_refs` per the plan's own "Merge-renumber rule" (section 3) - resolved and transcript-verified live on Postgres in "Post-merge migration cycle" below (was a flagged pre-merge TODO in the original round, now closed). |
 | AC-MIG-19 | [BE] | **PASS** | Every job created this run went through `POST /omnichannel/migration/jobs` -> a real `background_jobs` row of type `omnichannel.respondio_migration` (confirmed via `psql`: 7 rows this run, all that type). |
 | AC-MIG-20 | [BE] | **PASS** | curl-verified directly: a `run`-mode create against a mapping with no matching prior dry run -> `409 {"reason":"dry_run_required"}`. Frontend Start-disabled state matched exactly (never enabled until the SAME mapping's dry run settled `done`). |
 | AC-MIG-21 | [BE] | **PASS** | curl-verified directly: flipped an existing job to `status=running` for the workspace, then a second `POST /jobs` -> `409 {"reason":"migration_in_progress"}`; reverted. |
@@ -455,12 +455,65 @@ the original test report's own limitation).
 
 ### Still open
 
-- The alembic revision-id renumber (`0016`/`0017` collide with whatever `main` has moved to since)
-  is unchanged from the original report's own flagged pre-merge TODO - still the merger's job per
-  the plan's own "Merge-renumber rule", not addressed in this fix round.
-- The manifest version bump (`0.7.0` -> the merge-time-correct next number) and the three
-  version-pin test updates are likewise left for the merge checklist, unchanged from the original
-  review.
 - A live vendor-token B1 redirect-SSRF probe was not run (no real respond.io Developer API token
   on this machine) - covered by the pytest stub-transport tests only, same limitation as every
   other API-mode-only AC in the original test report.
+
+## Post-merge migration cycle
+
+Resolved at merge time (`main` 148a2552, module head `0016_omni_business_hours`, manifest `0.7.0`):
+the two previously-flagged "Still open" items above (alembic revision-id renumber, manifest bump,
+three version-pin tests) are DONE - `0016_omni_migration_refs` -> `0017_omni_migration_refs`
+(`down_revision` re-pointed at `0016_omni_business_hours`), `0017_omni_migration_uploads` ->
+`0018_omni_migration_uploads`, `manifest.json` `0.7.0` -> `0.8.0`, `update_tenant`'s docstring now
+reads `0.7.0 -> 0.8.0` for the plan 33 bump. This section is the transcript proving the renumbered
+chain actually applies on live Postgres, not only `create_all` (conftest cannot see migrations at
+all).
+
+The lane DB (`foundryx_service_s33`) was bootstrapped from `main` at `62584b42` (pre-A9/A5/A4/A8
+merges commit range for this specific chain) and had DRIFTED from both the pre-rename and
+post-rename module chains: `alembic_version_omnichannel` was stamped `0017_omni_migration_uploads`
+(our OLD, now-renamed name) while the actual `migration_refs`/`migration_uploads` tables already
+existed (created via the `create_all`/bootstrap fast path during S2-S6 dev, not via `alembic
+upgrade`) - and core `alembic_version` was stamped `teams_core_s428`, several revisions behind
+`main`'s real head (`workflows_http_s31`), with none of plan sprint-4/31's module tables
+(`workflow_contact_fires`, `workflow_waits`, `omnichannel_settings.business_hours_json`/
+`business_timezone`) present at all.
+
+Reconciliation (module chain, `alembic.command` driven, mirroring `run_module_migrations`'s own
+`Config` wiring):
+
+1. **Before**: `alembic_version_omnichannel = 0017_omni_migration_uploads` (pre-rename name, no
+   longer a valid revision id in the renamed working tree); `migration_refs`/`migration_uploads`
+   tables present (via `create_all`, not `alembic`); `workflow_contact_fires`/`workflow_waits`
+   absent; `omnichannel_settings.business_hours_json`/`business_timezone` absent.
+2. Built a SCRATCH `alembic` script-location (`env.py` + `0001`-`0012` copied unchanged +
+   `0016_omni_migration_refs.py`/`0017_omni_migration_uploads.py` restored from the pre-rename git
+   blob at `6fece90e`) pointed at the SAME database/version-table, and ran
+   `command.downgrade(cfg, "0012_omni_team_assignment")` against it - dropped `migration_uploads`,
+   then `migration_refs` and both `migrated_from` columns/indexes, confirmed by `\dt`/`\d` (both
+   tables absent, `migrated_from` gone from `contacts`). `alembic_version_omnichannel` read back
+   `0012_omni_team_assignment`.
+3. Switched to the REAL (renamed) `modules/omnichannel/alembic` script-location and ran
+   `command.upgrade(cfg, "head")` - ran `0013_omni_workflow_fires` -> `0014_omni_round_robin_cursor`
+   -> `0015_omni_workflow_waits` -> `0016_omni_business_hours` (main's plan sprint-4/31 chain, never
+   applied to this DB before) -> `0017_omni_migration_refs` -> `0018_omni_migration_uploads` (this
+   plan's renamed pair) IN ONE PASS. `alembic heads` confirmed ONE module head
+   (`0018_omni_migration_uploads`). `\dt` confirmed `migration_refs`, `migration_uploads`,
+   `workflow_contact_fires`, `workflow_waits` all present; `\d omnichannel_settings` confirmed
+   `business_hours_json`/`business_timezone`; `\d contacts` confirmed `migrated_from` +
+   `ix_omni_contacts_migrated_from` back.
+4. One down/up cycle on the FINAL (renamed) chain as an integrity check:
+   `command.downgrade(cfg, "-1")` (`0018` -> `0017_omni_migration_refs`, dropped
+   `migration_uploads`) then `command.upgrade(cfg, "head")` (recreated it, back to `0018_omni_
+   migration_uploads (head)`) - clean both directions, `migration_uploads` confirmed present again
+   after the cycle.
+5. Core chain separately: `alembic heads` -> ONE head (`workflows_http_s31`, unaffected by this
+   module's renumber - core and module version tables are isolated). `alembic current` read
+   `teams_core_s428` (behind); `alembic upgrade head` ran `teams_core_s428 -> bgjob_heartbeat_orphan
+   -> wf_run_pause_s31 -> workflows_http_s31` cleanly. Final state: core `workflows_http_s31`,
+   module `0018_omni_migration_uploads` - ONE head each, DB fully reconciled with the merged code.
+
+No DDL was hand-written outside the migration files themselves - every table/column mutation in
+this transcript came from running the actual `upgrade()`/`downgrade()` functions already reviewed
+in S2/review-round-1.

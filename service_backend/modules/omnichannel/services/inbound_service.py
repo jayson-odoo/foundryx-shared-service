@@ -208,6 +208,7 @@ class InboundService:
                 event_service.record(
                     self.db, contact, event_type,
                     from_value=prev_status_id, to_value=open_status_id,
+                    channel_id=channel.id,
                 )
         contact.status_id = open_status_id
         contact.csw_expires_at = now + CSW_WINDOW
@@ -243,39 +244,73 @@ class InboundService:
             message_payload["filename"] = message_payload.pop("mediaFilename", None)
             message_payload["size"] = message_payload.pop("mediaSize", None)
 
+        # Resume a run PARKED on an Ask-a-question step for this contact
+        # (plan sprint-4/31 S4, AC-WFP-45, D-A5-8/F2). This runs BEFORE the
+        # `message_received` dispatch below and, when it claims the message,
+        # CONSUMES it: no `message_received` run is created for an answer, or a
+        # workflow that asks a question and is itself triggered by an incoming
+        # message would re-ask on every reply. Isolated exactly like the
+        # dispatch below - a broken workflow never drops a message.
+        consumed_by_wait = False
+        try:
+            from .workflow_waits import resume_from_inbound
+
+            consumed_by_wait = resume_from_inbound(
+                self.db, contact=contact, tenant_id=channel.tenant_id, text=row.body
+            )
+        except Exception:  # noqa: BLE001 - a broken wait never drops a message
+            logger.exception("workflow wait resume failed for inbound message %s", row.id)
+            consumed_by_wait = False
+
         # Start any workflow whose trigger is "Incoming omnichannel message"
         # (plan sprint-4/17) - failure-isolated (CLAUDE.md: workflow dispatch
         # must never break the triggering request), on top of
         # notify_entity_event's own internal dispatch-failure isolation.
-        try:
-            from app.workflow_engine.entity_events import notify_entity_event
+        if not consumed_by_wait:
+            try:
+                from app.workflow_engine.entity_events import notify_entity_event
 
-            name = " ".join(
-                part for part in [contact.first_name, contact.last_name] if part
-            ).strip()
-            notify_entity_event(
-                self.db,
-                "omnichannel_message",
-                "received",
-                row,
-                tenant_id=channel.tenant_id,
-                extra={
-                    "channelId": channel.id,
-                    "channelName": channel.name,
-                    "workspaceId": channel.workspace_id,
-                    "contactId": contact.id,
-                    "contactName": name or contact.phone or "",
-                    "contactPhone": contact.phone or "",
-                    "conversationId": contact.id,
-                    "messageId": row.id,
-                    "messageType": row.message_type,
-                    "messageText": row.body,
-                    "mediaUrl": signed_media_url(row.id) if row.media_key else None,
-                    "mediaMime": row.media_mime,
-                },
-            )
-        except Exception:  # noqa: BLE001 - a broken workflow never drops a message
-            logger.exception("workflow trigger dispatch failed for inbound message %s", row.id)
+                name = " ".join(
+                    part for part in [contact.first_name, contact.last_name] if part
+                ).strip()
+                # AC-WFP-14: "first message only" - no PRIOR contact message exists
+                # for this contact before the one just inserted (`row`, already
+                # flushed above so it has an id to exclude).
+                is_first_message = (
+                    self.db.query(ConversationMessage.id)
+                    .filter(
+                        ConversationMessage.tenant_id == channel.tenant_id,
+                        ConversationMessage.contact_id == contact.id,
+                        ConversationMessage.sender_type == "CONTACT",
+                        ConversationMessage.id != row.id,
+                    )
+                    .first()
+                    is None
+                )
+                notify_entity_event(
+                    self.db,
+                    "omnichannel_message",
+                    "received",
+                    row,
+                    tenant_id=channel.tenant_id,
+                    extra={
+                        "channelId": channel.id,
+                        "channelName": channel.name,
+                        "workspaceId": channel.workspace_id,
+                        "contactId": contact.id,
+                        "contactName": name or contact.phone or "",
+                        "contactPhone": contact.phone or "",
+                        "conversationId": contact.id,
+                        "messageId": row.id,
+                        "messageType": row.message_type,
+                        "messageText": row.body,
+                        "mediaUrl": signed_media_url(row.id) if row.media_key else None,
+                        "mediaMime": row.media_mime,
+                        "isFirstMessage": is_first_message,
+                    },
+                )
+            except Exception:  # noqa: BLE001 - a broken workflow never drops a message
+                logger.exception("workflow trigger dispatch failed for inbound message %s", row.id)
 
         enqueue_event(
             self.db,
@@ -375,7 +410,9 @@ class InboundService:
             self.db.flush()
             # `opened` event (plan 27 A3, AC-IVE-03) - exactly one per new
             # thread, `to_value` = the OPEN status just assigned above.
-            event_service.record(self.db, contact, "opened", to_value=contact.status_id)
+            event_service.record(
+                self.db, contact, "opened", to_value=contact.status_id, channel_id=channel.id
+            )
 
         self.db.add(
             ContactChannelIdentity(

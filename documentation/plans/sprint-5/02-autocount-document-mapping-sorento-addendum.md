@@ -76,6 +76,12 @@ Family is the ESB's job (each task filters by your `doc_family` rule, `SPO-` pre
 should still refuse an `SPO-` number arriving under `purchase_orders` (per-record `failed`) as a
 guard.
 
+`container_number` (feat/spo-container-number, 2026-09-07): AutoCount's generic `PO.Ref` column - raw text, max 100, on shipping_orders ingest only at contract 2.1+, never on purchase_orders.
+Sourced by `SPO_PRESET.header` (`Ref -> container_number`); `PO_PRESET` maps no such field, so a
+purchase-order payload never carries it at any version. Same absent-vs-null rule as every other
+field (section 11): omitted from the payload entirely when the AutoCount value is unset, never
+sent as an explicit `null` that would clear an already-stored container on Sorento's side.
+
 ## 4. SO↔PO dedication from `FromSODocList`
 
 `CanonicalPurchaseOrderLine.from_so_numbers?: list[str]` (+ on SPO lines). On write, call
@@ -192,6 +198,17 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   version 1 or upgrade Sorento"); a Sorento with no contract endpoint at all is reported, not failed.
 - Sorento UAC/plan: `documentation/plans/autocount/autocount-document-ingest-v2-acceptance-criteria.md`
   (AC-V0..V6) + `PLAN-autocount-document-ingest-v2.md` (D1-D9, S0-S6) on sorento-crm main.
+- Push concurrency (`feat/sink-concurrency-ui`, 2026-09-07): the Sorento connection form gained a
+  second select, "Push concurrency" (`sinkConcurrency`, values `"1".."4"`, no stored default).
+  Unset means the platform default, which is 1 EVERYWHERE by design (`app/config.py`'s
+  `autocount_sink_concurrency` AND `docker-compose.yml`'s deployed `AUTOCOUNT_SINK_CONCURRENCY`
+  - a user ruling after Sorento accepted 2 as an achievable ceiling following their #710
+  measurement: the platform-wide default is left alone and the per-connection override is the
+  one lever). A stored value on the connection overrides it for THIS tenant only, up to the
+  ceiling of 4, so an operator can raise it to drain a backlog and set it back after, no deploy.
+  Resolved inside `SorentoSink._resolve_concurrency`, clamped to 1..4 and to the number of chunks
+  in the push; an invalid stored value falls back to the platform default and logs one warning
+  per sink instance rather than raising.
 
 ## 12. Change log
 
@@ -345,3 +362,16 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   Delivered backfill for existing tenants: module Alembic `0013_autocount_drop_credit_limit` +
   App Store 0.4.0 -> 0.5.0 (`update_tenant`) disable the now-dead enabled customer
   `credit_limit` rows. Known capability loss (no explicit-clear path under 2.1) = BL-SS-102.
+- 2026-09-07 (`container_number`, feat/spo-container-number): Sorento added `container_number` to
+  the 2.1 `shipping_orders` ingest schema and `fields_added.shipping_orders` in their PR #699
+  (squash commit `6e6bed893`, 2026-09-06, tag `autocount-contract-v2.1`); production runs build
+  `59dffc60d` (their #710 deploy, 2026-09-07T01:08Z), which contains `6e6bed893`
+  (`git merge-base --is-ancestor` true) - production already accepts the field. Deploy-order note:
+  the backfill (module Alembic 0016) re-stages 100% of existing SPOs on its first run, and the
+  whole re-staged family pushes with `container_number` on it; a Sorento that did NOT yet accept
+  the field would reject every one of them under `extra="forbid"` (the same guard that keeps
+  `container_number` OFF `purchase_orders` - Sorento's `CanonicalPurchaseOrder` declares no such
+  field either, which is why this ESB's own `CanonicalPurchaseOrder` carries none, only
+  `CanonicalShippingOrder` does). Checked before shipping: `GET /api/v1/external/contract` on
+  Sorento prod lists `container_number` under `fields_added.shipping_orders`, checked <UTC time>
+  by the operator; Sorento build `<SHA>`.

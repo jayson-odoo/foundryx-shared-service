@@ -11,7 +11,7 @@ later) maps to ``None`` - the migration setup form always shows "Skip this
 channel" preselected for it (AC-MIG-04), and its messages become channel-less
 history (``channel_id`` NULL, already legal - SYSTEM notes use it). A
 fabricated/guessed target type would silently misroute a real channel, which
-is worse than an honest skip (BL-SS-129 - re-verify this map against the
+is worse than an honest skip (BL-SS-148 - re-verify this map against the
 vendor's live catalog on a schedule).
 """
 from typing import Any, Dict, Optional

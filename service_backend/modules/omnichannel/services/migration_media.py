@@ -10,12 +10,12 @@ kind is unknown up front and only resolves after sniffing the real bytes.
 Mirrors `inbound_service._store_media`'s own pattern (sniff, cap,
 `storage_for_tenant().save`, continue on failure) with one difference: the
 source is an arbitrary external URL from a two-year-old vendor record, not a
-Graph media id - so it is re-validated through the SAME SSRF guard every
-consumer webhook delivery uses (`webhook_service.assert_deliverable`, public
-https only) immediately before every fetch AND before every redirect hop
-(review round 1, finding B1 - this branch has no `app/services/url_guard.py`;
-TODO(merge checklist item 3) switch to that module once it lands on `main`,
-in the SAME change as any further redirect-handling fix).
+Graph media id - so it is re-validated through the SAME core SSRF guard
+(`app/services/url_guard.assert_deliverable`, public https only - the guard
+`webhook_service.assert_deliverable` itself now delegates to, extracted at
+plan sprint-4/31 S5) immediately before every fetch AND before every redirect
+hop (review round 1, finding B1; switched to the core module directly at
+merge time, per the merge checklist).
 
 Every failure returns `MediaFetchResult(ok=False, reason=...)` - this
 function NEVER raises for a fetch/sniff/cap/storage problem (D-A6-7: the
@@ -41,9 +41,10 @@ from sqlalchemy.orm import Session
 from app.services.storage import storage_for_tenant
 from app.uploads import detect_upload_mime
 
+from app.services.url_guard import UrlGuardError, assert_deliverable
+
 from .media_pipeline import ACCEPTED_MIMES
 from .media_settings_service import MediaSettingsService
-from .webhook_service import WebhookError, assert_deliverable
 
 logger = logging.getLogger("foundryx.omnichannel.migration")
 
@@ -133,7 +134,7 @@ def _stream_with_guarded_redirects(
         next_url = str(httpx.URL(current_url).join(location))
         try:
             assert_deliverable(next_url)
-        except WebhookError as exc:
+        except UrlGuardError as exc:
             return None, f"Redirected source URL rejected: {exc}"
         current_url = next_url
     return None, f"Too many redirects (more than {MAX_REDIRECT_HOPS})."
@@ -163,7 +164,7 @@ def fetch_and_store_media(
 
     try:
         assert_deliverable(url)
-    except WebhookError as exc:
+    except UrlGuardError as exc:
         return MediaFetchResult(ok=False, reason=f"Source URL rejected: {exc}")
 
     settings_svc = MediaSettingsService(db)

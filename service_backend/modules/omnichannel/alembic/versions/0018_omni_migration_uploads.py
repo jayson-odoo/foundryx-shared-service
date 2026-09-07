@@ -5,12 +5,11 @@ contactsUploadId`/`snippetsUploadId` resolve against, review B2) - a client
 used to be able to hand the job-create route ANY storage-key string
 (`contactsCsvKey`/`snippetsCsvKey`), fetched unvalidated (path traversal /
 cross-tenant blob read). Idempotent guards (inspector checks), mirrors
-`0016_omni_migration_refs`'s own style. Revision id <= 32 chars.
+`0017_omni_migration_refs`'s own style. Revision id <= 32 chars.
 
-Merge-renumber note (mirrors 0016's own, D-A6-21, binding on whoever merges
-A6): re-check `modules/omnichannel/alembic/versions/` on the then-current
-`main` before merging - rename this file + its `revision`/`down_revision` to
-the then-current head's next free number.
+Merge-renumber resolution (mirrors 0017's own, D-A6-21 - FINAL, applied):
+renamed from `0017_omni_migration_uploads` at merge time to `0018`, chained
+onto `0017_omni_migration_refs` above.
 
 `created_at` uses `sa.DateTime(timezone=True)` (review round 1 nit, checked
 against `0012_omni_team_assignment` - confirmed the SAME convention this
@@ -18,15 +17,15 @@ whole module's Alembic migrations already use; the ORM model's `UTCDateTime`
 TypeDecorator only affects the Python-side value, not the underlying
 Postgres column type, so no `app.models.utc_datetime` import is needed here).
 
-Revision ID: 0017_omni_migration_uploads
-Revises: 0016_omni_migration_refs
+Revision ID: 0018_omni_migration_uploads
+Revises: 0017_omni_migration_refs
 Create Date: 2026-09-07
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0017_omni_migration_uploads"
-down_revision = "0016_omni_migration_refs"
+revision = "0018_omni_migration_uploads"
+down_revision = "0017_omni_migration_refs"
 branch_labels = None
 depends_on = None
 

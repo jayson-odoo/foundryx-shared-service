@@ -22,6 +22,10 @@ RUN_RUNNING = "running"
 RUN_SUCCESS = "success"
 RUN_FAILED = "failed"
 RUN_CANCELLED = "cancelled"
+# Parked: an action asked the engine to suspend the run (plan sprint-4/31 S4,
+# D-A5-6). A waiting run holds NO serialized lease and is NOT running, so it
+# never blocks its correlation scope; it returns to ``pending`` on resume.
+RUN_WAITING = "waiting"
 
 # Per-node lifecycle.
 NODE_PENDING = "pending"
@@ -144,6 +148,14 @@ class WorkflowRun(Base):
     triggered_by_run_id = Column(String, nullable=True)
     depth = Column(Integer, nullable=False, default=0)
     actor_id = Column(String, nullable=True)
+
+    # Park/resume (plan sprint-4/31 S4, D-A5-6/D-A5-20). ``paused_node_id`` is
+    # the node that raised ``WorkflowPaused``; ``resume_state_json`` carries the
+    # engine's own suspended walk state ({ctx, active, completedStateful,
+    # index}) so ``run_workflow`` re-enters the SAME walk instead of restarting
+    # it. Both NULL for every non-parked run (no backfill needed).
+    paused_node_id = Column(String, nullable=True)
+    resume_state_json = Column(JSON(none_as_null=True), nullable=True)
 
     error = Column(Text, nullable=True)
     started_at = Column(UTCDateTime(), nullable=True)

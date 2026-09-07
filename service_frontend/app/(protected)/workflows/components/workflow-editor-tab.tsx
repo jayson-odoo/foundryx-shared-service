@@ -8,6 +8,7 @@
 import { Bug, CloudUpload, Play, RefreshCw, Rocket, X } from 'lucide-react';
 import type {
   Workflow,
+  WorkflowCatalogStatus,
   WorkflowDefinition,
   WorkflowMetadata,
 } from '@/types/workflows';
@@ -27,7 +28,12 @@ export interface WorkflowEditorTabProps {
   canManage: boolean;
   templateOptions: TemplateOption[];
   metadata: WorkflowMetadata;
+  /** Load state of `GET /workflows/metadata` - the canvas palette renders a
+   * skeleton while it loads and a failure state when it errors (R-2). */
+  catalogStatus?: WorkflowCatalogStatus;
   canCode?: boolean;
+  /** Gates the HTTP request node (`workflows.http`), same as `canCode`. */
+  canHttp?: boolean;
   busy: boolean;
   onPublish: () => void;
   onUnpublish: () => void;
@@ -46,7 +52,9 @@ export function WorkflowEditorTab({
   canManage,
   templateOptions,
   metadata,
+  catalogStatus = 'ready',
   canCode = true,
+  canHttp = true,
   busy,
   onPublish,
   onUnpublish,
@@ -57,6 +65,9 @@ export function WorkflowEditorTab({
 }: WorkflowEditorTabProps) {
   const isPublished = workflow.currentVersionId !== null;
   const hasCode = doc.nodes.some((node) => node.type === 'code.run');
+  const hasHttp = doc.nodes.some((node) => node.type === 'http.request');
+  const permissionBlocked =
+    (hasCode && !canCode) || (hasHttp && !canHttp);
 
   return (
     <div className="flex flex-col gap-3" data-testid="workflow-editor-tab">
@@ -74,7 +85,7 @@ export function WorkflowEditorTab({
               variant="outline"
               size="sm"
               onClick={onExecuteAll}
-              disabled={busy || (hasCode && !canCode)}
+              disabled={busy || permissionBlocked}
               data-testid="execute-workflow"
             >
               <RefreshCw className="size-3.5" /> Execute workflow
@@ -120,7 +131,7 @@ export function WorkflowEditorTab({
             <Button
               variant="outline"
               size="sm"
-              disabled={busy || (hasCode && !canCode)}
+              disabled={busy || permissionBlocked}
               onClick={onRun}
               data-testid="workflow-run"
             >
@@ -142,7 +153,7 @@ export function WorkflowEditorTab({
                 size="sm"
                 disabled={
                   busy ||
-                  (hasCode && !canCode) ||
+                  permissionBlocked ||
                   (isPublished && !workflow.hasUnpublishedChanges)
                 }
                 onClick={onPublish}
@@ -166,7 +177,10 @@ export function WorkflowEditorTab({
         editing={editing}
         templateOptions={templateOptions}
         metadata={metadata}
+        catalogStatus={catalogStatus}
         canCode={canCode}
+        canHttp={canHttp}
+        currentWorkflowId={workflow.id || undefined}
         debug={debug}
       />
     </div>

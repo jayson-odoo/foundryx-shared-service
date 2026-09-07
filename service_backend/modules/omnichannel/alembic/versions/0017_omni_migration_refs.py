@@ -5,24 +5,22 @@ tool, D-A6-3, §5.3) and descriptive `migrated_from` markers on
 `contacts`/`conversation_messages`. Idempotent guards (inspector checks),
 mirrors `0012_omni_team_assignment`'s style. Revision id <= 32 chars.
 
-Merge-renumber note (plan §3, D-A6-21, binding on whoever merges A6): `0016`
-is a placeholder matching this lane's cut of `main` (module head `0012`,
-manifest `0.7.0`, S1 commit). Before merging, re-check
-`modules/omnichannel/alembic/versions/` on the then-current `main`: rename
-this file + its `revision` id to `00NN` (`NN = max(existing) + 1`), re-point
-`down_revision` at the then-current head (add a merge revision if two lanes
-left two heads - never silently pick one), and bump `manifest.json` to
-`0.<max existing minor + 1>.0` if another lane has since taken `0.7.0` first.
+Merge-renumber resolution (plan §3, D-A6-21 - this is the FINAL, applied
+renumber, not a placeholder): renamed from `0016_omni_migration_refs` at
+merge time. `main`'s module head at merge was `0016_omni_business_hours`
+(plan sprint-4/31), so this revision became `0017` and `down_revision`
+re-points at that head; `manifest.json` bumped to `0.8.0` (main was already
+at `0.7.0`).
 
-Revision ID: 0016_omni_migration_refs
-Revises: 0012_omni_team_assignment
+Revision ID: 0017_omni_migration_refs
+Revises: 0016_omni_business_hours
 Create Date: 2026-09-06
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0016_omni_migration_refs"
-down_revision = "0012_omni_team_assignment"
+revision = "0017_omni_migration_refs"
+down_revision = "0016_omni_business_hours"
 branch_labels = None
 depends_on = None
 

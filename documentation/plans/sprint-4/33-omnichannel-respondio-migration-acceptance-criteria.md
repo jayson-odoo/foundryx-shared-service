@@ -128,8 +128,9 @@ IDs: `AC-MIG-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
 
 ## Slice S2 - Migration job, contacts phase, dry run
 
-- **AC-MIG-18 [BE]** Given module Alembic revision `0016_omni_migration_refs` (renumbered per the
-  plan's merge rule), then `app_omnichannel.migration_refs` exists with `(id, tenant_id,
+- **AC-MIG-18 [BE]** Given module Alembic revision `0017_omni_migration_refs` (renumbered at merge
+  per the plan's merge rule - `down_revision` re-pointed at `main`'s then-current head,
+  `0016_omni_business_hours`), then `app_omnichannel.migration_refs` exists with `(id, tenant_id,
   workspace_id, source, entity_type, external_id, local_id, created_at)`, a UNIQUE index on
   `(tenant_id, workspace_id, source, entity_type, external_id)` and an index on `(tenant_id,
   workspace_id, source, entity_type, local_id)`; `contacts.migrated_from` and

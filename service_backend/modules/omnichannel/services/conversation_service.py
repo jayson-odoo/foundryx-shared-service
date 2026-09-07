@@ -528,6 +528,14 @@ class ConversationService:
         # `omnichannel.assign_contact` workflow action would pass "workflow".
         assignment_source: str = "agent",
     ) -> ThreadItem:
+        """`assigned_via_override` (plan sprint-4/31 S2) - lets a caller stamp
+        the assigned/unassigned event's `assigneeKind` explicitly (workflow
+        actions pass ``"workflow"`` so `event_service._emit_workflow_event`
+        reports `trigger.assignedVia == "workflow"`, matching the UI's own
+        "manual"/"external" values) instead of the default user/external_agent
+        inference. Kept as its own kwarg (not folded into `actor`) because the
+        actor for an automated assign is `None` - there is no user to infer
+        "manual" from."""
         c = self.repo.get_by_id(contact_id, tenant_id)
         if c is None:
             raise ThreadNotFound()

@@ -132,10 +132,10 @@ def test_manifest_version_and_model_shape(session_factory):
     manifest = json.loads(
         (Path(__file__).resolve().parents[1] / "modules" / "omnichannel" / "manifest.json").read_text()
     )
-    # Plan 33 S1 bumped the manifest to 0.7.0 - this test pins "the CURRENT
-    # manifest version", not a fixed string (updated the same way every prior
-    # version bump updated it before).
-    assert manifest["version"] == "0.7.0"
+    # Plan 31 bumped the manifest to 0.7.0, plan 33 S1 to 0.8.0 - this test
+    # pins "the CURRENT manifest version", not a fixed string (updated the
+    # same way every prior version bump updated it before).
+    assert manifest["version"] == "0.8.0"
     assert any(r["name"] == "team_settings" for r in manifest["routers"])
     assert hasattr(Contact, "assigned_team_id")
     assert TeamAssignmentSetting.__tablename__ == "team_assignment_settings"
@@ -837,7 +837,12 @@ def test_assign_conversation_action_registered_with_fields():
 
     assert by_key["contactId"].required and by_key["contactId"].mergeable
     assert by_key["mode"].required
-    assert {o["value"] for o in by_key["mode"].options} == {"user", "team", "unassign"}
+    # plan 31 A5 merge folds in a THIRD `round_robin` mode alongside A8's
+    # user/team/unassign - see test_omnichannel_workflow_parity_actions.py for
+    # its own dedicated coverage.
+    assert {o["value"] for o in by_key["mode"].options} == {
+        "user", "team", "round_robin", "unassign",
+    }
 
     assert by_key["userId"].show_when == ("mode", "user")
     assert by_key["userId"].mergeable

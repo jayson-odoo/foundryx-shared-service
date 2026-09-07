@@ -32,6 +32,12 @@ class JobHandlerDef:
     handler: JobHandler
     label: str
     queue: Optional[str] = None
+    # Liveness contract (fix/job-lease-orphan-sweep): True means the handler
+    # stamps ``JobService.heartbeat`` at every checkpoint, so a RUNNING job of
+    # this type with a stale beat IS an orphan and the sweep may fail it. A
+    # type that does not beat (a 45-minute meetings transcription, an import)
+    # is never swept - silence is not evidence for it.
+    heartbeats: bool = False
 
 
 _REGISTRY: Dict[str, JobHandlerDef] = {}
@@ -76,3 +82,9 @@ def queue_for_type(job_type: str) -> Optional[str]:
 def _reset_registry_for_tests() -> None:
     """Test seam - clears the registry (handlers re-register idempotently)."""
     _REGISTRY.clear()
+
+
+def types_that_heartbeat() -> List[str]:
+    """Job types whose handler declared ``heartbeats=True`` - the only types
+    the orphan sweep may judge by a stale heartbeat."""
+    return [d.type for d in _REGISTRY.values() if d.heartbeats]

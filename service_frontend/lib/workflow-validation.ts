@@ -6,6 +6,7 @@ export function workflowPublishIssue(
   workflow: Workflow,
   metadata: WorkflowMetadata,
   canCode: boolean,
+  canHttp = true,
 ): string | null {
   const definitionIssue = validateDefinition(
     workflow.draftDefinition,
@@ -17,6 +18,11 @@ export function workflowPublishIssue(
   );
   if (codeNodes.length > 0 && !canCode)
     return 'You need the workflows.code permission to publish Code nodes.';
+  const httpNodes = workflow.draftDefinition.nodes.filter(
+    (node) => node.type === 'http.request',
+  );
+  if (httpNodes.length > 0 && !canHttp)
+    return 'You need the workflows.http permission to publish HTTP request nodes.';
   if (metadata.codeRunnerAvailable !== false || codeNodes.length === 0)
     return null;
   if (workflow.currentVersionId && !workflow.currentVersion?.definition)

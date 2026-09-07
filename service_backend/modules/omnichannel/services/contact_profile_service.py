@@ -172,6 +172,19 @@ class ContactProfileService:
         if changes and emit:
             from app.workflow_engine.entity_events import emit_entity_event
 
+            extra: Dict[str, Any] = {}
+            if "tags" in changes:
+                # AC-WFP-11 (plan sprint-4/31): the `omnichannel.contact_tag_
+                # added`/`_removed` triggers' `trigger.tagName` output needs a
+                # name for the ADDED/REMOVED tag id(s) - resolve them here
+                # (tenant-scoped, workspace-scoped) rather than teach the pure
+                # `TriggerDef.context_extra` callable to hit the DB.
+                tag_change = changes["tags"]
+                touched_ids = set(tag_change.get("from") or []) | set(tag_change.get("to") or [])
+                if touched_ids:
+                    rows = self.tags.names_for_ids(contact.workspace_id, contact.tenant_id, touched_ids)
+                    extra["tagNames"] = rows
+
             emit_entity_event(
                 self.db,
                 "omnichannel_contact",
@@ -181,5 +194,6 @@ class ContactProfileService:
                 actor=actor,
                 actor_id=actor_id,
                 changes=changes,
+                extra=extra or None,
             )
         return changes

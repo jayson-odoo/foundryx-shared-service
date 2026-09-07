@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import {
   CircleSlash,
+  Clock3,
   FormInput,
   GitBranch,
   KeyRound,
@@ -27,6 +28,7 @@ import { WorkspaceLifecycleTab } from './workspace-lifecycle-tab';
 import { WorkspaceContactFieldsTab } from './workspace-contact-fields-tab';
 import { WorkspaceTagsTab } from './workspace-tags-tab';
 import { WorkspaceCloseReasonsTab } from './workspace-close-reasons-tab';
+import { WorkspaceBusinessHoursTab, type BusinessHoursController } from './workspace-business-hours-tab';
 import { WorkspaceTeamSettingsTab } from './workspace-team-settings-tab';
 import { useWorkspaceActions } from './use-workspace-actions';
 import { useCan } from '@/hooks/use-can';
@@ -61,6 +63,12 @@ export function useWorkspaceForm(
   // Save/Cancel exactly like the form engine's Flow tab (BL-064 pattern).
   const [lifecycleDirty, setLifecycleDirty] = useState(false);
   const lifecycleLayoutController = useRef<LayoutController | null>(null);
+  // Plan 31 S6 (AC-WFP-63) - the Business hours tab saves through its OWN
+  // endpoint (not the workspace PATCH), so it needs its own controller; its
+  // `save` is awaited (unlike the lifecycle layout's fire-and-forget) so a
+  // 422 keeps the form in edit mode instead of toasting a false success.
+  const [businessHoursDirty, setBusinessHoursDirty] = useState(false);
+  const businessHoursController = useRef<BusinessHoursController | null>(null);
 
   const form = useForm<WorkspaceFormValues>({
     mode: 'onTouched',
@@ -133,6 +141,12 @@ export function useWorkspaceForm(
       })();
       // The Lifecycle tab's layout draft commits with the same Save (BL-064).
       if (ok) lifecycleLayoutController.current?.save();
+      // Business hours saves through its own endpoint and can 422 (an
+      // overlapping/degenerate window) - awaited so a rejection keeps the
+      // form in edit mode instead of a false "Workspace updated" exit.
+      if (ok && businessHoursController.current) {
+        ok = await businessHoursController.current.save();
+      }
       return ok;
     };
 
@@ -140,6 +154,7 @@ export function useWorkspaceForm(
       if (creating) router.push(workspacesListPath);
       else form.reset(toFormValues(workspace));
       lifecycleLayoutController.current?.discard();
+      businessHoursController.current?.discard();
     };
 
     const tabs = [
@@ -225,6 +240,24 @@ export function useWorkspaceForm(
             },
           ]
         : []),
+      // Plan 31 S6 (AC-WFP-63) - gated the same as the page itself
+      // (`workspaces.read`, already required to reach this form); edits
+      // additionally need `workspaces.manage`, independent of the form's
+      // global Edit toggle (same pattern as the Lifecycle tab above).
+      {
+        id: 'business-hours',
+        label: 'Business hours',
+        icon: Clock3,
+        render: ({ editing }: { editing: boolean }) => (
+          <WorkspaceBusinessHoursTab
+            workspaceId={workspace?.id ?? null}
+            creating={creating}
+            editing={editing && can('workspaces.manage')}
+            onDirtyChange={setBusinessHoursDirty}
+            controller={businessHoursController}
+          />
+        ),
+      },
       ...(can('api_keys.read')
         ? [
             {
@@ -255,7 +288,7 @@ export function useWorkspaceForm(
       editable: !creating,
       editPermission: 'workspaces.manage',
       initialEditing: creating ? true : initialEditing,
-      isDirty: form.formState.isDirty || lifecycleDirty,
+      isDirty: form.formState.isDirty || lifecycleDirty || businessHoursDirty,
       onSave,
       onCancel,
       recordNav: creating
@@ -274,6 +307,7 @@ export function useWorkspaceForm(
     router,
     can,
     lifecycleDirty,
+    businessHoursDirty,
     fetchRecordAt,
     buildRecordHref,
   ]);

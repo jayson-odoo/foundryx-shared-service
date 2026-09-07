@@ -84,7 +84,11 @@ describe('createNode defaultConfig - omnichannel + AI Agent nodes (plan sprint-4
 
     const sendMessage = createNode('omnichannel.send_message', { x: 0, y: 0 });
     expect(sendMessage.kind).toBe('action');
-    expect(sendMessage.config).toEqual({ contactId: '', message: '' });
+    expect(sendMessage.config).toEqual({
+      contactId: '',
+      mode: 'text',
+      message: '',
+    });
   });
 
   it('rejects a nonempty AI output-parameter list with a blank key', () => {
