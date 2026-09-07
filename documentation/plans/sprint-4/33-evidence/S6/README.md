@@ -89,6 +89,17 @@ Neither probe row nor the RBAC role/user were committed to the repo; all four li
    click): Ada/Bob/Carl `MigE2E-20260907t042326z` all present with their phone/email and
    `New Lead`/`Customer` lifecycle - `08-contacts-list-migrated-1280.png`. Confirmed via the
    tenant-scoped `GET /omnichannel/contacts?search=MigE2E` API read too: `total: 3`.
+   **CORRECTION (review round 1 fix commit):** this line's "New Lead/Customer" claim was WRONG
+   as originally written - the screenshot itself shows all three contacts landed on "New Lead"
+   regardless of their CSV `Lifecycle` cell, because CSV mode never resolved that column at all
+   (filed as the test report's Defect 2). Fixed in the review-round-1 commit: CSV mode's
+   Lifecycle value now resolves via `lifecycleMap` when present, else an exact key/label match
+   against the target workspace's own stages (`find_stage_by_key_or_label`, map-only, never
+   create); an unmapped value still lands the contact on the initial stage but is now reported
+   as a `lifecycleUnmappedByValue` report row + blocker line. See
+   `tests/test_omnichannel_respondio_migration_review1.py`
+   (`test_csv_mode_lifecycle_resolves_by_stage_key_and_reports_the_unmapped_value`) and the test
+   report's Defect 2 section (now FIXED) for the corrected behavior.
 7. **Re-run idempotency (AC-MIG-60).** New migration > CSV mode > re-uploaded the SAME file
    (a fresh upload, new storage key - the mapping hash still matches since `contactsCsvKey`
    content is irrelevant to the hash, only the ROW DATA re-resolves identically) > left every

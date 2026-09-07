@@ -434,7 +434,10 @@ export const mockRespondioMigrationService: RespondioMigrationService = {
     const [headerLine, ...dataLines] = text.split(/\r?\n/).filter((l) => l.length > 0);
     const headers = (headerLine ?? '').split(',').map((h) => h.trim());
     void kind;
-    return delay({ key: `mock:csv:${file.name}`, rowCount: dataLines.length, headers }, 300);
+    // Review round 1, finding B2 - an OPAQUE receipt id, never a raw
+    // storage-key-shaped string (mirrors the real backend's
+    // `MigrationUploadResult.id`).
+    return delay({ id: `mock-upload-${jobSeq++}`, rowCount: dataLines.length, headers }, 300);
   },
 
   async listJobs(query: ListQuery): Promise<ListResult<MigrationJob>> {
@@ -463,9 +466,9 @@ export const mockRespondioMigrationService: RespondioMigrationService = {
         workspaceId: input.workspaceId ? '' : 'Choose a target workspace.',
       });
     }
-    if (input.source === 'csv' && !input.contactsCsvKey) {
+    if (input.source === 'csv' && !input.contactsUploadId) {
       throw fieldErrorsError('Upload a contacts CSV before running a CSV-mode migration.', {
-        contactsCsvKey: 'Upload a contacts CSV before running a CSV-mode migration.',
+        contactsUploadId: 'Upload a contacts CSV before running a CSV-mode migration.',
       });
     }
     const key = ledgerKey(input.connectionId ?? '', input.workspaceId);

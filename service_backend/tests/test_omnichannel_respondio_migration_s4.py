@@ -447,11 +447,7 @@ def test_events_no_fan_out_no_workflow_trigger(session_factory, monkeypatch):
     _stub_client(monkeypatch, handler)
     _patch_media_transport(monkeypatch, _media_handler({"/quiet.png": (200, _PNG_BYTES)}))
 
-    from modules.omnichannel.services.migration_service import MigrationService
-
-    snippets_key = MigrationService(db).upload_csv(
-        DEFAULT_TENANT_ID, "snippets", b"shortcut,body\r\nhi,Hello there\r\n"
-    ).key
+    snippets_key = _upload_snippets_csv(db, DEFAULT_TENANT_ID, "shortcut,body\r\nhi,Hello there\r\n")
 
     job = _make_full_job(db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run")
     job.payload_json = {**job.payload_json, "snippetsCsvKey": snippets_key}
@@ -540,10 +536,20 @@ def test_a9_report_service_reads_migrated_events_on_original_dates(session_facto
 def _upload_snippets_csv(db, tenant_id: str, text: str) -> str:
     """S5 (D-A6-25) replaced the S4 `snippetsCsvBase64` JSON-payload stopgap
     with the real upload route - this test helper mirrors that route's own
-    `storage_for_tenant(...).save` seam directly against the service."""
+    `storage_for_tenant(...).save` seam directly against the service.
+
+    Review round 1, finding B2 renamed `upload_csv`'s return from the raw
+    storage key to an opaque receipt `id` (`MigrationUploadResult.id`) -
+    these are DIRECT handler-level tests (`run_migration_job` against a
+    hand-built `BackgroundJob`, bypassing `create_job`'s own id-to-key
+    resolution entirely), so they still need the underlying storage key to
+    set on `job.payload_json["snippetsCsvKey"]` directly; fetched straight
+    off the persisted `MigrationUpload` receipt row."""
+    from modules.omnichannel.repositories.migration_upload_repository import MigrationUploadRepository
     from modules.omnichannel.services.migration_service import MigrationService
 
-    return MigrationService(db).upload_csv(tenant_id, "snippets", text.encode("utf-8")).key
+    upload = MigrationService(db).upload_csv(tenant_id, "snippets", text.encode("utf-8"))
+    return MigrationUploadRepository(db).get_for_tenant(tenant_id, upload.id).storage_key
 
 
 def test_quick_replies_created_from_csv_and_idempotent_rerun(session_factory, monkeypatch):
@@ -718,12 +724,14 @@ def test_events_and_media_migration_refs_are_tenant_scoped(session_factory, monk
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# HTTP round-trip - `snippetsCsvKey` must survive `POST /jobs` into the
-# persisted `payload_json` (`MigrationJobCreate.snippetsCsvKey` is NOT part
-# of `_mapping_hash`, so it is easy to forget wiring it into `create_job`'s
-# own `job_payload` dict - caught here rather than only at the phase level).
-# S5 (D-A6-25) renamed this field from S4's `snippetsCsvBase64` JSON-payload
-# stopgap onto the real `POST /omnichannel/migration/uploads` route.
+# HTTP round-trip - `snippetsUploadId` must resolve to the RESOLVED storage
+# key inside the persisted `payload_json["snippetsCsvKey"]` (review round 1,
+# finding B2 renamed the wire field from `snippetsCsvKey`; `MigrationJobCreate.
+# snippetsUploadId` is NOT part of `_mapping_hash`, so it is easy to forget
+# wiring it into `create_job`'s own `job_payload` dict - caught here rather
+# than only at the phase level). S5 (D-A6-25) renamed this field from S4's
+# `snippetsCsvBase64` JSON-payload stopgap onto the real `POST
+# /omnichannel/migration/uploads` route.
 # ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -739,17 +747,19 @@ def test_snippets_csv_key_round_trips_through_create_job(client, session_factory
         data={"kind": "snippets"},
     )
     assert upload.status_code == 201, upload.text
-    snippets_key = upload.json()["key"]
+    upload_id = upload.json()["id"]
 
     body = _minimal_job_body(connection_id, ws_id, mode="dry_run")
-    body["snippetsCsvKey"] = snippets_key
+    body["snippetsUploadId"] = upload_id
     res = client.post("/omnichannel/migration/jobs", headers=h, json=body)
     assert res.status_code == 201, res.text
     job_id = res.json()["id"]
 
     db = session_factory()
     from app.models.background_job import BackgroundJob
+    from modules.omnichannel.repositories.migration_upload_repository import MigrationUploadRepository
 
+    expected_key = MigrationUploadRepository(db).get_for_tenant(DEFAULT_TENANT_ID, upload_id).storage_key
     row = db.query(BackgroundJob).filter(BackgroundJob.id == job_id).first()
-    assert row.payload_json["snippetsCsvKey"] == snippets_key
+    assert row.payload_json["snippetsCsvKey"] == expected_key
     db.close()

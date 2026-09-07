@@ -10,6 +10,7 @@
  * rename is a mapping click, never a code change).
  */
 import { SearchSelect } from '@/components/platform/search-select';
+import { ClampedText } from '@/components/platform/clamped-text';
 import { MIGRATION_CSV_HEADER_KEYS } from '@/types/respondio-migration';
 
 const NOT_MAPPED = '__not_mapped__';
@@ -33,7 +34,7 @@ export function CsvHeaderMapSection({
       <p className="text-sm font-medium">Contacts CSV columns</p>
       {MIGRATION_CSV_HEADER_KEYS.map(({ key, label }) => (
         <div key={key} className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-          <p className="min-w-0 truncate text-sm">{label}</p>
+          <ClampedText text={label} lines={1} className="min-w-0 text-sm" />
           <div className="w-full sm:max-w-xs">
             <SearchSelect
               ariaLabel={`File column for ${label}`}

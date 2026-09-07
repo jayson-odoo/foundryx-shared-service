@@ -55,26 +55,32 @@ def _item(message_id, traffic="incoming", message=None, status=None, sender=None
 
 
 def test_timestamp_explicit_branch_uses_min_of_status_timestamps():
+    # Review round 1, finding S2 - `epoch_to_dt` clamps anything before
+    # 2009-01-01, so these fixtures use a realistic epoch base (2023-ish)
+    # rather than tiny synthetic offsets from 1970 (those all clamp to the
+    # SAME floor value now, which would silently defeat this test).
+    base = 1700000000
     fallback = datetime(2020, 1, 1, tzinfo=timezone.utc)
-    item = _item(1, status=[{"value": "delivered", "timestamp": 5000}, {"value": "sent", "timestamp": 3000}])
+    item = _item(1, status=[{"value": "delivered", "timestamp": base + 5000}, {"value": "sent", "timestamp": base + 3000}])
     (dt, inferred), = resolve_message_timestamps([item], fallback)
     assert inferred is False
-    assert dt == datetime.fromtimestamp(3000, tz=timezone.utc)
+    assert dt == datetime.fromtimestamp(base + 3000, tz=timezone.utc)
 
 
 def test_timestamp_interpolated_branch_between_bracketing_anchors():
+    base = 1700000000
     fallback = datetime(2020, 1, 1, tzinfo=timezone.utc)
     items = [
-        _item(1, status=[{"value": "sent", "timestamp": 1000}]),
+        _item(1, status=[{"value": "sent", "timestamp": base + 1000}]),
         _item(2),  # no status - must interpolate
-        _item(3, status=[{"value": "sent", "timestamp": 3000}]),
+        _item(3, status=[{"value": "sent", "timestamp": base + 3000}]),
     ]
     results = resolve_message_timestamps(items, fallback)
     assert results[0][1] is False
     assert results[2][1] is False
     mid_dt, mid_inferred = results[1]
     assert mid_inferred is True
-    assert mid_dt == datetime.fromtimestamp(2000, tz=timezone.utc)
+    assert mid_dt == datetime.fromtimestamp(base + 2000, tz=timezone.utc)
     # Monotonic in messageId order (AC-MIG-34 - never reorders a conversation).
     assert results[0][0] < results[1][0] < results[2][0]
 
@@ -173,7 +179,7 @@ def _make_channel(db, tenant_id, workspace_id, *, channel_type="WHATSAPP", name=
 
 
 def _make_full_job(db, tenant_id, *, connection_id, workspace_id, mode="run", cursor=None, result=None,
-                    channel_map=None, user_map=None):
+                    channel_map=None, user_map=None, team_map=None):
     """Like S2's `_make_job` but with `contactsOnly=False` so the identities
     and messages phases actually run - a real S3 job."""
     from app.models.background_job import JOB_RUNNING, BackgroundJob
@@ -182,7 +188,7 @@ def _make_full_job(db, tenant_id, *, connection_id, workspace_id, mode="run", cu
         tenant_id=tenant_id, type=MIGRATION_JOB_TYPE, status=JOB_RUNNING,
         payload_json={
             "mode": mode, "source": "api", "connectionId": connection_id, "workspaceId": workspace_id,
-            "channelMap": channel_map or [], "userMap": user_map or [], "teamMap": [], "lifecycleMap": [],
+            "channelMap": channel_map or [], "userMap": user_map or [], "teamMap": team_map or [], "lifecycleMap": [],
             "contactsOnly": False, "mappingHash": "test",
         },
         cursor_json=cursor,
@@ -193,9 +199,12 @@ def _make_full_job(db, tenant_id, *, connection_id, workspace_id, mode="run", cu
     return job
 
 
-def _pages_handler_full(contact_pages, custom_fields=None, channels_by_contact=None, messages_by_contact=None):
+def _pages_handler_full(
+    contact_pages, custom_fields=None, channels_by_contact=None, messages_by_contact=None, space_users=None
+):
     """A stubbed transport that answers `/contact/list`, `/space/custom_field`,
-    `/contact/{id}` (single-object), `/contact/{id}/channels` and
+    `/space/user` (review round 1, finding S5 - the team-map derivation
+    pass), `/contact/{id}` (single-object), `/contact/{id}/channels` and
     `/contact/{id}/message/list` (paginated) all from static dicts."""
     calls = []
 
@@ -204,6 +213,8 @@ def _pages_handler_full(contact_pages, custom_fields=None, channels_by_contact=N
         path = request.url.path
         if path.endswith("/space/custom_field"):
             return httpx.Response(200, json={"items": custom_fields or [], "pagination": {"next": None}})
+        if path.endswith("/space/user"):
+            return httpx.Response(200, json={"items": space_users or [], "pagination": {"next": None}})
         if path.endswith("/contact/list"):
             cursor = request.url.params.get("cursorId")
             items, next_cursor = contact_pages[cursor]

@@ -12,17 +12,28 @@ Mirrors `inbound_service._store_media`'s own pattern (sniff, cap,
 source is an arbitrary external URL from a two-year-old vendor record, not a
 Graph media id - so it is re-validated through the SAME SSRF guard every
 consumer webhook delivery uses (`webhook_service.assert_deliverable`, public
-https only) immediately before every fetch (this branch has no
-`app/services/url_guard.py` - that module does not exist here; the module's
-own guard is the documented substitute the coder brief names).
+https only) immediately before every fetch AND before every redirect hop
+(review round 1, finding B1 - this branch has no `app/services/url_guard.py`;
+TODO(merge checklist item 3) switch to that module once it lands on `main`,
+in the SAME change as any further redirect-handling fix).
 
 Every failure returns `MediaFetchResult(ok=False, reason=...)` - this
 function NEVER raises for a fetch/sniff/cap/storage problem (D-A6-7: the
 message row survives regardless, the caller just doesn't get a `media_key`).
+
+Redirects are followed MANUALLY, never via httpx's own `follow_redirects`
+(review round 1, finding B1): `assert_deliverable` only ever validates the
+url it is CALLED with, so a `follow_redirects=True` client would let a
+two-year-old export's `attachment.url` - a compromised/attacker-controlled
+shortener, LESS trusted than an operator-registered webhook callback -
+redirect straight past the guard into `http://169.254.169.254/` or any
+RFC1918 address. `_client_factory` therefore always builds with
+`follow_redirects=False`, and `_stream_with_guarded_redirects` re-validates
+every hop's `Location` before following it, capped at `MAX_REDIRECT_HOPS`.
 """
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 import httpx
 from sqlalchemy.orm import Session
@@ -37,6 +48,8 @@ from .webhook_service import WebhookError, assert_deliverable
 logger = logging.getLogger("foundryx.omnichannel.migration")
 
 FETCH_TIMEOUT_SECONDS = 30.0
+# Review round 1, finding B1 - the manual redirect-hop ceiling.
+MAX_REDIRECT_HOPS = 3
 
 # mime -> kind, reverse of `ACCEPTED_MIMES` - used ONLY when the caller has no
 # `declared_kind` up front (the nested email/template cases): the real kind is
@@ -62,7 +75,10 @@ class MediaFetchResult:
 
 
 def _default_client_factory() -> httpx.Client:
-    return httpx.Client(timeout=FETCH_TIMEOUT_SECONDS, follow_redirects=True)
+    # `follow_redirects=False` (review round 1, finding B1) - see the
+    # module docstring's redirect-hop paragraph; `_stream_with_guarded_
+    # redirects` is what actually walks a 3xx chain, re-validating each hop.
+    return httpx.Client(timeout=FETCH_TIMEOUT_SECONDS, follow_redirects=False)
 
 
 # The test seam - a MODULE-LEVEL name (like `RespondIoClient.from_connection`),
@@ -73,6 +89,54 @@ def _default_client_factory() -> httpx.Client:
 # migration_media, "_client_factory", ...)` scopes the override to this
 # module alone.
 _client_factory = _default_client_factory
+
+
+def _strip_query(url: str) -> str:
+    """Drops the query string and fragment from a vendor media URL before it
+    is EVER recorded in a failure message (review round 1, finding S12) -
+    respond.io's media URLs carry signed access tokens as query params, and
+    this module's failures land in a per-workspace, human-readable report/
+    CSV (`migration_service._write_failures_csv`)."""
+    return url.split("?", 1)[0].split("#", 1)[0]
+
+
+def _stream_with_guarded_redirects(
+    client: httpx.Client, url: str
+) -> Tuple[Optional[httpx.Response], Optional[str]]:
+    """Manual redirect walk (review round 1, finding B1). `_client_factory`
+    builds every client with `follow_redirects=False` for exactly this
+    reason: httpx's own automatic redirect-follow re-checks the SSRF guard
+    against nothing at all past the FIRST request, so a compromised/
+    attacker-controlled shortener in a two-year-old export's `attachment.
+    url` could redirect straight past `assert_deliverable` into
+    `http://169.254.169.254/` or any RFC1918 address. Every hop's `Location`
+    is re-validated through `assert_deliverable` BEFORE it is followed;
+    capped at `MAX_REDIRECT_HOPS` hops.
+
+    Returns `(response, None)` on a non-redirect terminal response - the
+    caller owns closing that response - or `(None, reason)` on any failure;
+    NEVER raises (mirrors this whole module's own contract)."""
+    current_url = url
+    for _hop in range(MAX_REDIRECT_HOPS):
+        try:
+            resp = client.send(client.build_request("GET", current_url), stream=True)
+        except httpx.TimeoutException:
+            return None, "Timed out fetching source media."
+        except httpx.HTTPError as exc:
+            return None, f"Could not fetch source media ({type(exc).__name__}) from {_strip_query(current_url)}."
+        if not resp.is_redirect:
+            return resp, None
+        location = resp.headers.get("location")
+        resp.close()
+        if not location:
+            return None, "Redirected with no Location header."
+        next_url = str(httpx.URL(current_url).join(location))
+        try:
+            assert_deliverable(next_url)
+        except WebhookError as exc:
+            return None, f"Redirected source URL rejected: {exc}"
+        current_url = next_url
+    return None, f"Too many redirects (more than {MAX_REDIRECT_HOPS})."
 
 
 def fetch_and_store_media(
@@ -113,20 +177,28 @@ def fetch_and_store_media(
     client = http_client or _client_factory()
     content = bytearray()
     try:
+        resp, reason = _stream_with_guarded_redirects(client, url)
+        if resp is None:
+            return MediaFetchResult(ok=False, reason=reason)
         try:
-            with client.stream("GET", url) as resp:
-                if resp.status_code >= 400:
-                    return MediaFetchResult(ok=False, reason=f"Source returned HTTP {resp.status_code}.")
+            if resp.status_code >= 400:
+                return MediaFetchResult(ok=False, reason=f"Source returned HTTP {resp.status_code}.")
+            try:
                 for chunk in resp.iter_bytes():
                     content.extend(chunk)
                     if len(content) > read_cap:
                         return MediaFetchResult(
                             ok=False, reason=f"Media exceeds the workspace's byte cap ({read_cap} bytes)."
                         )
-        except httpx.TimeoutException:
-            return MediaFetchResult(ok=False, reason="Timed out fetching source media.")
-        except httpx.HTTPError as exc:
-            return MediaFetchResult(ok=False, reason=f"Could not fetch source media: {exc}")
+            except httpx.TimeoutException:
+                return MediaFetchResult(ok=False, reason="Timed out fetching source media.")
+            except httpx.HTTPError as exc:
+                return MediaFetchResult(
+                    ok=False,
+                    reason=f"Could not fetch source media ({type(exc).__name__}) from {_strip_query(url)}.",
+                )
+        finally:
+            resp.close()
     finally:
         if owns_client:
             client.close()

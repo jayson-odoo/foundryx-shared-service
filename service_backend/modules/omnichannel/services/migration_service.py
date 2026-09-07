@@ -41,8 +41,10 @@ from app.status_engine.scoped import get_scope_status
 
 from ..models import Channel, ConversationMessage
 from ..models import Contact as ContactModel
+from ..models import MigrationUpload
 from ..repositories.migration_connection_repository import MigrationConnectionRepository
 from ..repositories.migration_ref_repository import MigrationRefRepository
+from ..repositories.migration_upload_repository import MigrationUploadRepository
 from ..respondio.channel_map import target_channel_type_for
 from ..respondio.client import RespondIoClient, RespondIoError
 from ..respondio.shapes import Contact, CustomField, SpaceChannel, SpaceUser
@@ -62,7 +64,7 @@ from ..schemas import (
     MigrationUploadResult,
     WorkspaceItem,
 )
-from . import migration_media
+from . import migration_media, team_directory
 from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
 from .lifecycle_service import initial_status_id, stages_for_workspace
 from .migration_writer import (
@@ -70,6 +72,7 @@ from .migration_writer import (
     ENTITY_EVENT,
     ENTITY_MESSAGE,
     MigrationWriter,
+    epoch_to_dt,
     resolve_message_timestamps,
 )
 from .statuses import status_id_for
@@ -99,6 +102,14 @@ CONTACT_REF_BATCH = 25
 # per-contact work.
 MEDIA_REF_BATCH = 50
 MAX_REPORT_SAMPLES = 10
+# Review round 1, finding S11 - `_process_contact_messages` buffers a whole
+# contact's message history in memory before any write (D-A6-9's bracketing
+# genuinely needs that). A cap bounds the worst case (a runaway/malformed
+# vendor thread, or a genuinely enormous single-contact history) to a fixed
+# memory ceiling instead of an unbounded spike; the contact itself still
+# migrates (its own row + prior pages already written are untouched) - only
+# its messages are skipped, reported as a blocker, never an abort.
+MAX_MESSAGES_PER_CONTACT = 20000
 # S3/S4 originally bounded `background_jobs.result_json` size by truncating
 # the failure list inline to this many rows; S5 moves the FULL set to
 # storage (`_write_failures_csv`) and keeps only a 50-row `sample` inline
@@ -500,6 +511,7 @@ def _process_csv_contacts(
     samples: List[dict],
     failures: List[dict],
     csv_blockers: List[str],
+    csv_lifecycle_unmapped: Dict[str, int],
     *,
     dry_run: bool,
     service: JobService,
@@ -616,6 +628,15 @@ def _process_csv_contacts(
             tag_counts["fetched"] = tag_counts.get("fetched", 0) + outcome.tags_created + outcome.tags_matched
             tag_counts["create"] = tag_counts.get("create", 0) + outcome.tags_created
             tag_counts["matched"] = tag_counts.get("matched", 0) + outcome.tags_matched
+            if outcome.lifecycle_unmapped:
+                # Defect 2 fix - the SEPARATE CSV-mode contacts loop used to
+                # never check `outcome.lifecycle_unmapped` at all (only the
+                # API-mode loop did, below), so an unresolvable CSV Lifecycle
+                # value silently landed on the initial stage with zero
+                # operator-visible signal. Tallied by the RAW value so the
+                # report can name it, not just a bare count.
+                label = source.lifecycle or ""
+                csv_lifecycle_unmapped[label] = csv_lifecycle_unmapped.get(label, 0) + 1
             if len(samples) < MAX_REPORT_SAMPLES:
                 samples.append({"name": outcome.source_label, "action": outcome.kind})
 
@@ -683,9 +704,13 @@ def _mapping_hash(payload: MigrationJobCreate) -> str:
         "messagesSince": payload.messagesSince or None,
         # S5 (D-A6-25) - a differently-uploaded contacts CSV or a changed
         # header map IS a different mapping for CSV mode (mirrors channelMap/
-        # userMap above); `snippetsCsvKey` stays EXCLUDED (S4's own rationale,
-        # unchanged: quick replies are independent of "the mapping").
-        "contactsCsvKey": payload.contactsCsvKey or None,
+        # userMap above); `snippetsUploadId` stays EXCLUDED (S4's own
+        # rationale, unchanged: quick replies are independent of "the
+        # mapping"). Hashes the WIRE id (review round 1, finding B2), not the
+        # resolved storage key - a fresh upload of byte-identical content
+        # already mints a new id/key pair either way, so this is equivalent
+        # and never resolves an upload just to hash it.
+        "contactsUploadId": payload.contactsUploadId or None,
         "csvHeaderMap": sorted((payload.csvHeaderMap or {}).items()),
     }
     blob = json.dumps(canonical, sort_keys=True, default=str)
@@ -704,6 +729,10 @@ def _build_report(
     messages_with_inferred: int = 0,
     message_samples: Optional[List[dict]] = None,
     messages_skipped_before_floor: int = 0,
+    messages_skipped_over_cap: int = 0,
+    user_map_dropped: int = 0,
+    team_map_dropped: int = 0,
+    lifecycle_unmapped_csv: Optional[Dict[str, int]] = None,
 ) -> dict:
     contacts_c = counts.get("contacts") or {}
     fields_c = counts.get("fields") or {}
@@ -714,10 +743,45 @@ def _build_report(
     events_c = counts.get("events") or {}
     quick_replies_c = counts.get("quickReplies") or {}
     blockers: List[str] = []
-    if lifecycle_unmapped:
+    if lifecycle_unmapped_csv:
+        # Defect 2 fix - CSV mode names the actual unmapped VALUE(s) and
+        # their count, rather than the API-mode aggregate-only line below
+        # (a CSV job never populates the scalar `lifecycle_unmapped` counter
+        # at all, so this branch and the `elif` below are mutually exclusive
+        # in practice, not just in wording).
+        for label, count in sorted(lifecycle_unmapped_csv.items()):
+            display = label or "(blank)"
+            blockers.append(
+                f'{count} contact(s) had a CSV Lifecycle value of "{display}" that does not '
+                "match a mapped value or an existing stage in this workspace - landed on the "
+                "initial stage instead."
+            )
+    elif lifecycle_unmapped:
         blockers.append(
             f"{lifecycle_unmapped} contact(s) have no lifecycle mapping and will land "
             "with no lifecycle stage."
+        )
+    if messages_skipped_over_cap:
+        # S11 (review round 1) - contacts whose whole message history
+        # exceeded `MAX_MESSAGES_PER_CONTACT` and were skipped entirely
+        # (never partially written, never fabricated).
+        blockers.append(
+            f"{messages_skipped_over_cap} contact(s) had more messages than this migration "
+            "tool will buffer for one contact - their message history was skipped."
+        )
+    # S4 (review round 1) - an agent/team target that validated at CREATE
+    # time but no longer validates at USE time (deleted between create and
+    # run) used to drop silently; now reported so the operator learns their
+    # mapping did not fully apply.
+    if user_map_dropped:
+        blockers.append(
+            f"{user_map_dropped} agent mapping(s) no longer resolve to a valid user "
+            "and were skipped."
+        )
+    if team_map_dropped:
+        blockers.append(
+            f"{team_map_dropped} team mapping(s) no longer resolve to a valid team "
+            "and were skipped."
         )
     return {
         "entities": {
@@ -787,6 +851,8 @@ def _build_report(
         },
         "messagesWithInferredTimestamp": messages_with_inferred,
         "messagesSkippedBeforeFloor": messages_skipped_before_floor,
+        "messagesSkippedOverCap": messages_skipped_over_cap,
+        "lifecycleUnmappedByValue": lifecycle_unmapped_csv or {},
         "blockers": blockers,
         "samples": {"contacts": samples, "messages": message_samples or []},
     }
@@ -828,11 +894,16 @@ def _resolve_channel_map(
     return channel_map, channel_type_by_target
 
 
-def _resolve_user_map(db: Session, tenant_id: str, payload: Dict[str, Any]) -> Dict[str, str]:
+def _resolve_user_map(db: Session, tenant_id: str, payload: Dict[str, Any]) -> Tuple[Dict[str, str], int]:
     """``sourceUserId(str) -> targetUserId(str)``, re-validated tenant-scoped
     at USE time (AC-MIG-51/32) - consumed ONLY by the messages phase's sender
     mapping; the contacts phase's assignee resolution is email-only and never
-    touches this map (D-A6-26)."""
+    touches this map (D-A6-26). Returns the number of mapped entries DROPPED
+    because their target no longer validates (review round 1, finding S4) -
+    `_validate_mapping` already rejects a foreign/unknown target at CREATE
+    time, so a drop HERE only happens when the target was deleted between
+    create and run; the caller reports it as a report blocker rather than
+    silently discarding the operator's mapping choice."""
     target_ids = {
         str(entry.get("targetUserId")) for entry in payload.get("userMap") or [] if entry.get("targetUserId")
     }
@@ -842,12 +913,39 @@ def _resolve_user_map(db: Session, tenant_id: str, payload: Dict[str, Any]) -> D
             r[0] for r in db.query(User.id).filter(User.tenant_id == tenant_id, User.id.in_(target_ids)).all()
         }
     user_map: Dict[str, str] = {}
+    dropped = 0
     for entry in payload.get("userMap") or []:
         source_id = str(entry.get("sourceUserId") or "")
         target_id = entry.get("targetUserId")
-        if source_id and target_id and target_id in valid_ids:
+        if not source_id or not target_id:
+            continue
+        if target_id in valid_ids:
             user_map[source_id] = target_id
-    return user_map
+        else:
+            dropped += 1
+    return user_map, dropped
+
+
+def _resolve_team_map(db: Session, tenant_id: str, payload: Dict[str, Any]) -> Tuple[Dict[str, str], int]:
+    """``sourceTeamId(str) -> targetTeamId(str)``, re-validated tenant-scoped
+    at USE time (mirrors `_resolve_user_map` exactly) via the `team_directory`
+    soft-ref gateway - core teams live outside this module's schema (D-A8-3),
+    never a raw cross-schema query. Consumed by `MigrationWriter.write_contact`
+    to set `assigned_team_id` from the mapped source team of the contact's
+    ASSIGNEE (plan 33 review round 1, finding S5 - A8/`Contact.
+    assigned_team_id` merged to `main` after this slice was originally cut)."""
+    team_map: Dict[str, str] = {}
+    dropped = 0
+    for entry in payload.get("teamMap") or []:
+        source_id = str(entry.get("sourceTeamId") or "")
+        target_id = entry.get("targetTeamId")
+        if not source_id or not target_id:
+            continue
+        if team_directory.validate_assignable(db, tenant_id, target_id):
+            team_map[source_id] = target_id
+        else:
+            dropped += 1
+    return team_map, dropped
 
 
 def _aborted(db: Session, job_id: str) -> bool:
@@ -972,6 +1070,18 @@ class MigrationService:
         except WorkspaceNotFound as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.") from exc
 
+    def _require_upload(self, tenant_id: str, upload_id: str, kind: str) -> MigrationUpload:
+        """Review round 1, finding B2 - resolves a `contactsUploadId`/
+        `snippetsUploadId` tenant-scoped, mirroring `_require_connection`/
+        `_require_workspace` exactly: a foreign, unknown OR wrong-`kind`
+        (e.g. a snippets receipt supplied as `contactsUploadId`) id all read
+        back as the SAME uniform 404, never distinguishing "doesn't exist"
+        from "isn't yours" or "is the wrong kind"."""
+        upload = MigrationUploadRepository(self.db).get_for_tenant(tenant_id, upload_id, kind=kind)
+        if upload is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Uploaded file not found.")
+        return upload
+
     def _require_job(self, tenant_id: str, job_id: str) -> BackgroundJob:
         job = self.jobs.get(tenant_id, job_id)
         # Type-scoped too (never a bare tenant+id match) - a DIFFERENT job
@@ -1027,6 +1137,33 @@ class MigrationService:
                         "This lifecycle stage does not belong to the selected workspace."
                     )
 
+        # S4 (review round 1) - `userMap`/`teamMap` targets used to be
+        # accepted with no save-time check at all, then silently dropped at
+        # USE time (`_resolve_user_map`/`_resolve_team_map`'s own tenant
+        # re-validation) - an operator never learned their mapping did not
+        # apply. Tenant-scoped here too (AC-MIG-51's use-time check stays as
+        # the second gate for an id deleted between create and run).
+        target_user_ids = {e.targetUserId for e in payload.userMap if e.targetUserId}
+        if target_user_ids:
+            valid_user_ids = {
+                r[0]
+                for r in self.db.query(User.id)
+                .filter(User.tenant_id == tenant_id, User.id.in_(target_user_ids))
+                .all()
+            }
+            for i, entry in enumerate(payload.userMap):
+                if entry.targetUserId and entry.targetUserId not in valid_user_ids:
+                    errors[f"userMap.{i}"] = "This target user does not belong to this tenant."
+
+        # Core teams live outside this module's schema - resolved through the
+        # `team_directory` soft-ref gateway (D-A8-3), never a raw cross-schema
+        # query (mirrors `write_contact`'s own assignee/team conventions).
+        for i, entry in enumerate(payload.teamMap):
+            if entry.targetTeamId and not team_directory.validate_assignable(
+                self.db, tenant_id, entry.targetTeamId
+            ):
+                errors[f"teamMap.{i}"] = "This target team does not belong to this tenant."
+
         parsed_messages_since: Optional[str] = None
         if payload.messagesSince:
             try:
@@ -1037,8 +1174,8 @@ class MigrationService:
 
         # S5 (AC-MIG-47) - a CSV-mode job needs an uploaded contacts file;
         # never discovered only once the job is already running.
-        if payload.source == "csv" and not payload.contactsCsvKey:
-            errors["contactsCsvKey"] = "Upload a contacts CSV before running a CSV-mode migration."
+        if payload.source == "csv" and not payload.contactsUploadId:
+            errors["contactsUploadId"] = "Upload a contacts CSV before running a CSV-mode migration."
 
         return errors, parsed_messages_since
 
@@ -1051,26 +1188,30 @@ class MigrationService:
         return None
 
     def _has_fresh_dry_run(self, tenant_id: str, workspace_id: str, mapping_hash: str) -> bool:
+        """S10 (review round 1) - the ORIGINAL implementation loaded EVERY
+        `DONE` migration job for the tenant with no `finished_at` filter and
+        no `.limit()`, on the create-path (unlike `list_jobs`, which at least
+        caps its own scan at `MAX_LIST_SCAN_JOBS`). `workspaceId`/`mode` live
+        inside `payload_json` (no native column, same reason `list_jobs`'
+        own search/sort stays in Python - see `MAX_LIST_SCAN_JOBS`'s own
+        comment) so they still filter in Python, but `finished_at >= cutoff`
+        DOES have a native column and now runs in SQL, and `.limit(1)` stops
+        the scan the instant a match is found rather than always walking the
+        tenant's full history."""
         cutoff = datetime.now(timezone.utc) - timedelta(hours=DRY_RUN_TTL_HOURS)
-        rows = (
+        q = (
             self.db.query(BackgroundJob)
             .filter(
                 BackgroundJob.tenant_id == tenant_id,
                 BackgroundJob.type == MIGRATION_JOB_TYPE,
                 BackgroundJob.status == JOB_DONE,
+                BackgroundJob.finished_at >= cutoff,
             )
             .order_by(BackgroundJob.finished_at.desc())
-            .all()
         )
-        for job in rows:
+        for job in q.yield_per(50):
             p = job.payload_json or {}
-            if (
-                p.get("mode") == "dry_run"
-                and p.get("workspaceId") == workspace_id
-                and p.get("mappingHash") == mapping_hash
-                and job.finished_at is not None
-                and job.finished_at >= cutoff
-            ):
+            if p.get("mode") == "dry_run" and p.get("workspaceId") == workspace_id and p.get("mappingHash") == mapping_hash:
                 return True
         return False
 
@@ -1093,6 +1234,24 @@ class MigrationService:
                 {"connectionId": "A respond.io connection is required for an API-mode migration."}
             )
         workspace = self._require_workspace(tenant_id, payload.workspaceId)
+
+        # Review round 1, finding B2 - `contactsUploadId`/`snippetsUploadId`
+        # resolve tenant-scoped to their RECEIPT row (never a client-supplied
+        # storage key); a foreign/unknown/wrong-kind id 404s here, before any
+        # mapping validation runs. The RESOLVED storage key is what actually
+        # lands in `job_payload` below - the phase-processing code keeps
+        # reading it off the SAME internal `contactsCsvKey`/`snippetsCsvKey`
+        # names it always has.
+        contacts_storage_key: Optional[str] = None
+        if payload.contactsUploadId:
+            contacts_storage_key = self._require_upload(
+                tenant_id, payload.contactsUploadId, "contacts"
+            ).storage_key
+        snippets_storage_key: Optional[str] = None
+        if payload.snippetsUploadId:
+            snippets_storage_key = self._require_upload(
+                tenant_id, payload.snippetsUploadId, "snippets"
+            ).storage_key
 
         errors, parsed_messages_since = self._validate_mapping(tenant_id, payload.workspaceId, payload)
         if errors:
@@ -1123,15 +1282,16 @@ class MigrationService:
             "messagesSince": parsed_messages_since,
             "contactsOnly": bool(payload.contactsOnly),
             "mappingHash": mapping_hash,
-            # S5 (AC-MIG-47) - carried through verbatim; `contactsCsvKey` is
-            # required (validated above) for `source="csv"`, ignored for
+            # S5 (AC-MIG-47) - the RESOLVED storage key (review round 1,
+            # finding B2 - resolved above, tenant-scoped, from
+            # `contactsUploadId`), required for `source="csv"`, ignored for
             # `source="api"`. `snippetsCsvKey` (S4's `snippetsCsvBase64`
             # renamed onto the real upload route, D-A6-25) stays optional in
             # BOTH modes - empty/absent means "no snippets CSV supplied", a
             # legitimate no-op for the quick_replies phase, not an error.
-            "contactsCsvKey": payload.contactsCsvKey,
+            "contactsCsvKey": contacts_storage_key,
             "csvHeaderMap": payload.csvHeaderMap or {},
-            "snippetsCsvKey": payload.snippetsCsvKey,
+            "snippetsCsvKey": snippets_storage_key,
             # Denormalized (the Broadcast-model convention, `models.py
             # template_name`) - a renamed/retired connection or workspace must
             # not blank out this job's history row.
@@ -1145,15 +1305,20 @@ class MigrationService:
 
     # ── S5 - CSV upload (AC-MIG-46/47, D-A6-25) ─────────────────────────────
 
-    def upload_csv(self, tenant_id: str, kind: str, content: bytes) -> MigrationUploadResult:
+    def upload_csv(
+        self, tenant_id: str, kind: str, content: bytes, *, actor_user_id: Optional[str] = None
+    ) -> MigrationUploadResult:
         """Stores an uploaded contacts/snippets CSV through the tenant's
         active storage connection (the SAME `storage_for_tenant(...).save`
-        seam every other upload in this codebase uses) and returns the key
-        the job payload then carries - the real-upload-route replacement for
-        S4's `snippetsCsvBase64` JSON stopgap, generalized to also cover the
-        CSV-mode contacts file. Sniff-gated (never trusts the filename/
-        declared content type): a PNG named `contacts.csv` is rejected here,
-        before a single byte reaches storage."""
+        seam every other upload in this codebase uses), persists a tenant-
+        scoped `MigrationUpload` receipt row for it (review round 1, finding
+        B2 - `MigrationJobCreate` now carries this receipt's OPAQUE `id`,
+        never the raw storage key), and returns that id - the real-upload-
+        route replacement for S4's `snippetsCsvBase64` JSON stopgap,
+        generalized to also cover the CSV-mode contacts file. Sniff-gated
+        (never trusts the filename/declared content type): a PNG named
+        `contacts.csv` is rejected here, before a single byte reaches
+        storage or a receipt row is created."""
         fmt = csv_readers.sniff_format(content)
         if fmt is None:
             raise MigrationJobValidationError({"file": "Unsupported file - upload a CSV (or xlsx/xls)."})
@@ -1161,7 +1326,17 @@ class MigrationService:
         key = storage_for_tenant(self.db, tenant_id).save(
             f"omnichannel/migration/uploads/{uuid4()}/{kind}.csv", content, "text/csv"
         )
-        return MigrationUploadResult(key=key, rowCount=len(records), headers=headers)
+        upload = MigrationUploadRepository(self.db).create(
+            tenant_id=tenant_id,
+            workspace_id=None,  # not yet chosen at upload time - tenant scope alone gates resolution
+            kind=kind,
+            storage_key=key,
+            row_count=len(records),
+            headers=headers,
+            created_by=actor_user_id,
+        )
+        self.db.commit()
+        return MigrationUploadResult(id=upload.id, rowCount=len(records), headers=headers)
 
     # ── reads ────────────────────────────────────────────────────────────────
 
@@ -1234,8 +1409,10 @@ class MigrationService:
         an AUTHED server-side fetch (never a redirect to a presigned URL -
         D-A6-23 forbids a bearer-less capability link for a file of contact
         names/phones/emails). Falls back to any INLINE `failures.rows` (the
-        pre-S5 shape, and still what a hand-built test/job row carries) when
-        no `fileKey` is present - never a hard failure either way."""
+        pre-S5 shape, and still what a hand-built test/job row carries) or
+        `failures.sample` (a DRY RUN, review round 1 finding S1 - `fileKey`
+        is deliberately `None` there, AC-MIG-27) when no `fileKey` is
+        present - never a hard failure either way."""
         job = self._require_job(tenant_id, job_id)
         failures_meta = (job.result_json or {}).get("failures") or {}
         file_key = failures_meta.get("fileKey")
@@ -1245,7 +1422,7 @@ class MigrationService:
                 return content.decode("utf-8-sig")
             except Exception:  # noqa: BLE001 - unresolvable key (connection gone) - fall back below
                 pass
-        rows = failures_meta.get("rows") or []
+        rows = failures_meta.get("rows") or failures_meta.get("sample") or []
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow(["entity", "sourceId", "sourceLabel", "reason", "action"])
@@ -1408,13 +1585,16 @@ def _process_contact_messages(
     failures: List[dict],
     message_samples: List[dict],
     messages_since: Optional[datetime] = None,
-) -> Tuple[int, int]:
+) -> Tuple[int, int, int]:
     """One contact's FULL message-history walk - buffered, sorted by
     `messageId`, timestamp-resolved as ONE unit (D-A6-9 needs the whole
     contact's history bracketed together). Shared by the real per-ref
     "messages" phase AND the dry-run inline preview. Returns
-    `(newly_inferred, newly_skipped_before_floor)` - plain ints, not shared
-    counters (the caller accumulates both).
+    `(newly_inferred, newly_skipped_before_floor, skipped_over_cap)` - plain
+    ints, not shared counters (the caller accumulates all three).
+    `skipped_over_cap` is 1 when this contact's history exceeded
+    `MAX_MESSAGES_PER_CONTACT` (review round 1, finding S11) and its whole
+    message set was skipped (reported, never an abort), 0 otherwise.
 
     `messages_since` (D-A6-22) is applied AFTER `resolve_message_timestamps`
     runs on the FULL unfiltered set - the interpolation branch needs every
@@ -1439,8 +1619,11 @@ def _process_contact_messages(
         raw_contact = client.get_contact(identifier)
         source_created_at = raw_contact.get("created_at")
         if source_created_at is not None:
-            fallback_dt = datetime.fromtimestamp(int(source_created_at), tz=timezone.utc)
-    except (RespondIoError, TypeError, ValueError) as exc:
+            # `epoch_to_dt` (review round 1, finding S2) never raises - a
+            # garbage/ms-magnitude/out-of-range value clamps rather than
+            # propagating out of this per-contact phase.
+            fallback_dt = epoch_to_dt(source_created_at)
+    except RespondIoError as exc:
         failures.append(
             {
                 "entity": "messages", "sourceId": contact_external_id, "sourceLabel": "",
@@ -1450,9 +1633,16 @@ def _process_contact_messages(
         )
 
     buffered_raw: List[dict] = []
+    over_cap = False
     try:
         for page_items, _next in client.list_messages_pages(identifier, limit=MESSAGES_PAGE_LIMIT):
             buffered_raw.extend(page_items)
+            if len(buffered_raw) > MAX_MESSAGES_PER_CONTACT:
+                # S11 - stop paging THIS contact immediately (no further
+                # network calls or memory growth); its whole message set is
+                # skipped below, never partially written.
+                over_cap = True
+                break
     except RespondIoError as exc:
         message_counts["errors"] = message_counts.get("errors", 0) + 1
         failures.append(
@@ -1461,7 +1651,21 @@ def _process_contact_messages(
                 "reason": exc.message, "action": "skipped",
             }
         )
-        return 0, 0
+        return 0, 0, 0
+
+    if over_cap:
+        message_counts["errors"] = message_counts.get("errors", 0) + 1
+        failures.append(
+            {
+                "entity": "messages", "sourceId": contact_external_id, "sourceLabel": "",
+                "reason": (
+                    f"This contact has more than {MAX_MESSAGES_PER_CONTACT} messages - its "
+                    "message history was skipped to protect the migration job."
+                ),
+                "action": "skipped",
+            }
+        )
+        return 0, 0, 1
 
     parsed_items: List[SourceMessageItem] = []
     for raw in buffered_raw:
@@ -1480,7 +1684,17 @@ def _process_contact_messages(
     # Thread order ALWAYS follows the source messageId (D-A6-9) - never the
     # resolved timestamp, which is derived FROM this order in the first place.
     parsed_items.sort(key=lambda m: m.messageId)
-    resolved = resolve_message_timestamps(parsed_items, fallback_dt)
+    try:
+        resolved = resolve_message_timestamps(parsed_items, fallback_dt)
+    except Exception as exc:  # noqa: BLE001 - per-contact isolation (review round 1, finding S2)
+        message_counts["errors"] = message_counts.get("errors", 0) + 1
+        failures.append(
+            {
+                "entity": "messages", "sourceId": contact_external_id, "sourceLabel": "",
+                "reason": f"could not resolve message timestamps: {exc}", "action": "skipped",
+            }
+        )
+        return 0, 0, 0
 
     skipped_before_floor = 0
     if messages_since is not None:
@@ -1529,7 +1743,7 @@ def _process_contact_messages(
     # AC-MIG-37 - exactly ONE recompute per contact, after its WHOLE message
     # phase (this call covers every page for this contact - buffered above).
     writer.recompute_contact_timestamps(local_contact)
-    return newly_inferred, skipped_before_floor
+    return newly_inferred, skipped_before_floor, 0
 
 
 # ── S4 - media (AC-MIG-39/40) ────────────────────────────────────────────────
@@ -1816,7 +2030,23 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             lifecycle_map[source_label] = target
 
     channel_map, channel_type_by_target = _resolve_channel_map(db, tenant_id, workspace_id, payload)
-    user_map = _resolve_user_map(db, tenant_id, payload)
+    user_map, user_map_dropped = _resolve_user_map(db, tenant_id, payload)
+    team_map, team_map_dropped = _resolve_team_map(db, tenant_id, payload)
+
+    # S5 (review round 1, A8 merged to `main`) - a source contact's team
+    # comes from its ASSIGNEE's team (respond.io's own `Contact` shape
+    # carries no team of its own) - only fetched when a team mapping was
+    # actually configured, so a job with an empty `teamMap` (the common
+    # case) never pays for this extra `/space/user` call.
+    user_team_by_id: Dict[str, str] = {}
+    if client is not None and payload.get("teamMap"):
+        try:
+            for raw_user in client.list_space_users():
+                parsed_user = SpaceUser(**raw_user)
+                if parsed_user.team is not None:
+                    user_team_by_id[str(parsed_user.id)] = str(parsed_user.team.id)
+        except RespondIoError as exc:
+            service.log(job, f"Could not read source space users for team mapping: {exc.message}", level="warning")
 
     thread_open_id = status_id_for(db, tenant_id, "THREAD", "OPEN")
     thread_closed_id = status_id_for(db, tenant_id, "THREAD", "CLOSED")
@@ -1856,6 +2086,8 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
         lifecycle_map=lifecycle_map,
         source_field_defs=source_field_defs,
         writes_enabled=not dry_run,
+        team_map=team_map,
+        user_team_by_id=user_team_by_id,
     )
     refs = MigrationRefRepository(db)
 
@@ -1877,11 +2109,22 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     assignee_unmatched = int(counts.get("assigneeUnmatchedCount") or 0)
     messages_inferred = int(counts.get("messagesWithInferredTimestamp") or 0)
     messages_skipped_before_floor = int(counts.get("messagesSkippedBeforeFloor") or 0)
+    # S11 (review round 1) - contacts whose whole message history exceeded
+    # `MAX_MESSAGES_PER_CONTACT` and were skipped, never fabricated/partially
+    # written; persisted through `checkpoint()` like every other counter.
+    messages_skipped_over_cap = int(counts.get("messagesSkippedOverCap") or 0)
     # S5 - persisted through `checkpoint()` (like every other counter here) so
     # a crash-resumed invocation that picks the job back up in a LATER phase
     # (e.g. `quick_replies`) still reports the row-cap/unmapped-header facts
     # the earlier `contacts` phase found (D-A6-25).
     csv_blockers: List[str] = list(counts.get("csvBlockers") or [])
+    # Defect 2 fix (test report round 1) - CSV mode's own per-VALUE unmapped
+    # lifecycle tally (`rawLabel -> count`), persisted through `checkpoint()`
+    # exactly like `csv_blockers` above. The API-mode `lifecycle_unmapped`
+    # scalar counter above stays as-is; CSV mode's contacts loop increments
+    # THIS dict instead so the report can name the actual value(s), not just
+    # a bare count.
+    csv_lifecycle_unmapped: Dict[str, int] = dict(counts.get("csvLifecycleUnmapped") or {})
 
     prior_result = job.result_json or {}
     failures: List[dict] = list((prior_result.get("failures") or {}).get("rows") or [])
@@ -1910,7 +2153,27 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
         counts["assigneeUnmatchedCount"] = assignee_unmatched
         counts["messagesWithInferredTimestamp"] = messages_inferred
         counts["messagesSkippedBeforeFloor"] = messages_skipped_before_floor
+        counts["messagesSkippedOverCap"] = messages_skipped_over_cap
         counts["csvBlockers"] = csv_blockers
+        counts["csvLifecycleUnmapped"] = csv_lifecycle_unmapped
+        # Review round 1, finding S6 - `set_total` used to be called ONLY
+        # inside `finish_done`, so `progressTotal` read 0 for the ENTIRE run
+        # (the detail page's Progress bar stalled at 0% throughout, jumping
+        # straight to 100% at the terminal state). A RUNNING total, refined
+        # every checkpoint (i.e. every page in the contacts phase, every
+        # contact/message ref afterwards) using the SAME formula
+        # `finish_done` already used - monotonic (`max` against whatever is
+        # already stored) so it only ever grows, converging on the true
+        # total by the time `finish_done` sets it exactly.
+        service.set_total(
+            job,
+            max(
+                job.progress_total or 0,
+                contact_counts.get("fetched", 0)
+                + identity_counts.get("fetched", 0)
+                + message_counts.get("fetched", 0),
+            ),
+        )
         service.set_cursor(
             job,
             {
@@ -1933,6 +2196,9 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             counts, samples, lifecycle_unmapped,
             messages_with_inferred=messages_inferred, message_samples=message_samples,
             messages_skipped_before_floor=messages_skipped_before_floor,
+            messages_skipped_over_cap=messages_skipped_over_cap,
+            user_map_dropped=user_map_dropped, team_map_dropped=team_map_dropped,
+            lifecycle_unmapped_csv=csv_lifecycle_unmapped if csv_mode else None,
         )
         if csv_mode:
             # AC-MIG-48 - stated UP FRONT (every CSV-mode report, dry run or
@@ -1956,7 +2222,12 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             ]
         # S5 (D-A6-25) - the FULL failure set moves to storage; only a small
         # capped sample stays inline for the detail page's failure table.
-        failures_key = _write_failures_csv(db, tenant_id, job.id, failures)
+        # Review round 1, finding S1 - a DRY RUN must write ZERO rows
+        # anywhere, storage blobs included (AC-MIG-27's own wording); the
+        # inline `sample` (capped, same as the real-mode shape) is all a dry
+        # run ever gets, `fileKey` stays `None` and `failures_csv()` falls
+        # back to that sample for the download route.
+        failures_key = None if dry_run else _write_failures_csv(db, tenant_id, job.id, failures)
         result = {
             "report": report,
             "failures": {"fileKey": failures_key, "rowCount": len(failures), "sample": failures[:50]},
@@ -1968,6 +2239,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
         _process_csv_contacts(
             db, tenant_id, workspace_id, writer, payload,
             contact_counts, field_counts, tag_counts, samples, failures, csv_blockers,
+            csv_lifecycle_unmapped,
             dry_run=dry_run, service=service, job=job,
         )
         checkpoint("contacts")
@@ -2039,13 +2311,14 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
                             preview_contact = (
                                 db.query(ContactModel).filter(ContactModel.id == outcome.contact_id).first()
                             )
-                            newly_inferred, newly_skipped = _process_contact_messages(
+                            newly_inferred, newly_skipped, newly_over_cap = _process_contact_messages(
                                 client, writer, refs, tenant_id, workspace_id, preview_contact, external_id,
                                 channel_map, user_map, message_counts, failures, message_samples,
                                 messages_since=messages_since_dt,
                             )
                             messages_inferred += newly_inferred
                             messages_skipped_before_floor += newly_skipped
+                            messages_skipped_over_cap += newly_over_cap
                     except Exception as exc:  # noqa: BLE001 - per-row isolation (AC-MIG-27/29)
                         nested.rollback()
                         contact_counts["fetched"] += 1
@@ -2193,13 +2466,14 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
                     continue
 
                 nested = db.begin_nested()
-                newly_inferred, newly_skipped = _process_contact_messages(
+                newly_inferred, newly_skipped, newly_over_cap = _process_contact_messages(
                     client, writer, refs, tenant_id, workspace_id, local_contact, ref.external_id,
                     channel_map, user_map, message_counts, failures, message_samples,
                     messages_since=messages_since_dt,
                 )
                 messages_inferred += newly_inferred
                 messages_skipped_before_floor += newly_skipped
+                messages_skipped_over_cap += newly_over_cap
                 # This phase only runs for a REAL (non-dry) run - see the
                 # identities phase's identical comment above.
                 if dry_run:  # pragma: no cover - unreachable, see the comment above

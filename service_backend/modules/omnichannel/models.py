@@ -873,6 +873,45 @@ class MigrationRef(OmniBase):
     )
 
 
+class MigrationUpload(OmniBase):
+    """Tenant-scoped upload receipt for a migration CSV (plan 33 review round
+    1, finding B2). `upload_csv` used to hand the client a raw, unvalidated
+    storage key back (`MigrationUploadResult.key`), and `MigrationJobCreate.
+    contactsCsvKey`/`snippetsCsvKey` accepted ANY client-supplied string,
+    fetched straight off `storage_for_tenant(...).fetch(key)` with no
+    ownership or shape check - a client-controlled key is a path-traversal /
+    cross-tenant-blob read (the house "tenant-authored storage keys are
+    sanitised" rule, and the polymorphic-stored-id class this codebase has
+    been bitten by twice already).
+
+    This row is the fix: `upload_csv` persists ITS OWN key here and returns
+    an OPAQUE `id`; `MigrationJobCreate` now carries `contactsUploadId`/
+    `snippetsUploadId` instead, resolved tenant-scoped (`MigrationService.
+    _require_upload`) at job-create time - a foreign or unknown id reads back
+    as a uniform 404, exactly like `_require_connection`/`_require_workspace`.
+    The RESOLVED `storage_key` is what actually lands in the job's
+    `payload_json` (`contactsCsvKey`/`snippetsCsvKey`, unchanged internal
+    names) - the phase-processing code (`_process_csv_contacts`,
+    `_process_quick_replies_csv`) never changes, only the client-facing
+    wire contract does.
+
+    `workspace_id` is nullable - the setup form lets an operator upload a
+    CSV before picking a target workspace (informational only; ownership is
+    tenant-scoped, never workspace-scoped, at resolve time)."""
+
+    __tablename__ = "migration_uploads"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, index=True)
+    kind = Column(String, nullable=False)  # "contacts" | "snippets"
+    storage_key = Column(String, nullable=False)
+    row_count = Column(Integer, nullable=False, default=0)
+    headers_json = Column(JSON(none_as_null=True), nullable=True)
+    created_by = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
 class EmbedJti(OmniBase):
     """Single-use ledger for embed assertion ``jti`` values - plan 11H Slice 2
     (AC-11H-05). An assertion may be exchanged at ``/embed/session`` exactly once;

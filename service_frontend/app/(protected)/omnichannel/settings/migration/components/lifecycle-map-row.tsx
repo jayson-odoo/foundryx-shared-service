@@ -1,6 +1,7 @@
 'use client';
 
 import { SearchSelect } from '@/components/platform/search-select';
+import { ClampedText } from '@/components/platform/clamped-text';
 import type { MigrationTargetStage } from '@/types/respondio-migration';
 
 const NO_STAGE_VALUE = '__no_stage__';
@@ -31,7 +32,7 @@ export function LifecycleMapRow({
 
   return (
     <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-      <p className="min-w-0 truncate text-sm font-medium">{sourceLabel}</p>
+      <ClampedText text={sourceLabel} lines={1} className="min-w-0 text-sm font-medium" />
       <div className="w-full sm:max-w-xs">
         <SearchSelect
           ariaLabel={`Target lifecycle stage for ${sourceLabel}`}

@@ -108,7 +108,7 @@ describe('useMigrationForm - "ready" is source-aware (AC-MIG-46/47)', () => {
     await waitFor(() => expect(result.current.ready).toBe(true));
   });
 
-  it('CSV mode: ready only once workspaceId AND contactsCsvKey are both set - no connection required', async () => {
+  it('CSV mode: ready only once workspaceId AND contactsUploadId are both set - no connection required', async () => {
     const result = await setup();
     act(() => {
       result.current.form.setValue('source', 'csv');
@@ -116,35 +116,35 @@ describe('useMigrationForm - "ready" is source-aware (AC-MIG-46/47)', () => {
     });
     expect(result.current.ready).toBe(false);
     act(() => {
-      result.current.onContactsUploaded({ key: 'conn:1:a.csv', rowCount: 2, headers: ['First Name'] }, 'contacts.csv');
+      result.current.onContactsUploaded({ id: 'upload-a', rowCount: 2, headers: ['First Name'] }, 'contacts.csv');
     });
     await waitFor(() => expect(result.current.ready).toBe(true));
   });
 });
 
 describe('useMigrationForm - CSV upload handlers', () => {
-  it('onContactsUploaded sets contactsCsvKey + headers and clears the field error', async () => {
+  it('onContactsUploaded sets contactsUploadId + headers and clears the field error', async () => {
     const result = await setup();
     act(() => {
-      result.current.form.setError('contactsCsvKey', { type: 'server', message: 'Upload a contacts CSV.' });
+      result.current.form.setError('contactsUploadId', { type: 'server', message: 'Upload a contacts CSV.' });
     });
     act(() => {
-      result.current.onContactsUploaded({ key: 'conn:1:a.csv', rowCount: 2, headers: ['First Name', 'Phone'] }, 'contacts.csv');
+      result.current.onContactsUploaded({ id: 'upload-a', rowCount: 2, headers: ['First Name', 'Phone'] }, 'contacts.csv');
     });
-    expect(result.current.form.getValues('contactsCsvKey')).toBe('conn:1:a.csv');
+    expect(result.current.form.getValues('contactsUploadId')).toBe('upload-a');
     expect(result.current.contactsCsvHeaders).toEqual(['First Name', 'Phone']);
-    expect(result.current.form.getFieldState('contactsCsvKey').error).toBeUndefined();
+    expect(result.current.form.getFieldState('contactsUploadId').error).toBeUndefined();
   });
 
   it('onContactsCleared resets the key, headers and header map', async () => {
     const result = await setup();
     act(() => {
-      result.current.onContactsUploaded({ key: 'conn:1:a.csv', rowCount: 2, headers: ['First Name'] }, 'contacts.csv');
+      result.current.onContactsUploaded({ id: 'upload-a', rowCount: 2, headers: ['First Name'] }, 'contacts.csv');
     });
     act(() => {
       result.current.onContactsCleared();
     });
-    expect(result.current.form.getValues('contactsCsvKey')).toBeNull();
+    expect(result.current.form.getValues('contactsUploadId')).toBeNull();
     expect(result.current.contactsCsvHeaders).toEqual([]);
     expect(result.current.contactsUpload).toBeNull();
   });
@@ -153,19 +153,19 @@ describe('useMigrationForm - CSV upload handlers', () => {
     const result = await setup();
     act(() => {
       result.current.form.setValue('source', 'csv');
-      result.current.onContactsUploaded({ key: 'conn:1:a.csv', rowCount: 2, headers: ['First Name'] }, 'contacts.csv');
+      result.current.onContactsUploaded({ id: 'upload-a', rowCount: 2, headers: ['First Name'] }, 'contacts.csv');
     });
     act(() => {
       result.current.form.setValue('source', 'api');
     });
     await waitFor(() => expect(result.current.contactsUpload).toBeNull());
-    expect(result.current.form.getValues('contactsCsvKey')).toBeNull();
+    expect(result.current.form.getValues('contactsUploadId')).toBeNull();
   });
 });
 
 describe('useMigrationForm - 422 fieldErrors map onto the form (S6)', () => {
   it('a fieldError for a rendered field (connectionId) sets a form error; the rest fall back to a toast', async () => {
-    // CSV mode so the CLIENT zod schema passes (workspaceId + contactsCsvKey
+    // CSV mode so the CLIENT zod schema passes (workspaceId + contactsUploadId
     // are all it needs) and `runDryRun` actually reaches the server call -
     // the server's own fieldErrors shape is otherwise identical either way.
     const { toast } = await import('@/lib/toast');
@@ -178,7 +178,7 @@ describe('useMigrationForm - 422 fieldErrors map onto the form (S6)', () => {
     act(() => {
       result.current.form.setValue('source', 'csv');
       result.current.form.setValue('workspaceId', 'wsp-1');
-      result.current.onContactsUploaded({ key: 'conn:1:a.csv', rowCount: 1, headers: ['First Name'] }, 'contacts.csv');
+      result.current.onContactsUploaded({ id: 'upload-a', rowCount: 1, headers: ['First Name'] }, 'contacts.csv');
     });
     await act(async () => {
       await result.current.runDryRun();
@@ -200,7 +200,7 @@ describe('useMigrationForm - 422 fieldErrors map onto the form (S6)', () => {
     act(() => {
       result.current.form.setValue('source', 'csv');
       result.current.form.setValue('workspaceId', 'wsp-1');
-      result.current.onContactsUploaded({ key: 'conn:1:a.csv', rowCount: 1, headers: ['First Name'] }, 'contacts.csv');
+      result.current.onContactsUploaded({ id: 'upload-a', rowCount: 1, headers: ['First Name'] }, 'contacts.csv');
     });
     await act(async () => {
       await result.current.runDryRun();
@@ -210,7 +210,7 @@ describe('useMigrationForm - 422 fieldErrors map onto the form (S6)', () => {
 });
 
 describe('useMigrationForm - Start-migration mapping hash includes CSV fields', () => {
-  it('a successful dry run for a CSV mapping unlocks Start ONLY for that exact contactsCsvKey/csvHeaderMap', async () => {
+  it('a successful dry run for a CSV mapping unlocks Start ONLY for that exact contactsUploadId/csvHeaderMap', async () => {
     const dryJob: MigrationJob = {
       id: 'mig-job-1',
       mode: 'dry_run',
@@ -243,7 +243,7 @@ describe('useMigrationForm - Start-migration mapping hash includes CSV fields', 
     act(() => {
       result.current.form.setValue('source', 'csv');
       result.current.form.setValue('workspaceId', 'wsp-1');
-      result.current.onContactsUploaded({ key: 'conn:1:a.csv', rowCount: 1, headers: ['First Name'] }, 'contacts.csv');
+      result.current.onContactsUploaded({ id: 'upload-a', rowCount: 1, headers: ['First Name'] }, 'contacts.csv');
     });
     await act(async () => {
       await result.current.runDryRun();
@@ -252,7 +252,7 @@ describe('useMigrationForm - Start-migration mapping hash includes CSV fields', 
 
     // Re-uploading a DIFFERENT file (a new key) re-locks Start immediately.
     act(() => {
-      result.current.onContactsUploaded({ key: 'conn:1:b.csv', rowCount: 5, headers: ['First Name'] }, 'contacts-v2.csv');
+      result.current.onContactsUploaded({ id: 'upload-b', rowCount: 5, headers: ['First Name'] }, 'contacts-v2.csv');
     });
     expect(result.current.canStartMigration).toBe(false);
   });

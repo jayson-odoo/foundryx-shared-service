@@ -26,7 +26,7 @@ explicit User-Story/Scenario/Steps/Expected/Actual narrative given for the two `
 | `[E2E]` AC-MIG-59 (CSV-mode full journey, dedicated tenant, real clicks) | **PASS**, with one functional defect found live - see Defect 2 |
 | `[E2E]` AC-MIG-60 (re-run/abort/RBAC/isolation) | **PASS** |
 | Responsive 375px + 1280px | **PASS** - verified at both viewports on every new/changed surface touched this run |
-| Independent defects found this run (not in the coder's own report) | **2** - see "Defects found" below |
+| Independent defects found this run (not in the coder's own report) | **2** - see "Defects found" below. **Both FIXED in Fix round 1** (see the final section of this report). |
 
 Evidence directory (this tester's own, independent of the coder's S0/S6 dirs):
 `documentation/plans/sprint-4/33-evidence/E2E/` (25 screenshots + `README.md` with every setup
@@ -34,7 +34,13 @@ call verbatim).
 
 ## Defects found (independent finding, both reproduced and root-caused)
 
-### Defect 1 - LOW severity, not reachable via any real UI/API flow demonstrated in this run
+### Defect 1 - LOW severity, not reachable via any real UI/API flow demonstrated in this run - **FIXED (Fix round 1)**
+
+> **Status update:** fixed in the review-round-1 fix commit (see "Fix round 1" section at the end
+> of this report for the commit hash and probe evidence). `MigrationJobItem.connectionId` is now
+> `Optional[str] = None`; live-probed via `GET /omnichannel/migration/jobs` (list) and `GET
+> /omnichannel/migration/jobs/{id}` (detail) against a hand-built row with a literal stored `null`
+> - both return `200` with `connectionId: null`, never a 500.
 
 `GET /omnichannel/migration/jobs` (list) and the per-job read 500 with an unhandled
 `pydantic_core.ValidationError` ("Input should be a valid string [type=string_type,
@@ -55,7 +61,23 @@ already tolerates a missing key). Not a customer-reachable regression as shipped
 defensive-coding gap that would 500 the whole list if any future write path (a data migration,
 a manual fix script, an older pre-`or ""` row) ever produces a literal `null`.
 
-### Defect 2 - FUNCTIONAL, reproducible via real UI clicks, affects migrated customer data
+### Defect 2 - FUNCTIONAL, reproducible via real UI clicks, affects migrated customer data - **FIXED (Fix round 1)**
+
+> **Status update:** fixed in the review-round-1 fix commit (see "Fix round 1" section at the end
+> of this report for the commit hash and probe evidence). CSV mode's `Lifecycle` column now
+> resolves through `lifecycleMap` when present, else an exact key/label match against the target
+> workspace's own stages (`find_stage_by_key_or_label` - the SAME canonical resolver the gateway
+> PATCH route already uses, not a parallel one - map-only, never creates a stage). An unmapped
+> value still lands the contact on the initial stage (never blank, never silently dropped) but is
+> now reported as a `report.lifecycleUnmappedByValue` row plus a blocker line naming the exact
+> value and count. Live-probed end to end (upload -> dry run -> real run -> contacts list) with a
+> 3-row CSV carrying two mapped values (`hot_lead`, `customer`) and one unmapped value
+> (`not-a-real-stage`): all three contacts landed on the correct stage, the unmapped one on the
+> initial stage with the expected blocker line and `lifecycleUnmappedByValue: {"not-a-real-stage":
+> 1}`. Unit-tested: `tests/test_omnichannel_respondio_migration_review1.py::
+> test_csv_mode_lifecycle_resolves_by_stage_key_and_reports_the_unmapped_value` (3-row CSV, two
+> mapped + one unmapped -> stages set + one report row) and `::
+> test_csv_mode_lifecycle_via_explicit_map_still_wins_over_the_key_label_fallback`.
 
 **CSV-mode migration jobs silently ignore the CSV file's own `Lifecycle` column.** Every CSV-mode
 contact lands on the target workspace's INITIAL lifecycle stage, regardless of what its `Lifecycle`
@@ -284,19 +306,21 @@ truth for exact request bodies.
 
 ## Backlog registration
 
-Both defects are new findings from this independent run, not previously registered. Recommend the
-following additions to `documentation/backlogs/backlog.md` (left to the coder/reviewer to register
-formally, per this repo's convention that the tester reports and the coder/reviewer backlogs):
+Both defects were new findings from this independent run, not previously registered. **Both are
+now FIXED (Fix round 1, see the final section of this report) - no backlog registration needed;**
+the paragraphs below are kept as a record of the ORIGINAL recommendation at the time this report
+was first filed.
 
 - **CSV-mode migration jobs silently ignore the CSV `Lifecycle` column** (Defect 2 above) - every
   CSV-migrated contact lands on the target workspace's INITIAL lifecycle stage regardless of its
   CSV value, with no blocker/report signal. Priority: **Medium-High** (silently wrong customer
   data on every CSV-mode migration that specifies a non-initial lifecycle stage). Source: this
-  report.
+  report. **FIXED, see "Fix round 1" below.**
 - **`MigrationJobItem.connectionId` is typed non-Optional `str` while the read path's
   `payload.get("connectionId", "")` does not coerce a stored `None`** (Defect 1 above) - a latent
   500 landmine for any future write path that stores a literal JSON `null`. Priority: **Low**
-  (not reachable via any current real write path). Source: this report.
+  (not reachable via any current real write path). Source: this report. **FIXED, see "Fix round 1"
+  below.**
 
 ## 9. Appendix - the coder's own S6 per-slice notes (kept for reference)
 
@@ -311,3 +335,132 @@ None of that detail is repeated here; see the coder's original evidence at
 of how each slice was built. This report's own defects (1 and 2) were not present in, or were
 mis-characterized by, that original report - see the "Defects found" section above for exactly
 how each diverges from what the coder's own document claimed.
+
+## 10. Fix round 1 (review round 1 + this report's Defect 1/Defect 2)
+
+**Commit under test:** `8b5c878e` (short form as of the last amend that touched this line) on
+`sprint-4/33-respondio-migration`, on top of `ae609a47` (= `d550b6f3` + this report's own
+evidence/report commit). Note the inherent self-reference: a commit cannot contain its own final
+hash, so this value was captured one amend behind the commit it now lives in - cross-check `git
+log -1 --format=%H` on this branch if precision matters more than the approximate pointer.
+
+### What landed
+
+**Review round 1 blockers/should-fixes (phase 1 + phase 2 coder):**
+- **B1** - `migration_media.py` media-URL redirects: `follow_redirects=False` + a manual, guarded
+  hop loop (`assert_deliverable` re-checked on every `Location`, `MAX_REDIRECT_HOPS` ceiling).
+- **B2** - `contactsCsvKey`/`snippetsCsvKey` free-string fields RETIRED (`extra="forbid"`);
+  replaced by opaque `contactsUploadId`/`snippetsUploadId` resolved tenant-scoped through a new
+  `migration_uploads` table (migration `0017_omni_migration_uploads`) + a core `LocalDiskStorage`
+  traversal guard on the READ path (`_safe_read_path`), belt-and-suspenders.
+- **B3** - `respondio/client.py` pagination: same-cursor-twice guard, empty-page-with-cursor guard,
+  `MAX_PAGES` ceiling.
+- **S1** - a dry run writes zero storage blobs (`fileKey: None`, inline sample only).
+- **S2** - `epoch_to_dt` clamps ms-magnitude/garbage/future/overflow values to `[2009, now+24h]`;
+  `resolve_message_timestamps` wrapped in the per-contact failure handler.
+- **S4** - `userMap`/`teamMap` tenant-scoped validation at create (422) + a reported blocker when a
+  mapping drops at use time.
+- **S5** - `teamMap` writes `Contact.assigned_team_id` from the contact's assignee's mapped team.
+- **S6** - a running `progressTotal`, refined every checkpoint (not just at `finish_done`).
+- **S9** - bare `truncate` replaced with `ClampedText` on every vendor-supplied string.
+- **S10** - `_has_fresh_dry_run` pushes `finished_at`/`mode`/`workspace` into the SQL filter.
+- **S12** - the failure-CSV/report reason string strips the vendor media URL's query string.
+- **S13** - the 2499-vs-2500 CSV row-cap boundary test monkeypatches the cap instead of writing
+  2500 real contacts twice.
+- **S11 (this round)** - a new module constant `MAX_MESSAGES_PER_CONTACT = 20000`
+  (`migration_service.py`). `_process_contact_messages` now checks the buffer size INSIDE the
+  vendor page loop; once exceeded, paging for that contact stops immediately (no further network
+  calls), the contact's whole message set is skipped (never partially written), a failure row is
+  recorded, and the run-level `report.messagesSkippedOverCap` count + a blocker line surface it.
+  The contact ROW itself still migrates - only its messages are skipped. Tested with the cap
+  monkeypatched to 2 (`test_message_cap_skips_only_the_capped_contact_reports_blocker_never_aborts`,
+  proving an UNRELATED contact's own messages are unaffected) and to 1 with a 2-page vendor
+  response (`test_message_cap_stops_paging_immediately_never_fetches_further_pages`, proving the
+  second page is never requested once the cap trips).
+
+**This report's Defect 2 (CSV Lifecycle column silently ignored):** `MigrationWriter.write_contact`
+(and `write_derived_events`, for the `lifecycle_changed` derived-event parity) now falls back to
+`find_stage_by_key_or_label` (`lifecycle_service.py` - the SAME canonical resolver the gateway PATCH
+route already uses for its own `lifecycle: <key or label>` field, not a parallel one) when
+`self.lifecycle_map` has no explicit entry for the source label. This is the plan's own stated
+contract (section 5.6: "Lifecycle -> lifecycle -> resolver matches an existing stage by key or
+label") and is map-only - it never creates a stage. `_process_csv_contacts` now also tallies
+`outcome.lifecycle_unmapped` per RAW CSV value into a new `csv_lifecycle_unmapped: Dict[str, int]`
+(persisted through `checkpoint()` for crash-resume, exactly like `csv_blockers`), surfaced in the
+report as `lifecycleUnmappedByValue` plus a blocker line per distinct unmapped value (`'N
+contact(s) had a CSV Lifecycle value of "<value>" that does not match a mapped value or an
+existing stage in this workspace - landed on the initial stage instead.'`). An unmapped value still
+writes the contact on the initial stage (never blank, never silently dropped) - the fix is that
+this is now REPORTED, not that the fallback stage changed.
+
+**This report's Defect 1 (`connectionId` null 500):** `MigrationJobItem.connectionId` is now
+`Optional[str] = None` (`schemas.py`), matching the request-side `MigrationJobCreate.connectionId`;
+the FE `MigrationJob.connectionId` type is now `string | null` to match. No read-side default
+change was needed (`payload.get("connectionId", "")` already tolerates a present-and-`None` value
+once the schema itself accepts `None`).
+
+### Migration transcript (lane DB `foundryx_service_s33`)
+
+1. Before: `alembic_version_omnichannel = 0016_omni_migration_refs`; `migration_uploads` table
+   absent.
+2. `run_module_migrations(engine, "omnichannel")` -> `alembic_version_omnichannel =
+   0017_omni_migration_uploads`; `migration_uploads` table present with the expected 9 columns
+   (`id`, `tenant_id`, `workspace_id`, `kind`, `storage_key`, `row_count`, `headers_json`,
+   `created_by`, `created_at`).
+3. Down/up cycle via raw `alembic.command`: `downgrade("0016_omni_migration_refs")` (drops
+   `migration_uploads` + its two indexes) -> `upgrade("head")` (recreates it) - both steps clean,
+   final state confirmed at `0017_omni_migration_uploads` with `migration_uploads` present again.
+
+### Live probes (curl against `:8012`, real Postgres, no mocks)
+
+| Probe | Result |
+|---|---|
+| Upload a 3-row CSV with `Lifecycle` values (`hot_lead`, `customer`, `not-a-real-stage`) | `201 {id, rowCount: 3, headers: [...]}` - opaque receipt id, never a raw storage key |
+| `POST .../jobs` with the RETIRED `contactsCsvKey` field | `422 {"detail":[{"type":"extra_forbidden","loc":["body","contactsCsvKey"],...}]}` |
+| `POST .../jobs` with an unknown `contactsUploadId` | `404 {"detail":"Uploaded file not found."}` |
+| `POST .../jobs` with tenant A's `contactsUploadId` from tenant B's own token | `404 {"detail":"Uploaded file not found."}` (uniform, same shape as unknown) |
+| Dry run (`mode: dry_run`) on the 3-row CSV | `status: done`; `report.lifecycleUnmappedByValue: {"not-a-real-stage": 1}`; blocker line names the value; `failureCount: 0` (no blob written) |
+| Real run (`mode: run`) on the SAME CSV | `status: done`; same `lifecycleUnmappedByValue` + blocker |
+| `GET /omnichannel/contacts?search=<phone>` per migrated contact | Ada (`hot_lead` CSV value) -> `lifecycle.key: hot_lead`; Bob (`customer`) -> `lifecycle.key: customer`; Carl (`not-a-real-stage`, unmapped) -> `lifecycle.key: new_lead` (the workspace's own initial stage) |
+| `GET /omnichannel/migration/jobs` and `GET .../jobs/{id}` against a hand-built row with `payload_json.connectionId = null` | Both `200`, `connectionId: null` in the response body - never a 500 |
+
+A media URL redirecting to a private IP is covered by the pytest-only stub transport tests (B1) -
+no live vendor call was made for this (no real respond.io token on this machine, unchanged from
+the original test report's own limitation).
+
+### Suite results (this fix round)
+
+- Backend, targeted (`test_omnichannel_respondio_migration_review1.py` + the 5 adjacent migration
+  suites + `test_storage_resolution.py`): **143 passed**, 0 failed.
+- Backend, full suite (`python -m pytest -q`, ONE run, lane `foundryx_service_s33`): **3753
+  passed, 1 skipped, 18 deselected** in 2353.46s (39m13s) - **zero failures.** The original
+  report's 11 pre-existing full-suite-order flakes (already diagnosed there as unrelated to
+  plan 33, reproducing in neither isolation nor a 28-file targeted run) did not reproduce at all
+  in this run, consistent with that diagnosis (an intermittent, order/load-dependent flake class,
+  tracked as `BL-SS-126`'s backend analogue - not a regression from this fix round).
+- Frontend, full suite (`npx vitest run`, ONE run): **335 files, 2548 tests, all PASSED** (same 2
+  pre-existing unrelated `Unhandled Rejection` warnings from AutoCount task-editor tests noted in
+  the original report above - did not fail any test).
+- `npx eslint` on every changed FE file: **0 errors**, 3 pre-existing a11y warnings on
+  `csv-upload-field.tsx` (unchanged from the original report, same dropzone pattern).
+- `npx tsc --noEmit`: no NEW errors from this fix round. The whole-repo run surfaces a large set of
+  pre-existing errors in UNRELATED files (AutoCount/ideation/platform test files, none touching
+  `migration`/`respondio`) - the only migration-adjacent hit is the SAME pre-existing
+  `services/storage-migration-service.mock.test.ts` `Job.logs` error the original report already
+  flagged as predating this branch.
+- `rm -rf .next && npm run build`: clean, no errors. Frontend restarted via `npx next start -p
+  3010` (cwd-verified before kill: `lsof -p $(lsof -ti :3010) | grep cwd`). Backend restarted via
+  `uvicorn app.main:app --port 8012` with `CORS_ORIGINS`/`CORS_ORIGIN_REGEX` overrides for :3010 +
+  its tenant-subdomain regex (cwd-verified before kill: `lsof -p $(lsof -ti :8012) | grep cwd`).
+
+### Still open
+
+- The alembic revision-id renumber (`0016`/`0017` collide with whatever `main` has moved to since)
+  is unchanged from the original report's own flagged pre-merge TODO - still the merger's job per
+  the plan's own "Merge-renumber rule", not addressed in this fix round.
+- The manifest version bump (`0.7.0` -> the merge-time-correct next number) and the three
+  version-pin test updates are likewise left for the merge checklist, unchanged from the original
+  review.
+- A live vendor-token B1 redirect-SSRF probe was not run (no real respond.io Developer API token
+  on this machine) - covered by the pytest stub-transport tests only, same limitation as every
+  other API-mode-only AC in the original test report.

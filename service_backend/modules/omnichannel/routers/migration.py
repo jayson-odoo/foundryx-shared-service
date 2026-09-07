@@ -41,6 +41,7 @@ async def upload_csv(
     file: UploadFile = File(...),
     kind: str = Form(...),
     current_user: User = Depends(require_permission("omnichannel_migration.manage")),
+    actor_id: str = Depends(get_actor_user_id),
     db: Session = Depends(get_db),
 ) -> MigrationUploadResult:
     """S5 (AC-MIG-46/47, D-A6-25) - the real-upload-route replacement for S4's
@@ -58,7 +59,7 @@ async def upload_csv(
             f"File exceeds the {MIGRATION_UPLOAD_MAX_BYTES // (1024 * 1024)} MB limit.",
         )
     try:
-        return MigrationService(db).upload_csv(current_user.tenant_id, kind, content)
+        return MigrationService(db).upload_csv(current_user.tenant_id, kind, content, actor_user_id=actor_id)
     except MigrationJobValidationError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {"fieldErrors": exc.errors})
 

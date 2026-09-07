@@ -431,6 +431,15 @@ refuses to enable "Run dry run" until the preflight confirms the first three.
 | BL-SS-128 | Migrate blocked-contact flags once A6-era Foundryx has a block flag (B2 / G24) | Low |
 | BL-SS-129 | Re-verify `SOURCE_TO_CHANNEL_TYPE` against the vendor's live channel catalog on a schedule; a new respond.io channel source currently falls through to "Skip" silently rather than warning | Low |
 
+**Review round 1 nit - id collision (provisional, flagged for merge):** two DIFFERENT backlog items
+actually landed in `backlog.md` under `BL-SS-129`/`BL-SS-130` during the S6 close - "Retry route has
+no real backend route" and "job-history list search/sort/filter runs in Python" - NOT the
+`SOURCE_TO_CHANNEL_TYPE` re-verify row reserved above. The `SOURCE_TO_CHANNEL_TYPE` row was never
+actually registered. This whole table's ids are provisional against THIS lane's cut of `main`
+(worktree s33) - per the merge checklist (D-A6-21), whoever merges A6 must re-derive every id from
+`main`'s then-current max (139 at review time) rather than trust the numbers printed here, and
+should register the `SOURCE_TO_CHANNEL_TYPE` row for real at that point if it is still open.
+
 ## 9. Risks and mitigations
 
 - **The vendor reference is JS-rendered and un-fetchable by an agent.** Field names in section 5.1
@@ -464,6 +473,14 @@ refuses to enable "Run dry run" until the preflight confirms the first three.
   rule is binding and the merger must re-check, not trust `0016`.
 - **Gateway contract.** This slice must not touch `routers/api_v1.py`, the `Rio*` schemas, or the
   consumer guide. AC-MIG-55 is a guard test, not a hope.
+- **Review round 1 nit - flagged for the storage-migration owner (pre-existing, NOT introduced by
+  this slice or its review fixes).** `bootstrap.py` registers a CORE table's `StorageKeyLocation`s
+  (`BackgroundJob.payload_json`/`result_json`) from the omnichannel module (`register_storage_key_
+  location(StorageKeyLoc(model=BackgroundJob, json_column=..., module=MODULE_NAME))`), commented as
+  deliberate - but it means an A→B storage-connection migration now rewrites `conn:` keys embedded
+  inside EVERY job type's `payload_json`/`result_json`, not only omnichannel's own (e.g. AutoCount ETL
+  job payloads, storage-migration's own job rows). Confirm this is intended before the next storage
+  migration ships, or move the registration to a core location file instead.
 
 ## 10. Flagged for the user (decisions taken that deviate from, or extend, the brief)
 

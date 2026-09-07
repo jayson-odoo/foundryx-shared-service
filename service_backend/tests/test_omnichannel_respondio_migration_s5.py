@@ -14,8 +14,8 @@ from typing import Dict, List, Optional
 from app.models import DEFAULT_TENANT_ID
 
 from modules.omnichannel.models import Contact, MigrationRef
+from modules.omnichannel.repositories.migration_upload_repository import MigrationUploadRepository
 from modules.omnichannel.services.migration_service import (
-    CSV_CONTACTS_ROW_CAP,
     MIGRATION_JOB_TYPE,
     MigrationService,
     run_migration_job,
@@ -27,6 +27,18 @@ from tests.test_omnichannel_respondio_migration_jobs import (
     _default_workspace_id,
     _row_counts,
 )
+
+
+def _upload_key(db, tenant_id: str, kind: str, content: bytes) -> str:
+    """Review round 1, finding B2 renamed `upload_csv`'s return from the raw
+    storage key to an opaque receipt `id` (`MigrationUploadResult.id`).
+    These are DIRECT handler-level tests (`run_migration_job` against a
+    hand-built `BackgroundJob.payload_json`, bypassing `create_job`'s own
+    id-to-key resolution) - they still need the underlying storage key,
+    fetched straight off the persisted `MigrationUpload` receipt row."""
+    result = MigrationService(db).upload_csv(tenant_id, kind, content)
+    return MigrationUploadRepository(db).get_for_tenant(tenant_id, result.id).storage_key
+
 
 # A REAL 1x1 transparent PNG (actual zlib-compressed IDAT bytes) - unlike a
 # hand-typed ASCII-ish "fake png", this is NOT decodable as text by
@@ -93,7 +105,7 @@ def test_upload_csv_returns_key_row_count_and_headers(client):
     body = res.json()
     assert body["rowCount"] == 2
     assert body["headers"] == ["First Name", "Phone"]
-    assert body["key"]
+    assert body["id"]
 
 
 def test_upload_rejects_a_png_named_csv(client):
@@ -172,7 +184,7 @@ def test_create_csv_job_requires_contacts_csv_key_422(client):
         },
     )
     assert res.status_code == 422, res.text
-    assert "contactsCsvKey" in res.json()["detail"]["fieldErrors"]
+    assert "contactsUploadId" in res.json()["detail"]["fieldErrors"]
 
 
 def test_create_csv_job_without_a_connection_succeeds(client):
@@ -186,14 +198,14 @@ def test_create_csv_job_without_a_connection_succeeds(client):
         files={"file": ("contacts.csv", content, "text/csv")}, data={"kind": "contacts"},
     )
     assert up.status_code == 201, up.text
-    key = up.json()["key"]
+    upload_id = up.json()["id"]
 
     res = client.post(
         "/omnichannel/migration/jobs", headers=h,
         json={
             "workspaceId": ws_id, "mode": "dry_run", "source": "csv",
             "channelMap": [], "userMap": [], "teamMap": [], "lifecycleMap": [],
-            "contactsCsvKey": key,
+            "contactsUploadId": upload_id,
         },
     )
     assert res.status_code == 201, res.text
@@ -217,7 +229,7 @@ def test_header_map_with_operator_choice_and_aliases(session_factory):
         ["Given Name", "last name", "Mobile", "Email", "Country"],
         [["Alias", "Guessed", "+15551230001", "alias@example.com", "my"]],
     )
-    key = MigrationService(db).upload_csv(DEFAULT_TENANT_ID, "contacts", content).key
+    key = _upload_key(db, DEFAULT_TENANT_ID, "contacts", content)
     db.commit()
 
     job = _make_csv_job(
@@ -244,7 +256,7 @@ def test_unmapped_header_reported_never_silently_dropped(session_factory):
         ["First Name", "Phone", "Notes"],
         [["Noted", "+15551230099", "some internal note"]],
     )
-    key = MigrationService(db).upload_csv(DEFAULT_TENANT_ID, "contacts", content).key
+    key = _upload_key(db, DEFAULT_TENANT_ID, "contacts", content)
     db.commit()
 
     job = _make_csv_job(db, DEFAULT_TENANT_ID, workspace_id=ws.id, contacts_csv_key=key, mode="dry_run")
@@ -260,7 +272,7 @@ def test_bom_and_delimiter_sniffed_like_the_rest_of_the_engine(session_factory):
     db = session_factory()
     ws = _default_workspace(db, DEFAULT_TENANT_ID)
     raw = codecs.BOM_UTF8 + _csv_bytes(["First Name", "Phone"], [["Bommed", "+15551230077"]])
-    key = MigrationService(db).upload_csv(DEFAULT_TENANT_ID, "contacts", raw).key
+    key = _upload_key(db, DEFAULT_TENANT_ID, "contacts", raw)
     db.commit()
 
     job = _make_csv_job(db, DEFAULT_TENANT_ID, workspace_id=ws.id, contacts_csv_key=key)
@@ -279,7 +291,7 @@ def test_dry_run_writes_nothing_csv_mode_paired_with_real_mode_control(session_f
     db = session_factory()
     ws = _default_workspace(db, DEFAULT_TENANT_ID)
     content = _csv_bytes(["First Name", "Phone"], [["Dry", "+15559990011"]])
-    key = MigrationService(db).upload_csv(DEFAULT_TENANT_ID, "contacts", content).key
+    key = _upload_key(db, DEFAULT_TENANT_ID, "contacts", content)
     db.commit()
 
     before = _row_counts(db, DEFAULT_TENANT_ID, ws.id)
@@ -303,7 +315,7 @@ def test_csv_rerun_via_migration_refs_creates_no_duplicates_with_explicit_id(ses
     content = _csv_bytes(
         ["Contact ID", "First Name", "Phone"], [["rio-9001", "Once", "+15559990033"]]
     )
-    key = MigrationService(db).upload_csv(DEFAULT_TENANT_ID, "contacts", content).key
+    key = _upload_key(db, DEFAULT_TENANT_ID, "contacts", content)
     db.commit()
 
     before = _row_counts(db, DEFAULT_TENANT_ID, ws.id)
@@ -334,7 +346,7 @@ def test_csv_rerun_creates_no_duplicates_via_stable_row_hash_when_id_absent(sess
     db = session_factory()
     ws = _default_workspace(db, DEFAULT_TENANT_ID)
     content = _csv_bytes(["First Name", "Phone"], [["Hashed", "+15559990044"]])
-    key = MigrationService(db).upload_csv(DEFAULT_TENANT_ID, "contacts", content).key
+    key = _upload_key(db, DEFAULT_TENANT_ID, "contacts", content)
     db.commit()
 
     before = _row_counts(db, DEFAULT_TENANT_ID, ws.id)
@@ -357,7 +369,7 @@ def test_csv_mode_blockers_media_identity_messages_stated_up_front(session_facto
     db = session_factory()
     ws = _default_workspace(db, DEFAULT_TENANT_ID)
     content = _csv_bytes(["First Name", "Phone"], [["Blocked", "+15559990055"]])
-    key = MigrationService(db).upload_csv(DEFAULT_TENANT_ID, "contacts", content).key
+    key = _upload_key(db, DEFAULT_TENANT_ID, "contacts", content)
     db.commit()
 
     job = _make_csv_job(db, DEFAULT_TENANT_ID, workspace_id=ws.id, contacts_csv_key=key, mode="dry_run")
@@ -374,8 +386,20 @@ def test_csv_mode_blockers_media_identity_messages_stated_up_front(session_facto
     db.close()
 
 
-def test_csv_contacts_row_cap_boundary_2499_vs_2500(session_factory):
-    """AC-MIG-49 - the row-cap warning fires AT the boundary, not before."""
+def test_csv_contacts_row_cap_boundary_2499_vs_2500(session_factory, monkeypatch):
+    """AC-MIG-49 - the row-cap warning fires AT the boundary, not before.
+
+    Review round 1, finding S13 - the ORIGINAL version of this test wrote
+    2500 real contact rows TWICE (~5s) to exercise the real
+    `CSV_CONTACTS_ROW_CAP` constant. `_process_csv_contacts` reads the cap
+    off the `migration_service` MODULE at call time (a plain global, not a
+    bound default), so monkeypatching it down to a small number exercises
+    the exact same boundary condition in a fraction of the rows/time."""
+    import modules.omnichannel.services.migration_service as migration_service_module
+
+    small_cap = 5
+    monkeypatch.setattr(migration_service_module, "CSV_CONTACTS_ROW_CAP", small_cap)
+
     db = session_factory()
     ws = _default_workspace(db, DEFAULT_TENANT_ID)
 
@@ -387,7 +411,7 @@ def test_csv_contacts_row_cap_boundary_2499_vs_2500(session_factory):
             w.writerow([f"P{i}", f"+1555{i:07d}"])
         return buf.getvalue().encode("utf-8")
 
-    key_under = MigrationService(db).upload_csv(DEFAULT_TENANT_ID, "contacts", _n_row_csv(CSV_CONTACTS_ROW_CAP - 1)).key
+    key_under = _upload_key(db, DEFAULT_TENANT_ID, "contacts", _n_row_csv(small_cap - 1))
     db.commit()
     job_under = _make_csv_job(db, DEFAULT_TENANT_ID, workspace_id=ws.id, contacts_csv_key=key_under, mode="dry_run")
     run_migration_job(db, job_under)
@@ -395,13 +419,13 @@ def test_csv_contacts_row_cap_boundary_2499_vs_2500(session_factory):
     assert job_under.status == "done", job_under.error
     assert not any("cap" in b.lower() for b in job_under.result_json["report"]["blockers"])
 
-    key_at = MigrationService(db).upload_csv(DEFAULT_TENANT_ID, "contacts", _n_row_csv(CSV_CONTACTS_ROW_CAP)).key
+    key_at = _upload_key(db, DEFAULT_TENANT_ID, "contacts", _n_row_csv(small_cap))
     db.commit()
     job_at = _make_csv_job(db, DEFAULT_TENANT_ID, workspace_id=ws.id, contacts_csv_key=key_at, mode="dry_run")
     run_migration_job(db, job_at)
     db.refresh(job_at)
     assert job_at.status == "done", job_at.error
-    assert any(str(CSV_CONTACTS_ROW_CAP) in b for b in job_at.result_json["report"]["blockers"])
+    assert any(str(small_cap) in b for b in job_at.result_json["report"]["blockers"])
     db.close()
 
 
@@ -413,9 +437,9 @@ def test_csv_mode_reaches_quick_replies_phase_on_real_run(session_factory):
     db = session_factory()
     ws = _default_workspace(db, DEFAULT_TENANT_ID)
     contacts_content = _csv_bytes(["First Name", "Phone"], [["Snip", "+15559990066"]])
-    contacts_key = MigrationService(db).upload_csv(DEFAULT_TENANT_ID, "contacts", contacts_content).key
+    contacts_key = _upload_key(db, DEFAULT_TENANT_ID, "contacts", contacts_content)
     snippets_content = _csv_bytes(["shortcut", "body"], [["/hi", "Hello there!"]])
-    snippets_key = MigrationService(db).upload_csv(DEFAULT_TENANT_ID, "snippets", snippets_content).key
+    snippets_key = _upload_key(db, DEFAULT_TENANT_ID, "snippets", snippets_content)
     db.commit()
 
     job = _make_csv_job(
@@ -484,6 +508,10 @@ def test_failure_csv_round_trip_formula_guarded_and_empty_when_no_failures(clien
     assert res_guarded.status_code == 200
     assert "'=SUM(A1:A10)" in res_guarded.text, res_guarded.text
     assert res_guarded.headers["x-content-type-options"] == "nosniff"
+    # Review round 1 nit - the CSP-sandbox + cache headers were set on the
+    # route (D-A6-23, a PII-carrying download) but never asserted here.
+    assert res_guarded.headers["content-security-policy"] == "default-src 'none'; sandbox"
+    assert res_guarded.headers["cache-control"] == "private, no-store"
 
 
 def test_failures_csv_requires_read_permission(client, session_factory):

@@ -33,7 +33,7 @@ describe('migrationFormSchema', () => {
 
     const withUpload: MigrationFormValues = {
       ...noUpload,
-      contactsCsvKey: 'conn:1:omnichannel/migration/uploads/abc/contacts.csv',
+      contactsUploadId: 'upload-abc',
     };
     expect(migrationFormSchema.safeParse(withUpload).success).toBe(true);
   });
@@ -86,8 +86,8 @@ describe('computeMappingHash', () => {
   });
 
   it('changes when a re-uploaded CSV or its header map changes (S5 D-A6-25 parity)', () => {
-    const withCsv = { ...base, contactsCsvKey: 'conn:1:a/contacts.csv', csvHeaderMap: { firstName: 'First Name' } };
-    const differentFile = { ...withCsv, contactsCsvKey: 'conn:1:b/contacts.csv' };
+    const withCsv = { ...base, contactsUploadId: 'upload-a', csvHeaderMap: { firstName: 'First Name' } };
+    const differentFile = { ...withCsv, contactsUploadId: 'upload-b' };
     const differentMap = { ...withCsv, csvHeaderMap: { firstName: 'FN' } };
     expect(computeMappingHash(withCsv)).not.toBe(computeMappingHash(differentFile));
     expect(computeMappingHash(withCsv)).not.toBe(computeMappingHash(differentMap));

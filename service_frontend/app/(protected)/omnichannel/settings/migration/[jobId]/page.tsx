@@ -95,7 +95,13 @@ export default function MigrationJobDetailPage({ params }: { params: Promise<{ j
     );
   }
 
-  const pct = job.progressTotal > 0 ? Math.round((job.progressDone / job.progressTotal) * 100) : 0;
+  // Review round 1, finding S6 - `progressTotal` stays 0 for the entire run
+  // (the backend only knows the true total once every phase has finished,
+  // `finish_done`'s own `set_total` call) - a 0%-forever bar is worse than
+  // no bar at all, so this renders a plain running count while the total is
+  // unknown rather than a misleading stalled percentage.
+  const hasTotal = job.progressTotal > 0;
+  const pct = hasTotal ? Math.round((job.progressDone / job.progressTotal) * 100) : 0;
 
   return (
     <RequirePermission permission="omnichannel_migration.read">
@@ -123,11 +129,9 @@ export default function MigrationJobDetailPage({ params }: { params: Promise<{ j
               </CardHeading>
             </CardHeader>
             <CardContent className="space-y-4">
-              <Progress value={pct} />
+              {hasTotal && <Progress value={pct} />}
               <div className="flex flex-wrap gap-2 text-sm text-muted-foreground">
-                <span>
-                  {job.progressDone}/{job.progressTotal} processed
-                </span>
+                <span>{hasTotal ? `${job.progressDone}/${job.progressTotal} processed` : `${job.progressDone} processed`}</span>
                 {job.progressFailed > 0 && <span className="text-destructive">{job.progressFailed} failed</span>}
               </div>
             </CardContent>

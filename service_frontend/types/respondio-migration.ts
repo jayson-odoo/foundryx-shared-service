@@ -136,17 +136,22 @@ export interface CreateMigrationJobInput {
   lifecycleMap: MigrationLifecycleMapEntry[];
   messagesSince?: string | null;
   contactsOnly?: boolean;
-  /** S5 (AC-MIG-47) - the storage key `POST /omnichannel/migration/uploads`
-   *  (`kind=contacts`) returned, required when `source === 'csv'`. */
-  contactsCsvKey?: string | null;
+  /** S5 (AC-MIG-47), review round 1 finding B2 - the OPAQUE receipt id
+   *  `POST /omnichannel/migration/uploads` (`kind=contacts`) returned,
+   *  required when `source === 'csv'`. Never the raw storage key (the
+   *  earlier `contactsCsvKey` field let a client substitute ANY string,
+   *  which the backend then fetched unvalidated - a path-traversal / cross-
+   *  tenant blob read); the backend resolves this id tenant-scoped. */
+  contactsUploadId?: string | null;
   /** systemKey -> the file's own header string (`MIGRATION_CSV_HEADER_KEYS`
    *  below); an unmapped key falls back to the backend's own case-
    *  insensitive alias guess (`_HEADER_ALIASES`, migration_service.py). */
   csvHeaderMap?: Record<string, string>;
-  /** S5 (D-A6-19/25) - the storage key `POST .../uploads` (`kind=snippets`)
-   *  returned; optional in BOTH modes (respond.io has no snippets endpoint,
-   *  so this is CSV-or-manual only either way). */
-  snippetsCsvKey?: string | null;
+  /** S5 (D-A6-19/25), review round 1 finding B2 - the OPAQUE receipt id
+   *  `POST .../uploads` (`kind=snippets`) returned; optional in BOTH modes
+   *  (respond.io has no snippets endpoint, so this is CSV-or-manual only
+   *  either way). */
+  snippetsUploadId?: string | null;
 }
 
 /** The CSV-mode contacts header map (plan §5.6, `CSV_HEADER_KEYS` in
@@ -166,12 +171,14 @@ export const MIGRATION_CSV_HEADER_KEYS: { key: string; label: string }[] = [
   { key: 'lifecycle', label: 'Lifecycle' },
 ];
 
-/** `POST /omnichannel/migration/uploads` response (S5, AC-MIG-46/47) - the
- *  storage key the job payload then carries, plus the sniffed file's row
- *  count and headers so the setup form can render the header-map step
- *  without a second round trip. */
+/** `POST /omnichannel/migration/uploads` response (S5, AC-MIG-46/47) - an
+ *  OPAQUE receipt id (review round 1, finding B2 - NEVER the raw storage
+ *  key; see `CreateMigrationJobInput.contactsUploadId`/`snippetsUploadId`'s
+ *  own doc comment) the job payload then references, plus the sniffed
+ *  file's row count and headers so the setup form can render the header-map
+ *  step without a second round trip. */
 export interface MigrationUploadResult {
-  key: string;
+  id: string;
   rowCount: number;
   headers: string[];
 }
@@ -245,7 +252,9 @@ export interface MigrationJob {
   id: string;
   mode: MigrationMode;
   source: MigrationSourceKind;
-  connectionId: string;
+  /** Optional (test report Defect 1) - a CSV-mode job carries no connection
+   *  at all; matches the backend's `Optional[str]` read shape. */
+  connectionId: string | null;
   spaceLabel: string;
   workspaceId: string;
   workspaceName: string;
@@ -276,10 +285,11 @@ export interface MigrationJobLogEntry {
 
 /** The subset of `CreateMigrationJobInput` that defines "the exact mapping"
  *  (D-A6-14 / AC-MIG-07/20): `mode` is deliberately excluded so a `dry_run`
- *  and its matching `run` share one hash. `contactsCsvKey`/`csvHeaderMap`
- *  mirror the backend's own `_mapping_hash` (S5, D-A6-25) - a re-uploaded
- *  CSV or a changed header map IS a different mapping; `snippetsCsvKey`
- *  stays excluded on both sides (quick replies are independent of "the
+ *  and its matching `run` share one hash. `contactsUploadId`/`csvHeaderMap`
+ *  mirror the backend's own `_mapping_hash` (S5, D-A6-25; renamed from
+ *  `contactsCsvKey`, review round 1 finding B2) - a re-uploaded CSV or a
+ *  changed header map IS a different mapping; `snippetsUploadId` stays
+ *  excluded on both sides (quick replies are independent of "the
  *  mapping"). */
 export type MigrationMappingShape = Pick<
   CreateMigrationJobInput,
@@ -291,7 +301,7 @@ export type MigrationMappingShape = Pick<
   | 'lifecycleMap'
   | 'contactsOnly'
   | 'messagesSince'
-  | 'contactsCsvKey'
+  | 'contactsUploadId'
   | 'csvHeaderMap'
 >;
 
@@ -319,7 +329,7 @@ export function computeMappingHash(shape: MigrationMappingShape): string {
     lifecycleMap: sortedBy(shape.lifecycleMap, (r) => r.sourceLabel).map((r) => [r.sourceLabel, r.targetStatusId]),
     contactsOnly: !!shape.contactsOnly,
     messagesSince: shape.messagesSince ?? null,
-    contactsCsvKey: shape.contactsCsvKey ?? null,
+    contactsUploadId: shape.contactsUploadId ?? null,
     csvHeaderMap: sortedBy(Object.entries(shape.csvHeaderMap ?? {}), (r) => r[0]),
   };
   const json = JSON.stringify(canonical);

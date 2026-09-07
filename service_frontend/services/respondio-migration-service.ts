@@ -25,8 +25,9 @@ export interface RespondioMigrationService {
   preflight(connectionId: string, workspaceId: string): Promise<MigrationPreflight>;
   /** `POST /omnichannel/migration/uploads` (multipart, S5 AC-MIG-46/47) -
    *  `kind=contacts` for the CSV-mode contacts file, `kind=snippets` for the
-   *  quick-replies CSV (either mode). Returns the storage key the job
-   *  payload then carries, plus the sniffed row count and headers. */
+   *  quick-replies CSV (either mode). Returns an OPAQUE receipt id (review
+   *  round 1, finding B2 - never a raw storage key) the job payload then
+   *  references, plus the sniffed row count and headers. */
   uploadCsv(kind: 'contacts' | 'snippets', file: File): Promise<MigrationUploadResult>;
   /** `GET /omnichannel/migration/jobs` - tenant-scoped job history. */
   listJobs(query: ListQuery): Promise<ListResult<MigrationJob>>;

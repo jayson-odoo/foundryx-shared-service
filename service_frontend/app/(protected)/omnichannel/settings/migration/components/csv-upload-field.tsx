@@ -12,6 +12,7 @@ import { useRef, useState } from 'react';
 import { LoaderCircle, UploadCloud, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { ClampedText } from '@/components/platform/clamped-text';
 import { toast } from '@/lib/toast';
 import { respondioMigrationService } from '@/services/respondio-migration-service';
 import type { MigrationUploadResult } from '@/types/respondio-migration';
@@ -59,7 +60,7 @@ export function CsvUploadField({
       {fileName ? (
         <div className="border-input flex items-center justify-between gap-3 rounded-lg border p-3">
           <div className="min-w-0">
-            <p className="truncate text-sm font-medium">{fileName}</p>
+            <ClampedText text={fileName} lines={1} className="text-sm font-medium" />
             {rowCount !== null && <p className="text-muted-foreground text-xs">{rowCount} rows</p>}
           </div>
           {editing && (

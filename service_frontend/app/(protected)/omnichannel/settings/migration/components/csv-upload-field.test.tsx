@@ -20,7 +20,7 @@ function file(name = 'contacts.csv') {
 
 describe('CsvUploadField', () => {
   it('uploads the chosen file and reports the result back', async () => {
-    uploadCsvMock.mockResolvedValueOnce({ key: 'conn:1:a.csv', rowCount: 1, headers: ['First Name'] });
+    uploadCsvMock.mockResolvedValueOnce({ id: 'upload-1', rowCount: 1, headers: ['First Name'] });
     const onUploaded = vi.fn();
     render(
       <CsvUploadField
@@ -37,7 +37,7 @@ describe('CsvUploadField', () => {
     await act(async () => {
       fireEvent.change(input, { target: { files: [file()] } });
     });
-    await vi.waitFor(() => expect(onUploaded).toHaveBeenCalledWith({ key: 'conn:1:a.csv', rowCount: 1, headers: ['First Name'] }, 'contacts.csv'));
+    await vi.waitFor(() => expect(onUploaded).toHaveBeenCalledWith({ id: 'upload-1', rowCount: 1, headers: ['First Name'] }, 'contacts.csv'));
     expect(uploadCsvMock).toHaveBeenCalledWith('contacts', expect.any(File));
   });
 

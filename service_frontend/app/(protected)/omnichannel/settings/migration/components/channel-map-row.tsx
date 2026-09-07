@@ -1,6 +1,7 @@
 'use client';
 
 import { SearchSelect } from '@/components/platform/search-select';
+import { ClampedText } from '@/components/platform/clamped-text';
 import type { MigrationSourceChannel, MigrationTargetChannel } from '@/types/respondio-migration';
 
 const SKIP_VALUE = '__skip__';
@@ -33,8 +34,8 @@ export function ChannelMapRow({
   return (
     <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
       <div className="min-w-0">
-        <p className="truncate text-sm font-medium">{channel.name}</p>
-        <p className="text-muted-foreground truncate text-xs">{channel.source}</p>
+        <ClampedText text={channel.name} lines={1} className="text-sm font-medium" />
+        <ClampedText text={channel.source} lines={1} className="text-muted-foreground text-xs" />
       </div>
       <div className="w-full sm:max-w-xs">
         <SearchSelect

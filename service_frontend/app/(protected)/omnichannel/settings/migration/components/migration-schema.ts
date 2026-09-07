@@ -45,9 +45,9 @@ export const migrationFormSchema = z
     lifecycleMap: z.array(lifecycleMapEntrySchema),
     messagesSince: z.string().nullable(),
     contactsOnly: z.boolean(),
-    contactsCsvKey: z.string().nullable(),
+    contactsUploadId: z.string().nullable(),
     csvHeaderMap: z.record(z.string(), z.string()),
-    snippetsCsvKey: z.string().nullable(),
+    snippetsUploadId: z.string().nullable(),
   })
   .superRefine((value, ctx) => {
     if (value.source === 'api') {
@@ -57,8 +57,8 @@ export const migrationFormSchema = z
       if (value.channelMap.length === 0) {
         ctx.addIssue({ code: 'custom', message: 'Run preflight to load the source channels.', path: ['channelMap'] });
       }
-    } else if (!value.contactsCsvKey) {
-      ctx.addIssue({ code: 'custom', message: 'Upload a contacts CSV.', path: ['contactsCsvKey'] });
+    } else if (!value.contactsUploadId) {
+      ctx.addIssue({ code: 'custom', message: 'Upload a contacts CSV.', path: ['contactsUploadId'] });
     }
   });
 
@@ -74,9 +74,9 @@ export const EMPTY_MIGRATION_FORM_VALUES: MigrationFormValues = {
   lifecycleMap: [],
   messagesSince: null,
   contactsOnly: false,
-  contactsCsvKey: null,
+  contactsUploadId: null,
   csvHeaderMap: {},
-  snippetsCsvKey: null,
+  snippetsUploadId: null,
 };
 
 export function toCreateMigrationJobInput(
@@ -94,8 +94,8 @@ export function toCreateMigrationJobInput(
     lifecycleMap: values.lifecycleMap,
     messagesSince: values.messagesSince,
     contactsOnly: values.contactsOnly,
-    contactsCsvKey: values.contactsCsvKey,
+    contactsUploadId: values.contactsUploadId,
     csvHeaderMap: values.csvHeaderMap,
-    snippetsCsvKey: values.snippetsCsvKey,
+    snippetsUploadId: values.snippetsUploadId,
   };
 }

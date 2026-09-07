@@ -34,7 +34,7 @@ describe('realRespondioMigrationService', () => {
   });
 
   it('uploadCsv() POSTs multipart with file + kind (S5, AC-MIG-46/47)', async () => {
-    apiFetchMock.mockResolvedValue({ key: 'conn:1:a.csv', rowCount: 3, headers: ['First Name'] });
+    apiFetchMock.mockResolvedValue({ id: 'upload-1', rowCount: 3, headers: ['First Name'] });
     const file = new File(['a,b\n1,2'], 'contacts.csv', { type: 'text/csv' });
     await svc.uploadCsv('contacts', file);
     expect(apiFetchMock).toHaveBeenCalledWith(
@@ -72,7 +72,7 @@ describe('realRespondioMigrationService', () => {
     expect(apiFetchMock).toHaveBeenCalledWith('/omnichannel/migration/jobs/mig-job-1');
   });
 
-  it('createJob() POSTs the input verbatim (source/contactsCsvKey/csvHeaderMap included)', async () => {
+  it('createJob() POSTs the input verbatim (source/contactsUploadId/csvHeaderMap included)', async () => {
     apiFetchMock.mockResolvedValue({});
     const input: CreateMigrationJobInput = {
       connectionId: null,
@@ -83,7 +83,7 @@ describe('realRespondioMigrationService', () => {
       userMap: [],
       teamMap: [],
       lifecycleMap: [],
-      contactsCsvKey: 'conn:1:a.csv',
+      contactsUploadId: 'upload-1',
       csvHeaderMap: { firstName: 'First Name' },
     };
     await svc.createJob(input);

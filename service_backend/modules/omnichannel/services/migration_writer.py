@@ -16,7 +16,7 @@ never a parallel writer.
 """
 import logging
 from dataclasses import dataclass, field as dataclass_field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import case, func
@@ -34,6 +34,7 @@ from ..respondio.shapes import Contact as SourceContact
 from ..respondio.shapes import ContactChannel as SourceContactChannel
 from ..respondio.shapes import MessageItem as SourceMessageItem
 from . import event_service
+from .lifecycle_service import find_stage_by_key_or_label
 from .contact_field_service import (
     FIELD_KEY_RE,
     FIELD_TYPES,
@@ -144,8 +145,48 @@ def _coerce_value(field_type: str, raw: Any) -> Tuple[Any, Optional[str]]:
     return (raw if isinstance(raw, str) else str(raw)), None
 
 
-def _epoch_to_dt(epoch_seconds: int) -> datetime:
-    return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc)
+# Review round 1, finding S2 - bounds every vendor epoch this module ever
+# converts. Floor: a two-year-old export predates respond.io itself by a
+# wide margin - any timestamp before this is treated as garbage, never a
+# literal epoch-1970 message sorted to the very top of a contact's history.
+# Ceiling is computed fresh (`now() + 24h`) at call time - a corrupt or
+# maliciously huge vendor value must never land in `conversation_messages.
+# created_at`/`contacts.last_message_at` and reorder the live inbox forever.
+_EPOCH_FLOOR = datetime(2009, 1, 1, tzinfo=timezone.utc)
+# A value at/above this magnitude is almost certainly MILLISECONDS since
+# epoch (a common vendor variation) - seconds-since-1970 does not reach 13
+# digits until the year 33658.
+_MS_EPOCH_THRESHOLD = 1_000_000_000_000
+
+
+def epoch_to_dt(epoch_value: Any) -> datetime:
+    """Vendor epoch (seconds OR milliseconds, any numeric-ish type) -> an
+    aware-UTC `datetime`, NEVER raising (review round 1, finding S2).
+    `datetime.fromtimestamp` on a millisecond epoch or a garbage/huge/
+    negative value raises `ValueError`/`OverflowError`/`OSError` - every
+    caller in this module used to let that propagate straight out of the
+    per-contact message phase, failing the WHOLE job over one bad
+    timestamp. Detects the millisecond magnitude and divides down; clamps
+    the result to `[_EPOCH_FLOOR, now + 24h]` - a value outside that range
+    is clamped to the nearer bound rather than rejected, so a contact with
+    one bad status timestamp still migrates (with an honest, bounded
+    date) instead of erroring out."""
+    try:
+        seconds = float(epoch_value)
+    except (TypeError, ValueError, OverflowError):
+        return _EPOCH_FLOOR
+    if abs(seconds) >= _MS_EPOCH_THRESHOLD:
+        seconds = seconds / 1000.0
+    ceiling = datetime.now(timezone.utc) + timedelta(hours=24)
+    try:
+        dt = datetime.fromtimestamp(seconds, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return _EPOCH_FLOOR if seconds < 0 else ceiling
+    if dt < _EPOCH_FLOOR:
+        return _EPOCH_FLOOR
+    if dt > ceiling:
+        return ceiling
+    return dt
 
 
 def resolve_message_timestamps(
@@ -172,7 +213,7 @@ def resolve_message_timestamps(
     for i, item in enumerate(items):
         stamps = [s.timestamp for s in (item.status or []) if s.timestamp is not None]
         if stamps:
-            explicit[i] = _epoch_to_dt(min(stamps))
+            explicit[i] = epoch_to_dt(min(stamps))
 
     left_idx: List[Optional[int]] = [None] * n
     last_seen: Optional[int] = None
@@ -295,6 +336,8 @@ class MigrationWriter:
         source: str = "respondio",
         writes_enabled: bool = True,
         thread_closed_status_id: Optional[str] = None,
+        team_map: Optional[Dict[str, str]] = None,
+        user_team_by_id: Optional[Dict[str, str]] = None,
     ):
         self.db = db
         self.tenant_id = tenant_id
@@ -320,6 +363,15 @@ class MigrationWriter:
         # sourceFieldName(lower) -> {dataType, allowedValues}, precomputed
         # once by the service from `GET /space/custom_field` (AC-MIG-24).
         self.source_field_defs = source_field_defs
+        # S5 (review round 1, finding S5, A8 on `main`) - sourceTeamId(str)
+        # -> targetTeamId(str), tenant re-validated by the service
+        # (`_resolve_team_map`), and sourceUserId(str) -> sourceTeamId(str)
+        # off the space's own user roster (respond.io's `Contact` shape
+        # carries no team of its own - only its ASSIGNEE does). Both default
+        # to `{}` so an existing caller with no team mapping configured pays
+        # nothing extra in `write_contact`.
+        self.team_map = team_map or {}
+        self.user_team_by_id = user_team_by_id or {}
 
         self.refs = MigrationRefRepository(db)
         self.contacts = ContactRepository(db)
@@ -581,6 +633,22 @@ class MigrationWriter:
         if contact.lifecycle_status_id is None:
             source_label_lc = (source.lifecycle or "").strip().lower()
             mapped = self.lifecycle_map.get(source_label_lc) if source_label_lc else None
+            if mapped is None and source.lifecycle:
+                # Fallback resolver (Defect 2 fix, test report round 1) - the
+                # SAME canonical key/label matcher the gateway PATCH uses
+                # (`find_stage_by_key_or_label`, `lifecycle_service.py`), not
+                # a parallel one - map-only, never creates a stage. CSV
+                # mode's setup form has no Lifecycle-mapping section at all,
+                # so `self.lifecycle_map` is always `{}` for a CSV job; this
+                # is the plan's own stated fallback (§5.6: "resolver matches
+                # an existing stage by key or label"). Applies to API mode
+                # too (a source label that exactly matches a stage but was
+                # never explicitly mapped now also resolves) - strictly more
+                # correct, not a behavior change any existing test relies on.
+                stage = find_stage_by_key_or_label(
+                    self.db, self.tenant_id, self.workspace_id, source.lifecycle
+                )
+                mapped = stage.id if stage is not None else None
             if source_label_lc and mapped is None:
                 result.lifecycle_unmapped = True
             contact.lifecycle_status_id = mapped or self.initial_lifecycle_status_id
@@ -602,6 +670,18 @@ class MigrationWriter:
                 contact.assigned_user_id = row[0]
             else:
                 result.assignee_unmatched = True
+
+        # ── team (S5, review round 1 finding S5, A8 on `main`): via the
+        # MAPPED source team of the contact's ASSIGNEE - respond.io's
+        # contact object carries no team of its own, only its assignee does
+        # (`self.user_team_by_id`, built once by the service from `GET
+        # /space/user`). Never overwrites an existing assignment; CSV mode's
+        # `assignee` is always `None` so this simply no-ops there. ─────────
+        if contact.assigned_team_id is None and source.assignee is not None:
+            source_team_id = self.user_team_by_id.get(str(source.assignee.id))
+            mapped_team_id = self.team_map.get(source_team_id) if source_team_id else None
+            if mapped_team_id:
+                contact.assigned_team_id = mapped_team_id
 
         self.db.flush()
         return result
@@ -645,7 +725,14 @@ class MigrationWriter:
             self.tenant_id, self.workspace_id, self.source, ENTITY_IDENTITY, ref_external_id
         )
         if existing_ref is not None:
-            row = self.db.query(ContactChannelIdentity).filter(ContactChannelIdentity.id == existing_ref).first()
+            row = (
+                self.db.query(ContactChannelIdentity)
+                .filter(
+                    ContactChannelIdentity.id == existing_ref,
+                    ContactChannelIdentity.tenant_id == self.tenant_id,
+                )
+                .first()
+            )
             if row is not None:
                 return IdentityWriteResult(kind="update")
 
@@ -654,9 +741,13 @@ class MigrationWriter:
         # channel before this migration ran) - the `uq_identity_channel_
         # external` constraint would reject a second row, so match first and
         # record the ref against the EXISTING row rather than insert.
+        # `tenant_id` explicit (review round 1, finding S3) even though the
+        # channel itself was tenant-validated upstream - the polymorphic-
+        # stored-id pattern this codebase has been bitten by twice already.
         matched = (
             self.db.query(ContactChannelIdentity)
             .filter(
+                ContactChannelIdentity.tenant_id == self.tenant_id,
                 ContactChannelIdentity.channel_id == target_channel_id,
                 ContactChannelIdentity.external_user_id == external_user_id,
             )
@@ -689,6 +780,7 @@ class MigrationWriter:
             winner = (
                 self.db.query(ContactChannelIdentity)
                 .filter(
+                    ContactChannelIdentity.tenant_id == self.tenant_id,
                     ContactChannelIdentity.channel_id == target_channel_id,
                     ContactChannelIdentity.external_user_id == external_user_id,
                 )
@@ -860,7 +952,16 @@ class MigrationWriter:
         the source exposes no data for them (D-A6-13/AC-MIG-42) - which is
         also why there is only ever ONE `first_agent_reply` candidate per
         contact (a single continuous cycle, not the live multi-cycle rule
-        `is_first_reply_pending` governs)."""
+        `is_first_reply_pending` governs).
+
+        Both aggregates below filter on `ConversationMessage.migrated_from ==
+        self.source` (review round 1, finding S7) - the ORIGINAL aggregate
+        ran over EVERY message the contact has, migrated or not. On a MERGE
+        target with existing live history, that stamped `opened` at the
+        live thread's first message (a second, spurious `opened` on a
+        thread that already has real events) and could derive
+        `first_agent_reply` from live traffic instead of the migrated
+        history AC-MIG-41 asks for ("at the first migrated message")."""
         first_at, last_at, first_contact_at = (
             self.db.query(
                 func.min(ConversationMessage.created_at),
@@ -872,6 +973,7 @@ class MigrationWriter:
             .filter(
                 ConversationMessage.tenant_id == self.tenant_id,
                 ConversationMessage.contact_id == contact.id,
+                ConversationMessage.migrated_from == self.source,
             )
             .first()
         )
@@ -896,6 +998,7 @@ class MigrationWriter:
                 .filter(
                     ConversationMessage.tenant_id == self.tenant_id,
                     ConversationMessage.contact_id == contact.id,
+                    ConversationMessage.migrated_from == self.source,
                     ConversationMessage.sender_type == "AGENT",
                     ConversationMessage.created_at >= first_contact_at,
                 )
@@ -931,6 +1034,12 @@ class MigrationWriter:
         # earlier merge/live edit, not this migration).
         source_label_lc = (source_contact.lifecycle or "").strip().lower()
         mapped_status_id = self.lifecycle_map.get(source_label_lc) if source_label_lc else None
+        if mapped_status_id is None and source_contact.lifecycle:
+            # Defect 2 fix - same fallback resolver as `write_contact` above.
+            stage = find_stage_by_key_or_label(
+                self.db, self.tenant_id, self.workspace_id, source_contact.lifecycle
+            )
+            mapped_status_id = stage.id if stage is not None else None
         if mapped_status_id and contact.lifecycle_status_id == mapped_status_id:
             event_service.record(
                 self.db, contact, "lifecycle_changed",

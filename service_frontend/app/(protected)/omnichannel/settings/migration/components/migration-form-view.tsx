@@ -49,7 +49,7 @@ function SetupSections({ hook, editing }: { hook: ReturnType<typeof useMigration
         preflightLoading={hook.preflightLoading}
         contactsUpload={hook.contactsUpload}
         contactsCsvHeaders={hook.contactsCsvHeaders}
-        contactsCsvError={formState.errors.contactsCsvKey?.message}
+        contactsCsvError={formState.errors.contactsUploadId?.message}
         onContactsUploaded={hook.onContactsUploaded}
         onContactsCleared={hook.onContactsCleared}
         csvHeaderMap={csvHeaderMap}

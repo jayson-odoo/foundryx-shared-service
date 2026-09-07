@@ -34,6 +34,14 @@ MAX_REQUESTS_PER_SECOND = 20
 MIN_REQUESTS_PER_SECOND = 0.1
 DEFAULT_TIMEOUT_SECONDS = 10.0
 MAX_ATTEMPTS = 5
+# Review round 1, finding B3 - a hard ceiling on the vendor cursor walk. A
+# vendor that returns the SAME cursor twice, a constant cursor, or an empty
+# `items` page WITH a cursor (all observable failure modes on a paginated
+# API this codebase does not control) would otherwise loop forever: unbounded
+# API calls, an unkillable background job (the abort check lives OUTSIDE this
+# generator, in the job service's own per-page loop), and a pinned DB
+# session. Far more pages than any real migration should ever need.
+MAX_PAGES = 100_000
 # Halve our own rate after this many CONSECUTIVE 429s (D-A6-5).
 RATE_HALVE_THRESHOLD = 4
 _BACKOFF_BASE_SECONDS = 0.5
@@ -251,17 +259,51 @@ class RespondIoClient:
         ``next_cursor`` this yields, and a crash-resume passes its last stored
         cursor back in as ``start_cursor`` to continue without re-walking
         already-processed pages. ``next_cursor`` is ``None`` on the LAST page
-        (mirrors the vendor's own ``pagination.next`` absence)."""
+        (mirrors the vendor's own ``pagination.next`` absence).
+
+        Review round 1, finding B3 - three termination guards, none of which
+        the vendor's own contract rules out: (1) the returned ``next``
+        equals the cursor just REQUESTED (a vendor stuck on the same page);
+        (2) an empty ``items`` page that STILL carries a cursor (nothing left
+        to walk, but the vendor never said so); (3) ``MAX_PAGES`` as an
+        absolute ceiling, logged as a milestone so it surfaces on the job's
+        detail page rather than looking like a silent early stop."""
         base_params = dict(params or {})
         base_params["limit"] = limit
         cursor: Optional[str] = start_cursor
+        pages = 0
         while True:
+            requested_cursor = cursor
             page_params = dict(base_params)
             if cursor:
                 page_params["cursorId"] = cursor
             data = self._request(method, path, params=page_params, json_body=json_body)
             items = data.get("items") or []
             cursor = ((data.get("pagination") or {}).get("next")) or None
+            pages += 1
+
+            if cursor is not None and cursor == requested_cursor:
+                self._on_milestone(
+                    f"respond.io returned the same pagination cursor twice on {path} - "
+                    "stopping this walk rather than looping forever."
+                )
+                yield items, None
+                break
+            if not items and cursor:
+                self._on_milestone(
+                    f"respond.io returned an empty page with a cursor still set on {path} - "
+                    "treating this as the end of the walk."
+                )
+                yield items, None
+                break
+            if pages >= MAX_PAGES:
+                self._on_milestone(
+                    f"Reached the {MAX_PAGES}-page ceiling on {path} - stopping this walk; "
+                    "some records may not have been migrated."
+                )
+                yield items, None
+                break
+
             yield items, cursor
             if not cursor:
                 break

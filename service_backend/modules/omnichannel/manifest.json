@@ -26,6 +26,11 @@
       "model": "WhatsappTemplate",
       "column": "media_sample_key",
       "tenantColumn": "tenant_id"
+    },
+    {
+      "model": "MigrationUpload",
+      "column": "storage_key",
+      "tenantColumn": "tenant_id"
     }
   ],
   "routers": [

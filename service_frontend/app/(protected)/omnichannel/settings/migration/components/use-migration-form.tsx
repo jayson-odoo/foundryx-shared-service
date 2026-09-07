@@ -61,7 +61,7 @@ const FORM_FIELD_PATHS: ReadonlySet<string> = new Set([
   'connectionId',
   'workspaceId',
   'messagesSince',
-  'contactsCsvKey',
+  'contactsUploadId',
 ]);
 
 function describe(error: unknown): string {
@@ -204,7 +204,7 @@ export function useMigrationForm(): UseMigrationFormResult {
     } else {
       setContactsUpload(null);
       setContactsCsvHeaders([]);
-      form.setValue('contactsCsvKey', null, { shouldDirty: true });
+      form.setValue('contactsUploadId', null, { shouldDirty: true });
       form.setValue('csvHeaderMap', {}, { shouldDirty: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -307,7 +307,7 @@ export function useMigrationForm(): UseMigrationFormResult {
     Date.now() - dryRunAt < 24 * 3_600_000;
 
   const ready =
-    !!workspaceId && (source === 'api' ? !!connectionId && !preflightLoading : !!watchedValues.contactsCsvKey);
+    !!workspaceId && (source === 'api' ? !!connectionId && !preflightLoading : !!watchedValues.contactsUploadId);
 
   const startMigration = useCallback(async () => {
     if (!canStartMigration) return;
@@ -328,9 +328,9 @@ export function useMigrationForm(): UseMigrationFormResult {
     (result: MigrationUploadResult, fileName: string) => {
       setContactsUpload({ fileName, rowCount: result.rowCount });
       setContactsCsvHeaders(result.headers);
-      form.setValue('contactsCsvKey', result.key, { shouldDirty: true });
+      form.setValue('contactsUploadId', result.id, { shouldDirty: true });
       form.setValue('csvHeaderMap', {}, { shouldDirty: true });
-      form.clearErrors('contactsCsvKey');
+      form.clearErrors('contactsUploadId');
     },
     [form],
   );
@@ -338,21 +338,21 @@ export function useMigrationForm(): UseMigrationFormResult {
   const onContactsCleared = useCallback(() => {
     setContactsUpload(null);
     setContactsCsvHeaders([]);
-    form.setValue('contactsCsvKey', null, { shouldDirty: true });
+    form.setValue('contactsUploadId', null, { shouldDirty: true });
     form.setValue('csvHeaderMap', {}, { shouldDirty: true });
   }, [form]);
 
   const onSnippetsUploaded = useCallback(
     (result: MigrationUploadResult, fileName: string) => {
       setSnippetsUpload({ fileName, rowCount: result.rowCount });
-      form.setValue('snippetsCsvKey', result.key, { shouldDirty: true });
+      form.setValue('snippetsUploadId', result.id, { shouldDirty: true });
     },
     [form],
   );
 
   const onSnippetsCleared = useCallback(() => {
     setSnippetsUpload(null);
-    form.setValue('snippetsCsvKey', null, { shouldDirty: true });
+    form.setValue('snippetsUploadId', null, { shouldDirty: true });
   }, [form]);
 
   return {

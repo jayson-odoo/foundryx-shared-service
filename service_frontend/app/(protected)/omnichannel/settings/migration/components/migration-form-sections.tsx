@@ -7,6 +7,7 @@
  * pre-seeded 1:1 from the preflight response (`use-migration-form.tsx`)
  * and can never be added to or removed from - only its target changes.
  */
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -18,6 +19,7 @@ import { StatusBadge } from '@/components/platform/status-badge';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { useDatetime } from '@/hooks/use-datetime';
 import { utcToZonedInputValue, zonedTimeToUtc } from '@/lib/datetime';
+import { contactsListPath } from '@/app/(protected)/omnichannel/contacts/components/paths';
 import type { Connection } from '@/types/integration';
 import type { Workspace } from '@/types/omnichannel';
 import type { Team } from '@/types/team';
@@ -159,6 +161,9 @@ export function SourceSection({
               editing={editing}
               onChange={onCsvHeaderMapChange}
             />
+            <Button type="button" variant="outline" size="sm" asChild>
+              <Link href={contactsListPath}>Import contacts</Link>
+            </Button>
           </div>
         )}
 

@@ -287,6 +287,11 @@ IDs: `AC-MIG-##`. Tags: `[BE]` `[FE]` `[E2E]` `[T]`.
   route by `.manage`, implied-read normalization forces `.read` alongside `.manage`, and an
   already-provisioned tenant receives the keys through the manifest version bump plus
   `update_tenant` (so the feature never silently 403s or hides). No existing key is reused.
+  **Disclosed deviation (review round 1 nit):** `GET .../preflight` is gated `.manage`, not `.read`
+  as this AC's own wording implies - preflight is the FIRST call the setup form makes and always
+  precedes a write, so gating it at the stricter permission spends no extra token in practice and
+  keeps "can see this respond.io space's data" and "can start a migration" as one grant. Pinned by
+  `test_preflight_requires_manage_permission`.
 - **AC-MIG-51 [BE]** Given any migration route or job step, then every query is scoped by the
   tenant id taken from the JWT (or from the job row for the worker) and never from client input;
   `workspaceId`, `connectionId` and every mapped user, team, channel and stage id is re-validated

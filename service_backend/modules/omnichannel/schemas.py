@@ -1677,7 +1677,15 @@ class MigrationJobCreate(ApiModel):
     plain `Optional[str]` (not `datetime`) so a malformed value is a HOUSE
     `{fieldErrors: {messagesSince: ...}}` 422 the service raises itself,
     never FastAPI's own un-housed pydantic-datetime 422 shape - the plan's
-    §5.2 422-paths list treats it exactly like `connectionId`/`workspaceId`."""
+    §5.2 422-paths list treats it exactly like `connectionId`/`workspaceId`.
+
+    `extra="forbid"` (review round 1, finding B2) - the RETIRED free-string
+    `contactsCsvKey`/`snippetsCsvKey` fields must 422 (`extra_forbidden`)
+    rather than silently pass through and be ignored; a caller still on the
+    old contract needs a loud failure, not a job that quietly never reads a
+    contacts file."""
+
+    model_config = ConfigDict(extra="forbid")
 
     # S5 (D-A6-25 below): a CSV-mode job has no working respond.io API access
     # at all, so `connectionId` is OPTIONAL - a customer with zero API access
@@ -1698,15 +1706,21 @@ class MigrationJobCreate(ApiModel):
     # through `app/import_engine/readers.py read_rows`, mapped by
     # `csvHeaderMap` (system field key -> the file's own header string; a
     # key with no entry falls back to a case-insensitive alias guess,
-    # `migration_service._HEADER_ALIASES`). Both are STORAGE KEYS returned by
-    # `POST /omnichannel/migration/uploads` (`kind=contacts`/`kind=snippets`)
-    # - replacing S4's `snippetsCsvBase64` JSON-payload stopgap (its own
-    # docstring named this slice as the one that would do it) with the same
-    # multipart-upload-then-reference-the-key convention the core import
-    # engine already uses (`app/import_engine/service.py create_job`).
-    contactsCsvKey: Optional[str] = None
+    # `migration_service._HEADER_ALIASES`).
+    #
+    # `contactsUploadId`/`snippetsUploadId` (review round 1, finding B2 -
+    # REPLACES the earlier `contactsCsvKey`/`snippetsCsvKey` free-string
+    # fields) are the OPAQUE id `POST /omnichannel/migration/uploads`
+    # returns (`kind=contacts`/`kind=snippets`) - never a raw storage key a
+    # client could substitute for path traversal or another tenant's blob.
+    # `MigrationService.create_job` resolves each id tenant-scoped
+    # (`_require_upload`, uniform 404 on foreign/unknown) and carries the
+    # RESOLVED storage key forward internally under the job payload's own
+    # `contactsCsvKey`/`snippetsCsvKey` keys - the phase-processing code
+    # never changes, only this wire contract does.
+    contactsUploadId: Optional[str] = None
     csvHeaderMap: Dict[str, str] = {}
-    snippetsCsvKey: Optional[str] = None
+    snippetsUploadId: Optional[str] = None
 
 
 class MigrationEntityCounts(ApiModel):
@@ -1725,6 +1739,14 @@ class MigrationReport(ApiModel):
     # error) - this is how many were skipped that way, reported so the
     # operator's volume estimate (plan §7 prerequisite 9) still reconciles.
     messagesSkippedBeforeFloor: int = 0
+    # S11 (review round 1) - contacts whose whole message history exceeded
+    # `MAX_MESSAGES_PER_CONTACT` and were skipped entirely (also surfaced as
+    # a human-readable `blockers` line).
+    messagesSkippedOverCap: int = 0
+    # Defect 2 fix (test report round 1) - CSV-mode's per-VALUE unmapped
+    # lifecycle tally (raw CSV value -> contact count), also surfaced as
+    # per-value `blockers` lines. Empty for API-mode jobs.
+    lifecycleUnmappedByValue: Dict[str, int] = {}
     blockers: List[str] = []
     samples: Dict[str, List[dict]]
 
@@ -1750,12 +1772,14 @@ class MigrationJobLogEntry(ApiModel):
 
 # ── Plan 33 S5 - CSV upload (plan §5.2 extension, AC-MIG-46..49) ────────────
 class MigrationUploadResult(ApiModel):
-    """`POST /omnichannel/migration/uploads` response - the storage KEY the
-    job payload then carries (`contactsCsvKey`/`snippetsCsvKey`), plus enough
-    of the sniffed file (row count + headers) for the setup form to render
-    the header-mapping step without a second round trip."""
+    """`POST /omnichannel/migration/uploads` response - an OPAQUE receipt
+    `id` (review round 1, finding B2 - NEVER the raw storage key; see
+    `MigrationJobCreate.contactsUploadId`/`snippetsUploadId`'s own docstring)
+    the job payload then references, plus enough of the sniffed file (row
+    count + headers) for the setup form to render the header-mapping step
+    without a second round trip."""
 
-    key: str
+    id: str
     rowCount: int
     headers: List[str]
 
@@ -1770,7 +1794,14 @@ class MigrationJobItem(ApiModel):
     id: str
     mode: str
     source: str
-    connectionId: str
+    # Optional (test report Defect 1) - `payload.get("connectionId", "")`
+    # only defaults when the KEY IS ABSENT, not when it is present-and-JSON-
+    # `null` (every REAL create path stores `connectionId or ""`, so a
+    # genuine CSV-mode job never persists a literal `null` - this is a
+    # defensive-coding gap for a hand-built/legacy row, not a reachable
+    # regression). `Optional[str] = None` matches the request-side
+    # `MigrationJobCreate.connectionId` and never 500s the whole list route.
+    connectionId: Optional[str] = None
     spaceLabel: str
     workspaceId: str
     workspaceName: str
