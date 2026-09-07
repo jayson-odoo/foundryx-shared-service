@@ -58,6 +58,14 @@ class DocumentPreset:
     filter_formula: Optional[str]
     header: Tuple[PresetField, ...]
     line: Tuple[PresetField, ...]
+    # feat/line-fingerprint-sweep - a cheap GROUP BY over the line table,
+    # scoped by the SAME header cut the fingerprint mismatch guard already
+    # rides (`from_date`, `ItemCode`/`Qty NOT NULL`), run on an interval by
+    # the incremental sweep to catch a line-only edit AutoCount never bumps
+    # the header's `LastModified` for (prod finding: `SODTL.TransferedQty`
+    # rising with no `SO.LastModified` change - see `sql_source/source.py`'s
+    # own sweep docstring for the full mechanism).
+    fingerprint_query: str = ""
 
 
 # ``LineCount`` fingerprint mismatch guard (S2, review round 4) - a plain
@@ -163,6 +171,23 @@ _SO_LINE_QUERY = (
     "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
 )
 
+# feat/line-fingerprint-sweep - prod finding SO419208 (DocKey 45672056):
+# AutoCount updates `SODTL.TransferedQty` (a delivery transfer) WITHOUT
+# bumping `SO.LastModified`, so a plain `LastModified > :since` incremental
+# never sees the change and the CRM copy stays stale until the next daily
+# reconcile. A cheap `GROUP BY` over the line table, scoped by the SAME
+# `from_date`/`ItemCode`/`Qty NOT NULL` cuts the header's own OUTER APPLY
+# fingerprint already makes (so a pseudo-line/display-line can never move
+# this fingerprint either, the same live findings the header cuts closed),
+# run once per sweep interval to CATCH what the header hash cannot.
+_SO_FINGERPRINT_QUERY = (
+    "SELECT d.DocKey AS DocKey, COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
+    "SUM(d.TransferedQty) AS TransferedSum, MAX(d.DtlKey) AS MaxDtlKey "
+    "FROM {database}.dbo.SODTL AS d JOIN {database}.dbo.SO AS h ON h.DocKey = d.DocKey "
+    "WHERE h.DocDate >= :from_date AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL "
+    "GROUP BY d.DocKey"
+)
+
 SO_PRESET = DocumentPreset(
     label="AutoCount SO",
     header_query=_SO_HEADER_QUERY,
@@ -202,6 +227,7 @@ SO_PRESET = DocumentPreset(
         # preset row consuming it, line_number never reaches Sorento.
         PresetField("Seq", "line_number", "string"),
     ),
+    fingerprint_query=_SO_FINGERPRINT_QUERY,
 )
 
 
@@ -263,6 +289,17 @@ _PO_LINE_QUERY = (
     "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
 )
 
+# feat/line-fingerprint-sweep - the PO/PODTL equivalent of `_SO_FINGERPRINT_
+# QUERY` above (see that constant's own comment for the mechanism), shared
+# by PO and SPO exactly like their header/line queries already are.
+_PO_FINGERPRINT_QUERY = (
+    "SELECT d.DocKey AS DocKey, COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
+    "SUM(d.TransferedQty) AS TransferedSum, MAX(d.DtlKey) AS MaxDtlKey "
+    "FROM {database}.dbo.PODTL AS d JOIN {database}.dbo.PO AS h ON h.DocKey = d.DocKey "
+    "WHERE h.DocDate >= :from_date AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL "
+    "GROUP BY d.DocKey"
+)
+
 # addendum §3/§9 - a PO task filters OUT the SPO-numbered documents its
 # sibling SPO task owns (and vice versa, once ENTITY_SHIPPING_ORDER exists in
 # slice S3). Seeded now so a PO task created in this slice already carries
@@ -316,6 +353,7 @@ PO_PRESET = DocumentPreset(
         # preset row consuming it, line_number never reaches Sorento.
         PresetField("Seq", "line_number", "string"),
     ),
+    fingerprint_query=_PO_FINGERPRINT_QUERY,
 )
 
 # ── Shipping Order ────────────────────────────────────────────────────────────
@@ -375,6 +413,7 @@ SPO_PRESET = DocumentPreset(
         # preset row consuming it, line_number never reaches Sorento.
         PresetField("Seq", "line_number", "string"),
     ),
+    fingerprint_query=_PO_FINGERPRINT_QUERY,
 )
 
 DOCUMENT_PRESETS: Dict[str, DocumentPreset] = {
@@ -493,5 +532,9 @@ def list_mapping_presets(entity_type: str, database_name: str) -> List[Dict[str,
             "docDateColumn": preset.doc_date_column,
             "fromDate": preset.from_date or None,
             "filterFormula": preset.filter_formula,
+            "fingerprintQuery": (
+                preset.fingerprint_query.replace("{database}", database_name)
+                if preset.fingerprint_query else None
+            ),
         }
     ]
