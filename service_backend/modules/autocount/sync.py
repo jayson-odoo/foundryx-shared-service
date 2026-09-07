@@ -1011,11 +1011,20 @@ def _stage_documents(
         # and is re-extracted must UPDATE that row in place, never insert a
         # second one - a second row offers (and once pushed, delivers) the
         # SAME document twice.
+        #     !!  ONE indexed SELECT per record (``ix_ac_staged_ref``),
+        #         unmeasured - a batched, per-page dedup would trade one
+        #         extra round trip per document for a single IN-list query
+        #         if this ever shows up in a live pass.  !!
         existing = staged_repo.list_staged_upserts(
             tenant_id, company_id, entity_type, record.source_ref
         )
         if existing:
             for row in existing:
+                # Re-pointed at THIS job by design: for an ACTIVE sql_db
+                # task the activate-once ceremony (AC-22-18) IS the human
+                # approval, so the row moving out from behind whatever prior
+                # ``needs_review`` job first parked it is the intended
+                # effect, not a scope leak.
                 row.job_id = job.id
                 row.doc_no = mapped.doc_no
                 row.source_last_modified = source_record.last_modified

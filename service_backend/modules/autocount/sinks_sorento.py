@@ -737,10 +737,11 @@ class SorentoSink:
         A record's ``delivered`` is True only for a ``created``/``updated``
         outcome - Sorento's own verdict, never inferred from the HTTP status.
 
-        ``on_chunk`` (fix/push-marks-per-chunk; composes with
-        fix/job-lease-orphan-sweep's liveness ping - see that lane's own
-        ``on_chunk``, merge job-lease FIRST and fold its heartbeat tick into
-        this richer callback) fires once per chunk as it resolves:
+        ``on_chunk`` (fix/push-marks-per-chunk, merged with fix/job-lease-
+        orphan-sweep's liveness ping: ``SyncService.apply_chunk`` marks +
+        COMMITS the chunk first, THEN calls ``self._chunk_beat(job_id)()`` -
+        a lost lease can only stop the push AFTER a chunk is durable, never
+        instead of committing it) fires once per chunk as it resolves:
         ``on_chunk(chunk_records, chunk_results, None)`` on a delivered
         chunk, ``on_chunk(chunk_records, None, exc)`` on a chunk that failed
         AFTER exhausting its retry attempts (``_post_with_retry``) - the
