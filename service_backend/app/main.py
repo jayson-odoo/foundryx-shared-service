@@ -133,6 +133,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Web chat's public visitor API (plan sprint-4/34 / A7b S2, D-A7B-4/AC-WEB-23)
+# carries NO cookie and must NEVER advertise `Access-Control-Allow-
+# Credentials` - but `CORSMiddleware` (above) stamps that header onto EVERY
+# response whose request carries an `Origin` header, UNCONDITIONALLY, before
+# it even checks whether the origin matches `cors_origins_list`/
+# `cors_origin_regex` (its `simple_response` applies `self.simple_headers` -
+# which bakes in `Access-Control-Allow-Credentials: true` whenever
+# `allow_credentials=True` - ahead of any origin-match check). Starlette's
+# `add_middleware` inserts at index 0 (LIFO), so registering THIS middleware
+# AFTER `CORSMiddleware` makes it the OUTER of the two - it runs (and can
+# still edit headers) AFTER `CORSMiddleware` has already added its stray
+# header, for this one public prefix only. Every other route's CORS
+# behaviour is completely unchanged.
+_WEBCHAT_PUBLIC_PREFIX = "/public/omnichannel/webchat/"
+
+
+@app.middleware("http")
+async def _strip_webchat_public_credentials_header(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith(_WEBCHAT_PUBLIC_PREFIX):
+        if "access-control-allow-credentials" in response.headers:
+            del response.headers["access-control-allow-credentials"]
+    return response
+
 # Frontend NextAuth calls ${BACKEND_API_URL}/auth/login
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(users.router, prefix="/users", tags=["users"])

@@ -343,6 +343,103 @@ class SignOutVisitorsResult(ApiModel):
     tokenEpoch: int
 
 
+# ── Web chat: the PUBLIC visitor API (plan 34 / A7b S2) ──────────────────────
+class WebchatHostIdentity(BaseModel):
+    """`{ userRef, hash }` (D-A7B-9) - a HOST identity assertion the
+    customer's OWN server signs. Verification (HMAC against the channel's
+    widget secret) lands in slice S5; S2 accepts and IGNORES this field
+    (D-A7B-9's "missing or invalid -> silently ignored" is the correct S2
+    behaviour, not a gap - there is no verification path yet to trust)."""
+
+    userRef: str
+    hash: str
+
+
+class WebchatSessionRequest(ApiModel):
+    """`POST /public/omnichannel/webchat/{widgetKey}/session` body (plan
+    §5.2). Every field optional - a brand-new visitor sends neither."""
+
+    token: Optional[str] = None
+    identity: Optional[WebchatHostIdentity] = None
+
+
+class VisitorMessage(ApiModel):
+    """The visitor projection's wire shape (plan §5.2) - the ONLY shape a
+    visitor's browser ever receives for a message, built EXCLUSIVELY by
+    `services/webchat_projection.py` (D-A7B-17)."""
+
+    id: str
+    direction: Literal["in", "out"]
+    text: Optional[str] = None
+    media: Optional[Dict[str, Any]] = None
+    quickReplies: Optional[List[Dict[str, Any]]] = None
+    agentName: Optional[str] = None
+    createdAt: datetime
+    status: Optional[Literal["sent", "delivered", "read", "failed"]] = None
+
+
+class WebchatSessionConfig(ApiModel):
+    """The `config` block of the session response (plan §5.2) - everything
+    the panel needs to render BEFORE a visitor sends a word."""
+
+    appearance: WebchatAppearance
+    greeting: str
+    offlineGreeting: str
+    preChat: WebchatPreChatToggles
+    agentDisplayName: str
+    # NEVER the raw `tenants.name` column (white-label; the `branding_service.
+    # _to_response` precedent) - only a tenant's OWN configured branding
+    # `appName`, else `None`. A `null` here is the panel's cue to render no
+    # tenant name at all, never a house/product name.
+    tenantName: Optional[str] = None
+    brandTokens: Dict[str, Any] = {}
+
+
+class WebchatSessionResult(ApiModel):
+    """`POST /public/omnichannel/webchat/{widgetKey}/session` 200 body (plan
+    §5.2). `online` is a hardcoded `true` in S2 - S5 wires the EXISTING
+    `BusinessHoursService` (D-A7B-24: an unconfigured workspace resolves
+    online anyway, so this is not a temporary lie, it is the eventual
+    default's own fallback value)."""
+
+    token: str
+    expiresAt: datetime
+    visitorId: str
+    config: WebchatSessionConfig
+    online: bool
+    messages: List[VisitorMessage] = []
+
+
+class WebchatMessageRequest(ApiModel):
+    """`POST /public/omnichannel/webchat/{widgetKey}/messages` body (plan
+    §5.2). `preChat` values are accepted on the wire (S5 writes them
+    write-if-empty per D-A7B-8/54) but S2 ignores them - no lookup, no
+    stitch, and (fail-closed, not "not yet implemented") no write either,
+    so a half-shipped write-if-empty never lands before its own tests do.
+    `hp` is the honeypot - a legitimate visitor's browser never fills it in
+    (AC-WEB-32)."""
+
+    text: str
+    preChat: Optional[Dict[str, Optional[str]]] = None
+    hp: Optional[str] = None
+
+
+class WebchatMessagesPage(ApiModel):
+    """`GET /public/omnichannel/webchat/{widgetKey}/messages` 200 body (plan
+    §5.2) - oldest to newest, page-capped; also the poll-fallback shape
+    (D-A7B-16, the SAME endpoint serves history and the fallback)."""
+
+    data: List[VisitorMessage]
+    nextAfter: Optional[str] = None
+
+
+class WebchatHoneypotResult(ApiModel):
+    """The normal-looking success shape a honeypot hit gets back (AC-WEB-32 -
+    never tip off the bot that anything different happened)."""
+
+    ok: bool = True
+
+
 # ── Shared ──────────────────────────────────────────────────────────────────
 class IdsRequest(ApiModel):
     ids: List[str]

@@ -31,6 +31,7 @@ from app.models.auth_throttle import (
     THROTTLE_SCOPE_FORM_PUBLIC,
     THROTTLE_SCOPE_IP,
     THROTTLE_SCOPE_PORTAL,
+    THROTTLE_SCOPE_WEBCHAT,
     AuthThrottle,
 )
 
@@ -79,6 +80,12 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
         return (
             settings.throttle_embed_max_fails,
             timedelta(minutes=settings.throttle_embed_window_minutes),
+            None,  # over-limit throttles until the window rolls over (like IP)
+        )
+    if scope == THROTTLE_SCOPE_WEBCHAT:
+        return (
+            settings.throttle_webchat_max_fails,
+            timedelta(minutes=settings.throttle_webchat_window_minutes),
             None,  # over-limit throttles until the window rolls over (like IP)
         )
     return (
@@ -281,3 +288,34 @@ class ThrottleService:
 
     def record_embed(self, *, ip: str) -> None:
         self.store.record_failure(THROTTLE_SCOPE_EMBED, ip)
+
+    # ---- omnichannel web chat public visitor API (own bucket, plan
+    # sprint-4/34 / A7b S2, AC-WEB-30, D-A7B-22) ----
+    #
+    # TWO independent key namespaces inside the ONE scope: `ip:<ip>` (the
+    # cheap, zero-DB-dependent gate checked first on every request) and
+    # `v:<visitorId>` (checked once the caller's visitor id is known - the
+    # session endpoint before a token exists, and every message endpoint
+    # after Bearer verification). Either tripping refuses the request -
+    # a single abusive visitor id is caught on ITS OWN counter without
+    # waiting for a whole office's shared IP budget to exhaust, and a single
+    # IP minting fresh visitor ids to dodge the visitor bucket still trips
+    # the IP bucket.
+
+    def enforce_webchat(self, *, ip: Optional[str] = None, visitor_id: Optional[str] = None) -> None:
+        """Either or both of `ip`/`visitor_id` may be checked in one call -
+        callers pass `ip` alone BEFORE a visitor id is known (session start,
+        pre-token-verify) and `visitor_id` alone for a SECOND, later check
+        once Bearer verification resolves it (avoids double-counting the IP
+        bucket per request)."""
+        retry = self.store.check(THROTTLE_SCOPE_WEBCHAT, f"ip:{ip}") if ip else None
+        if retry is None and visitor_id:
+            retry = self.store.check(THROTTLE_SCOPE_WEBCHAT, f"v:{visitor_id}")
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_webchat(self, *, ip: Optional[str] = None, visitor_id: Optional[str] = None) -> None:
+        if ip:
+            self.store.record_failure(THROTTLE_SCOPE_WEBCHAT, f"ip:{ip}")
+        if visitor_id:
+            self.store.record_failure(THROTTLE_SCOPE_WEBCHAT, f"v:{visitor_id}")

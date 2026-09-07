@@ -69,6 +69,13 @@ class Settings(BaseSettings):
     # Window-throttle like IP (no permanent lock).
     throttle_embed_max_fails: int = 30
     throttle_embed_window_minutes: int = 15
+    # Web chat visitor session/message endpoints (plan sprint-4/34 / A7b S2,
+    # AC-WEB-30, D-A7B-22) - own bucket, TWO independent key namespaces
+    # (`ip:<ip>`, `v:<visitorId>`) so a single busy office IP and a single
+    # abusive visitor id are rate-limited independently. Window-throttle like
+    # IP (no permanent lock - a public chat widget must self-heal).
+    throttle_webchat_max_fails: int = 60
+    throttle_webchat_window_minutes: int = 5
     # Profile Portal email one-time-code TTL (short - emailed login fallback).
     profile_otp_ttl_minutes: int = 10
     # Form upload caps (D12). Per-file hard ceiling (DoS guard - capped reads

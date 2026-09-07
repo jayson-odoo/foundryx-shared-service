@@ -345,16 +345,37 @@ def test_get_adapter_unknown_type_still_raises():
         get_adapter("DOUYIN")
 
 
-def test_webchat_adapter_send_and_parse_inbound_are_stubs_not_wired_yet():
-    """S1 ships the registry row only - `send`/`parse_inbound` land in S3/S2
-    and must fail loudly (never silently succeed) if reached early."""
+def test_webchat_adapter_send_is_a_stub_not_wired_yet():
+    """S1 ships the registry row only - `send` lands in S3 and must fail
+    loudly (never silently succeed) if reached early."""
     from modules.omnichannel.adapters.webchat import WebChatAdapter
 
     adapter = WebChatAdapter()
     with pytest.raises(NotImplementedError):
         adapter.send({}, "wk-1", "visitor-1", text="hi")
-    with pytest.raises(NotImplementedError):
-        adapter.parse_inbound({})
+
+
+def test_webchat_adapter_parse_inbound_translates_visitor_payload():
+    """S2 (plan sprint-4/34, AC-WEB-26) - `services/webchat_visitor_service.py`
+    is the only caller and always supplies `from`/`external_message_id`;
+    `parse_inbound` returns exactly ONE canonical `message` event, always
+    `TEXT`, and NEVER a `profile_name` (D-A7B-8 - no stitch signal)."""
+    from modules.omnichannel.adapters.webchat import WebChatAdapter
+
+    adapter = WebChatAdapter()
+    events = adapter.parse_inbound(
+        {"from": "visitor:abc", "external_message_id": "web:abc:1", "body": "hi"}
+    )
+    assert events == [
+        {
+            "kind": "message",
+            "from": "visitor:abc",
+            "external_message_id": "web:abc:1",
+            "body": "hi",
+            "message_type": "TEXT",
+        }
+    ]
+    assert "profile_name" not in events[0]
 
 
 def test_webchat_adapter_test_connection_trivially_ok():

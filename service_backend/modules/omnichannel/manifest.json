@@ -149,6 +149,11 @@
       "name": "webchat_widget",
       "prefix": "/omnichannel/widget",
       "public": true
+    },
+    {
+      "name": "webchat_public",
+      "prefix": "/public/omnichannel/webchat",
+      "public": true
     }
   ],
   "permissions_csv": "permissions/permissions.csv"

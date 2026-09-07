@@ -5,11 +5,10 @@ our own public visitor API (``routers/webchat_public.py``, slice S2). This
 keeps the adapter a thin, honest skeleton in slice S1 - the registry row
 (``adapters/__init__.py``) is what makes ``WEBCHAT`` a real channel type for
 every generic caller (``get_adapter``, ``messaging_policy``,
-``channel_addressing``); the two methods a live web chat conversation
-actually needs (``send``, ``parse_inbound``) are stubbed here and implemented
-for real in slices S3 and S2 respectively - nothing calls either of them
-before those slices land, so a stub that fails loudly is safer than a stub
-that pretends to succeed.
+``channel_addressing``). ``parse_inbound`` is implemented for real in slice
+S2 (``services/webchat_visitor_service.py`` is its only caller); ``send``
+stays stubbed here for slice S3 - nothing calls it before that slice lands,
+so a stub that fails loudly is safer than a stub that pretends to succeed.
 
 ``exchange_code`` / ``fetch_phone_details`` / ``fetch_media`` /
 ``list_templates`` are permanently unreachable for this channel type (no
@@ -77,11 +76,28 @@ class WebChatAdapter:
         raise NotImplementedError("WebChatAdapter.send lands in plan 34 slice S3.")
 
     def parse_inbound(self, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Slice S2 (`services/webchat_visitor_service.py`) implements the
-        visitor-POST -> canonical event-dict translation and calls this
-        directly - there is no webhook payload for this channel type, so
-        nothing reaches this method before S2 lands."""
-        raise NotImplementedError("WebChatAdapter.parse_inbound lands in plan 34 slice S2.")
+        """The visitor-POST -> canonical event-dict translation
+        (`services/webchat_visitor_service.py` builds `payload` and calls
+        `InboundService.process_payload` directly - there is no webhook for
+        this channel type, so `payload` is already the house canonical shape
+        the caller assembled, not a Meta envelope). ALWAYS exactly one
+        `"message"` event: web chat carries no delivery-receipt or reaction
+        concept from the visitor side (D-A7B-20 - no visitor uploads either,
+        so `message_type` is always `"TEXT"`). Deliberately NEVER sets
+        `profile_name` - D-A7B-8 forbids any stitch signal reaching
+        `InboundService._resolve_contact`, and a `WEBCHAT` channel already
+        skips the phone stitch there (it is not `WHATSAPP`); omitting
+        `profile_name` closes the one remaining lever (a Messenger/Instagram-
+        style Graph name lookup) that resolver has for a non-WhatsApp type."""
+        return [
+            {
+                "kind": "message",
+                "from": payload["from"],
+                "external_message_id": payload["external_message_id"],
+                "body": payload.get("body"),
+                "message_type": "TEXT",
+            }
+        ]
 
     def fetch_media(self, credentials: Dict[str, Any], media_id: str) -> Optional[Dict[str, Any]]:
         raise NotImplementedError("Web chat visitor uploads are disabled in v1 (D-A7B-20).")
