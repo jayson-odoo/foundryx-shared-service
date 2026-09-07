@@ -514,10 +514,12 @@ def test_sorento_provider_fields_are_base_url_and_a_secret_key():
 
     fields = SorentoProvider().fields()
     keys = [f["key"] for f in fields]
-    # ``sorentoContractVersion`` sits between them (contract-version field
-    # lane): its own shape is pinned in
-    # test_autocount_sorento_contract_version_field.py.
-    assert keys == ["baseUrl", "sorentoContractVersion", "apiKey"]
+    # ``sorentoContractVersion`` sits directly after the base URL (contract-
+    # version lane; its own shape is pinned in
+    # test_autocount_sorento_contract_version_field.py); later fields
+    # (apiKey, sinkConcurrency, ...) may follow in any order.
+    assert keys[:2] == ["baseUrl", "sorentoContractVersion"], keys
+    assert "apiKey" in keys
     by_key = {f["key"]: f for f in fields}
     assert by_key["apiKey"]["secret"] is True
     assert by_key["baseUrl"].get("secret") is not True

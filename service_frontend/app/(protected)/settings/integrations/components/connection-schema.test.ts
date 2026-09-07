@@ -195,3 +195,52 @@ describe('storedOrEffective (read mode and edit prefill share one resolution)', 
     expect(storedOrEffective(baseUrl, {})).toBe('');
   });
 });
+
+// feat/sink-concurrency-ui: a SECOND effective-value field on the Sorento
+// connection. The per-key hardcode for the contract version does not scale;
+// the provider payload carries the effective (platform-default) value on the
+// field itself and `storedOrEffective` falls back to it generically.
+describe('Sorento sink concurrency read-mode / edit prefill (feat/sink-concurrency-ui)', () => {
+  const sinkConcurrency: ProviderField = {
+    key: 'sinkConcurrency',
+    label: 'Push concurrency',
+    type: 'select',
+    required: false,
+    effectiveValue: '1',
+    options: [
+      { value: '1', label: '1 (sequential)' },
+      { value: '2', label: '2' },
+      { value: '3', label: '3' },
+      { value: '4', label: '4' },
+    ],
+  };
+  const sorentoWithConcurrency: IntegrationProvider = {
+    ...sorento,
+    fields: [sorento.fields[0], sorento.fields[1], sinkConcurrency, sorento.fields[2]],
+  };
+
+  it('an unset value shows the EFFECTIVE platform default the field carries', () => {
+    expect(storedOrEffective(sinkConcurrency, { baseUrl: 'https://sorento.example.com' })).toBe('1');
+    const values = valuesForConnection(sorentoWithConcurrency, {
+      provider: 'sorento',
+      name: 'Sorento',
+      config: { baseUrl: 'https://sorento.example.com', sorentoContractVersion: '2' },
+    });
+    expect(values.config.sinkConcurrency).toBe('1');
+  });
+
+  it('a stored "2" wins over the effective value', () => {
+    expect(
+      storedOrEffective(sinkConcurrency, { baseUrl: 'https://sorento.example.com', sinkConcurrency: '2' }),
+    ).toBe('2');
+  });
+
+  it('the contract-version behaviour is unchanged by the generic fallback', () => {
+    const values = valuesForConnection(sorentoWithConcurrency, {
+      provider: 'sorento',
+      name: 'Sorento',
+      config: { baseUrl: 'https://sorento.example.com' },
+    });
+    expect(values.config.sorentoContractVersion).toBe('1');
+  });
+});

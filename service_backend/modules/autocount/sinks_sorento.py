@@ -111,6 +111,25 @@ _ENTITY_PATH: Dict[str, str] = {
 # master isn't synced yet and NOTHING was written.
 _OUTCOME_DELIVERED = {"created", "updated"}
 
+# TRANSIENT gateway faults only (fix/push-marks-per-chunk, prod finding
+# 2026-09-07: Sorento's own nginx answers a bare 502 on roughly 1 in 25
+# ingest POSTs - upstream momentarily unreachable, never reaches their app).
+# A plain 500 stays a GUARD-RAIL error until the companion Sorento fix lands
+# (see the class docstring) and a 4xx is a genuine rejection - neither is
+# retried; retrying them would just hammer an app that already answered.
+# A 504 is safe to retry for the SAME reason a 502/503 is even though it can
+# mean the FIRST attempt's request reached the app and simply timed out
+# waiting for the answer: ingest is UPSERT, keyed on ``source_ref`` per
+# record (Appendix A6/A8) - a retried POST that lands on already-processed
+# records resolves to the identical ``updated`` outcome, never a duplicate.
+_TRANSIENT_HTTP_STATUS = frozenset({502, 503, 504})
+
+# Per-connection push concurrency override (feat/sink-concurrency-ui). Unset
+# means the platform default (`settings.autocount_sink_concurrency`); the
+# operator flips this on the Sorento connection's own edit form during a
+# backlog drain, no deploy. See ``SorentoSink._resolve_concurrency``.
+SINK_CONCURRENCY_KEY = "sinkConcurrency"
+
 # Entities whose ``retryable`` is EXPECTED, not a defect (AC-22-23, extended
 # S5/AC-22-24): a product's ``category_code``/``uom_code`` may legitimately
 # not have synced yet, and a document ALWAYS carries at least one master
@@ -327,6 +346,13 @@ class SorentoSink:
         # loop below (`dry_run`, `read`, `delete_batch`, `write_batch`) uses
         # it, so one setting governs every request shape.
         batch_size: int = SORENTO_MAX_BATCH,
+        # feat/sink-concurrency-ui - the connection's OWN stored
+        # `sinkConcurrency` ("1".."4", a STRING like the contract-version
+        # select), or `None`/blank when unset. Resolved lazily, at CALL
+        # time, in `_resolve_concurrency` - never here - so a test (or an
+        # operator) that flips `settings.autocount_sink_concurrency` after
+        # construction is honoured on an unset connection.
+        concurrency_config: Optional[str] = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -357,6 +383,11 @@ class SorentoSink:
         self._timeout = httpx.Timeout(float(timeout), connect=SINK_CONNECT_TIMEOUT_SECONDS)
         self._transport = transport
         self._max_rate_limit_waits = max_rate_limit_waits
+        self._concurrency_config = concurrency_config
+        # ONE warning per sink instance (feat/sink-concurrency-ui) - an
+        # invalid stored value does not re-log on every chunked call a
+        # single sync makes.
+        self._concurrency_warned = False
 
     # ── operator-facing text ────────────────────────────────────────────────
 
@@ -567,7 +598,9 @@ class SorentoSink:
         source_refs: Sequence[str],
         *,
         dry_run: bool = False,
-        on_chunk: Optional[Callable[[], None]] = None,
+        on_chunk: Optional[
+            Callable[[List[str], Optional[List[Dict[str, Any]]], Optional[BaseException]], None]
+        ] = None,
     ) -> Dict[str, Any]:
         """``POST /api/v1/external/ingest/{entity}/deletions``.
 
@@ -582,6 +615,19 @@ class SorentoSink:
         caller's staged delete intent stays STAGED and re-offers on the next
         run, exactly like a dependency-order carry-over, rather than the whole
         run failing on an endpoint that genuinely does not exist yet.
+
+        ``on_chunk`` mirrors ``write_batch``'s (fix/push-marks-per-chunk): a
+        chunk that resolves (delivered OR retried-as-unknown-entity) calls
+        ``on_chunk(chunk_refs, chunk_records, None)``; a TRANSIENT 5xx that
+        exhausts every retry attempt (``_post_with_retry``) fails ONLY that
+        chunk - ``on_chunk(chunk_refs, None, exc)``, then the loop continues
+        to the next chunk. Anything else stops the whole call, unchanged.
+
+        Concurrency (feat/sink-concurrency-ui) mirrors ``write_batch``: up to
+        ``_resolve_concurrency``'s N chunk POSTs run WITH REAL OVERLAP; a
+        chunk that fails outright (not the transient-exhausted case, which
+        never raises) cancels every NOT-YET-STARTED future and propagates,
+        same as before this connection setting existed.
         """
         refs = [str(r) for r in source_refs if str(r or "").strip()]
         summary: Dict[str, int] = {
@@ -589,30 +635,84 @@ class SorentoSink:
             "failed": 0, "retryable": 0,
         }
         results: List[Dict[str, Any]] = []
-        for start in range(0, len(refs), self.batch_size):
-            chunk = refs[start : start + self.batch_size]
-            try:
-                body = self._call(
-                    f"ingest/{self._path_segment}/deletions",
-                    {"source_refs": chunk},
-                    dry_run=dry_run,
-                )
-            except SinkUnknownEntity:
-                summary["total"] += len(chunk)
-                summary["retryable"] += len(chunk)
-                results.extend(
-                    {"source_ref": ref, "outcome": "retryable"} for ref in chunk
-                )
+        chunks = [
+            refs[start : start + self.batch_size]
+            for start in range(0, len(refs), self.batch_size)
+        ]
+        if not chunks:
+            return {"dry_run": dry_run, "summary": summary, "records": results}
+
+        def merge(partial: Optional[Dict[str, int]]) -> None:
+            for key, value in (partial or {}).items():
+                summary[key] = summary.get(key, 0) + value
+
+        concurrency = self._resolve_concurrency(len(chunks))
+        if concurrency == 1:
+            #     !!  BYTE-IDENTICAL TO BEFORE feat/sink-concurrency-ui.  !!
+            for chunk in chunks:
+                partial, chunk_records, error = self._run_delete_chunk(chunk, dry_run)
+                if error is not None:
+                    if on_chunk is not None:
+                        on_chunk(chunk, None, error)
+                    continue
+                merge(partial)
+                results.extend(chunk_records or [])
                 if on_chunk is not None:
-                    on_chunk()
-                continue
-            for key, value in (body.get("summary") or {}).items():
-                if isinstance(value, int):
-                    summary[key] = summary.get(key, 0) + value
-            results.extend(body.get("records") or [])
-            if on_chunk is not None:
-                on_chunk()
+                    on_chunk(chunk, chunk_records, None)
+        else:
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                futures = [
+                    executor.submit(self._run_delete_chunk, chunk, dry_run)
+                    for chunk in chunks
+                ]
+                try:
+                    for chunk, future in zip(chunks, futures):
+                        partial, chunk_records, error = future.result()
+                        if error is not None:
+                            if on_chunk is not None:
+                                on_chunk(chunk, None, error)
+                            continue
+                        merge(partial)
+                        results.extend(chunk_records or [])
+                        if on_chunk is not None:
+                            on_chunk(chunk, chunk_records, None)
+                except BaseException:
+                    # Same reasoning as `write_batch`: cancel every
+                    # NOT-YET-STARTED future, let anything already running
+                    # finish in the background, propagate unchanged.
+                    for pending in futures:
+                        pending.cancel()
+                    raise
         return {"dry_run": dry_run, "summary": summary, "records": results}
+
+    def _run_delete_chunk(
+        self, chunk: List[str], dry_run: bool
+    ) -> Tuple[Optional[Dict[str, int]], Optional[List[Dict[str, Any]]], Optional[BaseException]]:
+        """One deletion chunk POST, shared by ``delete_batch``'s sequential
+        and concurrent paths so a ``SinkUnknownEntity`` (addendum section 5)
+        is handled identically either way: every ref in the chunk reports
+        ``retryable`` rather than raising. Returns
+        ``(partial_summary, chunk_records, error)`` - ``error`` set means the
+        other two are ``None`` (a transient 5xx exhausted every retry
+        attempt); anything else NOT transient re-raises straight through, on
+        whichever thread is running it.
+        """
+        try:
+            body, error = self._post_with_retry(
+                f"ingest/{self._path_segment}/deletions",
+                {"source_refs": chunk},
+                dry_run=dry_run,
+            )
+        except SinkUnknownEntity:
+            chunk_records = [{"source_ref": ref, "outcome": "retryable"} for ref in chunk]
+            return {"total": len(chunk), "retryable": len(chunk)}, chunk_records, None
+        if error is not None:
+            return None, None, error
+        partial: Dict[str, int] = {}
+        for key, value in (body.get("summary") or {}).items():
+            if isinstance(value, int):
+                partial[key] = partial.get(key, 0) + value
+        return partial, (body.get("records") or []), None
 
     # ── contract (addendum section 11/12, AC-02-14) ──────────────────────────
 
@@ -643,38 +743,147 @@ class SorentoSink:
         except Exception:  # noqa: BLE001 - advisory only, must never propagate
             return None
 
+    # ── concurrency (feat/sink-concurrency-ui) ────────────────────────────────
+
+    def _resolve_concurrency(self, num_chunks: int) -> int:
+        """How many chunk POSTs may run WITH REAL OVERLAP, resolved fresh on
+        every call (never cached on the instance beyond the one-time warning
+        below): the connection's own stored ``sinkConcurrency`` when it is
+        present and a valid ``"1".."4"``, else the LIVE platform setting
+        (``settings.autocount_sink_concurrency``, read at call time so a
+        setting flipped after construction still takes effect).
+
+        Either source is then clamped to 1..4 (a forced platform value past
+        the validator's own bound, or a future stored value outside the
+        select's options, never leaks through) AND to ``num_chunks`` (no
+        point opening more workers than there is work).
+
+        An unset connection value (``None``/blank) is NOT invalid - it is
+        the intended "use the platform default" state and never warns. A
+        genuinely invalid stored value ("0", "9", "abc") falls back to the
+        platform setting and logs exactly ONE warning for the lifetime of
+        this sink instance, naming the bad value, so an operator who typed
+        garbage into `config_json` by hand (there is no PATCH-level
+        validation hook yet) finds out without the log flooding on every
+        chunk of a large push.
+        """
+        raw = self._concurrency_config
+        value: Optional[int] = None
+        if raw not in (None, ""):
+            candidate: Optional[int] = None
+            try:
+                candidate = int(str(raw).strip())
+            except (TypeError, ValueError):
+                candidate = None
+            if candidate is not None and 1 <= candidate <= 4:
+                value = candidate
+            elif not self._concurrency_warned:
+                logger.warning(
+                    "Sorento connection has an invalid %s '%s'; using the "
+                    "platform default instead.",
+                    SINK_CONCURRENCY_KEY, raw,
+                )
+                self._concurrency_warned = True
+        if value is None:
+            from app.config import settings as _settings
+
+            value = int(getattr(_settings, "autocount_sink_concurrency", 1) or 1)
+        return max(1, min(value, 4, num_chunks))
+
+    # ── retry (fix/push-marks-per-chunk, prod 2026-09-07) ────────────────────
+
+    def _post_with_retry(
+        self, path: str, payload: Dict[str, Any], *, dry_run: bool
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[SorentoSinkError]]:
+        """One chunk POST, retrying a TRANSIENT 5xx (``_TRANSIENT_HTTP_STATUS``)
+        up to ``settings.autocount_sink_retry_attempts`` (default 3, read at
+        CALL time) attempts total, with a short bounded backoff between
+        attempts (``time.sleep`` - the SAME seam the 429 wait already uses, so
+        a test can patch one thing). Returns ``(body, None)`` on eventual
+        success.
+
+        A TRANSIENT status that is STILL failing once every attempt is spent
+        returns ``(None, exc)`` - the CALLER's chunk loop treats this as ONE
+        failed chunk and continues to the next one (a lone upstream hiccup
+        must not re-offer every chunk that already succeeded). Anything else
+        - a plain 500 (guard-rail error until the companion Sorento fix
+        lands), a 4xx, an anchor/unknown-entity error, a bare transport fault
+        - is NOT retried and is RE-RAISED on the first attempt, unchanged:
+        the whole push stops there, exactly as before this fix.
+        """
+        from app.config import settings as _settings
+
+        attempts = max(1, int(getattr(_settings, "autocount_sink_retry_attempts", 3) or 3))
+        last_exc: Optional[SorentoSinkError] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._call(path, payload, dry_run=dry_run), None
+            except SorentoSinkError as exc:
+                if exc.status_code not in _TRANSIENT_HTTP_STATUS:
+                    raise
+                last_exc = exc
+                if attempt < attempts:
+                    # 1s, 2s, 4s, ... - three attempts (the default) sleep
+                    # 1s + 2s = 3s total, comfortably under any run budget.
+                    time.sleep(min(2 ** (attempt - 1), 4))
+        return None, last_exc
+
     # ── real push (AC-14-16/18) ──────────────────────────────────────────────
+
+    def _chunk_results(
+        self, chunk: Sequence[CanonicalRecord], body: Dict[str, Any]
+    ) -> List[WriteResult]:
+        by_ref = {str(r.get("source_ref") or ""): r for r in body.get("records", [])}
+        results: List[WriteResult] = []
+        for record in chunk:
+            ref = getattr(record, "source_ref", "")
+            results.append(self._result_for(ref, by_ref.get(ref)))
+        return results
 
     def write_batch(
         self,
         records: Sequence[CanonicalRecord],
         *,
         request_id: str,
-        on_chunk: Optional[Callable[[], None]] = None,
+        on_chunk: Optional[
+            Callable[
+                [Sequence[CanonicalRecord], Optional[List[WriteResult]], Optional[BaseException]],
+                None,
+            ]
+        ] = None,
     ) -> List[WriteResult]:
-        """Deliver a batch and return one ``WriteResult`` per input record, in
-        order. Chunks at the configured batch size (ceiling: the vendor's).
-
-        ``on_chunk`` (fix/job-lease-orphan-sweep) is called once per chunk
-        as its verdict arrives - the caller's job heartbeat - so an
-        unbounded push is not one silent stretch; an exception it raises
-        propagates like a chunk failure (no verdict reaches the caller).
+        """Deliver a batch and return one ``WriteResult`` per input record that
+        a chunk actually resolved, in order. Chunks at the vendor batch ceiling.
 
         A record's ``delivered`` is True only for a ``created``/``updated``
         outcome - Sorento's own verdict, never inferred from the HTTP status.
 
-        ``settings.autocount_sink_concurrency`` (S5b, performance round;
-        read at CALL time, never cached) lets up to N chunk POSTs run WITH
-        REAL OVERLAP instead of one at a time. The ALL-OR-NOTHING contract
-        is unchanged at every concurrency level, concurrency 1 included:
-        this method returns verdicts ONLY once every chunk has succeeded,
-        in submission order - one chunk failing (a transport error, a
-        5xx, a rate-limit exhaustion) propagates the SAME exception a
-        purely sequential loop always raised, and the caller
-        (``SyncService._auto_push_upserts``) already treats that as "apply
-        nothing, every row stays STAGED, the next run re-offers
-        everything" - concurrency only changes how many POSTs are in
-        flight, never what a failure means.
+        ``on_chunk`` (fix/push-marks-per-chunk, merged with fix/job-lease-
+        orphan-sweep's liveness ping: ``SyncService.apply_chunk`` marks +
+        COMMITS the chunk first, THEN calls ``self._chunk_beat(job_id)()`` -
+        a lost lease can only stop the push AFTER a chunk is durable, never
+        instead of committing it) fires once per chunk as it resolves:
+        ``on_chunk(chunk_records, chunk_results, None)`` on a delivered
+        chunk, ``on_chunk(chunk_records, None, exc)`` on a chunk that failed
+        AFTER exhausting its retry attempts (``_post_with_retry``) - the
+        caller marks + COMMITS per chunk so a later chunk's fault can never
+        undo an earlier chunk's delivery (prod finding 2026-09-07: one 502
+        out of 25 chunk POSTs discarded a whole clean run).
+
+        Failure handling, per ``_post_with_retry``:
+        * a TRANSIENT 5xx that exhausts every attempt fails ONLY that chunk -
+          the loop continues to the next one;
+        * anything else (a plain 500, a 4xx, an anchor error, a bare
+          transport fault) is NOT retried and stops the WHOLE push
+          immediately, propagating exactly like before this fix - no verdict
+          for any chunk from this point on.
+
+        Concurrency (S5b, performance round; feat/sink-concurrency-ui) lets
+        up to N chunk POSTs run WITH REAL OVERLAP instead of one at a time -
+        resolved per call via ``_resolve_concurrency`` (the connection's own
+        stored override, else ``settings.autocount_sink_concurrency``); a
+        chunk that stops the whole push still cancels every NOT-YET-STARTED
+        future, same as before.
         """
         record_list = list(records)
         chunks = [
@@ -684,53 +893,63 @@ class SorentoSink:
         if not chunks:
             return []
 
-        from app.config import settings as _settings
+        concurrency = self._resolve_concurrency(len(chunks))
 
-        concurrency = int(getattr(_settings, "autocount_sink_concurrency", 1) or 1)
-        concurrency = max(1, min(concurrency, len(chunks)))
-
+        results: List[WriteResult] = []
         if concurrency == 1:
             #     !!  BYTE-IDENTICAL TO BEFORE S5b - ONE POST AT A TIME, THE
             #         SAME ORDER.  !!
-            bodies = []
             for chunk in chunks:
-                bodies.append(self._post(self._to_records(chunk), dry_run=False))
-                # Liveness (fix/job-lease-orphan-sweep): one callback per
-                # chunk VERDICT, so a long push beats as it progresses.
+                body, error = self._post_with_retry(
+                    f"ingest/{self._path_segment}",
+                    {"records": self._to_records(chunk)},
+                    dry_run=False,
+                )
+                if error is not None:
+                    if on_chunk is not None:
+                        on_chunk(chunk, None, error)
+                    continue
+                chunk_results = self._chunk_results(chunk, body)
+                results.extend(chunk_results)
                 if on_chunk is not None:
-                    on_chunk()
+                    on_chunk(chunk, chunk_results, None)
         else:
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 futures = [
-                    executor.submit(self._post, self._to_records(chunk), dry_run=False)
+                    executor.submit(
+                        self._post_with_retry,
+                        f"ingest/{self._path_segment}",
+                        {"records": self._to_records(chunk)},
+                        dry_run=False,
+                    )
                     for chunk in chunks
                 ]
-                bodies = []
                 try:
-                    for future in futures:
-                        bodies.append(future.result())
+                    for chunk, future in zip(chunks, futures):
+                        body, error = future.result()
+                        if error is not None:
+                            if on_chunk is not None:
+                                on_chunk(chunk, None, error)
+                            continue
+                        chunk_results = self._chunk_results(chunk, body)
+                        results.extend(chunk_results)
                         if on_chunk is not None:
-                            on_chunk()
+                            on_chunk(chunk, chunk_results, None)
                 except BaseException:
-                    # A chunk failed - never submit/await anything further
-                    # than the context manager already will: cancel every
-                    # NOT-YET-STARTED future (a genuine no-op call to
-                    # Sorento avoided), let anything already running finish
-                    # in the background (the ``with`` block's own exit
-                    # waits for it), and propagate exactly like the
-                    # sequential path always did - no verdict from this
-                    # method reaches the caller either way.
+                    # A chunk failed OUTRIGHT (not the transient-exhausted
+                    # case, which returns a tuple rather than raising) -
+                    # never submit/await anything further than the context
+                    # manager already will: cancel every NOT-YET-STARTED
+                    # future (a genuine no-op call to Sorento avoided), let
+                    # anything already running finish in the background (the
+                    # ``with`` block's own exit waits for it), and propagate
+                    # exactly like the sequential path always did - no
+                    # verdict for any later chunk reaches the caller either
+                    # way.
                     for pending in futures:
                         pending.cancel()
                     raise
 
-        results: List[WriteResult] = []
-        for chunk, body in zip(chunks, bodies):
-            by_ref = {str(r.get("source_ref") or ""): r for r in body.get("records", [])}
-            for record in chunk:
-                ref = getattr(record, "source_ref", "")
-                verdict = by_ref.get(ref)
-                results.append(self._result_for(ref, verdict))
         return results
 
     def _result_for(self, ref: str, verdict: Optional[Dict[str, Any]]) -> WriteResult:
@@ -865,9 +1084,14 @@ def _decimalize(value: Any) -> Any:
 
 
 def _retry_after_seconds(response: httpx.Response) -> int:
+    """1..60s, whatever the header says - S5 (review round 2): an
+    uncooperative or misconfigured ``Retry-After`` (Sorento sent 3600 once)
+    must never park a chunk POST for an hour; 60s is already the
+    conservative default below, so capping the header at the same ceiling
+    keeps the ONE bound this method promises."""
     raw = response.headers.get("Retry-After", "")
     try:
-        return max(1, int(float(raw)))
+        return min(max(1, int(float(raw))), 60)
     except (TypeError, ValueError):
         # No/!int header - a conservative default beats hammering.
         return 60
@@ -996,4 +1220,10 @@ def sorento_sink_from_connection(
         # Sorento), where the provider's Test then checks the choice against
         # the contract Sorento advertises.
         contract_version=contract_major(config.get("sorentoContractVersion"), default=1) or 1,
+        # feat/sink-concurrency-ui - the connection's own override, else the
+        # platform default resolved lazily inside the sink (see
+        # `SorentoSink._resolve_concurrency`). Passed through verbatim
+        # (raw string or `None`); validity is checked at resolve time, not
+        # here.
+        concurrency_config=config.get(SINK_CONCURRENCY_KEY),
     )

@@ -389,6 +389,13 @@ class AcStagedRecord(AutocountBase):
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     pushed_at = Column(UTCDateTime(), nullable=True)
+    # Stamped every time ``list_pending_for_entity`` hands this row to a push
+    # (fix/push-marks-per-chunk, prod finding 2026-09-07: a permanently
+    # ``retryable`` head of the oldest-first queue must not starve fresh rows
+    # forever). ``NULLS FIRST`` in that query's ordering, so a never-offered
+    # row always sorts ahead of one already given a chance and answered
+    # retryable again.
+    last_offered_at = Column(UTCDateTime(), nullable=True)
 
 
 class AcSyncRun(AutocountBase):
@@ -434,6 +441,16 @@ class AcSyncRun(AutocountBase):
 
     outcome = Column(String, nullable=True)  # one of RUN_OUTCOMES
     error = Column(Text, nullable=True)
+    # ── push request accounting (fix/push-marks-per-chunk, prod 2026-09-07) ──
+    # A chunk-level push fault used to be invisible on the run row (the
+    # summary carried it, ``ac_sync_run.error`` did not) - an operator saw
+    # ``pushed_count 0`` with ``error NULL`` and no way to tell why. ``requests``
+    # / ``requests_failed`` count chunk POSTs this run made; ``first_failure``
+    # is the first one's ``{status, message}`` (status + a bounded snippet,
+    # ``describe_consumer_failure`` style) - never the request/URL.
+    requests = Column(Integer, nullable=True)
+    requests_failed = Column(Integer, nullable=True)
+    first_failure = Column(_JSON, nullable=True)
     # True when the record cap was hit - a truncated sync must NEVER read as a
     # complete one (AC-13-46).
     truncated = Column(Boolean, nullable=False, default=False)
