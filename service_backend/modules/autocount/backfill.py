@@ -23,16 +23,20 @@ incident and the rule live there and in
 """
 from __future__ import annotations
 
+import logging
+import uuid
 from typing import Any, Dict, Optional
 
 import sqlalchemy as sa
 
-from .canonical.documents import is_document_entity
+from .canonical.documents import ENTITY_SHIPPING_ORDER, is_document_entity
 from .db import AUTOCOUNT_SCHEMA
 from .envelopes import ENVELOPE_STATUS_DICT
-from .mapping import DOCUMENT_LINE_FIXED_FIELDS, SCOPE_LINE
+from .mapping import DOCUMENT_LINE_FIXED_FIELDS, SCOPE_HEADER, SCOPE_LINE
 from .models import AcEntityConfig, AcFieldMapping
 from .sources import INITIAL_LOAD_WINDOWED
+
+logger = logging.getLogger("foundryx.autocount")
 
 # Every entity config that predates this slice is a GRN one: a dict envelope with
 # a lookback-windowed first read. Those were the only semantics available, so
@@ -548,4 +552,246 @@ def disable_line_rows_missing_from_preview(
             row.is_enabled = False
             touched += 1
     db.flush()
+    return touched
+
+
+# feat/spo-container-number - Sorento holds 68,519 SPO allocations with no
+# container: the SPO task's header query never selected AutoCount `PO.Ref`
+# at all, on any tenant, so there was never a value to map. Two independent
+# repairs per EXISTING `shipping_order` task, across ALL tenants:
+#
+# (a) add an enabled `Ref -> container_number` header mapping row when one
+#     is not already there (an operator's own row - enabled, disabled, or
+#     carrying a formula - is left exactly as they set it);
+# (b) when the stored header query is BYTE-IDENTICAL to the OLD preset text
+#     (with the task's OWN company's `database_name` substituted - the same
+#     substitution `list_mapping_presets`'s "Use preset" picker performs),
+#     replace it with the NEW preset text (selecting `h.Ref AS Ref`) and add
+#     `"Ref"` to `result_columns` - the compared-column set a paged run's
+#     change detection hashes derives from `result_columns` (minus the key
+#     columns, `sql_source/source.py`), so without this the new column would
+#     never enter the hash and a document whose only change is a newly
+#     populated `Ref` would never re-stage.
+#
+# A query that is CUSTOMISED (including one that happens to match a SIBLING
+# company's substitution - a picker copy-paste, not the preset) is left
+# alone entirely and a WARNING names the config id, so an operator who wrote
+# their own query keeps it and knows they need to add `Ref` by hand to pick
+# up container numbers. (a) and (b) are independent: a customised query
+# still gets the mapping row.
+_OLD_PO_HEADER_QUERY_TEMPLATE = (
+    "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, s.AutoKey AS CreditorAutoKey, "
+    "h.PurchaseAgent AS SalesAgent, h.DocDate AS DocDate, "
+    "CAST(l.FirstDeliveryDate AS date) AS ExpectedDate, h.Cancelled AS Cancelled, "
+    "h.CreditorCode AS CreditorCode, h.CreditorName AS CreditorName, "
+    "h.CurrencyCode AS CurrencyCode, h.LastModified AS LastModified, "
+    "l.LineCount AS LineCount, l.QtySum AS QtySum, l.TransferedSum AS TransferedSum, "
+    "l.SubTotalSum AS SubTotalSum, l.MaxDtlKey AS MaxDtlKey "
+    "FROM {database}.dbo.PO AS h "
+    "LEFT JOIN {database}.dbo.Creditor AS s ON s.AccNo = h.CreditorCode "
+    "OUTER APPLY ("
+    "SELECT MIN(d.DeliveryDate) AS FirstDeliveryDate, COUNT(*) AS LineCount, "
+    "SUM(d.Qty) AS QtySum, SUM(d.TransferedQty) AS TransferedSum, "
+    "SUM(d.SubTotal) AS SubTotalSum, MAX(d.DtlKey) AS MaxDtlKey "
+    "FROM {database}.dbo.PODTL AS d "
+    "WHERE d.DocKey = h.DocKey AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
+    ") AS l"
+)
+
+_SHIPPING_ORDER_BACKFILL_ENTITY_CONFIG_COLUMNS = {
+    "id", "tenant_id", "company_id", "entity_type", "source_config", "result_columns",
+}
+_SHIPPING_ORDER_BACKFILL_COMPANY_COLUMNS = {"id", "tenant_id", "database_name"}
+_SHIPPING_ORDER_BACKFILL_FIELD_MAPPING_COLUMNS = {
+    "id", "tenant_id", "company_id", "entity_type", "scope", "source_path",
+    "canonical_field", "transform", "formula", "is_required", "is_enabled",
+    "is_source_owned", "sort_order",
+}
+
+
+def backfill_shipping_order_container_number(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
+) -> int:
+    """(a) + (b) above, for every ``shipping_order`` ``ac_entity_config`` row
+    across every tenant/company. Returns the number of individual changes
+    made (mapping rows created + header queries replaced) - 0 on a schema
+    that predates the tables/columns this touches (module Alembic 0016 and
+    ``update_tenant`` both call it, so it must survive every stamp in the
+    chain, not only the one it ships with).
+
+    Called UNCONDITIONALLY on every ``update_tenant`` run, like every other
+    backfill in this file - each check/write is idempotent (a mapping row
+    already there is skipped, a query already at the NEW text is skipped
+    silently), so re-running it costs a handful of no-op SELECTs, never a
+    duplicate row or a repeat warning.
+
+        !!  FROZEN ``sa.table`` ONLY - NEVER THE LIVE ORM MODEL.  !!
+    A prior incident (module Alembic 0006, documented in
+    ``documentation/engineering/storage-and-background-jobs.md``) queried
+    the live ``AcCompany`` model from INSIDE a migration and raised
+    ``UndefinedColumn`` on a fresh ``0001`` -> head replay once a LATER
+    migration added a column the model had already grown to expect. This
+    function is called from module Alembic 0016, so it selects/inserts/
+    updates through frozen ``sa.table`` snapshots naming only the columns
+    it actually touches (the ``_SHIPPING_ORDER_BACKFILL_*_COLUMNS`` sets
+    below, already used for the existence check) - safe at ANY later stamp,
+    no matter how many columns a future migration adds to these tables.
+
+    Never a bare id lookup: a config's company is resolved WITH the config's
+    OWN ``tenant_id`` (the polymorphic-target_id rule) before its
+    ``database_name`` is trusted for the byte-identity check.
+    """
+    needed = {
+        "ac_entity_config": _SHIPPING_ORDER_BACKFILL_ENTITY_CONFIG_COLUMNS,
+        "ac_company": _SHIPPING_ORDER_BACKFILL_COMPANY_COLUMNS,
+        "ac_field_mapping": _SHIPPING_ORDER_BACKFILL_FIELD_MAPPING_COLUMNS,
+    }
+    for table, columns in needed.items():
+        have = existing_columns(bind, table, schema=schema)
+        if have is None or not columns <= have:
+            return 0
+
+    from .presets import _PO_HEADER_QUERY
+
+    entity_config = sa.table(
+        "ac_entity_config",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("source_config", sa.JSON(none_as_null=True)),
+        sa.column("result_columns", sa.JSON(none_as_null=True)),
+        schema=schema,
+    )
+    company_table = sa.table(
+        "ac_company",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("database_name", sa.String),
+        schema=schema,
+    )
+    field_mapping = sa.table(
+        "ac_field_mapping",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("scope", sa.String),
+        sa.column("source_path", sa.String),
+        sa.column("canonical_field", sa.String),
+        sa.column("transform", sa.String),
+        sa.column("formula", sa.Text),
+        sa.column("is_required", sa.Boolean),
+        sa.column("is_enabled", sa.Boolean),
+        sa.column("is_source_owned", sa.Boolean),
+        sa.column("sort_order", sa.Integer),
+        schema=schema,
+    )
+
+    # Same unwrap ``existing_columns`` uses, and for the same reason - a
+    # ``Session.get_bind()`` checks out a SECOND pooled connection, blind to
+    # the session's own uncommitted work.
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
+
+    configs = connectable.execute(
+        sa.select(
+            entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+            entity_config.c.source_config, entity_config.c.result_columns,
+        ).where(entity_config.c.entity_type == ENTITY_SHIPPING_ORDER)
+    ).fetchall()
+
+    touched = 0
+    for config_id, tenant_id, company_id, source_config, result_columns in configs:
+        company_row = connectable.execute(
+            sa.select(company_table.c.database_name).where(
+                company_table.c.id == company_id,
+                company_table.c.tenant_id == tenant_id,
+            )
+        ).first()
+        if company_row is None or not company_row[0]:
+            continue
+        database_name = company_row[0]
+
+        # (a) the mapping row, independent of the query check below.
+        # Checked by `canonical_field` (the unique-constraint column), not
+        # `source_path` - an operator's own row targeting `container_number`
+        # from a different column still counts as "already there" and must
+        # never collide with a second insert.
+        has_ref_row = (
+            connectable.execute(
+                sa.select(field_mapping.c.id).where(
+                    field_mapping.c.tenant_id == tenant_id,
+                    field_mapping.c.company_id == company_id,
+                    field_mapping.c.entity_type == ENTITY_SHIPPING_ORDER,
+                    field_mapping.c.scope == SCOPE_HEADER,
+                    field_mapping.c.canonical_field == "container_number",
+                )
+            ).first()
+            is not None
+        )
+        if not has_ref_row:
+            sort_order = connectable.execute(
+                sa.select(sa.func.count())
+                .select_from(field_mapping)
+                .where(
+                    field_mapping.c.tenant_id == tenant_id,
+                    field_mapping.c.company_id == company_id,
+                    field_mapping.c.entity_type == ENTITY_SHIPPING_ORDER,
+                    field_mapping.c.scope == SCOPE_HEADER,
+                )
+            ).scalar() or 0
+            connectable.execute(
+                sa.insert(field_mapping).values(
+                    id=str(uuid.uuid4()),
+                    tenant_id=tenant_id,
+                    company_id=company_id,
+                    entity_type=ENTITY_SHIPPING_ORDER,
+                    scope=SCOPE_HEADER,
+                    source_path="Ref",
+                    canonical_field="container_number",
+                    transform="string",
+                    formula=None,
+                    is_required=False,
+                    is_enabled=True,
+                    # Not a NOT-NULL column DEFAULT at the database level
+                    # (`AcFieldMapping.is_source_owned`'s `default=True` is
+                    # ORM-side only) - a frozen `sa.table` insert must state
+                    # it explicitly or a strict backend (SQLite) rejects the
+                    # row outright.
+                    is_source_owned=True,
+                    sort_order=sort_order,
+                )
+            )
+            touched += 1
+
+        # (b) the header query, independent of (a) above.
+        source_config = source_config or {}
+        stored_query = source_config.get("query")
+        old_text = _OLD_PO_HEADER_QUERY_TEMPLATE.replace("{database}", database_name)
+        new_text = _PO_HEADER_QUERY.replace("{database}", database_name)
+        if stored_query == old_text:
+            fresh = dict(source_config)
+            fresh["query"] = new_text
+            columns_list = list(result_columns or [])
+            if "Ref" not in columns_list:
+                columns_list.append("Ref")
+            connectable.execute(
+                sa.update(entity_config)
+                .where(entity_config.c.id == config_id)
+                .values(source_config=fresh, result_columns=columns_list)
+            )
+            touched += 1
+        elif stored_query != new_text:
+            # Not the OLD preset (customised, or a sibling company's own
+            # substitution pasted in) AND not already the NEW preset
+            # (already migrated - silent, not a repeat warning every
+            # `update_tenant` call): left untouched, named so an operator
+            # can add `Ref` by hand.
+            logger.warning(
+                "Shipping-order task %s has a header query the "
+                "container_number backfill does not recognise as the "
+                "AutoCount SPO preset - left untouched. Add `Ref` to it "
+                "to pick up container numbers.",
+                config_id,
+            )
     return touched

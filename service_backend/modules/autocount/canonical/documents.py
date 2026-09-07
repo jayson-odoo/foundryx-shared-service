@@ -340,6 +340,11 @@ class CanonicalShippingOrder(CanonicalDocument):
     supplier_code: Optional[str] = Field(None, max_length=50)
     supplier_name: Optional[str] = None
     agent_code: Optional[str] = Field(None, max_length=100)
+    # feat/spo-container-number - AutoCount `PO.Ref`, sourced by the SPO
+    # preset only (`presets.SPO_PRESET`). v2.1+ only, same fallback gate as
+    # every other field below; a PO never carries this field at all
+    # (`CanonicalPurchaseOrder` declares no such attribute).
+    container_number: Optional[str] = Field(None, max_length=100)
     lines: List[CanonicalShippingOrderLine] = Field(default_factory=list)
 
     # No `internal_note` - same PO-shape rule above; Sorento's shipping-order
@@ -349,5 +354,18 @@ class CanonicalShippingOrder(CanonicalDocument):
         "expected_date", "currency", "status",
     )
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
-        "supplier_code", "supplier_name", "agent_code",
+        "supplier_code", "supplier_name", "agent_code", "container_number",
     )
+
+    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
+        """Same v2-gated shape as the base class, EXCEPT ``container_number``
+        is dropped from the payload entirely when it is ``None`` (addendum
+        section 11: absent means "leave Sorento's stored value alone", a
+        ``null`` means "clear it" - a document whose ``Ref`` is unmapped or
+        blank must never send the clear signal). Every other fallback field
+        keeps the base class's "send the key even when null" behaviour
+        unchanged."""
+        payload = super().sink_payload(contract_version=contract_version)
+        if payload.get("container_number") is None:
+            payload.pop("container_number", None)
+        return payload
