@@ -562,6 +562,12 @@ the three manifest-version-pin files (`test_omnichannel_{broadcasts,contacts_mod
 assignment}.py`), and `test_storage_resolution.py` (the coordinator's own request, covering the core
 storage-key-resolution seam this slice's `MigrationUpload` storage location joins) - **271 passed, 0
 failed**. No frontend file was touched by `main`'s delta (`git diff --stat -- service_frontend/`
-returned empty), so no vitest file needed re-running; the full frontend/backend suites from the PR
-#62 merge (2640/4007 passed, 0 failed) remain the last full-suite evidence and were not re-run here
-since neither omnichannel nor core storage/jobs were in this delta's blast radius.
+returned empty).
+
+**Owner instruction (relayed, effective for this resync): no full vitest locally - only the
+migration-surface vitest files + guardrail tests, one run, full suite is CI's job.** Ran every
+`app/(protected)/omnichannel/settings/migration/components/*.test.{ts,tsx}` file (10 files) +
+`no-playwright.guard.test.ts` (the FE guardrail) in ONE `npx vitest run` invocation - **46 tests,
+all passed**. The full frontend/backend suites from the PR #62 merge (2640/4007 passed, 0 failed)
+remain the last full-suite evidence; CI (`Validate frontend (next build)`) is the authority for
+this resync's own full-suite gate.
