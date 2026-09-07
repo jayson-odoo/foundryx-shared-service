@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Sequence, Tuple
 
-from sqlalchemy import Text, cast, nulls_first, or_, select, update
+from sqlalchemy import Text, cast, nulls_first, nulls_last, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.background_job import (
@@ -579,15 +579,23 @@ class StagedRecordRepository:
         The per-JOB ``list_pending_for_job`` is untouched: the review gate is a
         per-batch decision and must not widen.
 
-        **Ordered ``last_offered_at`` NULLS FIRST, then oldest-first**
-        (fix/push-marks-per-chunk, prod finding 2026-09-07): a permanently
-        ``retryable`` head (a master its consumer keeps saying isn't synced
-        yet) sorts oldest-first FOREVER under a plain ``created_at`` order,
-        starving every row staged after it once the offer cap is below the
-        stuck count. Stamping ``last_offered_at`` on every offer
-        (``mark_offered``, called by the caller right after this read) and
-        sorting never-offered rows first means a fresh row is offered within
-        one extra tick even behind an arbitrarily large stuck head.
+        **Ordered ``last_offered_at`` NULLS FIRST, then newest-source-first,
+        then oldest-created-first** (fix/push-marks-per-chunk, prod finding
+        2026-09-07; feat/line-fingerprint-sweep adds the middle term): a
+        permanently ``retryable`` head (a master its consumer keeps saying
+        isn't synced yet) sorts oldest-first FOREVER under a plain
+        ``created_at`` order, starving every row staged after it once the
+        offer cap is below the stuck count. Stamping ``last_offered_at`` on
+        every offer (``mark_offered``, called by the caller right after this
+        read) and sorting never-offered rows first means a fresh row is
+        offered within one extra tick even behind an arbitrarily large stuck
+        head. Among never-offered rows (and, after a full sweep, among
+        re-offered ones too), ``source_last_modified`` DESC breaks the tie
+        so the sweep's own re-staged documents - which can land in any
+        ``created_at`` order relative to the normal paged pass - are still
+        offered newest-source-change-first; NULLS LAST keeps a row with no
+        source stamp (never fetched with a watermark column) from jumping
+        ahead of one that has a real, recent change.
         """
         parked = (
             self.db.query(BackgroundJob.id)
@@ -614,6 +622,7 @@ class StagedRecordRepository:
             )
             .order_by(
                 nulls_first(AcStagedRecord.last_offered_at.asc()),
+                nulls_last(AcStagedRecord.source_last_modified.desc()),
                 AcStagedRecord.created_at.asc(),
                 AcStagedRecord.id.asc(),
             )
