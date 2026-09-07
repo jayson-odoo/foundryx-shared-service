@@ -137,6 +137,9 @@ export interface NodeFieldDef {
     | 'form'
     | 'assignments'
     | 'omnichannelChannel'
+    // Plan 32 / A7a S6 (AC-CHN-58) - the static WHATSAPP|FACEBOOK|INSTAGRAM
+    // vocabulary, rendered as a SearchSelect with an explicit "All types".
+    | 'omnichannelChannelType'
     | 'aiAgent'
     | 'team'
     | 'outputSchema'

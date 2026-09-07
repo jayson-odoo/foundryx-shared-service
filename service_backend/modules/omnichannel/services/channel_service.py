@@ -60,6 +60,8 @@ class ChannelService:
                 verifiedName=c.verified_name,
                 lastVerifiedAt=c.last_verified_at,
                 profileSyncedAt=c.profile_synced_at,
+                externalAccountId=c.external_account_id,
+                externalAccountName=c.external_account_name,
                 isTrashed=c.is_trashed,
                 createdAt=c.created_at,
                 updatedAt=c.updated_at,
@@ -130,7 +132,10 @@ class ChannelService:
         if c is None:
             raise ChannelNotFound()
         creds = decrypt_credentials(c.credentials_json) if c.credentials_json else {}
-        status = get_adapter(c.channel_type).test_connection(creds, c.phone_number_id or "")
+        # AC-CHN-37: a Messenger/Instagram channel pings its page/account id,
+        # never a phone_number_id (which it never has).
+        routing_id = c.phone_number_id if c.channel_type == "WHATSAPP" else c.external_account_id
+        status = get_adapter(c.channel_type).test_connection(creds, routing_id or "")
         now = datetime.now(timezone.utc)
         if status.ok:
             c.last_verified_at = now

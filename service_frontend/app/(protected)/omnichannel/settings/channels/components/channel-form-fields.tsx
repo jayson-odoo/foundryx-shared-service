@@ -149,21 +149,37 @@ export function ConfigurationTab({ form, editing, channel, onChannelSynced }: Co
         <FormRow label="Connected">{channel ? formatDate(channel.createdAt) : '-'}</FormRow>
 
         {/* ── Meta-owned identity (synced, read-only even in Edit) ── */}
-        <FormRow label="Display number">
-          <SyncedValue value={channel?.displayPhoneNumber} />
-        </FormRow>
-        <FormRow label="Verified name">
-          <SyncedValue value={channel?.verifiedName} />
-        </FormRow>
-        <FormRow label="Business account">
-          <SyncedValue value={channel?.businessAccountName} />
-        </FormRow>
-        <FormRow label="Phone number ID">
-          <SyncedValue value={channel?.phoneNumberId} mono />
-        </FormRow>
-        <FormRow label="WABA ID">
-          <SyncedValue value={channel?.wabaId} mono />
-        </FormRow>
+        {channel?.channelType === 'WHATSAPP' ? (
+          <>
+            <FormRow label="Display number">
+              <SyncedValue value={channel?.displayPhoneNumber} />
+            </FormRow>
+            <FormRow label="Verified name">
+              <SyncedValue value={channel?.verifiedName} />
+            </FormRow>
+            <FormRow label="Business account">
+              <SyncedValue value={channel?.businessAccountName} />
+            </FormRow>
+            <FormRow label="Phone number ID">
+              <SyncedValue value={channel?.phoneNumberId} mono />
+            </FormRow>
+            <FormRow label="WABA ID">
+              <SyncedValue value={channel?.wabaId} mono />
+            </FormRow>
+          </>
+        ) : (
+          // Messenger/Instagram identity block (plan 32 / A7a, AC-CHN-05) -
+          // the Page (or its linked Instagram account) is the routing key,
+          // the equivalent of `phoneNumberId` for these channel types.
+          <>
+            <FormRow label={channel?.channelType === 'INSTAGRAM' ? 'Instagram account' : 'Facebook Page'}>
+              <SyncedValue value={channel?.externalAccountName} />
+            </FormRow>
+            <FormRow label={channel?.channelType === 'INSTAGRAM' ? 'Account ID' : 'Page ID'}>
+              <SyncedValue value={channel?.externalAccountId} mono />
+            </FormRow>
+          </>
+        )}
 
         <FormRow label="Identity">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">

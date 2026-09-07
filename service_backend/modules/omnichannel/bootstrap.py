@@ -536,7 +536,7 @@ def create_schema_and_tables(engine: Engine) -> None:
             # Plan 33 S2 (respond.io migration, D-A6-3) - `migrated_from`
             # descriptive markers. `migration_refs` itself is a brand-new
             # table already created by `create_all` above (per-module Alembic
-            # migration 0017 is the real fix for a Postgres-tracked deploy;
+            # migration 0018 is the real fix for a Postgres-tracked deploy;
             # this covers the create_all path for a fresh install).
             conn.execute(
                 text(
@@ -560,6 +560,54 @@ def create_schema_and_tables(engine: Engine) -> None:
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_omni_conv_messages_migrated_from "
                     f'ON "{OMNI_SCHEMA}".conversation_messages (migrated_from)'
+                )
+            )
+            # Plan 32 S1 (A7a, D-A7-3/D-A7-5) - Messenger/Instagram routing
+            # columns + the per-identity window columns (module Alembic
+            # 0019_omni_meta_channels is the real fix for a Postgres-tracked
+            # deploy; this covers the create_all path for a fresh install).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS external_account_id VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS external_account_name VARCHAR"
+                )
+            )
+            # Only the partial UNIQUE index - mirrors migration 0019's fix
+            # (security review round 1 nit): a separate plain index here
+            # would carry a different name than the one `index=True`
+            # generates via `create_all` for the same column.
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_channels_external_account_id "
+                    f'ON "{OMNI_SCHEMA}".channels (external_account_id) '
+                    "WHERE external_account_id IS NOT NULL AND is_trashed = false"
+                )
+            )
+            for col in ("window_expires_at", "human_agent_expires_at", "last_inbound_at"):
+                conn.execute(
+                    text(
+                        f'ALTER TABLE "{OMNI_SCHEMA}".contact_channel_identities '
+                        f"ADD COLUMN IF NOT EXISTS {col} TIMESTAMPTZ"
+                    )
+                )
+            # AC-CHN-14 backfill mirror (the migration's own SQL sweep is
+            # Postgres-only and shares this exact statement) - idempotent,
+            # scoped to identities with no window stamped yet.
+            conn.execute(
+                text(
+                    f'UPDATE "{OMNI_SCHEMA}".contact_channel_identities i '
+                    "SET window_expires_at = c.csw_expires_at, "
+                    "    last_inbound_at = c.last_incoming_message_at "
+                    f'FROM "{OMNI_SCHEMA}".contacts c, "{OMNI_SCHEMA}".channels ch '
+                    "WHERE i.contact_id = c.id AND i.channel_id = ch.id "
+                    "  AND ch.channel_type = 'WHATSAPP' "
+                    "  AND i.window_expires_at IS NULL"
                 )
             )
 
@@ -702,15 +750,27 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     nothing to repair). `uninstall_tenant`'s generic per-table `tenant_id`-
     scoped delete loop already covers `migration_refs` for free (AC-MIG-54) -
     it needs no dedicated cleanup line here.
+
+    0.8.0 -> 0.9.0 (plan 32 S1, A7a, AC-CHN-14): `channels.external_account_id`/
+    `_name` are new, empty-until-connected columns - no backfill. The three
+    `contact_channel_identities` window columns DO need one: every existing
+    WhatsApp identity is stamped from its contact's `csw_expires_at`/
+    `last_incoming_message_at` so no pre-existing open thread loses its window
+    once `messaging_policy` starts reading the identity column. The module
+    Alembic migration (`0019_omni_meta_channels`) already runs this same sweep
+    in Postgres SQL for a tracked deploy; `messaging_policy.
+    backfill_identity_windows` is the dialect-agnostic Python twin (mirrors
+    `ContactRepository.backfill_phone_digits`) - idempotent, safe to re-run.
     """
     from .repositories.contact_repository import ContactRepository
-    from .services import close_reason_service, event_service, lifecycle_service
+    from .services import close_reason_service, event_service, lifecycle_service, messaging_policy
 
     statuses.ensure_statuses(db, tenant_id)
     lifecycle_service.backfill_tenant(db, tenant_id)
     event_service.backfill_tenant(db, tenant_id)
     close_reason_service.CloseReasonService(db).backfill_tenant(tenant_id)
     ContactRepository(db).backfill_phone_digits(tenant_id)
+    messaging_policy.backfill_identity_windows(db, tenant_id)
     db.flush()
 
 
@@ -760,8 +820,10 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     dev seed scripts only - never in prod bootstrap.
 
     Pre-merge follow-up (plan 27): the fixed literal ids this function seeds
-    (``chn-demo``, ``cnt-001``..``005``) are shared verbatim across every call
-    site - the dev seed scripts only ever call this with ``DEFAULT_TENANT_ID``.
+    (``chn-demo``, ``cnt-001``..``005``, and - plan 32 S1/S3/S4 - ``chn-demo-fb``,
+    ``cnt-fb-001``/``002``, ``chn-demo-ig``, ``cnt-ig-001``/``002``) are shared
+    verbatim across every call site - the dev seed scripts only ever call this
+    with ``DEFAULT_TENANT_ID``.
     A second tenant would collide on those SAME ids (unique-constraint or
     silent cross-tenant reads via an unscoped lookup), so this is gated to the
     default tenant rather than left to half-write cross-tenant rows the first
@@ -785,8 +847,16 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     # data, so a bare id check finds ANOTHER tenant's already-seeded contact
     # and wrongly skips seeding (and the backfill call below) for THIS
     # tenant when more than one tenant runs the dev seed.
-    if db.query(Contact).filter(Contact.id == "cnt-001", Contact.tenant_id == tenant_id).first():
-        return
+    #
+    # Plan 32 S1 (A7a): this check used to `return` immediately, which meant
+    # a tenant that already ran this seed BEFORE this slice landed would
+    # NEVER get `chn-demo-fb` (the channel-creation blocks below are their
+    # own idempotent guards and must run regardless of the thread-seeding
+    # state) - so only the cnt-001..005 thread/template/quick-reply seeding
+    # below is gated on it, not the channels.
+    already_seeded = bool(
+        db.query(Contact).filter(Contact.id == "cnt-001", Contact.tenant_id == tenant_id).first()
+    )
 
     now = datetime.now(timezone.utc)
     ws = (
@@ -814,6 +884,217 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
         )
         db.add(channel)
         db.flush()
+
+    # Plan 32 S1 (A7a) - a dev-credentialed Messenger sandbox channel so a
+    # local/E2E run can POST Messenger-shaped webhook payloads at
+    # `chn-demo-fb` without a real Meta app (mirrors `chn-demo` above; no
+    # seeded threads yet - the webhook pipeline itself creates the contact).
+    fb_channel = (
+        db.query(Channel).filter(Channel.id == "chn-demo-fb", Channel.tenant_id == tenant_id).first()
+    )
+    if fb_channel is None:
+        fb_channel = Channel(
+            id="chn-demo-fb",
+            tenant_id=tenant_id,
+            workspace_id=ws.id,
+            channel_type="FACEBOOK",
+            name="Demo Messenger (sandbox)",
+            credentials_json=encrypt_credentials({"dev": True}),
+            external_account_id="pg-demo-1",
+            external_account_name="Foundryx Concierge (sandbox)",
+            is_active=True,
+            status_id=statuses.status_id_for(db, tenant_id, "CHANNEL", "ACTIVE"),
+        )
+        db.add(fb_channel)
+        db.flush()
+
+    # Plan 32 S3 (A7a, AC-CHN-38) - two seeded Messenger threads so the E2E
+    # journey (inbox -> open a Messenger thread -> send) exists with no Meta
+    # app. Own idempotency gate (keyed on a fixed contact id, mirroring
+    # `already_seeded` above) so a tenant that ran this seed between S1 (bare
+    # `chn-demo-fb`, no threads) and S3 still gets them on the next call,
+    # without re-running the cnt-001..005 dataset.
+    fb_seeded = bool(
+        db.query(Contact).filter(Contact.id == "cnt-fb-001", Contact.tenant_id == tenant_id).first()
+    )
+    if not fb_seeded:
+        from .services import lifecycle_service as _lifecycle_service
+
+        fb_open_id = statuses.status_id_for(db, tenant_id, "THREAD", "OPEN")
+        fb_initial_lifecycle_id = _lifecycle_service.initial_status_id(db, tenant_id, ws.id)
+        fb_now = datetime.now(timezone.utc)
+        fb_threads = [
+            # (contact id, name, PSID, messages: (sender, body, minutes_ago))
+            ("cnt-fb-001", "Jordan Lee", "psid-demo-1", [
+                ("CONTACT", "Hey, do you still have the VIP package available?", 40),
+                ("AGENT", "Hi Jordan! Yes, a few slots are left - want the details?", 35),
+                ("CONTACT", "Yes please!", 30),
+            ]),
+            ("cnt-fb-002", "Alex Tan", "psid-demo-2", [
+                ("CONTACT", "Is the concierge desk open on weekends?", 15),
+            ]),
+        ]
+        for cid, name, psid, msgs in fb_threads:
+            first, _, last = name.partition(" ")
+            contact = Contact(
+                id=cid,
+                tenant_id=tenant_id,
+                workspace_id=ws.id,
+                first_name=first,
+                last_name=last or None,
+                status_id=fb_open_id,
+                priority="MEDIUM",
+                lifecycle_status_id=fb_initial_lifecycle_id,
+            )
+            db.add(contact)
+            db.flush()
+            db.add(
+                ContactChannelIdentity(
+                    tenant_id=tenant_id,
+                    contact_id=cid,
+                    channel_id=fb_channel.id,
+                    external_user_id=psid,
+                    profile_name=name,
+                    # Open window (24h standard + 168h human-agent, D-A7-5) so
+                    # the seeded thread is sendable end to end (AC-CHN-38).
+                    window_expires_at=fb_now + timedelta(hours=24),
+                    human_agent_expires_at=fb_now + timedelta(hours=168),
+                    last_inbound_at=fb_now,
+                ),
+            )
+            last_at = None
+            for i, (sender, body, minutes_ago) in enumerate(msgs):
+                created = fb_now - timedelta(minutes=minutes_ago)
+                db.add(
+                    ConversationMessage(
+                        tenant_id=tenant_id,
+                        contact_id=cid,
+                        channel_id=fb_channel.id,
+                        sender_type=sender,
+                        message_type="TEXT",
+                        body=body,
+                        external_message_id=f"m.demo-{cid}-{i}",
+                        delivery_status="READ" if sender == "AGENT" else None,
+                        created_at=created,
+                    )
+                )
+                last_at = created
+            contact.last_message_at = last_at
+            contact.agent_last_read_at = fb_now
+        db.flush()
+
+    # Plan 32 S4 (A7a) - a dev-credentialed Instagram sandbox channel whose
+    # `external_account_id` is `pg-702`'s linked Instagram professional
+    # account (`_DEV_PAGES` in `adapters/messenger.py`, `ig-702`/
+    # `foundryx.concierge`) - the SAME canned identity the connect wizard
+    # would offer for that page, so a manual dev run and the wizard agree.
+    ig_channel = (
+        db.query(Channel).filter(Channel.id == "chn-demo-ig", Channel.tenant_id == tenant_id).first()
+    )
+    if ig_channel is None:
+        ig_channel = Channel(
+            id="chn-demo-ig",
+            tenant_id=tenant_id,
+            workspace_id=ws.id,
+            channel_type="INSTAGRAM",
+            name="Demo Instagram (sandbox)",
+            credentials_json=encrypt_credentials({"dev": True}),
+            external_account_id="ig-702",
+            external_account_name="foundryx.concierge",
+            is_active=True,
+            status_id=statuses.status_id_for(db, tenant_id, "CHANNEL", "ACTIVE"),
+        )
+        db.add(ig_channel)
+        db.flush()
+
+    # AC-CHN-38 - two seeded Instagram threads: one inside its 24h standard
+    # window, one whose standard AND human-agent windows have BOTH closed -
+    # so the E2E journey shows both composer states (open vs locked) with no
+    # Meta app. Own idempotency gate (keyed on a fixed contact id, mirroring
+    # `fb_seeded` above) so a tenant that ran this seed before S4 landed
+    # still gets the threads on its next call.
+    ig_seeded = bool(
+        db.query(Contact).filter(Contact.id == "cnt-ig-001", Contact.tenant_id == tenant_id).first()
+    )
+    if not ig_seeded:
+        from .services import lifecycle_service as _ig_lifecycle_service
+
+        ig_open_id = statuses.status_id_for(db, tenant_id, "THREAD", "OPEN")
+        ig_initial_lifecycle_id = _ig_lifecycle_service.initial_status_id(db, tenant_id, ws.id)
+        ig_now = datetime.now(timezone.utc)
+        ig_threads = [
+            # (contact id, name, IGSID, window still open?, messages: (sender, body, minutes_ago))
+            ("cnt-ig-001", "Maya Rivera", "igsid-demo-1", True, [
+                ("CONTACT", "Love the new collection! Is the tote still in stock?", 20),
+                ("AGENT", "Hi Maya! Yes, we have it in black and tan.", 15),
+            ]),
+            ("cnt-ig-002", "Priya Nair", "igsid-demo-2", False, [
+                ("CONTACT", "Do you ship internationally?", 60 * 24 * 9),
+            ]),
+        ]
+        for cid, name, igsid, window_open, msgs in ig_threads:
+            first, _, last = name.partition(" ")
+            contact = Contact(
+                id=cid,
+                tenant_id=tenant_id,
+                workspace_id=ws.id,
+                first_name=first,
+                last_name=last or None,
+                status_id=ig_open_id,
+                priority="MEDIUM",
+                lifecycle_status_id=ig_initial_lifecycle_id,
+            )
+            db.add(contact)
+            db.flush()
+            if window_open:
+                window_expires_at = ig_now + timedelta(hours=24)
+                human_agent_expires_at = ig_now + timedelta(hours=168)
+                last_inbound_at = ig_now
+            else:
+                # Both windows closed (AC-CHN-38 "expired") - the composer
+                # against this thread is locked for EVERY actor
+                # (`messaging_policy.authorize` raises `messaging_window_closed`).
+                window_expires_at = ig_now - timedelta(hours=200)
+                human_agent_expires_at = ig_now - timedelta(hours=1)
+                last_inbound_at = ig_now - timedelta(hours=200)
+            db.add(
+                ContactChannelIdentity(
+                    tenant_id=tenant_id,
+                    contact_id=cid,
+                    channel_id=ig_channel.id,
+                    external_user_id=igsid,
+                    profile_name=name,
+                    window_expires_at=window_expires_at,
+                    human_agent_expires_at=human_agent_expires_at,
+                    last_inbound_at=last_inbound_at,
+                ),
+            )
+            last_at = None
+            for i, (sender, body, minutes_ago) in enumerate(msgs):
+                created = ig_now - timedelta(minutes=minutes_ago)
+                db.add(
+                    ConversationMessage(
+                        tenant_id=tenant_id,
+                        contact_id=cid,
+                        channel_id=ig_channel.id,
+                        sender_type=sender,
+                        message_type="TEXT",
+                        body=body,
+                        external_message_id=f"m.demo-{cid}-{i}",
+                        delivery_status="READ" if sender == "AGENT" else None,
+                        created_at=created,
+                    )
+                )
+                last_at = created
+            contact.last_message_at = last_at
+            contact.agent_last_read_at = ig_now
+        db.flush()
+
+    if already_seeded:
+        # Channels above are (re-)ensured; the cnt-001..005 thread/template/
+        # quick-reply dataset below is a one-time seed, already present.
+        db.commit()
+        return
 
     open_id = statuses.status_id_for(db, tenant_id, "THREAD", "OPEN")
     snoozed_id = statuses.status_id_for(db, tenant_id, "THREAD", "SNOOZED")

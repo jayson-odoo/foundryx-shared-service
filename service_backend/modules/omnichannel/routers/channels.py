@@ -22,10 +22,15 @@ from ..schemas import (
     IdsRequest,
     TestConnectionResult,
 )
+from ..services.channel_guards import ChannelTypeUnsupported
 from ..services.channel_profile_service import ChannelProfileService
 from ..services.channel_service import ChannelNotFound, ChannelService
 
 router = APIRouter()
+
+
+def _unsupported(exc: ChannelTypeUnsupported) -> HTTPException:
+    return HTTPException(status.HTTP_409_CONFLICT, {"reason": exc.reason})
 
 
 @router.get("", response_model=ChannelListResponse)
@@ -179,6 +184,8 @@ def sync_channel_config(
         return ChannelProfileService(db).sync_config(channel_id, current_user.tenant_id)
     except ChannelNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
 
 
 @router.get("/{channel_id}/profile", response_model=ChannelProfileOut)
@@ -191,6 +198,8 @@ def get_channel_profile(
         return ChannelProfileService(db).get_profile(channel_id, current_user.tenant_id)
     except ChannelNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
 
 
 @router.patch("/{channel_id}/profile", response_model=ChannelProfileOut)
@@ -205,6 +214,8 @@ def update_channel_profile(
         return ChannelProfileService(db).save_profile(channel_id, body, current_user.tenant_id)
     except ChannelNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
 
 
 @router.post("/{channel_id}/profile/sync", response_model=ChannelProfileOut)
@@ -217,6 +228,8 @@ def sync_channel_profile(
         return ChannelProfileService(db).sync_profile(channel_id, current_user.tenant_id)
     except ChannelNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found.")
+    except ChannelTypeUnsupported as exc:
+        raise _unsupported(exc)
 
 
 # NOTE: ``GET /{channel_id}/templates`` (composer send-picker) moved to the

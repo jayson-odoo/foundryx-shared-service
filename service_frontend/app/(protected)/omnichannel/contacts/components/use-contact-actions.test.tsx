@@ -31,6 +31,8 @@ function row(overrides: Partial<ContactListItem> = {}): ContactListItem {
     channelId: null,
     channelType: 'WHATSAPP',
     cswExpiresAt: null,
+    windowExpiresAt: null,
+    humanAgentExpiresAt: null,
     lastIncomingMessageAt: null,
     lastMessageAt: null,
     lastMessagePreview: null,

@@ -196,6 +196,14 @@ class ConversationService:
         channel_types = self._channel_types(
             [previews[c.id].channel_id for c in contacts if c.id in previews], tenant_id
         )
+        # Plan 32 / A7a (D-A7-5) - the per-identity messaging window, batched
+        # for the whole page by (contact_id, channel_id) pair.
+        identity_pairs = [
+            (c.id, previews[c.id].channel_id)
+            for c in contacts
+            if c.id in previews and previews[c.id].channel_id
+        ]
+        identity_windows = self.repo.identity_windows_for(identity_pairs, tenant_id)
         tag_refs = ContactTagService(self.db).refs_for_contacts(ids, tenant_id)
         lifecycle_map = self._lifecycle_map(contacts, tenant_id)
         field_registry = self._field_registry(contacts, tenant_id)
@@ -223,6 +231,9 @@ class ConversationService:
             # before `custom_fields_json` was `none_as_null=True` - review
             # round 2, finding B) - never `.items()` a non-dict.
             cf_blob = c.custom_fields_json if isinstance(c.custom_fields_json, dict) else {}
+            identity = (
+                identity_windows.get((c.id, channel_id)) if channel_id else None
+            )
             items.append(
                 ThreadItem(
                     id=c.id,
@@ -247,6 +258,8 @@ class ConversationService:
                     channelId=channel_id,
                     channelType=channel_types.get(channel_id, "WHATSAPP"),
                     cswExpiresAt=c.csw_expires_at,
+                    windowExpiresAt=identity.window_expires_at if identity else None,
+                    humanAgentExpiresAt=identity.human_agent_expires_at if identity else None,
                     lastIncomingMessageAt=c.last_incoming_message_at,
                     lastMessageAt=c.last_message_at,
                     lastMessagePreview=preview.body if preview else None,
@@ -282,6 +295,9 @@ class ConversationService:
             [m.id for m in messages],
             tenant_id,
         )
+        # Plan 32 / A7a (AC-CHN-56) - same batched, tenant-scoped resolution
+        # `_thread_items` uses for `ThreadItem.channelType`.
+        channel_types = self._channel_types([m.channel_id for m in messages], tenant_id)
         items: List[MessageItem] = []
         for m in messages:
             meta = m.metadata_json or {}
@@ -295,12 +311,21 @@ class ConversationService:
             else:
                 sender_name = names.get(m.sender_id) if m.sender_id else None
                 sender_avatar = None
+            # `{"mediaUnavailable": True}` is an internal placeholder written
+            # by `inbound_service` when a Messenger/Instagram CDN fetch
+            # expired before it could be stored (D-A7-12) - it is NOT a
+            # structured payload, so it is promoted to the typed top-level
+            # flag and never forwarded as `payload` (plan 32 / A7a S6).
+            raw_payload = m.payload_json if isinstance(m.payload_json, dict) else None
+            media_unavailable = bool(raw_payload and raw_payload.get("mediaUnavailable"))
+            payload = None if media_unavailable else raw_payload
             items.append(
                 MessageItem(
                     reactions=reactions_by_msg.get(m.id, []),
                     id=m.id,
                     contactId=m.contact_id,
                     channelId=m.channel_id,
+                    channelType=channel_types.get(m.channel_id),
                     senderType=m.sender_type,
                     senderId=m.sender_id,
                     senderName=sender_name,
@@ -313,7 +338,8 @@ class ConversationService:
                     mediaFilename=m.media_filename,
                     mediaSize=m.media_size,
                     voice=(m.message_type == "VOICE"),
-                    payload=m.payload_json,
+                    payload=payload,
+                    mediaUnavailable=media_unavailable,
                     externalMessageId=m.external_message_id,
                     deliveryStatus=m.delivery_status,
                     errorCode=m.error_code,

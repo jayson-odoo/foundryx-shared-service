@@ -98,6 +98,11 @@ class ChannelItem(ApiModel):
     verifiedName: Optional[str] = None
     lastVerifiedAt: Optional[datetime] = None
     profileSyncedAt: Optional[datetime] = None
+    # Plan 32 (A7a, AC-CHN-36) - the Messenger/Instagram routing key (PAGE_ID
+    # / IG professional account id) + its display name. Null on WHATSAPP
+    # (which uses wabaId/phoneNumberId instead).
+    externalAccountId: Optional[str] = None
+    externalAccountName: Optional[str] = None
     isTrashed: bool
     createdAt: datetime
     updatedAt: datetime
@@ -184,6 +189,46 @@ class ManualConnectRequest(ApiModel):
     phoneNumberId: Optional[str] = None
     wabaId: Optional[str] = None
     phoneNumber: Optional[str] = None
+
+
+# ── Meta connect flow: Messenger + Instagram (plan 32 S3, A7a) ───────────────
+class MetaPagesRequest(ApiModel):
+    """`POST /omnichannel/onboarding/meta/pages` - exchanges the OAuth code
+    server-side (D-A7-15); the token never reaches the browser."""
+
+    channelType: Literal["FACEBOOK", "INSTAGRAM"]
+    code: str
+    redirectUri: Optional[str] = None
+
+
+class MetaPageOption(ApiModel):
+    """A connectable Facebook Page (Messenger) or its linked Instagram
+    professional account (Instagram). `connected` marks a page/account
+    already bound to a LIVE channel anywhere in the service - the wizard does
+    not offer it (AC-CHN-02)."""
+
+    id: str
+    name: str
+    connected: bool
+    igAccountId: Optional[str] = None
+    igUsername: Optional[str] = None
+
+
+class MetaPagesResult(ApiModel):
+    sessionId: str
+    expiresAt: datetime
+    pages: List[MetaPageOption]
+
+
+class MetaConnectRequest(ApiModel):
+    """`POST /omnichannel/onboarding/meta/connect` - finalizes the channel for
+    the page (or Instagram account) picked from `MetaPagesResult.pages`."""
+
+    sessionId: str
+    workspaceId: str
+    channelType: Literal["FACEBOOK", "INSTAGRAM"]
+    pageId: str
+    igAccountId: Optional[str] = None
 
 
 # ── Shared ──────────────────────────────────────────────────────────────────
@@ -334,6 +379,11 @@ class MessageItem(ApiModel):
     id: str
     contactId: str
     channelId: Optional[str] = None
+    # The channel's type (plan 32 / A7a, AC-CHN-56) - resolved the SAME
+    # tenant-scoped way as `ThreadItem.channelType`. Lets a consumer (or the
+    # frontend composer/badge) branch per message without a second lookup;
+    # `null` only for a legacy/internal row with no channel (e.g. a comment).
+    channelType: Optional[str] = None
     senderType: str  # AGENT | CONTACT | SYSTEM
     senderId: Optional[str] = None
     senderName: Optional[str] = None
@@ -351,6 +401,13 @@ class MessageItem(ApiModel):
     # Structured payload for interactive/interactive-reply/location/contacts
     # (plan 12 Slice 2) - the friendly definition the bubble renders.
     payload: Optional[dict] = None
+    # A Messenger/Instagram inbound attachment whose short-lived CDN url
+    # could not be fetched in time (D-A7-12/plan 32 S5) - the message still
+    # lands (never dropped), but there is no blob to render. Promoted to a
+    # typed top-level flag (never left inside the free-form `payload`, which
+    # is reserved for structured interactive/location/contacts content) so
+    # the composer can render a muted placeholder without sniffing `payload`.
+    mediaUnavailable: bool = False
     # Emoji reaction chips (plan 12 Slice 3) - [{emoji, reactorType, reactor}].
     reactions: List[dict] = []
     externalMessageId: Optional[str] = None
@@ -393,6 +450,13 @@ class ThreadItem(ApiModel):
     channelId: Optional[str] = None
     channelType: str
     cswExpiresAt: Optional[datetime] = None
+    # Per-identity messaging window (plan 32 / A7a, D-A7-5) - generalizes
+    # `cswExpiresAt` to every channel type. For a WHATSAPP thread this is the
+    # SAME instant as `cswExpiresAt`; for FACEBOOK/INSTAGRAM `cswExpiresAt`
+    # stays null (it is a documented WhatsApp-only field, F4) while these two
+    # carry the real window.
+    windowExpiresAt: Optional[datetime] = None
+    humanAgentExpiresAt: Optional[datetime] = None
     lastIncomingMessageAt: Optional[datetime] = None
     lastMessageAt: Optional[datetime] = None
     lastMessagePreview: Optional[str] = None
@@ -1108,6 +1172,12 @@ class PublicReactionBody(ApiModel):
 
 class PublicSendRequest(ApiModel):
     to: str
+    # Optional explicit channel selector (plan 32 / A7a, D-A7-18, AC-CHN-53) -
+    # an ACTIVE channel of THIS workspace. Omitted → prefer an active
+    # WHATSAPP channel, else the oldest active channel of any type (byte-
+    # identical to every pre-slice consumer). An unknown/foreign/inactive id
+    # is a typed `422 invalid_channel`, never a silent fallback.
+    channelId: Optional[str] = None
     # text | template | image | video | audio | voice | document | sticker |
     # interactive | location | contacts | reaction
     type: str = "text"
@@ -1237,9 +1307,14 @@ class RioContactItem(BaseModel):
     # free-form sends are refused (409 csw_window_closed); only an approved
     # template re-engages.
     cswExpiresAt: Optional[str] = None
+    # Per-identity messaging window (plan 32 / A7a, D-A7-5) - the Foundryx
+    # extension every non-WhatsApp consumer needs; `cswExpiresAt` above keeps
+    # its documented WhatsApp-only meaning verbatim.
+    windowExpiresAt: Optional[str] = None
+    humanAgentExpiresAt: Optional[str] = None
     priority: Optional[str] = None            # LOW | MEDIUM | HIGH | URGENT
     channelId: Optional[str] = None
-    channelType: Optional[str] = None         # WHATSAPP
+    channelType: Optional[str] = None         # WHATSAPP | FACEBOOK | INSTAGRAM
     unreadCount: int = 0
     lastMessageAt: Optional[str] = None
     lastIncomingMessageAt: Optional[str] = None
@@ -1295,6 +1370,12 @@ class RioMessagePayload(BaseModel):
     # flattening into `text`. Same object the internal API exposes.
     payload: Optional[dict] = None
     messageTag: Optional[str] = None
+    # Mirrors `MessageItem.mediaUnavailable` (plan 32 / A7a) - a Messenger/
+    # Instagram inbound attachment whose short-lived CDN url expired before
+    # it could be fetched. `None` (never `False`) for a message that was
+    # never media in the first place, keeping this shape lossless vs the
+    # internal item without inventing a value the source never had.
+    mediaUnavailable: Optional[bool] = None
 
 
 class RioMessageReaction(BaseModel):
@@ -1317,6 +1398,7 @@ class RioMessageItem(BaseModel):
     channelMessageId: Optional[str] = None   # the provider's id (wamid)
     contactId: str
     channelId: Optional[str] = None
+    channelType: Optional[str] = None  # WHATSAPP | FACEBOOK | INSTAGRAM
     traffic: str                      # incoming | outgoing
     # Epoch seconds the message was created - populated for INCOMING as well as
     # outgoing. `status[].timestamp` only exists once a delivery receipt lands

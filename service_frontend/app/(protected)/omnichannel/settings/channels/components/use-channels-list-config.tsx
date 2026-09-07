@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
-import { MessageCircle } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import {
   DataGridTableRowSelect,
@@ -13,9 +13,10 @@ import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import { channelService } from '@/services/channel-service';
 import { useDatetime } from '@/hooks/use-datetime';
+import { channelCapabilities } from '@/lib/channel-capabilities';
 import type { FilterFieldDef } from '@/types/resource';
 import type { Channel } from '@/types/omnichannel';
-import { CHANNEL_STATUS_REGISTRY, CHANNEL_TYPE_LABELS } from './channel-status';
+import { CHANNEL_STATUS_REGISTRY, CHANNEL_TYPE_LABELS, CHANNEL_TYPE_REGISTRY } from './channel-status';
 import { useChannelActions } from './use-channel-actions';
 import { channelFormPath } from './paths';
 
@@ -26,9 +27,13 @@ const FILTER_FIELDS: FilterFieldDef[] = [
   { field: 'displayPhoneNumber', label: 'Phone Number', type: 'text' },
   {
     field: 'channelType',
-    label: 'Channel',
+    label: 'Type',
     type: 'enum',
-    options: [{ label: 'WhatsApp', value: 'WHATSAPP' }],
+    options: [
+      { label: 'WhatsApp', value: 'WHATSAPP' },
+      { label: 'Messenger', value: 'FACEBOOK' },
+      { label: 'Instagram', value: 'INSTAGRAM' },
+    ],
   },
   {
     field: 'status',
@@ -82,10 +87,12 @@ export function useChannelsListConfig({
         header: ({ column }) => <DataGridColumnHeader title="Channel" column={column} />,
         cell: ({ row }) => {
           const c = row.original;
+          const capabilities = channelCapabilities(c.channelType);
+          const Icon = capabilities.icon;
           return (
             <div className="flex items-center gap-2.5">
-              <span className="flex size-8 items-center justify-center rounded-md bg-[#25D366]/10 text-[#25D366]">
-                <MessageCircle className="size-4" />
+              <span className={cn('flex size-8 items-center justify-center rounded-md', capabilities.accentClassName)}>
+                <Icon className="size-4" />
               </span>
               <div className="flex flex-col">
                 <span className="font-medium text-foreground leading-tight">{c.name}</span>
@@ -97,6 +104,17 @@ export function useChannelsListConfig({
           );
         },
         size: 280,
+        enableSorting: true,
+      },
+      {
+        id: 'channelType',
+        accessorFn: (row) => row.channelType,
+        meta: { headerTitle: 'Type' },
+        header: ({ column }) => <DataGridColumnHeader title="Type" column={column} />,
+        cell: ({ row }) => (
+          <StatusBadge status={row.original.channelType} registry={CHANNEL_TYPE_REGISTRY} />
+        ),
+        size: 130,
         enableSorting: true,
       },
       {

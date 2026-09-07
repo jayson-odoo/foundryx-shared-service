@@ -21,6 +21,7 @@ from ..adapters.whatsapp_cloud import get_adapter
 from ..models import Channel, WhatsappTemplate
 from ..schemas import TemplateDetail, TemplateManageItem
 from ..security import decrypt_credentials
+from .channel_guards import assert_whatsapp
 from ..template_schemas import (
     TEMPLATE_STATUSES,
     WaTemplateDoc,
@@ -58,6 +59,10 @@ class TemplateManagementService:
         )
         if c is None:
             raise TemplateNotFound()
+        # AC-CHN-37 (D-A7-17): templates are a WABA concept - a Messenger/
+        # Instagram channel refuses at THIS single resolution point, shared
+        # by every method below (list/get/save_draft/edit/submit/delete/sync).
+        assert_whatsapp(c)
         return c
 
     def _row(self, channel_id: str, template_id: str, tenant_id: str) -> WhatsappTemplate:

@@ -133,6 +133,9 @@ def test_omnichannel_test_trigger_runs_draft_with_canonical_context(
         assert omni == {
             "channelId": channel_id,
             "channelName": "Test WhatsApp",
+            # Plan 32 / A7a S6 (AC-CHN-58) - every inbound/synthetic omnichannel
+            # extra dict now stamps the channel's type unconditionally.
+            "channelType": "WHATSAPP",
             "workspaceId": omni["workspaceId"],
             "contactId": contact_id,
             "contactName": "Sandbox Contact",

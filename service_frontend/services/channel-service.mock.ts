@@ -5,6 +5,7 @@
 import type {
   Channel,
   ChannelProfile,
+  ChannelType,
   EmbeddedSignupResult,
   UpdateChannelProfileInput,
 } from '@/types/omnichannel';
@@ -26,7 +27,7 @@ function seed(): ChannelRow[] {
     { name: 'Foundryx Official WhatsApp', workspaceId: 'wsp-001', workspaceName: 'General', status: 'ACTIVE', isActive: true, displayPhoneNumber: '+65 8123 4567' },
     { name: 'Sales WhatsApp', workspaceId: 'wsp-002', workspaceName: 'Sales & Support', status: 'ACTIVE', isActive: true, displayPhoneNumber: '+65 8222 9090' },
   ];
-  return base.map((c, i) => {
+  const whatsapp = base.map((c, i) => {
     const createdAt = new Date(EPOCH - (i + 1) * DAY * 4).toISOString();
     return {
       id: `chn-${String(i + 1).padStart(3, '0')}`,
@@ -44,11 +45,66 @@ function seed(): ChannelRow[] {
       verifiedName: c.name,
       lastVerifiedAt: createdAt,
       profileSyncedAt: null,
+      externalAccountId: null,
+      externalAccountName: null,
       createdAt,
       updatedAt: createdAt,
       isTrashed: false,
     } satisfies ChannelRow;
   });
+
+  // Plan 32 / A7a - one sandbox Messenger + one sandbox Instagram channel so
+  // the channels list, the form's tab filtering and the composer capability
+  // states are all exercisable with no backend (AC-CHN-10).
+  const metaCreatedAt = new Date(EPOCH - DAY).toISOString();
+  const meta: ChannelRow[] = [
+    {
+      id: 'chn-fb-001',
+      tenantId: DEFAULT_TENANT,
+      workspaceId: 'wsp-001',
+      workspaceName: 'General',
+      channelType: 'FACEBOOK',
+      name: 'Foundryx Events Co. (Messenger)',
+      status: 'ACTIVE',
+      isActive: true,
+      wabaId: null,
+      phoneNumberId: null,
+      displayPhoneNumber: null,
+      businessAccountName: null,
+      verifiedName: null,
+      lastVerifiedAt: metaCreatedAt,
+      profileSyncedAt: null,
+      externalAccountId: 'pg-701',
+      externalAccountName: 'Foundryx Events Co.',
+      createdAt: metaCreatedAt,
+      updatedAt: metaCreatedAt,
+      isTrashed: false,
+    },
+    {
+      id: 'chn-ig-001',
+      tenantId: DEFAULT_TENANT,
+      workspaceId: 'wsp-001',
+      workspaceName: 'General',
+      channelType: 'INSTAGRAM',
+      name: 'foundryx.events (Instagram)',
+      status: 'ACTIVE',
+      isActive: true,
+      wabaId: null,
+      phoneNumberId: null,
+      displayPhoneNumber: null,
+      businessAccountName: null,
+      verifiedName: null,
+      lastVerifiedAt: metaCreatedAt,
+      profileSyncedAt: null,
+      externalAccountId: 'ig-701',
+      externalAccountName: 'foundryx.events',
+      createdAt: metaCreatedAt,
+      updatedAt: metaCreatedAt,
+      isTrashed: false,
+    },
+  ];
+
+  return [...whatsapp, ...meta];
 }
 
 /** Workspace names by id - mirrors the workspace mock seed (for display only). */
@@ -139,6 +195,55 @@ export function __mockProvisionChannel(workspaceId: string, result: EmbeddedSign
     verifiedName: result.businessName ?? null,
     lastVerifiedAt: now,
     profileSyncedAt: null,
+    externalAccountId: null,
+    externalAccountName: null,
+    createdAt: now,
+    updatedAt: now,
+    isTrashed: false,
+  };
+  rows = [row, ...rows];
+  return toPublic(row);
+}
+
+/** True if `externalAccountId` already belongs to a LIVE (non-trashed) channel
+ *  anywhere in the mock store - mirrors the service-wide uniqueness rule
+ *  `phone_number_id` already has (D-A7-3/34). Used by the mock connect flow
+ *  to filter out an already-connected page/account (AC-CHN-02) and to reject
+ *  a duplicate connect with the same reason the real backend will use (S3). */
+export function __mockExternalAccountInUse(externalAccountId: string): boolean {
+  return rows.some((r) => !r.isTrashed && r.externalAccountId === externalAccountId);
+}
+
+/** Internal hook for the Messenger/Instagram onboarding mock (plan 32 / A7a):
+ *  provision a `FACEBOOK`/`INSTAGRAM` channel from the picked page (or its
+ *  linked Instagram account) so it shows up in the channels list
+ *  immediately, mirroring `__mockProvisionChannel`'s role for WhatsApp. The
+ *  app no longer binds to `onboarding-service.mock.ts` at runtime (S6) -
+ *  kept as the standing frontend-first mock for future tuning + tests. */
+export function __mockProvisionMetaChannel(
+  workspaceId: string,
+  channelType: Extract<ChannelType, 'FACEBOOK' | 'INSTAGRAM'>,
+  identity: { externalAccountId: string; externalAccountName: string },
+): Channel {
+  const now = new Date(EPOCH).toISOString();
+  const row: ChannelRow = {
+    id: `chn-${channelType === 'INSTAGRAM' ? 'ig' : 'fb'}-${String(rows.length + 1).padStart(3, '0')}`,
+    tenantId: DEFAULT_TENANT,
+    workspaceId,
+    workspaceName: WORKSPACE_NAMES[workspaceId] ?? 'Workspace',
+    channelType,
+    name: `${identity.externalAccountName} (${channelType === 'INSTAGRAM' ? 'Instagram' : 'Messenger'})`,
+    status: 'ACTIVE',
+    isActive: true,
+    wabaId: null,
+    phoneNumberId: null,
+    displayPhoneNumber: null,
+    businessAccountName: null,
+    verifiedName: null,
+    lastVerifiedAt: now,
+    profileSyncedAt: null,
+    externalAccountId: identity.externalAccountId,
+    externalAccountName: identity.externalAccountName,
     createdAt: now,
     updatedAt: now,
     isTrashed: false,

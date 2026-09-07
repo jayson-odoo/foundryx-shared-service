@@ -45,6 +45,7 @@ import { useTeams } from '@/hooks/use-teams';
 import { useThreadEvents } from '@/hooks/use-thread-events';
 import { conversationService } from '@/services/conversation-service';
 import { workspaceService } from '@/services/workspace-service';
+import { channelCapabilities } from '@/lib/channel-capabilities';
 import type {
   ConversationMessage,
   QuickReply,
@@ -252,10 +253,20 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     const t = setInterval(() => setNowTick(Date.now()), 30_000);
     return () => clearInterval(t);
   }, []);
-  const windowOpen = useMemo(
-    () => !!thread?.cswExpiresAt && Date.parse(thread.cswExpiresAt) > nowTick,
-    [thread?.cswExpiresAt, nowTick],
-  );
+  // Window state is derived through the capability record per channel type
+  // (plan 32 / A7a) instead of a hardcoded WhatsApp-only boolean. WhatsApp
+  // reads the SAME `cswExpiresAt` instant it always has (D-A7-5/R7 - byte-
+  // identical); every other type reads the generalized `windowExpiresAt`.
+  const capabilities = channelCapabilities(thread?.channelType ?? 'WHATSAPP');
+  const windowOpen = useMemo(() => {
+    const iso = thread?.channelType === 'WHATSAPP' ? thread?.cswExpiresAt : thread?.windowExpiresAt;
+    return !!iso && Date.parse(iso) > nowTick;
+  }, [thread?.channelType, thread?.cswExpiresAt, thread?.windowExpiresAt, nowTick]);
+  const humanAgentWindowOpen = useMemo(() => {
+    if (capabilities.reengageMode !== 'human_agent') return false;
+    const iso = thread?.humanAgentExpiresAt;
+    return !!iso && Date.parse(iso) > nowTick;
+  }, [capabilities.reengageMode, thread?.humanAgentExpiresAt, nowTick]);
 
   useEffect(() => {
     if (!thread?.channelId) return setTemplates([]);
@@ -365,7 +376,8 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
               {thread.name}
             </span>
             <Badge variant="secondary" appearance="light" size="sm">
-              WhatsApp
+              <capabilities.icon className="size-3" />
+              {capabilities.label}
             </Badge>
           </div>
           <div className="text-xs text-muted-foreground">{thread.phone}</div>
@@ -586,7 +598,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
                         setReplyTo(msg);
                       }}
                       onReact={
-                        m.senderType !== 'SYSTEM' && windowOpen
+                        m.senderType !== 'SYSTEM' && windowOpen && capabilities.outboundReaction
                           ? (msg, emoji) => void react(msg.id, emoji)
                           : undefined
                       }
@@ -603,6 +615,8 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
       {/* Composer - note mode on the Activities tab */}
       <Composer
         windowOpen={windowOpen}
+        humanAgentWindowOpen={humanAgentWindowOpen}
+        capabilities={capabilities}
         templates={templates}
         quickReplies={quickReplies}
         isSending={isSending}

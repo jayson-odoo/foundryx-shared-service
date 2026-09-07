@@ -101,6 +101,10 @@ def _ctx_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         ctx["trigger.contact.phone"] = oc.get("contactPhone")
         ctx["trigger.channel.id"] = oc.get("channelId")
         ctx["trigger.channel.name"] = oc.get("channelName")
+        # Plan 32 / A7a S6 (AC-CHN-58) - the channel's TYPE, always present
+        # regardless of the trigger's optional `channelType` filter (unset =
+        # any type) so a downstream IF/action can still branch on it.
+        ctx["trigger.channelType"] = oc.get("channelType")
         ctx["trigger.conversationId"] = oc.get("conversationId")
         ctx["trigger.message.isFirstMessage"] = oc.get("isFirstMessage")
     # Registry-driven extra context (plan sprint-4/31, `TriggerDef.context_extra`)

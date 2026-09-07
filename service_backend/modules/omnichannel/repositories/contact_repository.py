@@ -5,7 +5,7 @@ messages, resolve identities, and maintain the thread metadata columns the
 inbox sorts/filters on.
 """
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import sqlalchemy as sa
 from sqlalchemy import and_, case, func, or_
@@ -331,15 +331,43 @@ class ContactRepository:
         )
 
     def get_message_by_external_id(
-        self, external_message_id: str, tenant_id: str
+        self, external_message_id: str, tenant_id: str, *, channel_id: Optional[str] = None
     ) -> Optional[ConversationMessage]:
+        """``channel_id`` (optional) additionally scopes by channel - the
+        `mids[]` receipt path (nit, security review round 1) uses it so it
+        scopes identically to the sibling watermark path
+        (`outbound_before_watermark`); every other call site (single-
+        `external_message_id` receipts, `reply_to` resolution, reaction
+        target resolution) stays tenant-scoped only, its pre-existing
+        behaviour."""
+        query = self.db.query(ConversationMessage).filter(
+            ConversationMessage.tenant_id == tenant_id,
+            ConversationMessage.external_message_id == external_message_id,
+        )
+        if channel_id is not None:
+            query = query.filter(ConversationMessage.channel_id == channel_id)
+        return query.first()
+
+    def outbound_before_watermark(
+        self, contact_id: str, channel_id: str, tenant_id: str, *, at: datetime
+    ) -> List[ConversationMessage]:
+        """Messenger/Instagram `message_deliveries`/`message_reads` receipts
+        are WATERMARK-based (plan 32 / A7a, D-A7-22), not per-message: every
+        outbound row on this thread SENT AT OR BEFORE the watermark instant
+        is a receipt candidate. Sender-side only (never a `CONTACT` row) -
+        the caller re-checks each row's own status rank so a receipt still
+        only ever moves forward (a late `SENT` watermark after `READ` is a
+        no-op per row, never a regression)."""
         return (
             self.db.query(ConversationMessage)
             .filter(
                 ConversationMessage.tenant_id == tenant_id,
-                ConversationMessage.external_message_id == external_message_id,
+                ConversationMessage.contact_id == contact_id,
+                ConversationMessage.channel_id == channel_id,
+                ConversationMessage.sender_type != "CONTACT",
+                ConversationMessage.created_at <= at,
             )
-            .first()
+            .all()
         )
 
     # ── Reactions (plan 12 Slice 3) ─────────────────────────────────────────
@@ -484,6 +512,53 @@ class ContactRepository:
             )
             .first()
         )
+
+    def find_identity_for_channel(
+        self, contact_id: str, channel_id: str, tenant_id: str
+    ) -> Optional[ContactChannelIdentity]:
+        """The identity THIS contact has on a SPECIFIC channel (plan 32 / A7a)
+        - the addressing + window-policy seam: `messaging_policy.authorize`
+        reads a Messenger/Instagram identity's OWN re-engagement window off
+        this row, and `channel_addressing.recipient_ref` addresses by its
+        `external_user_id` (PSID/IGSID). Tenant-scoped."""
+        return (
+            self.db.query(ContactChannelIdentity)
+            .filter(
+                ContactChannelIdentity.tenant_id == tenant_id,
+                ContactChannelIdentity.contact_id == contact_id,
+                ContactChannelIdentity.channel_id == channel_id,
+            )
+            .first()
+        )
+
+    def identity_windows_for(
+        self, pairs: List[Tuple[str, str]], tenant_id: str
+    ) -> Dict[Tuple[str, str], ContactChannelIdentity]:
+        """Batched twin of `find_identity_for_channel` (plan 32 / A7a, S6) -
+        ONE query for a whole page's `(contact_id, channel_id)` pairs, keyed
+        back the same way, so `ThreadItem.windowExpiresAt`/
+        `humanAgentExpiresAt` never cost an N+1 on the inbox list. Tenant-
+        scoped like every other stored-id resolution in this repository."""
+        pairs = [p for p in {p for p in pairs if p[0] and p[1]}]
+        if not pairs:
+            return {}
+        contact_ids = {c for c, _ in pairs}
+        channel_ids = {ch for _, ch in pairs}
+        rows = (
+            self.db.query(ContactChannelIdentity)
+            .filter(
+                ContactChannelIdentity.tenant_id == tenant_id,
+                ContactChannelIdentity.contact_id.in_(contact_ids),
+                ContactChannelIdentity.channel_id.in_(channel_ids),
+            )
+            .all()
+        )
+        wanted = set(pairs)
+        return {
+            (r.contact_id, r.channel_id): r
+            for r in rows
+            if (r.contact_id, r.channel_id) in wanted
+        }
 
     def find_by_phone_digits(
         self, phone_digits: str, workspace_id: str, tenant_id: str

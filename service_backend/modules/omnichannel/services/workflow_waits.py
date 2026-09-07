@@ -270,6 +270,9 @@ def _send(db: Session, snap: Dict[str, Any], body: str) -> None:
             payload=SendMessageRequest(messageType="TEXT", body=body),
             channel_id_override=spec.get("channelId") or None,
             sandbox_only=bool(spec.get("sandboxOnly")) or snap["is_test"],
+            # A workflow wait re-ask is automation, never a human reply
+            # (D-A7-6).
+            actor_is_human=False,
         )
     except Exception:  # noqa: BLE001 - a failed re-ask never breaks the pipeline
         logger.exception("workflow wait %s: re-ask send failed", snap["id"])

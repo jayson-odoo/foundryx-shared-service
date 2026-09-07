@@ -124,9 +124,14 @@ export function DetailsSection({
 // Channel
 // ---------------------------------------------------------------------------
 
-/** Active, non-trashed channels of the workspace (AC-BRD-06) - lifted to a
- *  hook so both `ChannelSection` and the Review summary can resolve a name
- *  from the selected channel id without fetching twice. */
+/** Active, non-trashed WHATSAPP channels of the workspace (AC-BRD-06) -
+ *  lifted to a hook so both `ChannelSection` and the Review summary can
+ *  resolve a name from the selected channel id without fetching twice.
+ *  Broadcasts are approved-template sends only (D-A7-21) - a Messenger/
+ *  Instagram channel would reject every recipient with `kind_not_supported`
+ *  (templates are a WhatsApp-only capability), so foolproof-UI keeps it out
+ *  of the picker entirely rather than offering a channel that can never
+ *  succeed (plan 32 / A7a security review round 1, should-fix). */
 export function useActiveChannels(workspaceId: string | null): Channel[] {
   const [channels, setChannels] = useState<Channel[]>([]);
   useEffect(() => {
@@ -136,7 +141,9 @@ export function useActiveChannels(workspaceId: string | null): Channel[] {
     }
     channelService
       .listByWorkspace(workspaceId)
-      .then((rows) => setChannels(rows.filter((c) => c.isActive && !c.isTrashed)))
+      .then((rows) =>
+        setChannels(rows.filter((c) => c.isActive && !c.isTrashed && c.channelType === 'WHATSAPP')),
+      )
       .catch(() => setChannels([]));
   }, [workspaceId]);
   return channels;

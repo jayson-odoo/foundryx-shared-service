@@ -9,8 +9,8 @@
  */
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { WhatsAppTemplate } from '@/types/omnichannel';
-import { useApprovedTemplates } from './broadcast-form-sections';
+import type { Channel, WhatsAppTemplate } from '@/types/omnichannel';
+import { useActiveChannels, useApprovedTemplates } from './broadcast-form-sections';
 
 const listTemplatesMock = vi.fn();
 vi.mock('@/services/conversation-service', () => ({
@@ -18,6 +18,39 @@ vi.mock('@/services/conversation-service', () => ({
     listTemplates: (...args: unknown[]) => listTemplatesMock(...args),
   },
 }));
+
+const listByWorkspaceMock = vi.fn();
+vi.mock('@/services/channel-service', () => ({
+  channelService: {
+    listByWorkspace: (...args: unknown[]) => listByWorkspaceMock(...args),
+  },
+}));
+
+function channel(overrides: Partial<Channel> = {}): Channel {
+  return {
+    id: 'chn-1',
+    tenantId: 'tenant-1',
+    workspaceId: 'ws-1',
+    workspaceName: 'Default',
+    channelType: 'WHATSAPP',
+    name: 'Main line',
+    status: 'ACTIVE',
+    isActive: true,
+    wabaId: null,
+    phoneNumberId: 'pn-1',
+    displayPhoneNumber: '+1 555',
+    businessAccountName: null,
+    verifiedName: null,
+    lastVerifiedAt: null,
+    profileSyncedAt: null,
+    externalAccountId: null,
+    externalAccountName: null,
+    isTrashed: false,
+    createdAt: '2026-07-07T10:00:00Z',
+    updatedAt: '2026-07-07T10:00:00Z',
+    ...overrides,
+  };
+}
 
 function template(overrides: Partial<WhatsAppTemplate> = {}): WhatsAppTemplate {
   return {
@@ -77,6 +110,43 @@ describe('useApprovedTemplates', () => {
   it('resolves to an empty list (not a thrown error) when the service call rejects', async () => {
     listTemplatesMock.mockRejectedValueOnce(new Error('network'));
     const { result } = renderHook(() => useApprovedTemplates('chn-1'));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current).toEqual([]);
+  });
+});
+
+/**
+ * Broadcast channel picker (plan 32 / A7a security review round 1,
+ * should-fix) - broadcasts are approved-template sends only (D-A7-21), a
+ * WhatsApp-only capability, so a Messenger/Instagram channel must never
+ * reach the picker even though it is a perfectly active channel of the
+ * workspace (foolproof-UI: only offer options that will work).
+ */
+describe('useActiveChannels', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('offers only active, non-trashed WHATSAPP channels - Messenger/Instagram excluded', async () => {
+    listByWorkspaceMock.mockResolvedValueOnce([
+      channel({ id: 'wa-active', channelType: 'WHATSAPP', isActive: true, isTrashed: false }),
+      channel({ id: 'wa-inactive', channelType: 'WHATSAPP', isActive: false }),
+      channel({ id: 'wa-trashed', channelType: 'WHATSAPP', isTrashed: true }),
+      channel({ id: 'fb-active', channelType: 'FACEBOOK', isActive: true, isTrashed: false }),
+      channel({ id: 'ig-active', channelType: 'INSTAGRAM', isActive: true, isTrashed: false }),
+    ]);
+    const { result } = renderHook(() => useActiveChannels('ws-1'));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.map((c) => c.id)).toEqual(['wa-active']);
+  });
+
+  it('resolves to an empty list (not a thrown error) when the service call rejects', async () => {
+    listByWorkspaceMock.mockRejectedValueOnce(new Error('network'));
+    const { result } = renderHook(() => useActiveChannels('ws-1'));
     await act(async () => {
       await Promise.resolve();
     });

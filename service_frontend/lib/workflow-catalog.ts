@@ -173,7 +173,13 @@ export const TRIGGER_CATALOG: TriggerCatalogEntry[] = [
     icon: 'MessageCircle',
     category: 'Triggers',
     module: 'omnichannel',
-    fields: [{ key: 'channelId', label: 'Channel', type: 'omnichannelChannel' }],
+    fields: [
+      { key: 'channelId', label: 'Channel', type: 'omnichannelChannel' },
+      // Plan 32 / A7a S6 (AC-CHN-58) - independent of the specific-channel
+      // field above; unset = any type. `omnichannelChannelType` renders as a
+      // SearchSelect with an explicit "All types" option (foolproof-UI).
+      { key: 'channelType', label: 'Channel type', type: 'omnichannelChannelType' },
+    ],
     outputs: [
       { key: 'trigger.message.id', label: 'Message · id' },
       { key: 'trigger.message.text', label: 'Message · text' },
@@ -184,6 +190,7 @@ export const TRIGGER_CATALOG: TriggerCatalogEntry[] = [
       { key: 'trigger.contact.phone', label: 'Contact · phone' },
       { key: 'trigger.channel.id', label: 'Channel · id' },
       { key: 'trigger.channel.name', label: 'Channel · name' },
+      { key: 'trigger.channelType', label: 'Channel · type' },
       { key: 'trigger.conversationId', label: 'Conversation id' },
     ],
   },

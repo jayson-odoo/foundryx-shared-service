@@ -161,6 +161,10 @@ def _send_configured_message(
                 ),
                 channel_id_override=channel_override,
                 sandbox_only=sandbox_only,
+                # A workflow action is automation, never a human reply
+                # (D-A7-6) - refused outside 24h on Messenger/Instagram even
+                # while a human-agent window remains open.
+                actor_is_human=False,
             )
         else:
             text = (
@@ -177,6 +181,7 @@ def _send_configured_message(
                 payload=SendMessageRequest(messageType="TEXT", body=text),
                 channel_id_override=channel_override,
                 sandbox_only=sandbox_only,
+                actor_is_human=False,
             )
     except ThreadNotFound as exc:
         raise ActionError("Contact not found.") from exc
