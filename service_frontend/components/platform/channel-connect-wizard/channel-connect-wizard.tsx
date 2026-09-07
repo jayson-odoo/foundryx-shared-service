@@ -21,6 +21,8 @@ import { isEmbeddedSignupConfigured, launchEmbeddedSignup } from '@/lib/embedded
 import { CHANNEL_CAPABILITIES, CHANNEL_TYPES } from '@/lib/channel-capabilities';
 import { cn } from '@/lib/utils';
 import type { Channel, ChannelType, Workspace } from '@/types/omnichannel';
+import { OriginsEditor } from '@/app/(protected)/omnichannel/settings/embed/origins-editor';
+import { CopyField } from '@/app/(protected)/omnichannel/settings/embed/copy-field';
 import { MockEmbeddedSignupDialog } from './mock-embedded-signup-dialog';
 
 export interface ChannelConnectWizardProps {
@@ -59,11 +61,17 @@ export function ChannelConnectWizard({
   const [chosenWorkspace, setChosenWorkspace] = useState<string>(workspaceId ?? '');
   const [manualMode, setManualMode] = useState(false);
   const [manual, setManual] = useState({ accessToken: '', phoneNumberId: '', wabaId: '', phoneNumber: '' });
+  // Web chat (plan 34 / A7b, AC-WEB-01/02) - no OAuth, no page selection; just
+  // a name + at least one allowed origin, staged in the origins editor's
+  // controlled mode until "Connect" submits everything together.
+  const [webchatName, setWebchatName] = useState('');
+  const [webchatOrigins, setWebchatOrigins] = useState<string[]>([]);
   const {
     state,
     channel,
     error,
     pages,
+    webchatSecret,
     start,
     cancel,
     authorize,
@@ -75,16 +83,28 @@ export function ChannelConnectWizard({
     startMetaAuth,
     authorizeMetaCode,
     selectMetaPage,
+    connectWebchat,
   } = useConnectChannel(chosenWorkspace);
   const configured = isEmbeddedSignupConfigured();
   const capabilities = CHANNEL_CAPABILITIES[channelType];
   const isWhatsApp = channelType === 'WHATSAPP';
+  const isWebchat = channelType === 'WEBCHAT';
   const manualValid = manual.accessToken.trim().length > 0 && manual.phoneNumberId.trim().length > 0;
+  const webchatValid = webchatName.trim().length > 0 && webchatOrigins.length > 0;
   const availablePages = pages.filter((p) => !p.connected);
   const selectedPage = availablePages.find((p) => p.id === selectedPageId) ?? null;
 
   // "Continue" - real SDK/OAuth when configured, else the simulated popup.
   const handleConnect = async () => {
+    if (isWebchat) {
+      if (!webchatValid) return;
+      void connectWebchat({
+        name: webchatName.trim(),
+        workspaceId: chosenWorkspace,
+        allowedOrigins: webchatOrigins,
+      });
+      return;
+    }
     if (isWhatsApp) {
       if (!configured) {
         start();
@@ -139,12 +159,18 @@ export function ChannelConnectWizard({
       setSelectedPageId('');
       setManualMode(false);
       setManual({ accessToken: '', phoneNumberId: '', wabaId: '', phoneNumber: '' });
+      setWebchatName('');
+      setWebchatOrigins([]);
     }
   }, [open, reset]);
 
-  // Picking a different type mid-flow drops any in-progress page selection.
+  // Picking a different type mid-flow drops any in-progress page selection
+  // or staged web chat fields (a stale name/origin list must not survive a
+  // switch away from and back to Web chat).
   useEffect(() => {
     setSelectedPageId('');
+    setWebchatName('');
+    setWebchatOrigins([]);
   }, [channelType]);
 
   const submitManual = () => {
@@ -192,21 +218,33 @@ export function ChannelConnectWizard({
         {state === 'connected' && channel ? (
           <>
             <DialogHeader>
-              <DialogTitle>{configured ? 'Channel connected' : 'Sandbox channel created'}</DialogTitle>
+              <DialogTitle>
+                {isWebchat ? 'Channel connected' : configured ? 'Channel connected' : 'Sandbox channel created'}
+              </DialogTitle>
               <DialogDescription>
-                {configured
+                {isWebchat
                   ? `Your ${capabilities.label} channel is ready to use.`
-                  : 'Simulated channel - not linked to a real Meta account.'}
+                  : configured
+                    ? `Your ${capabilities.label} channel is ready to use.`
+                    : 'Simulated channel - not linked to a real Meta account.'}
               </DialogDescription>
             </DialogHeader>
             <DialogBody className="flex flex-col items-center gap-3 py-4 text-center">
-              <CheckCircle2 className={configured ? 'size-12 text-green-600' : 'size-12 text-amber-500'} />
+              <CheckCircle2
+                className={isWebchat || configured ? 'size-12 text-green-600' : 'size-12 text-amber-500'}
+              />
               <div>
                 <p className="text-sm font-medium text-foreground">{channel.name}</p>
                 <p className="text-xs text-muted-foreground">
                   {channel.displayPhoneNumber ?? channel.externalAccountName}
                 </p>
               </div>
+              {isWebchat && webchatSecret && (
+                <div className="w-full text-left">
+                  <label className="text-xs text-muted-foreground">Widget secret</label>
+                  <CopyField value={webchatSecret} ariaLabel="Widget secret" />
+                </div>
+              )}
             </DialogBody>
             <DialogFooter>
               <Button
@@ -393,32 +431,51 @@ export function ChannelConnectWizard({
                   />
                 </div>
               )}
-              {!configured && (
-                <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
-                  <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600" />
-                  <span>
-                    {capabilities.label} app not configured - this creates a{' '}
-                    <strong>simulated sandbox channel</strong>, not a real connection.
-                  </span>
-                </div>
-              )}
-              {isWhatsApp && (
-                <button
-                  type="button"
-                  className={cn(PRESSED_CLASS, 'self-start text-xs font-medium text-primary hover:underline')}
-                  onClick={() => setManualMode(true)}
-                >
-                  Set up manually (paste token)
-                </button>
+              {isWebchat ? (
+                <>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-sm text-muted-foreground">Channel name</label>
+                    <Input
+                      placeholder="Website chat"
+                      value={webchatName}
+                      onChange={(e) => setWebchatName(e.target.value)}
+                    />
+                  </div>
+                  <OriginsEditor origins={webchatOrigins} onChange={setWebchatOrigins} bare />
+                </>
+              ) : (
+                <>
+                  {!configured && (
+                    <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+                      <TriangleAlert className="mt-0.5 size-4 shrink-0 text-amber-600" />
+                      <span>
+                        {capabilities.label} app not configured - this creates a{' '}
+                        <strong>simulated sandbox channel</strong>, not a real connection.
+                      </span>
+                    </div>
+                  )}
+                  {isWhatsApp && (
+                    <button
+                      type="button"
+                      className={cn(PRESSED_CLASS, 'self-start text-xs font-medium text-primary hover:underline')}
+                      onClick={() => setManualMode(true)}
+                    >
+                      Set up manually (paste token)
+                    </button>
+                  )}
+                </>
               )}
             </DialogBody>
             <DialogFooter>
               <Button variant="outline" onClick={close}>
                 Cancel
               </Button>
-              <Button onClick={handleConnect} disabled={!chosenWorkspace}>
+              <Button
+                onClick={handleConnect}
+                disabled={!chosenWorkspace || (isWebchat ? !webchatValid : false)}
+              >
                 <capabilities.icon className="size-4" />
-                {configured ? 'Continue' : 'Connect (sandbox)'}
+                {isWebchat ? 'Connect' : configured ? 'Continue' : 'Connect (sandbox)'}
               </Button>
             </DialogFooter>
           </>

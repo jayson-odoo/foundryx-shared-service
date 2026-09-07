@@ -7,9 +7,14 @@ import { CHANNEL_CAPABILITIES, CHANNEL_TYPES, channelCapabilities } from './chan
  * backend test pins the same table from its side (D-A7-10).
  */
 describe('CHANNEL_CAPABILITIES', () => {
-  it('declares exactly the three implemented channel types', () => {
-    expect(Object.keys(CHANNEL_CAPABILITIES).sort()).toEqual(['FACEBOOK', 'INSTAGRAM', 'WHATSAPP']);
-    expect(CHANNEL_TYPES).toEqual(['WHATSAPP', 'FACEBOOK', 'INSTAGRAM']);
+  it('declares exactly the four implemented channel types', () => {
+    expect(Object.keys(CHANNEL_CAPABILITIES).sort()).toEqual([
+      'FACEBOOK',
+      'INSTAGRAM',
+      'WEBCHAT',
+      'WHATSAPP',
+    ]);
+    expect(CHANNEL_TYPES).toEqual(['WHATSAPP', 'FACEBOOK', 'INSTAGRAM', 'WEBCHAT']);
   });
 
   it('WhatsApp: template re-engagement, no human-agent extension, every media kind', () => {
@@ -48,10 +53,24 @@ describe('CHANNEL_CAPABILITIES', () => {
     expect(ig.media).not.toEqual(fb.media);
   });
 
-  it('every type declares a 24h standard window', () => {
-    for (const type of CHANNEL_TYPES) {
+  it('every provider-backed type declares a 24h standard window', () => {
+    for (const type of CHANNEL_TYPES.filter((t) => t !== 'WEBCHAT')) {
       expect(channelCapabilities(type).windowHours).toBe(24);
     }
+  });
+
+  it('Web chat (plan 34 / A7b): no re-engagement window, no templates, no WhatsApp-only kinds, agent media without stickers', () => {
+    const c = channelCapabilities('WEBCHAT');
+    expect(c.reengageMode).toBe('none');
+    expect(c.windowHours).toBe(0);
+    expect(c.humanAgentHours).toBeNull();
+    expect(c.template).toBe(false);
+    expect(c.list).toBe(false);
+    expect(c.location).toBe(false);
+    expect(c.contacts).toBe(false);
+    expect(c.outboundReaction).toBe(false);
+    expect(c.quickReplies).toBe(true);
+    expect(c.media).toEqual({ image: true, video: true, audio: true, voice: false, document: true, sticker: false });
   });
 
   it('an unmodelled channel type (no DB enum, BL-SS-122) falls back to a neutral UNKNOWN record instead of throwing', () => {

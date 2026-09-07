@@ -99,6 +99,16 @@ export interface ComposerProps {
    * the same table server-side regardless of what the frontend sends.
    */
   capabilities?: ChannelCapabilities;
+  /**
+   * Neutral presence marker for a `reengageMode: 'none'` thread (web chat,
+   * plan 34 / A7b, D-A7B-19/AC-WEB-43) - stands in for the window marker,
+   * never locks anything. Pre-computed by the drawer (which already owns the
+   * `useDatetime`/`nowTick` clock) so this component stays free of a
+   * session/timezone dependency; `null` = never seen yet, `undefined`/absent
+   * for every other channel type. S0 MOCK - the underlying field lands on
+   * the wire in slice S3.
+   */
+  visitorPresence?: { online: boolean; label: string } | null;
   templates: WhatsAppTemplate[];
   quickReplies: QuickReply[];
   isSending: boolean;
@@ -341,6 +351,7 @@ export function Composer({
   windowOpen,
   humanAgentWindowOpen = false,
   capabilities = CHANNEL_CAPABILITIES.WHATSAPP,
+  visitorPresence = null,
   templates,
   quickReplies,
   isSending,
@@ -375,12 +386,21 @@ export function Composer({
   // Standard window open → full capabilities. Otherwise, a human-agent
   // extension (Messenger/Instagram, D-A7-6) keeps the composer enabled with
   // no capability change (Meta requires the HUMAN_AGENT tag, not a content
-  // restriction) - only past BOTH windows does the composer lock.
+  // restriction) - only past BOTH windows does the composer lock. A channel
+  // with NO messaging window at all (`reengageMode: 'none'` - web chat, plan
+  // 34 / A7b, D-A7B-18) never locks and never shows the window marker: there
+  // is no provider policy to encode, so a reply to a visitor who left is a
+  // message that will be delivered when they return, not a violation.
+  const hasWindow = capabilities.reengageMode !== 'none';
   const extendedOpen = !windowOpen && humanAgentWindowOpen;
-  const locked = !isNote && !windowOpen && !extendedOpen;
+  const locked = !isNote && hasWindow && !windowOpen && !extendedOpen;
   // A neutral window marker shows whenever the standard window is closed,
   // whether or not the composer itself is still usable (AC-CHN-08).
-  const showWindowMarker = !isNote && !windowOpen;
+  const showWindowMarker = !isNote && hasWindow && !windowOpen;
+  // The window-less presence marker (AC-WEB-43) - replaces the window marker
+  // 1:1 for a `reengageMode: 'none'` thread, never locks anything, and
+  // carries no instructional copy (just a status fact + a timestamp).
+  const showPresenceMarker = !isNote && !hasWindow;
   const canAttach = !isNote && !locked && !!onSendMedia;
   const availableAttachOptions = ATTACH_OPTIONS.filter((o) => capabilities.media[o.kind]);
   const canRecordVoice = canAttach && capabilities.media.voice;
@@ -543,6 +563,21 @@ export function Composer({
               Choose template
             </Button>
           )}
+        </div>
+      )}
+      {showPresenceMarker && (
+        <div
+          className="mb-2 flex items-center gap-2 text-xs text-muted-foreground"
+          data-testid="presence-marker"
+        >
+          <span
+            className={cn(
+              'size-1.5 rounded-full',
+              visitorPresence?.online ? 'bg-green-500' : 'bg-muted-foreground/40',
+            )}
+            aria-hidden="true"
+          />
+          {visitorPresence?.label ?? 'Awaiting first message'}
         </div>
       )}
       {sendError && !locked && (

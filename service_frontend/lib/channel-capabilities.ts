@@ -11,7 +11,7 @@
  * exists - `channel-capabilities.test.ts` pins this side of the contract now
  * (D-A7-10: a UX-only mirror, never a new wire field).
  */
-import { CircleHelp, Facebook, Instagram, MessageCircle, type LucideIcon } from 'lucide-react';
+import { CircleHelp, Facebook, Globe, Instagram, MessageCircle, type LucideIcon } from 'lucide-react';
 import type { ChannelType } from '@/types/omnichannel';
 
 /** How a channel type re-engages a contact once its standard window closes. */
@@ -60,6 +60,28 @@ export interface ChannelCapabilities {
 }
 
 export const CHANNEL_CAPABILITIES: Record<ChannelType, ChannelCapabilities> = {
+  // S0 MOCK - swap to real in S6 (plan 34 / A7b): parity-pinned against
+  // `messaging_policy.CAPABILITIES["WEBCHAT"]` / `POLICIES["WEBCHAT"]` once
+  // S1 lands (§5.5). No external provider on the far side (D-A7B-1), so
+  // there is no messaging window at all - `reengageMode: 'none'` is the
+  // record every gate in this file already understands (composer lock,
+  // window banner) via the existing `reengageMode` checks, no new branch.
+  WEBCHAT: {
+    channelType: 'WEBCHAT',
+    label: 'Web chat',
+    icon: Globe,
+    accentClassName: 'bg-[#6366F1]/10 text-[#6366F1]',
+    windowHours: 0,
+    humanAgentHours: null,
+    reengageMode: 'none',
+    media: { image: true, video: true, audio: true, voice: false, document: true, sticker: false },
+    quickReplies: true,
+    list: false,
+    location: false,
+    contacts: false,
+    template: false,
+    outboundReaction: false,
+  },
   WHATSAPP: {
     channelType: 'WHATSAPP',
     label: 'WhatsApp',
@@ -115,7 +137,7 @@ export const CHANNEL_CAPABILITIES: Record<ChannelType, ChannelCapabilities> = {
 };
 
 /** Ordered list for pickers (connect wizard channel-type step, filters). */
-export const CHANNEL_TYPES: ChannelType[] = ['WHATSAPP', 'FACEBOOK', 'INSTAGRAM'];
+export const CHANNEL_TYPES: ChannelType[] = ['WHATSAPP', 'FACEBOOK', 'INSTAGRAM', 'WEBCHAT'];
 
 /**
  * Neutral fallback for a `channels.channel_type` value this build does not

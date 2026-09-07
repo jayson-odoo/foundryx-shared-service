@@ -165,7 +165,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     }
   }, [setStatus, reloadEvents]);
 
-  const { timeZone, formatTime } = useDatetime();
+  const { timeZone, formatTime, formatDateTime } = useDatetime();
   const [tab, setTab] = useState<'messages' | 'activities'>('messages');
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
@@ -267,6 +267,18 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
     const iso = thread?.humanAgentExpiresAt;
     return !!iso && Date.parse(iso) > nowTick;
   }, [capabilities.reengageMode, thread?.humanAgentExpiresAt, nowTick]);
+  // Web chat presence marker (plan 34 / A7b, D-A7B-19/AC-WEB-43) - the
+  // window-less channel type's stand-in for the window banner, computed here
+  // (not in the composer) so the composer stays free of a timezone/session
+  // dependency. `online` is a 2-minute recency heuristic - a UX mirror only,
+  // never an authorization fact (`reengageMode: 'none'` never locks anyway).
+  const visitorPresence = useMemo(() => {
+    if (capabilities.reengageMode !== 'none') return null;
+    const iso = thread?.visitorLastSeenAt;
+    if (!iso) return null;
+    const online = nowTick - Date.parse(iso) < 2 * 60_000;
+    return { online, label: online ? 'Online now' : `Last seen ${formatDateTime(iso)}` };
+  }, [capabilities.reengageMode, thread?.visitorLastSeenAt, nowTick, formatDateTime]);
 
   useEffect(() => {
     if (!thread?.channelId) return setTemplates([]);
@@ -617,6 +629,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
         windowOpen={windowOpen}
         humanAgentWindowOpen={humanAgentWindowOpen}
         capabilities={capabilities}
+        visitorPresence={visitorPresence}
         templates={templates}
         quickReplies={quickReplies}
         isSending={isSending}

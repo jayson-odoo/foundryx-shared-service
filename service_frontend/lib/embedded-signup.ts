@@ -24,11 +24,15 @@ const GRAPH_VERSION = process.env.NEXT_PUBLIC_META_GRAPH_VERSION ?? 'v23.0';
  * Messenger and Instagram share the WhatsApp Meta app (D-A7-1) - only the
  * OAuth **config id** is per product, each falling back to the WhatsApp one
  * so a tenant with a single Business Login config keeps working unchanged.
+ * `WEBCHAT` (plan 34 / A7b) has no Meta app at all (D-A7B-1) - unreachable in
+ * practice (the connect wizard never calls `launchEmbeddedSignup` for it),
+ * the empty string is a defensive fallback, not a real config.
  */
 const META_PRODUCT_CONFIG_ID: Record<ChannelType, string> = {
   WHATSAPP: META_CONFIG_ID,
   FACEBOOK: process.env.NEXT_PUBLIC_META_MESSENGER_ES_CONFIG_ID || META_CONFIG_ID,
   INSTAGRAM: process.env.NEXT_PUBLIC_META_INSTAGRAM_ES_CONFIG_ID || META_CONFIG_ID,
+  WEBCHAT: '',
 };
 
 /** Path of our OAuth callback page - must be registered as a Valid OAuth

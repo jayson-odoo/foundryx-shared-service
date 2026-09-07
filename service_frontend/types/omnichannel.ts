@@ -11,13 +11,14 @@ import type { UserStatus } from '@/types/user';
 import type { FilterGroup } from '@/types/resource';
 
 /**
- * Channels the platform can connect. Pruned to the three implemented adapters
- * (plan 32 / A7a, D-A7-20) - `DOUYIN` / `XIAOHONGSHU` had no adapter, no
- * window policy and no capability record, so a picker offering them could be
- * configured into a guaranteed runtime error (foolproof-UI). See
- * `lib/channel-capabilities.ts` for the per-type capability/window record.
+ * Channels the platform can connect. Pruned to the four implemented adapters
+ * (plan 32 / A7a, D-A7-20; plan 34 / A7b adds `WEBCHAT`) - `DOUYIN` /
+ * `XIAOHONGSHU` had no adapter, no window policy and no capability record, so
+ * a picker offering them could be configured into a guaranteed runtime error
+ * (foolproof-UI). See `lib/channel-capabilities.ts` for the per-type
+ * capability/window record.
  */
-export type ChannelType = 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM';
+export type ChannelType = 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM' | 'WEBCHAT';
 
 /** Connection lifecycle of a channel (maps to the static `statuses` table, CHANNEL scope). */
 export type ChannelStatus = 'ACTIVE' | 'PENDING' | 'INACTIVE' | 'ERROR';
@@ -88,6 +89,14 @@ export interface Channel {
   externalAccountId: string | null;
   /** Display name for `externalAccountId` (the Page name / IG username). */
   externalAccountName: string | null;
+  /**
+   * The 32-char opaque widget key for a `WEBCHAT` channel (plan 34 / A7b,
+   * D-A7B-25) - the only channel-identifying value that appears in a
+   * customer's public website source. Null on every other channel type. Not
+   * a secret (see `services/webchat-service.ts` for the widget SECRET, which
+   * never rides this object).
+   */
+  widgetKey: string | null;
   isTrashed: boolean;
   createdAt: string; // ISO
   updatedAt: string; // ISO
@@ -313,6 +322,15 @@ export interface ConversationThread {
    * (WhatsApp) or a thread that has never received a message.
    */
   humanAgentExpiresAt: string | null; // ISO
+  /**
+   * A web chat visitor's last socket-connect / session-start / message-post
+   * instant (plan 34 / A7b, D-A7B-19) - the presence fact that stands in for
+   * a messaging window on a `WEBCHAT` thread (which has none, D-A7B-18).
+   * Null for every other channel type and for a web chat visitor never seen.
+   * S0 MOCK - the backend wire field lands in plan 34 slice S3; mocked ahead
+   * of it here so the drawer's presence marker has real data to render.
+   */
+  visitorLastSeenAt?: string | null; // ISO
   lastIncomingMessageAt: string | null; // ISO
   lastMessageAt: string | null; // ISO
   /** Last visible message body (thread-list preview; server-computed). */
@@ -1347,3 +1365,78 @@ export interface ReportResponse<TRow = object, TTotals = object> {
 /** `POST .../reports/{reportKey}/export` request body (mirrors the read
  *  filters, D-A9-4). */
 export type ReportExportRequest = ReportFilters;
+
+// ---------------------------------------------------------------------------
+// Plan 34 / A7b - website chat channel (embeddable widget + visitor identity).
+// Admin-side types only; the visitor-side wire (`VisitorMessage`, the session
+// contract) lands with the panel in S4. See documentation/plans/sprint-4/
+// 34-omnichannel-channel-web-chat.md §5.1 for the exact contract this mirrors.
+// ---------------------------------------------------------------------------
+
+/** `POST /omnichannel/onboarding/webchat/connect` input (AC-WEB-01/02). */
+export interface ConnectWebchatInput {
+  name: string;
+  workspaceId: string;
+  allowedOrigins: string[];
+}
+
+/** `POST /omnichannel/onboarding/webchat/connect` result - the 201 body IS a
+ *  `Channel`, plus the widget secret, revealed exactly once (AC-WEB-18). */
+export type ConnectWebchatResult = Channel & { widgetSecret: string };
+
+/** Launcher side + header/agent-name appearance (AC-WEB-04). */
+export interface WebchatAppearance {
+  /** Hex color, e.g. "#FF5A00". */
+  accentColor: string;
+  position: 'left' | 'right';
+  headerTitle: string;
+  agentDisplayName: string;
+}
+
+/** Fixed pre-chat capture toggles (D-A7B-23 - not a form-engine form). */
+export interface WebchatPreChatToggles {
+  askName: boolean;
+  askEmail: boolean;
+  askPhone: boolean;
+}
+
+/** `GET/PUT /omnichannel/channels/{id}/widget` (plan §5.1). Never carries the
+ *  widget secret - that is revealed exactly once, by `connect`/`rotateSecret`
+ *  only. */
+export interface WebchatConfig {
+  widgetKey: string;
+  allowedOrigins: string[];
+  /** Bumped by "sign out all visitors" - display only on the admin side. */
+  tokenEpoch: number;
+  appearance: WebchatAppearance;
+  greeting: string;
+  offlineGreeting: string;
+  preChat: WebchatPreChatToggles;
+  /** The exact install snippet the backend serves for this channel - the
+   *  Widget tab renders this string verbatim (AC-WEB-05), never rebuilding it
+   *  client-side. */
+  snippet: string;
+}
+
+/** `PUT /omnichannel/channels/{id}/widget` input - every field optional so a
+ *  partial save (e.g. rename only) never clobbers the rest (mirrors the
+ *  channel profile write-through PATCH shape). */
+export interface UpdateWebchatConfigInput {
+  allowedOrigins?: string[];
+  appearance?: Partial<WebchatAppearance>;
+  greeting?: string;
+  offlineGreeting?: string;
+  preChat?: Partial<WebchatPreChatToggles>;
+}
+
+/** `POST /omnichannel/channels/{id}/widget/rotate-secret` result - the new
+ *  secret, revealed exactly once (AC-WEB-06/19). */
+export interface RotateWidgetSecretResult {
+  widgetSecret: string;
+}
+
+/** `POST /omnichannel/channels/{id}/widget/sign-out-visitors` result - the
+ *  secret is UNCHANGED (D-A7B-6); only the epoch moves. */
+export interface SignOutVisitorsResult {
+  tokenEpoch: number;
+}

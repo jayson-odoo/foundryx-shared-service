@@ -7,6 +7,7 @@ import { useConnectChannel } from './use-connect-channel';
 const completeOnboarding = vi.fn();
 const listMetaPages = vi.fn();
 const connectMetaChannel = vi.fn();
+const webchatConnect = vi.fn();
 
 vi.mock('@/services/onboarding-service', () => ({
   onboardingService: {
@@ -14,6 +15,12 @@ vi.mock('@/services/onboarding-service', () => ({
     manualConnect: vi.fn(),
     listMetaPages: (...args: unknown[]) => listMetaPages(...args),
     connectMetaChannel: (...args: unknown[]) => connectMetaChannel(...args),
+  },
+}));
+
+vi.mock('@/services/webchat-service', () => ({
+  webchatService: {
+    connect: (...args: unknown[]) => webchatConnect(...args),
   },
 }));
 
@@ -167,5 +174,73 @@ describe('useConnectChannel - Messenger/Instagram (plan 32 / A7a)', () => {
     });
     await waitFor(() => expect(result.current.state).toBe('failed'));
     expect(result.current.error).toBe('OAuth code invalid');
+  });
+});
+
+describe('useConnectChannel - web chat (plan 34 / A7b)', () => {
+  const WEB_CHANNEL = { id: 'chn-web-9', name: 'Website chat', channelType: 'WEBCHAT' } as Channel;
+
+  it('connectWebchat() skips every OAuth state, going straight idle -> exchanging -> connected', async () => {
+    webchatConnect.mockResolvedValue({ ...WEB_CHANNEL, widgetSecret: 'whsec_abc123' });
+    const { result } = renderHook(() => useConnectChannel('wsp-1'));
+    expect(result.current.state).toBe('idle');
+    await act(async () => {
+      await result.current.connectWebchat({
+        name: 'Website chat',
+        workspaceId: 'wsp-1',
+        allowedOrigins: ['https://shop.acme.test'],
+      });
+    });
+    await waitFor(() => expect(result.current.state).toBe('connected'));
+    expect(result.current.channel).toEqual(WEB_CHANNEL);
+    expect(webchatConnect).toHaveBeenCalledWith({
+      name: 'Website chat',
+      workspaceId: 'wsp-1',
+      allowedOrigins: ['https://shop.acme.test'],
+    });
+  });
+
+  it('connectWebchat() carries the revealed-once secret in webchatSecret, never on the channel object', async () => {
+    webchatConnect.mockResolvedValue({ ...WEB_CHANNEL, widgetSecret: 'whsec_abc123' });
+    const { result } = renderHook(() => useConnectChannel('wsp-1'));
+    await act(async () => {
+      await result.current.connectWebchat({
+        name: 'Website chat',
+        workspaceId: 'wsp-1',
+        allowedOrigins: ['https://shop.acme.test'],
+      });
+    });
+    expect(result.current.webchatSecret).toBe('whsec_abc123');
+    expect(result.current.channel).not.toHaveProperty('widgetSecret');
+  });
+
+  it('connectWebchat() failure -> failed, with no OAuth-only state entered', async () => {
+    webchatConnect.mockRejectedValue(new Error('Origin already used by another channel.'));
+    const { result } = renderHook(() => useConnectChannel('wsp-1'));
+    await act(async () => {
+      await result.current.connectWebchat({
+        name: 'Website chat',
+        workspaceId: 'wsp-1',
+        allowedOrigins: ['https://shop.acme.test'],
+      });
+    });
+    await waitFor(() => expect(result.current.state).toBe('failed'));
+    expect(result.current.error).toBe('Origin already used by another channel.');
+    expect(result.current.pages).toEqual([]);
+  });
+
+  it('reset() clears webchatSecret along with everything else', async () => {
+    webchatConnect.mockResolvedValue({ ...WEB_CHANNEL, widgetSecret: 'whsec_abc123' });
+    const { result } = renderHook(() => useConnectChannel('wsp-1'));
+    await act(async () => {
+      await result.current.connectWebchat({
+        name: 'Website chat',
+        workspaceId: 'wsp-1',
+        allowedOrigins: ['https://shop.acme.test'],
+      });
+    });
+    act(() => result.current.reset());
+    expect(result.current.webchatSecret).toBeNull();
+    expect(result.current.state).toBe('idle');
   });
 });

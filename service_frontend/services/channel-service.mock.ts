@@ -47,6 +47,7 @@ function seed(): ChannelRow[] {
       profileSyncedAt: null,
       externalAccountId: null,
       externalAccountName: null,
+      widgetKey: null,
       createdAt,
       updatedAt: createdAt,
       isTrashed: false,
@@ -76,6 +77,7 @@ function seed(): ChannelRow[] {
       profileSyncedAt: null,
       externalAccountId: 'pg-701',
       externalAccountName: 'Foundryx Events Co.',
+      widgetKey: null,
       createdAt: metaCreatedAt,
       updatedAt: metaCreatedAt,
       isTrashed: false,
@@ -98,13 +100,44 @@ function seed(): ChannelRow[] {
       profileSyncedAt: null,
       externalAccountId: 'ig-701',
       externalAccountName: 'foundryx.events',
+      widgetKey: null,
       createdAt: metaCreatedAt,
       updatedAt: metaCreatedAt,
       isTrashed: false,
     },
   ];
 
-  return [...whatsapp, ...meta];
+  // Plan 34 / A7b - one sandbox Web chat channel so the channels list, the
+  // form's Widget tab and the composer's `reengageMode: 'none'` states are
+  // exercisable with no backend (AC-WEB-10). S0 MOCK - swap to real in S6.
+  const webCreatedAt = new Date(EPOCH - 2 * DAY).toISOString();
+  const webchat: ChannelRow[] = [
+    {
+      id: 'chn-web-001',
+      tenantId: DEFAULT_TENANT,
+      workspaceId: 'wsp-001',
+      workspaceName: 'General',
+      channelType: 'WEBCHAT',
+      name: 'Website chat',
+      status: 'ACTIVE',
+      isActive: true,
+      wabaId: null,
+      phoneNumberId: null,
+      displayPhoneNumber: null,
+      businessAccountName: null,
+      verifiedName: null,
+      lastVerifiedAt: null,
+      profileSyncedAt: null,
+      externalAccountId: null,
+      externalAccountName: null,
+      widgetKey: 'wk_demo0000000000000000000001',
+      createdAt: webCreatedAt,
+      updatedAt: webCreatedAt,
+      isTrashed: false,
+    },
+  ];
+
+  return [...whatsapp, ...meta, ...webchat];
 }
 
 /** Workspace names by id - mirrors the workspace mock seed (for display only). */
@@ -197,6 +230,7 @@ export function __mockProvisionChannel(workspaceId: string, result: EmbeddedSign
     profileSyncedAt: null,
     externalAccountId: null,
     externalAccountName: null,
+    widgetKey: null,
     createdAt: now,
     updatedAt: now,
     isTrashed: false,
@@ -244,6 +278,43 @@ export function __mockProvisionMetaChannel(
     profileSyncedAt: null,
     externalAccountId: identity.externalAccountId,
     externalAccountName: identity.externalAccountName,
+    widgetKey: null,
+    createdAt: now,
+    updatedAt: now,
+    isTrashed: false,
+  };
+  rows = [row, ...rows];
+  return toPublic(row);
+}
+
+/** Internal hook for the web chat onboarding mock (plan 34 / A7b): provision
+ *  a `WEBCHAT` channel from the wizard's reduced form (name + workspace +
+ *  origins - no OAuth/page-selection at all), mirroring
+ *  `__mockProvisionMetaChannel`'s role for Messenger/Instagram. Origins
+ *  themselves are NOT stored on `Channel` (they live on `WebchatConfig`,
+ *  owned by `webchat-service.mock.ts`) - this only mints the channel row +
+ *  its `widgetKey`. */
+export function __mockProvisionWebchatChannel(workspaceId: string, name: string): Channel {
+  const now = new Date(EPOCH).toISOString();
+  const row: ChannelRow = {
+    id: `chn-web-${String(rows.length + 1).padStart(3, '0')}`,
+    tenantId: DEFAULT_TENANT,
+    workspaceId,
+    workspaceName: WORKSPACE_NAMES[workspaceId] ?? 'Workspace',
+    channelType: 'WEBCHAT',
+    name,
+    status: 'ACTIVE',
+    isActive: true,
+    wabaId: null,
+    phoneNumberId: null,
+    displayPhoneNumber: null,
+    businessAccountName: null,
+    verifiedName: null,
+    lastVerifiedAt: null,
+    profileSyncedAt: null,
+    externalAccountId: null,
+    externalAccountName: null,
+    widgetKey: `wk_${crypto.randomUUID().replace(/-/g, '')}`.slice(0, 35),
     createdAt: now,
     updatedAt: now,
     isTrashed: false,

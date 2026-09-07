@@ -3,23 +3,29 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { Settings as SettingsIcon, MessageSquareText, IdCard, Webhook } from 'lucide-react';
+import { Settings as SettingsIcon, MessageSquareText, IdCard, Webhook, MessagesSquare } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ListQuery } from '@/types/resource';
 import { useCan } from '@/hooks/use-can';
 import { channelService } from '@/services/channel-service';
+import { webchatService } from '@/services/webchat-service';
 import { ApiError } from '@/lib/api-client';
-import type { Channel, ChannelProfile } from '@/types/omnichannel';
+import type { Channel, ChannelProfile, WebchatConfig } from '@/types/omnichannel';
 import { ConfigurationTab } from './channel-form-fields';
 import { ChannelProfileTab } from './channel-profile-tab';
 import { ChannelTemplatesTab } from './channel-templates-tab';
 import { ChannelWebhooksTab } from './channel-webhooks-tab';
+import { ChannelWidgetTab } from './channel-widget-tab';
 import { useChannelActions } from './use-channel-actions';
 import { channelFormHref, channelsListPath } from './paths';
 import { channelDetailSchema, type ChannelDetailValues } from './channel-schema';
 
-function toFormValues(channel: Channel | null, profile: ChannelProfile | null): ChannelDetailValues {
+function toFormValues(
+  channel: Channel | null,
+  profile: ChannelProfile | null,
+  webchatConfig: WebchatConfig | null,
+): ChannelDetailValues {
   return {
     name: channel?.name ?? '',
     isActive: channel?.isActive ?? false,
@@ -30,6 +36,15 @@ function toFormValues(channel: Channel | null, profile: ChannelProfile | null): 
     vertical: profile?.vertical ?? '',
     website1: profile?.website1 ?? '',
     website2: profile?.website2 ?? '',
+    widgetAccentColor: webchatConfig?.appearance.accentColor ?? '#FF5A00',
+    widgetPosition: webchatConfig?.appearance.position ?? 'right',
+    widgetHeaderTitle: webchatConfig?.appearance.headerTitle ?? '',
+    widgetAgentDisplayName: webchatConfig?.appearance.agentDisplayName ?? '',
+    widgetGreeting: webchatConfig?.greeting ?? '',
+    widgetOfflineGreeting: webchatConfig?.offlineGreeting ?? '',
+    widgetAskName: webchatConfig?.preChat.askName ?? false,
+    widgetAskEmail: webchatConfig?.preChat.askEmail ?? false,
+    widgetAskPhone: webchatConfig?.preChat.askPhone ?? false,
   };
 }
 
@@ -47,13 +62,14 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
   const canReadWebhooks = can('webhooks.read');
   const [channel, setChannel] = useState<Channel | null>(null);
   const [profile, setProfile] = useState<ChannelProfile | null>(null);
+  const [webchatConfig, setWebchatConfig] = useState<WebchatConfig | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
   const form = useForm<ChannelDetailValues>({
     mode: 'onTouched',
     resolver: zodResolver(channelDetailSchema),
-    defaultValues: toFormValues(null, null),
+    defaultValues: toFormValues(null, null, null),
   });
 
   useEffect(() => {
@@ -65,19 +81,22 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
     // channel; the profile fetch is caught independently and degrades to
     // `null` (no Profile tab, see `config` below) instead of a false
     // "channel not found". Only the CHANNEL fetch failing is a real 404.
+    // Plan 34 / A7b - the widget config fetch only runs for a `WEBCHAT`
+    // channel, same degrade-to-null pattern (no Widget tab otherwise).
     channelService
       .get(channelId)
       .then((c) =>
-        channelService
-          .getProfile(channelId)
-          .catch(() => null)
-          .then((p) => {
-            if (!active) return;
-            setChannel(c);
-            setProfile(p);
-            form.reset(toFormValues(c, p));
-            setNotFound(false);
-          }),
+        Promise.all([
+          channelService.getProfile(channelId).catch(() => null),
+          c.channelType === 'WEBCHAT' ? webchatService.getConfig(channelId).catch(() => null) : null,
+        ]).then(([p, wc]) => {
+          if (!active) return;
+          setChannel(c);
+          setProfile(p);
+          setWebchatConfig(wc);
+          form.reset(toFormValues(c, p, wc));
+          setNotFound(false);
+        }),
       )
       .catch(() => active && setNotFound(true))
       .finally(() => active && setIsLoading(false));
@@ -114,6 +133,38 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
           isActive: values.isActive,
         });
         setChannel(updatedChannel);
+
+        // Widget fields (plan 34 / A7b) - a `WEBCHAT` channel only; every
+        // other channel type never reaches the backend PUT at all (D-A7-17's
+        // "a tab that can only fail is worse than an absent tab" rule
+        // applies to the write path too, not just the tab list).
+        if (updatedChannel.channelType === 'WEBCHAT') {
+          try {
+            const updatedWidget = await webchatService.updateConfig(channelId, {
+              appearance: {
+                accentColor: values.widgetAccentColor,
+                position: values.widgetPosition,
+                headerTitle: values.widgetHeaderTitle,
+                agentDisplayName: values.widgetAgentDisplayName,
+              },
+              greeting: values.widgetGreeting,
+              offlineGreeting: values.widgetOfflineGreeting,
+              preChat: {
+                askName: values.widgetAskName,
+                askEmail: values.widgetAskEmail,
+                askPhone: values.widgetAskPhone,
+              },
+            });
+            setWebchatConfig(updatedWidget);
+            form.reset(toFormValues(updatedChannel, profile, updatedWidget));
+            toast.success('Channel saved.');
+            ok = true;
+          } catch {
+            toast.error('Could not save the widget settings. Your changes are kept - please retry.');
+          }
+          return;
+        }
+
         // Profile fields (write-through). Backend diffs vs its mirror so only
         // genuinely-changed fields are POSTed to Meta (BR-6).
         try {
@@ -127,7 +178,7 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
             website2: values.website2 ?? '',
           });
           setProfile(updatedProfile);
-          form.reset(toFormValues(updatedChannel, updatedProfile));
+          form.reset(toFormValues(updatedChannel, updatedProfile, webchatConfig));
           toast.success('Channel saved.');
           ok = true;
         } catch (err) {
@@ -149,7 +200,7 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
       return ok;
     };
 
-    const onCancel = () => form.reset(toFormValues(channel, profile));
+    const onCancel = () => form.reset(toFormValues(channel, profile, webchatConfig));
 
     // Sync Profile pulls fresh data from Meta - reflect it in the editable
     // inputs too (not just the read view), else a later Edit shows stale values
@@ -176,8 +227,10 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
     // Instagram channel filters them out of the tabs array (plan 32 / A7a,
     // AC-CHN-05, D-A7-17) the same way `webhooks` already is conditional.
     // Foolproof-UI: a tab that can only fail (typed 409 server-side) is worse
-    // than an absent tab.
+    // than an absent tab. Plan 34 / A7b adds the same rule for `WEBCHAT`'s
+    // Widget tab (AC-WEB-03).
     const isWhatsApp = channel?.channelType === 'WHATSAPP';
+    const isWebchat = channel?.channelType === 'WEBCHAT';
     const tabs = [
       {
         id: 'configuration',
@@ -188,6 +241,7 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
             form={form}
             editing={editing}
             channel={channel}
+            channelId={channelId}
             onChannelSynced={setChannel}
           />
         ),
@@ -199,6 +253,23 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
               label: 'Templates',
               icon: MessageSquareText,
               render: () => <ChannelTemplatesTab channelId={channelId} />,
+            },
+          ]
+        : []),
+      ...(isWebchat
+        ? [
+            {
+              id: 'widget',
+              label: 'Widget',
+              icon: MessagesSquare,
+              render: ({ editing }: { editing: boolean }) => (
+                <ChannelWidgetTab
+                  form={form}
+                  editing={editing}
+                  channelId={channelId}
+                  webchatConfig={webchatConfig}
+                />
+              ),
             },
           ]
         : []),
@@ -260,6 +331,7 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
     notFound,
     channel,
     profile,
+    webchatConfig,
     actions,
     form,
     initialEditing,

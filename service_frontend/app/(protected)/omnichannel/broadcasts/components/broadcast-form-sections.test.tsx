@@ -45,6 +45,7 @@ function channel(overrides: Partial<Channel> = {}): Channel {
     profileSyncedAt: null,
     externalAccountId: null,
     externalAccountName: null,
+    widgetKey: null,
     isTrashed: false,
     createdAt: '2026-07-07T10:00:00Z',
     updatedAt: '2026-07-07T10:00:00Z',

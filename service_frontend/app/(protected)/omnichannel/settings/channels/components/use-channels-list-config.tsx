@@ -13,7 +13,7 @@ import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import { channelService } from '@/services/channel-service';
 import { useDatetime } from '@/hooks/use-datetime';
-import { channelCapabilities } from '@/lib/channel-capabilities';
+import { CHANNEL_TYPES, channelCapabilities } from '@/lib/channel-capabilities';
 import type { FilterFieldDef } from '@/types/resource';
 import type { Channel } from '@/types/omnichannel';
 import { CHANNEL_STATUS_REGISTRY, CHANNEL_TYPE_LABELS, CHANNEL_TYPE_REGISTRY } from './channel-status';
@@ -29,11 +29,9 @@ const FILTER_FIELDS: FilterFieldDef[] = [
     field: 'channelType',
     label: 'Type',
     type: 'enum',
-    options: [
-      { label: 'WhatsApp', value: 'WHATSAPP' },
-      { label: 'Messenger', value: 'FACEBOOK' },
-      { label: 'Instagram', value: 'INSTAGRAM' },
-    ],
+    // Derived from the ONE capability catalog (plan 34 / A7b, AC-WEB-09) so a
+    // new channel type never needs a second hardcoded list here.
+    options: CHANNEL_TYPES.map((t) => ({ label: CHANNEL_TYPE_LABELS[t], value: t })),
   },
   {
     field: 'status',
