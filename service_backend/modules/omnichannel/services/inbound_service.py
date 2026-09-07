@@ -3,22 +3,29 @@ resolution/stitching → persist → CSW re-open → broadcast.
 
 Runs inside the Celery worker (the webhook endpoint only fast-ACKs + enqueues).
 All logic takes an explicit db session so tests drive it directly.
+
+Plan 32 (A7a): ONE ingress serves WhatsApp, Messenger and Instagram
+(D-A7-2) - ``_resolve_channel`` dispatches on the payload's ``object`` field
+before falling back to the URL id; ``_resolve_contact`` runs the phone stitch
+ONLY for WhatsApp (D-A7-4, a PSID/IGSID carries no phone); every inbound
+message stamps the identity's own re-engagement window via
+``messaging_policy.stamp_inbound_window`` (D-A7-5).
 """
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
 from app.config import settings
 
-from ..adapters.whatsapp_cloud import get_adapter
+from ..adapters import get_adapter
 from ..models import Channel, Contact, ContactChannelIdentity, ConversationMessage
 from ..phone import digits_only
 from ..repositories.contact_repository import ContactRepository
 from ..security import signed_media_url
+from . import event_service, messaging_policy, realtime, statuses
 from .conversation_service import ConversationService
-from . import event_service, realtime, statuses
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +42,20 @@ def _payload_phone_number_id(payload: Dict[str, Any]) -> Optional[str]:
                 pnid = meta.get("phone_number_id")
                 if pnid:
                     return str(pnid)
+    except AttributeError:
+        pass
+    return None
+
+
+def _payload_entry_id(payload: Dict[str, Any]) -> Optional[str]:
+    """Pull ``entry[].id`` (PAGE_ID or IG account id) from a Messenger/
+    Instagram webhook payload - the same "one app-level callback, the payload
+    picks the tenant" pattern as ``_payload_phone_number_id`` (D-A7-2)."""
+    try:
+        for entry in payload.get("entry", []) or []:
+            eid = entry.get("id")
+            if eid:
+                return str(eid)
     except AttributeError:
         pass
     return None
@@ -101,8 +122,40 @@ class InboundService:
         return counters
 
     def _resolve_channel(self, channel_id: str, payload: Dict[str, Any]) -> Optional[Channel]:
-        """Prefer the number in the payload (unique + indexed); fall back to the
-        URL's channel id."""
+        """Dispatch on the payload's ``object`` field (D-A7-2): ``page``/
+        ``instagram`` resolve a live FACEBOOK/INSTAGRAM channel by
+        ``external_account_id``; ``whatsapp_business_account`` (or absent, the
+        pre-plan-32 shape) keeps today's ``phone_number_id`` path. The URL's
+        channel id is the LAST-RESORT fallback for all three - every
+        already-configured per-channel callback URL keeps working, and Meta's
+        one app-level callback delivering every tenant's traffic is exactly
+        why the payload, never the URL, is authoritative.
+
+        ``external_account_id`` carries its own service-wide PARTIAL UNIQUE
+        index over live rows (migration 0017, same design as
+        ``phone_number_id``), so this lookup - though intentionally
+        unauthenticated, the webhook has no tenant context yet - can only ever
+        resolve the ONE channel that legitimately owns that page/account id,
+        never a different tenant's."""
+        object_type = payload.get("object")
+        if object_type in ("page", "instagram"):
+            channel_type = "FACEBOOK" if object_type == "page" else "INSTAGRAM"
+            entry_id = _payload_entry_id(payload)
+            if entry_id:
+                by_account = (
+                    self.db.query(Channel)
+                    .filter(
+                        Channel.external_account_id == entry_id,
+                        Channel.channel_type == channel_type,
+                        Channel.is_trashed.is_(False),
+                    )
+                    .first()
+                )
+                if by_account is not None:
+                    return by_account
+            return self.db.query(Channel).filter(Channel.id == channel_id).first()
+
+        # whatsapp_business_account (or absent) - today's path, unchanged.
         pnid = _payload_phone_number_id(payload)
         if pnid:
             by_phone = (
@@ -126,7 +179,7 @@ class InboundService:
         if self.repo.get_message_by_external_id(external_id, channel.tenant_id):
             return False
 
-        contact = self._resolve_contact(channel, event)
+        contact, identity = self._resolve_contact(channel, event)
 
         # Reply context → quoted metadata (mirrors the outbound shape).
         metadata: Optional[Dict[str, Any]] = None
@@ -211,9 +264,17 @@ class InboundService:
                     channel_id=channel.id,
                 )
         contact.status_id = open_status_id
-        contact.csw_expires_at = now + CSW_WINDOW
-        contact.last_incoming_message_at = now
+        # `contacts.csw_expires_at`/`last_incoming_message_at` are a WhatsApp-
+        # ONLY dual write (plan 32 / A7a, D-A7-5, F4) - the documented gateway
+        # field + the composer's window lock must not change meaning for a
+        # type that never wrote them before this slice. Every OTHER channel
+        # type's window lives on the identity only (stamped below).
+        if channel.channel_type == "WHATSAPP":
+            contact.csw_expires_at = now + CSW_WINDOW
+            contact.last_incoming_message_at = now
         contact.last_message_at = now
+        # AC-CHN-21: the identity's OWN window on every channel type.
+        messaging_policy.stamp_inbound_window(identity, contact, channel, now=now)
         self.db.commit()
         self.db.refresh(row)
 
@@ -369,34 +430,54 @@ class InboundService:
         )
         return True
 
-    def _resolve_contact(self, channel: Channel, event: Dict[str, Any]) -> Contact:
-        """Contact resolution & stitching (§4): identity → phone stitch → create."""
-        wa_id = event["from"]
-        identity = self.repo.find_identity(channel.id, wa_id)
+    def _resolve_contact(
+        self, channel: Channel, event: Dict[str, Any]
+    ) -> Tuple[Contact, ContactChannelIdentity]:
+        """Contact resolution & stitching (§4; plan 32 / A7a, D-A7-4): identity
+        -> [phone stitch, WHATSAPP ONLY] -> create. A PSID/IGSID carries no
+        phone, no email and no stable name - merging on a display name would
+        silently fuse two customers, so a non-WhatsApp channel type NEVER
+        attempts the phone stitch (an empty digits string must never match a
+        phone-less contact, AC-CHN-20)."""
+        external_user_id = event["from"]
+        identity = self.repo.find_identity(channel.id, external_user_id)
         if identity is not None:
             contact = self.repo.get_by_id(identity.contact_id, channel.tenant_id)
             if contact is not None:
                 # Profile names drift - keep the identity fresh.
                 if event.get("profile_name") and identity.profile_name != event["profile_name"]:
                     identity.profile_name = event["profile_name"]
-                return contact
+                return contact, identity
 
-        digits = digits_only(wa_id)
-        contact = self.repo.find_by_phone_in_workspace(
-            digits, channel.workspace_id, channel.tenant_id
-        )
+        is_whatsapp = channel.channel_type == "WHATSAPP"
+        digits = digits_only(external_user_id) if is_whatsapp else ""
+        contact = None
+        if is_whatsapp:
+            contact = self.repo.find_by_phone_in_workspace(
+                digits, channel.workspace_id, channel.tenant_id
+            )
+
+        profile_name = event.get("profile_name") or ""
+        if contact is None and not profile_name and not is_whatsapp:
+            # Messenger/Instagram never carry a name inline (unlike WhatsApp's
+            # `contacts[].profile.name`) - one best-effort Graph lookup, only
+            # when actually creating a brand-new contact (AC-CHN-20 "the
+            # display name taken from the Graph user profile when available").
+            profile_name = self._fetch_profile_name(channel, external_user_id) or ""
+
         if contact is None:
             from .lifecycle_service import initial_status_id
 
-            profile_name = event.get("profile_name") or ""
             first, _, last = profile_name.partition(" ")
             contact = Contact(
                 tenant_id=channel.tenant_id,
                 workspace_id=channel.workspace_id,
                 first_name=first or None,
                 last_name=last or None,
-                phone=f"+{digits}",
-                phone_digits=digits,
+                # AC-CHN-20: phone / phone_digits stay NULL for a PSID/IGSID
+                # contact - WhatsApp keeps its exact pre-existing shape.
+                phone=f"+{digits}" if is_whatsapp else None,
+                phone_digits=digits if is_whatsapp else None,
                 status_id=statuses.status_id_for(self.db, channel.tenant_id, "THREAD", "OPEN"),
                 priority="MEDIUM",
                 # A workspace with no lifecycle graph "should not happen" post-
@@ -414,17 +495,40 @@ class InboundService:
                 self.db, contact, "opened", to_value=contact.status_id, channel_id=channel.id
             )
 
-        self.db.add(
-            ContactChannelIdentity(
-                tenant_id=channel.tenant_id,
-                contact_id=contact.id,
-                channel_id=channel.id,
-                external_user_id=wa_id,
-                profile_name=event.get("profile_name"),
-            )
+        new_identity = ContactChannelIdentity(
+            tenant_id=channel.tenant_id,
+            contact_id=contact.id,
+            channel_id=channel.id,
+            external_user_id=external_user_id,
+            profile_name=event.get("profile_name") or (profile_name or None),
         )
+        self.db.add(new_identity)
         self.db.flush()
-        return contact
+        return contact, new_identity
+
+    def _fetch_profile_name(self, channel: Channel, external_user_id: str) -> Optional[str]:
+        """Best-effort Graph profile-name lookup for a brand-new Messenger/
+        Instagram contact (AC-CHN-20) - failure-isolated exactly like
+        ``_store_media``: a Graph hiccup must never fail contact creation, and
+        dev/unconfigured credentials return ``None`` (the adapter's own
+        dev-safe gate)."""
+        from ..security import decrypt_credentials
+
+        adapter = get_adapter(channel.channel_type)
+        fetch = getattr(adapter, "fetch_profile_name", None)
+        if fetch is None:
+            return None
+        try:
+            credentials = decrypt_credentials(channel.credentials_json)
+        except Exception:  # noqa: BLE001 - bad/dev credentials: no name, keep the message
+            return None
+        try:
+            return fetch(credentials, external_user_id)
+        except Exception:  # noqa: BLE001 - a Graph hiccup must never break contact creation
+            logger.exception(
+                "profile-name lookup failed for channel %s user %s", channel.id, external_user_id
+            )
+            return None
 
     def _store_media(self, channel: Channel, media_id: str) -> Optional[Dict[str, Any]]:
         """Fetch inbound media via Graph + store by KEY (plan 12 AC-12-09).

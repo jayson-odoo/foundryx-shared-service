@@ -115,6 +115,14 @@ class Channel(OmniBase):
     # routing keys off it (O(1)). index=True mirrors that for the create_all path.
     phone_number_id = Column(String, nullable=True, index=True)
     display_phone_number = Column(String, nullable=True)
+    # Plan 32 (A7a, D-A7-3) - the Messenger/Instagram routing key (PAGE_ID / IG
+    # account id), byte-for-byte the `phone_number_id` design above: an
+    # unauthenticated webhook resolves the OWNING TENANT by this id GLOBALLY
+    # (never from the payload's tenant-editable content), so it carries its
+    # own service-wide PARTIAL UNIQUE index over live rows (migration 0017).
+    # index=True mirrors that for the create_all path.
+    external_account_id = Column(String, nullable=True, index=True)
+    external_account_name = Column(String, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     status_id = Column(String, ForeignKey("statuses.id"), nullable=True)
     webhook_verify_token = Column(String, nullable=True)
@@ -219,6 +227,15 @@ class ContactChannelIdentity(OmniBase):
     channel_id = Column(String, ForeignKey("channels.id"), nullable=False, index=True)
     external_user_id = Column(String, nullable=False)
     profile_name = Column(String, nullable=True)
+    # Plan 32 (A7a, D-A7-5) - the per-identity messaging window (one contact
+    # can now be reachable on three channels with three independent windows,
+    # so the window instant moves off the single `contacts.csw_expires_at`
+    # column onto the identity it actually belongs to). `contacts.csw_
+    # expires_at` keeps being dual-written for WhatsApp only (F4) - these
+    # three columns are what every OTHER channel type reads.
+    window_expires_at = Column(UTCDateTime(), nullable=True)
+    human_agent_expires_at = Column(UTCDateTime(), nullable=True)
+    last_inbound_at = Column(UTCDateTime(), nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
     __table_args__ = (

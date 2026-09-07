@@ -495,6 +495,56 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS business_timezone VARCHAR"
                 )
             )
+            # Plan 32 S1 (A7a, D-A7-3/D-A7-5) - Messenger/Instagram routing
+            # columns + the per-identity window columns (module Alembic
+            # 0017_omni_meta_channels is the real fix for a Postgres-tracked
+            # deploy; this covers the create_all path for a fresh install).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS external_account_id VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS external_account_name VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_omni_channels_external_account_id "
+                    f'ON "{OMNI_SCHEMA}".channels (external_account_id)'
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_channels_external_account_id "
+                    f'ON "{OMNI_SCHEMA}".channels (external_account_id) '
+                    "WHERE external_account_id IS NOT NULL AND is_trashed = false"
+                )
+            )
+            for col in ("window_expires_at", "human_agent_expires_at", "last_inbound_at"):
+                conn.execute(
+                    text(
+                        f'ALTER TABLE "{OMNI_SCHEMA}".contact_channel_identities '
+                        f"ADD COLUMN IF NOT EXISTS {col} TIMESTAMPTZ"
+                    )
+                )
+            # AC-CHN-14 backfill mirror (the migration's own SQL sweep is
+            # Postgres-only and shares this exact statement) - idempotent,
+            # scoped to identities with no window stamped yet.
+            conn.execute(
+                text(
+                    f'UPDATE "{OMNI_SCHEMA}".contact_channel_identities i '
+                    "SET window_expires_at = c.csw_expires_at, "
+                    "    last_inbound_at = c.last_incoming_message_at "
+                    f'FROM "{OMNI_SCHEMA}".contacts c, "{OMNI_SCHEMA}".channels ch '
+                    "WHERE i.contact_id = c.id AND i.channel_id = ch.id "
+                    "  AND ch.channel_type = 'WHATSAPP' "
+                    "  AND i.window_expires_at IS NULL"
+                )
+            )
 
 
 def install(engine: Engine, db: Session) -> None:
@@ -618,15 +668,27 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     waits`) and `omnichannel_settings.business_hours_json`/`business_timezone`
     (`0016_omni_business_hours`) - every one a brand-new, empty-until-written
     table or a nullable column with no existing rows to backfill.
+
+    0.7.0 -> 0.8.0 (plan 32 S1, A7a, AC-CHN-14): `channels.external_account_id`/
+    `_name` are new, empty-until-connected columns - no backfill. The three
+    `contact_channel_identities` window columns DO need one: every existing
+    WhatsApp identity is stamped from its contact's `csw_expires_at`/
+    `last_incoming_message_at` so no pre-existing open thread loses its window
+    once `messaging_policy` starts reading the identity column. The module
+    Alembic migration (`0017_omni_meta_channels`) already runs this same sweep
+    in Postgres SQL for a tracked deploy; `messaging_policy.
+    backfill_identity_windows` is the dialect-agnostic Python twin (mirrors
+    `ContactRepository.backfill_phone_digits`) - idempotent, safe to re-run.
     """
     from .repositories.contact_repository import ContactRepository
-    from .services import close_reason_service, event_service, lifecycle_service
+    from .services import close_reason_service, event_service, lifecycle_service, messaging_policy
 
     statuses.ensure_statuses(db, tenant_id)
     lifecycle_service.backfill_tenant(db, tenant_id)
     event_service.backfill_tenant(db, tenant_id)
     close_reason_service.CloseReasonService(db).backfill_tenant(tenant_id)
     ContactRepository(db).backfill_phone_digits(tenant_id)
+    messaging_policy.backfill_identity_windows(db, tenant_id)
     db.flush()
 
 
@@ -701,8 +763,16 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     # data, so a bare id check finds ANOTHER tenant's already-seeded contact
     # and wrongly skips seeding (and the backfill call below) for THIS
     # tenant when more than one tenant runs the dev seed.
-    if db.query(Contact).filter(Contact.id == "cnt-001", Contact.tenant_id == tenant_id).first():
-        return
+    #
+    # Plan 32 S1 (A7a): this check used to `return` immediately, which meant
+    # a tenant that already ran this seed BEFORE this slice landed would
+    # NEVER get `chn-demo-fb` (the channel-creation blocks below are their
+    # own idempotent guards and must run regardless of the thread-seeding
+    # state) - so only the cnt-001..005 thread/template/quick-reply seeding
+    # below is gated on it, not the channels.
+    already_seeded = bool(
+        db.query(Contact).filter(Contact.id == "cnt-001", Contact.tenant_id == tenant_id).first()
+    )
 
     now = datetime.now(timezone.utc)
     ws = (
@@ -730,6 +800,35 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
         )
         db.add(channel)
         db.flush()
+
+    # Plan 32 S1 (A7a) - a dev-credentialed Messenger sandbox channel so a
+    # local/E2E run can POST Messenger-shaped webhook payloads at
+    # `chn-demo-fb` without a real Meta app (mirrors `chn-demo` above; no
+    # seeded threads yet - the webhook pipeline itself creates the contact).
+    fb_channel = (
+        db.query(Channel).filter(Channel.id == "chn-demo-fb", Channel.tenant_id == tenant_id).first()
+    )
+    if fb_channel is None:
+        fb_channel = Channel(
+            id="chn-demo-fb",
+            tenant_id=tenant_id,
+            workspace_id=ws.id,
+            channel_type="FACEBOOK",
+            name="Demo Messenger (sandbox)",
+            credentials_json=encrypt_credentials({"dev": True}),
+            external_account_id="pg-demo-1",
+            external_account_name="Foundryx Concierge (sandbox)",
+            is_active=True,
+            status_id=statuses.status_id_for(db, tenant_id, "CHANNEL", "ACTIVE"),
+        )
+        db.add(fb_channel)
+        db.flush()
+
+    if already_seeded:
+        # Channels above are (re-)ensured; the cnt-001..005 thread/template/
+        # quick-reply dataset below is a one-time seed, already present.
+        db.commit()
+        return
 
     open_id = statuses.status_id_for(db, tenant_id, "THREAD", "OPEN")
     snoozed_id = statuses.status_id_for(db, tenant_id, "THREAD", "SNOOZED")

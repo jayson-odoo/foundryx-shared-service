@@ -132,7 +132,7 @@ def test_manifest_version_and_model_shape(session_factory):
     manifest = json.loads(
         (Path(__file__).resolve().parents[1] / "modules" / "omnichannel" / "manifest.json").read_text()
     )
-    assert manifest["version"] == "0.7.0"  # plan 31 bump
+    assert manifest["version"] == "0.8.0"  # plan 32 bump
     assert any(r["name"] == "team_settings" for r in manifest["routers"])
     assert hasattr(Contact, "assigned_team_id")
     assert TeamAssignmentSetting.__tablename__ == "team_assignment_settings"

@@ -1412,7 +1412,9 @@ def test_inbound_stitch_sets_initial_lifecycle_stage(session_factory):
     db.add(channel)
     db.flush()
 
-    contact = InboundService(db)._resolve_contact(
+    # Plan 32 (A7a) - `_resolve_contact` now returns `(Contact, identity)` so
+    # `_handle_message` can stamp the identity's own window (AC-CHN-21).
+    contact, _identity = InboundService(db)._resolve_contact(
         channel, {"from": "60129998877", "profile_name": "Fresh Lead"}
     )
     db.commit()
