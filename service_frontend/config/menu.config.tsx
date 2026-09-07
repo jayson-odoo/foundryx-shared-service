@@ -377,6 +377,13 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/omnichannel/settings/embed',
         permission: 'workspaces.manage',
       },
+      {
+        // respond.io migration tool (plan 33, roadmap A6) - AC-MIG-01.
+        title: 'Migration',
+        path: '/omnichannel/settings/migration',
+        module: 'omnichannel',
+        permission: 'omnichannel_migration.read',
+      },
     ],
   },
   // Meetings (sprint-5 S0) - module menu block, visible only while the
@@ -536,6 +543,13 @@ export const MENU_MEGA: MenuConfig = [
                 path: '/omnichannel/settings/embed',
                 permission: 'workspaces.manage',
               },
+              {
+                // respond.io migration tool (plan 33, roadmap A6) - AC-MIG-01.
+                title: 'Migration',
+                path: '/omnichannel/settings/migration',
+                module: 'omnichannel',
+                permission: 'omnichannel_migration.read',
+              },
             ],
           },
         ],
@@ -692,6 +706,13 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Embed access',
         path: '/omnichannel/settings/embed',
         permission: 'workspaces.manage',
+      },
+      {
+        // respond.io migration tool (plan 33, roadmap A6) - AC-MIG-01.
+        title: 'Migration',
+        path: '/omnichannel/settings/migration',
+        module: 'omnichannel',
+        permission: 'omnichannel_migration.read',
       },
     ],
   },

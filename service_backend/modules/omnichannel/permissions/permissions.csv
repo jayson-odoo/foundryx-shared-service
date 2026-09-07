@@ -25,3 +25,5 @@ conversations,Conversations,shortcut,Run shortcut,Run a Shortcut workflow from a
 broadcasts,Broadcasts,read,Read,View WhatsApp broadcast campaigns and their recipients
 broadcasts,Broadcasts,manage,Manage,Create/edit/duplicate/delete broadcast campaigns
 broadcasts,Broadcasts,send,Send,Send/schedule/cancel/test-send a broadcast campaign
+omnichannel_migration,Data Migration,read,Read,View respond.io migration jobs and their reports
+omnichannel_migration,Data Migration,manage,Manage,Connect respond.io and run migration preflights/dry runs/migrations
