@@ -19,7 +19,7 @@ import inspect
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Any, Dict, List, Optional, Tuple
+from typing import Callable, Any, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
@@ -37,6 +37,7 @@ from app.models.background_job import (
 )
 
 from ..activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS, record_activity
+from ..canonical.base import CanonicalRecord
 from ..canonical.documents import (
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
@@ -731,7 +732,7 @@ class SyncService:
         beat = self._chunk_beat(job_id)
 
         def apply_chunk(
-            chunk_records: Any,
+            chunk_records: Sequence[CanonicalRecord],
             chunk_results: Optional[List[WriteResult]],
             error: Optional[BaseException],
         ) -> None:

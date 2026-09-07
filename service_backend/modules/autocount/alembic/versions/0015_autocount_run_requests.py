@@ -23,7 +23,7 @@ row simply carries no accounting/offer history, which is the correct reading
 Existence-checked ADDs (0007's discipline): a ``create_all``-first host
 already has these from the model.
 
-Revision ID: 0015_autocount_run_requests   (28 chars <= 32)
+Revision ID: 0015_autocount_run_requests   (27 chars <= 32)
 Revises: 0014_autocount_db_entity_source
 Create Date: 2026-09-07
 """

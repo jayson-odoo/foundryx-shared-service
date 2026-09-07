@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Sequence, Tuple
 
-from sqlalchemy import Text, cast, nulls_first, or_, select
+from sqlalchemy import Text, cast, nulls_first, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.background_job import (
@@ -626,10 +626,27 @@ class StagedRecordRepository:
         the starvation guard beside ``list_pending_for_entity``'s ordering.
         Does not commit; the caller owns the transaction (``auto_push`` commits
         this up front, before any sink call, so the stamp survives even a
-        push that then fails outright)."""
+        push that then fails outright).
+
+        ONE set-based ``UPDATE`` (nit, review round 2) rather than a
+        per-row attribute assignment + ORM flush - up to 5,000 rows offered
+        in one call is the routine case, not the exception.
+        ``synchronize_session=False`` skips re-syncing the SESSION's already
+        -loaded objects against the bulk UPDATE (this call owns no other
+        pending changes to those rows to protect), so the in-memory rows are
+        stamped explicitly right after, for any caller that reads the
+        attribute back before the next fetch."""
+        ids = [row.id for row in rows]
+        if not ids:
+            return
+        self.db.execute(
+            update(AcStagedRecord)
+            .where(AcStagedRecord.id.in_(ids))
+            .values(last_offered_at=now)
+            .execution_options(synchronize_session=False)
+        )
         for row in rows:
             row.last_offered_at = now
-        self.db.flush()
 
     def list_staged_upserts(
         self, tenant_id: str, company_id: str, entity_type: str, source_ref: str

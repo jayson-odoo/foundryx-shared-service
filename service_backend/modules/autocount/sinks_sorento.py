@@ -117,6 +117,11 @@ _OUTCOME_DELIVERED = {"created", "updated"}
 # A plain 500 stays a GUARD-RAIL error until the companion Sorento fix lands
 # (see the class docstring) and a 4xx is a genuine rejection - neither is
 # retried; retrying them would just hammer an app that already answered.
+# A 504 is safe to retry for the SAME reason a 502/503 is even though it can
+# mean the FIRST attempt's request reached the app and simply timed out
+# waiting for the answer: ingest is UPSERT, keyed on ``source_ref`` per
+# record (Appendix A6/A8) - a retried POST that lands on already-processed
+# records resolves to the identical ``updated`` outcome, never a duplicate.
 _TRANSIENT_HTTP_STATUS = frozenset({502, 503, 504})
 
 # Entities whose ``retryable`` is EXPECTED, not a defect (AC-22-23, extended

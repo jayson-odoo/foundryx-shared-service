@@ -384,6 +384,32 @@ all-or-nothing" ruling:**
   chunk_results_or_None, error_or_None)`; job-lease's is a zero-arg heartbeat tick) with the
   heartbeat folded into the richer callback, not the other way round.
 
+  **A run can be `RUN_SUCCESS` with `last_run_error` (`ac_sync_run.error`) set - this is a
+  PARTIAL push, not a fetch failure.** The extract itself succeeded (every row was read and
+  mapped, or the mapping failures are already counted into `failed_count`); the outcome column
+  answers "did the FETCH complete", never "did every staged row reach the consumer". A chunk-level
+  push fault (a transient 5xx that exhausted retries, a lease lost mid-push) is surfaced entirely
+  through `error`/`requests`/`requests_failed`/`first_failure` on the SAME successful run row -
+  reading `outcome` alone to decide whether a run needs attention misses this class of fault
+  entirely; check `error` too.
+
+  **Review round 2 fixes (reviewer REQUEST CHANGES, merge composition with #56):** S1 - the paged
+  path's truncated branch now APPENDS the push's own error to the budget note rather than
+  replacing one with the other. S3 - a REAL flush/commit failure inside a chunk's own per-chunk
+  commit (a NOT NULL violation, a constraint fault) used to leave the session in
+  `PendingRollbackError` for every later statement (the run row itself could never be written);
+  `SyncService._commit_chunk` now rolls back, accounts the failure, and raises an internal
+  `_ChunkCommitFailed` sentinel the caller stops on cleanly. S4 - re-extracting a document already
+  STAGED and unresolved (typically `retryable`) now UPDATES that row in place
+  (`StagedRecordRepository.list_staged_upserts`, mirroring `pending_delete_refs`'s dedup rule for
+  deletes) instead of inserting a second row that would offer - and once pushed, deliver - the
+  same document twice; `_auto_push_upserts`/`_auto_push_deletes`'s ref lookup changed from a dict
+  (kept only the LAST row for a duplicate ref) to ref -> list, so a successful chunk marks EVERY
+  row sharing a ref. S5 - `_retry_after_seconds` caps an arbitrary vendor `Retry-After` at 60s (a
+  stray 3600 previously parked a chunk POST for an hour); the real worst-case bound per chunk is
+  dominated by the 429 wait INSIDE each retry attempt (`attempts * max_rate_limit_waits * 60s`,
+  ~6 minutes at the defaults), not the short backoff BETWEEN attempts.
+
 ### 2.2 Run loop, change-only staging, watermark (`sync.py`)
 
 `run_autocount_sync`, sql_db branch with a watermark column:
