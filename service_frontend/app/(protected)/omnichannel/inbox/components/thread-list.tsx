@@ -22,6 +22,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import type { ConversationFilters } from '@/hooks/use-conversations';
 import { cn } from '@/lib/utils';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
+import { CHANNEL_CAPABILITIES } from '@/lib/channel-capabilities';
 import type { ConversationThread } from '@/types/omnichannel';
 
 export interface ThreadListProps {
@@ -104,9 +105,25 @@ export function ThreadList({
                   )}
                   data-testid={`thread-row-${t.id}`}
                 >
-                  <Avatar className="mt-0.5 size-9 shrink-0">
-                    <AvatarFallback>{initials(t.name)}</AvatarFallback>
-                  </Avatar>
+                  <span className="relative mt-0.5 shrink-0">
+                    <Avatar className="size-9">
+                      <AvatarFallback>{initials(t.name)}</AvatarFallback>
+                    </Avatar>
+                    {/* Channel-type icon chip (plan 32 / A7a, AC-CHN-09). */}
+                    {(() => {
+                      const { icon: ChannelIcon, accentClassName } = CHANNEL_CAPABILITIES[t.channelType];
+                      return (
+                        <span
+                          className={cn(
+                            'absolute -end-1 -bottom-1 flex size-4 items-center justify-center rounded-full ring-2 ring-background',
+                            accentClassName,
+                          )}
+                        >
+                          <ChannelIcon className="size-2.5" />
+                        </span>
+                      );
+                    })()}
+                  </span>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
                       <span className={cn('truncate text-sm', t.unreadCount > 0 ? 'font-semibold' : 'font-medium')}>

@@ -44,6 +44,8 @@ function thread(over: Partial<ConversationThread> = {}): ConversationThread {
     channelId: null,
     channelType: 'WHATSAPP',
     cswExpiresAt: null,
+    windowExpiresAt: null,
+    humanAgentExpiresAt: null,
     lastIncomingMessageAt: null,
     lastMessageAt: '2026-06-04T10:00:00Z',
     lastMessagePreview: null,

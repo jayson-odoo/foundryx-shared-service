@@ -14,11 +14,22 @@
  * `NEXT_PUBLIC_META_APP_ID` + `NEXT_PUBLIC_META_ES_CONFIG_ID` are unset (dev / no
  * Meta app) the wizard falls back to the simulated popup instead.
  */
-import type { EmbeddedSignupResult } from '@/types/omnichannel';
+import type { ChannelType, EmbeddedSignupResult } from '@/types/omnichannel';
 
 const META_APP_ID = process.env.NEXT_PUBLIC_META_APP_ID ?? '';
 const META_CONFIG_ID = process.env.NEXT_PUBLIC_META_ES_CONFIG_ID ?? '';
 const GRAPH_VERSION = process.env.NEXT_PUBLIC_META_GRAPH_VERSION ?? 'v23.0';
+
+/**
+ * Messenger and Instagram share the WhatsApp Meta app (D-A7-1) - only the
+ * OAuth **config id** is per product, each falling back to the WhatsApp one
+ * so a tenant with a single Business Login config keeps working unchanged.
+ */
+const META_PRODUCT_CONFIG_ID: Record<ChannelType, string> = {
+  WHATSAPP: META_CONFIG_ID,
+  FACEBOOK: process.env.NEXT_PUBLIC_META_MESSENGER_ES_CONFIG_ID || META_CONFIG_ID,
+  INSTAGRAM: process.env.NEXT_PUBLIC_META_INSTAGRAM_ES_CONFIG_ID || META_CONFIG_ID,
+};
 
 /** Path of our OAuth callback page - must be registered as a Valid OAuth
  *  Redirect URI in the Meta app (Facebook Login for Business → Settings). */
@@ -52,11 +63,14 @@ interface WaSessionInfo {
 }
 
 /**
- * Launch Embedded Signup. Opens Meta's OAuth dialog in a popup and resolves with
- * the auth code once the tenant finishes. The WABA + phone ids are resolved
- * server-side from the exchanged token, so they're omitted here.
+ * Launch Embedded Signup / Business Login. Opens Meta's OAuth dialog in a
+ * popup and resolves with the auth code once the tenant finishes. `product`
+ * selects the per-product config id (D-A7-1); WABA + phone ids are resolved
+ * server-side from the exchanged token for WhatsApp, so they're omitted here.
  */
-export async function launchEmbeddedSignup(): Promise<EmbeddedSignupResult> {
+export async function launchEmbeddedSignup(
+  product: ChannelType = 'WHATSAPP',
+): Promise<EmbeddedSignupResult> {
   if (typeof window === 'undefined') throw new Error('Embedded Signup runs in the browser only.');
 
   const redirectUri = `${window.location.origin}${CALLBACK_PATH}`;
@@ -66,7 +80,7 @@ export async function launchEmbeddedSignup(): Promise<EmbeddedSignupResult> {
   const dialogUrl =
     `https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth` +
     `?client_id=${encodeURIComponent(META_APP_ID)}` +
-    `&config_id=${encodeURIComponent(META_CONFIG_ID)}` +
+    `&config_id=${encodeURIComponent(META_PRODUCT_CONFIG_ID[product])}` +
     `&response_type=code` +
     `&override_default_response_type=true` +
     `&redirect_uri=${encodeURIComponent(redirectUri)}` +

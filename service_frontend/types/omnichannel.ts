@@ -10,8 +10,14 @@
 import type { UserStatus } from '@/types/user';
 import type { FilterGroup } from '@/types/resource';
 
-/** Channels the platform can connect. MVP builds WHATSAPP; others are later adapters. */
-export type ChannelType = 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM' | 'DOUYIN' | 'XIAOHONGSHU';
+/**
+ * Channels the platform can connect. Pruned to the three implemented adapters
+ * (plan 32 / A7a, D-A7-20) - `DOUYIN` / `XIAOHONGSHU` had no adapter, no
+ * window policy and no capability record, so a picker offering them could be
+ * configured into a guaranteed runtime error (foolproof-UI). See
+ * `lib/channel-capabilities.ts` for the per-type capability/window record.
+ */
+export type ChannelType = 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM';
 
 /** Connection lifecycle of a channel (maps to the static `statuses` table, CHANNEL scope). */
 export type ChannelStatus = 'ACTIVE' | 'PENDING' | 'INACTIVE' | 'ERROR';
@@ -74,6 +80,16 @@ export interface Channel {
   lastVerifiedAt: string | null;
   /** Last WhatsApp Business Profile sync timestamp. */
   profileSyncedAt: string | null;
+  /**
+   * Routing key for a Messenger/Instagram channel (plan 32 / A7a) - the
+   * Facebook PAGE_ID for `FACEBOOK`, the Instagram professional account id
+   * for `INSTAGRAM`. Null on `WHATSAPP` (which uses `phoneNumberId` instead).
+   * S0 MOCK - the real backend column lands in S3; until then a channel read
+   * from the real service simply carries `null` here.
+   */
+  externalAccountId: string | null;
+  /** Display name for `externalAccountId` (the Page name / IG username). */
+  externalAccountName: string | null;
   isTrashed: boolean;
   createdAt: string; // ISO
   updatedAt: string; // ISO
@@ -158,6 +174,50 @@ export interface MockWabaOption {
 }
 
 // ---------------------------------------------------------------------------
+// Plan 32 / A7a - Messenger + Instagram connect flow (`/onboarding/meta/*`).
+// S0 MOCK - `onboardingService.listMetaPages`/`connectMetaChannel` bind the
+// mock implementation until the real routes land in S3/S6.
+// ---------------------------------------------------------------------------
+
+/** A connectable Facebook Page (Messenger) or its linked Instagram
+ *  professional account (Instagram) - offered by the wizard's page-selection
+ *  step. A page already bound to a live channel is never offered. */
+export interface MetaPageOption {
+  id: string;
+  name: string;
+  connected: boolean;
+  /** Present only when connecting `INSTAGRAM` - the account linked to this page. */
+  igAccountId?: string;
+  igUsername?: string;
+}
+
+/** `POST /omnichannel/onboarding/meta/pages` input - exchanges the OAuth code
+ *  server-side; the token never reaches the browser (D-A7-15). */
+export interface ListMetaPagesInput {
+  channelType: Extract<ChannelType, 'FACEBOOK' | 'INSTAGRAM'>;
+  code: string;
+  redirectUri?: string;
+}
+
+/** `POST /omnichannel/onboarding/meta/pages` result - `sessionId` is the
+ *  opaque, short-lived, single-use handle the follow-up connect call spends. */
+export interface MetaPagesResult {
+  sessionId: string;
+  expiresAt: string; // ISO
+  pages: MetaPageOption[];
+}
+
+/** `POST /omnichannel/onboarding/meta/connect` input - finalizes the channel
+ *  for the page (or Instagram account) picked from `MetaPagesResult.pages`. */
+export interface MetaConnectInput {
+  sessionId: string;
+  workspaceId: string;
+  channelType: Extract<ChannelType, 'FACEBOOK' | 'INSTAGRAM'>;
+  pageId: string;
+  igAccountId?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Plan 05 - message processing (conversations, inbox, templates, quick replies)
 // ---------------------------------------------------------------------------
 
@@ -230,8 +290,27 @@ export interface ConversationThread {
   /** Channel the latest message arrived on (drives the thread-list icon). */
   channelId: string | null;
   channelType: ChannelType;
-  /** 24h customer-service-window close time; null = never messaged in. */
+  /**
+   * 24h WhatsApp customer-service-window close time; null = never messaged
+   * in. A documented gateway field (guide 9.1/9.2) - keeps this EXACT
+   * meaning forever (D-A7-5, F4): it is a WhatsApp-only mirror, so it reads
+   * `null` on a Messenger/Instagram thread even though that thread has its
+   * own window (see `windowExpiresAt`).
+   */
   cswExpiresAt: string | null; // ISO
+  /**
+   * The messaging window for THIS thread's channel type (plan 32 / A7a) -
+   * generalizes `cswExpiresAt` to every channel type (`lib/channel-
+   * capabilities.ts` declares the window length per type). For a WHATSAPP
+   * thread this carries the SAME instant as `cswExpiresAt`.
+   */
+  windowExpiresAt: string | null; // ISO
+  /**
+   * The extended human-agent window close time (Messenger/Instagram only,
+   * D-A7-6) - null for a channel type with no human-agent extension
+   * (WhatsApp) or a thread that has never received a message.
+   */
+  humanAgentExpiresAt: string | null; // ISO
   lastIncomingMessageAt: string | null; // ISO
   lastMessageAt: string | null; // ISO
   /** Last visible message body (thread-list preview; server-computed). */

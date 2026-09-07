@@ -7,7 +7,13 @@ import { apiFetch } from '@/lib/api-client';
 import type { Channel, EmbeddedSignupResult, ManualConnectInput } from '@/types/omnichannel';
 import type { OnboardingService } from './onboarding-service';
 
-export const realOnboardingService: OnboardingService = {
+/**
+ * The real backend only implements the WhatsApp routes so far - `listMetaPages`
+ * / `connectMetaChannel` (plan 32 / A7a) land in S3 and get their own real
+ * implementation then; `onboarding-service.ts` binds those two to the mock in
+ * the meantime (S0 MOCK).
+ */
+export const realOnboardingService: Pick<OnboardingService, 'completeOnboarding' | 'manualConnect'> = {
   completeOnboarding(workspaceId, result: EmbeddedSignupResult) {
     return apiFetch<Channel>('/omnichannel/onboarding/oauth-callback', {
       method: 'POST',

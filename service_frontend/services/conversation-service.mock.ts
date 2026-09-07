@@ -156,8 +156,14 @@ function tagRef(name: string): ContactTagRef {
   return { id: t.id, name: t.name, emoji: t.emoji, color: t.color };
 }
 
+/** A WhatsApp thread's `windowExpiresAt` mirrors `cswExpiresAt` exactly
+ *  (D-A7-5/R7) - the generalized window column reads the SAME instant, so
+ *  deriving it here (rather than hand-duplicating every seed row) keeps the
+ *  two provably in sync. */
+type WhatsAppThreadSeed = Omit<ThreadRow, 'windowExpiresAt' | 'humanAgentExpiresAt'>;
+
 function seedThreads(): ThreadRow[] {
-  return [
+  const whatsapp: WhatsAppThreadSeed[] = [
     {
       // Open CSW window, assigned to me - the happy free-form path. Plan 25:
       // Hot Lead stage, tagged VIP, 2 registered custom-field values.
@@ -243,6 +249,95 @@ function seedThreads(): ThreadRow[] {
       tags: [],
       lifecycle: toLifecycleSummary(stageByKey('customer')),
       createdAt: iso(12 * 24 * HOUR),
+    },
+  ];
+  return [
+    ...whatsapp.map((t) => ({ ...t, windowExpiresAt: t.cswExpiresAt, humanAgentExpiresAt: null })),
+    ...seedMetaThreads(),
+  ];
+}
+
+/**
+ * Plan 32 / A7a - Messenger + Instagram threads (S0 MOCK, AC-CHN-10): the
+ * three composer window states (open / human-agent-extended / fully closed)
+ * plus one Instagram thread, so the whole surface is exercisable with no
+ * backend. `cswExpiresAt` stays null on every non-WhatsApp thread (D-A7-5,
+ * F4) - it is a documented WhatsApp-only mirror.
+ */
+function seedMetaThreads(): ThreadRow[] {
+  return [
+    {
+      // Messenger, standard window OPEN - full composer capabilities.
+      id: 'cnt-fb-001', tenantId: TENANT, workspaceId: 'wsp-001',
+      name: 'Wei Ling Tan', firstName: 'Wei Ling', lastName: 'Tan',
+      phone: null, email: null,
+      language: null, countryCode: null, avatarUrl: null,
+      assignedUserId: 'usr-demo', assignedUserName: 'Demo User',
+      status: 'OPEN', priority: 'MEDIUM',
+      channelId: 'chn-fb-001', channelType: 'FACEBOOK',
+      cswExpiresAt: null, windowExpiresAt: isoIn(20 * HOUR), humanAgentExpiresAt: isoIn(164 * HOUR),
+      lastIncomingMessageAt: iso(4 * HOUR),
+      lastMessageAt: iso(4 * HOUR), lastMessagePreview: 'Do you deliver to Penang?',
+      unreadCount: 1,
+      customFields: {},
+      tags: [],
+      lifecycle: null,
+      createdAt: iso(4 * HOUR),
+    },
+    {
+      // Messenger, standard window CLOSED but human-agent window OPEN - the
+      // composer stays enabled for a human agent (AC-CHN-08).
+      id: 'cnt-fb-002', tenantId: TENANT, workspaceId: 'wsp-001',
+      name: 'Aiman Farid', firstName: 'Aiman', lastName: 'Farid',
+      phone: null, email: null,
+      language: null, countryCode: null, avatarUrl: null,
+      assignedUserId: 'usr-demo', assignedUserName: 'Demo User',
+      status: 'OPEN', priority: 'LOW',
+      channelId: 'chn-fb-001', channelType: 'FACEBOOK',
+      cswExpiresAt: null, windowExpiresAt: iso(6 * HOUR), humanAgentExpiresAt: isoIn(138 * HOUR),
+      lastIncomingMessageAt: iso(30 * HOUR),
+      lastMessageAt: iso(30 * HOUR), lastMessagePreview: 'Thanks for the quote!',
+      unreadCount: 0,
+      customFields: {},
+      tags: [],
+      lifecycle: null,
+      createdAt: iso(30 * HOUR),
+    },
+    {
+      // Messenger, BOTH windows closed - composer locked, no template affordance.
+      id: 'cnt-fb-003', tenantId: TENANT, workspaceId: 'wsp-001',
+      name: 'Grace Lim', firstName: 'Grace', lastName: 'Lim',
+      phone: null, email: null,
+      language: null, countryCode: null, avatarUrl: null,
+      assignedUserId: null, assignedUserName: null,
+      status: 'OPEN', priority: 'LOW',
+      channelId: 'chn-fb-001', channelType: 'FACEBOOK',
+      cswExpiresAt: null, windowExpiresAt: iso(200 * HOUR), humanAgentExpiresAt: iso(32 * HOUR),
+      lastIncomingMessageAt: iso(200 * HOUR),
+      lastMessageAt: iso(200 * HOUR), lastMessagePreview: 'See you at the event.',
+      unreadCount: 0,
+      customFields: {},
+      tags: [],
+      lifecycle: null,
+      createdAt: iso(200 * HOUR),
+    },
+    {
+      // Instagram, standard window OPEN.
+      id: 'cnt-ig-001', tenantId: TENANT, workspaceId: 'wsp-001',
+      name: 'nur.aisyah', firstName: null, lastName: null,
+      phone: null, email: null,
+      language: null, countryCode: null, avatarUrl: null,
+      assignedUserId: null, assignedUserName: null,
+      status: 'OPEN', priority: 'MEDIUM',
+      channelId: 'chn-ig-001', channelType: 'INSTAGRAM',
+      cswExpiresAt: null, windowExpiresAt: isoIn(18 * HOUR), humanAgentExpiresAt: isoIn(162 * HOUR),
+      lastIncomingMessageAt: iso(6 * HOUR),
+      lastMessageAt: iso(6 * HOUR), lastMessagePreview: 'Love the new collection!',
+      unreadCount: 1,
+      customFields: {},
+      tags: [],
+      lifecycle: null,
+      createdAt: iso(6 * HOUR),
     },
   ];
 }
@@ -376,6 +471,24 @@ function touchThread(t: ThreadRow, patch: Partial<ThreadRow>): ThreadRow {
   const updated = { ...t, ...patch };
   threads = threads.map((x) => (x.id === t.id ? updated : x));
   return updated;
+}
+
+/**
+ * Mirrors the backend's free-form send gate through the SAME generalized
+ * window (plan 32 / A7a) the composer reads: WhatsApp keeps its exact
+ * `cswExpiresAt` check; Messenger/Instagram allow a free-form send inside the
+ * standard window OR the human-agent extension (the mock inbox always acts
+ * as a human agent, D-A7-6) - the automation-only rejection is a backend/S2
+ * concern, not modelled by this frontend mock.
+ */
+function mockWindowOpen(t: ThreadRow): boolean {
+  const now = Date.now();
+  if (t.channelType === 'WHATSAPP') {
+    return !!t.cswExpiresAt && Date.parse(t.cswExpiresAt) > now;
+  }
+  const standardOpen = !!t.windowExpiresAt && Date.parse(t.windowExpiresAt) > now;
+  const humanAgentOpen = !!t.humanAgentExpiresAt && Date.parse(t.humanAgentExpiresAt) > now;
+  return standardOpen || humanAgentOpen;
 }
 
 /** Simulate Meta delivery receipts for an agent send: SENT→DELIVERED→READ. */
@@ -555,7 +668,7 @@ function mockStructured(
   preview: string,
 ): Promise<ConversationMessage> {
   const t = threadOf(contactId);
-  const windowOpen = !!t.cswExpiresAt && Date.parse(t.cswExpiresAt) > Date.now();
+  const windowOpen = mockWindowOpen(t);
   if (!windowOpen) {
     throw new Error('The 24-hour window has closed - send an approved template to re-engage.');
   }
@@ -601,7 +714,7 @@ export const mockConversationService: ConversationService = {
 
   async sendMessage(contactId, input: SendMessageInput) {
     const t = threadOf(contactId);
-    const windowOpen = !!t.cswExpiresAt && Date.parse(t.cswExpiresAt) > Date.now();
+    const windowOpen = mockWindowOpen(t);
 
     let body: string;
     let messageType: ConversationMessage['messageType'];
@@ -693,7 +806,7 @@ export const mockConversationService: ConversationService = {
 
   async sendMedia(contactId, input: SendMediaInput) {
     const t = threadOf(contactId);
-    const windowOpen = !!t.cswExpiresAt && Date.parse(t.cswExpiresAt) > Date.now();
+    const windowOpen = mockWindowOpen(t);
     if (!windowOpen) {
       throw new Error('The 24-hour window has closed - send an approved template to re-engage.');
     }

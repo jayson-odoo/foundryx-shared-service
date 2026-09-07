@@ -160,6 +160,12 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
       );
     };
 
+    // Templates + Business Profile are WhatsApp/WABA concepts - a Messenger/
+    // Instagram channel filters them out of the tabs array (plan 32 / A7a,
+    // AC-CHN-05, D-A7-17) the same way `webhooks` already is conditional.
+    // Foolproof-UI: a tab that can only fail (typed 409 server-side) is worse
+    // than an absent tab.
+    const isWhatsApp = channel?.channelType === 'WHATSAPP';
     const tabs = [
       {
         id: 'configuration',
@@ -174,26 +180,34 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
           />
         ),
       },
-      {
-        id: 'templates',
-        label: 'Templates',
-        icon: MessageSquareText,
-        render: () => <ChannelTemplatesTab channelId={channelId} />,
-      },
-      {
-        id: 'profile',
-        label: 'Profile',
-        icon: IdCard,
-        render: ({ editing }: { editing: boolean }) => (
-          <ChannelProfileTab
-            form={form}
-            editing={editing}
-            channel={channel}
-            profile={profile}
-            onProfileSynced={handleProfileSynced}
-          />
-        ),
-      },
+      ...(isWhatsApp
+        ? [
+            {
+              id: 'templates',
+              label: 'Templates',
+              icon: MessageSquareText,
+              render: () => <ChannelTemplatesTab channelId={channelId} />,
+            },
+          ]
+        : []),
+      ...(isWhatsApp
+        ? [
+            {
+              id: 'profile',
+              label: 'Profile',
+              icon: IdCard,
+              render: ({ editing }: { editing: boolean }) => (
+                <ChannelProfileTab
+                  form={form}
+                  editing={editing}
+                  channel={channel}
+                  profile={profile}
+                  onProfileSynced={handleProfileSynced}
+                />
+              ),
+            },
+          ]
+        : []),
       ...(canReadWebhooks
         ? [
             {
