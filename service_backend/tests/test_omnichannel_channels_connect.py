@@ -226,6 +226,57 @@ def test_connect_session_is_single_use(client, session_factory):
     assert second.json()["detail"]["reason"] == "connect_session_consumed"
 
 
+def test_connect_session_single_use_claim_leaves_exactly_one_channel(client, session_factory):
+    """Security review round 1, should-fix - the session is claimed
+    atomically (a conditional `UPDATE ... WHERE consumed_at IS NULL`) BEFORE
+    any provisioning, not after `_persist_channel` succeeds at the very end
+    (the old ordering let two concurrent `/meta/connect` calls on one
+    session both read "not yet consumed" and, naming DIFFERENT pages, both
+    succeed). Two connects on one session must leave exactly ONE channel."""
+    from modules.omnichannel.models import Channel
+
+    h = _auth(client)
+    ws = _default_workspace_id(client, h)
+    session_id = _pages(client, h).json()["sessionId"]
+    first = _connect(client, h, session_id=session_id, workspace_id=ws, page_id="pg-701")
+    assert first.status_code == 201
+
+    second = _connect(client, h, session_id=session_id, workspace_id=ws, page_id="pg-702")
+    assert second.status_code == 400
+    assert second.json()["detail"]["reason"] == "connect_session_consumed"
+
+    db = session_factory()
+    count = (
+        db.query(Channel)
+        .filter(Channel.tenant_id == DEFAULT_TENANT_ID, Channel.channel_type == "FACEBOOK")
+        .count()
+    )
+    db.close()
+    assert count == 1
+
+
+def test_connect_session_not_consumed_on_a_failed_attempt_retry_succeeds(client, session_factory):
+    """The claim is CLEARED on the error path (not permanently spent) so a
+    failed provisioning attempt (here: a page already connected elsewhere,
+    409 `external_account_in_use`) still allows a retry with a DIFFERENT
+    page on the SAME session - the pre-existing "not consumed on failure"
+    behaviour, preserved by the atomic-claim fix."""
+    h = _auth(client)
+    ws = _default_workspace_id(client, h)
+    # pg-701 already connected via a fixture-independent prior connect.
+    first_session = _pages(client, h).json()["sessionId"]
+    assert _connect(client, h, session_id=first_session, workspace_id=ws, page_id="pg-701").status_code == 201
+
+    session_id = _pages(client, h).json()["sessionId"]
+    failed = _connect(client, h, session_id=session_id, workspace_id=ws, page_id="pg-701")
+    assert failed.status_code == 409
+    assert failed.json()["detail"]["reason"] == "external_account_in_use"
+
+    # SAME session, a DIFFERENT (unconnected) page - still usable.
+    retry = _connect(client, h, session_id=session_id, workspace_id=ws, page_id="pg-702")
+    assert retry.status_code == 201
+
+
 def test_connect_session_cross_tenant_is_404(client, session_factory):
     h = _auth(client)
     session_id = _pages(client, h).json()["sessionId"]

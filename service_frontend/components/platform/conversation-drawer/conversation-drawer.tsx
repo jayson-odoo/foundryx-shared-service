@@ -45,7 +45,7 @@ import { useTeams } from '@/hooks/use-teams';
 import { useThreadEvents } from '@/hooks/use-thread-events';
 import { conversationService } from '@/services/conversation-service';
 import { workspaceService } from '@/services/workspace-service';
-import { CHANNEL_CAPABILITIES } from '@/lib/channel-capabilities';
+import { channelCapabilities } from '@/lib/channel-capabilities';
 import type {
   ConversationMessage,
   QuickReply,
@@ -257,7 +257,7 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
   // (plan 32 / A7a) instead of a hardcoded WhatsApp-only boolean. WhatsApp
   // reads the SAME `cswExpiresAt` instant it always has (D-A7-5/R7 - byte-
   // identical); every other type reads the generalized `windowExpiresAt`.
-  const capabilities = CHANNEL_CAPABILITIES[thread?.channelType ?? 'WHATSAPP'];
+  const capabilities = channelCapabilities(thread?.channelType ?? 'WHATSAPP');
   const windowOpen = useMemo(() => {
     const iso = thread?.channelType === 'WHATSAPP' ? thread?.cswExpiresAt : thread?.windowExpiresAt;
     return !!iso && Date.parse(iso) > nowTick;

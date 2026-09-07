@@ -53,4 +53,14 @@ describe('CHANNEL_CAPABILITIES', () => {
       expect(channelCapabilities(type).windowHours).toBe(24);
     }
   });
+
+  it('an unmodelled channel type (no DB enum, BL-SS-122) falls back to a neutral UNKNOWN record instead of throwing', () => {
+    expect(() => channelCapabilities('TELEGRAM')).not.toThrow();
+    const c = channelCapabilities('TELEGRAM');
+    expect(c.icon).toBeDefined();
+    expect(c.reengageMode).toBe('none');
+    expect(c.template).toBe(false);
+    expect(c.quickReplies).toBe(false);
+    expect(c.media).toEqual({ image: false, video: false, audio: false, voice: false, document: false, sticker: false });
+  });
 });

@@ -193,16 +193,17 @@ class PublicGatewayService:
     @staticmethod
     def _override_for(channel: Channel) -> Optional[str]:
         """The `channel_id_override` to hand `MessageService` (plan 32 / A7a
-        S6). WhatsApp addresses by PHONE, never by a stored identity row -
-        `_channel_for_contact`'s override path additionally requires the
-        contact to be `is_attached_to_channel` (an identity row), which a
-        business-initiated (never-messaged-in) WhatsApp contact never has.
-        Forcing the override there would turn the WHATSAPP-preferred
-        DEFAULT choice into a regression for exactly the consumers D-A7-18
-        exists to protect. Messenger/Instagram DO need it - `_assert_
-        channel_identity` already proved the identity exists before this is
-        ever called, so the override is always safe there."""
-        return None if channel.channel_type == "WHATSAPP" else channel.id
+        S6). Always the CHOSEN channel's id - an explicit `channelId` in the
+        request must win outright, never be silently re-resolved to a
+        different channel (AC-CHN-53). `_channel_for_contact`'s override
+        path (`message_service.py`) accepts a WHATSAPP override with or
+        without a stored identity row (a business-initiated,
+        never-messaged-in WhatsApp contact addresses by PHONE, not by
+        identity), so returning the id unconditionally is safe for every
+        channel type; Messenger/Instagram overrides still require the
+        identity, already proved to exist by `_assert_channel_identity`
+        before this is ever called."""
+        return channel.id
 
     def _assert_channel_identity(
         self, tenant_id: str, channel: Channel, contact: Contact
@@ -370,7 +371,13 @@ class PublicGatewayService:
         # `ConversationService.message_items`) instead of leaking it as
         # `message.payload.mediaUnavailable`.
         raw_payload = m.payload_json if isinstance(m.payload_json, dict) else None
-        media_unavailable = bool(raw_payload and raw_payload.get("mediaUnavailable"))
+        # The marker can land on a row whose `message_type` did NOT resolve
+        # to a known media kind (an unmapped Messenger attachment kind falls
+        # through to `UNSUPPORTED`, `message_type.py::_ATTACHMENT_TYPES`) -
+        # key on the marker's PRESENCE, not on `is_media`, so the flag stays
+        # lossless vs the internal item (nit, security review round 1).
+        had_marker = bool(raw_payload) and "mediaUnavailable" in raw_payload
+        media_unavailable = bool(raw_payload.get("mediaUnavailable")) if had_marker else False
         payload = RioMessagePayload(
             type=(m.message_type or "text").lower(),
             # A media message's body IS its caption - expose it once, in
@@ -385,9 +392,9 @@ class PublicGatewayService:
             # template binding - flattening these into `text` loses them.
             # `payload_json` is free-form JSON: guard the stored shape (same
             # treatment as `reply_to` below) so a rogue row can't 500 a read.
-            payload=None if media_unavailable else raw_payload,
+            payload=None if had_marker else raw_payload,
             messageTag=meta.get("message_tag"),
-            mediaUnavailable=media_unavailable if is_media else None,
+            mediaUnavailable=media_unavailable if (is_media or had_marker) else None,
         )
         # `metadata_json` is free-form: never assume the stored shape (a legacy
         # or hand-written row must not 500 a read).

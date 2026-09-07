@@ -154,7 +154,21 @@ class InboundService:
                 )
                 if by_account is not None:
                     return by_account
-            return self.db.query(Channel).filter(Channel.id == channel_id).first()
+            # URL-id fallback (nit, security review round 1) - still type-
+            # matched and live-only: after an `object` dispatch, drop rather
+            # than fall back to a channel of the WRONG type or a trashed one
+            # (a Messenger payload must never be handed to
+            # `WhatsAppCloudAdapter.parse_inbound`, and a trashed channel is
+            # not a live routing target).
+            return (
+                self.db.query(Channel)
+                .filter(
+                    Channel.id == channel_id,
+                    Channel.channel_type == channel_type,
+                    Channel.is_trashed.is_(False),
+                )
+                .first()
+            )
 
         # whatsapp_business_account (or absent) - today's path, unchanged.
         pnid = _payload_phone_number_id(payload)
@@ -217,7 +231,9 @@ class InboundService:
                 media_mime = stored.get("mime") or media_mime
                 media_size = stored.get("size")
         elif event.get("media_url"):
-            stored = self._store_media_from_url(channel, event["media_url"])
+            stored = self._store_media_from_url(
+                channel, event["media_url"], kind=event.get("message_type")
+            )
             if stored is not None:
                 media_key = stored["key"]
                 media_mime = stored.get("mime") or media_mime
@@ -584,7 +600,9 @@ class InboundService:
             return None
         return {"key": key, "mime": mime, "size": len(content)}
 
-    def _store_media_from_url(self, channel: Channel, url: str) -> Optional[Dict[str, Any]]:
+    def _store_media_from_url(
+        self, channel: Channel, url: str, *, kind: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """Inbound Messenger/Instagram attachment (plan 32 S5, D-A7-12/
         AC-CHN-46/47): the payload carries a short-lived CDN URL, not a media
         id. Downloaded with the page token through `adapter.fetch_media_url`
@@ -592,7 +610,10 @@ class InboundService:
         bounded redirects + a bounded inline retry, ALL enforced inside the
         adapter that owns the CDN allowlist) then stored through the SAME
         `storage_for_tenant` path as WhatsApp media - a storage hiccup loses
-        the media, never the message. Returns {key, mime, size} or None."""
+        the media, never the message. ``kind`` (the resolved house message
+        type) widens the adapter's sniff allowlist for a `"DOCUMENT"` row to
+        the outbound document family (should-fix, security review round 1) -
+        every other kind is unaffected. Returns {key, mime, size} or None."""
         from app.services.storage import storage_for_tenant
 
         from ..security import decrypt_credentials
@@ -606,7 +627,7 @@ class InboundService:
         except Exception:  # noqa: BLE001 - bad/dev credentials: skip media, keep the message
             return None
         try:
-            blob = fetch(credentials, url)
+            blob = fetch(credentials, url, kind=kind)
         except Exception:  # noqa: BLE001 - a fetch hiccup must never drop the message
             logger.exception("media URL fetch failed for channel %s", channel.id)
             return None
@@ -668,7 +689,11 @@ class InboundService:
             seen: set = set()
             targets: List[ConversationMessage] = []
             for mid in mids:
-                msg = self.repo.get_message_by_external_id(mid, channel.tenant_id)
+                # Channel-scoped like the sibling watermark path (nit,
+                # security review round 1) - Meta mids are globally unique
+                # in practice, but the two receipt paths should scope
+                # identically.
+                msg = self.repo.get_message_by_external_id(mid, channel.tenant_id, channel_id=channel.id)
                 if msg is not None and msg.id not in seen:
                     seen.add(msg.id)
                     targets.append(msg)

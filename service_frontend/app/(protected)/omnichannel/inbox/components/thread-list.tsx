@@ -22,7 +22,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import type { ConversationFilters } from '@/hooks/use-conversations';
 import { cn } from '@/lib/utils';
 import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
-import { CHANNEL_CAPABILITIES } from '@/lib/channel-capabilities';
+import { channelCapabilities } from '@/lib/channel-capabilities';
 import type { ConversationThread } from '@/types/omnichannel';
 
 export interface ThreadListProps {
@@ -111,7 +111,7 @@ export function ThreadList({
                     </Avatar>
                     {/* Channel-type icon chip (plan 32 / A7a, AC-CHN-09). */}
                     {(() => {
-                      const { icon: ChannelIcon, accentClassName } = CHANNEL_CAPABILITIES[t.channelType];
+                      const { icon: ChannelIcon, accentClassName } = channelCapabilities(t.channelType);
                       return (
                         <span
                           className={cn(

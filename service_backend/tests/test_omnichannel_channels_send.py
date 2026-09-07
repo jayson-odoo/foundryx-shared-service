@@ -435,6 +435,61 @@ def test_channel_addressing_messenger_missing_identity_raises(session_factory):
     db.close()
 
 
+# ── Security review round 1, blocker 2 - MessageService._channel_for_contact
+# `channel_id_override` guard, pinned in both directions (was widened for
+# WhatsApp with no test on either side) ───────────────────────────────────
+def test_channel_for_contact_whatsapp_override_accepted_for_an_identity_less_contact(session_factory):
+    """A business-initiated (never-messaged-in) WhatsApp contact has NO
+    `ContactChannelIdentity` at all (D-A7-3, addresses by phone). An explicit
+    `channelId` override naming a WhatsApp channel must still be accepted -
+    this is the relaxation `message_service.py:189-198` shipped this slice
+    (`_override_for` in the gateway now relies on it, blocker 2)."""
+    from modules.omnichannel.models import Channel, Contact, Workspace
+    from modules.omnichannel.services import statuses
+    from modules.omnichannel.services.message_service import MessageService
+
+    channel_id = _wa_channel(session_factory, phone_number_id="pn-override-1")
+    db = session_factory()
+    channel = db.query(Channel).filter(Channel.id == channel_id).first()
+    ws = db.query(Workspace).filter(Workspace.tenant_id == DEFAULT_TENANT_ID, Workspace.is_default.is_(True)).first()
+    contact = Contact(
+        tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id,
+        phone="+60111119999", phone_digits="60111119999",
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "THREAD", "OPEN"),
+        priority="MEDIUM",
+    )
+    db.add(contact)
+    db.commit()
+
+    resolved = MessageService(db)._channel_for_contact(contact, channel_id)
+    assert resolved.id == channel.id
+    db.close()
+
+
+def test_channel_for_contact_messenger_override_still_refused_for_an_identity_less_contact(session_factory):
+    """Messenger/Instagram address by IDENTITY, never by phone - the
+    relaxation above is WhatsApp-only; a Messenger `channelId` override for
+    a contact with no identity on that channel must still be refused."""
+    from modules.omnichannel.models import Channel, Contact, Workspace
+    from modules.omnichannel.services import statuses
+    from modules.omnichannel.services.message_service import MessageService, SendRejected
+
+    channel_id = _fb_channel(session_factory, external_account_id="pg-override-1")
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.tenant_id == DEFAULT_TENANT_ID, Workspace.is_default.is_(True)).first()
+    contact = Contact(
+        tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id,
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "THREAD", "OPEN"),
+        priority="MEDIUM",
+    )
+    db.add(contact)
+    db.commit()
+
+    with pytest.raises(SendRejected):
+        MessageService(db)._channel_for_contact(contact, channel_id)
+    db.close()
+
+
 # ── AC-CHN-31: tenant isolation ──────────────────────────────────────────────
 def test_find_identity_for_channel_is_tenant_scoped(session_factory):
     from modules.omnichannel.repositories.contact_repository import ContactRepository

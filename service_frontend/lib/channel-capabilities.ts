@@ -11,7 +11,7 @@
  * exists - `channel-capabilities.test.ts` pins this side of the contract now
  * (D-A7-10: a UX-only mirror, never a new wire field).
  */
-import { Facebook, Instagram, MessageCircle, type LucideIcon } from 'lucide-react';
+import { CircleHelp, Facebook, Instagram, MessageCircle, type LucideIcon } from 'lucide-react';
 import type { ChannelType } from '@/types/omnichannel';
 
 /** How a channel type re-engages a contact once its standard window closes. */
@@ -116,6 +116,39 @@ export const CHANNEL_CAPABILITIES: Record<ChannelType, ChannelCapabilities> = {
 /** Ordered list for pickers (connect wizard channel-type step, filters). */
 export const CHANNEL_TYPES: ChannelType[] = ['WHATSAPP', 'FACEBOOK', 'INSTAGRAM'];
 
-export function channelCapabilities(channelType: ChannelType): ChannelCapabilities {
-  return CHANNEL_CAPABILITIES[channelType];
+/**
+ * Neutral fallback for a `channels.channel_type` value this build does not
+ * model (BL-SS-122: no DB enum, so a legacy row or a backend-only type ahead
+ * of its own frontend slice is a live possibility, not a theoretical one).
+ * Generic icon, no brand accent, text-only capabilities, no messaging
+ * window/re-engagement affordance - never crash the Channels/Contacts list,
+ * thread list or drawer over an unmodelled type.
+ */
+const UNKNOWN_CAPABILITIES: ChannelCapabilities = {
+  // `channelType` is unread on this record (every call site already has the
+  // raw string it looked up) - 'WHATSAPP' is a type-shape placeholder only.
+  channelType: 'WHATSAPP',
+  label: 'Unknown',
+  icon: CircleHelp,
+  accentClassName: 'bg-mono/10 text-mono',
+  windowHours: 0,
+  humanAgentHours: null,
+  reengageMode: 'none',
+  media: { image: false, video: false, audio: false, voice: false, document: false, sticker: false },
+  quickReplies: false,
+  list: false,
+  location: false,
+  contacts: false,
+  template: false,
+  outboundReaction: false,
+};
+
+/**
+ * The one lookup every call site must go through instead of indexing
+ * `CHANNEL_CAPABILITIES` directly - falls back to `UNKNOWN_CAPABILITIES`
+ * rather than throwing when `channelType` is not one of the three modelled
+ * types (a plain string on the wire, not a DB enum).
+ */
+export function channelCapabilities(channelType: string): ChannelCapabilities {
+  return CHANNEL_CAPABILITIES[channelType as ChannelType] ?? UNKNOWN_CAPABILITIES;
 }

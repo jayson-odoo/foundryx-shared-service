@@ -58,10 +58,18 @@ def upgrade() -> None:
             f'ALTER TABLE "{SCHEMA}".channels '
             "ADD COLUMN IF NOT EXISTS external_account_name VARCHAR"
         )
-        op.execute(
-            "CREATE INDEX IF NOT EXISTS ix_omni_channels_external_account_id "
-            f'ON "{SCHEMA}".channels (external_account_id)'
-        )
+        # Byte-for-byte the `phone_number_id` precedent (migration 0002,
+        # nit fixed in security review round 1): only the PARTIAL UNIQUE
+        # index is migration-created - it already serves every live-row
+        # lookup this column needs (`_assert_external_account_available`/
+        # `_resolve_channel` both filter `is_trashed = false`). A separate
+        # plain `CREATE INDEX` here would be redundant AND would carry a
+        # different name than the one `Channel.external_account_id`'s
+        # `index=True` generates on the `create_all` path
+        # (`ix_app_omnichannel_channels_external_account_id`) - two
+        # differently-named indexes for the same column depending on
+        # provisioning route. Dropping the plain index removes the
+        # mismatch entirely rather than trying to rename around it.
         op.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_channels_external_account_id "
             f'ON "{SCHEMA}".channels (external_account_id) '
@@ -128,7 +136,6 @@ def downgrade() -> None:
         batch_op.drop_column("human_agent_expires_at")
         batch_op.drop_column("window_expires_at")
     op.execute(f'DROP INDEX IF EXISTS "{SCHEMA}".uq_channels_external_account_id')
-    op.execute(f'DROP INDEX IF EXISTS "{SCHEMA}".ix_omni_channels_external_account_id')
     with op.batch_alter_table("channels", schema=SCHEMA) as batch_op:
         batch_op.drop_column("external_account_name")
         batch_op.drop_column("external_account_id")

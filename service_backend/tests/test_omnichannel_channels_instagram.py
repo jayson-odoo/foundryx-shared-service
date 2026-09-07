@@ -538,6 +538,66 @@ def test_ig_external_account_id_pins_inbound_routing_and_outbound_addressing(cli
     db.close()
 
 
+def test_ig_connect_with_mismatching_ig_account_id_is_refused_and_creates_no_channel(
+    client, session_factory
+):
+    """Security review round 1, blocker 1 - `igAccountId` must be validated
+    against the PAGE's own linked account, never trusted as-is: it becomes
+    the unauthenticated webhook routing key (`InboundService._resolve_
+    channel`). A client claiming an Instagram account it does not administer
+    through THIS page must be refused, not stamped onto
+    `external_account_id`."""
+    h = _auth(client)
+    ws_res = client.get("/omnichannel/workspaces", headers=h)
+    ws_id = next(w["id"] for w in ws_res.json()["data"] if w["isDefault"])
+
+    pages = client.post(
+        "/omnichannel/onboarding/meta/pages", headers=h,
+        json={"channelType": "INSTAGRAM", "code": "code-ig-mismatch"},
+    ).json()
+    connect = client.post(
+        "/omnichannel/onboarding/meta/connect", headers=h,
+        json={
+            "sessionId": pages["sessionId"], "workspaceId": ws_id, "channelType": "INSTAGRAM",
+            # pg-701 is linked to ig-701 (see `_DEV_PAGES`) - claiming
+            # ig-702 (pg-702's own linked account) must be refused.
+            "pageId": "pg-701", "igAccountId": "ig-702",
+        },
+    )
+    assert connect.status_code == 404
+
+    from modules.omnichannel.models import Channel
+
+    db = session_factory()
+    leaked = db.query(Channel).filter(Channel.external_account_id == "ig-702").first()
+    assert leaked is None
+    also_absent = db.query(Channel).filter(Channel.external_account_id == "ig-701").first()
+    assert also_absent is None
+    db.close()
+
+
+def test_ig_connect_without_ig_account_id_uses_the_pages_linked_account(client, session_factory):
+    """A connect that omits `igAccountId` (the field is optional on the
+    wire) still succeeds, using the page's own server-derived account."""
+    h = _auth(client)
+    ws_res = client.get("/omnichannel/workspaces", headers=h)
+    ws_id = next(w["id"] for w in ws_res.json()["data"] if w["isDefault"])
+
+    pages = client.post(
+        "/omnichannel/onboarding/meta/pages", headers=h,
+        json={"channelType": "INSTAGRAM", "code": "code-ig-noid"},
+    ).json()
+    connect = client.post(
+        "/omnichannel/onboarding/meta/connect", headers=h,
+        json={
+            "sessionId": pages["sessionId"], "workspaceId": ws_id, "channelType": "INSTAGRAM",
+            "pageId": "pg-702",
+        },
+    )
+    assert connect.status_code == 201
+    assert connect.json()["externalAccountId"] == "ig-702"
+
+
 def test_ig_test_connection_pings_external_account_id(session_factory):
     """AC-CHN-37/45 (Instagram side): `test_connection` addresses the IG
     account id, never a phone number id."""

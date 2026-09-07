@@ -106,6 +106,26 @@ describe('ChannelConnectWizard - plan 32 / A7a channel-type step', () => {
     expect(screen.getByText('Foundryx VIP Desk')).toBeInTheDocument();
   });
 
+  it('every returned page already connected -> a proper empty state, no dead disabled Connect control (nit, security review round 1)', async () => {
+    listMetaPages.mockResolvedValue({
+      sessionId: 'sess-empty',
+      expiresAt: '2026-01-01T00:05:00Z',
+      pages: PAGES.map((p) => ({ ...p, connected: true })),
+    });
+    render(<ChannelConnectWizard open onOpenChange={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Channel type' })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Channel type' }));
+    fireEvent.click(screen.getByText('Messenger'));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Channel type' })).toHaveTextContent('Messenger'));
+    fireEvent.click(screen.getByRole('button', { name: /Connect \(sandbox\)/ }));
+
+    await waitFor(() => expect(screen.getByTestId('wizard-no-available-pages')).toBeInTheDocument());
+    expect(screen.queryByRole('combobox', { name: 'Facebook Page' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+  });
+
   it('picking a page on the wizard\'s own page step connects the channel', async () => {
     listMetaPages.mockResolvedValue({
       sessionId: 'sess-2',

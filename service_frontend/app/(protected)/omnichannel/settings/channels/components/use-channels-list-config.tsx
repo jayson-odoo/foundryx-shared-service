@@ -13,7 +13,7 @@ import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import type { ResourceListConfig } from '@/components/platform/resource-list';
 import { channelService } from '@/services/channel-service';
 import { useDatetime } from '@/hooks/use-datetime';
-import { CHANNEL_CAPABILITIES } from '@/lib/channel-capabilities';
+import { channelCapabilities } from '@/lib/channel-capabilities';
 import type { FilterFieldDef } from '@/types/resource';
 import type { Channel } from '@/types/omnichannel';
 import { CHANNEL_STATUS_REGISTRY, CHANNEL_TYPE_LABELS, CHANNEL_TYPE_REGISTRY } from './channel-status';
@@ -87,10 +87,11 @@ export function useChannelsListConfig({
         header: ({ column }) => <DataGridColumnHeader title="Channel" column={column} />,
         cell: ({ row }) => {
           const c = row.original;
-          const Icon = CHANNEL_CAPABILITIES[c.channelType].icon;
+          const capabilities = channelCapabilities(c.channelType);
+          const Icon = capabilities.icon;
           return (
             <div className="flex items-center gap-2.5">
-              <span className={cn('flex size-8 items-center justify-center rounded-md', CHANNEL_CAPABILITIES[c.channelType].accentClassName)}>
+              <span className={cn('flex size-8 items-center justify-center rounded-md', capabilities.accentClassName)}>
                 <Icon className="size-4" />
               </span>
               <div className="flex flex-col">

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { CheckCircle2, Loader2, TriangleAlert } from 'lucide-react';
+import { CheckCircle2, Inbox, Loader2, TriangleAlert } from 'lucide-react';
 import {
   Dialog,
   DialogBody,
@@ -261,25 +261,45 @@ export function ChannelConnectWizard({
               </DialogDescription>
             </DialogHeader>
             <DialogBody className="flex flex-col gap-3">
-              <SearchSelect
-                options={availablePages.map((p) => ({
-                  value: p.id,
-                  label: channelType === 'INSTAGRAM' ? (p.igUsername ?? p.name) : p.name,
-                }))}
-                value={selectedPageId || null}
-                onChange={setSelectedPageId}
-                placeholder={channelType === 'INSTAGRAM' ? 'Select an account' : 'Select a page'}
-                ariaLabel={channelType === 'INSTAGRAM' ? 'Instagram account' : 'Facebook Page'}
-                className="w-full"
-              />
+              {availablePages.length === 0 ? (
+                // Every returned page/account is already connected (nit,
+                // security review round 1) - foolproof-UI: never leave an
+                // empty picker + a permanently-disabled Connect button with
+                // no explanation of the CURRENT STATE (distinct from the
+                // house's "no instructional copy" rule, which forbids
+                // teaching how to use the screen, not stating a fact).
+                <div
+                  className="flex flex-col items-center justify-center gap-2 py-6 text-muted-foreground"
+                  data-testid="wizard-no-available-pages"
+                >
+                  <Inbox className="size-8" />
+                  <p className="text-sm">
+                    Every {channelType === 'INSTAGRAM' ? 'account' : 'Page'} is already connected.
+                  </p>
+                </div>
+              ) : (
+                <SearchSelect
+                  options={availablePages.map((p) => ({
+                    value: p.id,
+                    label: channelType === 'INSTAGRAM' ? (p.igUsername ?? p.name) : p.name,
+                  }))}
+                  value={selectedPageId || null}
+                  onChange={setSelectedPageId}
+                  placeholder={channelType === 'INSTAGRAM' ? 'Select an account' : 'Select a page'}
+                  ariaLabel={channelType === 'INSTAGRAM' ? 'Instagram account' : 'Facebook Page'}
+                  className="w-full"
+                />
+              )}
             </DialogBody>
             <DialogFooter>
               <Button variant="outline" onClick={close}>
                 Cancel
               </Button>
-              <Button onClick={submitPage} disabled={!selectedPage}>
-                Connect
-              </Button>
+              {availablePages.length > 0 && (
+                <Button onClick={submitPage} disabled={!selectedPage}>
+                  Connect
+                </Button>
+              )}
             </DialogFooter>
           </>
         ) : manualMode ? (

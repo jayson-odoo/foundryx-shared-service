@@ -16,6 +16,8 @@ import type {
   LocationPayload,
 } from '@/types/omnichannel';
 
+import { MediaUnavailablePlaceholder } from './message-media';
+
 const STRUCTURED_TYPES = ['INTERACTIVE', 'INTERACTIVE_REPLY', 'LOCATION', 'CONTACTS', 'UNSUPPORTED'];
 
 export function isStructuredMessage(message: ConversationMessage): boolean {
@@ -172,7 +174,14 @@ export function MessageStructured({ message }: { message: ConversationMessage })
     case 'CONTACTS':
       return <ContactsCard payload={message.payload as ContactsPayload} />;
     default:
-      return (
+      // A Messenger/Instagram attachment kind this build never modelled
+      // (e.g. `location`, `fallback`) that ALSO failed its CDN fetch is
+      // stored as UNSUPPORTED but still carries `mediaUnavailable` (plan 32
+      // / A7a) - the same muted media placeholder every media type renders
+      // for a missing blob, not the generic "unsupported" copy.
+      return message.mediaUnavailable ? (
+        <MediaUnavailablePlaceholder />
+      ) : (
         <p className="text-sm italic text-muted-foreground" data-testid="structured-unsupported">
           Unsupported message type
         </p>

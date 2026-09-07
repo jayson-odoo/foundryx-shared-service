@@ -234,6 +234,46 @@ def test_fetch_media_url_sniff_mismatch_rejected(monkeypatch):
     assert result is None
 
 
+def test_fetch_media_url_document_kind_accepts_the_outbound_document_family(monkeypatch):
+    """Should-fix (security review round 1) - a DOCUMENT-typed attachment
+    (Messenger-only, `_ATTACHMENT_TYPES["file"]`) rides the SAME sniff family
+    the outbound upload path already accepts (`media_pipeline.ACCEPTED_
+    MIMES["DOCUMENT"]`), not the narrower image/video/audio/pdf set. A zip-
+    magic-bytes blob (docx/xlsx/pptx all share it; no filename means the
+    generic `application/zip` fallback, itself in the DOCUMENT family) is
+    accepted with `kind="DOCUMENT"`."""
+    _configure(monkeypatch)
+    docx = b"PK\x03\x04" + b"0" * 32
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=docx, headers={"content-type": "application/octet-stream"})
+
+    fake = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = MessengerAdapter(client=fake)
+    result = adapter.fetch_media_url(
+        {"access_token": "tok"}, "https://scontent.xx.fbcdn.net/receipt.docx", kind="DOCUMENT"
+    )
+    assert result == {"content": docx, "mime_type": "application/zip"}
+
+
+def test_fetch_media_url_document_bytes_rejected_without_the_document_kind(monkeypatch):
+    """The SAME zip-shaped blob is rejected for every OTHER kind (the
+    narrower image/video/audio/pdf allowlist is unaffected by the widening -
+    it is scoped strictly to `kind="DOCUMENT"`)."""
+    _configure(monkeypatch)
+    docx = b"PK\x03\x04" + b"0" * 32
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=docx, headers={"content-type": "application/octet-stream"})
+
+    fake = httpx.Client(transport=httpx.MockTransport(handler))
+    adapter = MessengerAdapter(client=fake)
+    result = adapter.fetch_media_url(
+        {"access_token": "tok"}, "https://scontent.xx.fbcdn.net/receipt.docx"
+    )
+    assert result is None
+
+
 def test_fetch_media_url_transient_5xx_retried_then_succeeds(monkeypatch):
     _configure(monkeypatch)
     png = b"\x89PNG\r\n\x1a\n" + b"2" * 16
@@ -296,7 +336,7 @@ def test_store_media_from_url_uses_existing_storage_key_convention(session_facto
     monkeypatch.setattr(
         MessengerAdapter,
         "fetch_media_url",
-        lambda self, creds, url: {"content": b"\x89PNGdata", "mime_type": "image/png"},
+        lambda self, creds, url, kind=None: {"content": b"\x89PNGdata", "mime_type": "image/png"},
     )
     channel_id = _fb_channel(session_factory, external_account_id="pg-store-1")
     db = session_factory()
@@ -324,7 +364,7 @@ def test_inbound_messenger_image_attachment_stores_blob_and_clears_pending_url(
     monkeypatch.setattr(
         MessengerAdapter,
         "fetch_media_url",
-        lambda self, creds, url: {"content": b"\x89PNGimgdata", "mime_type": "image/png"},
+        lambda self, creds, url, kind=None: {"content": b"\x89PNGimgdata", "mime_type": "image/png"},
     )
     channel_id = _fb_channel(session_factory, external_account_id="pg-img-1")
     payload = {
@@ -348,12 +388,55 @@ def test_inbound_messenger_image_attachment_stores_blob_and_clears_pending_url(
     assert row.payload_json is None  # `pendingMediaUrl` consumed, never left stale
 
 
+def test_inbound_messenger_document_attachment_stores_docx_blob(session_factory, monkeypatch, tmp_path):
+    """Should-fix (security review round 1) - a Messenger `file` attachment
+    (`_ATTACHMENT_TYPES["file"] == "DOCUMENT"`, the composer offers Document
+    on Messenger) whose CDN blob sniffs as the office/zip family stores,
+    end-to-end through `_process`, instead of silently landing as
+    `mediaUnavailable` even though the capability table advertises document
+    support. Also pins that the resolved `message_type` ("DOCUMENT") is the
+    `kind` threaded into `fetch_media_url`."""
+    from modules.omnichannel.models import ConversationMessage
+    from modules.omnichannel.services import storage as storage_module
+    from modules.omnichannel.services.storage import LocalDiskStorage
+
+    storage_module.set_storage(LocalDiskStorage(str(tmp_path)))
+    captured_kind = {}
+
+    def fake_fetch(self, creds, url, kind=None):
+        captured_kind["kind"] = kind
+        return {"content": b"PK\x03\x04" + b"0" * 32, "mime_type": "application/zip"}
+
+    monkeypatch.setattr(MessengerAdapter, "fetch_media_url", fake_fetch)
+    channel_id = _fb_channel(session_factory, external_account_id="pg-doc-1")
+    payload = {
+        "object": "page",
+        "entry": [{"id": "pg-doc-1", "messaging": [{
+            "sender": {"id": "psid-doc-1"}, "timestamp": 1,
+            "message": {"mid": "m.doc.1", "attachments": [
+                {"type": "file", "payload": {"url": "https://scontent.xx.fbcdn.net/v/receipt.docx"}}
+            ]},
+        }]}],
+    }
+    res = _process(session_factory, channel_id, payload)
+    storage_module.set_storage(None)
+    assert res["messages"] == 1
+    assert captured_kind["kind"] == "DOCUMENT"
+
+    db = session_factory()
+    row = db.query(ConversationMessage).filter(ConversationMessage.external_message_id == "m.doc.1").first()
+    db.close()
+    assert row.message_type == "DOCUMENT"
+    assert row.media_key is not None
+    assert row.payload_json is None  # `pendingMediaUrl` consumed, never left stale
+
+
 def test_inbound_messenger_image_fetch_failure_marks_unavailable_never_drops_message(
     session_factory, monkeypatch
 ):
     from modules.omnichannel.models import ConversationMessage
 
-    monkeypatch.setattr(MessengerAdapter, "fetch_media_url", lambda self, creds, url: None)
+    monkeypatch.setattr(MessengerAdapter, "fetch_media_url", lambda self, creds, url, kind=None: None)
     channel_id = _fb_channel(session_factory, external_account_id="pg-img-2")
     payload = {
         "object": "page",
@@ -481,6 +564,35 @@ def test_mids_receipt_targets_exact_messages_ignores_watermark_breadth(session_f
     statuses = _message_statuses(session_factory, contact_id)
     assert statuses["m.wm.6"] == "DELIVERED"
     assert statuses["m.wm.5"] == "SENT"  # mids present -> exact targeting only
+
+
+def test_mids_receipt_scoped_to_the_delivering_channel(session_factory):
+    """Nit, security review round 1 - `mids[]` receipt targeting must scope
+    by CHANNEL like the sibling watermark path
+    (`ContactRepository.outbound_before_watermark`). `external_message_id`
+    carries a table-wide UNIQUE constraint (Meta mids are globally unique in
+    practice, so a same-id row on a DIFFERENT channel cannot even be seeded)
+    - this test instead pins that a `mids[]` receipt delivered on channel A
+    cannot resolve a message that lives on channel B, even though the mid
+    itself is a real, existing external id."""
+    channel_a = _fb_channel(session_factory, external_account_id="pg-mids-a")
+    channel_b = _fb_channel(session_factory, external_account_id="pg-mids-b")
+    contact_b = _fb_contact_with_identity(session_factory, channel_b, psid="psid-mids-b")
+    base = _now() - timedelta(minutes=10)
+    _seed_outbound_messages(session_factory, contact_b, channel_b, [
+        {"created_at": base, "external_message_id": "m.mids.wrong-channel"},
+    ])
+    payload = {
+        "object": "page",
+        "entry": [{"id": "pg-mids-a", "messaging": [{
+            "sender": {"id": "psid-mids-a"},
+            "delivery": {"mids": ["m.mids.wrong-channel"]},
+        }]}],
+    }
+    res = _process(session_factory, channel_a, payload)
+    assert res["statuses"] == 0
+    assert res["skipped"] == 1
+    assert _message_statuses(session_factory, contact_b)["m.mids.wrong-channel"] == "SENT"  # untouched
 
 
 def test_read_watermark_advances_status_to_read(session_factory):

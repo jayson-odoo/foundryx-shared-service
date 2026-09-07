@@ -144,4 +144,18 @@ describe('MessageBubble - media rendering (plan 12)', () => {
     render(<MessageBubble message={mediaMsg({ messageType: 'STICKER', mediaMime: 'image/webp' })} />);
     await waitFor(() => expect(screen.getByTestId('media-sticker')).toBeInTheDocument());
   });
+
+  it('renders the muted media-unavailable placeholder (never attempts the blob fetch) when mediaUnavailable is set, plan 32 / A7a', async () => {
+    const { apiFetchBlob } = await import('@/lib/api-client');
+    const callsBefore = vi.mocked(apiFetchBlob).mock.calls.length;
+    render(<MessageBubble message={mediaMsg({ mediaUrl: null, mediaUnavailable: true })} />);
+    expect(screen.getByTestId('media-failed')).toBeInTheDocument();
+    expect(screen.getByText('Media unavailable')).toBeInTheDocument();
+    expect(screen.queryByTestId('media-image')).not.toBeInTheDocument();
+    // A null `mediaUrl` already short-circuits `useMediaBlob` before this
+    // render's own explicit `mediaUnavailable` check ever runs - this
+    // asserts no NEW fetch happened from THIS render (the mock is shared,
+    // uncleared, across this file's other tests).
+    expect(vi.mocked(apiFetchBlob).mock.calls.length).toBe(callsBefore);
+  });
 });

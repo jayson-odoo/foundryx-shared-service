@@ -224,58 +224,95 @@ class MetaConnectService:
         if session.expires_at < now:
             raise ConnectSessionExpired()
 
-        statuses.ensure_statuses(self.db, tenant_id)
-        user_credentials = decrypt_credentials(session.credentials_json)
-        adapter = get_adapter(payload.channelType)
-        raw_pages = adapter.list_pages(user_credentials)
-        page = next((p for p in raw_pages if p.get("id") == payload.pageId), None)
-        if page is None:
-            raise PageNotFound()
-
-        ig = page.get("instagram_business_account") or {}
-        if payload.channelType == "INSTAGRAM":
-            external_account_id = payload.igAccountId or ig.get("id")
-            if not external_account_id:
-                raise PageNotFound()
-            external_account_name = ig.get("username") or page.get("name") or "Instagram"
-        else:
-            external_account_id = page.get("id")
-            external_account_name = page.get("name") or "Facebook Page"
-
-        self._assert_external_account_available(external_account_id)
-
-        # The channel's OWN credentials are the PAGE access token (never the
-        # connect session's user token) - `send`/`test_connection`/
-        # `subscribe_webhook` all take a page-scoped credential from here on.
-        channel_credentials: Dict[str, Any] = {"access_token": page.get("access_token", "")}
-        if user_credentials.get("dev"):
-            channel_credentials["dev"] = True
-
-        channel = Channel(
-            tenant_id=tenant_id,
-            workspace_id=payload.workspaceId,
-            channel_type=payload.channelType,
-            name=external_account_name,
-            credentials_json=encrypt_credentials(channel_credentials),
-            external_account_id=external_account_id,
-            external_account_name=external_account_name,
-            is_active=True,
-            status_id=statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ACTIVE"),
-            last_verified_at=now,
+        # Atomic single-use claim (AC-CHN-33; security review round 1,
+        # should-fix). `_persist_channel()` used to be the ONLY place
+        # `consumed_at` got stamped, at the very end - two concurrent
+        # `/meta/connect` calls on one session could both pass the read
+        # above before either committed, and (naming DIFFERENT pages) both
+        # succeed: two channels from one single-use session. Claim it with a
+        # conditional UPDATE BEFORE any provisioning work; a rowcount of 0
+        # means another request already claimed it. Cleared on the error
+        # path below (a FAILED attempt - e.g. `external_account_in_use` -
+        # still allows a retry with a different page; only a SUCCESSFUL
+        # connect actually spends the session).
+        claimed = (
+            self.db.query(MetaConnectSession)
+            .filter(
+                MetaConnectSession.id == session.id,
+                MetaConnectSession.consumed_at.is_(None),
+            )
+            .update({"consumed_at": now}, synchronize_session=False)
         )
-        self._persist_channel(channel)
+        self.db.commit()
+        if claimed == 0:
+            raise ConnectSessionConsumed()
+
+        try:
+            statuses.ensure_statuses(self.db, tenant_id)
+            user_credentials = decrypt_credentials(session.credentials_json)
+            adapter = get_adapter(payload.channelType)
+            raw_pages = adapter.list_pages(user_credentials)
+            page = next((p for p in raw_pages if p.get("id") == payload.pageId), None)
+            if page is None:
+                raise PageNotFound()
+
+            ig = page.get("instagram_business_account") or {}
+            if payload.channelType == "INSTAGRAM":
+                # The server-derived page is the ONLY source of truth for
+                # which IG account is being connected (polymorphic-stored-id
+                # rule - this id becomes the unauthenticated webhook routing
+                # key, `InboundService._resolve_channel`). A client
+                # `igAccountId` is accepted only when it MATCHES the page's
+                # own linked account; anything else (including one the
+                # caller does not administer) is refused rather than
+                # trusted - never let it win over the server-derived value.
+                external_account_id = ig.get("id")
+                if not external_account_id or (
+                    payload.igAccountId and payload.igAccountId != external_account_id
+                ):
+                    raise PageNotFound()
+                external_account_name = ig.get("username") or page.get("name") or "Instagram"
+            else:
+                external_account_id = page.get("id")
+                external_account_name = page.get("name") or "Facebook Page"
+
+            self._assert_external_account_available(external_account_id)
+
+            # The channel's OWN credentials are the PAGE access token (never
+            # the connect session's user token) - `send`/`test_connection`/
+            # `subscribe_webhook` all take a page-scoped credential from
+            # here on.
+            channel_credentials: Dict[str, Any] = {"access_token": page.get("access_token", "")}
+            if user_credentials.get("dev"):
+                channel_credentials["dev"] = True
+
+            channel = Channel(
+                tenant_id=tenant_id,
+                workspace_id=payload.workspaceId,
+                channel_type=payload.channelType,
+                name=external_account_name,
+                credentials_json=encrypt_credentials(channel_credentials),
+                external_account_id=external_account_id,
+                external_account_name=external_account_name,
+                is_active=True,
+                status_id=statuses.status_id_for(self.db, tenant_id, "CHANNEL", "ACTIVE"),
+                last_verified_at=now,
+            )
+            self._persist_channel(channel)
+        except Exception:
+            session.consumed_at = None
+            self.db.commit()
+            raise
 
         # Best-effort subscribed_apps (AC-CHN-33) - ALWAYS the Facebook Page
         # id, even for an Instagram channel (IG messaging is page-linked,
-        # D-A7-14/45); a failure never blocks the connect.
+        # D-A7-14/45); a failure never blocks the connect, and never spends
+        # the session back to unconsumed - the channel already exists.
         try:
             adapter.subscribe_webhook(
                 channel_credentials, payload.pageId, f"/omnichannel/webhooks/{channel.id}"
             )
         except Exception:  # noqa: BLE001 - subscription failure shouldn't block onboarding
             pass
-
-        session.consumed_at = now
-        self.db.commit()
 
         return ChannelService(self.db)._items([channel], tenant_id)[0]

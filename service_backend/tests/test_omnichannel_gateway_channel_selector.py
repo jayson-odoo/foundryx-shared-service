@@ -95,6 +95,50 @@ def test_explicit_channel_id_wins_over_the_whatsapp_preference(client, session_f
     db.close()
 
 
+def test_explicit_channel_id_wins_for_a_second_whatsapp_channel_not_a_silent_fallback(
+    client, session_factory
+):
+    """Security review round 1, blocker 2 - `_override_for` must return the
+    CHOSEN channel unconditionally. A workspace with two active WhatsApp
+    channels where the contact's existing identity sits on the FIRST one:
+    an explicit `channelId` naming the SECOND must win outright, never
+    silently re-resolve through `via_identity` back to the first (that is
+    exactly "a silent fallback to another channel", AC-CHN-53)."""
+    from modules.omnichannel.models import Channel, Contact, ContactChannelIdentity
+
+    ws = _default_workspace_id(session_factory)
+    first_id = _seed_channel(session_factory, ws, phone_number_id="pn-w1")
+    second_id = _seed_channel(session_factory, ws, phone_number_id="pn-w2")
+    phone = "+60129990001"
+    contact_id = _seed_open_contact(session_factory, ws, phone=phone, open_window=True)
+
+    db = session_factory()
+    db.add(
+        ContactChannelIdentity(
+            tenant_id=DEFAULT_TENANT_ID,
+            contact_id=contact_id,
+            channel_id=first_id,
+            external_user_id=phone,
+        )
+    )
+    db.commit()
+    db.close()
+
+    key = _key(client, ws)
+    r = _send(
+        client, key,
+        {"to": phone, "channelId": second_id, "type": "text", "text": {"body": "hi"}},
+    )
+    assert r.status_code == 202, r.text
+
+    from modules.omnichannel.models import ConversationMessage
+
+    db = session_factory()
+    msg = db.query(ConversationMessage).filter(ConversationMessage.id == r.json()["id"]).first()
+    assert msg.channel_id == second_id
+    db.close()
+
+
 def test_unknown_channel_id_is_a_typed_422_never_a_silent_fallback(client, session_factory):
     ws = _default_workspace_id(session_factory)
     _seed_channel(session_factory, ws)
@@ -336,7 +380,48 @@ def test_message_item_carries_channel_type_on_both_shapes(client, session_factor
     assert rio["items"][0]["channelType"] == "FACEBOOK"
 
 
-# ── AC-CHN-57: contract-drift guard (guide MUST document this slice) ────────
+def test_rio_message_shape_emits_media_unavailable_for_a_non_media_unsupported_row(
+    client, session_factory, monkeypatch
+):
+    """Security review round 1, nit - the `{"mediaUnavailable": true}`
+    internal marker can land on a row whose `message_type` did NOT resolve
+    to a known media kind (an unmapped Messenger attachment kind with a
+    `url` still falls through to `UNSUPPORTED`). The rio shape must keep
+    emitting the flag rather than nulling it back to `None` just because
+    `is_media` reads false - lossless vs the internal item."""
+    from modules.omnichannel.adapters.messenger import MessengerAdapter
+
+    monkeypatch.setattr(MessengerAdapter, "fetch_media_url", lambda self, creds, url, kind=None: None)
+
+    ws = _default_workspace_id(session_factory)
+    fb_id = _fb_channel(session_factory, external_account_id="pg-850")
+    key = _key(client, ws)
+
+    payload = {
+        "object": "page",
+        "entry": [{"id": "pg-850", "messaging": [{
+            "sender": {"id": "psid-850"}, "timestamp": 1,
+            # "fallback" is not in `_ATTACHMENT_TYPES` - resolves to
+            # UNSUPPORTED, but carries a `url` so the fetch (and its
+            # failure) still runs.
+            "message": {"mid": "m.850", "attachments": [
+                {"type": "fallback", "payload": {"url": "https://scontent.xx.fbcdn.net/v/x"}}
+            ]},
+        }]}],
+    }
+    _process(session_factory, fb_id, payload)
+
+    hdr = {"Authorization": f"Bearer {key}"}
+    contact = client.get("/api/v1/omnichannel/contacts", headers=hdr).json()["data"][0]
+    cid = contact["id"]
+    rio = client.get(
+        f"/api/v1/omnichannel/contacts/{cid}/messages", headers=hdr, params={"format": "rio"}
+    ).json()
+    item = next(m for m in rio["items"] if m["channelMessageId"] == "m.850")
+    assert item["message"]["type"] == "unsupported"
+    assert item["message"]["mediaUnavailable"] is True
+
+
 def test_consumer_guide_documents_the_channel_selector_and_new_codes():
     import pathlib
 
@@ -354,6 +439,9 @@ def test_consumer_guide_documents_the_channel_selector_and_new_codes():
     assert "invalid_channel" in guide
     assert "windowExpiresAt" in guide
     assert "humanAgentExpiresAt" in guide
+    # Security review round 1, should-fix - a `Rio*` schema change without
+    # the matching guide change is an automatic review finding (CLAUDE.md).
+    assert "mediaUnavailable" in guide
 
 
 # ── AC-CHN-58: message_received channelType filter ───────────────────────────

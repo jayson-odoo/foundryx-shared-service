@@ -10,7 +10,7 @@
 >
 > | Date | Change |
 > |----|----|
-> | **2026-09-07** | **Messenger + Instagram channels** (plan 32 / A7a). `channelType` now also takes `FACEBOOK`/`INSTAGRAM` on every contact/message shape (§9). Sending: `POST /messages` accepts an optional `channelId` selector (§4); the implicit channel choice (no `channelId`) now PREFERS an active `WHATSAPP` channel, so a workspace that connects a second channel type never re-points an existing integration's sends (§2). `to` gains three new prefixes - `psid:<id>` / `igsid:<id>` (resolve an EXISTING contact identity on the CHOSEN channel only, never create) and `id:<contactId>` (§4.1); a bare value or `phone:` is unchanged. Two new error codes (§10): `messaging_window_closed` (409, Messenger/Instagram's own re-engagement window closed - `csw_window_closed` keeps its exact WhatsApp-only meaning) and `channel_not_available_for_contact` (422, the resolved contact has no identity on the chosen channel). `ThreadItem`/`ContactObject` gain `windowExpiresAt`/`humanAgentExpiresAt` (§9.1/9.2) - the per-channel-type messaging window; `cswExpiresAt` keeps its documented WhatsApp-only meaning verbatim (reads `null` for a Messenger/Instagram contact). `MessageItem`/`MessageObject` gain `channelType`. Non-breaking - every existing field/code keeps its exact meaning; a consumer that never sets `channelId` and never uses the new `to` prefixes sees byte-identical behaviour. |
+> | **2026-09-07** | **Messenger + Instagram channels** (plan 32 / A7a). `channelType` now also takes `FACEBOOK`/`INSTAGRAM` on every contact/message shape (§9). Sending: `POST /messages` accepts an optional `channelId` selector (§4); the implicit channel choice (no `channelId`) now PREFERS an active `WHATSAPP` channel, so a workspace that connects a second channel type never re-points an existing integration's sends (§2). `to` gains three new prefixes - `psid:<id>` / `igsid:<id>` (resolve an EXISTING contact identity on the CHOSEN channel only, never create) and `id:<contactId>` (§4.1); a bare value or `phone:` is unchanged. Two new error codes (§10): `messaging_window_closed` (409, Messenger/Instagram's own re-engagement window closed - `csw_window_closed` keeps its exact WhatsApp-only meaning) and `channel_not_available_for_contact` (422, the resolved contact has no identity on the chosen channel). `ThreadItem`/`ContactObject` gain `windowExpiresAt`/`humanAgentExpiresAt` (§9.1/9.2) - the per-channel-type messaging window; `cswExpiresAt` keeps its documented WhatsApp-only meaning verbatim (reads `null` for a Messenger/Instagram contact). `MessageItem`/`MessageObject` gain `channelType` and `mediaUnavailable` (§9.1/9.2) - a Messenger/Instagram inbound attachment whose CDN link expired before Foundryx could fetch it; the message still lands, render a muted placeholder. Non-breaking - every existing field/code keeps its exact meaning; a consumer that never sets `channelId` and never uses the new `to` prefixes sees byte-identical behaviour. |
 > | **2026-09-06** | **Team assignment** (plan 28). Both contact shapes gain `assignedTeamId`/`assignedTeamName` (a core Team, resolved tenant-scoped; `null` on a foreign/deleted team) - present on `GET /contacts`, `GET /contacts/{identifier}`, and the `contact` object inside `contact.updated` webhook deliveries. `PATCH /api/v1/omnichannel/contacts/{identifier}` accepts `assignedTeamId` **by id only** (never by name): alone it auto-picks a member by the team's strategy, with `assignedUserId` it sets both (the user must be a team member), `null` clears the team. Unknown/foreign/inactive team → `422 invalid_request`. `sender.teamId` on the rio message shape stays `null` (unrelated, message-level concept, out of scope). Non-breaking - existing fields are unchanged. |
 > | **2026-09-05** | **Contact data model: typed custom fields, tags, and a lifecycle stage** (plan 25). Both contact shapes gain `language`, `countryCode`, `customFields` (default) / `custom_fields` (rio), `tags`, and `lifecycle` - previously `null`/`[]` rio placeholders now carry real values. `PATCH /api/v1/omnichannel/contacts/{identifier}` accepts all four for writes: `tags` REPLACES the set by NAME (auto-creating unknown names in your workspace); `lifecycle` moves the contact by stage KEY or LABEL through the workspace's lifecycle graph (409 `lifecycle_move_not_allowed` with no edge). Non-breaking - existing fields are unchanged. |
 > | **2026-08-09 (b)** | **The documented shape is the DEFAULT again.** `/api/v1` read endpoints return `MessageItem`/`ThreadItem` in the envelopes this guide always described; the respond.io shape moved behind **`?format=rio`** (§6b). If you built to this guide before 2026-07-11, **you need no change at all** - your original code is correct again. Same release: self-serve **webhook registration on `/api/v1`** (§7), and the Rio contact shape gained the fields it was missing (`priority`, `unreadCount`, `lastMessagePreview`, …). |
@@ -699,6 +699,7 @@ The default message shape: `GET /contacts/{identifier}/messages` (inside `data[]
   "mediaFilename": "receipt.png", // webhook renames → filename
   "mediaSize": 20345,           // webhook renames → size
   "voice": false,
+  "mediaUnavailable": false,    // true = a Messenger/Instagram inbound attachment whose CDN link expired before we could fetch it (plan 32 / A7a); the message still lands, there is just no blob - render a muted placeholder, not an error
   "payload": { … },             // structured def for interactive/location/contacts/template
   "reactions": [ { "emoji":"❤️", "reactorType":"CONTACT", "reactor":"+6012…" } ],
   "externalMessageId": "wamid…",// Meta wamid
@@ -771,7 +772,8 @@ Returned by `GET /contacts/{identifier}/messages?format=rio` (inside `items[]`) 
     "mimeType": "image/png",
     "size": 39934,
     "payload": { … },                   // structured def - see below
-    "messageTag": null
+    "messageTag": null,
+    "mediaUnavailable": null            // Foundryx extension - true/false only on a message that WAS media (an expired Messenger/Instagram CDN link never got fetched); null for a message that was never media in the first place
   },
   "status": [                           // delivery state; EMPTY for inbound
     { "value": "delivered", "timestamp": 1783172100, "message": null, "code": null }
@@ -799,6 +801,7 @@ Notes that bite if you miss them:
   * `template` → the template binding
   * `null` for plain text/media. **`text` on an interactive/location message is a lossy human-readable summary - read `payload` for the real structure.**
 * **`sender.source: "system"`** = an internal note (§6a), never delivered to the customer, even though `traffic` reads `"outgoing"`.
+* **`message.mediaUnavailable: true`** means a Messenger/Instagram inbound attachment's short-lived CDN link expired before Foundryx could fetch it - the message still lands (never dropped), `message.url` is absent, and you should render a muted "media unavailable" placeholder rather than treating it as an error. It is `false` for media that fetched fine, and `null` for a message that was never media.
 * Ids are **UUID strings**, not respond.io's int64 - the one unavoidable deviation from parity.
 
 #### `ContactObject` - `?format=rio`
@@ -855,6 +858,7 @@ Only needed if you use `?format=rio`, or are porting a respond.io integration on
 | `mediaMime` / `mediaFilename` / `mediaSize` | `message.mimeType` / `message.filename` / `message.size` |
 | `voice: true` | `message.type === "voice"` |
 | `payload` | `message.payload` |
+| `mediaUnavailable` | `message.mediaUnavailable` (same - Foundryx extension, plan 32 / A7a) |
 | `reactions[]` | `reactions[]` (identical) |
 | `replyTo.id` / `.body` | `replyTo.messageId` / `.text` |
 | `externalMessageId` | `channelMessageId` |

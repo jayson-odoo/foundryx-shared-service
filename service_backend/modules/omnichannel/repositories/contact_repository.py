@@ -331,16 +331,22 @@ class ContactRepository:
         )
 
     def get_message_by_external_id(
-        self, external_message_id: str, tenant_id: str
+        self, external_message_id: str, tenant_id: str, *, channel_id: Optional[str] = None
     ) -> Optional[ConversationMessage]:
-        return (
-            self.db.query(ConversationMessage)
-            .filter(
-                ConversationMessage.tenant_id == tenant_id,
-                ConversationMessage.external_message_id == external_message_id,
-            )
-            .first()
+        """``channel_id`` (optional) additionally scopes by channel - the
+        `mids[]` receipt path (nit, security review round 1) uses it so it
+        scopes identically to the sibling watermark path
+        (`outbound_before_watermark`); every other call site (single-
+        `external_message_id` receipts, `reply_to` resolution, reaction
+        target resolution) stays tenant-scoped only, its pre-existing
+        behaviour."""
+        query = self.db.query(ConversationMessage).filter(
+            ConversationMessage.tenant_id == tenant_id,
+            ConversationMessage.external_message_id == external_message_id,
         )
+        if channel_id is not None:
+            query = query.filter(ConversationMessage.channel_id == channel_id)
+        return query.first()
 
     def outbound_before_watermark(
         self, contact_id: str, channel_id: str, tenant_id: str, *, at: datetime

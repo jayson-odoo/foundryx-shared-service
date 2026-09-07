@@ -198,3 +198,120 @@ assertion) and `npx vitest run` (2616/2616 after one fixed pinned-shape assertio
 thread's actual channel type). Full detail: `documentation/plans/sprint-4/32-evidence/S0/README.md`,
 `documentation/plans/sprint-4/32-evidence/S6/README.md`, and the commit bodies (`git log` on this
 branch, slices S0-S6).
+
+## Fix round 1 verification (appended by the fix coder, phase 2)
+
+Opus security review round 1 ran against `e4ac64ef` (diff `c6e92826..e4ac64ef`, the same HEAD this
+tester's pass verified: 63/63 AC-CHN ids PASS, whole-repo pytest 4034 passed). Fix round 1 addresses
+the review's 2 blockers, 8 should-fix items and the nit list; **commit under test:
+`5d6f9f9c` (`fix(omnichannel): plan 32 security review round 1 ...`), built on top of this tester's
+own commit `bee4a6f1`.** Blocker 3 (Alembic double-head against `origin/main`) and migration/manifest/
+backlog renumbering are explicitly OUT of scope for this round - the merge coder's job.
+
+**Lane (same as the tester's pass):** backend `:8013` restarted with
+`DATABASE_URL=postgresql://foundryx:foundryx@localhost:5432/foundryx_service_s32
+CELERY_TASK_ALWAYS_EAGER=true CORS_ORIGINS=http://localhost:3001,http://localhost:3002,http://localhost:3011`
+(pid cwd-verified as the s32 checkout before kill); frontend rebuilt (`rm -rf .next && npm run build`)
+and restarted with `npx next start -p 3011` (the `:3011` `next-server` pid's cwd verified as s32
+before kill - a Chrome process also held CLOSED sockets to both ports from a prior agent-browser
+session, left alone).
+
+### Automated re-verification
+
+| Suite | Result |
+|---|---|
+| `tests/test_omnichannel*.py` (full omnichannel-scoped backend suite, one run) | **1099 passed, 0 failed**, 88 pre-existing `StarletteDeprecationWarning`s (`HTTP_422_UNPROCESSABLE_ENTITY`, unrelated to this change), 851.99s |
+| `npx vitest run` on every touched dir in one run (`lib/channel-capabilities.test.ts`, the channels/contacts/inbox/broadcasts settings dirs, `components/platform/conversation-drawer`, `components/platform/channel-connect-wizard`) | **289 passed (43 files)**, 0 failed |
+| `npx eslint` on all 15 touched frontend files | **0 errors**, 9 pre-existing `jsx-a11y` warnings (unchanged lines - `use-channels-list-config.tsx` click handlers, `message-media.tsx` media controls) |
+| `npx tsc --noEmit` | **78 errors** (down from the review's baseline **79**, and down from **80** mid-round before `MessageType` gained `'UNSUPPORTED'`) - net **-1 vs baseline**, **0 new**. The fix round's own new test case (`structured-messages.test.tsx`, an UNSUPPORTED + `mediaUnavailable` row) initially reproduced a PRE-EXISTING type gap (`MessageType` never declared `'UNSUPPORTED'`, though it has been a real wire value since S4); closing that gap in `types/omnichannel.ts` fixed BOTH the new occurrence and the one pre-existing occurrence in the same file, netting an improvement. `diff` of the two `tsc` runs confirms only those two lines changed - no other file gained an error. |
+
+### Live probes (curl against `:8013`, `psql` against `foundryx_service_s32`, one `agent-browser` check for the frontend-crash-safety claim curl cannot verify)
+
+**1. IG connect with a mismatching `igAccountId` -> 404, no channel created (blocker 1).**
+```
+POST /omnichannel/onboarding/meta/connect
+  {"sessionId": "<fresh>", "workspaceId": "<default>", "channelType": "INSTAGRAM",
+   "pageId": "pg-701", "igAccountId": "ig-702"}     # pg-701 links ig-701, NOT ig-702
+-> HTTP 404 {"detail":"Connect session not found."}
+```
+(The router maps both `ConnectSessionNotFound` and `PageNotFound` to the same uniform-404 wording -
+this response IS the `PageNotFound` raised by the mismatch guard, not a session problem; the session
+was fresh and otherwise valid.) `GET /omnichannel/channels` confirmed no channel with
+`externalAccountId: "ig-702"` exists from this attempt (the pre-existing `ig-702` row is the
+unrelated seeded `chn-demo-ig` sandbox channel).
+
+**2. `/api/v1` send with `channelId` = a second WhatsApp channel -> message row on THAT channel, not the implicit-preference one (blocker 2).**
+- Created a second WhatsApp channel via the simulated WABA connect (`POST
+  /omnichannel/onboarding/oauth-callback`, `phoneNumberId: pn-probe2-...`) -> `201`, id
+  `59539e08-4896-4f72-be84-69ac7a95cb8c` ("Probe WA Co").
+- Opened the contact's window via an INBOUND webhook on the FIRST channel (`chn-demo`, `phone_number_id: pn-demo`)
+  for `+60197654321` -> message landed on `chn-demo` (confirmed via `GET .../messages`).
+- Sent via the gateway with an explicit override:
+  ```
+  POST /api/v1/omnichannel/messages
+    {"to": "+60197654321", "channelId": "59539e08-...", "type": "text", "text": {"body": "..."}}
+  -> HTTP 202 {"id": "57d92122-...", "status": "queued"}
+  ```
+- `GET /omnichannel/contacts/{id}/messages` confirms two rows: the inbound one on `channelId:
+  "chn-demo"`, the outbound one on `channelId: "59539e08-..."` (the SECOND channel, matching the
+  explicit override, never silently falling back to `chn-demo` where the contact's identity/inbound
+  activity actually was). This is the exact scenario `_override_for` returning `None` for WhatsApp
+  used to break.
+
+**3. Two concurrent `/meta/connect` on one session -> exactly one channel (should-fix f, atomic claim).**
+- Freed `pg-703` (`POST /omnichannel/channels/delete` on the pre-existing connected channel) so a
+  real success was reachable, then minted a fresh session.
+- Two backgrounded `curl` POSTs to `/meta/connect` with the SAME `sessionId` + `pageId: "pg-703"`,
+  raced via shell `&`/`wait`:
+  ```
+  A -> HTTP 201 {"id":"7a75d3ea-...","externalAccountId":"pg-703",...}
+  B -> HTTP 400 {"detail":{"reason":"connect_session_consumed"}}
+  ```
+- Decisive signal: B got `connect_session_consumed` (blocked at the atomic claim, BEFORE reaching
+  provisioning), not `external_account_in_use` (which is what the OLD non-atomic code would have
+  produced for a loser that raced past the claim and only collided at `_persist_channel`'s partial-
+  unique index). `GET /omnichannel/channels` confirms exactly ONE channel with `externalAccountId:
+  "pg-703"`.
+
+**4. A Messenger docx attachment webhook -> classified + stored-or-gracefully-unavailable (should-fix d).**
+- POSTed a `page`-object webhook to the pre-existing `pg-702` FACEBOOK channel with a `file`
+  attachment (`_ATTACHMENT_TYPES["file"] == "DOCUMENT"`) pointing at a `.docx`-named
+  `fbcdn.net` URL -> `HTTP 200 {"status":"queued"}`.
+- Resulting message row: `messageType: "DOCUMENT"`, `mediaUnavailable: true`, `externalMessageId:
+  "m.probe4.docx"` - correctly classified, never dropped, never crashed the pipeline.
+- **Environment caveat, disclosed rather than glossed over:** this lane has no `META_APP_ID`/
+  `META_APP_SECRET` configured (same dev-safe posture the tester's pass ran under), so
+  `MessengerAdapter._configured` is `False` and `fetch_media_url`'s dev-safe gate
+  (`not self._configured or credentials.get("dev")`) skips the real CDN fetch for EVERY attachment
+  type in this environment, not just DOCUMENT - a live curl probe therefore cannot reach the actual
+  sniff-widening code path (the Meta CDN host allowlist is hardcoded to `fbcdn.net`/`fbsbx.com`/
+  `cdninstagram.com` suffixes, so a local mock server cannot stand in for it either). The
+  sniff-widening fix itself (`_is_allowed_fetch_mime(mime, kind="DOCUMENT")` accepting the outbound
+  document family) is verified by the passing pytest suite instead:
+  `test_fetch_media_url_document_kind_accepts_the_outbound_document_family` (a real zip-magic-bytes
+  blob over an `httpx.MockTransport` against the `fbcdn.net` allowlist, asserting acceptance) and
+  `test_inbound_messenger_document_attachment_stores_docx_blob` (full `_process` pipeline, asserting
+  `media_key is not None`) - both included in the 1099-passed run above.
+
+**5. A channel with an unknown `channel_type` inserted via `psql` -> channels list + thread list render, no crash; then deleted.**
+- `INSERT INTO app_omnichannel.channels (..., channel_type, ...) VALUES (..., 'TELEGRAM', ...)` (id
+  `probe5-telegram-chn`) - a value the frontend `ChannelType` union has never modelled.
+- `GET /omnichannel/channels` (backend): `200`, row present, no 500.
+- `agent-browser` (curl cannot exercise client-side JS): logged in as `demo@example.com`, opened
+  `/omnichannel/settings/channels` - the row renders ("Probe Telegram (unmodelled)", Type badge
+  "TELEGRAM", a generic question-mark icon from `channelCapabilities()`'s `UNKNOWN` fallback, `-` in
+  the Phone Number column) with **zero console errors** (`agent-browser console` empty). Screenshot
+  taken. Also opened `/omnichannel/inbox` and `/omnichannel/contacts` with the row present in the
+  workspace - both loaded cleanly, zero console errors. This is the live confirmation of should-fix
+  (a) - before the fix, `CHANNEL_CAPABILITIES['TELEGRAM']` was `undefined` and `.icon` would have
+  thrown, crashing the Channels list.
+- Cleanup: `DELETE FROM app_omnichannel.channels WHERE id = 'probe5-telegram-chn'` - confirmed gone
+  from `GET /omnichannel/channels` afterward.
+
+### Scope note
+
+Per the coordinator's explicit instruction, this round does NOT renumber Alembic migrations, the
+manifest version, or backlog ids (Blocker 3 + the merge checklist items are the merge coder's job).
+The plan §8 backlog register (13 items) was added as provisional `BL-SS-147..162` rows
+("renumbered at merge") in `documentation/backlogs/backlog.md`, alongside this tester's own
+`BL-SS-163`/`164` additions - no collision, no renumbering performed.

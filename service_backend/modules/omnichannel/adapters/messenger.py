@@ -134,10 +134,13 @@ _MAX_FETCH_REDIRECTS = 3
 _MAX_FETCH_ATTEMPTS = 2  # one bounded inline retry on a transient CDN hiccup
 
 # Mimes an inbound attachment fetch accepts after sniffing (AC-CHN-46 "images/
-# video/audio/pdf per the existing upload allowlist") - narrower than
-# `media_pipeline.detect_media_mime`'s full family (that helper also accepts
-# office/zip/text for OUTBOUND document uploads, which Meta never sends us
-# inbound on this surface).
+# video/audio/pdf per the existing upload allowlist"). A DOCUMENT-typed
+# attachment (Messenger-only, `_ATTACHMENT_TYPES["file"]`) additionally rides
+# the SAME outbound document family (`media_pipeline.ACCEPTED_MIMES
+# ["DOCUMENT"]` - pdf/zip/docx/xlsx/pptx/txt) so an advertised capability
+# (`CAPABILITIES["FACEBOOK"].document is True`, the composer offers it) does
+# not silently drop every non-pdf inbound file (should-fix, security review
+# round 1) - everything else keeps the narrower image/video/audio/pdf set.
 _ALLOWED_FETCH_MIME_PREFIXES = ("image/", "video/", "audio/")
 
 # Dev-safe magic recipient (AC-CHN-51) - a workflow/manual test can trigger the
@@ -156,9 +159,13 @@ def _is_meta_cdn_host(host: Optional[str]) -> bool:
     return any(lowered == suffix or lowered.endswith("." + suffix) for suffix in _CDN_HOST_SUFFIXES)
 
 
-def _is_allowed_fetch_mime(mime: Optional[str]) -> bool:
+def _is_allowed_fetch_mime(mime: Optional[str], kind: Optional[str] = None) -> bool:
     if not mime:
         return False
+    if (kind or "").upper() == "DOCUMENT":
+        from ..services.media_pipeline import ACCEPTED_MIMES
+
+        return mime in ACCEPTED_MIMES["DOCUMENT"]
     return mime == "application/pdf" or mime.startswith(_ALLOWED_FETCH_MIME_PREFIXES)
 
 
@@ -497,7 +504,9 @@ class MessengerAdapter(MetaGraphMixin):
         return None
 
     # ── Inbound media fetch (plan 32 S5, D-A7-12/AC-CHN-46/47) ──────────────
-    def fetch_media_url(self, credentials: Dict[str, Any], url: Optional[str]) -> Optional[Dict[str, Any]]:
+    def fetch_media_url(
+        self, credentials: Dict[str, Any], url: Optional[str], kind: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """Download an inbound Messenger/Instagram attachment from the short-
         lived CDN URL Meta embeds in the webhook payload - a fetch target
         taken from attacker-influenced payload data, so it is validated
@@ -512,7 +521,10 @@ class MessengerAdapter(MetaGraphMixin):
         transport error or a Meta-side 5xx is retried once (bounded inline
         retry, AC-CHN-46 "a storage hiccup loses the media, never the
         message"). Never raises - the caller stores the message without
-        media on any failure."""
+        media on any failure. ``kind`` (the resolved house message type, e.g.
+        `"DOCUMENT"`) widens the sniff allowlist for that ONE kind to the
+        outbound document family - every other kind keeps the narrower
+        image/video/audio/pdf set (should-fix, security review round 1)."""
         if not url:
             return None
         if not self._configured or credentials.get("dev"):
@@ -524,7 +536,7 @@ class MessengerAdapter(MetaGraphMixin):
         headers = {"Authorization": f"Bearer {credentials.get('access_token', '')}"}
         for attempt in range(_MAX_FETCH_ATTEMPTS):
             try:
-                return self._fetch_media_once(url, headers)
+                return self._fetch_media_once(url, headers, kind=kind)
             except _TransientFetchError as exc:
                 if attempt + 1 >= _MAX_FETCH_ATTEMPTS:
                     logger.warning("media URL fetch exhausted retries: %s", exc)
@@ -535,7 +547,9 @@ class MessengerAdapter(MetaGraphMixin):
                 return None
         return None
 
-    def _fetch_media_once(self, url: str, headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
+    def _fetch_media_once(
+        self, url: str, headers: Dict[str, str], *, kind: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         current = url
         client = self._http()
         try:
@@ -574,8 +588,8 @@ class MessengerAdapter(MetaGraphMixin):
                     mime = detect_media_mime(content)
                 except Exception:  # noqa: BLE001 - a sniff hiccup is a rejection, not a crash
                     mime = None
-                if not _is_allowed_fetch_mime(mime):
-                    return None  # sniff mismatch / not on the images+video+audio+pdf allowlist
+                if not _is_allowed_fetch_mime(mime, kind):
+                    return None  # sniff mismatch / not on the allowed family for this kind
                 return {"content": content, "mime_type": mime}
             return None  # too many redirects
         finally:
@@ -675,7 +689,13 @@ class MessengerAdapter(MetaGraphMixin):
                     # Not fetched yet (D-A7-12 - the SSRF-guarded fetch lands
                     # in plan 32 S5); persisted as a pending ref so a later
                     # backfill can complete it without re-parsing the payload.
-                    "payload": {"pendingMediaUrl": url} if url else None,
+                    # An unmapped attachment kind (`location`, `fallback`, ...
+                    # falls through to `UNSUPPORTED` above) carries no `url`
+                    # at all - preserve its OWN payload (coordinates, template
+                    # data) instead of dropping it, matching the Instagram
+                    # adapter's `_ig_placeholder` (AC-CHN-18, nit - security
+                    # review round 1).
+                    "payload": {"pendingMediaUrl": url} if url else (att.get("payload") or None),
                     "reply_to_external_id": reply_to,
                     "timestamp": timestamp,
                 }
@@ -712,6 +732,11 @@ class MessengerAdapter(MetaGraphMixin):
                 "kind": "message",
                 # Messenger postbacks carry no `mid` - synthesize a stable,
                 # per-event id so idempotency/persistence still have one.
+                # Millisecond-timestamp granularity means two postbacks from
+                # the SAME sender in the same millisecond collide onto one
+                # id (dedupe to one stored row) - an accepted, narrow window
+                # given Meta provides nothing finer-grained here (nit,
+                # security review round 1).
                 "external_message_id": f"psb.{page_id or ''}.{sender}.{timestamp}",
                 "from": sender,
                 "profile_name": None,

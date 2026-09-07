@@ -1,6 +1,6 @@
 import { Badge } from '@/components/ui/badge';
 import { OverflowPills } from '@/components/platform/overflow-pills';
-import { CHANNEL_CAPABILITIES } from '@/lib/channel-capabilities';
+import { channelCapabilities } from '@/lib/channel-capabilities';
 import type { ContactChannelRef } from '@/types/omnichannel';
 
 /** Channel column cell (D-A2-11) - resolved from `contact_channel_identities`,
@@ -14,7 +14,7 @@ export function ContactChannelsCell({ channels }: { channels: ContactChannelRef[
       items={channels}
       keyFor={(c) => c.channelId}
       renderPill={(c) => {
-        const Icon = CHANNEL_CAPABILITIES[c.channelType].icon;
+        const Icon = channelCapabilities(c.channelType).icon;
         return (
           <Badge variant="secondary" appearance="light" size="sm" className="gap-1">
             <Icon className="size-3" />

@@ -221,6 +221,58 @@ def test_webhook_url_channel_id_is_last_resort_fallback(session_factory):
     assert counters["messages"] == 1
 
 
+def test_webhook_url_channel_id_fallback_drops_a_type_mismatched_channel(session_factory):
+    """Nit, security review round 1 - the URL-id fallback (last resort, after
+    `external_account_id` lookup misses) must still be TYPE-matched: a
+    `page`-object payload naming a WhatsApp channel by URL id must be
+    dropped, never handed to the wrong adapter."""
+    from modules.omnichannel.models import Channel
+    from modules.omnichannel.security import encrypt_credentials
+    from modules.omnichannel.services import statuses
+
+    db = session_factory()
+    from modules.omnichannel.models import Workspace
+
+    ws = db.query(Workspace).filter(Workspace.tenant_id == DEFAULT_TENANT_ID, Workspace.is_default.is_(True)).first()
+    wa = Channel(
+        tenant_id=DEFAULT_TENANT_ID,
+        workspace_id=ws.id,
+        channel_type="WHATSAPP",
+        name="URL fallback WA",
+        credentials_json=encrypt_credentials({"dev": True}),
+        phone_number_id="pn-url-fallback",
+        is_active=True,
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "CHANNEL", "ACTIVE"),
+    )
+    db.add(wa)
+    db.commit()
+    wa_id = wa.id
+    db.close()
+
+    counters = _process(
+        session_factory, wa_id, _messenger_payload(page_id="pg-does-not-exist-anywhere-2")
+    )
+    assert counters == {"messages": 0, "statuses": 0, "skipped": 0}
+
+
+def test_webhook_url_channel_id_fallback_drops_a_trashed_channel(session_factory):
+    """Nit, security review round 1 - the URL-id fallback must also exclude
+    a trashed channel (not a live routing target)."""
+    from modules.omnichannel.models import Channel
+
+    cid = _fb_channel(session_factory, external_account_id="pg-trashed-fallback")
+    db = session_factory()
+    ch = db.query(Channel).filter(Channel.id == cid).first()
+    ch.is_trashed = True
+    db.commit()
+    db.close()
+
+    counters = _process(
+        session_factory, cid, _messenger_payload(page_id="pg-does-not-exist-anywhere-3")
+    )
+    assert counters == {"messages": 0, "statuses": 0, "skipped": 0}
+
+
 def test_webhook_signature_and_handshake_apply_to_messenger_object(client, monkeypatch):
     import hashlib
     import hmac
@@ -316,6 +368,30 @@ def test_messenger_parse_inbound_document_attachment_is_messenger_only():
     }
     events = MessengerAdapter().parse_inbound(payload)
     assert events[0]["message_type"] == "DOCUMENT"
+
+
+def test_messenger_parse_inbound_unmapped_attachment_kind_preserves_its_own_payload():
+    """Security review round 1, nit - an attachment `type` outside
+    `_ATTACHMENT_TYPES` (e.g. `location`, which carries `coordinates`, not a
+    `url`) falls through to `UNSUPPORTED` but must keep ITS OWN payload
+    (matching `InstagramAdapter._ig_placeholder`, AC-CHN-18) rather than
+    dropping it because there is no `url` to stash as `pendingMediaUrl`."""
+    from modules.omnichannel.adapters.messenger import MessengerAdapter
+
+    payload = {
+        "object": "page",
+        "entry": [{"id": "pg-701", "messaging": [{
+            "sender": {"id": "psid-loc"}, "timestamp": 6,
+            "message": {"mid": "m.loc", "attachments": [
+                {"type": "location", "payload": {"coordinates": {"lat": 1.2, "long": 103.8}}}
+            ]},
+        }]}],
+    }
+    events = MessengerAdapter().parse_inbound(payload)
+    assert len(events) == 1
+    assert events[0]["message_type"] == "UNSUPPORTED"
+    assert events[0]["media_url"] is None
+    assert events[0]["payload"] == {"coordinates": {"lat": 1.2, "long": 103.8}}
 
 
 def test_messenger_parse_inbound_quick_reply_and_postback():

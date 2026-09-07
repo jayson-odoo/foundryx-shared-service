@@ -511,12 +511,10 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS external_account_name VARCHAR"
                 )
             )
-            conn.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS ix_omni_channels_external_account_id "
-                    f'ON "{OMNI_SCHEMA}".channels (external_account_id)'
-                )
-            )
+            # Only the partial UNIQUE index - mirrors migration 0017's fix
+            # (security review round 1 nit): a separate plain index here
+            # would carry a different name than the one `index=True`
+            # generates via `create_all` for the same column.
             conn.execute(
                 text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_channels_external_account_id "

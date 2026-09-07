@@ -235,7 +235,13 @@ export type MessageType =
   | 'INTERACTIVE_REPLY'
   | 'LOCATION'
   | 'CONTACTS'
-  | 'REACTION';
+  | 'REACTION'
+  /** An inbound kind this build does not model as a first-class type
+   *  (Messenger's unmapped attachment kinds, Instagram's story reply/story
+   *  mention/media share/unsend/is_unsupported - plan 32 / A7a S4) - stored
+   *  as a placeholder, never dropped (AC-CHN-18/41). On the wire since S4;
+   *  added to the union in security review round 1 fix round (tsc gap). */
+  | 'UNSUPPORTED';
 
 /** The media-bearing kinds an agent can attach + send (plan 12 Slice 1). */
 export type MediaKind = 'image' | 'video' | 'audio' | 'voice' | 'document' | 'sticker';
@@ -365,11 +371,12 @@ export interface ConversationMessage {
   /**
    * True when this is a Messenger/Instagram inbound attachment whose short-
    * lived CDN url expired before it could be fetched (plan 32 / A7a, D-A7-
-   * 12) - the message still landed, but there is no blob to render (a null
-   * `mediaUrl` already renders the bubble's muted placeholder either way -
-   * this flag exists for a consumer that wants to tell "never had media"
-   * apart from "had media, now gone"). Optional/absent on every message
-   * that isn't a media kind.
+   * 12) - the message still landed, but there is no blob to render.
+   * `MessageMedia`/`MessageStructured` read this flag explicitly to render
+   * the SAME muted placeholder every missing-blob case renders, whether the
+   * row is a media type (IMAGE/VIDEO/...) or an UNSUPPORTED-typed row whose
+   * unmapped attachment kind also failed its fetch. False/absent on a
+   * message that was never media in the first place.
    */
   mediaUnavailable?: boolean;
   /** Emoji reaction chips on this message (plan 12 Slice 3). */

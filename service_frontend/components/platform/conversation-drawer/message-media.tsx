@@ -35,11 +35,28 @@ function LoadFailed({ label }: { label: string }) {
   );
 }
 
+/**
+ * Muted placeholder for a message whose `mediaUnavailable` flag is set (plan
+ * 32 / A7a) - a Messenger/Instagram inbound attachment whose short-lived CDN
+ * link expired before Foundryx could fetch it. No explanation copy (the
+ * house foolproof-UI convention): the SAME neutral label a broken/expired
+ * blob fetch already renders, never "link expired" or similar detail.
+ * Exported so `MessageStructured` can render it identically for a non-media
+ * `UNSUPPORTED` row that still carries the flag (security review round 1,
+ * should-fix - the flag was plumbed end to end but read nowhere).
+ */
+export function MediaUnavailablePlaceholder() {
+  return <LoadFailed label="Media unavailable" />;
+}
+
 export function MessageMedia({ message }: { message: ConversationMessage }) {
   const { url, isLoading, error } = useMediaBlob(message.mediaUrl);
   const [lightbox, setLightbox] = useState(false);
   const type = message.messageType;
 
+  if (message.mediaUnavailable) {
+    return <MediaUnavailablePlaceholder />;
+  }
   if (isLoading && !url) {
     return <Skeleton className="h-40 w-52 rounded-md" data-testid="media-loading" />;
   }
