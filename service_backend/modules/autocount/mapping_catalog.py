@@ -81,18 +81,34 @@ _REQUIRED_DOCUMENT_FIELDS: Dict[str, frozenset] = {
 # sprint-5/02 (addendum §1, AC-02-14) - the customer/supplier's CODE+NAME
 # fallback fields, offered as mappable header targets alongside the ref
 # fields so an operator can fill Sorento's back-create ladder even when the
-# SQL login exposes only the document tables (no master task at all). Real
-# `CanonicalSalesOrder`/`CanonicalPurchaseOrder`/`CanonicalShippingOrder`
-# fields since slice S3 - `sink_payload(contract_version=)` gates whether
-# they actually cross the wire (AC-02-27); this catalog only decides whether
-# the mapping editor OFFERS the target.
-_SO_FALLBACK_FIELDS: Tuple[str, ...] = ("customer_code", "customer_name", "agent_code")
-_PO_FALLBACK_FIELDS: Tuple[str, ...] = ("supplier_code", "supplier_name", "agent_code")
-_SPO_FALLBACK_FIELDS: Tuple[str, ...] = ("supplier_code", "supplier_name", "agent_code")
+# SQL login exposes only the document tables (no master task at all).
+#
+#     !!  DERIVED FROM THE CANONICAL CLASS - NEVER HAND-TYPED AGAIN.  !!
+# fix/spo-container-catalog (prod finding, PR #59 deployed): a hand-typed
+# copy of `CanonicalShippingOrder.FALLBACK_FIELDS` drifted the moment
+# `container_number` was added to the model but not here - the Mapping tab
+# projected the backfilled `Ref -> container_number` row as "Not delivered
+# to Sorento" and the next save DELETED it (`delete_unknown`), with the PUT
+# guard then refusing to let the operator re-add it. Reading straight off
+# each canonical class's own `FALLBACK_FIELDS` means a future field added
+# there reaches the catalog automatically -
+# `test_header_catalog_equals_the_canonical_wire_set_minus_minted_identity`
+# fails BY NAME the moment the two ever disagree again.
+_SO_FALLBACK_FIELDS: Tuple[str, ...] = CanonicalSalesOrder.FALLBACK_FIELDS
+_PO_FALLBACK_FIELDS: Tuple[str, ...] = CanonicalPurchaseOrder.FALLBACK_FIELDS
+_SPO_FALLBACK_FIELDS: Tuple[str, ...] = CanonicalShippingOrder.FALLBACK_FIELDS
 
 # The line-scope equivalent (addendum §1): a line's own product/warehouse
 # code+name fallbacks + `line_number` (AutoCount `Seq`, addendum §9) - real
 # `CanonicalDocumentLine` fields since S3, contract-version-2-gated at push.
+#
+# NOT derived from `CanonicalPurchaseOrderLine`/`CanonicalShippingOrderLine`.
+# `FALLBACK_FIELDS` the way the header tuples above are: both of those also
+# carry `from_so_numbers` (addendum section 4), which the ESB derives itself
+# from AutoCount's `FromSODocList` and is never an operator-mapped target -
+# the ONE legitimate, permanent gap between a line model's wire set and this
+# picker, pinned explicitly by
+# `test_line_catalog_equals_the_canonical_line_wire_set_minus_engine_derived`.
 _LINE_FALLBACK_FIELDS: Tuple[str, ...] = (
     "product_code", "product_name", "warehouse_code", "line_number",
 )
