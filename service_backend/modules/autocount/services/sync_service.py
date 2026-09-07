@@ -19,7 +19,7 @@ import inspect
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Callable, Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -32,6 +32,8 @@ from app.models.background_job import (
     JOB_NEEDS_REVIEW,
     JOB_RUNNING,
     BackgroundJob,
+    JOB_ABORTED,
+    JOB_FAILED,
 )
 
 from ..activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS, record_activity
@@ -125,6 +127,17 @@ class NotAwaitingApproval(AutocountServiceError):
 class PushFailed(AutocountServiceError):
     """The push raised part-way through. The batch is back in ``needs_review``
     and is re-approvable - it is NOT stranded and NOT silently half-delivered."""
+
+
+class JobLeaseLost(RuntimeError):
+    """A push heartbeat found its job no longer RUNNING (orphan-swept or
+    aborted mid-push): stop at the chunk boundary, write nothing more."""
+
+    def __init__(self, job_id: str) -> None:
+        super().__init__(
+            f"Interrupted: job {job_id} is no longer running (swept or aborted); "
+            "the push stopped at a chunk boundary."
+        )
 
 
 class PreviewFailed(AutocountServiceError):
@@ -592,6 +605,7 @@ class SyncService:
             tenant_id=tenant_id,
             company_id=company_id,
             entity_type=entity_type,
+            job_id=job_id,
             summary=summary,
         ):
             return summary
@@ -621,6 +635,42 @@ class SyncService:
         if not summary.get("error"):
             summary["error"] = line[:2000]
 
+    def _chunk_beat(self, job_id: str) -> Callable[[], None]:
+        """The per-chunk heartbeat for a push (fix/job-lease-orphan-sweep).
+        Called AFTER a chunk's own outcome is already durable (marked +
+        committed on success, accounted on a chunk-level fault - see
+        ``apply_chunk`` in both ``_auto_push_upserts``/``_auto_push_
+        deletes``), never before - the fence below can only stop the NEXT
+        chunk, so it must never race the current one's own commit.
+
+        Best-effort on failure (a beat that errors is logged, the push
+        continues); a beat that lands on ZERO rows is a FENCE - the job is
+        re-read fresh and, if it is no longer RUNNING (swept as an orphan,
+        aborted), ``JobLeaseLost`` stops the push at this chunk boundary
+        (S5). A 0-row beat on a still-RUNNING row (Postgres ``SKIP LOCKED``)
+        is not a fence."""
+        jid = str(job_id)
+
+        def beat() -> None:
+            try:
+                alive = self.jobs.heartbeat(jid)
+            except Exception:  # noqa: BLE001 - advisory, never fails the push
+                logger.warning("auto_push: heartbeat for job %s failed", jid, exc_info=True)
+                return
+            if alive:
+                return
+            status = self.jobs.fresh_status(jid)
+            # The lost lease is the sweep's own verdict: ``failed``. An
+            # operator ABORT mid-push is left to the run's existing abort
+            # bookkeeping (checked between pages / before finish, never
+            # mid-chunk - pre-existing behaviour); PENDING (a push driven
+            # before its claim), DONE (a push re-driven under a finished job,
+            # as the round-6b suite does) or an unknown id are still ours.
+            if status == JOB_FAILED:
+                raise JobLeaseLost(jid)
+
+        return beat
+
     def _auto_push_upserts(
         self,
         pending: List[AcStagedRecord],
@@ -643,6 +693,7 @@ class SyncService:
         method still returns ``True``."""
         rows, records, failures = self._rehydrate_pushable(pending)
         by_ref = {row.source_ref: row for row in rows}
+        beat = self._chunk_beat(job_id)
 
         def apply_chunk(
             chunk_records: Any,
@@ -650,7 +701,13 @@ class SyncService:
             error: Optional[BaseException],
         ) -> None:
             if error is not None:
+                # A chunk-level fault (a transient 5xx that exhausted its
+                # retries) - nothing of ours to commit for THIS chunk, but
+                # the attempt still took real time (backoff sleeps included),
+                # so it still beats (fix/job-lease-orphan-sweep) exactly like
+                # a delivered chunk does.
                 self._account_failure(summary, error, sink=sink)
+                beat()
                 return
             summary["requests"] = int(summary.get("requests") or 0) + 1
             chunk_pushed: List[AcStagedRecord] = []
@@ -683,25 +740,36 @@ class SyncService:
                 self.staged.mark(chunk_quarantined, status=STAGED_FAILED)
             if chunk_pushed or chunk_quarantined:
                 # COMMIT per chunk - not the caller's final commit - so a
-                # LATER chunk's fault (or a lease lost mid-push) can never
-                # undo THIS chunk's already-delivered rows.
+                # LATER chunk's fault (or a lost lease) can never undo THIS
+                # chunk's already-delivered rows.
                 self.db.commit()
             summary["pushed"] = int(summary.get("pushed") or 0) + len(chunk_pushed)
             summary["quarantined"] = int(summary.get("quarantined") or 0) + len(chunk_quarantined)
+            # Liveness (fix/job-lease-orphan-sweep): beat ONLY AFTER this
+            # chunk's marks are committed above - JobLeaseLost (raised by
+            # ``beat()``) must stop the push AFTER a chunk is durable, never
+            # instead of committing it.
+            beat()
 
         try:
-            #     !!  NO ROLLBACK HERE - THIS METHOD DOES NOT OWN THE SESSION.  !!
-            # ``auto_push`` runs INSIDE the caller's (``run_autocount_sync``)
-            # still-open session, which already carries an UNCOMMITTED
-            # watermark/cursor advance from the fetch that just succeeded
-            # (S2 review BLOCKER 1). A bare ``self.db.rollback()`` on a sink
-            # failure discarded that advance too, making a failing sink (e.g.
-            # a wrong ``sorento_company_code``) pin the task at a full
-            # initial extract forever. The sink call below writes NOTHING
-            # local of its own (it is a network round-trip; the only local
-            # writes are the ``staged.mark(...)`` calls inside ``apply_chunk``,
-            # each already committed by the time this ``try`` could ever
-            # roll it back).
+            # Sequencing (fix/push-marks-per-chunk + fix/job-lease-orphan-
+            # sweep): ``auto_push`` runs INSIDE the caller's
+            # (``run_autocount_sync``) still-open session. By the time this
+            # method runs, that caller's own watermark/cursor advance AND
+            # this run's starvation-guard offer stamp (``mark_offered``) are
+            # both ALREADY COMMITTED (S10/S2 review BLOCKER 1 no longer
+            # applies - the pre-push commit moved earlier, before the sink is
+            # ever called) - so there is nothing of the CALLER's left
+            # uncommitted here to protect with a bare try/except. What
+            # matters at THIS level is narrower: the sink call below writes
+            # NOTHING local of its own (it is a network round-trip; the only
+            # local writes are the ``staged.mark(...)`` calls inside
+            # ``apply_chunk``, each already committed by the time this
+            # ``try`` could ever roll it back), so a fault here - a chunk
+            # exhausting its retries, an anchor error, a lost lease - never
+            # needs a rollback to protect anything: every already-applied
+            # chunk stands, and the still-open session carries no partial
+            # write of its own past that point.
             if records and hasattr(sink, "write_batch"):
                 kwargs: Dict[str, Any] = {}
                 if "on_chunk" in inspect.signature(sink.write_batch).parameters:
@@ -719,6 +787,13 @@ class SyncService:
                 for row, record in zip(rows, records):
                     result = sink.write(record, request_id=f"{job_id}:{row.id}")
                     apply_chunk([record], [result], None)
+        except JobLeaseLost as exc:
+            # The job is no longer ours (swept as an orphan, or aborted) -
+            # every chunk ``apply_chunk`` already ran for is durable; the
+            # caller bails without overwriting the terminal status.
+            summary["leaseLost"] = True
+            summary["error"] = str(exc)
+            return False
         except SinkAnchorError as exc:
             # TASK-level, never per record (Appendix A6): the company anchor is
             # wrong, so no record was even looked at. Everything stays STAGED.
@@ -749,6 +824,7 @@ class SyncService:
         tenant_id: str,
         company_id: str,
         entity_type: str,
+        job_id: str,
         summary: Dict[str, Any],
     ) -> bool:
         """The delete half of ``auto_push`` (plan 22 S3, AC-22-21). Routes
@@ -763,9 +839,12 @@ class SyncService:
 
         Marks + COMMITS per CHUNK exactly like the upsert half
         (fix/push-marks-per-chunk) - a fault on a LATER deletions chunk can
-        never undo an earlier one's already-handled refs. Returns ``False``
-        only on a STOPPING fault, same contract as the upsert half."""
+        never undo an earlier one's already-handled refs; each chunk beats
+        (fix/job-lease-orphan-sweep) AFTER its own marks are committed.
+        Returns ``False`` only on a STOPPING fault, same contract as the
+        upsert half."""
         by_ref = {row.source_ref: row for row in pending}
+        beat = self._chunk_beat(job_id)
 
         def apply_chunk(
             chunk_refs: List[str],
@@ -774,6 +853,7 @@ class SyncService:
         ) -> None:
             if error is not None:
                 self._account_failure(summary, error, sink=sink)
+                beat()
                 return
             summary["requests"] = int(summary.get("requests") or 0) + 1
             by_verdict = {str(r.get("source_ref") or ""): r for r in (chunk_records or [])}
@@ -806,6 +886,9 @@ class SyncService:
                     {"sourceRef": row.source_ref, "error": "the consumer rejected this delete"}
                     for row in failed
                 ]
+            # Liveness (fix/job-lease-orphan-sweep): beat only after this
+            # chunk's marks (and the row-hash drop) are committed above.
+            beat()
 
         refs = [row.source_ref for row in pending]
         try:
@@ -819,6 +902,22 @@ class SyncService:
                     apply_chunk(refs, (result or {}).get("records") or [], None)
             # else: no delete support on this sink at all - every ref stays
             # STAGED, same posture as a `retryable` upsert.
+        except JobLeaseLost as exc:
+            summary["leaseLost"] = True
+            summary["error"] = str(exc)
+            return False
+        except SinkAnchorError as exc:
+            self._account_failure(summary, exc, sink=sink)
+            summary["error"] = exc.sorento_message
+            summary["errorCode"] = exc.code
+            return False
+        except SorentoSinkError as exc:
+            self._account_failure(summary, exc, sink=sink)
+            return False
+        except Exception as exc:  # noqa: BLE001 - a run must never die on delivery
+            logger.exception("autocount auto-push delete failed for %s/%s", company_id, entity_type)
+            self._account_failure(summary, exc, sink=sink)
+            return False
         except SinkAnchorError as exc:
             self._account_failure(summary, exc, sink=sink)
             summary["error"] = exc.sorento_message

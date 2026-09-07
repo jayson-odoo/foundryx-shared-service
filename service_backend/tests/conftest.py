@@ -35,6 +35,10 @@ settings.meta_app_secret = ""
 # No dispatcher thread under tests - outbox tests drive dispatch_pending()
 # directly against the test session (the thread would hit the real DATABASE_URL).
 settings.email_dispatcher_enabled = False
+# No startup orphan sweep under tests either - ``TestClient(app)`` would open
+# ``SessionLocal()`` against the real DATABASE_URL; the sweep's own tests force
+# the flag per case and drive ``JobService`` against the test session.
+settings.background_job_orphan_sweep_on_startup = False
 # Tests must not pick up a platform SMTP connection from the local .env.
 settings.platform_smtp_host = ""
 # Nor a real LLM key: with no platform LLM connection seeded, the deterministic

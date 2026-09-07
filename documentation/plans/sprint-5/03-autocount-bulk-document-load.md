@@ -638,10 +638,11 @@ parallel at the end. Live load = AC-03-22/23 on the real company and `ac_sim`.
 - BL-SS-096 `SorentoSink.write_batch` opens a fresh `httpx.Client` per chunk - a TLS handshake
   per chunk instead of one connection-pooled client reused across the whole batch (review round
   7 polish; see the round 7 amendment above).
-- BL-SS-129 `test_auto_push_one_failing_chunk_keeps_the_other_chunks_verdicts_at_any_concurrency`
+- BL-SS-132 `test_auto_push_one_failing_chunk_keeps_the_other_chunks_verdicts_at_any_concurrency`
   (round6b) - CLOSED (`a5246f37`): the shared fixture now stamps explicit increasing
   `created_at` per row, the same shape `test_autocount_push_marks_per_chunk.py`'s own `_stage`
-  helper already used.
-- BL-SS-130 Fixed by this lane (fix/push-marks-per-chunk) - see `documentation/backlogs/
+  helper already used. (Renumbered from BL-SS-129, which `fix/job-lease-orphan-sweep` claimed
+  first on `main`.)
+- BL-SS-133 Fixed by this lane (fix/push-marks-per-chunk) - see `documentation/backlogs/
   backlog.md` for the full prod-numbers writeup; superseded round 6's "unchanged all-or-nothing"
-  ruling.
+  ruling. (Renumbered from BL-SS-130 for the same reason.)

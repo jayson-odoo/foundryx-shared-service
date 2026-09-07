@@ -501,7 +501,12 @@ class SorentoSink:
 
     # ── dry run (AC-14-20/21) ────────────────────────────────────────────────
 
-    def dry_run(self, records: Sequence[CanonicalRecord]) -> DryRunResult:
+    def dry_run(
+        self,
+        records: Sequence[CanonicalRecord],
+        *,
+        on_chunk: Optional[Callable[[], None]] = None,
+    ) -> DryRunResult:
         """Ask Sorento what a push WOULD do, writing nothing.
 
         The prediction is authoritative because Sorento runs its real resolution
@@ -520,6 +525,8 @@ class SorentoSink:
         # gate un-passable on precisely the companies that most need it.
         for start in range(0, len(projected), self.batch_size):
             body = self._post(projected[start : start + self.batch_size], dry_run=True)
+            if on_chunk is not None:
+                on_chunk()
             for key, value in (body.get("summary") or {}).items():
                 if isinstance(value, int):
                     summary[key] = summary.get(key, 0) + value
