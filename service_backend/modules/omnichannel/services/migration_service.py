@@ -4,14 +4,15 @@ orchestration, cursor writes, cooperative abort, dry-run gate, mapping hash,
 report assembly, plan §2.1) to this SAME file - kept together because S2's
 service reuses this one's connection/workspace resolution helpers.
 """
-import base64
 import csv
 import hashlib
 import io
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from cryptography.fernet import InvalidToken
 from fastapi import HTTPException, status
@@ -34,6 +35,7 @@ from app.models.background_job import (
 from app.models.connection import Connection
 from app.models.user import User
 from app.secrets import decrypt_secret
+from app.services.storage import storage_for_tenant
 from app.status_engine.scoped import get_scope_status
 
 from ..models import Channel, ConversationMessage
@@ -56,6 +58,7 @@ from ..schemas import (
     MigrationSourceUser,
     MigrationTargetChannel,
     MigrationTargetStage,
+    MigrationUploadResult,
     WorkspaceItem,
 )
 from . import migration_media
@@ -95,7 +98,29 @@ CONTACT_REF_BATCH = 25
 # per-contact work.
 MEDIA_REF_BATCH = 50
 MAX_REPORT_SAMPLES = 10
-MAX_FAILURE_ROWS_KEPT = 5000  # bounds background_jobs.result_json size (S3+ note below)
+# S3/S4 originally bounded `background_jobs.result_json` size by truncating
+# the failure list inline to this many rows; S5 moves the FULL set to
+# storage (`_write_failures_csv`) and keeps only a 50-row `sample` inline
+# instead, so this cap no longer applies - `failures_csv()` still reads a
+# pre-S5/hand-built job's inline `rows` unbounded for backward compatibility.
+
+# S5 (AC-MIG-46..49, D-A6-25) - the CSV fallback. respond.io's own Contacts
+# module export caps at 2500 rows (plan §5.1 sources, F1) - a file at or over
+# that count MAY be truncated, so it is a REPORTED blocker, never a limit we
+# ourselves enforce (a customer with fewer than 2500 contacts never sees it).
+CSV_CONTACTS_ROW_CAP = 2500
+# respond.io's own contacts-IMPORT doc (plan §5.1 sources) states a 20 MB
+# ceiling on its side; reused here as OUR ceiling too for the same class of
+# file (a customer's own export), rather than inventing an unrelated number.
+MIGRATION_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
+# Abort/checkpoint cadence for the CSV contacts phase (D-A6-25) - a CSV this
+# small (capped in practice around CSV_CONTACTS_ROW_CAP) does not need a
+# true resumable cursor (mirrors S4's own quick_replies-phase precedent, "a
+# single bounded pass... no separate resumability is needed beyond re-running
+# the same CSV, which write_contact's own migration_refs check already makes
+# idempotent") - this constant only paces how often a cooperative abort is
+# honoured mid-file, not a resume point.
+CSV_CONTACTS_CHECKPOINT_BATCH = 100
 
 # A workspace with more contacts than this skips the rest of the preflight's
 # distinct-lifecycle pass and reports a warning instead of walking the whole
@@ -316,6 +341,277 @@ class MigrationPreflightService:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# S5 - CSV fallback (AC-MIG-46..49, D-A6-18/25). `source="csv"` reads an
+# uploaded respond.io Contacts export through the SAME core `read_rows` the
+# rest of the platform's imports use (never a bespoke parser), maps it
+# through an operator-chosen header map, and writes it via the SAME
+# `MigrationWriter.write_contact` the API path uses - one writer, one set of
+# merge rules, one `migration_refs` idempotency index, regardless of source.
+#
+# D-A6-25 (taken where the plan/UAC were ambiguous - see the commit body for
+# the full reasoning): AC-MIG-46 hands CONTACTS to the EXISTING
+# `ImporterDef("omnichannel_contacts")` wizard (zero new parsing code, no
+# `migration_refs` row); THIS module ADDITIONALLY offers a parallel
+# migration-writer-backed contacts ingestion for the CSV path, because only
+# THIS path gives a CSV-sourced contact the SAME `migration_refs` idempotency
+# an API-sourced contact gets (so re-uploading the same export never
+# duplicates, and a later API-mode top-up run correctly recognises a
+# CSV-migrated contact by its respond.io id). The two paths are not mutually
+# exclusive; the setup form (S0/S6) still links to the wizard as the
+# lower-friction default. Custom fields and tags are DELIBERATELY NOT
+# automated here (D-A6-1/F1's own framing: CSV mode is contacts identity
+# fields + snippets; fields/tags are the plan §7 prerequisite-6 screenshot
+# path, or the separate wizard import, which already finds-or-creates them
+# from a `cf_<fieldKey>` column) - `CsvSourceContact` below carries no
+# `custom_fields`/`tags`/`assignee` at all, so `write_contact`'s own
+# find-or-create/union logic simply never runs for them on this path.
+CSV_HEADER_KEYS: Tuple[str, ...] = (
+    "externalId", "firstName", "lastName", "phone", "email", "language", "countryCode", "lifecycle",
+)
+
+# Case-insensitive fallback guesses (plan §5.6's own column names) - the
+# OPERATOR's `csvHeaderMap` always wins; this only fills in what they left
+# unmapped, so a vendor header rename is still a mapping click, never a code
+# change (plan §5.6's own stated invariant).
+_HEADER_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "externalId": ("contact id", "id", "external id"),
+    "firstName": ("first name", "firstname"),
+    "lastName": ("last name", "lastname"),
+    "phone": ("phone", "phone number"),
+    "email": ("email", "email address"),
+    "language": ("language",),
+    "countryCode": ("country", "country code"),
+    "lifecycle": ("lifecycle", "lifecycle stage"),
+}
+
+
+def _resolve_csv_header_map(
+    headers: List[str], operator_map: Dict[str, str]
+) -> Tuple[Dict[str, str], List[str]]:
+    """``systemKey -> actualFileHeader`` for every key this path understands,
+    resolved OPERATOR-choice-first then alias-guessed; returns the second
+    list of file headers that matched NEITHER (AC-MIG-47's "unknown headers
+    reported" - never silently dropped)."""
+    header_by_lower = {h.strip().lower(): h for h in headers}
+    resolved: Dict[str, str] = {}
+    for key in CSV_HEADER_KEYS:
+        choice = (operator_map or {}).get(key)
+        if choice and choice in headers:
+            resolved[key] = choice
+            continue
+        for alias in _HEADER_ALIASES.get(key, ()):
+            if alias in header_by_lower:
+                resolved[key] = header_by_lower[alias]
+                break
+    mapped_headers = set(resolved.values())
+    unmapped = [h for h in headers if h not in mapped_headers]
+    return resolved, unmapped
+
+
+@dataclass
+class CsvSourceContact:
+    """Duck-types `respondio.shapes.Contact` closely enough for
+    `MigrationWriter.write_contact` (a plain method - Python does not enforce
+    the `SourceContact` type hint at the call site), WITHOUT reusing that
+    pydantic model directly: `Contact.id` is a strict vendor `int`, and a
+    CSV row's id is either the export's own string "Contact ID" column or a
+    STABLE HASH of the row when that column is absent/blank (D-A6-25) -
+    neither fits an `int` field. `custom_fields`/`tags`/`assignee`/`status`
+    are left at their `None` defaults (see the module-docstring decision
+    above) so `write_contact`'s field/tag/assignee logic no-ops for them."""
+
+    id: str
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    language: Optional[str] = None
+    countryCode: Optional[str] = None
+    lifecycle: Optional[str] = None
+    custom_fields: Optional[List[Dict[str, Any]]] = None
+    tags: Optional[List[str]] = None
+    assignee: Optional[Any] = None
+    status: Optional[str] = None
+
+
+def _stable_row_id(header_map: Dict[str, str], record: Dict[str, Any]) -> str:
+    """A deterministic id over the MAPPED values only (never the raw record,
+    whose extra/unmapped columns or key order would make an otherwise
+    identical logical row hash differently run to run) - used ONLY when the
+    file carries no "Contact ID"-mapped column (D-A6-25)."""
+    basis = {k: record.get(v) for k, v in sorted(header_map.items()) if k != "externalId"}
+    blob = json.dumps(basis, sort_keys=True, default=str)
+    return "row:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:24]
+
+
+def _write_failures_csv(db: Session, tenant_id: str, job_id: str, failures: List[dict]) -> str:
+    """Writes the FULL failure set to the tenant's active storage connection
+    (D-A6-23/plan §2.1 "S5 owns the proper upload UX/contract" note extended
+    to the failure export too) - `result_json` keeps only a small capped
+    `sample` for the detail-page table (`MigrationService._to_item`), which
+    is what bounds `background_jobs.result_json` size now instead of
+    `MAX_FAILURE_ROWS_KEPT` truncating the SOURCE of truth. Always writes a
+    file, even with zero failures (a header-only CSV), so a finished job's
+    download route never has to special-case "no file yet"."""
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["entity", "sourceId", "sourceLabel", "reason", "action"])
+    for r in failures:
+        writer.writerow(
+            [
+                sanitize_cell(r.get("entity")),
+                sanitize_cell(r.get("sourceId")),
+                sanitize_cell(r.get("sourceLabel")),
+                sanitize_cell(r.get("reason")),
+                sanitize_cell(r.get("action")),
+            ]
+        )
+    content = buf.getvalue().encode("utf-8")
+    return storage_for_tenant(db, tenant_id).save(f"omnichannel/migration/{job_id}/failures.csv", content, "text/csv")
+
+
+def _process_csv_contacts(
+    db: Session,
+    tenant_id: str,
+    workspace_id: str,
+    writer: MigrationWriter,
+    payload: Dict[str, Any],
+    contact_counts: Dict[str, int],
+    field_counts: Dict[str, int],
+    tag_counts: Dict[str, int],
+    samples: List[dict],
+    failures: List[dict],
+    csv_blockers: List[str],
+    *,
+    dry_run: bool,
+    service: JobService,
+    job: BackgroundJob,
+) -> None:
+    """The `source="csv"` contacts phase (AC-MIG-47/48) - reads
+    `payload["contactsCsvKey"]` through the SAME core reader/writer every
+    other CSV path in this file uses, per-row SAVEPOINT + dry-run
+    rollback/real-mode commit exactly mirroring the API contacts loop
+    (`run_migration_job`'s own comment block documents why: D-A6-14, one
+    code path for both modes). Mutates every collection it is given IN
+    PLACE (mirrors `failures`/`samples` elsewhere in this module) rather than
+    returning a new report - `csv_blockers` in particular must survive a
+    crash-resume that picks the job back up in a LATER phase (persisted via
+    `counts["csvBlockers"]` in the caller's `checkpoint()`)."""
+    key = payload.get("contactsCsvKey")
+    if not key:
+        failures.append(
+            {
+                "entity": "contacts", "sourceId": "", "sourceLabel": "",
+                "reason": "No contacts CSV was uploaded for this CSV-mode migration.",
+                "action": "skipped",
+            }
+        )
+        return
+    try:
+        content, _mime = storage_for_tenant(db, tenant_id).fetch(key)
+    except Exception as exc:  # noqa: BLE001 - storage gone/misconfigured, never abort the job
+        failures.append(
+            {
+                "entity": "contacts", "sourceId": "", "sourceLabel": "",
+                "reason": f"Could not read the uploaded contacts CSV: {exc}", "action": "skipped",
+            }
+        )
+        return
+
+    fmt = csv_readers.sniff_format(content)
+    if fmt is None:
+        failures.append(
+            {
+                "entity": "contacts", "sourceId": "", "sourceLabel": "",
+                "reason": "Unsupported file format for the contacts CSV.", "action": "skipped",
+            }
+        )
+        return
+
+    headers, records = csv_readers.read_rows(content, fmt, None, settings.import_max_rows)
+    row_count = len(records)
+    if row_count >= CSV_CONTACTS_ROW_CAP:
+        csv_blockers.append(
+            f"This contacts file has {row_count} rows, at or over respond.io's own "
+            f"{CSV_CONTACTS_ROW_CAP}-row Contacts-module export cap - it may be truncated. "
+            "Re-export in narrower batches if this workspace has more contacts than that."
+        )
+
+    header_map, unmapped_headers = _resolve_csv_header_map(headers, payload.get("csvHeaderMap") or {})
+    if unmapped_headers:
+        csv_blockers.append(
+            "Unmapped CSV column(s), values not imported: " + ", ".join(unmapped_headers)
+        )
+
+    for i, record in enumerate(records):
+        external_id = None
+        ext_header = header_map.get("externalId")
+        if ext_header:
+            external_id = str(record.get(ext_header) or "").strip() or None
+        if not external_id:
+            external_id = _stable_row_id(header_map, record)
+
+        def _val(system_key: str) -> Optional[str]:
+            header = header_map.get(system_key)
+            if not header:
+                return None
+            raw = record.get(header)
+            text = str(raw).strip() if raw is not None else ""
+            return text or None
+
+        country_code = _val("countryCode")
+        source = CsvSourceContact(
+            id=external_id,
+            firstName=_val("firstName"),
+            lastName=_val("lastName"),
+            phone=_val("phone"),
+            email=_val("email"),
+            language=_val("language"),
+            countryCode=country_code.upper() if country_code else None,
+            lifecycle=_val("lifecycle"),
+        )
+
+        nested = db.begin_nested()
+        try:
+            outcome = writer.write_contact(source)
+        except Exception as exc:  # noqa: BLE001 - per-row isolation (AC-MIG-29's own pattern)
+            nested.rollback()
+            contact_counts["fetched"] += 1
+            contact_counts["errors"] = contact_counts.get("errors", 0) + 1
+            failures.append(
+                {
+                    "entity": "contacts", "sourceId": external_id, "sourceLabel": "",
+                    "reason": str(exc), "action": "skipped",
+                }
+            )
+        else:
+            if dry_run:
+                nested.rollback()  # D-A6-14: zero rows written anywhere
+            else:
+                nested.commit()
+            contact_counts["fetched"] += 1
+            contact_counts[outcome.kind] = contact_counts.get(outcome.kind, 0) + 1
+            field_counts["fetched"] = field_counts.get("fetched", 0) + outcome.fields_created + outcome.fields_matched
+            field_counts["create"] = field_counts.get("create", 0) + outcome.fields_created
+            field_counts["matched"] = field_counts.get("matched", 0) + outcome.fields_matched
+            field_counts["errors"] = field_counts.get("errors", 0) + outcome.field_errors
+            tag_counts["fetched"] = tag_counts.get("fetched", 0) + outcome.tags_created + outcome.tags_matched
+            tag_counts["create"] = tag_counts.get("create", 0) + outcome.tags_created
+            tag_counts["matched"] = tag_counts.get("matched", 0) + outcome.tags_matched
+            if len(samples) < MAX_REPORT_SAMPLES:
+                samples.append({"name": outcome.source_label, "action": outcome.kind})
+
+        service.advance(job, done=1)
+        if (i + 1) % CSV_CONTACTS_CHECKPOINT_BATCH == 0 and _aborted(db, job.id):
+            # Cooperative abort mid-file (AC-MIG-28's own rule, extended to
+            # CSV mode) - the caller's own checkpoint/abort-check right after
+            # this function returns catches anything past the last checked
+            # row; migration_refs makes a later re-run pick up cleanly either
+            # way (D-A6-25's own "no true resume cursor needed" note above).
+            return
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # S2 - MigrationService (job create/list/get/cancel, phase orchestration,
 # cooperative abort, dry-run gate, mapping hash, report assembly)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -367,6 +663,12 @@ def _mapping_hash(payload: MigrationJobCreate) -> str:
         ),
         "contactsOnly": bool(payload.contactsOnly),
         "messagesSince": payload.messagesSince or None,
+        # S5 (D-A6-25) - a differently-uploaded contacts CSV or a changed
+        # header map IS a different mapping for CSV mode (mirrors channelMap/
+        # userMap above); `snippetsCsvKey` stays EXCLUDED (S4's own rationale,
+        # unchanged: quick replies are independent of "the mapping").
+        "contactsCsvKey": payload.contactsCsvKey or None,
+        "csvHeaderMap": sorted((payload.csvHeaderMap or {}).items()),
     }
     blob = json.dumps(canonical, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -621,6 +923,11 @@ class MigrationService:
             except ValueError:
                 errors["messagesSince"] = "messagesSince must be an ISO-8601 date/time."
 
+        # S5 (AC-MIG-47) - a CSV-mode job needs an uploaded contacts file;
+        # never discovered only once the job is already running.
+        if payload.source == "csv" and not payload.contactsCsvKey:
+            errors["contactsCsvKey"] = "Upload a contacts CSV before running a CSV-mode migration."
+
         return errors, parsed_messages_since
 
     def _in_progress_job(self, tenant_id: str, workspace_id: str) -> Optional[BackgroundJob]:
@@ -658,7 +965,21 @@ class MigrationService:
     def create_job(
         self, tenant_id: str, actor_user_id: Optional[str], payload: MigrationJobCreate
     ) -> MigrationJobItem:
-        connection = self._require_connection(tenant_id, payload.connectionId)
+        # S5 (D-A6-25) - `connectionId` is required for an API-mode job (the
+        # only source of a client/token) but OPTIONAL for CSV mode, where a
+        # customer with zero API access may never have created a connection
+        # row at all. When one IS supplied (even in CSV mode, purely to carry
+        # `spaceLabel` for display), it is still resolved tenant-scoped
+        # (AC-MIG-51/52) - never a bare lookup either way.
+        connection: Optional[Connection] = None
+        space_label = ""
+        if payload.connectionId:
+            connection = self._require_connection(tenant_id, payload.connectionId)
+            space_label = str((connection.config_json or {}).get("spaceLabel") or "")
+        elif payload.source == "api":
+            raise MigrationJobValidationError(
+                {"connectionId": "A respond.io connection is required for an API-mode migration."}
+            )
         workspace = self._require_workspace(tenant_id, payload.workspaceId)
 
         errors, parsed_messages_since = self._validate_mapping(tenant_id, payload.workspaceId, payload)
@@ -681,7 +1002,7 @@ class MigrationService:
         job_payload = {
             "mode": payload.mode,
             "source": payload.source,
-            "connectionId": payload.connectionId,
+            "connectionId": payload.connectionId or "",
             "workspaceId": payload.workspaceId,
             "channelMap": [e.model_dump() for e in payload.channelMap],
             "userMap": [e.model_dump() for e in payload.userMap],
@@ -690,20 +1011,45 @@ class MigrationService:
             "messagesSince": parsed_messages_since,
             "contactsOnly": bool(payload.contactsOnly),
             "mappingHash": mapping_hash,
-            # S4 (AC-MIG-44) - carried through verbatim; empty/absent means
-            # "no snippets CSV supplied", a legitimate no-op for the
-            # quick_replies phase, not a validation error.
-            "snippetsCsvBase64": payload.snippetsCsvBase64,
+            # S5 (AC-MIG-47) - carried through verbatim; `contactsCsvKey` is
+            # required (validated above) for `source="csv"`, ignored for
+            # `source="api"`. `snippetsCsvKey` (S4's `snippetsCsvBase64`
+            # renamed onto the real upload route, D-A6-25) stays optional in
+            # BOTH modes - empty/absent means "no snippets CSV supplied", a
+            # legitimate no-op for the quick_replies phase, not an error.
+            "contactsCsvKey": payload.contactsCsvKey,
+            "csvHeaderMap": payload.csvHeaderMap or {},
+            "snippetsCsvKey": payload.snippetsCsvKey,
             # Denormalized (the Broadcast-model convention, `models.py
             # template_name`) - a renamed/retired connection or workspace must
             # not blank out this job's history row.
-            "spaceLabel": str((connection.config_json or {}).get("spaceLabel") or ""),
+            "spaceLabel": space_label,
             "workspaceName": workspace.name,
         }
         job = self.jobs.create_and_enqueue(
             type=MIGRATION_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id, payload=job_payload
         )
         return self._to_item(job, tenant_id)
+
+    # ── S5 - CSV upload (AC-MIG-46/47, D-A6-25) ─────────────────────────────
+
+    def upload_csv(self, tenant_id: str, kind: str, content: bytes) -> MigrationUploadResult:
+        """Stores an uploaded contacts/snippets CSV through the tenant's
+        active storage connection (the SAME `storage_for_tenant(...).save`
+        seam every other upload in this codebase uses) and returns the key
+        the job payload then carries - the real-upload-route replacement for
+        S4's `snippetsCsvBase64` JSON stopgap, generalized to also cover the
+        CSV-mode contacts file. Sniff-gated (never trusts the filename/
+        declared content type): a PNG named `contacts.csv` is rejected here,
+        before a single byte reaches storage."""
+        fmt = csv_readers.sniff_format(content)
+        if fmt is None:
+            raise MigrationJobValidationError({"file": "Unsupported file - upload a CSV (or xlsx/xls)."})
+        headers, records = csv_readers.read_rows(content, fmt, None, settings.import_max_rows)
+        key = storage_for_tenant(self.db, tenant_id).save(
+            f"omnichannel/migration/uploads/{uuid4()}/{kind}.csv", content, "text/csv"
+        )
+        return MigrationUploadResult(key=key, rowCount=len(records), headers=headers)
 
     # ── reads ────────────────────────────────────────────────────────────────
 
@@ -726,8 +1072,23 @@ class MigrationService:
         return self._to_item(job, tenant_id)
 
     def failures_csv(self, tenant_id: str, job_id: str) -> str:
+        """S5 (D-A6-23/25) - `finish_done()` now writes the FULL failure set
+        to storage (`_write_failures_csv`) and this reads it straight back,
+        an AUTHED server-side fetch (never a redirect to a presigned URL -
+        D-A6-23 forbids a bearer-less capability link for a file of contact
+        names/phones/emails). Falls back to any INLINE `failures.rows` (the
+        pre-S5 shape, and still what a hand-built test/job row carries) when
+        no `fileKey` is present - never a hard failure either way."""
         job = self._require_job(tenant_id, job_id)
-        rows = ((job.result_json or {}).get("failures") or {}).get("rows") or []
+        failures_meta = (job.result_json or {}).get("failures") or {}
+        file_key = failures_meta.get("fileKey")
+        if file_key:
+            try:
+                content, _mime = storage_for_tenant(self.db, tenant_id).fetch(file_key)
+                return content.decode("utf-8-sig")
+            except Exception:  # noqa: BLE001 - unresolvable key (connection gone) - fall back below
+                pass
+        rows = failures_meta.get("rows") or []
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow(["entity", "sourceId", "sourceLabel", "reason", "action"])
@@ -754,7 +1115,10 @@ class MigrationService:
         result = job.result_json or {}
         report = result.get("report")
         failures = result.get("failures") or {}
-        failure_rows = failures.get("rows") or []
+        # S5 - `finish_done()` now keeps only a capped `sample` inline
+        # (the FULL set moved to storage, `_write_failures_csv`); a pre-S5 or
+        # hand-built job row (tests) still carries the old inline `rows`.
+        failure_rows = failures.get("sample") or failures.get("rows") or []
 
         actor_name = None
         if job.actor_user_id:
@@ -1137,23 +1501,31 @@ def _process_contact_events(
 
 
 def _process_quick_replies_csv(
-    writer: MigrationWriter, csv_base64: Optional[str], qr_counts: Dict[str, int], failures: List[dict]
+    db: Session,
+    tenant_id: str,
+    writer: MigrationWriter,
+    csv_key: Optional[str],
+    qr_counts: Dict[str, int],
+    failures: List[dict],
 ) -> None:
     """Respond.io exposes no snippets endpoint (D-A6-19/F3) - this reads the
     2-column (`shortcut`, `body`) CSV the operator uploaded alongside the job
-    (base64 in the payload, see `MigrationJobCreate.snippetsCsvBase64`'s own
-    docstring) through the SAME `app/import_engine/readers.py` sniff/cap the
-    rest of the platform's imports use. A no-op (zero counts) when no CSV was
-    supplied - not a failure, a legitimate "API-only, no snippets" run."""
-    if not csv_base64:
+    through the SAME `app/import_engine/readers.py` sniff/cap the rest of the
+    platform's imports use. S5 (D-A6-25) reads it from STORAGE via `csv_key`
+    (`POST /omnichannel/migration/uploads`'s own key) - the real-upload-route
+    replacement for S4's `snippetsCsvBase64` JSON-payload stopgap, whose own
+    docstring named this slice as the one that would do it. A no-op (zero
+    counts) when no CSV was supplied - not a failure, a legitimate
+    "no snippets" run."""
+    if not csv_key:
         return
     try:
-        content = base64.b64decode(csv_base64, validate=True)
-    except Exception:  # noqa: BLE001 - bad upload, never abort the job
+        content, _mime = storage_for_tenant(db, tenant_id).fetch(csv_key)
+    except Exception as exc:  # noqa: BLE001 - storage gone/misconfigured, never abort the job
         failures.append(
             {
                 "entity": "quickReplies", "sourceId": "", "sourceLabel": "",
-                "reason": "Could not decode the snippets CSV upload.", "action": "skipped",
+                "reason": f"Could not read the uploaded snippets CSV: {exc}", "action": "skipped",
             }
         )
         return
@@ -1223,35 +1595,49 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     contacts loop below, so these three phases' report entities stay
     genuinely zero (never walked) in either mode, exactly like S3 left
     identities/messages zero for S2's dry runs (AC-MIG-27's "no media URL is
-    fetched" during a dry run is therefore structural, not a branch)."""
+    fetched" during a dry run is therefore structural, not a branch).
+
+    S5 (D-A6-25) - `source="csv"` skips the whole API surface: no
+    connection/client/credentials are required, `source_field_defs` stays
+    empty (this path automates no custom fields, see the S5 module-docstring
+    decision above the CSV helpers), and the phase machine goes straight
+    from `contacts` to `quick_replies` - `identities`/`messages`/`media`/
+    `events` never run (an API-less export carries none of that data,
+    AC-MIG-48) so those four report entities stay genuinely zero, exactly
+    like a `contactsOnly` API run leaves media/events/quick_replies zero."""
     service = JobService(db)
     tenant_id = job.tenant_id
     payload = job.payload_json or {}
     workspace_id = payload.get("workspaceId")
     connection_id = payload.get("connectionId")
+    source_mode = payload.get("source", "api")
+    csv_mode = source_mode == "csv"
     dry_run = payload.get("mode") == "dry_run"
     contacts_only = bool(payload.get("contactsOnly"))
 
-    connection = MigrationConnectionRepository(db).get_for_provider(
-        tenant_id, connection_id, RESPONDIO_PROVIDER
-    )
-    if connection is None:
-        service.finish(job, status=JOB_FAILED, error="The respond.io connection no longer exists.")
-        return
-    credentials = _decrypt_or_none(connection.credentials_json)
-    if credentials is None:
-        service.finish(
-            job, status=JOB_FAILED,
-            error="Stored credentials could not be decrypted - re-enter the access token.",
-        )
-        return
-    config = connection.config_json or {}
-    space_timezone = str(config.get("timezone") or "")
+    client: Optional[RespondIoClient] = None
+    space_timezone = ""
 
     def milestone(msg: str) -> None:
         service.log(job, msg)
 
-    client = RespondIoClient.from_connection(config, credentials, on_milestone=milestone)
+    if not csv_mode:
+        connection = MigrationConnectionRepository(db).get_for_provider(
+            tenant_id, connection_id, RESPONDIO_PROVIDER
+        )
+        if connection is None:
+            service.finish(job, status=JOB_FAILED, error="The respond.io connection no longer exists.")
+            return
+        credentials = _decrypt_or_none(connection.credentials_json)
+        if credentials is None:
+            service.finish(
+                job, status=JOB_FAILED,
+                error="Stored credentials could not be decrypted - re-enter the access token.",
+            )
+            return
+        config = connection.config_json or {}
+        space_timezone = str(config.get("timezone") or "")
+        client = RespondIoClient.from_connection(config, credentials, on_milestone=milestone)
 
     # Re-validate every mapped id AT USE TIME, never trust save-time
     # validation alone (AC-MIG-51) - a stage/channel/user deleted between
@@ -1284,17 +1670,18 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
         except ValueError:
             messages_since_dt = None
 
-    try:
-        source_field_defs: Dict[str, Dict[str, Any]] = {}
-        for raw_field in client.list_custom_fields():
-            parsed = CustomField(**raw_field)
-            source_field_defs[parsed.name.strip().lower()] = {
-                "dataType": parsed.dataType,
-                "allowedValues": parsed.allowedValues,
-            }
-    except RespondIoError as exc:
-        service.log(job, f"Could not read source custom fields: {exc.message}", level="warning")
-        source_field_defs = {}
+    source_field_defs: Dict[str, Dict[str, Any]] = {}
+    if client is not None:
+        try:
+            for raw_field in client.list_custom_fields():
+                parsed = CustomField(**raw_field)
+                source_field_defs[parsed.name.strip().lower()] = {
+                    "dataType": parsed.dataType,
+                    "allowedValues": parsed.allowedValues,
+                }
+        except RespondIoError as exc:
+            service.log(job, f"Could not read source custom fields: {exc.message}", level="warning")
+            source_field_defs = {}
 
     writer = MigrationWriter(
         db,
@@ -1327,6 +1714,11 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     assignee_unmatched = int(counts.get("assigneeUnmatchedCount") or 0)
     messages_inferred = int(counts.get("messagesWithInferredTimestamp") or 0)
     messages_skipped_before_floor = int(counts.get("messagesSkippedBeforeFloor") or 0)
+    # S5 - persisted through `checkpoint()` (like every other counter here) so
+    # a crash-resumed invocation that picks the job back up in a LATER phase
+    # (e.g. `quick_replies`) still reports the row-cap/unmapped-header facts
+    # the earlier `contacts` phase found (D-A6-25).
+    csv_blockers: List[str] = list(counts.get("csvBlockers") or [])
 
     prior_result = job.result_json or {}
     failures: List[dict] = list((prior_result.get("failures") or {}).get("rows") or [])
@@ -1355,6 +1747,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
         counts["assigneeUnmatchedCount"] = assignee_unmatched
         counts["messagesWithInferredTimestamp"] = messages_inferred
         counts["messagesSkippedBeforeFloor"] = messages_skipped_before_floor
+        counts["csvBlockers"] = csv_blockers
         service.set_cursor(
             job,
             {
@@ -1378,14 +1771,67 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             messages_with_inferred=messages_inferred, message_samples=message_samples,
             messages_skipped_before_floor=messages_skipped_before_floor,
         )
+        if csv_mode:
+            # AC-MIG-48 - stated UP FRONT (every CSV-mode report, dry run or
+            # real), never discovered mid-run: an API-less export carries no
+            # media and no per-channel identity, and this slice's CSV path
+            # migrates contacts (+ quick replies, if supplied) only - message
+            # history stays out of scope (D-A6-25's own reasoning, commit
+            # body). `csv_blockers` (row cap / unmapped headers) come first -
+            # they are FILE-specific and more actionable than the three
+            # static facts below.
+            report["blockers"] = [
+                *csv_blockers,
+                "CSV mode migrates contacts (and quick replies, if a snippets "
+                "CSV was supplied) only - message history is not migrated "
+                "through this path.",
+                "CSV mode creates no channel identity rows - the export "
+                "carries no per-channel identifiers, so a future inbound "
+                "message stitches to a migrated contact by phone/email only.",
+                "CSV mode migrates no media - the export carries no media URLs.",
+                *report["blockers"],
+            ]
+        # S5 (D-A6-25) - the FULL failure set moves to storage; only a small
+        # capped sample stays inline for the detail page's failure table.
+        failures_key = _write_failures_csv(db, tenant_id, job.id, failures)
         result = {
             "report": report,
-            "failures": {"rowCount": len(failures), "rows": failures[:MAX_FAILURE_ROWS_KEPT]},
+            "failures": {"fileKey": failures_key, "rowCount": len(failures), "sample": failures[:50]},
         }
         service.finish(job, status=JOB_DONE, result=result)
 
-    # ── phase 1 - contacts (S2, unchanged) ──────────────────────────────────
-    if phase == "contacts":
+    # ── phase 1 - contacts (S2 API path unchanged; S5 CSV path, AC-MIG-47) ──
+    if phase == "contacts" and csv_mode:
+        _process_csv_contacts(
+            db, tenant_id, workspace_id, writer, payload,
+            contact_counts, field_counts, tag_counts, samples, failures, csv_blockers,
+            dry_run=dry_run, service=service, job=job,
+        )
+        checkpoint("contacts")
+        if _aborted(db, job.id):
+            service.log(job, f"Aborted after {contact_counts.get('fetched', 0)} contacts.")
+            return
+
+        if contacts_only or dry_run:
+            # CSV mode's dry run never previews quick_replies inline (S4's
+            # own gap: contactsOnly already skips it for the API path too,
+            # see S4's docstring note the same block references below) - a
+            # dry-run report's `quickReplies` entity stays genuinely zero,
+            # consistent with `identities`/`messages`/`media`/`events`.
+            finish_done()
+            return
+
+        # No identities/messages/media/events phases exist for CSV mode (an
+        # API-less export carries none of that data, AC-MIG-48) - straight to
+        # quick_replies (still optional; a no-op when no snippets CSV was
+        # supplied, D-A6-19).
+        phase = "quick_replies"
+        checkpoint("quick_replies")
+        if _aborted(db, job.id):
+            service.log(job, "Aborted before the quick_replies phase.")
+            return
+
+    elif phase == "contacts":
         try:
             for page_items, next_cursor in client.list_contacts_pages(
                 timezone=space_timezone, limit=CONTACTS_PAGE_LIMIT, start_cursor=contact_list_cursor
@@ -1715,7 +2161,9 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
         # which `write_quick_reply`'s own migration_refs check already makes
         # idempotent (AC-MIG-44/45).
         nested = db.begin_nested()
-        _process_quick_replies_csv(writer, payload.get("snippetsCsvBase64"), quick_reply_counts, failures)
+        _process_quick_replies_csv(
+            db, tenant_id, writer, payload.get("snippetsCsvKey"), quick_reply_counts, failures
+        )
         if dry_run:  # pragma: no cover - unreachable, see the comment above
             nested.rollback()
         else:

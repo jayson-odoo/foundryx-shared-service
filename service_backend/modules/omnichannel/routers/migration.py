@@ -8,7 +8,7 @@ reads are gated ``.read`` (AC-MIG-50).
 """
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -20,8 +20,10 @@ from ..schemas import (
     MigrationJobItem,
     MigrationJobListResponse,
     MigrationPreflight,
+    MigrationUploadResult,
 )
 from ..services.migration_service import (
+    MIGRATION_UPLOAD_MAX_BYTES,
     MigrationJobConflict,
     MigrationJobValidationError,
     MigrationPreflightService,
@@ -29,6 +31,36 @@ from ..services.migration_service import (
 )
 
 router = APIRouter()
+
+
+_UPLOAD_KINDS = ("contacts", "snippets")
+
+
+@router.post("/uploads", response_model=MigrationUploadResult, status_code=status.HTTP_201_CREATED)
+async def upload_csv(
+    file: UploadFile = File(...),
+    kind: str = Form(...),
+    current_user: User = Depends(require_permission("omnichannel_migration.manage")),
+    db: Session = Depends(get_db),
+) -> MigrationUploadResult:
+    """S5 (AC-MIG-46/47, D-A6-25) - the real-upload-route replacement for S4's
+    `snippetsCsvBase64` JSON stopgap, generalized to also cover the CSV-mode
+    contacts file (`kind=contacts` / `kind=snippets`). Sniff-gated: content
+    is read up to `MIGRATION_UPLOAD_MAX_BYTES + 1` so an oversize file is
+    rejected without buffering an unbounded body (`app/uploads.py`'s own
+    capped-read convention)."""
+    if kind not in _UPLOAD_KINDS:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"kind must be one of {_UPLOAD_KINDS}.")
+    content = await file.read(MIGRATION_UPLOAD_MAX_BYTES + 1)
+    if len(content) > MIGRATION_UPLOAD_MAX_BYTES:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"File exceeds the {MIGRATION_UPLOAD_MAX_BYTES // (1024 * 1024)} MB limit.",
+        )
+    try:
+        return MigrationService(db).upload_csv(current_user.tenant_id, kind, content)
+    except MigrationJobValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {"fieldErrors": exc.errors})
 
 
 @router.get("/preflight", response_model=MigrationPreflight)
@@ -108,5 +140,10 @@ def download_failures_csv(
         headers={
             "Content-Disposition": f'attachment; filename="migration-{job_id}-failures.csv"',
             "Cache-Control": "private, no-store",
+            # PII-egress precedent shared with `contacts.py download_contacts_
+            # export`/`documents.py` - the file carries contact names, phones
+            # and emails (D-A6-23).
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "X-Content-Type-Options": "nosniff",
         },
     )

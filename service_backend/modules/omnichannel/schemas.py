@@ -1679,7 +1679,12 @@ class MigrationJobCreate(ApiModel):
     never FastAPI's own un-housed pydantic-datetime 422 shape - the plan's
     §5.2 422-paths list treats it exactly like `connectionId`/`workspaceId`."""
 
-    connectionId: str
+    # S5 (D-A6-25 below): a CSV-mode job has no working respond.io API access
+    # at all, so `connectionId` is OPTIONAL - a customer with zero API access
+    # never created a connection row. When present (even in CSV mode, purely
+    # to carry `spaceLabel` for display), it is still resolved tenant-scoped
+    # exactly like an API-mode job (AC-MIG-51/52) - never a bare lookup.
+    connectionId: Optional[str] = None
     workspaceId: str
     mode: Literal["dry_run", "run"]
     source: Literal["api", "csv"] = "api"
@@ -1689,15 +1694,19 @@ class MigrationJobCreate(ApiModel):
     lifecycleMap: List[MigrationLifecycleMapEntry] = []
     messagesSince: Optional[str] = None
     contactsOnly: bool = False
-    # S4 (AC-MIG-44, D-A6-19) - respond.io exposes NO snippets endpoint (F3),
-    # so quick replies ride a 2-column (`shortcut`, `body`) CSV the operator
-    # uploads alongside the job. A plain background-job JSON payload has no
-    # multipart slot, so the bytes travel base64-encoded (decoded once at
-    # phase time in `migration_service._process_quick_replies_csv`) - a
-    # deliberate, documented stopgap for S4's own scope; S5 (the CSV-fallback
-    # slice, which owns a proper upload surface) may replace this with a real
-    # file-upload route without changing the phase logic itself.
-    snippetsCsvBase64: Optional[str] = None
+    # S5 (AC-MIG-47, D-A6-25) - `source="csv"` reads this contacts export
+    # through `app/import_engine/readers.py read_rows`, mapped by
+    # `csvHeaderMap` (system field key -> the file's own header string; a
+    # key with no entry falls back to a case-insensitive alias guess,
+    # `migration_service._HEADER_ALIASES`). Both are STORAGE KEYS returned by
+    # `POST /omnichannel/migration/uploads` (`kind=contacts`/`kind=snippets`)
+    # - replacing S4's `snippetsCsvBase64` JSON-payload stopgap (its own
+    # docstring named this slice as the one that would do it) with the same
+    # multipart-upload-then-reference-the-key convention the core import
+    # engine already uses (`app/import_engine/service.py create_job`).
+    contactsCsvKey: Optional[str] = None
+    csvHeaderMap: Dict[str, str] = {}
+    snippetsCsvKey: Optional[str] = None
 
 
 class MigrationEntityCounts(ApiModel):
@@ -1726,6 +1735,18 @@ class MigrationFailureRow(ApiModel):
     sourceLabel: str
     reason: str
     action: str
+
+
+# ── Plan 33 S5 - CSV upload (plan §5.2 extension, AC-MIG-46..49) ────────────
+class MigrationUploadResult(ApiModel):
+    """`POST /omnichannel/migration/uploads` response - the storage KEY the
+    job payload then carries (`contactsCsvKey`/`snippetsCsvKey`), plus enough
+    of the sniffed file (row count + headers) for the setup form to render
+    the header-mapping step without a second round trip."""
+
+    key: str
+    rowCount: int
+    headers: List[str]
 
 
 class MigrationJobItem(ApiModel):

@@ -268,7 +268,9 @@ def test_identity_written_for_mapped_whatsapp_channel(session_factory, monkeypat
     assert identities[0].external_user_id == "15559990000"
     assert identities[0].channel_id == wa_channel.id
 
-    failures = job.result_json["failures"]["rows"]
+    # S5 (D-A6-25) moved the full failure set to storage; `sample` is the
+    # small capped set still kept inline on `result_json`.
+    failures = job.result_json["failures"]["sample"]
     assert any(f["entity"] == "identities" and f["action"] == "skipped" for f in failures)
     report = job.result_json["report"]["entities"]["identities"]
     assert report["fetched"] == 2

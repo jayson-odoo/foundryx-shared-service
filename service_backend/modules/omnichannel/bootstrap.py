@@ -72,6 +72,25 @@ def register_engine_entities() -> None:
             register_module_declared_locations(manifest)
             break
 
+    # Plan 33 S5 (D-A6-25) - the respond.io migration's uploaded-CSV keys
+    # (`contactsCsvKey`/`snippetsCsvKey`) and the failure-export key
+    # (`failures.fileKey`) live inside CORE `background_jobs.payload_json` /
+    # `.result_json`, not a column of this module's own models, so they
+    # cannot ride `manifest.json`'s `"storage_locations"` block (that path
+    # only imports from `modules.omnichannel.models`). Registered directly
+    # here instead - the generic JSON walker finds any `conn:`-prefixed
+    # string in either column regardless of `background_jobs.type`, so this
+    # is harmless (and free coverage) for every OTHER job type too.
+    from app.models.background_job import BackgroundJob
+    from app.storage_migration.registry import StorageKeyLoc, register_storage_key_location
+
+    register_storage_key_location(
+        StorageKeyLoc(model=BackgroundJob, json_column="payload_json", tenant_column="tenant_id", module=MODULE_NAME)
+    )
+    register_storage_key_location(
+        StorageKeyLoc(model=BackgroundJob, json_column="result_json", tenant_column="tenant_id", module=MODULE_NAME)
+    )
+
     # Workflow-engine trigger + actions (plan sprint-4/17) - registers into the
     # core registry's dict-backed catalog; idempotent like the rest of this hook.
     from .workflow_nodes import register_omnichannel_workflow_nodes

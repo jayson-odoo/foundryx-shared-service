@@ -163,7 +163,9 @@ def test_media_oversize_skip_and_report_message_kept(session_factory, monkeypatc
     assert row.media_url == f"{MEDIA_HOST}/big.png", "the original source URL is kept"
     assert "limit" in (row.payload_json or {}).get("migration", {}).get("mediaError", "")
 
-    failures = job.result_json["failures"]["rows"]
+    # S5 (D-A6-25) moved the full failure set to storage; `sample` is the
+    # small capped set still kept inline on `result_json`.
+    failures = job.result_json["failures"]["sample"]
     assert any(f["entity"] == "media" and "limit" in f["reason"] for f in failures)
     assert job.result_json["report"]["entities"]["media"]["errors"] == 1
     db.close()
@@ -445,11 +447,14 @@ def test_events_no_fan_out_no_workflow_trigger(session_factory, monkeypatch):
     _stub_client(monkeypatch, handler)
     _patch_media_transport(monkeypatch, _media_handler({"/quiet.png": (200, _PNG_BYTES)}))
 
-    import base64
-    snippets_csv = base64.b64encode(b"shortcut,body\r\nhi,Hello there\r\n").decode("ascii")
+    from modules.omnichannel.services.migration_service import MigrationService
+
+    snippets_key = MigrationService(db).upload_csv(
+        DEFAULT_TENANT_ID, "snippets", b"shortcut,body\r\nhi,Hello there\r\n"
+    ).key
 
     job = _make_full_job(db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run")
-    job.payload_json = {**job.payload_json, "snippetsCsvBase64": snippets_csv}
+    job.payload_json = {**job.payload_json, "snippetsCsvKey": snippets_key}
     db.commit()
 
     run_migration_job(db, job)
@@ -532,10 +537,13 @@ def test_a9_report_service_reads_migrated_events_on_original_dates(session_facto
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _csv_b64(text: str) -> str:
-    import base64
+def _upload_snippets_csv(db, tenant_id: str, text: str) -> str:
+    """S5 (D-A6-25) replaced the S4 `snippetsCsvBase64` JSON-payload stopgap
+    with the real upload route - this test helper mirrors that route's own
+    `storage_for_tenant(...).save` seam directly against the service."""
+    from modules.omnichannel.services.migration_service import MigrationService
 
-    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+    return MigrationService(db).upload_csv(tenant_id, "snippets", text.encode("utf-8")).key
 
 
 def test_quick_replies_created_from_csv_and_idempotent_rerun(session_factory, monkeypatch):
@@ -548,9 +556,10 @@ def test_quick_replies_created_from_csv_and_idempotent_rerun(session_factory, mo
     _stub_client(monkeypatch, handler)
 
     csv_content = "shortcut,body\r\nhello,Hello there!\r\nbye,Goodbye for now.\r\n"
+    snippets_key = _upload_snippets_csv(db, DEFAULT_TENANT_ID, csv_content)
 
     job1 = _make_full_job(db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run")
-    job1.payload_json = {**job1.payload_json, "snippetsCsvBase64": _csv_b64(csv_content)}
+    job1.payload_json = {**job1.payload_json, "snippetsCsvKey": snippets_key}
     db.commit()
     run_migration_job(db, job1)
     db.refresh(job1)
@@ -563,7 +572,7 @@ def test_quick_replies_created_from_csv_and_idempotent_rerun(session_factory, mo
     assert qr_report["wouldCreate"] == 2
 
     job2 = _make_full_job(db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run")
-    job2.payload_json = {**job2.payload_json, "snippetsCsvBase64": _csv_b64(csv_content)}
+    job2.payload_json = {**job2.payload_json, "snippetsCsvKey": snippets_key}
     db.commit()
     run_migration_job(db, job2)
     db.refresh(job2)
@@ -588,8 +597,9 @@ def test_quick_reply_matches_existing_live_row_case_insensitive_never_duplicates
     handler = _pages_handler_full({None: ([], None)})
     _stub_client(monkeypatch, handler)
 
+    snippets_key = _upload_snippets_csv(db, DEFAULT_TENANT_ID, "shortcut,body\r\nhello,New body\r\n")
     job = _make_full_job(db, DEFAULT_TENANT_ID, connection_id=conn.id, workspace_id=ws.id, mode="run")
-    job.payload_json = {**job.payload_json, "snippetsCsvBase64": _csv_b64("shortcut,body\r\nhello,New body\r\n")}
+    job.payload_json = {**job.payload_json, "snippetsCsvKey": snippets_key}
     db.commit()
     run_migration_job(db, job)
     db.refresh(job)
@@ -708,21 +718,31 @@ def test_events_and_media_migration_refs_are_tenant_scoped(session_factory, monk
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# HTTP round-trip - `snippetsCsvBase64` must survive `POST /jobs` into the
-# persisted `payload_json` (`MigrationJobCreate.snippetsCsvBase64` is NOT part
+# HTTP round-trip - `snippetsCsvKey` must survive `POST /jobs` into the
+# persisted `payload_json` (`MigrationJobCreate.snippetsCsvKey` is NOT part
 # of `_mapping_hash`, so it is easy to forget wiring it into `create_job`'s
 # own `job_payload` dict - caught here rather than only at the phase level).
+# S5 (D-A6-25) renamed this field from S4's `snippetsCsvBase64` JSON-payload
+# stopgap onto the real `POST /omnichannel/migration/uploads` route.
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def test_snippets_csv_base64_round_trips_through_create_job(client, session_factory, monkeypatch):
+def test_snippets_csv_key_round_trips_through_create_job(client, session_factory, monkeypatch):
     h = _auth(client)
     connection_id = _create_connection(client, h)
     ws_id = _default_workspace_id(client, h)
     _patch_client_factory(monkeypatch, _empty_pages_handler)
 
+    upload = client.post(
+        "/omnichannel/migration/uploads", headers=h,
+        files={"file": ("snippets.csv", b"shortcut,body\r\nhi,Hello\r\n", "text/csv")},
+        data={"kind": "snippets"},
+    )
+    assert upload.status_code == 201, upload.text
+    snippets_key = upload.json()["key"]
+
     body = _minimal_job_body(connection_id, ws_id, mode="dry_run")
-    body["snippetsCsvBase64"] = "aGVsbG8="
+    body["snippetsCsvKey"] = snippets_key
     res = client.post("/omnichannel/migration/jobs", headers=h, json=body)
     assert res.status_code == 201, res.text
     job_id = res.json()["id"]
@@ -731,5 +751,5 @@ def test_snippets_csv_base64_round_trips_through_create_job(client, session_fact
     from app.models.background_job import BackgroundJob
 
     row = db.query(BackgroundJob).filter(BackgroundJob.id == job_id).first()
-    assert row.payload_json["snippetsCsvBase64"] == "aGVsbG8="
+    assert row.payload_json["snippetsCsvKey"] == snippets_key
     db.close()
