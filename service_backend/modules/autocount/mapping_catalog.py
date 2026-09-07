@@ -90,10 +90,17 @@ _REQUIRED_DOCUMENT_FIELDS: Dict[str, frozenset] = {
 # projected the backfilled `Ref -> container_number` row as "Not delivered
 # to Sorento" and the next save DELETED it (`delete_unknown`), with the PUT
 # guard then refusing to let the operator re-add it. Reading straight off
-# each canonical class's own `FALLBACK_FIELDS` means a future field added
-# there reaches the catalog automatically -
+# each canonical class's own `FALLBACK_FIELDS` makes that class of drift
+# STRUCTURALLY IMPOSSIBLE from here on - there is no second copy left to
+# fall out of sync, so a future field added there reaches the catalog
+# automatically, with nothing here to go stale.
 # `test_header_catalog_equals_the_canonical_wire_set_minus_minted_identity`
-# fails BY NAME the moment the two ever disagree again.
+# cannot catch a header drift any more (there is none left to catch); its
+# remaining job is guarding `_MINTED_FIELDS` (`source_ref` must stay
+# excluded from the mappable set). The drift-catching job moved to the LINE
+# pin below - `_LINE_FALLBACK_FIELDS` stays hand-typed on purpose, so
+# `test_line_catalog_equals_the_canonical_line_wire_set_minus_engine_derived`
+# is the one that still goes red if a line model and this catalog disagree.
 _SO_FALLBACK_FIELDS: Tuple[str, ...] = CanonicalSalesOrder.FALLBACK_FIELDS
 _PO_FALLBACK_FIELDS: Tuple[str, ...] = CanonicalPurchaseOrder.FALLBACK_FIELDS
 _SPO_FALLBACK_FIELDS: Tuple[str, ...] = CanonicalShippingOrder.FALLBACK_FIELDS

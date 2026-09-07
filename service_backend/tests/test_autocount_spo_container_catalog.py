@@ -106,9 +106,16 @@ def test_catalog_does_not_offer_container_number_to_other_documents(entity_type)
 
 @pytest.mark.parametrize("entity_type", sorted(DOCUMENT_MODELS))
 def test_header_catalog_equals_the_canonical_wire_set_minus_minted_identity(entity_type):
-    """Derived from the canonical class, not spelled out: a field added to
-    ``SINK_FIELDS``/``FALLBACK_FIELDS`` without a catalog entry (or the
-    reverse) fails here by name."""
+    """The header catalog is now DERIVED from the canonical class
+    (``_SO/_PO/_SPO_FALLBACK_FIELDS = Canonical<X>.FALLBACK_FIELDS``), so a
+    header drift like this hotfix's is structurally impossible - there is no
+    second, hand-typed copy left to fall out of sync (reviewer round 1
+    proved it: a fake field added to ``SINK_FIELDS`` still passes this
+    assertion, because the catalog picks it up too). What this pin still
+    guards is ``_MINTED_FIELDS``/``MINTED_HEADER_FIELDS`` - that
+    ``source_ref`` stays excluded from the mappable set even though it is
+    part of the wire model. The drift-catching job belongs to the LINE pin
+    below (``_LINE_FALLBACK_FIELDS`` stays hand-typed on purpose)."""
     header_model, _ = DOCUMENT_MODELS[entity_type]
     expected = (
         frozenset(header_model.SINK_FIELDS) | frozenset(header_model.FALLBACK_FIELDS)
