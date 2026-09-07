@@ -37,11 +37,10 @@ from .message_service import (
     CSW_CLOSED_MESSAGE,
     MessageService,
     SendRejected,
-    _window_open,
     template_body_text,
     template_variable_count,
 )
-from . import event_service, idempotency, statuses
+from . import event_service, idempotency, messaging_policy, statuses
 
 if TYPE_CHECKING:  # forward ref used in a signature below
     from ..schemas import ThreadItem
@@ -78,7 +77,7 @@ def _iso_z(dt) -> Optional[str]:
     # SQLite can hand back a naive datetime (and an in-session assignment may be
     # read off the identity map before refresh) - treat naive as UTC, never as
     # local, or the CSW deadline shifts by the host offset. Mirrors
-    # `message_service._window_open`.
+    # `messaging_policy._whatsapp_window_open`.
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -628,10 +627,15 @@ class PublicGatewayService:
             # the SAME upload-by-id pipeline (never pass Meta a bare `link`).
             if req.media is None or not (req.media.url or "").strip():
                 raise ApiError(422, "invalid_request", "media.url is required.")
-            # Enforce the 24h CSW BEFORE fetching (don't do SSRF-fetch work on a
+            # Enforce the window BEFORE fetching (don't do SSRF-fetch work on a
             # closed window; media is free-form → an open window is required).
+            # Cheap pre-flight peek (plan 32 / A7a) - `send_media` below still
+            # runs the AUTHORITATIVE `authorize` call (automation is refused
+            # past 24h even when a human-agent window remains, D-A7-6 - the
+            # gateway is API-key automation by construction, never a human
+            # actor).
             contact = self._resolve_or_create_contact(tenant_id, workspace_id, req.to)
-            if not _window_open(contact):
+            if not messaging_policy.window_open(self.db, contact, channel):
                 raise ApiError(409, "csw_window_closed", CSW_CLOSED_MESSAGE)
             content = self._fetch_url(req.media.url)
             return self._send_media(
@@ -652,9 +656,15 @@ class PublicGatewayService:
             raise ApiError(400, "unsupported_type", f"Unknown message type '{msg_type}'.")
 
         contact = self._resolve_or_create_contact(tenant_id, workspace_id, req.to)
+        # `actor` is an opaque attribution string ("apikey:<id>"), NOT a human
+        # actor - the gateway is API-key automation by construction
+        # (D-A7-6): `actor_is_human=False` explicitly, never inferred from
+        # this string's truthiness.
         actor = f"apikey:{key_id}"
         try:
-            item = self.messages.send_message(contact.id, tenant_id, actor, payload)
+            item = self.messages.send_message(
+                contact.id, tenant_id, actor, payload, actor_is_human=False
+            )
         except SendRejected as exc:
             if exc.message == CSW_CLOSED_MESSAGE:
                 raise ApiError(409, "csw_window_closed", exc.message) from exc
@@ -720,6 +730,7 @@ class PublicGatewayService:
                 content=content,
                 filename=filename,
                 caption=caption,
+                actor_is_human=False,
             )
         except MediaRejected as exc:
             raise ApiError(422, exc.code, exc.message) from exc
@@ -766,16 +777,20 @@ class PublicGatewayService:
                     defn=defn,
                     header_content=header_content,
                     header_filename=header_filename,
+                    actor_is_human=False,
                 )
             elif msg_type == "location":
                 if not req.location:
                     raise ApiError(422, "invalid_request", "location is required.")
-                item = messages.send_location(contact.id, tenant_id, actor, defn=dict(req.location))
+                item = messages.send_location(
+                    contact.id, tenant_id, actor, defn=dict(req.location), actor_is_human=False
+                )
             else:  # contacts
                 if not req.contacts:
                     raise ApiError(422, "invalid_request", "contacts is required.")
                 item = messages.send_contacts(
-                    contact.id, tenant_id, actor, defn={"contacts": req.contacts}
+                    contact.id, tenant_id, actor, defn={"contacts": req.contacts},
+                    actor_is_human=False,
                 )
         except MediaRejected as exc:
             raise ApiError(422, exc.code, exc.message) from exc
@@ -802,7 +817,8 @@ class PublicGatewayService:
         actor = f"apikey:{key_id}"
         try:
             self.messages.react(
-                req.reaction.messageId, tenant_id, actor, emoji=req.reaction.emoji
+                req.reaction.messageId, tenant_id, actor, emoji=req.reaction.emoji,
+                actor_is_human=False,
             )
         except SendRejected as exc:
             if exc.message == CSW_CLOSED_MESSAGE:

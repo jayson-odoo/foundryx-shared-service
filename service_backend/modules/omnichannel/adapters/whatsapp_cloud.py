@@ -227,11 +227,20 @@ class WhatsAppCloudAdapter(MetaGraphMixin):
         contacts: Optional[list] = None,
         reaction: Optional[Dict[str, Any]] = None,
         context_message_id: Optional[str] = None,
+        structured: Optional[Dict[str, Any]] = None,  # noqa: ARG002 - plan 32/A7a, unused (byte-identical WhatsApp path)
+        messaging_type: Optional[str] = None,  # noqa: ARG002 - plan 32/A7a, unused (WhatsApp re-engages by template, not a Meta send param)
+        tag: Optional[str] = None,  # noqa: ARG002 - plan 32/A7a, unused (no message tags on this product)
     ) -> Dict[str, Any]:
         """Send a text/template/media/interactive/location/contacts message.
         Returns {"external_message_id": wamid}. Instrumented once via
         ``_graph_call`` so every send yields an ``outbound_meta`` activity row
-        (AC-DLC-14) carrying the inbound trace id + the resulting wamid."""
+        (AC-DLC-14) carrying the inbound trace id + the resulting wamid.
+
+        ``structured``/``messaging_type``/``tag`` (plan 32 / A7a) are accepted
+        for the uniform `ChannelAdapter.send` signature and deliberately
+        IGNORED here - passing them through to ``_send_impl`` unchanged (never
+        touched below) keeps this adapter's observable behaviour byte-
+        identical (AC-CHN-23)."""
         return self._graph_call(
             "graph:send",
             lambda: self._send_impl(

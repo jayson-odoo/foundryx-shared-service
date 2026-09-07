@@ -485,6 +485,24 @@ class ContactRepository:
             .first()
         )
 
+    def find_identity_for_channel(
+        self, contact_id: str, channel_id: str, tenant_id: str
+    ) -> Optional[ContactChannelIdentity]:
+        """The identity THIS contact has on a SPECIFIC channel (plan 32 / A7a)
+        - the addressing + window-policy seam: `messaging_policy.authorize`
+        reads a Messenger/Instagram identity's OWN re-engagement window off
+        this row, and `channel_addressing.recipient_ref` addresses by its
+        `external_user_id` (PSID/IGSID). Tenant-scoped."""
+        return (
+            self.db.query(ContactChannelIdentity)
+            .filter(
+                ContactChannelIdentity.tenant_id == tenant_id,
+                ContactChannelIdentity.contact_id == contact_id,
+                ContactChannelIdentity.channel_id == channel_id,
+            )
+            .first()
+        )
+
     def find_by_phone_digits(
         self, phone_digits: str, workspace_id: str, tenant_id: str
     ) -> Optional[Contact]:

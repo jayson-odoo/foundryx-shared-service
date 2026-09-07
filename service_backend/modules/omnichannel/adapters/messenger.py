@@ -2,30 +2,35 @@
 
 Rides the SAME Meta app as WhatsApp (D-A7-1: no `connections` row, no second
 credential model) via `MetaGraphMixin` (telemetry, dev-safe gate, HTTP client,
-base URL - `meta_graph.py`). Slice S1 ships inbound parsing only
-(`parse_inbound` - text, attachments-as-pending-media-refs, quick replies,
-postbacks, echo drop, receipts parsed but not yet applied); `send`/
-`test_connection`/`exchange_code`/`subscribe_webhook` are honest dev-safe
-stubs here, completed by plan 32 S2 (window policy + addressing + send) and S3
-(the connect flow) on top of this same file - not a second adapter.
+base URL - `meta_graph.py`). Slice S1 shipped inbound parsing
+(`parse_inbound`); slice S2 completes outbound `send` (text + quick replies,
+`messaging_type`/`tag` from `messaging_policy.authorize`) and a dev-safe
+`upload_media` placeholder (the real Graph attachment-upload call lands in
+plan 32 S5, D-A7-11). `test_connection`/`exchange_code`/`subscribe_webhook`
+stay honest dev-safe stubs, completed by plan 32 S3 (the connect flow) on this
+same file - not a second adapter.
 
 Sources (cited per CLAUDE.md, section 10 of the plan):
 - Messenger Platform webhooks (object `page`, `entry[].messaging[]`,
   `X-Hub-Signature-256`):
   https://developers.facebook.com/docs/messenger-platform/webhooks
-- Messenger Send API (`POST /{PAGE_ID}/messages`, `messaging_type`, `tag`):
+- Messenger Send API (`POST /{PAGE_ID}/messages`, `recipient.id`,
+  `messaging_type`, `tag`, response `message_id`):
   https://developers.facebook.com/documentation/business-messaging/messenger-platform/send-messages
+- Messenger quick replies (`message.quick_replies[]`, `content_type`,
+  max 13, 20-character title):
+  https://developers.facebook.com/docs/messenger-platform/send-messages/quick-replies
 - Messenger/Instagram messaging policy (24h standard window, the Human Agent
-  7-day extension):
+  7-day extension, human-only restriction):
   https://developers.facebook.com/documentation/business-messaging/messenger-platform/policy
 """
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
-from .base import ConnectionStatus
-from .meta_graph import MetaGraphMixin
+from .base import ConnectionStatus, SendError
+from .meta_graph import MetaGraphMixin, _meta_error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -66,21 +71,125 @@ class MessengerAdapter(MetaGraphMixin):
             ok=False, message="Live Messenger connection check lands in plan 32 S3."
         )
 
-    # ── Outbound (dev-safe stub; plan 32 S2 completes window/addressing/send) ─
+    # ── Outbound (plan 32 S2 - window/addressing resolved by the caller;
+    #             media-by-id upload completed in plan 32 S5, D-A7-11) ───────
+    def upload_media(
+        self, credentials: Dict[str, Any], phone_number_id: str, content: bytes, mime: str
+    ) -> str:
+        """Attachment upload-by-id (D-A7-11 - Meta's attachment upload
+        endpoint, never a public URL). Dev-safe stub: a fake id so the
+        generalized `send_runner` media branch runs end to end with no Meta
+        app; the real `POST /me/message_attachments` call lands in plan 32
+        S5."""
+        if not self._configured or credentials.get("dev"):
+            import uuid
+
+            return f"media.dev-{uuid.uuid4().hex[:12]}"
+        raise NotImplementedError(
+            "Messenger attachment upload is implemented by plan 32 S5."
+        )
+
     def send(
         self,
         credentials: Dict[str, Any],
-        recipient_id: str,
+        phone_number_id: str,
         to: str,
-        **kwargs: Any,
+        *,
+        text: Optional[str] = None,
+        media: Optional[Dict[str, Any]] = None,
+        structured: Optional[Dict[str, Any]] = None,
+        messaging_type: Optional[str] = None,
+        tag: Optional[str] = None,
+        context_message_id: Optional[str] = None,
+        **_ignored: Any,
+    ) -> Dict[str, Any]:
+        """``phone_number_id`` is actually the PAGE_ID / IG account id
+        (`channel_addressing.sender_ref`); ``to`` is the PSID/IGSID
+        (`channel_addressing.recipient_ref`) - named to match the uniform
+        `ChannelAdapter.send` signature every adapter shares. ``structured``
+        is the raw friendly interactive definition (only a ``buttons`` kind
+        ever reaches this adapter - `messaging_policy.assert_kind_supported`
+        refuses `list`/`cta_url`/`location_request` upstream); it maps onto
+        Meta quick replies via `structured.build_quick_replies` (D-A7-13).
+        ``messaging_type``/``tag`` are `messaging_policy.authorize`'s
+        resolved Meta send parameters, used VERBATIM (never re-derived,
+        D-A7-8). ``**_ignored`` absorbs any WhatsApp-only kwarg
+        (`template`/`interactive`/`location`/`contacts`/`reaction`) a
+        uniform caller might still pass - the capability gate upstream
+        guarantees none of those kinds ever reach here for real."""
+        return self._graph_call(
+            "graph:send",
+            lambda: self._send_impl(
+                credentials, phone_number_id, to,
+                text=text, media=media, structured=structured,
+                messaging_type=messaging_type, tag=tag,
+                context_message_id=context_message_id,
+            ),
+            extract_ref=lambda result: (result or {}).get("external_message_id"),
+        )
+
+    def _send_impl(
+        self,
+        credentials: Dict[str, Any],
+        phone_number_id: str,
+        to: str,
+        *,
+        text: Optional[str] = None,
+        media: Optional[Dict[str, Any]] = None,
+        structured: Optional[Dict[str, Any]] = None,
+        messaging_type: Optional[str] = None,
+        tag: Optional[str] = None,
+        context_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not self._configured or credentials.get("dev"):
             import uuid
 
             return {"external_message_id": f"m.dev-{uuid.uuid4().hex[:12]}", "dev": True}
-        raise NotImplementedError(
-            "Messenger send is implemented by messaging_policy + channel_addressing (plan 32 S2)."
-        )
+
+        from ..services.structured import build_quick_replies
+
+        message: Dict[str, Any] = {}
+        quick_replies = build_quick_replies(structured) if structured else None
+        if quick_replies:
+            message["text"] = (structured or {}).get("body") or text or ""
+            message["quick_replies"] = quick_replies
+        elif media is not None:
+            kind = (media.get("kind") or "").lower()
+            att_type = "file" if kind == "document" else kind
+            message["attachment"] = {
+                "type": att_type,
+                "payload": {"attachment_id": media["id"], "is_reusable": True},
+            }
+        else:
+            message["text"] = text or ""
+        if context_message_id:
+            message["reply_to"] = {"mid": context_message_id}
+
+        body: Dict[str, Any] = {
+            "recipient": {"id": to},
+            "messaging_type": messaging_type or "RESPONSE",
+            "message": message,
+        }
+        if tag:
+            body["tag"] = tag
+
+        client = self._http()
+        try:
+            resp = client.post(
+                f"{self._base}/{phone_number_id}/messages",
+                json=body,
+                headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
+            )
+            self._last_http_status = resp.status_code
+            if resp.status_code != 200:
+                raise SendError(_meta_error_detail(resp), transient=resp.status_code >= 500)
+            data = resp.json()
+            return {"external_message_id": data.get("message_id", "")}
+        except httpx.HTTPError as exc:
+            raise SendError(f"Could not reach Meta: {exc}", transient=True) from exc
+        finally:
+            if self._client is None:
+                client.close()
 
     def fetch_media(self, credentials: Dict[str, Any], media_id: str) -> Optional[Dict[str, Any]]:
         # Messenger delivers a short-lived CDN URL inline on the attachment,

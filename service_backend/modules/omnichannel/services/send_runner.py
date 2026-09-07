@@ -22,6 +22,7 @@ from ..models import MEDIA_MESSAGE_TYPES, Channel, ConversationMessage
 from ..repositories.contact_repository import ContactRepository
 from ..security import decrypt_credentials
 from . import realtime
+from .channel_addressing import NoChannelIdentity, recipient_ref, sender_ref
 from .media_pipeline import MediaRejected, transcode_voice
 
 logger = logging.getLogger(__name__)
@@ -193,9 +194,23 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
         channel.channel_type,
         recorder=build_meta_recorder(db, channel.tenant_id, channel.workspace_id),
     )
-    phone_id = channel.phone_number_id or ""
-    to = "".join(ch for ch in (contact.phone or "") if ch.isdigit())
+    # Addressing (plan 32 / A7a, AC-CHN-26): ONE helper resolves both parties -
+    # WhatsApp keeps digits(contact.phone) from channel.phone_number_id
+    # byte-identical to before this slice; Messenger/Instagram address the
+    # contact's OWN identity on THIS channel. A contact with no identity on
+    # the chosen channel fails the send cleanly rather than addressing empty.
+    phone_id = sender_ref(channel)
+    try:
+        to = recipient_ref(db, channel, contact)
+    except NoChannelIdentity as exc:
+        return _fail(db, row, str(exc))
     context_id: Optional[str] = meta.get("context_external_id")
+    # The Meta send parameters `messaging_policy.authorize` resolved AT
+    # ENQUEUE (D-A7-8) - used VERBATIM, never re-derived here. `None` for
+    # WhatsApp (its re-engagement mode is "template", not a Meta send param).
+    meta_send = meta.get("metaSend") or {}
+    messaging_type: Optional[str] = meta_send.get("messagingType")
+    send_tag: Optional[str] = meta_send.get("tag")
 
     try:
         if row.message_type == "TEMPLATE":
@@ -211,7 +226,8 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
                 )
                 inject_header_media_id(template, media_id)
             result = adapter.send(
-                credentials, phone_id, to, template=template, context_message_id=context_id
+                credentials, phone_id, to, template=template, context_message_id=context_id,
+                messaging_type=messaging_type, tag=send_tag,
             )
         elif row.message_type in MEDIA_MESSAGE_TYPES:
             content = _read_media(db, row.tenant_id, row.media_key)
@@ -239,6 +255,7 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
                     "filename": row.media_filename,
                 },
                 context_message_id=context_id,
+                messaging_type=messaging_type, tag=send_tag,
             )
         elif row.message_type == "INTERACTIVE":
             from .structured import build_meta_interactive, header_media_kind
@@ -251,9 +268,15 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
                 media_id = adapter.upload_media(
                     credentials, phone_id, content, row.media_mime or "application/octet-stream"
                 )
+            # `interactive` is the pre-built WhatsApp-native object (WhatsApp
+            # reads it); `structured` is the SAME defn raw (Messenger/
+            # Instagram build Meta quick replies from it, D-A7-13) - passing
+            # both keeps this call type-blind (no `channel_type` branch here).
             interactive = build_meta_interactive(defn, media_id=media_id)
             result = adapter.send(
-                credentials, phone_id, to, interactive=interactive, context_message_id=context_id
+                credentials, phone_id, to,
+                interactive=interactive, structured=defn, context_message_id=context_id,
+                messaging_type=messaging_type, tag=send_tag,
             )
         elif row.message_type == "LOCATION":
             from .structured import build_meta_location
@@ -264,6 +287,7 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
                 to,
                 location=build_meta_location(row.payload_json or {}),
                 context_message_id=context_id,
+                messaging_type=messaging_type, tag=send_tag,
             )
         elif row.message_type == "CONTACTS":
             result = adapter.send(
@@ -272,10 +296,12 @@ def run_send(db: Session, message_id: str, trace_id: Optional[str] = None) -> st
                 to,
                 contacts=(row.payload_json or {}).get("contacts") or [],
                 context_message_id=context_id,
+                messaging_type=messaging_type, tag=send_tag,
             )
         else:  # TEXT (and any free-form fallback)
             result = adapter.send(
-                credentials, phone_id, to, text=row.body, context_message_id=context_id
+                credentials, phone_id, to, text=row.body, context_message_id=context_id,
+                messaging_type=messaging_type, tag=send_tag,
             )
     except MediaRejected as exc:
         # Sniff/cap/transcode failure - permanent.

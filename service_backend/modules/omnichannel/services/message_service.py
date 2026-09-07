@@ -33,16 +33,22 @@ from ..schemas import (
     TemplateItem,
 )
 from ..security import decrypt_credentials
+from . import channel_addressing, event_service, messaging_policy, realtime
 from .conversation_service import ConversationService, ThreadNotFound
 from .media_pipeline import MediaRejected, sniff_and_validate
 from .media_settings_service import MediaSettingsService
+# `CSW_CLOSED_MESSAGE` moved to `messaging_policy` (plan 32 / A7a, D-A7-5 - it
+# is now one row of ONE per-channel-type window policy) - re-exported here
+# verbatim so `public_gateway_service.py`'s existing `from .message_service
+# import CSW_CLOSED_MESSAGE` (and any test importing it this way) needs no
+# change; the WhatsApp string itself is byte-identical (AC-CHN-23).
+from .messaging_policy import CSW_CLOSED_MESSAGE  # noqa: F401
 from .send_runner import (
     SANDBOX_ONLY_KEY,
     WORKFLOW_TEST_METADATA_KEY,
     TransientSendError,
     run_send,
 )
-from . import event_service, realtime
 
 
 class SendRejected(Exception):
@@ -61,25 +67,11 @@ class ShortcutConflict(Exception):
     """Another quick reply in this workspace already uses the shortcut (→ 409)."""
 
 
-CSW_CLOSED_MESSAGE = (
-    "The 24-hour window has closed - send an approved template to re-engage."
-)
-
 # All agents react as the ONE business number (Meta stores one reaction per
 # direction) - a single reactor identity keeps our mirror matching Meta.
 AGENT_REACTOR = "agent"
 # A WhatsApp reaction is a single emoji (possibly a ZWJ sequence); cap defensively.
 MAX_EMOJI_LEN = 32
-
-
-def _window_open(contact: Contact, now: Optional[datetime] = None) -> bool:
-    if contact.csw_expires_at is None:
-        return False
-    now = now or datetime.now(timezone.utc)
-    expires = contact.csw_expires_at
-    if expires.tzinfo is None:  # SQLite returns naive datetimes
-        expires = expires.replace(tzinfo=timezone.utc)
-    return expires > now
 
 
 def template_body_text(components: Optional[List[Dict[str, Any]]]) -> str:
@@ -301,13 +293,25 @@ class MessageService:
         channel_id_override: Optional[str] = None,
         sandbox_only: bool = False,
         metadata_extra: Optional[Dict[str, Any]] = None,
+        actor_is_human: bool = False,
     ) -> MessageItem:
         """``metadata_extra`` (plan 29 D-A4-19, additive) is merged into the
         stored ``metadata_json`` next to the ``WORKFLOW_TEST_METADATA_KEY``
         branch - broadcasts stamp ``{"broadcast": {"id", "recipientId"}}`` so a
         crash between this commit and the recipient-row update can be
         adopted-by-marker later, and the inbox can label a broadcast bubble
-        (BL-SS-091). Every existing caller omits it (no behaviour change)."""
+        (BL-SS-091). Every existing caller omits it (no behaviour change).
+
+        ``actor_is_human`` (plan 32 / A7a, D-A7-6) tells `messaging_policy.
+        authorize` whether a REAL human agent (native or federated) is
+        sending, for the Messenger/Instagram `HUMAN_AGENT` 7-day extension -
+        it is set by the CALLER from its own authentication context, never
+        inferred from ``actor_user_id``'s truthiness (the public gateway
+        stamps a non-empty ``apikey:<id>`` there for attribution, which is
+        NOT a human actor). Defaults to `False` (automation) - the fail-safe
+        direction: a caller that forgets to set it can never send an
+        automated message past the 24h window under a compliance-restricted
+        tag."""
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
             raise ThreadNotFound()
@@ -324,7 +328,15 @@ class MessageService:
         payload_json: Optional[Dict[str, Any]] = None
         media_key = media_mime = media_filename = None
         media_size: Optional[int] = None
+        meta_send: Optional[Dict[str, Any]] = None
         if message_type == "TEMPLATE":
+            try:
+                decision = messaging_policy.authorize(
+                    self.db, contact, channel, kind="TEMPLATE", actor_is_human=actor_is_human
+                )
+            except messaging_policy.PolicyRejected as exc:
+                raise SendRejected(exc.message) from exc
+            meta_send = messaging_policy.send_metadata(decision)
             tpl = (
                 self.db.query(WhatsappTemplate)
                 .filter(
@@ -401,12 +413,22 @@ class MessageService:
             payload_json = {"template": template_payload}
         else:
             message_type = "TEXT"
-            # Backend-enforced CSW (decision 14): free-form only inside 24h.
-            if not _window_open(contact):
-                raise SendRejected(CSW_CLOSED_MESSAGE)
+            # Backend-enforced window (decision 14; generalized plan 32 D-A7-5):
+            # free-form only inside the channel type's window.
+            try:
+                decision = messaging_policy.authorize(
+                    self.db, contact, channel, kind="TEXT", actor_is_human=actor_is_human
+                )
+            except messaging_policy.PolicyRejected as exc:
+                raise SendRejected(exc.message) from exc
+            meta_send = messaging_policy.send_metadata(decision)
             if not (payload.body or "").strip():
                 raise SendRejected("Message body is required.")
             body = (payload.body or "").strip()
+
+        if meta_send:
+            metadata = dict(metadata or {})
+            metadata["metaSend"] = meta_send
 
         now = datetime.now(timezone.utc)
         sender_id, sender_ext = self._sender_cols(actor_user_id, external_agent_id)
@@ -451,10 +473,12 @@ class MessageService:
         reply_to_message_id: Optional[str] = None,
         workspace_id_override: Optional[str] = None,
         external_agent_id: Optional[str] = None,
+        actor_is_human: bool = False,
     ) -> MessageItem:
         """Sniff-gate + cap-check + store an outbound media blob, create a QUEUED
         row and dispatch the async upload-by-id send (AC-12-02/03/10). Raises
-        ``SendRejected`` on CSW/validation, ``MediaRejected`` on sniff/cap."""
+        ``SendRejected`` on window/validation, ``MediaRejected`` on sniff/cap.
+        ``actor_is_human`` - see `send_message`."""
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
             raise ThreadNotFound()
@@ -462,15 +486,24 @@ class MessageService:
         kind = (kind or "").upper()
         if kind not in MEDIA_MESSAGE_TYPES:
             raise SendRejected(f"Unsupported media kind '{kind}'.")
-        # Media is free-form → 24h CSW applies (AC-12-25).
-        if not _window_open(contact):
-            raise SendRejected(CSW_CLOSED_MESSAGE)
+        # Media is free-form → the channel type's window applies (AC-12-25;
+        # generalized plan 32 D-A7-5).
+        try:
+            decision = messaging_policy.authorize(
+                self.db, contact, channel, kind=kind, actor_is_human=actor_is_human
+            )
+        except messaging_policy.PolicyRejected as exc:
+            raise SendRejected(exc.message) from exc
 
         max_bytes = MediaSettingsService(self.db).max_bytes_for(
             tenant_id, contact.workspace_id, kind
         )
         sniffed = sniff_and_validate(kind, content, filename=filename, max_bytes=max_bytes)
         metadata, _ = self._reply_metadata(contact, tenant_id, reply_to_message_id)
+        meta_send = messaging_policy.send_metadata(decision)
+        if meta_send:
+            metadata = dict(metadata or {})
+            metadata["metaSend"] = meta_send
 
         from app.services.storage import storage_for_tenant
 
@@ -521,15 +554,30 @@ class MessageService:
         media_filename: Optional[str] = None,
         media_size: Optional[int] = None,
         external_agent_id: Optional[str] = None,
+        sub_kind: Optional[str] = None,
+        actor_is_human: bool = False,
     ) -> MessageItem:
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
             raise ThreadNotFound()
         channel = self._channel_for_contact(contact)
-        # Interactive/location/contacts are free-form → 24h CSW applies (AC-12-25).
-        if not _window_open(contact):
-            raise SendRejected(CSW_CLOSED_MESSAGE)
+        # Interactive/location/contacts are free-form → the channel type's
+        # window applies (AC-12-25; generalized plan 32 D-A7-5). `sub_kind` is
+        # the interactive definition's own kind (buttons/list/cta_url/
+        # location_request) - only `buttons` is sendable on Messenger/
+        # Instagram (D-A7-13).
+        try:
+            decision = messaging_policy.authorize(
+                self.db, contact, channel, kind=message_type,
+                actor_is_human=actor_is_human, sub_kind=sub_kind,
+            )
+        except messaging_policy.PolicyRejected as exc:
+            raise SendRejected(exc.message) from exc
         metadata, _ = self._reply_metadata(contact, tenant_id, reply_to_message_id)
+        meta_send = messaging_policy.send_metadata(decision)
+        if meta_send:
+            metadata = dict(metadata or {})
+            metadata["metaSend"] = meta_send
         now = datetime.now(timezone.utc)
         sender_id, sender_ext = self._sender_cols(actor_user_id, external_agent_id)
         row = ConversationMessage(
@@ -569,6 +617,7 @@ class MessageService:
         header_filename: Optional[str] = None,
         reply_to_message_id: Optional[str] = None,
         external_agent_id: Optional[str] = None,
+        actor_is_human: bool = False,
     ) -> MessageItem:
         from .structured import StructuredError, header_media_kind, validate_interactive
 
@@ -586,10 +635,13 @@ class MessageService:
             contact = self.repo.get_by_id(contact_id, tenant_id)
             if contact is None:
                 raise ThreadNotFound()
-            # Reject on a closed 24h window BEFORE sniffing/storing the header blob -
-            # else a closed-window send orphans a persisted blob (never sent).
-            if not _window_open(contact):
-                raise SendRejected(CSW_CLOSED_MESSAGE)
+            channel = self._channel_for_contact(contact)
+            # Cheap pre-flight peek BEFORE sniffing/storing the header blob -
+            # else a closed-window send orphans a persisted blob (never
+            # sent). `_structured_row` below still runs the AUTHORITATIVE
+            # `authorize` call (capability + human/automation nuance).
+            if not messaging_policy.window_open(self.db, contact, channel):
+                raise SendRejected(messaging_policy.closed_window_message(channel.channel_type))
             max_bytes = MediaSettingsService(self.db).max_bytes_for(
                 tenant_id, contact.workspace_id, hkind.upper()
             )
@@ -617,6 +669,8 @@ class MessageService:
             media_filename=header_filename if hkind else None,
             media_size=media_size,
             external_agent_id=external_agent_id,
+            sub_kind=defn.get("kind"),
+            actor_is_human=actor_is_human,
         )
 
     def send_location(
@@ -628,6 +682,7 @@ class MessageService:
         defn: Dict[str, Any],
         reply_to_message_id: Optional[str] = None,
         external_agent_id: Optional[str] = None,
+        actor_is_human: bool = False,
     ) -> MessageItem:
         from .structured import StructuredError, validate_location
 
@@ -645,6 +700,7 @@ class MessageService:
             payload_json=payload,
             reply_to_message_id=reply_to_message_id,
             external_agent_id=external_agent_id,
+            actor_is_human=actor_is_human,
         )
 
     def send_contacts(
@@ -656,6 +712,7 @@ class MessageService:
         defn: Dict[str, Any],
         reply_to_message_id: Optional[str] = None,
         external_agent_id: Optional[str] = None,
+        actor_is_human: bool = False,
     ) -> MessageItem:
         from .structured import StructuredError, validate_contacts
 
@@ -673,6 +730,7 @@ class MessageService:
             payload_json=payload,
             reply_to_message_id=reply_to_message_id,
             external_agent_id=external_agent_id,
+            actor_is_human=actor_is_human,
         )
 
     # ── Reactions (plan 12 Slice 3 - AC-12-19/20/21) ────────────────────────
@@ -684,6 +742,7 @@ class MessageService:
         *,
         emoji: Optional[str],
         expected_contact_id: Optional[str] = None,
+        actor_is_human: bool = False,
     ) -> Dict[str, Any]:
         """An agent reacts to a message by our DURABLE id (never a raw wamid).
         Sends the reaction to Meta, upserts our row (empty emoji removes), and
@@ -699,9 +758,15 @@ class MessageService:
         if contact is None:
             raise ThreadNotFound()
         channel = self._channel_for_contact(contact)
-        # Reactions are free-form → the 24h window applies (Meta rule, AC-12-25).
-        if not _window_open(contact):
-            raise SendRejected(CSW_CLOSED_MESSAGE)
+        # Reactions are free-form → the channel type's window applies (Meta
+        # rule, AC-12-25); outbound reactions are WhatsApp-only (capability
+        # table, plan §5.5) - `authorize` refuses them elsewhere.
+        try:
+            messaging_policy.authorize(
+                self.db, contact, channel, kind="REACTION", actor_is_human=actor_is_human
+            )
+        except messaging_policy.PolicyRejected as exc:
+            raise SendRejected(exc.message) from exc
         if not target.external_message_id:
             raise SendRejected("This message hasn't been delivered yet - can't react to it.")
 
@@ -720,11 +785,13 @@ class MessageService:
         try:
             adapter.send(
                 credentials,
-                channel.phone_number_id or "",
-                "".join(ch for ch in (contact.phone or "") if ch.isdigit()),
+                channel_addressing.sender_ref(channel),
+                channel_addressing.recipient_ref(self.db, channel, contact),
                 reaction={"message_id": target.external_message_id, "emoji": clean},
             )
         except SendError as exc:
+            raise SendRejected(str(exc)) from exc
+        except channel_addressing.NoChannelIdentity as exc:
             raise SendRejected(str(exc)) from exc
 
         # Meta stores ONE reaction per direction - every agent reacts as the same

@@ -590,6 +590,9 @@ def send_message(
             principal.actor_user_id,
             payload,
             external_agent_id=principal.external_agent_id,
+            # A conversation principal is always a real human agent (native
+            # user or federated embed agent) - plan 32 / A7a, D-A7-6.
+            actor_is_human=True,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -647,6 +650,7 @@ async def send_template(
             header_content=header_content,
             header_filename=header_filename,
             external_agent_id=principal.external_agent_id,
+            actor_is_human=True,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -685,6 +689,7 @@ async def send_message_media(
             caption=caption,
             reply_to_message_id=reply_to_message_id,
             external_agent_id=principal.external_agent_id,
+            actor_is_human=True,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -740,6 +745,7 @@ async def send_interactive(
             header_filename=header_filename,
             reply_to_message_id=reply_to,
             external_agent_id=principal.external_agent_id,
+            actor_is_human=True,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -766,6 +772,7 @@ def send_location(
             defn=payload.model_dump(exclude={"replyToMessageId"}),
             reply_to_message_id=payload.replyToMessageId,
             external_agent_id=principal.external_agent_id,
+            actor_is_human=True,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -790,6 +797,7 @@ def send_contacts(
             defn={"contacts": payload.contacts},
             reply_to_message_id=payload.replyToMessageId,
             external_agent_id=principal.external_agent_id,
+            actor_is_human=True,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -825,6 +833,7 @@ def react_to_message(
             principal.actor_user_id,
             emoji=payload.emoji,
             expected_contact_id=contact_id,
+            actor_is_human=True,
         )
     except ThreadNotFound:
         raise HTTPException(status_code=404, detail="Message not found")

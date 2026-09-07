@@ -315,6 +315,10 @@ def _process_recipient(
             contact.id, broadcast.tenant_id, actor_user_id, req,
             channel_id_override=broadcast.channel_id,
             metadata_extra={"broadcast": {"id": broadcast.id, "recipientId": recipient.id}},
+            # A broadcast is automation, not a human reply (D-A7-6/D-A7-21) -
+            # explicit even though it's always a WhatsApp TEMPLATE send today
+            # (exempt from the window either way).
+            actor_is_human=False,
         )
     except (SendRejected, ThreadNotFound) as exc:
         db.rollback()

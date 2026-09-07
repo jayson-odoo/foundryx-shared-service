@@ -49,7 +49,7 @@ class ChannelAdapter(Protocol):
         """Lightweight ping to verify the number is reachable."""
         ...
 
-    # ── Message processing (plan 05) ─────────────────────────────────────────
+    # ── Message processing (plan 05; plan 32 / A7a generalizes addressing) ──
     def send(
         self,
         credentials: Dict[str, Any],
@@ -58,9 +58,23 @@ class ChannelAdapter(Protocol):
         *,
         text: Optional[str] = None,
         template: Optional[Dict[str, Any]] = None,
+        structured: Optional[Dict[str, Any]] = None,
+        messaging_type: Optional[str] = None,
+        tag: Optional[str] = None,
         context_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Send a text/template message; returns {"external_message_id": ...}."""
+        """Send a text/template message; returns {"external_message_id": ...}.
+
+        Plan 32 (A7a) adds three optional, provider-specific params that keep
+        `send_runner` type-blind: ``structured`` is the RAW friendly
+        interactive/location/contacts definition (`ConversationMessage.
+        payload_json`) - WhatsApp ignores it (it already receives a pre-built
+        native object via ``interactive``/``location``/``contacts``);
+        Messenger/Instagram read it to build Meta quick replies
+        (`structured.build_quick_replies`). ``messaging_type``/``tag`` are the
+        Meta send parameters `messaging_policy.authorize` resolved at enqueue
+        (`RESPONSE`/`MESSAGE_TAG`+`HUMAN_AGENT`) - WhatsApp ignores both (its
+        own re-engagement mode is "template", not a Meta send parameter)."""
         ...
 
     def parse_inbound(self, payload: Dict[str, Any]) -> list:
