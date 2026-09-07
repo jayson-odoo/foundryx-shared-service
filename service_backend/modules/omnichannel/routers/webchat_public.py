@@ -107,7 +107,9 @@ async def start_session(
     origin = request.headers.get("origin")
     service = WebchatVisitorService(db)
     try:
-        result = service.start_session(channel, origin=origin, token=body.get("token"))
+        result = service.start_session(
+            channel, origin=origin, token=body.get("token"), identity=body.get("identity")
+        )
     except WebchatNotFound:
         raise _uniform_404()
 

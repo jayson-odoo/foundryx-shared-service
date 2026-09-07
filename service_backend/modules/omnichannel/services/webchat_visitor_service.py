@@ -10,13 +10,22 @@ oldest to newest, page-capped - AC-WEB-34, also the poll fallback S3 wires).
 
 Every query derives `tenant_id`/`channel_id`/`contact_id` from the resolved
 CHANNEL (by widget key, globally unique over live rows) and the VERIFIED
-token's own `visitor_id` - never from any request body field (AC-WEB-27).
+token's own `identity_key` - never from any request body field (AC-WEB-27).
 `visitor_projection.visitor_message_item` is the ONE place a stored message
 becomes visitor-visible (D-A7B-17); nothing in this file builds a visitor-
 facing message shape any other way.
+
+Plan 34 S5 adds three things, none of which touch the identity/authorization
+model above: `online` computed via the EXISTING `BusinessHoursService`
+(AC-WEB-52), a host identity assertion resolved to `host:<userRef>` at
+session start (AC-WEB-55/56, D-A7B-9 - `identity_key` on the minted token IS
+the sanctioned stitch, never a lookup by pre-chat data), and pre-chat
+write-if-empty on the visitor's OWN already-resolved contact (AC-WEB-54,
+D-A7B-8 - never a lookup or merge against any OTHER contact).
 """
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
@@ -30,6 +39,7 @@ from app.models.tenant_branding import TenantBranding
 from app.repositories.module_repository import ModuleRepository
 
 from ..models import Channel, Contact, ConversationMessage
+from ..phone import digits_only
 from ..repositories.contact_repository import ContactRepository
 from ..webchat_auth import (
     InvalidVisitorToken,
@@ -38,9 +48,10 @@ from ..webchat_auth import (
     needs_renewal,
     verify_visitor_token,
 )
+from .business_hours import MissingBusinessHours, evaluate as evaluate_business_hours
 from .inbound_service import InboundService
 from .webchat_projection import visitor_message_item
-from .webchat_service import WebchatService
+from .webchat_service import WebchatService, verify_host_identity
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +63,16 @@ TEXT_MAX_CHARS = 4096
 BODY_MAX_BYTES = 24_000
 HISTORY_PAGE_LIMIT = 50
 HISTORY_PAGE_LIMIT_MAX = 100
+
+# AC-WEB-54: pre-chat values are normalized + capped, NEVER rejected - a bad
+# value is silently dropped and the message still lands (foolproof-UI: the
+# visitor never sees a validation error for a field they can't even see once
+# it's been asked once).
+_PRE_CHAT_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+PRE_CHAT_NAME_MAX_CHARS = 120
+PRE_CHAT_EMAIL_MAX_CHARS = 254
+PRE_CHAT_PHONE_MAX_CHARS = 32
+PRE_CHAT_PHONE_MIN_DIGITS = 5
 
 
 class WebchatNotFound(Exception):
@@ -156,17 +177,58 @@ async def read_capped_json(request: Request, *, cap: int = BODY_MAX_BYTES) -> Di
     return parsed
 
 
-def stamp_last_seen(db: Session, channel_id: str, visitor_id: str) -> None:
+def stamp_last_seen(db: Session, channel_id: str, identity_key: str) -> None:
     """AC-WEB-42 - a presence fact (D-A7B-19), stamped on session start, a
     message post and a WS connect (this function's three call sites: here,
     `WebchatVisitorService.post_message`, and `routers/ws.py`'s visitor
     `_authorize` branch). A no-op before the visitor's first message (D-A7B-
     7 - the identity does not exist yet; there is nothing to stamp, which is
-    the correct lazy-creation state, not a gap)."""
-    identity = ContactRepository(db).find_identity(channel_id, f"visitor:{visitor_id}")
+    the correct lazy-creation state, not a gap).
+
+    `identity_key` (plan 34 S5) is the token's OWN resolved identity -
+    `visitor:<visitorId>` for an anonymous session or `host:<userRef>` once a
+    host identity assertion has verified (D-A7B-9) - never re-derived from a
+    visitor id here, so a host-identified visitor's presence lands on the
+    SAME identity row its messages do."""
+    identity = ContactRepository(db).find_identity(channel_id, identity_key)
     if identity is not None:
         identity.last_seen_at = datetime.now(timezone.utc)
         db.commit()
+
+
+def _online(db: Session, channel: Channel) -> bool:
+    """AC-WEB-52/D-A7B-24 - the EXISTING `BusinessHoursService` (the
+    workspace row, else the tenant default row); an unconfigured workspace
+    resolves `online: true` rather than guessing a schedule. Never
+    duplicates `business_hours.py`'s own open/closed logic - `evaluate` IS
+    that logic."""
+    try:
+        is_open, _tzname, _checked_at = evaluate_business_hours(
+            db, channel.tenant_id, channel.workspace_id
+        )
+    except MissingBusinessHours:
+        return True
+    return is_open
+
+
+def _clean_pre_chat_value(kind: str, raw: Any) -> Optional[str]:
+    """AC-WEB-54 - normalize + cap, never reject; an invalid value is
+    dropped (returns `None`), the message still lands unaffected."""
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if kind == "name":
+        return value[:PRE_CHAT_NAME_MAX_CHARS]
+    if kind == "email":
+        value = value[:PRE_CHAT_EMAIL_MAX_CHARS]
+        return value if _PRE_CHAT_EMAIL_RE.match(value) else None
+    if kind == "phone":
+        if len(digits_only(value)) < PRE_CHAT_PHONE_MIN_DIGITS:
+            return None
+        return value[:PRE_CHAT_PHONE_MAX_CHARS]
+    return None
 
 
 class WebchatVisitorService:
@@ -176,11 +238,23 @@ class WebchatVisitorService:
 
     # ── session ──────────────────────────────────────────────────────────
     def start_session(
-        self, channel: Channel, *, origin: Optional[str], token: Optional[str]
+        self,
+        channel: Channel,
+        *,
+        origin: Optional[str],
+        token: Optional[str],
+        identity: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """AC-WEB-23..25/28/29. Reads ONLY - mints/renews a token but never
-        writes a row (D-A7B-7: contact/identity creation is lazy, on the
-        FIRST message, never at session start)."""
+        """AC-WEB-23..25/28/29/55/56. Reads ONLY - mints/renews a token but
+        never writes a row (D-A7B-7: contact/identity creation is lazy, on
+        the FIRST message, never at session start).
+
+        `identity` is the raw `{userRef, hash}` dict straight off the wire;
+        `webchat_service.verify_host_identity` is the ONLY place it is
+        trusted. A failure of any kind (missing, malformed, non-matching
+        hash) is silently ignored and the session proceeds exactly as if
+        `identity` had never been sent (AC-WEB-56) - never an error, never a
+        distinguishing response."""
         if not origin or origin not in _allowed_origins(channel):
             raise WebchatNotFound()  # AC-WEB-24 - off-list learns nothing
 
@@ -195,32 +269,56 @@ class WebchatVisitorService:
                 # succeeds").
                 claims = None
 
-        contact_id: Optional[str] = None
-        if claims is not None:
+        # D-A7B-9/AC-WEB-55/56 - verified ONLY here; `None` for every
+        # failure mode.
+        host_identity_key = verify_host_identity(channel, identity)
+
+        identity_key: str
+        contact_id: Optional[str]
+        if host_identity_key is not None and (
+            claims is None or claims.identity_key != host_identity_key
+        ):
+            # A fresh, or newly host-identified, session: mint a NEW visitor
+            # id bound to the ASSERTED identity rather than inheriting
+            # whatever anonymous session the browser already carried - a
+            # host identity assertion is the ONLY sanctioned stitch
+            # (D-A7B-9) and must never inherit an anonymous token's own
+            # separate history.
+            identity_key = host_identity_key
+            existing = self.contacts.find_identity(channel.id, identity_key)
+            contact_id = existing.contact_id if existing is not None else None
+            new_token, visitor_id, expires_at = mint_visitor_token(
+                channel, contact_id=contact_id, identity_key=identity_key
+            )
+        elif claims is not None:
+            identity_key = claims.identity_key
             contact_id = claims.contact_id
             if contact_id is None:
                 # A message may have created the contact SINCE this token
                 # was minted (D-A7B-7's lazy creation) - re-resolve it here
                 # so the SAME visitor's history/binding survives a page
                 # reload without ever writing anything itself.
-                identity = self.contacts.find_identity(
-                    channel.id, f"visitor:{claims.visitor_id}"
+                existing = self.contacts.find_identity(channel.id, identity_key)
+                contact_id = existing.contact_id if existing is not None else None
+            if not needs_renewal(claims):
+                # AC-WEB-29 - more than 7 days from expiry: returned
+                # UNCHANGED, byte-identical. `history`/`post_message`
+                # re-derive the contact from the identity key on every call
+                # (never from this token's possibly-stale `contactId`), so
+                # an unchanged token never goes stale in any way that
+                # matters.
+                new_token, visitor_id, expires_at = token, claims.visitor_id, claims.expires_at
+            else:
+                new_token, visitor_id, expires_at = mint_visitor_token(
+                    channel,
+                    visitor_id=claims.visitor_id,
+                    contact_id=contact_id,
+                    identity_key=identity_key,
                 )
-                contact_id = identity.contact_id if identity is not None else None
-
-        if claims is not None and not needs_renewal(claims):
-            # AC-WEB-29 - more than 7 days from expiry: returned UNCHANGED,
-            # byte-identical. `history`/`post_message` re-derive the contact
-            # from the visitor id on every call (never from this token's
-            # possibly-stale `contactId`), so an unchanged token never goes
-            # stale in any way that matters.
-            new_token, visitor_id, expires_at = token, claims.visitor_id, claims.expires_at
-        elif claims is not None:
-            new_token, visitor_id, expires_at = mint_visitor_token(
-                channel, visitor_id=claims.visitor_id, contact_id=contact_id
-            )
         else:
+            contact_id = None
             new_token, visitor_id, expires_at = mint_visitor_token(channel)
+            identity_key = f"visitor:{visitor_id}"
 
         messages: List[Dict[str, Any]] = []
         if contact_id is not None:
@@ -230,7 +328,7 @@ class WebchatVisitorService:
 
         # AC-WEB-42 - "session start" is one of the three stamp points. A
         # no-op for a brand-new visitor (no identity row exists yet, D-A7B-7).
-        stamp_last_seen(self.db, channel.id, visitor_id)
+        stamp_last_seen(self.db, channel.id, identity_key)
 
         return {
             "token": new_token,
@@ -238,11 +336,7 @@ class WebchatVisitorService:
             "visitorId": visitor_id,
             "workspaceId": channel.workspace_id,
             "config": self._session_config(channel),
-            # S5 wires the EXISTING `BusinessHoursService` (D-A7B-24); an
-            # unconfigured workspace resolves online anyway, so this
-            # hardcoded default is the eventual policy's own fallback value,
-            # not a placeholder lie.
-            "online": True,
+            "online": _online(self.db, channel),  # AC-WEB-52/D-A7B-24
             "messages": messages,
         }
 
@@ -306,13 +400,15 @@ class WebchatVisitorService:
                 "unsupported_content", "This surface does not accept media."
             )
 
-        # D-A7B-8/D-A7B-54 (S5 writes pre-chat values write-if-empty; S2
-        # deliberately ignores them here rather than half-implementing a
-        # write path with no tests yet) and D-A7B-9 (a host identity
-        # assertion is verified ONLY in S5 - S2 never reads `identity`).
+        # `claims.identity_key` is the ONLY identity this message is ever
+        # attributed to - `visitor:<visitorId>` for an ordinary anonymous
+        # session, or `host:<userRef>` once a host identity assertion
+        # verified at session start (D-A7B-9). `InboundService._resolve_
+        # contact` does the SAME lazy-create-or-reuse-by-external-user-id it
+        # already does for every other channel type - no special case here.
         external_message_id = f"web:{claims.visitor_id}:{uuid4().hex}"
         payload = {
-            "from": f"visitor:{claims.visitor_id}",
+            "from": claims.identity_key,
             "external_message_id": external_message_id,
             "body": text,
         }
@@ -333,22 +429,61 @@ class WebchatVisitorService:
                 channel.id,
             )
             raise WebchatInvalidRequest("send_failed", "Could not send your message.")
+
+        # AC-WEB-54/D-A7B-8 - write-if-empty on the visitor's OWN
+        # just-resolved contact ONLY. This is NOT a lookup: `row.contact_id`
+        # is the contact `_resolve_contact` above just attached to THIS
+        # identity - there is no search by name/email/phone anywhere in this
+        # path, on this message or any later one. Honored on every message
+        # (not only the first) where the target field is still empty, which
+        # is behaviourally identical to "first message only" from each
+        # field's own point of view - once a field is set it is never
+        # touched here again.
+        pre_chat = body.get("preChat")
+        if isinstance(pre_chat, dict):
+            contact = self.contacts.get_by_id(row.contact_id, channel.tenant_id)
+            if contact is not None and self._apply_pre_chat(contact, pre_chat):
+                self.db.commit()
+
         # AC-WEB-42 - "message post" is the second of the three stamp points.
         # The identity now DEFINITELY exists (this call just created it on a
         # first message, or it already did) - unlike session start's no-op.
-        stamp_last_seen(self.db, channel.id, claims.visitor_id)
+        stamp_last_seen(self.db, channel.id, claims.identity_key)
         item = visitor_message_item(row, channel)
         return item, False
+
+    def _apply_pre_chat(self, contact: Contact, pre_chat: Dict[str, Any]) -> bool:
+        """AC-WEB-54/D-A7B-8 - write ONLY onto fields that are currently
+        empty on THIS contact; returns whether anything changed (so the
+        caller only commits when needed). Never a lookup, never a merge."""
+        changed = False
+        name = _clean_pre_chat_value("name", pre_chat.get("name"))
+        if name and not contact.first_name and not contact.last_name:
+            first, _, last = name.partition(" ")
+            contact.first_name = first or None
+            contact.last_name = last or None
+            changed = True
+        email = _clean_pre_chat_value("email", pre_chat.get("email"))
+        if email and not contact.email:
+            contact.email = email
+            changed = True
+        phone = _clean_pre_chat_value("phone", pre_chat.get("phone"))
+        if phone and not contact.phone:
+            contact.phone = phone
+            contact.phone_digits = digits_only(phone)
+            changed = True
+        return changed
 
     # ── messages: read ───────────────────────────────────────────────────
     def history(
         self, channel: Channel, claims: VisitorClaims, *, after: Optional[str], limit: int
     ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
         """AC-WEB-34 - this visitor's OWN thread only, resolved from the
-        TOKEN's visitor id (never a client-supplied contact id). No contact
-        yet (never messaged) -> an empty page, never a 404 (a fresh visitor
-        polling before their first send is a normal state, not an error)."""
-        identity = self.contacts.find_identity(channel.id, f"visitor:{claims.visitor_id}")
+        TOKEN's identity key (never a client-supplied contact id). No
+        contact yet (never messaged) -> an empty page, never a 404 (a fresh
+        visitor polling before their first send is a normal state, not an
+        error)."""
+        identity = self.contacts.find_identity(channel.id, claims.identity_key)
         if identity is None:
             return [], None
         contact = self.contacts.get_by_id(identity.contact_id, channel.tenant_id)

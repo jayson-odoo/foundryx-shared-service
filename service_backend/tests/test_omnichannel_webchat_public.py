@@ -16,10 +16,15 @@ SESSION_URL = "/public/omnichannel/webchat/{key}/session"
 MESSAGES_URL = "/public/omnichannel/webchat/{key}/messages"
 
 
-def _session(client, widget_key, *, origin=ORIGIN, token=None):
+def _session(client, widget_key, *, origin=ORIGIN, token=None, identity=None):
+    body = {}
+    if token:
+        body["token"] = token
+    if identity is not None:
+        body["identity"] = identity
     return client.post(
         SESSION_URL.format(key=widget_key),
-        json=({"token": token} if token else {}),
+        json=body,
         headers=({"Origin": origin} if origin else {}),
     )
 

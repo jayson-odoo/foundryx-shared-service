@@ -346,10 +346,10 @@ class SignOutVisitorsResult(ApiModel):
 # ── Web chat: the PUBLIC visitor API (plan 34 / A7b S2) ──────────────────────
 class WebchatHostIdentity(BaseModel):
     """`{ userRef, hash }` (D-A7B-9) - a HOST identity assertion the
-    customer's OWN server signs. Verification (HMAC against the channel's
-    widget secret) lands in slice S5; S2 accepts and IGNORES this field
-    (D-A7B-9's "missing or invalid -> silently ignored" is the correct S2
-    behaviour, not a gap - there is no verification path yet to trust)."""
+    customer's OWN server signs. Verified in
+    `webchat_service.verify_host_identity` (HMAC-SHA256 against the
+    channel's CURRENT widget secret, plan 34 S5) - missing, malformed or
+    non-verifying is silently ignored (AC-WEB-56), never an error."""
 
     userRef: str
     hash: str
@@ -397,10 +397,9 @@ class WebchatSessionConfig(ApiModel):
 
 class WebchatSessionResult(ApiModel):
     """`POST /public/omnichannel/webchat/{widgetKey}/session` 200 body (plan
-    §5.2). `online` is a hardcoded `true` in S2 - S5 wires the EXISTING
-    `BusinessHoursService` (D-A7B-24: an unconfigured workspace resolves
-    online anyway, so this is not a temporary lie, it is the eventual
-    default's own fallback value)."""
+    §5.2). `online` is computed by the EXISTING `BusinessHoursService`
+    (D-A7B-24/AC-WEB-52): an unconfigured workspace resolves `online: true`
+    rather than guessing a schedule."""
 
     token: str
     expiresAt: datetime
@@ -417,12 +416,10 @@ class WebchatSessionResult(ApiModel):
 
 class WebchatMessageRequest(ApiModel):
     """`POST /public/omnichannel/webchat/{widgetKey}/messages` body (plan
-    §5.2). `preChat` values are accepted on the wire (S5 writes them
-    write-if-empty per D-A7B-8/54) but S2 ignores them - no lookup, no
-    stitch, and (fail-closed, not "not yet implemented") no write either,
-    so a half-shipped write-if-empty never lands before its own tests do.
-    `hp` is the honeypot - a legitimate visitor's browser never fills it in
-    (AC-WEB-32)."""
+    §5.2). `preChat` values are written write-if-empty onto the visitor's
+    OWN already-resolved contact only (D-A7B-8/AC-WEB-54) - NEVER a lookup
+    or a stitch against any other contact. `hp` is the honeypot - a
+    legitimate visitor's browser never fills it in (AC-WEB-32)."""
 
     text: str
     preChat: Optional[Dict[str, Optional[str]]] = None

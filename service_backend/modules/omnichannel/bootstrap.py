@@ -1138,6 +1138,117 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
             contact.agent_last_read_at = ig_now
         db.flush()
 
+    # Plan 34 S5 (A7b, AC-WEB-57) - a WEBCHAT sandbox channel so the inbox,
+    # the reports and the E2E journeys have a web chat thread with no
+    # external dependency at all (D-A7B-29: web chat's own backend IS the
+    # "provider" - there is nothing to stub). Mirrors chn-demo-fb/chn-demo-ig
+    # above: its own idempotency guard, ensured regardless of the cnt-001..
+    # 005 `already_seeded` gate below. Allowed origins cover every port this
+    # lane's own frontend + the E2E's static host page run on.
+    web_channel = (
+        db.query(Channel).filter(Channel.id == "chn-demo-web", Channel.tenant_id == tenant_id).first()
+    )
+    if web_channel is None:
+        web_channel = Channel(
+            id="chn-demo-web",
+            tenant_id=tenant_id,
+            workspace_id=ws.id,
+            channel_type="WEBCHAT",
+            name="Demo web chat (sandbox)",
+            credentials_json=encrypt_credentials(
+                {"widgetSecret": "whsec_demo0000000000000000000000000000"}
+            ),
+            widget_key="wk_demo00000000000000000000000000",
+            widget_config_json={
+                "allowedOrigins": [
+                    "http://localhost:3001",
+                    "http://localhost:3012",
+                    "http://localhost:3013",
+                ],
+                "appearance": {
+                    "accentColor": "#FF5A00",
+                    "position": "right",
+                    "headerTitle": "Chat with us",
+                    "agentDisplayName": "Support",
+                },
+                "greeting": "Hi! How can we help you today?",
+                "offlineGreeting": "We're offline right now - leave a message and we'll reply.",
+                "preChat": {"askName": True, "askEmail": True, "askPhone": False},
+            },
+            widget_token_epoch=0,
+            is_active=True,
+            status_id=statuses.status_id_for(db, tenant_id, "CHANNEL", "ACTIVE"),
+        )
+        db.add(web_channel)
+        db.flush()
+
+    # Two seeded visitor threads (AC-WEB-57's "two seeded visitor threads") -
+    # one anonymous, one with a pre-chat-style name/email already captured,
+    # so the inbox demonstrates both states with no external dependency. Own
+    # idempotency gate (keyed on a fixed contact id, mirroring fb_seeded/
+    # ig_seeded above).
+    web_seeded = bool(
+        db.query(Contact).filter(Contact.id == "cnt-web-001", Contact.tenant_id == tenant_id).first()
+    )
+    if not web_seeded:
+        from .services import lifecycle_service as _web_lifecycle_service
+
+        web_open_id = statuses.status_id_for(db, tenant_id, "THREAD", "OPEN")
+        web_initial_lifecycle_id = _web_lifecycle_service.initial_status_id(db, tenant_id, ws.id)
+        web_now = datetime.now(timezone.utc)
+        web_threads = [
+            # (contact id, first name, email, identity key, messages)
+            ("cnt-web-001", None, None, "visitor:vis_demo0000000000000000001", [
+                ("CONTACT", "Hi, do you offer a free trial?", 10),
+                ("AGENT", "Yes! 14 days, no card required.", 8),
+            ]),
+            ("cnt-web-002", "Jamie", "jamie@example.com", "visitor:vis_demo0000000000000000002", [
+                ("CONTACT", "What are your business hours?", 5),
+            ]),
+        ]
+        for cid, first_name, email, ext_id, msgs in web_threads:
+            contact = Contact(
+                id=cid,
+                tenant_id=tenant_id,
+                workspace_id=ws.id,
+                first_name=first_name,
+                email=email,
+                status_id=web_open_id,
+                priority="MEDIUM",
+                lifecycle_status_id=web_initial_lifecycle_id,
+            )
+            db.add(contact)
+            db.flush()
+            db.add(
+                ContactChannelIdentity(
+                    tenant_id=tenant_id,
+                    contact_id=cid,
+                    channel_id=web_channel.id,
+                    external_user_id=ext_id,
+                    last_seen_at=web_now,
+                ),
+            )
+            last_at = None
+            for i, (sender, body, minutes_ago) in enumerate(msgs):
+                created = web_now - timedelta(minutes=minutes_ago)
+                db.add(
+                    ConversationMessage(
+                        tenant_id=tenant_id,
+                        contact_id=cid,
+                        channel_id=web_channel.id,
+                        sender_type=sender,
+                        message_type="TEXT",
+                        body=body,
+                        external_message_id=f"web:demo-{cid}-{i}",
+                        delivery_status="READ" if sender == "AGENT" else None,
+                        created_at=created,
+                    )
+                )
+                last_at = created
+            contact.last_message_at = last_at
+            contact.agent_last_read_at = web_now
+        db.flush()
+
     if already_seeded:
         # Channels above are (re-)ensured; the cnt-001..005 thread/template/
         # quick-reply dataset below is a one-time seed, already present.

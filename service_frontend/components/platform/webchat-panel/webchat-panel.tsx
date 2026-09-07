@@ -5,7 +5,7 @@ import { MessageCircle, LoaderCircleIcon } from 'lucide-react';
 import { overrideVars } from '@/lib/branding-tokens';
 import { cn } from '@/lib/utils';
 import { useVisitorChat } from '@/hooks/use-visitor-chat';
-import type { WebchatPreChatValues } from '@/types/omnichannel';
+import type { WebchatPreChatValues, WebchatSessionResult } from '@/types/omnichannel';
 import { Composer } from './composer';
 import { PanelHeader } from './panel-header';
 import { PreChatStep } from './prechat-step';
@@ -32,6 +32,16 @@ function isEmbedded(): boolean {
 function postToHost(type: string, payload?: Record<string, unknown>): void {
   if (typeof window === 'undefined' || window.parent === window) return;
   window.parent.postMessage({ source: 'fx-webchat-panel', type, payload: payload ?? {} }, '*');
+}
+
+/** AC-WEB-52/53 - the online greeting, or the offline one once `online` is
+ *  `false`. A channel that never set its own offline greeting (an empty
+ *  string) falls back to the ONLINE greeting rather than showing a visitor
+ *  a blank system line - the offline greeting is optional copy, not a
+ *  required second field (foolproof-UI: never render nothing). */
+function resolveGreeting(session: WebchatSessionResult): string {
+  if (session.online) return session.config.greeting;
+  return session.config.offlineGreeting || session.config.greeting;
 }
 
 /**
@@ -137,7 +147,7 @@ export function WebchatPanel({ widgetKey }: WebchatPanelProps) {
       ) : chat.needsPreChat ? (
         <PreChatStep
           toggles={chat.session.config.preChat}
-          greeting={chat.session.online ? chat.session.config.greeting : chat.session.config.offlineGreeting}
+          greeting={resolveGreeting(chat.session)}
           sending={chat.sending}
           error={chat.sendError}
           honeypot={chat.honeypot}
@@ -148,7 +158,7 @@ export function WebchatPanel({ widgetKey }: WebchatPanelProps) {
         <>
           <Transcript
             messages={chat.messages}
-            greeting={chat.session.online ? chat.session.config.greeting : chat.session.config.offlineGreeting}
+            greeting={resolveGreeting(chat.session)}
             onQuickReply={(title) => void chat.send(title)}
           />
           <Composer

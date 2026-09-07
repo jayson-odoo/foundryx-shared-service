@@ -171,11 +171,13 @@ def _authorize(token: str, workspace_id: str) -> Optional[WsPrincipal]:
             except InvalidVisitorToken:
                 return None
             # The token's OWN `contactId` claim is advisory only (webchat_auth
-            # docstring) - re-derive from the channel-scoped identity, exactly
-            # like `webchat_visitor_service.history` does, never from the
-            # possibly-stale claim.
+            # docstring) - re-derive from the channel-scoped identity via the
+            # token's own `identity_key` (plan 34 S5: `visitor:<visitorId>`
+            # for an anonymous session, `host:<userRef>` once a host identity
+            # assertion verified, D-A7B-9), exactly like `webchat_visitor_
+            # service.history` does, never from the possibly-stale claim.
             identity = ContactRepository(db).find_identity(
-                channel.id, f"visitor:{claims.visitor_id}"
+                channel.id, claims.identity_key
             )
             if identity is None:
                 # No thread yet (D-A7B-7's lazy creation) - nothing to scope a
@@ -184,9 +186,9 @@ def _authorize(token: str, workspace_id: str) -> Optional[WsPrincipal]:
                 # D-A7B-16) covers a visitor who opens the panel before their
                 # first message, and the panel reconnects once one exists.
                 return None
-            stamp_last_seen(db, channel.id, claims.visitor_id)  # AC-WEB-42
+            stamp_last_seen(db, channel.id, claims.identity_key)  # AC-WEB-42
             return WsPrincipal(
-                principal_id=f"visitor:{claims.visitor_id}",
+                principal_id=claims.identity_key,
                 scope_contact_id=identity.contact_id,
                 visitor_channel=SimpleNamespace(widget_config_json=channel.widget_config_json),
             )

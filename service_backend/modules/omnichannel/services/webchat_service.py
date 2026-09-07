@@ -11,7 +11,14 @@ toggles, allowed origins) - never the secret.
 
 D-A7B-6: rotating the secret and bumping the epoch are two separate admin
 actions that never touch each other's state.
+
+Plan 34 S5 (D-A7B-9/AC-WEB-55/56) adds `verify_host_identity` - the ONLY
+place a host identity assertion is checked, HMAC-SHA256 against this SAME
+channel's CURRENT widget secret via `widget_secret_for` above.
 """
+import hashlib
+import hmac
+import re
 import secrets as pysecrets
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -46,6 +53,16 @@ from .onboarding_service import WorkspaceNotFound
 WIDGET_KEY_PREFIX = "wk_"
 WIDGET_SECRET_PREFIX = "whsec_"
 
+# D-A7B-9/AC-WEB-56: a `userRef` is bounded in length + charset so a hostile
+# value cannot forge or collide with an anonymous visitor id. The `host:` /
+# `visitor:` identity-key PREFIX already makes the two namespaces disjoint
+# regardless of `userRef`'s own content (a userRef of literally "vis_..."
+# still resolves to `host:vis_...`, never `visitor:vis_...`), but an
+# unbounded value could still carry control characters, whitespace, or blow
+# past what a customer's own user-id scheme would ever produce - rejected
+# outright rather than merely accepted-and-prefixed.
+_USER_REF_RE = re.compile(r"^[A-Za-z0-9_.@+-]{1,128}$")
+
 DEFAULT_APPEARANCE: Dict[str, Any] = {
     "accentColor": "#FF5A00",
     "position": "right",
@@ -79,6 +96,46 @@ def widget_secret_for(channel: Channel) -> Optional[str]:
         return None
     creds = decrypt_credentials(channel.credentials_json)
     return creds.get("widgetSecret")
+
+
+def verify_host_identity(channel: Channel, identity: Optional[Dict[str, Any]]) -> Optional[str]:
+    """D-A7B-9/AC-WEB-55/56 - verify a host identity assertion
+    `{userRef, hash}` against `channel`'s CURRENT widget secret:
+    `hash == hex(HMAC-SHA256(userRef, secret))`, constant-time compared.
+
+    Returns the identity key `host:<userRef>` on success, `None` for EVERY
+    failure mode (missing, malformed, wrong shape, a `userRef` outside
+    `_USER_REF_RE`, a channel with no stored secret yet, or a non-matching
+    hash) - the caller treats `None` as "proceed anonymously", never an
+    error (AC-WEB-56's silent-ignore contract; a `userRef` is NEVER trusted
+    without a valid signature, under any circumstance).
+
+    Only the CURRENT secret is ever checked - `rotate_secret` overwrites
+    `credentials_json` in place (D-A7B-6) and keeps no history, so an
+    assertion signed with a since-rotated secret fails exactly like a
+    missing one. This is a decision the plan left open (the epoch stays
+    unchanged on rotate, but nothing says the OLD secret keeps verifying):
+    honoring only the current secret matches "the epoch is a separate
+    control from the secret" - a customer who wants zero-downtime secret
+    rotation for identity assertions would need dual-secret support, which
+    is not built here (BL candidate, not required by any AC)."""
+    if not isinstance(identity, dict):
+        return None
+    user_ref = identity.get("userRef")
+    hash_hex = identity.get("hash")
+    if not isinstance(user_ref, str) or not isinstance(hash_hex, str):
+        return None
+    if not _USER_REF_RE.fullmatch(user_ref):
+        return None
+    secret = widget_secret_for(channel)
+    if not secret:
+        return None
+    expected = hmac.new(
+        secret.encode("utf-8"), user_ref.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(expected, hash_hex.strip().lower()):
+        return None
+    return f"host:{user_ref}"
 
 
 class WebchatService:

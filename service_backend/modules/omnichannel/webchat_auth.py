@@ -14,6 +14,18 @@ rotates the secret). A verify failure is ALWAYS the same `InvalidVisitorToken`
 regardless of which check failed - forged, expired, wrong-typ, wrong-channel
 and epoch-revoked are one indistinguishable case to the caller (AC-WEB-27,
 R4); the router maps it to one 401 body.
+
+Plan 34 S5 (D-A7B-9/AC-WEB-55/56) adds `identityKey` - the channel-scoped
+`ContactChannelIdentity.external_user_id` this token's conversation is
+addressed as: `visitor:<visitorId>` for an ordinary anonymous session, or
+`host:<userRef>` once `webchat_service.verify_host_identity` accepts a host
+identity assertion. It is decoupled from `visitorId` (which stays the
+session/device identifier used as the JWT `sub` and the throttle's `v:`
+bucket) precisely so a host-identified visitor keeps ONE contact across
+tabs/devices/renewals while an anonymous visitor's identity stays tied to the
+one browser that minted it. A token minted before this slice carries no
+`identityKey` claim; `verify_visitor_token` defaults it to
+`visitor:<visitorId>` so an in-flight token keeps resolving its own thread.
 """
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
@@ -39,7 +51,15 @@ class InvalidVisitorToken(Exception):
 class VisitorClaims:
     """The verified, trusted claims of a visitor token."""
 
-    __slots__ = ("tenant_id", "channel_id", "visitor_id", "contact_id", "epoch", "expires_at")
+    __slots__ = (
+        "tenant_id",
+        "channel_id",
+        "visitor_id",
+        "contact_id",
+        "epoch",
+        "expires_at",
+        "identity_key",
+    )
 
     def __init__(
         self,
@@ -49,6 +69,7 @@ class VisitorClaims:
         contact_id: Optional[str],
         epoch: int,
         expires_at: Optional[datetime],
+        identity_key: str,
     ) -> None:
         self.tenant_id = tenant_id
         self.channel_id = channel_id
@@ -56,6 +77,7 @@ class VisitorClaims:
         self.contact_id = contact_id
         self.epoch = epoch
         self.expires_at = expires_at
+        self.identity_key = identity_key
 
 
 def mint_visitor_token(
@@ -63,12 +85,19 @@ def mint_visitor_token(
     *,
     visitor_id: Optional[str] = None,
     contact_id: Optional[str] = None,
+    identity_key: Optional[str] = None,
 ) -> Tuple[str, str, datetime]:
     """Mint a fresh (no `visitor_id`) or renewed (same `visitor_id`) token
     bound to `channel`'s CURRENT `widget_token_epoch`. Returns
     `(token, visitor_id, expires_at)`. Never writes to the database - there
-    is nothing to persist (D-A7B-5; AC-WEB-25's zero-rows-per-page-view)."""
+    is nothing to persist (D-A7B-5; AC-WEB-25's zero-rows-per-page-view).
+
+    `identity_key` (plan 34 S5) is the `ContactChannelIdentity.external_
+    user_id` this token's thread is addressed as - `visitor:<vid>` by
+    default, or a caller-supplied `host:<userRef>` once a host identity
+    assertion has verified (D-A7B-9)."""
     vid = visitor_id or f"vis_{uuid4().hex}"
+    key = identity_key or f"visitor:{vid}"
     ttl_minutes = VISITOR_TOKEN_TTL_DAYS * 24 * 60
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
     claims = {
@@ -79,6 +108,7 @@ def mint_visitor_token(
         "visitorId": vid,
         "contactId": contact_id,
         "epoch": channel.widget_token_epoch or 0,
+        "identityKey": key,
     }
     token = create_access_token(claims, expires_minutes=ttl_minutes)
     return token, vid, expires_at
@@ -105,6 +135,10 @@ def verify_visitor_token(token: str, channel: Channel) -> VisitorClaims:
         raise InvalidVisitorToken("missing visitor id")
     exp = claims.get("exp")
     expires_at = datetime.fromtimestamp(exp, tz=timezone.utc) if exp else None
+    # A token minted before plan 34 S5 carries no `identityKey` claim - default
+    # it to the same key `post_message`/`history` used to derive implicitly
+    # (`visitor:<visitorId>`) so an in-flight token keeps resolving its thread.
+    identity_key = claims.get("identityKey") or f"visitor:{visitor_id}"
     return VisitorClaims(
         tenant_id=claims["tenantId"],
         channel_id=claims["channelId"],
@@ -112,6 +146,7 @@ def verify_visitor_token(token: str, channel: Channel) -> VisitorClaims:
         contact_id=claims.get("contactId"),
         epoch=claims.get("epoch") or 0,
         expires_at=expires_at,
+        identity_key=identity_key,
     )
 
 
