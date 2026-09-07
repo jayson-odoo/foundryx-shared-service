@@ -2,6 +2,7 @@
 
 import { ReactNode, useState } from 'react';
 import Image from 'next/image';
+import { usePathname } from 'next/navigation';
 import type { PublicBranding } from '@/types/branding';
 import { useTenantBranding } from '@/hooks/use-branding';
 import { AuthFooter } from '@/components/auth/auth-footer';
@@ -10,6 +11,15 @@ export interface PublicBrandedShellProps {
   children: ReactNode;
   /** Server-resolved branding (layout) - first paint, no Foundryx flash. */
   initialBranding?: PublicBranding | null;
+}
+
+/** The web chat PANEL is a full-bleed surface with no tenant subdomain
+ *  context of its own (D-A7B-25) - it supplies its own chrome and brand
+ *  tokens from the SESSION response, never this shell's header/nav-stub
+ *  footer (a vendor mark and instructional links no visitor should ever
+ *  see inside an embedded iframe, AC-WEB-47). */
+function isChromelessPanelPath(pathname: string | null): boolean {
+  return Boolean(pathname?.startsWith('/public/webchat/'));
 }
 
 /**
@@ -22,6 +32,11 @@ export interface PublicBrandedShellProps {
 export function PublicBrandedShell({ children, initialBranding }: PublicBrandedShellProps) {
   const { branding: live, isResolved } = useTenantBranding();
   const branding = isResolved ? live : (initialBranding ?? live);
+  const pathname = usePathname();
+
+  if (isChromelessPanelPath(pathname)) {
+    return <div className="flex h-full min-h-full grow flex-col">{children}</div>;
+  }
 
   return (
     <div className="flex min-h-full grow flex-col">

@@ -91,6 +91,21 @@ def cors_headers_for(channel: Channel, origin: Optional[str]) -> Dict[str, str]:
     return headers
 
 
+def origins_for_frame_policy(db: Session, widget_key: str) -> List[str]:
+    """S4 - the panel document's `Content-Security-Policy: frame-ancestors`
+    source (D-A7B-11/AC-WEB-47), mirroring the plan-11H embed precedent's
+    `EmbedSessionService.allowed_origins_for` exactly: unknown/trashed/
+    inactive/module-off/tenant-blocked all resolve to an EMPTY list (never a
+    404 - this is a read the Next.js middleware makes on every panel request,
+    so it stays uniform-by-shape rather than uniform-by-status-code) and a
+    read-only lookup, zero DB writes."""
+    try:
+        channel = resolve_live_channel(db, widget_key)
+    except WebchatNotFound:
+        return []
+    return _allowed_origins(channel)
+
+
 def resolve_live_channel(db: Session, widget_key: str) -> Channel:
     """GLOBAL lookup by widget key (unauthenticated, no tenant context yet) -
     the SAME resolution `routers/webchat_widget.py`'s loader route already

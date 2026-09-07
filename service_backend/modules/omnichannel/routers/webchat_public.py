@@ -32,6 +32,7 @@ from ..services.webchat_visitor_service import (
     WebchatUnauthorized,
     WebchatVisitorService,
     cors_headers_for,
+    origins_for_frame_policy,
     read_capped_json,
     resolve_live_channel,
 )
@@ -62,6 +63,17 @@ def _rate_limited(retry_after_seconds: int) -> ApiError:
         "rate_limited",
         "Too many attempts - try again later.",
     ).with_retry_after(retry_after_seconds)
+
+
+@router.get("/{widget_key}/frame-policy")
+def frame_policy(widget_key: str, db: Session = Depends(get_db)) -> dict:
+    """S4 (AC-WEB-47) - the panel document's `frame-ancestors` CSP source. The
+    Next.js middleware (`middleware.ts`) reads this on every
+    `/public/webchat/{widgetKey}` request and never renders the panel without
+    the header. Read-only, zero DB writes, mirrors `/embed/frame-policy`
+    (plan-11H): unknown/dead widget key -> empty list -> the middleware emits
+    `frame-ancestors 'none'`."""
+    return {"allowedOrigins": origins_for_frame_policy(db, widget_key)}
 
 
 @router.post("/{widget_key}/session")
