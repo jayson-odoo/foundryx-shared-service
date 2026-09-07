@@ -13,6 +13,8 @@ from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 from ..schemas import (
     AssignMembersRequest,
+    BusinessHoursResponse,
+    BusinessHoursUpdate,
     ExportRequest,
     IdsRequest,
     MemberCandidateItem,
@@ -25,6 +27,7 @@ from ..schemas import (
     WorkspaceNeighborResponse,
     WorkspaceUpdate,
 )
+from ..services.business_hours import BusinessHoursService, BusinessHoursValidationError
 from ..services.workspace_service import (
     DefaultWorkspaceProtected,
     WorkspaceNotFound,
@@ -158,6 +161,40 @@ def update_workspace(
         return WorkspaceService(db).update(ws_id, body, current_user.tenant_id)
     except WorkspaceNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
+
+
+@router.get("/{ws_id}/business-hours", response_model=BusinessHoursResponse)
+def get_business_hours(
+    ws_id: str,
+    current_user: User = Depends(require_permission("workspaces.read")),
+    db: Session = Depends(get_db),
+) -> BusinessHoursResponse:
+    try:
+        WorkspaceService(db).get(ws_id, current_user.tenant_id)
+    except WorkspaceNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
+    data = BusinessHoursService(db).get(current_user.tenant_id, ws_id)
+    return BusinessHoursResponse(workspaceId=ws_id, **data)
+
+
+@router.put("/{ws_id}/business-hours", response_model=BusinessHoursResponse)
+def update_business_hours(
+    ws_id: str,
+    body: BusinessHoursUpdate,
+    current_user: User = Depends(require_permission("workspaces.manage")),
+    db: Session = Depends(get_db),
+) -> BusinessHoursResponse:
+    try:
+        WorkspaceService(db).get(ws_id, current_user.tenant_id)
+    except WorkspaceNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
+    try:
+        data = BusinessHoursService(db).set(
+            current_user.tenant_id, ws_id, timezone=body.timezone, windows=body.windows
+        )
+    except BusinessHoursValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {"fieldErrors": exc.errors})
+    return BusinessHoursResponse(workspaceId=ws_id, **data)
 
 
 # NOTE: ``GET /{ws_id}/members`` (assignee picker) moved to the PUBLIC

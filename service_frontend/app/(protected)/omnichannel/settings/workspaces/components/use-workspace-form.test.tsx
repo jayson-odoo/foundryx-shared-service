@@ -11,7 +11,7 @@
  * `statuses.read` never sees a tab that would just 403 (foolproof-UI,
  * UX-only; the API is the real gate).
  */
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Workspace } from '@/types/omnichannel';
 import type { useWorkspaceForm as UseWorkspaceForm } from './use-workspace-form';
@@ -19,6 +19,28 @@ import type { useWorkspaceForm as UseWorkspaceForm } from './use-workspace-form'
 let can: (key: string) => boolean = () => true;
 vi.mock('@/hooks/use-can', () => ({
   useCan: () => ({ can: (key: string) => can(key) }),
+}));
+
+// Plan 31 S6 - the Business hours tab's own hook is mocked here so onSave/
+// onCancel wiring can be exercised without a real network call.
+const { businessHoursSaveMock, businessHoursDiscardMock } = vi.hoisted(() => ({
+  businessHoursSaveMock: vi.fn(async () => true),
+  businessHoursDiscardMock: vi.fn(),
+}));
+vi.mock('./use-business-hours', () => ({
+  useBusinessHours: () => ({
+    isLoading: false,
+    timezone: 'UTC',
+    windows: { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] },
+    isDirty: false,
+    isSaving: false,
+    saveError: null,
+    fieldErrors: {},
+    setTimezone: vi.fn(),
+    setWindows: vi.fn(),
+    save: businessHoursSaveMock,
+    discard: businessHoursDiscardMock,
+  }),
 }));
 
 function ws(over: Partial<Workspace> = {}): Workspace {
@@ -40,6 +62,7 @@ function ws(over: Partial<Workspace> = {}): Workspace {
 vi.mock('@/services/workspace-service', () => ({
   workspaceService: {
     get: vi.fn(async () => ws()),
+    update: vi.fn(async () => ws()),
     trash: vi.fn(),
     restore: vi.fn(),
   },
@@ -126,5 +149,82 @@ describe('useWorkspaceForm tab gating', () => {
     const tab = config.tabs.find((t) => t.id === 'lifecycle')!;
     const el = tab.render({ editing: true }) as { props: { editing: boolean } } | null;
     expect(el?.props.editing).toBe(true);
+  });
+});
+
+describe('useWorkspaceForm - Business hours tab (plan 31 S6, AC-WFP-63)', () => {
+  it('is always present, positioned after Close reasons when both render', async () => {
+    can = () => true;
+    const config = await loadedConfig();
+    const ids = config.tabs.map((t) => t.id);
+    expect(ids).toContain('business-hours');
+    expect(ids.indexOf('close-reasons')).toBeLessThan(ids.indexOf('business-hours'));
+  });
+
+  it('is visible even with none of the read permissions (page-level workspaces.read already gates the form)', async () => {
+    can = () => false;
+    const config = await loadedConfig();
+    expect(config.tabs.map((t) => t.id)).toContain('business-hours');
+  });
+
+  it('is read-only without workspaces.manage even while the form is in Edit mode', async () => {
+    can = () => false;
+    const config = await loadedConfig();
+    const tab = config.tabs.find((t) => t.id === 'business-hours')!;
+    const el = tab.render({ editing: true }) as { props: { editing: boolean } } | null;
+    expect(el?.props.editing).toBe(false);
+  });
+
+  it('is editable with workspaces.manage while the form is in Edit mode', async () => {
+    can = (key) => key === 'workspaces.manage';
+    const config = await loadedConfig();
+    const tab = config.tabs.find((t) => t.id === 'business-hours')!;
+    const el = tab.render({ editing: true }) as { props: { editing: boolean } } | null;
+    expect(el?.props.editing).toBe(true);
+  });
+
+  it('onSave awaits the business-hours controller and keeps edit mode on a rejection', async () => {
+    can = () => true;
+    businessHoursSaveMock.mockResolvedValueOnce(false);
+    const { result } = renderHook(() => useWorkspaceForm('wsp-1', false));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const tab = result.current.config!.tabs.find((t) => t.id === 'business-hours')!;
+    // Mount the tab so its `useEffect` registers the controller ref.
+    render(<>{tab.render({ editing: true })}</>);
+
+    let ok = true;
+    await act(async () => {
+      ok = await result.current.config!.onSave();
+    });
+    expect(businessHoursSaveMock).toHaveBeenCalled();
+    expect(ok).toBe(false);
+  });
+
+  it('onSave succeeds when the business-hours controller resolves true', async () => {
+    can = () => true;
+    businessHoursSaveMock.mockResolvedValueOnce(true);
+    const { result } = renderHook(() => useWorkspaceForm('wsp-1', false));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const tab = result.current.config!.tabs.find((t) => t.id === 'business-hours')!;
+    render(<>{tab.render({ editing: true })}</>);
+
+    let ok = false;
+    await act(async () => {
+      ok = await result.current.config!.onSave();
+    });
+    expect(ok).toBe(true);
+  });
+
+  it('onCancel discards the business-hours draft', async () => {
+    can = () => true;
+    const { result } = renderHook(() => useWorkspaceForm('wsp-1', false));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const tab = result.current.config!.tabs.find((t) => t.id === 'business-hours')!;
+    render(<>{tab.render({ editing: true })}</>);
+
+    act(() => {
+      result.current.config!.onCancel();
+    });
+    expect(businessHoursDiscardMock).toHaveBeenCalled();
   });
 });

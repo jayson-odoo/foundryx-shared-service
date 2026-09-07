@@ -6,6 +6,7 @@
  * strings (ApiModel); render via `useDatetime`.
  */
 
+import type { ContactFieldType } from './omnichannel';
 import type { RuleFactType, RuleGroup } from './rules';
 import type { TemplateDocument } from './templates';
 
@@ -33,6 +34,7 @@ export type WorkflowNodeConfig = Record<
   | string[]
   | WorkflowManualInput[]
   | WorkflowFieldAssignment[]
+  | WorkflowKeyValue[]
   | WorkflowAiOutputParam[]
   | WorkflowCodeInput[]
   | WorkflowCodeOutputParam[]
@@ -52,6 +54,14 @@ export interface WorkflowManualInput {
 export interface WorkflowFieldAssignment {
   field: string;
   /** Merge-templated literal written to the field. */
+  value: string;
+}
+
+/** One `key ← value` row shared by the HTTP request node's headers and the
+ * Send message / Ask a question template-variable editors (plan 31 §5.3). */
+export interface WorkflowKeyValue {
+  key: string;
+  /** Merge-templated literal. */
   value: string;
 }
 
@@ -134,15 +144,40 @@ export interface NodeFieldDef {
     | 'agentNode'
     | 'code'
     | 'codeInputs'
-    | 'codeCapabilities';
+    | 'codeCapabilities'
+    // Boolean flags render as a labelled checkbox (no bare `<Select>` for a
+    // plain yes/no toggle - matches the existing OutputParamsEditor pattern).
+    | 'boolean'
+    // Omnichannel-scoped pickers (plan 31 §5.2/§5.3) - each except
+    // `omnichannelWorkspace` reads its options from the workspace chosen via
+    // this node's `workspaceId` config (AC-WFP-03: disabled + empty until a
+    // workspace is chosen).
+    | 'omnichannelWorkspace'
+    | 'omnichannelTag'
+    | 'omnichannelContactField'
+    | 'omnichannelLifecycleStage'
+    | 'omnichannelCloseReason'
+    | 'omnichannelMember'
+    /** Approved WhatsApp template picker (send/ask template mode). */
+    | 'whatsappTemplate'
+    /** Per-placeholder mergeable values for a chosen WhatsApp template. */
+    | 'templateParams'
+    /** Ask a question's `choice` answer-type option list (capped at 10). */
+    | 'choiceList'
+    /** `workflow.trigger`'s target-workflow picker. */
+    | 'workflowRef'
+    /** Generic key/value rows (the HTTP request node's headers). */
+    | 'keyValue';
   required?: boolean;
   placeholder?: string;
   /** For `select` - static options (dynamic ones resolve in Phase B). */
   options?: { value: string; label: string }[];
   /** Whether the dynamic-content picker attaches to this field. */
   mergeable?: boolean;
-  /** Conditional: only shown/required when config[field] === value. */
-  showWhen?: { field: string; value: string };
+  /** Conditional: only shown/required when config[field] matches `value`
+   * (one literal, or one of several - e.g. the HTTP body field shown for
+   * BOTH `json` and `text` body modes). */
+  showWhen?: { field: string; value: string | string[] };
   /** For `entity` - restrict the picker (e.g. only status-engine entities, or
    * only entities that opt into the `entity.shortcut` trigger). */
   entityFilter?: 'status' | 'shortcut';
@@ -191,6 +226,20 @@ export interface ActionCatalogEntry {
   permission?: string;
   /** Owning module - see `TriggerCatalogEntry.module`. */
   module?: string;
+  /** Non-empty = a branching action (Ask a question, Business hours) - the
+   * executor's `kind === 'if'` port rule generalizes to any action declaring
+   * these (plan 31 D-A5-14); the canvas renders one labelled source handle
+   * per port instead of the single `out` handle. */
+  ports?: string[];
+  /** This action PARKS the run keyed by a contact (plan 31 D-A5-7,
+   * AC-WFP-51/06) - two runs answering the same contact would race the one
+   * wait row. `validateDefinition` (registry-driven, mirrors the backend's
+   * `ActionDef.requires_serialized` walk in `definition_issues`) blocks
+   * publish for any graph containing one of these unless
+   * `execution.mode = "serialized"` with a valid correlation key, using the
+   * SAME message the backend produces (`"{label} requires serialized
+   * execution and a Correlation key."`). */
+  requiresSerialized?: boolean;
 }
 
 /** The IF node (built-in, not a registered Trigger/Action - D8). Its config is
@@ -248,6 +297,36 @@ export interface WorkflowFormOption {
   fields: { key: string; label: string }[];
 }
 
+/** One tenant-scoped omnichannel workspace's picker options for the plan-31
+ * trigger/step catalog (`GET /workflows/metadata` §5.7) - a workspace-scoped
+ * picker (tag/field/stage/reason/member/template) reads ONLY the array under
+ * the workspace chosen on that node's `workspaceId` config (AC-WFP-03). */
+export interface WorkflowOmnichannelWorkspace {
+  id: string;
+  name: string;
+  contactTags: { id: string; name: string }[];
+  // `ContactField.type` (plan 25) - NOT a rule-engine fact type (nothing
+  // consumes this today, but the previous `RuleFactType` label was wrong
+  // - plan 31 S3 review nit).
+  contactFields: { key: string; label: string; type: ContactFieldType }[];
+  lifecycleStages: { id: string; name: string }[];
+  // The backend already filters to active reasons
+  // (`_omnichannel_workspace_options`) - the wire never carries `isActive`
+  // (plan 31 S3 review B-1).
+  closeReasons: { id: string; name: string }[];
+  members: { id: string; name: string }[];
+  /** Every template regardless of Meta review status - pickers filter to
+   * `status === 'APPROVED'` themselves (foolproof-UI). */
+  templates: { id: string; name: string; status: string }[];
+}
+
+/** A tenant workflow selectable by `workflow.trigger`'s `workflowId` (plan 31
+ * §5.3) - backs the `workflowRef` field type. */
+export interface WorkflowRefOption {
+  id: string;
+  name: string;
+}
+
 /** Tenant-resolved metadata the editor needs to configure slice-09 nodes -
  * `GET /workflow-metadata` in Phase B (mock in Phase A). */
 export interface WorkflowMetadata {
@@ -260,6 +339,12 @@ export interface WorkflowMetadata {
   /** Tenant's active omnichannel channels - backs the omnichannel trigger's
    * channel picker (plan sprint-4/17). */
   omnichannelChannels?: { id: string; name: string }[];
+  /** Tenant's omnichannel workspaces with their tags/fields/stages/reasons/
+   * members/templates (plan 31 §5.7). S0: mocked behind the metadata service
+   * boundary; S1/S3 wire the real `GET /workflows/metadata` addition. */
+  omnichannelWorkspaces?: WorkflowOmnichannelWorkspace[];
+  /** Tenant workflows selectable by `workflow.trigger` (plan 31 §5.3). */
+  workflows?: WorkflowRefOption[];
   /** Tenant's enabled AI agents - backs the AI Agent action's agent picker
    * (plan sprint-4/17). */
   aiAgents?: { id: string; name: string; model: string }[];
@@ -272,6 +357,17 @@ export interface WorkflowMetadata {
   codeRunnerAvailable?: boolean;
   /** The runner's language policy summary, rendered in the Code drawer. */
   codeCapabilities?: string[];
+  /** Every trigger/action key the backend registry currently resolves
+   * (plan 31 S3 review B-4) - the palette (and every quick-replace/context-
+   * menu picker) filters `TRIGGER_CATALOG`/`ACTION_CATALOG` down to this set
+   * so a node type with no backend `ActionDef`/`TriggerDef` yet (S4/S5's
+   * ask_question/wait/business_hours/http.request) is OMITTED entirely,
+   * never offered-then-disabled (foolproof-UI: never a choice guaranteed to
+   * 422 at Publish / RuntimeError at Run). Absent (undefined) means the
+   * metadata hasn't loaded yet - callers treat that as "show nothing new
+   * until we know", never "show everything".
+   */
+  registeredNodeTypes?: string[];
 }
 
 /** One backend-validated sandbox contact/channel pair for test-trigger runs. */
@@ -341,18 +437,33 @@ export interface WorkflowInput {
 
 // ---- runs ----
 
+/** Load state of `GET /workflows/metadata`, which backs the node palette's
+ * registry gate (plan 31 S3 review B-4). The palette renders a skeleton while
+ * it loads and an inline error state when it fails, instead of a silently
+ * empty catalog (review round 2, R-2). */
+export type WorkflowCatalogStatus = 'loading' | 'ready' | 'error';
+
 export type WorkflowRunStatus =
   | 'pending'
   | 'running'
   | 'success'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  /** Parked at an Ask a question / Wait / Business hours node (plan 31 S6,
+   * AC-WFP-65) - the node it is parked at is `pausedNodeId` on the run. */
+  | 'waiting';
 export type WorkflowNodeRunStatus =
   | 'pending'
   | 'running'
   | 'success'
   | 'failed'
-  | 'skipped';
+  | 'skipped'
+  /** Replay-only override (plan 31 S6, AC-WFP-65): the backend trace row for
+   * a parked node is `success` (it did complete its own work before asking
+   * the engine to suspend) - `RunReplay` re-labels the ONE node matching
+   * `run.pausedNodeId` while `run.status === 'waiting'` so it never reads as
+   * a phantom success or failure. */
+  | 'waiting';
 export type WorkflowRunTrigger = 'manual' | 'schedule' | 'event';
 
 export interface WorkflowRunListItem {
@@ -368,6 +479,9 @@ export interface WorkflowRunListItem {
   correlationKey: string | null;
   error: string | null;
   createdAt: string;
+  /** The node id this run is parked at while `status === 'waiting'`, else
+   * null (plan 31 S6, AC-WFP-65). */
+  pausedNodeId: string | null;
 }
 
 export interface WorkflowRunNode {

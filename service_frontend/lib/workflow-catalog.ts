@@ -22,6 +22,27 @@ const ENTITY_TRIGGER_OUTPUTS = [
   { key: 'trigger.actor.email', label: 'Actor email' },
 ];
 
+/** Output seed shared by every omnichannel contact-scoped trigger (plan 31
+ * §5.2) - the contact, the conversation and the workspace it happened in. */
+const OMNICHANNEL_CONTACT_TRIGGER_OUTPUTS = [
+  { key: 'trigger.contact.id', label: 'Contact · id' },
+  { key: 'trigger.contact.name', label: 'Contact · name' },
+  { key: 'trigger.contact.phone', label: 'Contact · phone' },
+  { key: 'trigger.conversationId', label: 'Conversation id' },
+  { key: 'trigger.workspaceId', label: 'Workspace id' },
+  { key: 'trigger.actor.name', label: 'Actor name' },
+  { key: 'trigger.actor.email', label: 'Actor email' },
+];
+
+/** The "trigger once per contact" flag every plan-31 contact trigger offers
+ * (D-A5-4) - a labelled checkbox, not a `select`, matching the existing
+ * boolean-flag convention (OutputParamsEditor's Required/Stateful rows). */
+const TRIGGER_ONCE_PER_CONTACT_FIELD = {
+  key: 'triggerOncePerContact',
+  label: 'Trigger once per contact',
+  type: 'boolean' as const,
+};
+
 export const TRIGGER_CATALOG: TriggerCatalogEntry[] = [
   {
     kind: 'trigger',
@@ -164,6 +185,164 @@ export const TRIGGER_CATALOG: TriggerCatalogEntry[] = [
       { key: 'trigger.channel.id', label: 'Channel · id' },
       { key: 'trigger.channel.name', label: 'Channel · name' },
       { key: 'trigger.conversationId', label: 'Conversation id' },
+    ],
+  },
+  // ---- plan 31 (omnichannel workflow parity) - conversation/contact triggers ----
+  {
+    kind: 'trigger',
+    type: 'omnichannel.conversation_opened',
+    label: 'Conversation opened',
+    description: 'Fires when a conversation moves to open (first contact or a reopen).',
+    icon: 'FolderOpen',
+    category: 'Triggers',
+    module: 'omnichannel',
+    fields: [
+      { key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace' },
+      { key: 'channelId', label: 'Channel', type: 'omnichannelChannel' },
+      { key: 'reopenOnly', label: 'Only on reopen', type: 'boolean' },
+      TRIGGER_ONCE_PER_CONTACT_FIELD,
+    ],
+    outputs: [
+      ...OMNICHANNEL_CONTACT_TRIGGER_OUTPUTS,
+      { key: 'trigger.isReopen', label: 'Is reopen' },
+      { key: 'trigger.channelId', label: 'Channel id' },
+    ],
+  },
+  {
+    kind: 'trigger',
+    type: 'omnichannel.conversation_closed',
+    label: 'Conversation closed',
+    description: 'Fires when a conversation is closed, optionally for one close reason.',
+    icon: 'FolderX',
+    category: 'Triggers',
+    module: 'omnichannel',
+    fields: [
+      { key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace' },
+      { key: 'closeReasonId', label: 'Close reason', type: 'omnichannelCloseReason' },
+      TRIGGER_ONCE_PER_CONTACT_FIELD,
+    ],
+    outputs: [
+      ...OMNICHANNEL_CONTACT_TRIGGER_OUTPUTS,
+      { key: 'trigger.closeReasonId', label: 'Close reason id' },
+      { key: 'trigger.closeReasonLabel', label: 'Close reason' },
+      { key: 'trigger.note', label: 'Note' },
+    ],
+  },
+  {
+    kind: 'trigger',
+    type: 'omnichannel.conversation_assigned',
+    label: 'Conversation assigned',
+    description: 'Fires when a conversation is assigned, reassigned, or unassigned.',
+    icon: 'UserCheck',
+    category: 'Triggers',
+    module: 'omnichannel',
+    fields: [
+      { key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace' },
+      { key: 'assigneeUserId', label: 'Assignee', type: 'omnichannelMember' },
+      { key: 'onUnassign', label: 'Only on unassign', type: 'boolean' },
+      TRIGGER_ONCE_PER_CONTACT_FIELD,
+    ],
+    outputs: [
+      ...OMNICHANNEL_CONTACT_TRIGGER_OUTPUTS,
+      { key: 'trigger.assigneeUserId', label: 'Assignee id' },
+      { key: 'trigger.previousAssigneeUserId', label: 'Previous assignee id' },
+      { key: 'trigger.assignedVia', label: 'Assigned via' },
+    ],
+  },
+  {
+    kind: 'trigger',
+    type: 'omnichannel.contact_tag_added',
+    label: 'Contact tag added',
+    description: 'Fires when a tag is added to a contact, optionally for one tag.',
+    icon: 'Tag',
+    category: 'Triggers',
+    module: 'omnichannel',
+    fields: [
+      { key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace' },
+      { key: 'tagId', label: 'Tag', type: 'omnichannelTag' },
+      TRIGGER_ONCE_PER_CONTACT_FIELD,
+    ],
+    outputs: [
+      ...OMNICHANNEL_CONTACT_TRIGGER_OUTPUTS,
+      { key: 'trigger.tagId', label: 'Tag id' },
+      { key: 'trigger.tagName', label: 'Tag name' },
+    ],
+  },
+  {
+    kind: 'trigger',
+    type: 'omnichannel.contact_tag_removed',
+    label: 'Contact tag removed',
+    description: 'Fires when a tag is removed from a contact, optionally for one tag.',
+    icon: 'Tag',
+    category: 'Triggers',
+    module: 'omnichannel',
+    fields: [
+      { key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace' },
+      { key: 'tagId', label: 'Tag', type: 'omnichannelTag' },
+      TRIGGER_ONCE_PER_CONTACT_FIELD,
+    ],
+    outputs: [
+      ...OMNICHANNEL_CONTACT_TRIGGER_OUTPUTS,
+      { key: 'trigger.tagId', label: 'Tag id' },
+      { key: 'trigger.tagName', label: 'Tag name' },
+    ],
+  },
+  {
+    kind: 'trigger',
+    type: 'omnichannel.contact_field_changed',
+    label: 'Contact field updated',
+    description: 'Fires when a registered custom field on a contact changes.',
+    icon: 'PencilLine',
+    category: 'Triggers',
+    module: 'omnichannel',
+    fields: [
+      { key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace' },
+      { key: 'fieldKey', label: 'Field', type: 'omnichannelContactField', required: true },
+      { key: 'newValue', label: 'New value', type: 'text' },
+      TRIGGER_ONCE_PER_CONTACT_FIELD,
+    ],
+    outputs: [
+      ...OMNICHANNEL_CONTACT_TRIGGER_OUTPUTS,
+      { key: 'trigger.fieldKey', label: 'Field key' },
+      { key: 'trigger.fromValue', label: 'From value' },
+      { key: 'trigger.toValue', label: 'To value' },
+    ],
+  },
+  {
+    kind: 'trigger',
+    type: 'omnichannel.lifecycle_changed',
+    label: 'Lifecycle updated',
+    description: 'Fires when a contact moves between lifecycle stages.',
+    icon: 'Activity',
+    category: 'Triggers',
+    module: 'omnichannel',
+    fields: [
+      { key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace' },
+      { key: 'fromStageId', label: 'From stage', type: 'omnichannelLifecycleStage' },
+      { key: 'toStageId', label: 'To stage', type: 'omnichannelLifecycleStage' },
+      TRIGGER_ONCE_PER_CONTACT_FIELD,
+    ],
+    outputs: [
+      ...OMNICHANNEL_CONTACT_TRIGGER_OUTPUTS,
+      { key: 'trigger.fromStatus', label: 'From stage' },
+      { key: 'trigger.toStatus', label: 'To stage' },
+      { key: 'trigger.toStageLabel', label: 'To stage label' },
+    ],
+  },
+  {
+    kind: 'trigger',
+    type: 'omnichannel.broadcast_completed',
+    label: 'Broadcast completed',
+    description: 'Fires when a broadcast finishes sending.',
+    icon: 'Megaphone',
+    category: 'Triggers',
+    module: 'omnichannel',
+    fields: [{ key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace' }],
+    outputs: [
+      { key: 'trigger.broadcastId', label: 'Broadcast id' },
+      { key: 'trigger.broadcastName', label: 'Broadcast name' },
+      { key: 'trigger.sent', label: 'Sent count' },
+      { key: 'trigger.failed', label: 'Failed count' },
     ],
   },
 ];
@@ -367,7 +546,7 @@ export const ACTION_CATALOG: ActionCatalogEntry[] = [
     kind: 'action',
     type: 'omnichannel.send_message',
     label: 'Send Message',
-    description: 'Send a text reply into the triggering conversation.',
+    description: 'Send a text or approved-template reply into a conversation.',
     icon: 'Send',
     category: 'Actions',
     module: 'omnichannel',
@@ -380,11 +559,443 @@ export const ACTION_CATALOG: ActionCatalogEntry[] = [
         mergeable: true,
         placeholder: '{{ trigger.contact.id }}',
       },
-      { key: 'message', label: 'Message', type: 'textarea', required: true, mergeable: true },
+      {
+        key: 'mode',
+        label: 'Message type',
+        type: 'select',
+        options: [
+          { value: 'text', label: 'Text message' },
+          { value: 'template', label: 'Approved template' },
+        ],
+      },
+      {
+        key: 'message',
+        label: 'Message',
+        type: 'textarea',
+        required: true,
+        mergeable: true,
+        showWhen: { field: 'mode', value: 'text' },
+      },
+      {
+        key: 'templateId',
+        label: 'Template',
+        type: 'whatsappTemplate',
+        required: true,
+        showWhen: { field: 'mode', value: 'template' },
+      },
+      {
+        key: 'templateVariables',
+        label: 'Template variables',
+        type: 'templateParams',
+        showWhen: { field: 'mode', value: 'template' },
+      },
     ],
     outputs: [
       { key: 'messageId', label: 'Message id' },
       { key: 'status', label: 'Send status' },
+    ],
+  },
+  // ---- plan 31 (omnichannel workflow parity) - simple steps ----
+  {
+    kind: 'action',
+    type: 'omnichannel.add_tag',
+    label: 'Add tag',
+    description: 'Add a tag to a contact.',
+    icon: 'Tag',
+    category: 'Actions',
+    module: 'omnichannel',
+    fields: [
+      {
+        key: 'contactId',
+        label: 'Contact',
+        type: 'text',
+        required: true,
+        mergeable: true,
+        placeholder: '{{ trigger.contact.id }}',
+      },
+      { key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace', required: true },
+      { key: 'tagId', label: 'Tag', type: 'omnichannelTag', required: true },
+    ],
+    outputs: [
+      { key: 'tags', label: 'Tags' },
+      { key: 'changed', label: 'Changed' },
+    ],
+  },
+  {
+    kind: 'action',
+    type: 'omnichannel.remove_tag',
+    label: 'Remove tag',
+    description: 'Remove a tag from a contact.',
+    icon: 'Tag',
+    category: 'Actions',
+    module: 'omnichannel',
+    fields: [
+      {
+        key: 'contactId',
+        label: 'Contact',
+        type: 'text',
+        required: true,
+        mergeable: true,
+        placeholder: '{{ trigger.contact.id }}',
+      },
+      { key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace', required: true },
+      { key: 'tagId', label: 'Tag', type: 'omnichannelTag', required: true },
+    ],
+    outputs: [
+      { key: 'tags', label: 'Tags' },
+      { key: 'changed', label: 'Changed' },
+    ],
+  },
+  {
+    kind: 'action',
+    type: 'omnichannel.update_field',
+    label: 'Update contact field',
+    description: 'Set or clear a registered custom field on a contact.',
+    icon: 'PencilLine',
+    category: 'Actions',
+    module: 'omnichannel',
+    destructive: true,
+    fields: [
+      {
+        key: 'contactId',
+        label: 'Contact',
+        type: 'text',
+        required: true,
+        mergeable: true,
+        placeholder: '{{ trigger.contact.id }}',
+      },
+      { key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace', required: true },
+      { key: 'fieldKey', label: 'Field', type: 'omnichannelContactField', required: true },
+      { key: 'value', label: 'Value', type: 'text', mergeable: true },
+      { key: 'clear', label: 'Clear the field', type: 'boolean' },
+    ],
+    outputs: [
+      { key: 'fieldKey', label: 'Field key' },
+      { key: 'value', label: 'Value' },
+    ],
+  },
+  {
+    kind: 'action',
+    type: 'omnichannel.update_lifecycle',
+    label: 'Update lifecycle',
+    description: 'Move a contact to a lifecycle stage through its state machine.',
+    icon: 'Activity',
+    category: 'Actions',
+    module: 'omnichannel',
+    destructive: true,
+    fields: [
+      {
+        key: 'contactId',
+        label: 'Contact',
+        type: 'text',
+        required: true,
+        mergeable: true,
+        placeholder: '{{ trigger.contact.id }}',
+      },
+      { key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace', required: true },
+      { key: 'toStageId', label: 'Move to stage', type: 'omnichannelLifecycleStage', required: true },
+    ],
+    outputs: [
+      { key: 'fromStageId', label: 'From stage id' },
+      { key: 'toStageId', label: 'To stage id' },
+      { key: 'stageLabel', label: 'Stage label' },
+    ],
+  },
+  {
+    kind: 'action',
+    type: 'omnichannel.open_conversation',
+    label: 'Open conversation',
+    description: 'Reopen a closed or snoozed conversation.',
+    icon: 'FolderOpen',
+    category: 'Actions',
+    module: 'omnichannel',
+    fields: [
+      {
+        key: 'contactId',
+        label: 'Contact',
+        type: 'text',
+        required: true,
+        mergeable: true,
+        placeholder: '{{ trigger.contact.id }}',
+      },
+    ],
+    outputs: [
+      { key: 'status', label: 'Status' },
+      { key: 'changed', label: 'Changed' },
+    ],
+  },
+  {
+    kind: 'action',
+    type: 'omnichannel.close_conversation',
+    label: 'Close conversation',
+    description: 'Close a conversation with a reason and an optional note.',
+    icon: 'FolderX',
+    category: 'Actions',
+    module: 'omnichannel',
+    destructive: true,
+    fields: [
+      {
+        key: 'contactId',
+        label: 'Contact',
+        type: 'text',
+        required: true,
+        mergeable: true,
+        placeholder: '{{ trigger.contact.id }}',
+      },
+      { key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace', required: true },
+      { key: 'closeReasonId', label: 'Close reason', type: 'omnichannelCloseReason', required: true },
+      { key: 'note', label: 'Note', type: 'textarea', mergeable: true },
+    ],
+    outputs: [
+      { key: 'status', label: 'Status' },
+      { key: 'closeReasonId', label: 'Close reason id' },
+    ],
+  },
+  {
+    kind: 'action',
+    type: 'omnichannel.add_comment',
+    label: 'Add comment',
+    description: 'Write an internal note on the conversation (not sent to the contact).',
+    icon: 'MessageSquareText',
+    category: 'Actions',
+    module: 'omnichannel',
+    fields: [
+      {
+        key: 'contactId',
+        label: 'Contact',
+        type: 'text',
+        required: true,
+        mergeable: true,
+        placeholder: '{{ trigger.contact.id }}',
+      },
+      { key: 'body', label: 'Comment', type: 'textarea', required: true, mergeable: true },
+    ],
+    outputs: [{ key: 'messageId', label: 'Message id' }],
+  },
+  {
+    kind: 'action',
+    type: 'omnichannel.ask_question',
+    label: 'Ask a question',
+    description: 'Send a message and wait for the contact to answer.',
+    icon: 'HelpCircle',
+    category: 'Actions',
+    module: 'omnichannel',
+    ports: ['answer', 'timeout'],
+    requiresSerialized: true,
+    fields: [
+      {
+        key: 'contactId',
+        label: 'Contact',
+        type: 'text',
+        required: true,
+        mergeable: true,
+        placeholder: '{{ trigger.contact.id }}',
+      },
+      {
+        key: 'mode',
+        label: 'Message type',
+        type: 'select',
+        options: [
+          { value: 'text', label: 'Text message' },
+          { value: 'template', label: 'Approved template' },
+        ],
+      },
+      {
+        key: 'message',
+        label: 'Message',
+        type: 'textarea',
+        required: true,
+        mergeable: true,
+        showWhen: { field: 'mode', value: 'text' },
+      },
+      {
+        key: 'templateId',
+        label: 'Template',
+        type: 'whatsappTemplate',
+        required: true,
+        showWhen: { field: 'mode', value: 'template' },
+      },
+      {
+        key: 'templateVariables',
+        label: 'Template variables',
+        type: 'templateParams',
+        showWhen: { field: 'mode', value: 'template' },
+      },
+      {
+        key: 'answerType',
+        label: 'Answer type',
+        type: 'select',
+        required: true,
+        options: [
+          { value: 'text', label: 'Text' },
+          { value: 'choice', label: 'Choice' },
+          { value: 'number', label: 'Number' },
+          { value: 'email', label: 'Email' },
+          { value: 'phone', label: 'Phone' },
+        ],
+      },
+      {
+        key: 'choices',
+        label: 'Choices',
+        type: 'choiceList',
+        required: true,
+        showWhen: { field: 'answerType', value: 'choice' },
+      },
+      {
+        key: 'retryLimit',
+        label: 'Retry limit',
+        type: 'select',
+        options: [
+          { value: '0', label: '0' },
+          { value: '1', label: '1' },
+          { value: '2', label: '2' },
+          { value: '3', label: '3' },
+        ],
+      },
+      { key: 'retryMessage', label: 'Re-ask message', type: 'textarea', mergeable: true },
+      { key: 'timeoutValue', label: 'Timeout', type: 'text', required: true },
+      {
+        key: 'timeoutUnit',
+        label: 'Timeout unit',
+        type: 'select',
+        required: true,
+        options: [
+          { value: 'minutes', label: 'Minutes' },
+          { value: 'hours', label: 'Hours' },
+          { value: 'days', label: 'Days' },
+        ],
+      },
+    ],
+    outputs: [
+      { key: 'answer', label: 'Answer' },
+      { key: 'answerRaw', label: 'Answer (raw message)' },
+      { key: 'answerKey', label: 'Answer key' },
+      { key: 'timedOut', label: 'Timed out' },
+      { key: 'reason', label: 'Reason' },
+    ],
+  },
+  {
+    kind: 'action',
+    type: 'omnichannel.wait',
+    label: 'Wait',
+    description: 'Pause the run for a fixed duration before continuing.',
+    icon: 'Clock',
+    category: 'Logic',
+    module: 'omnichannel',
+    fields: [
+      { key: 'waitValue', label: 'Duration', type: 'text', required: true },
+      {
+        key: 'waitUnit',
+        label: 'Duration unit',
+        type: 'select',
+        required: true,
+        options: [
+          { value: 'minutes', label: 'Minutes' },
+          { value: 'hours', label: 'Hours' },
+          { value: 'days', label: 'Days' },
+        ],
+      },
+    ],
+    outputs: [{ key: 'resumedAt', label: 'Resumed at' }],
+  },
+  {
+    kind: 'action',
+    type: 'omnichannel.business_hours',
+    label: 'Business hours',
+    description: "Branch the flow by whether a workspace is inside its business hours.",
+    icon: 'Clock3',
+    category: 'Logic',
+    module: 'omnichannel',
+    ports: ['inside', 'outside'],
+    fields: [{ key: 'workspaceId', label: 'Workspace', type: 'omnichannelWorkspace', required: true }],
+    outputs: [
+      { key: 'isOpen', label: 'Is open' },
+      { key: 'checkedAt', label: 'Checked at' },
+      { key: 'timezone', label: 'Timezone' },
+    ],
+  },
+  {
+    kind: 'action',
+    type: 'workflow.trigger',
+    label: 'Trigger another workflow',
+    description: 'Start another published workflow for this contact.',
+    icon: 'Workflow',
+    category: 'Actions',
+    fields: [
+      { key: 'workflowId', label: 'Workflow', type: 'workflowRef', required: true },
+      {
+        key: 'contactId',
+        label: 'Contact',
+        type: 'text',
+        mergeable: true,
+        placeholder: '{{ trigger.contact.id }}',
+      },
+      { key: 'payload', label: 'Payload (JSON)', type: 'textarea', mergeable: true },
+    ],
+    outputs: [
+      { key: 'runId', label: 'Run id' },
+      { key: 'workflowId', label: 'Workflow id' },
+    ],
+  },
+  {
+    kind: 'action',
+    type: 'http.request',
+    label: 'HTTP request',
+    description: 'Call an external HTTPS endpoint and capture the response.',
+    icon: 'Globe',
+    category: 'Actions',
+    permission: 'workflows.http',
+    fields: [
+      {
+        key: 'method',
+        label: 'Method',
+        type: 'select',
+        required: true,
+        options: [
+          { value: 'GET', label: 'GET' },
+          { value: 'POST', label: 'POST' },
+          { value: 'PUT', label: 'PUT' },
+          { value: 'PATCH', label: 'PATCH' },
+          { value: 'DELETE', label: 'DELETE' },
+        ],
+      },
+      { key: 'url', label: 'URL', type: 'text', required: true, mergeable: true, placeholder: 'https://…' },
+      { key: 'headers', label: 'Headers', type: 'keyValue' },
+      {
+        key: 'bodyMode',
+        label: 'Body',
+        type: 'select',
+        options: [
+          { value: 'none', label: 'No body' },
+          { value: 'json', label: 'JSON' },
+          { value: 'text', label: 'Text' },
+        ],
+      },
+      {
+        key: 'body',
+        label: 'Body content',
+        type: 'textarea',
+        mergeable: true,
+        showWhen: { field: 'bodyMode', value: ['json', 'text'] },
+      },
+      {
+        key: 'timeoutSeconds',
+        label: 'Timeout (seconds)',
+        type: 'select',
+        options: [
+          { value: '5', label: '5' },
+          { value: '10', label: '10' },
+          { value: '20', label: '20' },
+          { value: '30', label: '30' },
+        ],
+      },
+    ],
+    outputs: [
+      { key: 'statusCode', label: 'Status code' },
+      { key: 'ok', label: 'Ok' },
+      { key: 'body', label: 'Body' },
+      { key: 'json', label: 'JSON (dotted path)' },
+      { key: 'durationMs', label: 'Duration (ms)' },
     ],
   },
   {
@@ -392,10 +1003,14 @@ export const ACTION_CATALOG: ActionCatalogEntry[] = [
     // `modules/omnichannel/workflow_nodes.py` field-for-field (tester D1: the
     // backend registered it, the palette could not find it). `teamId` is the
     // generic `team` field type (core `team_capabilities.py` option provider).
+    // Plan 31 (A5) merge folds in a THIRD `round_robin` mode - picks across
+    // the CONTACT'S OWN workspace roster; no extra config field (the
+    // workspace is resolved from the contact at run time).
     kind: 'action',
     type: 'omnichannel.assign_conversation',
     label: 'Assign Conversation',
-    description: 'Assign a conversation to a user, a team, or unassign it.',
+    description:
+      "Assign a conversation to a user, a team, round-robin across the contact's own workspace, or unassign it.",
     icon: 'UserRoundCog',
     category: 'Actions',
     module: 'omnichannel',
@@ -416,6 +1031,7 @@ export const ACTION_CATALOG: ActionCatalogEntry[] = [
         options: [
           { value: 'user', label: 'A user' },
           { value: 'team', label: 'A team' },
+          { value: 'round_robin', label: 'Round robin' },
           { value: 'unassign', label: 'Unassign' },
         ],
       },
@@ -592,6 +1208,59 @@ export function catalogEntry(type: string): NodeCatalogEntry | undefined {
   return CATALOG.find((e) => e.type === type);
 }
 
+/** True when the entry declares a `permission` (e.g. `workflows.code` on
+ * Code, `workflows.http` on HTTP request) the caller does not hold - the ONE
+ * gate every permission-restricted node type shares (plan 31 S3
+ * generalization: a THIRD gated action needs no new per-call-site check,
+ * only one more entry in the caller's `deniedNodePermissions` set). */
+export function isPermissionDenied(
+  entry: NodeCatalogEntry | undefined,
+  denied: ReadonlySet<string>,
+): boolean {
+  return Boolean(
+    entry && 'permission' in entry && entry.permission && denied.has(entry.permission),
+  );
+}
+
+/** Builds the denied-permission set from the caller's boolean permission
+ * flags (`can('workflows.code')`, `can('workflows.http')`) - the single spot
+ * every canvas/palette/drawer consumer derives its `isPermissionDenied` input
+ * from, so a new gated permission is a one-line addition here. */
+export function deniedNodePermissions(flags: {
+  code?: boolean;
+  http?: boolean;
+}): ReadonlySet<string> {
+  const denied = new Set<string>();
+  if (!flags.code) denied.add('workflows.code');
+  if (!flags.http) denied.add('workflows.http');
+  return denied;
+}
+
 export function isTriggerType(type: string): boolean {
   return TRIGGER_CATALOG.some((e) => e.type === type);
+}
+
+/** Whether `entry`'s type is backend-registered TODAY (plan 31 S3 review
+ * B-4) - the palette (and every quick-replace picker: the drawer's Node
+ * type SearchSelect, the canvas right-click Replace menu) filters
+ * `TRIGGER_CATALOG`/`ACTION_CATALOG` down to `registeredNodeTypes` (from
+ * `GET /workflows/metadata`) so a node with no backend `ActionDef`/
+ * `TriggerDef` yet is OMITTED entirely rather than shown-then-disabled
+ * (foolproof-UI - the S4/S5 ask_question/wait/business_hours/http.request
+ * entries ship in the frontend catalog ahead of their backend executor by
+ * design, per the plan's slice order). The IF node is exempt - it is a
+ * structural kind the executor branches on directly, never a registry
+ * entry, matching the backend publish gate's own IF exemption
+ * (`schemas.py definition_issues`). `registeredNodeTypes` undefined (the
+ * metadata hasn't loaded yet) is treated as "nothing confirmed yet" -
+ * same convention as `useInstalledModules().isActive` defaulting to false
+ * pre-load - never show a node type before we know the backend can run it. */
+export function isNodeTypeRegistered(
+  entry: NodeCatalogEntry | undefined,
+  registeredNodeTypes: readonly string[] | undefined,
+): boolean {
+  if (!entry) return false;
+  if (entry.kind === 'if') return true;
+  if (!registeredNodeTypes) return false;
+  return registeredNodeTypes.includes(entry.type);
 }

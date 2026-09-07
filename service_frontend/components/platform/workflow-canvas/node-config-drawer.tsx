@@ -31,10 +31,12 @@ import type {
   WorkflowEntityField,
   WorkflowFieldAssignment,
   WorkflowFormOption,
+  WorkflowKeyValue,
   WorkflowManualInput,
   WorkflowMetadata,
   WorkflowNode,
   WorkflowNodeConfig,
+  WorkflowOmnichannelWorkspace,
   WorkflowRunNode,
   WorkflowTriggerableEntity,
 } from '@/types/workflows';
@@ -42,10 +44,14 @@ import { cn } from '@/lib/utils';
 import {
   ACTION_CATALOG,
   catalogEntry,
+  deniedNodePermissions,
+  isNodeTypeRegistered,
+  isPermissionDenied,
   TRIGGER_CATALOG,
 } from '@/lib/workflow-catalog';
 import {
   AI_OUTPUT_PARAM_KEY_RE,
+  matchesShowWhen,
   nodeDisplayName,
   validAiOutputParams,
 } from '@/lib/workflow-doc';
@@ -95,6 +101,12 @@ export interface NodeConfigDrawerProps {
   onExecuteNode?: () => void;
   executeBusy?: boolean;
   canCode?: boolean;
+  /** Gates the HTTP request node (`workflows.http`), same as `canCode`. */
+  canHttp?: boolean;
+  /** The workflow being edited - excluded from the `workflow.trigger` picker
+   * (foolproof-UI: never offer an option the backend would refuse, plan 31
+   * S3). Absent for a new/unsaved workflow (nothing to exclude yet). */
+  currentWorkflowId?: string;
 }
 
 /** A trigger node's full output key list (static seed + entity record fields +
@@ -439,6 +451,38 @@ function formFor(
   return (metadata.forms ?? []).find((f) => f.id === id);
 }
 
+/** The omnichannel workspace a node points at via `config.workspaceId` - backs
+ * every workspace-scoped picker (tags/fields/stages/reasons/members, plan 31
+ * §5.7). No workspace chosen ⇒ `undefined` ⇒ the dependent picker is disabled
+ * with an empty option set (AC-WFP-03, foolproof-UI). */
+function workspaceFor(
+  node: WorkflowNode,
+  metadata: WorkflowMetadata,
+): WorkflowOmnichannelWorkspace | undefined {
+  const id = node.config.workspaceId;
+  if (typeof id !== 'string' || !id) return undefined;
+  return (metadata.omnichannelWorkspaces ?? []).find((w) => w.id === id);
+}
+
+/** Every APPROVED WhatsApp template across every workspace - flattened
+ * tenant-wide since `send_message`/`ask_question`'s `contactId` is a
+ * merge-rendered run-context value with no workspace of its own to scope by
+ * (plan 31 §5.3 - contract lists no `workspaceId` field for these actions). */
+function approvedTemplateOptions(
+  metadata: WorkflowMetadata,
+): { value: string; label: string }[] {
+  const seen = new Set<string>();
+  const options: { value: string; label: string }[] = [];
+  for (const workspace of metadata.omnichannelWorkspaces ?? []) {
+    for (const template of workspace.templates ?? []) {
+      if (template.status !== 'APPROVED' || seen.has(template.id)) continue;
+      seen.add(template.id);
+      options.push({ value: template.id, label: template.name });
+    }
+  }
+  return options;
+}
+
 function ManualInputsEditor({
   inputs,
   editing,
@@ -577,6 +621,139 @@ function AssignmentsEditor({
       )}
       {!assignments.length && !editing && (
         <p className="text-xs text-muted-foreground">No fields set.</p>
+      )}
+    </div>
+  );
+}
+
+/** `key ← value` rows shared by the HTTP request node's headers and the
+ * Send message / Ask a question template-variable editors (plan 31 §5.3) -
+ * values are mergeable (dynamic-content picker); a header's VALUE is never
+ * traced server-side, but the editor itself is generic (the tracing rule is a
+ * backend concern, S5). */
+function KeyValueRowsEditor({
+  rows,
+  editing,
+  groups,
+  keyPlaceholder,
+  onChange,
+}: {
+  rows: WorkflowKeyValue[];
+  editing: boolean;
+  groups: DynamicContentGroup[];
+  keyPlaceholder: string;
+  onChange: (next: WorkflowKeyValue[]) => void;
+}) {
+  const update = (i: number, patch: Partial<WorkflowKeyValue>) =>
+    onChange(rows.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
+  return (
+    <div className="flex flex-col gap-2" data-testid="key-value-editor">
+      {rows.map((row, i) => (
+        <div key={i} className="flex items-start gap-1.5">
+          <Input
+            value={row.key}
+            disabled={!editing}
+            placeholder={keyPlaceholder}
+            aria-label={`Key ${i + 1}`}
+            onChange={(e) => update(i, { key: e.target.value })}
+            className="w-28 shrink-0"
+          />
+          <div className="flex-1">
+            <DynamicContentField
+              value={row.value}
+              onChange={(value) => update(i, { value })}
+              groups={groups}
+              placeholder="Value"
+              disabled={!editing}
+              aria-label={`Value ${i + 1}`}
+            />
+          </div>
+          {editing && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0 text-destructive"
+              aria-label={`Remove row ${i + 1}`}
+              onClick={() => onChange(rows.filter((_, idx) => idx !== i))}
+            >
+              <Trash2 className="size-3.5" />
+            </Button>
+          )}
+        </div>
+      ))}
+      {editing && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          data-testid="add-key-value"
+          onClick={() => onChange([...rows, { key: '', value: '' }])}
+        >
+          <Plus className="size-3.5" /> Add row
+        </Button>
+      )}
+      {!rows.length && !editing && (
+        <p className="text-xs text-muted-foreground">No entries.</p>
+      )}
+    </div>
+  );
+}
+
+/** Ask a question's `choice` answer-type option list (D-A5-18, capped at 10 -
+ * module constant, §5.3 "Caps"). */
+const MAX_CHOICES = 10;
+
+function ChoiceListEditor({
+  choices,
+  editing,
+  onChange,
+}: {
+  choices: string[];
+  editing: boolean;
+  onChange: (next: string[]) => void;
+}) {
+  const update = (i: number, v: string) =>
+    onChange(choices.map((c, idx) => (idx === i ? v : c)));
+  return (
+    <div className="flex flex-col gap-2" data-testid="choice-list-editor">
+      {choices.map((c, i) => (
+        <div key={i} className="flex items-center gap-1.5">
+          <Input
+            value={c}
+            disabled={!editing}
+            placeholder={`Choice ${i + 1}`}
+            aria-label={`Choice ${i + 1}`}
+            onChange={(e) => update(i, e.target.value)}
+            className="flex-1"
+          />
+          {editing && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0 text-destructive"
+              aria-label={`Remove choice ${i + 1}`}
+              onClick={() => onChange(choices.filter((_, idx) => idx !== i))}
+            >
+              <Trash2 className="size-3.5" />
+            </Button>
+          )}
+        </div>
+      ))}
+      {editing && choices.length < MAX_CHOICES && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          data-testid="add-choice"
+          onClick={() => onChange([...choices, ''])}
+        >
+          <Plus className="size-3.5" /> Add choice
+        </Button>
+      )}
+      {!choices.length && !editing && (
+        <p className="text-xs text-muted-foreground">No choices.</p>
       )}
     </div>
   );
@@ -910,6 +1087,18 @@ export function OutputParamsEditor({
   );
 }
 
+/** Field types whose options come from the chosen workspace (plan 31 §5.7) -
+ * changing the workspace invalidates any of them already selected
+ * (AC-WFP-03: never leave a stale pick from the old workspace). Module-scope
+ * (plan 31 S3 review nit) - a fresh `Set` per render bought nothing. */
+const WORKSPACE_SCOPED_TYPES = new Set<NodeFieldDef['type']>([
+  'omnichannelTag',
+  'omnichannelContactField',
+  'omnichannelLifecycleStage',
+  'omnichannelCloseReason',
+  'omnichannelMember',
+]);
+
 export function NodeConfigDrawer({
   node,
   doc,
@@ -924,6 +1113,8 @@ export function NodeConfigDrawer({
   onExecuteNode,
   executeBusy,
   canCode = true,
+  canHttp = true,
+  currentWorkflowId,
 }: NodeConfigDrawerProps) {
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [templatePreviewOpen, setTemplatePreviewOpen] = useState(false);
@@ -934,7 +1125,8 @@ export function NodeConfigDrawer({
       </div>
     );
   }
-  const editing = requestedEditing && (node.type !== 'code.run' || canCode);
+  const denied = deniedNodePermissions({ code: canCode, http: canHttp });
+  const editing = requestedEditing && !isPermissionDenied(catalogEntry(node.type), denied);
   const entry = catalogEntry(node.type);
   const groups = upstreamGroups(doc, node.id, metadata);
   const entity = entityFor(node, metadata);
@@ -961,7 +1153,8 @@ export function NodeConfigDrawer({
   )
     .filter(
       (e) =>
-        canCode || !('permission' in e) || e.permission !== 'workflows.code',
+        !isPermissionDenied(e, denied) &&
+        isNodeTypeRegistered(e, metadata.registeredNodeTypes),
     )
     .map((e) => ({ value: e.type, label: e.label }));
 
@@ -973,6 +1166,32 @@ export function NodeConfigDrawer({
     }
     if ('assignments' in node.config) patch.assignments = [];
     onConfigChange(node.id, patch);
+  };
+
+  const changeWorkspace = (key: string, value: string) => {
+    const patch: WorkflowNodeConfig = { [key]: value };
+    for (const f of entry?.fields ?? []) {
+      if (WORKSPACE_SCOPED_TYPES.has(f.type)) patch[f.key] = '';
+    }
+    onConfigChange(node.id, patch);
+  };
+
+  /** AC-WFP-04: switching a controlling field (assign mode, ask answer type,
+   * HTTP body mode, send-message message type) clears its now-hidden
+   * dependents from `config` rather than leaving a stale, invisible value. */
+  const clearHiddenOnChange = (
+    changedKey: string,
+    nextValue: string,
+  ): WorkflowNodeConfig => {
+    const patch: WorkflowNodeConfig = {};
+    const probe = { ...node.config, [changedKey]: nextValue };
+    for (const f of entry?.fields ?? []) {
+      if (f.showWhen?.field !== changedKey) continue;
+      if (matchesShowWhen(probe, f.showWhen, entry?.fields)) continue;
+      const existing = node.config[f.key];
+      patch[f.key] = Array.isArray(existing) ? [] : '';
+    }
+    return patch;
   };
 
   const renderField = (field: NodeFieldDef) => {
@@ -1343,19 +1562,179 @@ export function NodeConfigDrawer({
       );
     }
 
+    if (field.type === 'boolean') {
+      const checked = value === true;
+      return (
+        <label
+          key={field.key}
+          className="flex items-center gap-2 text-xs font-medium text-foreground"
+        >
+          <input
+            type="checkbox"
+            checked={checked}
+            disabled={!editing}
+            aria-label={field.label}
+            onChange={(e) => {
+              const patch: WorkflowNodeConfig = { [field.key]: e.target.checked };
+              Object.assign(
+                patch,
+                clearHiddenOnChange(field.key, e.target.checked ? 'true' : 'false'),
+              );
+              onConfigChange(node.id, patch);
+            }}
+          />
+          {field.label}
+        </label>
+      );
+    }
+
+    if (field.type === 'omnichannelWorkspace') {
+      const options = (metadata.omnichannelWorkspaces ?? []).map((w) => ({
+        value: w.id,
+        label: w.name,
+      }));
+      return wrap(
+        <SearchSelect
+          options={options}
+          value={typeof value === 'string' && value ? value : null}
+          onChange={(v) => changeWorkspace(field.key, v ?? '')}
+          ariaLabel={field.label}
+          placeholder="Choose a workspace…"
+          searchPlaceholder="Search workspaces…"
+          disabled={!editing}
+        />,
+      );
+    }
+
+    if (
+      field.type === 'omnichannelTag' ||
+      field.type === 'omnichannelContactField' ||
+      field.type === 'omnichannelLifecycleStage' ||
+      field.type === 'omnichannelCloseReason' ||
+      field.type === 'omnichannelMember'
+    ) {
+      const workspace = workspaceFor(node, metadata);
+      const options =
+        field.type === 'omnichannelTag'
+          ? (workspace?.contactTags ?? []).map((t) => ({ value: t.id, label: t.name }))
+          : field.type === 'omnichannelContactField'
+            ? (workspace?.contactFields ?? []).map((f) => ({ value: f.key, label: f.label }))
+            : field.type === 'omnichannelLifecycleStage'
+              ? (workspace?.lifecycleStages ?? []).map((s) => ({ value: s.id, label: s.name }))
+              : field.type === 'omnichannelCloseReason'
+                // The backend already filters to active reasons
+                // (`_omnichannel_workspace_options` - plan 31 S3 review B-1);
+                // the wire never carries `isActive` and never did, so a
+                // client-side filter on it silently emptied this picker.
+                ? (workspace?.closeReasons ?? []).map((r) => ({ value: r.id, label: r.name }))
+                : (workspace?.members ?? []).map((m) => ({ value: m.id, label: m.name }));
+      const noun =
+        field.type === 'omnichannelTag'
+          ? 'tag'
+          : field.type === 'omnichannelContactField'
+            ? 'field'
+            : field.type === 'omnichannelLifecycleStage'
+              ? 'stage'
+              : field.type === 'omnichannelCloseReason'
+                ? 'reason'
+                : 'member';
+      return wrap(
+        <SearchSelect
+          options={options}
+          value={typeof value === 'string' && value ? value : null}
+          onChange={(v) => onConfigChange(node.id, { [field.key]: v })}
+          ariaLabel={field.label}
+          placeholder={
+            !workspace
+              ? 'Choose a workspace first'
+              : field.required
+                ? `Choose a ${noun}…`
+                : `Any ${noun}`
+          }
+          searchPlaceholder={`Search ${noun}s…`}
+          disabled={!editing || !workspace}
+        />,
+      );
+    }
+
+    if (field.type === 'whatsappTemplate') {
+      return wrap(
+        <SearchSelect
+          options={approvedTemplateOptions(metadata)}
+          value={typeof value === 'string' && value ? value : null}
+          onChange={(v) => onConfigChange(node.id, { [field.key]: v })}
+          ariaLabel={field.label}
+          placeholder="Choose a template…"
+          searchPlaceholder="Search templates…"
+          disabled={!editing}
+        />,
+      );
+    }
+
+    if (field.type === 'templateParams' || field.type === 'keyValue') {
+      return wrap(
+        <KeyValueRowsEditor
+          rows={Array.isArray(value) ? (value as WorkflowKeyValue[]) : []}
+          editing={editing}
+          groups={groups}
+          keyPlaceholder={field.type === 'templateParams' ? 'placeholder' : 'header'}
+          onChange={(next) => onConfigChange(node.id, { [field.key]: next })}
+        />,
+      );
+    }
+
+    if (field.type === 'choiceList') {
+      return wrap(
+        <ChoiceListEditor
+          choices={Array.isArray(value) ? (value as string[]) : []}
+          editing={editing}
+          onChange={(next) => onConfigChange(node.id, { [field.key]: next })}
+        />,
+      );
+    }
+
+    if (field.type === 'workflowRef') {
+      // Self-trigger exclusion (plan 31 S3, AC-WFP-33 parity): never offer
+      // the workflow being edited - the backend `workflow_trigger` action
+      // refuses it at run time ("A workflow cannot trigger itself.") and
+      // foolproof-UI means the picker never lists a choice that would fail.
+      const options = (metadata.workflows ?? [])
+        .filter((w) => w.id !== currentWorkflowId)
+        .map((w) => ({
+          value: w.id,
+          label: w.name,
+        }));
+      return wrap(
+        <SearchSelect
+          options={options}
+          value={typeof value === 'string' && value ? value : null}
+          onChange={(v) => onConfigChange(node.id, { [field.key]: v })}
+          ariaLabel={field.label}
+          placeholder="Choose a workflow…"
+          searchPlaceholder="Search workflows…"
+          disabled={!editing}
+        />,
+      );
+    }
+
     if (field.type === 'select') {
       return wrap(
         <SearchSelect
           options={field.options ?? []}
           value={typeof value === 'string' && value ? value : null}
           onChange={(v) => {
-            const patch: WorkflowNodeConfig = { [field.key]: v };
+            const resolved = v ?? '';
+            const patch: WorkflowNodeConfig = { [field.key]: resolved };
+            Object.assign(patch, clearHiddenOnChange(field.key, resolved));
             // Switching email.send away from a template → drop the copied doc
             // (the backend renders doc first, so a stale copy would override).
+            // Only email.send copies a block doc - the omnichannel send/ask
+            // template modes are a plain WhatsApp template reference, already
+            // cleared generically by `clearHiddenOnChange` above.
             if (
               node.type === 'email.send' &&
               field.key === 'mode' &&
-              v !== 'template'
+              resolved !== 'template'
             ) {
               patch.doc = null;
               patch.templateId = null;
@@ -1618,11 +1997,7 @@ export function NodeConfigDrawer({
             </div>
           )}
           {(entry?.fields ?? [])
-            .filter(
-              (f) =>
-                !f.showWhen ||
-                node.config[f.showWhen.field] === f.showWhen.value,
-            )
+            .filter((f) => matchesShowWhen(node.config, f.showWhen, entry?.fields))
             .map(renderField)}
         </div>
       )}
