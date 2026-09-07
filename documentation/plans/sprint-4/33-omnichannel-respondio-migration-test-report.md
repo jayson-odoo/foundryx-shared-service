@@ -517,3 +517,51 @@ Reconciliation (module chain, `alembic.command` driven, mirroring `run_module_mi
 No DDL was hand-written outside the migration files themselves - every table/column mutation in
 this transcript came from running the actual `upgrade()`/`downgrade()` functions already reviewed
 in S2/review-round-1.
+
+### Resync after PR #62 went DIRTY (`main` advanced `148a2552` -> `b4e21dd3`)
+
+PR #62's `mergeStateStatus` flipped to `DIRTY` while sitting in CI - `main` had moved past the
+commit this branch was merged onto (CI itself stayed green). `git log --oneline 148a2552..
+b4e21dd3` showed the whole delta was `feat/line-fingerprint-sweep` (AutoCount only) plus one new
+`backlog.md` row: `service_backend/modules/autocount/{alembic/versions/0017_autocount_fingerprint.
+py,bootstrap.py,manifest.json,models.py,backfill.py,presets.py,mapping_catalog.py,repositories/*,
+services/etl_service.py,sql_source/*,sync.py}`, `service_backend/app/config.py` (one new AutoCount-
+scoped setting, `autocount_fingerprint_sweep_minutes`), two AutoCount plan docs, three new AutoCount
+test files, and `backlog.md`'s new `BL-SS-146` row. **Zero omnichannel files, zero core Alembic
+files, zero frontend files** in the delta - confirmed by `git diff 148a2552..b4e21dd3 --stat`
+grepped for `omnichannel`/`service_backend/alembic`/`service_frontend` (all empty) before touching
+anything, not assumed.
+
+`git merge origin/main` produced exactly ONE conflict: `backlog.md` (both this lane and `main`
+appended a row at the same position - `main`'s real `BL-SS-146` for the fingerprint sweep). Kept
+`main`'s `BL-SS-146` verbatim and shifted this lane's three rows up by one: `BL-SS-146` -> `BL-SS-
+147` (Migration Retry), `BL-SS-147` -> `BL-SS-148` (job-history search), `BL-SS-148` -> `BL-SS-149`
+(`SOURCE_TO_CHANNEL_TYPE` re-verify). Updated every cross-reference: the plan's own section 8 merge-
+resolution note (now documents BOTH the original PR #62 numbering and this resync's shift) and
+`channel_map.py`'s comment (now points at `BL-SS-149`). `bootstrap.py`, `manifest.json`, `models.py`,
+`event_service.py` and the module Alembic files needed NO changes - `main`'s delta never touched
+omnichannel, so this lane's prior merge work there stands unmodified.
+
+Module Alembic: omnichannel's chain is UNCHANGED (`main`'s omnichannel head is still `0016_omni_
+business_hours`, same as at the PR #62 merge) - `alembic heads` against the module script-location
+still reads ONE head, `0018_omni_migration_uploads`, already at head on the lane DB (no re-chain, no
+re-run needed). AutoCount's chain gained `0017_autocount_fingerprint` (`main`'s own new revision,
+isolated `alembic_version_autocount` table/schema - cannot collide with omnichannel's). The lane DB
+had never seen it (`alembic current` against the AutoCount script-location read `0014_autocount_db_
+entity_source`, several revisions behind `main`) - `command.upgrade(cfg, "head")` against AutoCount's
+own `Config` ran cleanly, landing on `0017_autocount_fingerprint (head)`. Core chain: unaffected by
+this delta, already at `workflows_http_s31 (head)` from the prior reconciliation. Final state: THREE
+version tables, THREE single heads, all at head - `alembic_version` (core) `workflows_http_s31`,
+`alembic_version_omnichannel` `0018_omni_migration_uploads`, `alembic_version_autocount` `0017_
+autocount_fingerprint`.
+
+Test scope for this resync (stated reasoning, not a full suite): the merge conflict was confined to
+`backlog.md` and every functional file `main`'s delta touched belongs to AutoCount, which this
+lane never modifies - so the targeted set was every `test_omnichannel_respondio_migration*.py` file,
+the three manifest-version-pin files (`test_omnichannel_{broadcasts,contacts_module,team_
+assignment}.py`), and `test_storage_resolution.py` (the coordinator's own request, covering the core
+storage-key-resolution seam this slice's `MigrationUpload` storage location joins) - **271 passed, 0
+failed**. No frontend file was touched by `main`'s delta (`git diff --stat -- service_frontend/`
+returned empty), so no vitest file needed re-running; the full frontend/backend suites from the PR
+#62 merge (2640/4007 passed, 0 failed) remain the last full-suite evidence and were not re-run here
+since neither omnichannel nor core storage/jobs were in this delta's blast radius.

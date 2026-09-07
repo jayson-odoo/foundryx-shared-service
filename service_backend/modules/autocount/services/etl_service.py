@@ -393,6 +393,7 @@ def validate_source_config(
     # ── documents: line query + from-date + filter formula (S5, sprint-5/02) ─
     from_date: Optional[str] = None
     doc_date_column: Optional[str] = None
+    fingerprint_query: Optional[str] = None
     # Never blank-required (a document with no filter simply stages every
     # header, today's behaviour).
     filter_formula = str(raw.get("filterFormula") or "").strip() or None
@@ -468,6 +469,20 @@ def validate_source_config(
                         "whole table."
                     )
 
+        # feat/line-fingerprint-sweep - the fingerprint query, same
+        # stored-verbatim contract as `query`/`lineQuery` (normalised,
+        # SELECT-only guarded). Optional: a document task with no
+        # fingerprint query simply never sweeps (the plain watermark path is
+        # unaffected) - never required to activate.
+        raw_fingerprint = normalize_statement(str(raw.get("fingerprintQuery") or ""))
+        if raw_fingerprint:
+            try:
+                assert_select_only(raw_fingerprint)
+            except SqlGuardError as exc:
+                errors["fingerprintQuery"] = exc.message
+            else:
+                fingerprint_query = raw_fingerprint
+
         # The from-date floor applies to the document's OWN date column -
         # deliberately separate from `watermarkColumn` (LastModified drives
         # change detection, not how far back the sync looks).
@@ -518,6 +533,7 @@ def validate_source_config(
         "fromDate": from_date if document else None,
         "docDateColumn": doc_date_column if document else None,
         "filterFormula": filter_formula if document else None,
+        "fingerprintQuery": fingerprint_query if document else None,
         "incrementalMinutes": minutes,
         "reconcileMode": mode,
         "reconcileHours": hours,

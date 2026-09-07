@@ -428,12 +428,17 @@ refuses to enable "Run dry run" until the preflight confirms the first three.
 ## 8. Backlog candidates
 
 **Merge resolution (this is what actually landed in `backlog.md` - the numbers below are FINAL, not
-provisional):** `main`'s max at merge time was `BL-SS-145`. Three items registered for real, renumbered
-from there: `BL-SS-146` ("Migration Retry / Complete-anyway have no real backend route", surfaced
-during S6, not part of the original candidate list below), `BL-SS-147` ("Migration job-history search/
-sort/filter runs in Python", also an S6 finding), and `BL-SS-148` (the `SOURCE_TO_CHANNEL_TYPE`
-re-verify row from the original candidate list below - the ONE row from that list registered at merge,
-per the round-1 review nit's own instruction). `channel_map.py`'s own comment points at `BL-SS-148`.
+provisional):** `main`'s max at the FIRST merge (PR #62, `main` `148a2552`) was `BL-SS-145`. Three
+items registered for real, renumbered from there: `BL-SS-146` ("Migration Retry / Complete-anyway
+has no real backend route", surfaced during S6, not part of the original candidate list below),
+`BL-SS-147` ("Migration job-history search/sort/filter runs in Python", also an S6 finding), and
+`BL-SS-148` (the `SOURCE_TO_CHANNEL_TYPE` re-verify row from the original candidate list below -
+the ONE row from that list registered at merge, per the round-1 review nit's own instruction).
+
+**Resync (PR #62 went `DIRTY` when `main` advanced to `b4e21dd3` - feat/line-fingerprint-sweep,
+BL-SS-146 already claimed for a different row there) - all three shifted up by one:** `BL-SS-146`
+-> **`BL-SS-147`**, `BL-SS-147` -> **`BL-SS-148`**, `BL-SS-148` -> **`BL-SS-149`**.
+`channel_map.py`'s own comment points at the CURRENT id, `BL-SS-149`.
 
 The remaining candidates below were never registered as real `backlog.md` rows (this plan's own S6
 close did not promote them, and the merge did not either - out of scope for a merge) and stay

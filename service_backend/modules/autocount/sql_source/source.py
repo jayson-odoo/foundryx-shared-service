@@ -87,7 +87,7 @@ from .guard import (
     query_binds_param,
     top_level_words,
 )
-from .hashing import compared_columns_for, row_hash
+from .hashing import compared_columns_for, document_fingerprint, row_hash
 from .preview import json_safe
 from .runtime import (
     RUNTIME,
@@ -100,12 +100,14 @@ from .runtime import (
 logger = logging.getLogger("foundryx.autocount")
 
 __all__ = [
+    "FINGERPRINT_KEY_CHUNK",
     "PageCursor",
     "PageResult",
     "SqlDbSource",
     "SqlTaskNotConfigured",
     "build_document_header_wrap",
     "build_incremental_wrap",
+    "build_keyed_header_wrap",
     "build_paged_wrap",
     "decode_mark",
     "register_sql_db_source",
@@ -136,6 +138,13 @@ MAX_EXTRACT_ROWS = 200_000
 # single read can return, so a fixed count-of-documents ceiling on top of it
 # would only ever fire below a pass that paging already keeps safe.
 MAX_DOCUMENT_LINES_PER_HEADER = 5000
+
+# ── fingerprint sweep (feat/line-fingerprint-sweep) ──────────────────────────
+# The changed-key IN-list a sweep's keyed header re-fetch binds, chunked the
+# same reason a large ``IN`` list is chunked anywhere else in this module -
+# one round trip's worth of bind parameters, never the whole changed set in
+# one statement.
+FINGERPRINT_KEY_CHUNK = 500
 
 # ── delete guard (plan 22 §2.5, AC-22-22) ────────────────────────────────────
 # A reconcile that would delete more than this fraction (or this many rows,
@@ -308,6 +317,29 @@ def build_document_header_wrap(
         f"WHERE t.{quoted_watermark} > :mark AND {date_predicate} "
         f"ORDER BY t.{quoted_watermark}"
     )
+
+
+def build_keyed_header_wrap(
+    query: str, quoted_key: str, key_values: Sequence[Any]
+) -> Tuple[str, Dict[str, Any]]:
+    """feat/line-fingerprint-sweep - a document header re-fetch keyed on an
+    explicit ``DocKey IN (...)`` list, for the keys the fingerprint sweep
+    found changed.
+
+    Deliberately a SEPARATE statement shape, never spliced into the
+    watermark-paged wrap's own ``WHERE``/``ORDER BY`` (tester-flagged risk:
+    OR-ing a key list into ``build_paged_wrap``'s predicate would change its
+    seek order and cursor semantics, which that wrap's own seek predicate
+    depends on being exactly what it is). Each value binds as its own
+    parameter (``:k0``, ``:k1``, ...) rather than being spliced into the
+    text - the same "never interpolate a value into SQL text" rule every
+    other bind in this module follows.
+    """
+    inner = _strip_trailing_order_by(query).replace(":", r"\:")
+    binds = [f":k{i}" for i in range(len(key_values))]
+    sql = f"SELECT * FROM ({inner}) AS t WHERE t.{quoted_key} IN ({', '.join(binds)})"
+    params = {f"k{i}": value for i, value in enumerate(key_values)}
+    return sql, params
 
 
 def _lexicographic_key_predicate(quoted_keys: List[str]) -> str:
@@ -678,6 +710,12 @@ class SqlDbSource:
         self.doc_date_column: Optional[str] = None
         self.from_date: Optional[date] = None
         self.filter_formula: Optional[str] = None
+        # feat/line-fingerprint-sweep - optional even for a document task (a
+        # task saved before this lane, or one whose operator never picked
+        # the preset's fingerprint query, simply never sweeps; the plain
+        # watermark path is unaffected either way).
+        self.fingerprint_query: Optional[str] = None
+        self._fingerprint_query_exec: Optional[str] = None
         self._last_skipped_by_filter = 0
         # The headers `filterFormula` dropped this run (B4, sprint-5/02
         # review round) - `fetch_changes` needs these to keep a filtered-out
@@ -767,6 +805,22 @@ class SqlDbSource:
             # sibling-task split), evaluated against the RAW header row
             # before line fetch. Blank/absent = every header passes.
             self.filter_formula = str(config.get("filterFormula") or "").strip() or None
+
+            # feat/line-fingerprint-sweep - stored verbatim like `query`/
+            # `lineQuery` (the validator already guards it SELECT-only at
+            # save time; this is the same execution-time backstop `query`
+            # itself gets a few lines above). Escaped the same way as
+            # `lineQuery`'s own `:doc_key` - only the genuine `:from_date`
+            # bind survives, any OTHER colon-shaped text is neutralised.
+            fingerprint_query = normalize_statement(
+                str(config.get("fingerprintQuery") or "")
+            )
+            if fingerprint_query:
+                assert_select_only(fingerprint_query)
+                self.fingerprint_query = fingerprint_query
+                self._fingerprint_query_exec = escape_incidental_binds(
+                    fingerprint_query, "from_date"
+                )
 
         # A STORED connection id, re-resolved tenant- AND provider-scoped on
         # every run (AC-22-29) - never a bare get-by-id.
@@ -1466,6 +1520,190 @@ class SqlDbSource:
             added=added,
             updated=updated,
             complete=complete,
+        )
+
+    # ── fingerprint sweep (feat/line-fingerprint-sweep) ─────────────────────
+
+    def fetch_fingerprints(self) -> Dict[str, Tuple[Any, str]]:
+        """Run this task's ``fingerprint_query`` ONCE and return
+        ``{source_ref: (raw_key_value, fingerprint)}`` for every row it
+        returns - empty when no fingerprint query is configured (a task
+        that predates this lane, or whose operator never picked the preset
+        query, simply never sweeps).
+
+        The query's OWN ``:from_date`` bind scopes it to the same permanent
+        floor the header wrap already applies - this is a fresh top-level
+        statement, never derived from ``self.query``. The first output
+        column is, by contract (every shipped preset and the picker that
+        offers it), aliased literally ``DocKey`` - the RAW key value, fed
+        straight to ``source_ref`` for the SAME ``{database}:{key}`` scheme
+        ``ac_row_hash`` already uses. Every OTHER column, in SELECT order,
+        is what ``document_fingerprint`` hashes.
+        """
+        if not self._fingerprint_query_exec:
+            return {}
+        with open_readonly(
+            self._engine, timeout_s=self.timeout_s, secrets=self._secrets
+        ) as conn:
+            try:
+                result = conn.execute(
+                    sa.text(self._fingerprint_query_exec), {"from_date": self.from_date}
+                )
+                rows = [dict(row._mapping) for row in result.fetchall()]
+            except Exception as exc:  # noqa: BLE001 - every driver has its own class
+                from .runtime import sanitize_error
+
+                raise SqlQueryError(sanitize_error(exc, secrets=self._secrets)) from exc
+
+        out: Dict[str, Tuple[Any, str]] = {}
+        for row in rows:
+            key_value = row.get("DocKey")
+            if key_value is None:
+                continue
+            ref = self.source_ref({self.key_columns[0]: key_value})
+            if ref is None:
+                continue
+            values = [v for k, v in row.items() if k != "DocKey"]
+            out[ref] = (key_value, document_fingerprint(values))
+        return out
+
+    def fetch_by_keys(self, key_values: Sequence[Any]) -> "PageResult":
+        """A SEPARATE, keyed header re-fetch (feat/line-fingerprint-sweep)
+        for the DocKeys the fingerprint sweep found changed - called AFTER
+        the watermark-paged pass completes for this run, never folded into
+        ``fetch_page``'s own seek/cursor wrap (a tester-flagged risk: OR-ing
+        a key list into that predicate would change its seek order and
+        cursor semantics, which the paged wrap's resumability depends on).
+
+        Deliberately a small, self-contained duplicate of ``fetch_page``'s
+        filter -> hash-diff -> line-attach pipeline for a document, rather
+        than a shared refactor of that heavily-reviewed paged code path -
+        this method never advances or resumes the paged cursor at all
+        (``last_mark``/``last_key`` are always ``None``, ``complete`` is
+        always ``True``), so folding it into ``fetch_page`` would only add
+        conditional branches to code whose seek-order correctness several
+        review rounds already hardened.
+        """
+        empty = PageResult(
+            records=[], preview_records=[], unchanged_refs=set(), hashes={},
+            last_mark=None, last_key=None, rows_scanned=0, added=0, updated=0,
+            complete=True,
+        )
+        if not key_values or not self.is_document:
+            return empty
+
+        quoted_key = self._quoted_keys()[0]
+        key_column_name = self.key_columns[0]
+        raw_rows: List[Dict[str, Any]] = []
+        with open_readonly(
+            self._engine, timeout_s=self.timeout_s, secrets=self._secrets
+        ) as conn:
+            for start in range(0, len(key_values), FINGERPRINT_KEY_CHUNK):
+                chunk = list(key_values[start : start + FINGERPRINT_KEY_CHUNK])
+                sql, params = build_keyed_header_wrap(self.query, quoted_key, chunk)
+                try:
+                    result = conn.execute(sa.text(sql), params)
+                    for row in result.fetchall():
+                        raw_rows.append(dict(row._mapping))
+                except Exception as exc:  # noqa: BLE001
+                    from .runtime import sanitize_error
+
+                    raise SqlQueryError(
+                        sanitize_error(exc, secrets=self._secrets)
+                    ) from exc
+
+            if not raw_rows:
+                return empty
+
+            candidates = raw_rows
+            filtered_this_page: List[Dict[str, Any]] = []
+            if self.filter_formula:
+                keep_rows = []
+                for header in raw_rows:
+                    try:
+                        if evaluate_row_filter(self.filter_formula, header):
+                            keep_rows.append(header)
+                        else:
+                            filtered_this_page.append(header)
+                    except FormulaError as exc:
+                        raise SqlFilterFormulaError(
+                            f"The filter could not be evaluated: {exc}. Nothing "
+                            f"was staged or pushed."
+                        ) from exc
+                candidates = keep_rows
+
+            known = self._prior_hashes(candidates)
+            hashes: Dict[str, str] = {}
+            unchanged_refs: set = set()
+            changed_headers: List[Dict[str, Any]] = []
+            changed_stamps: Dict[int, Optional[datetime]] = {}
+            records: List[SourceRecord] = []
+            added = updated = 0
+
+            for header in candidates:
+                ref = self.source_ref(header)
+                stamp = (
+                    _as_utc(header.get(self.watermark_column))
+                    if self.watermark_column else None
+                )
+                if ref is None:
+                    records.append(SourceRecord(raw=json_safe(header), last_modified=stamp))
+                    continue
+                value_hash = row_hash(header, self.compared_columns)
+                hashes[ref] = value_hash
+                #     !!  NEVER SKIP ON AN UNCHANGED HEADER HASH HERE  !!
+                # This is the whole reason the fingerprint sweep exists
+                # (SO419208: ``SODTL.TransferedQty`` rises without
+                # ``SO.LastModified`` moving) - a key only ever reaches this
+                # method because its LINE-derived fingerprint already
+                # differs, and the header's OWN compared columns
+                # (``compared_columns`` - never the lines) can legitimately
+                # stay byte-identical while that is true. Skipping on
+                # ``known.get(ref) == value_hash`` here (``fetch_page``'s
+                # own rule, correct THERE) would silently defeat the sweep
+                # for every document whose header truly never changes -
+                # every candidate this method is given is unconditionally
+                # staged; ``known`` only decides added vs. updated below.
+                if ref in known:
+                    updated += 1
+                else:
+                    added += 1
+                changed_headers.append(header)
+                changed_stamps[id(header)] = stamp
+
+            if changed_headers:
+                self._attach_lines(conn, changed_headers, key_column_name)
+
+            for header in changed_headers:
+                stamp = changed_stamps.get(id(header))
+                mismatch = self._line_count_mismatch(header)
+                records.append(
+                    SourceRecord(raw=json_safe(header), last_modified=stamp, error=mismatch)
+                )
+
+            if self.persist_hashes and filtered_this_page:
+                filtered_refs = [
+                    ref
+                    for ref in (self.source_ref(h) for h in filtered_this_page)
+                    if ref is not None
+                ]
+                if filtered_refs:
+                    filtered_known = RowHashRepository(self._ctx.db).hashes_for(
+                        self._ctx.tenant_id, self._ctx.company.id, self.entity_type,
+                        filtered_refs,
+                    )
+                    stale_filtered = [ref for ref in filtered_refs if ref in filtered_known]
+                    if stale_filtered:
+                        RowHashRepository(self._ctx.db).delete_many(
+                            self._ctx.tenant_id, self._ctx.company.id, self.entity_type,
+                            stale_filtered,
+                        )
+                        self._ctx.db.commit()
+
+        return PageResult(
+            records=records, preview_records=[], unchanged_refs=unchanged_refs,
+            hashes=hashes, last_mark=None, last_key=None, rows_scanned=len(raw_rows),
+            added=added, updated=updated, complete=True,
         )
 
     def _read(self, mark: Any) -> List[Dict[str, Any]]:
