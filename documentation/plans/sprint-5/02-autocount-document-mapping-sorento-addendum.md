@@ -362,3 +362,16 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   Delivered backfill for existing tenants: module Alembic `0013_autocount_drop_credit_limit` +
   App Store 0.4.0 -> 0.5.0 (`update_tenant`) disable the now-dead enabled customer
   `credit_limit` rows. Known capability loss (no explicit-clear path under 2.1) = BL-SS-102.
+- 2026-09-07 (`container_number`, feat/spo-container-number): Sorento added `container_number` to
+  the 2.1 `shipping_orders` ingest schema and `fields_added.shipping_orders` in their PR #699
+  (squash commit `6e6bed893`, 2026-09-06, tag `autocount-contract-v2.1`); production runs build
+  `59dffc60d` (their #710 deploy, 2026-09-07T01:08Z), which contains `6e6bed893`
+  (`git merge-base --is-ancestor` true) - production already accepts the field. Deploy-order note:
+  the backfill (module Alembic 0016) re-stages 100% of existing SPOs on its first run, and the
+  whole re-staged family pushes with `container_number` on it; a Sorento that did NOT yet accept
+  the field would reject every one of them under `extra="forbid"` (the same guard that keeps
+  `container_number` OFF `purchase_orders` - Sorento's `CanonicalPurchaseOrder` declares no such
+  field either, which is why this ESB's own `CanonicalPurchaseOrder` carries none, only
+  `CanonicalShippingOrder` does). Checked before shipping: `GET /api/v1/external/contract` on
+  Sorento prod lists `container_number` under `fields_added.shipping_orders`, checked <UTC time>
+  by the operator; Sorento build `<SHA>`.
