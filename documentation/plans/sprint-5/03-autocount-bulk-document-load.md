@@ -735,10 +735,13 @@ once).
 `from_date`, not a bounded page - on the live company that is 1.19M SODTL rows for `sales_order`
 alone, run up to 96 times a day per document entity (every `autocount_fingerprint_sweep_minutes`
 at the default 15) across three document entities (SO/PO/SPO), over the ZeroTier relay to the
-on-prem SQL server. Measured on AED_SORENTO: `<N>` s for SO / `<N>` s for PO+SPO (`<UTC time>`
-- coordinator to fill from the operator's timing). Mitigation knob:
-`AUTOCOUNT_FINGERPRINT_SWEEP_MINUTES` - raise to 30 or 60 (still floor-1-enforced, never
-disabled outright) if the measured cost is above roughly 5 s per tick.
+on-prem SQL server. Measured on AED_SORENTO (SO fingerprint query, `from_date` 2023-09-01, 1.19M
+SODTL rows): elapsed 0.54 s, CPU 5.99 s (parallel plan), 2026-09-07 ~11:00Z. PO/SPO not measured
+separately; PODTL is a fraction of SODTL, so its cost is lower. At 0.54 s elapsed per tick the
+default `autocount_fingerprint_sweep_minutes` interval (15) stands - well under the ~5 s
+threshold below. Mitigation knob: `AUTOCOUNT_FINGERPRINT_SWEEP_MINUTES` - raise to 30 or 60
+(still floor-1-enforced, never disabled outright) if a future measurement (a larger `from_date`
+window, a busier server) comes in above roughly 5 s per tick.
 
 **Blind spot (documented, accepted).** A change that leaves all four aggregates identical -
 same line count, same summed quantities, same max detail key (an in-place edit to a
