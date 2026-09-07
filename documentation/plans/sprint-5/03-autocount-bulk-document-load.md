@@ -568,11 +568,15 @@ instance: the real company's SO/PO/SPO `lineQuery` were hand-edited to the same
   note: a slow-but-alive Sorento ingesting a large document batch used to record a push FAILURE
   at the old hard-coded 30s even though the batch itself was fine - retune
   `AUTOCOUNT_SINK_TIMEOUT_SECONDS` (default 300s, floor 30s) instead of changing code. S5b -
-  `write_batch` sends up to `settings.autocount_sink_concurrency` chunk POSTs with real overlap,
-  same all-or-nothing contract at every concurrency level; ops note: default stays 1
-  (byte-identical to the old fully sequential loop) - raise `AUTOCOUNT_SINK_CONCURRENCY` (max 4)
-  only once the RECEIVING side has confirmed it can take concurrent batches, since a rate limit
-  or per-connection-serialised commit on their end would turn "faster" into "more 429s/5xxs".
+  `write_batch` sends up to `settings.autocount_sink_concurrency` chunk POSTs with real overlap;
+  per chunk fault handling is now fix/push-marks-per-chunk's per chunk mark and commit contract,
+  not the earlier all-or-nothing one. ops note: `app/config.py`'s own default stays 1 (local dev,
+  byte-identical to the old fully sequential loop); the deployed prod default
+  (`docker-compose.yml`'s `AUTOCOUNT_SINK_CONCURRENCY`) is 2 since fix/push-marks-per-chunk,
+  Sorento's agreed ceiling after they measured 4 async ingest workers at about 14s per 200 row
+  batch on their end (#710) - raise it further only once a NEW measurement on their side agrees
+  to it, since a rate limit or per-connection-serialised commit on their end would turn "faster"
+  into "more 429s/5xxs".
   `fix/sorento-batch-size` (2026-09-06) - records per ingest POST are now
   `AUTOCOUNT_SINK_BATCH_SIZE` (default 200, bounded 1..1000 = Sorento's per-request ceiling,
   read at call time), after a 1,000-record purchase_order batch with per-record supplier
