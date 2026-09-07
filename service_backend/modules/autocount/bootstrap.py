@@ -173,6 +173,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     from .backfill import (
         backfill_db_company_entity_sources,
         backfill_disable_credit_limit_mapping_rows,
+        backfill_document_fingerprint_queries,
         backfill_entity_config_defaults,
         backfill_etl_defaults,
         backfill_shipping_order_container_number,
@@ -208,6 +209,10 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # with no container because the SPO task's header query never selected
     # AutoCount `PO.Ref`. Module Alembic 0016 runs the same repair on deploy.
     backfill_shipping_order_container_number(db, schema=schema)
+    # 0.6.1 -> feat/line-fingerprint-sweep: every document task lacking a
+    # fingerprintQuery gets the preset's own sweep query. Module Alembic
+    # 0017 runs the same repair on deploy.
+    backfill_document_fingerprint_queries(db, schema=schema)
 
     service = CompanyService(db)
     page = 0

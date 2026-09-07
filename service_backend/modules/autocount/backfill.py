@@ -795,3 +795,114 @@ def backfill_shipping_order_container_number(
                 config_id,
             )
     return touched
+
+
+# ── feat/line-fingerprint-sweep ─────────────────────────────────────────────
+
+_FINGERPRINT_BACKFILL_ENTITY_CONFIG_COLUMNS = {
+    "id", "tenant_id", "company_id", "entity_type", "source_config",
+}
+_FINGERPRINT_BACKFILL_COMPANY_COLUMNS = {"id", "tenant_id", "database_name"}
+
+
+def backfill_document_fingerprint_queries(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
+) -> int:
+    """Sets ``source_config["fingerprintQuery"]`` from the entity's own
+    preset (with ``{database}`` substituted from the task's OWN company)
+    on every DOCUMENT ``ac_entity_config`` row that has none yet. Returns
+    the number of rows changed - 0 on a schema that predates the columns
+    this touches (module Alembic 0017 and ``update_tenant`` both call it).
+
+    Never overwrites an existing value, customised or not - a task that
+    already carries SOME ``fingerprintQuery`` (hand-edited, or already
+    backfilled by an earlier run) is left exactly as-is and named in a
+    WARNING so an operator who wants the shipped preset can pick it again
+    from the query picker. Master tasks (anything not in
+    ``DOCUMENT_PRESETS``) are never touched - the sweep does not apply to
+    them and the validator itself drops the key for a master.
+
+        !!  FROZEN ``sa.table`` ONLY - NEVER THE LIVE ORM MODEL.  !!
+    Same rule, same incident, as ``backfill_shipping_order_container_number``
+    above: this runs from module Alembic 0017, so a later migration adding
+    a column to either table must never break a fresh ``0001`` -> head
+    replay. Only the columns this function actually touches are named.
+
+    Never a bare id lookup: a config's company is resolved WITH the
+    config's OWN ``tenant_id`` (the polymorphic-target_id rule) before its
+    ``database_name`` is trusted for the substitution.
+    """
+    needed = {
+        "ac_entity_config": _FINGERPRINT_BACKFILL_ENTITY_CONFIG_COLUMNS,
+        "ac_company": _FINGERPRINT_BACKFILL_COMPANY_COLUMNS,
+    }
+    for table, columns in needed.items():
+        have = existing_columns(bind, table, schema=schema)
+        if have is None or not columns <= have:
+            return 0
+
+    from .presets import DOCUMENT_PRESETS
+
+    entity_config = sa.table(
+        "ac_entity_config",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("source_config", sa.JSON(none_as_null=True)),
+        schema=schema,
+    )
+    company_table = sa.table(
+        "ac_company",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("database_name", sa.String),
+        schema=schema,
+    )
+
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
+
+    configs = connectable.execute(
+        sa.select(
+            entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+            entity_config.c.entity_type, entity_config.c.source_config,
+        ).where(entity_config.c.entity_type.in_(list(DOCUMENT_PRESETS.keys())))
+    ).fetchall()
+
+    touched = 0
+    for config_id, tenant_id, company_id, entity_type, source_config in configs:
+        preset = DOCUMENT_PRESETS.get(entity_type)
+        if not preset or not preset.fingerprint_query:
+            continue
+
+        source_config = source_config or {}
+        existing = source_config.get("fingerprintQuery")
+        if existing:
+            logger.warning(
+                "Task %s already has a fingerprintQuery - the "
+                "line-fingerprint-sweep backfill left it untouched.",
+                config_id,
+            )
+            continue
+
+        company_row = connectable.execute(
+            sa.select(company_table.c.database_name).where(
+                company_table.c.id == company_id,
+                company_table.c.tenant_id == tenant_id,
+            )
+        ).first()
+        if company_row is None or not company_row[0]:
+            continue
+        database_name = company_row[0]
+
+        fresh = dict(source_config)
+        fresh["fingerprintQuery"] = preset.fingerprint_query.replace(
+            "{database}", database_name
+        )
+        connectable.execute(
+            sa.update(entity_config)
+            .where(entity_config.c.id == config_id)
+            .values(source_config=fresh)
+        )
+        touched += 1
+    return touched
