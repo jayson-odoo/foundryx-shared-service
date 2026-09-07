@@ -306,13 +306,14 @@ def _patch_client_factory(monkeypatch, handler, *, sleep=lambda s: None):
     transport, keeping the REAL client's throttle/retry/error-mapping code
     in the loop end to end."""
 
-    def fake_from_connection(config, credentials, *, client=None, on_milestone=None):
+    def fake_from_connection(config, credentials, *, client=None, on_milestone=None, on_blocker=None):
         return RespondIoClient(
             base_url=str(config.get("baseUrl") or "https://api.respond.io/v2"),
             api_token=str(credentials.get("apiToken", "")),
             requests_per_second=float(config.get("requestsPerSecond") or 4),
             client=httpx.Client(transport=httpx.MockTransport(handler)),
             on_milestone=on_milestone,
+            on_blocker=on_blocker,
             sleep=sleep,
         )
 

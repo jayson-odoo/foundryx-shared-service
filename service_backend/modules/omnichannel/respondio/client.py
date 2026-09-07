@@ -76,6 +76,7 @@ class RespondIoClient:
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         client: Optional[httpx.Client] = None,
         on_milestone: Optional[MilestoneFn] = None,
+        on_blocker: Optional[MilestoneFn] = None,
         sleep: Callable[[float], None] = _default_sleep,
         monotonic: Callable[[], float] = time.monotonic,
         rand: Callable[[], float] = random.random,
@@ -86,6 +87,14 @@ class RespondIoClient:
         self._timeout = timeout
         self._client = client
         self._on_milestone = on_milestone or (lambda _msg: None)
+        # Review round 2, R1 - a SEPARATE callback for the three pagination
+        # termination guards below (`_paginated_pages`), never fired for the
+        # rate-halving milestone above (that one is informational, not a
+        # data-loss signal). Callers that only care about the log line can
+        # leave this unset; the migration service wires it to append a
+        # `report.blockers` entry (a guard firing means the walk stopped
+        # before it was actually done).
+        self._on_blocker = on_blocker or (lambda _msg: None)
         self._sleep = sleep
         self._monotonic = monotonic
         self._rand = rand
@@ -104,6 +113,7 @@ class RespondIoClient:
         *,
         client: Optional[httpx.Client] = None,
         on_milestone: Optional[MilestoneFn] = None,
+        on_blocker: Optional[MilestoneFn] = None,
     ) -> "RespondIoClient":
         """Build a client from a saved ``respondio`` connection's
         ``config_json``/decrypted ``credentials_json`` (both plain-string
@@ -119,6 +129,7 @@ class RespondIoClient:
             requests_per_second=rps,
             client=client,
             on_milestone=on_milestone,
+            on_blocker=on_blocker,
         )
 
     # ── transport ──────────────────────────────────────────────────────────
@@ -283,24 +294,30 @@ class RespondIoClient:
             pages += 1
 
             if cursor is not None and cursor == requested_cursor:
-                self._on_milestone(
+                guard_msg = (
                     f"respond.io returned the same pagination cursor twice on {path} - "
                     "stopping this walk rather than looping forever."
                 )
+                self._on_milestone(guard_msg)
+                self._on_blocker(guard_msg)
                 yield items, None
                 break
             if not items and cursor:
-                self._on_milestone(
+                guard_msg = (
                     f"respond.io returned an empty page with a cursor still set on {path} - "
                     "treating this as the end of the walk."
                 )
+                self._on_milestone(guard_msg)
+                self._on_blocker(guard_msg)
                 yield items, None
                 break
             if pages >= MAX_PAGES:
-                self._on_milestone(
+                guard_msg = (
                     f"Reached the {MAX_PAGES}-page ceiling on {path} - stopping this walk; "
                     "some records may not have been migrated."
                 )
+                self._on_milestone(guard_msg)
+                self._on_blocker(guard_msg)
                 yield items, None
                 break
 

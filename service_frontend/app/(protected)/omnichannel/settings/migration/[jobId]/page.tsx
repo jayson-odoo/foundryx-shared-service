@@ -23,6 +23,7 @@ import { respondioMigrationService } from '@/services/respondio-migration-servic
 import { MIGRATION_JOB_IN_FLIGHT, type MigrationJob } from '@/types/respondio-migration';
 import { useMigrationActions } from '../components/use-migration-actions';
 import { MIGRATION_MODE_LABEL, MIGRATION_STATUS_REGISTRY } from '../components/migration-status';
+import { migrationProgressPct } from '../components/migration-progress';
 import { MigrationReportCard } from '../components/migration-report-card';
 import { MigrationFailuresTable } from '../components/migration-failures-table';
 import { migrationListPath } from '../components/paths';
@@ -101,7 +102,7 @@ export default function MigrationJobDetailPage({ params }: { params: Promise<{ j
   // no bar at all, so this renders a plain running count while the total is
   // unknown rather than a misleading stalled percentage.
   const hasTotal = job.progressTotal > 0;
-  const pct = hasTotal ? Math.round((job.progressDone / job.progressTotal) * 100) : 0;
+  const pct = migrationProgressPct(job.progressDone, job.progressTotal);
 
   return (
     <RequirePermission permission="omnichannel_migration.read">

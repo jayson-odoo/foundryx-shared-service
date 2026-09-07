@@ -98,13 +98,14 @@ def _empty_pages_handler(request: httpx.Request) -> httpx.Response:
 
 
 def _patch_client_factory(monkeypatch, handler):
-    def fake_from_connection(config, credentials, *, client=None, on_milestone=None):
+    def fake_from_connection(config, credentials, *, client=None, on_milestone=None, on_blocker=None):
         return RespondIoClient(
             base_url=str(config.get("baseUrl") or "https://api.respond.io/v2"),
             api_token=str(credentials.get("apiToken", "")),
             requests_per_second=float(config.get("requestsPerSecond") or 1000),
             client=httpx.Client(transport=httpx.MockTransport(handler)),
             on_milestone=on_milestone,
+            on_blocker=on_blocker,
             sleep=lambda s: None,
         )
 
@@ -558,11 +559,11 @@ def _pages_handler(pages: dict, custom_fields: list = None):
 
 
 def _stub_client(monkeypatch, handler):
-    def fake_from_connection(config, credentials, *, client=None, on_milestone=None):
+    def fake_from_connection(config, credentials, *, client=None, on_milestone=None, on_blocker=None):
         return RespondIoClient(
             base_url="https://api.respond.io/v2", api_token=str(credentials.get("apiToken", "")),
             requests_per_second=1000, client=httpx.Client(transport=httpx.MockTransport(handler)),
-            on_milestone=on_milestone, sleep=lambda s: None,
+            on_milestone=on_milestone, on_blocker=on_blocker, sleep=lambda s: None,
         )
 
     monkeypatch.setattr(RespondIoClient, "from_connection", staticmethod(fake_from_connection))
@@ -715,10 +716,10 @@ def test_cooperative_abort_stops_before_next_page_and_resume_continues(session_f
     monkeypatch.setattr(
         RespondIoClient, "from_connection",
         staticmethod(
-            lambda config, credentials, client=None, on_milestone=None: RespondIoClient(
+            lambda config, credentials, client=None, on_milestone=None, on_blocker=None: RespondIoClient(
                 base_url="https://api.respond.io/v2", api_token="tok", requests_per_second=1000,
                 client=httpx.Client(transport=httpx.MockTransport(handler)), on_milestone=on_milestone,
-                sleep=lambda s: None,
+                on_blocker=on_blocker, sleep=lambda s: None,
             )
         ),
     )

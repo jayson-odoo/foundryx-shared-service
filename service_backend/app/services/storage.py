@@ -87,7 +87,19 @@ def _safe_read_path(root: Path, key: str) -> Path:
     substring checks alone might miss). Raises `FileNotFoundError` - the
     SAME exception a genuinely-missing key raises - so a caller (and an
     attacker probing the behaviour) can never distinguish "unsafe" from
-    "missing"."""
+    "missing".
+
+    The `".."` check (review round 2 note) is a bare SUBSTRING match, not a
+    path-segment match - it rejects the whole key the moment `".."` appears
+    ANYWHERE in it, including inside an otherwise-innocent segment (a stored
+    key of `"report..final.csv"` or `"v1..2/export.csv"` never validates,
+    even though neither is a traversal attempt). This is deliberate
+    over-blocking, not a bug: every key this module mints itself is `_safe()`-
+    sanitized (`-`/`_`/`/`/alnum only, never a literal `.`), so a legitimate
+    stored key can never contain `".."` in the first place - only a hostile
+    or hand-typed key would, and refusing the whole key outright is strictly
+    safer than trying to parse "is this occurrence actually a `..` path
+    segment" case by case."""
     if not key or "\x00" in key or ".." in key or key.startswith("~") or Path(key).is_absolute():
         raise FileNotFoundError(key)
     resolved_root = root.resolve()

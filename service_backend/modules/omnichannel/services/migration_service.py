@@ -733,6 +733,7 @@ def _build_report(
     user_map_dropped: int = 0,
     team_map_dropped: int = 0,
     lifecycle_unmapped_csv: Optional[Dict[str, int]] = None,
+    pagination_blockers: Optional[List[str]] = None,
 ) -> dict:
     contacts_c = counts.get("contacts") or {}
     fields_c = counts.get("fields") or {}
@@ -742,7 +743,10 @@ def _build_report(
     media_c = counts.get("media") or {}
     events_c = counts.get("events") or {}
     quick_replies_c = counts.get("quickReplies") or {}
-    blockers: List[str] = []
+    # Review round 2, R1 - the pagination-guard blockers come FIRST: they
+    # mean the walk stopped before it finished, which is more consequential
+    # than "N contacts have no lifecycle mapping" and the like below.
+    blockers: List[str] = list(pagination_blockers or [])
     if lifecycle_unmapped_csv:
         # Defect 2 fix - CSV mode names the actual unmapped VALUE(s) and
         # their count, rather than the API-mode aggregate-only line below
@@ -1998,6 +2002,16 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     def milestone(msg: str) -> None:
         service.log(job, msg)
 
+    # Review round 2, R1 - a SECOND callback, wired only for the client's
+    # three pagination termination guards (`_on_blocker` in
+    # `respondio/client.py`), NOT the rate-halving milestone (that one is
+    # informational, not a data-loss signal). `pagination_blockers` is
+    # declared further down this function; a nested function only needs the
+    # name bound by the time it is actually CALLED, and every page walk
+    # happens after that assignment runs.
+    def blocker(msg: str) -> None:
+        pagination_blockers.append(msg)
+
     if not csv_mode:
         connection = MigrationConnectionRepository(db).get_for_provider(
             tenant_id, connection_id, RESPONDIO_PROVIDER
@@ -2014,7 +2028,9 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             return
         config = connection.config_json or {}
         space_timezone = str(config.get("timezone") or "")
-        client = RespondIoClient.from_connection(config, credentials, on_milestone=milestone)
+        client = RespondIoClient.from_connection(
+            config, credentials, on_milestone=milestone, on_blocker=blocker
+        )
 
     # Re-validate every mapped id AT USE TIME, never trust save-time
     # validation alone (AC-MIG-51) - a stage/channel/user deleted between
@@ -2125,6 +2141,16 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
     # THIS dict instead so the report can name the actual value(s), not just
     # a bare count.
     csv_lifecycle_unmapped: Dict[str, int] = dict(counts.get("csvLifecycleUnmapped") or {})
+    # Review round 2, R1 - the client's three pagination TERMINATION guards
+    # (same cursor twice, an empty page that still carries a cursor, the
+    # `MAX_PAGES` ceiling) used to only reach `service.log()` (the job's
+    # milestone log, easy to miss on the detail page). Each guard firing
+    # means the walk stopped EARLY - some records were not migrated - so it
+    # now ALSO lands in `report.blockers` (the surface the operator actually
+    # reads before deciding the run is complete). Persisted through
+    # `checkpoint()` like every other counter/list here so a crash-resumed
+    # invocation does not lose a guard that fired in an earlier phase.
+    pagination_blockers: List[str] = list(counts.get("paginationBlockers") or [])
 
     prior_result = job.result_json or {}
     failures: List[dict] = list((prior_result.get("failures") or {}).get("rows") or [])
@@ -2156,6 +2182,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
         counts["messagesSkippedOverCap"] = messages_skipped_over_cap
         counts["csvBlockers"] = csv_blockers
         counts["csvLifecycleUnmapped"] = csv_lifecycle_unmapped
+        counts["paginationBlockers"] = pagination_blockers
         # Review round 1, finding S6 - `set_total` used to be called ONLY
         # inside `finish_done`, so `progressTotal` read 0 for the ENTIRE run
         # (the detail page's Progress bar stalled at 0% throughout, jumping
@@ -2165,14 +2192,31 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
         # `finish_done` already used - monotonic (`max` against whatever is
         # already stored) so it only ever grows, converging on the true
         # total by the time `finish_done` sets it exactly.
-        service.set_total(
-            job,
-            max(
-                job.progress_total or 0,
-                contact_counts.get("fetched", 0)
-                + identity_counts.get("fetched", 0)
-                + message_counts.get("fetched", 0),
-            ),
+        #
+        # Review round 2 - `job.progress_done` joins the `max(...)` set. The
+        # fetched-sum formula above is a running ESTIMATE (it does not yet
+        # know about later phases' own fetches), and `service.advance()`
+        # bumps `progress_done` independently per row/contact/message; on a
+        # long run the two can transiently disagree in either direction. A
+        # total that ever reads BELOW `progress_done` is what makes the
+        # detail page's progress bar/pct read over 100% before the terminal
+        # `finish_done()` call reconciles it - folding `progress_done` into
+        # the same monotonic `max()` here keeps `progressTotal >=
+        # progressDone` at every checkpoint, not only at the end.
+        #
+        # Review round 2, R4 - `set_total` + `set_cursor` used to be two
+        # separate `JobService` calls, each committing on its own (a
+        # checkpoint = two commits). `JobService.set_total` is shared with
+        # other job handlers (autocount, broadcasts, exports) so its
+        # signature/commit behaviour stays untouched; here the field is set
+        # directly on the ORM object and `set_cursor` below does the single
+        # commit that persists both fields together.
+        job.progress_total = max(
+            job.progress_total or 0,
+            job.progress_done or 0,
+            contact_counts.get("fetched", 0)
+            + identity_counts.get("fetched", 0)
+            + message_counts.get("fetched", 0),
         )
         service.set_cursor(
             job,
@@ -2199,6 +2243,7 @@ def run_migration_job(db: Session, job: BackgroundJob) -> None:
             messages_skipped_over_cap=messages_skipped_over_cap,
             user_map_dropped=user_map_dropped, team_map_dropped=team_map_dropped,
             lifecycle_unmapped_csv=csv_lifecycle_unmapped if csv_mode else None,
+            pagination_blockers=pagination_blockers,
         )
         if csv_mode:
             # AC-MIG-48 - stated UP FRONT (every CSV-mode report, dry run or

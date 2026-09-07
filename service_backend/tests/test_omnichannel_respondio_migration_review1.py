@@ -39,11 +39,11 @@ from tests.test_omnichannel_respondio_migration_s5 import _csv_bytes, _make_csv_
 
 
 def _stub_client(monkeypatch, handler):
-    def fake_from_connection(config, credentials, *, client=None, on_milestone=None):
+    def fake_from_connection(config, credentials, *, client=None, on_milestone=None, on_blocker=None):
         return RespondIoClient(
             base_url="https://api.respond.io/v2", api_token=str(credentials.get("apiToken", "")),
             requests_per_second=1000, client=httpx.Client(transport=httpx.MockTransport(handler)),
-            on_milestone=on_milestone, sleep=lambda s: None,
+            on_milestone=on_milestone, on_blocker=on_blocker, sleep=lambda s: None,
         )
 
     monkeypatch.setattr(RespondIoClient, "from_connection", staticmethod(fake_from_connection))
