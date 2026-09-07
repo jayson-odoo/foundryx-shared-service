@@ -738,8 +738,9 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
     dev seed scripts only - never in prod bootstrap.
 
     Pre-merge follow-up (plan 27): the fixed literal ids this function seeds
-    (``chn-demo``, ``cnt-001``..``005``) are shared verbatim across every call
-    site - the dev seed scripts only ever call this with ``DEFAULT_TENANT_ID``.
+    (``chn-demo``, ``cnt-001``..``005``, and - plan 32 S1/S3 - ``chn-demo-fb``,
+    ``cnt-fb-001``/``002``) are shared verbatim across every call site - the
+    dev seed scripts only ever call this with ``DEFAULT_TENANT_ID``.
     A second tenant would collide on those SAME ids (unique-constraint or
     silent cross-tenant reads via an unscoped lookup), so this is gated to the
     default tenant rather than left to half-write cross-tenant rows the first
@@ -822,6 +823,81 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
             status_id=statuses.status_id_for(db, tenant_id, "CHANNEL", "ACTIVE"),
         )
         db.add(fb_channel)
+        db.flush()
+
+    # Plan 32 S3 (A7a, AC-CHN-38) - two seeded Messenger threads so the E2E
+    # journey (inbox -> open a Messenger thread -> send) exists with no Meta
+    # app. Own idempotency gate (keyed on a fixed contact id, mirroring
+    # `already_seeded` above) so a tenant that ran this seed between S1 (bare
+    # `chn-demo-fb`, no threads) and S3 still gets them on the next call,
+    # without re-running the cnt-001..005 dataset.
+    fb_seeded = bool(
+        db.query(Contact).filter(Contact.id == "cnt-fb-001", Contact.tenant_id == tenant_id).first()
+    )
+    if not fb_seeded:
+        from .services import lifecycle_service as _lifecycle_service
+
+        fb_open_id = statuses.status_id_for(db, tenant_id, "THREAD", "OPEN")
+        fb_initial_lifecycle_id = _lifecycle_service.initial_status_id(db, tenant_id, ws.id)
+        fb_now = datetime.now(timezone.utc)
+        fb_threads = [
+            # (contact id, name, PSID, messages: (sender, body, minutes_ago))
+            ("cnt-fb-001", "Jordan Lee", "psid-demo-1", [
+                ("CONTACT", "Hey, do you still have the VIP package available?", 40),
+                ("AGENT", "Hi Jordan! Yes, a few slots are left - want the details?", 35),
+                ("CONTACT", "Yes please!", 30),
+            ]),
+            ("cnt-fb-002", "Alex Tan", "psid-demo-2", [
+                ("CONTACT", "Is the concierge desk open on weekends?", 15),
+            ]),
+        ]
+        for cid, name, psid, msgs in fb_threads:
+            first, _, last = name.partition(" ")
+            contact = Contact(
+                id=cid,
+                tenant_id=tenant_id,
+                workspace_id=ws.id,
+                first_name=first,
+                last_name=last or None,
+                status_id=fb_open_id,
+                priority="MEDIUM",
+                lifecycle_status_id=fb_initial_lifecycle_id,
+            )
+            db.add(contact)
+            db.flush()
+            db.add(
+                ContactChannelIdentity(
+                    tenant_id=tenant_id,
+                    contact_id=cid,
+                    channel_id=fb_channel.id,
+                    external_user_id=psid,
+                    profile_name=name,
+                    # Open window (24h standard + 168h human-agent, D-A7-5) so
+                    # the seeded thread is sendable end to end (AC-CHN-38).
+                    window_expires_at=fb_now + timedelta(hours=24),
+                    human_agent_expires_at=fb_now + timedelta(hours=168),
+                    last_inbound_at=fb_now,
+                ),
+            )
+            last_at = None
+            for i, (sender, body, minutes_ago) in enumerate(msgs):
+                created = fb_now - timedelta(minutes=minutes_ago)
+                db.add(
+                    ConversationMessage(
+                        tenant_id=tenant_id,
+                        contact_id=cid,
+                        channel_id=fb_channel.id,
+                        sender_type=sender,
+                        message_type="TEXT",
+                        body=body,
+                        external_message_id=f"m.demo-{cid}-{i}",
+                        delivery_status="READ" if sender == "AGENT" else None,
+                        created_at=created,
+                    )
+                )
+                last_at = created
+            contact.last_message_at = last_at
+            contact.agent_last_read_at = fb_now
         db.flush()
 
     if already_seeded:

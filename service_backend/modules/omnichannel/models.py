@@ -152,6 +152,28 @@ class Channel(OmniBase):
     )
 
 
+class MetaConnectSession(OmniBase):
+    """Plan 32 S3 (A7a, D-A7-15) - a short-lived, single-use, tenant-and-user-
+    bound handle for the Messenger/Instagram connect flow. ``POST
+    /meta/pages`` exchanges the OAuth code server-side and stores the
+    resulting user token HERE, Fernet-encrypted, so it never reaches the
+    browser; the opaque ``id`` is what the client actually receives. ``POST
+    /meta/connect`` decrypts it, re-derives the page list, provisions the
+    channel and stamps ``consumed_at`` (single use). 5-minute TTL
+    (``expires_at``); swept on every ``/meta/pages`` call."""
+
+    __tablename__ = "meta_connect_sessions"
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=False)
+    channel_type = Column(String, nullable=False)  # FACEBOOK | INSTAGRAM
+    credentials_json = Column(Text, nullable=False)  # Fernet-encrypted user token
+    consumed_at = Column(UTCDateTime(), nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    expires_at = Column(UTCDateTime(), nullable=False, index=True)
+
+
 class Contact(OmniBase):
     """Consolidated CRM profile + thread metadata (operated on in plan 05)."""
 

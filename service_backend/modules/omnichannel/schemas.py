@@ -98,6 +98,11 @@ class ChannelItem(ApiModel):
     verifiedName: Optional[str] = None
     lastVerifiedAt: Optional[datetime] = None
     profileSyncedAt: Optional[datetime] = None
+    # Plan 32 (A7a, AC-CHN-36) - the Messenger/Instagram routing key (PAGE_ID
+    # / IG professional account id) + its display name. Null on WHATSAPP
+    # (which uses wabaId/phoneNumberId instead).
+    externalAccountId: Optional[str] = None
+    externalAccountName: Optional[str] = None
     isTrashed: bool
     createdAt: datetime
     updatedAt: datetime
@@ -184,6 +189,46 @@ class ManualConnectRequest(ApiModel):
     phoneNumberId: Optional[str] = None
     wabaId: Optional[str] = None
     phoneNumber: Optional[str] = None
+
+
+# ── Meta connect flow: Messenger + Instagram (plan 32 S3, A7a) ───────────────
+class MetaPagesRequest(ApiModel):
+    """`POST /omnichannel/onboarding/meta/pages` - exchanges the OAuth code
+    server-side (D-A7-15); the token never reaches the browser."""
+
+    channelType: Literal["FACEBOOK", "INSTAGRAM"]
+    code: str
+    redirectUri: Optional[str] = None
+
+
+class MetaPageOption(ApiModel):
+    """A connectable Facebook Page (Messenger) or its linked Instagram
+    professional account (Instagram). `connected` marks a page/account
+    already bound to a LIVE channel anywhere in the service - the wizard does
+    not offer it (AC-CHN-02)."""
+
+    id: str
+    name: str
+    connected: bool
+    igAccountId: Optional[str] = None
+    igUsername: Optional[str] = None
+
+
+class MetaPagesResult(ApiModel):
+    sessionId: str
+    expiresAt: datetime
+    pages: List[MetaPageOption]
+
+
+class MetaConnectRequest(ApiModel):
+    """`POST /omnichannel/onboarding/meta/connect` - finalizes the channel for
+    the page (or Instagram account) picked from `MetaPagesResult.pages`."""
+
+    sessionId: str
+    workspaceId: str
+    channelType: Literal["FACEBOOK", "INSTAGRAM"]
+    pageId: str
+    igAccountId: Optional[str] = None
 
 
 # ── Shared ──────────────────────────────────────────────────────────────────

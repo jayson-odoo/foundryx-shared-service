@@ -3,12 +3,14 @@
 Rides the SAME Meta app as WhatsApp (D-A7-1: no `connections` row, no second
 credential model) via `MetaGraphMixin` (telemetry, dev-safe gate, HTTP client,
 base URL - `meta_graph.py`). Slice S1 shipped inbound parsing
-(`parse_inbound`); slice S2 completes outbound `send` (text + quick replies,
-`messaging_type`/`tag` from `messaging_policy.authorize`) and a dev-safe
-`upload_media` placeholder (the real Graph attachment-upload call lands in
-plan 32 S5, D-A7-11). `test_connection`/`exchange_code`/`subscribe_webhook`
-stay honest dev-safe stubs, completed by plan 32 S3 (the connect flow) on this
-same file - not a second adapter.
+(`parse_inbound`); slice S2 shipped outbound `send` (text + quick replies,
+`messaging_type`/`tag` from `messaging_policy.authorize`); slice S3 completes
+the connect flow - real `exchange_code` (Facebook Login for Business),
+`exchange_long_lived_token`, `list_pages` (`GET /me/accounts` + the linked IG
+account) and `subscribe_webhook`/`test_connection` against a live Meta app,
+orchestrated by `services/meta_connect_service.py`. `upload_media` stays a
+dev-safe placeholder (the real Graph attachment-upload call lands in plan 32
+S5, D-A7-11).
 
 Sources (cited per CLAUDE.md, section 10 of the plan):
 - Messenger Platform webhooks (object `page`, `entry[].messaging[]`,
@@ -23,16 +25,57 @@ Sources (cited per CLAUDE.md, section 10 of the plan):
 - Messenger/Instagram messaging policy (24h standard window, the Human Agent
   7-day extension, human-only restriction):
   https://developers.facebook.com/documentation/business-messaging/messenger-platform/policy
+- Facebook Login for Business / long-lived token exchange
+  (`grant_type=fb_exchange_token`, non-expiring Page tokens):
+  https://developers.facebook.com/docs/facebook-login/guides/access-tokens/get-long-lived
+- `GET /me/accounts` (Pages + per-Page access token + linked
+  `instagram_business_account`):
+  https://developers.facebook.com/docs/graph-api/reference/user/accounts/
+- `POST /{page-id}/subscribed_apps` (`subscribed_fields`):
+  https://developers.facebook.com/docs/graph-api/reference/page/subscribed_apps/
 """
 import logging
 from typing import Any, Dict, List, Optional
 
 import httpx
 
-from .base import ConnectionStatus, SendError
+from app.config import settings
+from .base import CodeExchangeError, ConnectionStatus, SendError
 from .meta_graph import MetaGraphMixin, _meta_error_detail
 
 logger = logging.getLogger(__name__)
+
+# `subscribed_apps` fields this app asks a connected Page for (plan 32 S3,
+# D-A7-15). `message_echoes` is deliberately ABSENT (D-A7-23) - our own
+# outbound must never come back as a second inbound bubble, and the parser
+# drops an echo unconditionally, so there is nothing to gain from receiving
+# it and a real cost (a spurious workflow trigger) if it ever slipped
+# through. `message_reads`/`message_deliveries`/`message_reactions` are
+# requested now even though the "apply" side (watermark receipts, reactions)
+# completes in plan 32 S5 - `parse_inbound` already normalizes them (S1), so
+# subscribing early costs nothing and avoids a second Meta App Review pass.
+# Source: https://developers.facebook.com/docs/messenger-platform/webhooks
+_SUBSCRIBED_FIELDS = "messages,messaging_postbacks,message_reads,message_deliveries,message_reactions"
+
+# Dev-safe canned Facebook Pages (mirrors the S0 frontend mock's
+# MOCK_META_PAGES ids/names 1:1 so a manual dev run and the mock behave the
+# same) - returned by `list_pages` whenever the Meta app is unconfigured or
+# the session's exchanged token carries `dev` (AC-CHN-35).
+_DEV_PAGES: List[Dict[str, Any]] = [
+    {
+        "id": "pg-701",
+        "name": "Foundryx Events Co.",
+        "access_token": "dev-page-token-701",
+        "instagram_business_account": {"id": "ig-701", "username": "foundryx.events"},
+    },
+    {
+        "id": "pg-702",
+        "name": "Foundryx Concierge",
+        "access_token": "dev-page-token-702",
+        "instagram_business_account": {"id": "ig-702", "username": "foundryx.concierge"},
+    },
+    {"id": "pg-703", "name": "Foundryx VIP Desk", "access_token": "dev-page-token-703"},
+]
 
 # Messenger `attachment.type` -> the house canonical message-type vocabulary
 # (plan §5.6). `file` (document) is Messenger-only - Instagram never carries
@@ -48,28 +91,156 @@ _ATTACHMENT_TYPES = {
 class MessengerAdapter(MetaGraphMixin):
     channel_type = "FACEBOOK"
 
-    # ── Onboarding (dev-safe stubs; plan 32 S3 completes the real flow) ─────
+    # ── Onboarding (plan 32 S3 - Facebook Login for Business) ───────────────
     def exchange_code(self, code: str, redirect_uri: Optional[str] = None) -> Dict[str, Any]:
+        """Exchange the popup's auth code for a (short-lived) user access
+        token - byte-for-byte the WhatsApp Embedded Signup exchange
+        (`WhatsAppCloudAdapter.exchange_code`), since both ride the SAME Meta
+        app/client credentials (D-A7-1).
+
+        Source: https://developers.facebook.com/docs/facebook-login/guides/access-tokens/get-long-lived
+        """
         if not self._configured:
             return {"access_token": f"dev-token-{code}", "dev": True}
-        raise NotImplementedError(
-            "Messenger code exchange is implemented by meta_connect_service (plan 32 S3)."
-        )
+        params = {
+            "client_id": settings.meta_app_id,
+            "client_secret": settings.meta_app_secret,
+            "code": code,
+        }
+        if redirect_uri:
+            params["redirect_uri"] = redirect_uri
+
+        client = self._http()
+        try:
+            try:
+                resp = client.get(f"{self._base}/oauth/access_token", params=params)
+            except httpx.HTTPError as exc:
+                raise CodeExchangeError(f"Could not reach Meta: {exc}") from exc
+            if resp.status_code == 200:
+                return {"access_token": resp.json().get("access_token", "")}
+            try:
+                err = resp.json().get("error", {})
+                detail = err.get("message", "")
+            except ValueError:
+                err = {"raw": resp.text[:300]}
+                detail = f"Meta returned {resp.status_code}."
+            logger.warning(
+                "Messenger code exchange failed (redirect_uri=%r): %s", redirect_uri, err
+            )
+            raise CodeExchangeError(detail or "Code exchange failed.")
+        finally:
+            if self._client is None:
+                client.close()
+
+    def exchange_long_lived_token(self, credentials: Dict[str, Any]) -> Dict[str, Any]:
+        """Trade the short-lived user token for a long-lived one (~60 days) so
+        the Page access tokens `list_pages` returns are effectively
+        non-expiring (Meta: "Long-lived Page access tokens do not have an
+        expiration date"). Dev / unconfigured -> the credentials unchanged.
+
+        Source: https://developers.facebook.com/docs/facebook-login/guides/access-tokens/get-long-lived
+        """
+        token = credentials.get("access_token", "")
+        if not token or credentials.get("dev") or not self._configured:
+            return credentials
+        client = self._http()
+        try:
+            resp = client.get(
+                f"{self._base}/oauth/access_token",
+                params={
+                    "grant_type": "fb_exchange_token",
+                    "client_id": settings.meta_app_id,
+                    "client_secret": settings.meta_app_secret,
+                    "fb_exchange_token": token,
+                },
+            )
+            if resp.status_code == 200:
+                return {"access_token": resp.json().get("access_token", token)}
+            return credentials
+        except httpx.HTTPError:
+            return credentials
+        finally:
+            if self._client is None:
+                client.close()
+
+    def list_pages(self, credentials: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """List the Pages this user token administers, with each Page's OWN
+        access token and (when linked) its Instagram professional account -
+        `meta_connect_service` maps this into `MetaPageOption` (AC-CHN-32/44).
+
+        Source: https://developers.facebook.com/docs/graph-api/reference/user/accounts/
+        https://developers.facebook.com/docs/graph-api/reference/page/subscribed_apps/
+        """
+        if not self._configured or credentials.get("dev"):
+            return [dict(p) for p in _DEV_PAGES]
+        client = self._http()
+        try:
+            resp = client.get(
+                f"{self._base}/me/accounts",
+                params={
+                    "fields": "id,name,access_token,instagram_business_account{id,username}",
+                    "access_token": credentials.get("access_token", ""),
+                },
+            )
+            if resp.status_code != 200:
+                raise CodeExchangeError(_meta_error_detail(resp))
+            return resp.json().get("data") or []
+        except httpx.HTTPError as exc:
+            raise CodeExchangeError(f"Could not reach Meta: {exc}") from exc
+        finally:
+            if self._client is None:
+                client.close()
 
     def subscribe_webhook(self, credentials: Dict[str, Any], page_id: str, callback_url: str) -> None:
-        # Best-effort `subscribed_apps` subscription lands with the connect
-        # flow (plan 32 S3, D-A7-15) - a no-op here keeps the Protocol whole.
-        return None
+        """Best-effort `subscribed_apps` subscription - byte-for-byte the
+        WhatsApp `subscribe_webhook` shape (no try/except here; a
+        subscription failure must never block the connect, AC-CHN-33, so the
+        CALLER, `meta_connect_service.connect`, wraps this call in
+        try/except). ``credentials`` carries the PAGE access token (the
+        channel's own stored credentials, not the connect session's user
+        token) - `page_id` is the Facebook Page id even for an Instagram
+        channel (IG messaging is page-linked, D-A7-14/45)."""
+        if not self._configured or credentials.get("dev"):
+            return  # best-effort; no-op in dev
+        client = self._http()
+        try:
+            client.post(
+                f"{self._base}/{page_id}/subscribed_apps",
+                params={"subscribed_fields": _SUBSCRIBED_FIELDS},
+                headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
+            )
+        finally:
+            if self._client is None:
+                client.close()
 
     def fetch_phone_details(self, credentials: Dict[str, Any], phone_number_id: str) -> Dict[str, Any]:
         return {}  # No phone concept on Messenger.
 
     def test_connection(self, credentials: Dict[str, Any], routing_id: str) -> ConnectionStatus:
+        """``routing_id`` is the Page id (Messenger) or IG account id
+        (Instagram) - AC-CHN-37: this pings the page/account, never a phone
+        number id, which these channel types never have."""
         if not self._configured or credentials.get("dev"):
             return ConnectionStatus(ok=True, message="Connected (dev mode - no live Meta call).")
-        return ConnectionStatus(
-            ok=False, message="Live Messenger connection check lands in plan 32 S3."
-        )
+        client = self._http()
+        try:
+            resp = client.get(
+                f"{self._base}/{routing_id}",
+                params={"fields": "id,name"},
+                headers={"Authorization": f"Bearer {credentials.get('access_token', '')}"},
+            )
+            if resp.status_code == 200:
+                return ConnectionStatus(ok=True, message="Reached the page successfully.")
+            try:
+                detail = resp.json().get("error", {}).get("message", "")
+            except ValueError:
+                detail = ""
+            return ConnectionStatus(ok=False, message=detail or f"Meta returned {resp.status_code}.")
+        except httpx.HTTPError as exc:
+            return ConnectionStatus(ok=False, message=f"Connection error: {exc}")
+        finally:
+            if self._client is None:
+                client.close()
 
     # ── Outbound (plan 32 S2 - window/addressing resolved by the caller;
     #             media-by-id upload completed in plan 32 S5, D-A7-11) ───────
