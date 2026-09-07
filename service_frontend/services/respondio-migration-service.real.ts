@@ -1,15 +1,14 @@
 /**
- * Real respond.io migration service (plan 33 §5.2) - stubbed to the planned
- * routes ahead of the S1/S2 backend (S0 MOCK - swap the boundary in S6,
- * `respondio-migration-service.ts`). Not imported anywhere until S6 flips
- * the one line; kept here now so that swap really is one line, not a
- * from-scratch write under S6's time pressure.
+ * Real respond.io migration service (plan 33 §5.2, as built across S1-S5).
+ * S6 (AC-MIG-56) flips `respondio-migration-service.ts`'s shipped binding to
+ * this file.
  */
 import { apiFetch, apiFetchText } from '@/lib/api-client';
 import type {
   CreateMigrationJobInput,
   MigrationJob,
   MigrationPreflight,
+  MigrationUploadResult,
 } from '@/types/respondio-migration';
 import type { ListQuery, ListResult } from '@/types/resource';
 import type { RespondioMigrationService } from './respondio-migration-service';
@@ -33,6 +32,15 @@ export const realRespondioMigrationService: RespondioMigrationService = {
     const p = new URLSearchParams({ connectionId, workspaceId });
     return apiFetch<MigrationPreflight>(`/omnichannel/migration/preflight?${p.toString()}`);
   },
+  uploadCsv(kind, file) {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('kind', kind);
+    return apiFetch<MigrationUploadResult>('/omnichannel/migration/uploads', {
+      method: 'POST',
+      body: form,
+    });
+  },
   listJobs(query) {
     return apiFetch<ListResult<MigrationJob>>(`/omnichannel/migration/jobs?${listParams(query).toString()}`);
   },
@@ -44,6 +52,9 @@ export const realRespondioMigrationService: RespondioMigrationService = {
       method: 'POST',
       body: JSON.stringify(input),
     });
+  },
+  cancelJob(jobId) {
+    return apiFetch<MigrationJob>(`/omnichannel/migration/jobs/${jobId}/cancel`, { method: 'POST' });
   },
   downloadFailuresCsv(jobId) {
     return apiFetchText(`/omnichannel/migration/jobs/${jobId}/failures.csv`);

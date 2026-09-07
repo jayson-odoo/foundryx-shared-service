@@ -96,6 +96,12 @@ export function MigrationReportCard({ report }: { report: MigrationReport }) {
             timestamp).
           </p>
         )}
+        {report.messagesSkippedBeforeFloor > 0 && (
+          <p className="text-muted-foreground px-4 pb-2 text-sm">
+            {report.messagesSkippedBeforeFloor} messages were older than the "Messages since" floor and were
+            not migrated.
+          </p>
+        )}
         {report.blockers.length > 0 && (
           <ul className="space-y-1 px-4 pb-4 text-sm">
             {report.blockers.map((b, i) => (

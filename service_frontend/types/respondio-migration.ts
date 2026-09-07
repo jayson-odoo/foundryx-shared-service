@@ -1,8 +1,8 @@
 /**
- * respond.io migration tool types (plan 33, roadmap A6). S0 MOCK - swap to
- * real in S6. Mirrors the plan's §5.2 internal API contract exactly; the
- * source-vendor shapes (`shapes.py` field names) never leak past the
- * backend - everything below is already camelCase, Z-suffixed wire.
+ * respond.io migration tool types (plan 33, roadmap A6). Mirrors the real
+ * backend contract §5.2 (as built across S1-S5) exactly; the source-vendor
+ * shapes (`shapes.py` field names) never leak past the backend - everything
+ * below is already camelCase, Z-suffixed wire.
  *
  * `connectionId`/`workspaceId` come from the EXISTING `Connection` (filtered
  * `provider === 'respondio'`) and `Workspace` catalogs (`types/integration.ts`,
@@ -121,9 +121,12 @@ export interface MigrationLifecycleMapEntry {
   targetStatusId: string | null;
 }
 
-/** `POST /omnichannel/migration/jobs` body (§5.2). */
+/** `POST /omnichannel/migration/jobs` body (§5.2, extended by S5 D-A6-25).
+ *  `connectionId` is required for `source: 'api'` only - a CSV-mode
+ *  migration from a customer with zero API access never created a
+ *  connection row at all (AC-MIG-46, the setup form's own source toggle). */
 export interface CreateMigrationJobInput {
-  connectionId: string;
+  connectionId: string | null;
   workspaceId: string;
   mode: MigrationMode;
   source: MigrationSourceKind;
@@ -133,6 +136,44 @@ export interface CreateMigrationJobInput {
   lifecycleMap: MigrationLifecycleMapEntry[];
   messagesSince?: string | null;
   contactsOnly?: boolean;
+  /** S5 (AC-MIG-47) - the storage key `POST /omnichannel/migration/uploads`
+   *  (`kind=contacts`) returned, required when `source === 'csv'`. */
+  contactsCsvKey?: string | null;
+  /** systemKey -> the file's own header string (`MIGRATION_CSV_HEADER_KEYS`
+   *  below); an unmapped key falls back to the backend's own case-
+   *  insensitive alias guess (`_HEADER_ALIASES`, migration_service.py). */
+  csvHeaderMap?: Record<string, string>;
+  /** S5 (D-A6-19/25) - the storage key `POST .../uploads` (`kind=snippets`)
+   *  returned; optional in BOTH modes (respond.io has no snippets endpoint,
+   *  so this is CSV-or-manual only either way). */
+  snippetsCsvKey?: string | null;
+}
+
+/** The CSV-mode contacts header map (plan §5.6, `CSV_HEADER_KEYS` in
+ *  `migration_service.py`) - a fixed, small set of system field keys the
+ *  backend understands; NOT the file's headers (those come back from
+ *  `POST .../uploads` and populate each row's option list). Custom fields
+ *  and tags are deliberately not part of this map (D-A6-25) - only the
+ *  separate contacts-import wizard (AC-MIG-46) finds-or-creates those. */
+export const MIGRATION_CSV_HEADER_KEYS: { key: string; label: string }[] = [
+  { key: 'externalId', label: 'Contact ID' },
+  { key: 'firstName', label: 'First name' },
+  { key: 'lastName', label: 'Last name' },
+  { key: 'phone', label: 'Phone' },
+  { key: 'email', label: 'Email' },
+  { key: 'language', label: 'Language' },
+  { key: 'countryCode', label: 'Country' },
+  { key: 'lifecycle', label: 'Lifecycle' },
+];
+
+/** `POST /omnichannel/migration/uploads` response (S5, AC-MIG-46/47) - the
+ *  storage key the job payload then carries, plus the sniffed file's row
+ *  count and headers so the setup form can render the header-map step
+ *  without a second round trip. */
+export interface MigrationUploadResult {
+  key: string;
+  rowCount: number;
+  headers: string[];
 }
 
 export type MigrationEntityKey =
@@ -167,6 +208,9 @@ export interface MigrationEntityCounts {
 export interface MigrationReport {
   entities: Record<MigrationEntityKey, MigrationEntityCounts>;
   messagesWithInferredTimestamp: number;
+  /** S4 (D-A6-22) - messages older than the job's `messagesSince` floor,
+   *  excluded from the walk entirely (never written, never an error). */
+  messagesSkippedBeforeFloor: number;
   blockers: string[];
   samples: {
     contacts: Record<string, unknown>[];
@@ -217,6 +261,9 @@ export interface MigrationJob {
   finishedAt: string | null; // ISO Z
   createdAt: string; // ISO Z
   actorUserName: string | null;
+  /** S6 (AC-MIG-08) - the milestone log, populated on the detail read
+   *  (`GET .../jobs/{id}`) only; the list read always sends `[]`. */
+  logs: MigrationJobLogEntry[];
 }
 
 /** Milestone log line rendered on the detail page (mirrors `types/jobs.ts`
@@ -229,10 +276,23 @@ export interface MigrationJobLogEntry {
 
 /** The subset of `CreateMigrationJobInput` that defines "the exact mapping"
  *  (D-A6-14 / AC-MIG-07/20): `mode` is deliberately excluded so a `dry_run`
- *  and its matching `run` share one hash. */
+ *  and its matching `run` share one hash. `contactsCsvKey`/`csvHeaderMap`
+ *  mirror the backend's own `_mapping_hash` (S5, D-A6-25) - a re-uploaded
+ *  CSV or a changed header map IS a different mapping; `snippetsCsvKey`
+ *  stays excluded on both sides (quick replies are independent of "the
+ *  mapping"). */
 export type MigrationMappingShape = Pick<
   CreateMigrationJobInput,
-  'connectionId' | 'workspaceId' | 'channelMap' | 'userMap' | 'teamMap' | 'lifecycleMap' | 'contactsOnly' | 'messagesSince'
+  | 'connectionId'
+  | 'workspaceId'
+  | 'channelMap'
+  | 'userMap'
+  | 'teamMap'
+  | 'lifecycleMap'
+  | 'contactsOnly'
+  | 'messagesSince'
+  | 'contactsCsvKey'
+  | 'csvHeaderMap'
 >;
 
 function sortedBy<T, K extends string>(rows: T[], key: (row: T) => K): T[] {
@@ -259,6 +319,8 @@ export function computeMappingHash(shape: MigrationMappingShape): string {
     lifecycleMap: sortedBy(shape.lifecycleMap, (r) => r.sourceLabel).map((r) => [r.sourceLabel, r.targetStatusId]),
     contactsOnly: !!shape.contactsOnly,
     messagesSince: shape.messagesSince ?? null,
+    contactsCsvKey: shape.contactsCsvKey ?? null,
+    csvHeaderMap: sortedBy(Object.entries(shape.csvHeaderMap ?? {}), (r) => r[0]),
   };
   const json = JSON.stringify(canonical);
   let hash = 5381;

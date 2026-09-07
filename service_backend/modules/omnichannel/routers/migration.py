@@ -96,11 +96,22 @@ def list_jobs(
     page: int = Query(0, ge=0),
     page_size: int = Query(25, ge=1, le=200, alias="pageSize"),
     status_filter: Optional[str] = Query(None, alias="status"),
+    search: Optional[str] = Query(None),
+    sort_by: Optional[str] = Query(None, alias="sortBy"),
+    sort_dir: Optional[str] = Query(None, alias="sortDir"),
+    filter_raw: Optional[str] = Query(None, alias="filter"),
     current_user: User = Depends(require_permission("omnichannel_migration.read")),
     db: Session = Depends(get_db),
 ) -> MigrationJobListResponse:
     return MigrationService(db).list_jobs(
-        current_user.tenant_id, page=page, page_size=page_size, status_filter=status_filter
+        current_user.tenant_id,
+        page=page,
+        page_size=page_size,
+        status_filter=status_filter,
+        search=search,
+        sort_by=sort_by,
+        sort_desc=(sort_dir != "asc"),
+        filter_raw=filter_raw,
     )
 
 

@@ -30,11 +30,13 @@ const lifecycleMapEntrySchema = z.object({
  * source channel (Review can't be reached with a partially-mapped list -
  * the form seeds the array 1:1 from the preflight response and never lets
  * a row be removed, so "completeness" reduces to "non-empty AND loaded from
- * a preflight", checked here as a length guard).
+ * a preflight", checked here as a length guard) - API MODE ONLY: CSV mode
+ * (S5/S6, D-A6-25) has no preflight-derived channel/user/team/lifecycle rows
+ * at all, so `channelMap` stays legitimately empty there.
  */
 export const migrationFormSchema = z
   .object({
-    connectionId: z.string().min(1, 'Choose a connection.'),
+    connectionId: z.string().nullable(),
     workspaceId: z.string().min(1, 'Choose a target workspace.'),
     source: z.enum(['api', 'csv']),
     channelMap: z.array(channelMapEntrySchema),
@@ -43,17 +45,27 @@ export const migrationFormSchema = z
     lifecycleMap: z.array(lifecycleMapEntrySchema),
     messagesSince: z.string().nullable(),
     contactsOnly: z.boolean(),
+    contactsCsvKey: z.string().nullable(),
+    csvHeaderMap: z.record(z.string(), z.string()),
+    snippetsCsvKey: z.string().nullable(),
   })
   .superRefine((value, ctx) => {
-    if (value.channelMap.length === 0) {
-      ctx.addIssue({ code: 'custom', message: 'Run preflight to load the source channels.', path: ['channelMap'] });
+    if (value.source === 'api') {
+      if (!value.connectionId) {
+        ctx.addIssue({ code: 'custom', message: 'Choose a connection.', path: ['connectionId'] });
+      }
+      if (value.channelMap.length === 0) {
+        ctx.addIssue({ code: 'custom', message: 'Run preflight to load the source channels.', path: ['channelMap'] });
+      }
+    } else if (!value.contactsCsvKey) {
+      ctx.addIssue({ code: 'custom', message: 'Upload a contacts CSV.', path: ['contactsCsvKey'] });
     }
   });
 
 export type MigrationFormValues = z.infer<typeof migrationFormSchema>;
 
 export const EMPTY_MIGRATION_FORM_VALUES: MigrationFormValues = {
-  connectionId: '',
+  connectionId: null,
   workspaceId: '',
   source: 'api',
   channelMap: [],
@@ -62,6 +74,9 @@ export const EMPTY_MIGRATION_FORM_VALUES: MigrationFormValues = {
   lifecycleMap: [],
   messagesSince: null,
   contactsOnly: false,
+  contactsCsvKey: null,
+  csvHeaderMap: {},
+  snippetsCsvKey: null,
 };
 
 export function toCreateMigrationJobInput(
@@ -79,5 +94,8 @@ export function toCreateMigrationJobInput(
     lifecycleMap: values.lifecycleMap,
     messagesSince: values.messagesSince,
     contactsOnly: values.contactsOnly,
+    contactsCsvKey: values.contactsCsvKey,
+    csvHeaderMap: values.csvHeaderMap,
+    snippetsCsvKey: values.snippetsCsvKey,
   };
 }

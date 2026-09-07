@@ -25,7 +25,8 @@ import { migrationListPath } from './paths';
 
 function SetupSections({ hook, editing }: { hook: ReturnType<typeof useMigrationForm>; editing: boolean }) {
   const { control, setValue, formState } = hook.form;
-  const connectionId = useWatch({ control, name: 'connectionId' }) ?? '';
+  const source = useWatch({ control, name: 'source' }) ?? 'api';
+  const connectionId = useWatch({ control, name: 'connectionId' }) ?? null;
   const workspaceId = useWatch({ control, name: 'workspaceId' }) ?? '';
   const channelMap = useWatch({ control, name: 'channelMap' }) ?? [];
   const userMap = useWatch({ control, name: 'userMap' }) ?? [];
@@ -33,15 +34,30 @@ function SetupSections({ hook, editing }: { hook: ReturnType<typeof useMigration
   const lifecycleMap = useWatch({ control, name: 'lifecycleMap' }) ?? [];
   const contactsOnly = useWatch({ control, name: 'contactsOnly' }) ?? false;
   const messagesSince = useWatch({ control, name: 'messagesSince' }) ?? null;
+  const csvHeaderMap = useWatch({ control, name: 'csvHeaderMap' }) ?? {};
 
   return (
     <div className="flex flex-col gap-4">
       <SourceSection
+        source={source}
+        onSourceChange={(v) => setValue('source', v, { shouldDirty: true })}
         connections={hook.connections}
-        value={connectionId}
+        connectionId={connectionId}
+        onConnectionChange={(v) => setValue('connectionId', v, { shouldDirty: true })}
+        connectionError={formState.errors.connectionId?.message}
+        preflight={hook.preflight}
+        preflightLoading={hook.preflightLoading}
+        contactsUpload={hook.contactsUpload}
+        contactsCsvHeaders={hook.contactsCsvHeaders}
+        contactsCsvError={formState.errors.contactsCsvKey?.message}
+        onContactsUploaded={hook.onContactsUploaded}
+        onContactsCleared={hook.onContactsCleared}
+        csvHeaderMap={csvHeaderMap}
+        onCsvHeaderMapChange={(next) => setValue('csvHeaderMap', next, { shouldDirty: true })}
+        snippetsUpload={hook.snippetsUpload}
+        onSnippetsUploaded={hook.onSnippetsUploaded}
+        onSnippetsCleared={hook.onSnippetsCleared}
         editing={editing}
-        onChange={(v) => setValue('connectionId', v, { shouldDirty: true })}
-        error={formState.errors.connectionId?.message}
       />
       <TargetSection
         workspaces={hook.workspaces}
@@ -73,19 +89,19 @@ function SetupSections({ hook, editing }: { hook: ReturnType<typeof useMigration
         editing={editing}
         onChange={(next) => setValue('lifecycleMap', next, { shouldDirty: true })}
       />
-      <ScopeSection
-        contactsOnly={contactsOnly}
-        messagesSince={messagesSince}
-        editing={editing}
-        onChange={(next) => {
-          setValue('contactsOnly', next.contactsOnly, { shouldDirty: true });
-          setValue('messagesSince', next.messagesSince, { shouldDirty: true });
-        }}
-      />
+      {source === 'api' && (
+        <ScopeSection
+          contactsOnly={contactsOnly}
+          messagesSince={messagesSince}
+          editing={editing}
+          onChange={(next) => {
+            setValue('contactsOnly', next.contactsOnly, { shouldDirty: true });
+            setValue('messagesSince', next.messagesSince, { shouldDirty: true });
+          }}
+        />
+      )}
       <ReviewSection
-        connectionId={connectionId}
-        workspaceId={workspaceId}
-        preflightLoading={hook.preflightLoading}
+        ready={hook.ready}
         dryRunJob={hook.dryRunJob}
         canStartMigration={hook.canStartMigration}
         submitting={hook.submitting}
@@ -110,7 +126,10 @@ export function MigrationFormView() {
       backHref: migrationListPath,
       backLabel: 'Back to migration',
       title: 'New migration',
-      subtitle: 'Map a respond.io space onto a Foundryx workspace',
+      // S6 fix (white-label hard-fail, PRINCIPLES.md): a tenant-facing string
+      // never says "Foundryx" - the S0 subtitle did, undetected until this
+      // slice's live E2E run against a real tenant actually rendered it.
+      subtitle: 'Map a respond.io space onto a workspace',
       tabs: [
         {
           id: 'setup',

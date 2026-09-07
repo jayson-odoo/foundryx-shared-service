@@ -1,27 +1,33 @@
 'use client';
 
 /**
- * The setup form's data + submit orchestration (plan 33 S0, AC-MIG-03/07).
- * Connections and the target workspace ride the EXISTING generic catalogs
- * (`integration-service`, `workspace-service`, both already real); people
- * options ride the existing `user-service`/`team-service`; only the
- * respond.io-specific preflight + job creation go through the (mocked)
- * `respondio-migration-service`.
+ * The setup form's data + submit orchestration (plan 33, AC-MIG-03/07,
+ * extended in S6 for CSV mode - AC-MIG-46/47). Connections and the target
+ * workspace ride the EXISTING generic catalogs (`integration-service`,
+ * `workspace-service`); people options ride the existing `user-service`/
+ * `team-service`; only the respond.io-specific preflight + upload + job
+ * creation go through `respondio-migration-service` (the real routes as of
+ * S6, AC-MIG-56).
  *
  * "Start migration" is gated by a dry run for the EXACT current mapping
- * (AC-MIG-07/20). S0 decision (plan silent on how the gate survives a
- * reload): the gate is tracked in this hook's own state, set the moment a
- * `dry_run` job this session settles `done`, and compared against the
- * CURRENT form values' `computeMappingHash` on every render - so editing any
- * map row after a successful dry run immediately re-locks Start. The 24h /
- * mapping-hash rule is ALSO enforced server-side (`dry_run_required`,
- * AC-MIG-20) - this client gate is UX only, same as every other permission/
- * precondition gate in this codebase.
+ * (AC-MIG-07/20). The gate is tracked in this hook's own state, set the
+ * moment a `dry_run` job this session settles `done`, and compared against
+ * the CURRENT form values' `computeMappingHash` on every render - so editing
+ * any map row (or re-uploading a CSV) after a successful dry run immediately
+ * re-locks Start. The 24h / mapping-hash rule is ALSO enforced server-side
+ * (`dry_run_required`, AC-MIG-20) - this client gate is UX only.
+ *
+ * CSV mode (`source: 'csv'`, S6) skips preflight entirely - respond.io
+ * exposes no space data to a customer with zero API access, so
+ * channelMap/userMap/teamMap/lifecycleMap stay empty and the Channels/
+ * People/Lifecycle sections stay hidden (they already guard on
+ * `!preflight`). "Ready" for API mode needs a connection AND a settled
+ * preflight; for CSV mode it needs only an uploaded contacts file.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm, useWatch, type UseFormReturn } from 'react-hook-form';
+import { useForm, useWatch, type FieldPath, type UseFormReturn } from 'react-hook-form';
 import { toast } from '@/lib/toast';
 import { ApiError } from '@/lib/api-client';
 import { integrationService } from '@/services/integration-service';
@@ -33,7 +39,7 @@ import type { Connection } from '@/types/integration';
 import type { Workspace } from '@/types/omnichannel';
 import type { User } from '@/types/user';
 import type { Team } from '@/types/team';
-import type { MigrationJob, MigrationPreflight } from '@/types/respondio-migration';
+import type { MigrationJob, MigrationPreflight, MigrationUploadResult } from '@/types/respondio-migration';
 import { MIGRATION_JOB_IN_FLIGHT } from '@/types/respondio-migration';
 import {
   computeMappingHash,
@@ -47,6 +53,17 @@ import { migrationJobPath } from './paths';
 
 const POLL_MS = 2000;
 
+/** Top-level fields the setup form has a visible slot for - a 422 path
+ *  outside this set (e.g. a per-row `channelMap.0`/`lifecycleMap.0` leaf,
+ *  which has no dedicated error slot on its row component) falls back to a
+ *  toast instead of a silently-swallowed `setError`. */
+const FORM_FIELD_PATHS: ReadonlySet<string> = new Set([
+  'connectionId',
+  'workspaceId',
+  'messagesSince',
+  'contactsCsvKey',
+]);
+
 function describe(error: unknown): string {
   if (error instanceof ApiError) {
     const reason = (error.detail as { reason?: string } | null)?.reason;
@@ -55,6 +72,26 @@ function describe(error: unknown): string {
     return error.message;
   }
   return 'Something went wrong. Please try again.';
+}
+
+/** 422 `{fieldErrors}` -> RHF field errors for the fields this form renders
+ *  an error slot for; every other path is summarized as a toast (still
+ *  surfaced, never silently dropped). */
+function applyFieldErrors(form: UseFormReturn<MigrationFormValues>, error: unknown): boolean {
+  if (!(error instanceof ApiError) || error.status !== 422) return false;
+  const fieldErrors = (error.detail as { fieldErrors?: Record<string, string> } | null)?.fieldErrors;
+  if (!fieldErrors) return false;
+  const overflow: string[] = [];
+  for (const [path, message] of Object.entries(fieldErrors)) {
+    if (!message) continue;
+    if (FORM_FIELD_PATHS.has(path)) {
+      form.setError(path as FieldPath<MigrationFormValues>, { type: 'server', message });
+    } else {
+      overflow.push(message);
+    }
+  }
+  if (overflow.length > 0) toast.error(overflow.join(' '));
+  return true;
 }
 
 function compatibleTargetIds(sourceValue: string, preflight: MigrationPreflight): string[] {
@@ -78,6 +115,11 @@ function seedFromPreflight(pf: MigrationPreflight, tenantUsers: User[]): Partial
   };
 }
 
+export interface CsvUploadState {
+  fileName: string;
+  rowCount: number;
+}
+
 export interface UseMigrationFormResult {
   form: UseFormReturn<MigrationFormValues>;
   connections: Connection[];
@@ -89,9 +131,17 @@ export interface UseMigrationFormResult {
   compatibleTargetIds: (sourceValue: string) => string[];
   dryRunJob: MigrationJob | null;
   canStartMigration: boolean;
+  ready: boolean;
   runDryRun: () => Promise<void>;
   startMigration: () => Promise<void>;
   submitting: boolean;
+  contactsUpload: CsvUploadState | null;
+  contactsCsvHeaders: string[];
+  onContactsUploaded: (result: MigrationUploadResult, fileName: string) => void;
+  onContactsCleared: () => void;
+  snippetsUpload: CsvUploadState | null;
+  onSnippetsUploaded: (result: MigrationUploadResult, fileName: string) => void;
+  onSnippetsCleared: () => void;
 }
 
 export function useMigrationForm(): UseMigrationFormResult {
@@ -112,6 +162,9 @@ export function useMigrationForm(): UseMigrationFormResult {
   const [dryRunHash, setDryRunHash] = useState<string | null>(null);
   const [dryRunAt, setDryRunAt] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [contactsUpload, setContactsUpload] = useState<CsvUploadState | null>(null);
+  const [contactsCsvHeaders, setContactsCsvHeaders] = useState<string[]>([]);
+  const [snippetsUpload, setSnippetsUpload] = useState<CsvUploadState | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -133,12 +186,33 @@ export function useMigrationForm(): UseMigrationFormResult {
       .catch(() => setTenantTeams([]));
   }, []);
 
-  const connectionId = useWatch({ control: form.control, name: 'connectionId' }) ?? '';
+  const source = useWatch({ control: form.control, name: 'source' }) ?? 'api';
+  const connectionId = useWatch({ control: form.control, name: 'connectionId' }) ?? null;
   const workspaceId = useWatch({ control: form.control, name: 'workspaceId' }) ?? '';
 
+  // CSV mode has no preflight-derived space data at all - clear any stale
+  // API-mode state so the Channels/People/Lifecycle sections (all guarded on
+  // `!preflight`) stay hidden and the mapping hash never carries a ghost
+  // mapping from a mode the operator switched away from.
   useEffect(() => {
-    if (!connectionId || !workspaceId) {
+    if (source === 'csv') {
       setPreflight(null);
+      form.setValue('channelMap', [], { shouldDirty: true });
+      form.setValue('userMap', [], { shouldDirty: true });
+      form.setValue('teamMap', [], { shouldDirty: true });
+      form.setValue('lifecycleMap', [], { shouldDirty: true });
+    } else {
+      setContactsUpload(null);
+      setContactsCsvHeaders([]);
+      form.setValue('contactsCsvKey', null, { shouldDirty: true });
+      form.setValue('csvHeaderMap', {}, { shouldDirty: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source]);
+
+  useEffect(() => {
+    if (source !== 'api' || !connectionId || !workspaceId) {
+      if (source !== 'api') setPreflight(null);
       return;
     }
     let active = true;
@@ -163,7 +237,7 @@ export function useMigrationForm(): UseMigrationFormResult {
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionId, workspaceId]);
+  }, [source, connectionId, workspaceId]);
 
   const stopPolling = useCallback(() => {
     if (pollTimer.current) clearTimeout(pollTimer.current);
@@ -211,7 +285,7 @@ export function useMigrationForm(): UseMigrationFormResult {
       pollDryRun(job.id);
       toast.success('Dry run started.');
     } catch (error) {
-      toast.error(describe(error));
+      if (!applyFieldErrors(form, error)) toast.error(describe(error));
     } finally {
       setSubmitting(false);
     }
@@ -232,6 +306,9 @@ export function useMigrationForm(): UseMigrationFormResult {
     dryRunAt !== null &&
     Date.now() - dryRunAt < 24 * 3_600_000;
 
+  const ready =
+    !!workspaceId && (source === 'api' ? !!connectionId && !preflightLoading : !!watchedValues.contactsCsvKey);
+
   const startMigration = useCallback(async () => {
     if (!canStartMigration) return;
     setSubmitting(true);
@@ -241,11 +318,42 @@ export function useMigrationForm(): UseMigrationFormResult {
       toast.success('Migration started.');
       router.push(migrationJobPath(job.id));
     } catch (error) {
-      toast.error(describe(error));
+      if (!applyFieldErrors(form, error)) toast.error(describe(error));
     } finally {
       setSubmitting(false);
     }
   }, [canStartMigration, form, router]);
+
+  const onContactsUploaded = useCallback(
+    (result: MigrationUploadResult, fileName: string) => {
+      setContactsUpload({ fileName, rowCount: result.rowCount });
+      setContactsCsvHeaders(result.headers);
+      form.setValue('contactsCsvKey', result.key, { shouldDirty: true });
+      form.setValue('csvHeaderMap', {}, { shouldDirty: true });
+      form.clearErrors('contactsCsvKey');
+    },
+    [form],
+  );
+
+  const onContactsCleared = useCallback(() => {
+    setContactsUpload(null);
+    setContactsCsvHeaders([]);
+    form.setValue('contactsCsvKey', null, { shouldDirty: true });
+    form.setValue('csvHeaderMap', {}, { shouldDirty: true });
+  }, [form]);
+
+  const onSnippetsUploaded = useCallback(
+    (result: MigrationUploadResult, fileName: string) => {
+      setSnippetsUpload({ fileName, rowCount: result.rowCount });
+      form.setValue('snippetsCsvKey', result.key, { shouldDirty: true });
+    },
+    [form],
+  );
+
+  const onSnippetsCleared = useCallback(() => {
+    setSnippetsUpload(null);
+    form.setValue('snippetsCsvKey', null, { shouldDirty: true });
+  }, [form]);
 
   return {
     form,
@@ -258,8 +366,16 @@ export function useMigrationForm(): UseMigrationFormResult {
     compatibleTargetIds: (sourceValue: string) => (preflight ? compatibleTargetIds(sourceValue, preflight) : []),
     dryRunJob,
     canStartMigration,
+    ready,
     runDryRun,
     startMigration,
     submitting,
+    contactsUpload,
+    contactsCsvHeaders,
+    onContactsUploaded,
+    onContactsCleared,
+    snippetsUpload,
+    onSnippetsUploaded,
+    onSnippetsCleared,
   };
 }

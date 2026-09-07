@@ -1,5 +1,8 @@
 /**
- * Mock respond.io migration service (S0 MOCK - swap to real in S6, plan 33).
+ * Mock respond.io migration service (plan 33 S0; the real routes shipped in
+ * S1-S5 and the boundary flipped in S6, `respondio-migration-service.ts`).
+ * Survives as the frontend test fixture (`.mock.test.ts`) tuning every state
+ * without a live backend - no page imports this module anymore.
  * In-memory job store spanning every `MigrationJobStatus` (AC-MIG-09):
  * `done` dry run, `done` real run (with failures), `running` (advances on
  * each read, mirrors `broadcast-service.mock.ts`'s SENDING tick), `failed`,
@@ -22,9 +25,10 @@ import type {
   MigrationJob,
   MigrationPreflight,
   MigrationReport,
+  MigrationUploadResult,
 } from '@/types/respondio-migration';
 import type { ListQuery, ListResult } from '@/types/resource';
-import { computeMappingHash } from '@/types/respondio-migration';
+import { computeMappingHash, MIGRATION_JOB_IN_FLIGHT } from '@/types/respondio-migration';
 import { delay, runQuery, type QueryAdapter } from './mock-query';
 import type { RespondioMigrationService } from './respondio-migration-service';
 
@@ -55,6 +59,7 @@ function emptyReport(): MigrationReport {
       quickReplies: zeroCounts(),
     },
     messagesWithInferredTimestamp: 0,
+    messagesSkippedBeforeFloor: 0,
     blockers: [],
     samples: { contacts: [], messages: [] },
   };
@@ -185,6 +190,7 @@ function seed(): JobRow[] {
       finishedAt: iso(30 * MIN),
       createdAt: iso(36 * MIN),
       actorUserName: 'Demo Admin',
+      logs: [],
     });
   }
 
@@ -219,6 +225,7 @@ function seed(): JobRow[] {
       finishedAt: iso(2 * DAY - 40 * MIN),
       createdAt: iso(2 * DAY + 5 * MIN),
       actorUserName: 'Demo Admin',
+      logs: [],
     });
   }
 
@@ -245,6 +252,7 @@ function seed(): JobRow[] {
       finishedAt: null,
       createdAt: iso(7 * MIN),
       actorUserName: 'Demo Admin',
+      logs: [],
       _lastTick: NOW,
     });
   }
@@ -276,6 +284,7 @@ function seed(): JobRow[] {
       finishedAt: iso(5 * DAY - 90 * MIN),
       createdAt: iso(5 * DAY + 5 * MIN),
       actorUserName: 'Demo Admin',
+      logs: [],
     });
   }
 
@@ -302,6 +311,7 @@ function seed(): JobRow[] {
       finishedAt: iso(7 * DAY - 60_000),
       createdAt: iso(7 * DAY + 5 * MIN),
       actorUserName: 'Demo Admin',
+      logs: [],
     });
   }
 
@@ -328,6 +338,7 @@ function seed(): JobRow[] {
       finishedAt: iso(8 * DAY - 20 * MIN),
       createdAt: iso(8 * DAY + 5 * MIN),
       actorUserName: 'Demo Admin',
+      logs: [],
     });
   }
 
@@ -418,6 +429,14 @@ export const mockRespondioMigrationService: RespondioMigrationService = {
     return delay(mockPreflight(), 400);
   },
 
+  async uploadCsv(kind, file): Promise<MigrationUploadResult> {
+    const text = await file.text();
+    const [headerLine, ...dataLines] = text.split(/\r?\n/).filter((l) => l.length > 0);
+    const headers = (headerLine ?? '').split(',').map((h) => h.trim());
+    void kind;
+    return delay({ key: `mock:csv:${file.name}`, rowCount: dataLines.length, headers }, 300);
+  },
+
   async listJobs(query: ListQuery): Promise<ListResult<MigrationJob>> {
     tickAll();
     let filteredBySegment = rows;
@@ -436,16 +455,23 @@ export const mockRespondioMigrationService: RespondioMigrationService = {
   },
 
   async createJob(input: CreateMigrationJobInput): Promise<MigrationJob> {
-    if (!input.connectionId || !input.workspaceId) {
+    // CSV mode carries no connection at all for a customer with zero API
+    // access (S5, D-A6-25) - only an API-mode job requires one.
+    if ((input.source === 'api' && !input.connectionId) || !input.workspaceId) {
       throw fieldErrorsError('Choose a connection and a target workspace.', {
-        connectionId: input.connectionId ? '' : 'Choose a connection.',
+        connectionId: input.source === 'api' && !input.connectionId ? 'Choose a connection.' : '',
         workspaceId: input.workspaceId ? '' : 'Choose a target workspace.',
       });
     }
-    const key = ledgerKey(input.connectionId, input.workspaceId);
+    if (input.source === 'csv' && !input.contactsCsvKey) {
+      throw fieldErrorsError('Upload a contacts CSV before running a CSV-mode migration.', {
+        contactsCsvKey: 'Upload a contacts CSV before running a CSV-mode migration.',
+      });
+    }
+    const key = ledgerKey(input.connectionId ?? '', input.workspaceId);
     const inFlight = rows.find(
       (r) =>
-        r.connectionId === input.connectionId &&
+        r.connectionId === (input.connectionId ?? '') &&
         r.workspaceId === input.workspaceId &&
         (r.status === 'pending' || r.status === 'running'),
     );
@@ -465,7 +491,7 @@ export const mockRespondioMigrationService: RespondioMigrationService = {
       id,
       mode: input.mode,
       source: input.source,
-      connectionId: input.connectionId,
+      connectionId: input.connectionId ?? '',
       spaceLabel: mockPreflight().spaceLabel,
       workspaceId: input.workspaceId,
       workspaceName: MOCK_WORKSPACE_NAME,
@@ -481,6 +507,7 @@ export const mockRespondioMigrationService: RespondioMigrationService = {
       finishedAt: null,
       createdAt: new Date().toISOString(),
       actorUserName: 'You',
+      logs: [],
       _lastTick: Date.now(),
     };
     rows = [row, ...rows];
@@ -504,6 +531,17 @@ export const mockRespondioMigrationService: RespondioMigrationService = {
     }
 
     return delay(toJob(row), 300);
+  },
+
+  async cancelJob(jobId: string): Promise<MigrationJob> {
+    const row = rows.find((r) => r.id === jobId);
+    if (!row) throw new ApiError('Migration job not found.', 404, null, null);
+    if (!MIGRATION_JOB_IN_FLIGHT.has(row.status)) {
+      throw conflictError('not_in_progress', 'This migration is not in progress.');
+    }
+    row.status = 'aborted';
+    row.finishedAt = new Date().toISOString();
+    return delay(toJob(row), 150);
   },
 
   async downloadFailuresCsv(jobId: string): Promise<string> {

@@ -158,6 +158,39 @@ export default function MigrationJobDetailPage({ params }: { params: Promise<{ j
         {job.failureCount > 0 && (
           <MigrationFailuresTable jobId={job.id} rows={job.failureSample} totalFailures={job.failureCount} />
         )}
+
+        <Card className="mt-5">
+          <CardHeader>
+            <CardHeading>
+              <CardTitle>Logs</CardTitle>
+            </CardHeading>
+          </CardHeader>
+          <CardContent>
+            {job.logs.length === 0 ? (
+              <p className="text-muted-foreground text-sm">No log entries yet.</p>
+            ) : (
+              <ul className="space-y-1.5 font-mono text-xs">
+                {job.logs.map((entry, i) => (
+                  <li key={i} className="flex flex-wrap gap-x-2 gap-y-0.5">
+                    <span className="text-muted-foreground shrink-0">{formatDateTime(entry.ts)}</span>
+                    <span
+                      className={
+                        entry.level === 'error'
+                          ? 'text-destructive shrink-0 uppercase'
+                          : entry.level === 'warning'
+                            ? 'shrink-0 uppercase text-amber-600'
+                            : 'text-muted-foreground shrink-0 uppercase'
+                      }
+                    >
+                      {entry.level}
+                    </span>
+                    <span className="min-w-0 break-words">{entry.message}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
       </Container>
     </RequirePermission>
   );

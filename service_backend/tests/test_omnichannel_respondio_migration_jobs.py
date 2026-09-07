@@ -111,6 +111,33 @@ def _patch_client_factory(monkeypatch, handler):
     monkeypatch.setattr(RespondIoClient, "from_connection", staticmethod(fake_from_connection))
 
 
+def test_gateway_contract_files_carry_no_migration_trace():
+    """S6 (AC-MIG-55) - a content guard, not a `git diff` (which depends on
+    the checkout's branch state and would be flaky across a rebase/merge):
+    the public gateway router/schemas and the consumer guide must carry no
+    trace of anything this plan introduced. A real coupling (a shared
+    helper, a doc cross-reference, a schema field) would show up as one of
+    these needles landing in either file."""
+    import pathlib
+
+    backend_root = pathlib.Path(__file__).resolve().parents[1]
+    repo_root = backend_root.parent
+    gateway_router = (backend_root / "modules/omnichannel/routers/api_v1.py").read_text()
+    guide = (repo_root / "documentation/omnichannel/consumer-integration-guide.md").read_text()
+    needles = (
+        "respondio_migration",
+        "MigrationJobItem",
+        "MigrationPreflight",
+        "migration_refs",
+        "/migration/jobs",
+        "/migration/preflight",
+        "/migration/uploads",
+    )
+    for needle in needles:
+        assert needle not in gateway_router, f"{needle!r} leaked into the public gateway router"
+        assert needle not in guide, f"{needle!r} leaked into the consumer integration guide"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # HTTP route tests (AC-MIG-19..21, 50..53)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -253,6 +280,40 @@ def test_create_job_requires_manage_not_read(client, session_factory):
     assert res.status_code == 403
 
 
+def test_get_job_surfaces_milestone_log_list_does_not(client, session_factory):
+    """S6 (AC-MIG-08) - `JobService.log()` writes to `background_jobs.logs_json`
+    on every abort/backoff/page milestone; the detail read now surfaces it,
+    the list read stays lean (no per-row log payload)."""
+    ws_id = _default_workspace_id(client, _auth(client))
+    h = _auth(client)
+
+    db = session_factory()
+    from app.jobs.service import JobService
+    from app.models.background_job import JOB_DONE, BackgroundJob
+
+    job = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID, type=MIGRATION_JOB_TYPE, status=JOB_DONE,
+        payload_json={"workspaceId": ws_id, "mode": "dry_run"},
+    )
+    db.add(job)
+    db.commit()
+    JobService(db).log(job, "Aborted after 3 contacts.", level="warning")
+    job_id = job.id
+    db.close()
+
+    got = client.get(f"/omnichannel/migration/jobs/{job_id}", headers=h)
+    assert got.status_code == 200
+    logs = got.json()["logs"]
+    assert len(logs) == 1
+    assert logs[0]["level"] == "warning"
+    assert logs[0]["message"] == "Aborted after 3 contacts."
+
+    listed = client.get("/omnichannel/migration/jobs", headers=h)
+    assert listed.status_code == 200
+    row = next(j for j in listed.json()["data"] if j["id"] == job_id)
+    assert row["logs"] == []
+
+
 def test_list_and_get_job_tenant_scoped(client, monkeypatch, session_factory):
     h = _auth(client)
     connection_id = _create_connection(client, h)
@@ -293,6 +354,69 @@ def test_list_and_get_job_tenant_scoped(client, monkeypatch, session_factory):
     assert listed2.json()["data"] == []
     got2 = client.get(f"/omnichannel/migration/jobs/{job_id}", headers=h2)
     assert got2.status_code == 404
+
+
+def test_list_jobs_search_sort_and_filter(client, session_factory):
+    """S6 (AC-MIG-02/56) - the list's search box, column sort and Filter
+    popover all resolve against `spaceLabel`/`workspaceName`/`mode`, none of
+    which are native `background_jobs` columns (`_list_row_fields`). Rows are
+    hand-built directly (mirrors `test_create_job_migration_in_progress_409`)
+    rather than via two respond.io connections, which the one-active-per-
+    -tenant partial index would refuse."""
+    h = _auth(client)
+    ws_id = _default_workspace_id(client, h)
+
+    from app.models.background_job import JOB_DONE, BackgroundJob
+
+    db = session_factory()
+    db.add_all(
+        [
+            BackgroundJob(
+                tenant_id=DEFAULT_TENANT_ID, type=MIGRATION_JOB_TYPE, status=JOB_DONE,
+                payload_json={"workspaceId": ws_id, "mode": "dry_run", "spaceLabel": "Acme Support", "workspaceName": "Main"},
+            ),
+            BackgroundJob(
+                tenant_id=DEFAULT_TENANT_ID, type=MIGRATION_JOB_TYPE, status=JOB_DONE,
+                payload_json={"workspaceId": ws_id, "mode": "run", "spaceLabel": "Acme Support", "workspaceName": "Main"},
+            ),
+            BackgroundJob(
+                tenant_id=DEFAULT_TENANT_ID, type=MIGRATION_JOB_TYPE, status=JOB_DONE,
+                payload_json={"workspaceId": ws_id, "mode": "dry_run", "spaceLabel": "Zed Corp", "workspaceName": "Main"},
+            ),
+        ]
+    )
+    db.commit()
+    db.close()
+
+    # Free-text search over spaceLabel (case-insensitive substring).
+    searched = client.get("/omnichannel/migration/jobs?search=zed", headers=h)
+    assert searched.status_code == 200
+    labels = {j["spaceLabel"] for j in searched.json()["data"]}
+    assert labels == {"Zed Corp"}
+
+    # Column sort ascending by spaceLabel (Acme Support < Zed Corp).
+    sorted_asc = client.get(
+        "/omnichannel/migration/jobs?sortBy=spaceLabel&sortDir=asc", headers=h
+    )
+    assert sorted_asc.status_code == 200
+    ordered_labels = [j["spaceLabel"] for j in sorted_asc.json()["data"]]
+    assert ordered_labels.index("Acme Support") < ordered_labels.index("Zed Corp")
+
+    # Filter popover: mode == "run" (a single leaf FilterGroup, the frontend's
+    # own `{combinator, rules}` wire shape).
+    import json
+
+    mode_filter = json.dumps(
+        {"kind": "group", "combinator": "and", "rules": [{"kind": "condition", "field": "mode", "operator": "eq", "value": "run"}]}
+    )
+    filtered = client.get(f"/omnichannel/migration/jobs?filter={mode_filter}", headers=h)
+    assert filtered.status_code == 200
+    assert filtered.json()["data"] and all(j["mode"] == "run" for j in filtered.json()["data"])
+
+    # An unparseable filter never breaks the list read - it just goes unfiltered.
+    garbage = client.get("/omnichannel/migration/jobs?filter=not-json", headers=h)
+    assert garbage.status_code == 200
+    assert len(garbage.json()["data"]) >= 3
 
 
 def test_get_job_uniform_404_for_missing_and_wrong_type(client, session_factory):

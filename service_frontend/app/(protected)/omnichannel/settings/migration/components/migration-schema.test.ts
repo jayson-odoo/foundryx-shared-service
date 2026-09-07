@@ -22,6 +22,21 @@ describe('migrationFormSchema', () => {
     };
     expect(migrationFormSchema.safeParse(values).success).toBe(true);
   });
+
+  it('CSV mode needs no connection or channel map, only an uploaded contacts CSV (AC-MIG-46/47)', () => {
+    const noUpload: MigrationFormValues = {
+      ...EMPTY_MIGRATION_FORM_VALUES,
+      source: 'csv',
+      workspaceId: 'wsp-1',
+    };
+    expect(migrationFormSchema.safeParse(noUpload).success).toBe(false);
+
+    const withUpload: MigrationFormValues = {
+      ...noUpload,
+      contactsCsvKey: 'conn:1:omnichannel/migration/uploads/abc/contacts.csv',
+    };
+    expect(migrationFormSchema.safeParse(withUpload).success).toBe(true);
+  });
 });
 
 describe('computeMappingHash', () => {
@@ -68,5 +83,13 @@ describe('computeMappingHash', () => {
     const dryRunInput = toCreateMigrationJobInput({ ...EMPTY_MIGRATION_FORM_VALUES, ...base, source: 'api' }, 'dry_run');
     const runInput = toCreateMigrationJobInput({ ...EMPTY_MIGRATION_FORM_VALUES, ...base, source: 'api' }, 'run');
     expect(computeMappingHash(dryRunInput)).toBe(computeMappingHash(runInput));
+  });
+
+  it('changes when a re-uploaded CSV or its header map changes (S5 D-A6-25 parity)', () => {
+    const withCsv = { ...base, contactsCsvKey: 'conn:1:a/contacts.csv', csvHeaderMap: { firstName: 'First Name' } };
+    const differentFile = { ...withCsv, contactsCsvKey: 'conn:1:b/contacts.csv' };
+    const differentMap = { ...withCsv, csvHeaderMap: { firstName: 'FN' } };
+    expect(computeMappingHash(withCsv)).not.toBe(computeMappingHash(differentFile));
+    expect(computeMappingHash(withCsv)).not.toBe(computeMappingHash(differentMap));
   });
 });

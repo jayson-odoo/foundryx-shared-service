@@ -1737,6 +1737,17 @@ class MigrationFailureRow(ApiModel):
     action: str
 
 
+class MigrationJobLogEntry(ApiModel):
+    """One milestone log line (`JobService.log()`'s `{ts, level, message}`
+    shape off `background_jobs.logs_json`) - S6 (AC-MIG-08) surfaces these on
+    the detail page; S0-S2 wrote them (rate-limit backoff, abort, page
+    milestones) but never plumbed them past `logs_json` itself."""
+
+    ts: datetime
+    level: str
+    message: str
+
+
 # ── Plan 33 S5 - CSV upload (plan §5.2 extension, AC-MIG-46..49) ────────────
 class MigrationUploadResult(ApiModel):
     """`POST /omnichannel/migration/uploads` response - the storage KEY the
@@ -1775,6 +1786,11 @@ class MigrationJobItem(ApiModel):
     finishedAt: Optional[datetime] = None
     createdAt: datetime
     actorUserName: Optional[str] = None
+    # S6 (AC-MIG-08) - the milestone log the detail page renders. Omitted
+    # from the LIST read (`_to_item(..., include_logs=False)`) - a page of
+    # 25 jobs has no use for each row's own log line-by-line, and every
+    # abort/backoff/page-milestone line would bloat that response for free.
+    logs: List[MigrationJobLogEntry] = []
 
 
 class MigrationJobListResponse(ApiModel):

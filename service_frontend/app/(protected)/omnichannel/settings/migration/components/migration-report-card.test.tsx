@@ -17,6 +17,7 @@ function report(overrides: Partial<MigrationReport> = {}): MigrationReport {
       quickReplies: { ...zero },
     },
     messagesWithInferredTimestamp: 0,
+    messagesSkippedBeforeFloor: 0,
     blockers: [],
     samples: { contacts: [], messages: [] },
     ...overrides,
@@ -43,5 +44,12 @@ describe('MigrationReportCard (AC-MIG-08)', () => {
     expect(screen.queryByText(/message timestamps were inferred/)).not.toBeInTheDocument();
     rerender(<MigrationReportCard report={report({ messagesWithInferredTimestamp: 42 })} />);
     expect(screen.getByText(/42 message timestamps were inferred/)).toBeInTheDocument();
+  });
+
+  it('renders the messagesSince-floor note only when non-zero (S4 D-A6-22)', () => {
+    const { rerender } = render(<MigrationReportCard report={report({ messagesSkippedBeforeFloor: 0 })} />);
+    expect(screen.queryByText(/older than the "Messages since" floor/)).not.toBeInTheDocument();
+    rerender(<MigrationReportCard report={report({ messagesSkippedBeforeFloor: 7 })} />);
+    expect(screen.getByText(/7 messages were older than the "Messages since" floor/)).toBeInTheDocument();
   });
 });

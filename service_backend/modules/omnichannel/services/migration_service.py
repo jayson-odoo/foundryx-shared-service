@@ -34,6 +34,7 @@ from app.models.background_job import (
 )
 from app.models.connection import Connection
 from app.models.user import User
+from app.schemas.filters import FilterCondition, FilterGroup, FilterRule
 from app.secrets import decrypt_secret
 from app.services.storage import storage_for_tenant
 from app.status_engine.scoped import get_scope_status
@@ -121,6 +122,23 @@ MIGRATION_UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 # idempotent") - this constant only paces how often a cooperative abort is
 # honoured mid-file, not a resume point.
 CSV_CONTACTS_CHECKPOINT_BATCH = 100
+
+# S6 (AC-MIG-02/56) - the job-history list's search/sort/filter run IN PYTHON
+# over every one of the tenant's migration-type rows rather than a SQL
+# WHERE/ORDER BY: `spaceLabel`/`workspaceName`/`mode` live inside
+# `payload_json`, and a portable cross-dialect JSON-path clause (this suite
+# runs on in-memory SQLite, production on Postgres) is not worth building for
+# a list that is bounded by construction - `migration_in_progress` (AC-MIG-21)
+# already forbids more than one non-terminal job per workspace, so a tenant's
+# lifetime migration-job count stays small. This cap is a defensive ceiling,
+# not an expected size.
+MAX_LIST_SCAN_JOBS = 5000
+# Fields the job-history list's Filter popover/column sort may address
+# (`use-migration-list-config.tsx` `FILTER_FIELDS` + the sortable columns) -
+# whitelisted exactly like `filter_translator.py`'s `ColumnMap`, just resolved
+# against a plain per-row dict instead of a SQLAlchemy column.
+_LIST_TEXT_FIELDS = ("spaceLabel", "workspaceName")
+_LIST_SORT_FIELDS = ("spaceLabel", "workspaceName", "mode", "status", "createdAt", "startedAt", "finishedAt")
 
 # A workspace with more contacts than this skips the rest of the preflight's
 # distinct-lifecycle pass and reports a warning instead of walking the whole
@@ -839,6 +857,100 @@ def _aborted(db: Session, job_id: str) -> bool:
     return db.query(BackgroundJob.status).filter(BackgroundJob.id == job_id).scalar() == JOB_ABORTED
 
 
+def _list_row_fields(job: BackgroundJob) -> Dict[str, Any]:
+    """The subset of a job's fields the S6 list search/sort/filter can
+    address - `spaceLabel`/`workspaceName`/`mode` come from `payload_json`
+    (there is no native column for them), the rest are native `BackgroundJob`
+    columns."""
+    payload = job.payload_json or {}
+    return {
+        "spaceLabel": str(payload.get("spaceLabel") or ""),
+        "workspaceName": str(payload.get("workspaceName") or ""),
+        "mode": str(payload.get("mode") or ""),
+        "status": job.status,
+        "createdAt": job.created_at,
+        "startedAt": job.started_at,
+        "finishedAt": job.finished_at,
+    }
+
+
+def _parse_filter_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    try:
+        raw = str(value).replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(raw)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _filter_condition_matches(cond: FilterCondition, values: Dict[str, Any]) -> bool:
+    """Evaluates ONE whitelisted leaf against a job's `_list_row_fields()`
+    dict - the in-memory sibling of `app/services/filter_translator.py`'s SQL
+    clause builder, used here because `spaceLabel`/`workspaceName`/`mode` have
+    no native column to build a portable (SQLite-testable, Postgres-real)
+    clause over (see `MAX_LIST_SCAN_JOBS`'s own comment). An unwhitelisted
+    field or an unknown operator matches everything (never 500s a list read
+    over a stray query param)."""
+    if cond.field not in _LIST_SORT_FIELDS:
+        return True
+    value = values.get(cond.field)
+    op = cond.operator
+    if cond.field in _LIST_TEXT_FIELDS:
+        if op == "contains":
+            return str(cond.value or "").lower() in str(value or "").lower()
+        if op == "eq":
+            return str(value or "") == str(cond.value or "")
+        if op == "neq":
+            return str(value or "") != str(cond.value or "")
+        return True
+    if cond.field == "mode" or cond.field == "status":
+        if op == "eq":
+            return value == cond.value
+        if op == "neq":
+            return value != cond.value
+        if op == "in":
+            options = cond.value if isinstance(cond.value, list) else [cond.value]
+            return value in options
+        return True
+    # createdAt / startedAt / finishedAt - date comparisons.
+    if not isinstance(value, datetime):
+        return op not in ("before", "after", "between")
+    if op == "before":
+        parsed = _parse_filter_datetime(cond.value)
+        return parsed is not None and value < parsed
+    if op == "after":
+        parsed = _parse_filter_datetime(cond.value)
+        return parsed is not None and value > parsed
+    if op == "between" and isinstance(cond.value, list) and len(cond.value) >= 2:
+        lo, hi = _parse_filter_datetime(cond.value[0]), _parse_filter_datetime(cond.value[1])
+        return lo is not None and hi is not None and lo <= value <= hi
+    return True
+
+
+def _filter_rule_matches(rule: FilterRule, values: Dict[str, Any]) -> bool:
+    if rule.kind == "group":
+        if not rule.rules:
+            return True
+        results = [_filter_rule_matches(r, values) for r in rule.rules]
+        return all(results) if rule.combinator == "and" else any(results)
+    return _filter_condition_matches(rule, values)
+
+
+def _parse_list_filter(filter_raw: Optional[str]) -> Optional[FilterGroup]:
+    """A malformed/foreign filter payload is ignored (falls back to
+    "unfiltered") rather than 422ing a plain list read - this list has no
+    save-time contract to protect (unlike a saved broadcast audience filter,
+    plan 29 D-4)."""
+    if not filter_raw:
+        return None
+    try:
+        return FilterGroup.model_validate_json(filter_raw)
+    except Exception:  # noqa: BLE001 - defensive, never break the list read
+        return None
+
+
 class MigrationService:
     def __init__(self, db: Session):
         self.db = db
@@ -1054,22 +1166,67 @@ class MigrationService:
     # ── reads ────────────────────────────────────────────────────────────────
 
     def list_jobs(
-        self, tenant_id: str, *, page: int, page_size: int, status_filter: Optional[str]
+        self,
+        tenant_id: str,
+        *,
+        page: int,
+        page_size: int,
+        status_filter: Optional[str],
+        search: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        sort_desc: bool = True,
+        filter_raw: Optional[str] = None,
     ) -> MigrationJobListResponse:
-        rows, total = self.jobs.list(
-            tenant_id, job_type=MIGRATION_JOB_TYPE, status=status_filter, page=page, page_size=page_size
+        """S2 shipped pagination + the status segment only; S6 (AC-MIG-02/56)
+        adds the list's free-text search, column sort and Filter popover -
+        all evaluated IN PYTHON over this tenant's full migration-job set
+        (`MAX_LIST_SCAN_JOBS`'s own comment explains why: `spaceLabel`/
+        `workspaceName`/`mode` have no native column to sort/filter
+        portably)."""
+        q = self.db.query(BackgroundJob).filter(
+            BackgroundJob.tenant_id == tenant_id, BackgroundJob.type == MIGRATION_JOB_TYPE
         )
-        actor_ids = {r.actor_user_id for r in rows if r.actor_user_id}
+        if status_filter:
+            q = q.filter(BackgroundJob.status == status_filter)
+        rows = q.order_by(BackgroundJob.created_at.desc()).limit(MAX_LIST_SCAN_JOBS).all()
+
+        filter_group = _parse_list_filter(filter_raw)
+        row_fields = {r.id: _list_row_fields(r) for r in rows}
+        if search:
+            needle = search.strip().lower()
+            if needle:
+                rows = [r for r in rows if needle in row_fields[r.id]["spaceLabel"].lower() or needle in row_fields[r.id]["workspaceName"].lower()]
+        if filter_group is not None:
+            rows = [r for r in rows if _filter_rule_matches(filter_group, row_fields[r.id])]
+
+        sort_field = sort_by if sort_by in _LIST_SORT_FIELDS else "createdAt"
+
+        _MIN_DT = datetime.min.replace(tzinfo=timezone.utc)
+
+        def sort_key(job: BackgroundJob):
+            value = row_fields[job.id][sort_field]
+            if isinstance(value, str):
+                return value.lower()
+            if value is None:
+                return _MIN_DT
+            return value
+
+        rows.sort(key=sort_key, reverse=sort_desc)
+
+        total = len(rows)
+        page_rows = rows[page * page_size : page * page_size + page_size]
+
+        actor_ids = {r.actor_user_id for r in page_rows if r.actor_user_id}
         actor_names: Dict[str, str] = {}
         if actor_ids:
             for u in self.db.query(User).filter(User.tenant_id == tenant_id, User.id.in_(actor_ids)).all():
                 actor_names[u.id] = u.name or u.email
-        items = [self._to_item(r, tenant_id, actor_names=actor_names) for r in rows]
+        items = [self._to_item(r, tenant_id, actor_names=actor_names) for r in page_rows]
         return MigrationJobListResponse(data=items, total=total, page=page)
 
     def get_job(self, tenant_id: str, job_id: str) -> MigrationJobItem:
         job = self._require_job(tenant_id, job_id)
-        return self._to_item(job, tenant_id)
+        return self._to_item(job, tenant_id, include_logs=True)
 
     def failures_csv(self, tenant_id: str, job_id: str) -> str:
         """S5 (D-A6-23/25) - `finish_done()` now writes the FULL failure set
@@ -1105,7 +1262,12 @@ class MigrationService:
         return buf.getvalue()
 
     def _to_item(
-        self, job: BackgroundJob, tenant_id: str, *, actor_names: Optional[Dict[str, str]] = None
+        self,
+        job: BackgroundJob,
+        tenant_id: str,
+        *,
+        actor_names: Optional[Dict[str, str]] = None,
+        include_logs: bool = False,
     ) -> MigrationJobItem:
         payload = job.payload_json or {}
         cursor = job.cursor_json or {}
@@ -1155,6 +1317,7 @@ class MigrationService:
             finishedAt=job.finished_at,
             createdAt=job.created_at,
             actorUserName=actor_name,
+            logs=list(job.logs_json or []) if include_logs else [],
         )
 
     # ── cancel (AC-MIG-28) ───────────────────────────────────────────────────

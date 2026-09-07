@@ -8,12 +8,16 @@
  * and can never be added to or removed from - only its target changes.
  */
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { LoaderCircle } from 'lucide-react';
 import { SearchSelect } from '@/components/platform/search-select';
 import { StatusBadge } from '@/components/platform/status-badge';
+import { ClampedText } from '@/components/platform/clamped-text';
+import { useDatetime } from '@/hooks/use-datetime';
+import { utcToZonedInputValue, zonedTimeToUtc } from '@/lib/datetime';
 import type { Connection } from '@/types/integration';
 import type { Workspace } from '@/types/omnichannel';
 import type { Team } from '@/types/team';
@@ -25,42 +29,149 @@ import type {
   MigrationUserMapEntry,
   MigrationTeamMapEntry,
   MigrationLifecycleMapEntry,
+  MigrationSourceKind,
 } from '@/types/respondio-migration';
 import { ChannelMapRow } from './channel-map-row';
 import { UserMapRow } from './user-map-row';
 import { LifecycleMapRow } from './lifecycle-map-row';
 import { MigrationReportCard } from './migration-report-card';
 import { MIGRATION_STATUS_REGISTRY } from './migration-status';
+import { CsvUploadField } from './csv-upload-field';
+import { CsvHeaderMapSection } from './csv-header-map-section';
+import type { CsvUploadState } from './use-migration-form';
+import type { MigrationUploadResult } from '@/types/respondio-migration';
+
+const SOURCE_KIND_OPTIONS = [
+  { label: 'respond.io Developer API', value: 'api' },
+  { label: 'CSV export', value: 'csv' },
+];
 
 export function SourceSection({
+  source,
+  onSourceChange,
   connections,
-  value,
+  connectionId,
+  onConnectionChange,
+  connectionError,
+  preflight,
+  preflightLoading,
+  contactsUpload,
+  contactsCsvHeaders,
+  contactsCsvError,
+  onContactsUploaded,
+  onContactsCleared,
+  csvHeaderMap,
+  onCsvHeaderMapChange,
+  snippetsUpload,
+  onSnippetsUploaded,
+  onSnippetsCleared,
   editing,
-  onChange,
-  error,
 }: {
+  source: MigrationSourceKind;
+  onSourceChange: (next: MigrationSourceKind) => void;
   connections: Connection[];
-  value: string;
+  connectionId: string | null;
+  onConnectionChange: (id: string) => void;
+  connectionError?: string;
+  preflight: MigrationPreflight | null;
+  preflightLoading: boolean;
+  contactsUpload: CsvUploadState | null;
+  contactsCsvHeaders: string[];
+  contactsCsvError?: string;
+  onContactsUploaded: (result: MigrationUploadResult, fileName: string) => void;
+  onContactsCleared: () => void;
+  csvHeaderMap: Record<string, string>;
+  onCsvHeaderMapChange: (next: Record<string, string>) => void;
+  snippetsUpload: CsvUploadState | null;
+  onSnippetsUploaded: (result: MigrationUploadResult, fileName: string) => void;
+  onSnippetsCleared: () => void;
   editing: boolean;
-  onChange: (id: string) => void;
-  error?: string;
 }) {
   return (
     <Card>
       <CardHeader>
         <CardTitle>Source</CardTitle>
       </CardHeader>
-      <CardContent className="py-4">
+      <CardContent className="space-y-5 py-4">
         <div className="max-w-sm space-y-1.5">
-          <label className="text-sm text-muted-foreground">respond.io connection *</label>
+          <label className="text-sm text-muted-foreground">Method</label>
           <SearchSelect
-            ariaLabel="respond.io connection"
-            options={connections.map((c) => ({ label: c.name, value: c.id }))}
-            value={value || null}
-            onChange={onChange}
+            ariaLabel="Migration source method"
+            options={SOURCE_KIND_OPTIONS}
+            value={source}
+            onChange={(v) => onSourceChange(v as MigrationSourceKind)}
             disabled={!editing}
           />
-          {error && <p className="text-destructive text-xs">{error}</p>}
+        </div>
+
+        {source === 'api' ? (
+          <div className="max-w-sm space-y-1.5">
+            <label className="text-sm text-muted-foreground">respond.io connection *</label>
+            <SearchSelect
+              ariaLabel="respond.io connection"
+              options={connections.map((c) => ({ label: c.name, value: c.id }))}
+              value={connectionId}
+              onChange={onConnectionChange}
+              disabled={!editing}
+            />
+            {connectionError && <p className="text-destructive text-xs">{connectionError}</p>}
+            {preflightLoading && (
+              <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                <LoaderCircle className="size-3 animate-spin" /> Checking the connection…
+              </p>
+            )}
+            {!preflightLoading && preflight && (preflight.warnings.length > 0 || !preflight.apiAvailable) && (
+              <ul className="space-y-1 pt-1">
+                {(preflight.warnings.length > 0
+                  ? preflight.warnings
+                  : ['Could not reach respond.io with this connection.']
+                ).map((w, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm">
+                    <Badge
+                      variant={preflight.apiAvailable ? 'warning' : 'destructive'}
+                      appearance="light"
+                      size="sm"
+                      className="mt-0.5 shrink-0"
+                    >
+                      {preflight.apiAvailable ? 'Notice' : 'Blocked'}
+                    </Badge>
+                    <ClampedText text={w} lines={2} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : (
+          <div className="max-w-md space-y-5">
+            <CsvUploadField
+              kind="contacts"
+              label="Contacts CSV *"
+              editing={editing}
+              fileName={contactsUpload?.fileName ?? null}
+              rowCount={contactsUpload?.rowCount ?? null}
+              onUploaded={onContactsUploaded}
+              onClear={onContactsCleared}
+              error={contactsCsvError}
+            />
+            <CsvHeaderMapSection
+              headers={contactsCsvHeaders}
+              value={csvHeaderMap}
+              editing={editing}
+              onChange={onCsvHeaderMapChange}
+            />
+          </div>
+        )}
+
+        <div className="max-w-md">
+          <CsvUploadField
+            kind="snippets"
+            label="Quick replies CSV"
+            editing={editing}
+            fileName={snippetsUpload?.fileName ?? null}
+            rowCount={snippetsUpload?.rowCount ?? null}
+            onUploaded={onSnippetsUploaded}
+            onClear={onSnippetsCleared}
+          />
         </div>
       </CardContent>
     </Card>
@@ -271,6 +382,12 @@ export function ScopeSection({
   editing: boolean;
   onChange: (next: { contactsOnly: boolean; messagesSince: string | null }) => void;
 }) {
+  // `messagesSince` is a FLOOR on the operator's own calendar day, converted
+  // through their timezone preference (`zonedTimeToUtc`) rather than treated
+  // as UTC midnight - a `<input type="date">` value has no timezone of its
+  // own, and reading it as UTC would silently shift the floor by a day near
+  // a timezone boundary (`lib/datetime.ts`, the `useDatetime()` mandate).
+  const { timeZone } = useDatetime();
   return (
     <Card>
       <CardHeader>
@@ -290,11 +407,12 @@ export function ScopeSection({
           <Input
             type="date"
             aria-label="Messages since"
-            value={messagesSince ? messagesSince.slice(0, 10) : ''}
+            value={messagesSince ? utcToZonedInputValue(messagesSince, timeZone).slice(0, 10) : ''}
             disabled={!editing || contactsOnly}
             onChange={(e) => {
               const v = e.target.value;
-              onChange({ contactsOnly, messagesSince: v ? new Date(`${v}T00:00:00Z`).toISOString() : null });
+              const utc = v ? zonedTimeToUtc(`${v}T00:00`, timeZone) : null;
+              onChange({ contactsOnly, messagesSince: utc ? utc.toISOString() : null });
             }}
           />
         </div>
@@ -304,25 +422,20 @@ export function ScopeSection({
 }
 
 export function ReviewSection({
-  connectionId,
-  workspaceId,
-  preflightLoading,
+  ready,
   dryRunJob,
   canStartMigration,
   submitting,
   onRunDryRun,
   onStartMigration,
 }: {
-  connectionId: string;
-  workspaceId: string;
-  preflightLoading: boolean;
+  ready: boolean;
   dryRunJob: MigrationJob | null;
   canStartMigration: boolean;
   submitting: boolean;
   onRunDryRun: () => void;
   onStartMigration: () => void;
 }) {
-  const ready = !!connectionId && !!workspaceId && !preflightLoading;
   return (
     <Card>
       <CardHeader>
