@@ -105,6 +105,51 @@ describe('NodeConfigDrawer - omnichannel + AI Agent field paths', () => {
     expect(onConfigChange).toHaveBeenCalledWith(node.id, { channelId: 'chn-1' });
   });
 
+  // Plan 32 / A7a S6 (AC-CHN-58) - the independent channel-TYPE filter.
+  it('renders the channel-type picker for omnichannel.message_received, "All types" first', async () => {
+    const user = userEvent.setup();
+    const { doc } = docWith('omnichannel.message_received');
+    const node = doc.nodes[0];
+    render(
+      <NodeConfigDrawer
+        node={node}
+        doc={doc}
+        editing
+        templateOptions={[]}
+        metadata={BASE_METADATA}
+        onConfigChange={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByLabelText('Channel type');
+    expect(trigger).toHaveTextContent('All types');
+    await user.click(trigger);
+    expect(screen.getByText('WhatsApp')).toBeInTheDocument();
+    expect(screen.getByText('Messenger')).toBeInTheDocument();
+    expect(screen.getByText('Instagram')).toBeInTheDocument();
+  });
+
+  it('selecting a channel type writes it; "All types" writes null', async () => {
+    const user = userEvent.setup();
+    const { doc } = docWith('omnichannel.message_received');
+    const node = doc.nodes[0];
+    const onConfigChange = vi.fn();
+    render(
+      <NodeConfigDrawer
+        node={node}
+        doc={doc}
+        editing
+        templateOptions={[]}
+        metadata={BASE_METADATA}
+        onConfigChange={onConfigChange}
+        onDelete={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByLabelText('Channel type'));
+    await user.click(screen.getByText('Messenger'));
+    expect(onConfigChange).toHaveBeenCalledWith(node.id, { channelType: 'FACEBOOK' });
+  });
+
   it('renders the AI agent picker + the output-parameter editor for ai_agent.run', async () => {
     const user = userEvent.setup();
     const { doc } = docWith('ai_agent.run');

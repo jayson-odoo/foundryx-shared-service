@@ -214,10 +214,12 @@ export function __mockExternalAccountInUse(externalAccountId: string): boolean {
   return rows.some((r) => !r.isTrashed && r.externalAccountId === externalAccountId);
 }
 
-/** Internal hook for the Messenger/Instagram onboarding mock (plan 32 / A7a,
- *  S0 MOCK): provision a `FACEBOOK`/`INSTAGRAM` channel from the picked page
- *  (or its linked Instagram account) so it shows up in the channels list
- *  immediately, mirroring `__mockProvisionChannel`'s role for WhatsApp. */
+/** Internal hook for the Messenger/Instagram onboarding mock (plan 32 / A7a):
+ *  provision a `FACEBOOK`/`INSTAGRAM` channel from the picked page (or its
+ *  linked Instagram account) so it shows up in the channels list
+ *  immediately, mirroring `__mockProvisionChannel`'s role for WhatsApp. The
+ *  app no longer binds to `onboarding-service.mock.ts` at runtime (S6) -
+ *  kept as the standing frontend-first mock for future tuning + tests. */
 export function __mockProvisionMetaChannel(
   workspaceId: string,
   channelType: Extract<ChannelType, 'FACEBOOK' | 'INSTAGRAM'>,

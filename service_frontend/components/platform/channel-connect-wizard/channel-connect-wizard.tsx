@@ -20,7 +20,7 @@ import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { isEmbeddedSignupConfigured, launchEmbeddedSignup } from '@/lib/embedded-signup';
 import { CHANNEL_CAPABILITIES, CHANNEL_TYPES } from '@/lib/channel-capabilities';
 import { cn } from '@/lib/utils';
-import type { Channel, ChannelType, MetaPageOption, Workspace } from '@/types/omnichannel';
+import type { Channel, ChannelType, Workspace } from '@/types/omnichannel';
 import { MockEmbeddedSignupDialog } from './mock-embedded-signup-dialog';
 
 export interface ChannelConnectWizardProps {
@@ -75,7 +75,6 @@ export function ChannelConnectWizard({
     startMetaAuth,
     authorizeMetaCode,
     selectMetaPage,
-    authorizeMockMeta,
   } = useConnectChannel(chosenWorkspace);
   const configured = isEmbeddedSignupConfigured();
   const capabilities = CHANNEL_CAPABILITIES[channelType];
@@ -100,11 +99,18 @@ export function ChannelConnectWizard({
       }
       return;
     }
+    startMetaAuth();
     if (!configured) {
-      start();
+      // Simulated authorize (dev / no Meta app configured, AC-CHN-03) - the
+      // dev-safe backend adapter ignores the code and returns the SAME
+      // canned sandbox pages for any value, so this reuses the real two-call
+      // flow (`listMetaPages` -> pick -> `connectMetaChannel`) instead of a
+      // parallel mock data source. The "picking a page" step right after IS
+      // the simulated popup's job here (no separate mock dialog for Meta
+      // types, matching the WhatsApp mock's "pick, then authorize" shape).
+      await authorizeMetaCode(channelType, `simulated-${Date.now()}`);
       return;
     }
-    startMetaAuth();
     try {
       const result = await launchEmbeddedSignup(channelType);
       await authorizeMetaCode(channelType, result.code, result.redirectUri);
@@ -160,24 +166,21 @@ export function ChannelConnectWizard({
     onConnected?.(c);
   };
 
-  const authorizeMockPage = (option: MetaPageOption) => {
-    void authorizeMockMeta(channelType, chosenWorkspace, option);
-  };
-
   const submitPage = () => {
     if (!selectedPage) return;
     void selectMetaPage(channelType, chosenWorkspace, selectedPage);
   };
 
-  // Simulated popup (dev / no Meta app) - selecting, or exchanging after a pick.
-  if (open && !configured && (state === 'selecting' || state === 'exchanging')) {
+  // Simulated WhatsApp popup (dev / no Meta app) - picking a WABA number IS
+  // the authorization there (unchanged, plan 04). Messenger/Instagram never
+  // reach `selecting` (their simulated path reuses the real two-call flow -
+  // `startMetaAuth` -> `authorizing`/`picking-page`/`exchanging` below).
+  if (open && isWhatsApp && !configured && (state === 'selecting' || state === 'exchanging')) {
     return (
       <MockEmbeddedSignupDialog
         open
-        channelType={channelType}
         busy={state === 'exchanging'}
         onAuthorizeWaba={(opt) => authorize(opt).then(() => undefined)}
-        onAuthorizeMeta={authorizeMockPage}
         onCancel={cancel}
       />
     );

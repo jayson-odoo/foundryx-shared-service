@@ -5,7 +5,7 @@ messages, resolve identities, and maintain the thread metadata columns the
 inbox sorts/filters on.
 """
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import sqlalchemy as sa
 from sqlalchemy import and_, case, func, or_
@@ -524,6 +524,35 @@ class ContactRepository:
             )
             .first()
         )
+
+    def identity_windows_for(
+        self, pairs: List[Tuple[str, str]], tenant_id: str
+    ) -> Dict[Tuple[str, str], ContactChannelIdentity]:
+        """Batched twin of `find_identity_for_channel` (plan 32 / A7a, S6) -
+        ONE query for a whole page's `(contact_id, channel_id)` pairs, keyed
+        back the same way, so `ThreadItem.windowExpiresAt`/
+        `humanAgentExpiresAt` never cost an N+1 on the inbox list. Tenant-
+        scoped like every other stored-id resolution in this repository."""
+        pairs = [p for p in {p for p in pairs if p[0] and p[1]}]
+        if not pairs:
+            return {}
+        contact_ids = {c for c, _ in pairs}
+        channel_ids = {ch for _, ch in pairs}
+        rows = (
+            self.db.query(ContactChannelIdentity)
+            .filter(
+                ContactChannelIdentity.tenant_id == tenant_id,
+                ContactChannelIdentity.contact_id.in_(contact_ids),
+                ContactChannelIdentity.channel_id.in_(channel_ids),
+            )
+            .all()
+        )
+        wanted = set(pairs)
+        return {
+            (r.contact_id, r.channel_id): r
+            for r in rows
+            if (r.contact_id, r.channel_id) in wanted
+        }
 
     def find_by_phone_digits(
         self, phone_digits: str, workspace_id: str, tenant_id: str

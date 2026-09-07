@@ -1,16 +1,20 @@
 /**
  * Onboarding service - channel provisioning via Meta Embedded Signup.
  *
- * The Embedded Signup popup (Meta JS SDK in Phase B, a simulated dialog in
- * Phase A) hands the client an `EmbeddedSignupResult` (auth code + WABA/phone
- * ids). `completeOnboarding` sends that to the backend, which exchanges the code
- * for a permanent token and auto-provisions the channel (plan 04 §5.2).
+ * The Embedded Signup popup (Meta JS SDK when configured, a simulated dialog
+ * otherwise) hands the client an `EmbeddedSignupResult` (auth code + WABA/
+ * phone ids). `completeOnboarding` sends that to the backend, which exchanges
+ * the code for a permanent token and auto-provisions the channel (plan 04
+ * §5.2). `listMetaPages`/`connectMetaChannel` (plan 32 / A7a - Messenger +
+ * Instagram) exchange a Meta OAuth code for the connectable pages, then
+ * finalize the connect for the one picked - the dev-safe backend adapter
+ * (`not settings.meta_app_id`) makes both real calls work with no Meta app
+ * (canned sandbox pages), so the wizard's "simulated" path reuses this SAME
+ * real service boundary rather than a parallel mock data source.
  *
- * `completeOnboarding` / `manualConnect` are bound to the real api-client impl
- * (WhatsApp already shipped past Phase A). `listMetaPages` / `connectMetaChannel`
- * (plan 32 / A7a - Messenger + Instagram) are S0 MOCK: the real
- * `/omnichannel/onboarding/meta/*` routes land in S3, wired in S6. Swapping
- * each is a one-line change at this boundary, per method.
+ * `onboarding-service.mock.ts` remains the standing frontend-first mock for
+ * future tuning; the app no longer binds to it (mirrors `channel-service.ts`/
+ * `conversation-service.ts`).
  */
 import type {
   Channel,
@@ -21,7 +25,6 @@ import type {
   MetaPagesResult,
 } from '@/types/omnichannel';
 import { realOnboardingService } from './onboarding-service.real';
-import { mockOnboardingService } from './onboarding-service.mock';
 
 export interface OnboardingService {
   /** Exchange the signup result + provision the channel. Returns the new channel. */
@@ -35,11 +38,4 @@ export interface OnboardingService {
   connectMetaChannel(input: MetaConnectInput): Promise<Channel>;
 }
 
-export const onboardingService: OnboardingService = {
-  completeOnboarding: realOnboardingService.completeOnboarding,
-  manualConnect: realOnboardingService.manualConnect,
-  // S0 MOCK - swap to real in S6 (POST /omnichannel/onboarding/meta/pages).
-  listMetaPages: mockOnboardingService.listMetaPages,
-  // S0 MOCK - swap to real in S6 (POST /omnichannel/onboarding/meta/connect).
-  connectMetaChannel: mockOnboardingService.connectMetaChannel,
-};
+export const onboardingService: OnboardingService = realOnboardingService;

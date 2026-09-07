@@ -117,6 +117,7 @@ async def send_message(
             caption=media.get("caption"),
             to=str(payload_obj.get("to") or ""),
             idempotency_key=idempotency_key,
+            channel_id=payload_obj.get("channelId"),
         )
     else:
         try:

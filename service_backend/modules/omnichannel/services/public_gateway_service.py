@@ -14,7 +14,13 @@ from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
 
-from ..models import MEDIA_MESSAGE_TYPES, Channel, Contact, WhatsappTemplate
+from ..models import (
+    MEDIA_MESSAGE_TYPES,
+    Channel,
+    Contact,
+    ContactChannelIdentity,
+    WhatsappTemplate,
+)
 from ..phone import digits_only
 from ..repositories.contact_repository import ContactRepository
 from ..schemas import (
@@ -102,23 +108,144 @@ class PublicGatewayService:
         self.contacts = ContactRepository(db)
 
     # ── Channel + contact resolution ─────────────────────────────────────────
-    def _workspace_channel(self, tenant_id: str, workspace_id: str) -> Channel:
-        channel = (
-            self.db.query(Channel)
-            .filter(
-                Channel.tenant_id == tenant_id,
-                Channel.workspace_id == workspace_id,
-                Channel.is_active.is_(True),
-                Channel.is_trashed.is_(False),
-            )
-            .order_by(Channel.created_at.asc())
-            .first()
+    def _workspace_channel(
+        self, tenant_id: str, workspace_id: str, *, channel_id: Optional[str] = None
+    ) -> Channel:
+        """The channel a gateway send/read targets (plan 32 / A7a, D-A7-18,
+        AC-CHN-53). ``channel_id`` (optional, ``PublicSendRequest.channelId``)
+        WINS when given - an unknown id, a foreign one, or one belonging to
+        another workspace/tenant is a typed 4xx, NEVER a silent fallback to a
+        different channel. With no explicit id: prefer an ACTIVE `WHATSAPP`
+        channel (byte-identical behaviour for every consumer that predates
+        this slice - the whole point of the guide being a contract), else the
+        oldest active channel of any type (unchanged tie-break)."""
+        base = self.db.query(Channel).filter(
+            Channel.tenant_id == tenant_id,
+            Channel.workspace_id == workspace_id,
+            Channel.is_active.is_(True),
+            Channel.is_trashed.is_(False),
         )
+        if channel_id:
+            channel = base.filter(Channel.id == channel_id).first()
+            if channel is None:
+                raise ApiError(
+                    422, "invalid_channel", "Unknown or inactive channel for this workspace."
+                )
+            return channel
+        whatsapp = base.filter(Channel.channel_type == "WHATSAPP").order_by(
+            Channel.created_at.asc()
+        ).first()
+        if whatsapp is not None:
+            return whatsapp
+        channel = base.order_by(Channel.created_at.asc()).first()
         if channel is None:
             raise ApiError(
                 409, "no_active_channel", "No active channel is connected to this workspace."
             )
         return channel
+
+    # ── Send-target ("to") resolution (plan 32 / A7a, AC-CHN-54) ─────────────
+    def _resolve_send_target(
+        self, tenant_id: str, workspace_id: str, channel: Channel, to: str
+    ) -> Contact:
+        """Resolve the gateway's ``to`` field against the CHOSEN channel.
+
+        ``psid:``/``igsid:`` resolve an EXISTING identity's contact on THAT
+        channel only (a PSID/IGSID is meaningless on any other channel) - a
+        miss is a `422 invalid_recipient` and NEVER creates a contact (we
+        cannot fabricate an identity Meta will accept). ``id:<contactId>``
+        resolves an existing workspace contact the same way. A bare value or
+        ``phone:`` keeps the unchanged phone resolve-or-create behaviour."""
+        ident = (to or "").strip()
+        lower = ident.lower()
+        if lower.startswith("psid:") or lower.startswith("igsid:"):
+            external_user_id = ident.split(":", 1)[1].strip()
+            if not external_user_id:
+                raise ApiError(422, "invalid_recipient", "A recipient identifier is required.")
+            identity = (
+                self.db.query(ContactChannelIdentity)
+                .filter(
+                    ContactChannelIdentity.tenant_id == tenant_id,
+                    ContactChannelIdentity.channel_id == channel.id,
+                    ContactChannelIdentity.external_user_id == external_user_id,
+                )
+                .first()
+            )
+            contact = (
+                self.contacts.get_by_id(identity.contact_id, tenant_id)
+                if identity is not None
+                else None
+            )
+            if contact is None or contact.workspace_id != workspace_id:
+                raise ApiError(
+                    422, "invalid_recipient",
+                    "No contact found for that identity on the selected channel.",
+                )
+            return contact
+        if lower.startswith("id:"):
+            cid = ident.split(":", 1)[1].strip()
+            contact = self.contacts.get_by_id(cid, tenant_id) if cid else None
+            if contact is None or contact.workspace_id != workspace_id:
+                raise ApiError(422, "invalid_recipient", "Contact not found for this workspace.")
+            return contact
+        return self._resolve_or_create_contact(tenant_id, workspace_id, ident)
+
+    @staticmethod
+    def _override_for(channel: Channel) -> Optional[str]:
+        """The `channel_id_override` to hand `MessageService` (plan 32 / A7a
+        S6). WhatsApp addresses by PHONE, never by a stored identity row -
+        `_channel_for_contact`'s override path additionally requires the
+        contact to be `is_attached_to_channel` (an identity row), which a
+        business-initiated (never-messaged-in) WhatsApp contact never has.
+        Forcing the override there would turn the WHATSAPP-preferred
+        DEFAULT choice into a regression for exactly the consumers D-A7-18
+        exists to protect. Messenger/Instagram DO need it - `_assert_
+        channel_identity` already proved the identity exists before this is
+        ever called, so the override is always safe there."""
+        return None if channel.channel_type == "WHATSAPP" else channel.id
+
+    def _assert_channel_identity(
+        self, tenant_id: str, channel: Channel, contact: Contact
+    ) -> None:
+        """Synchronous pre-flight for the "no identity on the chosen channel"
+        case (plan §5.2 `channel_not_available_for_contact`, 422) - WhatsApp
+        addresses by phone (no identity row needed) so this is a no-op there;
+        Messenger/Instagram need the contact's OWN identity on THIS channel.
+        Checked BEFORE enqueueing so the gateway answers synchronously rather
+        than accepting a 202 that fails asynchronously in `send_runner`
+        (`channel_addressing.NoChannelIdentity`, which stays the runner's own
+        - unrelated - safety net for a race after this check passes)."""
+        if channel.channel_type == "WHATSAPP":
+            return
+        identity = ContactRepository(self.db).find_identity_for_channel(
+            contact.id, channel.id, tenant_id
+        )
+        if identity is None or not identity.external_user_id:
+            raise ApiError(
+                422, "channel_not_available_for_contact",
+                "This contact has no identity on the selected channel.",
+            )
+
+    @staticmethod
+    def _map_send_rejected(exc: "SendRejected", *, default_code: str = "send_rejected") -> ApiError:
+        """`SendRejected.code` (plan 32 / A7a, AC-CHN-55) → the gateway's
+        structured error. WhatsApp's `csw_window_closed` is checked FIRST and
+        by both code and the legacy message string (belt and suspenders - a
+        caller that still raises the bare, code-less `SendRejected(msg)` with
+        the byte-identical WhatsApp string keeps working). Messenger/
+        Instagram's two distinct policy codes (`messaging_window_closed` -
+        outside every window, `automation_outside_window` - inside the
+        human-agent window but the gateway is never a human actor, D-A7-6)
+        both surface as the ONE new public code - the gateway gives no
+        actionable difference between them (an API key can never send with
+        the tag either way)."""
+        if exc.code == "csw_window_closed" or exc.message == CSW_CLOSED_MESSAGE:
+            return ApiError(409, "csw_window_closed", exc.message)
+        if exc.code in ("messaging_window_closed", "automation_outside_window"):
+            return ApiError(409, "messaging_window_closed", exc.message)
+        if exc.code == "channel_not_available_for_contact":
+            return ApiError(422, "channel_not_available_for_contact", exc.message)
+        return ApiError(422, default_code, exc.message)
 
     # ── Contact identifier resolution (respond.io-style) ─────────────────────
     def _resolve_contact(self, tenant_id: str, workspace_id: str, identifier: str) -> Contact:
@@ -192,6 +319,8 @@ class PublicGatewayService:
             created_at=_epoch(thread.createdAt),
             isBlocked=False,        # not modeled
             cswExpiresAt=_iso_z(thread.cswExpiresAt),
+            windowExpiresAt=_iso_z(thread.windowExpiresAt),
+            humanAgentExpiresAt=_iso_z(thread.humanAgentExpiresAt),
             priority=thread.priority,
             channelId=thread.channelId,
             channelType=thread.channelType,
@@ -203,7 +332,24 @@ class PublicGatewayService:
             assignedTeamName=thread.assignedTeamName,
         )
 
-    def _rio_message(self, m, *, reactions: Optional[list] = None) -> RioMessageItem:
+    def _channel_types(self, channel_ids, tenant_id: str) -> dict:
+        """Tenant-scoped `channel_id -> channel_type`, mirroring
+        `ConversationService._channel_types` (plan 32 / A7a, AC-CHN-56) -
+        kept local rather than imported so this stays a plain, cheap lookup
+        without instantiating a second service."""
+        ids = [c for c in set(channel_ids) if c]
+        if not ids:
+            return {}
+        rows = (
+            self.db.query(Channel)
+            .filter(Channel.tenant_id == tenant_id, Channel.id.in_(ids))
+            .all()
+        )
+        return {c.id: c.channel_type for c in rows}
+
+    def _rio_message(
+        self, m, *, reactions: Optional[list] = None, channel_type: Optional[str] = None
+    ) -> RioMessageItem:
         meta = m.metadata_json or {}
         traffic = "incoming" if m.sender_type == "CONTACT" else "outgoing"
         # Media URL: a stored blob becomes an absolute, signed, clickable link;
@@ -219,6 +365,12 @@ class PublicGatewayService:
         # conversely an inbound media row whose blob failed to store has no
         # `url` but is still media, and its body is still a caption.
         is_media = (m.message_type or "").upper() in MEDIA_MESSAGE_TYPES
+        # `{"mediaUnavailable": True}` is an internal placeholder (D-A7-12),
+        # not a structured payload - promote it to the typed flag (mirrors
+        # `ConversationService.message_items`) instead of leaking it as
+        # `message.payload.mediaUnavailable`.
+        raw_payload = m.payload_json if isinstance(m.payload_json, dict) else None
+        media_unavailable = bool(raw_payload and raw_payload.get("mediaUnavailable"))
         payload = RioMessagePayload(
             type=(m.message_type or "text").lower(),
             # A media message's body IS its caption - expose it once, in
@@ -233,8 +385,9 @@ class PublicGatewayService:
             # template binding - flattening these into `text` loses them.
             # `payload_json` is free-form JSON: guard the stored shape (same
             # treatment as `reply_to` below) so a rogue row can't 500 a read.
-            payload=m.payload_json if isinstance(m.payload_json, dict) else None,
+            payload=None if media_unavailable else raw_payload,
             messageTag=meta.get("message_tag"),
+            mediaUnavailable=media_unavailable if is_media else None,
         )
         # `metadata_json` is free-form: never assume the stored shape (a legacy
         # or hand-written row must not 500 a read).
@@ -270,6 +423,7 @@ class PublicGatewayService:
             channelMessageId=m.external_message_id,
             contactId=m.contact_id,
             channelId=m.channel_id,
+            channelType=channel_type,
             traffic=traffic,
             # Inbound messages never carry a delivery receipt, so `status[]` is
             # empty for them - this is the ONE time key present on every message.
@@ -360,8 +514,12 @@ class PublicGatewayService:
             return contact.id, ConversationService(self.db).message_items(rows)
         # Reaction chips: ONE batched query for the whole page (never per-row).
         reactions = self.contacts.reactions_for([m.id for m in rows], tenant_id)
+        channel_types = self._channel_types([m.channel_id for m in rows], tenant_id)
         return contact.id, [
-            self._rio_message(m, reactions=reactions.get(m.id)) for m in rows
+            self._rio_message(
+                m, reactions=reactions.get(m.id), channel_type=channel_types.get(m.channel_id)
+            )
+            for m in rows
         ]
 
     def get_contact_message(
@@ -377,7 +535,8 @@ class PublicGatewayService:
         if fmt != FORMAT_RIO:
             return ConversationService(self.db).message_items([msg])[0]
         reactions = self.contacts.reactions_for([msg.id], tenant_id)
-        return self._rio_message(msg, reactions=reactions.get(msg.id))
+        channel_type = self._channel_types([msg.channel_id], tenant_id).get(msg.channel_id)
+        return self._rio_message(msg, reactions=reactions.get(msg.id), channel_type=channel_type)
 
     # ── Contact / conversation mutation ──────────────────────────────────────
     def update_contact(
@@ -609,7 +768,10 @@ class PublicGatewayService:
         self, tenant_id: str, workspace_id: str, key_id: str, req: PublicSendRequest
     ) -> str:
         msg_type = (req.type or "text").lower()
-        channel = self._workspace_channel(tenant_id, workspace_id)
+        # Plan 32 / A7a (D-A7-18, AC-CHN-53): `channelId` (optional) wins over
+        # the WHATSAPP-preferred implicit choice - an unknown/foreign one is a
+        # typed 4xx from `_workspace_channel`, never a silent fallback.
+        channel = self._workspace_channel(tenant_id, workspace_id, channel_id=req.channelId)
 
         if msg_type == "text":
             if req.text is None or not (req.text.body or "").strip():
@@ -627,6 +789,8 @@ class PublicGatewayService:
             # the SAME upload-by-id pipeline (never pass Meta a bare `link`).
             if req.media is None or not (req.media.url or "").strip():
                 raise ApiError(422, "invalid_request", "media.url is required.")
+            contact = self._resolve_send_target(tenant_id, workspace_id, channel, req.to)
+            self._assert_channel_identity(tenant_id, channel, contact)
             # Enforce the window BEFORE fetching (don't do SSRF-fetch work on a
             # closed window; media is free-form → an open window is required).
             # Cheap pre-flight peek (plan 32 / A7a) - `send_media` below still
@@ -634,9 +798,13 @@ class PublicGatewayService:
             # past 24h even when a human-agent window remains, D-A7-6 - the
             # gateway is API-key automation by construction, never a human
             # actor).
-            contact = self._resolve_or_create_contact(tenant_id, workspace_id, req.to)
             if not messaging_policy.window_open(self.db, contact, channel):
-                raise ApiError(409, "csw_window_closed", CSW_CLOSED_MESSAGE)
+                code = (
+                    "csw_window_closed"
+                    if channel.channel_type == "WHATSAPP"
+                    else "messaging_window_closed"
+                )
+                raise ApiError(409, code, messaging_policy.closed_window_message(channel.channel_type))
             content = self._fetch_url(req.media.url)
             return self._send_media(
                 tenant_id,
@@ -647,15 +815,17 @@ class PublicGatewayService:
                 filename=req.media.filename,
                 caption=req.media.caption,
                 to=req.to,
+                channel=channel,
             )
         elif msg_type in ("interactive", "location", "contacts"):
-            return self._send_structured(tenant_id, workspace_id, key_id, msg_type, req)
+            return self._send_structured(tenant_id, workspace_id, key_id, msg_type, req, channel)
         elif msg_type == "reaction":
             return self._send_reaction(tenant_id, workspace_id, key_id, req)
         else:
             raise ApiError(400, "unsupported_type", f"Unknown message type '{msg_type}'.")
 
-        contact = self._resolve_or_create_contact(tenant_id, workspace_id, req.to)
+        contact = self._resolve_send_target(tenant_id, workspace_id, channel, req.to)
+        self._assert_channel_identity(tenant_id, channel, contact)
         # `actor` is an opaque attribution string ("apikey:<id>"), NOT a human
         # actor - the gateway is API-key automation by construction
         # (D-A7-6): `actor_is_human=False` explicitly, never inferred from
@@ -663,12 +833,11 @@ class PublicGatewayService:
         actor = f"apikey:{key_id}"
         try:
             item = self.messages.send_message(
-                contact.id, tenant_id, actor, payload, actor_is_human=False
+                contact.id, tenant_id, actor, payload, actor_is_human=False,
+                channel_id_override=self._override_for(channel),
             )
         except SendRejected as exc:
-            if exc.message == CSW_CLOSED_MESSAGE:
-                raise ApiError(409, "csw_window_closed", exc.message) from exc
-            raise ApiError(422, "send_rejected", exc.message) from exc
+            raise self._map_send_rejected(exc) from exc
         return item.id
 
     def _fetch_url(self, url: str) -> bytes:
@@ -718,8 +887,14 @@ class PublicGatewayService:
         filename: Optional[str],
         caption: Optional[str],
         to: str,
+        channel: Optional[Channel] = None,
     ) -> str:
-        contact = self._resolve_or_create_contact(tenant_id, workspace_id, to)
+        # `channel` is None only for the legacy `send_multipart` call path
+        # that predates the explicit selector (plan 32 / A7a S6) - resolve
+        # the same WHATSAPP-preferred implicit channel there.
+        channel = channel or self._workspace_channel(tenant_id, workspace_id)
+        contact = self._resolve_send_target(tenant_id, workspace_id, channel, to)
+        self._assert_channel_identity(tenant_id, channel, contact)
         actor = f"apikey:{key_id}"
         try:
             item = self.messages.send_media(
@@ -731,22 +906,29 @@ class PublicGatewayService:
                 filename=filename,
                 caption=caption,
                 actor_is_human=False,
+                channel_id_override=self._override_for(channel),
             )
         except MediaRejected as exc:
             raise ApiError(422, exc.code, exc.message) from exc
         except SendRejected as exc:
-            if exc.message == CSW_CLOSED_MESSAGE:
-                raise ApiError(409, "csw_window_closed", exc.message) from exc
-            raise ApiError(422, "send_rejected", exc.message) from exc
+            raise self._map_send_rejected(exc) from exc
         return item.id
 
     # ── Structured send (interactive / location / contacts) ───────────────────
     def _send_structured(
-        self, tenant_id: str, workspace_id: str, key_id: str, msg_type: str, req: PublicSendRequest
+        self,
+        tenant_id: str,
+        workspace_id: str,
+        key_id: str,
+        msg_type: str,
+        req: PublicSendRequest,
+        channel: Optional[Channel] = None,
     ) -> str:
-        # Ensure the workspace has a channel (uniform error shape) before sending.
-        self._workspace_channel(tenant_id, workspace_id)
-        contact = self._resolve_or_create_contact(tenant_id, workspace_id, req.to)
+        # `channel` is resolved by `_do_send` (honours the explicit selector);
+        # a direct legacy caller with none falls back to the implicit choice.
+        channel = channel or self._workspace_channel(tenant_id, workspace_id)
+        contact = self._resolve_send_target(tenant_id, workspace_id, channel, req.to)
+        self._assert_channel_identity(tenant_id, channel, contact)
         actor = f"apikey:{key_id}"
         messages = self.messages
         try:
@@ -778,26 +960,26 @@ class PublicGatewayService:
                     header_content=header_content,
                     header_filename=header_filename,
                     actor_is_human=False,
+                    channel_id_override=self._override_for(channel),
                 )
             elif msg_type == "location":
                 if not req.location:
                     raise ApiError(422, "invalid_request", "location is required.")
                 item = messages.send_location(
-                    contact.id, tenant_id, actor, defn=dict(req.location), actor_is_human=False
+                    contact.id, tenant_id, actor, defn=dict(req.location), actor_is_human=False,
+                    channel_id_override=self._override_for(channel),
                 )
             else:  # contacts
                 if not req.contacts:
                     raise ApiError(422, "invalid_request", "contacts is required.")
                 item = messages.send_contacts(
                     contact.id, tenant_id, actor, defn={"contacts": req.contacts},
-                    actor_is_human=False,
+                    actor_is_human=False, channel_id_override=self._override_for(channel),
                 )
         except MediaRejected as exc:
             raise ApiError(422, exc.code, exc.message) from exc
         except SendRejected as exc:
-            if exc.message == CSW_CLOSED_MESSAGE:
-                raise ApiError(409, "csw_window_closed", exc.message) from exc
-            raise ApiError(422, "invalid_request", exc.message) from exc
+            raise self._map_send_rejected(exc, default_code="invalid_request") from exc
         return item.id
 
     # ── Reaction send (targets OUR durable id - AC-12-21) ─────────────────────
@@ -821,9 +1003,7 @@ class PublicGatewayService:
                 actor_is_human=False,
             )
         except SendRejected as exc:
-            if exc.message == CSW_CLOSED_MESSAGE:
-                raise ApiError(409, "csw_window_closed", exc.message) from exc
-            raise ApiError(422, "invalid_request", exc.message) from exc
+            raise self._map_send_rejected(exc, default_code="invalid_request") from exc
         return target.id
 
     # ── Multipart media send (file part) ──────────────────────────────────────
@@ -839,13 +1019,16 @@ class PublicGatewayService:
         caption: Optional[str],
         to: str,
         idempotency_key: Optional[str],
+        channel_id: Optional[str] = None,
     ) -> Tuple[str, bool]:
         """Gateway multipart media send (plan 12 AC-12-10). Same idempotency
-        semantics as the JSON ``send`` path."""
+        semantics as the JSON ``send`` path. ``channel_id`` (plan 32 / A7a S6)
+        - the multipart payload's own optional explicit channel selector."""
         if kind.upper() not in MEDIA_MESSAGE_TYPES:
             raise ApiError(400, "unsupported_type", f"Unknown media type '{kind}'.")
         if not (to or "").strip():
             raise ApiError(422, "invalid_recipient", "A recipient phone number is required.")
+        channel = self._workspace_channel(tenant_id, workspace_id, channel_id=channel_id)
         store = idempotency.get_store()
         reserved = False
         if idempotency_key:
@@ -869,6 +1052,7 @@ class PublicGatewayService:
                 filename=filename,
                 caption=caption,
                 to=to,
+                channel=channel,
             )
         except Exception:
             if reserved:

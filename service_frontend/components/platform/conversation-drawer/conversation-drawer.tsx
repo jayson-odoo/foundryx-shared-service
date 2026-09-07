@@ -376,7 +376,8 @@ export function ConversationDrawer({ contactId, emptyHint = 'Select a conversati
               {thread.name}
             </span>
             <Badge variant="secondary" appearance="light" size="sm">
-              WhatsApp
+              <capabilities.icon className="size-3" />
+              {capabilities.label}
             </Badge>
           </div>
           <div className="text-xs text-muted-foreground">{thread.phone}</div>

@@ -75,7 +75,7 @@ export const mockOnboardingService: OnboardingService = {
     return delay(channel, 400);
   },
 
-  // ---- plan 32 / A7a - Messenger + Instagram (S0 MOCK) --------------------
+  // ---- plan 32 / A7a - Messenger + Instagram (standing mock, not wired) ---
   async listMetaPages(input: ListMetaPagesInput): Promise<MetaPagesResult> {
     // Instagram only offers pages whose linked account is present (D-A7-14/44).
     const result: MetaPagesResult = {

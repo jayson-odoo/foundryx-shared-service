@@ -52,11 +52,21 @@ from .send_runner import (
 
 
 class SendRejected(Exception):
-    """Backend CSW / validation rejection (422 - the composer shows the reason)."""
+    """Backend CSW / validation rejection (422 - the composer shows the reason).
 
-    def __init__(self, message: str):
+    ``code`` (plan 32 / A7a, S6, additive) carries the typed
+    `messaging_policy.PolicyRejected.code` verbatim when this wraps a window/
+    capability rejection - `None` for every other (validation-shaped)
+    rejection, unchanged from before this slice. Callers that only read
+    `.message` (the composer, every pre-existing except-block) are
+    unaffected; the public gateway is the one caller that now branches on
+    `.code` to keep `csw_window_closed` byte-identical while giving
+    Messenger/Instagram their OWN distinct codes (AC-CHN-55)."""
+
+    def __init__(self, message: str, *, code: Optional[str] = None):
         super().__init__(message)
         self.message = message
+        self.code = code
 
 
 class QuickReplyNotFound(Exception):
@@ -172,18 +182,29 @@ class MessageService:
         self, contact: Contact, channel_id_override: Optional[str] = None
     ) -> Channel:
         """The channel this thread lives on: the identity's channel, else the
-        workspace's first active channel."""
+        workspace's first active channel (plan 32 / A7a, D-A7-18: "first" here
+        means WhatsApp-preferred, matching the gateway's own implicit choice -
+        see below).
+
+        ``channel_id_override`` skips straight to that channel, but WhatsApp
+        addresses by PHONE, never by a stored identity row (D-A7-3) - a
+        business-initiated (never-messaged-in) WhatsApp contact has no
+        `ContactChannelIdentity` at all, so `is_attached_to_channel` is only
+        meaningful for Messenger/Instagram overrides."""
         if channel_id_override:
             selected = self.channels.get_active_by_id(
                 channel_id_override, contact.tenant_id
             )
-            if (
-                selected is None
-                or selected.workspace_id != contact.workspace_id
-                or not self.repo.is_attached_to_channel(
+            attached = (
+                selected is not None
+                and selected.channel_type == "WHATSAPP"
+            ) or (
+                selected is not None
+                and self.repo.is_attached_to_channel(
                     contact.id, channel_id_override, contact.tenant_id
                 )
-            ):
+            )
+            if selected is None or selected.workspace_id != contact.workspace_id or not attached:
                 raise SendRejected("Selected channel is unavailable for this contact.")
             return selected
         via_identity = (
@@ -201,6 +222,26 @@ class MessageService:
         )
         if via_identity is not None:
             return via_identity
+        # No identity anywhere yet (a business-initiated first send, most
+        # commonly WhatsApp) - prefer an active WHATSAPP channel over the
+        # arbitrary "first row" tie-break, mirroring `PublicGatewayService.
+        # _workspace_channel`'s implicit choice (D-A7-18) so this fallback
+        # never silently re-points an existing WhatsApp-only integration the
+        # moment a tenant connects a second channel type.
+        whatsapp = (
+            self.db.query(Channel)
+            .filter(
+                Channel.tenant_id == contact.tenant_id,
+                Channel.workspace_id == contact.workspace_id,
+                Channel.channel_type == "WHATSAPP",
+                Channel.is_active.is_(True),
+                Channel.is_trashed.is_(False),
+            )
+            .order_by(Channel.created_at.asc())
+            .first()
+        )
+        if whatsapp is not None:
+            return whatsapp
         channel = (
             self.db.query(Channel)
             .filter(
@@ -335,7 +376,7 @@ class MessageService:
                     self.db, contact, channel, kind="TEMPLATE", actor_is_human=actor_is_human
                 )
             except messaging_policy.PolicyRejected as exc:
-                raise SendRejected(exc.message) from exc
+                raise SendRejected(exc.message, code=exc.code) from exc
             meta_send = messaging_policy.send_metadata(decision)
             tpl = (
                 self.db.query(WhatsappTemplate)
@@ -420,7 +461,7 @@ class MessageService:
                     self.db, contact, channel, kind="TEXT", actor_is_human=actor_is_human
                 )
             except messaging_policy.PolicyRejected as exc:
-                raise SendRejected(exc.message) from exc
+                raise SendRejected(exc.message, code=exc.code) from exc
             meta_send = messaging_policy.send_metadata(decision)
             if not (payload.body or "").strip():
                 raise SendRejected("Message body is required.")
@@ -474,15 +515,18 @@ class MessageService:
         workspace_id_override: Optional[str] = None,
         external_agent_id: Optional[str] = None,
         actor_is_human: bool = False,
+        channel_id_override: Optional[str] = None,
     ) -> MessageItem:
         """Sniff-gate + cap-check + store an outbound media blob, create a QUEUED
         row and dispatch the async upload-by-id send (AC-12-02/03/10). Raises
         ``SendRejected`` on window/validation, ``MediaRejected`` on sniff/cap.
-        ``actor_is_human`` - see `send_message`."""
+        ``actor_is_human`` - see `send_message`. ``channel_id_override`` (plan
+        32 / A7a S6) - the gateway's explicit/preferred channel selection;
+        `None` keeps the pre-existing identity-channel-first resolution."""
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
             raise ThreadNotFound()
-        channel = self._channel_for_contact(contact)
+        channel = self._channel_for_contact(contact, channel_id_override)
         kind = (kind or "").upper()
         if kind not in MEDIA_MESSAGE_TYPES:
             raise SendRejected(f"Unsupported media kind '{kind}'.")
@@ -493,7 +537,7 @@ class MessageService:
                 self.db, contact, channel, kind=kind, actor_is_human=actor_is_human
             )
         except messaging_policy.PolicyRejected as exc:
-            raise SendRejected(exc.message) from exc
+            raise SendRejected(exc.message, code=exc.code) from exc
 
         max_bytes = MediaSettingsService(self.db).max_bytes_for(
             tenant_id, contact.workspace_id, kind
@@ -556,11 +600,12 @@ class MessageService:
         external_agent_id: Optional[str] = None,
         sub_kind: Optional[str] = None,
         actor_is_human: bool = False,
+        channel_id_override: Optional[str] = None,
     ) -> MessageItem:
         contact = self.repo.get_by_id(contact_id, tenant_id)
         if contact is None:
             raise ThreadNotFound()
-        channel = self._channel_for_contact(contact)
+        channel = self._channel_for_contact(contact, channel_id_override)
         # Interactive/location/contacts are free-form → the channel type's
         # window applies (AC-12-25; generalized plan 32 D-A7-5). `sub_kind` is
         # the interactive definition's own kind (buttons/list/cta_url/
@@ -572,7 +617,7 @@ class MessageService:
                 actor_is_human=actor_is_human, sub_kind=sub_kind,
             )
         except messaging_policy.PolicyRejected as exc:
-            raise SendRejected(exc.message) from exc
+            raise SendRejected(exc.message, code=exc.code) from exc
         metadata, _ = self._reply_metadata(contact, tenant_id, reply_to_message_id)
         meta_send = messaging_policy.send_metadata(decision)
         if meta_send:
@@ -618,6 +663,7 @@ class MessageService:
         reply_to_message_id: Optional[str] = None,
         external_agent_id: Optional[str] = None,
         actor_is_human: bool = False,
+        channel_id_override: Optional[str] = None,
     ) -> MessageItem:
         from .structured import StructuredError, header_media_kind, validate_interactive
 
@@ -635,7 +681,7 @@ class MessageService:
             contact = self.repo.get_by_id(contact_id, tenant_id)
             if contact is None:
                 raise ThreadNotFound()
-            channel = self._channel_for_contact(contact)
+            channel = self._channel_for_contact(contact, channel_id_override)
             # Cheap pre-flight peek BEFORE sniffing/storing the header blob -
             # else a closed-window send orphans a persisted blob (never
             # sent). `_structured_row` below still runs the AUTHORITATIVE
@@ -671,6 +717,7 @@ class MessageService:
             external_agent_id=external_agent_id,
             sub_kind=defn.get("kind"),
             actor_is_human=actor_is_human,
+            channel_id_override=channel_id_override,
         )
 
     def send_location(
@@ -683,6 +730,7 @@ class MessageService:
         reply_to_message_id: Optional[str] = None,
         external_agent_id: Optional[str] = None,
         actor_is_human: bool = False,
+        channel_id_override: Optional[str] = None,
     ) -> MessageItem:
         from .structured import StructuredError, validate_location
 
@@ -701,6 +749,7 @@ class MessageService:
             reply_to_message_id=reply_to_message_id,
             external_agent_id=external_agent_id,
             actor_is_human=actor_is_human,
+            channel_id_override=channel_id_override,
         )
 
     def send_contacts(
@@ -713,6 +762,7 @@ class MessageService:
         reply_to_message_id: Optional[str] = None,
         external_agent_id: Optional[str] = None,
         actor_is_human: bool = False,
+        channel_id_override: Optional[str] = None,
     ) -> MessageItem:
         from .structured import StructuredError, validate_contacts
 
@@ -731,6 +781,7 @@ class MessageService:
             reply_to_message_id=reply_to_message_id,
             external_agent_id=external_agent_id,
             actor_is_human=actor_is_human,
+            channel_id_override=channel_id_override,
         )
 
     # ── Reactions (plan 12 Slice 3 - AC-12-19/20/21) ────────────────────────
@@ -766,7 +817,7 @@ class MessageService:
                 self.db, contact, channel, kind="REACTION", actor_is_human=actor_is_human
             )
         except messaging_policy.PolicyRejected as exc:
-            raise SendRejected(exc.message) from exc
+            raise SendRejected(exc.message, code=exc.code) from exc
         if not target.external_message_id:
             raise SendRejected("This message hasn't been delivered yet - can't react to it.")
 

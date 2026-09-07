@@ -97,6 +97,12 @@ def connect_meta_channel(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
     except (ConnectSessionNotFound, PageNotFound):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Connect session not found.")
+    # `{"reason": ...}` is the documented typed-error contract (plan §5.1) -
+    # `ConnectMetaError.reasonMessage` (plan 32 / A7a S6, `lib/channel-
+    # capabilities.ts`) maps each `.reason` to the SAME copy
+    # `meta_connect_service.py`'s exception carries, so the wizard shows the
+    # exact prose the mock always showed without changing this tested,
+    # documented body shape.
     except ConnectSessionExpired as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, {"reason": exc.reason})
     except ConnectSessionConsumed as exc:

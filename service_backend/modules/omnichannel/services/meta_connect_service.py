@@ -52,15 +52,25 @@ class ConnectSessionNotFound(Exception):
 
 
 class ConnectSessionExpired(Exception):
-    """Typed 400 reason `connect_session_expired`."""
+    """Typed 400 reason `connect_session_expired`. `str(exc)` (plan 32 / A7a
+    S6) is a real human message - the router forwards it verbatim as the
+    `detail` string so `ApiError.message` on the frontend is never a bare
+    status-line fallback; `.reason` stays available for a future consumer
+    that wants to branch on the code instead of the copy."""
 
     reason = "connect_session_expired"
+
+    def __init__(self) -> None:
+        super().__init__("This connection attempt has expired - start again.")
 
 
 class ConnectSessionConsumed(Exception):
     """Typed 400 reason `connect_session_consumed` (single-use, AC-CHN-33)."""
 
     reason = "connect_session_consumed"
+
+    def __init__(self) -> None:
+        super().__init__("This connection attempt has already been used - start again.")
 
 
 class ExternalAccountInUse(Exception):
@@ -69,10 +79,16 @@ class ExternalAccountInUse(Exception):
 
     reason = "external_account_in_use"
 
+    def __init__(self) -> None:
+        super().__init__("This page is already connected to another channel.")
+
 
 class PageNotFound(Exception):
     """The chosen page (or its linked IG account) is no longer present in the
     re-derived page list - e.g. access was revoked between the two calls."""
+
+    def __init__(self) -> None:
+        super().__init__("That page is no longer available - start again.")
 
 
 class MetaConnectService:

@@ -381,6 +381,7 @@ class InboundService:
                     extra={
                         "channelId": channel.id,
                         "channelName": channel.name,
+                        "channelType": channel.channel_type,
                         "workspaceId": channel.workspace_id,
                         "contactId": contact.id,
                         "contactName": name or contact.phone or "",

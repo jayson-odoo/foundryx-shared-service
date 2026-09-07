@@ -84,8 +84,6 @@ export interface Channel {
    * Routing key for a Messenger/Instagram channel (plan 32 / A7a) - the
    * Facebook PAGE_ID for `FACEBOOK`, the Instagram professional account id
    * for `INSTAGRAM`. Null on `WHATSAPP` (which uses `phoneNumberId` instead).
-   * S0 MOCK - the real backend column lands in S3; until then a channel read
-   * from the real service simply carries `null` here.
    */
   externalAccountId: string | null;
   /** Display name for `externalAccountId` (the Page name / IG username). */
@@ -175,8 +173,6 @@ export interface MockWabaOption {
 
 // ---------------------------------------------------------------------------
 // Plan 32 / A7a - Messenger + Instagram connect flow (`/onboarding/meta/*`).
-// S0 MOCK - `onboardingService.listMetaPages`/`connectMetaChannel` bind the
-// mock implementation until the real routes land in S3/S6.
 // ---------------------------------------------------------------------------
 
 /** A connectable Facebook Page (Messenger) or its linked Instagram
@@ -340,6 +336,11 @@ export interface ConversationMessage {
   id: string;
   contactId: string;
   channelId: string | null;
+  /** The channel's type (plan 32 / A7a) - resolved the same way as
+   *  `ConversationThread.channelType`; null/absent for a legacy/internal
+   *  row with no channel (e.g. a comment). Optional so every pre-existing
+   *  mock/test fixture stays valid. */
+  channelType?: ChannelType | null;
   senderType: SenderType;
   senderId: string | null;
   /** Resolved display name for AGENT/SYSTEM authors (server-joined). */
@@ -361,6 +362,16 @@ export interface ConversationMessage {
     | LocationPayload
     | ContactsPayload
     | null;
+  /**
+   * True when this is a Messenger/Instagram inbound attachment whose short-
+   * lived CDN url expired before it could be fetched (plan 32 / A7a, D-A7-
+   * 12) - the message still landed, but there is no blob to render (a null
+   * `mediaUrl` already renders the bubble's muted placeholder either way -
+   * this flag exists for a consumer that wants to tell "never had media"
+   * apart from "had media, now gone"). Optional/absent on every message
+   * that isn't a media kind.
+   */
+  mediaUnavailable?: boolean;
   /** Emoji reaction chips on this message (plan 12 Slice 3). */
   reactions: MessageReaction[];
   externalMessageId: string | null;

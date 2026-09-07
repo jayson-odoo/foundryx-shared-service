@@ -1,12 +1,15 @@
 /**
  * Channel connect wizard - plan 32 / A7a channel-type + page-selection steps
- * (AC-CHN-01/02/03, AC-CHN-61). No Meta env in the test process, so every
- * type falls back to the simulated dialog (the same one WhatsApp already
- * uses) - the real OAuth path is covered by `use-connect-channel.test.ts`.
+ * (AC-CHN-01/02/03, AC-CHN-61). No Meta env in the test process, so
+ * Messenger/Instagram "Connect (sandbox)" reuses the REAL two-call flow
+ * (`listMetaPages` then `connectMetaChannel`) against a dev-safe backend
+ * stub, landing on the wizard's OWN page-selection step (never a parallel
+ * mock page list) - WhatsApp alone still uses the simulated WABA-number
+ * dialog, covered separately below.
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { Channel, Workspace } from '@/types/omnichannel';
+import type { Channel, MetaPageOption, Workspace } from '@/types/omnichannel';
 import { ChannelConnectWizard } from './channel-connect-wizard';
 
 const WORKSPACES: Workspace[] = [
@@ -37,12 +40,20 @@ const CHANNEL = {
   externalAccountName: 'Foundryx Events Co.',
 } as Channel;
 
+const PAGES: MetaPageOption[] = [
+  // pg-701 is already bound to a live channel elsewhere - never offered.
+  { id: 'pg-701', name: 'Foundryx Events Co.', connected: true, igAccountId: 'ig-701', igUsername: 'foundryx.events' },
+  { id: 'pg-702', name: 'Foundryx Concierge', connected: false, igAccountId: 'ig-702', igUsername: 'foundryx.concierge' },
+  { id: 'pg-703', name: 'Foundryx VIP Desk', connected: false },
+];
+
+const listMetaPages = vi.fn();
 const connectMetaChannel = vi.fn();
 vi.mock('@/services/onboarding-service', () => ({
   onboardingService: {
     completeOnboarding: vi.fn(),
     manualConnect: vi.fn(),
-    listMetaPages: vi.fn(),
+    listMetaPages: (...args: unknown[]) => listMetaPages(...args),
     connectMetaChannel: (...args: unknown[]) => connectMetaChannel(...args),
   },
 }));
@@ -71,7 +82,12 @@ describe('ChannelConnectWizard - plan 32 / A7a channel-type step', () => {
     expect(screen.getByPlaceholderText('Search…')).toBeInTheDocument();
   });
 
-  it('Messenger + no Meta app -> the simulated dialog offers a page, excluding an already-connected one', async () => {
+  it('Messenger + no Meta app -> the wizard\'s own page step offers a page, excluding an already-connected one', async () => {
+    listMetaPages.mockResolvedValue({
+      sessionId: 'sess-1',
+      expiresAt: '2026-01-01T00:05:00Z',
+      pages: PAGES.filter((p) => !p.connected),
+    });
     render(<ChannelConnectWizard open onOpenChange={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Channel type' })).toBeInTheDocument());
 
@@ -81,13 +97,21 @@ describe('ChannelConnectWizard - plan 32 / A7a channel-type step', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Connect \(sandbox\)/ }));
 
-    await waitFor(() => expect(screen.getByText('Connect with Messenger')).toBeInTheDocument());
-    // pg-701 is already bound to the seeded chn-fb-001 sandbox channel - not offered.
-    expect(screen.queryByTestId('mock-meta-page-pg-701')).not.toBeInTheDocument();
-    expect(screen.getByTestId('mock-meta-page-pg-703')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Choose a Page')).toBeInTheDocument());
+    // pg-701 is already bound to a live channel elsewhere - filtered out by
+    // the (mocked) real `listMetaPages` response, never offered.
+    const trigger = screen.getByRole('combobox', { name: 'Facebook Page' });
+    fireEvent.click(trigger);
+    expect(screen.queryByText('Foundryx Events Co.')).not.toBeInTheDocument();
+    expect(screen.getByText('Foundryx VIP Desk')).toBeInTheDocument();
   });
 
-  it('picking a page in the simulated dialog connects the channel', async () => {
+  it('picking a page on the wizard\'s own page step connects the channel', async () => {
+    listMetaPages.mockResolvedValue({
+      sessionId: 'sess-2',
+      expiresAt: '2026-01-01T00:05:00Z',
+      pages: PAGES.filter((p) => !p.connected),
+    });
     connectMetaChannel.mockResolvedValue(CHANNEL);
     const onConnected = vi.fn();
     render(<ChannelConnectWizard open onOpenChange={vi.fn()} onConnected={onConnected} />);
@@ -98,13 +122,19 @@ describe('ChannelConnectWizard - plan 32 / A7a channel-type step', () => {
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Channel type' })).toHaveTextContent('Instagram'));
     fireEvent.click(screen.getByRole('button', { name: /Connect \(sandbox\)/ }));
 
-    await waitFor(() => expect(screen.getByTestId('mock-meta-page-pg-702')).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId('mock-meta-page-pg-702'));
-    fireEvent.click(screen.getByTestId('mock-meta-authorize'));
+    await waitFor(() => expect(screen.getByText('Choose a professional account')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('combobox', { name: 'Instagram account' }));
+    fireEvent.click(screen.getByText('foundryx.concierge'));
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Instagram account' })).toHaveTextContent(
+        'foundryx.concierge',
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
 
     await waitFor(() => expect(screen.getByText('Sandbox channel created')).toBeInTheDocument());
     expect(connectMetaChannel).toHaveBeenCalledWith(
-      expect.objectContaining({ channelType: 'INSTAGRAM', pageId: 'pg-702' }),
+      expect.objectContaining({ sessionId: 'sess-2', channelType: 'INSTAGRAM', pageId: 'pg-702' }),
     );
   });
 

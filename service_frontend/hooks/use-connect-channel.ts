@@ -10,6 +10,34 @@ import type {
   MockWabaOption,
 } from '@/types/omnichannel';
 import { onboardingService } from '@/services/onboarding-service';
+import { ApiError } from '@/lib/api-client';
+
+/**
+ * Typed 409/400 `detail.reason` -> the human copy the S0 mock always showed
+ * (plan 32 / A7a S6). The real `/onboarding/meta/*` routes keep the
+ * documented `{reason}` body shape (plan §5.1, pinned by backend tests) -
+ * this is the ONE place that turns a reason into prose, so a future reason
+ * needs one new row here, never a bare status-line fallback on screen.
+ */
+const META_CONNECT_REASON_MESSAGES: Record<string, string> = {
+  external_account_in_use: 'This page is already connected to another channel.',
+  connect_session_expired: 'This connection attempt has expired - start again.',
+  connect_session_consumed: 'This connection attempt has already been used - start again.',
+};
+
+function connectErrorMessage(e: unknown, fallback: string): string {
+  if (e instanceof ApiError) {
+    const reason =
+      e.detail && typeof e.detail === 'object' && 'reason' in e.detail
+        ? String((e.detail as { reason?: unknown }).reason ?? '')
+        : '';
+    if (reason && META_CONNECT_REASON_MESSAGES[reason]) {
+      return META_CONNECT_REASON_MESSAGES[reason];
+    }
+    return e.message || fallback;
+  }
+  return e instanceof Error ? e.message : fallback;
+}
 
 /**
  * Channel connect wizard state machine (plan 04 §5.2; extended plan 32 / A7a
@@ -74,8 +102,6 @@ export interface UseConnectChannelResult {
   authorizeMetaCode: (channelType: ChannelType, code: string, redirectUri?: string) => Promise<void>;
   /** Finalize the connect for the page/account picked in the wizard's own step. */
   selectMetaPage: (channelType: ChannelType, workspaceId: string, page: MetaPageOption) => Promise<void>;
-  /** Simulated dialog path - the picked page/account IS the authorization. */
-  authorizeMockMeta: (channelType: ChannelType, workspaceId: string, option: MetaPageOption) => Promise<void>;
 }
 
 export function useConnectChannel(workspaceId: string): UseConnectChannelResult {
@@ -174,7 +200,7 @@ export function useConnectChannel(workspaceId: string): UseConnectChannelResult 
         setPages(result.pages);
         setState('picking-page');
       } catch (e) {
-        setError(e instanceof Error ? e.message : 'Could not load your pages. Please try again.');
+        setError(connectErrorMessage(e, 'Could not load your pages. Please try again.'));
         setState('failed');
       }
     },
@@ -201,33 +227,11 @@ export function useConnectChannel(workspaceId: string): UseConnectChannelResult 
         setChannel(created);
         setState('connected');
       } catch (e) {
-        setError(e instanceof Error ? e.message : 'Connection failed. Please try again.');
+        setError(connectErrorMessage(e, 'Connection failed. Please try again.'));
         setState('failed');
       }
     },
     [sessionId],
-  );
-
-  const authorizeMockMeta = useCallback(
-    async (channelType: ChannelType, targetWorkspaceId: string, option: MetaPageOption) => {
-      setState('exchanging');
-      setError(null);
-      try {
-        const created = await onboardingService.connectMetaChannel({
-          sessionId: 'sandbox',
-          workspaceId: targetWorkspaceId,
-          channelType: channelType as 'FACEBOOK' | 'INSTAGRAM',
-          pageId: option.id,
-          igAccountId: option.igAccountId,
-        });
-        setChannel(created);
-        setState('connected');
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Connection failed. Please try again.');
-        setState('failed');
-      }
-    },
-    [],
   );
 
   return {
@@ -246,6 +250,5 @@ export function useConnectChannel(workspaceId: string): UseConnectChannelResult 
     startMetaAuth,
     authorizeMetaCode,
     selectMetaPage,
-    authorizeMockMeta,
   };
 }

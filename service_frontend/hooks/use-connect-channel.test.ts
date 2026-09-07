@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { ApiError } from '@/lib/api-client';
 import type { Channel, MetaPageOption, MockWabaOption } from '@/types/omnichannel';
 import { useConnectChannel } from './use-connect-channel';
 
@@ -123,18 +124,38 @@ describe('useConnectChannel - Messenger/Instagram (plan 32 / A7a)', () => {
     );
   });
 
-  it('authorizeMockMeta() (simulated dialog path) connects directly -> connected', async () => {
-    connectMetaChannel.mockResolvedValue(META_CHANNEL);
-    const { result } = renderHook(() => useConnectChannel('wsp-1'));
-    act(() => result.current.start());
-    expect(result.current.state).toBe('selecting');
-    await act(async () => {
-      await result.current.authorizeMockMeta('INSTAGRAM', 'wsp-1', { ...PAGE, igAccountId: 'ig-1' });
-    });
-    await waitFor(() => expect(result.current.state).toBe('connected'));
-    expect(connectMetaChannel).toHaveBeenCalledWith(
-      expect.objectContaining({ channelType: 'INSTAGRAM', igAccountId: 'ig-1' }),
+  it('a typed connect-session-expired 400 maps to friendly copy, not a bare status line', async () => {
+    listMetaPages.mockResolvedValue({ sessionId: 'sess-3', expiresAt: '2026-01-01T00:05:00Z', pages: [PAGE] });
+    connectMetaChannel.mockRejectedValue(
+      new ApiError('Bad Request', 400, undefined, { reason: 'connect_session_expired' }),
     );
+    const { result } = renderHook(() => useConnectChannel('wsp-1'));
+    act(() => result.current.startMetaAuth());
+    await act(async () => {
+      await result.current.authorizeMetaCode('FACEBOOK', 'code-1');
+    });
+    await act(async () => {
+      await result.current.selectMetaPage('FACEBOOK', 'wsp-1', PAGE);
+    });
+    await waitFor(() => expect(result.current.state).toBe('failed'));
+    expect(result.current.error).toBe('This connection attempt has expired - start again.');
+  });
+
+  it('a typed external-account-in-use 409 maps to friendly copy', async () => {
+    listMetaPages.mockResolvedValue({ sessionId: 'sess-4', expiresAt: '2026-01-01T00:05:00Z', pages: [PAGE] });
+    connectMetaChannel.mockRejectedValue(
+      new ApiError('Conflict', 409, undefined, { reason: 'external_account_in_use' }),
+    );
+    const { result } = renderHook(() => useConnectChannel('wsp-1'));
+    act(() => result.current.startMetaAuth());
+    await act(async () => {
+      await result.current.authorizeMetaCode('FACEBOOK', 'code-1');
+    });
+    await act(async () => {
+      await result.current.selectMetaPage('FACEBOOK', 'wsp-1', PAGE);
+    });
+    await waitFor(() => expect(result.current.state).toBe('failed'));
+    expect(result.current.error).toBe('This page is already connected to another channel.');
   });
 
   it('a failed page exchange surfaces an error and never reaches picking-page', async () => {

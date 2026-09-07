@@ -82,10 +82,12 @@ describe('omnichannel + AI Agent catalog entries (plan sprint-4/17)', () => {
     expect(catalogEntry('code.run')).toMatchObject({ permission: 'workflows.code' });
   });
 
-  it('the incoming-message trigger exposes an omnichannelChannel field', () => {
+  it('the incoming-message trigger exposes omnichannelChannel + omnichannelChannelType fields', () => {
+    // Plan 32 / A7a S6 (AC-CHN-58) - the independent channel-TYPE filter.
     const entry = catalogEntry('omnichannel.message_received');
     expect(entry?.fields).toEqual([
       { key: 'channelId', label: 'Channel', type: 'omnichannelChannel' },
+      { key: 'channelType', label: 'Channel type', type: 'omnichannelChannelType' },
     ]);
   });
 });

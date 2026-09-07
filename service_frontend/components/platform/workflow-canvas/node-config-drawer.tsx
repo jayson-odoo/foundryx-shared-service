@@ -40,6 +40,7 @@ import type {
   WorkflowRunNode,
   WorkflowTriggerableEntity,
 } from '@/types/workflows';
+import { CHANNEL_TYPES, channelCapabilities } from '@/lib/channel-capabilities';
 import { cn } from '@/lib/utils';
 import {
   ACTION_CATALOG,
@@ -1303,6 +1304,30 @@ export function NodeConfigDrawer({
           ariaLabel={field.label}
           placeholder="All channels"
           searchPlaceholder="Search channels…"
+          disabled={!editing}
+        />,
+      );
+    }
+
+    if (field.type === 'omnichannelChannelType') {
+      // Plan 32 / A7a S6 (AC-CHN-58) - static vocabulary (no workflow-
+      // metadata round trip needed), same "All types" unset-state pattern
+      // as `omnichannelChannel` above.
+      const typeOptions = [
+        { value: '__all__', label: 'All types' },
+        ...CHANNEL_TYPES.map((t) => ({ value: t, label: channelCapabilities(t).label })),
+      ];
+      const selectedType = typeof value === 'string' && value ? value : '__all__';
+      return wrap(
+        <SearchSelect
+          options={typeOptions}
+          value={selectedType}
+          onChange={(v) =>
+            onConfigChange(node.id, { [field.key]: v === '__all__' ? null : v })
+          }
+          ariaLabel={field.label}
+          placeholder="All types"
+          searchPlaceholder="Search channel types…"
           disabled={!editing}
         />,
       );

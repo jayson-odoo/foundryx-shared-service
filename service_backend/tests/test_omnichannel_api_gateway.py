@@ -1844,3 +1844,4 @@ def test_consumer_guide_documents_the_team_fields():
     # The PATCH section documents the by-id-only, team+user combination rules.
     assert "by id only" in guide.lower()
     assert "not a member of this team" in guide
+

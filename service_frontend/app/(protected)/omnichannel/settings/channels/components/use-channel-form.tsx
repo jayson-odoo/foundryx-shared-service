@@ -59,14 +59,26 @@ export function useChannelForm(channelId: string, initialEditing: boolean): UseC
   useEffect(() => {
     let active = true;
     setIsLoading(true);
-    Promise.all([channelService.get(channelId), channelService.getProfile(channelId)])
-      .then(([c, p]) => {
-        if (!active) return;
-        setChannel(c);
-        setProfile(p);
-        form.reset(toFormValues(c, p));
-        setNotFound(false);
-      })
+    // Plan 32 / A7a (D-A7-17) - Business Profile is refused with a typed 409
+    // on a non-WhatsApp channel (§ Profile tab). A `Promise.all` here would
+    // fail the WHOLE page on that expected 409 for every Messenger/Instagram
+    // channel; the profile fetch is caught independently and degrades to
+    // `null` (no Profile tab, see `config` below) instead of a false
+    // "channel not found". Only the CHANNEL fetch failing is a real 404.
+    channelService
+      .get(channelId)
+      .then((c) =>
+        channelService
+          .getProfile(channelId)
+          .catch(() => null)
+          .then((p) => {
+            if (!active) return;
+            setChannel(c);
+            setProfile(p);
+            form.reset(toFormValues(c, p));
+            setNotFound(false);
+          }),
+      )
       .catch(() => active && setNotFound(true))
       .finally(() => active && setIsLoading(false));
     return () => {

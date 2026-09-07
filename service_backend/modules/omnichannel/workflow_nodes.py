@@ -330,6 +330,13 @@ def _message_received_refine(config: Dict[str, Any], ev: Dict[str, Any]) -> bool
     wanted_channel = config.get("channelId")
     if wanted_channel and wanted_channel != extra.get("channelId"):
         return False
+    # Plan 32 / A7a S6 (AC-CHN-58) - optional channel TYPE filter, unset =
+    # any type; independent of (and composable with) the specific-channel
+    # filter above (both may be set - e.g. "channel X, but only if it is
+    # still a Messenger channel" survives a future channel-type change).
+    wanted_type = config.get("channelType")
+    if wanted_type and wanted_type != extra.get("channelType"):
+        return False
     if config.get("firstMessageOnly") and not extra.get("isFirstMessage"):
         return False
     keyword = str(config.get("keywordContains") or "").strip()
@@ -523,7 +530,18 @@ _TRIGGER_OUTPUTS = [
     NodeOutput("trigger.contact.phone", "Contact · phone"),
     NodeOutput("trigger.channel.id", "Channel · id"),
     NodeOutput("trigger.channel.name", "Channel · name"),
+    NodeOutput("trigger.channelType", "Channel · type"),
     NodeOutput("trigger.conversationId", "Conversation id"),
+]
+
+# Channel-type filter options (plan 32 / A7a S6, AC-CHN-58) - the SAME three
+# implemented types `lib/channel-capabilities.ts` declares; kept as a plain
+# static list (no DB lookup) since the vocabulary is fixed, unlike the
+# per-workspace `omnichannelChannel` picker.
+_CHANNEL_TYPE_OPTIONS = [
+    {"value": "WHATSAPP", "label": "WhatsApp"},
+    {"value": "FACEBOOK", "label": "Messenger"},
+    {"value": "INSTAGRAM", "label": "Instagram"},
 ]
 
 
@@ -560,6 +578,17 @@ def register_omnichannel_workflow_nodes() -> None:
                     label="Channel",
                     type="omnichannelChannel",
                     required=False,
+                ),
+                # Plan 32 / A7a S6 (AC-CHN-58) - optional channel TYPE filter,
+                # independent of the specific-channel field above; unset =
+                # any type (foolproof-UI: the FE renders an explicit "All
+                # types" option rather than an empty required picker).
+                NodeField(
+                    key="channelType",
+                    label="Channel type",
+                    type="omnichannelChannelType",
+                    required=False,
+                    options=_CHANNEL_TYPE_OPTIONS,
                 ),
                 # plan sprint-4/31 (AC-WFP-14): extra filters, refined at match
                 # time (never a second emission).

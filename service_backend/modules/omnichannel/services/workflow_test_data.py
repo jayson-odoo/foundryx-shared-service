@@ -136,6 +136,7 @@ def build_test_payload(
         "extra": {
             "channelId": channel.id,
             "channelName": channel.name,
+            "channelType": channel.channel_type,
             "workspaceId": channel.workspace_id,
             "contactId": contact.id,
             "contactName": _contact_name(contact),

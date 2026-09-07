@@ -1,8 +1,10 @@
 /**
- * Mock onboarding service - Messenger + Instagram connect flow (plan 32 / A7a,
- * S0 MOCK). Mirrors the real connect-flow contract the backend implements in
- * S3: `/meta/pages` then `/meta/connect`, an already-connected page/account
- * never offered, and a page uniqueness violation refused.
+ * Mock onboarding service - Messenger + Instagram connect flow (plan 32 /
+ * A7a). Mirrors the real connect-flow contract the backend implements
+ * (`/meta/pages` then `/meta/connect`, an already-connected page/account
+ * never offered, and a page uniqueness violation refused). The app no
+ * longer binds to this mock at runtime (S6) - kept as the standing
+ * frontend-first mock for future tuning.
  */
 import { describe, expect, it } from 'vitest';
 import { mockOnboardingService } from './onboarding-service.mock';

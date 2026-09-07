@@ -258,11 +258,13 @@ function seedThreads(): ThreadRow[] {
 }
 
 /**
- * Plan 32 / A7a - Messenger + Instagram threads (S0 MOCK, AC-CHN-10): the
- * three composer window states (open / human-agent-extended / fully closed)
- * plus one Instagram thread, so the whole surface is exercisable with no
- * backend. `cswExpiresAt` stays null on every non-WhatsApp thread (D-A7-5,
- * F4) - it is a documented WhatsApp-only mirror.
+ * Plan 32 / A7a - Messenger + Instagram threads (AC-CHN-10): the three
+ * composer window states (open / human-agent-extended / fully closed) plus
+ * one Instagram thread, so the whole surface is exercisable with no backend.
+ * `cswExpiresAt` stays null on every non-WhatsApp thread (D-A7-5, F4) - it is
+ * a documented WhatsApp-only mirror. The app no longer binds to this module
+ * at runtime (`conversation-service.ts` -> real, since plan 25) - these
+ * seeds remain the standing frontend-first mock for future tuning + tests.
  */
 function seedMetaThreads(): ThreadRow[] {
   return [
