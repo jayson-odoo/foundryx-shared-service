@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import datetime, timedelta, timezone
 from typing import Dict
 
 import httpx
@@ -65,7 +66,14 @@ def _active_task_staged_supplier_job(db, company, *, refs) -> BackgroundJob:
     ``needs_review`` job (that gate is for the review-approve path only;
     an ACTIVE db task's own rows are never behind it), so a plain ``done``
     job (as an ACTIVE task's own run would leave behind) is what makes
-    those rows visible to ``auto_push`` at all."""
+    those rows visible to ``auto_push`` at all.
+
+    ``created_at`` is EXPLICIT and strictly increasing in ``refs`` order:
+    ``list_pending_for_entity`` orders oldest-first and SQLite's
+    ``func.now()`` has one-second resolution, so 30 rows inserted in one
+    go all tied and the tie-break fell to random UUIDs - chunk membership
+    ("ref 15 is in the second chunk") only held by luck (BL-SS-129)."""
+    base = datetime(2026, 9, 1, 0, 0, 0, tzinfo=timezone.utc)
     job = BackgroundJob(
         tenant_id=DEFAULT_TENANT_ID,
         type=AUTOCOUNT_SYNC,
@@ -86,6 +94,7 @@ def _active_task_staged_supplier_job(db, company, *, refs) -> BackgroundJob:
                 tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
                 entity_type=ENTITY_SUPPLIER, job_id=job.id, source_ref=ref,
                 canonical_json=record.comparable(), status=STAGED,
+                created_at=base + timedelta(seconds=i),
             )
         )
     db.commit()
@@ -214,13 +223,21 @@ def test_auto_push_sends_up_to_N_chunks_concurrently_with_correct_verdicts(
 # ── (c) a mid-flight failure: all-or-nothing at every concurrency level ────
 
 
-def test_auto_push_one_failing_chunk_applies_no_verdicts_at_any_concurrency(
+def test_auto_push_one_failing_chunk_keeps_the_other_chunks_verdicts_at_any_concurrency(
     session_factory, transports, sorento_sink, monkeypatch,
 ):
+    """Re-pointed for fix/push-marks-per-chunk (prod finding: ~5 offers per
+    SO because one failing chunk discarded every other chunk's verdicts and
+    the next run re-offered the same oldest 5,000). Marks are written and
+    committed PER CHUNK: the chunk that failed stays STAGED for the next run,
+    every chunk the consumer answered is marked, and the summary accounts for
+    requests / requestsFailed / firstFailure - at any concurrency."""
     from app.config import settings as cfg
     from modules.autocount import sinks_sorento as sinks_sorento_module
+    from modules.autocount.models import STAGED_PUSHED
 
     monkeypatch.setattr(sinks_sorento_module, "SORENTO_MAX_BATCH", 10, raising=False)
+    monkeypatch.setattr(cfg, "autocount_sink_batch_size", 10)
     restore = _force_setting(cfg, "autocount_sink_concurrency", 3)
 
     db = session_factory()
@@ -230,11 +247,13 @@ def test_auto_push_one_failing_chunk_applies_no_verdicts_at_any_concurrency(
     job = _active_task_staged_supplier_job(db, company, refs=refs)
 
     failing_ref = "AED_VSOFT:15"  # lands in the second chunk
+    failing_chunk: Dict[str, set] = {}
 
     def responder(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         refs_in_chunk = {r["source_ref"] for r in body["records"]}
         if failing_ref in refs_in_chunk:
+            failing_chunk["refs"] = refs_in_chunk
             raise httpx.ConnectError("connection reset", request=request)
         recs = [
             {"source_ref": r["source_ref"], "outcome": "created",
@@ -257,17 +276,14 @@ def test_auto_push_one_failing_chunk_applies_no_verdicts_at_any_concurrency(
         restore()
 
     assert summary.get("error") is not None, (
-        f"a mid-flight transport failure must surface as a batch error - got "
+        f"a mid-flight transport failure must still surface as the run error - got "
         f"{summary!r}"
     )
-    assert "push failed before the consumer resolved it" in summary["error"], (
-        f"last_run_error must carry the existing push-failed text - got "
-        f"{summary['error']!r}"
-    )
-    assert not summary.get("pushed"), (
-        f"all-or-nothing: NO verdict may be applied, even for chunks that "
-        f"completed before the failing one - got pushed={summary.get('pushed')!r}"
-    )
+    assert summary.get("requestsFailed") == 1, summary
+    assert summary.get("requests", 0) >= 2, summary
+    assert "unreachable" in str(summary.get("firstFailure")).lower() or "ConnectError" in str(
+        summary.get("firstFailure")
+    ), summary
 
     statuses = {
         r.source_ref: r.status
@@ -275,8 +291,12 @@ def test_auto_push_one_failing_chunk_applies_no_verdicts_at_any_concurrency(
             DEFAULT_TENANT_ID, company.id, job.id
         )
     }
-    assert set(statuses.values()) == {STAGED}, (
-        f"every row (including ones in an already-completed chunk) must "
-        f"stay STAGED so the next run re-offers them - got {statuses}"
+    failed_refs = failing_chunk["refs"]
+    assert all(statuses[r] == STAGED for r in failed_refs), (
+        f"the failed chunk's rows must stay STAGED for the next run - got {statuses}"
     )
+    answered = [r for r in refs if r not in failed_refs and statuses[r] == STAGED_PUSHED]
+    assert answered, "chunks the consumer answered must be marked PUSHED"
+    assert summary.get("pushed") == len(answered), summary
+    assert set(statuses.values()) <= {STAGED, STAGED_PUSHED}
     db.close()

@@ -348,13 +348,29 @@ class Settings(BaseSettings):
     # bumped to fit the configured worker count plus the page's own header
     # connection, so a high worker count can never starve the pool.
     autocount_line_fetch_workers: int = 4
-    # The sink's chunked push, up to N POSTs in flight (S5b, same
-    # performance round) - `SorentoSink.write_batch` keeps its EXISTING
-    # all-or-nothing contract at every concurrency: one chunk failing
-    # discards every chunk's verdict, exactly like the fully sequential
-    # loop always has. Default 1 (byte-identical to today, same request
-    # order) - an operator raises it only once the RECEIVING side (Sorento)
-    # has confirmed it can take concurrent batches. Bounded 1..4.
+    # The sink's chunked push, up to N POSTs in flight (S5b, same performance
+    # round). Concurrency 1 is byte-identical to the original fully
+    # sequential loop (same request order, one POST at a time) - the only
+    # thing concurrency changes.
+    #
+    # `fix/push-marks-per-chunk` (2026-09-07) replaced the ORIGINAL
+    # all-or-nothing contract with a per-chunk one: `write_batch`/
+    # `delete_batch` call `on_chunk` as each chunk resolves, and the caller
+    # (`SyncService`) marks + COMMITS that chunk immediately, so ONE failed
+    # chunk costs only that chunk - every sibling chunk's already-delivered
+    # verdict is durable and never re-offered. A raised setting therefore
+    # widens the blast radius of a single bad chunk hardly at all (still one
+    # chunk's rows, just possibly N of them retrying at once) rather than
+    # the old "one failure discards the whole batch" risk.
+    #
+    # The default stays 1 EVERYWHERE (this application default AND
+    # `docker-compose.yml`'s deployed `AUTOCOUNT_SINK_CONCURRENCY`) - a user
+    # ruling after Sorento accepted 2 as an achievable ceiling following
+    # their #710 capacity measurement: the platform-wide default is left
+    # alone and `feat/sink-concurrency-ui`'s per-connection "Push
+    # concurrency" field (`SorentoSink._resolve_concurrency`) is the ONE
+    # lever an operator raises, per tenant, from that Sorento connection's
+    # own edit form. Bounded 1..4 at every level.
     autocount_sink_concurrency: int = 1
     # Records per Sorento ingest POST (2026-09-06 prod incident: a 1,000-record
     # purchase_order batch with per-record supplier back-create ran past
@@ -365,6 +381,29 @@ class Settings(BaseSettings):
     # the next push. Bounded 1..`SORENTO_MAX_BATCH` - the ceiling is Sorento's
     # own per-request limit and cannot be raised from here.
     autocount_sink_batch_size: int = 200
+    # Bounded retry for a TRANSIENT Sorento 5xx (502/503/504 - prod finding
+    # 2026-09-07: their own nginx answers a bare 502 on roughly 1 in 25 chunk
+    # POSTs, upstream momentarily unreachable, never reaching their app). A
+    # plain 500 (still a guard-rail error until the companion Sorento fix
+    # lands) or a 4xx is NEVER retried - only a 502/503/504 is. Read at CALL
+    # time by `SorentoSink._post_with_retry`. Bounded 1..5.
+    #
+    #     !!  THE BACKOFF BETWEEN ATTEMPTS IS SHORT (1s/2s/4s...) - THE
+    #         DOMINANT WORST CASE PER CHUNK IS THE 429 WAIT INSIDE EACH
+    #         ATTEMPT, NOT THIS BACKOFF (S5, review round 2).  !!
+    # Each retry ATTEMPT is one `_call`, which internally loops on its own
+    # 429 handling up to `max_rate_limit_waits` times (default 2) at up to
+    # `_retry_after_seconds`'s 60s cap - so ONE attempt can itself take up to
+    # `max_rate_limit_waits * 60s` before it ever reaches the transient-5xx
+    # check this setting governs. Worst case for a whole chunk is therefore
+    # roughly `autocount_sink_retry_attempts * (max_rate_limit_waits * 60s)`
+    # plus the (small) backoff between attempts - at the defaults, up to
+    # ~6 minutes, not "a few seconds". A run's own time budget
+    # (`autocount_run_time_budget_seconds`) is what actually bounds a stuck
+    # chunk from running away with a whole tick; this setting only bounds
+    # how many TIMES a transient fault is retried, never how long any one
+    # attempt can take.
+    autocount_sink_retry_attempts: int = 3
 
     @field_validator("background_job_orphan_after_minutes")
     @classmethod
@@ -428,6 +467,13 @@ class Settings(BaseSettings):
                 f"autocount_sink_batch_size must be between 1 and {SORENTO_MAX_BATCH} "
                 f"(Sorento's per-request ingest ceiling)."
             )
+        return v
+
+    @field_validator("autocount_sink_retry_attempts")
+    @classmethod
+    def _autocount_sink_retry_attempts_bounds(cls, v: int) -> int:
+        if v < 1 or v > 5:
+            raise ValueError("autocount_sink_retry_attempts must be between 1 and 5.")
         return v
 
 

@@ -423,9 +423,14 @@ def test_write_batch_calls_on_chunk_once_per_chunk():
         for i in range(7)
     ]
     beats: List[int] = []
-    results = sink.write_batch(records, request_id="t", on_chunk=lambda: beats.append(1))
+    # Merged contract (fix/push-marks-per-chunk): ``on_chunk(chunk_records,
+    # chunk_results_or_None, error_or_None)`` - still exactly once per chunk.
+    results = sink.write_batch(
+        records, request_id="t",
+        on_chunk=lambda chunk, chunk_results, error: beats.append(len(chunk)),
+    )
     assert len(results) == 7
-    assert len(beats) == 3  # chunks of 3 / 3 / 1
+    assert beats == [3, 3, 1]  # chunks of 3 / 3 / 1, one call each
 
 
 def test_a_push_of_seven_rows_in_chunks_of_three_heartbeats_at_least_three_times(

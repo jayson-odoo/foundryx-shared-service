@@ -39,9 +39,10 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from app.config import settings
 from app.integrations.base import TestResult
 
-from .sinks_sorento import contract_major
+from .sinks_sorento import SINK_CONCURRENCY_KEY, contract_major
 
 SORENTO_PROVIDER_KEY = "sorento"
 # Connection category. Distinct from AutoCount's ``erp`` (which points AT
@@ -77,11 +78,12 @@ class SorentoProvider:
     test_target = None
 
     def fields(self) -> List[Dict[str, Any]]:
-        """Config schema driving the integrations form. Three fields: the base
+        """Config schema driving the integrations form. Four fields: the base
         URL (displayable config), the contract version (select, displayable
         config - same shape as the SMTP provider's ``security`` select, which
         the generic integrations form already renders and prefills from the
-        stored config on edit) and the API key (write-only secret)."""
+        stored config on edit), the push concurrency (select,
+        feat/sink-concurrency-ui) and the API key (write-only secret)."""
         return [
             {
                 "key": "baseUrl",
@@ -107,6 +109,26 @@ class SorentoProvider:
                 "type": "password",
                 "required": True,
                 "secret": True,
+            },
+            {
+                "key": SINK_CONCURRENCY_KEY,
+                "label": "Push concurrency",
+                "type": "select",
+                "required": False,
+                # NO `defaultValue` - unset means the platform default, not a
+                # stored "1". An operator raises this during a backlog drain
+                # and sets it back afterwards, no deploy (see
+                # `SorentoSink._resolve_concurrency`).
+                "options": [
+                    {"value": "1", "label": "1 (sequential)"},
+                    {"value": "2", "label": "2"},
+                    {"value": "3", "label": "3"},
+                    {"value": "4", "label": "4"},
+                ],
+                # What this connection actually runs at right now, read at
+                # REQUEST time - the read-mode / edit prefill for an unset
+                # connection (`storedOrEffective` on the frontend).
+                "effectiveValue": str(settings.autocount_sink_concurrency),
             },
         ]
 

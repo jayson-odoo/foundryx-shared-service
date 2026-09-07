@@ -68,12 +68,16 @@ export const SORENTO_CONTRACT_VERSION_KEY = 'sorentoContractVersion';
 const SORENTO_CONTRACT_VERSION_EFFECTIVE = '1';
 
 /** The value a field SHOWS for an existing connection: the stored one, else
- *  the effective fallback above (Sorento contract version only), else blank.
- *  Used by both the edit prefill and the read-mode row so the two modes never
+ *  the field's own `effectiveValue` (feat/sink-concurrency-ui - the provider
+ *  computes it per request, e.g. the platform's `sinkConcurrency` default),
+ *  else the Sorento contract-version literal above (its provider payload
+ *  predates `effectiveValue` and still hardcodes "1"), else blank. Used by
+ *  both the edit prefill and the read-mode row so the two modes never
  *  disagree about what the connection runs at. */
 export function storedOrEffective(f: ProviderField, config: Record<string, string>): string {
   const stored = config[f.key];
   if (stored !== undefined) return stored;
+  if (f.effectiveValue !== undefined) return f.effectiveValue;
   return f.key === SORENTO_CONTRACT_VERSION_KEY ? SORENTO_CONTRACT_VERSION_EFFECTIVE : '';
 }
 

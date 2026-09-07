@@ -192,6 +192,17 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   version 1 or upgrade Sorento"); a Sorento with no contract endpoint at all is reported, not failed.
 - Sorento UAC/plan: `documentation/plans/autocount/autocount-document-ingest-v2-acceptance-criteria.md`
   (AC-V0..V6) + `PLAN-autocount-document-ingest-v2.md` (D1-D9, S0-S6) on sorento-crm main.
+- Push concurrency (`feat/sink-concurrency-ui`, 2026-09-07): the Sorento connection form gained a
+  second select, "Push concurrency" (`sinkConcurrency`, values `"1".."4"`, no stored default).
+  Unset means the platform default, which is 1 EVERYWHERE by design (`app/config.py`'s
+  `autocount_sink_concurrency` AND `docker-compose.yml`'s deployed `AUTOCOUNT_SINK_CONCURRENCY`
+  - a user ruling after Sorento accepted 2 as an achievable ceiling following their #710
+  measurement: the platform-wide default is left alone and the per-connection override is the
+  one lever). A stored value on the connection overrides it for THIS tenant only, up to the
+  ceiling of 4, so an operator can raise it to drain a backlog and set it back after, no deploy.
+  Resolved inside `SorentoSink._resolve_concurrency`, clamped to 1..4 and to the number of chunks
+  in the push; an invalid stored value falls back to the platform default and logs one warning
+  per sink instance rather than raising.
 
 ## 12. Change log
 

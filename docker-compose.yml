@@ -56,6 +56,10 @@ x-backend-env: &backend-env
   # RECREATED (`docker compose up -d`), a `restart` keeps the old environment.
   AUTOCOUNT_SINK_BATCH_SIZE: ${AUTOCOUNT_SINK_BATCH_SIZE:-200}
   AUTOCOUNT_SINK_TIMEOUT_SECONDS: ${AUTOCOUNT_SINK_TIMEOUT_SECONDS:-300}
+  # Ceiling 4; Sorento accepted 2 after measuring #710 (4 async ingest workers
+  # at ~14s per 200 row batch), but the deployed default stays 1 - raise push
+  # concurrency per tenant from that Sorento connection's own Push concurrency
+  # field instead (feat/sink-concurrency-ui), not by editing this default.
   AUTOCOUNT_SINK_CONCURRENCY: ${AUTOCOUNT_SINK_CONCURRENCY:-1}
 
 x-backend-base: &backend-base

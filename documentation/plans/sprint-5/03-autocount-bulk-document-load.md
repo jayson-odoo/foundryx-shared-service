@@ -325,11 +325,13 @@
   the exact same exception a purely sequential loop always raised;
   `SyncService._auto_push_upserts`'s existing generic `except Exception` handler (`"The push
   failed before the consumer resolved it"`) needed no changes at all. Concurrency 1 is
-  byte-identical to before this round (same request order, one POST in flight). Ops note:
-  default stays 1 - an operator raises `AUTOCOUNT_SINK_CONCURRENCY` only once the RECEIVING side
-  has confirmed it can take concurrent batches (a per-connection-serialised commit or an
-  aggressive rate limit on their end would turn "faster" into "more 429s/5xxs", the opposite of
-  the intent).
+  byte-identical to before this round (same request order, one POST in flight). Ops note
+  (superseded twice - see `fix/push-marks-per-chunk` and `feat/sink-concurrency-ui` below, and
+  the user's ruling after Sorento's #710 measurement): the default stays 1 EVERYWHERE - both
+  `app/config.py`'s `autocount_sink_concurrency` (local dev) and `docker-compose.yml`'s deployed
+  `AUTOCOUNT_SINK_CONCURRENCY` - and a Sorento connection's own "Push concurrency" field (1..4
+  ceiling) is the ONE lever an operator raises for a specific tenant, from its edit form, without
+  a redeploy.
 
 **Review round 7 amendments (reviewer polish, no blocker):**
 - **Pool headroom for two concurrent paged tasks.** `runtime.py`'s `engine_for` now sizes
@@ -355,6 +357,60 @@
   pays a TLS handshake per chunk instead of reusing one connection-pooled client across the
   whole batch. Low priority, out of this round's scope (the concurrent path already parallelises
   the handshakes rather than serialising them, which is most of the win) - tracked for later.
+
+**Prod fix (fix/push-marks-per-chunk, 2026-09-07) - supersedes round 6's S5b "unchanged
+all-or-nothing" ruling:**
+- **The ALL-OR-NOTHING contract that round 6 deliberately kept is the prod bug.** Sorento's
+  `api_call_log` over 6h of the sales_order task: ~657 requests x 200 = ~131k offers for 23k
+  distinct SOs (~5 offers per document) - a lone 502 from Sorento's OWN nginx (upstream
+  momentarily unreachable, never reaching their app) on roughly 1 in 25 chunk POSTs discarded
+  every OTHER chunk's already-delivered verdict too, so the next run re-offered rows Sorento had
+  already accepted `created`/`updated`. `write_batch`/`delete_batch` now take an `on_chunk`
+  callback invoked once per chunk as it resolves; `SyncService._auto_push_upserts`/`_auto_push_
+  deletes` mark + COMMIT that chunk immediately, so a LATER chunk's fault can never undo an
+  EARLIER chunk's delivery. A TRANSIENT 5xx (502/503/504 only, `settings.
+  autocount_sink_retry_attempts`, default 3, bounded backoff via `time.sleep`) is retried in
+  place; a chunk that still fails after exhausting its attempts fails ONLY that chunk and the
+  loop continues to later chunks - a plain 500 (still a guard-rail error until the companion
+  Sorento fix lands), a 4xx, an anchor error or a bare transport fault is NOT retried and stops
+  the whole push immediately, unchanged from round 6's posture for those cases. The summary (and
+  `ac_sync_run.requests`/`requests_failed`/`first_failure`, migration `0015`) now accounts for
+  how many chunk POSTs a run made and which one failed first - the Runs list previously showed
+  `pushed_count 0` / `error NULL` with no way to tell a chunk-level fault had even happened.
+  `ac_staged_record.last_offered_at` (same migration) + `list_pending_for_entity`'s `last_offered_at`
+  NULLS-FIRST ordering guard against a permanently-`retryable` head of the oldest-first queue
+  starving fresh rows behind it forever, now that a partial-batch outcome is common rather than
+  rare. **Merge order: fix/job-lease-orphan-sweep (adds its OWN `write_batch(on_chunk=)` for a
+  liveness heartbeat, in review, not yet merged at the time of this fix) must merge FIRST** - the
+  two `on_chunk` shapes need folding into one signature (this lane's carries `(chunk_records,
+  chunk_results_or_None, error_or_None)`; job-lease's is a zero-arg heartbeat tick) with the
+  heartbeat folded into the richer callback, not the other way round.
+
+  **A run can be `RUN_SUCCESS` with `last_run_error` (`ac_sync_run.error`) set - this is a
+  PARTIAL push, not a fetch failure.** The extract itself succeeded (every row was read and
+  mapped, or the mapping failures are already counted into `failed_count`); the outcome column
+  answers "did the FETCH complete", never "did every staged row reach the consumer". A chunk-level
+  push fault (a transient 5xx that exhausted retries, a lease lost mid-push) is surfaced entirely
+  through `error`/`requests`/`requests_failed`/`first_failure` on the SAME successful run row -
+  reading `outcome` alone to decide whether a run needs attention misses this class of fault
+  entirely; check `error` too.
+
+  **Review round 2 fixes (reviewer REQUEST CHANGES, merge composition with #56):** S1 - the paged
+  path's truncated branch now APPENDS the push's own error to the budget note rather than
+  replacing one with the other. S3 - a REAL flush/commit failure inside a chunk's own per-chunk
+  commit (a NOT NULL violation, a constraint fault) used to leave the session in
+  `PendingRollbackError` for every later statement (the run row itself could never be written);
+  `SyncService._commit_chunk` now rolls back, accounts the failure, and raises an internal
+  `_ChunkCommitFailed` sentinel the caller stops on cleanly. S4 - re-extracting a document already
+  STAGED and unresolved (typically `retryable`) now UPDATES that row in place
+  (`StagedRecordRepository.list_staged_upserts`, mirroring `pending_delete_refs`'s dedup rule for
+  deletes) instead of inserting a second row that would offer - and once pushed, deliver - the
+  same document twice; `_auto_push_upserts`/`_auto_push_deletes`'s ref lookup changed from a dict
+  (kept only the LAST row for a duplicate ref) to ref -> list, so a successful chunk marks EVERY
+  row sharing a ref. S5 - `_retry_after_seconds` caps an arbitrary vendor `Retry-After` at 60s (a
+  stray 3600 previously parked a chunk POST for an hour); the real worst-case bound per chunk is
+  dominated by the 429 wait INSIDE each retry attempt (`attempts * max_rate_limit_waits * 60s`,
+  ~6 minutes at the defaults), not the short backoff BETWEEN attempts.
 
 ### 2.2 Run loop, change-only staging, watermark (`sync.py`)
 
@@ -514,11 +570,20 @@ instance: the real company's SO/PO/SPO `lineQuery` were hand-edited to the same
   note: a slow-but-alive Sorento ingesting a large document batch used to record a push FAILURE
   at the old hard-coded 30s even though the batch itself was fine - retune
   `AUTOCOUNT_SINK_TIMEOUT_SECONDS` (default 300s, floor 30s) instead of changing code. S5b -
-  `write_batch` sends up to `settings.autocount_sink_concurrency` chunk POSTs with real overlap,
-  same all-or-nothing contract at every concurrency level; ops note: default stays 1
-  (byte-identical to the old fully sequential loop) - raise `AUTOCOUNT_SINK_CONCURRENCY` (max 4)
-  only once the RECEIVING side has confirmed it can take concurrent batches, since a rate limit
-  or per-connection-serialised commit on their end would turn "faster" into "more 429s/5xxs".
+  `write_batch` sends up to `settings.autocount_sink_concurrency` chunk POSTs with real overlap.
+  `fix/push-marks-per-chunk` (2026-09-07) replaced the all-or-nothing verdict with per-chunk
+  mark+commit (see that section above) - a raised concurrency no longer risks discarding a
+  sibling chunk's already-delivered verdict, only widening a single failed chunk's own blast
+  radius. `feat/sink-concurrency-ui` (`sorento_provider.py`'s `sinkConcurrency` select,
+  `SorentoSink._resolve_concurrency`) then made a Sorento connection's OWN edit form the lever,
+  not the deploy: an operator raises a tenant's push concurrency (1..4, clamped to the number of
+  chunks) to drain a backlog and sets it back after, no deploy; an invalid stored value falls
+  back to the default and logs one warning per sink instance, never raises. The default stays 1
+  EVERYWHERE - `app/config.py`'s `autocount_sink_concurrency` (byte-identical to the old fully
+  sequential loop) and `docker-compose.yml`'s deployed `AUTOCOUNT_SINK_CONCURRENCY` both - per the
+  user's ruling after Sorento measured 4 async ingest workers at about 14s per 200-row batch on
+  their end (#710) and accepted 2 as an achievable ceiling: the platform-wide default is left
+  alone and the per-connection override is the one place concurrency actually gets raised.
   `fix/sorento-batch-size` (2026-09-06) - records per ingest POST are now
   `AUTOCOUNT_SINK_BATCH_SIZE` (default 200, bounded 1..1000 = Sorento's per-request ceiling,
   read at call time), after a 1,000-record purchase_order batch with per-record supplier
@@ -610,3 +675,11 @@ parallel at the end. Live load = AC-03-22/23 on the real company and `ac_sim`.
 - BL-SS-096 `SorentoSink.write_batch` opens a fresh `httpx.Client` per chunk - a TLS handshake
   per chunk instead of one connection-pooled client reused across the whole batch (review round
   7 polish; see the round 7 amendment above).
+- BL-SS-132 `test_auto_push_one_failing_chunk_keeps_the_other_chunks_verdicts_at_any_concurrency`
+  (round6b) - CLOSED (`a5246f37`): the shared fixture now stamps explicit increasing
+  `created_at` per row, the same shape `test_autocount_push_marks_per_chunk.py`'s own `_stage`
+  helper already used. (Renumbered from BL-SS-129, which `fix/job-lease-orphan-sweep` claimed
+  first on `main`.)
+- BL-SS-133 Fixed by this lane (fix/push-marks-per-chunk) - see `documentation/backlogs/
+  backlog.md` for the full prod-numbers writeup; superseded round 6's "unchanged all-or-nothing"
+  ruling. (Renumbered from BL-SS-130 for the same reason.)

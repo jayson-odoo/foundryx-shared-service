@@ -35,6 +35,13 @@ export interface ProviderField {
   /** Select options (type === 'select'). */
   options?: Array<{ value: string; label: string }>;
   defaultValue?: string;
+  /**
+   * What this field actually runs at RIGHT NOW when unset (feat/sink-
+   * concurrency-ui) - the provider computes it per request (e.g. the
+   * platform default), so read mode and the edit prefill can show the truth
+   * instead of a blank required field. See `storedOrEffective`.
+   */
+  effectiveValue?: string;
   /** Collapsed under the wizard's "Advanced" section. */
   advanced?: boolean;
   /**

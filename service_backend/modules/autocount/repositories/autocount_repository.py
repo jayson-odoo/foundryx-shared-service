@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Sequence, Tuple
 
-from sqlalchemy import Text, cast, or_, select
+from sqlalchemy import Text, cast, nulls_first, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.background_job import (
@@ -578,6 +578,16 @@ class StagedRecordRepository:
 
         The per-JOB ``list_pending_for_job`` is untouched: the review gate is a
         per-batch decision and must not widen.
+
+        **Ordered ``last_offered_at`` NULLS FIRST, then oldest-first**
+        (fix/push-marks-per-chunk, prod finding 2026-09-07): a permanently
+        ``retryable`` head (a master its consumer keeps saying isn't synced
+        yet) sorts oldest-first FOREVER under a plain ``created_at`` order,
+        starving every row staged after it once the offer cap is below the
+        stuck count. Stamping ``last_offered_at`` on every offer
+        (``mark_offered``, called by the caller right after this read) and
+        sorting never-offered rows first means a fresh row is offered within
+        one extra tick even behind an arbitrarily large stuck head.
         """
         parked = (
             self.db.query(BackgroundJob.id)
@@ -602,8 +612,64 @@ class StagedRecordRepository:
                 AcStagedRecord.status == STAGED,
                 AcStagedRecord.job_id.notin_(select(parked.c.id)),
             )
-            .order_by(AcStagedRecord.created_at.asc(), AcStagedRecord.id.asc())
+            .order_by(
+                nulls_first(AcStagedRecord.last_offered_at.asc()),
+                AcStagedRecord.created_at.asc(),
+                AcStagedRecord.id.asc(),
+            )
             .limit(limit)
+            .all()
+        )
+
+    def mark_offered(self, rows: Sequence[AcStagedRecord], *, now: datetime) -> None:
+        """Stamp every row as OFFERED to a push (fix/push-marks-per-chunk) -
+        the starvation guard beside ``list_pending_for_entity``'s ordering.
+        Does not commit; the caller owns the transaction (``auto_push`` commits
+        this up front, before any sink call, so the stamp survives even a
+        push that then fails outright).
+
+        ONE set-based ``UPDATE`` (nit, review round 2) rather than a
+        per-row attribute assignment + ORM flush - up to 5,000 rows offered
+        in one call is the routine case, not the exception.
+        ``synchronize_session=False`` skips re-syncing the SESSION's already
+        -loaded objects against the bulk UPDATE (this call owns no other
+        pending changes to those rows to protect), so the in-memory rows are
+        stamped explicitly right after, for any caller that reads the
+        attribute back before the next fetch."""
+        ids = [row.id for row in rows]
+        if not ids:
+            return
+        self.db.execute(
+            update(AcStagedRecord)
+            .where(AcStagedRecord.id.in_(ids))
+            .values(last_offered_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        for row in rows:
+            row.last_offered_at = now
+
+    def list_staged_upserts(
+        self, tenant_id: str, company_id: str, entity_type: str, source_ref: str
+    ) -> List[AcStagedRecord]:
+        """Every STILL-OPEN (``STAGED``) upsert row for this ref (S4, review
+        round 2) - mirrors ``pending_delete_refs``'s dedup-at-stage-time rule
+        for the upsert side. Re-extracting a document that is already
+        staged (unresolved from a prior run - most commonly a ``retryable``
+        verdict) must UPDATE the existing row(s) in place rather than insert
+        a second one, which would offer the same document twice and (once
+        pushed) leave a duplicate delivered. A list, not one row, so a
+        legacy duplicate (pre-dating this fix) is refreshed on every row
+        rather than only the row this query happens to pick."""
+        return (
+            self.db.query(AcStagedRecord)
+            .filter(
+                AcStagedRecord.tenant_id == tenant_id,
+                AcStagedRecord.company_id == company_id,
+                AcStagedRecord.entity_type == entity_type,
+                AcStagedRecord.source_ref == source_ref,
+                AcStagedRecord.op != STAGED_OP_DELETE,
+                AcStagedRecord.status == STAGED,
+            )
             .all()
         )
 

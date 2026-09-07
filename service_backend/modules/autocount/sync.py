@@ -799,6 +799,15 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         delete_failed_count = len(push_summary.get("deleteFailures") or [])
         if delete_failed_count:
             run.failed_count = (run.failed_count or 0) + delete_failed_count
+        # Push request accounting (fix/push-marks-per-chunk, prod 2026-09-07):
+        # an operator reading the Runs list saw `pushed_count 0` / `error
+        # NULL` with no way to tell a lone chunk-level fault happened - the
+        # summary carried it, the RUN ROW never did.
+        run.requests = int(push_summary.get("requests") or 0)
+        run.requests_failed = int(push_summary.get("requestsFailed") or 0)
+        run.first_failure = push_summary.get("firstFailure")
+        if push_summary.get("error"):
+            run.error = push_summary["error"]
     else:
         config.last_run_error = None
         config.last_run_error_code = None
@@ -996,24 +1005,53 @@ def _stage_documents(
         diff = compute_diff(
             previous.canonical_json if previous is not None else None, canonical
         )
-        staged_repo.add(
-            AcStagedRecord(
-                tenant_id=tenant_id,
-                company_id=company_id,
-                entity_type=entity_type,
-                job_id=job.id,
-                source_ref=record.source_ref,
-                # From the MAPPED result, not ``record.doc_no``: the attribute
-                # name differs per entity (a master's is ``source_doc_no``), and
-                # reaching for the document one on a master silently yields None.
-                doc_no=mapped.doc_no,
-                source_last_modified=source_record.last_modified,
-                raw_json=raw_json,
-                canonical_json=canonical,
-                diff_json=diff,
-                status=STAGED,
-            )
+        # S4 (review round 2) - mirrors ``pending_delete_refs``'s dedup for
+        # deletes: a document already STAGED and unresolved from a prior run
+        # (most commonly ``retryable``, never pushed) that changes at source
+        # and is re-extracted must UPDATE that row in place, never insert a
+        # second one - a second row offers (and once pushed, delivers) the
+        # SAME document twice.
+        #     !!  ONE indexed SELECT per record (``ix_ac_staged_ref``),
+        #         unmeasured - a batched, per-page dedup would trade one
+        #         extra round trip per document for a single IN-list query
+        #         if this ever shows up in a live pass.  !!
+        existing = staged_repo.list_staged_upserts(
+            tenant_id, company_id, entity_type, record.source_ref
         )
+        if existing:
+            for row in existing:
+                # Re-pointed at THIS job by design: for an ACTIVE sql_db
+                # task the activate-once ceremony (AC-22-18) IS the human
+                # approval, so the row moving out from behind whatever prior
+                # ``needs_review`` job first parked it is the intended
+                # effect, not a scope leak.
+                row.job_id = job.id
+                row.doc_no = mapped.doc_no
+                row.source_last_modified = source_record.last_modified
+                row.raw_json = raw_json
+                row.canonical_json = canonical
+                row.diff_json = diff
+                row.error = None
+        else:
+            staged_repo.add(
+                AcStagedRecord(
+                    tenant_id=tenant_id,
+                    company_id=company_id,
+                    entity_type=entity_type,
+                    job_id=job.id,
+                    source_ref=record.source_ref,
+                    # From the MAPPED result, not ``record.doc_no``: the
+                    # attribute name differs per entity (a master's is
+                    # ``source_doc_no``), and reaching for the document one on
+                    # a master silently yields None.
+                    doc_no=mapped.doc_no,
+                    source_last_modified=source_record.last_modified,
+                    raw_json=raw_json,
+                    canonical_json=canonical,
+                    diff_json=diff,
+                    status=STAGED,
+                )
+            )
         staged += 1
         service.advance(job, done=1)
         db.commit()
@@ -1623,6 +1661,12 @@ def _run_paged_sql_db(
         delete_failed_count = len(push_summary.get("deleteFailures") or [])
         if delete_failed_count:
             run.failed_count = (run.failed_count or 0) + delete_failed_count
+        # Push request accounting (fix/push-marks-per-chunk, prod 2026-09-07):
+        # persisted on the RUN ROW, not just the job's result JSON - the Runs
+        # list has no other place to show a chunk-level push fault.
+        run.requests = int(push_summary.get("requests") or 0)
+        run.requests_failed = int(push_summary.get("requestsFailed") or 0)
+        run.first_failure = push_summary.get("firstFailure")
     else:
         config.last_run_error = None
         config.last_run_error_code = None
@@ -1645,7 +1689,14 @@ def _run_paged_sql_db(
     run.finished_at = datetime.now(timezone.utc)
     run.duration_ms = int((time.monotonic() - started) * 1000)
     if truncated:
-        run.error = f"Budget reached after page {pages_done}; continues on the next tick."
+        budget_note = f"Budget reached after page {pages_done}; continues on the next tick."
+        # S1 (fix/push-marks-per-chunk review round 2): APPEND the push's own
+        # error rather than replacing the budget note with it - a truncated
+        # pass and a chunk-level push fault are two independent reasons this
+        # run did not fully succeed, and an operator needs both, not
+        # whichever one this branch happened to write last.
+        push_error = push_summary.get("error") if push_summary else None
+        run.error = f"{budget_note} {push_error}" if push_error else budget_note
         # The initial (or continuing) pass resumes on the VERY NEXT sweep
         # tick, not after a full `incrementalMinutes` wait (D3 - 148k SO
         # headers must finish in hours unattended, not overnight-per-page).
@@ -1671,7 +1722,12 @@ def _run_paged_sql_db(
         if next_incremental is not None:
             config.next_incremental_at = datetime.now(timezone.utc)
     else:
-        run.error = None
+        # A push fault (fix/push-marks-per-chunk) is still the reason THIS
+        # run did not fully succeed even though the fetch itself is not
+        # truncated - carry it onto the run row rather than wiping it back
+        # to `None` (prod finding 2026-09-07: `pushed_count 0` / `error NULL`
+        # with no way to tell a chunk-level fault happened).
+        run.error = push_summary.get("error") if push_summary else None
 
     record_activity(
         db, tenant_id=tenant_id, operation=f"sync {entity_type}", status=ACTIVITY_SUCCESS,

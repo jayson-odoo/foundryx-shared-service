@@ -496,6 +496,16 @@ class SyncRunItem(ApiModel):
     durationMs: Optional[int] = Field(default=None, validation_alias="duration_ms")
     # Why a ``skipped`` tick never ran (the overlap guard, AC-22-14).
     skipReason: Optional[str] = Field(default=None, validation_alias="skip_reason")
+    # ── push request accounting (fix/push-marks-per-chunk, prod 2026-09-07) ──
+    # How many chunk POSTs this run's push made, how many of them failed, and
+    # the first one's account (``{status, message}``) - an operator reading
+    # `pushed_count 0` / `error` alone could not tell a lone chunk-level
+    # fault from total silence.
+    requests: Optional[int] = Field(default=None, validation_alias="requests")
+    requestsFailed: Optional[int] = Field(default=None, validation_alias="requests_failed")
+    firstFailure: Optional[Dict[str, Any]] = Field(
+        default=None, validation_alias="first_failure"
+    )
 
 
 class SyncRunListResponse(ApiModel):
