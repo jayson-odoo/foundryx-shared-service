@@ -6,10 +6,19 @@ Auth on connect: JWT via `?token=` (browsers can't set headers on WS), user
 must be ACTIVE in a sign-in-allowed tenant, hold `conversations.read`, and
 either be a member of the workspace or hold `workspaces.manage` (admins see
 every workspace without a membership row).
+
+Plan 34 (A7b) S3 adds a THIRD principal type: a visitor token
+(`typ="webchat"`, D-A7B-15). It is ALWAYS thread-scoped to its own contact
+(never the native/embed "None = whole workspace" carve-out) and every
+relayed frame passes through `webchat_projection.visitor_frame` - the same
+fail-closed chokepoint the REST reads use (AC-WEB-38/39, R1/R2).
 """
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any, Optional
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
@@ -20,10 +29,30 @@ from app.database import SessionLocal
 from app.dependencies import effective_permission_keys
 from app.models.user import User, UserStatus
 from app.security import decode_access_token
-from ..models import Workspace, WorkspaceMember
+from ..models import Channel, Workspace, WorkspaceMember
 from ..services.realtime import channel_for
+from ..services.webchat_projection import visitor_frame
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class WsPrincipal:
+    """What `_authorize` resolves a connecting socket to.
+
+    `scope_contact_id` is `None` only for the native staff branch (whole-
+    workspace visibility, admins/full members); the plan-11H embed branch
+    and the plan-34 visitor branch both confine it to one contact.
+    `visitor_channel` is set ONLY for a visitor principal - a plain proxy
+    (never a live ORM row, which would be detached once `_authorize`'s own
+    db session closes below) carrying just the one attribute
+    `webchat_projection.visitor_frame` reads (`widget_config_json`), snapshot
+    at connect time."""
+
+    principal_id: str
+    scope_contact_id: Optional[str]
+    visitor_channel: Optional[Any] = None
+
 
 router = APIRouter()
 
@@ -51,15 +80,13 @@ def set_async_redis(client) -> None:
     _async_client = client
 
 
-def _authorize(token: str, workspace_id: str):
-    """Resolve + authorize the WS user synchronously. Returns ``(principal_id,
-    scope_contact_id)`` - ``principal_id`` is the user id OR external-agent id,
-    ``scope_contact_id`` is the single contact a thread-scoped embed token is
-    confined to (``None`` = whole-workspace visibility). Returns ``None`` when
+def _authorize(token: str, workspace_id: str) -> Optional[WsPrincipal]:
+    """Resolve + authorize the WS caller synchronously. Returns `None` when
     the caller is not authorized (callers close the socket with 4403).
 
-    Accepts BOTH the native staff JWT and an omnichannel embed access token
-    (``typ="embed"``, plan 11H Slice 3)."""
+    Accepts the native staff JWT, an omnichannel embed access token
+    (``typ="embed"``, plan 11H Slice 3), and a web chat visitor token
+    (``typ="webchat"``, plan 34 / A7b S3)."""
     db = _session_factory()
     try:
         try:
@@ -96,7 +123,73 @@ def _authorize(token: str, workspace_id: str):
             scope_contact_id = (
                 scope.split(":", 1)[1] if scope.startswith("thread:") else None
             )
-            return agent_id, scope_contact_id
+            return WsPrincipal(agent_id, scope_contact_id)
+        # ── Web chat visitor token branch (plan 34 / A7b S3) ───────────────────
+        # ALWAYS thread-scoped (never the "None = whole workspace" carve-out
+        # above) - a visitor is precisely a single-contact principal, and the
+        # SAME `verify_visitor_token` the REST endpoints use is the ONE place
+        # that decides a token is valid for this channel right now (typ,
+        # tenant, channel, epoch - AC-WEB-27/R4).
+        if payload.get("typ") == "webchat":
+            from ..repositories.contact_repository import ContactRepository
+            from ..services.webchat_visitor_service import stamp_last_seen
+            from ..webchat_auth import InvalidVisitorToken, verify_visitor_token
+
+            channel_id = payload.get("channelId")
+            tenant_id = payload.get("tenantId")
+            if not (channel_id and tenant_id):
+                return None
+            channel = (
+                db.query(Channel)
+                .filter(
+                    Channel.id == channel_id,
+                    Channel.tenant_id == tenant_id,
+                    Channel.channel_type == "WEBCHAT",
+                    Channel.is_trashed.is_(False),
+                )
+                .first()
+            )
+            if channel is None or not channel.is_active:
+                return None
+            from app.repositories.module_repository import ModuleRepository
+
+            if not ModuleRepository(db).is_active(tenant_id, "omnichannel"):
+                return None
+            ws = (
+                db.query(Workspace)
+                .filter(
+                    Workspace.id == workspace_id,
+                    Workspace.tenant_id == tenant_id,
+                    Workspace.is_trashed.is_(False),
+                )
+                .first()
+            )
+            if ws is None or ws.id != channel.workspace_id:
+                return None
+            try:
+                claims = verify_visitor_token(token, channel)
+            except InvalidVisitorToken:
+                return None
+            # The token's OWN `contactId` claim is advisory only (webchat_auth
+            # docstring) - re-derive from the channel-scoped identity, exactly
+            # like `webchat_visitor_service.history` does, never from the
+            # possibly-stale claim.
+            identity = ContactRepository(db).find_identity(
+                channel.id, f"visitor:{claims.visitor_id}"
+            )
+            if identity is None:
+                # No thread yet (D-A7B-7's lazy creation) - nothing to scope a
+                # socket to. Refuse rather than fall back to whole-workspace
+                # visibility (R1); the poll fallback (GET .../messages,
+                # D-A7B-16) covers a visitor who opens the panel before their
+                # first message, and the panel reconnects once one exists.
+                return None
+            stamp_last_seen(db, channel.id, claims.visitor_id)  # AC-WEB-42
+            return WsPrincipal(
+                principal_id=f"visitor:{claims.visitor_id}",
+                scope_contact_id=identity.contact_id,
+                visitor_channel=SimpleNamespace(widget_config_json=channel.widget_config_json),
+            )
         user = db.query(User).filter(User.id == payload.get("sub")).first()
         if (
             user is None
@@ -131,7 +224,7 @@ def _authorize(token: str, workspace_id: str):
         )
         if member is None and "workspaces.manage" not in keys:
             return None
-        return user.id, None
+        return WsPrincipal(user.id, None)
     finally:
         db.close()
 
@@ -167,7 +260,7 @@ async def conversation_socket(
     if principal is None:
         await websocket.close(code=4403)
         return
-    _principal_id, scope_contact_id = principal
+    scope_contact_id = principal.scope_contact_id
 
     await websocket.accept()
     pubsub = get_async_redis().pubsub()
@@ -178,9 +271,29 @@ async def conversation_socket(
             if message.get("type") != "message":
                 continue
             data = message["data"]
-            # Thread-scoped embed token: only relay frames for its one contact
-            # (server-side scope enforcement - never trust the widget to filter).
+            # Thread-scoped embed/visitor token: only relay frames for its one
+            # contact (server-side scope enforcement - never trust the widget
+            # to filter). A visitor principal's `scope_contact_id` is NEVER
+            # `None` (`_authorize`'s webchat branch refuses the connection
+            # rather than falling back to whole-workspace visibility - R1).
             if scope_contact_id is not None and _event_contact_id(data) != scope_contact_id:
+                continue
+            if principal.visitor_channel is not None:
+                # AC-WEB-38/39 - a visitor NEVER gets a raw internal frame:
+                # every relayed frame passes through the SAME fail-closed
+                # projection the REST reads use (D-A7B-17). An unrecognized
+                # frame type, or one belonging to another contact somehow
+                # (defense in depth past the pre-filter above), is dropped.
+                try:
+                    frame = json.loads(data)
+                except (ValueError, TypeError):
+                    continue
+                projected = visitor_frame(frame, principal.visitor_channel, scope_contact_id)
+                if projected is None:
+                    continue
+                await websocket.send_text(
+                    json.dumps({"type": frame.get("type"), "message": projected}, default=str)
+                )
                 continue
             await websocket.send_text(data)
 

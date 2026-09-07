@@ -405,6 +405,11 @@ class WebchatSessionResult(ApiModel):
     token: str
     expiresAt: datetime
     visitorId: str
+    # S3 (AC-WEB-38) - the panel needs this to open the EXISTING conversation
+    # WebSocket (`?workspaceId=<id>&token=<visitor token>`); the widget key
+    # alone does not carry it and the plan's own contract never named a
+    # field for it, so this is where it lands (parallel to `visitorId`).
+    workspaceId: str
     config: WebchatSessionConfig
     online: bool
     messages: List[VisitorMessage] = []
@@ -666,6 +671,11 @@ class ThreadItem(ApiModel):
     # carry the real window.
     windowExpiresAt: Optional[datetime] = None
     humanAgentExpiresAt: Optional[datetime] = None
+    # Plan 34 (A7b, D-A7B-19/AC-WEB-42) - a presence fact, not an
+    # authorization fact: null on every channel type but WEBCHAT, and null
+    # on a WEBCHAT thread until the visitor's first session/message/socket
+    # connect. Also read on both gateway shapes (S6, the losslessness rule).
+    visitorLastSeenAt: Optional[datetime] = None
     lastIncomingMessageAt: Optional[datetime] = None
     lastMessageAt: Optional[datetime] = None
     lastMessagePreview: Optional[str] = None

@@ -260,6 +260,7 @@ class ConversationService:
                     cswExpiresAt=c.csw_expires_at,
                     windowExpiresAt=identity.window_expires_at if identity else None,
                     humanAgentExpiresAt=identity.human_agent_expires_at if identity else None,
+                    visitorLastSeenAt=identity.last_seen_at if identity else None,
                     lastIncomingMessageAt=c.last_incoming_message_at,
                     lastMessageAt=c.last_message_at,
                     lastMessagePreview=preview.body if preview else None,

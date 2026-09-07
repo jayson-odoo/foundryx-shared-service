@@ -17,6 +17,7 @@ facing message shape any other way.
 """
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -140,6 +141,19 @@ async def read_capped_json(request: Request, *, cap: int = BODY_MAX_BYTES) -> Di
     return parsed
 
 
+def stamp_last_seen(db: Session, channel_id: str, visitor_id: str) -> None:
+    """AC-WEB-42 - a presence fact (D-A7B-19), stamped on session start, a
+    message post and a WS connect (this function's three call sites: here,
+    `WebchatVisitorService.post_message`, and `routers/ws.py`'s visitor
+    `_authorize` branch). A no-op before the visitor's first message (D-A7B-
+    7 - the identity does not exist yet; there is nothing to stamp, which is
+    the correct lazy-creation state, not a gap)."""
+    identity = ContactRepository(db).find_identity(channel_id, f"visitor:{visitor_id}")
+    if identity is not None:
+        identity.last_seen_at = datetime.now(timezone.utc)
+        db.commit()
+
+
 class WebchatVisitorService:
     def __init__(self, db: Session):
         self.db = db
@@ -199,10 +213,15 @@ class WebchatVisitorService:
             if contact is not None:
                 messages, _ = self._history(channel, contact, after=None, limit=HISTORY_PAGE_LIMIT)
 
+        # AC-WEB-42 - "session start" is one of the three stamp points. A
+        # no-op for a brand-new visitor (no identity row exists yet, D-A7B-7).
+        stamp_last_seen(self.db, channel.id, visitor_id)
+
         return {
             "token": new_token,
             "expiresAt": expires_at,
             "visitorId": visitor_id,
+            "workspaceId": channel.workspace_id,
             "config": self._session_config(channel),
             # S5 wires the EXISTING `BusinessHoursService` (D-A7B-24); an
             # unconfigured workspace resolves online anyway, so this
@@ -299,6 +318,10 @@ class WebchatVisitorService:
                 channel.id,
             )
             raise WebchatInvalidRequest("send_failed", "Could not send your message.")
+        # AC-WEB-42 - "message post" is the second of the three stamp points.
+        # The identity now DEFINITELY exists (this call just created it on a
+        # first message, or it already did) - unlike session start's no-op.
+        stamp_last_seen(self.db, channel.id, claims.visitor_id)
         item = visitor_message_item(row, channel)
         return item, False
 

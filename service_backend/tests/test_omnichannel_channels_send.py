@@ -345,14 +345,44 @@ def test_get_adapter_unknown_type_still_raises():
         get_adapter("DOUYIN")
 
 
-def test_webchat_adapter_send_is_a_stub_not_wired_yet():
-    """S1 ships the registry row only - `send` lands in S3 and must fail
-    loudly (never silently succeed) if reached early."""
+def test_webchat_adapter_send_makes_no_network_call_and_returns_immediately():
+    """S3 (AC-WEB-36) - `send` performs no network call of any kind: there is
+    no `httpx`/Graph call to fake, so this simply asserts a locally-minted
+    id comes back synchronously for every kind `send_runner` can reach a
+    WEBCHAT thread with (text, media, and interactive/buttons - quick
+    replies)."""
     from modules.omnichannel.adapters.webchat import WebChatAdapter
 
     adapter = WebChatAdapter()
-    with pytest.raises(NotImplementedError):
-        adapter.send({}, "wk-1", "visitor-1", text="hi")
+    result = adapter.send({}, "wk-1", "visitor-1", text="hi")
+    assert result["external_message_id"].startswith("web:out:")
+
+    media_result = adapter.send(
+        {}, "wk-1", "visitor-1", media={"kind": "image", "id": "webchat-media-x"}
+    )
+    assert media_result["external_message_id"].startswith("web:out:")
+    # Every id is unique - never reused across calls.
+    assert media_result["external_message_id"] != result["external_message_id"]
+
+    # A kind `messaging_policy` would already have refused (interactive list,
+    # location, contacts, template) is accepted structurally too (**_ignored) -
+    # this adapter stays correct even if a caller reached it anyway.
+    ignored_kwargs_result = adapter.send(
+        {}, "wk-1", "visitor-1", location={"latitude": 1.0, "longitude": 2.0}
+    )
+    assert ignored_kwargs_result["external_message_id"].startswith("web:out:")
+
+
+def test_webchat_adapter_upload_media_returns_a_synthetic_id_with_no_upload():
+    """S3 (AC-WEB-36/41) - there is no external media host to upload to; the
+    row's OWN `media_key` (written before `send_runner` ever runs) is what
+    the visitor projection turns into a signed URL, never this return
+    value."""
+    from modules.omnichannel.adapters.webchat import WebChatAdapter
+
+    adapter = WebChatAdapter()
+    media_id = adapter.upload_media({}, "wk-1", b"binary-content", "image/png")
+    assert media_id.startswith("webchat-media-")
 
 
 def test_webchat_adapter_parse_inbound_translates_visitor_payload():

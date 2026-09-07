@@ -15,7 +15,21 @@ so a stub that fails loudly is safer than a stub that pretends to succeed.
 OAuth, no WABA phone identity, visitor uploads are disabled in v1 - D-A7B-20,
 and ``messaging_policy.CAPABILITIES["WEBCHAT"].template`` is False) and raise
 ``NotImplementedError`` rather than silently no-op.
+
+Slice S3 (AC-WEB-36..38) implements ``send``/``upload_media`` for real: no
+network call of any kind (D-A7B-29 - the "provider" IS our own backend), a
+locally-minted external id, and an immediate return so ``send_runner`` stamps
+the row ``SENT`` in the SAME run. Every keyword ``send_runner`` can pass for
+any message kind this channel type's own capability row
+(``messaging_policy.CAPABILITIES["WEBCHAT"]``) actually allows through
+``assert_kind_supported`` (``text``, ``media``, and ``interactive`` for a
+quick-reply-buttons send - ``template``/``location``/``contacts``/
+``reaction`` are rejected upstream before they would ever reach here) is
+accepted; anything else lands in ``**_ignored`` (the `MessengerAdapter`
+precedent) so this stays correct even if a caller passed something the
+policy layer should already have refused.
 """
+import uuid
 from typing import Any, Dict, List, Optional
 
 from .base import ConnectionStatus
@@ -57,6 +71,17 @@ class WebChatAdapter:
         )
 
     # ── Message processing - S2 (inbound) / S3 (outbound) ───────────────────
+    def upload_media(
+        self, credentials: Dict[str, Any], phone_number_id: str, content: bytes, mime: str
+    ) -> str:
+        """No external upload (D-A7B-29) - the row's OWN `media_key` (already
+        written by `MessageService.send_media` before `send_runner` ever
+        runs) is what `webchat_projection` turns into a signed URL for the
+        visitor; this id is never read back by anything. A synthetic value
+        keeps `send_runner`'s generic upload-then-send flow uniform across
+        every channel type without a `channel_type` branch there."""
+        return f"webchat-media-{uuid.uuid4().hex[:12]}"
+
     def send(
         self,
         credentials: Dict[str, Any],
@@ -65,15 +90,21 @@ class WebChatAdapter:
         *,
         text: Optional[str] = None,
         template: Optional[Dict[str, Any]] = None,
+        media: Optional[Dict[str, Any]] = None,
+        interactive: Optional[Dict[str, Any]] = None,
         structured: Optional[Dict[str, Any]] = None,
         messaging_type: Optional[str] = None,
         tag: Optional[str] = None,
         context_message_id: Optional[str] = None,
+        **_ignored: Any,
     ) -> Dict[str, Any]:
-        """Slice S3 (`send_runner` wiring, AC-WEB-36..38) implements this for
-        real: no network I/O, a locally-minted external id, immediate SENT.
-        Stubbed here so nothing calls it before S3 lands."""
-        raise NotImplementedError("WebChatAdapter.send lands in plan 34 slice S3.")
+        """AC-WEB-36 - no network call of any kind: `to` (the visitor's
+        `external_user_id`, `channel_addressing.recipient_ref`) is not
+        addressed anywhere, there is no provider to reject the send, so this
+        always succeeds and returns immediately. `send_runner` stamps the row
+        SENT in the SAME run this returns from - there is no async provider
+        round trip to await, unlike every other channel type."""
+        return {"external_message_id": f"web:out:{uuid.uuid4().hex}"}
 
     def parse_inbound(self, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         """The visitor-POST -> canonical event-dict translation
