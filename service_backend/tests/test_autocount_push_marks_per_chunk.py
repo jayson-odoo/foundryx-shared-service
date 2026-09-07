@@ -85,8 +85,14 @@ def _stage(db, company, job, refs: Sequence[str], *, op: str = "upsert", start: 
     db.commit()
 
 
-def _statuses(session_factory, company_id: str) -> Dict[str, str]:
-    """Read back on a FRESH session - what is actually committed."""
+def _statuses(session_factory, company_id: str, *, rollback: object = None) -> Dict[str, str]:
+    """Read back what is actually COMMITTED. The conftest engine is
+    ``sqlite://`` on a StaticPool - every session shares ONE connection, so a
+    "fresh" session sees uncommitted rows too. Pass the run's session as
+    ``rollback`` to discard its uncommitted state first; only marks that were
+    committed per chunk survive."""
+    if rollback is not None:
+        rollback.rollback()
     s = session_factory()
     try:
         rows = (
@@ -135,6 +141,16 @@ def _rig(db, transports):
     return company
 
 
+def _count_commits(db) -> List[int]:
+    """Session-level ``after_commit`` counter on the run's own session (a
+    heartbeat's connection-level commit does not register here)."""
+    import sqlalchemy as sa
+
+    commits: List[int] = []
+    sa.event.listen(db, "after_commit", lambda session: commits.append(1))
+    return commits
+
+
 REFS = [f"AED_VSOFT:{i}" for i in range(7)]  # chunks: 0-2 / 3-5 / 6
 
 
@@ -156,9 +172,13 @@ def test_a_500_on_chunk_two_keeps_chunk_one_pushed_and_committed(session_factory
         return _ok(request)
 
     sorento_sink.responder = responder
+    commits = _count_commits(db)
     summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, job_id=job.id)
 
-    statuses = _statuses(session_factory, company.id)
+    # B2: chunk 1's marks must survive a ROLLBACK of the run's session - i.e.
+    # they were committed when chunk 1 resolved, not left for a final commit.
+    assert len(commits) >= 1, "no Session commit happened while chunk 1 resolved"
+    statuses = _statuses(session_factory, company.id, rollback=db)
     assert [statuses[r] for r in REFS[:3]] == [STAGED_PUSHED] * 3, statuses
     assert [statuses[r] for r in REFS[3:]] == [STAGED] * 4, statuses
     assert summary["pushed"] == 3
@@ -229,9 +249,11 @@ def test_a_500_on_the_second_deletions_chunk_keeps_the_first_chunk_handled(sessi
         return _ok(request)
 
     sorento_sink.responder = responder
+    commits = _count_commits(db)
     summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, job_id=job.id)
 
-    statuses = _statuses(session_factory, company.id)
+    assert len(commits) >= 1, "no Session commit happened while deletions chunk 1 resolved"
+    statuses = _statuses(session_factory, company.id, rollback=db)
     assert [statuses[r] for r in REFS[:3]] == [STAGED_PUSHED] * 3, statuses
     assert [statuses[r] for r in REFS[3:]] == [STAGED] * 4, statuses
     assert summary["deletedHandled"] == 3
@@ -489,3 +511,321 @@ def test_backoff_is_bounded_across_the_attempt_cap(session_factory, transports, 
     assert no_sleep, "a retry must back off, never hammer nginx immediately"
     assert sum(no_sleep) <= 10.0, f"backoff for three attempts must stay bounded: {no_sleep}"
     db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Review round 2 (76510bb3): B1, B2 (above), S1, S3, S4, S5
+# ═══════════════════════════════════════════════════════════════════════════
+
+import sqlalchemy as sa  # noqa: E402
+
+from modules.autocount.models import STAGED_FAILED, AcSyncRun  # noqa: E402
+from tests.test_autocount_bulk_load import (  # noqa: E402,F401 - fixtures re-exported
+    RUN_MODE_MANUAL,
+    _clean_runtime,
+    _insert_rows,
+    _make_rig,
+    _rows,
+    _run,
+    _run_row,
+    consumer,
+)
+
+
+def _sequenced_upsert(consumer, script: Dict[int, int]):
+    """Override the bulk-load Consumer's ``_upsert`` by POST number: an int
+    answers that HTTP status with an nginx-style body, else the normal
+    created verdicts."""
+    original = consumer._upsert
+    calls = {"n": 0}
+
+    def upsert(body):
+        calls["n"] += 1
+        status = script.get(calls["n"])
+        if status is not None:
+            return httpx.Response(status, text=NGINX_502.replace("502 Bad Gateway", f"{status} Gateway"))
+        return original(body)
+
+    consumer._upsert = upsert
+    return calls
+
+
+# ── B1: the paged run persists the accounting on the run row ────────────────
+
+
+def test_a_paged_run_persists_error_requests_requests_failed_and_first_failure_on_the_run_row(
+    session_factory, monkeypatch, consumer, no_sleep
+):
+    monkeypatch.setattr(settings, "autocount_page_size", 100, raising=False)
+    monkeypatch.setattr(settings, "autocount_run_time_budget_seconds", 600, raising=False)
+    monkeypatch.setattr(settings, "autocount_sink_retry_attempts", 3, raising=False)
+
+    company_id, _sql_id, engine = _make_rig(session_factory)
+    _insert_rows(engine, _rows(7))
+    # chunk 1 ok (POST 1); chunk 2 -> 502 x3 (POSTs 2-4, exhausted); chunk 3 ok (POST 5).
+    calls = _sequenced_upsert(consumer, {2: 502, 3: 502, 4: 502})
+
+    db = session_factory()
+    job = _run(db, company_id, RUN_MODE_MANUAL)
+    db.close()
+
+    fresh = session_factory()
+    try:
+        run = fresh.query(AcSyncRun).filter(AcSyncRun.job_id == job.id).one()
+        assert run.error, "a failed chunk must leave a non-null run error"
+        # ``requests`` counts CHUNKS this run offered (retries of one chunk are
+        # not separate chunks); ``requests_failed`` the chunks that never resolved.
+        assert run.requests == 3, run.requests
+        assert run.requests_failed == 1
+        assert run.first_failure, "first_failure must be persisted on the run row"
+        assert "HTTP 502" in str(run.first_failure)
+        assert run.pushed_count == 4
+        statuses = {
+            r.source_ref: r.status
+            for r in fresh.query(AcStagedRecord).filter(AcStagedRecord.company_id == company_id)
+        }
+        assert sorted(statuses.values()) == sorted([STAGED_PUSHED] * 4 + [STAGED] * 3)
+    finally:
+        fresh.close()
+    assert calls["n"] == 5
+
+
+# ── S1: a truncated pass keeps BOTH the budget note and the push failure ────
+
+
+def test_a_truncated_pass_with_a_failed_push_chunk_keeps_both_texts_on_the_run_error(
+    session_factory, monkeypatch, consumer, no_sleep
+):
+    monkeypatch.setattr(settings, "autocount_page_size", 5, raising=False)
+    # Budget 0 cuts the run after its FIRST page (the loop checks the page's
+    # own completeness before the budget) - page 1 carries 5 of the 7 rows.
+    monkeypatch.setattr(settings, "autocount_run_time_budget_seconds", 0, raising=False)
+
+    company_id, _sql_id, engine = _make_rig(session_factory)
+    _insert_rows(engine, _rows(7))
+    # page 1 = 5 rows -> chunks of 3 / 2; chunk 2 answers a plain 500.
+    _sequenced_upsert(consumer, {2: 500})
+
+    db = session_factory()
+    job = _run(db, company_id, RUN_MODE_MANUAL)
+    run = _run_row(db, company_id, job.id)
+
+    assert run.truncated is True
+    assert run.error, "the run error must not be wiped"
+    assert "Budget reached" in run.error, run.error
+    assert "HTTP 500" in run.error, run.error
+    assert run.requests_failed == 1
+    db.close()
+
+
+# ── S3: a commit that fails inside apply_chunk must not poison the session ──
+
+
+def test_a_commit_failure_on_chunk_two_stops_the_push_and_leaves_the_session_usable(
+    session_factory, transports, sorento_sink
+):
+    """A real flush failure inside the per-chunk commit (here a NOT NULL
+    violation on a chunk-2 row) rolls SQLAlchemy's transaction back and, if
+    nobody calls ``rollback()``, every later statement raises
+    ``PendingRollbackError`` - the run row could never be written. The push
+    must stop at that chunk, account the failure, keep chunk 1's committed
+    marks, and hand back a usable session."""
+    from sqlalchemy.exc import PendingRollbackError
+
+    db = session_factory()
+    company = _rig(db, transports)
+    job = _done_job(db, company)
+    _stage(db, company, job, REFS)
+    chunk2_row = (
+        db.query(AcStagedRecord)
+        .filter(AcStagedRecord.company_id == company.id, AcStagedRecord.source_ref == REFS[3])
+        .one()
+    )
+    chunk2_id = chunk2_row.id
+    db.expire_all()
+
+    sorento_sink.responder = _ok
+    real_commit = db.commit
+    state = {"commits": 0}
+
+    def sabotaged_commit():
+        state["commits"] += 1
+        target = db.get(AcStagedRecord, chunk2_id)
+        if target.status == STAGED_PUSHED and not state.get("poisoned"):
+            # Chunk 2's own per-chunk commit (its rows were just marked in
+            # session): poison the flush with an invalid value on one of them.
+            state["poisoned"] = True
+            target.status = None  # NOT NULL column -> IntegrityError inside commit
+        return real_commit()
+
+    db.commit = sabotaged_commit  # instance attribute, this session only
+    posts_before = len(sorento_sink.requests)
+    summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, job_id=job.id)
+    db.commit = real_commit
+
+    assert len(sorento_sink.requests) - posts_before == 2, "the push must stop at the failing chunk"
+    assert summary["error"], summary
+    assert summary["firstFailure"], summary
+    # The session is usable without the caller having to know a commit failed.
+    try:
+        db.query(AcStagedRecord).filter(AcStagedRecord.company_id == company.id).count()
+    except PendingRollbackError as exc:  # pragma: no cover - the failure we are guarding
+        pytest.fail(f"session poisoned after a failed per-chunk commit: {exc}")
+    statuses = _statuses(session_factory, company.id, rollback=db)
+    assert [statuses[r] for r in REFS[:3]] == [STAGED_PUSHED] * 3, statuses
+    assert [statuses[r] for r in REFS[3:]] == [STAGED] * 4, statuses
+    db.close()
+
+
+# ── S4: one STAGED row per source_ref ───────────────────────────────────────
+
+
+def test_re_extracting_an_unresolved_document_updates_its_staged_row_in_place(
+    session_factory, monkeypatch, consumer
+):
+    """Doc X is staged and the consumer answers ``retryable`` (unresolved);
+    X changes at source and is extracted again by the next run. There must
+    be ONE STAGED row for X, carrying the NEWER payload - never a second
+    insert that would be offered twice (and pushed twice) later."""
+    monkeypatch.setattr(settings, "autocount_page_size", 100, raising=False)
+    monkeypatch.setattr(settings, "autocount_run_time_budget_seconds", 600, raising=False)
+
+    company_id, _sql_id, engine = _make_rig(session_factory)
+    _insert_rows(engine, _rows(1))  # 300-B0000, "Company 0"
+    ref = f"AED_BULK:300-B0000"
+
+    original = consumer._upsert
+
+    def retryable_upsert(body):
+        recs = [
+            {"source_ref": r["source_ref"], "outcome": "retryable", "errors": {"x": "not yet"}}
+            for r in body["records"]
+        ]
+        return httpx.Response(200, json={
+            "summary": {"total": len(recs), "created": 0, "updated": 0, "failed": 0, "retryable": len(recs)},
+            "records": recs,
+        })
+
+    consumer._upsert = retryable_upsert
+
+    db = session_factory()
+    job1 = _run(db, company_id, RUN_MODE_MANUAL)
+    assert job1.status == JOB_DONE, job1.error
+    rows_after_first = (
+        db.query(AcStagedRecord)
+        .filter(AcStagedRecord.company_id == company_id, AcStagedRecord.source_ref == ref)
+        .all()
+    )
+    assert len(rows_after_first) == 1 and rows_after_first[0].status == STAGED
+
+    # The document changes at source and is picked up by the next run.
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "UPDATE debtor SET company_name = 'Company 0 RENAMED', "
+            "last_modified = '2026-08-01 05:00:00' WHERE acc_no = '300-B0000'"
+        )
+    job2 = _run(db, company_id, RUN_MODE_MANUAL)
+    assert job2.status == JOB_DONE, job2.error
+    db.expire_all()
+
+    staged_for_ref = (
+        db.query(AcStagedRecord)
+        .filter(
+            AcStagedRecord.company_id == company_id,
+            AcStagedRecord.source_ref == ref,
+            AcStagedRecord.status == STAGED,
+        )
+        .all()
+    )
+    assert len(staged_for_ref) == 1, (
+        f"expected ONE STAGED row for {ref}, got {len(staged_for_ref)} (a second insert "
+        f"means the document is offered twice)"
+    )
+    assert (staged_for_ref[0].canonical_json or {}).get("name") == "Company 0 RENAMED"
+    consumer._upsert = original
+    db.close()
+
+
+def test_two_staged_rows_for_one_ref_are_both_marked_after_a_successful_chunk(
+    session_factory, transports, sorento_sink
+):
+    """Defence in depth: if duplicates exist anyway (legacy data), a
+    successful push must mark EVERY staged row of that ref - a ref-to-row
+    dict that keeps only the last one leaves a ghost STAGED row to be
+    re-offered forever."""
+    db = session_factory()
+    company = _rig(db, transports)
+    job = _done_job(db, company)
+    _stage(db, company, job, ["AED_VSOFT:dup", "AED_VSOFT:other"])
+    _stage(db, company, job, ["AED_VSOFT:dup"], start=50)  # the duplicate, staged later
+
+    sorento_sink.responder = _ok
+    summary = SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_SUPPLIER, job_id=job.id)
+
+    rows = (
+        db.query(AcStagedRecord)
+        .filter(AcStagedRecord.company_id == company.id, AcStagedRecord.source_ref == "AED_VSOFT:dup")
+        .all()
+    )
+    assert len(rows) == 2
+    assert {r.status for r in rows} == {STAGED_PUSHED}, [r.status for r in rows]
+    assert summary["pushed"] == 3
+    db.close()
+
+
+# ── S5: the 429 wait is capped ──────────────────────────────────────────────
+
+
+def _sink_with(responder, **kwargs):
+    from modules.autocount.sinks_sorento import SorentoSink
+
+    return SorentoSink(
+        base_url="http://x", api_key="k", entity_type="supplier",
+        transport=httpx.MockTransport(responder), **kwargs,
+    )
+
+
+def _supplier_records(n: int):
+    return [
+        CanonicalSupplier(source_ref=f"AED:{i}", source_doc_no=f"C{i}", code=f"C{i}", name="N", is_active=True)
+        for i in range(n)
+    ]
+
+
+def test_a_huge_retry_after_is_capped_at_sixty_seconds(no_sleep):
+    calls = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "3600"}, json={"code": "rate_limited"})
+        return _ok(request)
+
+    sink = _sink_with(responder, batch_size=3)
+    results = sink.write_batch(_supplier_records(3), request_id="t")
+
+    assert len(results) == 3 and all(r.delivered for r in results)
+    assert no_sleep, "a 429 must still wait before retrying"
+    assert max(no_sleep) <= 60.0, f"Retry-After must be capped at 60s, slept {no_sleep}"
+
+
+def test_a_transient_retry_does_not_re_enter_an_uncapped_429_wait(no_sleep, monkeypatch):
+    """502 -> backoff -> 429 (Retry-After 3600) -> 200: the total wait for
+    the chunk stays within one capped 429 wait plus the bounded backoff."""
+    monkeypatch.setattr(settings, "autocount_sink_retry_attempts", 3, raising=False)
+    calls = {"n": 0}
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(502, text=NGINX_502)
+        if calls["n"] == 2:
+            return httpx.Response(429, headers={"Retry-After": "3600"}, json={"code": "rate_limited"})
+        return _ok(request)
+
+    sink = _sink_with(responder, batch_size=3)
+    results = sink.write_batch(_supplier_records(3), request_id="t")
+
+    assert len(results) == 3 and all(r.delivered for r in results)
+    assert calls["n"] == 3
+    assert sum(no_sleep) <= 65.0, f"total wait must stay bounded: {no_sleep}"
