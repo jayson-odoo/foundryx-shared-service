@@ -5,7 +5,7 @@ config schema (drawer), output schema (dynamic-content picker) and - for actions
 ``email.send``; modules append at install (slice 09 fans out core triggers/actions).
 """
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from sqlalchemy.orm import Session
 
@@ -23,10 +23,48 @@ class NodeField:
     required: bool = False
     mergeable: bool = False
     options: Optional[List[Dict[str, str]]] = None
-    # Conditional field: only shown/required when config[field] == value.
-    show_when: Optional[Tuple[str, str]] = None
+    # Conditional field: only shown/required when config[field] matches value
+    # - one literal, or one of several (SF-9, plan 31 S3 review; mirrors the
+    # frontend `showWhen` tuple-of-values form the HTTP body field needs).
+    show_when: Optional[Tuple[str, Union[str, Tuple[str, ...]]]] = None
     # For `entity` - restrict the picker (e.g. only status-engine entities).
     entity_filter: Optional[str] = None
+    # True = this field's VALUE(S) are secret-shaped (e.g. an HTTP header
+    # value) and must be scrubbed at the trace boundary, not left to a
+    # `mergeable=False` convention (plan sprint-4/31 review B1). A `keyValue`
+    # field's rows get their `value` masked to `"***"` (key kept); any other
+    # field's whole value is masked. Enforced by `executor._node_input_json`.
+    redacted: bool = False
+
+
+def matches_show_when(
+    config: Dict[str, Any], field_def: "NodeField", sibling_fields: Sequence["NodeField"]
+) -> bool:
+    """Whether `field_def` is visible/required given `config`, resolving the
+    CONTROLLING field's default when it is absent from `config` (plan 31 S3
+    review SF-2) - an absent controlling key falls back to that field's FIRST
+    declared option, so a node saved before the controlling field existed
+    (e.g. a plan-17 `omnichannel.send_message` node with no `mode` key) keeps
+    its dependent field visible/required instead of being silently hidden.
+    Mirrors the frontend `lib/workflow-doc.ts matchesShowWhen` exactly,
+    including the tuple/list-of-values form (SF-9)."""
+    if field_def.show_when is None:
+        return True
+    controlling_key, wanted = field_def.show_when
+    if controlling_key in config:
+        actual = config.get(controlling_key)
+    else:
+        controlling_field = next(
+            (f for f in sibling_fields if f.key == controlling_key), None
+        )
+        actual = (
+            controlling_field.options[0]["value"]
+            if controlling_field and controlling_field.options
+            else None
+        )
+    if isinstance(wanted, (list, tuple)):
+        return str(actual) in {str(w) for w in wanted}
+    return str(actual) == str(wanted)
 
 
 @dataclass(frozen=True)
@@ -48,6 +86,21 @@ class TriggerTestDataError(Exception):
     """A test-trigger selection failed structural or tenant validation."""
 
 
+# Registry-driven dispatch (plan sprint-4/31, D-A5-1/D-A5-4, closes A4's F3):
+# a TriggerDef declares everything ``_trigger_types_for``/publish denorm/
+# ``_passes_refine``/"trigger once per contact" need, so a NEW module trigger
+# requires NO further core edit (AC-WFP-07).
+RefineFn = Callable[[Dict[str, Any], Dict[str, Any]], bool]
+# (db, workflow, trigger_config, event) -> True = create the run, False = skip
+# (module-owned "trigger once per contact" claim, D-A5-4 - no core table).
+FireGuardFn = Callable[[Session, Any, Dict[str, Any], Dict[str, Any]], bool]
+# (trigger_config, event) -> extra ``trigger.<dotted key>`` context (merged by
+# the executor's generic ``payload["eventData"]`` flattening) - lets a
+# registry-driven trigger add context the fixed payload keys don't cover
+# without a per-trigger hardcoded branch in the executor.
+ContextExtraFn = Callable[[Dict[str, Any], Dict[str, Any]], Dict[str, Any]]
+
+
 @dataclass(frozen=True)
 class TriggerDef:
     key: str
@@ -60,6 +113,24 @@ class TriggerDef:
     module: str = "core"
     test_metadata_provider: Optional[TriggerTestMetadataProvider] = None
     test_payload_builder: Optional[TriggerTestPayloadBuilder] = None
+    # The domain-event ``action`` this trigger listens to (``emit_entity_event``/
+    # ``notify_entity_event``'s second arg) - drives ``_trigger_types_for``.
+    event_action: Optional[str] = None
+    # Denormalized ``Workflow.trigger_entity_type`` at publish (only needed when
+    # it is a FIXED constant, not the author-picked ``config.entityType`` the
+    # generic ``entity.*`` triggers already use).
+    event_entity_type: Optional[str] = None
+    # In-Python refinement the indexed candidate query can't do.
+    refine: Optional[RefineFn] = None
+    # "Trigger once per contact"-style guards, called once per candidate
+    # workflow right before a run would be created.
+    fire_guard: Optional[FireGuardFn] = None
+    # Release a WINNING `fire_guard` claim when the run was never actually
+    # created after all (plan 31 S3 review nit) - e.g. a `CodeNotAuthorized`
+    # skip inside `_create_run` would otherwise burn the once-per-contact
+    # marker permanently with no run ever produced.
+    fire_release: Optional[FireGuardFn] = None
+    context_extra: Optional[ContextExtraFn] = None
 
 
 # An action executor: (db, tenant_id, config, ctx) -> output dict. ``ctx`` is the
@@ -81,6 +152,20 @@ class ActionDef:
     requires_connection: Optional[str] = None  # 'email' | 'storage'
     destructive: bool = False
     module: str = "core"
+    # Non-empty = a BRANCHING action (mirrors the IF node): the executor
+    # activates only the outgoing edges whose ``sourcePort`` matches the
+    # executor output's ``branch`` key (plan sprint-4/31 S2+, D-A5-14).
+    ports: Tuple[str, ...] = ()
+    # Optional extra permission gate beyond ``workflows.manage`` (e.g.
+    # ``workflows.http``), checked at publish like ``workflows.code``.
+    permission: Optional[str] = None
+    # True = the action PARKS the run keyed by something outside it (a contact),
+    # so two concurrent runs of the same workflow would race that key. Publish
+    # then REFUSES a graph carrying it unless `execution.mode = "serialized"`
+    # with a correlation key (plan sprint-4/31 D-A5-7, AC-WFP-51) - the same
+    # rule stateful AI outputs already carry, expressed on the registry instead
+    # of a hardcoded node-type check in `definition_issues`.
+    requires_serialized: bool = False
 
 
 _TRIGGERS: Dict[str, TriggerDef] = {}
@@ -139,6 +224,37 @@ def list_actions() -> List[ActionDef]:
 
 
 # ---- core nodes ("module zero") ----
+
+
+# ── registry-driven refine callables (plan sprint-4/31, closes A4's F3) ─────
+# Moved out of ``entity_events._passes_refine``'s old if-chain (AC-WFP-07) so
+# a module trigger's refine logic lives with its own TriggerDef.
+
+
+def _refine_field_changed(config: Dict[str, Any], ev: Dict[str, Any]) -> bool:
+    from app.workflow_engine.entities import attr_for
+
+    wanted = config.get("field")
+    if not wanted:
+        return False
+    # The picker stores a camelCase field key; most emitters' change-diff keys
+    # are snake_case model attrs, but some (omnichannel_contact, AC-CDM-23)
+    # deliberately emit wire camelCase (incl. dotted `customFields.<key>`).
+    # Canonicalize BOTH sides through the SAME `attr_for` (plan-25 B7).
+    wanted_attr = attr_for(str(wanted))
+    return any(attr_for(str(key)) == wanted_attr for key in (ev.get("changes") or {}))
+
+
+def _refine_status_changed(config: Dict[str, Any], ev: Dict[str, Any]) -> bool:
+    extra = ev.get("extra") or {}
+    from_ok = not config.get("fromStatus") or config.get("fromStatus") == extra.get("from_status_id")
+    to_ok = not config.get("toStatus") or config.get("toStatus") == extra.get("to_status_id")
+    return from_ok and to_ok
+
+
+def _refine_form_submitted(config: Dict[str, Any], ev: Dict[str, Any]) -> bool:
+    wanted = config.get("formId")
+    return bool(wanted) and wanted == (ev.get("extra") or {}).get("formId")
 
 
 _ENTITY_TRIGGER_OUTPUTS = [
@@ -222,6 +338,7 @@ def _register_core() -> None:
                 NodeField(key="field", label="Field", type="field", required=True),
             ],
             outputs=[*_ENTITY_TRIGGER_OUTPUTS, NodeOutput("trigger.changedFields", "Changed fields")],
+            refine=_refine_field_changed,
         )
     )
     register_trigger(
@@ -242,6 +359,7 @@ def _register_core() -> None:
                 NodeOutput("trigger.toStatus", "To status"),
                 NodeOutput("trigger.actor.name", "Actor name"),
             ],
+            refine=_refine_status_changed,
         )
     )
     # Plan sprint-4/27 (A3, D-A3-5/D-A3-10) - a GENERIC "run this workflow
@@ -294,6 +412,9 @@ def _register_core() -> None:
                 NodeOutput("trigger.formId", "Form id"),
                 NodeOutput("trigger.submissionId", "Submission id"),
             ],
+            event_action="submitted",
+            event_entity_type="form_submission",
+            refine=_refine_form_submitted,
         )
     )
     register_action(
@@ -544,6 +665,105 @@ def _register_core() -> None:
         )
     )
 
+    # ---- workflow.trigger (sprint-4/31 S2, AC-WFP-33) ----
+    from app.workflow_engine.actions.workflow_trigger_actions import workflow_trigger
+
+    register_action(
+        ActionDef(
+            key="workflow.trigger",
+            label="Trigger another workflow",
+            description="Start another published workflow for this contact.",
+            icon="Workflow",
+            category="Actions",
+            executor=workflow_trigger,
+            fields=[
+                NodeField(key="workflowId", label="Workflow", type="workflowRef", required=True),
+                NodeField(key="contactId", label="Contact", type="text", mergeable=True),
+                NodeField(key="payload", label="Payload (JSON)", type="textarea", mergeable=True),
+            ],
+            outputs=[NodeOutput("runId", "Run id"), NodeOutput("workflowId", "Workflow id")],
+        )
+    )
+
+    # ---- http.request (plan sprint-4/31 S5, AC-WFP-57..62, gated workflows.http) ----
+    from app.workflow_engine.actions.http_actions import http_request
+
+    register_action(
+        ActionDef(
+            key="http.request",
+            label="HTTP request",
+            description="Call an external HTTPS endpoint and capture the response.",
+            icon="Globe",
+            category="Actions",
+            executor=http_request,
+            # D-A5-12: an API-key-free outbound HTTP call is the same blast
+            # radius as a Code node - gated the same way (`workflows.code`).
+            permission="workflows.http",
+            fields=[
+                NodeField(
+                    key="method",
+                    label="Method",
+                    type="select",
+                    required=True,
+                    options=[
+                        {"value": "GET", "label": "GET"},
+                        {"value": "POST", "label": "POST"},
+                        {"value": "PUT", "label": "PUT"},
+                        {"value": "PATCH", "label": "PATCH"},
+                        {"value": "DELETE", "label": "DELETE"},
+                    ],
+                ),
+                NodeField(key="url", label="URL", type="text", required=True, mergeable=True),
+                # Deliberately NOT `mergeable=True` (plan risk "Header
+                # secrets") - the generic `_node_input_json` trace helper only
+                # renders fields flagged mergeable, so header VALUES never
+                # reach the run trace even though the executor merge-renders
+                # them at request time (AC-WFP-59). `redacted=True` closes the
+                # LITERAL-secret gap the merge-token convention alone missed
+                # (review B1): the raw `config` `_node_input_json` always
+                # stores gets its header VALUES masked before it is written,
+                # regardless of whether the author typed a merge token or a
+                # literal value.
+                NodeField(key="headers", label="Headers", type="keyValue", redacted=True),
+                NodeField(
+                    key="bodyMode",
+                    label="Body",
+                    type="select",
+                    options=[
+                        {"value": "none", "label": "No body"},
+                        {"value": "json", "label": "JSON"},
+                        {"value": "text", "label": "Text"},
+                    ],
+                ),
+                NodeField(
+                    key="body",
+                    label="Body content",
+                    type="textarea",
+                    mergeable=True,
+                    show_when=("bodyMode", ("json", "text")),
+                ),
+                NodeField(
+                    key="timeoutSeconds",
+                    label="Timeout (seconds)",
+                    type="select",
+                    options=[
+                        {"value": "5", "label": "5"},
+                        {"value": "10", "label": "10"},
+                        {"value": "20", "label": "20"},
+                        {"value": "30", "label": "30"},
+                    ],
+                ),
+            ],
+            outputs=[
+                NodeOutput("statusCode", "Status code"),
+                NodeOutput("ok", "Ok"),
+                NodeOutput("body", "Body"),
+                NodeOutput("json", "JSON (dotted path)"),
+                NodeOutput("durationMs", "Duration (ms)"),
+            ],
+        )
+    )
+
     # ---- Sandboxed Code action (sprint-4/19 S4) ----
     from app.workflow_engine.actions.code_actions import code_run
 
@@ -555,6 +775,17 @@ def _register_core() -> None:
             icon="Code2",
             category="Actions",
             executor=code_run,
+            # Plan sprint-4/31 S5 (closes BL-SS-121): `workflows.code` now
+            # flows through the SAME generic `ActionDef.permission` seam
+            # `http.request`'s `workflows.http` uses - `assert_node_permissions`
+            # (nee `assert_code_permitted`)/`required_node_permissions` no
+            # longer special-case `code.run` by
+            # name. The `code_authorized_by` publish-time stamp (below, via
+            # `has_code_nodes`) is a SEPARATE, additional Code-only mechanism
+            # (it also captures runner-health-at-publish-time for the
+            # event/scheduled-trigger path, which a permission check alone
+            # cannot) - not replaced by this.
+            permission="workflows.code",
             fields=[
                 NodeField(key="language", label="Language", type="select", required=True, options=[{"value": "python", "label": "Python"}]),
                 NodeField(key="source", label="Python", type="code", required=True),

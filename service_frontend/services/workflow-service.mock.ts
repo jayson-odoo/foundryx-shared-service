@@ -296,6 +296,7 @@ function seedRuns(): StoredRun[] {
       correlationKey: null,
       error: fail ? 'Node "Send email" failed.' : null,
       createdAt: isoMinsAgo(n * 30 + 5),
+      pausedNodeId: null,
       definition: def,
       triggerPayload: {
         input: { email: 'alex@example.com', name: 'Alex Tan' },
@@ -322,6 +323,7 @@ function toRunSummary(run: StoredRun): WorkflowRunListItem {
     correlationKey: run.correlationKey,
     error: run.error,
     createdAt: run.createdAt,
+    pausedNodeId: run.pausedNodeId,
   };
 }
 
@@ -576,6 +578,7 @@ export const mockWorkflowService: WorkflowService = {
       correlationKey: null,
       error: null,
       createdAt: now,
+      pausedNodeId: null,
       definition,
       triggerPayload: { input: request.inputs },
       nodes,

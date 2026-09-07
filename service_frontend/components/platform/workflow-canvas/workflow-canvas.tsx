@@ -50,6 +50,7 @@ import {
 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import type {
+  WorkflowCatalogStatus,
   WorkflowDefinition,
   WorkflowMetadata,
   WorkflowNodeConfig,
@@ -58,6 +59,9 @@ import type {
 import {
   ACTION_CATALOG,
   catalogEntry,
+  deniedNodePermissions,
+  isNodeTypeRegistered,
+  isPermissionDenied,
   TRIGGER_CATALOG,
 } from '@/lib/workflow-catalog';
 import {
@@ -107,13 +111,28 @@ export interface WorkflowCanvasProps {
   /** Triggerable entities + statuses/fields the node drawers resolve (D6). */
   metadata: WorkflowMetadata;
   canCode?: boolean;
+  /** Gates the HTTP request node (`workflows.http`), same as `canCode`. */
+  canHttp?: boolean;
+  /** The workflow being edited (absent for a new/unsaved workflow) - excludes
+   * itself from the `workflow.trigger` picker and backs the self-trigger
+   * publish-parity check (plan 31 S3). */
+  currentWorkflowId?: string;
+  /** Load state of `GET /workflows/metadata` - drives the palette's skeleton /
+   * failure state (review round 2, R-2). */
+  catalogStatus?: WorkflowCatalogStatus;
   debug?: WorkflowDebugBundle | null;
 }
 
-/** Branch-port edge styling - green true / red false (D8 IF node). */
+/** Branch-port edge styling - green true / red false (D8 IF node), extended
+ * (plan 31 D-A5-14) with the same labelled-handle convention for Ask a
+ * question (answer/timeout) and Business hours (inside/outside). */
 const BRANCH_EDGE: Record<string, { label: string; stroke: string }> = {
   true: { label: 'True', stroke: '#16a34a' },
   false: { label: 'False', stroke: '#dc2626' },
+  answer: { label: 'Answer', stroke: '#2563eb' },
+  timeout: { label: 'Timeout', stroke: '#d97706' },
+  inside: { label: 'Inside hours', stroke: '#16a34a' },
+  outside: { label: 'Outside hours', stroke: '#64748b' },
 };
 
 function CanvasDropZone({ children }: { children: React.ReactNode }) {
@@ -133,7 +152,14 @@ export function WorkflowCanvas({
   metadata,
   debug,
   canCode = true,
+  canHttp = true,
+  currentWorkflowId,
+  catalogStatus = 'ready',
 }: WorkflowCanvasProps) {
+  const deniedPermissions = useMemo(
+    () => deniedNodePermissions({ code: canCode, http: canHttp }),
+    [canCode, canHttp],
+  );
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -323,13 +349,11 @@ export function WorkflowCanvas({
   const addNodeAt = useCallback(
     (type: string, position?: { x: number; y: number }) => {
       const entry = catalogEntry(type);
-      if (
-        !canCode &&
-        entry &&
-        'permission' in entry &&
-        entry.permission === 'workflows.code'
-      )
-        return;
+      if (isPermissionDenied(entry, deniedPermissions)) return;
+      // Defense in depth (B-4): the palette already omits an unregistered
+      // type, but a stale drag payload or a future non-palette caller must
+      // not add a node the backend can't publish/run either.
+      if (!isNodeTypeRegistered(entry, metadata.registeredNodeTypes)) return;
       if (entry?.kind === 'trigger' && hasTrigger(doc)) {
         toast.error('A workflow can have only one trigger.');
         return;
@@ -353,7 +377,7 @@ export function WorkflowCanvas({
       emit(addDocNode(doc, node));
       setSelectedNodeId(node.id);
     },
-    [canCode, doc, emit],
+    [deniedPermissions, doc, emit, metadata.registeredNodeTypes],
   );
 
   const sensors = useSensors(
@@ -399,8 +423,8 @@ export function WorkflowCanvas({
   );
 
   const issues = useMemo(
-    () => validateDefinition(doc, metadata),
-    [doc, metadata],
+    () => validateDefinition(doc, metadata, currentWorkflowId),
+    [doc, metadata, currentWorkflowId],
   );
   const errors = issues.filter((i) => i.level === 'error');
 
@@ -421,16 +445,11 @@ export function WorkflowCanvas({
   const handleReplace = useCallback(
     (nodeId: string, newType: string) => {
       const entry = catalogEntry(newType);
-      if (
-        !canCode &&
-        entry &&
-        'permission' in entry &&
-        entry.permission === 'workflows.code'
-      )
-        return;
+      if (isPermissionDenied(entry, deniedPermissions)) return;
+      if (!isNodeTypeRegistered(entry, metadata.registeredNodeTypes)) return;
       emit(replaceNodeType(doc, nodeId, newType));
     },
-    [canCode, doc, emit],
+    [deniedPermissions, doc, emit, metadata.registeredNodeTypes],
   );
 
   const handleNodeContextMenu = useCallback(
@@ -459,9 +478,8 @@ export function WorkflowCanvas({
         : []
   ).filter(
     (entry) =>
-      canCode ||
-      !('permission' in entry) ||
-      entry.permission !== 'workflows.code',
+      !isPermissionDenied(entry, deniedPermissions) &&
+      isNodeTypeRegistered(entry, metadata.registeredNodeTypes),
   );
 
   return (
@@ -489,6 +507,9 @@ export function WorkflowCanvas({
                 hasTrigger={hasTrigger(doc)}
                 disabled={!editing}
                 canCode={canCode}
+                canHttp={canHttp}
+                registeredNodeTypes={metadata.registeredNodeTypes}
+                catalogStatus={catalogStatus}
                 onAdd={(t) => addNodeAt(t)}
               />
             ) : (
@@ -585,6 +606,8 @@ export function WorkflowCanvas({
               onDelete={handleDelete}
               onReplaceNode={handleReplace}
               canCode={canCode}
+              canHttp={canHttp}
+              currentWorkflowId={currentWorkflowId}
               runData={
                 selectedNode && debug
                   ? (debug.data[selectedNode.id] ?? null)

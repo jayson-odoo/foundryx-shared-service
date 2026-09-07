@@ -255,6 +255,16 @@ def create_schema_and_tables(engine: Engine) -> None:
                     f'ON "{OMNI_SCHEMA}".contacts (last_agent_message_at)'
                 )
             )
+            # Round-robin assign cursor (plan sprint-4/31 S2, D-A5-15) -
+            # idempotent add for existing deployments (module Alembic 0014 is
+            # the real fix for a Postgres-tracked deploy; this covers the
+            # `create_all` path).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".workspaces '
+                    "ADD COLUMN IF NOT EXISTS round_robin_cursor VARCHAR"
+                )
+            )
             # contact_fields.key / contact_tags.name → per-workspace UNIQUE
             # (case-insensitive), plan 25 review round 1 finding 9 - the
             # DB backstop for `_find_by_key`/`_find_by_name`'s race (two
@@ -470,6 +480,21 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS broadcast_rate_per_second INTEGER"
                 )
             )
+            # Business hours (plan sprint-4/31 S5, D-A5-13) - idempotent add
+            # for existing deployments (module Alembic 0016 is the real fix
+            # for a Postgres-tracked deploy; this covers the `create_all` path).
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".omnichannel_settings '
+                    "ADD COLUMN IF NOT EXISTS business_hours_json JSON"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".omnichannel_settings '
+                    "ADD COLUMN IF NOT EXISTS business_timezone VARCHAR"
+                )
+            )
 
 
 def install(engine: Engine, db: Session) -> None:
@@ -586,6 +611,13 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     both read back correctly as-is with zero backfill (a tenant landing here
     simply has no thread assigned to a team yet, which is a valid state, not
     a gap to repair).
+
+    0.6.0 -> 0.7.0 (plan sprint-4/31, S1-S5): adds `workflow_contact_fires`
+    (migration `0013_omni_workflow_fires`), `workspaces.round_robin_cursor`
+    (`0014_omni_round_robin_cursor`), `workflow_waits` (`0015_omni_workflow_
+    waits`) and `omnichannel_settings.business_hours_json`/`business_timezone`
+    (`0016_omni_business_hours`) - every one a brand-new, empty-until-written
+    table or a nullable column with no existing rows to backfill.
     """
     from .repositories.contact_repository import ContactRepository
     from .services import close_reason_service, event_service, lifecycle_service
@@ -612,7 +644,12 @@ def uninstall_tenant(db: Session, tenant_id: str) -> None:
     """
     from app.status_engine.scoped import delete_scope
 
-    from .services import lifecycle_service
+    from .services import lifecycle_service, workflow_waits
+
+    # AC-WFP-54: a run this tenant parked on an omnichannel wait can never be
+    # resumed once the module is gone - cancel it through the CORE seam BEFORE
+    # the generic sweep below wipes the wait rows that point at it.
+    workflow_waits.cancel_parked_runs_for_tenant(db, tenant_id)
 
     for ws in db.query(Workspace).filter(Workspace.tenant_id == tenant_id).all():
         delete_scope(db, lifecycle_service.ENTITY_TYPE, tenant_id, ws.id)

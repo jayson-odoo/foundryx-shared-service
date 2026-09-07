@@ -49,6 +49,11 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
     [run],
   );
 
+  // A parked node's own trace row reads `success` (it finished its work
+  // before asking the engine to suspend - plan 31 S6, AC-WFP-65) - re-label
+  // just that one node `waiting` so the replay never shows a phantom
+  // success (or failure) for a run still in flight.
+  const isWaitingRun = run.status === 'waiting';
   const nodes = useMemo<Node[]>(
     () =>
       run.definition.nodes.map((node) => ({
@@ -58,12 +63,15 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
         data: {
           node,
           catalog: catalogEntry(node.type),
-          runStatus: cache[node.id]?.status,
+          runStatus:
+            isWaitingRun && node.id === run.pausedNodeId
+              ? 'waiting'
+              : cache[node.id]?.status,
         } satisfies WorkflowNodeData,
         deletable: false,
         selected: node.id === selectedNodeId,
       })),
-    [run, cache, selectedNodeId],
+    [run, cache, selectedNodeId, isWaitingRun],
   );
 
   const edges = useMemo<Edge[]>(
@@ -83,6 +91,10 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
   const selectedNode =
     run.definition.nodes.find((n) => n.id === selectedNodeId) ?? null;
   const selectedData = selectedNodeId ? cache[selectedNodeId] : null;
+  const selectedNodeStatus =
+    isWaitingRun && selectedNodeId === run.pausedNodeId
+      ? 'waiting'
+      : selectedData?.status;
 
   return (
     <div className="flex flex-col gap-3" data-testid="run-replay">
@@ -143,18 +155,27 @@ export function RunReplay({ run, onDebugInEditor }: RunReplayProps) {
                 <span className="text-sm font-semibold text-foreground">
                   {catalogEntry(selectedNode.type)?.label ?? selectedNode.type}
                 </span>
-                {selectedData && (
-                  <NodeRunStatusBadge status={selectedData.status} />
+                {selectedNodeStatus && (
+                  <NodeRunStatusBadge status={selectedNodeStatus} />
                 )}
               </div>
-              {resolvedInput(selectedData?.inputJson) && (
-                <DataBlock
-                  label="Resolved input"
-                  value={resolvedInput(selectedData?.inputJson)}
-                />
+              {selectedNode.kind !== 'trigger' && (
+                <>
+                  {resolvedInput(selectedData?.inputJson) && (
+                    <DataBlock
+                      label="Resolved input"
+                      value={resolvedInput(selectedData?.inputJson)}
+                    />
+                  )}
+                  <DataBlock label="Input" value={selectedData?.inputJson} />
+                </>
               )}
-              <DataBlock label="Input" value={selectedData?.inputJson} />
-              <DataBlock label="Output" value={selectedData?.outputJson} />
+              {/* Plan 31 S3, AC-WFP-38: the trigger node has no config input -
+                  only the captured event data it fired the run with. */}
+              <DataBlock
+                label={selectedNode.kind === 'trigger' ? 'Trigger data' : 'Output'}
+                value={selectedData?.outputJson}
+              />
               {selectedData?.error && (
                 <ErrorBlock error={selectedData.error} />
               )}

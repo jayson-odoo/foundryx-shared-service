@@ -15,6 +15,7 @@ from app.models.workflow import (
     RUN_PENDING,
     RUN_RUNNING,
     RUN_CANCELLED,
+    RUN_WAITING,
     TRIGGER_MANUAL,
     Workflow,
     WorkflowRun,
@@ -242,21 +243,39 @@ class WorkflowService:
     # ---- writes ----
 
     @staticmethod
-    def assert_code_permitted(actor: Optional[User], doc: Any) -> None:
-        """``workflows.code`` gates adding/editing/publishing/running a graph
-        that carries a Code node (AC-SAR-68). ``actor=None`` = system path."""
-        from app.workflow_engine.schemas import has_code_nodes
+    def assert_node_permissions(actor: Optional[User], doc: Any) -> None:
+        """Every ``ActionDef.permission`` a node in ``doc`` declares gates
+        adding/editing/publishing/running that graph (AC-SAR-68, AC-WFP-61;
+        plan sprint-4/31 S5 generalizes this beyond ``workflows.code`` -
+        closes BL-SS-121, one seam for any current or future gated action -
+        e.g. ``workflows.http`` on ``http.request``). ``actor=None`` = system
+        path (an event/scheduled trigger has no live actor - the gate is
+        SKIPPED for that path; ``code.run`` keeps its own separate
+        ``code_authorized_by`` publish-time stamp precisely because a system
+        publish has no actor to check a permission against - see
+        ``entity_events.create_run_for_event`` and BL-SS-124)."""
+        from app.workflow_engine.schemas import required_node_permissions
 
-        if actor is None or not has_code_nodes(doc):
+        if actor is None:
+            return
+        required = required_node_permissions(doc)
+        if not required:
             return
         from app.dependencies import effective_permission_keys
 
-        if "workflows.code" not in effective_permission_keys(actor):
-            raise WorkflowPermissionError("Missing permission: workflows.code")
+        have = effective_permission_keys(actor)
+        missing = sorted(perm for perm in required if perm not in have)
+        if missing:
+            raise WorkflowPermissionError(f"Missing permission: {missing[0]}")
+
+    # Back-compat alias - renamed from `assert_code_permitted` (plan 31 review
+    # nit: the name no longer matched what it does since S5 generalized it
+    # beyond `code.run`). Same staticmethod object under both names.
+    assert_code_permitted = assert_node_permissions
 
     def create(self, tenant_id: str, *, name: str, description: str, draft: Dict[str, Any], actor_id: str, actor: Optional[User] = None) -> Workflow:
         parse_definition(draft)  # shape gate (422 on malformed)
-        self.assert_code_permitted(actor, draft)
+        self.assert_node_permissions(actor, draft)
         wf = Workflow(
             tenant_id=tenant_id,
             name=name.strip(),
@@ -274,7 +293,7 @@ class WorkflowService:
     def update(self, workflow_id: str, tenant_id: str, *, name: str, description: str, draft: Dict[str, Any], actor: Optional[User] = None) -> Workflow:
         wf = self.get(workflow_id, tenant_id)
         parse_definition(draft)
-        self.assert_code_permitted(actor, draft)
+        self.assert_node_permissions(actor, draft)
         changes: Dict[str, Any] = {}
         if wf.name != name.strip():
             changes["name"] = {"from": wf.name, "to": name.strip()}
@@ -332,13 +351,20 @@ class WorkflowService:
 
     def publish(self, workflow_id: str, tenant_id: str, actor_id: str, actor: Optional[User] = None) -> Workflow:
         wf = self.get(workflow_id, tenant_id)
-        doc = validate_definition(wf.draft_definition_json)  # raises on issues (422)
+        # raises on issues (422); `workflow_id` gates a `workflow.trigger`
+        # node that targets ITSELF (AC-WFP-33).
+        doc = validate_definition(wf.draft_definition_json, workflow_id=wf.id)
         from app.workflow_engine.schemas import has_code_nodes
 
+        # Generalized permission gate (plan sprint-4/31 S5, closes BL-SS-121):
+        # ANY node whose ActionDef declares a `permission` - not only
+        # `code.run` - must be checked at publish, so `http.request`'s
+        # `workflows.http` (AC-WFP-61) is enforced here too, not only at
+        # create/update/manual-run.
+        self.assert_node_permissions(actor, doc)
         code_bearing = has_code_nodes(doc)
         code_authorized_by = None
         if code_bearing:
-            self.assert_code_permitted(actor, doc)
             from app.workflow_engine.code_runner import code_runner_available
 
             if not code_runner_available():
@@ -358,15 +384,16 @@ class WorkflowService:
         wf.trigger_type = trigger.type if trigger else None
         wf.trigger_entity_type = (trigger.config.get("entityType") if trigger else None)
         wf.trigger_action = (trigger.config.get("action") if trigger else None)
-        # form.submitted denormalizes to the constant entity type so the indexed
-        # match finds it; per-form selectivity is refined by config.formId at
-        # dispatch (sprint-3/02). The formId itself stays in the version config.
-        if trigger and trigger.type == "form.submitted":
-            wf.trigger_entity_type = "form_submission"
-        # Omnichannel inbound message (sprint-4/17) - same denormalization
-        # shape as form.submitted (per-channel selectivity stays in config).
-        if trigger and trigger.type == "omnichannel.message_received":
-            wf.trigger_entity_type = "omnichannel_message"
+        # Registry-driven override (plan sprint-4/31, AC-WFP-07/20, closes A4's
+        # F3): a trigger with a FIXED entity type (form.submitted, omnichannel.*)
+        # declares `TriggerDef.event_entity_type` so the indexed candidate query
+        # matches - replaces the old per-type if-chain (form.submitted /
+        # omnichannel.message_received). Author-picked `entity.*` triggers have
+        # no `event_entity_type` and keep using `config.entityType` above.
+        if trigger is not None:
+            trig_def = get_trigger(trigger.type)
+            if trig_def is not None and trig_def.event_entity_type:
+                wf.trigger_entity_type = trig_def.event_entity_type
         # Scheduled trigger: arm the next fire (cron interpreted in its tz → UTC).
         wf.next_run_at = None
         if trigger and trigger.type == "schedule.cron":
@@ -404,7 +431,7 @@ class WorkflowService:
     ) -> WorkflowRun:
         """Execute the draft manually or with registered synthetic trigger data."""
         wf = self.get(workflow_id, tenant_id)
-        self.assert_code_permitted(actor, wf.draft_definition_json)
+        self.assert_node_permissions(actor, wf.draft_definition_json)
         version_id = wf.current_version_id
         current = self.repo.get_version(version_id) if version_id else None
         version_number = current.version_number if current else 0
@@ -608,9 +635,17 @@ class WorkflowService:
         run = self.repo.get_run(run_id, tenant_id)
         if run is None:
             raise WorkflowNotFound()
-        if run.status not in (RUN_PENDING, RUN_RUNNING):
-            raise WorkflowError("Only pending or running runs can be cancelled.")
+        if run.status not in (RUN_PENDING, RUN_RUNNING, RUN_WAITING):
+            raise WorkflowError("Only pending, running or waiting runs can be cancelled.")
+        if run.status == RUN_WAITING:
+            # AC-WFP-52: cancelling a parked run also drops whatever module row
+            # indexes it (omnichannel's `workflow_waits`) - core stays generic.
+            from app.workflow_engine.parking import run_wait_cleanup
+
+            run_wait_cleanup(self.db, run)
         run.status = RUN_CANCELLED
+        run.paused_node_id = None
+        run.resume_state_json = None
         run.finished_at = _now()
         self.db.commit()
         self.db.refresh(run)
@@ -636,7 +671,7 @@ class WorkflowService:
         # source) - the same ``workflows.code`` gate as a manual run (AC-SAR-68).
         # Scratch can only override config on existing nodes, never add a node
         # or change its type, so gating on the snapshot covers scratch too.
-        self.assert_code_permitted(actor, run.definition_snapshot_json)
+        self.assert_node_permissions(actor, run.definition_snapshot_json)
         touched = _debug_execute(
             self.db, run, target_node_id=target_node_id, scratch=scratch, stale_node_ids=stale_node_ids
         )
@@ -729,14 +764,31 @@ class WorkflowService:
         }
         from app.workflow_engine.code_runner import code_runner_available
         from code_runner.policy import CAPABILITIES as CODE_CAPABILITIES
+        from app.workflow_engine.registry import list_actions, list_triggers
+
+        # Plan 31 S3 review B-4: this branch's palette ships catalog entries
+        # (ask_question/wait/business_hours/http.request) with no backend
+        # ActionDef until S4/S5 register them - offering them would 422 at
+        # Publish and RuntimeError at Run. `registeredNodeTypes` is the
+        # generic, tenant-agnostic fix: the registry is process-global (every
+        # module's TriggerDef/ActionDef lands here at boot regardless of
+        # tenant), so the frontend catalog filters itself to exactly what the
+        # backend can execute TODAY - a node type earns its palette slot the
+        # moment its ActionDef/TriggerDef is registered, zero further FE edit.
+        registered_node_types = sorted(
+            {t.key for t in list_triggers()} | {a.key for a in list_actions()}
+        )
 
         metadata = {
             "entities": entities,
             "connections": connections,
             "forms": self._form_options(tenant_id),
             "omnichannelChannels": self._omnichannel_channel_options(tenant_id),
+            "omnichannelWorkspaces": self._omnichannel_workspace_options(tenant_id),
+            "workflows": self._workflow_ref_options(tenant_id),
             "codeRunnerAvailable": code_runner_available(),
             "codeCapabilities": list(CODE_CAPABILITIES),
+            "registeredNodeTypes": registered_node_types,
             "teams": self._team_options(tenant_id) if include_teams else [],
         }
         if include_ai_agents:
@@ -789,6 +841,195 @@ class WorkflowService:
             .all()
         )
         return [{"id": r.id, "name": r.name} for r in rows]
+
+    def _workflow_ref_options(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Backs `workflow.trigger`'s `workflowId` picker (plan sprint-4/31 S2,
+        AC-WFP-33) - published, active, non-trashed workflows only (the same
+        bar `list_shortcuts`/`run_shortcut` hold a triggerable workflow to).
+        Self-exclusion (a workflow must not offer itself) is a client concern
+        (S3, drawer-scoped to the workflow being edited) - this generic,
+        workflow-agnostic list is reused by every node drawer."""
+        rows = (
+            self.db.query(Workflow)
+            .filter(
+                Workflow.tenant_id == tenant_id,
+                Workflow.is_active.is_(True),
+                Workflow.is_trashed.is_(False),
+                Workflow.current_version_id.isnot(None),
+            )
+            .order_by(Workflow.name)
+            .all()
+        )
+        return [{"id": r.id, "name": r.name} for r in rows]
+
+    def _omnichannel_workspace_options(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Backs every omnichannel workspace-scoped picker (tags, contact
+        fields, lifecycle stages, close reasons, members, templates) in ONE
+        call (plan sprint-4/31, AC-WFP-21; `templates` added S2 for the Send
+        message/Ask a question template pickers). Guarded import - empty when
+        the module isn't present in the build; tenant-scoped throughout.
+
+        Plan 31 S3 review SF-3: early-returns `[]` when the module is not
+        ACTIVE for the tenant (AC-WFP-21 - "all empty when the module is
+        inactive"; the previous version only guarded the missing-in-BUILD
+        case), and the six per-workspace queries are batched into six
+        `IN (workspace_ids)` queries grouped in Python, instead of 6xN queries
+        for N workspaces."""
+        try:
+            from modules.omnichannel.models import (
+                Channel,
+                CloseReason,
+                ContactField,
+                ContactTag,
+                WhatsappTemplate,
+                Workspace,
+                WorkspaceMember,
+            )
+            from modules.omnichannel.services import lifecycle_service
+        except ImportError:
+            return []
+        from app.models.status import Status as CoreStatus
+        from app.models.user import User
+        from app.repositories.module_repository import ModuleRepository
+
+        if not ModuleRepository(self.db).is_active(tenant_id, "omnichannel"):
+            return []
+
+        workspaces = (
+            self.db.query(Workspace)
+            .filter(Workspace.tenant_id == tenant_id, Workspace.is_trashed.is_(False))
+            .order_by(Workspace.name)
+            .all()
+        )
+        if not workspaces:
+            return []
+        ws_ids = [ws.id for ws in workspaces]
+
+        tags_by_ws: Dict[str, List[Any]] = {wid: [] for wid in ws_ids}
+        for row in (
+            self.db.query(ContactTag.id, ContactTag.name, ContactTag.workspace_id)
+            .filter(ContactTag.tenant_id == tenant_id, ContactTag.workspace_id.in_(ws_ids))
+            .order_by(ContactTag.name)
+            .all()
+        ):
+            tags_by_ws[row.workspace_id].append(row)
+
+        fields_by_ws: Dict[str, List[Any]] = {wid: [] for wid in ws_ids}
+        for row in (
+            self.db.query(
+                ContactField.key, ContactField.label, ContactField.type, ContactField.workspace_id
+            )
+            .filter(ContactField.tenant_id == tenant_id, ContactField.workspace_id.in_(ws_ids))
+            .order_by(ContactField.label)
+            .all()
+        ):
+            fields_by_ws[row.workspace_id].append(row)
+
+        stages_by_ws: Dict[str, List[Any]] = {wid: [] for wid in ws_ids}
+        for row in (
+            self.db.query(CoreStatus.id, CoreStatus.label, CoreStatus.scope_id)
+            .filter(
+                CoreStatus.tenant_id == tenant_id,
+                CoreStatus.entity_type == lifecycle_service.ENTITY_TYPE,
+                CoreStatus.scope_id.in_(ws_ids),
+            )
+            .order_by(CoreStatus.sort_order)
+            .all()
+        ):
+            stages_by_ws[row.scope_id].append(row)
+
+        reasons_by_ws: Dict[str, List[Any]] = {wid: [] for wid in ws_ids}
+        for row in (
+            self.db.query(CloseReason.id, CloseReason.name, CloseReason.workspace_id)
+            .filter(
+                CloseReason.tenant_id == tenant_id,
+                CloseReason.workspace_id.in_(ws_ids),
+                CloseReason.is_active.is_(True),
+            )
+            .order_by(CloseReason.name)
+            .all()
+        ):
+            reasons_by_ws[row.workspace_id].append(row)
+
+        # B-2: a stored `WorkspaceMember.user_id` is resolved tenant-scoped
+        # AND excludes trashed users (the polymorphic-stored-id rule - the
+        # exact leak class that shipped twice already, status-engine
+        # notifications then the gateway `_user_names`) - a name AND email
+        # render into an authenticated response below.
+        members_by_ws: Dict[str, List[Any]] = {wid: [] for wid in ws_ids}
+        for row in (
+            self.db.query(User.id, User.name, User.email, WorkspaceMember.workspace_id)
+            .join(WorkspaceMember, WorkspaceMember.user_id == User.id)
+            .filter(
+                WorkspaceMember.tenant_id == tenant_id,
+                WorkspaceMember.workspace_id.in_(ws_ids),
+                User.tenant_id == tenant_id,
+                User.is_trashed.is_(False),
+            )
+            .order_by(User.name)
+            .all()
+        ):
+            members_by_ws[row.workspace_id].append(row)
+
+        # `whatsappTemplate` field type (Send message / Ask a question
+        # template mode, plan sprint-4/31 S2) - every template regardless of
+        # Meta review status; the drawer filters to APPROVED itself
+        # (foolproof-UI - the picker only OFFERS a usable choice, but the
+        # full set stays available for a future "show pending" affordance
+        # without a second endpoint).
+        templates_by_ws: Dict[str, List[Any]] = {wid: [] for wid in ws_ids}
+        for row in (
+            self.db.query(
+                WhatsappTemplate.id,
+                WhatsappTemplate.name,
+                WhatsappTemplate.status,
+                Channel.workspace_id,
+            )
+            .join(Channel, Channel.id == WhatsappTemplate.channel_id)
+            .filter(
+                WhatsappTemplate.tenant_id == tenant_id,
+                Channel.tenant_id == tenant_id,
+                Channel.workspace_id.in_(ws_ids),
+            )
+            .order_by(WhatsappTemplate.name)
+            .all()
+        ):
+            templates_by_ws[row.workspace_id].append(row)
+
+        out: List[Dict[str, Any]] = []
+        for ws in workspaces:
+            out.append(
+                {
+                    "id": ws.id,
+                    "name": ws.name,
+                    "contactTags": [
+                        {"id": t.id, "name": t.name} for t in tags_by_ws[ws.id]
+                    ],
+                    "contactFields": [
+                        {"key": f.key, "label": f.label, "type": f.type}
+                        for f in fields_by_ws[ws.id]
+                    ],
+                    # `name` (not `label`) matches every sibling array on this
+                    # workspace shape (contactTags/closeReasons/members all use
+                    # `name`) and the pre-existing frontend contract
+                    # (WorkflowOmnichannelWorkspace.lifecycleStages, S3 drift fix).
+                    "lifecycleStages": [
+                        {"id": s.id, "name": s.label} for s in stages_by_ws[ws.id]
+                    ],
+                    "closeReasons": [
+                        {"id": r.id, "name": r.name} for r in reasons_by_ws[ws.id]
+                    ],
+                    "members": [
+                        {"id": m.id, "name": m.name or m.email, "email": m.email}
+                        for m in members_by_ws[ws.id]
+                    ],
+                    "templates": [
+                        {"id": t.id, "name": t.name, "status": (t.status or "").upper()}
+                        for t in templates_by_ws[ws.id]
+                    ],
+                }
+            )
+        return out
 
     def _ai_agent_options(self, tenant_id: str) -> List[Dict[str, Any]]:
         """Backs the AI Agent node's agent picker (sprint-4/17)."""

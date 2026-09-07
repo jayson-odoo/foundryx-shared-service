@@ -33,7 +33,7 @@ describe('omnichannel + AI Agent catalog entries (plan sprint-4/17)', () => {
     expect(catalogEntry('omnichannel.send_message')).toBe(sendMessage);
   });
 
-  it('registers omnichannel.assign_conversation matching the backend ActionDef (plan 28, tester D1)', () => {
+  it('registers omnichannel.assign_conversation matching the backend ActionDef (plan 28, tester D1; plan 31 A5 merge folds in round_robin)', () => {
     const entry = ACTION_CATALOG.find((e) => e.type === 'omnichannel.assign_conversation');
     expect(entry).toBeDefined();
     expect(entry?.kind).toBe('action');
@@ -41,7 +41,7 @@ describe('omnichannel + AI Agent catalog entries (plan sprint-4/17)', () => {
     expect(entry?.label).toBe('Assign Conversation');
     expect(entry?.fields.map((f) => f.key)).toEqual(['contactId', 'mode', 'userId', 'teamId', 'strategy']);
     expect(entry?.fields.find((f) => f.key === 'mode')?.options?.map((o) => o.value)).toEqual([
-      'user', 'team', 'unassign',
+      'user', 'team', 'round_robin', 'unassign',
     ]);
     expect(entry?.fields.find((f) => f.key === 'userId')?.showWhen).toEqual({ field: 'mode', value: 'user' });
     expect(entry?.fields.find((f) => f.key === 'teamId')).toMatchObject({

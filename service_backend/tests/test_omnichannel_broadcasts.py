@@ -173,8 +173,8 @@ def test_grant_sweep_on_update(client, session_factory):
 
     db2 = session_factory()
     module, new_state = AppStoreService(db2).update(DEFAULT_TENANT_ID, "omnichannel")
-    assert module.version == "0.6.0"
-    assert new_state.installed_version == "0.6.0"
+    assert module.version == "0.7.0"  # plan 31 bump
+    assert new_state.installed_version == "0.7.0"
     db2.close()
 
     h = _auth(client)

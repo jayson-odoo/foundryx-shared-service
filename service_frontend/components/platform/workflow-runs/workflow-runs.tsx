@@ -25,6 +25,9 @@ const SEGMENTS = [
   { value: 'success', label: 'Success' },
   { value: 'failed', label: 'Failed' },
   { value: 'running', label: 'Running' },
+  // Plan 31 S6 (AC-WFP-65) - parked at an Ask a question / Wait / Business
+  // hours node, awaiting an answer or a deadline.
+  { value: 'waiting', label: 'Waiting' },
   { value: 'pending', label: 'Pending' },
   { value: 'cancelled', label: 'Cancelled' },
 ];
