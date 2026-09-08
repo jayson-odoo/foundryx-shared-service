@@ -29,6 +29,7 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 from annotated_types import MaxLen
+from pydantic import ValidationError
 from sqlalchemy.pool import StaticPool
 
 import modules.autocount.canonical.documents as documents_module
@@ -150,6 +151,25 @@ def test_string_list_caps_at_50_entries_and_warns(caplog):
     assert warnings, "no WARNING logged when the list was capped past 50 entries"
 
 
+def test_string_list_rejects_an_entry_over_100_chars_after_strip():
+    """Codex round finding 3 - `from_so_numbers`' own entries feed straight
+    into `SO000012`-shaped doc numbers, which the contract caps at 100 chars
+    each (the same cap `from_so_external_doc_no`/`from_po_number` carry). An
+    over-cap entry must be a NAMED, per-field `TransformError` here - a
+    Sorento 422 on the whole record is a worse failure mode than refusing
+    the save. The cap is checked AFTER strip (leading/trailing whitespace
+    does not count against it, same as every other length-checked field)."""
+    fn = _string_list_fn()
+    too_long = "S" * 101
+    with pytest.raises(TransformError) as excinfo:
+        fn(f"SO1, {too_long}")
+    assert "100" in str(excinfo.value), str(excinfo.value)
+
+    # Exactly 100 (after strip) is fine.
+    exactly_100 = "S" * 100
+    assert fn(f"  {exactly_100}  ") == [exactly_100]
+
+
 def _field(model, name):
     field = model.model_fields.get(name)
     if field is None:
@@ -197,6 +217,32 @@ def test_line_model_declares_from_so_external_as_an_optional_nested_model(model)
         pytest.fail("canonical.documents has no FromSoExternal model yet (AC-06-02)")
     for name in ("db", "doc_key", "doc_no", "dtl_key"):
         assert name in ext_model.model_fields, f"FromSoExternal has no '{name}' field"
+
+
+def test_from_so_external_db_is_a_required_non_blank_string_capped_at_100():
+    """Codex round finding 2 - the engine only ever CONSTRUCTS a
+    `FromSoExternal` when the mapped `from_so_external_db` resolved
+    (`mapping.py`'s minting step); the "``db`` is set whenever the object
+    exists" invariant this docstring already claims must actually be
+    enforced by the model, or a future caller could mint `{"db": None}`
+    onto the wire. `db` must be required (missing = ValidationError),
+    non-blank (empty string = ValidationError) and capped at 100 chars
+    like every other AutoCount code/name field."""
+    ext_model = getattr(documents_module, "FromSoExternal", None)
+    if ext_model is None:
+        pytest.fail("canonical.documents has no FromSoExternal model yet (AC-06-02)")
+
+    with pytest.raises(ValidationError):
+        ext_model()
+    with pytest.raises(ValidationError):
+        ext_model(db="")
+    with pytest.raises(ValidationError):
+        ext_model(db="x" * 101)
+
+    ok = ext_model(db="AED_VSOFT")
+    assert ok.db == "AED_VSOFT"
+    capped = ext_model(db="x" * 100)
+    assert capped.db == "x" * 100
 
 
 def test_sales_order_line_gains_none_of_the_linkage_fields():
@@ -573,6 +619,75 @@ def test_from_so_numbers_only_accepts_the_string_list_transform(session_factory)
         message = str(excinfo.value).lower()
         assert "from_so_numbers" in message, message
         assert "transform" in message, message
+    finally:
+        db.close()
+        RUNTIME.dispose_all()
+
+
+def test_from_po_number_only_accepts_the_string_transform(session_factory):
+    """Codex round finding 4 - `from_po_number` was never named in
+    `LINE_FIELD_ALLOWED_TRANSFORMS`, so `allowed is None` skipped the narrow-
+    set check entirely and `int`/`decimal`/`ref_*` all saved onto it
+    (`from_po_number` is a plain string field, `canonical/documents.py`).
+    Locking it to `{"string"}` mirrors `from_so_external_db`/
+    `from_so_external_doc_no` above."""
+    db, company = _guard_task(session_factory, database="AED_PONUMBER_XFORM")
+    try:
+        service = CompanyService(db)
+        ok_rows = list(_REQUIRED_LINE_WRITE_ROWS) + [
+            MappingWriteRow(
+                source_path="FromPODocNo", transform="string",
+                sorento_field="from_po_number", scope=SCOPE_LINE,
+            ),
+        ]
+        try:
+            service.replace_mapping(
+                DEFAULT_TENANT_ID, company.id, ENTITY_PURCHASE_ORDER, ok_rows,
+                line_rows_submitted=True,
+            )
+        except AutocountServiceError as exc:
+            pytest.fail(f"'string' must be accepted for from_po_number: {exc}")
+
+        db.expire_all()
+        for bad_transform in ("int", "decimal"):
+            bad_rows = list(_REQUIRED_LINE_WRITE_ROWS) + [
+                MappingWriteRow(
+                    source_path="FromPODocNo", transform=bad_transform,
+                    sorento_field="from_po_number", scope=SCOPE_LINE,
+                ),
+            ]
+            with pytest.raises(AutocountServiceError) as excinfo:
+                service.replace_mapping(
+                    DEFAULT_TENANT_ID, company.id, ENTITY_PURCHASE_ORDER, bad_rows,
+                    line_rows_submitted=True,
+                )
+            message = str(excinfo.value).lower()
+            assert "from_po_number" in message, message
+            assert "transform" in message, message
+    finally:
+        db.close()
+        RUNTIME.dispose_all()
+
+
+def test_from_po_number_refuses_a_ref_transform(session_factory):
+    """The narrow set also blocks a `ref_*` transform - `from_po_number` is
+    a plain scalar, never a reference field."""
+    db, company = _guard_task(session_factory, database="AED_PONUMBER_REF")
+    try:
+        service = CompanyService(db)
+        rows = list(_REQUIRED_LINE_WRITE_ROWS) + [
+            MappingWriteRow(
+                source_path="FromPODocNo", transform="ref_product",
+                sorento_field="from_po_number", scope=SCOPE_LINE,
+            ),
+        ]
+        with pytest.raises(AutocountServiceError) as excinfo:
+            service.replace_mapping(
+                DEFAULT_TENANT_ID, company.id, ENTITY_PURCHASE_ORDER, rows,
+                line_rows_submitted=True,
+            )
+        message = str(excinfo.value).lower()
+        assert "from_po_number" in message, message
     finally:
         db.close()
         RUNTIME.dispose_all()

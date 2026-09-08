@@ -194,7 +194,7 @@ def _api_company(db, *, database: str, tenant_id: str = DEFAULT_TENANT_ID) -> Ac
 def _document_config(
     db, company: AcCompany, entity_type: str, *,
     query: str, line_query: str = None, fingerprint_query: str = None,
-    result_columns=None, line_result_columns=None,
+    result_columns=None, line_result_columns=None, compared_columns=None,
 ) -> AcEntityConfig:
     config = AcEntityConfig(
         tenant_id=company.tenant_id, company_id=company.id, entity_type=entity_type,
@@ -211,7 +211,7 @@ def _document_config(
         "fingerprintQuery": fingerprint_query,
         "keyColumns": ["DocKey"],
         "watermarkColumn": "LastModified",
-        "comparedColumns": [],
+        "comparedColumns": list(compared_columns) if compared_columns is not None else [],
         "fromDate": "2026-01-01",
         "docDateColumn": "DocDate",
         "filterFormula": 'startswith(upper(trim(DocNo)), "SPO-")',
@@ -456,6 +456,67 @@ def test_backfill_replaces_byte_identical_old_text_and_appends_aggregate_names(d
     # enter the row hash and the one-time re-stage never fires.
     assert after.result_columns[: len(_BASE_RESULT_COLUMNS)] == _BASE_RESULT_COLUMNS
     assert after.result_columns[len(_BASE_RESULT_COLUMNS):] == AGGREGATE_RESULT_COLUMNS
+
+
+# ── codex round finding 1: comparedColumns must gain the four aggregate
+#    names too, in the SAME update, when it is an explicit non-empty
+#    picklist ─────────────────────────────────────────────────────────────
+
+
+def test_backfill_appends_aggregate_names_to_a_non_empty_comparedcolumns_too(db):
+    """Codex round finding 1 - `compared_columns_for` (`sql_source/
+    hashing.py`) hashes ONLY the configured picklist when `comparedColumns`
+    is non-empty; `result_columns` gaining the four aggregate names is
+    inert for a task like this one, because the picklist filters them
+    straight back out and the document never re-stages. They must land in
+    `comparedColumns` too, in the SAME update, preserving the operator's
+    existing entries and their order, with no duplicates."""
+    helper = _backfill()
+    company = _api_company(db, database="AED_COMPARED")
+    config = _document_config(
+        db, company, ENTITY_PURCHASE_ORDER,
+        query=OLD_PO_HEADER_QUERY.replace("{database}", "AED_COMPARED"),
+        line_query=OLD_PO_LINE_QUERY.replace("{database}", "AED_COMPARED"),
+        fingerprint_query=OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_COMPARED"),
+        compared_columns=["DocNo", "Cancelled"],
+    )
+    _seed_baseline_line_row(db, company, ENTITY_PURCHASE_ORDER)
+    config_id = config.id
+    db.expire_all()
+
+    helper(db, schema=None)
+    db.expire_all()
+
+    after = db.get(AcEntityConfig, config_id)
+    compared = after.source_config["comparedColumns"]
+    assert compared[:2] == ["DocNo", "Cancelled"], compared
+    for name in AGGREGATE_RESULT_COLUMNS:
+        assert name in compared, (name, compared)
+    assert len(compared) == len(set(compared)), f"duplicate entries: {compared}"
+
+
+def test_backfill_leaves_an_empty_comparedcolumns_alone(db):
+    """The other branch - an empty/absent `comparedColumns` already means
+    "every result column minus the keys" (`compared_columns_for`), so the
+    four aggregate names take effect via `result_columns` alone; the
+    backfill must not turn an empty picklist into a populated one."""
+    helper = _backfill()
+    company = _api_company(db, database="AED_COMPARED_EMPTY")
+    config = _document_config(
+        db, company, ENTITY_PURCHASE_ORDER,
+        query=OLD_PO_HEADER_QUERY.replace("{database}", "AED_COMPARED_EMPTY"),
+        line_query=OLD_PO_LINE_QUERY.replace("{database}", "AED_COMPARED_EMPTY"),
+        fingerprint_query=OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_COMPARED_EMPTY"),
+    )
+    _seed_baseline_line_row(db, company, ENTITY_PURCHASE_ORDER)
+    config_id = config.id
+    db.expire_all()
+
+    helper(db, schema=None)
+    db.expire_all()
+
+    after = db.get(AcEntityConfig, config_id)
+    assert after.source_config["comparedColumns"] == []
 
 
 def test_backfill_appends_the_seven_line_columns_when_linequery_is_rewritten_and_enables_the_six_rows(db):

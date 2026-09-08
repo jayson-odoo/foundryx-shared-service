@@ -125,9 +125,17 @@ class FromSoExternal(BaseModel):
     minting step (``mapping.py``: the object is only ever constructed when
     the mapped ``from_so_external_db`` resolves), never by validation here.
     A key that does not resolve in this book never travels as a same-book
-    ref (the Sorento owner's rule, grill D6)."""
+    ref (the Sorento owner's rule, grill D6).
 
-    db: Optional[str] = Field(None, max_length=100)
+    ``db`` is REQUIRED and non-blank here (codex round finding 2) - the
+    engine only ever constructs this object when the mapped
+    ``from_so_external_db`` resolved (``mapping.py``'s minting step), so a
+    validated instance can never carry ``db=None``/``""``; ``sink_payload``
+    can therefore never emit ``{"db": null}``. The other three fields stay
+    optional at the model level (a resolved ``db`` does not guarantee the
+    doc/dtl keys also resolved)."""
+
+    db: str = Field(min_length=1, max_length=100)
     doc_key: Optional[int] = None
     doc_no: Optional[str] = Field(None, max_length=100)
     dtl_key: Optional[int] = None

@@ -266,13 +266,24 @@ def slash_datetime(value: Any) -> Optional[datetime]:
 # trace) with a WARNING.
 LINE_LIST_MAX_LEN = 50
 
+# (codex round, finding 3) - the contract's per-entry cap: each entry feeds
+# straight into a doc-number-shaped string, same cap as
+# `from_so_external_doc_no`/`from_po_number` (`canonical/documents.py`,
+# `max_length=100`). Checked AFTER strip. An over-cap entry is a NAMED,
+# per-field `TransformError` - a Sorento 422 on the whole record is a worse
+# failure mode than refusing the save here.
+LINE_LIST_ENTRY_MAX_LEN = 100
+
 
 def t_string_list(value: Any, source_path: Optional[str] = None) -> Optional[List[str]]:
     """``"SO1, SO2,,SO1 "`` → ``["SO1", "SO2"]`` - split on comma, strip,
     drop blanks, dedupe preserving first occurrence. Blank passes through as
     None (the same "absent is not unconvertible" house rule every other
     transform follows); a non-string value is a NAMED ``TransformError``
-    (AC-13-09), never a silent coercion attempt.
+    (AC-13-09), never a silent coercion attempt. An entry longer than
+    ``LINE_LIST_ENTRY_MAX_LEN`` chars (after strip) is also a NAMED
+    ``TransformError`` (codex round finding 3) - a per-field error on our
+    side beats a Sorento 422 on the whole record.
 
     ``source_path`` (sprint-5/06 review nit) names the mapping row's OWN
     source column in the cap warning below - ``MappingRow.coerce`` passes its
@@ -290,6 +301,11 @@ def t_string_list(value: Any, source_path: Optional[str] = None) -> Optional[Lis
         item = piece.strip()
         if not item or item in seen:
             continue
+        if len(item) > LINE_LIST_ENTRY_MAX_LEN:
+            raise TransformError(
+                f"entry {item!r} is {len(item)} chars, over the "
+                f"{LINE_LIST_ENTRY_MAX_LEN}-char limit per entry"
+            )
         seen.append(item)
     if len(seen) > LINE_LIST_MAX_LEN:
         logger.warning(
@@ -850,6 +866,11 @@ LINE_FIELD_ALLOWED_TRANSFORMS: Dict[str, frozenset] = {
     "from_so_external_db": frozenset({"string"}),
     "from_so_external_doc_no": frozenset({"string"}),
     "from_so_numbers": frozenset({"string_list"}),
+    # (codex round, finding 4) - `from_po_number` was missing from this map
+    # entirely, so `allowed is None` skipped the narrow-set check below and
+    # `int`/`decimal`/`ref_*` all saved onto a plain string field
+    # (`canonical/documents.py`).
+    "from_po_number": frozenset({"string"}),
 }
 
 # A canonical LINE field whose declared shape is a LIST (only

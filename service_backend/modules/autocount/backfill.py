@@ -1323,6 +1323,22 @@ def backfill_document_line_linkage(bind: Any, *, schema: Optional[str] = AUTOCOU
                 if name not in columns_list:
                     columns_list.append(name)
             update_values["result_columns"] = columns_list
+            # (codex round, finding 1) - `compared_columns_for`
+            # (`sql_source/hashing.py`) hashes ONLY an explicit non-empty
+            # `comparedColumns` picklist, so `result_columns` alone gaining
+            # these four names is inert for such a task - the picklist
+            # filters them straight back out and the document never
+            # re-stages. Appended in the SAME update, preserving the
+            # operator's own entries and order, no duplicates. An empty/
+            # absent picklist already means "every result column minus the
+            # keys" (`compared_columns_for`'s other branch) - left alone.
+            compared_columns = fresh_config.get("comparedColumns")
+            if compared_columns:
+                compared_list = list(compared_columns)
+                for name in _LINE_LINKAGE_AGGREGATE_COLUMNS:
+                    if name not in compared_list:
+                        compared_list.append(name)
+                fresh_config["comparedColumns"] = compared_list
         if line_replaced:
             # B1 - the SAME update that rewrites `lineQuery` to the text
             # that now selects these seven columns must also declare them,
