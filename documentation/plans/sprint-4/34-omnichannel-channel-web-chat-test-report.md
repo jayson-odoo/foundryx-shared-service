@@ -378,3 +378,48 @@ Backend restarted on `:8014` per the lane's exact command with `DATABASE_URL` an
 confirmed present in the running process's environment. Full detail and live-probe transcripts
 (preflight `curl` against an unknown key and the seeded `chn-demo-web` key): `34-evidence/R3/
 README.md`.
+
+## Review round 4 (2026-09-09, final) - APPROVE for merge
+
+Range `6058e2cf..000605b9` (the single commit that landed round 3's four fixes). No new findings.
+The reviewer re-verified all five round-3-and-earlier disposition items hold under direct code
+inspection rather than re-running the live probes, since this commit touches only the CORS
+middleware, the origins-cache internals, two docstrings and `middleware.ts`'s error handling - no
+visitor-facing behaviour, wire shape, schema or permission changed.
+
+| Finding | Disposition |
+|---|---|
+| B5 (resolver on the event loop) | RESOLVED - `_allows` is `async`, dispatches via `run_in_threadpool`; short-circuit ordering confirmed safe (`origin and await self._allows(...)`); a raising resolver still yields no ACAO, never a 500; new end-to-end test drives the middleware with a hand-rolled ASGI scope and asserts the resolver ran on a different thread |
+| S-new-2 (`_origins_cache` thread-safety) | RESOLVED - one module-level `threading.Lock` across the three acquirers (`_cached_frame_policy`, `_store_frame_policy`, `reset_origins_cache`), no nested acquisition, no I/O inside the critical section; `test_origins_cache_is_thread_safe_under_concurrent_hammering` (16 threads, forced constant expiry+eviction) is a real mutation test, not a formality |
+| N-new-5 (`middleware.ts` non-JSON 200 body) | RESOLVED - `response.json()` and the shape check are back inside a `try`, all four failure shapes fail closed and are distinguishable in the log |
+| N-new-6 (backwards cache-load comment) | RESOLVED - both docstrings corrected to state the cache absorbs repeated keys only, distinct-key volume is deliberately unbounded, and point at `BL-SS-181` |
+
+No new findings. Two non-actionable observations: the threadpool dispatch changes an unthrottled
+distinct-key preflight flood's failure mode from "event loop stalls" to "requests queue on
+Starlette's shared threadpool limiter" (the same bound every other sync DB route already lives
+under, and exactly the residual `BL-SS-181` names); the new end-to-end middleware test does not
+assert `status == 204` explicitly, but the `_dummy_app` forwarding guard plus the header assertions
+cover the substance.
+
+**Regression re-run this round** (touched files, each run alone): `test_module_platform.py` 18
+passed (was 17, +1 B5 end-to-end test), `test_omnichannel_webchat_frame_policy.py` 13 passed (was
+12, +1 hammering test), `test_omnichannel_webchat_public.py` 53 passed (unchanged),
+`test_omnichannel_webchat_outbound.py` 16 passed, `test_omnichannel_ws.py` 5 passed,
+`middleware.test.ts` 5 passed (was 4, +1), `npx eslint middleware.ts middleware.test.ts` clean.
+
+Cumulative state across all four rounds: B1-B5, S1-S9, S-new-1, S-new-2, N1-N9, N-new-1..6 all
+RESOLVED; AC-WEB-62 remains the single honest DEFERRED (`BL-SS-182`). The round-1 hard-fail
+checklist's one FAIL row (frontend gating not mirroring backend perms, S6) closed in round 2 and
+stayed closed. Residual backlog rows carried into merge, none blocking: `BL-SS-181` (amended,
+unauthenticated/unthrottled frame-policy + preflight, repeated-key-only cache), `BL-SS-182`
+(AC-WEB-62 deferred), `BL-SS-184` (no mid-tab token renewal), `BL-SS-185` (unverified pre-chat name
+on the contact row), `BL-SS-186` (honeypot timing oracle), `BL-SS-187` (no in-product
+`visitorProfile` promotion action), `BL-SS-188` (frame-policy 60s staleness, no cache-bust),
+`BL-SS-189` (host identity assertion has no expiry/nonce, single-secret rotation), `BL-SS-190`
+(unsegmented origins-cache LRU pool), `BL-SS-191` (revisit the 15s negative TTL once BL-SS-188
+lands). Also carried forward from round 1 as accepted-and-recorded risk (plan section 7, R1-R6),
+not separate backlog rows: the visitor token in the WS query string, the browser-enforced-only
+origin allowlist, the dev seed's fixed widget key/secret (dev-gated), and `frame-policy` disclosing
+a channel's allowed-origins list to a holder of the widget key.
+
+**VERDICT: APPROVE for merge.**
