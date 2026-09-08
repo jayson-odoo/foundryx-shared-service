@@ -628,6 +628,133 @@ def test_backfill_leaves_fingerprint_rows_alone_when_fingerprintquery_is_customi
     assert remaining == 1, "a customised fingerprintQuery must never reset fingerprint rows"
 
 
+def test_backfill_scopes_the_fingerprint_reset_to_its_own_tenant_company_and_entity_type(db):
+    """The delete in AC-06-17's fingerprint-reset branch is
+    `where tenant_id, company_id, entity_type` - three predicates, not just
+    "this tenant" or "this company". Pins EACH predicate with a sibling row
+    that shares every OTHER coordinate but must survive:
+
+    * company A's ``purchase_order`` task is byte-identical old text -> its
+      three fingerprint rows are reset (deleted).
+    * company A's ``shipping_order`` task (same tenant, same company) has a
+      hand-edited ``fingerprintQuery`` -> untouched, so its ONE fingerprint
+      row must survive - pins the ``entity_type`` predicate.
+    * company C, a SIBLING company in the SAME tenant, also runs a
+      ``purchase_order`` task, also hand-edited -> untouched, so its ONE
+      fingerprint row must survive even though it shares tenant AND
+      entity_type with company A's deleted rows - pins the ``company_id``
+      predicate.
+    * company D, in a SECOND tenant, runs a ``purchase_order`` task with
+      byte-identical old text under its own database name -> its own
+      fingerprint row is legitimately reset too (its OWN query was
+      rewritten, not a cross-tenant leak from company A's reset).
+    """
+    helper = _backfill()
+
+    company_a = _api_company(db, database="AED_FP_SCOPE_A")
+    config_a = _document_config(
+        db, company_a, ENTITY_PURCHASE_ORDER,
+        query=OLD_PO_HEADER_QUERY.replace("{database}", "AED_FP_SCOPE_A"),
+        line_query=OLD_PO_LINE_QUERY.replace("{database}", "AED_FP_SCOPE_A"),
+        fingerprint_query=OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_FP_SCOPE_A"),
+    )
+    _seed_baseline_line_row(db, company_a, ENTITY_PURCHASE_ORDER)
+    db.add_all([
+        AcDocFingerprint(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company_a.id,
+            entity_type=ENTITY_PURCHASE_ORDER, source_ref=f"AED_FP_SCOPE_A:{i}",
+            fingerprint=f"hash-a-{i}",
+        )
+        for i in range(2)
+    ])
+
+    config_b = _document_config(
+        db, company_a, ENTITY_SHIPPING_ORDER,
+        query=OLD_PO_HEADER_QUERY.replace("{database}", "AED_FP_SCOPE_A"),
+        line_query=OLD_PO_LINE_QUERY.replace("{database}", "AED_FP_SCOPE_A"),
+        fingerprint_query=(
+            OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_FP_SCOPE_A")
+            + " HAVING COUNT(*) > 0"
+        ),
+    )
+    _seed_baseline_line_row(db, company_a, ENTITY_SHIPPING_ORDER)
+    db.add(
+        AcDocFingerprint(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company_a.id,
+            entity_type=ENTITY_SHIPPING_ORDER, source_ref="AED_FP_SCOPE_A:spo-1",
+            fingerprint="hash-b-1",
+        )
+    )
+
+    company_c = _api_company(db, database="AED_FP_SCOPE_C")
+    config_c = _document_config(
+        db, company_c, ENTITY_PURCHASE_ORDER,
+        query=OLD_PO_HEADER_QUERY.replace("{database}", "AED_FP_SCOPE_C"),
+        line_query=OLD_PO_LINE_QUERY.replace("{database}", "AED_FP_SCOPE_C"),
+        fingerprint_query=(
+            OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_FP_SCOPE_C")
+            + " HAVING COUNT(*) > 0"
+        ),
+    )
+    _seed_baseline_line_row(db, company_c, ENTITY_PURCHASE_ORDER)
+    db.add(
+        AcDocFingerprint(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company_c.id,
+            entity_type=ENTITY_PURCHASE_ORDER, source_ref="AED_FP_SCOPE_C:1",
+            fingerprint="hash-c-1",
+        )
+    )
+
+    company_d = _api_company(db, database="AED_FP_SCOPE_D", tenant_id="tenant-b")
+    config_d = _document_config(
+        db, company_d, ENTITY_PURCHASE_ORDER,
+        query=OLD_PO_HEADER_QUERY.replace("{database}", "AED_FP_SCOPE_D"),
+        line_query=OLD_PO_LINE_QUERY.replace("{database}", "AED_FP_SCOPE_D"),
+        fingerprint_query=OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_FP_SCOPE_D"),
+    )
+    _seed_baseline_line_row(db, company_d, ENTITY_PURCHASE_ORDER)
+    db.add(
+        AcDocFingerprint(
+            tenant_id="tenant-b", company_id=company_d.id,
+            entity_type=ENTITY_PURCHASE_ORDER, source_ref="AED_FP_SCOPE_D:1",
+            fingerprint="hash-d-1",
+        )
+    )
+    db.commit()
+    assert config_a.id and config_b.id and config_c.id and config_d.id
+    db.expire_all()
+
+    helper(db, schema=None)
+    db.expire_all()
+
+    def _count(tenant_id, company_id, entity_type):
+        return (
+            db.query(AcDocFingerprint)
+            .filter(
+                AcDocFingerprint.tenant_id == tenant_id,
+                AcDocFingerprint.company_id == company_id,
+                AcDocFingerprint.entity_type == entity_type,
+            )
+            .count()
+        )
+
+    assert _count(DEFAULT_TENANT_ID, company_a.id, ENTITY_PURCHASE_ORDER) == 0, (
+        "company A's rewritten purchase_order task must reset its own fingerprint rows"
+    )
+    assert _count(DEFAULT_TENANT_ID, company_a.id, ENTITY_SHIPPING_ORDER) == 1, (
+        "company A's untouched shipping_order fingerprint row must survive its sibling"
+        " purchase_order task's reset - the delete must be entity_type-scoped"
+    )
+    assert _count(DEFAULT_TENANT_ID, company_c.id, ENTITY_PURCHASE_ORDER) == 1, (
+        "sibling company C's untouched purchase_order fingerprint row must survive"
+        " company A's reset - the delete must be company_id-scoped, not tenant-wide"
+    )
+    assert _count("tenant-b", company_d.id, ENTITY_PURCHASE_ORDER) == 0, (
+        "company D's own rewritten purchase_order task legitimately resets its own"
+        " fingerprint rows in its own tenant"
+    )
+
+
 def test_backfill_treats_a_partially_customised_task_per_statement(db, caplog):
     """``query`` / ``fingerprintQuery`` are byte-identical to the OLD preset
     and get rewritten; ``lineQuery`` was hand-edited and is left untouched -
