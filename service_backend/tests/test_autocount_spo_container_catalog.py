@@ -75,10 +75,20 @@ DOCUMENT_MODELS = {
 
 # Identity is minted by the engine, never mapped (mapping_catalog._MINTED_FIELDS).
 MINTED_HEADER_FIELDS = frozenset({"source_ref"})
-# `from_so_numbers` is derived by the engine from AutoCount's FromSODocList
-# (addendum section 4), never an operator-mapped line target - the ONE
-# legitimate difference between a line model's wire set and the picker.
-ENGINE_DERIVED_LINE_FIELDS = frozenset({"from_so_numbers"})
+# sprint-5/06 (AC-06-10) - line linkage rewrites the LINE parity pin.
+# `MINTED` is the wire-minted set the engine composes AFTER operator mapping
+# (never an accepted target - `from_so_numbers`/`from_po_number` map directly
+# instead and so are NOT minted); `INPUT` is the eight operator-mappable
+# fields that feed minting and are never sent on the wire themselves - they
+# ARE accepted line targets on a model that declares them (PO/SPO; empty for
+# SO, which declares none of them).
+MINTED = frozenset({"from_so_line_ref", "from_so_external", "from_po_line_ref"})
+INPUT = frozenset({
+    "from_so_doc_key", "from_so_line_key",
+    "from_so_external_db", "from_so_external_doc_key",
+    "from_so_external_doc_no", "from_so_external_line_key",
+    "from_po_doc_key", "from_po_line_key",
+})
 
 
 # ── 1 + 2: the catalog itself ───────────────────────────────────────────────
@@ -129,10 +139,17 @@ def test_header_catalog_equals_the_canonical_wire_set_minus_minted_identity(enti
 
 @pytest.mark.parametrize("entity_type", sorted(DOCUMENT_MODELS))
 def test_line_catalog_equals_the_canonical_line_wire_set_minus_engine_derived(entity_type):
+    """sprint-5/06 (AC-06-10) rewrite: ``catalog == (SINK | FALLBACK | INPUT)
+    - MINTED``. ``INPUT`` is intersected with the line model's OWN declared
+    fields first - ``CanonicalSalesOrderLine`` declares none of the eight
+    input fields at all (Group A, AC-06-02), so this reduces to the
+    pre-lane shape for ``sales_order`` unchanged, while PO/SPO (which DO
+    declare them) pick up all eight."""
     _, line_model = DOCUMENT_MODELS[entity_type]
+    declared_input = INPUT & frozenset(line_model.model_fields)
     expected = (
-        frozenset(line_model.SINK_FIELDS) | frozenset(line_model.FALLBACK_FIELDS)
-    ) - ENGINE_DERIVED_LINE_FIELDS
+        frozenset(line_model.SINK_FIELDS) | frozenset(line_model.FALLBACK_FIELDS) | declared_input
+    ) - MINTED
     actual = line_accepted_field_names(entity_type)
     assert actual == expected, (
         f"{entity_type}: line catalog missing {sorted(expected - actual)}, "
