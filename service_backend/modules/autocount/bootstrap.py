@@ -174,6 +174,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         backfill_db_company_entity_sources,
         backfill_disable_credit_limit_mapping_rows,
         backfill_document_fingerprint_queries,
+        backfill_document_line_linkage,
         backfill_entity_config_defaults,
         backfill_etl_defaults,
         backfill_shipping_order_container_number,
@@ -213,6 +214,11 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # fingerprintQuery gets the preset's own sweep query. Module Alembic
     # 0017 runs the same repair on deploy.
     backfill_document_fingerprint_queries(db, schema=schema)
+    # 0.7.0 -> 0.8.0 (sprint-5/06 S2): every existing PO/SPO task gets the
+    # six FromSO*/FromPO* line mapping rows, and a byte-identical old
+    # statement is rewritten to the NEW preset text carrying line linkage.
+    # Module Alembic 0018 runs the same repair on deploy.
+    backfill_document_line_linkage(db, schema=schema)
 
     service = CompanyService(db)
     page = 0
