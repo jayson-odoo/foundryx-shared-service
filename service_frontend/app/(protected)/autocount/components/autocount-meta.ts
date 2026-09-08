@@ -151,6 +151,12 @@ export const AC_TRANSFORMS: { value: string; label: string }[] = [
   { value: 'date', label: 'Date' },
   { value: 'datetime', label: 'Date & time' },
   { value: 'slash_datetime', label: 'Slash date/time' },
+  // sprint-5/06 (AC-06-01/21) - splits a comma list into deduped, trimmed
+  // strings (`from_so_numbers`). Produces a LIST, not a scalar `FormulaValue`
+  // (`lib/autocount-formula.ts` TRANSFORM_OUTPUT_SHAPE) - a formula row can
+  // never target the field this feeds; the save-time 422 (AC-06-11) surfaces
+  // as that row's own field error, same as every other rejected combination.
+  { value: 'string_list', label: 'Comma-separated list' },
 ];
 
 export function transformLabel(transform: string): string {

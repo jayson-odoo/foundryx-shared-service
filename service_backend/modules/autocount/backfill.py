@@ -29,7 +29,11 @@ from typing import Any, Dict, Optional
 
 import sqlalchemy as sa
 
-from .canonical.documents import ENTITY_SHIPPING_ORDER, is_document_entity
+from .canonical.documents import (
+    ENTITY_PURCHASE_ORDER,
+    ENTITY_SHIPPING_ORDER,
+    is_document_entity,
+)
 from .db import AUTOCOUNT_SCHEMA
 from .envelopes import ENVELOPE_STATUS_DICT
 from .mapping import DOCUMENT_LINE_FIXED_FIELDS, SCOPE_HEADER, SCOPE_LINE
@@ -905,4 +909,483 @@ def backfill_document_fingerprint_queries(
             .values(source_config=fresh)
         )
         touched += 1
+    return touched
+
+
+# ── sprint-5/06 (AC-06-16..19) - document line linkage backfill ────────────
+
+_LINE_LINKAGE_ENTITY_TYPES = (ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER)
+
+# AC-06-14: the six enabled, not-required line rows PO_PRESET/SPO_PRESET
+# gain, as (source_path, canonical_field, transform) - kept here as a plain
+# tuple (not read off `presets.PO_PRESET.line`) so this backfill's target
+# set is pinned independently of any future preset edit, the same way the
+# OLD query text below is pinned independently of any future preset edit.
+_LINE_LINKAGE_FIELDS = (
+    ("FromSODocKey", "from_so_doc_key", "int"),
+    ("FromSODtlKey", "from_so_line_key", "int"),
+    ("FromSODocList", "from_so_numbers", "string_list"),
+    ("FromPODocKey", "from_po_doc_key", "int"),
+    ("FromPODtlKey", "from_po_line_key", "int"),
+    ("FromPODocNo", "from_po_number", "string"),
+)
+
+# AC-06-13's four header aggregate names, appended verbatim (order pinned)
+# to `result_columns` when the header `query` is rewritten below - they only
+# enter the SELECT list via the NEW `_PO_HEADER_QUERY`, and the compared-
+# column set a paged run's change-detection hashes derives from
+# `result_columns` (minus the key columns, `sql_source/source.py`), so
+# without this a document whose only change is a newly populated link would
+# never re-stage.
+_LINE_LINKAGE_AGGREGATE_COLUMNS = (
+    "LinkedSOCount", "FromSOKeySum", "LinkedPOCount", "FromPOKeySum",
+)
+
+# B1 (review round, BLOCKER) - the seven names `_PO_LINE_QUERY` newly SELECTs
+# (AC-06-12), appended to `line_result_columns` in the SAME update that
+# rewrites `lineQuery` - the header-side equivalent of
+# `_LINE_LINKAGE_AGGREGATE_COLUMNS` above. Six of the seven are a
+# `_LINE_LINKAGE_FIELDS` row's own `source_path`; `FromSODocNo` is
+# select-only (never mapped to a target) but must still be a recognised
+# preview column, or `_replace_line_mapping`'s known-vars gate 422s any
+# FORMULA row that names it. Without this, the six ENABLED rows this
+# function inserts below reference a `source_path` that is not among the
+# task's last-previewed columns - `_replace_line_mapping`
+# (`services/company_service.py:1505-1509`) 422s any later Mapping-tab save
+# on every one of these existing tasks.
+_LINE_LINKAGE_LINE_RESULT_COLUMNS = (
+    "FromSODtlKey", "FromSODocKey", "FromSODocNo", "FromSODocList",
+    "FromPODtlKey", "FromPODocKey", "FromPODocNo",
+)
+
+# The generic PO/SPO header/line/fingerprint queries EXACTLY as they shipped
+# on this branch BEFORE slice S1 (frozen on purpose - `git show
+# 21e2df32:service_backend/modules/autocount/presets.py`). The byte-identity
+# check below is against THIS text, with `{database}` substituted the same
+# way `list_mapping_presets`'s "Use preset" picker hands it out - never a
+# regenerated string that could silently drift from what a live task
+# actually stored before this slice shipped.
+_OLD_PO_HEADER_QUERY = (
+    "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, s.AutoKey AS CreditorAutoKey, "
+    "h.PurchaseAgent AS SalesAgent, h.DocDate AS DocDate, "
+    "CAST(l.FirstDeliveryDate AS date) AS ExpectedDate, h.Cancelled AS Cancelled, "
+    "h.CreditorCode AS CreditorCode, h.CreditorName AS CreditorName, "
+    "h.CurrencyCode AS CurrencyCode, h.LastModified AS LastModified, h.Ref AS Ref, "
+    "l.LineCount AS LineCount, l.QtySum AS QtySum, l.TransferedSum AS TransferedSum, "
+    "l.SubTotalSum AS SubTotalSum, l.MaxDtlKey AS MaxDtlKey "
+    "FROM {database}.dbo.PO AS h "
+    "LEFT JOIN {database}.dbo.Creditor AS s ON s.AccNo = h.CreditorCode "
+    "OUTER APPLY ("
+    "SELECT MIN(d.DeliveryDate) AS FirstDeliveryDate, COUNT(*) AS LineCount, "
+    "SUM(d.Qty) AS QtySum, SUM(d.TransferedQty) AS TransferedSum, "
+    "SUM(d.SubTotal) AS SubTotalSum, MAX(d.DtlKey) AS MaxDtlKey "
+    "FROM {database}.dbo.PODTL AS d "
+    "WHERE d.DocKey = h.DocKey AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
+    ") AS l"
+)
+_OLD_PO_LINE_QUERY = (
+    "SELECT d.DtlKey AS DtlKey, i.AutoKey AS ItemAutoKey, "
+    "w.AutoKey AS LocationAutoKey, d.Qty AS Qty, "
+    "d.TransferedQty AS TransferedQty, d.UnitPrice AS UnitPrice, "
+    "d.DiscountAmt AS DiscountAmt, d.SubTotal AS SubTotal, d.UOM AS UOM, "
+    "d.DeliveryDate AS ExpectedDate, d.ItemCode AS ItemCode, "
+    "d.Description AS Description, d.Location AS Location, d.Seq AS Seq "
+    "FROM {database}.dbo.PODTL AS d "
+    "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
+    "LEFT JOIN {database}.dbo.Location AS w ON w.Location = d.Location "
+    "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
+)
+_OLD_PO_FINGERPRINT_QUERY = (
+    "SELECT d.DocKey AS DocKey, COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
+    "SUM(d.TransferedQty) AS TransferedSum, MAX(d.DtlKey) AS MaxDtlKey "
+    "FROM {database}.dbo.PODTL AS d JOIN {database}.dbo.PO AS h ON h.DocKey = d.DocKey "
+    "WHERE h.DocDate >= :from_date AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL "
+    "GROUP BY d.DocKey"
+)
+
+_LINE_LINKAGE_ENTITY_CONFIG_COLUMNS = {
+    "id", "tenant_id", "company_id", "entity_type", "source_config", "result_columns",
+    "line_result_columns",
+}
+_LINE_LINKAGE_COMPANY_COLUMNS = {"id", "tenant_id", "database_name"}
+_LINE_LINKAGE_FIELD_MAPPING_COLUMNS = {
+    "id", "tenant_id", "company_id", "entity_type", "scope", "source_path",
+    "canonical_field", "transform", "formula", "is_required", "is_enabled",
+    "is_source_owned", "sort_order",
+}
+# S1 (review round, should-fix) - scoped columns for the `ac_doc_fingerprint`
+# sweep this backfill resets below when `fingerprintQuery` is rewritten.
+_LINE_LINKAGE_FINGERPRINT_COLUMNS = {"tenant_id", "company_id", "entity_type", "source_ref"}
+
+_LINE_LINKAGE_TARGET_FIELDS = tuple(target for _src, target, _tf in _LINE_LINKAGE_FIELDS)
+
+
+def backfill_document_line_linkage(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA) -> int:
+    """(AC-06-16/17) for every existing ``purchase_order``/``shipping_order``
+    ``ac_entity_config`` row across every tenant/company that already has AT
+    LEAST ONE line-scope mapping row (a task with ZERO is skipped entirely -
+    see the ``!! S2 !!`` note below):
+
+    * adds the six enabled-or-disabled, not-required line-linkage mapping
+      rows of AC-06-14 for any target not already present (an operator's
+      own row for that target, in ANY state, is left alone - checked by
+      ``canonical_field``, the unique-constraint column, never
+      ``source_path``);
+    * independently, when the task's stored ``query``/``lineQuery``/
+      ``fingerprintQuery`` is byte-identical to the OLD preset text (with
+      the task's OWN company ``database_name`` substituted), replaces it
+      with the current preset text; when ``query`` itself is replaced this
+      way, the four header aggregate names of AC-06-13 are appended to
+      ``result_columns`` (they only enter the SELECT list via the NEW
+      header query, and the paged run's change-detection hash derives its
+      compared-column set from ``result_columns``); when ``lineQuery`` is
+      replaced this way, the seven names it newly SELECTs are appended to
+      ``line_result_columns`` in the SAME update, and the six rows above
+      land ENABLED - see the ``!! B1 !!`` note below; when ``fingerprintQuery``
+      is replaced this way, the task's stored ``ac_doc_fingerprint`` rows are
+      DELETED (scoped tenant/company/entity) - see the ``!! S1 !!`` note
+      below; any statement that is neither the OLD text nor already the NEW
+      text is a customisation (including one that happens to match a
+      SIBLING company's own substitution) and is left completely untouched,
+      with ONE WARNING naming the config id.
+
+    ``sales_order`` never reaches this function's row/query logic at all -
+    filtered by ``entity_type`` up front, never by matching query text (a
+    ``sales_order`` task given the exact same generic OLD text must still
+    be left completely alone, unlogged). Returns the number of individual
+    changes made (mapping rows created + statements replaced) - 0 on a
+    schema that predates the tables/columns this touches (module Alembic
+    0018 and ``update_tenant`` both call this, so it must survive every
+    stamp in the chain, not only the one it ships with).
+
+        !!  B1 (review round, BLOCKER) - is_enabled MIRRORS THE lineQuery
+            REWRITE.  !!
+    An ENABLED row whose ``source_path`` is not among the task's last-
+    previewed ``line_result_columns`` 422s any LATER Mapping-tab save
+    (``services/company_service.py`` ``_replace_line_mapping``,
+    ~1505-1509). The six rows only land enabled when THIS pass rewrote
+    ``lineQuery`` to the text that actually selects their source columns
+    (proof); left alone (customised, or already migrated by an earlier
+    pass) proves nothing either way, so they land disabled - the same
+    posture ``presets._seed_rows`` already uses for "a column the task's
+    ACTUAL query does not return".
+
+        !!  S2 (review round, should-fix) - ZERO LINE ROWS SKIPS THE TASK
+            ENTIRELY.  !!
+    A real task reaching this backfill in production already has ordinary
+    line mapping (module Alembic 0010 backfilled LINE rows onto every
+    existing document task) - zero is the "never even test-queried once"
+    state, which belongs to ``EtlService.update_task``'s own first-save
+    preset seed (which, as of this slice, carries the six linkage rows
+    itself). Seeding a partial six rows here would permanently block that
+    seed (its own ``line_empty`` gate would never see zero again).
+
+        !!  S1 (review round, should-fix) - fingerprintQuery REWRITE RESETS
+            ITS FINGERPRINT ROWS.  !!
+    The rewritten ``fingerprintQuery`` selects extra join columns
+    (AC-06-12), so its computed hash changes for EVERY document even when
+    that document's own lines never moved. Left in place, the sweep
+    (``sync.py`` ~1147-1157) would see every stored fingerprint mismatch its
+    freshly computed one at once and stage the task's entire window unpaced.
+    Deleting the stored rows (scoped tenant/company/entity) means the sweep
+    finds none stored and silently RE-SEEDS instead (``sync.py``
+    ~1156-1160's ``seed_only``) - the intentional one-time re-stage of the
+    header/line linkage data itself stays owned by ``result_columns``/
+    ``line_result_columns`` above, via the PAGED reconcile run's own
+    change-detection hash, never this sweep.
+
+        !!  FROZEN ``sa.table`` ONLY - NEVER THE LIVE ORM MODEL.  !!
+    Same rule, same incident, as ``backfill_shipping_order_container_number``
+    (module Alembic 0006, ``documentation/engineering/storage-and-background-
+    jobs.md``): called from module Alembic 0018, so a later migration adding
+    a column to any of these three tables must never break a fresh
+    ``0001`` -> head replay.
+
+    Never a bare id lookup: a config's company is resolved WITH the
+    config's OWN ``tenant_id`` (the polymorphic-target_id rule) before its
+    ``database_name`` is trusted for the substitution.
+    """
+    needed = {
+        "ac_entity_config": _LINE_LINKAGE_ENTITY_CONFIG_COLUMNS,
+        "ac_company": _LINE_LINKAGE_COMPANY_COLUMNS,
+        "ac_field_mapping": _LINE_LINKAGE_FIELD_MAPPING_COLUMNS,
+        "ac_doc_fingerprint": _LINE_LINKAGE_FINGERPRINT_COLUMNS,
+    }
+    for table, columns in needed.items():
+        have = existing_columns(bind, table, schema=schema)
+        if have is None or not columns <= have:
+            return 0
+
+    from .presets import _PO_FINGERPRINT_QUERY, _PO_HEADER_QUERY, _PO_LINE_QUERY
+
+    entity_config = sa.table(
+        "ac_entity_config",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("source_config", sa.JSON(none_as_null=True)),
+        sa.column("result_columns", sa.JSON(none_as_null=True)),
+        sa.column("line_result_columns", sa.JSON(none_as_null=True)),
+        schema=schema,
+    )
+    company_table = sa.table(
+        "ac_company",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("database_name", sa.String),
+        schema=schema,
+    )
+    field_mapping = sa.table(
+        "ac_field_mapping",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("scope", sa.String),
+        sa.column("source_path", sa.String),
+        sa.column("canonical_field", sa.String),
+        sa.column("transform", sa.String),
+        sa.column("formula", sa.Text),
+        sa.column("is_required", sa.Boolean),
+        sa.column("is_enabled", sa.Boolean),
+        sa.column("is_source_owned", sa.Boolean),
+        sa.column("sort_order", sa.Integer),
+        schema=schema,
+    )
+    doc_fingerprint = sa.table(
+        "ac_doc_fingerprint",
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("source_ref", sa.String),
+        schema=schema,
+    )
+
+    # Same unwrap `existing_columns` uses, and for the same reason - a
+    # `Session.get_bind()` checks out a SECOND pooled connection, blind to
+    # the session's own uncommitted work.
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
+
+    configs = connectable.execute(
+        sa.select(
+            entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+            entity_config.c.entity_type, entity_config.c.source_config,
+            entity_config.c.result_columns, entity_config.c.line_result_columns,
+        ).where(entity_config.c.entity_type.in_(_LINE_LINKAGE_ENTITY_TYPES))
+    ).fetchall()
+
+    touched = 0
+    for (
+        config_id, tenant_id, company_id, entity_type, source_config,
+        result_columns, line_result_columns,
+    ) in configs:
+        company_row = connectable.execute(
+            sa.select(company_table.c.database_name).where(
+                company_table.c.id == company_id,
+                company_table.c.tenant_id == tenant_id,
+            )
+        ).first()
+        if company_row is None or not company_row[0]:
+            continue
+        database_name = company_row[0]
+
+        #     !!  S2 (review round, should-fix) - ZERO EXISTING LINE ROWS
+        #         SKIPS THE TASK ENTIRELY.  !!
+        # A real task reaching this backfill in production already has
+        # ordinary line mapping (module Alembic 0010 backfilled LINE rows
+        # onto every existing document task) - a genuinely EMPTY line scope
+        # only happens for a task that was never even test-queried once.
+        # THAT state belongs to `EtlService.update_task`'s own first-save
+        # preset seed, which (as of this slice's S1) already carries the six
+        # linkage rows itself - inserting a partial six rows HERE would set
+        # `AcFieldMapping` scope=line rows for the task, so the seed's own
+        # `line_empty` gate (`services/etl_service.py`) would never fire
+        # again, and the operator would get ONLY the six linkage rows and
+        # never the rest of the preset's line fields. `MAX(sort_order)`
+        # doubles as this existence check (`NULL` <=> zero rows) and as the
+        # next insert's own starting point (S2 nit: `MAX + 1`, never
+        # `COUNT` - a prior DELETE leaves a gap `COUNT` would collide into).
+        max_sort_order = connectable.execute(
+            sa.select(sa.func.max(field_mapping.c.sort_order)).where(
+                field_mapping.c.tenant_id == tenant_id,
+                field_mapping.c.company_id == company_id,
+                field_mapping.c.entity_type == entity_type,
+                field_mapping.c.scope == SCOPE_LINE,
+            )
+        ).scalar()
+        if max_sort_order is None:
+            continue
+        next_sort_order = max_sort_order + 1
+
+        # (b, computed FIRST) the three statements, each an INDEPENDENT
+        # check - a customised lineQuery must never block the header query
+        # (or fingerprintQuery) from being rewritten, and vice versa
+        # (AC-06-17 "per statement"). Computed before (a) below on purpose
+        # (B1, review round, BLOCKER): whether `lineQuery` itself was
+        # rewritten THIS pass decides whether the six rows (a) are safe to
+        # enable AND whether `line_result_columns` gains their source names.
+        source_config = source_config or {}
+        fresh_config: Dict[str, Any] = dict(source_config)
+        config_changed = False
+        header_replaced = False
+        line_replaced = False
+        fingerprint_replaced = False
+        customised = False
+        for key, old_template, new_template in (
+            ("query", _OLD_PO_HEADER_QUERY, _PO_HEADER_QUERY),
+            ("lineQuery", _OLD_PO_LINE_QUERY, _PO_LINE_QUERY),
+            ("fingerprintQuery", _OLD_PO_FINGERPRINT_QUERY, _PO_FINGERPRINT_QUERY),
+        ):
+            stored = source_config.get(key)
+            old_text = old_template.replace("{database}", database_name)
+            new_text = new_template.replace("{database}", database_name)
+            if stored == old_text:
+                fresh_config[key] = new_text
+                config_changed = True
+                touched += 1
+                if key == "query":
+                    header_replaced = True
+                elif key == "lineQuery":
+                    line_replaced = True
+                elif key == "fingerprintQuery":
+                    fingerprint_replaced = True
+            elif stored != new_text:
+                # Neither the OLD preset (customised, or a SIBLING
+                # company's own substitution pasted in) nor already the
+                # NEW preset (already migrated - silent, never a repeat
+                # warning) - left untouched.
+                customised = True
+
+        # (a) the six mapping rows. Checked by `canonical_field` (the
+        # unique-constraint column) - an operator's own row targeting a
+        # linkage field from a different source column still counts as
+        # "already there".
+        #
+        #     !!  B1 (review round, BLOCKER) - is_enabled MIRRORS THE
+        #         lineQuery REWRITE, NOT A BLANKET True.  !!
+        # `_replace_line_mapping` 422s any ENABLED row whose `source_path`
+        # is not among `line_result_columns` (`services/company_service.py`
+        # ~1505-1509). `line_replaced` (just computed above) is the ONLY
+        # proof this pass has that the task's query actually selects these
+        # six rows' source columns - unrewritten (customised, or already the
+        # NEW text from an earlier pass) proves nothing either way, so the
+        # row lands disabled, same posture `presets._seed_rows` already uses
+        # for "a column the task's ACTUAL query does not return".
+        existing_targets = {
+            row[0]
+            for row in connectable.execute(
+                sa.select(field_mapping.c.canonical_field).where(
+                    field_mapping.c.tenant_id == tenant_id,
+                    field_mapping.c.company_id == company_id,
+                    field_mapping.c.entity_type == entity_type,
+                    field_mapping.c.scope == SCOPE_LINE,
+                    field_mapping.c.canonical_field.in_(_LINE_LINKAGE_TARGET_FIELDS),
+                )
+            ).fetchall()
+        }
+        for source_path, target, transform in _LINE_LINKAGE_FIELDS:
+            if target in existing_targets:
+                continue
+            connectable.execute(
+                sa.insert(field_mapping).values(
+                    id=str(uuid.uuid4()),
+                    tenant_id=tenant_id,
+                    company_id=company_id,
+                    entity_type=entity_type,
+                    scope=SCOPE_LINE,
+                    source_path=source_path,
+                    canonical_field=target,
+                    transform=transform,
+                    formula=None,
+                    is_required=False,
+                    is_enabled=line_replaced,
+                    # Not a NOT-NULL column DEFAULT at the database level
+                    # (`AcFieldMapping.is_source_owned`'s `default=True` is
+                    # ORM-side only) - a frozen `sa.table` insert must
+                    # state it explicitly or a strict backend (SQLite)
+                    # rejects the row outright.
+                    is_source_owned=True,
+                    sort_order=next_sort_order,
+                )
+            )
+            next_sort_order += 1
+            touched += 1
+
+        # (c) ONE update carrying whichever of source_config/result_columns/
+        # line_result_columns actually changed this pass.
+        update_values: Dict[str, Any] = {}
+        if config_changed:
+            update_values["source_config"] = fresh_config
+        if header_replaced:
+            columns_list = list(result_columns or [])
+            for name in _LINE_LINKAGE_AGGREGATE_COLUMNS:
+                if name not in columns_list:
+                    columns_list.append(name)
+            update_values["result_columns"] = columns_list
+            # (codex round, finding 1) - `compared_columns_for`
+            # (`sql_source/hashing.py`) hashes ONLY an explicit non-empty
+            # `comparedColumns` picklist, so `result_columns` alone gaining
+            # these four names is inert for such a task - the picklist
+            # filters them straight back out and the document never
+            # re-stages. Appended in the SAME update, preserving the
+            # operator's own entries and order, no duplicates. An empty/
+            # absent picklist already means "every result column minus the
+            # keys" (`compared_columns_for`'s other branch) - left alone.
+            compared_columns = fresh_config.get("comparedColumns")
+            if compared_columns:
+                compared_list = list(compared_columns)
+                for name in _LINE_LINKAGE_AGGREGATE_COLUMNS:
+                    if name not in compared_list:
+                        compared_list.append(name)
+                fresh_config["comparedColumns"] = compared_list
+        if line_replaced:
+            # B1 - the SAME update that rewrites `lineQuery` to the text
+            # that now selects these seven columns must also declare them,
+            # or the six rows just inserted ENABLED above 422 the very next
+            # Mapping-tab save.
+            line_columns_list = list(line_result_columns or [])
+            for name in _LINE_LINKAGE_LINE_RESULT_COLUMNS:
+                if name not in line_columns_list:
+                    line_columns_list.append(name)
+            update_values["line_result_columns"] = line_columns_list
+        if update_values:
+            connectable.execute(
+                sa.update(entity_config)
+                .where(entity_config.c.id == config_id)
+                .values(**update_values)
+            )
+
+        #     !!  S1 (review round, should-fix) - A REWRITTEN
+        #         fingerprintQuery RESETS ITS FINGERPRINT ROWS.  !!
+        # `fingerprintQuery`'s new text selects extra join columns
+        # (AC-06-12), so its computed hash changes for every document even
+        # when nothing about that document's own lines changed - left in
+        # place, the NEXT sweep would see every stored fingerprint mismatch
+        # its freshly computed one at once and stage the task's ENTIRE
+        # window unpaced (`sync.py` ~1147-1157: `changed_refs` is exactly
+        # "stored fingerprint exists AND differs"). Deleting the stored rows
+        # here means the sweep instead finds no stored fingerprint at all
+        # for any of them (`stored.get(ref) is None`) and silently RE-SEEDS
+        # (`sync.py` ~1156-1160's `seed_only`), never stages. The intentional
+        # one-time re-stage of the header/line linkage data itself stays
+        # owned by `result_columns`/`line_result_columns` above, via the
+        # PAGED reconcile run's own change-detection hash - never this sweep.
+        if fingerprint_replaced:
+            connectable.execute(
+                sa.delete(doc_fingerprint).where(
+                    doc_fingerprint.c.tenant_id == tenant_id,
+                    doc_fingerprint.c.company_id == company_id,
+                    doc_fingerprint.c.entity_type == entity_type,
+                )
+            )
+
+        if customised:
+            logger.warning(
+                "%s task %s has a query/lineQuery/fingerprintQuery the "
+                "line-linkage backfill does not recognise as the "
+                "AutoCount PO/SPO preset - left untouched. Add the "
+                "FromSO*/FromPO* columns by hand to pick up line linkage.",
+                entity_type, config_id,
+            )
     return touched
