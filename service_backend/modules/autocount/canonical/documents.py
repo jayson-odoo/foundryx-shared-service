@@ -104,19 +104,15 @@ LINE_LINKAGE_INPUT_FIELDS: Tuple[str, ...] = (
     "from_so_external_doc_no", "from_so_external_line_key",
     "from_po_doc_key", "from_po_line_key",
 )
-# The five WIRE fields (contract >= 2, FALLBACK_FIELDS gate). The first two
-# and the fourth are engine-minted (never an operator-mapped target); the
-# other two (`from_so_numbers`, `from_po_number`) are mapped directly.
-LINE_LINKAGE_WIRE_FIELDS: Tuple[str, ...] = (
-    "from_so_line_ref", "from_so_external", "from_so_numbers",
-    "from_po_line_ref", "from_po_number",
-)
-# The subset of the wire fields the ENGINE mints post-mapping - never an
-# accepted mapping-row target (`mapping_catalog.py` excludes them; a save
-# targeting one is refused, AC-06-07).
-LINE_LINKAGE_MINTED_FIELDS: Tuple[str, ...] = (
-    "from_so_line_ref", "from_so_external", "from_po_line_ref",
-)
+# (sprint-5/06 review nit) - the five WIRE fields and the three ENGINE-MINTED
+# ones among them (`from_so_line_ref`/`from_so_external`/`from_po_line_ref`)
+# used to live here as two more module-level tuples; dropped as dead code -
+# neither was ever imported anywhere (`mapping_catalog.py` builds its own
+# `_LINE_LINKAGE_DIRECT_WIRE_FIELDS` + reads `FALLBACK_FIELDS` straight off
+# the model instead, and `OMIT_WHEN_EMPTY_FIELDS` below is its own hand-typed
+# tuple per subclass). If a THIRD hand-typed copy of either set ever shows up,
+# promote one of these back as the single source rather than re-adding an
+# unused constant.
 
 
 class FromSoExternal(BaseModel):

@@ -144,6 +144,16 @@ describe('MappingTable edit mode', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /build formula for row/i })[1]);
     expect(onBuildRow).toHaveBeenCalledWith(1);
   });
+
+  it('never offers formula mode for a list-transform row (sprint-5/06 review nit, foolproof-UI)', () => {
+    const listRow: MappingEditableRow = {
+      sourcePath: 'FromSODocList', transform: 'string_list', formula: null, sorentoField: 'from_so_numbers',
+    };
+    renderTable(true, { rows: [...rows(), listRow] });
+    // 3 rows total; only the 2 non-list rows offer a "Build formula" button.
+    expect(screen.getAllByRole('button', { name: /build formula for row/i }).length).toBe(2);
+    expect(screen.queryByRole('button', { name: /build formula for row 3/i })).toBeNull();
+  });
 });
 
 describe('MappingTable transform picker - ref-preset filtering (S5 review BLOCKER 2)', () => {

@@ -39,6 +39,7 @@ from ..mapping import (
     LINE_FIELD_ALLOWED_TRANSFORMS,
     LINE_FIELD_REF_TRANSFORMS,
     LINE_LIST_FIELDS,
+    LIST_TRANSFORMS,
     REF_TRANSFORM_ENTITIES,
     SCOPE_HEADER,
     SCOPE_LINE,
@@ -1342,6 +1343,17 @@ class CompanyService:
                     f"The Sorento field '{target}' is mapped more than once."
                 )
             seen.add(target)
+            #     !!  A LIST TRANSFORM HAS NO HEADER TARGET (sprint-5/06
+            #         review S3).  !!
+            # A header field is never list-shaped - `string_list` exists
+            # ONLY for the line-scope `from_so_numbers` target. Refused
+            # outright here, never accepted then silently coerced to a
+            # single-entry list.
+            if row.transform in LIST_TRANSFORMS:
+                raise AutocountServiceError(
+                    f"'{row.transform}' cannot be used for '{target}' - it "
+                    f"produces a list, which no header field accepts."
+                )
             #     !!  A ``ref_*`` TRANSFORM AND ITS FIELD ARE A PAIR.  !!
             # (S5 review BLOCKER 2 - both directions, foolproof server-side.)
             # (a) a ref transform smuggled onto a field it does not mint a
@@ -1539,6 +1551,22 @@ class CompanyService:
                 raise AutocountServiceError(
                     f"'{target}' does not accept the '{row.transform}' transform - "
                     f"use one of: {', '.join(sorted(allowed))}."
+                )
+            #     !!  A LIST TRANSFORM AND ITS FIELD ARE A PAIR TOO (review
+            #         S3) - THE SAME BOTH-DIRECTIONS LOCK ref_* HAS.  !!
+            # `LINE_FIELD_ALLOWED_TRANSFORMS` above already blocks the
+            # reverse direction for the fields it names (e.g.
+            # `from_so_numbers` may ONLY use `string_list`); this catches a
+            # list transform smuggled onto a target `LINE_FIELD_ALLOWED_
+            # TRANSFORMS` never mentions at all (`product_name`, a plain
+            # line field with no narrow set of its own) - `allowed is None`
+            # skips the check above entirely, so nothing else here would
+            # ever reject it.
+            if row.transform in LIST_TRANSFORMS and target not in LINE_LIST_FIELDS:
+                raise AutocountServiceError(
+                    f"'{row.transform}' cannot be used for '{target}' - it "
+                    f"produces a list, only accepted for: "
+                    f"{', '.join(sorted(LINE_LIST_FIELDS))}."
                 )
             formula = (row.formula or "").strip() or None
             #     !!  A FORMULA MAY NEVER TARGET A LIST FIELD (AC-06-11).  !!

@@ -267,12 +267,20 @@ def slash_datetime(value: Any) -> Optional[datetime]:
 LINE_LIST_MAX_LEN = 50
 
 
-def t_string_list(value: Any) -> Optional[List[str]]:
+def t_string_list(value: Any, source_path: Optional[str] = None) -> Optional[List[str]]:
     """``"SO1, SO2,,SO1 "`` → ``["SO1", "SO2"]`` - split on comma, strip,
     drop blanks, dedupe preserving first occurrence. Blank passes through as
     None (the same "absent is not unconvertible" house rule every other
     transform follows); a non-string value is a NAMED ``TransformError``
-    (AC-13-09), never a silent coercion attempt."""
+    (AC-13-09), never a silent coercion attempt.
+
+    ``source_path`` (sprint-5/06 review nit) names the mapping row's OWN
+    source column in the cap warning below - ``MappingRow.coerce`` passes its
+    own ``source_path`` through for this one transform. The raw cell VALUE is
+    never logged: a capped list is, by definition, a long (and potentially
+    sensitive) comma blob, and a warning worth reading needs to name WHICH
+    line source produced it, not echo the blob back.
+    """
     if _blank(value):
         return None
     if not isinstance(value, str):
@@ -286,8 +294,9 @@ def t_string_list(value: Any) -> Optional[List[str]]:
     if len(seen) > LINE_LIST_MAX_LEN:
         logger.warning(
             "string_list transform capped at %d entries (dropped %d) for "
-            "source value %r",
-            LINE_LIST_MAX_LEN, len(seen) - LINE_LIST_MAX_LEN, value,
+            "source %s",
+            LINE_LIST_MAX_LEN, len(seen) - LINE_LIST_MAX_LEN,
+            source_path or "<unknown source>",
         )
         seen = seen[:LINE_LIST_MAX_LEN]
     return seen
@@ -545,6 +554,11 @@ class MappingRow:
         fn = table.get(self.transform)
         if fn is None:
             raise TransformError(f"unknown transform '{self.transform}'")
+        # `string_list` is the one transform that names its OWN source in a
+        # cap warning (review nit) - every other transform keeps the plain
+        # single-arg call, byte-identical to before.
+        if self.transform in LIST_TRANSFORMS:
+            return fn(value, source_path=self.source_path)
         return fn(value)
 
 
@@ -842,6 +856,15 @@ LINE_FIELD_ALLOWED_TRANSFORMS: Dict[str, frozenset] = {
 # `from_so_numbers` today) - a formula row may never target it (AC-06-11):
 # the formula language produces a scalar, never a list.
 LINE_LIST_FIELDS: frozenset = frozenset({"from_so_numbers"})
+
+# (sprint-5/06 review S3) - the transform(s) that PRODUCE a list value (only
+# `string_list` today). A list transform saved onto a target outside
+# ``LINE_LIST_FIELDS`` - any other line field, or ANY header field (a header
+# has no list-shaped target at all) - is the same both-directions mistake
+# ``FIELD_REF_TRANSFORMS``/``LINE_FIELD_REF_TRANSFORMS`` already lock: the
+# transform and its one legitimate target are a pair, enforced at save time
+# by ``company_service._replace_header_mapping``/``_replace_line_mapping``.
+LIST_TRANSFORMS: frozenset = frozenset({"string_list"})
 
 # The documented default `status` formula a document preset seeds (sprint-5/02,
 # AC-02-08, amended by the review round - a header with ZERO lines yet (a

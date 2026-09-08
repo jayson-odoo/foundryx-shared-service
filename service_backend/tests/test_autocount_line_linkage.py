@@ -602,6 +602,86 @@ def test_a_formula_row_may_not_target_from_so_numbers(session_factory):
         RUNTIME.dispose_all()
 
 
+# ── sprint-5/06 review round S3: `string_list` is a line-linkage-only lock ──
+
+
+def test_string_list_is_refused_on_a_non_list_line_target(session_factory):
+    """AC-06-11's both-directions lock, generalised (review S3): `string_list`
+    may target ONLY `from_so_numbers` - an ordinary line field like
+    `product_name` is never named in `LINE_FIELD_ALLOWED_TRANSFORMS` at all
+    (that check alone skips it, `allowed is None`), so this must still 422,
+    naming both the field and the transform."""
+    db, company = _guard_task(session_factory, database="AED_LIST_LOCK_LINE")
+    try:
+        service = CompanyService(db)
+        rows = list(_REQUIRED_LINE_WRITE_ROWS) + [
+            MappingWriteRow(
+                source_path="Description", transform="string_list",
+                sorento_field="product_name", scope=SCOPE_LINE,
+            ),
+        ]
+        with pytest.raises(AutocountServiceError) as excinfo:
+            service.replace_mapping(
+                DEFAULT_TENANT_ID, company.id, ENTITY_PURCHASE_ORDER, rows,
+                line_rows_submitted=True,
+            )
+        message = str(excinfo.value).lower()
+        assert "product_name" in message, message
+        assert "string_list" in message, message
+    finally:
+        db.close()
+        RUNTIME.dispose_all()
+
+
+def test_string_list_is_refused_on_any_header_target(session_factory):
+    """No header field is ever list-shaped - `string_list` on `po_number`
+    (or any other header target) must 422, naming both the field and the
+    transform (the header path never even checked `LINE_LIST_FIELDS` before
+    - the row would have saved as-is)."""
+    db, company = _guard_task(session_factory, database="AED_LIST_LOCK_HEADER")
+    try:
+        service = CompanyService(db)
+        rows = [
+            MappingWriteRow(
+                source_path="DocNo", transform="string_list",
+                sorento_field="po_number", scope=SCOPE_HEADER,
+            ),
+        ]
+        with pytest.raises(AutocountServiceError) as excinfo:
+            service.replace_mapping(
+                DEFAULT_TENANT_ID, company.id, ENTITY_PURCHASE_ORDER, rows,
+            )
+        message = str(excinfo.value).lower()
+        assert "po_number" in message, message
+        assert "string_list" in message, message
+    finally:
+        db.close()
+        RUNTIME.dispose_all()
+
+
+# ── sprint-5/06 review round nit: the cap warning names the SOURCE, not the
+#    raw cell value ──────────────────────────────────────────────────────
+
+
+def test_string_list_cap_warning_names_the_source_path_not_the_raw_value(caplog):
+    """`MappingRow.coerce` passes its OWN `source_path` through to
+    `t_string_list` for exactly this transform - the warning must name it
+    (so an operator can find the offending row) and must never echo the full
+    (potentially long) raw comma-separated cell back into the log."""
+    row = MappingRow("FromSODocList", "from_so_numbers", "string_list", SCOPE_LINE)
+    raw = ", ".join(f"SO{i}" for i in range(1, 60))  # 59 unique entries, caps at 50
+    with caplog.at_level(logging.WARNING):
+        result = row.coerce(raw)
+    assert result == [f"SO{i}" for i in range(1, 51)], result
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings, "no WARNING logged when the list was capped past 50 entries"
+    messages = [r.getMessage() for r in warnings]
+    assert any("FromSODocList" in m for m in messages), messages
+    assert not any("SO59" in m for m in messages), (
+        f"the raw cell value must never be echoed into the warning: {messages}"
+    )
+
+
 # ── AC-06-12: `_PO_LINE_QUERY` gains the SO / source-PO joins + columns ────
 
 

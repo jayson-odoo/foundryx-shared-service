@@ -59,6 +59,7 @@ from modules.autocount.mapping import SCOPE_LINE
 from modules.autocount.models import (
     SOURCE_IMPL_SQL_DB,
     AcCompany,
+    AcDocFingerprint,
     AcEntityConfig,
     AcFieldMapping,
 )
@@ -131,6 +132,18 @@ LINE_LINKAGE_PRESET_FIELDS = (
 )
 LINE_LINKAGE_TARGETS = tuple(target for _src, target, _tf in LINE_LINKAGE_PRESET_FIELDS)
 
+# B1 (review round, blocker) - the seven names `_PO_LINE_QUERY` SELECTs that
+# the six mapping rows above reference as their `source_path` (six of the
+# seven are a mapping row's own source; `FromSODocNo` is select-only, never
+# mapped to a target, but still needs to be a recognised preview column or
+# nothing about it matters here). Appended to `line_result_columns` in the
+# SAME update that rewrites `lineQuery` - mirrors `AGGREGATE_RESULT_COLUMNS`
+# for the header side (AC-06-13).
+LINE_RESULT_COLUMN_NAMES = (
+    "FromSODtlKey", "FromSODocKey", "FromSODocNo", "FromSODocList",
+    "FromPODtlKey", "FromPODocKey", "FromPODocNo",
+)
+
 # AC-06-13's four header aggregate names, in the exact order they are named
 # in the plan/UAC - the backfill appends them to `result_columns` verbatim.
 AGGREGATE_RESULT_COLUMNS = ["LinkedSOCount", "FromSOKeySum", "LinkedPOCount", "FromPOKeySum"]
@@ -181,7 +194,7 @@ def _api_company(db, *, database: str, tenant_id: str = DEFAULT_TENANT_ID) -> Ac
 def _document_config(
     db, company: AcCompany, entity_type: str, *,
     query: str, line_query: str = None, fingerprint_query: str = None,
-    result_columns=None,
+    result_columns=None, line_result_columns=None,
 ) -> AcEntityConfig:
     config = AcEntityConfig(
         tenant_id=company.tenant_id, company_id=company.id, entity_type=entity_type,
@@ -207,10 +220,34 @@ def _document_config(
         "reconcileAt": "02:00",
     }
     config.result_columns = list(result_columns or _BASE_RESULT_COLUMNS)
+    if line_result_columns is not None:
+        config.line_result_columns = list(line_result_columns)
     db.add(config)
     db.commit()
     db.refresh(config)
     return config
+
+
+def _seed_baseline_line_row(db, company: AcCompany, entity_type: str) -> None:
+    """S2 (review round) - a task that reaches this backfill in PRODUCTION
+    already has ordinary line mapping rows: migration 0010 backfilled LINE
+    rows onto every existing document task (`presets.py`'s own module
+    docstring), so a genuinely EMPTY line scope only happens for a task that
+    was never even test-queried once - which S2 hands off entirely to
+    `EtlService.update_task`'s own first-save preset seed (which now carries
+    the six linkage rows itself) rather than this backfill partially seeding
+    them and permanently blocking that full seed (`line_empty` would never
+    be true again). Seeds ONE ordinary, non-linkage line row so a fixture
+    matches that reality for every test that is not itself proving the
+    zero-rows case."""
+    db.add(
+        AcFieldMapping(
+            tenant_id=company.tenant_id, company_id=company.id, entity_type=entity_type,
+            scope=SCOPE_LINE, source_path="ItemCode", canonical_field="product_name",
+            transform="string", is_enabled=True, is_required=False,
+        )
+    )
+    db.commit()
 
 
 def _line_rows(db, company_id: str, entity_type: str):
@@ -248,6 +285,11 @@ def test_backfill_adds_the_six_linkage_rows_to_po_and_spo_tasks_across_tenants(d
         fingerprint_query=OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_B"),
     )
     assert config_a.id and config_b.id
+    # S2 (review round) - a real task reaching this backfill already has
+    # ordinary line mapping (0010's own backfill); a genuinely EMPTY line
+    # scope is skipped entirely (its own dedicated test below).
+    _seed_baseline_line_row(db, company_a, entity_type)
+    _seed_baseline_line_row(db, company_b, entity_type)
     db.expire_all()
 
     touched = helper(db, schema=None)
@@ -331,6 +373,45 @@ def test_backfill_leaves_an_operators_own_row_for_a_target_alone(db):
     assert sorted(by_target) == sorted(LINE_LINKAGE_TARGETS)
 
 
+def test_backfill_skips_a_task_with_zero_line_rows_entirely(db):
+    """S2 (review round, should-fix) - a task with ZERO existing LINE-scope
+    rows (never even test-queried once - a real post-0010 production task
+    always has SOME line mapping) must be skipped ENTIRELY: no six rows, no
+    query/lineQuery/fingerprintQuery rewrite, `touched` excludes it. A
+    partial six-row seed here would set `AcFieldMapping` scope=line rows
+    for the task, so `EtlService.update_task`'s ``line_empty`` check (its
+    own first-save preset seed, which now carries the six linkage rows
+    itself, S1) would never fire again - the operator would get ONLY the
+    six linkage rows and never the rest of the preset's line fields."""
+    helper = _backfill()
+    company = _api_company(db, database="AED_ZERO_LINES")
+    config = _document_config(
+        db, company, ENTITY_PURCHASE_ORDER,
+        query=OLD_PO_HEADER_QUERY.replace("{database}", "AED_ZERO_LINES"),
+        line_query=OLD_PO_LINE_QUERY.replace("{database}", "AED_ZERO_LINES"),
+        fingerprint_query=OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_ZERO_LINES"),
+    )
+    config_id = config.id
+    stored_source = dict(config.source_config)
+    stored_columns = list(config.result_columns)
+    db.expire_all()
+
+    touched = helper(db, schema=None)
+    db.expire_all()
+
+    assert touched == 0, f"a zero-line-row task must contribute nothing: {touched}"
+    after = db.get(AcEntityConfig, config_id)
+    assert after.source_config == stored_source, (
+        "the query must not be rewritten either - the task is skipped entirely, not"
+        " row-insertion-only"
+    )
+    assert list(after.result_columns) == stored_columns
+    assert _line_rows(db, company.id, ENTITY_PURCHASE_ORDER) == []
+    assert (
+        db.query(AcFieldMapping).filter(AcFieldMapping.company_id == company.id).count() == 0
+    )
+
+
 # ── AC-06-17: byte-identical query / lineQuery / fingerprintQuery rewrite ──
 
 
@@ -343,6 +424,10 @@ def test_backfill_replaces_byte_identical_old_text_and_appends_aggregate_names(d
         line_query=OLD_PO_LINE_QUERY.replace("{database}", "AED_OLD"),
         fingerprint_query=OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_OLD"),
     )
+    # S2 (review round) - a zero-line-row task is skipped entirely (own
+    # dedicated test below); a task whose query gets rewritten in
+    # production already has ordinary line mapping.
+    _seed_baseline_line_row(db, company, ENTITY_SHIPPING_ORDER)
     before = dict(config.source_config)
     config_id = config.id
     db.expire_all()
@@ -373,6 +458,176 @@ def test_backfill_replaces_byte_identical_old_text_and_appends_aggregate_names(d
     assert after.result_columns[len(_BASE_RESULT_COLUMNS):] == AGGREGATE_RESULT_COLUMNS
 
 
+def test_backfill_appends_the_seven_line_columns_when_linequery_is_rewritten_and_enables_the_six_rows(db):
+    """B1 (review round, BLOCKER) - `_replace_line_mapping` 422s any later
+    Mapping-tab save on this task: an ENABLED row whose `source_path` is not
+    among `line_result_columns` (the task's last query-preview columns) is
+    refused (`company_service.py:1505-1509`). The six rows this backfill
+    inserts reference `FromSODtlKey`/`FromSODocKey`/`FromSODocNo`/
+    `FromSODocList`/`FromPODtlKey`/`FromPODocKey`/`FromPODocNo` - when
+    `lineQuery` is rewritten to the NEW preset text (which DOES select all
+    seven, AC-06-12), the seven names must land in `line_result_columns` in
+    the SAME update (mirrors `AGGREGATE_RESULT_COLUMNS` on the header side),
+    and the six rows must be inserted ENABLED (their source is proven to
+    exist in the query this very pass)."""
+    helper = _backfill()
+    company = _api_company(db, database="AED_LINECOLS_NEW")
+    config = _document_config(
+        db, company, ENTITY_PURCHASE_ORDER,
+        query=OLD_PO_HEADER_QUERY.replace("{database}", "AED_LINECOLS_NEW"),
+        line_query=OLD_PO_LINE_QUERY.replace("{database}", "AED_LINECOLS_NEW"),
+        fingerprint_query=OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_LINECOLS_NEW"),
+        line_result_columns=["DtlKey", "ItemCode"],
+    )
+    _seed_baseline_line_row(db, company, ENTITY_PURCHASE_ORDER)
+    config_id = config.id
+    db.expire_all()
+
+    helper(db, schema=None)
+    db.expire_all()
+
+    after = db.get(AcEntityConfig, config_id)
+    # The existing prefix survives untouched - APPENDED, never replaced.
+    assert after.line_result_columns[:2] == ["DtlKey", "ItemCode"], after.line_result_columns
+    for name in LINE_RESULT_COLUMN_NAMES:
+        assert name in after.line_result_columns, (name, after.line_result_columns)
+
+    rows = _line_rows(db, company.id, ENTITY_PURCHASE_ORDER)
+    assert len(rows) == 6, [r.canonical_field for r in rows]
+    assert all(row.is_enabled is True for row in rows), [
+        (r.canonical_field, r.is_enabled) for r in rows
+    ]
+
+
+def test_backfill_inserts_the_six_rows_disabled_and_leaves_line_result_columns_alone_when_linequery_is_not_rewritten(db):
+    """B1's other branch - a customised `lineQuery` is left completely
+    untouched by this backfill, so its ACTUAL query is never proven to
+    select the seven linkage columns this pass. The six rows must land
+    DISABLED (same posture as `presets._seed_rows`'s "a column the task's
+    ACTUAL query does not return lands disabled" - still an ordinary
+    editable row, never omitted, never 422ing the rest of a save), and
+    `line_result_columns` must be left completely untouched (nothing was
+    proven about it this pass)."""
+    helper = _backfill()
+    company = _api_company(db, database="AED_LINECOLS_CUSTOM")
+    customised_line_query = (
+        OLD_PO_LINE_QUERY.replace("{database}", "AED_LINECOLS_CUSTOM")
+        + " AND d.ItemCode NOT LIKE 'ZZ%'"
+    )
+    config = _document_config(
+        db, company, ENTITY_PURCHASE_ORDER,
+        query=OLD_PO_HEADER_QUERY.replace("{database}", "AED_LINECOLS_CUSTOM"),
+        line_query=customised_line_query,
+        fingerprint_query=OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_LINECOLS_CUSTOM"),
+        line_result_columns=["DtlKey", "ItemCode"],
+    )
+    _seed_baseline_line_row(db, company, ENTITY_PURCHASE_ORDER)
+    config_id = config.id
+    db.expire_all()
+
+    helper(db, schema=None)
+    db.expire_all()
+
+    after = db.get(AcEntityConfig, config_id)
+    assert after.line_result_columns == ["DtlKey", "ItemCode"], after.line_result_columns
+    assert after.source_config["lineQuery"] == customised_line_query
+
+    rows = _line_rows(db, company.id, ENTITY_PURCHASE_ORDER)
+    assert len(rows) == 6, [r.canonical_field for r in rows]
+    assert all(row.is_enabled is False for row in rows), [
+        (r.canonical_field, r.is_enabled) for r in rows
+    ]
+
+
+# ── sprint-5/06 review round S1: a rewritten fingerprintQuery resets its
+#    own ac_doc_fingerprint rows ────────────────────────────────────────
+
+
+def test_backfill_deletes_fingerprint_rows_when_fingerprintquery_is_rewritten(db):
+    """S1 (review round, should-fix) - `fingerprintQuery`'s new text selects
+    extra join columns (AC-06-12), so every document's computed hash moves
+    even when its own lines never changed. Left in place, the NEXT sweep
+    would see every stored fingerprint mismatch at once and stage the whole
+    task unpaced (`sync.py` ~1147-1157). Deleting the stored rows - scoped
+    tenant/company/entity, never a blanket wipe - lets the sweep silently
+    RE-SEED instead (`sync.py` ~1156-1160's `seed_only`)."""
+    helper = _backfill()
+    company = _api_company(db, database="AED_FP_RESET")
+    config = _document_config(
+        db, company, ENTITY_PURCHASE_ORDER,
+        query=OLD_PO_HEADER_QUERY.replace("{database}", "AED_FP_RESET"),
+        line_query=OLD_PO_LINE_QUERY.replace("{database}", "AED_FP_RESET"),
+        fingerprint_query=OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_FP_RESET"),
+    )
+    _seed_baseline_line_row(db, company, ENTITY_PURCHASE_ORDER)
+    db.add_all([
+        AcDocFingerprint(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+            entity_type=ENTITY_PURCHASE_ORDER, source_ref=f"AED_FP_RESET:{i}",
+            fingerprint=f"hash-{i}",
+        )
+        for i in range(3)
+    ])
+    db.commit()
+    db.expire_all()
+
+    helper(db, schema=None)
+    db.expire_all()
+
+    remaining = (
+        db.query(AcDocFingerprint)
+        .filter(
+            AcDocFingerprint.tenant_id == DEFAULT_TENANT_ID,
+            AcDocFingerprint.company_id == company.id,
+            AcDocFingerprint.entity_type == ENTITY_PURCHASE_ORDER,
+        )
+        .count()
+    )
+    assert remaining == 0, "the fingerprint rows must be reset when fingerprintQuery is rewritten"
+
+
+def test_backfill_leaves_fingerprint_rows_alone_when_fingerprintquery_is_customised(db):
+    """The other half - a task whose `fingerprintQuery` was hand-edited (left
+    completely untouched, per-statement independence) must keep its
+    fingerprint rows: nothing about the query changed, so nothing about the
+    stored hashes is stale."""
+    helper = _backfill()
+    company = _api_company(db, database="AED_FP_KEEP")
+    customised_fingerprint = (
+        OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_FP_KEEP") + " HAVING COUNT(*) > 0"
+    )
+    config = _document_config(
+        db, company, ENTITY_PURCHASE_ORDER,
+        query=OLD_PO_HEADER_QUERY.replace("{database}", "AED_FP_KEEP"),
+        line_query=OLD_PO_LINE_QUERY.replace("{database}", "AED_FP_KEEP"),
+        fingerprint_query=customised_fingerprint,
+    )
+    _seed_baseline_line_row(db, company, ENTITY_PURCHASE_ORDER)
+    db.add(
+        AcDocFingerprint(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+            entity_type=ENTITY_PURCHASE_ORDER, source_ref="AED_FP_KEEP:1",
+            fingerprint="hash-1",
+        )
+    )
+    db.commit()
+    db.expire_all()
+
+    helper(db, schema=None)
+    db.expire_all()
+
+    remaining = (
+        db.query(AcDocFingerprint)
+        .filter(
+            AcDocFingerprint.tenant_id == DEFAULT_TENANT_ID,
+            AcDocFingerprint.company_id == company.id,
+            AcDocFingerprint.entity_type == ENTITY_PURCHASE_ORDER,
+        )
+        .count()
+    )
+    assert remaining == 1, "a customised fingerprintQuery must never reset fingerprint rows"
+
+
 def test_backfill_treats_a_partially_customised_task_per_statement(db, caplog):
     """``query`` / ``fingerprintQuery`` are byte-identical to the OLD preset
     and get rewritten; ``lineQuery`` was hand-edited and is left untouched -
@@ -391,6 +646,7 @@ def test_backfill_treats_a_partially_customised_task_per_statement(db, caplog):
         line_query=customised_line_query,
         fingerprint_query=OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_MIXED"),
     )
+    _seed_baseline_line_row(db, company, ENTITY_PURCHASE_ORDER)
     config_id = config.id
     db.expire_all()
 
@@ -430,6 +686,7 @@ def test_backfill_leaves_a_fully_customised_task_alone_and_warns_naming_the_conf
         query=customised_query, line_query=customised_line,
         fingerprint_query=customised_fingerprint,
     )
+    _seed_baseline_line_row(db, company, ENTITY_SHIPPING_ORDER)
     config_id = config.id
     db.expire_all()
 
@@ -467,6 +724,7 @@ def test_backfill_treats_a_sibling_companys_substitution_as_customised(db):
         line_query=OLD_PO_LINE_QUERY.replace("{database}", "AED_OTHER"),
         fingerprint_query=OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_OTHER"),
     )
+    _seed_baseline_line_row(db, company, ENTITY_PURCHASE_ORDER)
     config_id = config.id
     stored = dict(config.source_config)
     db.expire_all()
@@ -563,6 +821,7 @@ def test_update_tenant_runs_the_line_linkage_backfill(db):
         line_query=OLD_PO_LINE_QUERY.replace("{database}", "AED_UPD"),
         fingerprint_query=OLD_PO_FINGERPRINT_QUERY.replace("{database}", "AED_UPD"),
     )
+    _seed_baseline_line_row(db, company, ENTITY_PURCHASE_ORDER)
     config_id = config.id
     db.expire_all()
 

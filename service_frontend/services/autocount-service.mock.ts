@@ -1978,23 +1978,19 @@ const SO_PRESET: DocumentPresetSpec = {
 };
 
 /**
- * The eight sprint-5/06 "input" fields (never sent on the wire, UAC
- * Definitions) plus `from_po_number` - the nine LINE targets the PO/SPO
- * catalog gains beyond `from_so_numbers` (already an existing mapped row
- * below). Catalog-only: none of these mint themselves, so none is
- * pre-mapped here - an operator adds the row, exactly like `from_so_external_*`
- * always has been (AC-06-24).
+ * The four `from_so_external_*` INPUT fields (never sent on the wire, UAC
+ * Definitions) - the ICB (inter-company) case only, the ONE part of the
+ * linkage catalog that never gets a preset row (review round nit: the other
+ * six input/wire targets are now pre-mapped below, mirroring the backend
+ * preset's own `PO_PRESET.line`/`SPO_PRESET.line`). Catalog-only: none of
+ * these mint themselves without an operator explicitly mapping `db`, so none
+ * is pre-mapped here - an operator adds the row (AC-06-24).
  */
 const LINE_LINKAGE_CATALOG_ONLY_TARGETS: AutocountSorentoField[] = [
-  { field: 'from_so_doc_key', required: false },
-  { field: 'from_so_line_key', required: false },
   { field: 'from_so_external_db', required: false },
   { field: 'from_so_external_doc_key', required: false },
   { field: 'from_so_external_doc_no', required: false },
   { field: 'from_so_external_line_key', required: false },
-  { field: 'from_po_doc_key', required: false },
-  { field: 'from_po_line_key', required: false },
-  { field: 'from_po_number', required: false },
 ];
 
 /** PO/SPO share the supplier-side shape (unit_cost/qty_received/currency);
@@ -2013,10 +2009,17 @@ function purchaseFamilyPreset(entityType: 'purchase_order' | 'shipping_order'): 
     { sourcePath: 'ItemCode', sorentoField: 'product_code', transform: 'string' },
     { sourcePath: 'Description', sorentoField: 'product_name', transform: 'string' },
     { sourcePath: 'Location', sorentoField: 'warehouse_code', transform: 'string' },
-    // sprint-5/06 (AC-06-01/14) - `string_list` splits the comma list into
-    // deduped, trimmed SO document numbers; this row already existed here
-    // (plan 22 S5) with the placeholder `string` transform.
+    // sprint-5/06 (AC-06-14, review round nit) - the six line-linkage preset
+    // rows, mirroring the backend preset (`PO_PRESET.line`/`SPO_PRESET.line`,
+    // `modules/autocount/presets.py`) byte-for-byte: `from_so_numbers` already
+    // existed here (plan 22 S5, placeholder `string` transform before AC-06-01
+    // made it `string_list`); the other five are new.
+    { sourcePath: 'FromSODocKey', sorentoField: 'from_so_doc_key', transform: 'int' },
+    { sourcePath: 'FromSODtlKey', sorentoField: 'from_so_line_key', transform: 'int' },
     { sourcePath: 'FromSODocList', sorentoField: 'from_so_numbers', transform: 'string_list' },
+    { sourcePath: 'FromPODocKey', sorentoField: 'from_po_doc_key', transform: 'int' },
+    { sourcePath: 'FromPODtlKey', sorentoField: 'from_po_line_key', transform: 'int' },
+    { sourcePath: 'FromPODocNo', sorentoField: 'from_po_number', transform: 'string' },
     { sourcePath: 'Seq', sorentoField: 'line_number', transform: 'int' },
   ];
   return {

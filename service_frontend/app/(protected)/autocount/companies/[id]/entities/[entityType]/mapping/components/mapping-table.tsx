@@ -10,6 +10,7 @@ import { SearchSelect } from '@/components/platform/search-select';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { humanizeFieldKey } from '@/lib/autocount-diff';
 import { pickerColumnOptions, statusFormulaSeed } from '@/lib/autocount-etl';
+import { isListTransform } from '@/lib/autocount-formula';
 import { cn } from '@/lib/utils';
 import type {
   AutocountMappingRow,
@@ -220,17 +221,24 @@ export function MappingTable({
                 ariaLabel={`Transform for row ${index + 1}`}
               />
             </div>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              mode="icon"
-              onClick={() => onBuildRow(index)}
-              aria-label={`Build formula for row ${index + 1}`}
-              title="Edit as a formula"
-            >
-              <FunctionSquare className="size-4" />
-            </Button>
+            {/* sprint-5/06 review round nit (foolproof-UI) - a list-shaped
+                transform (`string_list`) never offers formula mode: the
+                formula language produces a scalar, so the server 422s a
+                formula row targeting a list field (AC-06-11) - the picker
+                must never offer a combination the save would reject. */}
+            {!isListTransform(row.original.transform) && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                mode="icon"
+                onClick={() => onBuildRow(index)}
+                aria-label={`Build formula for row ${index + 1}`}
+                title="Edit as a formula"
+              >
+                <FunctionSquare className="size-4" />
+              </Button>
+            )}
           </div>
         ) : (
           <div className={cn('flex flex-col gap-0.5', stale && 'opacity-60')}>
