@@ -74,6 +74,14 @@ the linkage for documents Sorento already holds.
 
 `fromDate` is task config; the migration does not touch it. Runbook, after Sorento 2.2 is
 live and the ESB is deployed (agreed with the Sorento session 2026-09-08):
+0. For a task whose header query predates the recognised preset text (the backfill logs a
+   WARNING naming the config id), re-pick the preset on the Query tab and Test Query before
+   the waves below - that refreshes `result_columns`/`line_result_columns` and is what
+   triggers the re-stage (review round S1: the backfill's own byte-identity rewrite only
+   fires for a statement it recognises as the OLD preset text verbatim; a customised query
+   is left untouched on purpose, so re-picking the preset by hand is how that task's
+   `line_result_columns` ever gains the seven `FromSO*`/`FromPO*` names and its lineQuery the
+   new joins).
 1. Sorento connection batch size stays at the default 200 documents per POST
    (`settings.autocount_sink_batch_size`; never raise it for the backfill - each document
    carries its full line set and drives a claim write plus `resolve()` on their side), sink

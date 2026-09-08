@@ -108,9 +108,13 @@ from_po_number?:    str, max 100
 `{database}:{DocKey}:{DtlKey}`, the identical shape the line's own `source_ref` already
 carries. `from_so_external` is the ICB (inter-company) case only - a source SO in a
 DIFFERENT AutoCount book than the one this PO/SPO line was fetched from; `db` is set
-whenever the object is present at all, and it never rides alongside a same-book
-`from_so_line_ref` for the SAME SO (a key that does not resolve in THIS book never travels
-as a same-book ref; the two are mutually exclusive per link, never both set for one SO).
+whenever the object is present at all. The two describe DIFFERENT books (this book's own SO
+vs. an external book's SO) and may both be present on the same line at once - a PO/SPO line
+can be raised against a same-book SO AND separately reference a cross-book SO; the engine
+does not resolve `from_so_external` into anything, it only records what the operator mapped
+(review round S4 - corrected from an earlier draft that claimed the two are mutually
+exclusive; the mapping engine enforces no such rule, and Sorento's `order_link_service` does
+its own resolution downstream).
 
 Operator-mappable INPUT fields feed the two ref pairs and are NEVER sent on the wire at any
 contract version - the ESB mints `from_so_line_ref`/`from_po_line_ref`/`from_so_external`
