@@ -148,6 +148,10 @@ the S1 diff (engine change).
 - **List cap** - Sorento caps `from_so_numbers` at 50; the transform caps and warns.
 - **Location** - untouched. The "no location" rows Sorento saw are their own missing
   warehouse (BRW-TERA, retired; owner ruled leave blank).
+- **`update_tenant` runs the module backfills service-wide, not tenant-scoped** (the 0016/0017/0018
+  precedent) - tracked as BL-SS-194.
+- **A same-key swap between two lines (or a `FromSODocList`-only change) is invisible to the
+  header link aggregates** (count + sum are order-insensitive) - tracked as BL-SS-195.
 
 ## 6. Backlog
 
