@@ -52,6 +52,7 @@ import type {
   AutocountSimulateFieldResult,
   AutocountSimulateResult,
   AutocountSinkTargetInput,
+  AutocountSorentoField,
   AutocountSourceImpl,
   AutocountSqlConnection,
   AutocountSqlPreview,
@@ -1922,6 +1923,14 @@ interface DocumentPresetSpec {
   filterFormula: string | null;
   header: DocFieldSpec[];
   line: DocFieldSpec[];
+  /**
+   * The LINE catalog's accepted targets (sprint-5/06, AC-06-10) - defaults to
+   * `line`'s own mapped fields when absent (every prior preset's catalog IS
+   * exactly its mapped rows). PO/SPO diverge: four `from_so_external_*` input
+   * fields are catalog-OFFERED but never preset-mapped (operator additions
+   * only, AC-06-24), so their preset needs a target list wider than `line`.
+   */
+  lineTargets?: AutocountSorentoField[];
 }
 
 const SO_PRESET: DocumentPresetSpec = {
@@ -1968,10 +1977,48 @@ const SO_PRESET: DocumentPresetSpec = {
   ],
 };
 
+/**
+ * The eight sprint-5/06 "input" fields (never sent on the wire, UAC
+ * Definitions) plus `from_po_number` - the nine LINE targets the PO/SPO
+ * catalog gains beyond `from_so_numbers` (already an existing mapped row
+ * below). Catalog-only: none of these mint themselves, so none is
+ * pre-mapped here - an operator adds the row, exactly like `from_so_external_*`
+ * always has been (AC-06-24).
+ */
+const LINE_LINKAGE_CATALOG_ONLY_TARGETS: AutocountSorentoField[] = [
+  { field: 'from_so_doc_key', required: false },
+  { field: 'from_so_line_key', required: false },
+  { field: 'from_so_external_db', required: false },
+  { field: 'from_so_external_doc_key', required: false },
+  { field: 'from_so_external_doc_no', required: false },
+  { field: 'from_so_external_line_key', required: false },
+  { field: 'from_po_doc_key', required: false },
+  { field: 'from_po_line_key', required: false },
+  { field: 'from_po_number', required: false },
+];
+
 /** PO/SPO share the supplier-side shape (unit_cost/qty_received/currency);
  *  the family split is the filter formula + entity, not the field list. */
 function purchaseFamilyPreset(entityType: 'purchase_order' | 'shipping_order'): DocumentPresetSpec {
   const isSpo = entityType === 'shipping_order';
+  const line: DocFieldSpec[] = [
+    { sourcePath: 'DtlKey', sorentoField: 'source_ref', transform: 'string', required: true },
+    { sourcePath: 'ItemAutoKey', sorentoField: 'product_ref', transform: 'ref_product', required: true },
+    { sourcePath: 'LocationAutoKey', sorentoField: 'warehouse_ref', transform: 'ref_warehouse' },
+    { sourcePath: 'Qty', sorentoField: 'qty_ordered', transform: 'decimal', required: true },
+    { sourcePath: 'ReceivedQty', sorentoField: 'qty_received', transform: 'decimal' },
+    { sourcePath: 'UnitPrice', sorentoField: 'unit_cost', transform: 'decimal' },
+    { sourcePath: 'UOM', sorentoField: 'uom', transform: 'string' },
+    { sourcePath: 'ExpectedDate', sorentoField: 'expected_date', transform: 'date' },
+    { sourcePath: 'ItemCode', sorentoField: 'product_code', transform: 'string' },
+    { sourcePath: 'Description', sorentoField: 'product_name', transform: 'string' },
+    { sourcePath: 'Location', sorentoField: 'warehouse_code', transform: 'string' },
+    // sprint-5/06 (AC-06-01/14) - `string_list` splits the comma list into
+    // deduped, trimmed SO document numbers; this row already existed here
+    // (plan 22 S5) with the placeholder `string` transform.
+    { sourcePath: 'FromSODocList', sorentoField: 'from_so_numbers', transform: 'string_list' },
+    { sourcePath: 'Seq', sorentoField: 'line_number', transform: 'int' },
+  ];
   return {
     label: isSpo ? 'AutoCount SPO' : 'AutoCount PO',
     headerQuery:
@@ -2009,20 +2056,15 @@ function purchaseFamilyPreset(entityType: 'purchase_order' | 'shipping_order'): 
       { sourcePath: 'CreditorName', sorentoField: 'supplier_name', transform: 'string' },
       { sourcePath: 'PurchaseAgent', sorentoField: 'agent_code', transform: 'string' },
     ],
-    line: [
-      { sourcePath: 'DtlKey', sorentoField: 'source_ref', transform: 'string', required: true },
-      { sourcePath: 'ItemAutoKey', sorentoField: 'product_ref', transform: 'ref_product', required: true },
-      { sourcePath: 'LocationAutoKey', sorentoField: 'warehouse_ref', transform: 'ref_warehouse' },
-      { sourcePath: 'Qty', sorentoField: 'qty_ordered', transform: 'decimal', required: true },
-      { sourcePath: 'ReceivedQty', sorentoField: 'qty_received', transform: 'decimal' },
-      { sourcePath: 'UnitPrice', sorentoField: 'unit_cost', transform: 'decimal' },
-      { sourcePath: 'UOM', sorentoField: 'uom', transform: 'string' },
-      { sourcePath: 'ExpectedDate', sorentoField: 'expected_date', transform: 'date' },
-      { sourcePath: 'ItemCode', sorentoField: 'product_code', transform: 'string' },
-      { sourcePath: 'Description', sorentoField: 'product_name', transform: 'string' },
-      { sourcePath: 'Location', sorentoField: 'warehouse_code', transform: 'string' },
-      { sourcePath: 'FromSODocList', sorentoField: 'from_so_numbers', transform: 'string' },
-      { sourcePath: 'Seq', sorentoField: 'line_number', transform: 'int' },
+    line,
+    // sprint-5/06 (AC-06-10) - the LINE catalog offers the eight input
+    // fields + `from_so_numbers` + `from_po_number` (ten total); the four
+    // `from_so_external_*` names never get a preset row (AC-06-24), so the
+    // catalog is wider than `line` here - every prior preset's catalog
+    // stayed exactly its mapped rows (the `lineTargets` default below).
+    lineTargets: [
+      ...line.map((f) => ({ field: f.sorentoField, required: Boolean(f.required) })),
+      ...LINE_LINKAGE_CATALOG_ONLY_TARGETS,
     ],
   };
 }
@@ -2059,7 +2101,8 @@ function documentMappingView(entityType: string): AutocountMappingView {
     rows: [...toRows(spec.header, 'header'), ...toRows(spec.line, 'line')],
     sorentoFields: spec.header.map((f) => ({ field: f.sorentoField, required: Boolean(f.required) })),
     acFields: spec.header.map((f) => f.sourcePath),
-    lineSorentoFields: spec.line.map((f) => ({ field: f.sorentoField, required: Boolean(f.required) })),
+    lineSorentoFields:
+      spec.lineTargets ?? spec.line.map((f) => ({ field: f.sorentoField, required: Boolean(f.required) })),
     lineAcFields: spec.line.map((f) => f.sourcePath),
   };
 }

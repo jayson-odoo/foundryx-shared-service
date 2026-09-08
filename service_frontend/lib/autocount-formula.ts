@@ -442,6 +442,30 @@ export const TRANSFORM_PRESET: Record<string, string> = {
   ref_sales_agent: 'ref_sales_agent',
 };
 
+/**
+ * Named transform → the shape it produces (sprint-5/06, AC-06-01/11) - mirrors
+ * the backend's per-field type coercion (`mapping.coerce_output`) closely
+ * enough to answer one question: can a FORMULA feed this field. `FormulaValue`
+ * (this file's evaluator return type) is `null | boolean | number | string |
+ * FormulaDate` - there is no list literal in the grammar, so `string_list`
+ * (the one transform whose output is a list) can never be reproduced by an
+ * authored formula. Every transform absent from this map is a `'scalar'`
+ * (the same objects `TRANSFORM_PRESET` already covers). The server's
+ * save-time gate is what actually enforces "a formula row may not target a
+ * list field" (422 named to the row's field, AC-06-11) - this map documents
+ * the fact for the FE and feeds no new validation of its own.
+ */
+export type TransformOutputShape = 'scalar' | 'list';
+export const TRANSFORM_OUTPUT_SHAPE: Record<string, TransformOutputShape> = {
+  string_list: 'list',
+};
+
+/** Whether `transform` produces a list - `false` (the default) for every
+ * scalar transform, including any not present in `TRANSFORM_OUTPUT_SHAPE`. */
+export function isListTransform(transform: string): boolean {
+  return TRANSFORM_OUTPUT_SHAPE[transform] === 'list';
+}
+
 // ── parser ────────────────────────────────────────────────────────────────────
 class Parser {
   private pos = 0;
