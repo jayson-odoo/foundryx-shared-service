@@ -73,9 +73,20 @@ the linkage for documents Sorento already holds.
 ### 2.4 Backfill window (grill: since 2023-09-01)
 
 `fromDate` is task config; the migration does not touch it. Runbook, after Sorento 2.2 is
-live and the ESB is deployed: on the PO and the SPO task set fromDate `2023-09-01`, run
-reconcile (bulk document load, plan 03: 2000 headers / run) until the run reports 0 re-staged,
-then restore the previous fromDate. Recorded in the test report with counts.
+live and the ESB is deployed (agreed with the Sorento session 2026-09-08):
+1. Sorento connection batch size stays at the default 200 documents per POST
+   (`settings.autocount_sink_batch_size`; never raise it for the backfill - each document
+   carries its full line set and drives a claim write plus `resolve()` on their side), sink
+   concurrency 1.
+2. **PO task first, SPO task second** - `from_po_line_ref` on a shipping-order line points at
+   a purchase-order line, so landing POs first means every SPO reference resolves on arrival.
+3. On the PO task set fromDate `2023-09-01`, run reconcile (bulk document load, plan 03: 2000
+   headers / run, ~5 waves for ~9,350 POs) until a run re-stages 0; then the same on the SPO
+   task (~4 waves for ~6,570 SPOs); then restore the previous fromDate on both.
+4. Precondition already met: the Sorento SO task's fromDate is `2023-09-01` (234k staged SO
+   rows), so the sales side of every claim exists. A claim reported `still_open` on an early
+   wave is not a defect - Sorento's `resolve()` retries open claims.
+Recorded in the test report with counts per wave.
 
 ### 2.5 Frontend
 
