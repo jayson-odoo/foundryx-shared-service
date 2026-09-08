@@ -258,6 +258,18 @@ SO_PRESET = DocumentPreset(
 # APPLY` - see the SO header's own comment above for the live finding
 # (`ItemCode NULL` display lines such as 'CURRENCY ROUNDING DIFFERENCE')
 # this closes.
+#     !!  LINE LINKAGE (sprint-5/06, AC-06-12/13) - PO/SPO ONLY.  !!
+# `FromSODtlKey` (populated by AutoCount's stock "Transfer from S/O") points
+# at the SODTL row a PO/SPO line was raised for; `FromDocType`/
+# `FromDocDtlKey` (populated for an SPO transferred FROM a PO) point at the
+# source PODTL row. Both are resolved to their OWN header's `DocKey`/`DocNo`
+# here (never left as bare keys) so a mapped line carries enough to mint a
+# ref (`mapping.py`) without a second round-trip. Four header-level
+# aggregates (below) mirror this at the OUTER APPLY / fingerprint level, so
+# change detection sees a link added/removed/re-pointed with NO line-level
+# watermark. No `UDF_*` column here (D5, AC-06-24) - a per-company UDF
+# (AED_SORENTO's ICB plugin) is a documented operator addition to the LIVE
+# query, mapped to `from_so_external_*`, never baked into this shared text.
 _PO_HEADER_QUERY = (
     "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, s.AutoKey AS CreditorAutoKey, "
     "h.PurchaseAgent AS SalesAgent, h.DocDate AS DocDate, "
@@ -265,13 +277,19 @@ _PO_HEADER_QUERY = (
     "h.CreditorCode AS CreditorCode, h.CreditorName AS CreditorName, "
     "h.CurrencyCode AS CurrencyCode, h.LastModified AS LastModified, h.Ref AS Ref, "
     "l.LineCount AS LineCount, l.QtySum AS QtySum, l.TransferedSum AS TransferedSum, "
-    "l.SubTotalSum AS SubTotalSum, l.MaxDtlKey AS MaxDtlKey "
+    "l.SubTotalSum AS SubTotalSum, l.MaxDtlKey AS MaxDtlKey, "
+    "l.LinkedSOCount AS LinkedSOCount, l.FromSOKeySum AS FromSOKeySum, "
+    "l.LinkedPOCount AS LinkedPOCount, l.FromPOKeySum AS FromPOKeySum "
     "FROM {database}.dbo.PO AS h "
     "LEFT JOIN {database}.dbo.Creditor AS s ON s.AccNo = h.CreditorCode "
     "OUTER APPLY ("
     "SELECT MIN(d.DeliveryDate) AS FirstDeliveryDate, COUNT(*) AS LineCount, "
     "SUM(d.Qty) AS QtySum, SUM(d.TransferedQty) AS TransferedSum, "
-    "SUM(d.SubTotal) AS SubTotalSum, MAX(d.DtlKey) AS MaxDtlKey "
+    "SUM(d.SubTotal) AS SubTotalSum, MAX(d.DtlKey) AS MaxDtlKey, "
+    "SUM(CASE WHEN d.FromSODtlKey IS NOT NULL THEN 1 ELSE 0 END) AS LinkedSOCount, "
+    "SUM(d.FromSODtlKey) AS FromSOKeySum, "
+    "SUM(CASE WHEN d.FromDocType = 'PO' AND d.FromDocDtlKey IS NOT NULL THEN 1 ELSE 0 END) AS LinkedPOCount, "
+    "SUM(CASE WHEN d.FromDocType = 'PO' THEN d.FromDocDtlKey END) AS FromPOKeySum "
     "FROM {database}.dbo.PODTL AS d "
     "WHERE d.DocKey = h.DocKey AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
     ") AS l"
@@ -282,19 +300,35 @@ _PO_LINE_QUERY = (
     "d.TransferedQty AS TransferedQty, d.UnitPrice AS UnitPrice, "
     "d.DiscountAmt AS DiscountAmt, d.SubTotal AS SubTotal, d.UOM AS UOM, "
     "d.DeliveryDate AS ExpectedDate, d.ItemCode AS ItemCode, "
-    "d.Description AS Description, d.Location AS Location, d.Seq AS Seq "
+    "d.Description AS Description, d.Location AS Location, d.Seq AS Seq, "
+    "d.FromSODtlKey AS FromSODtlKey, so.DocKey AS FromSODocKey, "
+    "so.DocNo AS FromSODocNo, d.FromSODocList AS FromSODocList, "
+    "CASE WHEN d.FromDocType = 'PO' THEN d.FromDocDtlKey END AS FromPODtlKey, "
+    "sh.DocKey AS FromPODocKey, sh.DocNo AS FromPODocNo "
     "FROM {database}.dbo.PODTL AS d "
     "LEFT JOIN {database}.dbo.Item AS i ON i.ItemCode = d.ItemCode "
     "LEFT JOIN {database}.dbo.Location AS w ON w.Location = d.Location "
+    "LEFT JOIN {database}.dbo.SODTL AS sd ON sd.DtlKey = d.FromSODtlKey "
+    "LEFT JOIN {database}.dbo.SO AS so ON so.DocKey = sd.DocKey "
+    "LEFT JOIN {database}.dbo.PODTL AS src ON src.DtlKey = d.FromDocDtlKey AND d.FromDocType = 'PO' "
+    "LEFT JOIN {database}.dbo.PO AS sh ON sh.DocKey = src.DocKey "
     "WHERE d.DocKey = :doc_key AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
 )
 
 # feat/line-fingerprint-sweep - the PO/PODTL equivalent of `_SO_FINGERPRINT_
 # QUERY` above (see that constant's own comment for the mechanism), shared
-# by PO and SPO exactly like their header/line queries already are.
+# by PO and SPO exactly like their header/line queries already are. Same
+# four link aggregates as the header's own OUTER APPLY (AC-06-13) - a link
+# added/removed/re-pointed with NO other column change still moves this
+# fingerprint, catching what the header hash alone might miss between
+# reconciles.
 _PO_FINGERPRINT_QUERY = (
     "SELECT d.DocKey AS DocKey, COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
-    "SUM(d.TransferedQty) AS TransferedSum, MAX(d.DtlKey) AS MaxDtlKey "
+    "SUM(d.TransferedQty) AS TransferedSum, MAX(d.DtlKey) AS MaxDtlKey, "
+    "SUM(CASE WHEN d.FromSODtlKey IS NOT NULL THEN 1 ELSE 0 END) AS LinkedSOCount, "
+    "SUM(d.FromSODtlKey) AS FromSOKeySum, "
+    "SUM(CASE WHEN d.FromDocType = 'PO' AND d.FromDocDtlKey IS NOT NULL THEN 1 ELSE 0 END) AS LinkedPOCount, "
+    "SUM(CASE WHEN d.FromDocType = 'PO' THEN d.FromDocDtlKey END) AS FromPOKeySum "
     "FROM {database}.dbo.PODTL AS d JOIN {database}.dbo.PO AS h ON h.DocKey = d.DocKey "
     "WHERE h.DocDate >= :from_date AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL "
     "GROUP BY d.DocKey"
@@ -352,6 +386,14 @@ PO_PRESET = DocumentPreset(
         # S3 (AC-02-27) - the line queries already SELECT Seq; without a
         # preset row consuming it, line_number never reaches Sorento.
         PresetField("Seq", "line_number", "string"),
+        # sprint-5/06 (AC-06-14) - line linkage: enabled, not-required (an
+        # unlinked line is the common case, never a save-time error).
+        PresetField("FromSODocKey", "from_so_doc_key", "int"),
+        PresetField("FromSODtlKey", "from_so_line_key", "int"),
+        PresetField("FromSODocList", "from_so_numbers", "string_list"),
+        PresetField("FromPODocKey", "from_po_doc_key", "int"),
+        PresetField("FromPODtlKey", "from_po_line_key", "int"),
+        PresetField("FromPODocNo", "from_po_number", "string"),
     ),
     fingerprint_query=_PO_FINGERPRINT_QUERY,
 )
@@ -412,6 +454,14 @@ SPO_PRESET = DocumentPreset(
         # S3 (AC-02-27) - the line queries already SELECT Seq; without a
         # preset row consuming it, line_number never reaches Sorento.
         PresetField("Seq", "line_number", "string"),
+        # sprint-5/06 (AC-06-14) - line linkage: enabled, not-required (an
+        # unlinked line is the common case, never a save-time error).
+        PresetField("FromSODocKey", "from_so_doc_key", "int"),
+        PresetField("FromSODtlKey", "from_so_line_key", "int"),
+        PresetField("FromSODocList", "from_so_numbers", "string_list"),
+        PresetField("FromPODocKey", "from_po_doc_key", "int"),
+        PresetField("FromPODtlKey", "from_po_line_key", "int"),
+        PresetField("FromPODocNo", "from_po_number", "string"),
     ),
     fingerprint_query=_PO_FINGERPRINT_QUERY,
 )

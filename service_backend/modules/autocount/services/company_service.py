@@ -36,7 +36,9 @@ from ..client import AutoCountClient, AutoCountError
 from ..mapping import (
     DEFAULT_MAPPINGS,
     FIELD_REF_TRANSFORMS,
+    LINE_FIELD_ALLOWED_TRANSFORMS,
     LINE_FIELD_REF_TRANSFORMS,
+    LINE_LIST_FIELDS,
     REF_TRANSFORM_ENTITIES,
     SCOPE_HEADER,
     SCOPE_LINE,
@@ -1530,7 +1532,24 @@ class CompanyService:
                     f"transform - a plain value would send the raw AutoCount code, which "
                     f"Sorento cannot resolve as a reference."
                 )
+            #     !!  LINE LINKAGE (sprint-5/06, AC-06-11) - NARROW ALLOWED
+            #         TRANSFORM SET.  !!
+            allowed = LINE_FIELD_ALLOWED_TRANSFORMS.get(target)
+            if allowed is not None and row.transform not in allowed:
+                raise AutocountServiceError(
+                    f"'{target}' does not accept the '{row.transform}' transform - "
+                    f"use one of: {', '.join(sorted(allowed))}."
+                )
             formula = (row.formula or "").strip() or None
+            #     !!  A FORMULA MAY NEVER TARGET A LIST FIELD (AC-06-11).  !!
+            # The formula language produces a scalar; `from_so_numbers` is a
+            # list, so a formula row targeting it can never produce a value
+            # the canonical model would accept.
+            if formula is not None and target in LINE_LIST_FIELDS:
+                raise AutocountServiceError(
+                    f"'{target}' does not accept a formula - it is a list field, "
+                    f"not a single value."
+                )
             if formula is not None:
                 try:
                     parse_formula(formula, known_vars)

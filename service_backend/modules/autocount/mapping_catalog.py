@@ -55,6 +55,7 @@ from .canonical.documents import (
     ENTITY_PURCHASE_ORDER,
     ENTITY_SALES_ORDER,
     ENTITY_SHIPPING_ORDER,
+    LINE_LINKAGE_INPUT_FIELDS,
     CanonicalPurchaseOrder,
     CanonicalPurchaseOrderLine,
     CanonicalSalesOrder,
@@ -110,15 +111,24 @@ _SPO_FALLBACK_FIELDS: Tuple[str, ...] = CanonicalShippingOrder.FALLBACK_FIELDS
 # `CanonicalDocumentLine` fields since S3, contract-version-2-gated at push.
 #
 # NOT derived from `CanonicalPurchaseOrderLine`/`CanonicalShippingOrderLine`.
-# `FALLBACK_FIELDS` the way the header tuples above are: both of those also
-# carry `from_so_numbers` (addendum section 4), which the ESB derives itself
-# from AutoCount's `FromSODocList` and is never an operator-mapped target -
-# the ONE legitimate, permanent gap between a line model's wire set and this
+# `FALLBACK_FIELDS` the way the header tuples above are - `FALLBACK_FIELDS`
+# also carries the three ENGINE-MINTED linkage fields (`from_so_line_ref`,
+# `from_so_external`, `from_po_line_ref`), which the ESB composes itself
+# post-mapping (`mapping.py`) and can never be an operator-mapped target -
+# the legitimate, permanent gap between a line model's wire set and this
 # picker, pinned explicitly by
-# `test_line_catalog_equals_the_canonical_line_wire_set_minus_engine_derived`.
+# `test_line_catalog_equals_the_canonical_line_wire_set_minus_engine_derived`
+# (sprint-5/06, AC-06-10).
 _LINE_FALLBACK_FIELDS: Tuple[str, ...] = (
     "product_code", "product_name", "warehouse_code", "line_number",
 )
+
+# sprint-5/06 (AC-06-10) - the two DIRECTLY-mapped linkage wire fields
+# (`from_so_numbers`, `from_po_number`; never minted). Offered ONLY when the
+# entity's own line model declares them (PO/SPO; SO declares neither) - the
+# SAME "read straight off the model" rule `_line_fields` below applies to
+# the eight input fields, so this can never drift from the model either.
+_LINE_LINKAGE_DIRECT_WIRE_FIELDS: Tuple[str, ...] = ("from_so_numbers", "from_po_number")
 
 # sprint-5/02 (AC-02-02/03) - a document's LINE fields are now first-class,
 # operator-editable mapping rows (the fixed column-name convention is gone).
@@ -165,6 +175,24 @@ def _accepted_line(
     )
 
 
+def _line_fields(line_model, required: frozenset) -> Tuple[SorentoFieldDef, ...]:
+    """sprint-5/06 (AC-06-10) - a line's accepted set PLUS whichever of the
+    eight line-linkage INPUT fields the entity's OWN line model declares
+    (all eight for PO/SPO; none for SO, which declares none of them) - read
+    straight off the model, never a second hand-typed per-entity copy that
+    could drift."""
+    declared_input = tuple(
+        name for name in LINE_LINKAGE_INPUT_FIELDS if name in line_model.model_fields
+    )
+    declared_direct_wire = tuple(
+        name for name in _LINE_LINKAGE_DIRECT_WIRE_FIELDS if name in line_model.model_fields
+    )
+    return _accepted_line(
+        line_model.SINK_FIELDS + _LINE_FALLBACK_FIELDS + declared_direct_wire + declared_input,
+        required,
+    )
+
+
 # ── Sorento accepted-field catalogs (AC-15-42) ────────────────────────────────
 SORENTO_FIELDS: Dict[str, Tuple[SorentoFieldDef, ...]] = {
     ENTITY_SUPPLIER: _accepted(CanonicalSupplier.SINK_FIELDS),
@@ -205,17 +233,14 @@ SORENTO_FIELDS: Dict[str, Tuple[SorentoFieldDef, ...]] = {
 # ``scope='line'`` rows. ``source_ref``/``product_ref``/``qty_ordered`` are
 # required the moment ANY line row is saved (addendum §3's fixed line shape).
 SORENTO_LINE_FIELDS: Dict[str, Tuple[SorentoFieldDef, ...]] = {
-    ENTITY_SALES_ORDER: _accepted_line(
-        CanonicalSalesOrderLine.SINK_FIELDS + _LINE_FALLBACK_FIELDS,
-        _REQUIRED_LINE_FIELDS[ENTITY_SALES_ORDER],
+    ENTITY_SALES_ORDER: _line_fields(
+        CanonicalSalesOrderLine, _REQUIRED_LINE_FIELDS[ENTITY_SALES_ORDER],
     ),
-    ENTITY_PURCHASE_ORDER: _accepted_line(
-        CanonicalPurchaseOrderLine.SINK_FIELDS + _LINE_FALLBACK_FIELDS,
-        _REQUIRED_LINE_FIELDS[ENTITY_PURCHASE_ORDER],
+    ENTITY_PURCHASE_ORDER: _line_fields(
+        CanonicalPurchaseOrderLine, _REQUIRED_LINE_FIELDS[ENTITY_PURCHASE_ORDER],
     ),
-    ENTITY_SHIPPING_ORDER: _accepted_line(
-        CanonicalShippingOrderLine.SINK_FIELDS + _LINE_FALLBACK_FIELDS,
-        _REQUIRED_LINE_FIELDS[ENTITY_SHIPPING_ORDER],
+    ENTITY_SHIPPING_ORDER: _line_fields(
+        CanonicalShippingOrderLine, _REQUIRED_LINE_FIELDS[ENTITY_SHIPPING_ORDER],
     ),
 }
 

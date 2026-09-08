@@ -25,6 +25,7 @@ What this layer absorbs, so nothing downstream ever sees it:
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field as dc_field
 from datetime import date, datetime, timezone
@@ -74,6 +75,8 @@ from .canonical.documents import (
 SCOPE_HEADER = "header"
 SCOPE_LINE = "line"
 SCOPES = (SCOPE_HEADER, SCOPE_LINE)
+
+logger = logging.getLogger(__name__)
 
 
 class TransformError(ValueError):
@@ -258,6 +261,38 @@ def slash_datetime(value: Any) -> Optional[datetime]:
     )
 
 
+# sprint-5/06 (AC-06-01) - Sorento's own `max_length=50` on the linkage
+# list fields; extra entries are dropped (never silently truncated with no
+# trace) with a WARNING.
+LINE_LIST_MAX_LEN = 50
+
+
+def t_string_list(value: Any) -> Optional[List[str]]:
+    """``"SO1, SO2,,SO1 "`` → ``["SO1", "SO2"]`` - split on comma, strip,
+    drop blanks, dedupe preserving first occurrence. Blank passes through as
+    None (the same "absent is not unconvertible" house rule every other
+    transform follows); a non-string value is a NAMED ``TransformError``
+    (AC-13-09), never a silent coercion attempt."""
+    if _blank(value):
+        return None
+    if not isinstance(value, str):
+        raise TransformError(f"expected a comma-separated string, got {value!r}")
+    seen: List[str] = []
+    for piece in value.split(","):
+        item = piece.strip()
+        if not item or item in seen:
+            continue
+        seen.append(item)
+    if len(seen) > LINE_LIST_MAX_LEN:
+        logger.warning(
+            "string_list transform capped at %d entries (dropped %d) for "
+            "source value %r",
+            LINE_LIST_MAX_LEN, len(seen) - LINE_LIST_MAX_LEN, value,
+        )
+        seen = seen[:LINE_LIST_MAX_LEN]
+    return seen
+
+
 TRANSFORMS = {
     "string": t_string,
     "bool": t_bool,
@@ -268,6 +303,8 @@ TRANSFORMS = {
     # Master coercions (AC-14-05).
     "t_f_bool": t_f_bool,
     "slash_datetime": slash_datetime,
+    # sprint-5/06 (AC-06-01) - `FromSODocList`/comma-separated line targets.
+    "string_list": t_string_list,
 }
 
 
@@ -781,6 +818,31 @@ LINE_FIELD_REF_TRANSFORMS: Dict[str, str] = {
     "warehouse_ref": "ref_warehouse",
 }
 
+# sprint-5/06 (AC-06-11) - the line-linkage fields each accept a NARROW
+# transform set, foolproof server-side: an input KEY field is only ever an
+# AutoCount int key (Pydantic coerces a numeric string into the int field,
+# so "string" is accepted too for a source column typed as text); the two
+# same-book db/doc-no fields are plain text; `from_so_numbers` is the ONE
+# field the `string_list` transform may target (a plain "string" would ship
+# the raw comma-separated cell straight through, which Sorento's
+# `max_length=50` list field would reject whole).
+LINE_FIELD_ALLOWED_TRANSFORMS: Dict[str, frozenset] = {
+    "from_so_doc_key": frozenset({"int", "string"}),
+    "from_so_line_key": frozenset({"int", "string"}),
+    "from_so_external_doc_key": frozenset({"int", "string"}),
+    "from_so_external_line_key": frozenset({"int", "string"}),
+    "from_po_doc_key": frozenset({"int", "string"}),
+    "from_po_line_key": frozenset({"int", "string"}),
+    "from_so_external_db": frozenset({"string"}),
+    "from_so_external_doc_no": frozenset({"string"}),
+    "from_so_numbers": frozenset({"string_list"}),
+}
+
+# A canonical LINE field whose declared shape is a LIST (only
+# `from_so_numbers` today) - a formula row may never target it (AC-06-11):
+# the formula language produces a scalar, never a list.
+LINE_LIST_FIELDS: frozenset = frozenset({"from_so_numbers"})
+
 # The documented default `status` formula a document preset seeds (sprint-5/02,
 # AC-02-08, amended by the review round - a header with ZERO lines yet (a
 # fresh SO/PO before its detail rows have synced) must read "open", not
@@ -1248,6 +1310,36 @@ class MappingEngine:
             # canonical line model's own validation names it if required.
             if self.profile.line_ref_prefix and doc_key and values.get("source_ref"):
                 values["source_ref"] = f"{doc_key}:{values['source_ref']}"
+            #     !!  LINE LINKAGE MINTING (sprint-5/06, AC-06-05..09).  !!
+            # Same spot as the ref composition above: AFTER `_apply`
+            # (mapped input values are ready), BEFORE the canonical line
+            # model is constructed. `values` only ever carries a
+            # `from_*_doc_key`/`from_*_line_key`/`from_so_external_*` entry
+            # when the profile's OWN line model declares that field
+            # (`_apply` only writes a canonical target that is `in fields`)
+            # - so this is a correct no-op for `sales_order`, whose line
+            # model declares none of them, with no entity-type branch
+            # needed here. The ref format is the SAME `{database}:{DocKey}
+            # :{DtlKey}` scheme the line's own `source_ref` just got above.
+            so_doc_key = values.get("from_so_doc_key")
+            so_line_key = values.get("from_so_line_key")
+            if so_doc_key is not None and so_line_key is not None:
+                values["from_so_line_ref"] = f"{self.database_name}:{so_doc_key}:{so_line_key}"
+            po_doc_key = values.get("from_po_doc_key")
+            po_line_key = values.get("from_po_line_key")
+            if po_doc_key is not None and po_line_key is not None:
+                values["from_po_line_ref"] = f"{self.database_name}:{po_doc_key}:{po_line_key}"
+            ext_db = values.get("from_so_external_db")
+            if ext_db is not None:
+                # A key that does not resolve in THIS book never sits in a
+                # same-book ref field (D6) - the object is minted ONLY when
+                # `db` itself is set, even if the other three are.
+                values["from_so_external"] = {
+                    "db": ext_db,
+                    "doc_key": values.get("from_so_external_doc_key"),
+                    "doc_no": values.get("from_so_external_doc_no"),
+                    "dtl_key": values.get("from_so_external_line_key"),
+                }
             try:
                 lines.append(self.profile.line_model(**values))
             except Exception as exc:  # noqa: BLE001 - a model reject is a field error

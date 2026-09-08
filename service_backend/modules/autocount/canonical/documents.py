@@ -44,7 +44,7 @@ from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from decimal import Decimal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .base import CanonicalLine, CanonicalRecord
 
@@ -91,6 +91,51 @@ DOCUMENT_STATUS_VALUES: Tuple[str, ...] = (
     "open", "partial", "fulfilled", "closed", "cancelled",
 )
 
+# sprint-5/06 (Definitions section of the UAC) - the eight operator-mappable
+# line INPUT fields that feed engine minting and are NEVER sent on the wire
+# (declared on `CanonicalPurchaseOrderLine`/`CanonicalShippingOrderLine`
+# only - `CanonicalSalesOrderLine` gains none of them). Named once here so
+# `mapping.py` (minting + save-time transform pairing) and
+# `mapping_catalog.py` (the LINE picker) read the SAME set rather than a
+# second hand-typed copy that could drift.
+LINE_LINKAGE_INPUT_FIELDS: Tuple[str, ...] = (
+    "from_so_doc_key", "from_so_line_key",
+    "from_so_external_db", "from_so_external_doc_key",
+    "from_so_external_doc_no", "from_so_external_line_key",
+    "from_po_doc_key", "from_po_line_key",
+)
+# The five WIRE fields (contract >= 2, FALLBACK_FIELDS gate). The first two
+# and the fourth are engine-minted (never an operator-mapped target); the
+# other two (`from_so_numbers`, `from_po_number`) are mapped directly.
+LINE_LINKAGE_WIRE_FIELDS: Tuple[str, ...] = (
+    "from_so_line_ref", "from_so_external", "from_so_numbers",
+    "from_po_line_ref", "from_po_number",
+)
+# The subset of the wire fields the ENGINE mints post-mapping - never an
+# accepted mapping-row target (`mapping_catalog.py` excludes them; a save
+# targeting one is refused, AC-06-07).
+LINE_LINKAGE_MINTED_FIELDS: Tuple[str, ...] = (
+    "from_so_line_ref", "from_so_external", "from_po_line_ref",
+)
+
+
+class FromSoExternal(BaseModel):
+    """sprint-5/06 (AC-06-02/06) - a same-book ICB (inter-company) reference:
+    ``db``/``doc_key``/``doc_no``/``dtl_key`` of a sales order the PO/SPO
+    line was raised for, in a DIFFERENT AutoCount book than the one this
+    line was fetched from (same-book linkage is ``from_so_line_ref``
+    instead). All four fields are optional AT THE MODEL LEVEL - the "``db``
+    is set whenever the object exists" invariant is upheld by the engine's
+    minting step (``mapping.py``: the object is only ever constructed when
+    the mapped ``from_so_external_db`` resolves), never by validation here.
+    A key that does not resolve in this book never travels as a same-book
+    ref (the Sorento owner's rule, grill D6)."""
+
+    db: Optional[str] = Field(None, max_length=100)
+    doc_key: Optional[int] = None
+    doc_no: Optional[str] = Field(None, max_length=100)
+    dtl_key: Optional[int] = None
+
 
 class CanonicalDocumentLine(CanonicalLine):
     """Shared line rules (mirrors Sorento's ``_CanonicalLine``).
@@ -128,6 +173,13 @@ class CanonicalDocumentLine(CanonicalLine):
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "product_code", "product_name", "warehouse_code", "line_number",
     )
+    # sprint-5/06 (AC-06-03) - the `container_number` rule, generalised: a
+    # fallback field named here is DROPPED from the payload (never sent as
+    # an explicit `null`/`[]`) when its value is empty. Absent means "leave
+    # Sorento's stored value alone"; `null` means "clear it" - a linkage
+    # field the engine could not resolve THIS run must never send the clear
+    # signal. Empty on the shared base; PO/SPO lines populate it (Group A).
+    OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ()
 
     def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
         """The wire shape for ONE line. ``contract_version`` (default 1,
@@ -139,7 +191,11 @@ class CanonicalDocumentLine(CanonicalLine):
         keys = list(self.SINK_FIELDS)
         if contract_version >= 2:
             keys = keys + list(self.FALLBACK_FIELDS)
-        return {key: data[key] for key in keys if key in data}
+        payload = {key: data[key] for key in keys if key in data}
+        for name in self.OMIT_WHEN_EMPTY_FIELDS:
+            if not payload.get(name):
+                payload.pop(name, None)
+        return payload
 
 
 class CanonicalSalesOrderLine(CanonicalDocumentLine):
@@ -166,13 +222,42 @@ class CanonicalPurchaseOrderLine(CanonicalDocumentLine):
     # Sorento's `order_link_service.claim_book_pairing` runs once per value).
     from_so_numbers: Optional[List[str]] = None
 
+    #     !!  LINE LINKAGE (sprint-5/06, AC-06-02) - INPUT then WIRE.  !!
+    # Input fields feed engine minting (`mapping.py`, right beside the
+    # line's own `source_ref` composition) and are NEVER sent to Sorento -
+    # they never appear in SINK_FIELDS/FALLBACK_FIELDS below. Wire fields
+    # join FALLBACK_FIELDS (contract >= 2); the ref pair is minted, the
+    # object is minted, `from_so_numbers`/`from_po_number` are mapped
+    # directly (see `documents.py`'s own module docstring precedent and
+    # plan 06 section 2.1's table).
+    from_so_doc_key: Optional[int] = None
+    from_so_line_key: Optional[int] = None
+    from_so_external_db: Optional[str] = Field(None, max_length=100)
+    from_so_external_doc_key: Optional[int] = None
+    from_so_external_doc_no: Optional[str] = Field(None, max_length=100)
+    from_so_external_line_key: Optional[int] = None
+    from_po_doc_key: Optional[int] = None
+    from_po_line_key: Optional[int] = None
+
+    from_so_line_ref: Optional[str] = Field(None, max_length=255)
+    from_so_external: Optional[FromSoExternal] = None
+    from_po_line_ref: Optional[str] = Field(None, max_length=255)
+    from_po_number: Optional[str] = Field(None, max_length=100)
+
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref", "product_ref", "warehouse_ref", "qty_ordered",
         "qty_received", "unit_cost", "discount", "line_total", "uom",
         "currency", "expected_date",
     )
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
-        CanonicalDocumentLine.FALLBACK_FIELDS + ("from_so_numbers",)
+        CanonicalDocumentLine.FALLBACK_FIELDS + (
+            "from_so_numbers", "from_so_line_ref", "from_so_external",
+            "from_po_line_ref", "from_po_number",
+        )
+    )
+    OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "from_so_numbers", "from_so_line_ref", "from_so_external",
+        "from_po_line_ref", "from_po_number",
     )
 
 
@@ -187,12 +272,38 @@ class CanonicalShippingOrderLine(CanonicalDocumentLine):
     expected_date: Optional[date] = None
     from_so_numbers: Optional[List[str]] = None
 
+    # Line linkage (sprint-5/06, AC-06-02) - identical shape to the PO
+    # line's own (see its comment above); a source PO line for an SPO
+    # (`from_po_line_ref`/`from_po_number`) is the primary use of THIS
+    # entity's linkage, an SO source (`from_so_*`) still possible when an
+    # SPO was itself raised for a sales order.
+    from_so_doc_key: Optional[int] = None
+    from_so_line_key: Optional[int] = None
+    from_so_external_db: Optional[str] = Field(None, max_length=100)
+    from_so_external_doc_key: Optional[int] = None
+    from_so_external_doc_no: Optional[str] = Field(None, max_length=100)
+    from_so_external_line_key: Optional[int] = None
+    from_po_doc_key: Optional[int] = None
+    from_po_line_key: Optional[int] = None
+
+    from_so_line_ref: Optional[str] = Field(None, max_length=255)
+    from_so_external: Optional[FromSoExternal] = None
+    from_po_line_ref: Optional[str] = Field(None, max_length=255)
+    from_po_number: Optional[str] = Field(None, max_length=100)
+
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref", "product_ref", "warehouse_ref", "qty_ordered",
         "qty_received", "unit_cost", "uom", "expected_date",
     )
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
-        CanonicalDocumentLine.FALLBACK_FIELDS + ("from_so_numbers",)
+        CanonicalDocumentLine.FALLBACK_FIELDS + (
+            "from_so_numbers", "from_so_line_ref", "from_so_external",
+            "from_po_line_ref", "from_po_number",
+        )
+    )
+    OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "from_so_numbers", "from_so_line_ref", "from_so_external",
+        "from_po_line_ref", "from_po_number",
     )
 
 
