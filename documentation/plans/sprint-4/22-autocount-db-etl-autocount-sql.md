@@ -161,47 +161,53 @@ Notes
 
 ## 3. Purchase Order - header query
 
-Task: entity `purchase_order`, `source_impl = sql_db`.
+Task: entity `purchase_order`, `source_impl = sql_db`. Shared verbatim with the SPO task
+(`SPO_PRESET.header_query` in `presets.py`) - the SPO-only difference is the `filterFormula`
+(§9 of the design plan), not the SQL.
 
 ```sql
 SELECT
     h.DocKey                                   AS DocKey,
     h.DocNo                                    AS DocNo,
-    h.DocDate                                  AS DocDate,
-    h.LastModified                             AS LastModified,
-    h.CreditorCode                             AS CreditorCode,
     s.AutoKey                                  AS CreditorAutoKey,
-    h.CreditorName                             AS CreditorName,
-    h.PurchaseAgent                            AS PurchaseAgent,
-    h.CurrencyCode                             AS CurrencyCode,
+    h.PurchaseAgent                            AS SalesAgent,
+    h.DocDate                                  AS DocDate,
     CAST(l.FirstDeliveryDate AS date)          AS ExpectedDate,
     h.Cancelled                                AS Cancelled,
-    h.Transferable                             AS Transferable,
-    h.DocStatus                                AS DocStatus,
-    h.NetTotal                                 AS NetTotal,
-    h.FinalTotal                               AS FinalTotal,
-    CASE
-        WHEN h.Cancelled = 'T'                              THEN 'cancelled'
-        WHEN l.LineCount IS NULL OR l.LineCount = 0         THEN 'open'
-        WHEN l.DoneCount = l.LineCount                      THEN 'fulfilled'
-        WHEN h.Transferable = 'F'                           THEN 'closed'
-        WHEN l.StartedCount > 0                             THEN 'partial'
-        ELSE                                                     'open'
-    END                                        AS status
+    h.CreditorCode                             AS CreditorCode,
+    h.CreditorName                             AS CreditorName,
+    h.CurrencyCode                             AS CurrencyCode,
+    h.LastModified                             AS LastModified,
+    h.Ref                                      AS Ref,
+    l.LineCount                                AS LineCount,
+    l.QtySum                                   AS QtySum,
+    l.TransferedSum                            AS TransferedSum,
+    l.SubTotalSum                              AS SubTotalSum,
+    l.MaxDtlKey                                AS MaxDtlKey,
+    l.LinkedSOCount                            AS LinkedSOCount,
+    l.FromSOKeySum                             AS FromSOKeySum,
+    l.LinkedPOCount                            AS LinkedPOCount,
+    l.FromPOKeySum                             AS FromPOKeySum
 FROM AED_SORENTO.dbo.PO AS h
 LEFT JOIN AED_SORENTO.dbo.Creditor AS s
        ON s.AccNo = h.CreditorCode
 OUTER APPLY (
     SELECT
-        COUNT(*)                                                   AS LineCount,
-        SUM(CASE WHEN d.TransferedQty >= d.Qty THEN 1 ELSE 0 END)  AS DoneCount,
-        SUM(CASE WHEN d.TransferedQty > 0      THEN 1 ELSE 0 END)  AS StartedCount,
         MIN(d.DeliveryDate)                                        AS FirstDeliveryDate,
-        -- line fingerprint (plan sprint-5/03, AC-03-20) - see §0's note.
+        COUNT(*)                                                   AS LineCount,
         SUM(d.Qty)                                                 AS QtySum,
         SUM(d.TransferedQty)                                       AS TransferedSum,
         SUM(d.SubTotal)                                            AS SubTotalSum,
-        MAX(d.DtlKey)                                               AS MaxDtlKey
+        MAX(d.DtlKey)                                              AS MaxDtlKey,
+        -- line linkage aggregates (sprint-5/06, AC-06-13) - see §0's note.
+        SUM(CASE WHEN d.FromSODtlKey IS NOT NULL THEN 1 ELSE 0 END)
+                                                                    AS LinkedSOCount,
+        SUM(d.FromSODtlKey)                                        AS FromSOKeySum,
+        SUM(CASE WHEN d.FromDocType = 'PO'
+                  AND d.FromDocDtlKey IS NOT NULL THEN 1 ELSE 0 END)
+                                                                    AS LinkedPOCount,
+        SUM(CASE WHEN d.FromDocType = 'PO' THEN d.FromDocDtlKey END)
+                                                                    AS FromPOKeySum
     FROM AED_SORENTO.dbo.PODTL AS d
     WHERE d.DocKey = h.DocKey
       AND d.ItemCode IS NOT NULL
@@ -209,7 +215,15 @@ OUTER APPLY (
 ) AS l
 ```
 
-`source_config` - identical to §1 except `query`/`lineQuery`.
+`h.PurchaseAgent AS SalesAgent` reuses the SO header's alias so the SAME `agent_code`
+mapping row (below) targets it on every entity - not a copy-paste error. `h.Ref` carries no
+PO mapping row (`container_number` is SPO-only, addendum §3); it is selected here only
+because this header query is shared verbatim with the SPO preset. No `status` column: PO's
+`Cancelled` maps directly to `status` via the shared status formula (mapping rows below) -
+the earlier CASE-derived `status`/`Transferable`/`DocStatus`/`NetTotal`/`FinalTotal`
+columns no longer exist in the live preset text (`presets.py`).
+
+`source_config` - identical to §1 except `query`/`lineQuery`/`fingerprintQuery` (§4a).
 
 Header mapping rows
 
@@ -220,38 +234,138 @@ Header mapping rows
 | `DocDate` | `issue_date` | `date` |
 | `ExpectedDate` | `expected_date` | `date` |
 | `CurrencyCode` | `currency` | `string` |
-| `status` | `status` (required) | `string` |
+| `Cancelled` | `status` (required) | formula (`DEFAULT_STATUS_FORMULA`) |
+| `CreditorCode` | `supplier_code` | `string` |
+| `CreditorName` | `supplier_name` | `string` |
+| `SalesAgent` | `agent_code` | `string` |
 
 Do **not** map `internal_note` on PO.
 
 ## 4. Purchase Order - line query
 
+Shared verbatim with the SPO task (`SPO_PRESET.line_query`).
+
 ```sql
 SELECT
-    d.DtlKey                    AS DtlKey,
-    d.Seq                       AS Seq,
-    d.ItemCode                  AS ItemCode,
-    i.AutoKey                   AS ItemAutoKey,
-    d.Location                  AS Location,
-    w.AutoKey                   AS LocationAutoKey,
-    d.Description               AS Description,
-    d.Qty                       AS qty_ordered,
-    d.TransferedQty             AS qty_received,
-    d.UnitPrice                 AS unit_cost,
-    d.DiscountAmt               AS discount,
-    d.SubTotal                  AS line_total,
-    d.UOM                       AS uom,
-    COALESCE(d.UDF_Currency, h.CurrencyCode) AS currency,
-    CAST(d.DeliveryDate AS date) AS expected_date
+    d.DtlKey                                                       AS DtlKey,
+    i.AutoKey                                                      AS ItemAutoKey,
+    w.AutoKey                                                      AS LocationAutoKey,
+    d.Qty                                                          AS Qty,
+    d.TransferedQty                                                AS TransferedQty,
+    d.UnitPrice                                                    AS UnitPrice,
+    d.DiscountAmt                                                  AS DiscountAmt,
+    d.SubTotal                                                     AS SubTotal,
+    d.UOM                                                          AS UOM,
+    d.DeliveryDate                                                 AS ExpectedDate,
+    d.ItemCode                                                     AS ItemCode,
+    d.Description                                                  AS Description,
+    d.Location                                                     AS Location,
+    d.Seq                                                          AS Seq,
+    -- line linkage (sprint-5/06, AC-06-12) - see §0's note.
+    d.FromSODtlKey                                                 AS FromSODtlKey,
+    so.DocKey                                                      AS FromSODocKey,
+    so.DocNo                                                       AS FromSODocNo,
+    d.FromSODocList                                                AS FromSODocList,
+    CASE WHEN d.FromDocType = 'PO' THEN d.FromDocDtlKey END        AS FromPODtlKey,
+    sh.DocKey                                                      AS FromPODocKey,
+    sh.DocNo                                                       AS FromPODocNo
 FROM AED_SORENTO.dbo.PODTL AS d
-JOIN      AED_SORENTO.dbo.PO       AS h ON h.DocKey    = d.DocKey
-LEFT JOIN AED_SORENTO.dbo.Item     AS i ON i.ItemCode  = d.ItemCode
-LEFT JOIN AED_SORENTO.dbo.Location AS w ON w.Location  = d.Location
+LEFT JOIN AED_SORENTO.dbo.Item     AS i   ON i.ItemCode   = d.ItemCode
+LEFT JOIN AED_SORENTO.dbo.Location AS w   ON w.Location   = d.Location
+LEFT JOIN AED_SORENTO.dbo.SODTL    AS sd  ON sd.DtlKey    = d.FromSODtlKey
+LEFT JOIN AED_SORENTO.dbo.SO       AS so  ON so.DocKey    = sd.DocKey
+LEFT JOIN AED_SORENTO.dbo.PODTL    AS src ON src.DtlKey   = d.FromDocDtlKey
+                                          AND d.FromDocType = 'PO'
+LEFT JOIN AED_SORENTO.dbo.PO       AS sh  ON sh.DocKey    = src.DocKey
 WHERE d.DocKey = :doc_key
   AND d.ItemCode IS NOT NULL
   AND d.Qty IS NOT NULL
-ORDER BY d.Seq
 ```
+
+Notes
+- Native AutoCount column names (`Qty`, `UnitPrice`, ...), not canonical field names - PO
+  and SPO line values are operator-mapped on the Mapping tab (below), unlike SO's fixed
+  alias-to-canonical convention noted in §0.
+- `FromSODtlKey` resolves to its OWN header (`sd`/`so`) so a mapped line carries the source
+  sales-order `DocKey`/`DocNo` alongside the raw key, without a second round-trip
+  (`mapping.py` mints `from_so_line_ref` from these). `FromDocType = 'PO'` isolates the case
+  where an SPO line was transferred FROM a purchase order - `src`/`sh` resolve that source
+  PO line's own header (`FromPODtlKey`/`FromPODocKey`/`FromPODocNo`).
+- No `UDF_ICB_*` column here - see §4b.
+
+Line mapping rows (new, sprint-5/06, AC-06-14) - enabled, not required (an unlinked line is
+the common case, never a save-time error); shared by `PO_PRESET.line` and `SPO_PRESET.line`
+
+| Source column | Canonical | Transform |
+|---|---|---|
+| `FromSODocKey` | `from_so_doc_key` | `int` |
+| `FromSODtlKey` | `from_so_line_key` | `int` |
+| `FromSODocList` | `from_so_numbers` | `string_list` |
+| `FromPODocKey` | `from_po_doc_key` | `int` |
+| `FromPODtlKey` | `from_po_line_key` | `int` |
+| `FromPODocNo` | `from_po_number` | `string` |
+
+### 4a. Purchase Order - fingerprint query (shared PO/SPO, plan sprint-5/03)
+
+A separate `source_config["fingerprintQuery"]` - not run per-header like `lineQuery`, run on
+an interval by the incremental sweep (see §0's line-fingerprint note) - mirrors the header
+query's own `OUTER APPLY`, grouped by `DocKey`, so a line-only edit that never bumps
+`PO.LastModified` (fulfilment, or a link added/removed/re-pointed) still moves a header
+row's hash on the next sweep:
+
+```sql
+SELECT
+    d.DocKey                                                       AS DocKey,
+    COUNT(*)                                                       AS LineCount,
+    SUM(d.Qty)                                                     AS QtySum,
+    SUM(d.TransferedQty)                                           AS TransferedSum,
+    MAX(d.DtlKey)                                                  AS MaxDtlKey,
+    SUM(CASE WHEN d.FromSODtlKey IS NOT NULL THEN 1 ELSE 0 END)    AS LinkedSOCount,
+    SUM(d.FromSODtlKey)                                            AS FromSOKeySum,
+    SUM(CASE WHEN d.FromDocType = 'PO'
+              AND d.FromDocDtlKey IS NOT NULL THEN 1 ELSE 0 END)   AS LinkedPOCount,
+    SUM(CASE WHEN d.FromDocType = 'PO' THEN d.FromDocDtlKey END)   AS FromPOKeySum
+FROM AED_SORENTO.dbo.PODTL AS d
+JOIN AED_SORENTO.dbo.PO AS h ON h.DocKey = d.DocKey
+WHERE h.DocDate >= :from_date
+  AND d.ItemCode IS NOT NULL
+  AND d.Qty IS NOT NULL
+GROUP BY d.DocKey
+```
+
+### 4b. AED_SORENTO-only: `UDF_ICB_*` cross-book linkage (operator addition, never in the preset)
+
+AED_SORENTO's inter-company (ICB) plugin stamps UDF columns on the rare PO/SPO line raised
+for a sales order in a DIFFERENT AutoCount book (19 lines all-time, 2026-09-08 probe). No
+`UDF_*` column sits in the shared preset text above (D5, addendum §4) - a per-company UDF on
+one book breaks every other book sharing the preset (ETL Demo Co, AED_VSOFT). An operator
+with this plugin appends it to their OWN copy of §4's line query by hand - a line-level
+column plus a second header join for the header-level columns:
+
+```sql
+    d.UDF_ICB_FromSODtlKey  AS ICB_FromSODtlKey,
+    ...
+FROM AED_SORENTO.dbo.PODTL AS d
+JOIN AED_SORENTO.dbo.PO AS h ON h.DocKey = d.DocKey
+    ...
+    h.UDF_ICB_FromSODB      AS ICB_FromSODB,
+    h.UDF_ICB_FromSODocKey  AS ICB_FromSODocKey,
+    h.UDF_ICB_FromSODocNo   AS ICB_FromSODocNo
+```
+
+mapped to the four `from_so_external_*` input fields (never a wire field directly - the
+engine mints `from_so_external` from them once `from_so_external_db` resolves, AC-06-06):
+
+| Source column | Canonical | Transform |
+|---|---|---|
+| `ICB_FromSODB` | `from_so_external_db` | `string` |
+| `ICB_FromSODocKey` | `from_so_external_doc_key` | `int` |
+| `ICB_FromSODocNo` | `from_so_external_doc_no` | `string` |
+| `ICB_FromSODtlKey` | `from_so_external_line_key` | `int` |
+
+These four are a per-company customisation documented here for AED_SORENTO only - never
+part of `PO_PRESET`/`SPO_PRESET` (backlog: `UDF_ICB_*` cross-book linkage as a preset
+option, `documentation/backlogs/backlog.md`).
 
 ---
 

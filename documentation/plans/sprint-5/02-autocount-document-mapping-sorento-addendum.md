@@ -82,13 +82,54 @@ purchase-order payload never carries it at any version. Same absent-vs-null rule
 field (section 11): omitted from the payload entirely when the AutoCount value is unset, never
 sent as an explicit `null` that would clear an already-stored container on Sorento's side.
 
-## 4. SO↔PO dedication from `FromSODocList`
+## 4. SO↔PO line linkage (contract 2.2, frozen with the Sorento owner 2026-09-08)
 
-`CanonicalPurchaseOrderLine.from_so_numbers?: list[str]` (+ on SPO lines). On write, call
-`order_link_service.claim_book_pairing(so_number, po_number, item_code, source="autocount")` per
-value, then `resolve()` - the same as `_claim_stated_so_links`. The ESB splits AutoCount's
-comma-separated `FromSODocList` into the list (the upload ignores multi-value cells; we send them
-all).
+Sorento's `order_link_service` (via `claim_book_pairing` and the reservation ranking that
+consumes it) wants the source PO/SPO line and, where it resolves, the source SO line - not
+only a comma list of SO numbers. Frozen 2026-09-08 (session `sorento-crm-2b`), in the
+owner's words: we pass the key and the number, Sorento links. **The ESB resolves nothing
+into a Sorento id** - `order_link_service` does, same as every other ref in this addendum.
+
+`CanonicalPurchaseOrderLine` (+ `CanonicalShippingOrderLine`) gain five wire fields, all
+optional, `product_code` (already on the wire, section 1) sitting beside them on the same
+line payload. Absent means unknown, same as every other optional field here - never sent as
+`null`, never sent as `[]`:
+
+```
+from_so_line_ref?:  str, max 255, "{database}:{SO DocKey}:{SODTL DtlKey}"
+from_so_numbers?:   list[str], max 50 entries of max 100 chars each, deduped
+from_so_external?:  { db: str (required whenever the object is present), doc_key?: int,
+                       doc_no?: str max 100, dtl_key?: int }
+from_po_line_ref?:  str, max 255, "{database}:{PO DocKey}:{PODTL DtlKey}"
+from_po_number?:    str, max 100
+```
+
+`from_so_line_ref` / `from_po_line_ref` are the SAME-book case: the source line's own
+`{database}:{DocKey}:{DtlKey}`, the identical shape the line's own `source_ref` already
+carries. `from_so_external` is the ICB (inter-company) case only - a source SO in a
+DIFFERENT AutoCount book than the one this PO/SPO line was fetched from; `db` is set
+whenever the object is present at all, and it never rides alongside a same-book
+`from_so_line_ref` for the SAME SO (a key that does not resolve in THIS book never travels
+as a same-book ref; the two are mutually exclusive per link, never both set for one SO).
+
+Operator-mappable INPUT fields feed the two ref pairs and are NEVER sent on the wire at any
+contract version - the ESB mints `from_so_line_ref`/`from_po_line_ref`/`from_so_external`
+after mapping, before the line reaches the sink: `from_so_doc_key`, `from_so_line_key`,
+`from_so_external_db`, `from_so_external_doc_key`, `from_so_external_doc_no`,
+`from_so_external_line_key`, `from_po_doc_key`, `from_po_line_key`. `from_so_numbers` (from
+AutoCount's comma-separated `FromSODocList`, split/stripped/deduped/capped at 50 on the ESB
+side - the upload ignores multi-value cells, we send them all) and `from_po_number` are
+mapped directly, no minting.
+
+Write path unchanged from the original ask: `order_link_service.claim_book_pairing(
+so_number, po_number, item_code, source="autocount")` per `from_so_numbers` value, then
+`resolve()` - the same as `_claim_stated_so_links`. `from_so_line_ref` / `from_so_external` /
+`from_po_line_ref` are read-only context for Sorento's own line-level resolution; the ESB
+does not call a second claim/resolve for them.
+
+Live AED_SORENTO facts (2026-09-08 probe, read-only): `PODTL.FromSODtlKey` is populated on
+20,802 of 37,692 PO lines since 2025 (`FromSODocList` populated on the same rows); 106,283
+SPO lines carry `FromDocType='PO'` with `FromDocDtlKey` resolving to the source PO line.
 
 ## 5. Document deletions
 
@@ -381,3 +422,11 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   mapping editor's accepted-target list can never drift from what `sink_payload` actually gates
   again - the gap this fix closed (`container_number` reaching `CanonicalShippingOrder.
   FALLBACK_FIELDS` without the editor ever offering it as a mappable target, deployed in PR #59).
+- 2026-09-08 (`sprint-5/06-autocount-line-linkage`, section 4 rewritten to the frozen shape
+  above): `from_so_line_ref`, `from_so_external`, `from_po_line_ref`, `from_po_number` land
+  under contract **2.2** (`from_so_numbers` already ships under 2.1, S4 green entry above).
+  Deploy-order rule, same guard `container_number` needed under 2.1: before the ESB deploys
+  this lane, `GET /api/v1/external/contract` on Sorento prod must list all four names under
+  BOTH `fields_added.purchase_orders` and `fields_added.shipping_orders` - `extra="forbid"`
+  rejects every re-staged PO/SPO document under the OLD contract otherwise. Checked
+  <UTC time> by the operator; Sorento build `<SHA>`.
