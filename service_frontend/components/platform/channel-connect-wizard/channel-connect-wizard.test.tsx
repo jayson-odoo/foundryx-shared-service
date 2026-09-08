@@ -58,18 +58,26 @@ vi.mock('@/services/onboarding-service', () => ({
   },
 }));
 
+const webchatConnect = vi.fn();
+vi.mock('@/services/webchat-service', () => ({
+  webchatService: {
+    connect: (...args: unknown[]) => webchatConnect(...args),
+  },
+}));
+
 describe('ChannelConnectWizard - plan 32 / A7a channel-type step', () => {
-  it('offers exactly WhatsApp, Messenger and Instagram as a searchable select', async () => {
+  it('offers exactly WhatsApp, Messenger, Instagram and Web chat as a searchable select (AC-WEB-01)', async () => {
     render(<ChannelConnectWizard open onOpenChange={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('Connect a channel')).toBeInTheDocument());
 
     const trigger = screen.getByRole('combobox', { name: 'Channel type' });
     // Default selection is WhatsApp - the trigger already shows that label,
-    // so only assert the OTHER two implemented types are offered once open.
+    // so only assert the OTHER implemented types are offered once open.
     expect(trigger).toHaveTextContent('WhatsApp');
     fireEvent.click(trigger);
     expect(screen.getByText('Messenger')).toBeInTheDocument();
     expect(screen.getByText('Instagram')).toBeInTheDocument();
+    expect(screen.getByText('Web chat')).toBeInTheDocument();
     // Foolproof-UI - no pruned/unimplemented type is ever offered.
     expect(screen.queryByText('Douyin')).not.toBeInTheDocument();
     expect(screen.queryByText('Xiaohongshu')).not.toBeInTheDocument();
@@ -167,5 +175,95 @@ describe('ChannelConnectWizard - plan 32 / A7a channel-type step', () => {
     await waitFor(() =>
       expect(screen.queryByText('Set up manually (paste token)')).not.toBeInTheDocument(),
     );
+  });
+});
+
+describe('ChannelConnectWizard - plan 34 / A7b Web chat (AC-WEB-01/02)', () => {
+  it('selecting Web chat skips the Meta popup entirely, asking only for a name + origins', async () => {
+    render(<ChannelConnectWizard open onOpenChange={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Channel type' })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Channel type' }));
+    fireEvent.click(screen.getByText('Web chat'));
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Channel type' })).toHaveTextContent('Web chat'),
+    );
+
+    // No Meta-app warning, no manual-connect link, no OAuth affordance at all.
+    expect(screen.queryByText(/app not configured/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Set up manually (paste token)')).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Website chat')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('https://crm.acme.com')).toBeInTheDocument();
+  });
+
+  it('"Connect" stays disabled until a name AND at least one valid origin are present', async () => {
+    render(<ChannelConnectWizard open onOpenChange={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Channel type' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('combobox', { name: 'Channel type' }));
+    fireEvent.click(screen.getByText('Web chat'));
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Channel type' })).toHaveTextContent('Web chat'),
+    );
+
+    const connectButton = screen.getByRole('button', { name: 'Connect' });
+    expect(connectButton).toBeDisabled();
+
+    fireEvent.change(screen.getByPlaceholderText('Website chat'), { target: { value: 'Website chat' } });
+    expect(connectButton).toBeDisabled();
+
+    fireEvent.change(screen.getByPlaceholderText('https://crm.acme.com'), {
+      target: { value: 'https://shop.acme.test' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await waitFor(() => expect(connectButton).toBeEnabled());
+  });
+
+  it('an invalid origin surfaces the same field-level message the embed screen produces', async () => {
+    render(<ChannelConnectWizard open onOpenChange={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Channel type' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('combobox', { name: 'Channel type' }));
+    fireEvent.click(screen.getByText('Web chat'));
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Channel type' })).toHaveTextContent('Web chat'),
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('https://crm.acme.com'), {
+      target: { value: 'not-a-url' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(await screen.findByText(/is not a valid origin/i)).toBeInTheDocument();
+  });
+
+  it('connecting provisions the channel and reveals the widget secret exactly once', async () => {
+    webchatConnect.mockResolvedValue({
+      id: 'chn-web-9',
+      name: 'Website chat',
+      channelType: 'WEBCHAT',
+      widgetSecret: 'whsec_only_shown_once',
+    });
+    const onConnected = vi.fn();
+    render(<ChannelConnectWizard open onOpenChange={vi.fn()} onConnected={onConnected} />);
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Channel type' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('combobox', { name: 'Channel type' }));
+    fireEvent.click(screen.getByText('Web chat'));
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Channel type' })).toHaveTextContent('Web chat'),
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('Website chat'), { target: { value: 'Website chat' } });
+    fireEvent.change(screen.getByPlaceholderText('https://crm.acme.com'), {
+      target: { value: 'https://shop.acme.test' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Connect' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+
+    await waitFor(() => expect(screen.getByText('Channel connected')).toBeInTheDocument());
+    expect(webchatConnect).toHaveBeenCalledWith({
+      name: 'Website chat',
+      workspaceId: 'wsp-1',
+      allowedOrigins: ['https://shop.acme.test'],
+    });
+    expect(screen.getByDisplayValue('whsec_only_shown_once')).toBeInTheDocument();
   });
 });

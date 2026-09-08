@@ -103,6 +103,11 @@ class ChannelItem(ApiModel):
     # (which uses wabaId/phoneNumberId instead).
     externalAccountId: Optional[str] = None
     externalAccountName: Optional[str] = None
+    # Plan 34 (A7b, D-A7B-25) - the opaque widget key for a WEBCHAT channel;
+    # null on every other channel type. Not a secret (see `WebchatConnect
+    # Result`/`RotateWidgetSecretResult` for the widget SECRET, which never
+    # rides this object).
+    widgetKey: Optional[str] = None
     isTrashed: bool
     createdAt: datetime
     updatedAt: datetime
@@ -229,6 +234,247 @@ class MetaConnectRequest(ApiModel):
     channelType: Literal["FACEBOOK", "INSTAGRAM"]
     pageId: str
     igAccountId: Optional[str] = None
+
+
+# ── Web chat channel (plan 34 / A7b S1) - mirrors service_frontend/types/
+# omnichannel.ts §"Plan 34 / A7b" byte-for-byte (contract pinned by the S0
+# mock, see documentation/plans/sprint-4/
+# 34-omnichannel-channel-web-chat.md §5.1). ──────────────────────────────────
+class ConnectWebchatRequest(ApiModel):
+    """`POST /omnichannel/onboarding/webchat/connect` (AC-WEB-18)."""
+
+    name: str
+    workspaceId: str
+    allowedOrigins: List[str] = []
+
+
+class WebchatAppearance(BaseModel):
+    """Launcher side + header/agent-name appearance (AC-WEB-04)."""
+
+    accentColor: str
+    position: Literal["left", "right"]
+    headerTitle: str
+    agentDisplayName: str
+
+    @field_validator("accentColor")
+    @classmethod
+    def _accent_color(cls, v: str) -> str:
+        return _validate_hex_color(v)  # type: ignore[return-value]
+
+
+class WebchatAppearanceUpdate(BaseModel):
+    """Partial write - only the fields present are changed (mirrors
+    `UpdateWebchatConfigInput.appearance` on the wire)."""
+
+    accentColor: Optional[str] = None
+    position: Optional[Literal["left", "right"]] = None
+    headerTitle: Optional[str] = None
+    agentDisplayName: Optional[str] = None
+
+    @field_validator("accentColor")
+    @classmethod
+    def _accent_color(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_hex_color(v)
+
+
+class WebchatPreChatToggles(BaseModel):
+    """Fixed pre-chat capture toggles (D-A7B-23 - not a form-engine form)."""
+
+    askName: bool
+    askEmail: bool
+    askPhone: bool
+
+
+class WebchatPreChatTogglesUpdate(BaseModel):
+    askName: Optional[bool] = None
+    askEmail: Optional[bool] = None
+    askPhone: Optional[bool] = None
+
+
+class WebchatConfig(ApiModel):
+    """`GET/PUT /omnichannel/channels/{id}/widget` (plan §5.1). Never carries
+    the widget secret - that is revealed exactly once, by connect/rotate-
+    secret only."""
+
+    widgetKey: str
+    allowedOrigins: List[str]
+    tokenEpoch: int
+    appearance: WebchatAppearance
+    greeting: str
+    offlineGreeting: str
+    preChat: WebchatPreChatToggles
+    # The exact install snippet the backend serves for this channel - the
+    # Widget tab renders this verbatim (AC-WEB-05), never rebuilding it
+    # client-side.
+    snippet: str
+
+
+class UpdateWebchatConfigInput(ApiModel):
+    """`PUT /omnichannel/channels/{id}/widget` - every field optional so a
+    partial save never clobbers the rest (mirrors the channel profile
+    write-through PATCH shape)."""
+
+    allowedOrigins: Optional[List[str]] = None
+    appearance: Optional[WebchatAppearanceUpdate] = None
+    greeting: Optional[str] = None
+    offlineGreeting: Optional[str] = None
+    preChat: Optional[WebchatPreChatTogglesUpdate] = None
+
+
+class WebchatConnectResult(ChannelItem):
+    """`POST /omnichannel/onboarding/webchat/connect` result - the 201 body
+    IS a `ChannelItem`, plus the widget secret, revealed exactly once
+    (AC-WEB-18)."""
+
+    widgetSecret: str
+
+
+class RotateWidgetSecretResult(ApiModel):
+    """`POST /omnichannel/channels/{id}/widget/rotate-secret` result - the
+    new secret, revealed exactly once (AC-WEB-19)."""
+
+    widgetSecret: str
+
+
+class SignOutVisitorsResult(ApiModel):
+    """`POST /omnichannel/channels/{id}/widget/sign-out-visitors` result -
+    the secret is UNCHANGED (D-A7B-6); only the epoch moves."""
+
+    tokenEpoch: int
+
+
+# ── Web chat: the PUBLIC visitor API (plan 34 / A7b S2) ──────────────────────
+class WebchatHostIdentity(BaseModel):
+    """`{ userRef, hash }` (D-A7B-9) - a HOST identity assertion the
+    customer's OWN server signs. Verified in
+    `webchat_service.verify_host_identity` (HMAC-SHA256 against the
+    channel's CURRENT widget secret, plan 34 S5) - missing, malformed or
+    non-verifying is silently ignored (AC-WEB-56), never an error."""
+
+    userRef: str
+    hash: str
+
+
+class WebchatSessionRequest(ApiModel):
+    """`POST /public/omnichannel/webchat/{widgetKey}/session` body (plan
+    §5.2). Every field optional - a brand-new visitor sends neither.
+
+    Two deliberately different strictnesses (review round 1, S1):
+
+    - `token` is typed. A non-string used to reach `decode_access_token(123)`
+      -> `AttributeError` -> 500 on an unauthenticated surface; it is now
+      just another session failure mode (the uniform 404).
+    - `identity` is `Any`. AC-WEB-56 requires a missing, malformed or
+      non-verifying host identity assertion to be SILENTLY IGNORED with the
+      session proceeding anonymously - never an error and never a
+      distinguishing response - so rejecting a wrong-shaped one at the
+      envelope would break the contract. `webchat_service.
+      verify_host_identity` is the ONE place it is inspected, and it already
+      returns `None` for every non-`{userRef: str, hash: str}` shape
+      (including a bare string or a list). `WebchatHostIdentity` stays the
+      documented shape of the field.
+    """
+
+    token: Optional[str] = None
+    identity: Optional[Any] = None
+
+
+class VisitorMessage(ApiModel):
+    """The visitor projection's wire shape (plan §5.2) - the ONLY shape a
+    visitor's browser ever receives for a message, built EXCLUSIVELY by
+    `services/webchat_projection.py` (D-A7B-17)."""
+
+    id: str
+    direction: Literal["in", "out"]
+    text: Optional[str] = None
+    media: Optional[Dict[str, Any]] = None
+    quickReplies: Optional[List[Dict[str, Any]]] = None
+    agentName: Optional[str] = None
+    createdAt: datetime
+    status: Optional[Literal["sent", "delivered", "read", "failed"]] = None
+
+
+class WebchatSessionConfig(ApiModel):
+    """The `config` block of the session response (plan §5.2) - everything
+    the panel needs to render BEFORE a visitor sends a word."""
+
+    appearance: WebchatAppearance
+    greeting: str
+    offlineGreeting: str
+    preChat: WebchatPreChatToggles
+    agentDisplayName: str
+    # NEVER the raw `tenants.name` column (white-label; the `branding_service.
+    # _to_response` precedent) - only a tenant's OWN configured branding
+    # `appName`, else `None`. A `null` here is the panel's cue to render no
+    # tenant name at all, never a house/product name.
+    tenantName: Optional[str] = None
+    brandTokens: Dict[str, Any] = {}
+
+
+class WebchatSessionResult(ApiModel):
+    """`POST /public/omnichannel/webchat/{widgetKey}/session` 200 body (plan
+    §5.2). `online` is computed by the EXISTING `BusinessHoursService`
+    (D-A7B-24/AC-WEB-52): an unconfigured workspace resolves `online: true`
+    rather than guessing a schedule."""
+
+    token: str
+    expiresAt: datetime
+    visitorId: str
+    # S3 (AC-WEB-38) - the panel needs this to open the EXISTING conversation
+    # WebSocket (`?workspaceId=<id>&token=<visitor token>`); the widget key
+    # alone does not carry it and the plan's own contract never named a
+    # field for it, so this is where it lands (parallel to `visitorId`).
+    workspaceId: str
+    config: WebchatSessionConfig
+    online: bool
+    messages: List[VisitorMessage] = []
+
+
+class WebchatMessageRequest(ApiModel):
+    """`POST /public/omnichannel/webchat/{widgetKey}/messages` body (plan
+    §5.2). `hp` is the honeypot - a legitimate visitor's browser never fills
+    it in (AC-WEB-32).
+
+    `preChat` values are written write-if-empty (D-A7B-8/AC-WEB-54) - NEVER
+    a lookup or a stitch against any other contact. Since review round 1
+    (B3): `name` onto the visitor's OWN contact, `email`/`phone` onto their
+    identity's `visitor_profile_json` as unverified, visitor-declared values,
+    never onto `contacts.email`/`phone`/`phone_digits` (inbound stitch keys
+    an unauthenticated caller must not be able to set).
+
+    `Dict[str, Any]`, not `Dict[str, str]`, on purpose: AC-WEB-54 says a bad
+    pre-chat value is silently DROPPED, never rejected (the visitor cannot
+    see or fix the field any more), so type-checking happens value by value
+    in `_clean_pre_chat_value`, not at the envelope. `text`/`hp` are the
+    opposite: they are the request itself, so a non-string there is a
+    typed 422 rather than an `AttributeError` 500 (review round 1, S1)."""
+
+    text: str
+    preChat: Optional[Dict[str, Any]] = None
+    hp: Optional[str] = None
+
+
+class VisitorProfile(ApiModel):
+    """What a WEB CHAT visitor typed into the pre-chat form - UNVERIFIED and
+    read-only (plan 34 review round 1, B3). Present on `ThreadItem` (and
+    therefore on both gateway contact shapes, per the losslessness rule) so
+    an agent can see the email/phone a visitor gave without those values
+    being written onto the contact's own `email`/`phone` columns, which are
+    inbound STITCH KEYS. Every field is optional and `null` on every channel
+    type but `WEBCHAT`."""
+
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+
+class WebchatMessagesPage(ApiModel):
+    """`GET /public/omnichannel/webchat/{widgetKey}/messages` 200 body (plan
+    §5.2) - oldest to newest, page-capped; also the poll-fallback shape
+    (D-A7B-16, the SAME endpoint serves history and the fallback)."""
+
+    data: List[VisitorMessage]
+    nextAfter: Optional[str] = None
 
 
 # ── Shared ──────────────────────────────────────────────────────────────────
@@ -457,6 +703,16 @@ class ThreadItem(ApiModel):
     # carry the real window.
     windowExpiresAt: Optional[datetime] = None
     humanAgentExpiresAt: Optional[datetime] = None
+    # Plan 34 (A7b, D-A7B-19/AC-WEB-42) - a presence fact, not an
+    # authorization fact: null on every channel type but WEBCHAT, and null
+    # on a WEBCHAT thread until the visitor's first session/message/socket
+    # connect. Also read on both gateway shapes (S6, the losslessness rule).
+    visitorLastSeenAt: Optional[datetime] = None
+    # Plan 34 (A7b, review round 1 B3) - the UNVERIFIED name/email/phone a
+    # web chat visitor typed into pre-chat, read-only. Null on every channel
+    # type but WEBCHAT, and null on a WEBCHAT thread whose visitor was never
+    # asked (or never answered). Never a lookup key anywhere.
+    visitorProfile: Optional[VisitorProfile] = None
     lastIncomingMessageAt: Optional[datetime] = None
     lastMessageAt: Optional[datetime] = None
     lastMessagePreview: Optional[str] = None
@@ -1314,7 +1570,17 @@ class RioContactItem(BaseModel):
     humanAgentExpiresAt: Optional[str] = None
     priority: Optional[str] = None            # LOW | MEDIUM | HIGH | URGENT
     channelId: Optional[str] = None
-    channelType: Optional[str] = None         # WHATSAPP | FACEBOOK | INSTAGRAM
+    channelType: Optional[str] = None         # WHATSAPP | FACEBOOK | INSTAGRAM | WEBCHAT
+    # Plan 34 (A7b, D-A7B-19) - the same presence fact as `ThreadItem.
+    # visitorLastSeenAt` (losslessness rule, AC-WEB-59): null on every
+    # channel type but WEBCHAT, and null on a WEBCHAT contact until the
+    # visitor's first session/message/socket connect.
+    visitorLastSeenAt: Optional[str] = None
+    # Plan 34 (A7b, review round 1 B3) - the same UNVERIFIED pre-chat values
+    # as `ThreadItem.visitorProfile` (losslessness rule): a gateway consumer
+    # has no other read source for them, and they are deliberately NOT the
+    # contact's own `phone`/`email` above.
+    visitorProfile: Optional[VisitorProfile] = None
     unreadCount: int = 0
     lastMessageAt: Optional[str] = None
     lastIncomingMessageAt: Optional[str] = None
@@ -1398,7 +1664,7 @@ class RioMessageItem(BaseModel):
     channelMessageId: Optional[str] = None   # the provider's id (wamid)
     contactId: str
     channelId: Optional[str] = None
-    channelType: Optional[str] = None  # WHATSAPP | FACEBOOK | INSTAGRAM
+    channelType: Optional[str] = None  # WHATSAPP | FACEBOOK | INSTAGRAM | WEBCHAT
     traffic: str                      # incoming | outgoing
     # Epoch seconds the message was created - populated for INCOMING as well as
     # outgoing. `status[].timestamp` only exists once a delivery receipt lands

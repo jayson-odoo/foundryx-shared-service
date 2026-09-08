@@ -14,7 +14,14 @@ from app.models.status import Status as CoreStatus
 from app.models.user import User
 from ..models import Channel, Contact, ContactTag, ConversationMessage, Status
 from ..repositories.contact_repository import ContactRepository
-from ..schemas import ContactLifecycleSummary, ContactTagRefItem, MessageItem, ReplyRefItem, ThreadItem
+from ..schemas import (
+    ContactLifecycleSummary,
+    ContactTagRefItem,
+    MessageItem,
+    ReplyRefItem,
+    ThreadItem,
+    VisitorProfile,
+)
 from . import event_service, realtime, statuses, team_assignment_service, team_directory
 from .contact_tag_service import ContactTagService
 from .lifecycle_service import ENTITY_TYPE as LIFECYCLE_ENTITY_TYPE
@@ -58,6 +65,25 @@ VALID_PRIORITY = {"LOW", "MEDIUM", "HIGH", "URGENT"}
 # (`modules/omnichannel/workflow_nodes.py`) - the shortcut routes below always
 # fire against THIS entity type, never a client-supplied one.
 SHORTCUT_ENTITY_TYPE = "omnichannel_contact"
+
+
+def _visitor_profile(identity) -> Optional[VisitorProfile]:
+    """Plan 34 review round 1 (B3) - project the identity's UNVERIFIED
+    pre-chat blob onto the wire model, or `None` when there is nothing to
+    show. Fail-closed on shape: a non-dict blob, or a value that is not a
+    string, yields nothing rather than a raw column read (this is
+    visitor-authored data on an anonymous surface). Never a lookup key."""
+    raw = getattr(identity, "visitor_profile_json", None) if identity is not None else None
+    if not isinstance(raw, dict):
+        return None
+    fields = {
+        key: raw[key]
+        for key in ("name", "email", "phone")
+        if isinstance(raw.get(key), str) and raw[key].strip()
+    }
+    if not fields:
+        return None
+    return VisitorProfile(**fields)
 
 
 def contact_display_name(c: Contact) -> str:
@@ -260,6 +286,8 @@ class ConversationService:
                     cswExpiresAt=c.csw_expires_at,
                     windowExpiresAt=identity.window_expires_at if identity else None,
                     humanAgentExpiresAt=identity.human_agent_expires_at if identity else None,
+                    visitorLastSeenAt=identity.last_seen_at if identity else None,
+                    visitorProfile=_visitor_profile(identity),
                     lastIncomingMessageAt=c.last_incoming_message_at,
                     lastMessageAt=c.last_message_at,
                     lastMessagePreview=preview.body if preview else None,

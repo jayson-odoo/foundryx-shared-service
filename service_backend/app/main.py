@@ -133,6 +133,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Module-registered public CORS prefixes (plan sprint-4/34 review round 1,
+# S9). A module that mounts a `"public": true` router whose allowed origins
+# are TENANT data - a web chat channel's own `allowedOrigins`, which this
+# service's `CORS_ORIGINS` env knows nothing about - registers its prefix +
+# an origin resolver at boot (`register_public_cors_prefix`), and this ONE
+# generic, pure-ASGI middleware answers the preflight and strips the stray
+# `Access-Control-Allow-Credentials` that `CORSMiddleware` stamps on before
+# it even checks the origin. Core holds no module path constants; a request
+# outside every registered prefix is handed straight down untouched.
+#
+# Registered AFTER `CORSMiddleware`: `add_middleware` inserts at index 0
+# (LIFO), so this ends up OUTSIDE it - the only position from which it can
+# short-circuit an `OPTIONS` before `CORSMiddleware` refuses it, and edit the
+# header `CORSMiddleware` has already added.
+from app.module_platform.public_cors_middleware import PublicCorsMiddleware  # noqa: E402
+
+app.add_middleware(PublicCorsMiddleware)
+
 # Frontend NextAuth calls ${BACKEND_API_URL}/auth/login
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(users.router, prefix="/users", tags=["users"])

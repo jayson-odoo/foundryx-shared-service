@@ -93,6 +93,27 @@ def _fb_contact_with_identity(
     return cid
 
 
+def _web_channel(session_factory, *, tenant_id=DEFAULT_TENANT_ID, widget_key="wk-send-1"):
+    """A WEBCHAT channel for the plan 34 (A7b) policy/addressing tests."""
+    from modules.omnichannel.models import Channel, Workspace
+    from modules.omnichannel.security import encrypt_credentials
+    from modules.omnichannel.services import statuses
+
+    db = session_factory()
+    ws = db.query(Workspace).filter(Workspace.tenant_id == tenant_id, Workspace.is_default.is_(True)).first()
+    channel = Channel(
+        tenant_id=tenant_id, workspace_id=ws.id, channel_type="WEBCHAT",
+        name="Test Web Chat (S1)", credentials_json=encrypt_credentials({"widgetSecret": "whsec_test"}),
+        widget_key=widget_key, widget_config_json={"allowedOrigins": []}, widget_token_epoch=0,
+        is_active=True, status_id=statuses.status_id_for(db, tenant_id, "CHANNEL", "ACTIVE"),
+    )
+    db.add(channel)
+    db.commit()
+    cid = channel.id
+    db.close()
+    return cid
+
+
 # ── AC-CHN-22: ONE window-check call site, no `_window_open` outside it ─────
 def test_no_window_open_symbol_survives_anywhere():
     """The old `message_service._window_open` is GONE (renamed/moved into
@@ -304,17 +325,239 @@ def test_authorize_instagram_matches_facebook_policy_row(session_factory):
     db.close()
 
 
+# ── Plan 34 (A7b S1) - AC-WEB-12/13/14/15: WEBCHAT registry, policy, addressing ──
+def test_get_adapter_webchat_registry_row():
+    """AC-WEB-12."""
+    from modules.omnichannel.adapters import ADAPTERS, get_adapter
+    from modules.omnichannel.adapters.webchat import WebChatAdapter
+
+    assert ADAPTERS["WEBCHAT"] is WebChatAdapter
+    adapter = get_adapter("WEBCHAT")
+    assert isinstance(adapter, WebChatAdapter)
+    assert adapter.channel_type == "WEBCHAT"
+
+
+def test_get_adapter_unknown_type_still_raises():
+    """AC-WEB-12 (unchanged AC-CHN-15 behaviour)."""
+    from modules.omnichannel.adapters import get_adapter
+
+    with pytest.raises(ValueError):
+        get_adapter("DOUYIN")
+
+
+def test_webchat_adapter_send_makes_no_network_call_and_returns_immediately():
+    """S3 (AC-WEB-36) - `send` performs no network call of any kind: there is
+    no `httpx`/Graph call to fake, so this simply asserts a locally-minted
+    id comes back synchronously for every kind `send_runner` can reach a
+    WEBCHAT thread with (text, media, and interactive/buttons - quick
+    replies)."""
+    from modules.omnichannel.adapters.webchat import WebChatAdapter
+
+    adapter = WebChatAdapter()
+    result = adapter.send({}, "wk-1", "visitor-1", text="hi")
+    assert result["external_message_id"].startswith("web:out:")
+
+    media_result = adapter.send(
+        {}, "wk-1", "visitor-1", media={"kind": "image", "id": "webchat-media-x"}
+    )
+    assert media_result["external_message_id"].startswith("web:out:")
+    # Every id is unique - never reused across calls.
+    assert media_result["external_message_id"] != result["external_message_id"]
+
+    # A kind `messaging_policy` would already have refused (interactive list,
+    # location, contacts, template) is accepted structurally too (**_ignored) -
+    # this adapter stays correct even if a caller reached it anyway.
+    ignored_kwargs_result = adapter.send(
+        {}, "wk-1", "visitor-1", location={"latitude": 1.0, "longitude": 2.0}
+    )
+    assert ignored_kwargs_result["external_message_id"].startswith("web:out:")
+
+
+def test_webchat_adapter_upload_media_returns_a_synthetic_id_with_no_upload():
+    """S3 (AC-WEB-36/41) - there is no external media host to upload to; the
+    row's OWN `media_key` (written before `send_runner` ever runs) is what
+    the visitor projection turns into a signed URL, never this return
+    value."""
+    from modules.omnichannel.adapters.webchat import WebChatAdapter
+
+    adapter = WebChatAdapter()
+    media_id = adapter.upload_media({}, "wk-1", b"binary-content", "image/png")
+    assert media_id.startswith("webchat-media-")
+
+
+def test_webchat_adapter_parse_inbound_translates_visitor_payload():
+    """S2 (plan sprint-4/34, AC-WEB-26) - `services/webchat_visitor_service.py`
+    is the only caller and always supplies `from`/`external_message_id`;
+    `parse_inbound` returns exactly ONE canonical `message` event, always
+    `TEXT`, and NEVER a `profile_name` (D-A7B-8 - no stitch signal)."""
+    from modules.omnichannel.adapters.webchat import WebChatAdapter
+
+    adapter = WebChatAdapter()
+    events = adapter.parse_inbound(
+        {"from": "visitor:abc", "external_message_id": "web:abc:1", "body": "hi"}
+    )
+    assert events == [
+        {
+            "kind": "message",
+            "from": "visitor:abc",
+            "external_message_id": "web:abc:1",
+            "body": "hi",
+            "message_type": "TEXT",
+        }
+    ]
+    assert "profile_name" not in events[0]
+
+
+def test_webchat_adapter_test_connection_trivially_ok():
+    from modules.omnichannel.adapters.webchat import WebChatAdapter
+
+    result = WebChatAdapter().test_connection({}, "")
+    assert result.ok is True
+
+
+def test_authorize_webchat_always_allowed_no_meta_params(session_factory):
+    """AC-WEB-13 - the ONE new `authorize` branch: always allowed, whatever
+    the actor (there is no window to be inside or outside of)."""
+    from modules.omnichannel.models import Channel, Contact
+    from modules.omnichannel.services import messaging_policy
+
+    channel_id = _web_channel(session_factory, widget_key="wk-auth-1")
+    db = session_factory()
+    channel = db.query(Channel).filter(Channel.id == channel_id).first()
+    contact = Contact(tenant_id=DEFAULT_TENANT_ID, workspace_id=channel.workspace_id, priority="MEDIUM")
+    db.add(contact)
+    db.commit()
+
+    for actor_is_human in (True, False):
+        decision = messaging_policy.authorize(
+            db, contact, channel, kind="TEXT", actor_is_human=actor_is_human
+        )
+        assert decision.messaging_type is None and decision.tag is None
+        assert messaging_policy.send_metadata(decision) is None
+    db.close()
+
+
+def test_authorize_webchat_document_supported_sticker_and_template_are_not():
+    """AC-WEB-13 `CAPABILITIES["WEBCHAT"]` values (parity §5.5)."""
+    from modules.omnichannel.services import messaging_policy
+
+    messaging_policy.assert_kind_supported("WEBCHAT", "DOCUMENT")  # no raise
+    for kind in ("STICKER", "TEMPLATE", "LOCATION", "CONTACTS", "REACTION"):
+        with pytest.raises(messaging_policy.PolicyRejected) as exc:
+            messaging_policy.assert_kind_supported("WEBCHAT", kind)
+        assert exc.value.code == "kind_not_supported"
+
+
+def test_window_open_webchat_always_true(session_factory):
+    """AC-WEB-13 - `window_open`'s pre-flight peek must never bail out for a
+    channel type with no window at all."""
+    from modules.omnichannel.models import Channel, Contact
+    from modules.omnichannel.services import messaging_policy
+
+    channel_id = _web_channel(session_factory, widget_key="wk-open-1")
+    db = session_factory()
+    channel = db.query(Channel).filter(Channel.id == channel_id).first()
+    contact = Contact(tenant_id=DEFAULT_TENANT_ID, workspace_id=channel.workspace_id, priority="MEDIUM")
+    db.add(contact)
+    db.commit()
+    assert messaging_policy.window_open(db, contact, channel) is True
+    db.close()
+
+
+def test_stamp_inbound_window_webchat_leaves_window_null(session_factory):
+    """AC-WEB-13: `window_expires_at`/`human_agent_expires_at` stay NULL for a
+    WEBCHAT identity - a plain `window_hours=0` add would otherwise stamp
+    `now + 0h == now`, which reads as closed the instant it's written."""
+    from modules.omnichannel.models import Channel, Contact, ContactChannelIdentity, Workspace
+    from modules.omnichannel.services import messaging_policy, statuses
+
+    channel_id = _web_channel(session_factory, widget_key="wk-stamp-1")
+    db = session_factory()
+    channel = db.query(Channel).filter(Channel.id == channel_id).first()
+    ws = (
+        db.query(Workspace)
+        .filter(Workspace.tenant_id == DEFAULT_TENANT_ID, Workspace.is_default.is_(True))
+        .first()
+    )
+    contact = Contact(
+        tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id,
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "THREAD", "OPEN"),
+        priority="MEDIUM",
+    )
+    db.add(contact)
+    db.flush()
+    identity = ContactChannelIdentity(
+        tenant_id=DEFAULT_TENANT_ID, contact_id=contact.id, channel_id=channel.id,
+        external_user_id="visitor-1",
+    )
+    db.add(identity)
+    db.commit()
+    messaging_policy.stamp_inbound_window(identity, contact, channel)
+    db.commit()
+    assert identity.window_expires_at is None
+    assert identity.human_agent_expires_at is None
+    assert identity.last_inbound_at is not None
+    db.close()
+
+
+def test_channel_addressing_webchat_uses_widget_key_and_identity(session_factory):
+    """AC-WEB-15."""
+    from modules.omnichannel.models import Channel
+    from modules.omnichannel.repositories.contact_repository import ContactRepository
+    from modules.omnichannel.services import channel_addressing
+
+    channel_id = _web_channel(session_factory, widget_key="wk-addr-1")
+    contact_id = _fb_contact_with_identity(session_factory, channel_id, psid="visitor-addr-1")
+    db = session_factory()
+    channel = db.query(Channel).filter(Channel.id == channel_id).first()
+    contact = ContactRepository(db).get_by_id(contact_id, DEFAULT_TENANT_ID)
+    assert channel_addressing.sender_ref(channel) == "wk-addr-1"
+    assert channel_addressing.recipient_ref(db, channel, contact) == "visitor-addr-1"
+    db.close()
+
+
+def test_channel_addressing_webchat_missing_identity_raises(session_factory):
+    """AC-WEB-15 - no empty recipient is ever addressed."""
+    from modules.omnichannel.models import Channel, Contact, Workspace
+    from modules.omnichannel.services import channel_addressing, statuses
+
+    channel_id = _web_channel(session_factory, widget_key="wk-addr-2")
+    db = session_factory()
+    channel = db.query(Channel).filter(Channel.id == channel_id).first()
+    ws = (
+        db.query(Workspace)
+        .filter(Workspace.tenant_id == DEFAULT_TENANT_ID, Workspace.is_default.is_(True))
+        .first()
+    )
+    contact = Contact(
+        tenant_id=DEFAULT_TENANT_ID, workspace_id=ws.id,
+        status_id=statuses.status_id_for(db, DEFAULT_TENANT_ID, "THREAD", "OPEN"),
+        priority="MEDIUM",
+    )
+    db.add(contact)
+    db.commit()
+    with pytest.raises(channel_addressing.NoChannelIdentity):
+        channel_addressing.recipient_ref(db, channel, contact)
+    db.close()
+
+
 # ── AC-CHN-29: assert_kind_supported / CAPABILITIES ─────────────────────────
 def test_capabilities_pinned_list():
     from modules.omnichannel.services.messaging_policy import CAPABILITIES
 
-    assert set(CAPABILITIES) == {"WHATSAPP", "FACEBOOK", "INSTAGRAM"}
+    # Plan 34 (A7b, AC-WEB-13) adds "WEBCHAT" - this literal exhaustive-set
+    # pin is the one place adding a channel type NECESSARILY touches (every
+    # WHATSAPP/FACEBOOK/INSTAGRAM assertion below and in the rest of this
+    # file/AC-WEB-14 is unchanged).
+    assert set(CAPABILITIES) == {"WHATSAPP", "FACEBOOK", "INSTAGRAM", "WEBCHAT"}
     assert CAPABILITIES["WHATSAPP"].document is True
     assert CAPABILITIES["FACEBOOK"].document is True
     assert CAPABILITIES["INSTAGRAM"].document is False
+    assert CAPABILITIES["WEBCHAT"].document is True
     for kind in ("sticker", "template", "interactive_list", "location", "contacts", "reaction_outbound"):
         assert getattr(CAPABILITIES["FACEBOOK"], kind) is False
         assert getattr(CAPABILITIES["INSTAGRAM"], kind) is False
+        assert getattr(CAPABILITIES["WEBCHAT"], kind) is False
         assert getattr(CAPABILITIES["WHATSAPP"], kind) is True
 
 
@@ -333,12 +576,19 @@ def test_capabilities_and_policies_match_the_frontend_golden_mirror():
         assert POLICIES[channel_type].window_hours == 24
         assert POLICIES[channel_type].human_agent_hours == 168
         assert POLICIES[channel_type].reengage_mode == "human_agent"
+    # Plan 34 (A7b §5.5).
+    assert POLICIES["WEBCHAT"].window_hours == 0
+    assert POLICIES["WEBCHAT"].human_agent_hours is None
+    assert POLICIES["WEBCHAT"].reengage_mode == "none"
 
     assert CAPABILITIES["WHATSAPP"].sticker is True
     assert CAPABILITIES["FACEBOOK"].document is True
     assert CAPABILITIES["FACEBOOK"].sticker is False
     assert CAPABILITIES["INSTAGRAM"].document is False
     assert CAPABILITIES["INSTAGRAM"].sticker is False
+    assert CAPABILITIES["WEBCHAT"].document is True
+    assert CAPABILITIES["WEBCHAT"].sticker is False
+    assert CAPABILITIES["WEBCHAT"].template is False
 
 
 @pytest.mark.parametrize(

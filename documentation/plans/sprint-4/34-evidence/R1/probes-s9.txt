@@ -1,0 +1,32 @@
+=== S9(a) OPTIONS /session with allowed origin ===
+HTTP/1.1 204 No Content
+date: Mon, 07 Sep 2026 22:31:16 GMT
+server: uvicorn
+access-control-allow-methods: GET, POST, OPTIONS
+access-control-allow-headers: authorization, content-type
+access-control-max-age: 600
+vary: Origin
+access-control-allow-origin: http://localhost:3013
+
+
+=== S9(b) OPTIONS /session with evil origin ===
+HTTP/1.1 204 No Content
+date: Mon, 07 Sep 2026 22:31:16 GMT
+server: uvicorn
+access-control-allow-methods: GET, POST, OPTIONS
+access-control-allow-headers: authorization, content-type
+access-control-max-age: 600
+vary: Origin
+
+
+=== S9(c) OPTIONS non-webchat path unaffected ===
+HTTP/1.1 400 Bad Request
+date: Mon, 07 Sep 2026 22:31:16 GMT
+server: uvicorn
+vary: Origin
+access-control-allow-methods: DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT
+access-control-max-age: 600
+access-control-allow-credentials: true
+content-length: 22
+content-type: text/plain; charset=utf-8
+

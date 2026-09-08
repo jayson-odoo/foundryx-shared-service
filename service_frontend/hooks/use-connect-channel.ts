@@ -4,12 +4,14 @@ import { useCallback, useState } from 'react';
 import type {
   Channel,
   ChannelType,
+  ConnectWebchatInput,
   EmbeddedSignupResult,
   ManualConnectInput,
   MetaPageOption,
   MockWabaOption,
 } from '@/types/omnichannel';
 import { onboardingService } from '@/services/onboarding-service';
+import { webchatService } from '@/services/webchat-service';
 import { ApiError } from '@/lib/api-client';
 
 /**
@@ -58,9 +60,16 @@ function connectErrorMessage(e: unknown, fallback: string): string {
  *                                                                       exchanging ──▶ connected | failed
  *
  *   Simulated dialog path (no Meta app configured) reuses `start()` →
- *   `selecting` for ALL three types - `authorizeMockMeta` plays the role
- *   `authorize()` plays for WhatsApp (the picked page/account IS both the
- *   auth and the selection, exactly like picking a WABA number today).
+ *   `selecting` for ALL three Meta-backed types - `authorizeMockMeta` plays
+ *   the role `authorize()` plays for WhatsApp (the picked page/account IS
+ *   both the auth and the selection, exactly like picking a WABA number
+ *   today).
+ *
+ *   Web chat (plan 34 / A7b, new - no OAuth, no popup at all):
+ *     idle ──connectWebchat(input)──▶ exchanging ──▶ connected | failed
+ *   Reuses the SAME `exchanging`/`connected`/`failed` states as every other
+ *   type so the wizard's success/failure views need no web-chat-specific
+ *   fork (D-A7B-1 - a channel TYPE, not a parallel flow).
  */
 export type ConnectState =
   | 'idle'
@@ -77,6 +86,12 @@ export interface UseConnectChannelResult {
   error: string | null;
   /** Pages/accounts returned by `authorizeMetaCode` (real path only). */
   pages: MetaPageOption[];
+  /**
+   * The widget secret returned by `connectWebchat` (AC-WEB-18) - revealed
+   * exactly once, here, at the moment of connect; never re-fetchable. `null`
+   * for every other channel type and cleared by `reset()`.
+   */
+  webchatSecret: string | null;
   /** Begin the flow (open the simulated Meta popup - WhatsApp today, also
    *  used by the Messenger/Instagram simulated dialog). */
   start: () => void;
@@ -102,6 +117,11 @@ export interface UseConnectChannelResult {
   authorizeMetaCode: (channelType: ChannelType, code: string, redirectUri?: string) => Promise<void>;
   /** Finalize the connect for the page/account picked in the wizard's own step. */
   selectMetaPage: (channelType: ChannelType, workspaceId: string, page: MetaPageOption) => Promise<void>;
+
+  // ---- Web chat (plan 34 / A7b) -------------------------------------------
+  /** Provision a `WEBCHAT` channel from the wizard's reduced form (name +
+   *  workspace + origins - no OAuth, no page selection). */
+  connectWebchat: (input: ConnectWebchatInput) => Promise<void>;
 }
 
 export function useConnectChannel(workspaceId: string): UseConnectChannelResult {
@@ -110,6 +130,7 @@ export function useConnectChannel(workspaceId: string): UseConnectChannelResult 
   const [error, setError] = useState<string | null>(null);
   const [pages, setPages] = useState<MetaPageOption[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [webchatSecret, setWebchatSecret] = useState<string | null>(null);
 
   const start = useCallback(() => {
     setError(null);
@@ -126,6 +147,7 @@ export function useConnectChannel(workspaceId: string): UseConnectChannelResult 
     setChannel(null);
     setPages([]);
     setSessionId(null);
+    setWebchatSecret(null);
     setState('idle');
   }, []);
 
@@ -234,11 +256,27 @@ export function useConnectChannel(workspaceId: string): UseConnectChannelResult 
     [sessionId],
   );
 
+  const connectWebchat = useCallback(async (input: ConnectWebchatInput) => {
+    setState('exchanging');
+    setError(null);
+    try {
+      const created = await webchatService.connect(input);
+      const { widgetSecret, ...channelFields } = created;
+      setChannel(channelFields);
+      setWebchatSecret(widgetSecret);
+      setState('connected');
+    } catch (e) {
+      setError(connectErrorMessage(e, 'Could not connect the web chat channel. Please try again.'));
+      setState('failed');
+    }
+  }, []);
+
   return {
     state,
     channel,
     error,
     pages,
+    webchatSecret,
     start,
     cancel,
     authorize,
@@ -250,5 +288,6 @@ export function useConnectChannel(workspaceId: string): UseConnectChannelResult 
     startMetaAuth,
     authorizeMetaCode,
     selectMetaPage,
+    connectWebchat,
   };
 }

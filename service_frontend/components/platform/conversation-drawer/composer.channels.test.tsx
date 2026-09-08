@@ -98,4 +98,56 @@ describe('Composer - per-type attach + structured gating', () => {
     expect(screen.getByTestId('attach-location')).toBeInTheDocument();
     expect(screen.getByTestId('attach-contact')).toBeInTheDocument();
   });
+
+  it('Web chat offers image/video/audio/document but no stickers, location or contacts', async () => {
+    const user = userEvent.setup();
+    render(<Composer {...base} windowOpen={false} capabilities={CHANNEL_CAPABILITIES.WEBCHAT} />);
+    await user.click(screen.getByTestId('attach-menu'));
+    expect(screen.getByTestId('attach-image')).toBeInTheDocument();
+    expect(screen.getByTestId('attach-video')).toBeInTheDocument();
+    expect(screen.getByTestId('attach-audio')).toBeInTheDocument();
+    expect(screen.getByTestId('attach-document')).toBeInTheDocument();
+    expect(screen.queryByTestId('attach-sticker')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('attach-location')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('attach-contact')).not.toBeInTheDocument();
+  });
+});
+
+describe('Composer - Web chat has no messaging window (plan 34 / A7b, D-A7B-18, AC-WEB-08/43)', () => {
+  it('never locks and never shows the window marker, whatever windowOpen/humanAgentWindowOpen are', () => {
+    render(
+      <Composer
+        {...base}
+        windowOpen={false}
+        humanAgentWindowOpen={false}
+        capabilities={CHANNEL_CAPABILITIES.WEBCHAT}
+      />,
+    );
+    expect(screen.getByTestId('message-input')).toBeEnabled();
+    expect(screen.queryByTestId('csw-banner')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('csw-pick-template')).not.toBeInTheDocument();
+  });
+
+  it('renders the neutral presence marker instead, with no instructional copy', () => {
+    render(
+      <Composer
+        {...base}
+        windowOpen={false}
+        capabilities={CHANNEL_CAPABILITIES.WEBCHAT}
+        visitorPresence={{ online: false, label: 'Last seen 5m ago' }}
+      />,
+    );
+    expect(screen.getByTestId('presence-marker')).toHaveTextContent('Last seen 5m ago');
+  });
+
+  it('with no visitor seen yet, shows a plain status line and stays enabled', () => {
+    render(<Composer {...base} windowOpen={false} capabilities={CHANNEL_CAPABILITIES.WEBCHAT} />);
+    expect(screen.getByTestId('presence-marker')).toHaveTextContent('Awaiting first message');
+    expect(screen.getByTestId('message-input')).toBeEnabled();
+  });
+
+  it('a WhatsApp thread never renders the presence marker (reengageMode !== "none")', () => {
+    render(<Composer {...base} windowOpen />);
+    expect(screen.queryByTestId('presence-marker')).not.toBeInTheDocument();
+  });
 });

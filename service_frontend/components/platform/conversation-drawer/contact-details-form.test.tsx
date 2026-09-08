@@ -160,3 +160,47 @@ describe('ContactDetailsForm', () => {
     expect(patch).not.toHaveProperty('lastName'); // never re-sends/overwrites the concurrent change
   });
 });
+
+// ── Plan 34 (A7b) review round 1, B3 - visitor-provided pre-chat values ─────
+describe('ContactDetailsForm - visitor provided block', () => {
+  it('shows the unverified pre-chat values read-only, separate from the contact fields', () => {
+    can = () => true;
+    render(
+      <ContactDetailsForm
+        thread={thread({
+          channelType: 'WEBCHAT',
+          phone: null,
+          email: null,
+          visitorProfile: { name: 'Ada Lovelace', email: 'ada@example.com', phone: '+1 555 000 1111' },
+        })}
+        fields={[]}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Visitor provided')).toBeInTheDocument();
+    expect(screen.getByText('ada@example.com')).toBeInTheDocument();
+    expect(screen.getByText('+1 555 000 1111')).toBeInTheDocument();
+    // The contact's own (empty) email/phone are untouched by it.
+    expect(screen.getAllByText('-').length).toBeGreaterThan(0);
+  });
+
+  it('renders nothing at all when the thread carries no visitor profile', () => {
+    can = () => true;
+    render(<ContactDetailsForm thread={thread()} fields={[]} onSave={vi.fn()} />);
+    expect(screen.queryByText('Visitor provided')).toBeNull();
+  });
+
+  it('offers no input for the visitor values even in edit mode', async () => {
+    can = () => true;
+    const user = userEvent.setup();
+    render(
+      <ContactDetailsForm
+        thread={thread({ visitorProfile: { email: 'ada@example.com' } })}
+        fields={[]}
+        onSave={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: /edit/i }));
+    expect(screen.getByText('ada@example.com').tagName).toBe('P');
+  });
+});

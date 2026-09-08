@@ -534,14 +534,16 @@ _TRIGGER_OUTPUTS = [
     NodeOutput("trigger.conversationId", "Conversation id"),
 ]
 
-# Channel-type filter options (plan 32 / A7a S6, AC-CHN-58) - the SAME three
-# implemented types `lib/channel-capabilities.ts` declares; kept as a plain
-# static list (no DB lookup) since the vocabulary is fixed, unlike the
-# per-workspace `omnichannelChannel` picker.
+# Channel-type filter options (plan 32 / A7a S6, AC-CHN-58; plan 34 / A7b S6,
+# AC-WEB-61 adds WEBCHAT) - the SAME implemented types `lib/channel-
+# capabilities.ts` declares; kept as a plain static list (no DB lookup) since
+# the vocabulary is fixed, unlike the per-workspace `omnichannelChannel`
+# picker.
 _CHANNEL_TYPE_OPTIONS = [
     {"value": "WHATSAPP", "label": "WhatsApp"},
     {"value": "FACEBOOK", "label": "Messenger"},
     {"value": "INSTAGRAM", "label": "Instagram"},
+    {"value": "WEBCHAT", "label": "Web chat"},
 ]
 
 

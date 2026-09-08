@@ -7,13 +7,16 @@ from app.database import get_db
 from app.dependencies import require_permission
 from app.models.user import User
 from ..adapters.base import CodeExchangeError
+from ..origins import InvalidOrigin
 from ..schemas import (
     ChannelItem,
+    ConnectWebchatRequest,
     ManualConnectRequest,
     MetaConnectRequest,
     MetaPagesRequest,
     MetaPagesResult,
     OnboardingCallbackRequest,
+    WebchatConnectResult,
 )
 from ..services.meta_connect_service import (
     ConnectSessionConsumed,
@@ -30,6 +33,7 @@ from ..services.onboarding_service import (
     PhoneNumberInUse,
     WorkspaceNotFound,
 )
+from ..services.webchat_service import WebchatService
 
 router = APIRouter()
 
@@ -111,3 +115,23 @@ def connect_meta_channel(
         raise HTTPException(status.HTTP_409_CONFLICT, {"reason": exc.reason})
     except CodeExchangeError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+
+
+# ── Web chat connect flow (plan 34 S1, A7b) ──────────────────────────────────
+@router.post(
+    "/webchat/connect", response_model=WebchatConnectResult, status_code=status.HTTP_201_CREATED
+)
+def connect_webchat(
+    body: ConnectWebchatRequest,
+    current_user: User = Depends(require_permission("channels.manage")),
+    db: Session = Depends(get_db),
+) -> WebchatConnectResult:
+    try:
+        return WebchatService(db).connect(body, current_user.tenant_id)
+    except WorkspaceNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Workspace not found.")
+    except InvalidOrigin as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {"fieldErrors": {"allowedOrigins": exc.message}},
+        )

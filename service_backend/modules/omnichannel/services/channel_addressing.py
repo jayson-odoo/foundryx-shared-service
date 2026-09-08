@@ -23,9 +23,14 @@ class NoChannelIdentity(Exception):
 def sender_ref(channel: Channel) -> str:
     """The ref Meta expects as the routing id in the send URL: the phone
     number id for WhatsApp, the PAGE_ID / IG account id for Messenger/
-    Instagram (D-A7-3, the same design as `phone_number_id`)."""
+    Instagram (D-A7-3, the same design as `phone_number_id`), or the widget
+    key for web chat (plan 34 / A7b, AC-WEB-15 - there is no Meta send URL
+    at all, but `send_runner` still resolves this uniformly for every
+    channel type)."""
     if channel.channel_type == "WHATSAPP":
         return channel.phone_number_id or ""
+    if channel.channel_type == "WEBCHAT":
+        return channel.widget_key or ""
     return channel.external_account_id or ""
 
 

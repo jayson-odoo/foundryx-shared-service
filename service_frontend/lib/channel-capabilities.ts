@@ -7,11 +7,18 @@
  *
  * Parity-pinned to the backend's authoritative `messaging_policy.CAPABILITIES`
  * / `messaging_policy.POLICIES` (`modules/omnichannel/services/
- * messaging_policy.py`, landing in S2) by a golden test once that module
- * exists - `channel-capabilities.test.ts` pins this side of the contract now
+ * messaging_policy.py`) by the golden test in `channel-capabilities.test.ts`
  * (D-A7-10: a UX-only mirror, never a new wire field).
+ *
+ * What "parity-pinned" does and does not mean (review round 1, N9): the
+ * backend record models `document`/`sticker`/`template`/`interactive_list`/
+ * `location`/`contacts`/`reaction_outbound` and the window policy. It does
+ * NOT model `image`/`video`/`audio`/`voice` at all - every implemented type
+ * carries those - so those four flags are this file's own UX detail and the
+ * golden test pins them here alone. The fields that DO exist on both sides
+ * must agree exactly.
  */
-import { CircleHelp, Facebook, Instagram, MessageCircle, type LucideIcon } from 'lucide-react';
+import { CircleHelp, Facebook, Globe, Instagram, MessageCircle, type LucideIcon } from 'lucide-react';
 import type { ChannelType } from '@/types/omnichannel';
 
 /** How a channel type re-engages a contact once its standard window closes. */
@@ -60,6 +67,38 @@ export interface ChannelCapabilities {
 }
 
 export const CHANNEL_CAPABILITIES: Record<ChannelType, ChannelCapabilities> = {
+  // Plan 34 / A7b: parity-pinned against `messaging_policy.
+  // CAPABILITIES["WEBCHAT"]` / `POLICIES["WEBCHAT"]` (§5.5). No external
+  // provider on the far side (D-A7B-1), so there is no messaging window at
+  // all - `reengageMode: 'none'` is the record every gate in this file
+  // already understands (composer lock, window banner) via the existing
+  // `reengageMode` checks, no new branch.
+  WEBCHAT: {
+    channelType: 'WEBCHAT',
+    label: 'Web chat',
+    icon: Globe,
+    // Review round 1 (N5): the three Meta types echo a real external BRAND
+    // hex, which is the only reason a raw colour is defensible in this file.
+    // Web chat has no external provider (D-A7B-1) and therefore no brand to
+    // echo, so its chip rides design tokens like every other non-brand
+    // surface. The Meta hexes are deliberately left alone.
+    accentClassName: 'bg-secondary text-secondary-foreground',
+    windowHours: 0,
+    humanAgentHours: null,
+    reengageMode: 'none',
+    // `voice` is TRUE (review round 1, N9): `messaging_policy.CAPABILITIES`
+    // does not model the audio kinds at all and `webchat_projection.
+    // _ALLOWED_MESSAGE_KINDS` includes `VOICE`, so a `false` here was a
+    // silent divergence from the backend the header comment claims parity
+    // with, not a deliberate restriction.
+    media: { image: true, video: true, audio: true, voice: true, document: true, sticker: false },
+    quickReplies: true,
+    list: false,
+    location: false,
+    contacts: false,
+    template: false,
+    outboundReaction: false,
+  },
   WHATSAPP: {
     channelType: 'WHATSAPP',
     label: 'WhatsApp',
@@ -115,7 +154,7 @@ export const CHANNEL_CAPABILITIES: Record<ChannelType, ChannelCapabilities> = {
 };
 
 /** Ordered list for pickers (connect wizard channel-type step, filters). */
-export const CHANNEL_TYPES: ChannelType[] = ['WHATSAPP', 'FACEBOOK', 'INSTAGRAM'];
+export const CHANNEL_TYPES: ChannelType[] = ['WHATSAPP', 'FACEBOOK', 'INSTAGRAM', 'WEBCHAT'];
 
 /**
  * Neutral fallback for a `channels.channel_type` value this build does not

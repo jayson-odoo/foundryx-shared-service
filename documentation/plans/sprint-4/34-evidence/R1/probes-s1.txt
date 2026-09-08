@@ -1,0 +1,7 @@
+=== S1(a) POST /session with {token:123} ===
+{"detail":"Not found."}
+HTTP_STATUS:404
+
+=== compare: unknown widget key 404 ===
+{"detail":"Not found."}
+HTTP_STATUS:404

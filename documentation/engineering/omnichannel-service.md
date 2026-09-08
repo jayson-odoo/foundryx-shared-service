@@ -72,3 +72,63 @@ Generalizes the module beyond WhatsApp: `channels.channel_type` now also accepts
 - `uninstall_tenant` needs no new code - `meta_connect_sessions` carries `tenant_id` so the generic per-table sweep already covers it; the manifest stayed at `0.8.0` (S1's bump) since S3 adds no new permission key (D-A7-16) and no version-gated backfill.
 - Tests: `tests/test_omnichannel_channels_connect.py` (19 - dev-safe canned pages incl. Instagram's page-linked-only filter and the `connected` flag, channel creation for both types incl. the WhatsApp-untouched null fields, service-wide duplicate-page 409 incl. cross-tenant, session expiry/single-use/cross-tenant-404/unknown-id-404, the sweep-on-list behaviour, the non-WhatsApp 409 guard on templates AND business-profile routes, type-aware `test_connection`, `uninstall_tenant` sweeping `meta_connect_sessions` incl. other-tenant isolation, and the two-thread dev seed incl. idempotency). Full omnichannel-scoped suite stays green (existing WhatsApp/Messenger/send suites pass UNEDITED).
 
+#### Website chat channel (plan sprint-4/34, A7b - MERGED, review round 1 fixes landed)
+A fourth `channels.channel_type` value, `WEBCHAT`, needing no Meta app at all - a first-party JS widget
+embedded on the tenant's own website. Plan `documentation/plans/sprint-4/34-omnichannel-channel-web-chat.md`
+(+ UAC); detail (all decisions, the BL-SS-183 loader-mints-the-session redesign, the review round 1
+findings B1-B3/S1-S9/N1-N9 and their fixes) lives in the plan file and
+`documentation/plans/sprint-4/34-evidence/`. Ten-line architecture summary for orientation:
+- **Loader mints, panel consumes.** The customer's page loads one small `<script>`
+  (`GET /omnichannel/widget/{widgetKey}.js`, uniform 404 across every failure mode) which itself calls
+  `POST /public/omnichannel/webchat/{widgetKey}/session` FROM THE HOST PAGE'S OWN ORIGIN, stores the
+  returned token (`localStorage`, in-memory fallback), and mounts ONE chromeless iframe pointed at the
+  panel route (`app/(public)/public/webchat/[widgetKey]/page.tsx`) carrying the token via `postMessage`
+  - the panel itself never calls `/session` and never sees the customer's origin, closing the
+  origin-allowlist gap the pre-redesign version had (BL-SS-183).
+- **Public routes** (`modules/omnichannel/routers/webchat_public.py`, manifest `"public": true`,
+  prefix `/public/omnichannel/webchat/`) - `POST /session` (mint/resume, Origin-gated, zero DB writes
+  beyond the throttle bucket), `POST /messages` (honeypot, 4096-char cap, capped raw body, typed
+  422s), `GET /messages` (the visitor's own history AND the poll fallback - the SAME endpoint, no
+  third transport), `GET /frame-policy` (allowed origins for the panel's CSP, 60s in-memory cache).
+  The prefix's CORS preflight is answered by a MODULE-REGISTERED pure-ASGI middleware
+  (`app/module_platform/public_cors.py` + `public_cors_middleware.py`, `register_public_cors()` called
+  from the module loader's boot hook) - core `app/main.py` carries zero omnichannel-specific routing
+  knowledge (review round 1, S9).
+- **Token scheme**: a visitor JWT (`typ: "webchat"`, `sub` = a minted `vis_...` id, `channelId`,
+  `contactId` once known, `epoch`) with sliding renewal inside 7 days of expiry; "sign out all
+  visitors" bumps `channels.widget_token_epoch` (S4 additionally re-verifies the epoch on a timer
+  inside an already-open WebSocket's relay loop, not just on the next REST call).
+- **Fail-closed visitor projection** (`services/webchat_projection.py`) - `_ALLOWED_SENDER_TYPES`/
+  `_ALLOWED_MESSAGE_KINDS`/`_ALLOWED_FRAME_TYPES` allowlist what a visitor may ever see; `status` is
+  ALSO allowlisted explicitly (an in-flight `QUEUED`/`SENDING` delivery status maps to `None` rather
+  than round-tripping the raw DB value, review round 1 B1) and `visitor_frame` requires the relayed
+  frame's `channelId` to match the visitor's own channel (review round 1 B2 - a contact stitched
+  across web chat AND WhatsApp must never leak the WhatsApp thread onto an open web chat socket).
+- **Pre-chat is unverified by design.** `name` is write-if-empty onto the `Contact` row exactly like
+  any other channel; `email`/`phone` are held ONLY on the identity's `visitor_profile_json`
+  (`contact_channel_identities`, migration `0022_omni_webchat_profile`) and NEVER touch
+  `contact.email`/`phone`/`phone_digits` - those columns are the WhatsApp inbound stitch key, and an
+  anonymous internet user must never be able to write to it (review round 1 B3). Surfaced to agents as
+  `ThreadItem.visitorProfile` / a "Visitor provided" block in the contact details panel, visually
+  distinct from the verified contact fields.
+- **Host identity assertion** (optional, for a tenant with its own logged-in users) - the host page can
+  call `window.fxWebchat.identify({userRef, hash})` where `hash = HMAC-SHA256(userRef, widgetSecret)`;
+  a valid assertion resolves/reuses `host:<userRef>` across sessions/devices, an invalid or missing one
+  is silently ignored and the session proceeds anonymously (no error, by design - AC-WEB-56). Documented
+  in the consumer guide's dedicated web chat section (review round 1 S5 - the original draft pointed
+  at the unrelated plan-11H embed-shell HMAC).
+- **`frame-ancestors` CSP** on the panel route restricts which sites may iframe it at all, independent
+  of the origin check the session endpoint performs - two different layers of the same "only the
+  customer's own site" guarantee.
+- **Migrations**: module head `0021_omni_webchat` (the `Channel.widget_key`/`widget_config_json`/
+  `widget_token_epoch` + `ContactChannelIdentity.last_seen_at` columns, S1) then
+  `0022_omni_webchat_profile` (`visitor_profile_json`, review round 1 B3) - both mirrored in
+  `bootstrap.create_schema_and_tables` for the `create_all` path. `channels.widget_key` is registered
+  in the storage-key drift gate's exclude set (`app/storage_migration/registry.py`) as a logical
+  public identifier, not a storage blob reference (review round 1 D1).
+- **Gateway parity**: `to = "webchat:<value>"` resolves an existing identity only (never creates,
+  same rule as `psid:`/`igsid:`); both gateway shapes carry `channelType: "WEBCHAT"` and
+  `visitorLastSeenAt`, with every window field (`cswExpiresAt`/`windowExpiresAt`/
+  `humanAgentExpiresAt`) null - a web chat contact has no messaging-window concept at all
+  (`messaging_policy.CAPABILITIES["WEBCHAT"].reengageMode == "none"`).
+

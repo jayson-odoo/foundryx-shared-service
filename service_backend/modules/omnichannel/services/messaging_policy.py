@@ -51,6 +51,12 @@ POLICIES = {
     "WHATSAPP": WindowPolicy("WHATSAPP", 24, None, "template"),
     "FACEBOOK": WindowPolicy("FACEBOOK", 24, 168, "human_agent"),
     "INSTAGRAM": WindowPolicy("INSTAGRAM", 24, 168, "human_agent"),
+    # Plan 34 (A7b, D-A7B-18) - there is no provider policy to encode: a
+    # web chat visitor who left is reachable again the moment they return,
+    # never locked out by a window. `window_hours=0`/`human_agent_hours=None`
+    # are never actually used for the "none" mode (see `stamp_inbound_window`/
+    # `window_open`/`authorize` below, which all short-circuit on it first).
+    "WEBCHAT": WindowPolicy("WEBCHAT", 0, None, "none"),
 }
 
 
@@ -73,12 +79,20 @@ def stamp_inbound_window(
     every channel type gets."""
     now = now or datetime.now(timezone.utc)
     policy = POLICIES.get(channel.channel_type, POLICIES["WHATSAPP"])
-    identity.window_expires_at = now + timedelta(hours=policy.window_hours)
-    identity.human_agent_expires_at = (
-        now + timedelta(hours=policy.human_agent_hours)
-        if policy.human_agent_hours
-        else None
-    )
+    if policy.reengage_mode == "none":
+        # Plan 34 (A7b, D-A7B-18/AC-WEB-13) - web chat has no messaging
+        # window at all: leave both NULL rather than stamping a same-instant
+        # "already expired" window (`window_hours=0` would otherwise compute
+        # `now + 0h == now`, which reads as closed the instant it's written).
+        identity.window_expires_at = None
+        identity.human_agent_expires_at = None
+    else:
+        identity.window_expires_at = now + timedelta(hours=policy.window_hours)
+        identity.human_agent_expires_at = (
+            now + timedelta(hours=policy.human_agent_hours)
+            if policy.human_agent_hours
+            else None
+        )
     identity.last_inbound_at = now
 
 
@@ -174,6 +188,12 @@ CAPABILITIES = {
     ),
     "INSTAGRAM": ChannelCapabilities(
         "INSTAGRAM", document=False, sticker=False, template=False,
+        interactive_list=False, location=False, contacts=False, reaction_outbound=False,
+    ),
+    # Plan 34 (A7b §5.5) - parity-pinned against `lib/channel-capabilities.ts`
+    # (`CHANNEL_CAPABILITIES.WEBCHAT`).
+    "WEBCHAT": ChannelCapabilities(
+        "WEBCHAT", document=True, sticker=False, template=False,
         interactive_list=False, location=False, contacts=False, reaction_outbound=False,
     ),
 }
@@ -282,6 +302,11 @@ def window_open(
     never substitutes for it."""
     now = now or datetime.now(timezone.utc)
     policy = POLICIES.get(channel.channel_type, POLICIES["WHATSAPP"])
+    if policy.reengage_mode == "none":
+        # Plan 34 (A7b, D-A7B-18) - no window to be closed; a pre-flight
+        # peek before expensive work (media sniff/store, SSRF-guarded fetch)
+        # must never bail out on a web chat send.
+        return True
     if policy.reengage_mode == "template":
         return _whatsapp_window_open(contact, now)
     identity = _identity_for(db, contact, channel)
@@ -336,6 +361,14 @@ def authorize(
         if _whatsapp_window_open(contact, now):
             return SendDecision()
         raise PolicyRejected("csw_window_closed", CSW_CLOSED_MESSAGE)
+
+    # Plan 34 (A7b, D-A7B-18/AC-WEB-13) - the ONE new branch this slice adds.
+    # Added AFTER the template branch (R11) so the WhatsApp/Messenger/
+    # Instagram matrix above is untouched. There is no provider policy on
+    # web chat to encode - a reply to a visitor who left is delivered
+    # whenever they return, never a violation.
+    if policy.reengage_mode == "none":
+        return SendDecision()
 
     identity = _identity_for(db, contact, channel)
     inside_standard = (

@@ -51,6 +51,27 @@ def register_capabilities() -> None:
     )
 
 
+def register_public_cors() -> None:
+    """Boot-time public-CORS registration (plan 34 review round 1, S9).
+    Idempotent. The public web chat visitor API's allowed origins are
+    per-CHANNEL tenant data, so core's `CORSMiddleware` (which knows only the
+    `CORS_ORIGINS` env) cannot answer a customer website's preflight for it -
+    the module hands over its own prefix and resolver instead of core
+    hardcoding either. Both live in the service layer; this is the wiring."""
+    from app.module_platform import register_public_cors_prefix
+
+    from .services.webchat_visitor_service import (
+        WEBCHAT_PUBLIC_PREFIX,
+        preflight_origin_allowed,
+    )
+
+    register_public_cors_prefix(
+        WEBCHAT_PUBLIC_PREFIX,
+        provider_module=MODULE_NAME,
+        resolver=preflight_origin_allowed,
+    )
+
+
 def register_engine_entities() -> None:
     """Boot-time engine registration (plan 11 D9). Idempotent - called by
     ``register_module_boot`` whenever the module is loaded.
@@ -610,6 +631,54 @@ def create_schema_and_tables(engine: Engine) -> None:
                     "  AND i.window_expires_at IS NULL"
                 )
             )
+            # Web chat widget (plan 34 / A7b S1, AC-WEB-16) - idempotent add
+            # for existing deployments (module Alembic 0021 is the real fix
+            # for a Postgres-tracked deploy; this covers the create_all path).
+            # No backfill: all four columns are new and empty-until-used.
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS widget_key VARCHAR"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS widget_config_json JSON"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".channels '
+                    "ADD COLUMN IF NOT EXISTS widget_token_epoch INTEGER NOT NULL DEFAULT 0"
+                )
+            )
+            # Mirrors migration 0021's fix (same reasoning as
+            # `uq_channels_external_account_id` above): only the PARTIAL
+            # UNIQUE index is created here - a plain index would carry a
+            # different name than `Channel.widget_key`'s `index=True`
+            # generates via `create_all`.
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_channels_widget_key "
+                    f'ON "{OMNI_SCHEMA}".channels (widget_key) '
+                    "WHERE widget_key IS NOT NULL AND is_trashed = false"
+                )
+            )
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contact_channel_identities '
+                    "ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ"
+                )
+            )
+            # Unverified visitor pre-chat profile (plan 34 review round 1, B3 -
+            # module Alembic 0022). New, empty-until-used, no backfill.
+            conn.execute(
+                text(
+                    f'ALTER TABLE "{OMNI_SCHEMA}".contact_channel_identities '
+                    "ADD COLUMN IF NOT EXISTS visitor_profile_json JSON"
+                )
+            )
 
 
 def install(engine: Engine, db: Session) -> None:
@@ -761,6 +830,27 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     in Postgres SQL for a tracked deploy; `messaging_policy.
     backfill_identity_windows` is the dialect-agnostic Python twin (mirrors
     `ContactRepository.backfill_phone_digits`) - idempotent, safe to re-run.
+
+    0.9.0 -> 0.10.0 (plan 34 S1, A7b, AC-WEB-16): `channels.widget_key`/
+    `widget_config_json`/`widget_token_epoch` and `contact_channel_
+    identities.last_seen_at` are brand-new, empty-until-used columns - no
+    backfill (a tenant landing here simply has no WEBCHAT channel yet, a
+    valid state, not a gap to repair). No new permission keys either
+    (D-A7B-28) - `channels.read`/`channels.manage` already cover every new
+    route, so there is nothing for the post-hook grant sweep to deliver.
+    Review round 1 (B3) adds a fifth column in the same 0.10.0 release -
+    `contact_channel_identities.visitor_profile_json` (module Alembic
+    `0022_omni_webchat_profile`), also brand-new and empty-until-used, also
+    no backfill: no tenant has ever had a pre-chat submission before it
+    existed, so there is nothing to repair.
+
+    0.10.0 -> 0.10.1 (review round 2, N-new-4): no schema or column change at
+    all - the bump exists ONLY so a tenant already stamped `installed_version
+    "0.10.0"` (this branch has never shipped outside it) re-runs this hook
+    once, which is a no-op per tenant for the reason above. Recorded here so
+    "a schema change bumps the version" stays legible to the next reader: the
+    B3 column truly did arrive inside 0.10.0's own migration + `create_all`
+    mirror, this bump is pure discipline, not a missed migration.
     """
     from .repositories.contact_repository import ContactRepository
     from .services import close_reason_service, event_service, lifecycle_service, messaging_policy
@@ -1088,6 +1178,117 @@ def seed_demo_conversations(db: Session, tenant_id: str) -> None:
                 last_at = created
             contact.last_message_at = last_at
             contact.agent_last_read_at = ig_now
+        db.flush()
+
+    # Plan 34 S5 (A7b, AC-WEB-57) - a WEBCHAT sandbox channel so the inbox,
+    # the reports and the E2E journeys have a web chat thread with no
+    # external dependency at all (D-A7B-29: web chat's own backend IS the
+    # "provider" - there is nothing to stub). Mirrors chn-demo-fb/chn-demo-ig
+    # above: its own idempotency guard, ensured regardless of the cnt-001..
+    # 005 `already_seeded` gate below. Allowed origins cover every port this
+    # lane's own frontend + the E2E's static host page run on.
+    web_channel = (
+        db.query(Channel).filter(Channel.id == "chn-demo-web", Channel.tenant_id == tenant_id).first()
+    )
+    if web_channel is None:
+        web_channel = Channel(
+            id="chn-demo-web",
+            tenant_id=tenant_id,
+            workspace_id=ws.id,
+            channel_type="WEBCHAT",
+            name="Demo web chat (sandbox)",
+            credentials_json=encrypt_credentials(
+                {"widgetSecret": "whsec_demo0000000000000000000000000000"}
+            ),
+            widget_key="wk_demo00000000000000000000000000",
+            widget_config_json={
+                "allowedOrigins": [
+                    "http://localhost:3001",
+                    "http://localhost:3012",
+                    "http://localhost:3013",
+                ],
+                "appearance": {
+                    "accentColor": "#FF5A00",
+                    "position": "right",
+                    "headerTitle": "Chat with us",
+                    "agentDisplayName": "Support",
+                },
+                "greeting": "Hi! How can we help you today?",
+                "offlineGreeting": "We're offline right now - leave a message and we'll reply.",
+                "preChat": {"askName": True, "askEmail": True, "askPhone": False},
+            },
+            widget_token_epoch=0,
+            is_active=True,
+            status_id=statuses.status_id_for(db, tenant_id, "CHANNEL", "ACTIVE"),
+        )
+        db.add(web_channel)
+        db.flush()
+
+    # Two seeded visitor threads (AC-WEB-57's "two seeded visitor threads") -
+    # one anonymous, one with a pre-chat-style name/email already captured,
+    # so the inbox demonstrates both states with no external dependency. Own
+    # idempotency gate (keyed on a fixed contact id, mirroring fb_seeded/
+    # ig_seeded above).
+    web_seeded = bool(
+        db.query(Contact).filter(Contact.id == "cnt-web-001", Contact.tenant_id == tenant_id).first()
+    )
+    if not web_seeded:
+        from .services import lifecycle_service as _web_lifecycle_service
+
+        web_open_id = statuses.status_id_for(db, tenant_id, "THREAD", "OPEN")
+        web_initial_lifecycle_id = _web_lifecycle_service.initial_status_id(db, tenant_id, ws.id)
+        web_now = datetime.now(timezone.utc)
+        web_threads = [
+            # (contact id, first name, email, identity key, messages)
+            ("cnt-web-001", None, None, "visitor:vis_demo0000000000000000001", [
+                ("CONTACT", "Hi, do you offer a free trial?", 10),
+                ("AGENT", "Yes! 14 days, no card required.", 8),
+            ]),
+            ("cnt-web-002", "Jamie", "jamie@example.com", "visitor:vis_demo0000000000000000002", [
+                ("CONTACT", "What are your business hours?", 5),
+            ]),
+        ]
+        for cid, first_name, email, ext_id, msgs in web_threads:
+            contact = Contact(
+                id=cid,
+                tenant_id=tenant_id,
+                workspace_id=ws.id,
+                first_name=first_name,
+                email=email,
+                status_id=web_open_id,
+                priority="MEDIUM",
+                lifecycle_status_id=web_initial_lifecycle_id,
+            )
+            db.add(contact)
+            db.flush()
+            db.add(
+                ContactChannelIdentity(
+                    tenant_id=tenant_id,
+                    contact_id=cid,
+                    channel_id=web_channel.id,
+                    external_user_id=ext_id,
+                    last_seen_at=web_now,
+                ),
+            )
+            last_at = None
+            for i, (sender, body, minutes_ago) in enumerate(msgs):
+                created = web_now - timedelta(minutes=minutes_ago)
+                db.add(
+                    ConversationMessage(
+                        tenant_id=tenant_id,
+                        contact_id=cid,
+                        channel_id=web_channel.id,
+                        sender_type=sender,
+                        message_type="TEXT",
+                        body=body,
+                        external_message_id=f"web:demo-{cid}-{i}",
+                        delivery_status="READ" if sender == "AGENT" else None,
+                        created_at=created,
+                    )
+                )
+                last_at = created
+            contact.last_message_at = last_at
+            contact.agent_last_read_at = web_now
         db.flush()
 
     if already_seeded:

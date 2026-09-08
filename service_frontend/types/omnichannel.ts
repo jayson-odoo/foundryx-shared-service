@@ -9,15 +9,17 @@
 
 import type { UserStatus } from '@/types/user';
 import type { FilterGroup } from '@/types/resource';
+import type { BrandingTokens } from '@/types/branding';
 
 /**
- * Channels the platform can connect. Pruned to the three implemented adapters
- * (plan 32 / A7a, D-A7-20) - `DOUYIN` / `XIAOHONGSHU` had no adapter, no
- * window policy and no capability record, so a picker offering them could be
- * configured into a guaranteed runtime error (foolproof-UI). See
- * `lib/channel-capabilities.ts` for the per-type capability/window record.
+ * Channels the platform can connect. Pruned to the four implemented adapters
+ * (plan 32 / A7a, D-A7-20; plan 34 / A7b adds `WEBCHAT`) - `DOUYIN` /
+ * `XIAOHONGSHU` had no adapter, no window policy and no capability record, so
+ * a picker offering them could be configured into a guaranteed runtime error
+ * (foolproof-UI). See `lib/channel-capabilities.ts` for the per-type
+ * capability/window record.
  */
-export type ChannelType = 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM';
+export type ChannelType = 'WHATSAPP' | 'FACEBOOK' | 'INSTAGRAM' | 'WEBCHAT';
 
 /** Connection lifecycle of a channel (maps to the static `statuses` table, CHANNEL scope). */
 export type ChannelStatus = 'ACTIVE' | 'PENDING' | 'INACTIVE' | 'ERROR';
@@ -88,6 +90,14 @@ export interface Channel {
   externalAccountId: string | null;
   /** Display name for `externalAccountId` (the Page name / IG username). */
   externalAccountName: string | null;
+  /**
+   * The 32-char opaque widget key for a `WEBCHAT` channel (plan 34 / A7b,
+   * D-A7B-25) - the only channel-identifying value that appears in a
+   * customer's public website source. Null on every other channel type. Not
+   * a secret (see `services/webchat-service.ts` for the widget SECRET, which
+   * never rides this object).
+   */
+  widgetKey: string | null;
   isTrashed: boolean;
   createdAt: string; // ISO
   updatedAt: string; // ISO
@@ -257,6 +267,17 @@ export type ThreadStatus = 'OPEN' | 'SNOOZED' | 'CLOSED';
 export type ThreadPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
 
 /**
+ * What a web chat visitor typed into the pre-chat form - UNVERIFIED,
+ * visitor-declared, read-only (plan 34 / A7b, review round 1 B3). Stored on
+ * the channel identity, never on the contact's own `email`/`phone` columns.
+ */
+export interface VisitorProfile {
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+}
+
+/**
  * A conversation thread = a contact + its thread metadata (mirrors backend
  * `contacts` - the contact IS the thread; messages hang off it).
  */
@@ -313,6 +334,23 @@ export interface ConversationThread {
    * (WhatsApp) or a thread that has never received a message.
    */
   humanAgentExpiresAt: string | null; // ISO
+  /**
+   * A web chat visitor's last socket-connect / session-start / message-post
+   * instant (plan 34 / A7b, D-A7B-19) - the presence fact that stands in for
+   * a messaging window on a `WEBCHAT` thread (which has none, D-A7B-18).
+   * Null for every other channel type and for a web chat visitor never seen.
+   * Wired to the real `ThreadItem.visitorLastSeenAt` field since slice S3.
+   */
+  visitorLastSeenAt?: string | null; // ISO
+  /**
+   * The UNVERIFIED name / email / phone a web chat visitor typed into the
+   * pre-chat form (plan 34 / A7b, review round 1 B3). Read-only everywhere:
+   * they are deliberately NOT the contact's own `email`/`phone`, which are
+   * inbound stitch keys an anonymous caller must not be able to set. Null on
+   * every other channel type, and on a web chat thread whose visitor was
+   * never asked (or never answered).
+   */
+  visitorProfile?: VisitorProfile | null;
   lastIncomingMessageAt: string | null; // ISO
   lastMessageAt: string | null; // ISO
   /** Last visible message body (thread-list preview; server-computed). */
@@ -1347,3 +1385,176 @@ export interface ReportResponse<TRow = object, TTotals = object> {
 /** `POST .../reports/{reportKey}/export` request body (mirrors the read
  *  filters, D-A9-4). */
 export type ReportExportRequest = ReportFilters;
+
+// ---------------------------------------------------------------------------
+// Plan 34 / A7b - website chat channel (embeddable widget + visitor identity).
+// Admin-side types below; the visitor-side wire (`VisitorMessage`, the session
+// contract) is further down this section (S4). See documentation/plans/
+// sprint-4/34-omnichannel-channel-web-chat.md §5.1/§5.2 for the exact
+// contracts this mirrors.
+// ---------------------------------------------------------------------------
+
+/** `POST /omnichannel/onboarding/webchat/connect` input (AC-WEB-01/02). */
+export interface ConnectWebchatInput {
+  name: string;
+  workspaceId: string;
+  allowedOrigins: string[];
+}
+
+/** `POST /omnichannel/onboarding/webchat/connect` result - the 201 body IS a
+ *  `Channel`, plus the widget secret, revealed exactly once (AC-WEB-18). */
+export type ConnectWebchatResult = Channel & { widgetSecret: string };
+
+/** Launcher side + header/agent-name appearance (AC-WEB-04). */
+export interface WebchatAppearance {
+  /** Hex color, e.g. "#FF5A00". */
+  accentColor: string;
+  position: 'left' | 'right';
+  headerTitle: string;
+  agentDisplayName: string;
+}
+
+/** Fixed pre-chat capture toggles (D-A7B-23 - not a form-engine form). */
+export interface WebchatPreChatToggles {
+  askName: boolean;
+  askEmail: boolean;
+  askPhone: boolean;
+}
+
+/** `GET/PUT /omnichannel/channels/{id}/widget` (plan §5.1). Never carries the
+ *  widget secret - that is revealed exactly once, by `connect`/`rotateSecret`
+ *  only. */
+export interface WebchatConfig {
+  widgetKey: string;
+  allowedOrigins: string[];
+  /** Bumped by "sign out all visitors" - display only on the admin side. */
+  tokenEpoch: number;
+  appearance: WebchatAppearance;
+  greeting: string;
+  offlineGreeting: string;
+  preChat: WebchatPreChatToggles;
+  /** The exact install snippet the backend serves for this channel - the
+   *  Widget tab renders this string verbatim (AC-WEB-05), never rebuilding it
+   *  client-side. */
+  snippet: string;
+}
+
+/** `PUT /omnichannel/channels/{id}/widget` input - every field optional so a
+ *  partial save (e.g. rename only) never clobbers the rest (mirrors the
+ *  channel profile write-through PATCH shape). */
+export interface UpdateWebchatConfigInput {
+  allowedOrigins?: string[];
+  appearance?: Partial<WebchatAppearance>;
+  greeting?: string;
+  offlineGreeting?: string;
+  preChat?: Partial<WebchatPreChatToggles>;
+}
+
+/** `POST /omnichannel/channels/{id}/widget/rotate-secret` result - the new
+ *  secret, revealed exactly once (AC-WEB-06/19). */
+export interface RotateWidgetSecretResult {
+  widgetSecret: string;
+}
+
+/** `POST /omnichannel/channels/{id}/widget/sign-out-visitors` result - the
+ *  secret is UNCHANGED (D-A7B-6); only the epoch moves. */
+export interface SignOutVisitorsResult {
+  tokenEpoch: number;
+}
+
+// ---------------------------------------------------------------------------
+// Plan 34 / A7b S4 - the visitor-side wire (the panel, `webchat-visitor-
+// service`). Mirrors plan §5.2 / `schemas.py`'s `VisitorMessage` /
+// `WebchatSessionResult` exactly - this is the ONLY shape a visitor's browser
+// ever receives, built exclusively by the backend's `webchat_projection.py`
+// (D-A7B-17, fail-closed allowlist).
+// ---------------------------------------------------------------------------
+
+/** A signed, short-TTL URL bound to one message id (D-A7B-20/AC-WEB-41) -
+ *  agent-to-visitor media only; a visitor's OWN messages never carry one. */
+export interface VisitorMedia {
+  url: string;
+  mimeType: string;
+  name: string | null;
+}
+
+/** A structured quick-reply button attached to an agent (or workflow) message. */
+export interface VisitorQuickReply {
+  id: string;
+  title: string;
+}
+
+/** The ONE shape a visitor ever sees for a message (D-A7B-17). No sender
+ *  identity beyond `agentName` - the CHANNEL's configured display name,
+ *  never a real user name or email. */
+export interface VisitorMessage {
+  id: string;
+  direction: 'in' | 'out';
+  text: string | null;
+  media: VisitorMedia | null;
+  quickReplies: VisitorQuickReply[] | null;
+  agentName: string | null;
+  createdAt: string;
+  status: 'sent' | 'delivered' | 'read' | 'failed' | null;
+}
+
+/** The `config` block of the session response - everything the panel needs
+ *  to render before a visitor sends a word. */
+export interface WebchatSessionConfig {
+  appearance: WebchatAppearance;
+  greeting: string;
+  offlineGreeting: string;
+  preChat: WebchatPreChatToggles;
+  agentDisplayName: string;
+  /** Never the raw tenant row name (white-label) - a tenant's own configured
+   *  branding `appName`, or `null` (render no tenant name at all). */
+  tenantName: string | null;
+  /** The curated `--foundryx-*` token diff (parity-pinned whitelist,
+   *  `lib/branding-tokens.ts`); `{}` for an unbranded tenant. */
+  brandTokens: Partial<BrandingTokens>;
+}
+
+/** `POST /public/omnichannel/webchat/{widgetKey}/session` 200 body. */
+export interface WebchatSessionResult {
+  token: string;
+  expiresAt: string;
+  visitorId: string;
+  /** Opens the EXISTING conversation WebSocket (`?workspaceId=&token=`). */
+  workspaceId: string;
+  config: WebchatSessionConfig;
+  online: boolean;
+  /** This visitor's history when the token already resolves a contact. */
+  messages: VisitorMessage[];
+}
+
+/** The fixed pre-chat capture VALUES (as opposed to `WebchatPreChatToggles`,
+ *  which fields are ASKED). Every field optional - only the toggled-on ones
+ *  are ever collected. */
+export interface WebchatPreChatValues {
+  name?: string;
+  email?: string;
+  phone?: string;
+}
+
+/** `POST /public/omnichannel/webchat/{widgetKey}/messages` body. `hp` is the
+ *  honeypot - a real visitor's browser never fills it in (AC-WEB-32). */
+export interface PostVisitorMessageInput {
+  text: string;
+  preChat?: WebchatPreChatValues;
+  hp?: string;
+}
+
+/** `GET /public/omnichannel/webchat/{widgetKey}/messages` 200 body - oldest
+ *  to newest, page-capped; also the poll-fallback shape (D-A7B-16). */
+export interface VisitorMessagesPage {
+  data: VisitorMessage[];
+  nextAfter: string | null;
+}
+
+/** The panel's own frame/postMessage discriminant for a WS frame relayed to
+ *  a visitor (S3's `{"type": "message.created", "message": VisitorMessage}` -
+ *  additive so a future frame type never breaks the panel's handler). */
+export interface VisitorSocketEvent {
+  type: 'message.created';
+  message: VisitorMessage;
+}

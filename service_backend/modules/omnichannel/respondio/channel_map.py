@@ -31,6 +31,18 @@ SOURCE_TO_CHANNEL_TYPE: Dict[str, str] = {
     # A7a (plan 32) plugs in here with no A6 change (plan §6, in-flight seams).
     "facebook": "FACEBOOK",
     "instagram": "INSTAGRAM",
+    # Plan 34 (A7b) AC-WEB-62 - a `WEBCHAT` row is deliberately ABSENT.
+    # The vendor's official `@respond-io/typescript-sdk` `ChannelSource`
+    # union (`src/types/contact.ts`, fetched live 2026-09-08) has no
+    # website-chat member at all - only every type already listed here plus
+    # `twilio`/`message_bird`/`nexmo` (SMS). This lane has no respond.io API
+    # token and the one sandbox workspace checked in plan 24 had no channel
+    # connected, so a live `GET /space/channel` value could not be obtained
+    # either. Per this module's own D-A6-10 rule (see the module docstring),
+    # an unverified guess is worse than an honest skip: a respond.io website
+    # chat source keeps mapping to `None` ("Skip this channel") until a real
+    # value is confirmed against a live workspace or a newer SDK release
+    # (BL-SS-182).
     "telegram": "TELEGRAM",
     "line": "LINE",
     "viber": "VIBER",

@@ -10,13 +10,16 @@ import { Button } from '@/components/ui/button';
 import { FormControl, FormField, FormItem, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
+import { Skeleton } from '@/components/ui/skeleton';
 import { FormRow } from '@/components/platform/resource-form';
 import { StatusBadge } from '@/components/platform/status-badge';
 import { ClampedText } from '@/components/platform/clamped-text';
+import { OriginsEditor } from '@/app/(protected)/omnichannel/settings/embed/origins-editor';
 import { channelService } from '@/services/channel-service';
 import { useDatetime } from '@/hooks/use-datetime';
 import { useCan } from '@/hooks/use-can';
-import type { Channel } from '@/types/omnichannel';
+import { useWebchatConfig } from '@/hooks/use-webchat-config';
+import type { Channel, WebchatConfig } from '@/types/omnichannel';
 import { workspaceFormPath } from '../../workspaces/components/paths';
 import { CHANNEL_STATUS_REGISTRY, CHANNEL_TYPE_LABELS } from './channel-status';
 import type { ChannelDetailValues } from './channel-schema';
@@ -25,8 +28,68 @@ export interface ConfigurationTabProps {
   form: UseFormReturn<ChannelDetailValues>;
   editing: boolean;
   channel: Channel | null;
+  channelId: string;
   /** Refresh the parent's channel state after a Sync / Test stamps new data. */
   onChannelSynced: (channel: Channel) => void;
+  /** The widget config the parent already fetched for a `WEBCHAT` channel
+   *  (review round 1, N3 - one GET per record, shared with the Widget tab). */
+  webchatConfig: WebchatConfig | null;
+  /** Refresh the parent's copy after the origins editor self-saves. */
+  onWebchatConfigSaved: (config: WebchatConfig) => void;
+}
+
+/**
+ * Widget key + allowed-origins block for a `WEBCHAT` channel (plan 34 / A7b,
+ * AC-WEB-03) - replaces the Meta-owned identity block. The origins editor
+ * keeps its OWN self-save (the same component the embed settings screen
+ * uses, unmodified in that mode), so it works regardless of the record's
+ * global Edit toggle - there is nothing Meta-synced to gate here.
+ *
+ * Review round 1: the config comes from the PARENT's single fetch (N3 - the
+ * page used to GET the same record twice), and the editor is gated on
+ * `channels.manage` (S6 - `PUT /channels/{id}/widget` requires it, so a
+ * read-only user must never be offered a Save that can only 403).
+ */
+function WebchatIdentityBlock({
+  channelId,
+  config,
+  canManage,
+  onSaved,
+}: {
+  channelId: string;
+  config: WebchatConfig | null;
+  canManage: boolean;
+  onSaved: (config: WebchatConfig) => void;
+}) {
+  const { save } = useWebchatConfig(channelId, false);
+
+  if (!config) {
+    return (
+      <FormRow label="Widget key">
+        <Skeleton className="h-4 w-48" />
+      </FormRow>
+    );
+  }
+
+  return (
+    <>
+      <FormRow label="Widget key">
+        <SyncedValue value={config.widgetKey} mono />
+      </FormRow>
+      <FormRow label="Allowed origins">
+        <OriginsEditor
+          origins={config.allowedOrigins}
+          onSave={
+            canManage
+              ? (origins) => save({ allowedOrigins: origins }).then(onSaved)
+              : undefined
+          }
+          readOnly={!canManage}
+          bare
+        />
+      </FormRow>
+    </>
+  );
 }
 
 /** Read-only synced value with a monospace option + ClampedText for long text. */
@@ -41,7 +104,15 @@ function SyncedValue({ value, mono }: { value: string | null | undefined; mono?:
  * workspace (link), active. Read-only synced (Meta-owned) identity block with a
  * "last synced" caption, plus Sync + Test Connection actions.
  */
-export function ConfigurationTab({ form, editing, channel, onChannelSynced }: ConfigurationTabProps) {
+export function ConfigurationTab({
+  form,
+  editing,
+  channel,
+  channelId,
+  onChannelSynced,
+  webchatConfig,
+  onWebchatConfigSaved,
+}: ConfigurationTabProps) {
   const { formatDate, formatDateTime } = useDatetime();
   const { can } = useCan();
   const canManage = can('channels.manage');
@@ -148,7 +219,7 @@ export function ConfigurationTab({ form, editing, channel, onChannelSynced }: Co
 
         <FormRow label="Connected">{channel ? formatDate(channel.createdAt) : '-'}</FormRow>
 
-        {/* ── Meta-owned identity (synced, read-only even in Edit) ── */}
+        {/* ── Provider-owned identity (synced, read-only even in Edit) ── */}
         {channel?.channelType === 'WHATSAPP' ? (
           <>
             <FormRow label="Display number">
@@ -167,6 +238,16 @@ export function ConfigurationTab({ form, editing, channel, onChannelSynced }: Co
               <SyncedValue value={channel?.wabaId} mono />
             </FormRow>
           </>
+        ) : channel?.channelType === 'WEBCHAT' ? (
+          // Plan 34 / A7b, AC-WEB-03 - the widget key + the origins editor
+          // (self-save, unmodified, D-A7B-13) replace the Meta identity block
+          // entirely: web chat has no external provider to mirror.
+          <WebchatIdentityBlock
+            channelId={channelId}
+            config={webchatConfig}
+            canManage={canManage}
+            onSaved={onWebchatConfigSaved}
+          />
         ) : (
           // Messenger/Instagram identity block (plan 32 / A7a, AC-CHN-05) -
           // the Page (or its linked Instagram account) is the routing key,
@@ -181,36 +262,38 @@ export function ConfigurationTab({ form, editing, channel, onChannelSynced }: Co
           </>
         )}
 
-        <FormRow label="Identity">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <span className="text-xs text-muted-foreground">{lastSynced}</span>
-            {canManage && (
-              <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={runSync} disabled={syncing || !channel}>
-                  {syncing ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : (
-                    <RefreshCw className="size-4" />
-                  )}
-                  {syncing ? 'Syncing…' : 'Sync'}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={runTest}
-                  disabled={testing || !channel}
-                >
-                  {testing ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : (
-                    <PlugZap className="size-4" />
-                  )}
-                  {testing ? 'Testing…' : 'Test connection'}
-                </Button>
-              </div>
-            )}
-          </div>
-        </FormRow>
+        {channel?.channelType !== 'WEBCHAT' && (
+          <FormRow label="Identity">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <span className="text-xs text-muted-foreground">{lastSynced}</span>
+              {canManage && (
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" size="sm" onClick={runSync} disabled={syncing || !channel}>
+                    {syncing ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="size-4" />
+                    )}
+                    {syncing ? 'Syncing…' : 'Sync'}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={runTest}
+                    disabled={testing || !channel}
+                  >
+                    {testing ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <PlugZap className="size-4" />
+                    )}
+                    {testing ? 'Testing…' : 'Test connection'}
+                  </Button>
+                </div>
+              )}
+            </div>
+          </FormRow>
+        )}
       </CardContent>
     </Card>
   );

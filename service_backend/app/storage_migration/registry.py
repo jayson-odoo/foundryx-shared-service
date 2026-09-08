@@ -244,6 +244,10 @@ _NON_STORAGE_KEY_COLUMNS = frozenset(
         # `app/deferred_actions/registry.py` registry key (`<entity>.<verb>`,
         # e.g. "users.trash") - a logical identifier, no blob behind it.
         "action_key",
+        # Omnichannel web chat channel (plan 34): a public, machine-minted,
+        # globally unique identifier for one WEBCHAT channel - a logical key,
+        # not a storage blob reference, so nothing for a bucket migration to move.
+        "widget_key",
         # NOTE: `media_sample_key` (WhatsApp draft media-header sample) IS a
         # storage key - registered by omnichannel at install (Slice 3), so it is
         # deliberately NOT excluded here; the drift test now enforces it.

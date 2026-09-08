@@ -16,7 +16,12 @@ import { Label } from '@/components/ui/label';
 import { SearchSelect } from '@/components/platform/search-select';
 import { ApiError } from '@/lib/api-client';
 import { useCan } from '@/hooks/use-can';
-import type { ContactField, ConversationThread, PatchContactInput } from '@/types/omnichannel';
+import type {
+  ContactField,
+  ConversationThread,
+  PatchContactInput,
+  VisitorProfile,
+} from '@/types/omnichannel';
 
 export interface ContactDetailsFormProps {
   thread: ConversationThread;
@@ -355,6 +360,41 @@ export function ContactDetailsForm({ thread, fields, onSave }: ContactDetailsFor
             {errorFor(`customFields.${f.key}`) && (
               <p className="text-xs text-destructive">{errorFor(`customFields.${f.key}`)}</p>
             )}
+          </div>
+        ))}
+      </div>
+
+      <VisitorProvidedBlock profile={thread.visitorProfile} />
+    </div>
+  );
+}
+
+/**
+ * Web chat pre-chat answers (plan 34 / A7b, review round 1 B3) - what the
+ * VISITOR typed, never verified and never written onto the contact's own
+ * phone/email (those are inbound stitch keys). Read-only, and rendered only
+ * when there is something to show, so no other channel type ever sees it.
+ */
+function VisitorProvidedBlock({ profile }: { profile?: VisitorProfile | null }) {
+  const rows: { label: string; value: string }[] = [
+    { label: 'Name', value: profile?.name ?? '' },
+    { label: 'Email', value: profile?.email ?? '' },
+    { label: 'Phone', value: profile?.phone ?? '' },
+  ].filter((r) => r.value.trim().length > 0);
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-2 border-t pt-3">
+      <p className="text-xs font-medium text-muted-foreground">Visitor provided</p>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {rows.map((row) => (
+          <div key={row.label} className="flex flex-col gap-1">
+            <Label id={`cd-vp-${row.label}`} className="text-xs text-muted-foreground">
+              {row.label}
+            </Label>
+            <p aria-labelledby={`cd-vp-${row.label}`} className="text-sm break-all">
+              {row.value}
+            </p>
           </div>
         ))}
       </div>

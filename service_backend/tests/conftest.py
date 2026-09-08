@@ -188,7 +188,21 @@ def session_factory():
     AppStoreService(db).install(DEFAULT_TENANT_ID, "autocount")
     db.close()
 
+    # Plan 34 (A7b) review round 1, S9 - the public web chat CORS preflight is
+    # answered by an ASGI middleware, OUTSIDE FastAPI's dependency system, so
+    # `get_db` cannot reach it (it would open the real DATABASE_URL). Same
+    # seam and same reason as `routers/ws.py`'s handshake factory. The 60s
+    # origin cache is cleared with it so one test's channel never answers for
+    # the next test's.
+    from modules.omnichannel.services import webchat_visitor_service as _webchat_visitor
+
+    _webchat_visitor.set_preflight_session_factory(TestingSessionLocal)
+    _webchat_visitor.reset_origins_cache()
+
     yield TestingSessionLocal
+
+    _webchat_visitor.set_preflight_session_factory(None)
+    _webchat_visitor.reset_origins_cache()
 
 
 @pytest.fixture

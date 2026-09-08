@@ -1,0 +1,7 @@
+=== S2 honeypot 201 ===
+{"id":"27a5c79d-fb04-4ccd-9c99-7fc246d7d69a","direction":"in","text":"x","media":null,"quickReplies":null,"agentName":null,"createdAt":"2026-09-07T22:32:02.202932Z","status":null}
+HTTP_STATUS:201
+
+=== real 201 for key-set comparison ===
+{"id":"2b9effa5-ca79-4986-bf1d-887d229ebf41","direction":"in","text":"real message for R1 probe","media":null,"quickReplies":null,"agentName":null,"createdAt":"2026-09-07T22:32:02.225858Z","status":null}
+HTTP_STATUS:201
