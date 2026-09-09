@@ -432,5 +432,11 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   Deploy-order rule, same guard `container_number` needed under 2.1: before the ESB deploys
   this lane, `GET /api/v1/external/contract` on Sorento prod must list all four names under
   BOTH `fields_added.purchase_orders` and `fields_added.shipping_orders` - `extra="forbid"`
-  rejects every re-staged PO/SPO document under the OLD contract otherwise. Checked
-  <UTC time> by the operator; Sorento build `<SHA>`.
+  rejects every re-staged PO/SPO document under the OLD contract otherwise. Captured
+  2026-09-09 (sorento-crm #762, merge e99dba2baa145bcea5c67955d1ffdbed59150930, Sorento prod
+  deploy completed 2026-09-08T17:12:14Z, host `fe-sorento.foundryx.my`): the ESB deployed
+  after that build and Sorento prod PERSISTED the new keys - `spo_allocations` rows for
+  SPO-2026/09-0036 carry `from_po_line_ref` `AED_SORENTO:45113567:45113667` /
+  `from_po_number` `202606-S0110` (and four more), which a 2.1 schema would have rejected
+  under `extra="forbid"`. Accepted as the deploy-order proof in place of the endpoint body
+  (the operator's curl of `/api/v1/external/contract` may be appended when run).
