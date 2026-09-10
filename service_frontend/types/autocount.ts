@@ -860,7 +860,7 @@ export interface AutocountEtlRunStart {
 export interface AutocountEtlRepushResult {
   clearedCount: number;
   nextReconcileAt: string | null; // ISO Z
-  status: AutocountEtlStatus | string;
+  status: AutocountEtlStatus;
 }
 
 // ── diff view model (AC-13-12) ───────────────────────────────────────────────

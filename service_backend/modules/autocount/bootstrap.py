@@ -117,6 +117,13 @@ def register_engine_entities() -> None:
     # own docstring). Idempotent (the bus dedupes by function identity).
     register_event_subscriber(_evict_deleted_connection)
 
+    # Deferred (grace-window) actions (sprint-5/07 review round): "Re-push
+    # all" registers into the CORE grace-window engine here, the same way
+    # `omnichannel`/`ideation` extend it - never a fork.
+    from .deferred_actions import register_autocount_deferred_actions
+
+    register_autocount_deferred_actions()
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""

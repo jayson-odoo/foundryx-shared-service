@@ -1,6 +1,5 @@
 'use client';
 
-import { useState } from 'react';
 import Link from 'next/link';
 import {
   CircleCheck,
@@ -12,21 +11,12 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { Alert, AlertDescription, AlertIcon, AlertTitle } from '@/components/ui/alert';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardHeading, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
+import { DeferredCountdown } from '@/components/platform/resource-actions/deferred-action-button';
 import { PreviewPanel } from '@/components/platform/autocount/preview-panel';
+import { useDeferredAction } from '@/hooks/use-deferred-action';
 import type {
   UseEtlTaskLifecycleResult,
   UseEtlTaskPreviewResult,
@@ -46,8 +36,14 @@ import {
   AC_SYNC_RUN,
   acCompanyHref,
   acTaskHref,
-  entityLabel,
 } from '../../../../../components/autocount-meta';
+
+/** "Re-push all"'s deferred-action key (sprint-5/07 review round - D2/D13:
+ * every destructive action is a no-confirm-dialog grace window on the CORE
+ * engine, never a hand-rolled dialog or a component-local timer; registered
+ * server-side in `modules/autocount/deferred_actions.py`). */
+const REPUSH_ACTION_KEY = 'autocount_etl_task.repush';
+const REPUSH_ENTITY_TYPE = 'autocount_etl_task';
 
 export interface ActivateTabProps {
   company: AutocountCompany | null;
@@ -64,16 +60,15 @@ export interface ActivateTabProps {
   entities?: AutocountEntityConfig[];
   /**
    * Re-fetch the TASK ITSELF (status, `nextIncrementalAt`/`nextReconcileAt`)
-   * from the server - plan sprint-5/07 review round: a re-push arms
-   * `nextReconcileAt` to "now" server-side, but its own wire response is
-   * narrow (`clearedCount`/`nextReconcileAt`/`status` only, AC-07-20) and
-   * deliberately not widened into a full task, so this tab cannot fold the
-   * result into `task` the way activate/pause/resume do (their responses
-   * ARE the full task). Calling this after a successful re-push is the
-   * SAME "go get the current task" primitive `useAutocountEtlTask.reload`
-   * already provides - foolproof-UI: a badge still showing tonight's 02:00
-   * right after the operator armed an immediate reconcile would be a lie.
-   * Optional so existing callers are unaffected.
+   * from the server - a re-push arms `nextReconcileAt` to "now" server-side,
+   * but the deferred-actions engine's `onCommitted` carries no task payload
+   * at all (the commit runs server-side, off the grace window - there is no
+   * response for this tab to read). Calling this once the engine reports the
+   * commit is the SAME "go get the current task" primitive
+   * `useAutocountEtlTask.reload` already provides - foolproof-UI: a badge
+   * still showing tonight's 02:00 right after the operator armed an
+   * immediate reconcile would be a lie. Optional so existing callers are
+   * unaffected.
    */
   reloadTask?: () => void;
 }
@@ -119,39 +114,56 @@ export function ActivateTab({
   // "Re-push all" (plan sprint-5/07, AC-07-20..24) - foolproof-UI: only a
   // database task that is actually running (active/paused) can be re-pushed,
   // and only for a viewer who can configure the task at all. A draft or an
-  // API-sourced task never offers it, rather than showing it disabled.
-  const isDatabaseTask = entities.some(
-    (e) => e.entityType === task.entityType && e.sourceImpl === 'sql_db',
-  );
-  const showRepush = (status === 'active' || status === 'paused') && isDatabaseTask && canManage;
-  const [repushOpen, setRepushOpen] = useState(false);
-  const [repushConfirmText, setRepushConfirmText] = useState('');
-  const repushLabel = entityLabel(task.entityType);
+  // API-sourced task never offers it, rather than showing it disabled. The
+  // deferred-actions engine parks against `ac_entity_config.id` (the ONE
+  // per-(company, entityType) task row's own PK) - already on the wire via
+  // `entities` (the company-detail entities list, `EntityConfigItem.id`),
+  // so no new endpoint/field is needed to reach it from here.
+  const currentEntity = entities.find((e) => e.entityType === task.entityType);
+  const isDatabaseTask = currentEntity?.sourceImpl === 'sql_db';
+  const repushEntityId = currentEntity?.id ?? null;
+  const showRepush =
+    (status === 'active' || status === 'paused') &&
+    isDatabaseTask &&
+    canManage &&
+    repushEntityId !== null;
 
-  async function confirmRepush() {
-    const outcome = await lifecycle.repush();
-    if (outcome.result) {
-      const count = outcome.result.clearedCount.toLocaleString();
+  const repush = useDeferredAction({
+    watchFromMount: repushEntityId !== null,
+    watch: repushEntityId !== null ? { entityType: REPUSH_ENTITY_TYPE, entityId: repushEntityId } : undefined,
+    onCommitted: () => {
+      // The commit runs server-side, off the grace window - there is no
+      // response here to read a real `clearedCount` from (unlike the
+      // synchronous API path `EtlService.repush_task` itself answers).
       const tail =
-        status === 'active' ? ' The full re-push starts on the next scheduler tick.' : '';
-      toast.success(`Change tracking cleared for ${count} documents.${tail}`);
+        status === 'active'
+          ? ' The full re-push starts on the next scheduler tick.'
+          : ' Nothing moves until the task is resumed.';
+      toast.success(`Change tracking cleared.${tail}`);
       onRan();
       reloadTask();
-      return;
-    }
-    if (outcome.runningRunId) {
-      toast.error(outcome.message ?? 'A run is already in progress for this task.', {
+    },
+    onFailed: (error) => {
+      toast.error(error || 'The action failed.', {
         action: (
           <Link href={acTaskHref(task.companyId, task.entityType, 'runs')} className="underline">
             View run
           </Link>
         ),
       });
-      return;
-    }
-    // Every other failure lands on the shared `error` state the tab already
-    // renders (`data-testid="lifecycle-error"`) - nothing else to do here.
+    },
+  });
+  const repushPending = repush.state.status === 'pending' ? repush.state : null;
+
+  function startRepush() {
+    if (!repushEntityId) return;
+    repush
+      .start(REPUSH_ACTION_KEY, { entityType: REPUSH_ENTITY_TYPE, entityId: repushEntityId })
+      .catch((error: unknown) => {
+        toast.error(error instanceof Error ? error.message : 'Could not start that action.');
+      });
   }
+
   // S5 review SHOULD-FIX 4b - SEPARATE from `prerequisites`: that list also
   // gates Run preview, and fixing this means re-running preview after
   // editing the mapping, so Run preview must stay available.
@@ -328,23 +340,27 @@ export function ActivateTab({
           </Button>
         )}
 
-        {showRepush && (
-          <Button
-            type="button"
-            variant="destructive"
-            size="sm"
-            disabled={busy}
-            onClick={() => setRepushOpen(true)}
-            data-testid="etl-repush-all"
-          >
-            {lifecycle.busy === 'repush' ? (
-              <LoaderCircleIcon className="size-4 animate-spin" />
-            ) : (
+        {showRepush &&
+          (repushPending ? (
+            <DeferredCountdown
+              verb="Re-pushing all"
+              commitAt={repushPending.commitAt}
+              windowSeconds={repushPending.windowSeconds}
+              onCancel={() => void repush.cancel()}
+            />
+          ) : (
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={busy}
+              onClick={startRepush}
+              data-testid="etl-repush-all"
+            >
               <RotateCcw className="size-4" />
-            )}
-            Re-push all
-          </Button>
-        )}
+              Re-push all
+            </Button>
+          ))}
 
         <div className="flex flex-wrap items-center gap-2 sm:ms-auto">
           {task.lastPreviewAt && (
@@ -414,55 +430,6 @@ export function ActivateTab({
         </Card>
       )}
 
-      {/* Re-push all - typed confirmation, the shell's AlertDialog (plan
-          sprint-5/07, AC-07-22). Not the shared ResourceAction
-          `ConfirmActionDialog`: that one is reserved to the resource-list
-          action registry's disclosed carve-outs (see
-          `confirm-carve-outs.inventory.test.ts`) - this tab has no
-          `ResourceAction` registry at all, so it composes the same
-          `AlertDialog` + typed `Input` primitive directly, same as
-          `module-card.tsx`'s Deactivate/Uninstall dialogs. */}
-      <AlertDialog
-        open={repushOpen}
-        onOpenChange={(open) => {
-          setRepushOpen(open);
-          if (!open) setRepushConfirmText('');
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Re-push all documents</AlertDialogTitle>
-            <AlertDialogDescription>
-              Clears change tracking for this task. The next reconcile pushes every document to
-              Sorento again.
-              {status === 'paused' && ' Nothing moves until the task is resumed.'}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="flex flex-col gap-1.5">
-            <p className="text-xs text-muted-foreground">
-              Type &quot;{repushLabel}&quot; to confirm.
-            </p>
-            <Input
-              value={repushConfirmText}
-              onChange={(e) => setRepushConfirmText(e.target.value)}
-              placeholder={repushLabel}
-              aria-label="Confirmation text"
-              data-testid="etl-repush-confirm-input"
-            />
-          </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={repushConfirmText !== repushLabel || lifecycle.busy !== null}
-              onClick={() => void confirmRepush()}
-              data-testid="etl-repush-confirm"
-            >
-              Re-push all
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }
