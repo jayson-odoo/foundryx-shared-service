@@ -45,12 +45,17 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance only
 
 logger = logging.getLogger("foundryx.autocount")
 
+# sprint-5/07 (AC-07-18) - "Re-push all"'s own `operation` value, so every
+# call site names it the same way instead of a scattered literal.
+OPERATION_REPUSH_TASK = "repush task"
+
 __all__ = [
     "record_activity",
     "record_client_calls",
     "trace_id_for_job",
     "ACTIVITY_SUCCESS",
     "ACTIVITY_ERROR",
+    "OPERATION_REPUSH_TASK",
 ]
 
 

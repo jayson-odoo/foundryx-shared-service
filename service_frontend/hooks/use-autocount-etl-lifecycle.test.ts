@@ -143,4 +143,10 @@ describe('useEtlTaskLifecycle (AC-22-18/19)', () => {
     expect(runId).toBe('run-9');
     expect(onTask).toHaveBeenCalledWith(refreshed);
   });
+
+  // "Re-push all" (plan sprint-5/07) no longer rides this hook - review
+  // round: it moved onto the core deferred-actions engine
+  // (`useDeferredAction`, `autocount_etl_task.repush`) the same way every
+  // other destructive action in the app works (D2/D13). See
+  // `activate-tab.tsx`/`activate-tab.test.tsx` for its coverage now.
 });

@@ -143,7 +143,7 @@ LINE_COUNT_FINGERPRINT_COLUMN = "LineCount"
 _SO_HEADER_QUERY = (
     "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, c.AutoKey AS DebtorAutoKey, "
     "h.SalesAgent AS SalesAgent, h.DocDate AS DocDate, "
-    "h.UDF_DelDate AS RequestedDeliveryDate, h.Note AS Note, "
+    "h.UDF_DelDate AS RequestedDeliveryDate, h.Note AS Note, h.Ref AS Ref, "
     "h.Cancelled AS Cancelled, h.DebtorCode AS DebtorCode, "
     "h.DebtorName AS DebtorName, h.LastModified AS LastModified, "
     "l.LineCount AS LineCount, l.QtySum AS QtySum, l.TransferedSum AS TransferedSum, "
@@ -204,6 +204,7 @@ SO_PRESET = DocumentPreset(
         PresetField("DocDate", "doc_date", "date"),
         PresetField("RequestedDeliveryDate", "requested_delivery_date", "date"),
         PresetField("Note", "internal_note", "string"),
+        PresetField("Ref", "ref", "string"),
         PresetField("Cancelled", "status", "string", formula=DEFAULT_STATUS_FORMULA, required=True),
         PresetField("DebtorCode", "customer_code", "string"),
         PresetField("DebtorName", "customer_name", "string"),

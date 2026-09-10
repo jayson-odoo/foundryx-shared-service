@@ -218,6 +218,16 @@ def test_v2_payload_omits_container_number_when_none():
     assert "container_number" not in payload, sorted(payload)
 
 
+def test_v2_payload_omits_container_number_when_empty_string():
+    """Review round (sprint-5/07): only ``None`` was pinned above - the
+    generalised ``OMIT_WHEN_EMPTY_FIELDS`` loop (``CanonicalDocument.
+    sink_payload``) uses a falsy check, so an empty STRING must be omitted
+    the same way a genuinely-absent value is (an unmapped/blank ``Ref``
+    reads as "" through the mapping engine, not ``None``)."""
+    payload = _spo(container_number="").sink_payload(contract_version=2)
+    assert "container_number" not in payload, sorted(payload)
+
+
 @pytest.mark.parametrize("version", [1, 2, 3])
 def test_purchase_order_payload_never_carries_container_number(version):
     po = CanonicalPurchaseOrder(

@@ -11,6 +11,7 @@ import type {
   AutocountCompanyDetail,
   AutocountEntityConfig,
   AutocountEtlPreviewResult,
+  AutocountEtlRepushResult,
   AutocountEtlRunStart,
   AutocountEtlTask,
   AutocountEtlTaskUpdate,
@@ -284,6 +285,13 @@ export const realAutocountService: AutocountService = {
     return apiFetch<ListResult<AutocountSyncRun>>(
       `${etlTaskPath(companyId, entityType)}/runs?${pageParams(query).toString()}`,
     );
+  },
+
+  // plan sprint-5/07, AC-07-13..19 - contract documented on `AutocountService`.
+  repushEtlTask(companyId, entityType) {
+    return apiFetch<AutocountEtlRepushResult>(`${etlTaskPath(companyId, entityType)}/repush`, {
+      method: 'POST',
+    });
   },
 };
 

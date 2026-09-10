@@ -117,6 +117,13 @@ def register_engine_entities() -> None:
     # own docstring). Idempotent (the bus dedupes by function identity).
     register_event_subscriber(_evict_deleted_connection)
 
+    # Deferred (grace-window) actions (sprint-5/07 review round): "Re-push
+    # all" registers into the CORE grace-window engine here, the same way
+    # `omnichannel`/`ideation` extend it - never a fork.
+    from .deferred_actions import register_autocount_deferred_actions
+
+    register_autocount_deferred_actions()
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + all module tables. Idempotent."""
@@ -177,6 +184,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
         backfill_document_line_linkage,
         backfill_entity_config_defaults,
         backfill_etl_defaults,
+        backfill_sales_order_ref,
         backfill_shipping_order_container_number,
         backfill_sink_impl_defaults,
         default_schema,
@@ -219,6 +227,12 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # statement is rewritten to the NEW preset text carrying line linkage.
     # Module Alembic 0018 runs the same repair on deploy.
     backfill_document_line_linkage(db, schema=schema)
+    # 0.8.0 -> sprint-5/07: every existing `sales_order` task gets a
+    # `Ref -> ref` header mapping row (enabled when the query already selects
+    # `Ref`, disabled + one warning otherwise), and a byte-identical old
+    # preset query is rewritten to the NEW text carrying `h.Ref AS Ref`.
+    # Module Alembic 0019 runs the same repair on deploy.
+    backfill_sales_order_ref(db, schema=schema)
 
     service = CompanyService(db)
     page = 0

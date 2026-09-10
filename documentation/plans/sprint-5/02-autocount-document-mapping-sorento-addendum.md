@@ -434,3 +434,33 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   BOTH `fields_added.purchase_orders` and `fields_added.shipping_orders` - `extra="forbid"`
   rejects every re-staged PO/SPO document under the OLD contract otherwise. Checked
   <UTC time> by the operator; Sorento build `<SHA>`.
+- 2026-09-10 (sprint-5/07, `ref` - project label, same `container_number` deploy-order
+  guard): `CanonicalSalesOrder.ref: Optional[str]` (max 255), sourced from AutoCount `SO.Ref`
+  and sent VERBATIM (no cleaning on the ESB side - sales staff stamp the project name into it
+  alongside agent stamps, `"THE MET KL"`/`"JF- 9/9 3.50"`; Sorento's `label_from_ref` owns
+  stripping the stamps to derive `sales_orders.project_label`). SO only, never sent for PO/SPO
+  (`CanonicalPurchaseOrder`/`CanonicalShippingOrder` declare no `ref` attribute at all); v2+
+  only (`FALLBACK_FIELDS`), omitted from the payload entirely when empty (`OMIT_WHEN_EMPTY_
+  FIELDS`, the `container_number` rule generalised onto the HEADER base class) - absent means
+  "leave Sorento's stored value alone", `ref` is never sent as an explicit `null`. Deploy order
+  (plan section 2.6): Sorento's `feat/so-project-label` (stacked on their #809, which strips the
+  RTF AutoCount stores in `SO.Note`) must accept `ref` under `sales_orders` (`GET
+  /api/v1/external/contract` lists it under `fields_added.sales_orders`) BEFORE the ESB deploys
+  this lane - `extra="forbid"` otherwise quarantines every SO the backfill re-stages.
+- 2026-09-10 (sprint-5/07, `internal_note` RTF ownership - closes the "notes looked unmapped"
+  investigation): `Note -> internal_note` has flowed since 2026-09-05 and was never broken -
+  AutoCount stores `SO.Note` as RTF (`{\rtf1...}`, 166,868 of 234,480 staged SOs carry it) and
+  Sorento's own `#809` now strips that RTF at their ingest edge; the ESB keeps sending the raw
+  value verbatim, exactly as it always has, and owns no RTF-cleaning logic of its own (the
+  anti-SSTI house line - substitution-only, never a hand-rolled RTF parser on tenant-authored
+  content). Reconcile only re-pushes a row whose SOURCE hash changed, so an unchanged note on an
+  otherwise-unmodified SO is correctly NOT re-pushed by a plain incremental/reconcile tick - the
+  "Re-push all" task action (Group C, this plan) is the deliberate way to re-push an unchanged
+  population after a mapping or consumer-side change.
+- 2026-09-10 (review round, `OMIT_WHEN_EMPTY_FIELDS` falsy check confirmed for BOTH fields): an
+  empty STRING is omitted the same way `None` is - `container_number == ""` and `ref == ""` are
+  both dropped from the payload entirely (never sent as `""` or as an explicit `null`), same
+  "absent = leave Sorento's stored value alone" semantics as addendum section 11. Pinned by
+  `test_v2_payload_omits_container_number_when_empty_string` (`test_autocount_spo_container_
+  number.py`) and the existing `test_v2_payload_omits_ref_when_empty` parametrization
+  (`test_autocount_so_ref.py`, already covered `[None, ""]`).

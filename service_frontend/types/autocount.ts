@@ -849,6 +849,20 @@ export interface AutocountEtlRunStart {
   task: AutocountEtlTask;
 }
 
+/**
+ * `POST .../etl-task/repush` (plan sprint-5/07, AC-07-13..19) - clears this
+ * task's tracked rows (`ac_row_hash`) so the next reconcile classifies every
+ * source row as an add and re-pushes it. `nextReconcileAt` mirrors what the
+ * server armed: `now(utc)` for an `active` task (the next sweep claims a
+ * reconcile), `null` for a `paused` one (nothing scheduled until resumed).
+ * `status` is the task's `etlStatus`, unchanged by this call.
+ */
+export interface AutocountEtlRepushResult {
+  clearedCount: number;
+  nextReconcileAt: string | null; // ISO Z
+  status: AutocountEtlStatus;
+}
+
 // ── diff view model (AC-13-12) ───────────────────────────────────────────────
 
 /** One changed field, before → after. */

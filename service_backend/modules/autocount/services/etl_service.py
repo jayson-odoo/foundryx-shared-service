@@ -30,7 +30,12 @@ from app.jobs.service import JobService
 from app.models.connection import Connection
 from app.secrets import decrypt_secret
 
-from ..activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS, record_activity
+from ..activity import (
+    ACTIVITY_ERROR,
+    ACTIVITY_SUCCESS,
+    OPERATION_REPUSH_TASK,
+    record_activity,
+)
 from ..canonical.documents import (
     DOCUMENT_ENTITY_TYPES,
     ENTITY_PURCHASE_ORDER,
@@ -248,6 +253,17 @@ class EtlTaskView:
     next_reconcile_at: Optional[datetime] = None
     # ── continuation (plan sprint-5/03 S1/S4, AC-03-03/21) ───────────────────
     initial_load: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class EtlRepushView:
+    """``repush_task``'s result (plan sprint-5/07, AC-07-13..19) - deliberately
+    NOT an `EtlTaskView`: the route clears change tracking only, it does not
+    return the whole task."""
+
+    cleared_count: int
+    next_reconcile_at: Optional[datetime]
+    status: str
 
 
 def default_source_config(entity_type: str, *, today: Optional[date] = None) -> Dict[str, Any]:
@@ -1685,6 +1701,128 @@ class EtlService:
             "status": job.status,
             "task": self._task_view(company_id, entity_type, config),
         }
+
+    def _in_flight_guard(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> None:
+        """Raise the SAME `EtlStateError` `run_task_now` raises when a run for
+        this (company, entity) is still executing - ``run.id if run is not
+        None else None`` (AC-07-16: "same shape `run_task_now` uses" - no
+        background-job-id fallback). Called TWICE by `repush_task`: once as
+        the up-front guard, once again after `clear_all` but before the
+        commit (the race `first_unfinished`/`clear_all` leaves open - a run
+        can be enqueued in between)."""
+        from ..sync import AUTOCOUNT_SYNC
+
+        in_flight = SyncJobRepository(self.db).first_unfinished(
+            tenant_id, AUTOCOUNT_SYNC, company_id, entity_type
+        )
+        if in_flight is None:
+            return
+        run = SyncRunRepository(self.db).get_for_job(tenant_id, company_id, in_flight.id)
+        raise EtlStateError(
+            "A run for this task is still going. Wait for it to finish.",
+            running_run_id=(run.id if run is not None else None),
+        )
+
+    def repush_task(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        *,
+        actor_user_id: Optional[str] = None,
+    ) -> EtlRepushView:
+        """Clear this task's change-tracking rows so the next reconcile
+        classifies every fetched row as an add and re-pushes it (plan
+        sprint-5/07, AC-07-13..19) - the operator's answer to "the mapping
+        changed, re-send everything" with no SQL by hand.
+
+        Guards mirror ``run_task_now``'s (a run in flight refuses the SAME
+        way, with the same ``running_run_id`` link) plus two of its own: a
+        task whose source is not a database task, and a draft (nothing has
+        ever run for it to re-push). All three refuse BEFORE anything is
+        deleted - ``EtlStateError`` -> 409, nothing committed.
+
+        ``ac_doc_fingerprint``/the watermark are left alone (D5, plan
+        section 2.3): the reconcile that follows is a FULL extract either
+        way, so neither gates what it pushes - the fingerprint sweep
+        re-baselines itself on its next pass, and resetting the watermark
+        would re-read every page incrementally for nothing.
+
+            !!  COMMIT ORDER - read before touching this method.  !!
+
+        ``record_activity``/``ActivityLogService.record`` COMMITS the
+        session it is handed on success, and on ITS OWN failure calls
+        ``self.db.rollback()`` INSIDE its own swallow-all try/except (never
+        re-raises - ``activity.py``'s own module docstring, AC-13-43). Call
+        it before this method's own commit and a dropped activity row
+        SILENTLY discards the `clear_all` deletion too (same session, same
+        uncommitted transaction) while this method carries on as if nothing
+        happened - a 200 reporting a `clearedCount` that was never actually
+        persisted. So the ONLY correct order is: mutate -> re-check the
+        in-flight race -> `self.db.commit()` (the ACTUAL atomicity boundary
+        for the deletion + `next_reconcile_at`) -> THEN `record_activity`
+        (same pattern as `preview_task`'s `_record_preview` call, ~:715) -
+        an activity-write failure past this point can never touch the
+        already-committed deletion.
+        """
+        _company, config = self._task_config(tenant_id, company_id, entity_type)
+        if config.source_impl != SOURCE_IMPL_SQL_DB:
+            raise EtlStateError("Re-push applies to database tasks only.")
+        if config.etl_status == ETL_STATUS_DRAFT:
+            raise EtlStateError(
+                "Activate the task first - a draft has nothing to re-push."
+            )
+        self._in_flight_guard(tenant_id, company_id, entity_type)
+
+        # `clear_all` only FLUSHES (never commits - its own docstring).
+        cleared = RowHashRepository(self.db).clear_all(
+            tenant_id, company_id, entity_type
+        )
+        if config.etl_status == ETL_STATUS_ACTIVE:
+            # The very next scheduler sweep claims a `reconcile` (existing
+            # claim path, no new mode) - the incremental schedule is
+            # untouched. A `paused` task leaves this `None`: resuming later
+            # re-arms it as today, same as any other resume.
+            config.next_reconcile_at = datetime.now(timezone.utc)
+
+        # Re-check the race `first_unfinished` + `clear_all` leaves open: a
+        # manual/scheduled run can be enqueued between the up-front guard
+        # above and this commit, and would otherwise push a population whose
+        # tracked rows this call just wiped out from under it. Caught here
+        # means the deletion is rolled back with everything else - nothing
+        # commits at all for this request.
+        try:
+            self._in_flight_guard(tenant_id, company_id, entity_type)
+        except EtlStateError:
+            self.db.rollback()
+            raise
+
+        self.db.commit()
+        self.db.refresh(config)
+
+        logger.info(
+            "autocount repush: tenant=%s company=%s entity=%s actor=%s cleared=%d",
+            tenant_id, company_id, entity_type, actor_user_id, cleared,
+        )
+        record_activity(
+            self.db,
+            tenant_id=tenant_id,
+            operation=OPERATION_REPUSH_TASK,
+            status=ACTIVITY_SUCCESS,
+            external_ref=company_id,
+            response={
+                "clearedCount": cleared,
+                "entityType": entity_type,
+                "actorUserId": actor_user_id,
+            },
+        )
+        return EtlRepushView(
+            cleared_count=cleared,
+            next_reconcile_at=config.next_reconcile_at,
+            status=config.etl_status,
+        )
 
     def list_task_runs(
         self,
