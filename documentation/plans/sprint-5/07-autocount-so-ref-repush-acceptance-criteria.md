@@ -92,11 +92,14 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   missing under that tenant is skipped with a warning, never matched against another tenant's
   company.
 - **AC-07-12 [T]** Live replay on the lane DB (`foundryx_service_s36`, cloned from the user's
-  dump): after `alembic upgrade head` for the module, the `ac_sim` SO task's query contains
-  `h.Ref AS Ref`, its `result_columns` end with `Ref`, and it has an enabled `Ref -> ref` row;
-  the `Sorento` SO task's query is byte-identical to before, its `result_columns` are unchanged,
-  it has a DISABLED `Ref -> ref` row, and the migration log shows exactly one warning naming its
-  config id. The PO / SPO tasks are untouched (row counts and query hashes equal before/after).
+  dump): after the module migration runs to head, the `Sorento` SO task's query is byte-identical
+  to before, its `result_columns` are unchanged, it has a DISABLED `Ref -> ref` row, and the
+  migration log shows exactly one warning naming its config id. The PO / SPO tasks are untouched
+  (row counts and query hashes equal before/after). A second run touches 0 rows and logs no
+  warning. Amended 2026-09-10 after the replay: the lane's `ac_sim` task is a hand-authored
+  Postgres-dialect translation of the preset (`LEFT JOIN LATERAL`), never byte-identical to the
+  MSSQL preset text, so it takes the same customised branch as `Sorento` (disabled row + one
+  warning; BL-SS-196). The auto-swap branch (AC-07-08) is proven by unit test, not by lane data.
 
 ## Group C - "Re-push all" backend (`[BE]`)
 
