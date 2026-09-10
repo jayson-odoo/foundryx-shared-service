@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-09-10).** This run was captured against the typed-confirm build (commit 4c8dbb80 or earlier). Review rounds D8/D10 replaced the dialog with the server-parked deferred action; the current AC-07-25 evidence lives in `../repush-tester/`. Kept for the audit trail only.
+
 # S2a "Re-push all" - Phase 1 FE evidence
 
 Lane stack: backend `:8006` (`.venv/bin/uvicorn app.main:app --port 8006`, DB

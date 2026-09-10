@@ -182,19 +182,23 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
 - **AC-07-24 [FE]** Vitest: renders/hides per AC-07-21 (four permission x status cases), the
   deferred action fires the service exactly once with the right ids when its window lapses and
   never when undone, 409 path renders the message and the Runs link, task reload fires on success
-  and not on 409, a loading state disables the trigger while `busy`; hook tests for
-  `useEtlTaskLifecycle.repush` (success / 409 with `runningRunId` / other error) and a
-  `readRunningRunId` test against the exact backend 409 `detail` shape `{message, runningRunId}`. No `any`, no raw CSS, no bare Select /
+  and not on a failed commit, a loading state disables the trigger while `busy` and while the
+  parked action is committing, a failed cancel surfaces a toast. (Amended 2026-09-10, D10: the
+  synchronous hook path and `readRunningRunId` were removed with the server-parked model; the
+  tab tests run the real `useDeferredAction` against a mocked pending-actions service.) No `any`, no raw CSS, no bare Select /
   table / sonner imports (eslint guardrails).
-- **AC-07-25 [E2E]** Recorded agent-browser run on the lane stack (fresh prod build,
-  :3006 / :8006, `--session s36`), real clicks from `/` via the sidebar: Services -> AutoCount ->
-  company -> the SO entity task -> Review & Activate -> Re-push all -> typed confirm -> success
-  toast; DB proof in the README: `ac_row_hash` count for that (company, entity) is 0 after the
-  click and `next_reconcile_at <= now`; the Runs tab shows the claimed reconcile once the
-  sweep ticks (or the README states the sweep was not running and shows the DB row instead).
-  Screenshots at 375px AND 1280px for the tab with the action, the dialog, and the toast.
-  Evidence under `documentation/plans/sprint-5/07-evidence/repush/`. A second run against a
-  draft task proves the action is absent.
+- **AC-07-25 [E2E]** (amended 2026-09-10, D8/D10) Recorded agent-browser run on the lane
+  stack (fresh prod build, :3006 / :8006), real clicks from `/` via the sidebar: Services ->
+  AutoCount -> company -> an active database task -> Review & Activate -> Re-push all -> the
+  countdown with Cancel appears (no dialog) -> the window lapses and the server commits ->
+  success toast and the reloaded Next reconcile badge. DB proof in the README, taken AFTER the
+  window lapsed: `ac_row_hash` count for that (company, entity) is 0, `next_reconcile_at <=
+  now`, one activity row `repush task` carrying `actorUserId`. A cancel-within-window run proves
+  the count is unchanged and no pending action remains. A run against a draft task proves the
+  action is absent. Screenshots at 375px AND 1280px for the tab with the action, the countdown
+  (Cancel visible, not clipped at 375px), and the toast. Evidence under
+  `documentation/plans/sprint-5/07-evidence/repush-tester/` (the earlier `07-evidence/repush/`
+  and `repush-mock/` directories document the superseded typed-confirm build and are banner-marked).
 
 ## Group E - deploy order, operator steps, report (`[T]`)
 
