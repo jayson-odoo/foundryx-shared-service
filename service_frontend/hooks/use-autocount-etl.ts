@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/lib/api-client';
-import { readFieldErrors, readTaskError } from '@/lib/autocount-etl';
+import { readFieldErrors, readRunningRunId, readTaskError } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
+  AutocountEtlRepushResult,
   AutocountEtlSourceConfig,
   AutocountEtlTask,
   AutocountEtlTaskError,
@@ -166,7 +167,23 @@ export function useEtlTaskPreview(
 
 // ── lifecycle: activate / pause / resume / run now (AC-22-18/19) ──────────────
 
-export type EtlLifecycleAction = 'activate' | 'pause' | 'resume' | 'run';
+export type EtlLifecycleAction = 'activate' | 'pause' | 'resume' | 'run' | 'repush';
+
+/**
+ * The outcome of `repush()` (plan sprint-5/07, AC-07-20/23) - carried on the
+ * RETURN value rather than read back off hook state right after the same
+ * `await`: a state update the hook makes internally only reaches the caller's
+ * closure on the NEXT render, so a synchronous post-await read would see a
+ * stale snapshot. `result` set = success (toast the count). `runningRunId`
+ * set = the ONE failure the tab treats specially (a toast + link to the run,
+ * never the generic inline Alert). Neither set = every other failure, already
+ * surfaced via the shared `error` state (the existing `lifecycle.error` Alert).
+ */
+export interface EtlRepushOutcome {
+  result: AutocountEtlRepushResult | null;
+  runningRunId: string | null;
+  message: string | null;
+}
 
 export interface UseEtlTaskLifecycleResult {
   /** The action in flight, if any (one at a time - the buttons disable together). */
@@ -178,6 +195,8 @@ export interface UseEtlTaskLifecycleResult {
   resume: () => Promise<boolean>;
   /** Manual run now; resolves to the run id (null on failure). */
   runNow: () => Promise<string | null>;
+  /** Clear change tracking for a re-push (plan sprint-5/07, AC-07-20). */
+  repush: () => Promise<EtlRepushOutcome>;
   clearError: () => void;
 }
 
@@ -229,9 +248,37 @@ export function useEtlTaskLifecycle(
     return runId;
   }, [companyId, entityType, perform]);
 
+  // Not built on `perform`: `repushEtlTask` does not return an
+  // `AutocountEtlTask` (only clearedCount/nextReconcileAt/status), so there
+  // is no `onTask` to hand it to. Shares the SAME `busy`/`error` state as
+  // every other action above (still exactly one lifecycle action in flight
+  // at a time) but returns a rich outcome instead of a boolean - see
+  // `EtlRepushOutcome`.
+  const repush = useCallback(async (): Promise<EtlRepushOutcome> => {
+    setBusy('repush');
+    setError(null);
+    try {
+      const result = await autocountService.repushEtlTask(companyId, entityType);
+      return { result, runningRunId: null, message: null };
+    } catch (e) {
+      if (e instanceof ApiError) {
+        const runningRunId = readRunningRunId(e.detail);
+        if (runningRunId) {
+          return { result: null, runningRunId, message: e.message };
+        }
+        setError(e.message);
+      } else {
+        setError('That action could not be completed.');
+      }
+      return { result: null, runningRunId: null, message: null };
+    } finally {
+      setBusy(null);
+    }
+  }, [companyId, entityType]);
+
   const clearError = useCallback(() => setError(null), []);
 
-  return { busy, error, activate, pause, resume, runNow, clearError };
+  return { busy, error, activate, pause, resume, runNow, repush, clearError };
 }
 
 // ── connections ──────────────────────────────────────────────────────────────

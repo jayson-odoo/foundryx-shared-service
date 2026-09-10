@@ -17,9 +17,19 @@ vi.mock('@/hooks/use-can', () => ({
   useCan: () => ({ can: canMock, ready: true }),
 }));
 
+const { toastSuccess, toastError } = vi.hoisted(() => ({
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+}));
+vi.mock('@/lib/toast', () => ({
+  toast: { success: toastSuccess, error: toastError, info: vi.fn(), warning: vi.fn() },
+}));
+
 beforeEach(() => {
   canMock.mockReset();
   canMock.mockReturnValue(true);
+  toastSuccess.mockReset();
+  toastError.mockReset();
 });
 
 function company(over: Partial<AutocountCompany> = {}): AutocountCompany {
@@ -104,6 +114,11 @@ function lifecycle(over: Partial<UseEtlTaskLifecycleResult> = {}): UseEtlTaskLif
     pause: vi.fn().mockResolvedValue(true),
     resume: vi.fn().mockResolvedValue(true),
     runNow: vi.fn().mockResolvedValue('run-1'),
+    repush: vi.fn().mockResolvedValue({
+      result: { clearedCount: 148068, nextReconcileAt: '2026-09-10T06:31:00Z', status: 'active' },
+      runningRunId: null,
+      message: null,
+    }),
     clearError: vi.fn(),
     ...over,
   };
@@ -351,5 +366,193 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
       />,
     );
     expect(screen.queryByTestId('activate-dependency-warning')).not.toBeInTheDocument();
+  });
+
+  // ── "Re-push all" (plan sprint-5/07, AC-07-20..24) ─────────────────────────
+
+  describe('Re-push all', () => {
+    const dbEntity = () => entityConfig({ id: 'so', entityType: 'sales_order', sourceImpl: 'sql_db' });
+
+    it('renders for an active database task when the caller can manage companies', () => {
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ entityType: 'sales_order', etlStatus: 'active', lastPreviewAt: '2026-08-30T06:21:00Z' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle()}
+          onRan={vi.fn()}
+          entities={[dbEntity()]}
+        />,
+      );
+      expect(screen.getByTestId('etl-repush-all')).toBeInTheDocument();
+    });
+
+    it('renders for a paused database task when the caller can manage companies', () => {
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ entityType: 'sales_order', etlStatus: 'paused' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle()}
+          onRan={vi.fn()}
+          entities={[dbEntity()]}
+        />,
+      );
+      expect(screen.getByTestId('etl-repush-all')).toBeInTheDocument();
+    });
+
+    it('hides for a draft task even when it is a database task and the caller can manage', () => {
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ entityType: 'sales_order', etlStatus: 'draft' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle()}
+          onRan={vi.fn()}
+          entities={[dbEntity()]}
+        />,
+      );
+      expect(screen.queryByTestId('etl-repush-all')).not.toBeInTheDocument();
+    });
+
+    it('hides for an active task without autocount.companies.manage', () => {
+      canMock.mockImplementation((key: string) => key !== 'autocount.companies.manage');
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ entityType: 'sales_order', etlStatus: 'active', lastPreviewAt: '2026-08-30T06:21:00Z' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle()}
+          onRan={vi.fn()}
+          entities={[dbEntity()]}
+        />,
+      );
+      expect(screen.queryByTestId('etl-repush-all')).not.toBeInTheDocument();
+    });
+
+    it('hides for an active task whose source is the AutoCount API, not a database task', () => {
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ entityType: 'sales_order', etlStatus: 'active', lastPreviewAt: '2026-08-30T06:21:00Z' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle()}
+          onRan={vi.fn()}
+          entities={[entityConfig({ id: 'so', entityType: 'sales_order', sourceImpl: 'autocount_read' })]}
+        />,
+      );
+      expect(screen.queryByTestId('etl-repush-all')).not.toBeInTheDocument();
+    });
+
+    it('gates the typed confirm on the entity label and calls the service exactly once with the right ids', async () => {
+      const repush = vi.fn().mockResolvedValue({
+        result: { clearedCount: 148068, nextReconcileAt: '2026-09-10T06:31:00Z', status: 'active' },
+        runningRunId: null,
+        message: null,
+      });
+      const onRan = vi.fn();
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ companyId: 'c1', entityType: 'sales_order', etlStatus: 'active' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle({ repush })}
+          onRan={onRan}
+          entities={[dbEntity()]}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('etl-repush-all'));
+      const confirmButton = screen.getByTestId('etl-repush-confirm');
+      expect(confirmButton).toBeDisabled();
+
+      fireEvent.change(screen.getByTestId('etl-repush-confirm-input'), {
+        target: { value: 'wrong' },
+      });
+      expect(confirmButton).toBeDisabled();
+
+      fireEvent.change(screen.getByTestId('etl-repush-confirm-input'), {
+        target: { value: 'Sales order' },
+      });
+      expect(confirmButton).toBeEnabled();
+
+      fireEvent.click(confirmButton);
+      expect(repush).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(toastSuccess).toHaveBeenCalledTimes(1));
+      expect(toastSuccess.mock.calls[0][0]).toContain('148,068');
+      expect(toastSuccess.mock.calls[0][0]).toContain('next scheduler tick');
+      expect(onRan).toHaveBeenCalledTimes(1);
+    });
+
+    it('closes on Cancel without calling the service', async () => {
+      const repush = vi.fn();
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ entityType: 'sales_order', etlStatus: 'active' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle({ repush })}
+          onRan={vi.fn()}
+          entities={[dbEntity()]}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('etl-repush-all'));
+      fireEvent.change(screen.getByTestId('etl-repush-confirm-input'), {
+        target: { value: 'Sales order' },
+      });
+      fireEvent.click(screen.getByText('Cancel'));
+      expect(repush).not.toHaveBeenCalled();
+      await vi.waitFor(() =>
+        expect(screen.queryByTestId('etl-repush-confirm-input')).not.toBeInTheDocument(),
+      );
+    });
+
+    it('renders a 409 in-flight failure as a toast with a link to the running run, dialog closed', async () => {
+      const repush = vi.fn().mockResolvedValue({
+        result: null,
+        runningRunId: 'run-42',
+        message: 'A run is already in progress for this task.',
+      });
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ companyId: 'c1', entityType: 'sales_order', etlStatus: 'active' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle({ repush })}
+          onRan={vi.fn()}
+          entities={[dbEntity()]}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('etl-repush-all'));
+      fireEvent.change(screen.getByTestId('etl-repush-confirm-input'), {
+        target: { value: 'Sales order' },
+      });
+      fireEvent.click(screen.getByTestId('etl-repush-confirm'));
+      await vi.waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
+      expect(toastError.mock.calls[0][0]).toBe('A run is already in progress for this task.');
+      expect(toastSuccess).not.toHaveBeenCalled();
+    });
+
+    it('disables the trigger while a lifecycle action is busy', () => {
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ entityType: 'sales_order', etlStatus: 'active' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle({ busy: 'repush' })}
+          onRan={vi.fn()}
+          entities={[dbEntity()]}
+        />,
+      );
+      expect(screen.getByTestId('etl-repush-all')).toBeDisabled();
+    });
   });
 });

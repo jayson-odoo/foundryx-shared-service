@@ -21,6 +21,7 @@ import type {
   AutocountEntityConfig,
   AutocountEntityConfigUpdate,
   AutocountEtlPreviewResult,
+  AutocountEtlRepushResult,
   AutocountEtlRunStart,
   AutocountEtlTask,
   AutocountEtlTaskUpdate,
@@ -348,6 +349,36 @@ export interface AutocountService {
     entityType: string,
     query?: AutocountListQuery,
   ): Promise<ListResult<AutocountSyncRun>>;
+
+  // ── "Re-push all" (plan sprint-5/07, AC-07-13..24) ─────────────────────────
+  //
+  // BACKEND CONTRACT (S2b must match this EXACTLY - the mock is the spec):
+  //
+  //   POST /autocount/companies/{companyId}/entities/{entityType}/etl-task/repush
+  //        → 200 AutocountEtlRepushResult {clearedCount, nextReconcileAt, status}
+  //          - clears EVERY tracked row (`ac_row_hash`) for this (tenant,
+  //          company, entityType) ONLY; `ac_doc_fingerprint`/the watermark are
+  //          untouched. An `active` task gets `next_reconcile_at = now(utc)`
+  //          (the next sweep claims a reconcile - `nextReconcileAt` echoes
+  //          it); a `paused` task's stays `null` (nothing scheduled until
+  //          resumed) - AC-07-14/15.
+  //        → 409 (nothing deleted), body `{detail, message}` where `detail`
+  //          is a PLAIN STRING for a draft task ("Activate the task first -
+  //          a draft has nothing to re-push.") or a non-database task
+  //          ("Re-push applies to database tasks only."), and the OBJECT
+  //          `{message, runningRunId}` when a run for this (company, entity)
+  //          is already in flight (AC-07-16) - the surface links to that run
+  //          instead of the generic inline error.
+  //        → 403 without `autocount.companies.manage`; 404 for another
+  //          tenant's company (never resolved unscoped).
+  //   Gated `autocount.companies.manage` (the same "configure the task"
+  //   bucket as pause/activate/refetch-history - no new permission key).
+
+  /**
+   * Clear change tracking so the next reconcile re-pushes every document of
+   * this (database) task. See the contract above.
+   */
+  repushEtlTask(companyId: string, entityType: string): Promise<AutocountEtlRepushResult>;
 
   // ── document mapping (sprint-5/02, S1 - AC-02-01..09/16..22) ───────────────
   //

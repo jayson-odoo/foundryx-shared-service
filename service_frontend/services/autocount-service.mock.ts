@@ -567,6 +567,17 @@ const sourceImpls = new Map<string, AutocountSourceImpl>();
 /** Result columns of every preview run this session, by normalized query. */
 const previewColumnsByQuery = new Map<string, string[]>();
 const etlRuns = new Map<string, AutocountSyncRun[]>();
+/**
+ * Test seam (plan sprint-5/07, AC-07-20) - the ONLY way to reach the "a run
+ * is in flight" 409 with no backend: set a run id here and the next
+ * `repushEtlTask` call throws it instead of clearing anything. Cleared by
+ * `resetEtlMockState`.
+ */
+let mockRepushInFlightRunId: string | null = null;
+
+export function setMockRepushInFlight(runId: string | null): void {
+  mockRepushInFlightRunId = runId;
+}
 
 function taskKey(companyId: string, entityType: string): string {
   return `${companyId}:${entityType}`;
@@ -1255,6 +1266,7 @@ export function resetEtlMockState(): void {
   etlTasks.clear();
   createdCompanies.clear();
   dbSeeded = false;
+  mockRepushInFlightRunId = null;
 }
 
 export const mockAutocountService: AutocountService = {
@@ -1813,6 +1825,33 @@ export const mockAutocountService: AutocountService = {
   async listEtlRuns(companyId, entityType, query) {
     await pause(200);
     return mockListEtlRuns(companyId, entityType, query);
+  },
+
+  // ── "Re-push all" (plan sprint-5/07, AC-07-20) - PHASE 1 MOCK is the spec
+  // for the S2b backend, per `setMockRepushInFlight` above. ─────────────────
+  async repushEtlTask(companyId, entityType) {
+    await pause(300);
+    if (mockRepushInFlightRunId) {
+      const runId = mockRepushInFlightRunId;
+      throw new ApiError('A run is already in progress for this task.', 409, null, {
+        message: 'A run is already in progress for this task.',
+        runningRunId: runId,
+      });
+    }
+    const task = await this.getEtlTask(companyId, entityType);
+    if (task.etlStatus === 'draft') {
+      throw new ApiError('Activate the task first - a draft has nothing to re-push.', 409);
+    }
+    const impl = sourceImpls.get(taskKey(companyId, entityType)) ?? 'sql_db';
+    if (impl !== 'sql_db') {
+      throw new ApiError('Re-push applies to database tasks only.', 409);
+    }
+    return {
+      clearedCount: 148068,
+      nextReconcileAt:
+        task.etlStatus === 'active' ? new Date(Date.now() + 60_000).toISOString() : null,
+      status: task.etlStatus,
+    };
   },
 };
 

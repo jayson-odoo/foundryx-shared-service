@@ -219,6 +219,18 @@ export function readTaskError(detail: unknown): AutocountEtlTaskError | null {
   return { code: bag.code, message: bag.message };
 }
 
+/**
+ * Read the in-flight run id off a "re-push all" 409's `{message,
+ * runningRunId}` detail (plan sprint-5/07, AC-07-16/23) - null for a plain-
+ * string 409 (draft task / not a database task), which surfaces on the
+ * generic `lifecycle.error` Alert instead.
+ */
+export function readRunningRunId(detail: unknown): string | null {
+  if (!detail || typeof detail !== 'object') return null;
+  const bag = detail as { runningRunId?: unknown };
+  return typeof bag.runningRunId === 'string' ? bag.runningRunId : null;
+}
+
 /** Run duration for the history list (cost per run, AC-22-17). */
 export function formatDurationMs(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || !Number.isFinite(ms)) return '-';

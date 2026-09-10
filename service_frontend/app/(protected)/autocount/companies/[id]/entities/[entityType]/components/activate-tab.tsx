@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import {
   CircleCheck,
@@ -7,12 +8,24 @@ import {
   LoaderCircleIcon,
   Pause,
   Play,
+  RotateCcw,
   TriangleAlert,
 } from 'lucide-react';
 import { Alert, AlertDescription, AlertIcon, AlertTitle } from '@/components/ui/alert';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardHeading, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { PreviewPanel } from '@/components/platform/autocount/preview-panel';
 import type {
   UseEtlTaskLifecycleResult,
@@ -26,8 +39,15 @@ import {
   previewFailedBlocksActivation,
   productDependencyWarning,
 } from '@/lib/autocount-etl';
+import { toast } from '@/lib/toast';
 import type { AutocountCompany, AutocountEntityConfig, AutocountEtlTask } from '@/types/autocount';
-import { AC_SYNC_RUN, acCompanyHref } from '../../../../../components/autocount-meta';
+import {
+  AC_COMPANIES_MANAGE,
+  AC_SYNC_RUN,
+  acCompanyHref,
+  acTaskHref,
+  entityLabel,
+} from '../../../../../components/autocount-meta';
 
 export interface ActivateTabProps {
   company: AutocountCompany | null;
@@ -70,6 +90,7 @@ export function ActivateTab({
   // stay ungated HERE - they are `companies.manage`, already implied by
   // having reached the page at all.
   const canRun = can(AC_SYNC_RUN);
+  const canManage = can(AC_COMPANIES_MANAGE);
   const prerequisites = activatePrerequisites({ company, task, configDirty });
   const blocked = prerequisites.length > 0;
   // A WARNING, never a block (AC-22-23): the retryable/carry-over mechanism
@@ -79,6 +100,42 @@ export function ActivateTab({
   const status = task.etlStatus;
   const busy = lifecycle.busy !== null || preview.state.status === 'loading';
   const previewOk = Boolean(task.lastPreviewAt);
+
+  // "Re-push all" (plan sprint-5/07, AC-07-20..24) - foolproof-UI: only a
+  // database task that is actually running (active/paused) can be re-pushed,
+  // and only for a viewer who can configure the task at all. A draft or an
+  // API-sourced task never offers it, rather than showing it disabled.
+  const isDatabaseTask = entities.some(
+    (e) => e.entityType === task.entityType && e.sourceImpl === 'sql_db',
+  );
+  const showRepush = (status === 'active' || status === 'paused') && isDatabaseTask && canManage;
+  const [repushOpen, setRepushOpen] = useState(false);
+  const [repushConfirmText, setRepushConfirmText] = useState('');
+  const repushLabel = entityLabel(task.entityType);
+
+  async function confirmRepush() {
+    const outcome = await lifecycle.repush();
+    if (outcome.result) {
+      const count = outcome.result.clearedCount.toLocaleString();
+      const tail =
+        status === 'active' ? ' The full re-push starts on the next scheduler tick.' : '';
+      toast.success(`Change tracking cleared for ${count} documents.${tail}`);
+      onRan();
+      return;
+    }
+    if (outcome.runningRunId) {
+      toast.error(outcome.message ?? 'A run is already in progress for this task.', {
+        action: (
+          <Link href={acTaskHref(task.companyId, task.entityType, 'runs')} className="underline">
+            View run
+          </Link>
+        ),
+      });
+      return;
+    }
+    // Every other failure lands on the shared `error` state the tab already
+    // renders (`data-testid="lifecycle-error"`) - nothing else to do here.
+  }
   // S5 review SHOULD-FIX 4b - SEPARATE from `prerequisites`: that list also
   // gates Run preview, and fixing this means re-running preview after
   // editing the mapping, so Run preview must stay available.
@@ -255,6 +312,24 @@ export function ActivateTab({
           </Button>
         )}
 
+        {showRepush && (
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            disabled={busy}
+            onClick={() => setRepushOpen(true)}
+            data-testid="etl-repush-all"
+          >
+            {lifecycle.busy === 'repush' ? (
+              <LoaderCircleIcon className="size-4 animate-spin" />
+            ) : (
+              <RotateCcw className="size-4" />
+            )}
+            Re-push all
+          </Button>
+        )}
+
         <div className="flex flex-wrap items-center gap-2 sm:ms-auto">
           {task.lastPreviewAt && (
             <Badge variant="success" appearance="light" size="sm" data-testid="etl-preview-passed">
@@ -322,6 +397,56 @@ export function ActivateTab({
           </CardContent>
         </Card>
       )}
+
+      {/* Re-push all - typed confirmation, the shell's AlertDialog (plan
+          sprint-5/07, AC-07-22). Not the shared ResourceAction
+          `ConfirmActionDialog`: that one is reserved to the resource-list
+          action registry's disclosed carve-outs (see
+          `confirm-carve-outs.inventory.test.ts`) - this tab has no
+          `ResourceAction` registry at all, so it composes the same
+          `AlertDialog` + typed `Input` primitive directly, same as
+          `module-card.tsx`'s Deactivate/Uninstall dialogs. */}
+      <AlertDialog
+        open={repushOpen}
+        onOpenChange={(open) => {
+          setRepushOpen(open);
+          if (!open) setRepushConfirmText('');
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Re-push all documents</AlertDialogTitle>
+            <AlertDialogDescription>
+              Clears change tracking for this task. The next reconcile pushes every document to
+              Sorento again.
+              {status === 'paused' && ' Nothing moves until the task is resumed.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex flex-col gap-1.5">
+            <p className="text-xs text-muted-foreground">
+              Type &quot;{repushLabel}&quot; to confirm.
+            </p>
+            <Input
+              value={repushConfirmText}
+              onChange={(e) => setRepushConfirmText(e.target.value)}
+              placeholder={repushLabel}
+              aria-label="Confirmation text"
+              data-testid="etl-repush-confirm-input"
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={repushConfirmText !== repushLabel || lifecycle.busy !== null}
+              onClick={() => void confirmRepush()}
+              data-testid="etl-repush-confirm"
+            >
+              Re-push all
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
