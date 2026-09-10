@@ -1617,6 +1617,48 @@ def test_repush_is_refused_when_source_impl_is_not_sql_db(client, session_factor
 
 
 def test_repush_is_refused_while_a_run_is_in_flight(client, session_factory, rig, consumer):
+    """AC-07-16: the SAME shape `run_task_now` uses - `runningRunId` present
+    when the in-flight job already has its `ac_sync_run` row (review round
+    finding 4: no background-job-id fallback; `run.id if run is not None
+    else None`, exactly like `run_task_now`)."""
+    from app.models.background_job import JOB_RUNNING
+
+    company_id, _sql_id = rig
+    _activated(client, company_id)
+    db = session_factory()
+    _row_hash(db, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="untouched")
+    job = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID, type="autocount_sync", status=JOB_RUNNING,
+        payload_json={"companyId": company_id, "entityType": ENTITY_CUSTOMER},
+    )
+    db.add(job)
+    db.flush()
+    db.add(AcSyncRun(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company_id, entity_type=ENTITY_CUSTOMER,
+        job_id=job.id,
+    ))
+    db.commit()
+    db.close()
+
+    response = client.post(_repush_url(company_id), headers=_auth(client))
+    assert response.status_code == 409, response.text
+    body = response.json()
+    assert "still going" in str(body).lower()
+    assert "runningRunId" in str(body), body
+
+    db2 = session_factory()
+    assert _row_hash_count(db2, company_id=company_id, entity_type=ENTITY_CUSTOMER) == 1
+    db2.close()
+
+
+def test_repush_in_flight_with_no_run_row_yet_still_409s_without_a_runningRunId(
+    client, session_factory, rig, consumer,
+):
+    """Very early in a job's lifecycle (or a worker that has not written its
+    `ac_sync_run` row yet) - `run_task_now`'s own guard has the same gap, so
+    `repush_task` matches it exactly rather than inventing its own fallback
+    (review round finding 4): the conflict is still a 409 naming the reason,
+    just without a `runningRunId` to link."""
     from app.models.background_job import JOB_RUNNING
 
     company_id, _sql_id = rig
@@ -1634,7 +1676,7 @@ def test_repush_is_refused_while_a_run_is_in_flight(client, session_factory, rig
     assert response.status_code == 409, response.text
     body = response.json()
     assert "still going" in str(body).lower()
-    assert "runningRunId" in str(body), body
+    assert "runningRunId" not in str(body), body
 
     db2 = session_factory()
     assert _row_hash_count(db2, company_id=company_id, entity_type=ENTITY_CUSTOMER) == 1
@@ -1644,36 +1686,39 @@ def test_repush_is_refused_while_a_run_is_in_flight(client, session_factory, rig
 # ── AC-07-17: atomicity - clear + next_reconcile_at in ONE commit ───────────
 
 
-def test_repush_failure_after_clear_all_rolls_back_the_deletion(
+def test_repush_failure_at_commit_rolls_back_the_deletion(
     session_factory, rig, consumer, monkeypatch,
 ):
-    """Simulated failure: `record_activity` (the write that sits at the tail
-    of `repush_task`, per the plan's step order) is monkeypatched to raise.
+    """Simulated failure at the REAL atomicity seam: `repush_task`'s OWN
+    `self.db.commit()` (review round finding 1/6a - `record_activity` itself
+    can never be this test's failure point, since `ActivityLogService.record`
+    swallows its own exception and never re-raises, AC-13-43; it also commits
+    on success, so injecting a raise into the OLD monkeypatched
+    `record_activity` name proved nothing about the real commit boundary).
     `clear_all` only FLUSHES (never commits - see its own docstring), so a
-    raise before the service's own commit must leave the session's rollback
-    (mirroring `app.database.get_db`'s `except Exception: db.rollback()`)
-    with the deletion undone."""
-    import modules.autocount.services.etl_service as etl_service_module
+    raise AT the commit call must leave the session's rollback (mirroring
+    `app.database.get_db`'s `except Exception: db.rollback()`) with the
+    deletion undone."""
+    from modules.autocount.services.etl_service import EtlService
 
     company_id, _sql_id = rig
     client_setup = session_factory()
     # Activate + seed a hash row directly at the service/session level (no
     # HTTP indirection here - this test drives EtlService itself so the
     # failure injection and the rollback are observed in ONE place).
-    from modules.autocount.services.etl_service import EtlService
-
     EtlService(client_setup).preview_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
     EtlService(client_setup).activate_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
     _row_hash(client_setup, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="r1")
     client_setup.commit()
     client_setup.close()
 
-    def boom(*args, **kwargs):
-        raise RuntimeError("simulated failure after clear_all")
-
-    monkeypatch.setattr(etl_service_module, "record_activity", boom)
-
     db = session_factory()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated failure at commit")
+
+    monkeypatch.setattr(db, "commit", boom)
+
     service = EtlService(db)
     method = getattr(service, "repush_task", None)
     if method is None:
@@ -1687,6 +1732,96 @@ def test_repush_failure_after_clear_all_rolls_back_the_deletion(
     assert _row_hash_count(
         fresh, company_id=company_id, entity_type=ENTITY_CUSTOMER,
     ) == 1, "the clear_all deletion must have been rolled back with the failed commit"
+    fresh.close()
+
+
+def test_repush_a_run_enqueued_between_the_guard_and_the_commit_rolls_back(
+    session_factory, rig, consumer, monkeypatch,
+):
+    """The race `first_unfinished`/`clear_all` leaves open (review round
+    finding 3): a run can be enqueued AFTER the up-front in-flight guard
+    passes but BEFORE `repush_task` commits. `_in_flight_guard` is called a
+    SECOND time, right before the commit - monkeypatched here to answer
+    "nothing in flight" on the first call (the up-front guard) and "a job IS
+    in flight" on the second (the pre-commit re-check), so the method must
+    409 and roll the deletion back, exactly like the plain race-free 409."""
+    from modules.autocount.services.etl_service import EtlService, EtlStateError
+
+    company_id, _sql_id = rig
+    setup = session_factory()
+    EtlService(setup).preview_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
+    EtlService(setup).activate_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
+    _row_hash(setup, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="r1")
+    setup.commit()
+    setup.close()
+
+    db = session_factory()
+    service = EtlService(db)
+    if not hasattr(service, "_in_flight_guard"):
+        pytest.fail("EtlService has no `_in_flight_guard` helper yet")
+
+    calls = {"n": 0}
+    real_guard = service._in_flight_guard
+
+    def racy_guard(tenant_id, company_id_, entity_type):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None  # the up-front guard sees nothing in flight
+        # The pre-commit re-check sees a job that appeared in between.
+        raise EtlStateError(
+            "A run for this task is still going. Wait for it to finish.",
+            running_run_id="run-raced-in",
+        )
+
+    monkeypatch.setattr(service, "_in_flight_guard", racy_guard)
+
+    with pytest.raises(EtlStateError) as excinfo:
+        service.repush_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
+    assert excinfo.value.running_run_id == "run-raced-in"
+    assert calls["n"] == 2, "the guard must run once up front AND once before the commit"
+    db.close()
+
+    fresh = session_factory()
+    assert _row_hash_count(
+        fresh, company_id=company_id, entity_type=ENTITY_CUSTOMER,
+    ) == 1, "a run enqueued mid-request must roll the deletion back, nothing committed"
+    fresh.close()
+
+
+def test_repush_an_activity_write_failure_never_undoes_the_committed_wipe(
+    session_factory, rig, consumer, monkeypatch,
+):
+    """The reviewer's kill test: `record_activity` runs AFTER `repush_task`'s
+    own commit now (review round finding 1), so a failure writing the
+    activity row must never touch the already-committed deletion - the
+    response still reports the real `clearedCount` and the wipe is real."""
+    import app.activity_log.service as activity_service_module
+    from modules.autocount.services.etl_service import EtlService
+
+    company_id, _sql_id = rig
+    setup = session_factory()
+    EtlService(setup).preview_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
+    EtlService(setup).activate_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
+    _row_hash(setup, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="r1")
+    _row_hash(setup, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="r2")
+    setup.commit()
+    setup.close()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated activity write failure")
+
+    monkeypatch.setattr(activity_service_module.IntegrationActivityRepository, "add", boom)
+
+    db = session_factory()
+    service = EtlService(db)
+    view = service.repush_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
+    assert view.cleared_count == 2
+    db.close()
+
+    fresh = session_factory()
+    assert _row_hash_count(
+        fresh, company_id=company_id, entity_type=ENTITY_CUSTOMER,
+    ) == 0, "an activity-write failure must never undo the already-committed wipe"
     fresh.close()
 
 

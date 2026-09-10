@@ -457,3 +457,10 @@ Per-entity ingest tests for the new fields, back-create paths, `shipping_orders`
   otherwise-unmodified SO is correctly NOT re-pushed by a plain incremental/reconcile tick - the
   "Re-push all" task action (Group C, this plan) is the deliberate way to re-push an unchanged
   population after a mapping or consumer-side change.
+- 2026-09-10 (review round, `OMIT_WHEN_EMPTY_FIELDS` falsy check confirmed for BOTH fields): an
+  empty STRING is omitted the same way `None` is - `container_number == ""` and `ref == ""` are
+  both dropped from the payload entirely (never sent as `""` or as an explicit `null`), same
+  "absent = leave Sorento's stored value alone" semantics as addendum section 11. Pinned by
+  `test_v2_payload_omits_container_number_when_empty_string` (`test_autocount_spo_container_
+  number.py`) and the existing `test_v2_payload_omits_ref_when_empty` parametrization
+  (`test_autocount_so_ref.py`, already covered `[None, ""]`).

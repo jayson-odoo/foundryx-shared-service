@@ -665,6 +665,9 @@ def repush_etl_task(
     # this clears change tracking, it does not itself move any data - the
     # push happens on the reconcile the NEXT sweep tick claims.
     current_user: User = Depends(require_permission("autocount.companies.manage")),
+    # The REAL user under impersonation (writes/activity are never
+    # attributed to the target), same dependency `run_etl_task` uses.
+    actor_id: str = Depends(get_actor_user_id),
     db: Session = Depends(get_db),
 ):
     """Clear this task's tracked rows so the next reconcile re-pushes every
@@ -673,7 +676,9 @@ def repush_etl_task(
     conflict carries the running run's id when one is, same shape
     `run_task_now` uses)."""
     try:
-        view = EtlService(db).repush_task(current_user.tenant_id, company_id, entity_type)
+        view = EtlService(db).repush_task(
+            current_user.tenant_id, company_id, entity_type, actor_user_id=actor_id,
+        )
     except AutocountServiceError as exc:
         return _raise_task(exc)
     return EtlRepushResponse(

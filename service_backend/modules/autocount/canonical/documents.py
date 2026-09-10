@@ -196,6 +196,11 @@ class CanonicalDocumentLine(CanonicalLine):
         if contract_version >= 2:
             keys = keys + list(self.FALLBACK_FIELDS)
         payload = {key: data[key] for key in keys if key in data}
+        # CONSTRAINT (review round, sprint-5/07): `not payload.get(name)`
+        # treats `0`/`False`/`[]` as empty too, which is exactly right for a
+        # string/ref field (never send a blank as the value, only omit it)
+        # but WRONG for a numeric/boolean field genuinely valued at zero or
+        # false - never name one of those here.
         for name in self.OMIT_WHEN_EMPTY_FIELDS:
             if not payload.get(name):
                 payload.pop(name, None)
@@ -374,6 +379,11 @@ class CanonicalDocument(CanonicalRecord):
         if contract_version >= 2:
             keys = keys + list(self.FALLBACK_FIELDS)
         payload = {key: data[key] for key in keys if key in data}
+        # CONSTRAINT (review round, sprint-5/07): `not payload.get(name)`
+        # treats `0`/`False`/`[]` as empty too, which is exactly right for a
+        # string/ref field (never send a blank as the value, only omit it)
+        # but WRONG for a numeric/boolean field genuinely valued at zero or
+        # false - never name one of those here.
         for name in self.OMIT_WHEN_EMPTY_FIELDS:
             if not payload.get(name):
                 payload.pop(name, None)
