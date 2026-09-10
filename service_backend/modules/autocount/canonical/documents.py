@@ -325,6 +325,14 @@ class CanonicalDocument(CanonicalRecord):
     # each subclass declares its OWN (the field names differ: customer_* vs
     # supplier_*).
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = ()
+    # sprint-5/07 (AC-07-02) - the HEADER-level twin of
+    # `CanonicalDocumentLine.OMIT_WHEN_EMPTY_FIELDS` (sprint-5/06): a fallback
+    # field named here is DROPPED from the payload (never sent as an explicit
+    # `null`) when its value is empty. Absent means "leave Sorento's stored
+    # value alone"; `null` means "clear it" - generalises the `container_number`
+    # rule that used to be a one-off `sink_payload` override on
+    # `CanonicalShippingOrder`. Empty on the shared base; SO/SPO populate it.
+    OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ()
 
     @field_validator("status")
     @classmethod
@@ -366,6 +374,9 @@ class CanonicalDocument(CanonicalRecord):
         if contract_version >= 2:
             keys = keys + list(self.FALLBACK_FIELDS)
         payload = {key: data[key] for key in keys if key in data}
+        for name in self.OMIT_WHEN_EMPTY_FIELDS:
+            if not payload.get(name):
+                payload.pop(name, None)
         payload["lines"] = [
             line.sink_payload(contract_version=contract_version) for line in self.lines
         ]
@@ -392,6 +403,13 @@ class CanonicalSalesOrder(CanonicalDocument):
     customer_code: Optional[str] = Field(None, max_length=50)
     customer_name: Optional[str] = None
     agent_code: Optional[str] = Field(None, max_length=100)
+    # sprint-5/07 (AC-07-02) - AutoCount `SO.Ref`, sent VERBATIM (no cleaning
+    # on the ESB side - Sorento's `label_from_ref` owns stripping the sales-
+    # staff agent stamps to derive `project_label`). SO only: PO/SPO never
+    # carry this field at all (`CanonicalPurchaseOrder`/`CanonicalShippingOrder`
+    # declare no such attribute). v2+ only, same fallback gate as every other
+    # field below; never sent as an explicit `null` (`OMIT_WHEN_EMPTY_FIELDS`).
+    ref: Optional[str] = Field(None, max_length=255)
     lines: List[CanonicalSalesOrderLine] = Field(default_factory=list)
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
@@ -399,8 +417,9 @@ class CanonicalSalesOrder(CanonicalDocument):
         "doc_date", "requested_delivery_date", "status", "internal_note",
     )
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
-        "customer_code", "customer_name", "agent_code",
+        "customer_code", "customer_name", "agent_code", "ref",
     )
+    OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ("ref",)
 
 
 class CanonicalPurchaseOrder(CanonicalDocument):
@@ -471,16 +490,9 @@ class CanonicalShippingOrder(CanonicalDocument):
     FALLBACK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "supplier_code", "supplier_name", "agent_code", "container_number",
     )
-
-    def sink_payload(self, *, contract_version: int = 1) -> Dict[str, Any]:
-        """Same v2-gated shape as the base class, EXCEPT ``container_number``
-        is dropped from the payload entirely when it is ``None`` (addendum
-        section 11: absent means "leave Sorento's stored value alone", a
-        ``null`` means "clear it" - a document whose ``Ref`` is unmapped or
-        blank must never send the clear signal). Every other fallback field
-        keeps the base class's "send the key even when null" behaviour
-        unchanged."""
-        payload = super().sink_payload(contract_version=contract_version)
-        if payload.get("container_number") is None:
-            payload.pop("container_number", None)
-        return payload
+    # sprint-5/07 - generalised onto the base class's own
+    # `OMIT_WHEN_EMPTY_FIELDS` mechanism (previously a one-off `sink_payload`
+    # override here): addendum section 11, absent means "leave Sorento's
+    # stored value alone", `null` means "clear it" - a document whose `Ref`
+    # is unmapped or blank must never send the clear signal.
+    OMIT_WHEN_EMPTY_FIELDS: ClassVar[Tuple[str, ...]] = ("container_number",)

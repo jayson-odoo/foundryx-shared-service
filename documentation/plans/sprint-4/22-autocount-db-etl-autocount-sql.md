@@ -49,6 +49,7 @@ SELECT
     CAST(COALESCE(h.UDF_DelDate, l.FirstDeliveryDate) AS date)
                                                AS RequestedDeliveryDate,
     h.Note                                     AS Note,
+    h.Ref                                      AS Ref,
     h.Cancelled                                AS Cancelled,
     h.Transferable                             AS Transferable,
     h.DocStatus                                AS DocStatus,
@@ -114,6 +115,13 @@ Header mapping rows (operator-authored on the Mapping tab)
 | `RequestedDeliveryDate` | `requested_delivery_date` | `date` |
 | `status` | `status` (required) | `string` |
 | `Note` | `internal_note` | `string` |
+| `Ref` | `ref` | `string` |
+
+`Ref` (sprint-5/07, AC-07-01/02/06) - sales staff stamp the project name into
+AutoCount `SO.Ref` alongside agent stamps (`"THE MET KL"`, `"JF- 9/9 3.50"`);
+sent VERBATIM, no cleaning on the ESB side - Sorento's `label_from_ref`
+derives `sales_orders.project_label` from it and owns stripping the stamps.
+SO only: never map `ref` on PO/SPO (§3 below).
 
 ## 2. Sales Order - line query
 
@@ -239,7 +247,11 @@ Header mapping rows
 | `CreditorName` | `supplier_name` | `string` |
 | `SalesAgent` | `agent_code` | `string` |
 
-Do **not** map `internal_note` on PO.
+Do **not** map `internal_note` on PO. Do **not** map `ref` on PO either
+(sprint-5/07): `h.Ref` rides this shared header query only because it is
+selected for the SPO preset's `container_number` (addendum §3); PO's
+`CanonicalPurchaseOrder` declares no `ref` attribute at all, so mapping it
+422s (`mapping_catalog.accepted_field_names("purchase_order")` excludes it).
 
 ## 4. Purchase Order - line query
 

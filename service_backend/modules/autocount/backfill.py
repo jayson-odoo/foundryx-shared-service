@@ -31,6 +31,7 @@ import sqlalchemy as sa
 
 from .canonical.documents import (
     ENTITY_PURCHASE_ORDER,
+    ENTITY_SALES_ORDER,
     ENTITY_SHIPPING_ORDER,
     is_document_entity,
 )
@@ -796,6 +797,228 @@ def backfill_shipping_order_container_number(
                 "container_number backfill does not recognise as the "
                 "AutoCount SPO preset - left untouched. Add `Ref` to it "
                 "to pick up container numbers.",
+                config_id,
+            )
+    return touched
+
+
+# ── sprint-5/07 - SO `Ref` (project label) ──────────────────────────────────
+
+# The SO header query BEFORE this lane added `h.Ref AS Ref` - pinned VERBATIM
+# (copied from `presets._SO_HEADER_QUERY` at the moment this lane started),
+# independent of any later preset edit, same precedent as
+# `_OLD_PO_HEADER_QUERY_TEMPLATE` above.
+_OLD_SO_HEADER_QUERY = (
+    "SELECT h.DocKey AS DocKey, h.DocNo AS DocNo, c.AutoKey AS DebtorAutoKey, "
+    "h.SalesAgent AS SalesAgent, h.DocDate AS DocDate, "
+    "h.UDF_DelDate AS RequestedDeliveryDate, h.Note AS Note, "
+    "h.Cancelled AS Cancelled, h.DebtorCode AS DebtorCode, "
+    "h.DebtorName AS DebtorName, h.LastModified AS LastModified, "
+    "l.LineCount AS LineCount, l.QtySum AS QtySum, l.TransferedSum AS TransferedSum, "
+    "l.SubTotalSum AS SubTotalSum, l.MaxDtlKey AS MaxDtlKey "
+    "FROM {database}.dbo.SO AS h "
+    "LEFT JOIN {database}.dbo.Debtor AS c ON c.AccNo = h.DebtorCode "
+    "OUTER APPLY ("
+    "SELECT COUNT(*) AS LineCount, SUM(d.Qty) AS QtySum, "
+    "SUM(d.TransferedQty) AS TransferedSum, SUM(d.SubTotal) AS SubTotalSum, "
+    "MAX(d.DtlKey) AS MaxDtlKey "
+    "FROM {database}.dbo.SODTL AS d "
+    "WHERE d.DocKey = h.DocKey AND d.ItemCode IS NOT NULL AND d.Qty IS NOT NULL"
+    ") AS l"
+)
+
+_SALES_ORDER_REF_ENTITY_CONFIG_COLUMNS = {
+    "id", "tenant_id", "company_id", "entity_type", "source_config", "result_columns",
+}
+_SALES_ORDER_REF_COMPANY_COLUMNS = {"id", "tenant_id", "database_name"}
+_SALES_ORDER_REF_FIELD_MAPPING_COLUMNS = {
+    "id", "tenant_id", "company_id", "entity_type", "scope", "source_path",
+    "canonical_field", "transform", "formula", "is_required", "is_enabled",
+    "is_source_owned", "sort_order",
+}
+
+
+def backfill_sales_order_ref(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA) -> int:
+    """AC-07-07..11 - for every ``sales_order`` ``ac_entity_config`` row across
+    every tenant/company: a query byte-identical to the OLD preset (its own
+    company's ``database_name`` substituted) is swapped to the NEW preset
+    text (``h.Ref AS Ref`` added) and ``"Ref"`` appended to
+    ``result_columns``; a query already at the NEW text is skipped silently;
+    anything else (a customised query, e.g. the production ``AED_SORENTO``
+    shape) is left byte-untouched. A ``Ref -> ref`` header mapping row is
+    created the moment none exists yet in ANY state (an operator's own row,
+    enabled or disabled, is never duplicated or modified) - ENABLED when the
+    query is the OLD/NEW preset text or already selects ``Ref``, DISABLED
+    (with one WARNING naming the config id) otherwise, so no `ref` reaches
+    the wire from a task an operator has not yet pointed at the column.
+
+    Returns the number of individual changes made (mapping rows created +
+    header queries replaced) - 0 (no error) against a schema that predates
+    the tables/columns this touches. Module Alembic 0019 and ``update_tenant``
+    both call this UNCONDITIONALLY, like every other backfill in this file -
+    idempotent, safe to run repeatedly (0016/0018 precedent).
+
+        !!  FROZEN ``sa.table`` ONLY - NEVER THE LIVE ORM MODEL.  !!
+    See ``backfill_shipping_order_container_number`` above for the incident
+    this rule comes from.
+
+    Never a bare id lookup: a config's company is resolved WITH the config's
+    OWN ``tenant_id`` (the polymorphic-target_id rule) before its
+    ``database_name`` is trusted for the byte-identity check; a config whose
+    company is missing under that tenant is skipped WITH a warning (never
+    matched against another tenant's company of the same id).
+    """
+    needed = {
+        "ac_entity_config": _SALES_ORDER_REF_ENTITY_CONFIG_COLUMNS,
+        "ac_company": _SALES_ORDER_REF_COMPANY_COLUMNS,
+        "ac_field_mapping": _SALES_ORDER_REF_FIELD_MAPPING_COLUMNS,
+    }
+    for table, columns in needed.items():
+        have = existing_columns(bind, table, schema=schema)
+        if have is None or not columns <= have:
+            return 0
+
+    from .presets import _SO_HEADER_QUERY
+
+    entity_config = sa.table(
+        "ac_entity_config",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("source_config", sa.JSON(none_as_null=True)),
+        sa.column("result_columns", sa.JSON(none_as_null=True)),
+        schema=schema,
+    )
+    company_table = sa.table(
+        "ac_company",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("database_name", sa.String),
+        schema=schema,
+    )
+    field_mapping = sa.table(
+        "ac_field_mapping",
+        sa.column("id", sa.String),
+        sa.column("tenant_id", sa.String),
+        sa.column("company_id", sa.String),
+        sa.column("entity_type", sa.String),
+        sa.column("scope", sa.String),
+        sa.column("source_path", sa.String),
+        sa.column("canonical_field", sa.String),
+        sa.column("transform", sa.String),
+        sa.column("formula", sa.Text),
+        sa.column("is_required", sa.Boolean),
+        sa.column("is_enabled", sa.Boolean),
+        sa.column("is_source_owned", sa.Boolean),
+        sa.column("sort_order", sa.Integer),
+        schema=schema,
+    )
+
+    # Same unwrap ``existing_columns`` uses, and for the same reason.
+    connectable = bind.connection() if hasattr(bind, "get_bind") else bind
+
+    configs = connectable.execute(
+        sa.select(
+            entity_config.c.id, entity_config.c.tenant_id, entity_config.c.company_id,
+            entity_config.c.source_config, entity_config.c.result_columns,
+        ).where(entity_config.c.entity_type == ENTITY_SALES_ORDER)
+    ).fetchall()
+
+    touched = 0
+    for config_id, tenant_id, company_id, source_config, result_columns in configs:
+        company_row = connectable.execute(
+            sa.select(company_table.c.database_name).where(
+                company_table.c.id == company_id,
+                company_table.c.tenant_id == tenant_id,
+            )
+        ).first()
+        if company_row is None or not company_row[0]:
+            logger.warning(
+                "Sales-order task %s's company could not be resolved under "
+                "its own tenant - the SO `Ref` backfill skipped it.",
+                config_id,
+            )
+            continue
+        database_name = company_row[0]
+
+        has_ref_row = (
+            connectable.execute(
+                sa.select(field_mapping.c.id).where(
+                    field_mapping.c.tenant_id == tenant_id,
+                    field_mapping.c.company_id == company_id,
+                    field_mapping.c.entity_type == ENTITY_SALES_ORDER,
+                    field_mapping.c.scope == SCOPE_HEADER,
+                    field_mapping.c.canonical_field == "ref",
+                )
+            ).first()
+            is not None
+        )
+
+        source_config = source_config or {}
+        stored_query = source_config.get("query")
+        columns_list = list(result_columns or [])
+        old_text = _OLD_SO_HEADER_QUERY.replace("{database}", database_name)
+        new_text = _SO_HEADER_QUERY.replace("{database}", database_name)
+
+        if stored_query == new_text:
+            # Already migrated (a previous pass, or a freshly-created task
+            # already on the new preset) - nothing to do, no warning.
+            continue
+
+        query_replaced = False
+        if stored_query == old_text:
+            fresh = dict(source_config)
+            fresh["query"] = new_text
+            if "Ref" not in columns_list:
+                columns_list.append("Ref")
+            connectable.execute(
+                sa.update(entity_config)
+                .where(entity_config.c.id == config_id)
+                .values(source_config=fresh, result_columns=columns_list)
+            )
+            touched += 1
+            query_replaced = True
+
+        if has_ref_row:
+            # An operator's own row (or one this backfill already seeded on
+            # an earlier pass) - never duplicated or modified, in ANY state.
+            continue
+
+        sort_order = connectable.execute(
+            sa.select(sa.func.coalesce(sa.func.max(field_mapping.c.sort_order), -1) + 1)
+            .where(
+                field_mapping.c.tenant_id == tenant_id,
+                field_mapping.c.company_id == company_id,
+                field_mapping.c.entity_type == ENTITY_SALES_ORDER,
+                field_mapping.c.scope == SCOPE_HEADER,
+            )
+        ).scalar()
+        enabled = query_replaced or "Ref" in columns_list
+        connectable.execute(
+            sa.insert(field_mapping).values(
+                id=str(uuid.uuid4()),
+                tenant_id=tenant_id,
+                company_id=company_id,
+                entity_type=ENTITY_SALES_ORDER,
+                scope=SCOPE_HEADER,
+                source_path="Ref",
+                canonical_field="ref",
+                transform="string",
+                formula=None,
+                is_required=False,
+                is_enabled=enabled,
+                is_source_owned=True,
+                sort_order=sort_order,
+            )
+        )
+        touched += 1
+        if not enabled:
+            logger.warning(
+                "Sales-order task %s has a header query the `ref` backfill "
+                "does not recognise as the AutoCount SO preset - left "
+                "untouched. Add `h.Ref AS Ref` to the Query tab and enable "
+                "the `Ref -> ref` row on the Mapping tab.",
                 config_id,
             )
     return touched
