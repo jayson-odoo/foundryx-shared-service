@@ -89,8 +89,14 @@ the kind of silent edit the 0016 review rejected; the operator step is one line 
    query with a new result column re-hashes every SO whose `Ref` is non-empty, so those re-push
    on the next run by themselves (the 0016 mechanism).
 2. Mapping tab: enable the `Ref -> ref` row the backfill created disabled.
-3. Off-hours, one company first: Review & Activate -> Re-push all -> typed confirm. Expect a
-   single long reconcile (150k headers + lines through Sorento's per-integration rate limit).
+3. Re-push all is NOT needed for the notes: Sorento's #809 migration 510 rewrites the stored RTF
+   notes to plain text, and their ingest treats an identical record as a no-op (no `updated_at`
+   churn, verified by the Sorento owner session 2026-09-10). Step 1 alone re-pushes every SO with
+   a non-empty `Ref`. Keep Re-push all for the generic case (a mapping or consumer-side change
+   that must reach documents whose source did not move). When it is run: off-hours, one company
+   first, typed confirm; expect a single long reconcile (150k headers + lines, Sorento ingest is
+   synchronous with a batch cap of 1000). Sorento ranks `ref` below a note `PROJECT :` line and
+   below an inquiry-sheet label, so a re-push only fills labels that are empty or lower-ranked.
 
 ### 2.5 Frontend (AC-07-20..25)
 
