@@ -199,3 +199,10 @@ Docs: SQL pack, sprint-5/02 addendum, this pair, test report, `documentation/bac
   and the in-flight guard is re-checked after `clear_all` before the commit. The structural fix
   (stamp `repush_requested_at`, let the reconcile clear hashes inside its own run transaction,
   which also removes the "Added = N" reporting artefact) is BL-SS-197, not this slice.
+- D10 (2026-09-10, review round 2): the deferred action is the SERVER-PARKED engine
+  (`useDeferredAction` + `pendingActionsService` on the client, a `DeferredActionDef`
+  `autocount_etl_task.repush` in `modules/autocount/deferred_actions.py` whose executor calls
+  `EtlService.repush_task`), not a client-side countdown timer. D2 names the model explicitly
+  (server-deferred, tenant-configurable window), the registry already serves omnichannel and
+  ideation, and the task has a per-row id (`ac_entity_config`). The POST route stays as the API
+  path; the tab never calls it.

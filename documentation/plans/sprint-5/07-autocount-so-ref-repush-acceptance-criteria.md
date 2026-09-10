@@ -148,8 +148,19 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
 - **AC-07-20 [FE]** Service trio: `autocountService.repushEtlTask(companyId, entityType)` in
   `autocount-service.ts` (JSDoc contract at the top), `.mock.ts` (resolves
   `{clearedCount: 148068, nextReconcileAt: <now+60s>, status: 'active'}`; a mock flag simulates
-  the 409 in-flight case), `.real.ts` (POST to AC-07-13). `useEtlTaskLifecycle` gains
-  `repush()` under the same one-at-a-time `busy`/`error` pattern as `runNow`.
+  the 409 in-flight case), `.real.ts` (POST to AC-07-13) - the API path for direct callers.
+  (Amended 2026-09-10, D8/D10.) The tab itself does NOT call that route: it parks the D2
+  deferred action `autocount_etl_task.repush` on entity `autocount_etl_task` / the
+  `ac_entity_config` id through `useDeferredAction` + `pendingActionsService`; the server-side
+  `DeferredActionDef` (`modules/autocount/deferred_actions.py`, permission
+  `autocount.companies.manage`, tenant-scoped exists check) commits by calling
+  `EtlService.repush_task` with the parking actor.
+- **AC-07-20b [BE]** Deferred def contract: park by a `companies.manage` holder on an active or
+  paused `sql_db` task -> 202 and a countdown; park by a `sync.run`-only user -> 403; park on
+  another tenant's config id -> 404 (exists check); commit clears the hashes, arms the reconcile
+  on an active task and records the activity row with the parking actor; commit while a run is in
+  flight (or on a task that turned draft) fails with the same 409 message and leaves the hashes
+  intact; cancel before commit clears nothing.
 - **AC-07-21 [FE]** Review & Activate tab (`activate-tab.tsx`): a destructive-styled
   "Re-push all" action, rendered ONLY when the task is `active` or `paused`, its source is a
   database task, and `useCan(AC_COMPANIES_MANAGE)`; hidden otherwise (foolproof-UI: never an
@@ -159,14 +170,15 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   this very tab drops confirms on re-sync actions.) The action is a `DeferredActionButton` /
   `useDeferredAction` (the app's D2/D13 grace-window model): clicking arms the action with a
   visible undo window; undo within the window makes NO call; when the window lapses the service
-  is called once. No dialog, no typed input. The button copy is "Re-push all"; the success toast
-  states that change tracking is cleared and the next reconcile pushes every document of this
-  task to Sorento again, and for a paused task that nothing moves until the task is resumed.
-- **AC-07-23 [FE]** Success: `lib/toast` success naming the cleared count and, for an active
-  task, that the full re-push starts on the next scheduler tick; the Runs tab data refreshes
-  (`SWR` / list refetch) so the reconcile appears once claimed. 409 in flight: toast error with
-  the server message and a link to the running run (`running_run_id`), dialog closes, nothing
-  else changes. Other errors: existing `lifecycle.error` surface.
+  is committed server-side (the parked pending action, tenant-configurable window). No dialog, no
+  typed input, no client timer. The button copy is "Re-push all"; the success toast states that
+  change tracking is cleared and the next reconcile pushes every document of this task to Sorento
+  again, and for a paused task that nothing moves until the task is resumed.
+- **AC-07-23 [FE]** `onCommitted`: `lib/toast` success ("Change tracking cleared. The full
+  re-push starts on the next scheduler tick." / paused variant), the task view reloads and the
+  Runs tab data refreshes so the reconcile appears once claimed. `onFailed(error)`: toast error
+  with the server message and a link to the Runs tab; no reload. Cancel within the window: no
+  toast, no call. The tab never calls the repush route directly.
 - **AC-07-24 [FE]** Vitest: renders/hides per AC-07-21 (four permission x status cases), the
   deferred action fires the service exactly once with the right ids when its window lapses and
   never when undone, 409 path renders the message and the Runs link, task reload fires on success
