@@ -204,7 +204,7 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
 
 - **AC-07-26 [T]** Plan section 2.6 and the PR description state the deploy order: Sorento
   (#809 + project-label PR) merged AND deployed first, confirmed by the `autocount-crm` session's
-  ping; only then `workflow_dispatch` the FoundryX deploy (bootstrap_db runs 0019). Merging to
+  ping; only then `workflow_dispatch` the Foundryx deploy (bootstrap_db runs 0019). Merging to
   `main` does NOT deploy (deploy is manual), so the PR may merge on review pass.
 - **AC-07-27 [T]** The production operator step for the customised `Sorento` SO task is written
   in the plan (section 2.4) and the test report: open the Query tab, add the line

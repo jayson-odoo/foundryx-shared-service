@@ -128,9 +128,9 @@ the kind of silent edit the 0016 review rejected; the operator step is one line 
 Sorento `extra="forbid"` rejects every SO record carrying `ref` until their project-label PR is
 deployed. Sequence: (1) this PR merges on review pass (merge != deploy: `deploy.yml` is
 `workflow_dispatch`); (2) the `autocount-crm` session pings `foundryx-shared-service-1a` when
-#809 + project-label are merged AND deployed; (3) `workflow_dispatch` FoundryX deploy
+#809 + project-label are merged AND deployed; (3) `workflow_dispatch` Foundryx deploy
 (`bootstrap_db` runs 0019: `ac_sim` swaps automatically, `Sorento` gets a disabled row + warning);
-(4) operator steps 2.4. If FoundryX must deploy earlier for another reason, the backfill is
+(4) operator steps 2.4. If Foundryx must deploy earlier for another reason, the backfill is
 still safe: the production task's row lands DISABLED, so no `ref` leaves the ESB until step 2.4.
 `ac_sim` (`SIM`) pushes `ref` immediately after deploy - it is a simulation company; if Sorento
 is not live yet its SOs quarantine with a 422 and clear on the next run after Sorento deploys.
