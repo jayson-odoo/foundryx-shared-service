@@ -1736,50 +1736,51 @@ def test_repush_failure_at_commit_rolls_back_the_deletion(
 
 
 def test_repush_a_run_enqueued_between_the_guard_and_the_commit_rolls_back(
-    session_factory, rig, consumer, monkeypatch,
+    client, session_factory, rig, consumer, monkeypatch,
 ):
     """The race `first_unfinished`/`clear_all` leaves open (review round
     finding 3): a run can be enqueued AFTER the up-front in-flight guard
-    passes but BEFORE `repush_task` commits. `_in_flight_guard` is called a
-    SECOND time, right before the commit - monkeypatched here to answer
-    "nothing in flight" on the first call (the up-front guard) and "a job IS
-    in flight" on the second (the pre-commit re-check), so the method must
-    409 and roll the deletion back, exactly like the plain race-free 409."""
-    from modules.autocount.services.etl_service import EtlService, EtlStateError
+    passes but BEFORE `repush_task` commits. Exercised end to end with the
+    REAL `_in_flight_guard` on both calls (never stubbed): `RowHashRepository.
+    clear_all` is monkeypatched to perform the genuine delete AND THEN insert
+    a real unfinished `BackgroundJob` for the same (tenant, company, entity) -
+    the row a run enqueued mid-window would actually leave behind - so the
+    SECOND real guard read (right before the commit) is what trips, on real
+    data, not a stubbed exception."""
+    import modules.autocount.repositories.autocount_repository as repo_module
+    from app.models.background_job import JOB_RUNNING
 
     company_id, _sql_id = rig
-    setup = session_factory()
-    EtlService(setup).preview_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
-    EtlService(setup).activate_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
-    _row_hash(setup, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="r1")
-    setup.commit()
-    setup.close()
-
+    _activated(client, company_id)
     db = session_factory()
-    service = EtlService(db)
-    if not hasattr(service, "_in_flight_guard"):
-        pytest.fail("EtlService has no `_in_flight_guard` helper yet")
-
-    calls = {"n": 0}
-    real_guard = service._in_flight_guard
-
-    def racy_guard(tenant_id, company_id_, entity_type):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return None  # the up-front guard sees nothing in flight
-        # The pre-commit re-check sees a job that appeared in between.
-        raise EtlStateError(
-            "A run for this task is still going. Wait for it to finish.",
-            running_run_id="run-raced-in",
-        )
-
-    monkeypatch.setattr(service, "_in_flight_guard", racy_guard)
-
-    with pytest.raises(EtlStateError) as excinfo:
-        service.repush_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
-    assert excinfo.value.running_run_id == "run-raced-in"
-    assert calls["n"] == 2, "the guard must run once up front AND once before the commit"
+    _row_hash(db, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="r1")
+    db.commit()
     db.close()
+
+    real_clear_all = repo_module.RowHashRepository.clear_all
+
+    def racy_clear_all(self, tenant_id, company_id_, entity_type):
+        cleared = real_clear_all(self, tenant_id, company_id_, entity_type)
+        # The run that "got enqueued in between" - same session `clear_all`
+        # is already using, so the second guard read (same request, same
+        # transaction) sees it with no extra round trip.
+        self.db.add(BackgroundJob(
+            tenant_id=tenant_id, type="autocount_sync", status=JOB_RUNNING,
+            payload_json={"companyId": company_id_, "entityType": entity_type},
+        ))
+        self.db.flush()
+        return cleared
+
+    monkeypatch.setattr(repo_module.RowHashRepository, "clear_all", racy_clear_all)
+
+    response = client.post(_repush_url(company_id), headers=_auth(client))
+    assert response.status_code == 409, response.text
+
+    db2 = session_factory()
+    assert _row_hash_count(db2, company_id=company_id, entity_type=ENTITY_CUSTOMER) == 1, (
+        "a run enqueued mid-request must roll the deletion back, nothing committed"
+    )
+    db2.close()
 
     fresh = session_factory()
     assert _row_hash_count(

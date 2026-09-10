@@ -129,8 +129,15 @@ export function ActivateTab({
     repushEntityId !== null;
 
   const repush = useDeferredAction({
-    watchFromMount: repushEntityId !== null,
-    watch: repushEntityId !== null ? { entityType: REPUSH_ENTITY_TYPE, entityId: repushEntityId } : undefined,
+    // Gated on `showRepush`, not just a non-null id (review round): a
+    // viewer who can never fire this action (no `companies.manage`, a
+    // draft, or an API-sourced task) must never poll `GET .../current` for
+    // it either - the countdown could not be theirs to see.
+    watchFromMount: showRepush,
+    watch:
+      showRepush && repushEntityId
+        ? { entityType: REPUSH_ENTITY_TYPE, entityId: repushEntityId }
+        : undefined,
     onCommitted: () => {
       // The commit runs server-side, off the grace window - there is no
       // response here to read a real `clearedCount` from (unlike the
@@ -152,8 +159,18 @@ export function ActivateTab({
         ),
       });
     },
+    // Review round: a Cancel that arrives at/after the window closes loses
+    // to the commit (`useDeferredAction.cancel` reconciles by re-reading
+    // `current`) and re-parks the countdown SILENTLY otherwise - without
+    // this the operator sees the countdown reappear with no explanation for
+    // why their Cancel click seemingly did nothing (resource-form.tsx's own
+    // gear action wires the exact same toast).
+    onCancelFailed: (error) => {
+      toast.error(error || 'Could not cancel that action.');
+    },
   });
   const repushPending = repush.state.status === 'pending' ? repush.state : null;
+  const repushCommitting = repush.state.status === 'committing';
 
   function startRepush() {
     if (!repushEntityId) return;
@@ -353,7 +370,12 @@ export function ActivateTab({
               type="button"
               variant="destructive"
               size="sm"
-              disabled={busy}
+              // `committing` (review round): a SECOND park can succeed
+              // server-side the instant the first countdown's window
+              // lapses (the beat sweep/lazy-commit claim it before this
+              // render even sees the countdown disappear) - disabled here
+              // too, not just while another lifecycle action is `busy`.
+              disabled={busy || repushCommitting}
               onClick={startRepush}
               data-testid="etl-repush-all"
             >

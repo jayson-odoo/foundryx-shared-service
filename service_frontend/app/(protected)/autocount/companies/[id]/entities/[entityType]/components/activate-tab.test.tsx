@@ -681,5 +681,84 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
       );
       expect(screen.getByTestId('etl-repush-all')).toBeDisabled();
     });
+
+    it('a cancel that loses the race to the commit toasts onCancelFailed (review round - resource-form.tsx parity)', async () => {
+      park.mockResolvedValue({
+        id: 'pa1', commitAt: new Date(Date.now() + 10_000).toISOString(), windowSeconds: 10,
+      });
+      // The cancel request itself fails (arrived at/after the window closed) -
+      // `useDeferredAction.cancel()` reconciles by re-reading `current`.
+      cancelPark.mockRejectedValue(new Error('too late'));
+      current.mockResolvedValue({
+        pending: null,
+        lastOutcome: {
+          id: 'pa1', actionKey: 'autocount_etl_task.repush', status: 'committed',
+          errorText: null, endedAt: new Date().toISOString(),
+        },
+      });
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ entityType: 'sales_order', etlStatus: 'active' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle()}
+          onRan={vi.fn()}
+          entities={[dbEntity()]}
+        />,
+      );
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('etl-repush-all'));
+      });
+      await vi.waitFor(() => expect(screen.getByTestId('deferred-countdown')).toBeInTheDocument());
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      });
+      await vi.waitFor(() =>
+        expect(toastError).toHaveBeenCalledWith('Could not cancel - the action already ran.'),
+      );
+    });
+
+    it('disables the trigger while committing (a second park can succeed server-side mid-window)', async () => {
+      vi.useFakeTimers();
+      try {
+        park.mockResolvedValue({
+          id: 'pa1', commitAt: new Date(Date.now() + 1_000).toISOString(), windowSeconds: 1,
+        });
+        current.mockResolvedValue({
+          pending: {
+            id: 'pa1', actionKey: 'autocount_etl_task.repush', entityType: 'autocount_etl_task',
+            entityId: 'so', commitAt: new Date(Date.now() + 1_000).toISOString(), windowSeconds: 1,
+            requestedById: null, requestedByName: null, status: 'committing',
+          },
+          lastOutcome: null,
+        });
+        render(
+          <ActivateTab
+            company={company()}
+            task={task({ entityType: 'sales_order', etlStatus: 'active' })}
+            configDirty={false}
+            preview={preview()}
+            lifecycle={lifecycle()}
+            onRan={vi.fn()}
+            entities={[dbEntity()]}
+          />,
+        );
+        await act(async () => {
+          fireEvent.click(screen.getByTestId('etl-repush-all'));
+        });
+        // Past the (1s) window - the poll discovers the row already CLAIMED
+        // (another park/commit reached it first), not yet settled.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2_000);
+        });
+
+        expect(screen.queryByTestId('deferred-countdown')).not.toBeInTheDocument();
+        expect(screen.getByTestId('etl-repush-all')).toBeDisabled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
