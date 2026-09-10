@@ -707,6 +707,19 @@ class EtlRunStartResponse(ApiModel):
     task: EtlTaskResponse
 
 
+class EtlRepushResponse(ApiModel):
+    """``POST .../etl-task/repush`` (plan sprint-5/07, AC-07-13..19) - clears
+    this task's change-tracking rows so the next reconcile re-pushes every
+    document. ``nextReconcileAt`` mirrors what the server armed: ``now(utc)``
+    for an `active` task (the next sweep claims a reconcile), ``None`` for a
+    `paused` one (nothing scheduled until resumed). ``status`` is the task's
+    `etlStatus`, unchanged by this call."""
+
+    clearedCount: int
+    nextReconcileAt: Optional[datetime] = None
+    status: str
+
+
 class PreviewResponse(ApiModel):
     """The dry-run verdict shown at the approval gate (AC-14-20). ``preview``
     carries either the per-record predictions + summary, or a "nothing to

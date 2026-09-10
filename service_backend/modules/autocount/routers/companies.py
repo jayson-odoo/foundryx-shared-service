@@ -26,6 +26,7 @@ from ..schemas import (
     EntityConfigItem,
     EntityConfigUpdate,
     EtlPreviewResponse,
+    EtlRepushResponse,
     EtlRunStartResponse,
     EtlTaskResponse,
     EtlTaskUpdate,
@@ -650,6 +651,36 @@ def resume_etl_task(
     except AutocountServiceError as exc:
         return _raise_task(exc)
     return _task_response(view)
+
+
+@router.post(
+    "/{company_id}/entities/{entity_type}/etl-task/repush",
+    response_model=EtlRepushResponse,
+)
+def repush_etl_task(
+    company_id: str,
+    entity_type: str,
+    # `autocount.companies.manage` - the "configure the task" bucket, same as
+    # pause/activate/refetch-history (AC-07-13). NOT `autocount.sync.run`:
+    # this clears change tracking, it does not itself move any data - the
+    # push happens on the reconcile the NEXT sweep tick claims.
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+):
+    """Clear this task's tracked rows so the next reconcile re-pushes every
+    document (plan sprint-5/07, AC-07-13..19). 409 unless the task is
+    `active`/`paused` on a database source with no run in flight (the
+    conflict carries the running run's id when one is, same shape
+    `run_task_now` uses)."""
+    try:
+        view = EtlService(db).repush_task(current_user.tenant_id, company_id, entity_type)
+    except AutocountServiceError as exc:
+        return _raise_task(exc)
+    return EtlRepushResponse(
+        clearedCount=view.cleared_count,
+        nextReconcileAt=view.next_reconcile_at,
+        status=view.status,
+    )
 
 
 @router.post(
