@@ -877,3 +877,90 @@ def test_a_non_shared_entitys_missing_ref_still_stages_a_delete_intent(
     assert row.op == STAGED_OP_DELETE
     assert row.source_ref == ref
     db.close()
+
+
+# ═══════════ sprint-5/07, AC-07-19 - "Re-push all"'s follow-up reconcile ════
+#
+# `RowHashRepository.clear_all` and a plain reconcile already exist and are
+# independently proven above - this pins the COMBINATION the "Re-push all"
+# action relies on: clearing every tracked row makes the very next reconcile
+# treat the WHOLE population as new, even though the source rows themselves
+# never changed, and Sorento's own `updated` verdict (an existing
+# `source_ref` it already holds) still counts as delivered.
+
+
+def test_clear_all_then_reconcile_stages_every_row_as_an_add_and_repopulates_hashes(
+    session_factory, rig, consumer,
+):
+    from modules.autocount.repositories import RowHashRepository
+
+    company_id = rig
+    db = session_factory()
+    _seed(db, company_id)
+    baseline_refs = _known_refs(db, company_id)
+    assert len(baseline_refs) == 3, baseline_refs
+
+    # The "Re-push all" clear step - no source-side change at all.
+    cleared = RowHashRepository(db).clear_all(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
+    db.commit()
+    assert cleared == 3
+    assert _known_refs(db, company_id) == set()
+
+    # Sorento already holds every one of these customers - it answers
+    # "updated", never "created", for a source_ref it has seen before. Only
+    # `_OUTCOME_DELIVERED` (`created`/`updated`) matters for delivery.
+    def updated_only(_path, body):
+        import httpx as _httpx
+
+        records = body.get("records") or []
+        return _httpx.Response(
+            200,
+            json={
+                "summary": {
+                    "total": len(records), "created": 0, "updated": len(records),
+                    "failed": 0, "retryable": 0,
+                },
+                "records": [
+                    {"source_ref": r["source_ref"], "outcome": "updated", "entity_id": "x"}
+                    for r in records
+                ],
+            },
+        )
+
+    consumer.responder = updated_only
+    consumer.requests.clear()
+
+    job = _reconcile(db, company_id)
+    assert job.status == JOB_DONE, (job.status, job.error, job.logs_json)
+
+    run = _run_row(db, company_id, job.id)
+    assert run.mode == RUN_MODE_RECONCILE
+    assert run.added_count == 3, (
+        f"every one of the 3 known rows must stage as an ADD - got "
+        f"added={run.added_count} updated={run.updated_count}"
+    )
+    assert run.deleted_count == 0
+
+    staged = (
+        db.query(AcStagedRecord)
+        .filter(
+            AcStagedRecord.tenant_id == DEFAULT_TENANT_ID,
+            AcStagedRecord.company_id == company_id,
+            AcStagedRecord.entity_type == ENTITY_CUSTOMER,
+            AcStagedRecord.job_id == job.id,
+        )
+        .all()
+    )
+    assert len(staged) == 3
+    assert {row.status for row in staged} == {STAGED_PUSHED}, (
+        "a Sorento `updated` verdict must still count as delivered"
+    )
+
+    assert _known_refs(db, company_id) == baseline_refs, (
+        "ac_row_hash must be repopulated to the fetched population"
+    )
+
+    pushed_calls = [r for r in consumer.requests if not r["path"].endswith("/deletions")]
+    assert len(pushed_calls) == 1
+    assert {r["source_ref"] for r in pushed_calls[0]["json"]["records"]} == baseline_refs
+    db.close()

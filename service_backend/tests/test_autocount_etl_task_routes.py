@@ -16,6 +16,7 @@ and the consumer is an ``httpx.MockTransport`` - no socket anywhere.
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List
 
 import httpx
@@ -30,22 +31,26 @@ from app.models.tenant import Tenant
 from app.repositories.permission_repository import PermissionRepository
 from app.secrets import encrypt_secret
 from app.security import hash_password
-from modules.autocount.canonical.masters import ENTITY_CUSTOMER
+from modules.autocount.canonical.masters import ENTITY_CUSTOMER, ENTITY_SUPPLIER
 from modules.autocount.models import (
     ETL_STATUS_ACTIVE,
     ETL_STATUS_DRAFT,
     ETL_STATUS_PAUSED,
+    SOURCE_IMPL_AUTOCOUNT_READ,
     STAGED,
     STAGED_PUSHED,
     AcCompany,
+    AcDocFingerprint,
     AcEntityConfig,
     AcFieldMapping,
+    AcRowHash,
     AcStagedRecord,
     AcSyncRun,
     AcWatermark,
 )
 from modules.autocount.services.company_service import CompanyService
 from modules.autocount.sql_source.runtime import RUNTIME
+from app.models.integration_activity import IntegrationActivity
 
 PASSWORD = "S3cret!Pa55"
 DB_NAME = "AED_2024"
@@ -1403,3 +1408,368 @@ def test_a_failed_verdict_is_QUARANTINED_while_retryable_carries_over(
     )
     db.close()
     assert quarantined.source_ref not in offered
+
+
+# ═══════════ "Re-push all" (sprint-5/07, AC-07-13..18) ══════════════════════
+#
+# POST .../etl-task/repush - RED tests written BEFORE the route/service exist.
+# Reuses the `rig` fixture (a saved, mapped, sink-pointed customer DB task) -
+# Group C is entity-agnostic, so the existing master fixture is exactly the
+# "any sql_db task" shape the UAC describes.
+
+
+def _repush_url(company_id: str) -> str:
+    return _url(company_id, "/repush")
+
+
+def _row_hash(db, *, tenant_id=DEFAULT_TENANT_ID, company_id: str, entity_type: str, ref: str):
+    db.add(AcRowHash(
+        tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
+        source_ref=ref, row_hash="h",
+    ))
+
+
+def _row_hash_count(db, *, tenant_id=DEFAULT_TENANT_ID, company_id: str, entity_type: str) -> int:
+    return (
+        db.query(AcRowHash)
+        .filter(
+            AcRowHash.tenant_id == tenant_id,
+            AcRowHash.company_id == company_id,
+            AcRowHash.entity_type == entity_type,
+        )
+        .count()
+    )
+
+
+# ── AC-07-13: permission + tenant scoping ───────────────────────────────────
+
+
+def test_repush_requires_manage_and_404s_cross_tenant_and_401_unauthenticated(
+    client, session_factory, rig,
+):
+    company_id, _sql_id = rig
+    db = session_factory()
+    _other_tenant(db)
+    theirs = _company(db, tenant_id=OTHER_TENANT, database_name="THEIRS_REPUSH")
+    _limited_user(
+        db, ["autocount.companies.read", "autocount.sync.run"], "norepush@example.com",
+    )
+    db.close()
+
+    unauthenticated = client.post(_repush_url(company_id))
+    assert unauthenticated.status_code == 401, unauthenticated.text
+
+    limited = _auth(client, "norepush@example.com", "limited1234")
+    assert client.post(_repush_url(company_id), headers=limited).status_code == 403
+
+    assert (
+        client.post(_repush_url(theirs.id), headers=_auth(client)).status_code == 404
+    )
+
+
+# ── AC-07-14: clears ONLY this (tenant, company, entity)'s tracked rows ─────
+
+
+def test_repush_happy_path_clears_only_this_companys_entity_hashes(
+    client, session_factory, rig, consumer,
+):
+    company_id, _sql_id = rig
+    _activated(client, company_id)
+    # One real run first, so `ac_watermark` actually has a row for this
+    # (company, entity) to prove untouched (it is created lazily on first
+    # extract, never at activation).
+    ran = client.post(_url(company_id, "/run"), headers=_auth(client))
+    assert ran.status_code == 200, ran.text
+
+    db = session_factory()
+    other_company = _company(db, database_name="AED_NEIGHBOUR")
+    _row_hash(db, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="mine-1")
+    _row_hash(db, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="mine-2")
+    _row_hash(db, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="mine-3")
+    _row_hash(db, company_id=company_id, entity_type=ENTITY_SUPPLIER, ref="sibling-entity-1")
+    _row_hash(db, company_id=company_id, entity_type=ENTITY_SUPPLIER, ref="sibling-entity-2")
+    _row_hash(db, company_id=other_company.id, entity_type=ENTITY_CUSTOMER, ref="sibling-co-1")
+    db.add(AcDocFingerprint(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company_id, entity_type=ENTITY_CUSTOMER,
+        source_ref="mine-1", fingerprint="fp",
+    ))
+    db.commit()
+    expected_cleared = _row_hash_count(
+        db, company_id=company_id, entity_type=ENTITY_CUSTOMER,
+    )
+    watermark_before = _watermark_row(db, db.get(AcCompany, company_id))
+    watermark_id, watermark_seen = watermark_before.id, watermark_before.last_success_at
+    db.close()
+
+    response = client.post(_repush_url(company_id), headers=_auth(client))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["clearedCount"] == expected_cleared, body
+    assert "status" in body
+
+    db2 = session_factory()
+    assert _row_hash_count(
+        db2, company_id=company_id, entity_type=ENTITY_CUSTOMER,
+    ) == 0, "every tracked row for this (company, entity) must be cleared"
+    assert _row_hash_count(
+        db2, company_id=company_id, entity_type=ENTITY_SUPPLIER,
+    ) == 2, "a sibling entity's rows must be untouched"
+    assert _row_hash_count(
+        db2, company_id=other_company.id, entity_type=ENTITY_CUSTOMER,
+    ) == 1, "a sibling company's rows must be untouched"
+    assert (
+        db2.query(AcDocFingerprint)
+        .filter(AcDocFingerprint.company_id == company_id)
+        .count()
+        == 1
+    ), "ac_doc_fingerprint must NOT be touched by a re-push"
+    watermark_after = _watermark_row(db2, db2.get(AcCompany, company_id))
+    assert watermark_after.id == watermark_id
+    assert watermark_after.last_success_at == watermark_seen, (
+        "ac_watermark must NOT be touched by a re-push"
+    )
+    db2.close()
+
+
+# ── AC-07-15: active arms next_reconcile_at now; paused stays None ──────────
+
+
+def test_repush_on_an_active_task_arms_the_next_reconcile_now(
+    client, session_factory, rig, consumer,
+):
+    company_id, _sql_id = rig
+    _activated(client, company_id)
+    db = session_factory()
+    incremental_before = _config_row(db, db.get(AcCompany, company_id)).next_incremental_at
+    db.close()
+
+    response = client.post(_repush_url(company_id), headers=_auth(client))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == ETL_STATUS_ACTIVE
+    assert body["nextReconcileAt"] is not None, body
+
+    db2 = session_factory()
+    config = _config_row(db2, db2.get(AcCompany, company_id))
+    assert config.next_reconcile_at is not None
+    assert config.next_incremental_at == incremental_before, (
+        "the incremental schedule must not be touched by a re-push"
+    )
+    db2.close()
+
+
+def test_repush_on_a_paused_task_leaves_next_reconcile_at_none(
+    client, session_factory, rig, consumer,
+):
+    company_id, _sql_id = rig
+    _activated(client, company_id)
+    assert client.post(_url(company_id, "/pause"), headers=_auth(client)).status_code == 200
+
+    response = client.post(_repush_url(company_id), headers=_auth(client))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == ETL_STATUS_PAUSED
+    assert body["nextReconcileAt"] is None, body
+
+    db = session_factory()
+    config = _config_row(db, db.get(AcCompany, company_id))
+    assert config.next_reconcile_at is None
+    db.close()
+
+
+# ── AC-07-16: guards -> 409, nothing deleted ─────────────────────────────────
+
+
+def test_repush_is_refused_on_a_draft_task(client, session_factory, rig):
+    company_id, _sql_id = rig  # rig's task is saved but never activated (draft)
+    db = session_factory()
+    _row_hash(db, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="untouched")
+    db.commit()
+    db.close()
+
+    response = client.post(_repush_url(company_id), headers=_auth(client))
+    assert response.status_code == 409, response.text
+    assert "activate" in str(response.json()).lower()
+
+    db2 = session_factory()
+    assert _row_hash_count(db2, company_id=company_id, entity_type=ENTITY_CUSTOMER) == 1
+    db2.close()
+
+
+def test_repush_is_refused_when_source_impl_is_not_sql_db(client, session_factory, rig):
+    company_id, _sql_id = rig
+    db = session_factory()
+    config = _config_row(db, db.get(AcCompany, company_id))
+    config.source_impl = SOURCE_IMPL_AUTOCOUNT_READ
+    config.etl_status = ETL_STATUS_ACTIVE
+    db.commit()
+    _row_hash(db, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="untouched")
+    db.commit()
+    db.close()
+
+    response = client.post(_repush_url(company_id), headers=_auth(client))
+    assert response.status_code == 409, response.text
+    assert "database task" in str(response.json()).lower()
+
+    db2 = session_factory()
+    assert _row_hash_count(db2, company_id=company_id, entity_type=ENTITY_CUSTOMER) == 1
+    db2.close()
+
+
+def test_repush_is_refused_while_a_run_is_in_flight(client, session_factory, rig, consumer):
+    from app.models.background_job import JOB_RUNNING
+
+    company_id, _sql_id = rig
+    _activated(client, company_id)
+    db = session_factory()
+    _row_hash(db, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="untouched")
+    db.add(BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID, type="autocount_sync", status=JOB_RUNNING,
+        payload_json={"companyId": company_id, "entityType": ENTITY_CUSTOMER},
+    ))
+    db.commit()
+    db.close()
+
+    response = client.post(_repush_url(company_id), headers=_auth(client))
+    assert response.status_code == 409, response.text
+    body = response.json()
+    assert "still going" in str(body).lower()
+    assert "runningRunId" in str(body), body
+
+    db2 = session_factory()
+    assert _row_hash_count(db2, company_id=company_id, entity_type=ENTITY_CUSTOMER) == 1
+    db2.close()
+
+
+# ── AC-07-17: atomicity - clear + next_reconcile_at in ONE commit ───────────
+
+
+def test_repush_failure_after_clear_all_rolls_back_the_deletion(
+    session_factory, rig, consumer, monkeypatch,
+):
+    """Simulated failure: `record_activity` (the write that sits at the tail
+    of `repush_task`, per the plan's step order) is monkeypatched to raise.
+    `clear_all` only FLUSHES (never commits - see its own docstring), so a
+    raise before the service's own commit must leave the session's rollback
+    (mirroring `app.database.get_db`'s `except Exception: db.rollback()`)
+    with the deletion undone."""
+    import modules.autocount.services.etl_service as etl_service_module
+
+    company_id, _sql_id = rig
+    client_setup = session_factory()
+    # Activate + seed a hash row directly at the service/session level (no
+    # HTTP indirection here - this test drives EtlService itself so the
+    # failure injection and the rollback are observed in ONE place).
+    from modules.autocount.services.etl_service import EtlService
+
+    EtlService(client_setup).preview_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
+    EtlService(client_setup).activate_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
+    _row_hash(client_setup, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="r1")
+    client_setup.commit()
+    client_setup.close()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated failure after clear_all")
+
+    monkeypatch.setattr(etl_service_module, "record_activity", boom)
+
+    db = session_factory()
+    service = EtlService(db)
+    method = getattr(service, "repush_task", None)
+    if method is None:
+        pytest.fail("EtlService has no `repush_task` method yet")
+    with pytest.raises(Exception):
+        method(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
+    db.rollback()
+    db.close()
+
+    fresh = session_factory()
+    assert _row_hash_count(
+        fresh, company_id=company_id, entity_type=ENTITY_CUSTOMER,
+    ) == 1, "the clear_all deletion must have been rolled back with the failed commit"
+    fresh.close()
+
+
+def test_repush_control_the_same_fixture_sees_a_committed_delete(session_factory, rig, consumer):
+    """Companion to the mutation test above (rollback-tests-need-savepoint-
+    fixture): the identical setup, WITHOUT the injected failure, must
+    genuinely commit the deletion - otherwise the rollback test above would
+    be proving nothing."""
+    from modules.autocount.services.etl_service import EtlService
+
+    company_id, _sql_id = rig
+    setup = session_factory()
+    EtlService(setup).preview_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
+    EtlService(setup).activate_task(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
+    _row_hash(setup, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="r1")
+    setup.commit()
+    setup.close()
+
+    db = session_factory()
+    service = EtlService(db)
+    method = getattr(service, "repush_task", None)
+    if method is None:
+        pytest.fail("EtlService has no `repush_task` method yet")
+    method(DEFAULT_TENANT_ID, company_id, ENTITY_CUSTOMER)
+    db.close()
+
+    fresh = session_factory()
+    assert _row_hash_count(
+        fresh, company_id=company_id, entity_type=ENTITY_CUSTOMER,
+    ) == 0, "the control run must actually commit the deletion"
+    fresh.close()
+
+
+# ── AC-07-18: one activity row on success, none on a 409 ────────────────────
+
+
+def _repush_activity_rows(db):
+    return (
+        db.query(IntegrationActivity)
+        .filter(
+            IntegrationActivity.tenant_id == DEFAULT_TENANT_ID,
+            IntegrationActivity.source == "autocount",
+            IntegrationActivity.operation.ilike("%repush%"),
+        )
+        .all()
+    )
+
+
+def test_repush_success_writes_one_activity_row_naming_the_cleared_count(
+    client, session_factory, rig, consumer,
+):
+    company_id, _sql_id = rig
+    _activated(client, company_id)
+    db = session_factory()
+    _row_hash(db, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="a1")
+    _row_hash(db, company_id=company_id, entity_type=ENTITY_CUSTOMER, ref="a2")
+    db.commit()
+    before = len(_repush_activity_rows(db))
+    db.close()
+
+    response = client.post(_repush_url(company_id), headers=_auth(client))
+    assert response.status_code == 200, response.text
+
+    db2 = session_factory()
+    rows = _repush_activity_rows(db2)
+    assert len(rows) == before + 1, "exactly one activity row for the re-push"
+    assert "2" in (rows[-1].error_message or "") or "2" in json.dumps(
+        rows[-1].request_summary_json or {}
+    ) + json.dumps(rows[-1].response_summary_json or {}), (
+        "the activity row must name the clearedCount somewhere"
+    )
+    db2.close()
+
+
+def test_repush_409_writes_no_activity_row(client, session_factory, rig):
+    company_id, _sql_id = rig  # draft -> 409
+    db = session_factory()
+    before = len(_repush_activity_rows(db))
+    db.close()
+
+    response = client.post(_repush_url(company_id), headers=_auth(client))
+    assert response.status_code == 409, response.text
+
+    db2 = session_factory()
+    assert len(_repush_activity_rows(db2)) == before, "a 409 must write no activity row"
+    db2.close()
