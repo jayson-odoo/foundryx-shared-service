@@ -540,6 +540,62 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
       expect(toastSuccess).not.toHaveBeenCalled();
     });
 
+    it('refreshes the task view on success (review round: badges must not lie about the armed reconcile), but not on a 409', async () => {
+      const successRepush = vi.fn().mockResolvedValue({
+        result: { clearedCount: 5, nextReconcileAt: '2026-09-10T06:31:00Z', status: 'active' },
+        runningRunId: null,
+        message: null,
+      });
+      const reloadTask = vi.fn();
+      const { rerender } = render(
+        <ActivateTab
+          company={company()}
+          task={task({ companyId: 'c1', entityType: 'sales_order', etlStatus: 'active' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle({ repush: successRepush })}
+          onRan={vi.fn()}
+          entities={[dbEntity()]}
+          reloadTask={reloadTask}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('etl-repush-all'));
+      fireEvent.change(screen.getByTestId('etl-repush-confirm-input'), {
+        target: { value: 'Sales order' },
+      });
+      fireEvent.click(screen.getByTestId('etl-repush-confirm'));
+      await vi.waitFor(() => expect(toastSuccess).toHaveBeenCalledTimes(1));
+      expect(reloadTask).toHaveBeenCalledTimes(1);
+
+      // A 409 (in-flight) on a fresh render must NOT trigger a reload - the
+      // task did not change.
+      const conflictRepush = vi.fn().mockResolvedValue({
+        result: null,
+        runningRunId: 'run-42',
+        message: 'A run is already in progress for this task.',
+      });
+      const reloadTaskOnConflict = vi.fn();
+      rerender(
+        <ActivateTab
+          company={company()}
+          task={task({ companyId: 'c1', entityType: 'sales_order', etlStatus: 'active' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle({ repush: conflictRepush })}
+          onRan={vi.fn()}
+          entities={[dbEntity()]}
+          reloadTask={reloadTaskOnConflict}
+        />,
+      );
+      fireEvent.click(screen.getByTestId('etl-repush-all'));
+      fireEvent.change(screen.getByTestId('etl-repush-confirm-input'), {
+        target: { value: 'Sales order' },
+      });
+      fireEvent.click(screen.getByTestId('etl-repush-confirm'));
+      await vi.waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
+      expect(reloadTaskOnConflict).not.toHaveBeenCalled();
+    });
+
     it('disables the trigger while a lifecycle action is busy', () => {
       render(
         <ActivateTab

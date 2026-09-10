@@ -62,6 +62,20 @@ export interface ActivateTabProps {
    * this tab derive the product/category/UOM dependency heads-up with no
    * extra request. Optional so existing callers are unaffected. */
   entities?: AutocountEntityConfig[];
+  /**
+   * Re-fetch the TASK ITSELF (status, `nextIncrementalAt`/`nextReconcileAt`)
+   * from the server - plan sprint-5/07 review round: a re-push arms
+   * `nextReconcileAt` to "now" server-side, but its own wire response is
+   * narrow (`clearedCount`/`nextReconcileAt`/`status` only, AC-07-20) and
+   * deliberately not widened into a full task, so this tab cannot fold the
+   * result into `task` the way activate/pause/resume do (their responses
+   * ARE the full task). Calling this after a successful re-push is the
+   * SAME "go get the current task" primitive `useAutocountEtlTask.reload`
+   * already provides - foolproof-UI: a badge still showing tonight's 02:00
+   * right after the operator armed an immediate reconcile would be a lie.
+   * Optional so existing callers are unaffected.
+   */
+  reloadTask?: () => void;
 }
 
 /**
@@ -80,6 +94,7 @@ export function ActivateTab({
   lifecycle,
   onRan,
   entities = [],
+  reloadTask = () => {},
 }: ActivateTabProps) {
   const { formatDateTime } = useDatetime();
   const { can } = useCan();
@@ -121,6 +136,7 @@ export function ActivateTab({
         status === 'active' ? ' The full re-push starts on the next scheduler tick.' : '';
       toast.success(`Change tracking cleared for ${count} documents.${tail}`);
       onRan();
+      reloadTask();
       return;
     }
     if (outcome.runningRunId) {

@@ -78,10 +78,8 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   const form = useForm({ mode: 'onTouched' });
   const { can } = useCan();
   const { detail } = useAutocountCompany(companyId);
-  const { task, isLoading, notFound, saveError, fieldErrors, save, apply } = useAutocountEtlTask(
-    companyId,
-    entityType,
-  );
+  const { task, isLoading, notFound, saveError, fieldErrors, save, apply, reload } =
+    useAutocountEtlTask(companyId, entityType);
   const sqlConnections = useAutocountSqlConnections();
   const mapping = useAutocountMapping(companyId, entityType);
   const draft = useMappingDraft(mapping.view);
@@ -463,6 +461,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 lifecycle={lifecycle}
                 onRan={onRan}
                 entities={detail?.entities ?? []}
+                reloadTask={reload}
               />
             </div>
           ),
@@ -523,6 +522,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     onUsePreset,
     presets,
     preview,
+    reload,
     runsConfig,
     runsKey,
     saveError,
