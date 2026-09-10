@@ -73,7 +73,14 @@ the kind of silent edit the 0016 review rejected; the operator step is one line 
   4. `cleared = RowHashRepository.clear_all(...)`; if `active`: `config.next_reconcile_at =
      now(utc)` (scheduler claims a `reconcile` on its next sweep, existing path; incremental
      untouched); if `paused`: leave `None`;
-  5. `record_activity(kind=REPUSH..., ok)` with `clearedCount`; single commit.
+  5. re-check `first_unfinished` (review finding: a job claimed between the first check and
+     the commit could re-write hashes for a page it decided not to push); a job now present ->
+     rollback + the same 409;
+  6. ONE `commit()`; THEN `record_activity(kind=REPUSH..., ok)` with `clearedCount`,
+     `entityType`, `actorUserId` (route takes `get_actor_user_id`) - the activity service commits
+     the session it is handed, so it sits after the mutation's commit like every other call site
+     in the module; plus one structured info log line for traceability when the activity row is
+     volume-dropped.
 - Fingerprints (`ac_doc_fingerprint`) and the watermark are NOT touched: the reconcile is a
   full extract, so neither gates what it pushes; the fingerprint sweep re-baselines itself on
   its next pass. Watermark reset would also re-read every page incrementally for nothing.
@@ -103,11 +110,14 @@ the kind of silent edit the 0016 review rejected; the operator step is one line 
 - Trio + hook: `repushEtlTask` in `autocount-service.{ts,mock.ts,real.ts}`, `repush()` on
   `useEtlTaskLifecycle` (same `perform()` busy/error pattern as `runNow`). Mock first (Phase 1),
   swapped at the service boundary in Phase 2.
-- `activate-tab.tsx`: a destructive "Re-push all" `Button` (variant destructive/outline per the
-  design language roster) + the shell `AlertDialog` typed-confirm. Visibility = `active|paused`
-  AND database task AND `useCan(AC_COMPANIES_MANAGE)`. Copy: "Clears change tracking for this
-  task. The next reconcile pushes every document to Sorento again." Paused variant adds "Nothing
-  moves until the task is resumed." No hint text elsewhere (foolproof-UI).
+- `activate-tab.tsx`: a destructive "Re-push all" `DeferredActionButton` (`useDeferredAction`,
+  the D2/D13 grace-window undo model). Amended 2026-09-10 after review: the first cut composed an
+  `AlertDialog` typed-confirm, which is a named PRINCIPLES.md design hard-fail (only four
+  typed-confirm carve-outs exist) and contradicts the T5 ruling that dropped confirms on this
+  tab's re-sync actions. Visibility = `active|paused` AND database task AND
+  `useCan(AC_COMPANIES_MANAGE)`. Success toast: "Change tracking cleared for N documents. The
+  full re-push starts on the next scheduler tick." Paused variant adds "Nothing moves until the
+  task is resumed." No hint text elsewhere (foolproof-UI).
 - Success `lib/toast`: "Change tracking cleared for 148,068 documents. The full re-push starts on
   the next scheduler tick." Runs list refetch. 409 in flight: toast error with the server text and
   a link to `running_run_id`.
@@ -181,3 +191,11 @@ Docs: SQL pack, sprint-5/02 addendum, this pair, test report, `documentation/bac
 - D6: re-push permission = `autocount.companies.manage` (configure bucket, `refetch-history`
   analog); no new key, no grant sweep.
 - D7: drift exclusion dropped: `compute_diff` is pushed-vs-pushed; `read_back` has no caller.
+- D8 (2026-09-10, review): Re-push all is a `DeferredActionButton`, not a typed-confirm dialog.
+  PRINCIPLES.md's design hard-fail (no new destructive confirm outside the four named carve-outs)
+  and the T5 ruling on this tab override the grill default; the grace-window undo is the guard.
+- D9 (2026-09-10, review): activity row is written AFTER the mutation's commit (the activity
+  service commits the session it is handed), carries `actorUserId` from `get_actor_user_id`,
+  and the in-flight guard is re-checked after `clear_all` before the commit. The structural fix
+  (stamp `repush_requested_at`, let the reconcile clear hashes inside its own run transaction,
+  which also removes the "Added = N" reporting artefact) is BL-SS-197, not this slice.

@@ -123,12 +123,20 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   deleted: a run in flight (`running_run_id` in the body, same as `run_task_now`); a `draft`
   task ("Activate the task first - a draft has nothing to re-push."); a task whose `source_impl`
   is not `sql_db` ("Re-push applies to database tasks only.").
-- **AC-07-17 [BE]** Atomicity: clear + `next_reconcile_at` land in ONE commit; a failure after
-  `clear_all` (simulated) rolls the deletion back (the savepoint fixture from
-  [[rollback-tests-need-savepoint-fixture]]: pair with a control test proving the same fixture
-  does see a committed delete).
+- **AC-07-17 [BE]** Atomicity: clear + `next_reconcile_at` land in ONE commit; a failure of that
+  commit (simulated by making the session commit raise) leaves every hash row in place (pair with
+  a control test proving the same fixture does see a committed delete). Amended 2026-09-10 after
+  review: the in-flight guard is re-checked AFTER `clear_all` and BEFORE the commit; a job that
+  appeared in between rolls the deletion back and answers 409 (pinned by a test that injects the
+  job between the two checks).
 - **AC-07-18 [BE]** `record_activity(...)` writes one activity row for the action (kind names the
-  re-push, message carries `clearedCount`), on the same commit; a 409 writes no activity row.
+  re-push; payload carries `clearedCount`, `entityType` and `actorUserId` from
+  `get_actor_user_id`, i.e. the real admin under impersonation) IMMEDIATELY AFTER the commit
+  (the activity service commits the session it is handed, so it must never sit inside the
+  mutation's transaction); a 409 writes no activity row. A failing activity insert never undoes
+  the wipe: pinned by a test that makes the activity repository raise and asserts 200 with the
+  hashes still cleared. One structured `logger.info` line records tenant, company, entity, actor
+  and cleared count on success.
 - **AC-07-19 [BE]** The reconcile that follows a re-push classifies every fetched row as an add
   and pushes it; the Sorento sink's `updated` outcome for an existing `source_ref` counts as
   delivered (existing `_OUTCOME_DELIVERED`), the run's `Added` reflects the staged adds, and
@@ -146,19 +154,25 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   "Re-push all" action, rendered ONLY when the task is `active` or `paused`, its source is a
   database task, and `useCan(AC_COMPANIES_MANAGE)`; hidden otherwise (foolproof-UI: never an
   option that cannot work). Draft tasks never show it.
-- **AC-07-22 [FE]** Clicking opens the shell's `AlertDialog` typed-confirm (type the entity's
-  label, the same primitive other destructive actions use - no hand-rolled dialog); copy states
-  that change tracking is cleared and the next reconcile pushes EVERY document of this task to
-  Sorento again, and for a paused task that nothing moves until the task is resumed. Confirm is
-  disabled until the typed value matches; Escape / Cancel closes with no call.
+- **AC-07-22 [FE]** (amended 2026-09-10 after review, PRINCIPLES.md design hard-fail: no new
+  destructive confirm dialog outside the four named typed-confirm carve-outs; the T5 ruling on
+  this very tab drops confirms on re-sync actions.) The action is a `DeferredActionButton` /
+  `useDeferredAction` (the app's D2/D13 grace-window model): clicking arms the action with a
+  visible undo window; undo within the window makes NO call; when the window lapses the service
+  is called once. No dialog, no typed input. The button copy is "Re-push all"; the success toast
+  states that change tracking is cleared and the next reconcile pushes every document of this
+  task to Sorento again, and for a paused task that nothing moves until the task is resumed.
 - **AC-07-23 [FE]** Success: `lib/toast` success naming the cleared count and, for an active
   task, that the full re-push starts on the next scheduler tick; the Runs tab data refreshes
   (`SWR` / list refetch) so the reconcile appears once claimed. 409 in flight: toast error with
   the server message and a link to the running run (`running_run_id`), dialog closes, nothing
   else changes. Other errors: existing `lifecycle.error` surface.
-- **AC-07-24 [FE]** Vitest: renders/hides per AC-07-21 (four permission x status cases), typed
-  confirm gating, service called once with the right ids, 409 path renders the message, a
-  loading state disables the trigger while `busy`. No `any`, no raw CSS, no bare Select /
+- **AC-07-24 [FE]** Vitest: renders/hides per AC-07-21 (four permission x status cases), the
+  deferred action fires the service exactly once with the right ids when its window lapses and
+  never when undone, 409 path renders the message and the Runs link, task reload fires on success
+  and not on 409, a loading state disables the trigger while `busy`; hook tests for
+  `useEtlTaskLifecycle.repush` (success / 409 with `runningRunId` / other error) and a
+  `readRunningRunId` test against the exact backend 409 `detail` shape `{message, runningRunId}`. No `any`, no raw CSS, no bare Select /
   table / sonner imports (eslint guardrails).
 - **AC-07-25 [E2E]** Recorded agent-browser run on the lane stack (fresh prod build,
   :3006 / :8006, `--session s36`), real clicks from `/` via the sidebar: Services -> AutoCount ->
