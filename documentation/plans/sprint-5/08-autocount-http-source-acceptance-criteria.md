@@ -253,7 +253,8 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   (`retryable` on a product for an unknown brand is expected, not a defect). The logging sink
   handles `brand` with no change.
 - **AC-08-33 [BE]** `sorento_supports_entity("brand")` is gated on the consumer contract
-  version (`>= 2.3`, read from `GET /api/v1/external/contract` as sprint-5/06 reads 2.2): on
+  (`GET /api/v1/external/contract`: version `>= 2.3` AND `"brands"` in `entities`, read as
+  sprint-5/06 reads 2.2): on
   a 2.2 consumer a brand task stages and logs (logging-sink fallback) with the Review & Activate
   banner "Consumer contract 2.2 - brands land when 2.3 is deployed"; never a 422 from Sorento.
 - **AC-08-34 [T]** Appendix A of the plan (Sorento contract 2.3: `brands` ingest entity,

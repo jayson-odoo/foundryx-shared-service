@@ -275,14 +275,30 @@ Facts from your reply 2026-09-11 (origin/main 3bc23aeb0) drive this; do not re-d
    (`integration_reference_service.py:57-76`) += `brands`; read-back `_READ_COLUMNS`
    (`master_read_service.py:39-95`); deletions `ENTITY_MODELS` + deactivation map
    (`deletion_service.py:117, :134-140`, a brand with products -> deactivate).
-5. **Adoption of auto-created brands**: the product path creates `brands` with code = name =
-   raw value; a later `brands` push must ADOPT that row by normalised code (trim, case-fold)
-   rather than create a second one - please make the master adoption lookup for brands use
-   `normalized_code=True` (`master_ingest_service.py:442-479`).
-6. **Contract**: `contract.py:65-85` lists `brands`; version string `ingest.py:196` -> `2.3`.
-   Products keep `brand_code` resolution unchanged.
+5. **Adoption of auto-created brands**: no code needed (peer correction 2026-09-12). The default
+   `resolve_master_by_code` (`master_ingest_service.py:812-822`) compares `upper(btrim())` on
+   both sides inside the anchored company and brand is already in the code/name maps
+   (`rules/master_rules.py:38, :47, :84-103`), so a `SORENTO` push adopts an auto-created
+   " sorento " row. Their UAC AC-3 pins it. Do NOT switch brands to `normalized_code=True`
+   (that is the raw-SQL path for the shared sales-agents table).
+6. **Contract**: `entities` on `GET /external/contract` already lists `brands` (built from
+   `SUPPORTED_ENTITIES`); `FIELDS_ADDED` untouched; version string -> `2.3`. The ESB gate
+   (AC-08-33) checks version >= 2.3 AND `brands` in `entities`. Products keep `brand_code`
+   resolution unchanged. Sorento ships one idempotent migration granting
+   `master_data.brands.{view,edit,delete}` to `integration_foundryx_esb`, so item 3's prod
+   check is not needed for brands.
 7. **Company anchor**: nothing to change; the ESB sends `companyCode` per body (`SRT` /
    `MOCHA`). Owner to run the prod binding query from your reply before the first Mocha push.
 8. Tests: route happy + 413 + permission denial; adoption of a pre-existing auto-created
    brand; deletion deactivation with dependents. Reply with the PR number when open; the ESB
-   merge gate waits for 2.3 on prod.
+   merges when reviewed, brands land on prod once 2.3 serves.
+
+Sorento-side status 2026-09-12: plan + UAC drafted in sorento_crm
+(`documentation/plans/autocount/PLAN-autocount-brands-ingest.md` + `...-acceptance-criteria.md`),
+awaiting the OWNER's approval there before code. Their rulings: caps = column widths (code 1..50,
+name 1..150) with a per-record `failed` verdict, never a batch reject; a brand with products is
+deactivated on delete and keeps its reference; BL-056 (refs unique without `company_id`) stays
+open for the owner - Mocha is its trigger and this plan relies on the per-company ref prefix (D4).
+Runbook note for S5 / first prod run: push brands with `?dry_run=true` first; the `created` count
+exposes any hand-made live brand whose code differs from the AutoCount `ItemBrand` code (e.g.
+`SRT` vs `SORENTO`) that would otherwise land as a second brand.
