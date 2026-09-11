@@ -62,7 +62,11 @@ class HttpApiClient:
     @property
     def _client(self) -> httpx.Client:
         if self._transport is None:
-            self._transport = httpx.Client(timeout=self.timeout_seconds)
+            # S5 (sprint-5/08 review round 1) - never silently follow a
+            # redirect off the configured base URL (SSRF-adjacent).
+            self._transport = httpx.Client(
+                timeout=self.timeout_seconds, follow_redirects=False
+            )
         return self._transport
 
     def close(self) -> None:
@@ -137,7 +141,29 @@ class HttpApiClient:
                     "params": mask_payload(dict(params or {})),
                 }
             )
-            response_body, response_truncated = bound_payload(mask_payload(body))
+            #     !!  S10 (sprint-5/08 review round 1) - NEVER PERSIST ROW
+            #         BODIES FOR THIS CLIENT.  !!
+            # The wrapper is public and unauthenticated (plan §2.10): a
+            # debtor page carries phone numbers and credit limits, a product
+            # page carries pricing. ``mask_payload``/``bound_payload`` only
+            # protect known CREDENTIAL keys and cap byte size - they do
+            # nothing about ordinary business PII sitting in an open
+            # `Data[]` array, and `MAX_LIST_ITEMS` (5) would still have let
+            # up to 5 rows of it land in ``integration_activity`` on every
+            # page. So the response side of THIS client's activity record
+            # carries COUNTERS ONLY (status/rowCount/envelope) - never the
+            # body. The SQL/vendor client (`client.py`'s own
+            # `_record_call`) is untouched: that transport is never public.
+            envelope: Optional[str] = None
+            if isinstance(body, dict) and isinstance(body.get("Data"), list):
+                envelope = "paged"
+            elif isinstance(body, list):
+                envelope = "list"
+            response_summary = {
+                "statusCode": status_code,
+                "rowCount": row_count,
+                "envelope": envelope,
+            }
 
             self._calls.append(
                 CallRecord(
@@ -152,14 +178,7 @@ class HttpApiClient:
                         else {"body": request_payload},
                         request_truncated,
                     ),
-                    response=mark_truncated(
-                        {
-                            "statusCode": status_code,
-                            "body": response_body,
-                            "rowCount": row_count,
-                        },
-                        response_truncated,
-                    ),
+                    response=response_summary,
                     error_message=(str(mask_payload(error))[:1000] if error else None),
                 )
             )
@@ -167,6 +186,30 @@ class HttpApiClient:
             logger.exception(
                 "failed to buffer an AutoCount HTTP call record for %s", path
             )
+
+    def record_note(self, message: str, *, ok: bool = True) -> None:
+        """Append a synthetic, no-request ``CallRecord`` carrying an
+        observability note (S12, sprint-5/08 review round 1) - drained
+        through the EXACT SAME ``drain_calls()`` path as a genuine page
+        fetch, so something worth surfacing on a run (the page-drift
+        duplicate-key warning, AC-08-22) reaches ``integration_activity``
+        instead of only ``logger.warning``, which nobody but a developer
+        with shell access ever sees."""
+        try:
+            self._calls.append(
+                CallRecord(
+                    method="NOTE",
+                    path=self.base_url,
+                    status_code=None,
+                    latency_ms=0,
+                    ok=ok,
+                    request={},
+                    response={"message": str(mask_payload(message))[:1000]},
+                    error_message=None,
+                )
+            )
+        except Exception:  # noqa: BLE001 - observability NEVER breaks a run
+            logger.exception("failed to buffer an AutoCount HTTP note")
 
     def drain_calls(self) -> List[CallRecord]:
         drained = list(self._calls)

@@ -236,6 +236,12 @@ def test_duplicate_key_across_pages_first_wins_with_warning(rig, caplog):
     result = source.fetch_changes(Watermark())
     refs = [source.source_ref(r.raw) for r in result.records]
     assert refs.count(f"{DB_NAME}:A1") == 1
+    # S12 (sprint-5/08 review round 1, AC-08-22) - the drift is ALSO on the
+    # activity trail an operator can actually see, not just the app log.
+    activity = list(source.drain_activity())
+    notes = [r for r in activity if r.method == "NOTE"]
+    assert len(notes) == 1, activity
+    assert "1 duplicate key" in notes[0].response["message"]
 
 
 def test_distinct_of_projection_trimmed_non_blank_first_seen(rig):
@@ -266,11 +272,25 @@ def test_distinct_of_projection_trimmed_non_blank_first_seen(rig):
 
 
 def test_page_error_fails_run_and_touches_nothing(rig):
+    """AC-08-23. S8 (sprint-5/08 review round 1) - was a COUNT-only
+    assertion, which would stay green even if the run overwrote the seed
+    row's hash VALUE with a different one (same count, corrupted content).
+    Now pins the ``ac_row_hash`` row byte-identical AND an ``ac_watermark``
+    row's cursor untouched, per the AC's own "byte-identical" wording."""
     db, company, conn = rig
     config = _config(db, company, connection_id=conn.id)
     RowHashRepository(db).upsert_many(
         DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, {f"{DB_NAME}:SEED": "x" * 64}, seen_at=None
     )
+    seed_watermark_cursor = {"cursorColumn": "LastModified", "cursorMark": "2026-08-01T00:00:00"}
+    db.add(
+        AcWatermark(
+            tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_PRODUCT,
+            cursor_json=dict(seed_watermark_cursor),
+        )
+    )
+    db.commit()
+    before_hashes = RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
     before_hash_count = db.query(AcRowHash).count()
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -293,6 +313,18 @@ def test_page_error_fails_run_and_touches_nothing(rig):
     assert exc.value.page == 3
     assert exc.value.status == 500
     assert db.query(AcRowHash).count() == before_hash_count
+    after_hashes = RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    assert after_hashes == before_hashes, "every ac_row_hash row must be byte-identical"
+    watermark_row = (
+        db.query(AcWatermark)
+        .filter(
+            AcWatermark.tenant_id == DEFAULT_TENANT_ID,
+            AcWatermark.company_id == company.id,
+            AcWatermark.entity_type == ENTITY_PRODUCT,
+        )
+        .one()
+    )
+    assert watermark_row.cursor_json == seed_watermark_cursor
 
 
 def test_timeout_fails_the_run(rig):
@@ -399,6 +431,46 @@ def test_drain_activity_one_record_per_page(rig):
     assert len(activity) == 2
     assert all(record.method == "GET" for record in activity)
     assert "page=1" in activity[0].path or activity[0].path.endswith("page=1")
+
+
+# ── S10 (sprint-5/08 review round 1): never persist row bodies (PII) ────────
+
+
+def test_drained_activity_never_carries_a_debtor_row_body():
+    """The wrapper is public + unauthenticated (plan §2.10) - a debtor page
+    carries ``CompanyName``/``Phone1``/credit-limit fields. This client's
+    OWN activity record must carry counters only, never the row bodies -
+    unlike the vendor/SQL client's own ``_record_call`` (untouched, never
+    public)."""
+    from modules.autocount.http_source.client import HttpApiClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "TotalCount": 1, "Page": 1, "PageSize": 50, "TotalPages": 1,
+                "Data": [
+                    {
+                        "AccNo": "D001",
+                        "CompanyName": "Sorento Trading Sdn Bhd",
+                        "Phone1": "+60123456789",
+                        "CreditLimit": 50000,
+                    }
+                ],
+            },
+        )
+
+    client = HttpApiClient(BASE_URL, transport=_transport(handler))
+    client.get("/debtorbypage", {"page": 1, "pageSize": 50})
+    activity = client.drain_calls()
+    assert len(activity) == 1
+    record = activity[0]
+    serialized = repr(record.request) + repr(record.response)
+    assert "CompanyName" not in serialized
+    assert "Sorento Trading Sdn Bhd" not in serialized
+    assert "+60123456789" not in serialized
+    assert "CreditLimit" not in serialized
+    assert record.response == {"statusCode": 200, "rowCount": 1, "envelope": "paged"}
 
 
 # ── AC-08-25: run modes mirror sql_db ─────────────────────────────────────────
@@ -540,3 +612,26 @@ def test_multi_key_joined_with_pipe(rig):
     config = _config(db, company, connection_id=conn.id, key_fields=("ItemCode", "Location"))
     source = HttpApiSource(_ctx(db, company, config), entity_type=ENTITY_PRODUCT, transport=_transport(lambda r: httpx.Response(200, json=[])))
     assert source.source_ref({"ItemCode": "SRT-01", "Location": "WH1"}) == f"{DB_NAME}:SRT-01|WH1"
+
+
+# ── S6 (sprint-5/08 review round 1): auth-scoped, not just provider-scoped ──
+
+
+def test_basic_auth_connection_refuses_construction(rig):
+    """A task's ``connectionId`` resolving to a BASIC-auth ``autocount``
+    connection (the operator flipped the connection's own ``auth`` after
+    saving the task, or hand-edited the row) must fail the SAME way a
+    missing connection does - never silently attempt an unauthenticated GET
+    against a vendor endpoint that expects a session."""
+    db, company, _open_conn = rig
+    basic_conn = Connection(
+        tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="Basic AC",
+        config_json={"baseUrl": BASE_URL, "auth": "basic", "userId": "ADMIN"},
+        credentials_json=None, is_active=True,
+    )
+    db.add(basic_conn)
+    db.commit()
+    db.refresh(basic_conn)
+    config = _config(db, company, connection_id=basic_conn.id)
+    with pytest.raises(HttpSourceError):
+        HttpApiSource(_ctx(db, company, config), entity_type=ENTITY_PRODUCT)

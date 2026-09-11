@@ -192,8 +192,21 @@ def sorento_supported_entities_label() -> str:
     future entity join (another document, another master) can never leave
     the operator-facing "not previewable" reason stale again the way "it
     currently accepts suppliers and customers only" did the moment documents
-    joined the map (plan 22 S5)."""
-    names = [entity_type.replace("_", " ") for entity_type in _ENTITY_PATH]
+    joined the map (plan 22 S5).
+
+    S3 (sprint-5/08 review round 1) - CONTRACT-GATED entities (``brand``,
+    AC-08-33) are EXCLUDED: unqualified membership in ``_ENTITY_PATH`` is
+    not the same claim as "Sorento accepts this today" for an entity whose
+    real answer depends on the consumer's advertised contract version, and
+    this sentence was previously saying "...and brand" on every 2.2
+    consumer while ``sorento_supports_entity("brand")`` (no contract kwargs)
+    answered ``False`` for the exact same request - a direct contradiction
+    an operator would read as a bug report against us."""
+    names = [
+        entity_type.replace("_", " ")
+        for entity_type in _ENTITY_PATH
+        if entity_type != ENTITY_BRAND
+    ]
     if len(names) <= 1:
         return names[0] if names else ""
     return ", ".join(names[:-1]) + f" and {names[-1]}"
@@ -239,6 +252,18 @@ def contract_major(version: Any, *, default: Optional[int] = None) -> Optional[i
         return int(version)
     head = str(version).strip().split(".", 1)[0]
     return int(head) if head.isdigit() else default
+
+
+@dataclass(frozen=True)
+class SorentoContractInfo:
+    """``GET /external/contract``'s full answer (S2, sprint-5/08 review
+    round 1) - the RAW version (a float; ``fetch_contract``'s major-only int
+    cannot satisfy a ``>= 2.3`` gate) and the advertised ``entities`` list,
+    so ``sorento_supports_entity``'s contract-gate kwargs (AC-08-33) have a
+    real caller."""
+
+    version: float
+    entities: List[str]
 
 
 class SorentoSinkError(Exception):
@@ -741,6 +766,47 @@ class SorentoSink:
         return partial, (body.get("records") or []), None
 
     # ── contract (addendum section 11/12, AC-02-14) ──────────────────────────
+
+    def fetch_contract_detail(self) -> Optional["SorentoContractInfo"]:
+        """``GET /api/v1/external/contract`` -> the FULL version (a float,
+        e.g. ``2.3`` - ``fetch_contract`` below truncates to the major int,
+        which cannot ever satisfy a ``>= 2.3`` gate) plus the advertised
+        ``entities`` list, or ``None`` on ANY failure (network, non-200,
+        malformed body) - the SAME "unprovable = not yet provable" contract
+        ``fetch_contract`` follows.
+
+        S2 (sprint-5/08 review round 1) - ``sorento_supports_entity``'s
+        ``contract_version``/``contract_entities`` kwargs (AC-08-33) existed
+        with nothing feeding them: every call site only ever called
+        ``fetch_contract()`` (major-only) or nothing at all, so the
+        ``brand`` gate could never open even against a genuinely-2.3
+        consumer.
+        """
+        url = f"{self._base_url}/api/v1/external/contract"
+        headers = {"X-API-Key": self._api_key}
+        try:
+            with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
+                response = client.get(url, headers=headers)
+            if response.status_code != 200:
+                return None
+            body = response.json()
+            if not isinstance(body, dict):
+                return None
+            raw_version = body.get("version")
+            if isinstance(raw_version, bool) or raw_version is None:
+                version = 1.0
+            elif isinstance(raw_version, (int, float)):
+                version = float(raw_version)
+            else:
+                try:
+                    version = float(str(raw_version).strip())
+                except ValueError:
+                    return None
+            entities = body.get("entities")
+            entities_list = [str(e) for e in entities] if isinstance(entities, list) else []
+            return SorentoContractInfo(version=version, entities=entities_list)
+        except Exception:  # noqa: BLE001 - advisory only, must never propagate
+            return None
 
     def fetch_contract(self) -> Optional[int]:
         """``GET /api/v1/external/contract`` -> the version Sorento advertises,

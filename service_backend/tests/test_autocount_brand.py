@@ -116,6 +116,102 @@ def test_supports_brand_false_when_entity_missing_even_at_2_3():
     ) is False
 
 
+# ── S2 (sprint-5/08 review round 1) - the gate has a REAL caller now ────────
+#
+# Before this fix ``fetch_contract`` returned ONLY the truncated MAJOR int
+# (``contract_major`` floors "2.3" to 2), so ``contract_version >= 2.3`` could
+# never be true even against a genuinely-2.3 consumer, and neither call site
+# (`company_service.sink_for_company` / `sync_service.preview`) passed the
+# gate kwargs at all - `sorento_supports_entity("brand")` (no kwargs)
+# always answers False, so the gate could never OPEN.
+
+
+def test_fetch_contract_detail_parses_full_version_and_entities():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"version": "2.3", "entities": ["suppliers", "brands"]})
+
+    sink = SorentoSink(
+        base_url="https://sorento.example.com", api_key="k", entity_type=ENTITY_BRAND,
+        transport=httpx.MockTransport(handler),
+    )
+    detail = sink.fetch_contract_detail()
+    assert detail is not None
+    assert detail.version == 2.3
+    assert detail.entities == ["suppliers", "brands"]
+
+
+def test_fetch_contract_detail_none_on_failure():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    sink = SorentoSink(
+        base_url="https://sorento.example.com", api_key="k", entity_type=ENTITY_BRAND,
+        transport=httpx.MockTransport(handler),
+    )
+    assert sink.fetch_contract_detail() is None
+
+
+@pytest.fixture
+def _brand_gate_rig(session_factory):
+    from app.models import DEFAULT_TENANT_ID
+    from app.models.connection import Connection
+    from app.secrets import encrypt_secret
+    from modules.autocount.models import AcCompany, SINK_IMPL_SORENTO
+
+    db = session_factory()
+    source_conn = Connection(
+        tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="Vendor",
+        config_json={"baseUrl": "https://ac.example.com", "auth": "basic"},
+        credentials_json=encrypt_secret({"appId": "a", "password": "p"}), is_active=True,
+    )
+    sorento_conn = Connection(
+        tenant_id=DEFAULT_TENANT_ID, provider="sorento", type="erp", name="Sorento",
+        config_json={"baseUrl": "https://sorento.example.com"},
+        credentials_json=encrypt_secret({"apiKey": "k"}), is_active=True,
+    )
+    db.add_all([source_conn, sorento_conn])
+    db.commit()
+    company = AcCompany(
+        tenant_id=DEFAULT_TENANT_ID, connection_id=source_conn.id,
+        database_name="MOCHA", company_name="Mocha", name="Mocha", is_active=True,
+        sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento_conn.id,
+        sorento_company_code="MOCHA",
+    )
+    db.add(company)
+    db.commit()
+    yield db, company
+    db.close()
+
+
+def test_sink_for_company_brand_opens_on_2_3_with_brands_entity(monkeypatch, _brand_gate_rig):
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.services.company_service import CompanyService
+    from modules.autocount.sinks_sorento import SorentoContractInfo
+
+    monkeypatch.setattr(
+        SorentoSink, "fetch_contract_detail",
+        lambda self: SorentoContractInfo(version=2.3, entities=["brands"]),
+    )
+    db, company = _brand_gate_rig
+    sink = CompanyService(db).sink_for_company(DEFAULT_TENANT_ID, company, ENTITY_BRAND)
+    assert isinstance(sink, SorentoSink)
+    assert hasattr(sink, "dry_run")
+
+
+def test_sink_for_company_brand_falls_back_to_logging_on_2_2_contract(monkeypatch, _brand_gate_rig):
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.services.company_service import CompanyService
+    from modules.autocount.sinks_sorento import SorentoContractInfo
+
+    monkeypatch.setattr(
+        SorentoSink, "fetch_contract_detail",
+        lambda self: SorentoContractInfo(version=2.2, entities=["suppliers", "customers"]),
+    )
+    db, company = _brand_gate_rig
+    sink = CompanyService(db).sink_for_company(DEFAULT_TENANT_ID, company, ENTITY_BRAND)
+    assert sink.name == SINK_LOGGING
+
+
 # ── AC-08-35: 429 mid-batch sleeps Retry-After capped at 60s, once, retries ──
 
 

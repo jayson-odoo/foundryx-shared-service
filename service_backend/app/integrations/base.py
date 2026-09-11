@@ -65,7 +65,28 @@ class IntegrationProvider(Protocol):
     test_needs_context: bool
 
     def fields(self) -> List[Dict[str, Any]]:
-        """Config schema rows (key/label/type/required/secret/…) for the wizard."""
+        """Config schema rows (key/label/type/required/secret/…) for the
+        wizard. Every row is a plain dict (no typed schema class - the
+        wire IS the contract); the keys the frontend form understands:
+
+        * ``key``/``label``/``type`` (``text``/``password``/``select``/…)/
+          ``required``/``secret``/``placeholder``/``default`` - the base
+          shape every field carries.
+        * ``options`` - ``[{"value", "label"}, ...]`` for a ``select`` field.
+        * ``defaultsFrom`` - ``{"field": <key>, "values": {<that field's
+          value>: <this field's default>}}`` (sql_provider.py's per-dialect
+          port). A DEPENDENT default, not conditional visibility - the
+          field still always renders.
+        * ``showWhen`` (sprint-5/08, D11) - ``{"field": <key>, "values":
+          [<value>, ...]}``. Conditional VISIBILITY: the form hides this
+          field (and drops it from the required set AND the submitted
+          config) unless the named sibling field's current value is one of
+          ``values``. Absent = always shown (every pre-existing provider's
+          behaviour is unchanged). See ``modules/autocount/provider.py``'s
+          ``auth`` select for the reference usage (the three vendor
+          credential fields carry ``showWhen: {"field": "auth", "values":
+          ["basic"]}`` so the open/no-auth mode never asks for them).
+        """
         ...
 
     def test(

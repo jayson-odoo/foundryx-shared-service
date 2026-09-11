@@ -155,6 +155,17 @@ class AutoCountProvider:
             },
         ]
 
+    def validate_config(self, config: Dict[str, Any]) -> Optional[str]:
+        """S5 (sprint-5/08 review round 1) - the SAME scheme rule `test()`
+        already applies, now also enforced at SAVE, not only when the
+        operator happens to click Test. Blank is fine here (the `required`
+        gate on `baseUrl` is the wizard's own job); only a present-but-bad
+        scheme is rejected."""
+        base_url = str((config or {}).get("baseUrl") or "").strip()
+        if base_url and not base_url.lower().startswith(("http://", "https://")):
+            return "The base URL must start with http:// or https://."
+        return None
+
     def test(
         self,
         config: Dict[str, Any],

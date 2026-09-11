@@ -38,7 +38,7 @@ from ..client import parse_last_modified
 from ..mapping import IdentityError, flat_source_ref
 from ..models import RUN_MODE_MANUAL, RUN_MODE_RECONCILE, SOURCE_IMPL_AUTOCOUNT_HTTP
 from ..repositories import ConnectionRepository, RowHashRepository
-from ..provider import PROVIDER_KEY
+from ..provider import PROVIDER_KEY, is_open_connection
 from ..sources import FetchResult, SourceContext, SourceRecord, Watermark, register_source
 from ..sql_source.hashing import compared_columns_for, row_hash
 from ..sql_source.source import CURSOR_COLUMN, CURSOR_MARK, MAX_EXTRACT_ROWS
@@ -121,7 +121,13 @@ class HttpApiSource:
         conn = ConnectionRepository(ctx.db).get_for_provider(
             ctx.tenant_id, connection_id, PROVIDER_KEY
         )
-        if conn is None:
+        # S6 (sprint-5/08 review round 1) - provider-scoped alone is not
+        # enough: a task saved against a BASIC-auth ``autocount`` connection
+        # (e.g. an operator switched a connection's auth after saving the
+        # task) must fail the SAME way a missing connection does, never
+        # silently attempt an unauthenticated GET against a vendor endpoint
+        # that expects a session.
+        if conn is None or not is_open_connection(conn):
             raise HttpApiTaskNotConfigured(
                 "The API connection this task reads from was not found."
             )
@@ -242,6 +248,14 @@ class HttpApiSource:
                 self.entity_type,
                 duplicates,
                 getattr(self._ctx.company, "id", ""),
+            )
+            # S12 (sprint-5/08 review round 1, AC-08-22) - the SAME fact,
+            # also on the run's activity trail (not just the app log an
+            # operator cannot see).
+            self._client.record_note(
+                f"{duplicates} duplicate key(s) seen while walking pages for "
+                f"'{self.entity_type}' - first occurrence kept.",
+                ok=False,
             )
         return kept
 

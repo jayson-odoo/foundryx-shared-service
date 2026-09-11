@@ -1321,13 +1321,22 @@ def test_mapping_presets_are_database_substituted_for_a_document_entity(
     assert preset["filterFormula"] is None
 
 
-def test_mapping_presets_is_empty_for_a_non_document_entity(client, session_factory, transports):
+def test_mapping_presets_is_empty_for_an_entity_with_no_preset_at_all(
+    client, session_factory, transports
+):
+    """S7 (sprint-5/08 review round 1) - `customer` is no longer a valid
+    "has no preset" example: it is one of the six HTTP entities
+    (`presets.HTTP_PRESETS`) and now correctly answers non-empty (see
+    `test_get_mapping_presets_route_returns_http_preset_not_empty` in
+    `test_autocount_http_task_config.py`). `supplier` has neither a
+    document nor an HTTP preset registered, so it is the genuine "nothing
+    to offer" case this test exists to pin."""
     setup = session_factory()
     company_id = _company(setup, transports, database_name="AED_PRESET_HTTP2").id
     setup.close()
 
     response = client.get(
-        "/autocount/presets/customer?companyId=" + company_id, headers=_auth(client)
+        "/autocount/presets/supplier?companyId=" + company_id, headers=_auth(client)
     )
     assert response.status_code == 200
     assert response.json() == []

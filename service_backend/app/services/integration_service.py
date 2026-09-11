@@ -67,6 +67,30 @@ def _decrypt_or_none(ciphertext: str) -> Optional[Dict[str, str]]:
         return None
 
 
+def _validate_provider_config(provider: IntegrationProvider, config: Dict) -> None:
+    """S5 (sprint-5/08 review round 1) - a save-time schema check BEYOND
+    `required`, for a provider that opts in. `validate_config`, when a
+    provider defines one (duck-typed - not every provider needs a format
+    rule beyond `required`), returns an error message or `None`; a
+    non-`None` result is a plain 422 naming no field in particular (the
+    error string itself names what is wrong, e.g. "the base URL must start
+    with http:// or https://").
+
+    Kept GENERIC here rather than special-cased per provider: today only
+    `modules.autocount.provider.AutoCountProvider` defines one (`baseUrl`'s
+    scheme, previously checked only at Test time, so a bad scheme could sit
+    in storage indefinitely waiting for someone to click Test), but any
+    future provider gets the same save-time gate for free by defining the
+    same method.
+    """
+    validate = getattr(provider, "validate_config", None)
+    if validate is None:
+        return
+    error = validate(config)
+    if error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, error)
+
+
 def _provider_out(p: IntegrationProvider) -> ProviderOut:
     return ProviderOut(
         provider=p.provider,
@@ -255,6 +279,7 @@ class IntegrationService:
                     f'A {existing.type} connection ("{existing.name}") already exists '
                     "for this workspace - disconnect it first.",
                 )
+        _validate_provider_config(provider, dict(req.config))
         connection = Connection(
             tenant_id=tenant_id,
             provider=provider.provider,
@@ -295,7 +320,11 @@ class IntegrationService:
             # MERGE, don't replace - config is a partial PATCH field (its
             # sibling `credentials` merges too); wholesale replace would let a
             # partial body silently wipe omitted keys.
-            connection.config_json = {**(connection.config_json or {}), **req.config}
+            merged_config = {**(connection.config_json or {}), **req.config}
+            provider = get_provider(connection.provider)
+            if provider is not None:
+                _validate_provider_config(provider, merged_config)
+            connection.config_json = merged_config
         if req.rateLimitPerMinute is not None:
             connection.rate_limit_per_minute = req.rateLimitPerMinute
         # Write-only secrets: omitted/empty keys keep the stored values.

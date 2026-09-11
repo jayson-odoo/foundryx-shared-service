@@ -578,25 +578,46 @@ def list_mapping_presets(entity_type: str, database_name: str) -> List[Dict[str,
     preset (a non-document entity, or a document family not yet documented).
     """
     preset = DOCUMENT_PRESETS.get(entity_type)
-    if preset is None:
-        return []
-    return [
-        {
-            "entityType": entity_type,
-            "label": preset.label,
-            "headerQuery": preset.header_query.replace("{database}", database_name),
-            "lineQuery": preset.line_query.replace("{database}", database_name),
-            "keyColumns": list(preset.key_columns),
-            "watermarkColumn": preset.watermark_column,
-            "docDateColumn": preset.doc_date_column,
-            "fromDate": preset.from_date or None,
-            "filterFormula": preset.filter_formula,
-            "fingerprintQuery": (
-                preset.fingerprint_query.replace("{database}", database_name)
-                if preset.fingerprint_query else None
-            ),
-        }
-    ]
+    if preset is not None:
+        return [
+            {
+                "entityType": entity_type,
+                "label": preset.label,
+                "headerQuery": preset.header_query.replace("{database}", database_name),
+                "lineQuery": preset.line_query.replace("{database}", database_name),
+                "keyColumns": list(preset.key_columns),
+                "watermarkColumn": preset.watermark_column,
+                "docDateColumn": preset.doc_date_column,
+                "fromDate": preset.from_date or None,
+                "filterFormula": preset.filter_formula,
+                "fingerprintQuery": (
+                    preset.fingerprint_query.replace("{database}", database_name)
+                    if preset.fingerprint_query else None
+                ),
+            }
+        ]
+    # S7 (sprint-5/08 review round 1, AC-08-16 second clause) - this endpoint
+    # used to answer ``[]`` for every HTTP entity (product/customer/
+    # warehouse/product_category/brand/unit_of_measure): it only ever
+    # checked ``DOCUMENT_PRESETS``, so the Mapping tab's "Use preset" action
+    # had nothing to show for the entities this plan actually added. No
+    # ``{database}`` substitution applies to an HTTP preset - there is no
+    # query text, only the endpoint path + field picks.
+    http_preset = HTTP_PRESETS.get(entity_type)
+    if http_preset is not None:
+        return [
+            {
+                "entityType": entity_type,
+                "label": http_preset.label,
+                "path": http_preset.path,
+                "keyFields": list(http_preset.key_fields),
+                "watermarkField": http_preset.watermark_field,
+                "distinctOf": (
+                    list(http_preset.distinct_of) if http_preset.distinct_of else None
+                ),
+            }
+        ]
+    return []
 
 
 # ── open REST API presets (sprint-5/08, AC-08-16) ─────────────────────────────

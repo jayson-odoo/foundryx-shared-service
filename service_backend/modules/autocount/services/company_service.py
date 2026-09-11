@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from cryptography.fernet import InvalidToken
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.connection import Connection
@@ -91,6 +92,7 @@ from ..models import (
 # strategy and look like it worked.
 SOURCE_IMPLS = (SOURCE_IMPL_AUTOCOUNT_READ, SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)
 from ..http_client import OpenProbeError, probe_open_connection
+from ..presets import HTTP_ENTITY_TYPES as _PRESET_HTTP_ENTITY_TYPES
 from ..provider import PROVIDER_KEY, auth_mode, client_from_connection, is_open_connection
 from ..repositories import (
     CompanyRepository,
@@ -127,7 +129,7 @@ logger = logging.getLogger("foundryx.autocount")
 # `AC_API_CAPABLE_ENTITY_TYPES` in `autocount-meta.ts`, drift-checked by
 # `tests/test_autocount_entity_parity.py`.
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE  # noqa: E402
-from ..canonical.masters import ENTITY_CUSTOMER, ENTITY_SUPPLIER  # noqa: E402
+from ..canonical.masters import ENTITY_BRAND, ENTITY_CUSTOMER, ENTITY_SUPPLIER  # noqa: E402
 from ..envelopes import ENVELOPE_ROW_ARRAY, ENVELOPE_STATUS_DICT  # noqa: E402
 from ..sources import INITIAL_LOAD_FULL, INITIAL_LOAD_WINDOWED  # noqa: E402
 
@@ -151,14 +153,13 @@ SOURCE_PROVIDERS = (PROVIDER_KEY, SQL_DATABASE_PROVIDER_KEY)
 # sprint-5/08 (AC-08-12): the six entities the open REST API can extract - a
 # `sourceImpl='autocount_http'` switch is only ever offered/accepted for one
 # of these (mirrors `SEEDED_ENTITIES`'s "confirmed vendor payload" guard).
-HTTP_CAPABLE_ENTITY_TYPES = (
-    "product",
-    ENTITY_CUSTOMER,
-    "warehouse",
-    "product_category",
-    "brand",
-    "unit_of_measure",
-)
+# NIT (sprint-5/08 review round 1) - derived from `presets.HTTP_ENTITY_TYPES`
+# (the preset registry's OWN key set) rather than hand-duplicated: the two
+# used to list the same six entities independently, which is exactly the
+# kind of pair a future 7th entity join could add to one and forget the
+# other. `test_autocount_entity_parity.py` pins the parity anyway; this
+# just makes drift structurally impossible instead of merely tested.
+HTTP_CAPABLE_ENTITY_TYPES = _PRESET_HTTP_ENTITY_TYPES
 
 # sprint-5/08 (AC-08-07): the reference-prefix grammar for an open company's
 # `database_name` - trimmed, upper-cased, 2..32 chars of A-Z/0-9/_.
@@ -737,7 +738,15 @@ class CompanyService:
             # swappable the same way the Sorento sink is chosen - one seam.
             return sink_for(SINK_IMPL_LOGGING)
         if impl == SINK_IMPL_SORENTO:
-            if not sorento_supports_entity(entity_type):
+            # S2 (sprint-5/08 review round 1, AC-08-33) - ``brand`` is
+            # CONTRACT-GATED: unlike every other entity here, whether
+            # Sorento accepts it depends on the CONSUMER's own advertised
+            # ``/external/contract`` (version >= 2.3 AND ``"brands"`` in its
+            # ``entities``), so the plain membership check
+            # (``sorento_supports_entity(entity_type)``, no kwargs) can
+            # never open for it - it needs a LIVE contract read. Every other
+            # entity keeps the original zero-network early-out unchanged.
+            if entity_type != ENTITY_BRAND and not sorento_supports_entity(entity_type):
                 # Sorento ingests masters only; a document entity (GRN, PO, …)
                 # has no ingest endpoint yet. Route it to the logging sink so it
                 # stages + logs cleanly instead of raising on a missing ingest
@@ -750,7 +759,7 @@ class CompanyService:
                     "connection configured. Choose a target connection first."
                 )
             conn = self._consumer_connection(tenant_id, company.sink_connection_id)
-            return sorento_sink_from_connection(
+            sink = sorento_sink_from_connection(
                 conn.config_json or {},
                 self.credentials(conn),  # clean InvalidToken reject, never 500
                 entity_type=entity_type,
@@ -762,6 +771,20 @@ class CompanyService:
                 # answers the authoritative COMPANY_ANCHOR_REQUIRED.
                 company_code=company.sorento_company_code,
             )
+            if entity_type == ENTITY_BRAND:
+                contract = sink.fetch_contract_detail()
+                supported = sorento_supports_entity(
+                    entity_type,
+                    contract_version=(contract.version if contract else None),
+                    contract_entities=(contract.entities if contract else None),
+                )
+                if not supported:
+                    # AC-08-33 - never a 422 from Sorento; a 2.2 consumer (or
+                    # an unreachable one) falls back to the logging sink,
+                    # exactly the "deliverability" story every other
+                    # not-yet-built entity already gets.
+                    return sink_for(SINK_IMPL_LOGGING)
+            return sink
         raise UnknownSinkImpl(
             f"Company '{company.database_name}' is configured with an unknown "
             f"push sink '{impl}'."
@@ -1138,18 +1161,34 @@ class CompanyService:
             },
         )
 
-        company = self.companies.add(
-            AcCompany(
-                tenant_id=tenant_id,
-                connection_id=conn.id,
-                database_name=prefix,
-                company_name=(name or prefix).strip(),
-                name=(name or prefix).strip(),
-                is_active=True,
+        # S13 (sprint-5/08 review round 1, AC-08-07) - the ``get_by_database_
+        # name`` pre-check above closes the common race window, but two
+        # concurrent creates for the SAME prefix can still both pass it and
+        # both reach this ``add()``; only the DB's own unique constraint
+        # (``uq_ac_company_tenant_db``) catches that. Mirrors the house
+        # pattern (``AuthService.create_user``'s ``IntegrityError`` ->
+        # ``EmailAlreadyExists``) - a clean 409 naming the holder, never a
+        # raw 500.
+        try:
+            company = self.companies.add(
+                AcCompany(
+                    tenant_id=tenant_id,
+                    connection_id=conn.id,
+                    database_name=prefix,
+                    company_name=(name or prefix).strip(),
+                    name=(name or prefix).strip(),
+                    is_active=True,
+                )
             )
-        )
-        # Deliberately NO ``seed_company_defaults`` (D13) - see the docstring.
-        self.db.commit()
+            # Deliberately NO ``seed_company_defaults`` (D13) - see the docstring.
+            self.db.commit()
+        except IntegrityError:
+            self.db.rollback()
+            holder = self.companies.get_by_database_name(tenant_id, prefix)
+            holder_name = holder.name or holder.database_name if holder else prefix
+            raise CompanyAlreadyExists(
+                f"'{prefix}' is already connected as company '{holder_name}'."
+            )
         return company
 
     def create_from_connection(
