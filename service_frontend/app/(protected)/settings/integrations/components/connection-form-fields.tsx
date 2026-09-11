@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { UseFormReturn } from 'react-hook-form';
+import { useWatch, type UseFormReturn } from 'react-hook-form';
 import { ChevronDown, LoaderCircleIcon, Send } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
@@ -29,7 +29,12 @@ import { integrationService } from '@/services/integration-service';
 import { useDatetime } from '@/hooks/use-datetime';
 import type { Connection, IntegrationProvider, ProviderField } from '@/types/integration';
 import { CONNECTION_STATUS_REGISTRY } from './connection-status';
-import { dependentDefault, type ConnectionFormValues, storedOrEffective } from './connection-schema';
+import {
+  dependentDefault,
+  isFieldVisible,
+  type ConnectionFormValues,
+  storedOrEffective,
+} from './connection-schema';
 
 const TYPE_LABELS: Record<string, string> = {
   email: 'Email',
@@ -177,8 +182,16 @@ export function ConfigurationTab({
     return () => subscription.unsubscribe();
   }, [form, provider]);
 
-  const basic = provider?.fields.filter((f) => !f.advanced) ?? [];
-  const advanced = provider?.fields.filter((f) => f.advanced) ?? [];
+  // Live values while editing, the stored record while read-only (plan
+  // sprint-5/08, D11) - a `showWhen` field is hidden/shown reactively as its
+  // driver select changes, and never rendered at all for a saved connection
+  // whose driver currently hides it.
+  const liveConfig = useWatch({ control: form.control, name: 'config' });
+  const visibilityConfig = editing ? (liveConfig ?? {}) : (connection?.config ?? {});
+  const shown = (f: ProviderField) => isFieldVisible(f, visibilityConfig);
+
+  const basic = (provider?.fields.filter((f) => !f.advanced) ?? []).filter(shown);
+  const advanced = (provider?.fields.filter((f) => f.advanced) ?? []).filter(shown);
   // Read mode: surface advanced fields that actually hold a value.
   const advancedVisible = editing
     ? showAdvanced

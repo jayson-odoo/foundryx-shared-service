@@ -113,6 +113,13 @@ vi.mock('@/hooks/use-autocount-etl', () => ({
     isLoading: false,
     error: null,
   }),
+  useAutocountApiConnections: () => ({
+    connections: [
+      { id: 'conn-sql-1', name: 'AutoCount API', baseUrl: 'https://api.example', auth: 'basic' as const },
+    ],
+    isLoading: false,
+    error: null,
+  }),
   useAutocountSqlSchema: (connectionId: string | null) => {
     schemaSpy(connectionId);
     return { schema: null, isLoading: false, error: null, refresh: vi.fn() };
@@ -146,6 +153,7 @@ vi.mock('@/hooks/use-autocount-etl', () => ({
     run: vi.fn(),
     reset: vi.fn(),
   }),
+  useHttpPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), fieldErrors: {}, reset: vi.fn() }),
 }));
 
 vi.mock('@/hooks/use-autocount-mapping', () => ({
@@ -209,11 +217,15 @@ describe('TaskEditorView - DB company locked connection seeds the BASELINE (revi
     expect(screen.getByText('Discard changes?')).toBeInTheDocument();
   });
 
-  it('an API company keeps the null draft as-is (picker present, nothing seeded)', () => {
+  it('an API company opens the Source tab on API, locked to its own (basic-auth) connection (sprint-5/08, AC-08-18/19 - supersedes the pre-toggle "free SQL picker" behaviour)', () => {
     detailBox.current = companyDetail('api');
     render(<TaskEditorView companyId="c1" entityType="customer" />);
-    expect(screen.getByRole('combobox', { name: 'Connection' })).toBeInTheDocument();
+    // Basic-auth + an API-capable entity (`customer`) reads through the
+    // vendor login - no endpoint to configure, so the API branch shows the
+    // locked connection + the read-only message, never a Database picker.
+    expect(screen.getByTestId('locked-api-connection')).toHaveTextContent('AutoCount API');
+    expect(screen.getByTestId('basic-auth-source')).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Connection' })).not.toBeInTheDocument();
     expect(screen.queryByTestId('locked-connection')).not.toBeInTheDocument();
-    expect(schemaSpy).toHaveBeenLastCalledWith(null);
   });
 });

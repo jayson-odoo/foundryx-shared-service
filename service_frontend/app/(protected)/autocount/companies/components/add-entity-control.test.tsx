@@ -113,3 +113,31 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     expect(names).toContain('Supplier');
   });
 });
+
+describe('AddEntityControl - open (http) company kind (sprint-5/08, AC-08-18)', () => {
+  it('an open company offers exactly the six confirmed open-API masters', () => {
+    render(<AddEntityControl entities={[]} sourceKind="http" onAdd={vi.fn()} />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
+    const names = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'Product', 'Customer', 'Warehouse', 'Product category', 'Brand', 'Unit of measure',
+      ]),
+    );
+    expect(names).toHaveLength(6);
+  });
+
+  it("an open company's list drops entities already configured", () => {
+    render(
+      <AddEntityControl
+        entities={[entity({ entityType: 'product' })]}
+        sourceKind="http"
+        onAdd={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
+    const names = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(names).toHaveLength(5);
+    expect(names).not.toContain('Product');
+  });
+});

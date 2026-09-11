@@ -115,28 +115,34 @@ beforeEach(() => {
   detailBox.current = detail();
 });
 
-describe('AutocountCompanyDetailView - kind (AC-01-16)', () => {
-  it('an API company\'s Integration row reads "AutoCount API" and still links the connection', () => {
+describe('AutocountCompanyDetailView - kind (AC-01-16, AC-08-10)', () => {
+  it('an API (basic-auth) company\'s Integration row reads "API (basic auth)" and still links the connection', () => {
     render(<AutocountCompanyDetailView companyId="c1" />);
-    expect(screen.getByTestId('company-source-kind')).toHaveTextContent('AutoCount API');
+    expect(screen.getByTestId('company-source-kind')).toHaveTextContent('API (basic auth)');
     expect(screen.getByRole('link', { name: 'Open connection' })).toHaveAttribute(
       'href',
       '/settings/integrations/conn-1',
     );
   });
 
-  it('a DB company\'s Integration row reads "SQL database"', () => {
+  it('a DB company\'s Integration row reads "Database"', () => {
     detailBox.current = detail({ sourceKind: 'db', connectionId: 'conn-sql-1' });
     render(<AutocountCompanyDetailView companyId="c1" />);
-    expect(screen.getByTestId('company-source-kind')).toHaveTextContent('SQL database');
+    expect(screen.getByTestId('company-source-kind')).toHaveTextContent('Database');
     expect(screen.getByRole('link', { name: 'Open connection' })).toHaveAttribute(
       'href',
       '/settings/integrations/conn-sql-1',
     );
   });
+
+  it('an open (http) company\'s Integration row reads "API (no auth)"', () => {
+    detailBox.current = detail({ sourceKind: 'http', connectionId: 'conn-api-mocha' });
+    render(<AutocountCompanyDetailView companyId="c1" />);
+    expect(screen.getByTestId('company-source-kind')).toHaveTextContent('API (no auth)');
+  });
 });
 
-describe('AutocountCompanyDetailView - Add entity per kind (AC-01-17)', () => {
+describe('AutocountCompanyDetailView - Add entity per kind (AC-01-17, AC-08-18)', () => {
   it('a DB company offers Customer and Supplier, never GRN', () => {
     detailBox.current = detail({ sourceKind: 'db' });
     render(<AutocountCompanyDetailView companyId="c1" />);
@@ -145,6 +151,17 @@ describe('AutocountCompanyDetailView - Add entity per kind (AC-01-17)', () => {
     expect(names).toHaveLength(10);
     expect(names).toEqual(expect.arrayContaining(['Customer', 'Supplier']));
     expect(names).not.toContain('Goods received note');
+  });
+
+  it('an open (http) company offers exactly the six confirmed open-API masters', () => {
+    detailBox.current = detail({ sourceKind: 'http', connectionId: 'conn-api-mocha' });
+    render(<AutocountCompanyDetailView companyId="c1" />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
+    const names = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(names).toHaveLength(6);
+    expect(names).toEqual(
+      expect.arrayContaining(['Product', 'Customer', 'Warehouse', 'Product category', 'Brand', 'Unit of measure']),
+    );
   });
 
   it('an API company keeps today\'s seven', () => {

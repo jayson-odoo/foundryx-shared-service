@@ -3,7 +3,6 @@
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import {
-  ArrowLeftRight,
   CalendarRange,
   Database,
   Globe,
@@ -88,10 +87,12 @@ export interface EntitiesListConfigOptions {
   onRefetch: (entity: AutocountEntityConfig) => void | Promise<void>;
   /** Open the entity's field-mapping editor (AC-15-40). */
   onConfigureMapping: (entity: AutocountEntityConfig) => void;
-  /** Open the entity's Database-mode task editor (plan 22, AC-22-07). */
+  /**
+   * Open the entity's task editor at the Source tab (sprint-5/08 D13): the
+   * ONE place the API ⇄ Database choice is made now - the `change-source`
+   * dialog + action are gone.
+   */
   onConfigureTask: (entity: AutocountEntityConfig) => void;
-  /** Open the guarded API ⇄ Database source switch (plan 22 S2, AC-22-08). */
-  onChangeSource: (entity: AutocountEntityConfig) => void;
 }
 
 export function useAutocountEntitiesListConfig({
@@ -103,20 +104,13 @@ export function useAutocountEntitiesListConfig({
   onRefetch,
   onConfigureMapping,
   onConfigureTask,
-  onChangeSource,
 }: EntitiesListConfigOptions): ResourceListConfig<AutocountEntityConfig> {
   const { formatDateTime } = useDatetime();
 
   return useMemo<ResourceListConfig<AutocountEntityConfig>>(() => {
-    // The first-run window is a vendor-API concept; a DB company's entities
-    // never had one (AC-01-18). The source switch is judged PER ROW below:
-    // hidden only for a `sql_db` row on a DB company (the one shape that has
-    // nowhere to go), shown on every API-company row AND on an
-    // `autocount_read` row that a DB company should never have carried
-    // (the 2026-09-06 reseed bug) - otherwise there is no UI way out of it.
-    const apiBacked = sourceKind !== 'db';
-    const canChangeSource = (rows: AutocountEntityConfig[]) =>
-      apiBacked || rows[0]?.sourceImpl === 'autocount_read';
+    // The first-run window is a vendor-API concept; a DB or open (http)
+    // company's entities never had one (AC-01-18, AC-08-10 - same predicate).
+    const apiBacked = sourceKind !== 'db' && sourceKind !== 'http';
     const actions: ResourceAction<AutocountEntityConfig>[] = [
       {
         id: 'sync-now',
@@ -179,32 +173,22 @@ export function useAutocountEntitiesListConfig({
         },
       },
       {
-        // The Database-mode task editor (plan 22). Offered ONLY on a
-        // database-sourced entity - on an API entity the editor would
-        // configure a query nothing runs (foolproof: only valid options).
+        // The task editor's Source tab (sprint-5/08 D13) is now the ONE place
+        // the API <-> Database choice is made - this ONE row action replaces
+        // both the old "Configure database query" (sql_db only) and the
+        // guarded "Change source" dialog, always reachable regardless of the
+        // row's current impl (this is also how a row stranded on
+        // `autocount_read` on a DB company gets fixed - fix/db-company-seed-
+        // source's regression, now solved by "one place" rather than a
+        // second action).
         id: 'configure-task',
-        label: 'Configure database query',
+        label: 'Configure source',
         icon: Database,
         surfaces: { row: true },
         permission: AC_COMPANIES_MANAGE,
-        isVisible: (rows) => rows[0]?.sourceImpl === 'sql_db',
         run: (rows) => {
           const row = rows[0];
           if (row) onConfigureTask(row);
-        },
-      },
-      {
-        // The guarded source switch (plan 22 S2, AC-22-08): a confirm dialog
-        // with the picker, since it changes how every later sync runs.
-        id: 'change-source',
-        label: 'Change source',
-        icon: ArrowLeftRight,
-        surfaces: { row: true },
-        permission: AC_COMPANIES_MANAGE,
-        isVisible: canChangeSource,
-        run: (rows) => {
-          const row = rows[0];
-          if (row) onChangeSource(row);
         },
       },
     ];
@@ -234,11 +218,14 @@ export function useAutocountEntitiesListConfig({
         meta: { headerTitle: 'Source' },
         header: ({ column }) => <DataGridColumnHeader title="Source" column={column} />,
         cell: ({ row }) => {
-          const db = row.original.sourceImpl === 'sql_db';
+          // Both task-backed impls (SQL and the open REST API, sprint-5/08)
+          // read as "task" iconography; only the vendor-login path is Globe.
+          const taskBacked =
+            row.original.sourceImpl === 'sql_db' || row.original.sourceImpl === 'autocount_http';
           return (
             <div className="flex items-start">
-              <Badge variant={db ? 'primary' : 'secondary'} appearance="light" size="sm">
-                {db ? <Database className="size-3" /> : <Globe className="size-3" />}
+              <Badge variant={taskBacked ? 'primary' : 'secondary'} appearance="light" size="sm">
+                {taskBacked ? <Database className="size-3" /> : <Globe className="size-3" />}
                 {sourceImplLabel(row.original.sourceImpl)}
               </Badge>
             </div>
@@ -420,7 +407,6 @@ export function useAutocountEntitiesListConfig({
     companyActive,
     entities,
     formatDateTime,
-    onChangeSource,
     onConfigureMapping,
     onConfigureTask,
     onEditLookback,

@@ -14,6 +14,7 @@
  * on install): `autocount.companies.read/manage`, `autocount.sync.read/run`.
  */
 import type {
+  AutocountApiConnection,
   AutocountApprovalResult,
   AutocountCompany,
   AutocountCompanyCreateInput,
@@ -42,9 +43,14 @@ import type {
   AutocountSyncJob,
   AutocountSyncJobBatch,
   AutocountSyncRun,
+  HttpPreview,
+  HttpPreviewInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
-import { realAutocountService } from './autocount-service.real';
+import { mockAutocountService } from './autocount-service.mock';
+// `autocount-service.real.ts` carries its own `AutocountService` type
+// annotation, so it type-checks against every contract above whether or not
+// it is imported here - no need to import it just to keep it compiling.
 
 export interface AutocountListQuery {
   page?: number; // 0-based
@@ -425,17 +431,71 @@ export interface AutocountService {
     companyId: string,
     entityType: string,
   ): Promise<AutocountMappingPreset[]>;
+
+  // ── open REST API source (sprint-5/08, S1 - AC-08-06/09/14/15) ─────────────
+  //
+  // PHASE 1 MOCK - the backend phase (S2 provider/company, S3 source/task)
+  // MUST match this contract byte for byte; the mock IS the spec.
+  //
+  //   GET /autocount/http/connections
+  //        → AutocountApiConnection[] {id, name, baseUrl, auth}  - EVERY
+  //          `autocount` connection of the tenant (both auths), tenant-scoped,
+  //          gated `autocount.read` (AC-08-15). Feeds BOTH the connect-company
+  //          picker (badging + the ref-prefix reveal, AC-08-09) and the task
+  //          Source tab's connection picker (badging + impl derivation,
+  //          AC-08-19) - ONE endpoint, not two.
+  //
+  //   POST /autocount/companies  {connectionId, name?, refPrefix?}
+  //        → AutocountCompany - gains `refPrefix` (AC-08-06/07): REQUIRED
+  //          (422 `{fieldErrors: {refPrefix}}`) when `connectionId` names an
+  //          open (`auth: 'none'`) connection; trimmed, upper-cased,
+  //          `^[A-Z0-9_]{2,32}$` server-side (`REF_PREFIX_RE` mirrors it
+  //          client-side for the disabled-until-valid gate only - the 422 is
+  //          still authoritative). Ignored (422 "not applicable") for a
+  //          vendor/SQL connection. `AutocountCompany.sourceKind` gains
+  //          `'http'` for an open company.
+  //
+  //   POST /autocount/http/preview  {connectionId, path, distinctOf?}
+  //        → HttpPreview {envelope: 'paged'|'list', totalCount?, columns:
+  //          [{name, sample}], rows (<=50), durationMs}  (AC-08-14). `paged`
+  //          = a `{TotalCount,Page,PageSize,TotalPages,Data[]}` envelope
+  //          (page 1, pageSize 50); `list` = a bare JSON array capped to 50.
+  //          `distinctOf` set → rows are the distinct `{value}` projection,
+  //          `columns == [{name:'value', sample:<first value>}]`. Errors map
+  //          to 422 naming the step (`connectionId` for a non-open/foreign
+  //          connection, `path` for a 404/non-JSON/timeout/`..`/query-string).
+  //        Gated `autocount.manage` (same bucket as `/autocount/sql/preview`).
+  //
+  //   `AutocountEtlTask` (existing `/etl-task` routes) gains `sourceImpl`
+  //        ('sql_db'|'autocount_http') and, when 'autocount_http', the task's
+  //        `sourceConfig` carries `path`/`keyFields`/`watermarkField`/
+  //        `comparedFields`/`distinctOf` ALONGSIDE the (unused, defaulted)
+  //        SQL fields - ONE envelope, not a discriminated union on the wire,
+  //        so Mapping/Schedule/Review & Activate/Runs keep reading the SAME
+  //        `AutocountEtlTask.sourceConfig` shape unchanged (AC-08-19). This is
+  //        a DELIBERATE FE-mock simplification, not the literal backend JSON
+  //        shape the UAC Definitions describe (a real discriminated
+  //        `ac_entity_config.source_config`) - flagged for the S2/S3 backend
+  //        coder to confirm/reconcile against `types/autocount.ts`'s own
+  //        `AutocountHttpSourceConfig` doc comment.
+
+  /** Every `autocount` connection of the tenant, badged by auth. */
+  listApiConnections(): Promise<AutocountApiConnection[]>;
+  /** Page-1 sample of an open-API endpoint path (<=50 rows), writes nothing. */
+  previewHttp(input: HttpPreviewInput): Promise<HttpPreview>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// The whole AutoCount surface is backed by FastAPI end to end (companies,
-// sync, staged review, ETL tasks, document field mapping incl. line rows/
-// aggregates/status formula/presets/Simulate-with-lines - sprint-5/02
-// S1-S3). The `withPhase1DocumentMappingMock` overlay this used to carry is
-// gone now that `GET /autocount/presets/{entityType}` and
-// `CompanyService.simulate_mapping`'s `lines=` param are both real
-// (`modules/autocount/routers/sync.py`/`services/company_service.py`); a
-// `.mock` sibling still exists as frontend-first scaffolding for the
-// Vitest suite (the house service-trio pattern).
+// PHASE 1 MOCK - swap in S5 (sprint-5/08). The open REST API source
+// (`listApiConnections`/`previewHttp`, the `refPrefix` company-create path,
+// the `autocount_http` task fields above) has NO backend yet - S2 builds the
+// provider/company halves, S3 the source/task halves. Binding the WHOLE
+// AutoCount surface to `.mock` for the duration (companies/sync/mapping/ETL
+// were real since sprint-5/02-07 and will be again once S5 flips this back)
+// mirrors how plan 22 S1 built the direct-DB source: one company's data must
+// stay consistent across every screen the operator clicks through, which a
+// mix of live + mock state cannot guarantee. `mockAutocountService` IS the
+// backend spec for S2-S4; every field/error shape documented above must
+// round-trip byte for byte once real.
 // ═══════════════════════════════════════════════════════════════════════════
-export const autocountService: AutocountService = realAutocountService;
+export const autocountService: AutocountService = mockAutocountService;

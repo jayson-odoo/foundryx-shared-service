@@ -6,8 +6,14 @@ import type {
   AutocountMappingPreset,
   AutocountSqlConnection,
 } from '@/types/autocount';
-import type { SqlPreviewState, UseAutocountSqlSchemaResult, UseSqlPreviewResult } from '@/hooks/use-autocount-etl';
-import { QueryTab, type LockedConnection } from './query-tab';
+import type {
+  SqlPreviewState,
+  UseAutocountSqlSchemaResult,
+  UseHttpPreviewResult,
+  UseSqlPreviewResult,
+} from '@/hooks/use-autocount-etl';
+import type { AutocountApiConnection } from '@/types/autocount';
+import { SourceTab, type LockedApiConnection, type LockedConnection } from './source-tab';
 
 /**
  * Query tab - plan 22 S5 additions (AC-22-24): the line-query test leg,
@@ -70,7 +76,7 @@ const EMPTY_SCHEMA: UseAutocountSqlSchemaResult = {
   refresh: vi.fn(),
 };
 
-function renderQueryTab(over: {
+function renderSourceTab(over: {
   entityType?: string;
   cfg?: AutocountEtlSourceConfig;
   preview?: UseSqlPreviewResult;
@@ -84,9 +90,11 @@ function renderQueryTab(over: {
   const onChange = over.onChange ?? vi.fn();
   const onUsePreset = over.onUsePreset ?? vi.fn();
   render(
-    <QueryTab
+    <SourceTab
       editing
       entityType={over.entityType ?? 'sales_order'}
+      sourceKind="db"
+      onSourceKindChange={vi.fn()}
       config={over.cfg ?? config()}
       onChange={onChange}
       connections={over.connections ?? CONNECTIONS}
@@ -99,27 +107,31 @@ function renderQueryTab(over: {
       presets={over.presets}
       onUsePreset={onUsePreset}
       onServerTest={passThroughServer}
+      apiConnections={[]}
+      apiConnectionsLoading={false}
+      lockedApiConnection={null}
+      httpPreview={{ state: { status: 'idle' }, run: vi.fn(), fieldErrors: {}, reset: vi.fn() }}
     />,
   );
   return { onChange, onUsePreset };
 }
 
-describe('QueryTab - document line/ref columns (plan 22 S5, AC-22-24)', () => {
+describe('SourceTab - document line/ref columns (plan 22 S5, AC-22-24)', () => {
   it('shows the line query editor + Test line query button for a document entity', () => {
-    renderQueryTab();
+    renderSourceTab();
     expect(screen.getByTestId('sql-line-editor')).toBeInTheDocument();
     expect(screen.getByTestId('sql-test-line-query')).toBeInTheDocument();
   });
 
   it('hides the whole document block for a non-document entity', () => {
-    renderQueryTab({ entityType: 'customer' });
+    renderSourceTab({ entityType: 'customer' });
     expect(screen.queryByTestId('sql-line-editor')).not.toBeInTheDocument();
     expect(screen.queryByTestId('sql-test-line-query')).not.toBeInTheDocument();
   });
 
   it('runs the line preview with a bound (never real) sample doc key on Test line query', () => {
     const linePreview = idlePreview();
-    renderQueryTab({ linePreview });
+    renderSourceTab({ linePreview });
     fireEvent.click(screen.getByTestId('sql-test-line-query'));
     expect(linePreview.run).toHaveBeenCalledWith(
       'conn-sql-1',
@@ -129,12 +141,12 @@ describe('QueryTab - document line/ref columns (plan 22 S5, AC-22-24)', () => {
   });
 
   it('Test line query is disabled until a line query is present', () => {
-    renderQueryTab({ cfg: config({ lineQuery: '' }) });
+    renderSourceTab({ cfg: config({ lineQuery: '' }) });
     expect(screen.getByTestId('sql-test-line-query')).toBeDisabled();
   });
 
   it('the document date column picker is fed by the HEADER preview, not the line one', () => {
-    renderQueryTab({
+    renderSourceTab({
       preview: successPreview(['DocKey', 'DocNo', 'Status', 'DocDate']),
       linePreview: idlePreview(),
     });
@@ -145,13 +157,13 @@ describe('QueryTab - document line/ref columns (plan 22 S5, AC-22-24)', () => {
   });
 
   it('a document watermark picker never offers "None" (a document REQUIRES one, S5)', () => {
-    renderQueryTab({ preview: successPreview(['DocKey', 'DocNo', 'Status', 'LastModified']) });
+    renderSourceTab({ preview: successPreview(['DocKey', 'DocNo', 'Status', 'LastModified']) });
     fireEvent.click(screen.getByLabelText('Watermark column'));
     expect(screen.queryByRole('option', { name: 'None' })).not.toBeInTheDocument();
   });
 
   it('a non-document watermark picker still offers "None"', () => {
-    renderQueryTab({
+    renderSourceTab({
       entityType: 'customer',
       cfg: config({ lineQuery: null, keyColumns: ['AccNo'] }),
       preview: successPreview(['AccNo', 'CompanyName', 'LastModified']),
@@ -164,26 +176,26 @@ describe('QueryTab - document line/ref columns (plan 22 S5, AC-22-24)', () => {
 
 // sprint-5/02 (AC-02-19/20) - the line pickers are gone; a Filter formula
 // field (builder-only) + "Use preset" take their place.
-describe('QueryTab - Filter formula + presets (sprint-5/02)', () => {
+describe('SourceTab - Filter formula + presets (sprint-5/02)', () => {
   it('the three line pickers no longer exist', () => {
-    renderQueryTab();
+    renderSourceTab();
     expect(screen.queryByLabelText('Line key column')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Line product column')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Line warehouse column')).not.toBeInTheDocument();
   });
 
   it('shows "no filter" when unset, and the formula read-only once set', () => {
-    renderQueryTab({ cfg: config({ filterFormula: null }) });
+    renderSourceTab({ cfg: config({ filterFormula: null }) });
     expect(screen.getByText(/no filter/i)).toBeInTheDocument();
 
-    renderQueryTab({ cfg: config({ filterFormula: 'startswith(upper(trim(DocNo)), "SPO-")' }) });
+    renderSourceTab({ cfg: config({ filterFormula: 'startswith(upper(trim(DocNo)), "SPO-")' }) });
     expect(screen.getByText('startswith(upper(trim(DocNo)), "SPO-")')).toBeInTheDocument();
     // Never a free-text input for it (Q16 - builder-only).
     expect(screen.queryByRole('textbox', { name: /filter/i })).not.toBeInTheDocument();
   });
 
   it('opens the formula builder to edit the filter, never a bare text field', () => {
-    renderQueryTab();
+    renderSourceTab();
     fireEvent.click(screen.getByRole('button', { name: 'Build the filter formula' }));
     expect(screen.getByLabelText('Formula expression')).toBeInTheDocument();
   });
@@ -192,7 +204,7 @@ describe('QueryTab - Filter formula + presets (sprint-5/02)', () => {
     // `DocKey` is the fixture's only known variable (no preview run yet, so
     // the Variables panel offers only the saved key columns) - proves the
     // Apply wiring without needing a full preview run in this test.
-    const { onChange } = renderQueryTab();
+    const { onChange } = renderSourceTab();
     fireEvent.click(screen.getByRole('button', { name: 'Build the filter formula' }));
     fireEvent.change(screen.getByLabelText('Formula expression'), {
       target: { value: 'startswith(upper(trim(DocKey)), "SPO-")' },
@@ -213,19 +225,19 @@ describe('QueryTab - Filter formula + presets (sprint-5/02)', () => {
       fromDate: '2026-01-01',
       filterFormula: null,
     };
-    const { onUsePreset } = renderQueryTab({ presets: [preset] });
+    const { onUsePreset } = renderSourceTab({ presets: [preset] });
     fireEvent.click(screen.getByRole('combobox', { name: 'Use preset' }));
     fireEvent.click(screen.getByRole('option', { name: 'AutoCount SO' }));
     expect(onUsePreset).toHaveBeenCalledWith(preset);
   });
 
   it('hides "Use preset" entirely when there is none (foolproof-UI)', () => {
-    renderQueryTab({ presets: [] });
+    renderSourceTab({ presets: [] });
     expect(screen.queryByRole('combobox', { name: 'Use preset' })).not.toBeInTheDocument();
   });
 
   it('hides "Use preset" for a non-document entity even with presets passed', () => {
-    renderQueryTab({
+    renderSourceTab({
       entityType: 'customer',
       cfg: config({ lineQuery: null }),
       presets: [],
@@ -234,17 +246,17 @@ describe('QueryTab - Filter formula + presets (sprint-5/02)', () => {
   });
 });
 
-describe('QueryTab - DB company connection lock (plan sprint-5/01, AC-01-19)', () => {
+describe('SourceTab - DB company connection lock (plan sprint-5/01, AC-01-19)', () => {
   const LOCKED: LockedConnection = { id: 'conn-sql-1', label: 'AutoCount DB · AED_2024' };
 
   it('replaces the Connection picker with a read-only row on a DB company', () => {
-    renderQueryTab({ entityType: 'customer', cfg: config({ lineQuery: null }), lockedConnection: LOCKED });
+    renderSourceTab({ entityType: 'customer', cfg: config({ lineQuery: null }), lockedConnection: LOCKED });
     expect(screen.getByTestId('locked-connection')).toHaveTextContent('AutoCount DB · AED_2024');
     expect(screen.queryByRole('combobox', { name: 'Connection' })).not.toBeInTheDocument();
   });
 
   it('an API company keeps the searchable Connection picker', () => {
-    renderQueryTab({ entityType: 'customer', cfg: config({ lineQuery: null }) });
+    renderSourceTab({ entityType: 'customer', cfg: config({ lineQuery: null }) });
     expect(screen.getByRole('combobox', { name: 'Connection' })).toBeInTheDocument();
     expect(screen.queryByTestId('locked-connection')).not.toBeInTheDocument();
   });
@@ -255,7 +267,7 @@ describe('QueryTab - DB company connection lock (plan sprint-5/01, AC-01-19)', (
     // (`task-editor-view.locked-connection.test.tsx`). Pin that the tab itself
     // stays silent even when the config disagrees with the lock.
     const onChange = vi.fn();
-    renderQueryTab({
+    renderSourceTab({
       entityType: 'customer',
       cfg: config({ lineQuery: null, connectionId: 'conn-other' }),
       lockedConnection: LOCKED,
@@ -267,7 +279,7 @@ describe('QueryTab - DB company connection lock (plan sprint-5/01, AC-01-19)', (
   it('never shows the "No SQL database connection yet." warning on a DB company', () => {
     // Even with an empty connection list (still loading elsewhere / not visible):
     // the company connection IS the connection.
-    renderQueryTab({
+    renderSourceTab({
       entityType: 'customer',
       cfg: config({ lineQuery: null }),
       connections: [],
@@ -277,7 +289,7 @@ describe('QueryTab - DB company connection lock (plan sprint-5/01, AC-01-19)', (
   });
 
   it('an API company with no SQL connection still gets the warning (regression pin)', () => {
-    renderQueryTab({ entityType: 'customer', cfg: config({ lineQuery: null }), connections: [] });
+    renderSourceTab({ entityType: 'customer', cfg: config({ lineQuery: null }), connections: [] });
     expect(screen.getByTestId('no-sql-connection')).toBeInTheDocument();
   });
 });
@@ -294,7 +306,7 @@ describe('QueryTab - DB company connection lock (plan sprint-5/01, AC-01-19)', (
 // the operator can't even see what's wrong, let alone fix it by
 // deselecting. Only UNSELECTED values should ever be excluded.
 // ═══════════════════════════════════════════════════════════════════════════
-describe('QueryTab - key/watermark exclusion keeps an already-selected offending column visible (SF3/SF4)', () => {
+describe('SourceTab - key/watermark exclusion keeps an already-selected offending column visible (SF3/SF4)', () => {
   function legacyCfg() {
     return config({
       keyColumns: ['DocKey', 'LastModified'],
@@ -303,7 +315,7 @@ describe('QueryTab - key/watermark exclusion keeps an already-selected offending
   }
 
   it('SF3: the key-columns MultiSelect still shows a pill for a legacy watermark-inside-keyColumns value', () => {
-    renderQueryTab({
+    renderSourceTab({
       cfg: legacyCfg(),
       preview: successPreview(['DocKey', 'DocNo', 'Status', 'LastModified']),
     });
@@ -315,7 +327,7 @@ describe('QueryTab - key/watermark exclusion keeps an already-selected offending
   });
 
   it('SF3: the watermark SearchSelect still shows its selected value, not the "None" placeholder, when that value is also (legacy) a key column', () => {
-    renderQueryTab({
+    renderSourceTab({
       cfg: legacyCfg(),
       preview: successPreview(['DocKey', 'DocNo', 'Status', 'LastModified']),
     });
@@ -324,7 +336,7 @@ describe('QueryTab - key/watermark exclusion keeps an already-selected offending
   });
 
   it('SF4 (no test today, control): in the NORMAL (non-legacy) state the exclusion still works both ways - a chosen watermark is not offered as a key-column choice, and a chosen key column is not offered as a watermark choice', () => {
-    renderQueryTab({
+    renderSourceTab({
       cfg: config({ keyColumns: ['DocKey'], watermarkColumn: 'LastModified' }),
       preview: successPreview(['DocKey', 'DocNo', 'Status', 'LastModified']),
     });
@@ -341,5 +353,210 @@ describe('QueryTab - key/watermark exclusion keeps an already-selected offending
     // option to pick as the watermark.
     fireEvent.click(screen.getByLabelText('Watermark column'));
     expect(screen.queryByRole('option', { name: 'DocKey' })).not.toBeInTheDocument();
+  });
+});
+
+// ── open REST API source (sprint-5/08, S1 - AC-08-18/19/20) ──────────────────
+
+function httpConfig(over: Partial<AutocountEtlSourceConfig> = {}): AutocountEtlSourceConfig {
+  return config({
+    lineQuery: null,
+    keyColumns: [],
+    connectionId: 'conn-api-sorento',
+    path: '/itembypage',
+    keyFields: ['ItemCode'],
+    watermarkField: 'LastModified',
+    comparedFields: [],
+    ...over,
+  });
+}
+
+function idleHttpPreview(): UseHttpPreviewResult {
+  return { state: { status: 'idle' }, run: vi.fn(), fieldErrors: {}, reset: vi.fn() };
+}
+
+function successHttpPreview(): UseHttpPreviewResult {
+  return {
+    state: {
+      status: 'success',
+      preview: {
+        envelope: 'paged',
+        totalCount: 11826,
+        columns: [
+          { name: 'ItemCode', sample: 'SRT-01' },
+          { name: 'LastModified', sample: '2026-08-01T00:00:00' },
+        ],
+        rows: [],
+        durationMs: 220,
+      },
+    },
+    run: vi.fn(),
+    fieldErrors: {},
+    reset: vi.fn(),
+  };
+}
+
+const API_CONNECTIONS: AutocountApiConnection[] = [
+  { id: 'conn-api-sorento', name: 'Sorento REST', baseUrl: 'https://hapi.sorento.cc.cd/api/db1', auth: 'none' },
+  { id: 'conn-api-vendor', name: 'AutoCount Vendor API', baseUrl: 'https://api.autocountcloud.com', auth: 'basic' },
+];
+
+function renderApiBranch(over: {
+  entityType?: string;
+  cfg?: AutocountEtlSourceConfig;
+  httpPreview?: UseHttpPreviewResult;
+  onChange?: (patch: Partial<AutocountEtlSourceConfig>) => void;
+  onSourceKindChange?: (kind: 'db' | 'api') => void;
+  apiConnections?: AutocountApiConnection[];
+  lockedApiConnection?: LockedApiConnection | null;
+  fieldErrors?: Record<string, string>;
+} = {}) {
+  const onChange = over.onChange ?? vi.fn();
+  const onSourceKindChange = over.onSourceKindChange ?? vi.fn();
+  render(
+    <SourceTab
+      editing
+      entityType={over.entityType ?? 'product'}
+      sourceKind="api"
+      onSourceKindChange={onSourceKindChange}
+      config={over.cfg ?? httpConfig()}
+      onChange={onChange}
+      connections={[]}
+      connectionsLoading={false}
+      lockedConnection={null}
+      schema={EMPTY_SCHEMA}
+      preview={idlePreview()}
+      linePreview={idlePreview()}
+      fieldErrors={over.fieldErrors ?? {}}
+      onServerTest={passThroughServer}
+      apiConnections={over.apiConnections ?? API_CONNECTIONS}
+      apiConnectionsLoading={false}
+      lockedApiConnection={over.lockedApiConnection ?? null}
+      httpPreview={over.httpPreview ?? idleHttpPreview()}
+    />,
+  );
+  return { onChange, onSourceKindChange };
+}
+
+describe('SourceTab - Source toggle (sprint-5/08 D13, AC-08-19)', () => {
+  it('renders API | Database segments', () => {
+    renderApiBranch();
+    expect(screen.getByRole('radio', { name: 'API' })).toHaveAttribute('data-state', 'on');
+    expect(screen.getByRole('radio', { name: 'Database' })).toHaveAttribute('data-state', 'off');
+  });
+
+  it('toggling to Database calls onSourceKindChange', () => {
+    const { onSourceKindChange } = renderApiBranch();
+    fireEvent.click(screen.getByRole('radio', { name: 'Database' }));
+    expect(onSourceKindChange).toHaveBeenCalledWith('db');
+  });
+});
+
+describe('SourceTab - API branch, free picker (AC-08-19)', () => {
+  it('lists every autocount connection, badged by auth (an API-capable entity sees both auths)', () => {
+    renderApiBranch({ entityType: 'customer', cfg: httpConfig({ connectionId: null }) });
+    fireEvent.click(screen.getByRole('combobox', { name: 'Connection' }));
+    expect(screen.getByRole('option', { name: 'Sorento REST (No auth)' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'AutoCount Vendor API (Basic auth)' })).toBeInTheDocument();
+  });
+
+  it('picking a connection resets the preview and calls onChange', () => {
+    const httpPreview = idleHttpPreview();
+    const { onChange } = renderApiBranch({ cfg: httpConfig({ connectionId: null }), httpPreview });
+    fireEvent.click(screen.getByRole('combobox', { name: 'Connection' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Sorento REST (No auth)' }));
+    expect(onChange).toHaveBeenCalledWith({ connectionId: 'conn-api-sorento' });
+    expect(httpPreview.reset).toHaveBeenCalled();
+  });
+});
+
+describe('SourceTab - API branch, locked connection (AC-08-19)', () => {
+  it('shows a read-only locked row with the auth badge, no picker', () => {
+    renderApiBranch({
+      lockedApiConnection: { id: 'conn-api-sorento', label: 'Sorento REST', auth: 'none' },
+    });
+    expect(screen.getByTestId('locked-api-connection')).toHaveTextContent('Sorento REST');
+    expect(screen.getByTestId('locked-api-connection')).toHaveTextContent('No auth');
+    expect(screen.queryByRole('combobox', { name: 'Connection' })).not.toBeInTheDocument();
+  });
+});
+
+describe('SourceTab - API branch, path + Test + preview (AC-08-14/19)', () => {
+  it('the path input is editable and preset-filled', () => {
+    renderApiBranch();
+    expect(screen.getByLabelText('Endpoint path')).toHaveValue('/itembypage');
+  });
+
+  it('Test is disabled until connectionId + path are set', () => {
+    renderApiBranch({ cfg: httpConfig({ connectionId: null }) });
+    expect(screen.getByTestId('http-test-path')).toBeDisabled();
+  });
+
+  it('Test runs the http preview with connectionId/path/distinctOf', () => {
+    const httpPreview = idleHttpPreview();
+    renderApiBranch({ httpPreview, cfg: httpConfig({ distinctOf: ['BaseUOM'] }) });
+    fireEvent.click(screen.getByTestId('http-test-path'));
+    expect(httpPreview.run).toHaveBeenCalledWith('conn-api-sorento', '/itembypage', ['BaseUOM']);
+  });
+
+  it('shows the envelope badge (D14 - a run walks every page)', () => {
+    renderApiBranch({ httpPreview: successHttpPreview() });
+    expect(screen.getByTestId('http-preview-badge')).toHaveTextContent(
+      'Paged · 11,826 total · 12 pages of 1000 - a run walks every page',
+    );
+  });
+
+  it('reuses SqlPreviewGrid for the results (AC-08-19 - never a parallel grid)', () => {
+    renderApiBranch({ httpPreview: successHttpPreview() });
+    const grid = screen.getByTestId('sql-preview-success');
+    expect(grid).toBeInTheDocument();
+    expect(within(grid).getByText('ItemCode')).toBeInTheDocument();
+  });
+
+  it('shows the "derived from distinct values of" chips when distinctOf is set', () => {
+    renderApiBranch({ cfg: httpConfig({ distinctOf: ['BaseUOM', 'SalesUOM'] }) });
+    expect(screen.getByText('BaseUOM')).toBeInTheDocument();
+    expect(screen.getByText('SalesUOM')).toBeInTheDocument();
+  });
+
+  it('surfaces a 422 on the path field inline', () => {
+    renderApiBranch({ fieldErrors: { path: "'/bogus' was not found." } });
+    expect(screen.getByText("'/bogus' was not found.")).toBeInTheDocument();
+  });
+
+  it('feeds the key/watermark/compared pickers from the preview columns', () => {
+    renderApiBranch({ httpPreview: successHttpPreview() });
+    fireEvent.click(screen.getByLabelText('Watermark column'));
+    expect(screen.getByRole('option', { name: 'LastModified' })).toBeInTheDocument();
+  });
+});
+
+describe('SourceTab - API branch, no connection (AC-08-20)', () => {
+  it('warns and links to Settings -> Integrations when there is nothing to pick', () => {
+    renderApiBranch({ apiConnections: [] });
+    expect(screen.getByTestId('no-api-connection')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Settings -> Integrations' })).toHaveAttribute(
+      'href',
+      '/settings/integrations/new',
+    );
+  });
+});
+
+describe('SourceTab - API branch, basic-auth connection (D13 - no endpoint to configure)', () => {
+  it('a GRN/supplier/customer entity on a basic-auth connection shows the read-only message, no path/Test/pickers', () => {
+    renderApiBranch({
+      entityType: 'customer',
+      cfg: httpConfig({ connectionId: 'conn-api-vendor' }),
+    });
+    expect(screen.getByTestId('basic-auth-source')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Endpoint path')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('http-test-path')).not.toBeInTheDocument();
+  });
+
+  it('a non-capable entity never offers a basic-auth connection in the free picker (foolproof-UI)', () => {
+    renderApiBranch({ entityType: 'product', cfg: httpConfig({ connectionId: null }) });
+    fireEvent.click(screen.getByRole('combobox', { name: 'Connection' }));
+    expect(screen.queryByRole('option', { name: 'AutoCount Vendor API (Basic auth)' })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Sorento REST (No auth)' })).toBeInTheDocument();
   });
 });

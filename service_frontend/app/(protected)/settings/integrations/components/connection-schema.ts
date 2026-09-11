@@ -22,6 +22,19 @@ export function isSecretField(f: ProviderField): boolean {
   return Boolean(f.secret);
 }
 
+/**
+ * Whether a field is currently shown, per its `showWhen` (plan sprint-5/08,
+ * D11) - absent = always shown. `config` is whatever holds the DRIVER
+ * field's live value: the edit form's live values, or a read-mode
+ * connection's stored config (`storedOrEffective` resolves legacy/effective
+ * values the same way the driven field's own read-mode row does).
+ */
+export function isFieldVisible(f: ProviderField, config: Record<string, string>): boolean {
+  if (!f.showWhen) return true;
+  const value = config[f.showWhen.field] ?? '';
+  return f.showWhen.values.includes(value);
+}
+
 /** Default form values for a freshly-picked provider (field defaults applied). */
 export function defaultsForProvider(provider: IntegrationProvider): ConnectionFormValues {
   const config: Record<string, string> = {};
@@ -111,6 +124,9 @@ export function requiredFieldErrors(
   const errors: { path: `config.${string}` | `credentials.${string}`; message: string }[] = [];
   for (const f of provider.fields) {
     if (!f.required) continue;
+    // A hidden field (`showWhen` unmet) is dropped from the required set -
+    // AppId/user/password are not required when Auth = "none" (AC-08-04).
+    if (!isFieldVisible(f, values.config)) continue;
     if (isSecretField(f)) {
       if (creating && !(values.credentials[f.key] ?? '').trim()) {
         errors.push({ path: `credentials.${f.key}`, message: `${f.label} is required.` });
@@ -122,21 +138,40 @@ export function requiredFieldErrors(
   return errors;
 }
 
-/** The write payload - only NON-EMPTY secrets travel (blank = keep). */
-export function toConnectionInput(values: ConnectionFormValues): {
+/**
+ * The write payload - only NON-EMPTY secrets travel (blank = keep). `provider`
+ * (optional, plan sprint-5/08 AC-08-04) drops any field whose `showWhen` is
+ * unmet from BOTH `config` and `credentials` - a hidden field never reaches
+ * the wire, so a stale AppId/password left over from switching Auth to "none"
+ * is never silently saved. Omitted `provider` = every value travels
+ * (pre-`showWhen` callers, and providers with no conditional fields at all).
+ */
+export function toConnectionInput(
+  values: ConnectionFormValues,
+  provider?: IntegrationProvider | null,
+): {
   provider: string;
   name: string;
   config: Record<string, string>;
   credentials: Record<string, string>;
 } {
+  const fieldByKey = new Map((provider?.fields ?? []).map((f) => [f.key, f]));
+  const visible = (key: string) => {
+    const f = fieldByKey.get(key);
+    return !f || isFieldVisible(f, values.config);
+  };
   const credentials: Record<string, string> = {};
   for (const [key, value] of Object.entries(values.credentials)) {
-    if (value.trim()) credentials[key] = value;
+    if (value.trim() && visible(key)) credentials[key] = value;
+  }
+  const config: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values.config)) {
+    if (visible(key)) config[key] = value;
   }
   return {
     provider: values.provider,
     name: values.name,
-    config: { ...values.config },
+    config,
     credentials,
   };
 }

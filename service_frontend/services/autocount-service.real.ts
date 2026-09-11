@@ -5,6 +5,7 @@
  */
 import { apiFetch } from '@/lib/api-client';
 import type {
+  AutocountApiConnection,
   AutocountApprovalResult,
   AutocountCompany,
   AutocountCompanyCreateInput,
@@ -30,6 +31,8 @@ import type {
   AutocountSyncJob,
   AutocountSyncJobBatch,
   AutocountSyncRun,
+  HttpPreview,
+  HttpPreviewInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
 import type { AutocountStagedQuery } from '@/types/autocount';
@@ -69,7 +72,15 @@ export const realAutocountService: AutocountService = {
   createCompany(input: AutocountCompanyCreateInput) {
     return apiFetch<AutocountCompany>('/autocount/companies', {
       method: 'POST',
-      body: JSON.stringify({ connectionId: input.connectionId, name: input.name ?? '' }),
+      body: JSON.stringify({
+        connectionId: input.connectionId,
+        name: input.name ?? '',
+        // Only sent when set - an open (no-auth) connection requires it
+        // server-side (sprint-5/08 AC-08-06/07); any other connection kind
+        // ignores/422s it, so a vendor/SQL create never carries the key at
+        // all rather than an empty string.
+        ...(input.refPrefix ? { refPrefix: input.refPrefix } : {}),
+      }),
     });
   },
 
@@ -244,7 +255,13 @@ export const realAutocountService: AutocountService = {
   updateEtlTask(companyId, entityType, input: AutocountEtlTaskUpdate) {
     return apiFetch<AutocountEtlTask>(
       `${etlTaskPath(companyId, entityType)}`,
-      { method: 'PUT', body: JSON.stringify({ sourceConfig: input.sourceConfig }) },
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          sourceConfig: input.sourceConfig,
+          ...(input.sourceImpl ? { sourceImpl: input.sourceImpl } : {}),
+        }),
+      },
     );
   },
 
@@ -291,6 +308,18 @@ export const realAutocountService: AutocountService = {
   repushEtlTask(companyId, entityType) {
     return apiFetch<AutocountEtlRepushResult>(`${etlTaskPath(companyId, entityType)}/repush`, {
       method: 'POST',
+    });
+  },
+
+  // sprint-5/08 (S2 backend) - contract documented on `AutocountService`.
+  listApiConnections() {
+    return apiFetch<AutocountApiConnection[]>('/autocount/http/connections');
+  },
+
+  previewHttp(input: HttpPreviewInput) {
+    return apiFetch<HttpPreview>('/autocount/http/preview', {
+      method: 'POST',
+      body: JSON.stringify(input),
     });
   },
 };

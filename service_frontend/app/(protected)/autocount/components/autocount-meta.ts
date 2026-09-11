@@ -6,7 +6,6 @@ import type {
   AutocountJobStatus,
   AutocountRunMode,
   AutocountRunOutcome,
-  AutocountSourceImpl,
   AutocountSourceKind,
   AutocountStagedStatus,
 } from '@/types/autocount';
@@ -45,25 +44,30 @@ export function acTaskHref(companyId: string, entityType: string, tab?: AcTaskTa
   return tab && tab !== 'query' ? `${base}?tab=${tab}` : base;
 }
 
-// ── entity source (plan 22 S2, AC-22-08) ─────────────────────────────────────
+// ── entity source (plan 22 S2, AC-22-08; sprint-5/08 D13 - the Source TAB) ───
 
-/** The two sources an entity can read from - the picker's ONLY options. */
-export const AC_SOURCE_IMPL_OPTIONS: { value: AutocountSourceImpl; label: string }[] = [
-  { value: 'autocount_read', label: 'AutoCount API' },
-  { value: 'sql_db', label: 'Database' },
-];
+/**
+ * Source-impl display label (the Entities list's Source column, AC-08-18).
+ * The picker for CHOOSING a source moved to the task's Source tab (D13); the
+ * `change-source` dialog and `AC_SOURCE_IMPL_OPTIONS` it used are gone.
+ */
+const SOURCE_IMPL_LABELS: Record<string, string> = {
+  autocount_read: 'AutoCount API',
+  sql_db: 'Database',
+  autocount_http: 'Open API',
+};
 
 export function sourceImplLabel(impl: string): string {
-  return AC_SOURCE_IMPL_OPTIONS.find((o) => o.value === impl)?.label ?? humanizeFieldKey(impl);
+  return SOURCE_IMPL_LABELS[impl] ?? humanizeFieldKey(impl);
 }
 
 /**
  * The entities backed by a confirmed, observed AutoCount API payload (mirrors
  * the backend's own `SEEDED_ENTITIES` guard, `services/company_service.py`) -
- * the ONLY entities the source-switch dialog may offer "AutoCount API" for.
- * The plan 22 S4 masters fan-out entities below have no vendor route at all,
- * so offering that option for them would be a guaranteed-to-fail sync
- * (foolproof-UI: only offer valid options).
+ * the ONLY entities the Source tab may derive `autocount_read` (Basic-auth
+ * API) for. Every other entity offers Basic-auth connections filtered out of
+ * the picker entirely (foolproof-UI: only offer valid options - sprint-5/08
+ * AC-08-19 simplification, see `source-tab.tsx`).
  *
  * PARITY-PINNED (S4 review S2): `tests/test_autocount_entity_parity.py`
  * reads this literal straight out of this file and fails if it drifts from
@@ -90,17 +94,48 @@ export const AC_NEW_MASTER_ENTITY_TYPES: string[] = [
   'purchase_order',
 ];
 
-// ── company source kind (plan sprint-5/01) ───────────────────────────────────
+// ── company source kind (plan sprint-5/01; `http` added sprint-5/08) ─────────
 
-/** The two ways a company can be connected - the Source toggle's ONLY options. */
-export const AC_SOURCE_KIND_OPTIONS: { value: AutocountSourceKind; label: string }[] = [
+/** The two ways to CONNECT a company - the connect-form Source toggle's ONLY
+ * options (sprint-5/08 review R2: an open/no-auth `autocount` connection is
+ * still picked under "API", never a third toggle segment). */
+export const AC_SOURCE_KIND_OPTIONS: { value: 'api' | 'db'; label: string }[] = [
   { value: 'api', label: 'AutoCount API' },
   { value: 'db', label: 'SQL database' },
 ];
 
+const SOURCE_KIND_LABELS: Record<string, string> = {
+  db: 'Database',
+  // sprint-5/08 AC-08-10 - the company detail Integration row distinguishes
+  // the two `api` auth modes; callers needing that distinction pass the
+  // connection's auth alongside (see `company-detail-view.tsx`).
+  api: 'API (basic auth)',
+  http: 'API (no auth)',
+};
+
 export function sourceKindLabel(kind: string): string {
-  return AC_SOURCE_KIND_OPTIONS.find((o) => o.value === kind)?.label ?? humanizeFieldKey(kind);
+  return SOURCE_KIND_LABELS[kind] ?? humanizeFieldKey(kind);
 }
+
+/**
+ * Every entity the open REST API (sprint-5/08) can extract - the six masters
+ * with a confirmed `hapi.sorento.cc.cd` payload (UAC Definitions). An `http`
+ * company's "Add entity" picker offers exactly this set; a `db`/`api`
+ * company's task Source tab offers it too when toggled to API + a no-auth
+ * connection.
+ *
+ * PARITY-PINNED (S1): `tests/test_autocount_http_source.py` (S3) will pin
+ * this literal against the backend's `HTTP_ENTITY_TYPES` / `HTTP_PRESETS`
+ * keys - edit both sides together once that lands.
+ */
+export const AC_HTTP_ENTITY_TYPES: string[] = [
+  'product',
+  'customer',
+  'warehouse',
+  'product_category',
+  'brand',
+  'unit_of_measure',
+];
 
 /**
  * Every entity a DATABASE company can extract (AC-01-17) - the nine `sql_db`
@@ -130,9 +165,18 @@ export const AC_SQL_DB_ENTITY_TYPES: string[] = [
   'shipping_order',
 ];
 
-/** The Add-entity picker's candidate list for a company of the given kind. */
-export function addableEntityTypes(kind: AutocountSourceKind): string[] {
-  return kind === 'db' ? AC_SQL_DB_ENTITY_TYPES : AC_NEW_MASTER_ENTITY_TYPES;
+/**
+ * The Add-entity picker's candidate list for a company of the given kind
+ * (sprint-5/08 AC-08-18): a `db` company offers every `sql_db` entity, an
+ * `http` (open) company offers exactly the confirmed HTTP masters, an `api`
+ * (vendor/basic-auth) company keeps the plan 22 S4 masters fan-out (its
+ * three vendor-seeded entities - GRN/supplier/customer - already exist with
+ * no "Add" step).
+ */
+export function entitiesForSourceKind(kind: AutocountSourceKind): string[] {
+  if (kind === 'db') return AC_SQL_DB_ENTITY_TYPES;
+  if (kind === 'http') return AC_HTTP_ENTITY_TYPES;
+  return AC_NEW_MASTER_ENTITY_TYPES;
 }
 
 // ── transforms (mapping editor picker; mirrors backend mapping.py TRANSFORMS) ──

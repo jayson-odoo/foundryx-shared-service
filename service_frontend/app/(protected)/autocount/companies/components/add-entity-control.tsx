@@ -5,7 +5,7 @@ import { Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { SearchSelect } from '@/components/platform/search-select';
 import type { AutocountEntityConfig, AutocountSourceKind } from '@/types/autocount';
-import { addableEntityTypes, entityLabel } from '../../components/autocount-meta';
+import { entitiesForSourceKind, entityLabel } from '../../components/autocount-meta';
 
 export interface AddEntityControlProps {
   entities: AutocountEntityConfig[];
@@ -31,7 +31,7 @@ export function AddEntityControl({ entities, sourceKind, onAdd }: AddEntityContr
   const configured = useMemo(() => new Set(entities.map((e) => e.entityType)), [entities]);
   const options = useMemo(
     () =>
-      addableEntityTypes(sourceKind)
+      entitiesForSourceKind(sourceKind)
         .filter((entityType) => !configured.has(entityType))
         .map((entityType) => ({ value: entityType, label: entityLabel(entityType) })),
     [configured, sourceKind],

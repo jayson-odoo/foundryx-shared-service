@@ -93,6 +93,7 @@ vi.mock('@/hooks/use-autocount-etl', () => ({
     reload: vi.fn(),
   }),
   useAutocountSqlConnections: () => ({ connections: [], isLoading: false, error: null }),
+  useAutocountApiConnections: () => ({ connections: [], isLoading: false, error: null }),
   useAutocountSqlSchema: () => ({ schema: null, isLoading: false, error: null, refresh: vi.fn() }),
   useEtlTaskLifecycle: () => ({
     busy: null,
@@ -105,6 +106,7 @@ vi.mock('@/hooks/use-autocount-etl', () => ({
   }),
   useEtlTaskPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), reset: vi.fn() }),
   useSqlPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), reset: vi.fn() }),
+  useHttpPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), fieldErrors: {}, reset: vi.fn() }),
 }));
 
 vi.mock('@/hooks/use-autocount-mapping', () => ({

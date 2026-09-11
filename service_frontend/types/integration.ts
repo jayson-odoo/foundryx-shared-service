@@ -58,6 +58,16 @@ export interface ProviderField {
    * provider's `fields()`; the form handles it generically.
    */
   defaultsFrom?: { field: string; values: Record<string, string> };
+  /**
+   * Show this field ONLY when the named sibling non-secret field currently
+   * holds one of `values` (plan sprint-5/08, D11) - conditional credentials
+   * (an `autocount` connection's AppId/user/password fields, hidden when its
+   * `auth` select is "none"). Absent = always shown. Generic, mirrors
+   * `NodeField.show_when` on the workflow engine. Hidden fields are dropped
+   * from the required-field check AND from the submitted config/credentials
+   * (`connection-schema.ts requiredFieldErrors`/`toConnectionInput`).
+   */
+  showWhen?: { field: string; values: string[] };
 }
 
 /** Catalog entry (GET /integrations/providers) - config schema drives the wizard. */

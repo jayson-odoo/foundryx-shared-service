@@ -1,15 +1,13 @@
 import { renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const listConnections = vi.fn();
+const listApiConnections = vi.fn();
 const listCompanies = vi.fn();
 const listSqlConnections = vi.fn();
 
-vi.mock('@/services/integration-service', () => ({
-  integrationService: { list: (...args: unknown[]) => listConnections(...args) },
-}));
 vi.mock('@/services/autocount-service', () => ({
   autocountService: {
+    listApiConnections: (...args: unknown[]) => listApiConnections(...args),
     listCompanies: (...args: unknown[]) => listCompanies(...args),
     listSqlConnections: (...args: unknown[]) => listSqlConnections(...args),
   },
@@ -18,8 +16,8 @@ vi.mock('@/services/autocount-service', () => ({
 const { useAutocountSourceConnections } = await import('./use-autocount-connections');
 
 const API = [
-  { id: 'conn-api-1', name: 'AutoCount HQ', provider: 'autocount' },
-  { id: 'conn-api-2', name: 'AutoCount Branch', provider: 'autocount' },
+  { id: 'conn-api-1', name: 'AutoCount HQ', baseUrl: 'https://hapi.sorento.cc.cd/api/db1', auth: 'none' },
+  { id: 'conn-api-2', name: 'AutoCount Branch', baseUrl: 'https://api.autocountcloud.com', auth: 'basic' },
 ];
 const SQL = [
   { id: 'conn-sql-1', name: 'SQL HQ', dialect: 'mssql', database: 'AED_HQ' },
@@ -31,7 +29,7 @@ function companies(...connectionIds: string[]) {
 }
 
 beforeEach(() => {
-  listConnections.mockReset().mockResolvedValue({ data: API, total: 2, page: 0 });
+  listApiConnections.mockReset().mockResolvedValue(API);
   listSqlConnections.mockReset().mockResolvedValue(SQL);
   listCompanies.mockReset().mockResolvedValue(companies());
 });
@@ -42,7 +40,7 @@ async function loaded() {
   return hook.result.current;
 }
 
-describe('useAutocountSourceConnections (plan sprint-5/01, AC-01-12)', () => {
+describe('useAutocountSourceConnections (plan sprint-5/01, AC-01-12; sprint-5/08 AC-08-09/15)', () => {
   it('excludes connections already bound to a company from BOTH pickers', async () => {
     listCompanies.mockResolvedValue(companies('conn-api-1', 'conn-sql-1'));
     const r = await loaded();
@@ -52,12 +50,28 @@ describe('useAutocountSourceConnections (plan sprint-5/01, AC-01-12)', () => {
     expect(r.db.options[0].label).toBe('SQL Branch · AED_BRANCH');
   });
 
+  it('labels each API option with its auth mode (AC-08-09)', async () => {
+    const r = await loaded();
+    expect(r.api.options).toEqual([
+      { label: 'AutoCount HQ (No auth)', value: 'conn-api-1' },
+      { label: 'AutoCount Branch (Basic auth)', value: 'conn-api-2' },
+    ]);
+    expect(r.apiConnectionsById['conn-api-1'].auth).toBe('none');
+    expect(r.apiConnectionsById['conn-api-2'].auth).toBe('basic');
+  });
+
+  it('drops a bound connection from apiConnectionsById too', async () => {
+    listCompanies.mockResolvedValue(companies('conn-api-1'));
+    const r = await loaded();
+    expect(Object.keys(r.apiConnectionsById)).toEqual(['conn-api-2']);
+  });
+
   it('defaults to API when both sources have an unbound connection', async () => {
     expect((await loaded()).defaultKind).toBe('api');
   });
 
   it('defaults to DB when only the SQL source has an unbound connection', async () => {
-    listConnections.mockResolvedValue({ data: [], total: 0, page: 0 });
+    listApiConnections.mockResolvedValue([]);
     const r = await loaded();
     expect(r.defaultKind).toBe('db');
     expect(r.api.hasAny).toBe(false);
@@ -71,7 +85,7 @@ describe('useAutocountSourceConnections (plan sprint-5/01, AC-01-12)', () => {
   });
 
   it('falls back to API when neither source has anything to pick', async () => {
-    listConnections.mockResolvedValue({ data: [], total: 0, page: 0 });
+    listApiConnections.mockResolvedValue([]);
     listSqlConnections.mockResolvedValue([]);
     const r = await loaded();
     expect(r.defaultKind).toBe('api');
@@ -92,5 +106,13 @@ describe('useAutocountSourceConnections (plan sprint-5/01, AC-01-12)', () => {
     const r = await loaded();
     expect(r.db.hasAny).toBe(false);
     expect(r.api.options).toHaveLength(2);
+  });
+
+  it('a failing API-connections call degrades to "none" rather than breaking the SQL picker', async () => {
+    listApiConnections.mockRejectedValue(new Error('boom'));
+    const r = await loaded();
+    expect(r.api.hasAny).toBe(false);
+    expect(r.apiConnectionsById).toEqual({});
+    expect(r.db.options).toHaveLength(2);
   });
 });

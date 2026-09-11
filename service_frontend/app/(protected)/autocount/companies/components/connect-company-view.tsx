@@ -18,25 +18,27 @@ import {
   type ResourceFormConfig,
 } from '@/components/platform/resource-form';
 import { ApiError } from '@/lib/api-client';
-import { readFieldErrors } from '@/lib/autocount-etl';
+import { REF_PREFIX_RE, derivePrefix, readFieldErrors } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import {
   useAutocountSourceConnections,
   type SourceConnectionsState,
 } from '@/hooks/use-autocount-connections';
-import type { AutocountCompany, AutocountSourceKind } from '@/types/autocount';
+import type { AutocountCompany } from '@/types/autocount';
 import {
   AC_COMPANIES_PATH,
   AC_SOURCE_KIND_OPTIONS,
   acCompanyHref,
 } from '../../components/autocount-meta';
 
+type SourceKind = 'api' | 'db';
+
 /** The shell's segmented-control styling (Active|Trashed) - selected = filled primary. */
 const SEGMENT_CLASS =
   'data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:border-primary';
 
 /** Why there is nothing to pick for a source, when there is nothing to pick. */
-function emptyReason(kind: AutocountSourceKind, state: SourceConnectionsState) {
+function emptyReason(kind: SourceKind, state: SourceConnectionsState) {
   if (state.isLoading || state.options.length > 0) return null;
   if (kind === 'api') {
     return state.hasAny
@@ -68,18 +70,27 @@ export function ConnectCompanyView() {
   const router = useRouter();
   const form = useForm({ mode: 'onTouched' });
   const sources = useAutocountSourceConnections();
-  const [pickedKind, setPickedKind] = useState<AutocountSourceKind | null>(null);
+  const [pickedKind, setPickedKind] = useState<SourceKind | null>(null);
   const [connectionId, setConnectionId] = useState<string | null>(null);
   const [label, setLabel] = useState('');
+  // Reference prefix (AC-08-06/07/09) - only meaningful for a No-auth (open)
+  // API connection; `touched` tracks whether the operator has edited the
+  // auto-derived default so a later connection change doesn't clobber it.
+  const [refPrefix, setRefPrefix] = useState('');
+  const [refPrefixTouched, setRefPrefixTouched] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [fieldError, setFieldError] = useState<string | null>(null);
+  const [refPrefixError, setRefPrefixError] = useState<string | null>(null);
 
   // The operator's pick wins; until they pick, the default follows the data
   // (AC-01-12) - nothing is selected yet, so the default flipping after load
   // never has to clear a connection.
-  const kind: AutocountSourceKind = pickedKind ?? sources.defaultKind;
+  const kind: SourceKind = pickedKind ?? sources.defaultKind;
   const source = kind === 'db' ? sources.db : sources.api;
   const banner = emptyReason(kind, source);
+
+  const pickedApiConnection = connectionId ? sources.apiConnectionsById[connectionId] : undefined;
+  const isOpenConnection = kind === 'api' && pickedApiConnection?.auth === 'none';
 
   const onKindChange = useCallback((value: string) => {
     if (value !== 'api' && value !== 'db') return;
@@ -87,6 +98,30 @@ export function ConnectCompanyView() {
     // A connection belongs to its source - switching clears it.
     setConnectionId(null);
     setFieldError(null);
+    setRefPrefix('');
+    setRefPrefixTouched(false);
+    setRefPrefixError(null);
+  }, []);
+
+  const onConnectionChange = useCallback(
+    (value: string) => {
+      setConnectionId(value);
+      setFieldError(null);
+      setRefPrefixError(null);
+      // A fresh No-auth pick seeds the prefix from the connection's own name
+      // (AC-08-09) UNLESS the operator already typed something of their own.
+      const picked = sources.apiConnectionsById[value];
+      if (picked?.auth === 'none' && !refPrefixTouched) {
+        setRefPrefix(derivePrefix(picked.name));
+      }
+    },
+    [refPrefixTouched, sources.apiConnectionsById],
+  );
+
+  const onRefPrefixChange = useCallback((value: string) => {
+    setRefPrefix(value);
+    setRefPrefixTouched(true);
+    setRefPrefixError(null);
   }, []);
 
   const onSave = useCallback(async () => {
@@ -94,22 +129,33 @@ export function ConnectCompanyView() {
       setFieldError('Select a connection.');
       return false;
     }
+    if (isOpenConnection && !REF_PREFIX_RE.test(refPrefix.trim())) {
+      setRefPrefixError('Enter a reference prefix (letters, digits, underscore).');
+      return false;
+    }
     setFieldError(null);
+    setRefPrefixError(null);
     setIsSaving(true);
     try {
       const company: AutocountCompany = await autocountService.createCompany({
         connectionId,
         name: label.trim(),
+        ...(isOpenConnection ? { refPrefix: refPrefix.trim() } : {}),
       });
       toast.success(`Connected ${company.databaseName}.`);
       router.push(acCompanyHref(company.id));
       return true;
     } catch (error) {
       if (error instanceof ApiError && (error.status === 422 || error.status === 409)) {
+        const fieldErrors = readFieldErrors(error.detail);
         // A probe mismatch / connect failure lands on the field (422); a 409
         // names the company already holding the database - both belong under
         // the picker the operator is looking at, not in a toast (AC-01-14).
-        setFieldError(readFieldErrors(error.detail).connectionId ?? error.message);
+        if (fieldErrors.refPrefix) {
+          setRefPrefixError(fieldErrors.refPrefix);
+          return false;
+        }
+        setFieldError(fieldErrors.connectionId ?? error.message);
         return false;
       }
       toast.error(
@@ -119,7 +165,7 @@ export function ConnectCompanyView() {
     } finally {
       setIsSaving(false);
     }
-  }, [connectionId, label, router]);
+  }, [connectionId, isOpenConnection, label, refPrefix, router]);
 
   const config = useMemo<ResourceFormConfig<AutocountCompany>>(
     () => ({
@@ -181,10 +227,7 @@ export function ConnectCompanyView() {
                   <SearchSelect
                     options={source.options}
                     value={connectionId}
-                    onChange={(value) => {
-                      setConnectionId(value);
-                      setFieldError(null);
-                    }}
+                    onChange={onConnectionChange}
                     disabled={source.isLoading || isSaving || source.options.length === 0}
                     placeholder="Select a connection"
                     ariaLabel={kind === 'db' ? 'SQL database connection' : 'AutoCount connection'}
@@ -197,6 +240,28 @@ export function ConnectCompanyView() {
                   )}
                 </div>
               </FormRow>
+              {isOpenConnection && (
+                <FormRow label="Reference prefix" required>
+                  <div className="flex flex-col gap-1">
+                    <Input
+                      value={refPrefix}
+                      onChange={(e) => onRefPrefixChange(e.target.value)}
+                      disabled={isSaving}
+                      aria-label="Reference prefix"
+                      className="max-w-sm font-mono"
+                    />
+                    <span className="text-xs text-muted-foreground">
+                      Prefixes every record reference sent to the consumer. Cannot be changed
+                      later.
+                    </span>
+                    {refPrefixError && (
+                      <span className="text-xs text-destructive" data-testid="ref-prefix-error">
+                        {refPrefixError}
+                      </span>
+                    )}
+                  </div>
+                </FormRow>
+              )}
               <FormRow label="Label">
                 <Input
                   value={label}
@@ -215,13 +280,31 @@ export function ConnectCompanyView() {
       actionRows: [],
       editable: false,
       initialEditing: true,
-      isDirty: Boolean(connectionId) || label.length > 0,
-      // Create cannot succeed without a connection - withheld, not offered-then-failed.
-      saveDisabled: !connectionId,
+      isDirty: Boolean(connectionId) || label.length > 0 || refPrefix.length > 0,
+      // Create cannot succeed without a connection - and, for a No-auth pick,
+      // without a valid reference prefix - withheld, not offered-then-failed.
+      saveDisabled:
+        !connectionId || (isOpenConnection && !REF_PREFIX_RE.test(refPrefix.trim())),
       onSave,
       onCancel: () => router.push(AC_COMPANIES_PATH),
     }),
-    [banner, connectionId, fieldError, isSaving, kind, label, onKindChange, onSave, router, source],
+    [
+      banner,
+      connectionId,
+      fieldError,
+      isOpenConnection,
+      isSaving,
+      kind,
+      label,
+      onConnectionChange,
+      onKindChange,
+      onRefPrefixChange,
+      onSave,
+      refPrefix,
+      refPrefixError,
+      router,
+      source,
+    ],
   );
 
   return (

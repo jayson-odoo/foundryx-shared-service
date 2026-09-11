@@ -23,12 +23,15 @@ import { ApiError } from '@/lib/api-client';
 import { testFormula as evalFormula } from '@/lib/autocount-formula';
 import {
   DEFAULT_STATUS_FORMULA,
+  HTTP_PRESETS,
   MIN_RECONCILE_HOURS,
+  REF_PREFIX_RE,
   RECONCILE_TIME_RE,
   incrementalFloorMinutes,
   isDocumentEntity,
 } from '@/lib/autocount-etl';
 import type {
+  AutocountApiConnection,
   AutocountApprovalResult,
   AutocountCompany,
   AutocountCompanyCreateInput,
@@ -64,6 +67,8 @@ import type {
   AutocountSyncJob,
   AutocountSyncJobBatch,
   AutocountSyncRun,
+  HttpPreview,
+  HttpPreviewInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
 import type { AutocountListQuery, AutocountService } from './autocount-service';
@@ -474,10 +479,19 @@ function runMockPreview(query: string): AutocountSqlPreview {
   };
 }
 
-/** Draft defaults for a never-configured entity (documents get a from-date). */
+/**
+ * Draft defaults for a never-configured entity (documents get a from-date).
+ * `connectionId` is genuinely OPTIONAL (`null` = "nothing picked yet") - a
+ * SQL connection default here was a latent bug (sprint-5/08 fix): a
+ * non-`db` company's blank task silently inherited an ARBITRARY SQL
+ * connection id, which `baseline`'s `saved.connectionId ?? lockId` then
+ * treated as "already picked", so an http/api company's lock never actually
+ * reached `config.connectionId` (the locked DISPLAY read the lock directly
+ * and looked correct; Test/Save silently used the wrong connection).
+ */
 function defaultEtlConfig(
   entityType: string,
-  connectionId: string = SQL_CONNECTIONS[0].id,
+  connectionId: string | null = null,
 ): AutocountEtlSourceConfig {
   return {
     connectionId,
@@ -510,7 +524,7 @@ function blankTask(companyId: string, entityType: string): AutocountEtlTask {
     activatedAt: null,
     sourceConfig: defaultEtlConfig(
       entityType,
-      company.sourceKind === 'db' ? company.connectionId : undefined,
+      company.sourceKind === 'db' ? company.connectionId : null,
     ),
     resultColumns: [],
     lastPreviewAt: null,
@@ -659,29 +673,70 @@ function nextRunsFor(etlStatus: AutocountEtlTask['etlStatus'], sourceConfig: Aut
 /** Lay the session's lifecycle state over a (real or mock) task. */
 function applyTaskOverlay(task: AutocountEtlTask): AutocountEtlTask {
   const o = overlayFor(task.companyId, task.entityType);
+  const impl = sourceImpls.get(taskKey(task.companyId, task.entityType));
   return {
     ...task,
     ...o,
     sourceConfig: task.sourceConfig,
+    // sprint-5/08 D13 - present on every task (defaults 'sql_db'); an
+    // entity-level 'autocount_read' override never touches the TASK's own
+    // impl (there is no task on that path at all).
+    sourceImpl: impl === 'autocount_http' ? 'autocount_http' : 'sql_db',
     ...nextRunsFor(o.etlStatus, task.sourceConfig),
   };
 }
 
-/** The columns a saved query yields - from the session's preview of it, else
- * the saved picks (so an existing task still lists something to map). */
-function resultColumnsFor(cfg: AutocountEtlSourceConfig): string[] {
+/** `httpPreview` result columns this session, by (connection, path, distinctOf). */
+const httpPreviewColumnsByKey = new Map<string, string[]>();
+
+function httpPreviewKey(connectionId: string, path: string, distinctOf?: string[] | null): string {
+  return `${connectionId}|${path}|${(distinctOf ?? []).join(',')}`;
+}
+
+/** The columns a saved query/endpoint yields - from the session's preview of
+ * it, else the saved picks (so an existing task still lists something to
+ * map). `impl` selects the SQL-query cache or the HTTP-path cache - the two
+ * never collide on the same task (sprint-5/08). */
+function resultColumnsFor(
+  cfg: AutocountEtlSourceConfig,
+  impl: 'sql_db' | 'autocount_http' = 'sql_db',
+): string[] {
+  if (impl === 'autocount_http') {
+    const seen = httpPreviewColumnsByKey.get(
+      httpPreviewKey(cfg.connectionId ?? '', cfg.path ?? '', cfg.distinctOf),
+    );
+    if (seen) return [...seen];
+    const picks = [
+      ...(cfg.keyFields ?? []),
+      ...(cfg.watermarkField ? [cfg.watermarkField] : []),
+      ...(cfg.comparedFields ?? []),
+    ];
+    return Array.from(new Set(picks));
+  }
   const seen = previewColumnsByQuery.get(normalizeQuery(cfg.query));
   if (seen) return [...seen];
   const picks = [...cfg.keyColumns, ...(cfg.watermarkColumn ? [cfg.watermarkColumn] : []), ...cfg.comparedColumns];
   return Array.from(new Set(picks));
 }
 
-/** A config save supersedes any earlier preview (the gate must re-run). */
-function noteTaskSaved(companyId: string, entityType: string, cfg: AutocountEtlSourceConfig): void {
+/**
+ * A config save supersedes any earlier preview (the gate must re-run,
+ * AC-22-11/AC-08-13). `implOrSourceChanged` (AC-08-28) additionally drops an
+ * ACTIVE task back to `draft` when the impl, connection or (HTTP) path just
+ * changed - never on an unrelated field edit.
+ */
+function noteTaskSaved(
+  companyId: string,
+  entityType: string,
+  cfg: AutocountEtlSourceConfig,
+  impl: 'sql_db' | 'autocount_http' = 'sql_db',
+  implOrSourceChanged = false,
+): void {
   const o = overlayFor(companyId, entityType);
-  o.resultColumns = resultColumnsFor(cfg);
+  o.resultColumns = resultColumnsFor(cfg, impl);
   o.lastPreviewAt = null;
   o.lastPreviewFailedCount = null;
+  if (implOrSourceChanged && o.etlStatus === 'active') o.etlStatus = 'draft';
 }
 
 /**
@@ -693,8 +748,11 @@ function mockCompanyState(id: string): AutocountCompany {
   const legacy = id.includes('legacy');
   const sink = mockSinks.get(id);
   const created = createdCompanies.get(id);
+  const createdOpen = createdOpenCompanies.get(id);
   let base: AutocountCompany;
   if (id === DB_COMPANY_ID) base = mockDbCompany();
+  else if (id === HTTP_COMPANY_ID) base = mockHttpCompany();
+  else if (createdOpen) base = { ...createdOpen };
   else if (created) base = { ...created };
   else {
     base = mockCompany({
@@ -785,7 +843,12 @@ async function mockPreviewEtlTask(
   task: AutocountEtlTask,
 ): Promise<AutocountEtlPreviewResult> {
   await pause(350);
-  if (!task.sourceConfig.query.trim() || task.sourceConfig.keyColumns.length === 0) {
+  const impl = sourceImpls.get(taskKey(task.companyId, task.entityType));
+  const configured =
+    impl === 'autocount_http'
+      ? Boolean(task.sourceConfig.path?.trim()) && (task.sourceConfig.keyFields?.length ?? 0) > 0
+      : Boolean(task.sourceConfig.query.trim()) && task.sourceConfig.keyColumns.length > 0;
+  if (!configured) {
     throw new ApiError('Save a query with key columns before previewing.', 409);
   }
   const o = overlayFor(task.companyId, task.entityType);
@@ -1006,6 +1069,197 @@ function mockListEtlRuns(
 //                   one missing+inactive line; a freshly created DB company has no entities
 //                   (AC-01-05) → no card, Add entity offers all nine.
 
+// ── open REST API source fixtures (sprint-5/08, S1 - PHASE 1 MOCK is the backend spec) ──
+//
+// BACKEND CONTRACT (S2/S3 must match this EXACTLY - the mock IS the spec).
+// See the full contract block atop `autocount-service.ts`.
+//
+// Click-reachable states (no backend):
+//   conn-api-sorento  open (no-auth), unbound → the Sorento DB company's
+//                     Source-tab API branch can point HTTP tasks at it
+//                     (AC-08-36); also pickable on the connect form.
+//   conn-api-mocha    open (no-auth), bound to the seeded `company-http`
+//                     (Mocha) - excluded from the connect picker.
+//   conn-api-vendor   basic-auth, unbound - the "Basic auth" badge + the
+//                     ref-prefix field NOT shown when picked.
+//   /itembypage       paged, 11,826 total (12 pages of 1000) - `product`.
+//   /debtorbypage     paged, 4,224 total (5 pages of 1000) - `customer`.
+//   /location         list, 2 rows - `warehouse` (small on purpose).
+//   /ItemGroup        list, 60 rows - `product_category`.
+//   /ItemBrand        list, 12 rows - `brand`.
+//   /itembypage + distinctOf ["BaseUOM","SalesUOM","PurchaseUOM"] - `unit_of_measure`.
+//   /bogus            422 on `path` ("Not found").
+//   any connectionId not in HTTP_API_CONNECTIONS, or a basic-auth one → 422 on `connectionId`.
+
+const HTTP_API_CONNECTIONS: AutocountApiConnection[] = [
+  {
+    id: 'conn-api-sorento',
+    name: 'Sorento REST',
+    baseUrl: 'https://hapi.sorento.cc.cd/api/db1',
+    auth: 'none',
+  },
+  {
+    id: 'conn-api-mocha',
+    name: 'Mocha REST',
+    baseUrl: 'https://hapi.sorento.cc.cd/api/db2',
+    auth: 'none',
+  },
+  {
+    id: 'conn-api-vendor',
+    name: 'AutoCount Vendor API',
+    baseUrl: 'https://api.autocountcloud.com',
+    auth: 'basic',
+  },
+];
+
+function httpConnectionFor(id: string): AutocountApiConnection | undefined {
+  return HTTP_API_CONNECTIONS.find((c) => c.id === id);
+}
+
+function isoStamp(daysAgo: number): string {
+  return new Date(Date.now() - daysAgo * 86_400_000).toISOString().replace(/\.\d+Z$/, '');
+}
+
+const ITEM_GROUPS = ['AIRCOND', 'PARTS', 'SERVICE', 'HARDWARE', 'ELECTRICAL'];
+const ITEM_BRANDS = ['DAIKIN', 'PANASONIC', 'MITSUBISHI', 'YORK', 'CARRIER', 'LG'];
+const UOMS = ['UNIT', 'BOX', 'SET', 'PCS'];
+
+/** ~30 realistic `/itembypage` rows - the `product` preset's preview sample. */
+function itemRows(count = 30): Array<Record<string, unknown>> {
+  return Array.from({ length: count }, (_, i) => ({
+    ItemCode: `SRT-${String(i + 1).padStart(3, '0')}`,
+    Description: `Item ${i + 1}`,
+    Desc2: i % 4 === 0 ? '' : `Variant ${i}`,
+    ItemGroup: ITEM_GROUPS[i % ITEM_GROUPS.length],
+    ItemBrand: ITEM_BRANDS[i % ITEM_BRANDS.length],
+    BaseUOM: UOMS[i % UOMS.length],
+    SalesUOM: UOMS[(i + 1) % UOMS.length],
+    PurchaseUOM: UOMS[(i + 2) % UOMS.length],
+    LastModified: isoStamp(i),
+    IsActive: i % 11 === 5 ? 'F' : 'T',
+    Discontinued: i % 17 === 3 ? 'T' : 'F',
+  }));
+}
+
+function debtorRows(count = 30): Array<Record<string, unknown>> {
+  return Array.from({ length: count }, (_, i) => ({
+    AccNo: `300-${String(i + 1).padStart(4, '0')}`,
+    CompanyName: `Customer ${i + 1} Sdn Bhd`,
+    Phone1: `03-77${String(1000 + i).slice(1)}`,
+    IsActive: i % 13 === 6 ? 'F' : 'T',
+    LastModified: isoStamp(i),
+  }));
+}
+
+const LOCATION_ROWS: Array<Record<string, unknown>> = [
+  { Location: 'HQ', Description: 'Head Office', Address1: 'Jalan Utama', IsActive: 'T' },
+  { Location: 'PENANG', Description: 'Penang Branch', Address1: 'Jalan Timah', IsActive: 'T' },
+];
+
+const ITEM_GROUP_ROWS: Array<Record<string, unknown>> = Array.from({ length: 60 }, (_, i) => ({
+  ItemGroup: `GRP${String(i + 1).padStart(2, '0')}`,
+  Description: `${ITEM_GROUPS[i % ITEM_GROUPS.length]} ${Math.floor(i / ITEM_GROUPS.length) + 1}`,
+}));
+
+const ITEM_BRAND_ROWS: Array<Record<string, unknown>> = ITEM_BRANDS.map((b) => ({
+  ItemBrand: b,
+  Description: '',
+}));
+
+/** One path's full fixture: envelope shape + the rows behind it. */
+interface HttpPathFixture {
+  envelope: 'paged' | 'list';
+  totalCount?: number;
+  rows: Array<Record<string, unknown>>;
+}
+
+const HTTP_PATH_FIXTURES: Record<string, HttpPathFixture> = {
+  '/itembypage': { envelope: 'paged', totalCount: 11826, rows: itemRows() },
+  '/debtorbypage': { envelope: 'paged', totalCount: 4224, rows: debtorRows() },
+  '/location': { envelope: 'list', rows: LOCATION_ROWS },
+  '/ItemGroup': { envelope: 'list', rows: ITEM_GROUP_ROWS },
+  '/ItemBrand': { envelope: 'list', rows: ITEM_BRAND_ROWS },
+};
+
+/** Distinct, trimmed, non-blank, first-seen-order projection (mirrors the
+ * backend's `distinctOf` extraction, AC-08-22). */
+function distinctValues(rows: Array<Record<string, unknown>>, fields: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const row of rows) {
+    for (const field of fields) {
+      const raw = row[field];
+      const value = typeof raw === 'string' ? raw.trim() : raw == null ? '' : String(raw);
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      out.push(value);
+    }
+  }
+  return out;
+}
+
+/** The mock's `POST /autocount/http/preview` - the behaviour classes the
+ * real endpoint must reproduce (AC-08-14). */
+async function mockPreviewHttp(input: HttpPreviewInput): Promise<HttpPreview> {
+  await pause(600);
+  const connection = httpConnectionFor(input.connectionId);
+  if (!connection || connection.auth !== 'none') {
+    throw new ApiError('Choose an open (no-auth) AutoCount connection.', 422, null, {
+      fieldErrors: { connectionId: 'Choose an open (no-auth) AutoCount connection.' },
+    });
+  }
+  const path = input.path.trim();
+  if (!path.startsWith('/') || path.includes('..') || path.includes('?')) {
+    throw new ApiError('Enter a valid endpoint path.', 422, null, {
+      fieldErrors: { path: 'Enter a valid endpoint path.' },
+    });
+  }
+  const fixture = HTTP_PATH_FIXTURES[path];
+  if (!fixture) {
+    throw new ApiError(`'${path}' was not found.`, 422, null, {
+      fieldErrors: { path: `'${path}' was not found.` },
+    });
+  }
+  const rows50 = fixture.rows.slice(0, 50);
+  if (input.distinctOf && input.distinctOf.length > 0) {
+    const values = distinctValues(fixture.rows, input.distinctOf).slice(0, 50);
+    return {
+      envelope: fixture.envelope,
+      totalCount: fixture.envelope === 'paged' ? fixture.totalCount : undefined,
+      columns: [{ name: 'value', sample: values[0] ?? null }],
+      rows: values.map((value) => ({ value })),
+      durationMs: 180,
+    };
+  }
+  const columnNames = Object.keys(rows50[0] ?? {});
+  return {
+    envelope: fixture.envelope,
+    totalCount: fixture.envelope === 'paged' ? fixture.totalCount : undefined,
+    columns: columnNames.map((name) => ({ name, sample: rows50[0]?.[name] ?? null })),
+    rows: rows50,
+    durationMs: 220,
+  };
+}
+
+/** The seeded open (Mocha) company - no database at all (D3/D4). */
+const HTTP_COMPANY_ID = 'company-http';
+const HTTP_COMPANY_CONNECTION = HTTP_API_CONNECTIONS[1]; // Mocha REST
+
+function mockHttpCompany(): AutocountCompany {
+  return mockCompany({
+    id: HTTP_COMPANY_ID,
+    connectionId: HTTP_COMPANY_CONNECTION.id,
+    databaseName: 'MOCHA',
+    companyName: 'Mocha Sdn Bhd',
+    name: 'Mocha',
+    sourceKind: 'http',
+    createdAt: '2026-09-10T00:00:00Z',
+  });
+}
+
+/** Open companies registered this session (created from a No-auth connection). */
+const createdOpenCompanies = new Map<string, AutocountCompany>();
+
 const DB_COMPANY_ID = 'company-db';
 const DB_COMPANY_CONNECTION = SQL_CONNECTIONS[0];
 
@@ -1179,13 +1433,19 @@ function apiSeedEntities(companyId: string): AutocountEntityConfig[] {
 function bornEntities(companyId: string): AutocountEntityConfig[] {
   const rows: AutocountEntityConfig[] = [];
   for (const [key, task] of Array.from(etlTasks.entries())) {
-    if (!key.startsWith(`${companyId}:`) || !task.sourceConfig.query.trim()) continue;
+    if (!key.startsWith(`${companyId}:`)) continue;
+    // A row is born the moment EITHER task grammar has a saved source
+    // (sprint-5/08 D13 - an `autocount_http` task never has a `query`, only
+    // `path`; the SQL branch is unaffected, still gated on `query`).
+    const configured = task.sourceConfig.query.trim() || task.sourceConfig.path?.trim();
+    if (!configured) continue;
     const o = overlayFor(companyId, task.entityType);
+    const impl = sourceImpls.get(key) === 'autocount_http' ? 'autocount_http' : 'sql_db';
     rows.push({
       id: `${companyId}-${task.entityType}`,
       entityType: task.entityType,
       syncMode: 'AUTO',
-      sourceImpl: 'sql_db',
+      sourceImpl: impl,
       recordCap: 200,
       initialLookbackDays: 30,
       enabled: true,
@@ -1204,29 +1464,43 @@ function bornEntities(companyId: string): AutocountEntityConfig[] {
   return rows.sort((a, b) => order(a.entityType) - order(b.entityType));
 }
 
-/** A company's entity rows: API seeds (API company only, AC-01-05) + born DB rows. */
+/** A company's entity rows: API seeds (API company only, AC-01-05) + born DB rows.
+ * An open (http) company seeds nothing either - D13 mirrors the DB branch. */
 function companyEntities(company: AutocountCompany): AutocountEntityConfig[] {
   if (company.id === DB_COMPANY_ID) ensureDbCompanySeed();
-  const base = company.sourceKind === 'db' ? [] : apiSeedEntities(company.id);
+  const base =
+    company.sourceKind === 'db' || company.sourceKind === 'http'
+      ? []
+      : apiSeedEntities(company.id);
   const seen = new Set(base.map((e) => e.entityType));
   return [...base, ...bornEntities(company.id).filter((e) => !seen.has(e.entityType))];
 }
 
-/** Every company the tenant holds: the API one, the seeded DB one, the session's creates. */
+/** Every company the tenant holds: the API one, the seeded DB one, the seeded
+ * open (Mocha) one, the session's creates of either kind. */
 function allCompanies(): AutocountCompany[] {
   return [
     mockCompanyState('company-1'),
     mockCompanyState(DB_COMPANY_ID),
+    mockCompanyState(HTTP_COMPANY_ID),
     ...Array.from(createdCompanies.keys()).map(mockCompanyState),
+    ...Array.from(createdOpenCompanies.keys()).map(mockCompanyState),
   ].map(applyCompanyOverlay);
 }
 
-/** The create dispatcher the backend's `CompanyService.create` must mirror. */
+/** The create dispatcher the backend's `CompanyService.create` must mirror
+ * (sprint-5/08 D1/D6 adds the THIRD branch: an open/no-auth `autocount`
+ * connection). */
 async function mockCreateCompany(input: AutocountCompanyCreateInput): Promise<AutocountCompany> {
   await pause(300);
   const sql = SQL_CONNECTIONS.find((c) => c.id === input.connectionId);
-  // Not a `sql_database` connection → the API path (the plan-13 scaffolding).
-  if (!sql) return mockCompany();
+  const openApi = httpConnectionFor(input.connectionId);
+  if (openApi?.auth === 'none') {
+    return mockCreateOpenCompany(input, openApi);
+  }
+  // Not a `sql_database` connection → the API path (the plan-13 scaffolding,
+  // this also covers a basic-auth `autocount` connection).
+  if (!sql) return mockCompany({ connectionId: input.connectionId });
   const companies = allCompanies();
   const bound = companies.find((c) => c.connectionId === sql.id);
   if (bound) {
@@ -1255,6 +1529,50 @@ async function mockCreateCompany(input: AutocountCompanyCreateInput): Promise<Au
   return { ...company };
 }
 
+/** The open-company branch (AC-08-06/07): reachability probe (mocked as
+ * always-ok for a known connection), `ref_prefix` required/validated/unique,
+ * `database_name = ref_prefix`, NO entity seeding. */
+async function mockCreateOpenCompany(
+  input: AutocountCompanyCreateInput,
+  connection: AutocountApiConnection,
+): Promise<AutocountCompany> {
+  const companies = allCompanies();
+  const bound = companies.find((c) => c.connectionId === connection.id);
+  if (bound) {
+    throw new ApiError(`'${connection.name}' is already connected as company '${bound.name}'.`, 409);
+  }
+  const prefix = (input.refPrefix ?? '').trim().toUpperCase();
+  if (!prefix) {
+    throw new ApiError('Reference prefix is required.', 422, null, {
+      fieldErrors: { refPrefix: 'Reference prefix is required.' },
+    });
+  }
+  if (!REF_PREFIX_RE.test(prefix)) {
+    throw new ApiError('Use letters, digits and underscore only (2-32 characters).', 422, null, {
+      fieldErrors: {
+        refPrefix: 'Use letters, digits and underscore only (2-32 characters).',
+      },
+    });
+  }
+  const holder = companies.find((c) => c.databaseName === prefix);
+  if (holder) {
+    throw new ApiError(`'${prefix}' is already used by company '${holder.name}'.`, 409, null, {
+      fieldErrors: { refPrefix: `'${prefix}' is already used by company '${holder.name}'.` },
+    });
+  }
+  const company = mockCompany({
+    id: `company-http-${createdOpenCompanies.size + 1}`,
+    connectionId: connection.id,
+    databaseName: prefix,
+    companyName: '',
+    name: input.name?.trim() || connection.name,
+    sourceKind: 'http',
+    createdAt: nowIso(),
+  });
+  createdOpenCompanies.set(company.id, company);
+  return { ...company };
+}
+
 /** Test seam: forget every S2 session state (the Vitest suite isolates cases). */
 export function resetEtlMockState(): void {
   etlOverlays.clear();
@@ -1262,9 +1580,11 @@ export function resetEtlMockState(): void {
   mockSinks.clear();
   sourceImpls.clear();
   previewColumnsByQuery.clear();
+  httpPreviewColumnsByKey.clear();
   etlRuns.clear();
   etlTasks.clear();
   createdCompanies.clear();
+  createdOpenCompanies.clear();
   dbSeeded = false;
   mockRepushInFlightRunId = null;
 }
@@ -1465,16 +1785,16 @@ export const mockAutocountService: AutocountService = {
     return Promise.resolve(applyCompanyOverlay(mockCompanyState(companyId)));
   },
 
-  getMapping(_companyId: string, entityType: string): Promise<AutocountMappingView> {
-    return Promise.resolve(mockMappingView(entityType));
+  getMapping(companyId: string, entityType: string): Promise<AutocountMappingView> {
+    return Promise.resolve(mockMappingView(entityType, sourceImpls.get(taskKey(companyId, entityType))));
   },
 
   updateMapping(
-    _companyId: string,
+    companyId: string,
     entityType: string,
     input: AutocountMappingUpdate,
   ): Promise<AutocountMappingView> {
-    const view = mockMappingView(entityType);
+    const view = mockMappingView(entityType, sourceImpls.get(taskKey(companyId, entityType)));
     const headerRows = input.rows.filter((r) => (r.scope ?? 'header') === 'header');
     // Mirrors the real service's backward-compat fold (security re-review
     // should-fix, sprint-5/02 review round): the dedicated `lineRows` field
@@ -1566,7 +1886,7 @@ export const mockAutocountService: AutocountService = {
   },
 
   simulateMapping(
-    _companyId: string,
+    companyId: string,
     entityType: string,
     record: Record<string, unknown>,
     rows?: AutocountMappingWriteRow[],
@@ -1576,7 +1896,7 @@ export const mockAutocountService: AutocountService = {
     // deliverable row's formula/passthrough over the flat mock record so the
     // record-in → record-out preview + per-field errors are tunable with no
     // backend. The real engine is authoritative; this only drives the UI states.
-    const view = mockMappingView(entityType);
+    const view = mockMappingView(entityType, sourceImpls.get(taskKey(companyId, entityType)));
     type RowSpec = { sourcePath: string; formula: string | null; canonicalField: string };
     const toSpec = (r: {
       sourcePath: string;
@@ -1743,11 +2063,16 @@ export const mockAutocountService: AutocountService = {
     await pause(250);
     const current = etlTaskFor(companyId, entityType);
     let cfg = input.sourceConfig;
-    // A DB company reads ONLY from its own connection (AC-01-09/10): an
-    // omitted connection is filled, a different one refused on the field; the
-    // API-only GRN envelope has no database path at all.
+    const key = taskKey(companyId, entityType);
+    const previousImpl: 'sql_db' | 'autocount_http' =
+      sourceImpls.get(key) === 'autocount_http' ? 'autocount_http' : 'sql_db';
+    const newImpl = input.sourceImpl ?? previousImpl;
     const company = mockCompanyState(companyId);
-    if (company.sourceKind === 'db') {
+    // A DB company reads ONLY from its own connection for a `sql_db` task
+    // (AC-01-09/10); an `autocount_http` task on a DB company may reference
+    // ANY open connection of the tenant (AC-08-13 narrows the lock to
+    // `sql_db` only). The API-only GRN envelope has no database path at all.
+    if (company.sourceKind === 'db' && newImpl === 'sql_db') {
       if (entityType === 'goods_received_note') {
         throw new ApiError('Goods received notes are not available on a database company.', 422);
       }
@@ -1757,11 +2082,23 @@ export const mockAutocountService: AutocountService = {
         throw new ApiError(message, 422, null, { fieldErrors: { connectionId: message } });
       }
     }
+    if (newImpl === 'autocount_http') {
+      const conn = httpConnectionFor(cfg.connectionId ?? '');
+      if (!conn || conn.auth !== 'none') {
+        const message = 'Choose an open (no-auth) AutoCount connection.';
+        throw new ApiError(message, 422, null, { fieldErrors: { connectionId: message } });
+      }
+      if (!cfg.path?.trim()) {
+        const message = 'Enter an endpoint path.';
+        throw new ApiError(message, 422, null, { fieldErrors: { path: message } });
+      }
+    }
     // Mirrors the save-time guard (AC-22-11/S5, line key/product columns
     // moved OFF this guard and onto the mapping save path in sprint-5/02
     // AC-02-03/05): documents need a from-date, a watermark column
     // (line-change detection - AutoCount stamps a header's LastModified on
-    // any line edit), and a date-floor column.
+    // any line edit), and a date-floor column. HTTP entities are never
+    // documents (AC_HTTP_ENTITY_TYPES), so this never fires for one.
     if (isDocumentEntity(entityType)) {
       const fieldErrors: Record<string, string> = {};
       if (!cfg.fromDate) fieldErrors.fromDate = 'From date is required for documents.';
@@ -1775,12 +2112,22 @@ export const mockAutocountService: AutocountService = {
         });
       }
     }
+    // AC-08-28 - changing the task's impl (either direction), connection or
+    // (for HTTP) path sets an ACTIVE task back to draft (must Test +
+    // re-activate); `ac_row_hash`-equivalent tracking (the mock has none to
+    // clear) is untouched so the first reconcile after a switch reports
+    // updates rather than phantom deletes when the key is unchanged.
+    const implOrSourceChanged =
+      newImpl !== previousImpl ||
+      cfg.connectionId !== current.sourceConfig.connectionId ||
+      (newImpl === 'autocount_http' && cfg.path !== current.sourceConfig.path);
     const next: AutocountEtlTask = {
       ...current,
       sourceConfig: cloneJson(cfg),
     };
-    etlTasks.set(`${companyId}:${entityType}`, next);
-    noteTaskSaved(companyId, entityType, cfg);
+    etlTasks.set(key, next);
+    if (input.sourceImpl) noteSourceImpl(companyId, entityType, input.sourceImpl);
+    noteTaskSaved(companyId, entityType, cfg, newImpl, implOrSourceChanged);
     return cloneJson(applyTaskOverlay(next));
   },
 
@@ -1852,6 +2199,27 @@ export const mockAutocountService: AutocountService = {
         task.etlStatus === 'active' ? new Date(Date.now() + 60_000).toISOString() : null,
       status: task.etlStatus,
     };
+  },
+
+  // ── open REST API source (sprint-5/08, S1) ──────────────────────────────
+
+  async listApiConnections(): Promise<AutocountApiConnection[]> {
+    // EVERY `autocount` connection, bound or not (AC-08-15) - the connect
+    // form's picker excludes already-bound ones ITSELF (the same "taken" set
+    // `useAutocountSourceConnections` already builds from `listCompanies()`);
+    // the task Source tab needs the bound ones too, to badge/label a locked
+    // company connection or a DB company's free cross-tenant pick.
+    await pause(150);
+    return HTTP_API_CONNECTIONS.map((c) => ({ ...c }));
+  },
+
+  async previewHttp(input: HttpPreviewInput): Promise<HttpPreview> {
+    const preview = await mockPreviewHttp(input);
+    httpPreviewColumnsByKey.set(
+      httpPreviewKey(input.connectionId, input.path, input.distinctOf),
+      preview.columns.map((c) => c.name),
+    );
+    return preview;
   },
 };
 
@@ -2149,10 +2517,51 @@ function documentMappingView(entityType: string): AutocountMappingView {
   };
 }
 
-function mockMappingView(entityType: string): AutocountMappingView {
-  return isDocumentEntity(entityType) && DOCUMENT_PRESETS[entityType]
-    ? documentMappingView(entityType)
-    : masterMappingView(entityType);
+/**
+ * An open REST API master's mapping view (sprint-5/08, AC-08-16/21) - seeded
+ * straight from `HTTP_PRESETS[entityType].mapping`, the SAME table the
+ * Source tab's preset pre-fill reads (one source of truth, never a second
+ * copy). No document family here (AC_HTTP_ENTITY_TYPES has none), so every
+ * row is header-scope and there are no line fields.
+ */
+function httpMasterMappingView(entityType: string): AutocountMappingView {
+  const preset = HTTP_PRESETS[entityType];
+  const rows = preset.mapping.map((m) => ({
+    sourcePath: m.sourcePath,
+    transform: m.transform,
+    formula: null,
+    sorentoField: m.canonicalField,
+    canonicalField: m.canonicalField,
+    scope: 'header' as const,
+    isRequired: Boolean(m.required),
+    isEnabled: true,
+  }));
+  return {
+    entityType,
+    rows,
+    sorentoFields: rows.map((r) => ({ field: r.canonicalField, required: r.isRequired })),
+    acFields: Array.from(new Set(preset.mapping.map((m) => m.sourcePath))),
+    lineSorentoFields: [],
+    lineAcFields: [],
+  };
+}
+
+/**
+ * `customer` is the ONE entity type both the legacy vendor-login path
+ * (`autocount_read`, `masterMappingView` - AccNo/CompanyName/IsActive/
+ * EmailAddress, unchanged since plan 15) AND the open REST API path
+ * (`autocount_http`, AC-08-16) can configure - dispatch on the RESOLVED
+ * impl for that one collision; every other `HTTP_PRESETS` entity has no
+ * vendor-path meaning at all, so it always reads its HTTP preset.
+ */
+function mockMappingView(entityType: string, impl?: string): AutocountMappingView {
+  if (isDocumentEntity(entityType) && DOCUMENT_PRESETS[entityType]) {
+    return documentMappingView(entityType);
+  }
+  if (HTTP_PRESETS[entityType] && (impl === 'autocount_http' || entityType !== 'customer')) {
+    return httpMasterMappingView(entityType);
+  }
+  return masterMappingView(entityType);
 }
 
 /** `GET /autocount/presets/{entityType}` (S3 backend) - the mock returns the

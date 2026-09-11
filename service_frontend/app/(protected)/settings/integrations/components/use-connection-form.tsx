@@ -129,7 +129,7 @@ export function useConnectionForm(
       return false;
     }
     try {
-      const input = toConnectionInput(values);
+      const input = toConnectionInput(values, provider);
       if (creating) {
         const created = await integrationService.create(input);
         toast.success(`${created.name} connected - run a test to verify it.`);

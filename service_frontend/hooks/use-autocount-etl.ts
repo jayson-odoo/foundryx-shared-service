@@ -5,6 +5,7 @@ import { ApiError } from '@/lib/api-client';
 import { readFieldErrors, readTaskError } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
+  AutocountApiConnection,
   AutocountEtlSourceConfig,
   AutocountEtlTask,
   AutocountEtlTaskError,
@@ -12,6 +13,7 @@ import type {
   AutocountSqlConnection,
   AutocountSqlPreview,
   AutocountSqlSchema,
+  HttpPreview,
 } from '@/types/autocount';
 
 /**
@@ -30,8 +32,16 @@ export interface UseAutocountEtlTaskResult {
   /** Per-field 422 errors from the save-time guard (AC-22-11). */
   fieldErrors: Record<string, string>;
   isSaving: boolean;
-  /** Draft-save the source config. False (with `saveError`) on rejection. */
-  save: (sourceConfig: AutocountEtlSourceConfig) => Promise<boolean>;
+  /**
+   * Draft-save the source config. `sourceImpl` (sprint-5/08, D13) - present
+   * when the Source tab's toggle derives `sql_db`/`autocount_http`; omitted
+   * for a `sql_db`-only caller that predates the toggle. False (with
+   * `saveError`) on rejection.
+   */
+  save: (
+    sourceConfig: AutocountEtlSourceConfig,
+    sourceImpl?: 'sql_db' | 'autocount_http',
+  ) => Promise<boolean>;
   /** Adopt a task returned by a lifecycle call (activate/pause/resume/run/preview). */
   apply: (task: AutocountEtlTask) => void;
   reload: () => void;
@@ -74,13 +84,17 @@ export function useAutocountEtlTask(
   }, [companyId, entityType, reloadKey]);
 
   const save = useCallback(
-    async (sourceConfig: AutocountEtlSourceConfig): Promise<boolean> => {
+    async (
+      sourceConfig: AutocountEtlSourceConfig,
+      sourceImpl?: 'sql_db' | 'autocount_http',
+    ): Promise<boolean> => {
       setIsSaving(true);
       setSaveError(null);
       setFieldErrors({});
       try {
         const saved = await autocountService.updateEtlTask(companyId, entityType, {
           sourceConfig,
+          ...(sourceImpl ? { sourceImpl } : {}),
         });
         setTask(saved);
         return true;
@@ -406,4 +420,93 @@ export function useLineFetcher(): {
     [],
   );
   return { fetchLines };
+}
+
+// ── open REST API source (sprint-5/08, S1) ────────────────────────────────────
+
+export interface UseAutocountApiConnectionsResult {
+  connections: AutocountApiConnection[];
+  isLoading: boolean;
+  error: string | null;
+}
+
+/** Every `autocount` connection of the tenant, badged by auth (AC-08-15) -
+ * the Source tab's API-branch picker source. */
+export function useAutocountApiConnections(): UseAutocountApiConnectionsResult {
+  const [connections, setConnections] = useState<AutocountApiConnection[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    autocountService
+      .listApiConnections()
+      .then((list) => {
+        if (!cancelled) setConnections(list);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          setError(e instanceof ApiError ? e.message : 'Connections could not be loaded.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return { connections, isLoading, error };
+}
+
+/** The four designed preview states, mirroring `SqlPreviewState` for the
+ * open REST API (AC-08-14/20). */
+export type HttpPreviewState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'success'; preview: HttpPreview };
+
+export interface UseHttpPreviewResult {
+  state: HttpPreviewState;
+  /** Run the endpoint path (page 1, <=50 rows). Never throws - errors land
+   * in state, the field they belong to read via `readFieldErrors`. */
+  run: (connectionId: string, path: string, distinctOf?: string[]) => Promise<void>;
+  /** The 422's field (`connectionId` | `path`), when the last run failed on
+   * a specific field rather than a generic error. */
+  fieldErrors: Record<string, string>;
+  reset: () => void;
+}
+
+export function useHttpPreview(): UseHttpPreviewResult {
+  const [state, setState] = useState<HttpPreviewState>({ status: 'idle' });
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const runId = useRef(0);
+
+  const run = useCallback(async (connectionId: string, path: string, distinctOf?: string[]) => {
+    const id = ++runId.current;
+    setState({ status: 'loading' });
+    setFieldErrors({});
+    try {
+      const preview = await autocountService.previewHttp({ connectionId, path, distinctOf });
+      if (id === runId.current) setState({ status: 'success', preview });
+    } catch (e) {
+      if (id !== runId.current) return;
+      const errors = e instanceof ApiError ? readFieldErrors(e.detail) : {};
+      setFieldErrors(errors);
+      setState({
+        status: 'error',
+        message: e instanceof ApiError ? e.message : 'The preview could not be run.',
+      });
+    }
+  }, []);
+
+  const reset = useCallback(() => {
+    runId.current += 1;
+    setState({ status: 'idle' });
+    setFieldErrors({});
+  }, []);
+
+  return { state, run, fieldErrors, reset };
 }

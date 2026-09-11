@@ -18,15 +18,27 @@ export type AutocountSyncMode = 'AUTO' | 'SCHEDULED_REVIEW' | 'MANUAL';
  * plan 22 §2): the vendor HTTP API (the plan-13 path, untouched) or a direct
  * read-only SQL extraction task. Switching changes how every sync runs.
  */
-export type AutocountSourceImpl = 'autocount_read' | 'sql_db';
+export type AutocountSourceImpl = 'autocount_read' | 'sql_db' | 'autocount_http';
 
 /**
- * How a company is connected (plan sprint-5/01, AC-01-07): DERIVED server-side
- * from its ONE connection's provider - `autocount` → `'api'`, `sql_database` →
- * `'db'`. Never stored, never client-supplied. A DB company has no vendor API:
- * every entity reads through a `sql_db` task locked to the company connection.
+ * How a company is connected (plan sprint-5/01, AC-01-07; `'http'` added
+ * sprint-5/08 D1/D8): DERIVED server-side from its ONE connection's provider -
+ * `autocount` (auth `basic`) → `'api'`, `autocount` (auth `none`, the open
+ * REST wrapper) → `'http'`, `sql_database` → `'db'`. Never stored, never
+ * client-supplied. A DB or open (`http`) company has no vendor login: a `db`
+ * company reads through `sql_db` tasks locked to the company connection; an
+ * `http` company's tasks read `autocount_http` locked to the SAME open
+ * connection (there is no separate onboarding step - the company IS the
+ * connection).
  */
-export type AutocountSourceKind = 'api' | 'db';
+export type AutocountSourceKind = 'api' | 'db' | 'http';
+
+/** Auth mode of an `autocount` connection (sprint-5/08, D1). `basic` = the
+ * vendor login (AppId + user + password, today's grammar, GRN/supplier/
+ * customer only); `none` = the open REST wrapper (base URL only, every
+ * `AC_HTTP_ENTITY_TYPES` entity). Absent/legacy connection rows behave as
+ * `basic` (`auth_mode(config)` on the backend). */
+export type AutocountConnectionAuth = 'basic' | 'none';
 
 /**
  * One document entity's prerequisite-master status (AC-01-11). A sales order
@@ -163,6 +175,14 @@ export interface AutocountCompanyCreateInput {
   connectionId: string;
   /** Optional label; blank falls back to the discovered company name. */
   name?: string;
+  /**
+   * REQUIRED when `connectionId` names an open (no-auth) `autocount`
+   * connection (sprint-5/08, AC-08-06/07/D4) - the operator-typed reference
+   * prefix every pushed ref carries (`{prefix}:{key}`), stored as
+   * `ac_company.database_name`, immutable once created. Ignored (422 "not
+   * applicable") for a vendor or SQL connection.
+   */
+  refPrefix?: string;
 }
 
 // ── sync ─────────────────────────────────────────────────────────────────────
@@ -751,6 +771,88 @@ export interface AutocountEtlSourceConfig {
   reconcileHours: number | null;
   /** "HH:MM" in the tenant timezone (`reconcileMode === 'dailyAt'`). */
   reconcileAt: string | null;
+  // ── sprint-5/08 (D13) - present only when the task's Source is API/`autocount_http` ──
+  //
+  // PHASE 1 MOCK simplification (see the contract block atop
+  // `autocount-service.ts`): rather than a discriminated `sourceConfig`
+  // union, the open-API fields ride the SAME envelope as the SQL fields
+  // above (mutually exclusive by which half is populated) so Mapping /
+  // Schedule / Review & Activate / Runs keep reading ONE `AutocountEtlTask.
+  // sourceConfig` shape unchanged (AC-08-19: "the existing components
+  // untouched"). `AutocountHttpSourceConfig` below documents the field names
+  // the UAC's wire contract actually uses (`keyFields` not `keyColumns`,
+  // etc.) - the backend phase (S2/S3) is free to keep them as a nested JSON
+  // as long as this FE envelope's mapping stays exact.
+  /** Relative endpoint path (`/itembypage`); no query string, no `..`. */
+  path?: string;
+  keyFields?: string[];
+  watermarkField?: string | null;
+  comparedFields?: string[];
+  /** Set only for a "distinct values of" derived entity (unit_of_measure) -
+   * mutually exclusive with a normal `keyFields` pick (must be `["value"]`). */
+  distinctOf?: string[] | null;
+}
+
+/**
+ * `source_config` of an `autocount_http` task, named per the UAC wire
+ * contract (sprint-5/08 Definitions) - the open REST API's OWN field grammar
+ * (`keyFields`/`watermarkField`/`comparedFields`/`distinctOf`, distinct from
+ * the SQL task's `keyColumns`/`watermarkColumn`/`comparedColumns`/no-
+ * distinct-concept). Used for local Source-tab draft state and as the
+ * `previewHttp`/`GET .../http/connections` documentation shape; persisted
+ * onto the SAME `AutocountEtlSourceConfig` envelope above (PHASE 1 MOCK).
+ */
+export interface AutocountHttpSourceConfig {
+  connectionId: string | null;
+  path: string;
+  keyFields: string[];
+  watermarkField: string | null;
+  comparedFields: string[];
+  distinctOf: string[] | null;
+  incrementalMinutes: number;
+  reconcileMode: 'interval' | 'dailyAt';
+  reconcileHours: number | null;
+  reconcileAt: string | null;
+}
+
+/** `GET /autocount/http/connections` - a tenant's `autocount` connections,
+ * badged by auth so the Source tab / connect-company picker can label each
+ * option and derive the impl without a second fetch (AC-08-15). */
+export interface AutocountApiConnection {
+  id: string;
+  name: string;
+  baseUrl: string;
+  auth: AutocountConnectionAuth;
+}
+
+/** One column of an HTTP preview - a SAMPLE value, never a reported SQL type
+ * (the open API carries no schema, AC-08-14). */
+export interface HttpPreviewColumn {
+  name: string;
+  sample: unknown;
+}
+
+/**
+ * `POST /autocount/http/preview` result (AC-08-14, AC-08-22 "page walk"
+ * definition). `paged` = a `{TotalCount,Page,PageSize,TotalPages,Data[]}`
+ * envelope (a run walks every page); `list` = a bare JSON array (one
+ * request). `totalCount` is present for `paged` only.
+ */
+export interface HttpPreview {
+  envelope: 'paged' | 'list';
+  totalCount?: number;
+  columns: HttpPreviewColumn[];
+  rows: Array<Record<string, unknown>>;
+  durationMs: number;
+}
+
+/** `POST /autocount/http/preview` body. */
+export interface HttpPreviewInput {
+  connectionId: string;
+  path: string;
+  /** Project the response's listed fields to distinct `{value}` rows (the
+   * `unit_of_measure` preset - AC-08-16 D6). */
+  distinctOf?: string[];
 }
 
 /**
@@ -763,6 +865,13 @@ export interface AutocountEtlTask {
   entityType: string;
   etlStatus: AutocountEtlStatus;
   activatedAt: string | null; // ISO Z
+  /**
+   * Which task grammar `sourceConfig` is populated as (sprint-5/08, D13) -
+   * `sql_db` (default; every task before this plan) or `autocount_http`.
+   * Optional/absent reads as `sql_db` everywhere (back-compat with every
+   * fixture/task built before this field existed).
+   */
+  sourceImpl?: 'sql_db' | 'autocount_http';
   sourceConfig: AutocountEtlSourceConfig;
   /**
    * Result column names of the SAVED query - derived server-side from the
@@ -805,6 +914,14 @@ export interface AutocountEtlTask {
 /** `PUT .../etl-task` body - replaces the task's source config (draft save). */
 export interface AutocountEtlTaskUpdate {
   sourceConfig: AutocountEtlSourceConfig;
+  /**
+   * The task's Source (sprint-5/08, D13) - present when the operator's
+   * toggle derives `sql_db` or `autocount_http`; omitted when the picked
+   * connection is basic-auth (that save goes through
+   * `updateEntityConfig({sourceImpl:'autocount_read'})` instead, there being
+   * no task at all on that path).
+   */
+  sourceImpl?: 'sql_db' | 'autocount_http';
 }
 
 // ── activation gate + runs (plan 22, slice S2 - AC-22-17/18/19, Appendix A6) ──
