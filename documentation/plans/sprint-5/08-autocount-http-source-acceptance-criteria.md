@@ -26,11 +26,14 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
 
 ## Definitions
 
-- **open connection** - a core `connections` row, provider `autocount`, `config.authMode ==
-  "none"`. Config = `baseUrl` only; the base URL INCLUDES the company segment
-  (`https://hapi.sorento.cc.cd/api/db1`). No credentials.
-- **vendor connection** - the same provider with `authMode == "vendor"` (or absent = legacy
-  rows): today's four fields, login test, unchanged behaviour.
+- **source kind** - `api` (an `autocount` connection) or `db` (a `sql_database` connection).
+  The operator's two words (plan review 2026-09-11); every picker uses them.
+- **open connection** - an `api` connection with `config.auth == "none"`. Config = `baseUrl`
+  only; the base URL INCLUDES the company segment (`https://hapi.sorento.cc.cd/api/db1`). No
+  credentials.
+- **basic connection** - an `api` connection with `config.auth == "basic"` (or absent = legacy
+  rows): today's AppId / User ID / Password, login test, unchanged fetch grammar
+  (`autocount_read`, GRN / supplier / customer only).
 - **HTTP task** - an `ac_entity_config` row with `source_impl == "autocount_http"`. Its
   `source_config` = `{connectionId, path, keyFields[], watermarkField?, comparedFields[],
   distinctOf?[], incrementalMinutes, reconcileMode, reconcileHours?, reconcileAt?}`.
@@ -45,21 +48,21 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
 
 ## Group A - provider and connection (`[BE]` / `[FE]`)
 
-- **AC-08-01 [BE]** `AutoCountProvider.fields()` gains a leading `authMode` select
-  (`vendor` = "Vendor login API", `none` = "Open REST API (no auth)"; default `vendor`). The
-  three credential fields carry `showWhen: {field: "authMode", values: ["vendor"]}`; `baseUrl`
-  is always shown. Legacy rows without `authMode` behave as `vendor` everywhere
-  (`auth_mode(config)` helper, one place).
-- **AC-08-02 [BE]** `provider.test()` with `authMode == "none"`: `GET {baseUrl}/location`
+- **AC-08-01 [BE]** `AutoCountProvider.fields()` gains a leading `auth` select (`basic` =
+  "Basic auth (AppId + user + password)", `none` = "No auth"; default `basic`). The three
+  credential fields carry `showWhen: {field: "auth", values: ["basic"]}`; `baseUrl` is always
+  shown. Legacy rows without `auth` behave as `basic` everywhere (`auth_mode(config)` helper,
+  one place).
+- **AC-08-02 [BE]** `provider.test()` with `auth == "none"`: `GET {baseUrl}/location`
   with a 10 s timeout; a 2xx JSON array -> `ok=True` with message naming the row count; any
   network error, non-2xx, or non-array body -> `ok=False` naming the step ("reachability" /
   "not JSON" / "HTTP 404") and never the raw body. Credentials are NOT required and a login is
-  NEVER attempted in this mode. `authMode == "vendor"` is byte-for-byte today's behaviour.
+  NEVER attempted in this mode. `auth == "basic"` is byte-for-byte today's behaviour.
 - **AC-08-03 [BE]** `base_url` validation for `none` is the same rule the provider applies
   today (scheme `http`/`https`, no trailing whitespace); a trailing `/` is stripped once at
   save so `{baseUrl}/location` never double-slashes.
 - **AC-08-04 [FE]** The core connection form renders `select` fields and honours `showWhen`:
-  switching `authMode` to `none` hides AppId / User ID / Password and clears their required
+  switching `auth` to `none` hides AppId / User ID / Password and clears their required
   state; switching back restores them. Unit test on `connection-schema.ts` + the field
   component. No other provider changes behaviour (`showWhen` absent = always shown).
 - **AC-08-05 [T]** `documentation/engineering/integrations-email.md` documents `showWhen`
@@ -81,20 +84,20 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   `CompanyItem.sourceKind` is `Literal['api','db','http']`; `client_for` on an open company
   raises `CompanyNotApiBacked` (409) exactly as for a DB company; `update_entity_config(
   sourceImpl='autocount_read')` and `goods_received_note` creation on an open company -> 422.
-- **AC-08-09 [FE]** Connect form's Source toggle gains a third segment "Open REST API"
-  (shown only when the tenant has at least one open connection with no company bound, same
-  `hasAny`/`allBound` banners as the other two). Picking it reveals a "Reference prefix" text
-  field pre-filled from the label (upper-cased, non-alphanumerics -> `_`), editable, with the
-  helper text "Prefixes every record reference sent to the consumer. Cannot be changed later."
-  Create is disabled until connection + prefix are valid; 422 `refPrefix` lands inline.
-- **AC-08-10 [FE]** Company detail Integration row reads "Open REST API" for `sourceKind ==
-  "http"`; `edit-lookback` / `change-source` / GRN entity actions are hidden for it (same
+- **AC-08-09 [FE]** Connect form's Source toggle stays TWO segments, "API" | "Database". The
+  API connection picker lists every `autocount` connection with no company bound, each option
+  labelled with its auth ("Basic auth" / "No auth"). Picking a No-auth connection reveals a
+  "Reference prefix" text field pre-filled from the label (upper-cased, non-alphanumerics ->
+  `_`), editable, helper text "Prefixes every record reference sent to the consumer. Cannot be
+  changed later."; a Basic-auth pick keeps today's discovery flow with no prefix field. Create
+  is disabled until connection (+ prefix when shown) is valid; 422 `refPrefix` lands inline.
+- **AC-08-10 [FE]** Company detail Integration row reads "API (no auth)" for `sourceKind ==
+  "http"` and "API (basic auth)" for `api`; `edit-lookback` / `change-source` / GRN entity actions are hidden for it (same
   predicate that hides them for `db`).
-- **AC-08-11 [E2E]** Settings -> Integrations -> add AutoCount connection, Auth mode "Open
-  REST API", base URL `https://hapi.sorento.cc.cd/api/db2`, Test -> success naming the
-  location count; AutoCount -> Companies -> Connect -> "Open REST API" -> that connection ->
-  label `Mocha <ts>`, prefix auto `MOCHA_<TS>` -> Create -> detail shows Integration "Open REST
-  API" and the reference prefix. 375 + 1280, evidence dir `08-evidence/open-company/`.
+- **AC-08-11 [E2E]** Settings -> Integrations -> add AutoCount connection, Auth "No auth", base URL `https://hapi.sorento.cc.cd/api/db2`, Test -> success naming the
+  location count; AutoCount -> Companies -> Connect -> "API" -> that connection (badge "No auth") ->
+  label `Mocha <ts>`, prefix auto `MOCHA_<TS>` -> Create -> detail shows Integration "API (no
+  auth)" and the reference prefix. 375 + 1280, evidence dir `08-evidence/open-company/`.
 
 ## Group C - HTTP task configuration (`[BE]` / `[FE]`)
 
@@ -105,7 +108,7 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   `goods_received_note`, `supplier`, `sales_agent`, `sales_order`, `purchase_order`,
   `shipping_order` with `autocount_http` -> 422 naming the entity.
 - **AC-08-13 [BE]** `validate_source_config` for `autocount_http`: `connectionId` must resolve
-  tenant-scoped to an `autocount` connection with `authMode == "none"` (a vendor or SQL id ->
+  tenant-scoped to an `autocount` connection with `auth == "none"` (a vendor or SQL id ->
   422 `connectionId`); `path` required, must start with `/`, no `..`, no query string (page
   params are ours), <= 200 chars; `keyFields` non-empty and each present in
   `result_columns` once a preview exists (else 422 "Test the endpoint first"); `watermarkField`
@@ -123,8 +126,9 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   `distinctOf`, rows are the distinct projection (`{value}`) and `columns == [value]`. Records
   `last_preview_at` / `result_columns` on the task exactly as the SQL preview does when
   `companyId` + `entityType` are passed.
-- **AC-08-15 [BE]** `GET /autocount/http/connections` lists the tenant's open connections
-  (`{id, name, baseUrl}`), tenant-scoped, `autocount.read`. Vendor rows are excluded.
+- **AC-08-15 [BE]** `GET /autocount/http/connections` lists the tenant's `autocount`
+  connections (`{id, name, baseUrl, auth: "basic"|"none"}`), tenant-scoped, `autocount.read`,
+  so the Source tab can badge each option and derive the impl.
 - **AC-08-16 [BE]** First clean save of an HTTP task with an empty mapping seeds the entity's
   **HTTP preset** (`presets.HTTP_PRESETS[entity_type]`: `path`, `keyFields`,
   `watermarkField`, `distinctOf`, mapping rows) through the same seed-if-absent contract as
@@ -153,28 +157,39 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
 - **AC-08-17 [BE]** A parity test pins `HTTP_PRESETS.keys() == HTTP_ENTITY_TYPES ==
   autocount-meta.ts AC_HTTP_ENTITY_TYPES` and that every preset canonical field exists on the
   entity's canonical class (`SINK_FIELDS` or declared field).
-- **AC-08-18 [FE]** `AutocountSourceImpl` gains `'autocount_http'`; `AC_SOURCE_IMPL_OPTIONS`
-  gains `{value:'autocount_http', label:'Open REST API'}`; `AC_HTTP_ENTITY_TYPES` (six) is
-  exported; `entitiesForSourceKind('http') == AC_HTTP_ENTITY_TYPES`; the entity-source dialog
-  offers `autocount_http` only for entities in that set, `sql_db` only for
-  `AC_SQL_DB_ENTITY_TYPES`, and on an open company shows a single locked option.
-- **AC-08-19 [FE]** Task editor for `sourceImpl == 'autocount_http'` renders an **Endpoint
-  tab** in the `query` slot (`AcTaskTab` unchanged): open-connection `SearchSelect` (from
-  AC-08-15; on an open company locked to the company's own connection via the existing
-  `lockedConnection` prop), `path` text input (preset-filled, editable, monospace), a
-  read-only "Derived from distinct values of" chip list when `distinctOf` is set, a **Test**
-  `DeferredActionButton` -> preview grid (reuse `SqlPreviewGrid`) with the envelope badge
-  ("Paged, 11,826 total" / "List, 60 rows"), then the key / watermark / compared pickers fed
-  by the preview columns (reuse the SQL tab's pickers, dropdowns never free text). Mapping,
-  Schedule, Review & Activate and Runs tabs are the existing components untouched.
-- **AC-08-20 [FE]** States: no open connection ("Add an Open REST API connection in
+- **AC-08-18 [FE]** `AutocountSourceImpl` gains `'autocount_http'`; `AC_HTTP_ENTITY_TYPES`
+  (six) is exported; `entitiesForSourceKind('http') == AC_HTTP_ENTITY_TYPES`. The source
+  choice moves to the task's Source tab (AC-08-19): the `change-source` action and
+  `entity-source-dialog.tsx` are REMOVED (one place). "Add entity" creates the task with the
+  company's default (`db` company -> Database, `http` company -> API, `api` company -> API)
+  and opens the Source tab. `AC_SOURCE_IMPL_OPTIONS` is deleted with the dialog; the impl is
+  derived: Database -> `sql_db`; API + no-auth connection -> `autocount_http`; API +
+  basic-auth connection -> `autocount_read` (offered only for `AC_API_CAPABLE_ENTITY_TYPES`,
+  other entities show the picker option disabled with the reason "Basic-auth API supports
+  GRN, supplier and customer only").
+- **AC-08-19 [FE]** The task editor's first tab is renamed **Source** (`AcTaskTab` value
+  `query` kept for the route; label changes). It opens with a two-segment "API" | "Database"
+  toggle (the shell's `ToggleGroup`). **Database** renders today's SQL query editor unchanged
+  (connection locked on a DB company). **API** renders: connection `SearchSelect` listing the
+  tenant's `autocount` connections with an auth badge per option (from AC-08-15, which now
+  returns both auths; on an `http`/`api` company locked to the company's own connection via
+  `lockedConnection`), `path` text input (preset-filled, editable, monospace; read-only vendor
+  path for a basic-auth connection), a read-only "Derived from distinct values of" chip list
+  when `distinctOf` is set, a **Test** `DeferredActionButton` -> preview grid (reuse
+  `SqlPreviewGrid`) with the envelope badge ("Paged · 11,826 total · 12 pages of 1000 - a run
+  walks every page" / "List · 60 rows · one request"), then the key / watermark / compared
+  pickers fed by the preview columns (the SQL tab's pickers extracted into one shared
+  component, dropdowns never free text). Toggling API <-> Database on a saved task shows the
+  dirty guard and, on save, AC-08-28 applies (status back to draft). Mapping, Schedule,
+  Review & Activate and Runs tabs are the existing components untouched.
+- **AC-08-20 [FE]** States: no API connection ("Add an AutoCount API connection in
   Settings -> Integrations" with link), preview loading (skeleton), preview error (422 message
   inline on `path`), preview success, unsaved-changes dirty guard (shell AlertDialog). Save is
   disabled until a preview succeeded after the last `path`/`connectionId` change (same rule as
   the SQL tab's "Test a query first").
-- **AC-08-21 [E2E]** On the Mocha company from AC-08-11: Add entity "Product" -> Endpoint tab
-  shows `/itembypage` preset -> Test -> "Paged, N total", key `ItemCode`, watermark
-  `LastModified` pre-picked -> Save -> Mapping tab shows the seeded preset rows -> Schedule
+- **AC-08-21 [E2E]** On the Mocha company from AC-08-11: Add entity "Product" -> Source tab
+  opens on API with the company's connection locked, `/itembypage` preset -> Test -> "Paged ·
+  N total · 12 pages of 1000", key `ItemCode`, watermark `LastModified` pre-picked -> Save -> Mapping tab shows the seeded preset rows -> Schedule
   tab -> Review & Activate. Repeat for "Brand" (`/ItemBrand`, list envelope) and "Unit of
   measure" (derived chip). 375 + 1280, evidence `08-evidence/http-task/`.
 
@@ -251,10 +266,11 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
 ## Group F - end to end, live, docs (`[E2E]` / `[T]`)
 
 - **AC-08-36 [E2E]** Sorento company (DB company, existing SQL SO/PO/SPO tasks untouched):
-  Add entity "Product category" -> source dialog offers "Database" and "Open REST API" ->
-  pick Open REST API -> Endpoint tab connection picker lists the Sorento open connection
-  (`.../api/db1`) -> Test -> Save -> Activate -> Run now -> Runs tab shows requests = 1, rows
-  ~60, added N -> Review shows staged records with refs `AED_SORENTO:<ItemGroup>`. Then the
+  Add entity "Product category" -> Source tab opens on Database -> toggle API -> connection
+  picker lists the Sorento no-auth connection (`.../api/db1`, badge "No auth") -> Test ->
+  Save -> Activate -> Run now -> Runs tab shows requests = 1, rows ~60, added N. Then Add
+  entity "Product" the same way -> Test shows "12 pages of 1000" -> Run now -> Runs tab shows
+  requests = 12, rows scanned 11,826 -> Review shows staged records with refs `AED_SORENTO:<ItemGroup>`. Then the
   SQL PO task's Runs tab still shows its own last run unchanged. 375 + 1280, evidence
   `08-evidence/sorento-mixed/`.
 - **AC-08-37 [T]** Live replay on the lane DB against `https://hapi.sorento.cc.cd/api/db2`

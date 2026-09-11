@@ -23,18 +23,23 @@ The seam already exists: `ac_entity_config.source_impl` selects the fetch implem
 ENTITY (`sources.py` D6), the SQL source proved the hash / reconcile / schedule machinery is
 source-agnostic, and BL-SS-081 ("attach a second connection to a company") predicted this
 plan. What is new is the HTTP page-walking source, the open auth mode, the open-company
-onboarding path, the `brand` entity, and the Endpoint tab.
+onboarding path, the `brand` entity, and the Source tab (API | Database).
 
 ## 2. Design
 
-### 2.1 One provider, two auth modes (grill Q1, D1)
+### 2.1 Two source kinds, API or Database; API has an auth (grill Q1, review R2, D1)
 
-`AutoCountProvider.fields()` gains `authMode` (`select`: `vendor` | `none`, default `vendor`).
-The three credential fields carry `showWhen: {field: "authMode", values: ["vendor"]}`. The
+The operator's vocabulary (plan review 2026-09-11): a source is **API** or **Database**. An
+API connection is the `autocount` provider; its **Auth** is `basic` (AppId + user + password,
+today's fields, the vendor login grammar) or `none` (base URL only, the hapi wrapper). The
+fetch grammar follows the connection's auth, never a separate operator choice.
+
+`AutoCountProvider.fields()` gains `auth` (`select`: `basic` | `none`, default `basic`).
+The three credential fields carry `showWhen: {field: "auth", values: ["basic"]}`. The
 core connection form gains generic `showWhen` support next to `defaultsFrom`
 (`connection-schema.ts` / `connection-form-fields.tsx`): hidden fields are dropped from the
 required set and from the submitted config. `provider.py` exposes `auth_mode(config) -> str`
-(absent = `vendor`) and `is_open_connection(conn)`; `test()` branches on it (AC-08-02).
+(absent = `basic`) and `is_open_connection(conn)`; `test()` branches on it (AC-08-02).
 `client_from_connection` is untouched (vendor only); a new `http_client.py` builds the open
 transport.
 
@@ -118,24 +123,32 @@ unchanged (product already tolerates `retryable`; the brand row itself has no de
 
 ### 2.8 Frontend
 
+Review R2 rulings: (a) the source choice lives on the task's **Source** tab as an
+API | Database toggle, one place - the `change-source` action and `entity-source-dialog.tsx`
+are removed, "Add entity" seeds the company default and opens the tab; (b) the impl is
+DERIVED (Database -> `sql_db`; API + no-auth -> `autocount_http`; API + basic-auth ->
+`autocount_read`, GRN / supplier / customer only), never picked by name; (c) the page walk
+is explicit in the Test badge ("12 pages of 1000 - a run walks every page") and in the Runs
+tab request count.
+
 - `types/autocount.ts`: `AutocountSourceImpl` += `'autocount_http'`, `AutocountSourceKind`
   += `'http'`, `AutocountHttpSourceConfig`, `HttpPreview` types; service trio gains
   `listHttpConnections`, `previewHttp`; mock fixtures: an open connection, an open company
   (`MOCHA`), a paged preview (11,826 total) and a list preview, a 422 path error.
-- `autocount-meta.ts`: `AC_SOURCE_IMPL_OPTIONS` += Open REST API; `AC_HTTP_ENTITY_TYPES`;
+- `autocount-meta.ts`: `AC_SOURCE_IMPL_OPTIONS` removed; `AC_HTTP_ENTITY_TYPES`;
   `entitiesForSourceKind('http')`; `sourceKindLabel('http')`.
-- `connect-company-view.tsx`: third `ToggleGroupItem` "Open REST API" (existing primitive);
-  `useAutocountSourceConnections('http')` filters `provider === 'autocount' && config.authMode
-  === 'none'` minus bound ids; "Reference prefix" field (plain `Input` from the form shell)
-  with the derived default + helper text.
-- `entity-source-dialog.tsx` / `add-entity-control.tsx`: options by entity set; locked single
-  option on an open company.
-- `[entityType]/components/endpoint-tab.tsx` (new, in the `query` tab slot when `sourceImpl
-  === 'autocount_http'`): open-connection `SearchSelect` (or `lockedConnection`), `path`
-  input, derived chips, Test as `DeferredActionButton`, `SqlPreviewGrid` reuse with an
-  envelope `StatusBadge`, then the SAME key / watermark / compared pickers component the SQL
-  tab uses (extract `ColumnPickers` from `query-tab.tsx` if it is not already a component; no
-  second copy). `task-editor-view.tsx` picks the tab by `sourceImpl`.
+- `connect-company-view.tsx`: toggle stays API | Database; the API picker lists every
+  `autocount` connection with an auth badge; a No-auth pick reveals the "Reference prefix"
+  field (plain `Input` from the form shell) with the derived default + helper text.
+- `entity-source-dialog.tsx` deleted; `add-entity-control.tsx` seeds the company default and
+  routes to the Source tab; `AC_SOURCE_IMPL_OPTIONS` deleted.
+- `[entityType]/components/source-tab.tsx` (renamed from `query-tab.tsx`; route value
+  `query` kept): API | Database `ToggleGroup`; Database branch = today's SQL editor; API
+  branch = connection `SearchSelect` with auth badge (or `lockedConnection`), `path` input,
+  derived chips, Test as `DeferredActionButton`, `SqlPreviewGrid` reuse with the envelope +
+  page-count badge, then the SAME key / watermark / compared pickers component (extract
+  `ColumnPickers` from the SQL branch; no second copy). `task-editor-view.tsx` derives
+  `sourceImpl` from toggle + connection auth on save.
 - No new primitives, no motion beyond the shell's; `design-language.md` roster applies.
 
 ### 2.9 Sorento contract 2.3 (deploy order) - Appendix A
@@ -147,14 +160,14 @@ back to the logging sink by the contract check.
 ### 2.10 Security notes
 
 The wrapper is public and unauthenticated (4,224 debtors with phones and credit limits). Owner
-ruling: the API owner will add auth later. Our side: `authMode` select makes adding an API-key
+ruling: the API owner will add auth later. Our side: the `auth` select makes adding an API-key
 header a field change (`headerName` / `headerValue` secret) not a schema change; `showWhen`
 already hides it. Base-URL validation is the provider's existing rule; the ESB only ever GETs.
 
 ## 3. Files
 
 Backend (`service_backend/modules/autocount/`):
-`provider.py` (authMode, `auth_mode`, open test), `http_client.py`, `http_source/{__init__,
+`provider.py` (`auth` select, `auth_mode`, no-auth test), `http_client.py`, `http_source/{__init__,
 source,client,envelope,errors,preview}.py`, `models.py` (`SOURCE_IMPL_AUTOCOUNT_HTTP`),
 `canonical/masters.py` (brand), `mapping.py` (`ENTITY_PROFILES` brand), `presets.py`
 (`HTTP_PRESETS`), `services/company_service.py` (`source_kind` http, `create_from_open_
@@ -181,8 +194,8 @@ table, preset table, `pageSize` clamp gotcha), `integrations-email.md` (`showWhe
 | Slice | Scope | UAC |
 |---|---|---|
 | S0 | Lane + docs commit; Appendix A sent to the Sorento peer | AC-08-34 (send) |
-| S1 FE mock | Types, mock service, meta, connect form (http segment + prefix), source dialog, Endpoint tab, every state; agent-browser 375/1280 against the mock | AC-08-09/10/18/19/20 (mock) |
-| S2 BE provider + company | authMode + showWhen (core form), open test, `create_from_open_connection`, `source_kind` http, guards, router `refPrefix` | AC-08-01..08 |
+| S1 FE mock | Types, mock service, meta, connect form (auth-aware picker + prefix), Source tab (API / Database toggle, connection, path, page-walk badge), dialog removal, every state; agent-browser 375/1280 against the mock | AC-08-09/10/18/19/20 (mock) |
+| S2 BE provider + company | `auth` select + showWhen (core form), no-auth test, `create_from_open_connection`, `source_kind` http, guards, router `refPrefix` | AC-08-01..08 |
 | S3 BE source + task | `http_source/`, validate, preview router, presets, dispatch, scheduler | AC-08-12..17, 22..30 |
 | S4 BE brand | canonical, profile, sink path, contract gate, 429 test | AC-08-31..33, 35 |
 | S5 wire + E2E | swap mock for real, prod build, recorded runs, live replay on db2 with the logging sink, failure + parity replays, report, docs | AC-08-11, 21, 36..40 |
@@ -226,7 +239,7 @@ S2..S4 combined and again at merge gate; codex second opinion on the source pack
 
 | # | Decision | Why |
 |---|---|---|
-| D1 | One `autocount` provider, `authMode` select (`vendor` / `none`) | Owner: one provider; open API needs no login |
+| D1 | Two source kinds API / Database; API connection has `auth` = `basic` / `none` on the one `autocount` provider | Owner: "they are API; we support API / DB; Basic auth or No auth" |
 | D2 | Base URL includes the company segment; no company-key field | Owner: "usually people put v1/v2 there", two connections |
 | D3 | No company schema change; `connection_id` = primary; HTTP tasks carry their own `connectionId` | Per-entity choice (owner), plan-22 seam already task-level |
 | D4 | Open company `database_name` = operator-typed reference prefix | Mocha has no DB; every ref needs a prefix (Sorento BL-056) |
@@ -238,6 +251,9 @@ S2..S4 combined and again at merge gate; codex second opinion on the source pack
 | D10 | `brand` canonical + Sorento `brands` ingest (contract 2.3), contract-gated | Owner: Sorento needs brand ingestion |
 | D11 | `showWhen` added to the core connection form | Conditional credentials; generic, tiny, mirrors `NodeField.show_when` |
 | D12 | Lane s37 :8007/:3007 | s36 held by plan 07 |
+| D13 | Source choice = the task's Source tab (API / Database toggle), one place; change-source dialog removed; impl derived from toggle + connection auth | Review R2: "let me choose API / DB here" |
+| D14 | Page walk explicit: Test badge names pages, Runs tab counts requests | Review R2: "iterate through the pages" |
+| D15 | Brand name = code; prefix immutable at create; ESB merges when reviewed, brand tasks log-only until Sorento 2.3 | Review R2 confirm forms |
 
 ## Appendix A - Sorento contract 2.3 brief (for the `autocount` peer session)
 
