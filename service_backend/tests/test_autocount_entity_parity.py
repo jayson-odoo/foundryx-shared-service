@@ -69,3 +69,45 @@ def test_ac_sql_db_entity_types_is_every_extractable_entity_minus_grn():
     assert "shipping_order" in ts_sql_db, (
         "AC_SQL_DB_ENTITY_TYPES is missing shipping_order (AC-02-10)"
     )
+
+
+# ── sprint-5/08 S3 extension (AC-08-17) ───────────────────────────────────────
+#
+# RED before the coder: ``modules.autocount.presets`` carries no
+# ``HTTP_PRESETS`` registry yet (read 2026-09-12, only ``DOCUMENT_PRESETS``
+# exists) - this import fails, failing every test below it in this block at
+# collection.
+
+
+def test_http_presets_parity_backend_and_frontend():
+    from modules.autocount.presets import HTTP_PRESETS
+
+    try:
+        from modules.autocount.presets import HTTP_ENTITY_TYPES
+    except ImportError:  # pragma: no cover - tolerate either export shape
+        HTTP_ENTITY_TYPES = set(HTTP_PRESETS)
+
+    src = TS_PATH.read_text()
+    ts_http = _string_array(src, "AC_HTTP_ENTITY_TYPES")
+
+    assert set(HTTP_PRESETS.keys()) == set(HTTP_ENTITY_TYPES)
+    assert set(HTTP_PRESETS.keys()) == ts_http, (
+        f"backend HTTP_PRESETS {sorted(HTTP_PRESETS)} != frontend "
+        f"AC_HTTP_ENTITY_TYPES {sorted(ts_http)}"
+    )
+    assert ts_http == {
+        "product", "customer", "warehouse", "product_category", "brand", "unit_of_measure",
+    }
+
+
+def test_http_preset_canonical_fields_exist_on_their_entity_class():
+    from modules.autocount.presets import HTTP_PRESETS
+
+    for entity_type, preset in HTTP_PRESETS.items():
+        profile = ENTITY_PROFILES[entity_type]
+        declared = set(profile.record_model.model_fields)
+        for row in preset.rows:
+            assert row.canonical_field in declared, (
+                f"{entity_type} preset row maps to '{row.canonical_field}', "
+                f"not a field on {profile.record_model.__name__}"
+            )
