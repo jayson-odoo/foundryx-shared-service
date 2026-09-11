@@ -355,6 +355,16 @@ export function SourceTab({
     [config.comparedFields, onChange],
   );
 
+  // An OPEN (no-auth) company has no database connection at all - offering
+  // "Database" as a toggle segment would be a guaranteed dead end
+  // (foolproof-UI: only valid options). A vendor/basic-auth `api` company
+  // keeps both (it may still carry `sql_db` tasks, AC-08-13); a `db`
+  // company (`lockedApiConnection` unset here) keeps both too.
+  const sourceKindOptions =
+    lockedApiConnection?.auth === 'none'
+      ? SOURCE_KIND_OPTIONS.filter((option) => option.value !== 'db')
+      : SOURCE_KIND_OPTIONS;
+
   return (
     <div className="flex flex-col gap-4">
       <ToggleGroup
@@ -369,7 +379,7 @@ export function SourceTab({
         aria-label="Source"
         className="w-fit max-w-full flex-wrap"
       >
-        {SOURCE_KIND_OPTIONS.map((option) => (
+        {sourceKindOptions.map((option) => (
           <ToggleGroupItem key={option.value} value={option.value} className={SEGMENT_CLASS}>
             {option.label}
           </ToggleGroupItem>

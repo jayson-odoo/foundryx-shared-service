@@ -421,8 +421,11 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     // connection, or path) keeps its `activatedAt` stamp, so a draft task
     // that HAS one was active before this save - never a fresh, never-run task.
     const revertedBySourceChange = status === 'draft' && Boolean(task.activatedAt);
-    const sourceBadgeLabel =
-      (task.sourceImpl ?? 'sql_db') === 'autocount_http' ? 'Open API' : 'Database';
+    // AC-08-18: derived from the WORKING Source-tab state (`derivedImpl`),
+    // never the saved task alone - a never-configured task's `sourceImpl` is
+    // absent, so reading `task.sourceImpl` straight would badge "Database"
+    // even on an `http` company's freshly-opened, never-saved editor.
+    const sourceBadgeLabel = derivedImpl === 'autocount_http' ? 'Open API' : 'Database';
 
     // The lifecycle in the form "…" so it is reachable from every tab; the
     // Review & Activate tab carries the same buttons beside the preview.
@@ -675,6 +678,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     columnTypes,
     companyId,
     config,
+    derivedImpl,
     detail,
     dirty,
     draft,
