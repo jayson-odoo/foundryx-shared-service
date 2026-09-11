@@ -2113,7 +2113,9 @@ class EtlService:
         """
         _company, config = self._task_config(tenant_id, company_id, entity_type)
         if config.source_impl not in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP):
-            raise EtlStateError("Re-push applies to database or open-API tasks only.")
+            raise EtlStateError(
+                "Re-push applies to a database task or an open-API task only."
+            )
         if config.etl_status == ETL_STATUS_DRAFT:
             raise EtlStateError(
                 "Activate the task first - a draft has nothing to re-push."

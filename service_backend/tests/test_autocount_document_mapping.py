@@ -833,8 +833,9 @@ def test_shipping_order_entity():
     assert payload["source_ref"] == "x"
     assert len(payload["lines"]) == 1
 
-    # DB company add-entity set: ten entities (nine today + shipping_order).
-    assert len(set(ENTITY_PROFILES) - {"goods_received_note"}) == 10
+    # DB company add-entity set: eleven entities (nine + shipping_order +
+    # brand, sprint-5/08 AC-08-31 - "a DB task can feed it too").
+    assert len(set(ENTITY_PROFILES) - {"goods_received_note"}) == 11
 
 
 def test_filter_formula_skips_headers(session_factory):
