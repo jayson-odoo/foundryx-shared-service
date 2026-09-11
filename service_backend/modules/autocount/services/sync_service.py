@@ -48,6 +48,7 @@ from ..canonical.documents import (
 )
 from ..canonical.grn import CanonicalGrn, ENTITY_GOODS_RECEIVED_NOTE
 from ..canonical.masters import (
+    ENTITY_BRAND,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
@@ -55,6 +56,7 @@ from ..canonical.masters import (
     ENTITY_SUPPLIER,
     ENTITY_UNIT_OF_MEASURE,
     ENTITY_WAREHOUSE,
+    CanonicalBrand,
     CanonicalCustomer,
     CanonicalProduct,
     CanonicalProductCategory,
@@ -107,6 +109,7 @@ CANONICAL_MODELS = {
     ENTITY_WAREHOUSE: CanonicalWarehouse,
     ENTITY_PRODUCT: CanonicalProduct,
     ENTITY_SALES_AGENT: CanonicalSalesAgent,
+    ENTITY_BRAND: CanonicalBrand,
     ENTITY_SALES_ORDER: CanonicalSalesOrder,
     ENTITY_PURCHASE_ORDER: CanonicalPurchaseOrder,
     ENTITY_SHIPPING_ORDER: CanonicalShippingOrder,

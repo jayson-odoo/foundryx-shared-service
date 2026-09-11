@@ -55,6 +55,7 @@ from .canonical.documents import (
     ENTITY_SHIPPING_ORDER,
 )
 from .canonical.masters import (
+    ENTITY_BRAND,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
@@ -104,6 +105,11 @@ _ENTITY_PATH: Dict[str, str] = {
     # sprint-5/02 S3 (addendum section 3) - a LINE-SET entity on Sorento's
     # side (`spo_allocations`, no header table) but a normal ingest path.
     ENTITY_SHIPPING_ORDER: "shipping_orders",
+    # sprint-5/08 (AC-08-32) - contract 2.3 (Appendix A). Present in
+    # ``_ENTITY_PATH`` unconditionally; ``sorento_supports_entity`` is what
+    # actually gates it behind the consumer's advertised contract, since a
+    # 2.2 consumer has no ``/ingest/brands`` route yet.
+    ENTITY_BRAND: "brands",
 }
 
 # Outcomes Sorento may report per record. `created`/`updated` = delivered;
@@ -143,7 +149,12 @@ _DEPENDENT_ENTITIES = {
 }
 
 
-def sorento_supports_entity(entity_type: str) -> bool:
+def sorento_supports_entity(
+    entity_type: str,
+    *,
+    contract_version: Optional[float] = None,
+    contract_entities: Optional[Sequence[str]] = None,
+) -> bool:
     """Whether Sorento's ingest API accepts this canonical entity yet.
 
     Sorento ingests masters (suppliers, customers, product categories, units
@@ -154,8 +165,23 @@ def sorento_supports_entity(entity_type: str) -> bool:
     logging sink for it (stages + logs, delivering nothing) rather than
     erroring on a missing path - *deliverability*, an expected not-yet-built
     state, not a misconfiguration.
+
+    ``brand`` (sprint-5/08, AC-08-33) is CONTRACT-GATED on top of the plain
+    membership check every other entity gets: it needs consumer contract
+    ``>= 2.3`` AND ``"brands"`` advertised in ``GET /external/contract``'s
+    ``entities`` list. ``contract_version``/``contract_entities`` unknown
+    (the plain 1-arg call every OTHER caller still makes) reads as "not yet
+    provable" - the SAME logging-sink fallback a 2.2 consumer gets, never a
+    422. Every other entity's signature/behaviour is BYTE-IDENTICAL to
+    before this kwarg pair existed.
     """
-    return entity_type in _ENTITY_PATH
+    if entity_type not in _ENTITY_PATH:
+        return False
+    if entity_type != ENTITY_BRAND:
+        return True
+    if contract_version is None or contract_entities is None:
+        return False
+    return contract_version >= 2.3 and "brands" in contract_entities
 
 
 def sorento_supported_entities_label() -> str:

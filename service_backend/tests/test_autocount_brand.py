@@ -132,7 +132,7 @@ def test_sink_429_mid_batch_sleeps_retry_after_capped_once_and_retries(monkeypat
         if len(attempts) == 1:
             return httpx.Response(429, headers={"Retry-After": "9999"}, json={"message": "slow down"})
         return httpx.Response(
-            200, json={"summary": {"created": 1}, "records": [{"source_ref": "MOCHA:S", "outcome": "created"}]}
+            200, json={"summary": {"created": 1}, "records": [{"source_ref": "MOCHA:SORENTO", "outcome": "created"}]}
         )
 
     sink = SorentoSink(
