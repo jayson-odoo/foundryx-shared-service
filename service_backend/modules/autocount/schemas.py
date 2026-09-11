@@ -38,6 +38,10 @@ class CompanyCreate(ApiModel):
 
     connectionId: str
     name: str = ""
+    # sprint-5/08 (AC-08-06/07) - required, operator-typed, ONLY for an open
+    # (no-auth) API connection; ``None`` for every other connection kind
+    # (a value here on a vendor/SQL connection is a 422 "not applicable").
+    refPrefix: Optional[str] = None
 
 
 class EntityConfigItem(ApiModel):
@@ -143,7 +147,7 @@ class CompanyItem(ApiModel):
     # company is connected (``'api'`` = vendor HTTP API, ``'db'`` = a direct
     # ``sql_database`` connection) and, on the DETAIL only, the prerequisite-
     # master status of each configured document entity.
-    sourceKind: str = "api"
+    sourceKind: Literal["api", "db", "http"] = "api"
     documentPrerequisites: List[DocumentPrerequisiteOut] = []
 
 
@@ -594,6 +598,51 @@ class SqlPreviewResponse(ApiModel):
     durationMs: int
 
 
+# ── open REST API source (sprint-5/08, AC-08-14/15) ───────────────────────────
+
+
+class HttpConnectionItem(ApiModel):
+    """One tenant ``autocount`` connection the Source tab's API picker may
+    pick, badged by its auth mode (AC-08-15)."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    name: str
+    baseUrl: str = Field(default="", validation_alias="base_url")
+    auth: Literal["basic", "none"] = "basic"
+
+
+class HttpPreviewRequest(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    connectionId: str
+    path: str = ""
+    distinctOf: Optional[List[str]] = None
+    # When both are given, the preview also records `resultColumns`/
+    # `lastPreviewAt` on the task (AC-08-14) - exactly as the SQL preview
+    # does, so the Source tab's column pickers see it without a second call.
+    companyId: Optional[str] = None
+    entityType: Optional[str] = None
+
+
+class HttpPreviewColumnOut(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str
+    sample: Optional[str] = None
+
+
+class HttpPreviewResponse(ApiModel):
+    """``POST /autocount/http/preview`` - one page-1 sample (AC-08-14)."""
+
+    envelope: Literal["paged", "list"]
+    totalCount: Optional[int] = None
+    columns: List[HttpPreviewColumnOut] = []
+    rows: List[Dict[str, Any]] = []
+    durationMs: int = 0
+
+
 class EtlSourceConfigIn(ApiModel):
     """The task's ``source_config`` document as the editor sends it (plan 22
     §2.4). Every field is optional on the wire - a draft may be partial; the
@@ -602,6 +651,12 @@ class EtlSourceConfigIn(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
     connectionId: Optional[str] = None
+    # sprint-5/08 (AC-08-13) - which fetch implementation this task saves as.
+    # ``None``/``'sql_db'`` keep the SQL shape below; ``'autocount_http'``
+    # routes to the HTTP shape at the bottom of this schema - ONE envelope,
+    # never a second endpoint. A stray key from the OTHER shape is simply not
+    # copied into the clean config the service persists (dropped, never 422).
+    sourceImpl: Optional[str] = None
     query: str = ""
     lineQuery: Optional[str] = None
     keyColumns: List[str] = []
@@ -624,6 +679,12 @@ class EtlSourceConfigIn(ApiModel):
     reconcileMode: str = "dailyAt"
     reconcileHours: Optional[int] = None
     reconcileAt: Optional[str] = None
+    # ── HTTP (open REST API) shape only (sprint-5/08, AC-08-13) ──────────────
+    path: Optional[str] = None
+    keyFields: List[str] = []
+    watermarkField: Optional[str] = None
+    comparedFields: List[str] = []
+    distinctOf: Optional[List[str]] = None
 
 
 class InitialLoadProgress(ApiModel):
@@ -656,6 +717,8 @@ class EtlTaskResponse(ApiModel):
     entityType: str
     etlStatus: str
     activatedAt: Optional[datetime] = None
+    # sprint-5/08 (AC-08-30) - which fetch implementation this task saves as.
+    sourceImpl: str = "sql_db"
     sourceConfig: Dict[str, Any]
     # The saved query's result columns, from the validation preview every PUT
     # runs - the Mapping tab's source picker (AC-22-09).

@@ -31,9 +31,33 @@ from .client import (
     AutoCountRelayError,
     AutoCountTransportError,
 )
+from .http_client import OpenProbeError, probe_open_connection
 
 PROVIDER_KEY = "autocount"
 CONNECTION_TYPE = "erp"
+
+# The two auth modes an ``autocount`` connection may carry (sprint-5/08,
+# AC-08-01). ``basic`` is the vendor session-auth grammar (AppId/UserId/
+# Password, today's ONLY behaviour); ``none`` is the open REST wrapper -
+# base URL only, no credentials, never a login attempt.
+AUTH_BASIC = "basic"
+AUTH_NONE = "none"
+
+
+def auth_mode(config: Dict[str, Any]) -> str:
+    """``config.auth``, defaulted to ``basic`` for a legacy row that predates
+    this field (AC-08-01) - never ``KeyError``, never a silent ``None``."""
+    value = str((config or {}).get("auth") or "").strip().lower()
+    return value if value in (AUTH_BASIC, AUTH_NONE) else AUTH_BASIC
+
+
+def is_open_connection(conn: Any) -> bool:
+    """Whether a stored ``Connection`` row is an open (no-auth) AutoCount
+    connection - the ``autocount`` provider AND ``auth_mode == 'none'``.
+    Any other provider, or a missing/legacy config, is never open."""
+    if conn is None or getattr(conn, "provider", None) != PROVIDER_KEY:
+        return False
+    return auth_mode(conn.config_json or {}) == AUTH_NONE
 
 
 def client_from_connection(
@@ -77,11 +101,27 @@ class AutoCountProvider:
     def fields(self) -> List[Dict[str, Any]]:
         """Config schema driving the integrations form.
 
-        Deliberately FOUR fields. No AppSecret (does not exist) and no company
-        picker (discovered from the login response) - offering either would be
+        ``auth`` leads (AC-08-01): ``basic`` is the vendor session-auth
+        grammar (AppId/UserId/Password, today's ONLY behaviour before this
+        field existed); ``none`` is the open REST wrapper - base URL only.
+        The three credential fields carry ``showWhen`` so the form hides
+        (and stops requiring) them when ``none`` is picked; ``baseUrl`` is
+        always shown. No AppSecret (does not exist) and no company picker
+        (discovered from the login response) - offering either would be
         asking the operator for something we cannot use.
         """
         return [
+            {
+                "key": "auth",
+                "label": "Auth",
+                "type": "select",
+                "required": True,
+                "default": AUTH_BASIC,
+                "options": [
+                    {"value": AUTH_BASIC, "label": "Basic auth (AppId + user + password)"},
+                    {"value": AUTH_NONE, "label": "No auth"},
+                ],
+            },
             {
                 "key": "baseUrl",
                 "label": "AutoCount API base URL",
@@ -95,6 +135,7 @@ class AutoCountProvider:
                 "type": "password",
                 "required": True,
                 "secret": True,
+                "showWhen": {"field": "auth", "values": [AUTH_BASIC]},
             },
             {
                 "key": "userId",
@@ -102,6 +143,7 @@ class AutoCountProvider:
                 "type": "text",
                 "required": True,
                 "placeholder": "ADMIN",
+                "showWhen": {"field": "auth", "values": [AUTH_BASIC]},
             },
             {
                 "key": "password",
@@ -109,6 +151,7 @@ class AutoCountProvider:
                 "type": "password",
                 "required": True,
                 "secret": True,
+                "showWhen": {"field": "auth", "values": [AUTH_BASIC]},
             },
         ]
 
@@ -117,12 +160,19 @@ class AutoCountProvider:
         config: Dict[str, Any],
         credentials: Dict[str, Any],
         target: Optional[str] = None,
+        *,
+        transport: Optional[Any] = None,
     ) -> TestResult:
-        """Verify the connection by signing in ONCE, and report which step failed.
+        """Verify the connection - branching on ``auth_mode`` (AC-08-02).
 
-        Success echoes the DISCOVERED company so the operator can confirm the
-        AppId selected the company they intended - the AppId is opaque, so this
-        readback is the only way to catch "right credentials, wrong company".
+        ``basic`` signs in ONCE (byte-for-byte the original behaviour) and
+        echoes the DISCOVERED company so the operator can confirm the AppId
+        selected the company they intended - the AppId is opaque, so this
+        readback is the only way to catch "right credentials, wrong
+        company". ``none`` NEVER attempts a login (credentials are not
+        required and are ignored even if present): it GETs ``{baseUrl}/
+        location`` and reports the row count, naming the failing STEP on any
+        error - never the raw response body.
         """
         base_url = str(config.get("baseUrl", "")).strip()
         if not base_url:
@@ -133,7 +183,17 @@ class AutoCountProvider:
                 message="The base URL must start with http:// or https://.",
             )
 
-        client = client_from_connection(config, credentials)
+        if auth_mode(config) == AUTH_NONE:
+            try:
+                rows = probe_open_connection(base_url, transport=transport)
+            except OpenProbeError as exc:
+                return TestResult(ok=False, message=exc.message)
+            return TestResult(
+                ok=True,
+                message=f"Reachable - {len(rows)} row(s) returned from /location.",
+            )
+
+        client = client_from_connection(config, credentials, transport=transport)
         try:
             session = client.login()
         except AutoCountTransportError as exc:

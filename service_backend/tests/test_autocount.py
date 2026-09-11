@@ -121,9 +121,14 @@ def test_provider_registers_as_an_erp_provider(client):
 
 def test_provider_fields_have_no_appsecret_and_no_company(client):
     """Verified live: there is no AppSecret, and the company is DISCOVERED from
-    the login response - offering either field would ask for something unusable."""
+    the login response - offering either field would ask for something unusable.
+
+    sprint-5/08 (AC-08-01): the ``auth`` select now LEADS the field list (it
+    decides whether the three credential fields even show); see
+    ``tests/test_autocount_http_provider.py`` for the ``showWhen`` pin.
+    """
     keys = [f["key"] for f in AutoCountProvider().fields()]
-    assert keys == ["baseUrl", "appId", "userId", "password"]
+    assert keys == ["auth", "baseUrl", "appId", "userId", "password"]
 
     fields = {f["key"]: f for f in AutoCountProvider().fields()}
     assert fields["appId"]["secret"] is True

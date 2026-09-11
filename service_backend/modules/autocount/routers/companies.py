@@ -138,7 +138,10 @@ def create_company(
     service = CompanyService(db)
     try:
         company = service.create(
-            current_user.tenant_id, body.connectionId, name=body.name
+            current_user.tenant_id,
+            body.connectionId,
+            name=body.name,
+            ref_prefix=body.refPrefix,
         )
     except ConnectionValidationError as exc:
         return _field_errors(exc.field_errors, exc.message)
@@ -458,6 +461,7 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         entityType=view.entity_type,
         etlStatus=view.etl_status,
         activatedAt=view.activated_at,
+        sourceImpl=view.source_impl,
         sourceConfig=view.source_config,
         resultColumns=view.result_columns,
         lineResultColumns=view.line_result_columns,
