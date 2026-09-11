@@ -175,7 +175,7 @@ connection`, guards), `services/etl_service.py` (`_validate_http_config`, dispat
 `routers/http.py`, `routers/companies.py` (`refPrefix`), `schemas.py`, `sinks_sorento.py`
 (brands path, contract gate), `bootstrap.py` (register source + router), `scheduler.py`
 (impl filter if any), `manifest.json` (0.10.0, router entry), `permissions/` (none new -
-`autocount.manage` / `autocount.read` reused). Core: `app/integrations/base.py` docstring for
+`autocount.companies.manage` / `autocount.companies.read` reused). Core: `app/integrations/base.py` docstring for
 `showWhen`. Tests: `tests/test_autocount_http_source.py`, `..._http_preview.py`,
 `..._open_company.py`, `..._brand.py`, parity test extension, provider test.
 

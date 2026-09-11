@@ -119,7 +119,7 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   Plan 01's "DB company reads only its own connection" lock (AC-01-09) applies to `sql_db`
   tasks only - an HTTP task on a DB company may reference ANY open connection of the tenant.
 - **AC-08-14 [BE]** `POST /autocount/http/preview {connectionId, path, distinctOf?}` (perm
-  `autocount.manage`, same as `/autocount/sql/preview`): fetches page 1 with `pageSize=50`
+  `autocount.companies.manage`, same as `/autocount/sql/preview`): fetches page 1 with `pageSize=50`
   (or the bare array, capped to the first 50 rows), returns `{envelope: "paged"|"list",
   totalCount?, columns[{name, sample}], rows[<=50], durationMs}`. Errors map to 422 with the
   step named (`connectionId` for a bad connection, `path` for 404 / non-JSON / timeout). With
@@ -127,7 +127,7 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   `last_preview_at` / `result_columns` on the task exactly as the SQL preview does when
   `companyId` + `entityType` are passed.
 - **AC-08-15 [BE]** `GET /autocount/http/connections` lists the tenant's `autocount`
-  connections (`{id, name, baseUrl, auth: "basic"|"none"}`), tenant-scoped, `autocount.read`,
+  connections (`{id, name, baseUrl, auth: "basic"|"none"}`), tenant-scoped, `autocount.companies.read`,
   so the Source tab can badge each option and derive the impl.
 - **AC-08-16 [BE]** First clean save of an HTTP task with an empty mapping seeds the entity's
   **HTTP preset** (`presets.HTTP_PRESETS[entity_type]`: `path`, `keyFields`,
@@ -238,7 +238,8 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   two jobs.
 - **AC-08-30 [BE]** Router / schema: `EtlTaskView.sourceImpl` and `source_config` round-trip
   the HTTP shape; `update_task` for an HTTP task never calls the SQL runtime (no engine is
-  created; asserted with a spy). `repush_task` (sprint-5/07) works unchanged for HTTP tasks.
+  created; asserted with a spy). `repush_task` (sprint-5/07) works for HTTP tasks (its
+  current "database tasks only" guard widens to `sql_db` | `autocount_http`).
 
 ## Group E - brand entity and Sorento push (`[BE]`)
 
