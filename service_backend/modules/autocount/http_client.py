@@ -31,6 +31,25 @@ class OpenProbeError(Exception):
         self.message = message
 
 
+def get_http_transport() -> Optional[httpx.Client]:
+    """FastAPI dependency seam (mirrors ``get_db``) for every router handler
+    that ends up making a live open-API call (open-company create, the
+    ``/autocount/http/preview`` route).
+
+    Production never overrides this - it returns ``None``, meaning "build a
+    real ``httpx.Client``". Tests override it via
+    ``app.dependency_overrides[get_http_transport] = lambda: stub_client``
+    so a ROUTE-level test (``client.post(...)``) can prove the real
+    Router -> Service -> Service dispatch without EVER reaching
+    ``hapi.sorento.cc.cd`` (sprint-5/08 review round 1, B4 - a bare
+    ``monkeypatch`` of the transport-building function would work too, but
+    this is the SAME seam every service method already accepts
+    (``transport=``), just exposed to FastAPI's own DI so a router test
+    does not need to reach into service internals).
+    """
+    return None
+
+
 def probe_open_connection(
     base_url: str, *, transport: Optional[httpx.Client] = None
 ) -> List[Any]:
@@ -44,7 +63,11 @@ def probe_open_connection(
     """
     url = f"{(base_url or '').rstrip('/')}/location"
     client = transport if transport is not None else httpx.Client(
-        timeout=OPEN_PROBE_TIMEOUT_SECONDS
+        timeout=OPEN_PROBE_TIMEOUT_SECONDS,
+        # S5 (sprint-5/08 review round 1) - never silently follow a redirect
+        # to a host the operator never typed (SSRF-adjacent; the base URL is
+        # the ONLY endpoint this probe is meant to reach).
+        follow_redirects=False,
     )
     owns_client = transport is None
     try:

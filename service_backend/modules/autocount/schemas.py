@@ -456,13 +456,22 @@ class MappingPresetOut(ApiModel):
 
     entityType: str
     label: str
-    headerQuery: str
+    # sprint-5/08 review round 1 (S7) - was a REQUIRED field, which made an
+    # HTTP-source preset (no query text at all) impossible to return from
+    # this same endpoint. Defaulted rather than split into a second route:
+    # a document preset still always sends a real string.
+    headerQuery: str = ""
     lineQuery: Optional[str] = None
     keyColumns: List[str] = []
     watermarkColumn: Optional[str] = None
     docDateColumn: Optional[str] = None
     fromDate: Optional[str] = None
     filterFormula: Optional[str] = None
+    # ── HTTP-source preset fields only (S7) - null for a document preset ────
+    path: Optional[str] = None
+    keyFields: List[str] = []
+    watermarkField: Optional[str] = None
+    distinctOf: Optional[List[str]] = None
 
 
 class SyncRunItem(ApiModel):
@@ -703,6 +712,17 @@ class EtlTaskUpdate(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
     sourceConfig: EtlSourceConfigIn
+    # sprint-5/08 review round 1 (B1) - the FE's real service posts
+    # ``sourceImpl`` as a TOP-LEVEL sibling of ``sourceConfig`` (see
+    # ``autocount-service.real.ts``'s ``updateEtlTask``), never nested inside
+    # it. Without this field Pydantic silently drops the incoming key (this
+    # schema has no ``model_config = ConfigDict(extra="forbid")``, so it is
+    # not even a 422 - the save just falls through to the SQL branch of
+    # ``EtlService.update_task`` and 422s on a missing ``query``). Kept
+    # OPTIONAL and merged with ``EtlSourceConfigIn.sourceImpl`` at the router
+    # (a nested value, if a caller ever sends one, still wins nothing over an
+    # explicit top-level one - the router prefers the top-level field).
+    sourceImpl: Optional[str] = None
 
 
 class EtlTaskResponse(ApiModel):

@@ -108,7 +108,7 @@ from .company_service import (
 )
 from ..presets import seed_document_mapping, seed_http_preset_mapping
 from ..mapping import SCOPE_HEADER, SCOPE_LINE
-from ..http_source.preview import HttpPreviewError, run_http_preview
+from ..http_source.preview import HttpPreviewError, run_http_preview, validate_http_path
 from ..provider import AUTH_NONE, PROVIDER_KEY, auth_mode
 from ..sql_source.hashing import compared_columns_for
 
@@ -788,6 +788,7 @@ class EtlService:
         distinct_of: Optional[List[str]] = None,
         company_id: Optional[str] = None,
         entity_type: Optional[str] = None,
+        transport: Any = None,
     ):
         """One page-1 sample against an OPEN connection (AC-08-14).
 
@@ -796,6 +797,13 @@ class EtlService:
         404 (the id may be perfectly real, just not usable here). When both
         ``company_id``/``entity_type`` are given, a clean result also stamps
         ``result_columns``/``last_preview_at`` on the task, tenant-scoped.
+
+        ``transport``, when given, is a FULL ``httpx.Client`` used AS-IS
+        (house convention - see ``probe_open_connection``) - production
+        never passes one (a real network call); the router injects a stub
+        ONLY via the ``get_http_transport`` dependency override, so a test
+        exercising the real ``POST /autocount/http/preview`` route never
+        reaches ``hapi.sorento.cc.cd`` (sprint-5/08 review round 1, B4).
         """
         conn = self.connections.get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
         if conn is None or auth_mode(conn.config_json or {}) != AUTH_NONE:
@@ -803,8 +811,13 @@ class EtlService:
                 {"connectionId": "Choose an open (no-auth) AutoCount API connection."}
             )
         base_url = str((conn.config_json or {}).get("baseUrl") or "").strip()
+        path_error = validate_http_path(path)
+        if path_error:
+            raise EtlValidationError({"path": path_error})
         try:
-            result = run_http_preview(base_url, path, distinct_of=distinct_of)
+            result = run_http_preview(
+                base_url, path, distinct_of=distinct_of, transport=transport
+            )
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc
 
@@ -1011,14 +1024,14 @@ class EtlService:
         path = str(raw.get("path") or "").strip()
         if not path:
             errors["path"] = "Enter the endpoint path."
-        elif not path.startswith("/"):
-            errors["path"] = "The path must start with '/'."
-        elif ".." in path:
-            errors["path"] = "The path may not contain '..'."
-        elif "?" in path:
-            errors["path"] = "The path may not include a query string - page params are ours."
-        elif len(path) > 200:
-            errors["path"] = "The path is too long (200 characters max)."
+        else:
+            # S4 (sprint-5/08 review round 1) - the SAME rule set the
+            # preview route now applies (``validate_http_path``), so a path
+            # can never pass save-time validation and then fail differently
+            # (or not at all) against the preview endpoint.
+            path_error = validate_http_path(path)
+            if path_error:
+                errors["path"] = path_error
 
         key_fields = _clean_list(raw.get("keyFields"))
         distinct_of = _clean_list(raw.get("distinctOf")) or None
@@ -1347,6 +1360,10 @@ class EtlService:
             if config is not None and isinstance(config.source_config, dict)
             else None
         )
+        # sprint-5/08 review round 1 (B2) - captured BEFORE the branch below
+        # may create a fresh row (whose ``source_impl`` starts at
+        # ``sql_db`` and has nothing to demote from).
+        previous_source_impl = config.source_impl if config is not None else None
         if config is None:
             # A row that exists ONLY for the DB path is born on the DB source.
             # Existing rows (API-path entities) keep their source_impl - the
@@ -1364,6 +1381,23 @@ class EtlService:
                 )
             )
         config.source_config = clean
+        #     !!  AC-08-28: sourceImpl CHANGE ON AN ACTIVE TASK DEMOTES IT TO
+        #         DRAFT - EVERY DIRECTION, NOT JUST HTTP -> SQL (B2, review
+        #         round 1: this branch used to never write ``source_impl`` at
+        #         all, so an HTTP task saved through the SQL editor kept
+        #         reporting ``autocount_http`` while carrying a SQL-shaped
+        #         ``source_config`` - and an ACTIVE HTTP task saved this way
+        #         never demoted).  !!
+        # Hashes are KEPT (mirrors ``_update_http_task``) - the first
+        # reconcile after a switch reports updates for changed hashes, never
+        # a phantom mass-delete, as long as the key shape is unchanged.
+        if (
+            previous_source_impl is not None
+            and previous_source_impl != SOURCE_IMPL_SQL_DB
+            and config.etl_status == ETL_STATUS_ACTIVE
+        ):
+            config.etl_status = ETL_STATUS_DRAFT
+        config.source_impl = SOURCE_IMPL_SQL_DB
         #     !!  A NARROWED POPULATION MUST RE-BASELINE, NEVER DELETE.  !!
         # (F1, sprint-5/02 review round - BLOCKER.) A document task's
         # `ac_row_hash` rows are a diff baseline for the set `query` +
@@ -1814,23 +1848,53 @@ class EtlService:
         from ..sources import SourceContext, Watermark
         from ..sql_source.source import PageCursor, SqlDbSource
 
-        source = SqlDbSource(
-            SourceContext(
-                db=self.db,
-                tenant_id=tenant_id,
-                company=company,
-                entity_config=config,
-                company_service=self.companies,
-            ),
-            entity_type=entity_type,
-            # A dry run must leave no trace: the FIRST real run has to report
-            # its rows as adds, which it cannot do if the preview already
-            # recorded their hashes.
-            persist_hashes=False,
-        )
+        #     !!  B3 (sprint-5/08 review round 1): DISPATCH ON source_impl -
+        #         NEVER HARDCODE SqlDbSource.  !!
+        # Before this fix, Review & Activate's consumer dry-run always built
+        # a ``SqlDbSource`` regardless of the task's actual implementation,
+        # so an ``autocount_http`` task's "Preview" either crashed (no
+        # ``query``/``keyColumns``) or silently mapped nothing - and
+        # ``activate_task`` had to carve out a special bypass of the
+        # "run a preview first" gate for HTTP tasks as a result (removed
+        # below, now that this dry-run genuinely covers them too).
+        is_http = config.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP
+        if is_http:
+            from ..http_source.source import HttpApiSource
+
+            source = HttpApiSource(
+                SourceContext(
+                    db=self.db,
+                    tenant_id=tenant_id,
+                    company=company,
+                    entity_config=config,
+                    company_service=self.companies,
+                ),
+                entity_type=entity_type,
+                mode=RUN_MODE_MANUAL,
+                # A dry run must leave no trace (same contract as the SQL
+                # branch below): the FIRST real run has to report its rows
+                # as adds, which it cannot do if the preview already
+                # recorded their hashes.
+                persist_hashes=False,
+            )
+        else:
+            source = SqlDbSource(
+                SourceContext(
+                    db=self.db,
+                    tenant_id=tenant_id,
+                    company=company,
+                    entity_config=config,
+                    company_service=self.companies,
+                ),
+                entity_type=entity_type,
+                # A dry run must leave no trace: the FIRST real run has to report
+                # its rows as adds, which it cannot do if the preview already
+                # recorded their hashes.
+                persist_hashes=False,
+            )
         page_complete: Optional[bool] = None
         try:
-            if source.watermark_column:
+            if not is_http and source.watermark_column:
                 page = source.fetch_page(PageCursor())
                 #     !!  PREVIEW MAPS EVERY CANDIDATE, NOT JUST CHANGED ONES
                 #         (R2-S1, review round 3).  !!
@@ -1847,8 +1911,12 @@ class EtlService:
             else:
                 # ``Watermark()`` = no mark, so this is the INITIAL LOAD -
                 # exactly what the activation gate is meant to show
-                # (AC-22-18). Only reachable for a task with no watermark
-                # column configured at all, which has no page concept.
+                # (AC-22-18). For SQL this is only reachable for a task with
+                # no watermark column at all; an HTTP task ALWAYS takes this
+                # branch - it has no page-limited preview concept, it walks
+                # the whole population every run by design (plan §2.4), so
+                # its dry run does too. ``page_complete`` stays ``None`` for
+                # it (not a partial look - a genuine full walk).
                 result = source.fetch_changes(Watermark())
                 raw_records = result.records
                 current_refs = list(result.current_refs)
@@ -1856,9 +1924,12 @@ class EtlService:
             source.close()
 
         try:
-            profile = flat_profile(
-                entity_type, (config.source_config or {}).get("keyColumns") or []
-            )
+            key_columns = (
+                (config.source_config or {}).get("keyFields")
+                if is_http
+                else (config.source_config or {}).get("keyColumns")
+            ) or []
+            profile = flat_profile(entity_type, key_columns)
         except UnknownEntityProfile as exc:
             # NIT (S2 review): ``ETL_ENTITY_TYPES`` (a task CAN be saved for
             # this entity) is wider than ``mapping.ENTITY_PROFILES`` (mapping
@@ -1873,12 +1944,14 @@ class EtlService:
         # ``ac_field_mapping`` rows now, not a code-generated fixed-column
         # convention. ``build_mapping_rows_for_run`` is the ONE gate here (S5
         # review NIT - shared with ``sync.py``'s real-run path so the two can
-        # never drift). This method only ever runs against a freshly-built
-        # ``SqlDbSource`` above - always the DB source, never the API path.
+        # never drift). This method now runs against EITHER a freshly-built
+        # ``SqlDbSource`` OR (sprint-5/08 B3) an ``HttpApiSource`` above -
+        # ``is_sql_db_source`` is currently unused by the function itself
+        # (see its docstring) but kept honest for a future reader/caller.
         rows = build_mapping_rows_for_run(
             entity_type,
             self.companies.mapping_rows(tenant_id, company.id, entity_type),
-            is_sql_db_source=True,
+            is_sql_db_source=not is_http,
             source_config=config.source_config,
         )
         engine = MappingEngine(
@@ -1906,16 +1979,18 @@ class EtlService:
         self._require_runnable(config)
         if config.etl_status == ETL_STATUS_ACTIVE:
             raise EtlStateError("This task is already active.")
-        #     !!  KNOWN GAP (sprint-5/08, deferred to S5): an ``autocount_http``
-        #         task does not yet run ``preview_task``'s consumer dry-run gate -
-        #         ``preview_task``/``_stage_documents`` build a ``SqlDbSource``
-        #         only. Until that is wired, an HTTP task's activate-once gate is
-        #         its OWN endpoint preview (``/autocount/http/preview``,
-        #         AC-08-14), never SQL's "dry run against the consumer" ceremony.
-        if (
-            config.source_impl != SOURCE_IMPL_AUTOCOUNT_HTTP
-            and config.last_preview_at is None
-        ):
+        #     !!  ACTIVATE-ONCE GATE - NOW UNIFORM ACROSS BOTH source_impl
+        #         VALUES (sprint-5/08 review round 1, B3).  !!
+        # ``_extract_and_map`` (``preview_task``'s dry-run) dispatches on
+        # ``source_impl`` and builds a real ``HttpApiSource`` for an HTTP
+        # task exactly as it builds a ``SqlDbSource`` for a SQL one, so this
+        # gate no longer needs (or gets) a bypass for HTTP: ``last_preview_at``
+        # is stamped by EITHER a successful ``preview_task`` run OR the
+        # Source tab's own Test button (``/autocount/http/preview`` with
+        # ``companyId``/``entityType`` set, AC-08-14) - foolproof-UI: the
+        # operator only ever has to click Test once, never a second
+        # ceremony.
+        if config.last_preview_at is None:
             raise EtlStateError(
                 "Run a successful preview of the initial load before activating."
             )

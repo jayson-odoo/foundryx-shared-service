@@ -19,6 +19,32 @@ from .envelope import parse_page
 
 PREVIEW_PAGE_SIZE = 50
 
+# Path length ceiling shared by every caller that accepts an operator-typed
+# endpoint path (AC-08-13's task-save validator AND the preview route
+# itself, S4 sprint-5/08 review round 1 - the preview route used to apply
+# NONE of these rules, so a `..`/query-string/over-long path reached the
+# vendor call unchecked).
+MAX_PATH_LENGTH = 200
+
+
+def validate_http_path(path: str) -> Optional[str]:
+    """The one shared rule set for an operator-typed HTTP task path
+    (AC-08-13): must start with ``/``, no ``..`` (traversal), no ``?``
+    (page params are ours), <= 200 chars. Returns an operator-safe message,
+    or ``None`` when the path is clean. A blank path is NOT this function's
+    job (callers differ on whether blank is even reachable / how to word
+    "required" - `_validate_http_config` phrases it as "Enter the endpoint
+    path.", the preview route as "Enter a path to preview.")."""
+    if not path.startswith("/"):
+        return "The path must start with '/'."
+    if ".." in path:
+        return "The path may not contain '..'."
+    if "?" in path:
+        return "The path may not include a query string - page params are ours."
+    if len(path) > MAX_PATH_LENGTH:
+        return f"The path is too long ({MAX_PATH_LENGTH} characters max)."
+    return None
+
 
 class HttpPreviewError(Exception):
     """A preview failed. ``field`` names which input to blame (AC-08-14:

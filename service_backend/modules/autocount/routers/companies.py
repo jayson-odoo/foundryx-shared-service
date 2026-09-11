@@ -4,7 +4,7 @@ No DB query and no raw SQL lives here (code-review hard-fail). Every handler
 takes the tenant from the authenticated user - NEVER from client input - and
 hands off to a service.
 """
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
@@ -14,6 +14,7 @@ from app.database import get_db
 from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
+from ..http_client import get_http_transport
 from ..canonical.documents import is_document_entity
 from ..mapping import SCOPE_LINE
 from ..schemas import (
@@ -129,12 +130,19 @@ def create_company(
     body: CompanyCreate,
     current_user: User = Depends(require_permission("autocount.companies.manage")),
     db: Session = Depends(get_db),
+    transport: Optional[Any] = Depends(get_http_transport),
 ):
     """Register an AutoCount company by DISCOVERING it from its connection -
     the vendor login for an ``autocount`` connection, the connection's own
     ``database`` (verified by a live probe) for a ``sql_database`` one (plan
     sprint-5/01 AC-01-01). A probe mismatch / connect failure is a per-field
-    422 on ``connectionId`` (AC-01-02)."""
+    422 on ``connectionId`` (AC-01-02).
+
+    ``transport`` (sprint-5/08 review round 1, B4) is the SAME dependency
+    seam ``/autocount/http/preview`` uses - production leaves it ``None``
+    (a real network call for the open-company reachability probe), tests
+    override it so this route never reaches ``hapi.sorento.cc.cd``.
+    """
     service = CompanyService(db)
     try:
         company = service.create(
@@ -142,6 +150,7 @@ def create_company(
             body.connectionId,
             name=body.name,
             ref_prefix=body.refPrefix,
+            transport=transport,
         )
     except ConnectionValidationError as exc:
         return _field_errors(exc.field_errors, exc.message)
@@ -555,11 +564,18 @@ def update_etl_task(
     apply → ``422 {fieldErrors}``. ``connectionId`` is re-validated against
     the tenant on every use. Reuses ``autocount.companies.manage``."""
     try:
+        # sprint-5/08 review round 1 (B1) - the FE sends ``sourceImpl`` as a
+        # TOP-LEVEL sibling of ``sourceConfig``; prefer it, falling back to a
+        # nested ``sourceConfig.sourceImpl`` only if a caller ever sends that
+        # shape instead (never both silently disagreeing - the top-level one
+        # wins, matching what ``EtlService.update_task`` dispatches on).
+        raw = body.sourceConfig.model_dump()
+        raw["sourceImpl"] = body.sourceImpl or body.sourceConfig.sourceImpl
         view = EtlService(db).update_task(
             current_user.tenant_id,
             company_id,
             entity_type,
-            body.sourceConfig.model_dump(),
+            raw,
         )
     except EtlValidationError as exc:
         return _field_errors(exc.field_errors, exc.message)

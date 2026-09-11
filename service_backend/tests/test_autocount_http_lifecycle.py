@@ -113,6 +113,19 @@ def _transport(rows=None):
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
+def _stamp_previewed(db, company_id: str, entity_type: str = ENTITY_PRODUCT) -> None:
+    """B3 (sprint-5/08 review round 1) widened ``activate_task``'s
+    "run a preview first" gate to HTTP tasks too (it used to bypass them
+    entirely) - these lifecycle tests are about DEMOTION/repush, not the
+    preview gate itself, so they stamp it directly rather than running a
+    real dry-run against a consumer."""
+    from modules.autocount.repositories import EntityConfigRepository
+
+    config = EntityConfigRepository(db).get(DEFAULT_TENANT_ID, company_id, entity_type)
+    config.last_preview_at = NOW
+    db.commit()
+
+
 # ── AC-08-28: demotion to draft on source-impl/connection/path change ────────
 
 
@@ -122,6 +135,7 @@ def test_changing_connection_on_active_http_task_returns_draft_and_keeps_hashes(
     view = EtlService(db).update_task(
         DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, _http_raw(connectionId=conn_a.id)
     )
+    _stamp_previewed(db, company.id)
     EtlService(db).activate_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
     from modules.autocount.repositories import RowHashRepository
 
@@ -147,7 +161,28 @@ def test_changing_connection_on_active_http_task_returns_draft_and_keeps_hashes(
 # ── AC-08-29: the sweep enqueues due HTTP tasks too ──────────────────────────
 
 
-def test_sweep_enqueues_due_sql_and_due_http(db):
+def test_sweep_enqueues_due_sql_and_due_http(db, monkeypatch):
+    """AC-08-29 - the sweep's SELECTION logic fires both a due SQL and a due
+    HTTP task; it never has to actually RUN either job to prove that (B4,
+    sprint-5/08 review round 1: this test used to run under the suite's
+    always-eager job setting, which executed the enqueued job INLINE and
+    made a real network call to ``hapi.sorento.cc.cd`` on every pytest run).
+    Job dispatch itself (`run_job_task.delay`/`apply_async`) is the SAME
+    seam ``tests/test_background_jobs.py`` already stubs - reused here
+    rather than invented fresh."""
+    from app.config import settings
+    from app.jobs import worker as worker_module
+
+    monkeypatch.setattr(settings, "celery_task_always_eager", False)
+    dispatched: list = []
+    monkeypatch.setattr(
+        worker_module.run_job_task, "delay", lambda job_id: dispatched.append(job_id)
+    )
+    monkeypatch.setattr(
+        worker_module.run_job_task,
+        "apply_async",
+        lambda args=None, queue=None, **kw: dispatched.append((args, queue)),
+    )
     from modules.autocount.models import SOURCE_IMPL_SQL_DB
     from modules.autocount.canonical.masters import ENTITY_CUSTOMER
 
@@ -190,6 +225,7 @@ def test_sweep_enqueues_due_sql_and_due_http(db):
 
     result = sweep_etl_tasks(db, now=NOW)
     assert result["fired"] == 2, result
+    assert len(dispatched) == 2, dispatched
 
 
 def test_sweep_overlap_guard_skips_http_task_in_flight(db):
@@ -251,7 +287,81 @@ def test_repush_task_works_for_http_task(db):
     conn = _open_connection(db)
     company = _company(db, conn.id)
     EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, _http_raw(connectionId=conn.id))
+    _stamp_previewed(db, company.id)
     EtlService(db).activate_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
 
     result = EtlService(db).repush_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
     assert result.status == ETL_STATUS_ACTIVE
+
+
+# ── B3 (sprint-5/08 review round 1) - the activate-once gate is now uniform,
+# and Review & Activate's consumer dry-run genuinely dispatches on
+# source_impl instead of hardcoding SqlDbSource for an HTTP task. ──────────
+
+
+def test_activate_http_task_without_a_preview_409(db):
+    from modules.autocount.services.etl_service import EtlStateError
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, _http_raw(connectionId=conn.id)
+    )
+    with pytest.raises(EtlStateError) as exc:
+        EtlService(db).activate_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    assert "preview" in str(exc.value).lower()
+
+
+def test_extract_and_map_dispatches_http_api_source_never_sql_engine(db, monkeypatch):
+    """B3 - ``preview_task``'s dry-run (``_extract_and_map``) used to
+    unconditionally build a ``SqlDbSource``, so an HTTP task's Review &
+    Activate preview either crashed or silently mapped nothing. Proven
+    directly against ``_extract_and_map`` (the private dispatch point)
+    rather than through a full Sorento consumer round trip, which
+    ``sink_for_company`` does not (yet) accept a stub transport for.
+
+    ``_extract_and_map`` has no ``transport`` parameter of its own (it is
+    an internal dispatch point, never a public seam) - the network is
+    stubbed the same way ``client_from_connection`` gets stubbed elsewhere
+    in this module: at the class the source builds
+    (``http_source.source.HttpApiClient``), never a REAL call to
+    ``hapi.sorento.cc.cd``."""
+    import modules.autocount.http_source.source as http_source_module
+    from modules.autocount.http_source.client import HttpApiClient
+
+    calls: list = []
+    monkeypatch.setattr(
+        EtlService, "_engine",
+        lambda self, c: calls.append(c) or (_ for _ in ()).throw(
+            AssertionError("SQL engine built for an HTTP task's preview")
+        ),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"ItemCode": "A1", "Description": "Item A1"}])
+
+    stub_transport = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        http_source_module,
+        "HttpApiClient",
+        lambda base_url, **kw: HttpApiClient(base_url, transport=stub_transport),
+    )
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT,
+        _http_raw(connectionId=conn.id, path="/itembypage", keyFields=["ItemCode"]),
+    )
+    from modules.autocount.repositories import EntityConfigRepository
+
+    config = EntityConfigRepository(db).get(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+
+    service = EtlService(db)
+    records, current_refs, page_complete = service._extract_and_map(
+        DEFAULT_TENANT_ID, company, config, ENTITY_PRODUCT
+    )
+    assert calls == [], "the SQL engine must never be built for an HTTP task's preview"
+    assert page_complete is None
+    assert current_refs == ["MOCHA:A1"]
+    assert len(records) == 1

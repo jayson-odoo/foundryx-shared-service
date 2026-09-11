@@ -244,22 +244,57 @@ def test_ref_prefix_duplicate_409_names_holder(db):
     assert "MOCHA" in exc.value.message
 
 
+def test_ref_prefix_duplicate_race_forced_integrity_error_409(db, monkeypatch):
+    """S13 (sprint-5/08 review round 1) - the ``get_by_database_name``
+    pre-check closes the COMMON race window, but two concurrent creates for
+    the same prefix can both pass it; only the DB's own unique constraint
+    catches THAT. Forced here by making the pre-check lie (simulating the
+    race) while a real holder already exists - the ``IntegrityError`` from
+    the unique index must still surface as a clean 409, never a raw 500."""
+    from modules.autocount.services.company_service import CompanyAlreadyExists
+
+    conn_a = _open_connection(db, name="Mocha REST A")
+    CompanyService(db).create_from_open_connection(
+        DEFAULT_TENANT_ID, conn_a, name="Mocha", ref_prefix="MOCHA", transport=_transport()
+    )
+    conn_b = _open_connection(db, name="Mocha REST B")
+    service = CompanyService(db)
+    monkeypatch.setattr(service.companies, "get_by_database_name", lambda *a, **k: None)
+    with pytest.raises(CompanyAlreadyExists) as exc:
+        service.create_from_open_connection(
+            DEFAULT_TENANT_ID, conn_b, name="Mocha Two", ref_prefix="MOCHA", transport=_transport()
+        )
+    assert "MOCHA" in exc.value.message
+
+
 def test_ref_prefix_not_applicable_on_basic_connection_422(db):
     """A ref prefix is ignored (422 'not applicable') when the connection is
     vendor (basic) or sql_database - `create()` is expected to reject a
     ref_prefix argument on a non-open connection rather than silently accept
-    it."""
+    it.
+
+    S8 (sprint-5/08 review round 1) - was ``pytest.raises(Exception)``,
+    which passes for ANY exception (a typo'd attribute, an unrelated crash)
+    just as happily as the real validation error; now pins the actual
+    error class AND the ``refPrefix`` field error, matching every other
+    ``ConnectionValidationError`` assertion in this module."""
     conn = _basic_connection(db)
     service = CompanyService(db)
-    with pytest.raises(Exception):
+    with pytest.raises(ConnectionValidationError) as exc:
         service.create(DEFAULT_TENANT_ID, conn.id, name="X", ref_prefix="NOTAPPLICABLE")
+    assert exc.value.field_errors == {
+        "refPrefix": "A reference prefix only applies to a no-auth API connection."
+    }
 
 
 def test_ref_prefix_not_applicable_on_sql_connection_422(db):
     conn = _sql_connection(db)
     service = CompanyService(db)
-    with pytest.raises(Exception):
+    with pytest.raises(ConnectionValidationError) as exc:
         service.create(DEFAULT_TENANT_ID, conn.id, name="X", ref_prefix="NOTAPPLICABLE")
+    assert exc.value.field_errors == {
+        "refPrefix": "A reference prefix only applies to a no-auth API connection."
+    }
 
 
 # ── AC-08-08: source_kind + guards ─────────────────────────────────────────────
@@ -334,11 +369,26 @@ def test_router_create_dispatches_open_connection_without_a_vendor_login(client,
         company_module, "client_from_connection", lambda *_a, **_k: FakeFailingClient()
     )
     conn = _open_connection(db)
-    response = client.post(
-        "/autocount/companies",
-        json={"connectionId": conn.id, "name": "Mocha", "refPrefix": "MOCHA"},
-        headers=headers,
+    # B4 (sprint-5/08 review round 1): the reachability probe itself is a
+    # REAL network call unless the router's ``get_http_transport``
+    # dependency is overridden - this test used to reach
+    # ``hapi.sorento.cc.cd`` for the exact reason it exists (proving the
+    # router-level dispatch), which is precisely what must never happen in
+    # the suite.
+    from app.main import app
+    from modules.autocount.http_client import get_http_transport
+
+    app.dependency_overrides[get_http_transport] = lambda: _transport(
+        [{"Location": "A1"}]
     )
+    try:
+        response = client.post(
+            "/autocount/companies",
+            json={"connectionId": conn.id, "name": "Mocha", "refPrefix": "MOCHA"},
+            headers=headers,
+        )
+    finally:
+        app.dependency_overrides.pop(get_http_transport, None)
     assert response.status_code == 201, response.text
     assert response.json()["sourceKind"] == SOURCE_KIND_HTTP
     assert not login_attempts, "an open connection must never sign in to the vendor API"

@@ -249,12 +249,28 @@ def test_http_task_stray_sql_keys_dropped_not_422ed(db):
 
 
 def test_preview_http_paged(client, headers, db):
+    """B4 (sprint-5/08 review round 1): this used to reach the real
+    ``hapi.sorento.cc.cd`` on every pytest run - the route builds its OWN
+    transport, the ``_open_company(..., transport=...)`` stub only ever
+    covered the CREATE probe, never the preview call. The router's
+    ``get_http_transport`` dependency override (the SAME seam
+    ``probe_open_connection``/``run_http_preview`` already accept as a
+    plain kwarg) lets this stay a REAL route test with zero network."""
+    from app.main import app
+    from modules.autocount.http_client import get_http_transport
+
     company, conn = _open_company(db, transport=_transport({"TotalCount": 3, "Page": 1, "PageSize": 50, "TotalPages": 1, "Data": []}))
-    response = client.post(
-        "/autocount/http/preview",
-        json={"connectionId": conn.id, "path": "/itembypage"},
-        headers=headers,
+    app.dependency_overrides[get_http_transport] = lambda: _transport(
+        {"TotalCount": 3, "Page": 1, "PageSize": 50, "TotalPages": 1, "Data": [{"ItemCode": "A"}]}
     )
+    try:
+        response = client.post(
+            "/autocount/http/preview",
+            json={"connectionId": conn.id, "path": "/itembypage"},
+            headers=headers,
+        )
+    finally:
+        app.dependency_overrides.pop(get_http_transport, None)
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["envelope"] == "paged"
@@ -268,6 +284,23 @@ def test_preview_http_bad_connection_422(client, headers, db):
         headers=headers,
     )
     assert response.status_code == 422, response.text
+
+
+@pytest.mark.parametrize("bad_path", ["../x", "/a?b", "itembypage", "/" + "x" * 200])
+def test_preview_http_applies_path_rules_422(client, headers, db, bad_path):
+    """S4 (sprint-5/08 review round 1) - `POST /autocount/http/preview`
+    used to apply NONE of `_validate_http_config`'s path rules
+    (`/`-prefix, no `..`, no `?`, <= 200 chars) - a `../x` or `/a?b` path
+    reached the vendor call unchecked. `validate_http_path` is now the
+    ONE shared rule set both callers run."""
+    company, conn = _open_company(db)
+    response = client.post(
+        "/autocount/http/preview",
+        json={"connectionId": conn.id, "path": bad_path},
+        headers=headers,
+    )
+    assert response.status_code == 422, response.text
+    assert "path" in response.json()["detail"]["fieldErrors"]
 
 
 def test_preview_http_permission_denied_403(client, db):
@@ -286,6 +319,11 @@ def test_preview_http_permission_denied_403(client, db):
 
 
 def test_list_http_connections_both_auths_excludes_sql_and_other_tenants(client, headers, db):
+    """S8 (sprint-5/08 review round 1): the name promised "and other
+    tenants" but no other-tenant row was ever created - a dropped
+    ``tenant_id`` filter on ``list_for_provider`` would have stayed green."""
+    from app.models import Tenant
+
     open_conn = _open_connection(db)
     from modules.autocount.services.company_service import CompanyService as CS  # noqa: F401
 
@@ -296,6 +334,18 @@ def test_list_http_connections_both_auths_excludes_sql_and_other_tenants(client,
     )
     db.add(basic)
     _sql_connection(db)
+
+    other_tenant_id = "tenant-other-http-connections"
+    if db.get(Tenant, other_tenant_id) is None:
+        default_tenant = db.get(Tenant, DEFAULT_TENANT_ID)
+        db.add(
+            Tenant(
+                id=other_tenant_id, slug="other-co-http-connections",
+                name="Other Co", status_id=default_tenant.status_id,
+            )
+        )
+    db.commit()
+    foreign = _open_connection(db, tenant_id=other_tenant_id)
     db.commit()
 
     response = client.get("/autocount/http/connections", headers=headers)
@@ -306,6 +356,7 @@ def test_list_http_connections_both_auths_excludes_sql_and_other_tenants(client,
     assert basic.id in ids
     assert ids[open_conn.id]["auth"] == "none"
     assert ids[basic.id]["auth"] == "basic"
+    assert foreign.id not in ids, "another tenant's connection leaked into the list"
 
 
 # ── AC-08-16: first clean save seeds the HTTP preset ─────────────────────────
@@ -342,6 +393,85 @@ def test_second_save_does_not_reseed(db):
     EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, _http_raw(connectionId=conn.id))
     after = db.query(AcFieldMapping).filter(AcFieldMapping.company_id == company.id).count()
     assert before == after
+
+
+# ── S1 (sprint-5/08 review round 1): connectionId tenant scope, ROUTE-level ──
+#
+# Kill test: dropping the ``tenant_id`` filter on ``ConnectionRepository.
+# get_for_provider`` (``etl_service.py:800``/``:1000``) must turn either of
+# these green-turned-red; before this pair neither the PUT etl-task route
+# nor the preview route had ANY tenant-cross-connection test at all.
+
+
+def test_put_etl_task_rejects_another_tenants_connection_422_never_leaks(client, headers, db):
+    from app.models import Tenant
+
+    company, _own_conn = _open_company(db)
+    other_tenant_id = "tenant-other-http-task-put"
+    if db.get(Tenant, other_tenant_id) is None:
+        default_tenant = db.get(Tenant, DEFAULT_TENANT_ID)
+        db.add(
+            Tenant(
+                id=other_tenant_id, slug="other-co-http-task-put",
+                name="Other Co", status_id=default_tenant.status_id,
+            )
+        )
+        db.commit()
+    foreign = _open_connection(db, tenant_id=other_tenant_id)
+
+    response = client.put(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_PRODUCT}/etl-task",
+        json={"sourceConfig": _http_raw(connectionId=foreign.id)},
+        headers=headers,
+    )
+    assert response.status_code == 422, response.text
+    assert "connectionId" in response.json()["detail"]["fieldErrors"], response.text
+
+
+def test_preview_http_rejects_another_tenants_connection_422_never_leaks(client, headers, db):
+    from app.models import Tenant
+
+    other_tenant_id = "tenant-other-http-preview"
+    default_tenant = db.get(Tenant, DEFAULT_TENANT_ID)
+    if db.get(Tenant, other_tenant_id) is None:
+        db.add(
+            Tenant(
+                id=other_tenant_id, slug="other-co-http-preview",
+                name="Other Co", status_id=default_tenant.status_id,
+            )
+        )
+        db.commit()
+    foreign = _open_connection(db, tenant_id=other_tenant_id)
+
+    response = client.post(
+        "/autocount/http/preview",
+        json={"connectionId": foreign.id, "path": "/location"},
+        headers=headers,
+    )
+    assert response.status_code == 422, response.text
+    assert "connectionId" in response.json()["detail"]["fieldErrors"], response.text
+
+
+# ── S7 (sprint-5/08 review round 1, AC-08-16 second clause) ─────────────────
+
+
+def test_get_mapping_presets_route_returns_http_preset_not_empty(client, headers, db):
+    """Before this fix ``list_mapping_presets`` only ever checked
+    ``DOCUMENT_PRESETS`` - every HTTP entity (product/customer/warehouse/
+    product_category/brand/unit_of_measure) answered ``[]``, so the Mapping
+    tab's "Use preset" action had nothing to offer for the entities this
+    plan actually added."""
+    company, _conn = _open_company(db)
+    response = client.get(
+        f"/autocount/presets/{ENTITY_PRODUCT}",
+        params={"companyId": company.id},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body) == 1, body
+    assert body[0]["path"] == "/itembypage"
+    assert "ItemCode" in body[0]["keyFields"]
 
 
 # ── AC-08-17: parity extension lives in test_autocount_entity_parity.py ──────

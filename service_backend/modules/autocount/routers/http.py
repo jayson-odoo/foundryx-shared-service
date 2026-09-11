@@ -7,6 +7,8 @@ handler hands off to ``EtlService``. Reuses the EXISTING
 ``autocount.companies.{read,manage}`` keys (no new permission, no grant
 sweep needed for existing tenants).
 """
+from typing import Any, Optional
+
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
@@ -17,6 +19,7 @@ from app.models.user import User
 from ..schemas import HttpConnectionItem, HttpPreviewColumnOut, HttpPreviewRequest, HttpPreviewResponse
 from ..services import EtlService, EtlValidationError
 from ..provider import auth_mode
+from ..http_client import get_http_transport
 from .companies import _field_errors
 
 router = APIRouter()
@@ -46,6 +49,7 @@ def preview_http(
     body: HttpPreviewRequest,
     current_user: User = Depends(require_permission("autocount.companies.manage")),
     db: Session = Depends(get_db),
+    transport: Optional[Any] = Depends(get_http_transport),
 ):
     """Page-1 sample against an open (no-auth) connection (AC-08-14). A bad
     connection or a bad path is a 422 naming the field."""
@@ -57,6 +61,7 @@ def preview_http(
             distinct_of=body.distinctOf,
             company_id=body.companyId,
             entity_type=body.entityType,
+            transport=transport,
         )
     except EtlValidationError as exc:
         return _field_errors(exc.field_errors, exc.message)
