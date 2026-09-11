@@ -112,6 +112,14 @@ export interface SourceTabProps {
    * "an HTTP task on a DB company may reference ANY open connection"). */
   lockedApiConnection?: LockedApiConnection | null;
   httpPreview: UseHttpPreviewResult;
+  /** The task's owning company (sprint-5/08 review round 1, B3) - passed to
+   * `httpPreview.run` so a clean Test ALSO stamps `resultColumns`/
+   * `lastPreviewAt` on this exact task (AC-08-14), the same way the SQL
+   * tab's Test Query already does implicitly by saving through the task
+   * route. Without it, the activate-once gate could only ever be satisfied
+   * by Review & Activate's own "Preview" ceremony, never the Source tab's
+   * own Test button. */
+  companyId: string;
 }
 
 const NO_WATERMARK = '';
@@ -145,6 +153,7 @@ export function SourceTab({
   apiConnectionsLoading,
   lockedApiConnection = null,
   httpPreview,
+  companyId,
 }: SourceTabProps) {
   const isDocument = isDocumentEntity(entityType);
   const connection = connections.find((c) => c.id === config.connectionId) ?? null;
@@ -334,8 +343,11 @@ export function SourceTab({
 
   const onTestHttp = useCallback(() => {
     if (!config.connectionId || !config.path) return;
-    void httpPreview.run(config.connectionId, config.path, config.distinctOf ?? undefined);
-  }, [config.connectionId, config.distinctOf, config.path, httpPreview]);
+    void httpPreview.run(config.connectionId, config.path, config.distinctOf ?? undefined, {
+      companyId,
+      entityType,
+    });
+  }, [companyId, config.connectionId, config.distinctOf, config.path, entityType, httpPreview]);
 
   const onApiConnectionChange = useCallback(
     (id: string) => {

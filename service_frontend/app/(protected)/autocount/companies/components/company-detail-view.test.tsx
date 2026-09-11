@@ -144,12 +144,14 @@ describe('AutocountCompanyDetailView - kind (AC-01-16, AC-08-10)', () => {
 
 describe('AutocountCompanyDetailView - Add entity per kind (AC-01-17, AC-08-18)', () => {
   it('a DB company offers Customer and Supplier, never GRN', () => {
+    // sprint-5/08 S4 (AC-08-31) added `brand` to the DB-capable entity set -
+    // was ten before that commit.
     detailBox.current = detail({ sourceKind: 'db' });
     render(<AutocountCompanyDetailView companyId="c1" />);
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(10);
-    expect(names).toEqual(expect.arrayContaining(['Customer', 'Supplier']));
+    expect(names).toHaveLength(11);
+    expect(names).toEqual(expect.arrayContaining(['Customer', 'Supplier', 'Brand']));
     expect(names).not.toContain('Goods received note');
   });
 

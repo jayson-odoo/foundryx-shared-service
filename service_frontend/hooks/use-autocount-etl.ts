@@ -468,11 +468,27 @@ export type HttpPreviewState =
   | { status: 'error'; message: string }
   | { status: 'success'; preview: HttpPreview };
 
+/** `useHttpPreview().run`'s optional trailing options - sprint-5/08 review
+ * round 1 (B3). Passing both `companyId` + `entityType` makes a clean
+ * preview ALSO stamp `resultColumns`/`lastPreviewAt` on the task
+ * (AC-08-14), exactly like `previewSqlQuery`'s task-preview counterpart -
+ * omitted only for a caller previewing OUTSIDE a task context (none today,
+ * kept optional for that reason). */
+export interface HttpPreviewRunOptions {
+  companyId?: string;
+  entityType?: string;
+}
+
 export interface UseHttpPreviewResult {
   state: HttpPreviewState;
   /** Run the endpoint path (page 1, <=50 rows). Never throws - errors land
    * in state, the field they belong to read via `readFieldErrors`. */
-  run: (connectionId: string, path: string, distinctOf?: string[]) => Promise<void>;
+  run: (
+    connectionId: string,
+    path: string,
+    distinctOf?: string[],
+    options?: HttpPreviewRunOptions,
+  ) => Promise<void>;
   /** The 422's field (`connectionId` | `path`), when the last run failed on
    * a specific field rather than a generic error. */
   fieldErrors: Record<string, string>;
@@ -484,23 +500,37 @@ export function useHttpPreview(): UseHttpPreviewResult {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const runId = useRef(0);
 
-  const run = useCallback(async (connectionId: string, path: string, distinctOf?: string[]) => {
-    const id = ++runId.current;
-    setState({ status: 'loading' });
-    setFieldErrors({});
-    try {
-      const preview = await autocountService.previewHttp({ connectionId, path, distinctOf });
-      if (id === runId.current) setState({ status: 'success', preview });
-    } catch (e) {
-      if (id !== runId.current) return;
-      const errors = e instanceof ApiError ? readFieldErrors(e.detail) : {};
-      setFieldErrors(errors);
-      setState({
-        status: 'error',
-        message: e instanceof ApiError ? e.message : 'The preview could not be run.',
-      });
-    }
-  }, []);
+  const run = useCallback(
+    async (
+      connectionId: string,
+      path: string,
+      distinctOf?: string[],
+      options?: HttpPreviewRunOptions,
+    ) => {
+      const id = ++runId.current;
+      setState({ status: 'loading' });
+      setFieldErrors({});
+      try {
+        const preview = await autocountService.previewHttp({
+          connectionId,
+          path,
+          distinctOf,
+          companyId: options?.companyId,
+          entityType: options?.entityType,
+        });
+        if (id === runId.current) setState({ status: 'success', preview });
+      } catch (e) {
+        if (id !== runId.current) return;
+        const errors = e instanceof ApiError ? readFieldErrors(e.detail) : {};
+        setFieldErrors(errors);
+        setState({
+          status: 'error',
+          message: e instanceof ApiError ? e.message : 'The preview could not be run.',
+        });
+      }
+    },
+    [],
+  );
 
   const reset = useCallback(() => {
     runId.current += 1;

@@ -47,10 +47,10 @@ import type {
   HttpPreviewInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
-import { mockAutocountService } from './autocount-service.mock';
-// `autocount-service.real.ts` carries its own `AutocountService` type
-// annotation, so it type-checks against every contract above whether or not
-// it is imported here - no need to import it just to keep it compiling.
+import { realAutocountService } from './autocount-service.real';
+// `mockAutocountService` stays imported by the Vitest suite directly
+// (the house service-trio pattern) - no need to import it here just to
+// keep it compiling.
 
 export interface AutocountListQuery {
   page?: number; // 0-based
@@ -434,8 +434,9 @@ export interface AutocountService {
 
   // ── open REST API source (sprint-5/08, S1 - AC-08-06/09/14/15) ─────────────
   //
-  // PHASE 1 MOCK - the backend phase (S2 provider/company, S3 source/task)
-  // MUST match this contract byte for byte; the mock IS the spec.
+  // Wire contract (kept as documentation post-S5; the backend now implements
+  // this byte for byte - `modules/autocount/routers/{http,companies}.py`,
+  // `.../schemas.py`).
   //
   //   GET /autocount/http/connections
   //        → AutocountApiConnection[] {id, name, baseUrl, auth}  - EVERY
@@ -472,12 +473,14 @@ export interface AutocountService {
   //        `comparedFields`/`distinctOf` ALONGSIDE the (unused, defaulted)
   //        SQL fields - ONE envelope, not a discriminated union on the wire,
   //        so Mapping/Schedule/Review & Activate/Runs keep reading the SAME
-  //        `AutocountEtlTask.sourceConfig` shape unchanged (AC-08-19). This is
-  //        a DELIBERATE FE-mock simplification, not the literal backend JSON
-  //        shape the UAC Definitions describe (a real discriminated
-  //        `ac_entity_config.source_config`) - flagged for the S2/S3 backend
-  //        coder to confirm/reconcile against `types/autocount.ts`'s own
-  //        `AutocountHttpSourceConfig` doc comment.
+  //        `AutocountEtlTask.sourceConfig` shape unchanged (AC-08-19).
+  //        CONFIRMED against the real backend (S5): `EtlSourceConfigIn`
+  //        (`modules/autocount/schemas.py`) is that same flat envelope; the
+  //        `sourceImpl` that picks which half of it is live is sent as a
+  //        TOP-LEVEL sibling of `sourceConfig` on `PUT .../etl-task`
+  //        (`EtlTaskUpdate.sourceImpl`, review round 1 B1 - it is NOT nested
+  //        inside `sourceConfig` on the wire, only in this FE's local draft
+  //        state).
 
   /** Every `autocount` connection of the tenant, badged by auth. */
   listApiConnections(): Promise<AutocountApiConnection[]>;
@@ -486,16 +489,12 @@ export interface AutocountService {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PHASE 1 MOCK - swap in S5 (sprint-5/08). The open REST API source
+// S5 (sprint-5/08) - swapped to the REAL service. The open REST API source
 // (`listApiConnections`/`previewHttp`, the `refPrefix` company-create path,
-// the `autocount_http` task fields above) has NO backend yet - S2 builds the
-// provider/company halves, S3 the source/task halves. Binding the WHOLE
-// AutoCount surface to `.mock` for the duration (companies/sync/mapping/ETL
-// were real since sprint-5/02-07 and will be again once S5 flips this back)
-// mirrors how plan 22 S1 built the direct-DB source: one company's data must
-// stay consistent across every screen the operator clicks through, which a
-// mix of live + mock state cannot guarantee. `mockAutocountService` IS the
-// backend spec for S2-S4; every field/error shape documented above must
-// round-trip byte for byte once real.
+// the `autocount_http` task fields documented above) is now backed by
+// FastAPI end to end (S2 provider/company, S3 source/task, S4 brand, review
+// round 1 fixes B1-B4/S1-S13). `mockAutocountService` stays as the frontend
+// Vitest fixture only - import it directly in a test, never through this
+// module.
 // ═══════════════════════════════════════════════════════════════════════════
-export const autocountService: AutocountService = mockAutocountService;
+export const autocountService: AutocountService = realAutocountService;

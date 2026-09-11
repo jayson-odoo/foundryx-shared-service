@@ -111,6 +111,7 @@ function renderSourceTab(over: {
       apiConnectionsLoading={false}
       lockedApiConnection={null}
       httpPreview={{ state: { status: 'idle' }, run: vi.fn(), fieldErrors: {}, reset: vi.fn() }}
+      companyId="company-1"
     />,
   );
   return { onChange, onUsePreset };
@@ -433,6 +434,7 @@ function renderApiBranch(over: {
       apiConnectionsLoading={false}
       lockedApiConnection={over.lockedApiConnection ?? null}
       httpPreview={over.httpPreview ?? idleHttpPreview()}
+      companyId="company-1"
     />,
   );
   return { onChange, onSourceKindChange };
@@ -492,11 +494,16 @@ describe('SourceTab - API branch, path + Test + preview (AC-08-14/19)', () => {
     expect(screen.getByTestId('http-test-path')).toBeDisabled();
   });
 
-  it('Test runs the http preview with connectionId/path/distinctOf', () => {
+  it('Test runs the http preview with connectionId/path/distinctOf AND the owning company/entity (B3, sprint-5/08 review round 1 - AC-08-14 stamps result_columns/lastPreviewAt only when both are sent)', () => {
     const httpPreview = idleHttpPreview();
-    renderApiBranch({ httpPreview, cfg: httpConfig({ distinctOf: ['BaseUOM'] }) });
+    renderApiBranch({
+      httpPreview, cfg: httpConfig({ distinctOf: ['BaseUOM'] }), entityType: 'product',
+    });
     fireEvent.click(screen.getByTestId('http-test-path'));
-    expect(httpPreview.run).toHaveBeenCalledWith('conn-api-sorento', '/itembypage', ['BaseUOM']);
+    expect(httpPreview.run).toHaveBeenCalledWith('conn-api-sorento', '/itembypage', ['BaseUOM'], {
+      companyId: 'company-1',
+      entityType: 'product',
+    });
   });
 
   it('shows the envelope badge (D14 - a run walks every page)', () => {

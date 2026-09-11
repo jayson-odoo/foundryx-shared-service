@@ -445,9 +445,26 @@ export interface HttpPreset {
   mapping: HttpPresetMappingRow[];
 }
 
-/** `HTTP_PRESETS` (AC-08-16) - keys pinned to `AC_HTTP_ENTITY_TYPES`
- * (`autocount-meta.ts`); a parity test (S3 backend) will pin this against the
- * server's own `presets.HTTP_PRESETS`. */
+/**
+ * `HTTP_PRESETS` (AC-08-16) - keys pinned to `AC_HTTP_ENTITY_TYPES`
+ * (`autocount-meta.ts`); a parity test (S3 backend, `test_autocount_entity_
+ * parity.py`) pins this against the server's own `presets.HTTP_PRESETS`.
+ *
+ * PHASE 1 MOCK ONLY (sprint-5/08 review round 1, NIT) - this table is what a
+ * newborn `autocount_http` task's Source tab pre-fills FROM, client-side,
+ * before any save (`task-editor-view.tsx`'s "pick API for the first time"
+ * and "first mount with no path yet" seeds). The backend now carries the
+ * identical data (`modules/autocount/presets.py::HTTP_PRESETS`, exposed via
+ * `GET /autocount/presets/{entityType}?companyId=`, S7), so this duplicate
+ * copy is a drift risk: a future preset edit (a path change, a new default
+ * field) made only on the backend leaves the frontend's OWN pre-fill stale
+ * even though the parity test still passes (it checks KEYS, not values).
+ * Not swapped in this round - doing so means the Source tab's first-mount
+ * effect awaiting a network round trip before it can seed, a behaviour
+ * change beyond this round's scope. Tracked for a follow-up: read the
+ * preset from `GET /autocount/presets/{entityType}` instead of this local
+ * table once that round exists.
+ */
 export const HTTP_PRESETS: Record<string, HttpPreset> = {
   product: {
     path: '/itembypage',

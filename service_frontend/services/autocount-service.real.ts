@@ -11,6 +11,7 @@ import type {
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
   AutocountEntityConfig,
+  AutocountEtlSourceConfig,
   AutocountEtlPreviewResult,
   AutocountEtlRepushResult,
   AutocountEtlRunStart,
@@ -53,6 +54,45 @@ function stagedParams(query: AutocountStagedQuery = {}): URLSearchParams {
   if (query.changed !== undefined) p.set('changed', String(query.changed));
   if (query.status) p.set('status', query.status);
   return p;
+}
+
+// sprint-5/08 review round 1 (S5 live-verify DEFECT found against the real
+// backend, NOT patched around) - `default_http_source_config()`
+// (`modules/autocount/services/etl_service.py`) DELIBERATELY never merges
+// the SQL-shape keys (AC-08-30: "never a stray SQL key round-trips onto an
+// HTTP task's wire config"), so a REAL saved `autocount_http` task's
+// `sourceConfig` omits `query`/`lineQuery`/`keyColumns`/`watermarkColumn`/
+// `comparedColumns`/`fromDate`/`docDateColumn`/`filterFormula` entirely.
+// Every FE consumer (`task-editor-view.tsx`'s baseline dirty-check,
+// `SourceTab`'s `canTest`, ...) was written against the `AutocountEtlTask`
+// TYPE contract, which declares those fields non-optional (the mock always
+// filled them) - `seeded.query.trim()` crashed with "Cannot read properties
+// of undefined" live-verifying AC-08-21 (Add entity -> Test -> Save on a
+// fresh HTTP task). Normalized HERE, ONCE, at the wire boundary, rather than
+// `?.`-guarding every read site across the component tree.
+const SQL_SHAPE_DEFAULTS: Pick<
+  AutocountEtlSourceConfig,
+  | 'query'
+  | 'lineQuery'
+  | 'keyColumns'
+  | 'watermarkColumn'
+  | 'comparedColumns'
+  | 'fromDate'
+  | 'docDateColumn'
+  | 'filterFormula'
+> = {
+  query: '',
+  lineQuery: null,
+  keyColumns: [],
+  watermarkColumn: null,
+  comparedColumns: [],
+  fromDate: null,
+  docDateColumn: null,
+  filterFormula: null,
+};
+
+function normalizeEtlTask(task: AutocountEtlTask): AutocountEtlTask {
+  return { ...task, sourceConfig: { ...SQL_SHAPE_DEFAULTS, ...task.sourceConfig } };
 }
 
 export const realAutocountService: AutocountService = {
@@ -249,7 +289,7 @@ export const realAutocountService: AutocountService = {
   getEtlTask(companyId, entityType) {
     return apiFetch<AutocountEtlTask>(
       `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/etl-task`,
-    );
+    ).then(normalizeEtlTask);
   },
 
   updateEtlTask(companyId, entityType, input: AutocountEtlTaskUpdate) {
@@ -262,7 +302,7 @@ export const realAutocountService: AutocountService = {
           ...(input.sourceImpl ? { sourceImpl: input.sourceImpl } : {}),
         }),
       },
-    );
+    ).then(normalizeEtlTask);
   },
 
   // ── direct-DB ETL (plan 22 S2) - endpoints per the contract documented on

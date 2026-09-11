@@ -50,7 +50,9 @@ import {
 } from './autocount-meta';
 
 describe('AC_SQL_DB_ENTITY_TYPES (AC-01-17)', () => {
-  it('is exactly the ten sql_db entities - customer + supplier included, GRN absent', () => {
+  it('is exactly the eleven sql_db entities - customer + supplier + brand included, GRN absent', () => {
+    // sprint-5/08 S4 (AC-08-31) added `brand` - was ten before that commit
+    // (this literal went stale until sprint-5/08 review round 1).
     expect(AC_SQL_DB_ENTITY_TYPES).toEqual([
       'customer',
       'supplier',
@@ -62,6 +64,7 @@ describe('AC_SQL_DB_ENTITY_TYPES (AC-01-17)', () => {
       'sales_order',
       'purchase_order',
       'shipping_order',
+      'brand',
     ]);
     expect(AC_SQL_DB_ENTITY_TYPES).not.toContain('goods_received_note');
   });

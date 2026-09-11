@@ -549,6 +549,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 apiConnectionsLoading={apiConnections.isLoading}
                 lockedApiConnection={lockedApiConnection}
                 httpPreview={httpPreview}
+                companyId={companyId}
               />
             </div>
           ),

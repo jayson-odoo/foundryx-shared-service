@@ -853,6 +853,16 @@ export interface HttpPreviewInput {
   /** Project the response's listed fields to distinct `{value}` rows (the
    * `unit_of_measure` preset - AC-08-16 D6). */
   distinctOf?: string[];
+  /**
+   * When both are given, a clean preview also stamps `resultColumns`/
+   * `lastPreviewAt` on the named task (AC-08-14, sprint-5/08 review round 1
+   * B3) - the SAME "Test the endpoint" ceremony the SQL tab's Test Query
+   * button already performs, and what makes the Source tab's own Test
+   * button satisfy the activate-once gate without a second "Preview"
+   * ceremony on the Review & Activate tab.
+   */
+  companyId?: string;
+  entityType?: string;
 }
 
 /**
@@ -867,11 +877,15 @@ export interface AutocountEtlTask {
   activatedAt: string | null; // ISO Z
   /**
    * Which task grammar `sourceConfig` is populated as (sprint-5/08, D13) -
-   * `sql_db` (default; every task before this plan) or `autocount_http`.
-   * Optional/absent reads as `sql_db` everywhere (back-compat with every
-   * fixture/task built before this field existed).
+   * `sql_db` (default; every task before this plan), `autocount_http`, or
+   * `autocount_read` (S9, review round 1 - the pre-existing vendor-API
+   * grammar the backend already returns for GRN/supplier/customer tasks;
+   * omitting it from this union was silently narrowing a real backend
+   * value down to `undefined` at the type boundary). Optional/absent reads
+   * as `sql_db` everywhere (back-compat with every fixture/task built
+   * before this field existed).
    */
-  sourceImpl?: 'sql_db' | 'autocount_http';
+  sourceImpl?: 'sql_db' | 'autocount_http' | 'autocount_read';
   sourceConfig: AutocountEtlSourceConfig;
   /**
    * Result column names of the SAVED query - derived server-side from the

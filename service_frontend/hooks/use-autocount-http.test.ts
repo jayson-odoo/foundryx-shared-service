@@ -65,6 +65,37 @@ describe('useHttpPreview (AC-08-14/20)', () => {
     expect(hook.result.current.state).toEqual({ status: 'success', preview });
   });
 
+  it('forwards companyId/entityType to the service when given (B3, sprint-5/08 review round 1 - AC-08-14 stamps the task only when both are present)', async () => {
+    previewHttp.mockResolvedValue({ envelope: 'list', columns: [], rows: [], durationMs: 1 });
+    const hook = renderHook(() => useHttpPreview());
+    await act(() =>
+      hook.result.current.run('conn-1', '/itembypage', undefined, {
+        companyId: 'company-1',
+        entityType: 'product',
+      }),
+    );
+    expect(previewHttp).toHaveBeenCalledWith({
+      connectionId: 'conn-1',
+      path: '/itembypage',
+      distinctOf: undefined,
+      companyId: 'company-1',
+      entityType: 'product',
+    });
+  });
+
+  it('omits companyId/entityType when no options are given', async () => {
+    previewHttp.mockResolvedValue({ envelope: 'list', columns: [], rows: [], durationMs: 1 });
+    const hook = renderHook(() => useHttpPreview());
+    await act(() => hook.result.current.run('conn-1', '/itembypage'));
+    expect(previewHttp).toHaveBeenCalledWith({
+      connectionId: 'conn-1',
+      path: '/itembypage',
+      distinctOf: undefined,
+      companyId: undefined,
+      entityType: undefined,
+    });
+  });
+
   it('a 422 lands the message AND the per-field error', async () => {
     previewHttp.mockRejectedValue(
       new ApiError("'/bogus' was not found.", 422, null, {
