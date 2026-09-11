@@ -51,23 +51,23 @@ def test_ac_sql_db_entity_types_is_every_extractable_entity_minus_grn():
     entity a database task can extract AND mapping can shape - ``ENTITY_PROFILES``
     (= ``ETL_ENTITY_TYPES``) minus GRN, which has no Sorento path and an
     API-only envelope (AC-01-10). Ten with `shipping_order` (sprint-5/02,
-    AC-02-10); an entity added to either side without the other fails LOUDLY
-    here.
-
-    RED until AC-02-10 lands: today neither `ENTITY_PROFILES`/
-    `ETL_ENTITY_TYPES` nor `autocount-meta.ts`'s `AC_SQL_DB_ENTITY_TYPES`
-    carry `shipping_order` yet, so this fails at 9, not 10.
+    AC-02-10), eleven with `brand` (sprint-5/08, AC-08-31 - "a DB task can
+    feed it too"); an entity added to either side without the other fails
+    LOUDLY here.
     """
     src = TS_PATH.read_text()
     ts_sql_db = _string_array(src, "AC_SQL_DB_ENTITY_TYPES")
     assert ts_sql_db == set(ENTITY_PROFILES) - {ENTITY_GOODS_RECEIVED_NOTE}
     assert ts_sql_db == set(ETL_ENTITY_TYPES) - {ENTITY_GOODS_RECEIVED_NOTE}
-    assert len(ts_sql_db) == 10, (
-        "AC_SQL_DB_ENTITY_TYPES must include shipping_order (AC-02-10) - "
-        f"got {len(ts_sql_db)}: {sorted(ts_sql_db)}"
+    assert len(ts_sql_db) == 11, (
+        "AC_SQL_DB_ENTITY_TYPES must include shipping_order (AC-02-10) and "
+        f"brand (AC-08-31) - got {len(ts_sql_db)}: {sorted(ts_sql_db)}"
     )
     assert "shipping_order" in ts_sql_db, (
         "AC_SQL_DB_ENTITY_TYPES is missing shipping_order (AC-02-10)"
+    )
+    assert "brand" in ts_sql_db, (
+        "AC_SQL_DB_ENTITY_TYPES is missing brand (AC-08-31)"
     )
 
 

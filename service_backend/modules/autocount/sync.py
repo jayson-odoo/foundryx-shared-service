@@ -79,6 +79,7 @@ from .models import (
     RUN_MODE_MANUAL,
     RUN_MODE_RECONCILE,
     RUN_SUCCESS,
+    SOURCE_IMPL_AUTOCOUNT_HTTP,
     SOURCE_IMPL_SQL_DB,
     STAGED,
     STAGED_FAILED,
@@ -660,10 +661,20 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         # ``Data.0.AutoKey``; a DB task's rows are FLAT, so identity is minted
         # from the task's key columns (AC-22-09/10). Using the API profile on
         # flat rows fails EVERY record with "carries no Data.0.AutoKey" - which
-        # reads like a mapping mistake and is not one.
+        # reads like a mapping mistake and is not one. An HTTP (open REST)
+        # task's rows are flat too (sprint-5/08) - its key list lives under
+        # ``keyFields``, not the DB path's ``keyColumns``.
         profile=(
-            flat_profile(entity_type, (config.source_config or {}).get("keyColumns") or [])
-            if config.source_impl == SOURCE_IMPL_SQL_DB
+            flat_profile(
+                entity_type,
+                (config.source_config or {}).get(
+                    "keyColumns"
+                    if config.source_impl == SOURCE_IMPL_SQL_DB
+                    else "keyFields"
+                )
+                or [],
+            )
+            if config.source_impl in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)
             else None
         ),
         # Masters mint a COMPANY-QUALIFIED ``source_ref`` (AC-14-10). The name
@@ -750,11 +761,13 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     # Sorento dry-run of the initial load, then an explicit Activate. After it,
     # scheduled runs deliver without a per-run click - otherwise a minutely task
     # would build a queue nobody can drain. The API path's ``needs_review`` gate
-    # is untouched; this branch is entered only for an ACTIVE ``sql_db`` task.
+    # is untouched; this branch is entered only for an ACTIVE ``sql_db`` OR
+    # ``autocount_http`` task (sprint-5/08 AC-08-25: run semantics mirror
+    # ``sql_db`` exactly).
     pushed_count = 0
     push_summary: Optional[Dict[str, Any]] = None
     if (
-        config.source_impl == SOURCE_IMPL_SQL_DB
+        config.source_impl in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)
         and config.etl_status == ETL_STATUS_ACTIVE
     ):
         from .services.sync_service import SyncService

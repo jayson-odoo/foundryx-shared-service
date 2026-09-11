@@ -163,6 +163,9 @@ export const AC_SQL_DB_ENTITY_TYPES: string[] = [
   'sales_order',
   'purchase_order',
   'shipping_order',
+  // sprint-5/08 (AC-08-31) - `brand` is DB-extractable too, not just the
+  // open REST API's `HTTP_ENTITY_TYPES` set.
+  'brand',
 ];
 
 /**

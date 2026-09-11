@@ -59,6 +59,9 @@ ENTITY_PRODUCT_CATEGORY = "product_category"
 ENTITY_UNIT_OF_MEASURE = "unit_of_measure"
 ENTITY_WAREHOUSE = "warehouse"
 ENTITY_PRODUCT = "product"
+# sprint-5/08 (AC-08-31) - the open REST API's ItemBrand lookup. Lives here
+# for the same no-import-cycle reason as its five siblings above.
+ENTITY_BRAND = "brand"
 # Sales agent DID start as a plain flat DB-extract entity with no canonical
 # dataclass (S2/S3); S4 gives it one (``CanonicalSalesAgent`` below) now that
 # it actually pushes to Sorento (Appendix A6 §6/A8).
@@ -221,6 +224,32 @@ class CanonicalProductCategory(CanonicalMaster):
     )
 
 
+class CanonicalBrand(CanonicalMaster):
+    """AutoCount ``ItemBrand`` -> Sorento ``brands`` (sprint-5/08, AC-08-31).
+
+    Sorento's DB widths are TIGHTER than the ``CanonicalMaster`` defaults
+    (100/255) - copied verbatim here rather than inherited, so a value that
+    would 422 on their side fails at mapping/preview time instead of arriving
+    as a push-time quarantine (the same rule ``CanonicalMaster``'s own
+    docstring states for every sibling in this file).
+    """
+
+    entity_type: str = ENTITY_BRAND
+
+    code: Optional[str] = Field(None, max_length=50)
+    name: Optional[str] = Field(None, max_length=150)
+    description: Optional[str] = Field(None, max_length=255)
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "source_doc_no",
+        "code",
+        "name",
+        "description",
+        "is_active",
+    )
+
+
 class CanonicalUnitOfMeasure(CanonicalMaster):
     """AutoCount UOM → Sorento ``units_of_measure``. Likewise a product
     dependency (``products.base_uom_id`` is NOT NULL)."""
@@ -280,6 +309,11 @@ class CanonicalProduct(CanonicalMaster):
     brand_code: Optional[str] = None
     list_price: Optional[Decimal] = Field(None, ge=0)
     cost_price: Optional[Decimal] = Field(None, ge=0)
+    # sprint-5/08 (AC-08-16) - the open REST API's ``Discontinued`` flag.
+    # Captured for staging/visibility like ``last_modified``; NOT a Sorento
+    # field (absent from ``SINK_FIELDS`` - their ``products`` schema has no
+    # column for it) and not sent.
+    is_discontinued: Optional[bool] = None
 
     SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
         "source_ref",
@@ -363,4 +397,5 @@ MASTER_ENTITIES: List[str] = [
     ENTITY_WAREHOUSE,
     ENTITY_PRODUCT,
     ENTITY_SALES_AGENT,
+    ENTITY_BRAND,
 ]

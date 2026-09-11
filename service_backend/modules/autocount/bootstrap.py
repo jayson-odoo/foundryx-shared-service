@@ -102,6 +102,7 @@ def register_engine_entities() -> None:
     from .sorento_provider import SorentoProvider
     from .sql_provider import SqlDatabaseProvider
     from .sync import register_autocount_sync_handler
+    from .http_source.source import register_http_source
 
     register_provider(AutoCountProvider())
     # The OUTBOUND consumer target (hop 2). Registered beside the inbound ``erp``
@@ -112,6 +113,9 @@ def register_engine_entities() -> None:
     # provider, configured from the same surface.
     register_provider(SqlDatabaseProvider())
     register_autocount_sync_handler()
+    # The open (no-auth) REST API source (sprint-5/08, AC-08-12) - the third
+    # ``EntitySource`` implementation the per-entity ``source_impl`` may pick.
+    register_http_source()
     # S6 review SHOULD-FIX 4 - drop the cached engine + schema cache the
     # instant a ``sql_database`` connection is deleted (see the subscriber's
     # own docstring). Idempotent (the bus dedupes by function identity).

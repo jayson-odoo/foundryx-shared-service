@@ -47,6 +47,7 @@ from ..canonical.documents import (
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
 from ..formula import FormulaError, known_filter_variables, parse_formula
 from ..canonical.masters import (
+    ENTITY_BRAND,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
@@ -60,6 +61,7 @@ from ..models import (
     ETL_STATUS_DRAFT,
     ETL_STATUS_PAUSED,
     RUN_MODE_MANUAL,
+    SOURCE_IMPL_AUTOCOUNT_HTTP,
     SOURCE_IMPL_SQL_DB,
     SYNC_MODE_SCHEDULED_REVIEW,
     AcEntityConfig,
@@ -97,14 +99,18 @@ from ..sql_source.source import (
     build_incremental_wrap,
 )
 from .company_service import (
+    HTTP_CAPABLE_ENTITY_TYPES,
     SOURCE_KIND_DB,
     AutocountServiceError,
     CompanyService,
     ConnectionNotFound,
     EntityConfigNotFound,
 )
-from ..presets import seed_document_mapping
+from ..presets import seed_document_mapping, seed_http_preset_mapping
 from ..mapping import SCOPE_HEADER, SCOPE_LINE
+from ..http_source.preview import HttpPreviewError, run_http_preview
+from ..provider import AUTH_NONE, PROVIDER_KEY, auth_mode
+from ..sql_source.hashing import compared_columns_for
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -129,6 +135,9 @@ ETL_ENTITY_TYPES = (
     ENTITY_PURCHASE_ORDER,
     ENTITY_SHIPPING_ORDER,
     ENTITY_GOODS_RECEIVED_NOTE,
+    # sprint-5/08 (AC-08-31) - a DB task may feed `brand` too (the open REST
+    # API is not the only source), so it joins the DB-extractable catalogue.
+    ENTITY_BRAND,
 )
 
 # ── schedule floors (AC-22-12, Q17) ──────────────────────────────────────────
@@ -230,6 +239,10 @@ class EtlTaskView:
     etl_status: str
     activated_at: Optional[datetime]
     source_config: Dict[str, Any] = field(default_factory=dict)
+    # sprint-5/08 (AC-08-30) - which fetch implementation this task saves as
+    # (``sql_db`` | ``autocount_http``). Defaults to ``sql_db`` for a
+    # never-configured entity (the editor's own create-time default).
+    source_impl: str = SOURCE_IMPL_SQL_DB
     # ── read-only task state (plan 22 S2, all stamped server-side) ───────────
     # The SAVED query's result column names, from the validation preview every
     # PUT runs - so the Mapping tab offers them without re-running the query.
@@ -287,6 +300,25 @@ def default_source_config(entity_type: str, *, today: Optional[date] = None) -> 
         # are GONE - a document's line fields are persisted `ac_field_mapping`
         # rows now (AC-02-01), not source_config picks.
         "filterFormula": None,
+        "incrementalMinutes": DEFAULT_INCREMENTAL_MINUTES,
+        "reconcileMode": RECONCILE_MODE_DAILY_AT,
+        "reconcileHours": None,
+        "reconcileAt": DEFAULT_RECONCILE_AT,
+    }
+
+
+def default_http_source_config() -> Dict[str, Any]:
+    """The draft an ``autocount_http`` task starts from - the OWN shape
+    (sprint-5/08, AC-08-30): never merged onto ``default_source_config``'s
+    SQL keys, so a never-saved SQL key (``query``/``keyColumns``/...) never
+    round-trips onto an HTTP task's wire config."""
+    return {
+        "connectionId": None,
+        "path": "",
+        "keyFields": [],
+        "watermarkField": None,
+        "comparedFields": [],
+        "distinctOf": None,
         "incrementalMinutes": DEFAULT_INCREMENTAL_MINUTES,
         "reconcileMode": RECONCILE_MODE_DAILY_AT,
         "reconcileHours": None,
@@ -739,6 +771,52 @@ class EtlService:
             response=response,
         )
 
+    # ── open REST API (sprint-5/08, AC-08-14/15) ─────────────────────────────
+
+    def list_http_connections(self, tenant_id: str) -> List[Connection]:
+        """Every tenant ``autocount`` connection, BOTH auths (AC-08-15) - the
+        Source tab's API picker badges each option from this. Tenant-scoped;
+        the router projects the wire shape (auth is derived, not a column)."""
+        return self.connections.list_for_provider(tenant_id, PROVIDER_KEY)
+
+    def preview_http(
+        self,
+        tenant_id: str,
+        connection_id: str,
+        path: str,
+        *,
+        distinct_of: Optional[List[str]] = None,
+        company_id: Optional[str] = None,
+        entity_type: Optional[str] = None,
+    ):
+        """One page-1 sample against an OPEN connection (AC-08-14).
+
+        ``connectionId`` is tenant- AND provider-scoped and must be a no-auth
+        connection - a vendor/SQL id is a 422 naming ``connectionId``, never a
+        404 (the id may be perfectly real, just not usable here). When both
+        ``company_id``/``entity_type`` are given, a clean result also stamps
+        ``result_columns``/``last_preview_at`` on the task, tenant-scoped.
+        """
+        conn = self.connections.get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
+        if conn is None or auth_mode(conn.config_json or {}) != AUTH_NONE:
+            raise EtlValidationError(
+                {"connectionId": "Choose an open (no-auth) AutoCount API connection."}
+            )
+        base_url = str((conn.config_json or {}).get("baseUrl") or "").strip()
+        try:
+            result = run_http_preview(base_url, path, distinct_of=distinct_of)
+        except HttpPreviewError as exc:
+            raise EtlValidationError({exc.field: exc.message}) from exc
+
+        if company_id and entity_type:
+            self.companies.get(tenant_id, company_id)  # tenant-scope guard
+            config = self.configs.get(tenant_id, company_id, entity_type)
+            if config is not None:
+                config.result_columns = list(result.columns)
+                config.last_preview_at = datetime.now(timezone.utc)
+                self.db.commit()
+        return result
+
     # ── task (AC-22-11) ──────────────────────────────────────────────────────
 
     def _require_task_entity(self, tenant_id: str, company_id: str, entity_type: str):
@@ -757,9 +835,18 @@ class EtlService:
     def _task_view(
         self, company_id: str, entity_type: str, config: Optional[AcEntityConfig]
     ) -> EtlTaskView:
-        # Stored keys win; new keys fall back to the draft defaults so an older
-        # document always round-trips whole.
-        merged = default_source_config(entity_type)
+        source_impl = (
+            (config.source_impl if config is not None else None) or SOURCE_IMPL_SQL_DB
+        )
+        # Stored keys win; new keys fall back to the draft defaults so an
+        # older document always round-trips whole. An HTTP task starts from
+        # its OWN defaults (AC-08-30) - never the SQL shape's keys, so a
+        # stray SQL key never round-trips onto an HTTP task's wire config.
+        merged = (
+            default_http_source_config()
+            if source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP
+            else default_source_config(entity_type)
+        )
         if config is not None and isinstance(config.source_config, dict):
             merged.update(config.source_config)
         return EtlTaskView(
@@ -768,6 +855,7 @@ class EtlService:
             etl_status=(config.etl_status if config is not None else None) or ETL_STATUS_DRAFT,
             activated_at=config.activated_at if config is not None else None,
             source_config=merged,
+            source_impl=source_impl,
             result_columns=[
                 str(c) for c in ((config.result_columns if config is not None else None) or [])
             ],
@@ -889,6 +977,222 @@ class EtlService:
         with open_readonly(engine, timeout_s=QUERY_TIMEOUT_SECONDS, secrets=secrets) as conn:
             conn.execute(sa.text(probe_sql), {"from_date": date.today()}).close()
 
+    # ── HTTP task (sprint-5/08, AC-08-12/13/16/28/30) ─────────────────────────
+
+    def _validate_http_config(
+        self,
+        tenant_id: str,
+        raw: Dict[str, Any],
+        *,
+        existing_result_columns: Optional[List[str]],
+    ) -> Tuple[Dict[str, Any], Dict[str, str]]:
+        """Normalise + validate an ``autocount_http`` task's ``source_config``
+        (AC-08-13). ONE envelope with the SQL shape - a stray SQL key on the
+        raw payload is simply not copied into ``clean`` (dropped, never a
+        422). ``existing_result_columns`` is the task's CURRENT stored
+        ``result_columns`` (from the last ``/autocount/http/preview`` call
+        that named this task) - ``None`` when it has never been previewed,
+        in which case key/watermark picks are accepted un-checked (nothing
+        to check against yet) rather than refused.
+        """
+        errors: Dict[str, str] = {}
+
+        connection_id = str(raw.get("connectionId") or "").strip() or None
+        if connection_id:
+            conn = self.connections.get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
+            if conn is None or auth_mode(conn.config_json or {}) != AUTH_NONE:
+                errors["connectionId"] = (
+                    "Choose an open (no-auth) AutoCount API connection of this tenant."
+                )
+                connection_id = None
+        else:
+            errors["connectionId"] = "Choose an open (no-auth) AutoCount API connection."
+
+        path = str(raw.get("path") or "").strip()
+        if not path:
+            errors["path"] = "Enter the endpoint path."
+        elif not path.startswith("/"):
+            errors["path"] = "The path must start with '/'."
+        elif ".." in path:
+            errors["path"] = "The path may not contain '..'."
+        elif "?" in path:
+            errors["path"] = "The path may not include a query string - page params are ours."
+        elif len(path) > 200:
+            errors["path"] = "The path is too long (200 characters max)."
+
+        key_fields = _clean_list(raw.get("keyFields"))
+        distinct_of = _clean_list(raw.get("distinctOf")) or None
+        if not key_fields:
+            errors["keyFields"] = "Choose at least one key field."
+        elif distinct_of and key_fields != ["value"]:
+            errors["keyFields"] = (
+                "A distinct-values field can only key on 'value'."
+            )
+        elif existing_result_columns is not None:
+            missing = [c for c in key_fields if c not in existing_result_columns]
+            if missing:
+                errors["keyFields"] = (
+                    f"Not in the last preview: {', '.join(missing)}. Test the "
+                    f"endpoint first."
+                )
+
+        watermark_field = str(raw.get("watermarkField") or "").strip() or None
+        if (
+            watermark_field
+            and existing_result_columns is not None
+            and watermark_field not in existing_result_columns
+        ):
+            errors["watermarkField"] = f"'{watermark_field}' is not in the last preview."
+
+        configured_compared = _clean_list(raw.get("comparedFields"))
+        compared_fields = compared_columns_for(
+            configured=configured_compared,
+            result_columns=existing_result_columns or configured_compared,
+            key_columns=key_fields,
+        )
+
+        # ── schedule floors (AC-22-12, reused verbatim) ──────────────────────
+        minutes = _clean_int(raw.get("incrementalMinutes"))
+        floor = (
+            MIN_INCREMENTAL_MINUTES if watermark_field else MIN_INCREMENTAL_MINUTES_NO_WATERMARK
+        )
+        if minutes is None:
+            errors["incrementalMinutes"] = "Enter the incremental interval in minutes."
+            minutes = DEFAULT_INCREMENTAL_MINUTES
+        elif minutes < floor:
+            errors["incrementalMinutes"] = (
+                f"At least {floor} minute{'s' if floor != 1 else ''}"
+                + (" without a watermark field." if not watermark_field else ".")
+            )
+
+        mode = str(raw.get("reconcileMode") or "").strip()
+        hours: Optional[int] = None
+        at: Optional[str] = None
+        if mode not in RECONCILE_MODES:
+            errors["reconcileMode"] = "Choose how to reconcile: every N hours or daily at a time."
+            mode = RECONCILE_MODE_DAILY_AT
+        elif mode == RECONCILE_MODE_INTERVAL:
+            hours = _clean_int(raw.get("reconcileHours"))
+            if hours is None:
+                errors["reconcileHours"] = "Enter the reconcile interval in hours."
+            elif hours < MIN_RECONCILE_HOURS:
+                errors["reconcileHours"] = f"At least {MIN_RECONCILE_HOURS} hour."
+        else:
+            at = str(raw.get("reconcileAt") or "").strip() or None
+            if at is None or not _TIME_RE.match(at):
+                errors["reconcileAt"] = "Enter the daily reconcile time as HH:MM."
+
+        clean = {
+            "connectionId": connection_id,
+            "path": path,
+            "keyFields": key_fields,
+            "watermarkField": watermark_field,
+            "comparedFields": compared_fields,
+            "distinctOf": distinct_of,
+            "incrementalMinutes": minutes,
+            "reconcileMode": mode,
+            "reconcileHours": hours,
+            "reconcileAt": at,
+        }
+        return clean, errors
+
+    def _update_http_task(
+        self, tenant_id: str, company_id: str, entity_type: str, raw: Dict[str, Any]
+    ) -> EtlTaskView:
+        """Draft-save an ``autocount_http`` task (AC-08-13/16/28/30).
+
+        Deliberately NO network call here - the SQL path's "fresh preview on
+        every save" discipline would mean a live GET to a customer's server
+        on every keystroke-driven save; the open API's Test button
+        (``/autocount/http/preview``) is the one place that talks to the
+        source, and it is what stamps ``result_columns``/``last_preview_at``
+        (AC-08-14). A save therefore only validates the STATIC shape, keeps
+        (or seeds) the mapping and demotes an active task whose identity
+        changed (AC-08-28) - never an SQL engine, never an HTTP request.
+        """
+        self._require_task_entity(tenant_id, company_id, entity_type)
+        if entity_type not in HTTP_CAPABLE_ENTITY_TYPES:
+            raise EtlValidationError(
+                {"path": f"'{entity_type}' has no open REST API route."}
+            )
+
+        config = self.configs.get(tenant_id, company_id, entity_type)
+        existing_result_columns = (
+            list(config.result_columns)
+            if config is not None and config.result_columns
+            else None
+        )
+        clean, errors = self._validate_http_config(
+            tenant_id, raw, existing_result_columns=existing_result_columns
+        )
+        if errors:
+            raise EtlValidationError(errors)
+
+        previous_source_config: Optional[Dict[str, Any]] = (
+            dict(config.source_config)
+            if config is not None and isinstance(config.source_config, dict)
+            else None
+        )
+        previous_source_impl = config.source_impl if config is not None else None
+
+        if config is None:
+            config = self.configs.add(
+                AcEntityConfig(
+                    tenant_id=tenant_id,
+                    company_id=company_id,
+                    entity_type=entity_type,
+                    sync_mode=SYNC_MODE_SCHEDULED_REVIEW,
+                    source_impl=SOURCE_IMPL_AUTOCOUNT_HTTP,
+                    initial_load=INITIAL_LOAD_FULL,
+                    enabled=True,
+                    etl_status=ETL_STATUS_DRAFT,
+                )
+            )
+
+        #     !!  AC-08-28: sourceImpl/connectionId/path change on an ACTIVE
+        #         task demotes it to draft - hashes are KEPT.  !!
+        demote = False
+        if previous_source_impl is not None and previous_source_impl != SOURCE_IMPL_AUTOCOUNT_HTTP:
+            demote = True
+        elif previous_source_config is not None and (
+            previous_source_config.get("connectionId") != clean.get("connectionId")
+            or previous_source_config.get("path") != clean.get("path")
+        ):
+            demote = True
+
+        config.source_impl = SOURCE_IMPL_AUTOCOUNT_HTTP
+        config.source_config = clean
+        if demote and config.etl_status == ETL_STATUS_ACTIVE:
+            config.etl_status = ETL_STATUS_DRAFT
+
+        # Every save invalidates the activation gate (AC-22-18 parity) - the
+        # operator must Test again before Activate/re-activate.
+        config.last_preview_at = None
+        config.last_preview_failed_count = None
+        if config.etl_status == ETL_STATUS_ACTIVE:
+            # ``next_run_times`` reads the SQL key name - translated so an
+            # active HTTP task's schedule floor still reflects whether it
+            # carries a watermark.
+            config.next_incremental_at, config.next_reconcile_at = self.next_run_times(
+                {**clean, "watermarkColumn": clean.get("watermarkField")},
+                now=datetime.now(timezone.utc),
+            )
+
+        #     !!  FIRST CLEAN SAVE SEEDS THE HTTP PRESET (AC-08-16).  !!
+        # Only when the entity's mapping is still completely empty (an
+        # operator who already started mapping, or a second save, is never
+        # re-seeded) - the same seed-if-absent contract every other preset
+        # in this module follows. ``columns=None`` (no live preview here)
+        # seeds every row ENABLED, matching "nothing proven wrong yet".
+        if self.companies.mappings.count(tenant_id, company_id, entity_type) == 0:
+            seed_http_preset_mapping(
+                self.db, tenant_id, company_id, entity_type, columns=None
+            )
+
+        self.db.commit()
+        self.db.refresh(config)
+        return self._task_view(company_id, entity_type, config)
+
     def update_task(
         self, tenant_id: str, company_id: str, entity_type: str, raw: Dict[str, Any]
     ) -> EtlTaskView:
@@ -903,7 +1207,16 @@ class EtlService:
         with a watermark column and no errors so far, PROBE the exact
         incremental statement shape the real run will execute (BLOCKER 2) -
         every failure names its field.
+
+        sprint-5/08 (AC-08-13/30): ``raw.sourceImpl == 'autocount_http'``
+        dispatches to ``_update_http_task`` FIRST, before a single line of
+        the SQL machinery below runs - no SQL engine is ever built for an
+        HTTP task (asserted with a spy in
+        ``tests/test_autocount_http_lifecycle.py``).
         """
+        if str(raw.get("sourceImpl") or "") == SOURCE_IMPL_AUTOCOUNT_HTTP:
+            return self._update_http_task(tenant_id, company_id, entity_type, raw)
+
         company = self._require_task_entity(tenant_id, company_id, entity_type)
         errors: Dict[str, str] = {}
 
@@ -1220,12 +1533,31 @@ class EtlService:
     @staticmethod
     def _require_runnable(config) -> None:
         source = config.source_config or {}
+        if config.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP:
+            if not str(source.get("path") or "").strip():
+                raise EtlStateError("Save the endpoint path for this task first.")
+            if not [c for c in (source.get("keyFields") or []) if str(c).strip()]:
+                raise EtlStateError(
+                    "Choose the key fields that identify a row before running this task."
+                )
+            return
         if not str(source.get("query") or "").strip():
             raise EtlStateError("Save a query for this task first.")
         if not [c for c in (source.get("keyColumns") or []) if str(c).strip()]:
             raise EtlStateError(
                 "Choose the key columns that identify a row before running this task."
             )
+
+    @staticmethod
+    def _schedule_source_config(config: AcEntityConfig) -> Dict[str, Any]:
+        """``config.source_config`` translated for ``next_run_times`` (which
+        reads the SQL key name ``watermarkColumn`` for its floor/cadence
+        decision) - an ``autocount_http`` task's watermark lives under
+        ``watermarkField`` instead (sprint-5/08)."""
+        source = dict(config.source_config or {})
+        if config.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP:
+            source["watermarkColumn"] = source.get("watermarkField")
+        return source
 
     @staticmethod
     def next_run_times(
@@ -1574,7 +1906,16 @@ class EtlService:
         self._require_runnable(config)
         if config.etl_status == ETL_STATUS_ACTIVE:
             raise EtlStateError("This task is already active.")
-        if config.last_preview_at is None:
+        #     !!  KNOWN GAP (sprint-5/08, deferred to S5): an ``autocount_http``
+        #         task does not yet run ``preview_task``'s consumer dry-run gate -
+        #         ``preview_task``/``_stage_documents`` build a ``SqlDbSource``
+        #         only. Until that is wired, an HTTP task's activate-once gate is
+        #         its OWN endpoint preview (``/autocount/http/preview``,
+        #         AC-08-14), never SQL's "dry run against the consumer" ceremony.
+        if (
+            config.source_impl != SOURCE_IMPL_AUTOCOUNT_HTTP
+            and config.last_preview_at is None
+        ):
             raise EtlStateError(
                 "Run a successful preview of the initial load before activating."
             )
@@ -1601,10 +1942,13 @@ class EtlService:
         config.activated_at = now
         # Activation IS the switch to the DB path: an active task that still
         # read from the vendor API would auto-push records the operator
-        # previewed from a different source entirely.
-        config.source_impl = SOURCE_IMPL_SQL_DB
+        # previewed from a different source entirely. sprint-5/08: an
+        # ``autocount_http`` task is left AS-IS - it is not the legacy
+        # vendor-API default this switch exists to escape.
+        if config.source_impl not in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP):
+            config.source_impl = SOURCE_IMPL_SQL_DB
         _, config.next_reconcile_at = self.next_run_times(
-            config.source_config or {}, now=now
+            self._schedule_source_config(config), now=now
         )
         # plan sprint-5/03 §2.4 - the initial (paged) pass starts on the
         # FIRST tick after activation, not after a full ``incrementalMinutes``
@@ -1638,7 +1982,7 @@ class EtlService:
         now = datetime.now(timezone.utc)
         config.etl_status = ETL_STATUS_ACTIVE
         config.next_incremental_at, config.next_reconcile_at = self.next_run_times(
-            config.source_config or {}, now=now
+            self._schedule_source_config(config), now=now
         )
         self.db.commit()
         self.db.refresh(config)
@@ -1768,8 +2112,8 @@ class EtlService:
         already-committed deletion.
         """
         _company, config = self._task_config(tenant_id, company_id, entity_type)
-        if config.source_impl != SOURCE_IMPL_SQL_DB:
-            raise EtlStateError("Re-push applies to database tasks only.")
+        if config.source_impl not in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP):
+            raise EtlStateError("Re-push applies to database or open-API tasks only.")
         if config.etl_status == ETL_STATUS_DRAFT:
             raise EtlStateError(
                 "Activate the task first - a draft has nothing to re-push."

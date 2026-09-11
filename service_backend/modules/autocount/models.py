@@ -82,6 +82,8 @@ RUN_OUTCOMES = (RUN_SUCCESS, RUN_FAILED, RUN_ABORTED)
 # Source implementations behind the ``EntitySource`` seam.
 SOURCE_IMPL_AUTOCOUNT_READ = "autocount_read"  # HTTP wrapper (plans 13-16)
 SOURCE_IMPL_SQL_DB = "sql_db"  # direct read-only SQL source (plan 22)
+# The open (no-auth) REST wrapper page-walk source (sprint-5/08).
+SOURCE_IMPL_AUTOCOUNT_HTTP = "autocount_http"
 # Task lifecycle of a DB extraction (AC-22-18/19): configured but never
 # activated → activate-once gate passed, scheduled runs push → held.
 ETL_STATUS_DRAFT = "draft"

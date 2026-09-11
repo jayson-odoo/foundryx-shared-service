@@ -73,6 +73,12 @@ def _company(db, connection_id: str) -> AcCompany:
     company = AcCompany(
         tenant_id=DEFAULT_TENANT_ID, connection_id=connection_id, database_name="MOCHA",
         company_name="Mocha", name="Mocha", is_active=True,
+        # `activate_task` refuses ANY company (any source_impl) with no
+        # Sorento company code - a pre-existing, universal gate
+        # (`test_activate_is_refused_without_a_sorento_company_code`,
+        # test_autocount_etl_task_routes.py:706) this fixture must satisfy
+        # to reach the demotion/repush behaviour these tests actually cover.
+        sorento_company_code="MOCHA",
     )
     db.add(company)
     db.commit()
