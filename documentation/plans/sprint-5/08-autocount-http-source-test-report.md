@@ -17,8 +17,15 @@ every backend re-check the coordinator asked for was independently re-run:
 - `d696daba` - review round 4 (logging-sink activation unblocked: the anchor-code gate now
   scopes to `sink_impl == 'sorento'` only, on both the backend gate and the FE
   `activatePrerequisites` mirror; the stale `EtlTaskView` fixture - Defect 1 below - fixed).
-  **Final HEAD; the report's PASS/FAIL verdicts and suite counts below are all as of
-  `d696daba` unless a line says otherwise.**
+- `3110490f` - review round 5 (Defect 2 fix: `activateEtlTask`/`pauseEtlTask`/`resumeEtlTask`/
+  `runEtlTaskNow`/`previewEtlTask` now run their response through `normalizeEtlTask`, the same
+  wire boundary `getEtlTask`/`updateEtlTask` already used; restored a non-blocking
+  logging-sink warning on Review & Activate; `preview_task` comment reworded). **Final HEAD;
+  the report's PASS/FAIL verdicts and suite counts below are all as of `3110490f` unless a
+  line says otherwise.** Re-verified independently by a second tester pass (round-5 verify,
+  `08-evidence/round5-verify/`), backend NOT restarted (already at `3110490f`), frontend NOT
+  rebuilt (already serving a fresh `3110490f` prod build) - both confirmed via `git rev-parse
+  HEAD` on the running pids' `cwd` before this pass.
 
 Backend restarted from HEAD after each fix commit (`kill` only the pid whose `cwd` was
 `s37/service_backend`, confirmed via `lsof` before every restart - never a bare `pkill`).
@@ -107,13 +114,13 @@ then `npx next start -p 3007` restarted (kill only the pid whose `cwd` was
 | AC-08-11 | E2E | PASS | `08-evidence/open-company/README.md` + screenshots `00`-`04` (1280 and 375). Real connection created + tested live, real company created, real "API (no auth)" badge. |
 | AC-08-12 | BE | PASS | `test_autocount_http_task_config.py` (`autocount_http` accepted on open/DB/vendor companies for the six HTTP entities, 422 naming the entity for GRN/supplier/sales_agent/SO/PO/SPO) - in the 129-passed run. |
 | AC-08-13 | BE | PASS | `test_autocount_http_task_config.py` (connectionId must be an open `autocount` connection, path rules, `distinctOf` requires `keyFields == ["value"]`) PLUS live on a real DB company (`08-evidence/sorento-mixed/`): toggling to API showed BOTH tenant open connections FREE, proving the DB-lock narrows to `sql_db` only. |
-| AC-08-14 | BE | PASS, RE-VERIFIED at `da5c82d3` | `POST /autocount/http/preview` live-verified for all six entities against the real wrapper (see `08-evidence/live-replay-T/README.md` table: product 3,438/paged, customer 2,508/paged, warehouse 12 cols/list, product_category 4 cols/list (28 rows), brand 0 rows/list, unit_of_measure distinct UNIT/DZ/SET). Round-3 re-check: activating a task whose preview returned 0 rows (empty `comparedFields` AND empty `resultColumns`) is now a **409** (was 422 before round 2/3) with the exact message `"Test the endpoint again so a real preview can confirm which fields to watch for changes before activating."` - reproduced live via curl on the `brand` task. |
+| AC-08-14 | BE | PASS, RE-VERIFIED at `da5c82d3`, AND AGAIN at `3110490f` | `POST /autocount/http/preview` live-verified for all six entities against the real wrapper (see `08-evidence/live-replay-T/README.md` table: product 3,438/paged, customer 2,508/paged, warehouse 12 cols/list, product_category 4 cols/list (28 rows), brand 0 rows/list, unit_of_measure distinct UNIT/DZ/SET). Round-3 re-check: activating a task whose preview returned 0 rows (empty `comparedFields` AND empty `resultColumns`) is now a **409** (was 422 before round 2/3) with the exact message `"Test the endpoint again so a real preview can confirm which fields to watch for changes before activating."` - reproduced live via curl on the `brand` task. Round-5 re-verify (`08-evidence/round5-verify/README.md`): a brand-new `unit_of_measure` task's `/autocount/http/preview` (distinct-of `/itembypage`) was Tested live TWICE in the same session (before and after Save) - both preview calls succeeded and both advanced `last_preview_at` (confirmed via `psql`), matching the AC's preview contract unchanged by round 5. |
 | AC-08-15 | BE | PASS | Live: the Source tab's connection picker showed both auths (`Mocha REST 20260912T004004Z (No auth)` selectable, `Mocha REST (Basic auth capable but not offered for non-vendor entities)` correctly excluded where not applicable). `test_autocount_http_task_config.py`. |
 | AC-08-16 | BE | PASS | Live: Product's Mapping tab matched the AC's table byte-for-byte (`ItemCode->Code, Description->Name, Desc2->Description, ItemGroup->Category code, ItemBrand->Brand code, BaseUOM->Uom code, IsActive->Is active, Discontinued->Is discontinued (Provenance/not delivered)`). `test_autocount_http_task_config.py` for the other five entities' presets. |
 | AC-08-17 | BE | PASS | `tests/test_autocount_entity_parity.py` (in the 129-passed run) - `HTTP_PRESETS.keys() == HTTP_ENTITY_TYPES`, frontend `AC_HTTP_ENTITY_TYPES` parity, every preset field exists on its canonical class. |
 | AC-08-18 | FE | PASS | Live: "Add entity" offered exactly the six HTTP entities on the open Mocha company. `autocount-meta.test.ts` (9 tests, passing) pins `AC_HTTP_ENTITY_TYPES`/`entitiesForSourceKind('http')`; `entity-source-dialog.tsx` and `AC_SOURCE_IMPL_OPTIONS` are confirmed deleted (`git show 1028bda2..HEAD --stat` shows `entity-source-dialog.tsx` / `.test.tsx` both removed, `-119`/`-99` lines). |
 | AC-08-19 | FE | PASS | Live, extensively: Mocha Product/Brand/UOM tasks (API-only, locked connection) AND the substitute Sorento DB-company `product_category` task (Database default, real schema tree, toggle to a FREE API picker, shared `ColumnPickers`). `source-tab.test.tsx` (286 lines of new/changed assertions) passing. |
-| AC-08-20 | FE | PASS | Live: Save disabled until Test succeeded after the connection/path was set (never independently defeated); dirty-guard AlertDialog covered by `task-editor-view.locked-connection.test.tsx`; no-connection/loading/error states covered by `source-tab.test.tsx` + `task-editor-view.http-save-gate.test.tsx`, all passing. |
+| AC-08-20 | FE | PASS, RE-VERIFIED at `3110490f` (see the round-5 staleness probe below) | Live: Save disabled until Test succeeded after the connection/path was set (never independently defeated); dirty-guard AlertDialog covered by `task-editor-view.locked-connection.test.tsx`; no-connection/loading/error states covered by `source-tab.test.tsx` + `task-editor-view.http-save-gate.test.tsx`, all passing. **Round-5 finding (not this AC's own gate, a NEIGHBOURING one on the Review & Activate tab, recorded per the coordinator's request, not filed as a defect on this AC):** Source-tab Test -> Save -> Test again -> Review & Activate WITHOUT leaving the task editor's mounted component shows `Activate` DISABLED even though the second Test succeeded server-side (`last_preview_at` advanced, confirmed via `psql`); leaving and re-entering the SAME task (fresh mount/refetch) shows it correctly ENABLED. Screenshots `08-evidence/round5-verify/07-staleness-probe-activate-disabled-{1280,375}.png` (disabled, same mount) and `08-evidence/round5-verify/08-staleness-probe-activate-enabled-after-remount-1280.png` (enabled, fresh mount). No crash, no console error - a staleness/UX bug in the Review & Activate tab's local state, not this AC's Source-tab Save gate. Reported for the coder, not fixed by the tester. |
 | AC-08-21 | E2E | PASS | `08-evidence/http-task/README.md` + screenshots `01`-`09` (1280 and 375). Product (paged, 3,438 real total, saved, preset mapping verbatim, born "Open API") and Unit of measure (`distinctOf`, real UNIT/DZ/SET) fully proven; Brand's live total is genuinely 0 (verified independently against the raw wrapper - not a defect). |
 | AC-08-22 | BE | PASS | `tests/test_autocount_http_source.py` (26 tests: page walk, echoed-size-trusted, page-past-end, dedup-with-warning, `distinctOf` projection, `rows_scanned`) - in the 129-passed run. Live corroboration: product/UOM's "N pages of 1000" badges matched the echoed `TotalPages` exactly. |
 | AC-08-23 | BE | PASS, RE-VERIFIED at `da5c82d3` | `test_page_error_fails_run_and_touches_nothing`, `test_timeout_fails_the_run`, `test_non_json_body_fails_the_run`, `test_envelope_shape_change_mid_walk_fails` (all in the 129-passed run). Round-3 re-check independently re-run: `test_clamped_last_page_empty_data_terminates_cleanly` + `test_a_server_that_ignores_page_fails_fast_never_spins` -> **2 passed** (`pytest -k "clamped_last_page or ignores_page_fails_fast"`). |
@@ -130,10 +137,10 @@ then `npx next start -p 3007` restarted (kill only the pid whose `cwd` was
 | AC-08-34 | T | PASS | Plan `08-autocount-http-source.md` Appendix A delivered to the `autocount` peer session; the peer's corrections are recorded IN the plan itself, dated 2026-09-12 ("Sorento-side status 2026-09-12: plan + UAC drafted in sorento_crm... awaiting the OWNER's approval there before code" + the numbered "peer correction 2026-09-12" on adoption needing no code) - this IS the round-trip acknowledgement the AC asks for (a reply with corrective facts, not a rubber-stamp). |
 | AC-08-35 | BE | PASS | Existing `SorentoSink` 429/`Retry-After` handling, unchanged by this plan per the plan's own text; covered by the pre-existing push-chunk test suite (`test_autocount_push_marks_per_chunk.py`, in the full glob). |
 | AC-08-36 | E2E | **PARTIAL / DEFERRED** | `08-evidence/sorento-mixed/README.md` - see the environment-gap note there: no real `AED_SORENTO`/MSSQL tunnel is reachable from this lane (`nc -zv localhost 59773` refused; no `ac_company` row for it in `foundryx_service_s37`). The NEW mechanic the AC exists to prove (DB company defaults to Database with a real schema tree, toggles to a FREE API connection picker, Test shows the real page-count badge, Save persists the switch) was fully verified live on a substitute (but genuinely real, currently-running) SQL Database connection + the real Mocha wrapper. The specific "existing SQL PO task's Runs tab stays unchanged" sub-clause could not be checked (no pre-existing SQL task exists to compare, and typing into the CodeMirror SQL editor did not register via this session's `agent-browser` tooling - see the README for the exact methods tried). |
-| AC-08-37 | T | **PASS at `d696daba`** (was FAIL/BLOCKED at `da5c82d3`, root-caused and fixed by round 4) | `08-evidence/live-replay-T/README.md` (full re-run section + round-3 history kept below it). Live, real clicks + real API against the real `db2` wrapper on the SAME logging-sink Mocha company throughout: Activate now renders enabled (`disabled: false`, screenshot `product-review-activate-enabled-1280.png`) after the round-4 fix scoped the anchor-code gate to `sink_impl == 'sorento'` only. Test -> Activate -> Run now -> idempotent second run proven end to end for **customer** (job `448ee13b`/`51372fbf`: 2508 added then 0/0/0), **product_category** (job `0a3a92ed`/`1d3e4a57`: 28 added then 0/0/0) and **warehouse** (job `cfcb5406`/`11647a18`: 21 added then 0/0/0, 21 matching the documented wrapper fact). **product**'s Run now hit a confirmed, currently-live EXTERNAL timeout on `/itembypage` (independently reproduced with raw `curl`: `pageSize>=100` hangs 15-60s, `pageSize=10` is instant) - `TRANSPORT` error code surfaced correctly, not a code defect. **brand** correctly 409s (0 real rows on Mocha, the round-2 empty-compared-set gate). Flip proof (`ac08-37-flip-proof-script.py`): 0 added, 0 deleted, **1 updated**. **Defect 2 found and reported** (below): Activate/Run now transiently crashes the app once per task (recoverable via Reset/reload, backend always succeeds) - a real, newly-exposed bug from round 4, cited with a repro and a suspected file/line. |
+| AC-08-37 | T | **PASS at `d696daba`** (was FAIL/BLOCKED at `da5c82d3`, root-caused and fixed by round 4) | `08-evidence/live-replay-T/README.md` (full re-run section + round-3 history kept below it). Live, real clicks + real API against the real `db2` wrapper on the SAME logging-sink Mocha company throughout: Activate now renders enabled (`disabled: false`, screenshot `product-review-activate-enabled-1280.png`) after the round-4 fix scoped the anchor-code gate to `sink_impl == 'sorento'` only. Test -> Activate -> Run now -> idempotent second run proven end to end for **customer** (job `448ee13b`/`51372fbf`: 2508 added then 0/0/0), **product_category** (job `0a3a92ed`/`1d3e4a57`: 28 added then 0/0/0) and **warehouse** (job `cfcb5406`/`11647a18`: 21 added then 0/0/0, 21 matching the documented wrapper fact). **product**'s Run now hit a confirmed, currently-live EXTERNAL timeout on `/itembypage` (independently reproduced with raw `curl`: `pageSize>=100` hangs 15-60s, `pageSize=10` is instant) - `TRANSPORT` error code surfaced correctly, not a code defect. **brand** correctly 409s (0 real rows on Mocha, the round-2 empty-compared-set gate). Flip proof (`ac08-37-flip-proof-script.py`): 0 added, 0 deleted, **1 updated**. **Defect 2 found and reported** (below): Activate/Run now transiently crashes the app once per task (recoverable via Reset/reload, backend always succeeds) - a real, newly-exposed bug from round 4, cited with a repro and a suspected file/line. **Round-5 re-verify (`08-evidence/round5-verify/README.md`): Defect 2 is CLOSED at `3110490f`.** On the SAME logging-sink Mocha company's `warehouse` task (already active): Pause -> Resume -> Run now, each a real click via the SAME in-place status-transition path that crashed every time at `d696daba`, produced **zero crashes and zero console errors** (`agent-browser errors`/`console` both empty after each click, screenshots `02`-`05`); a new `ac_sync_run` row was written (`job_id 69deffb0-...`, `rows_scanned 21`, `added/updated/deleted 0`, idempotent) and the Runs tab shows it. The restored logging-sink warning (`data-testid="activate-logging-sink-warning"`, exact text `"Runs on this company are logged only - no records are delivered until a Sorento target is set."`) is visible at 1280 and 375 (`06-warehouse-review-activate-warning-*.png`) and never blocks Activate/Run now; no company's sink was switched to `sorento`. |
 | AC-08-38 | T | PASS | `08-evidence/live-replay-T/README.md`. `/autocount/http/preview` caps to page 1 by design (independently confirmed via a `get_http_transport`-dependency-override script - a page-3 stub never reaches it, 200 not 422). The actual multi-page walk failure IS proven via `test_preview_task_maps_http_source_failure_to_422_naming_page_and_status`, `test_preview_route_maps_http_source_failure_to_422_never_a_bare_500`, `test_run_autocount_sync_http_status_failure_sets_error_code_and_names_page` (error_code `HTTP_STATUS`, "page 3" named, NO stack trace logged) - all re-run green at `da5c82d3`. |
 | AC-08-39 | T | PASS | `08-evidence/live-replay-T/ac08-39-ref-parity-script.py` + `ac08-39-output.txt`. Run against the REAL Postgres lane DB using the production `HttpApiSource.fetch_changes`/`RowHashRepository`/`row_hash` code: `added_count=0, updated_count=5, delete_refs=[], rows_scanned=20` on a `sql_db`-hashed-state -> `autocount_http` switch with 5 of 20 keys carrying a changed field. Ref-parity: `AC0839_...:SRT-01`. Script cleans up its own rows on exit (verified 0 residue via psql). |
-| AC-08-40 | T | **PASS with ONE open defect** | This report. Backend `tests/test_autocount_*.py` at `d696daba`: **1363 passed / 0 failed** (Defect 1 - the stale `EtlTaskView` fixture - fixed in round 4, confirmed by name and assertion). Frontend vitest: 545 passed / 0 failed, re-confirmed at `d696daba`. Lint: 0 errors on the diff. Prod build: clean (rebuilt for round 4). `documentation/engineering/process-lessons.md` gains the AutoCount reference section (source-impl table, HTTP preset table, run-mode table, the `pageSize`-clamp gotcha) - added by commit `69ca640f` (SF-3), verified present. Backlog rows BL-SS-201/202/203/204/205 present; BL-SS-081 correctly marked "Superseded (sprint-5/08)". Defect 2 (transient Activate/Run-now crash, found during the AC-08-37 re-run at `d696daba`) is still OPEN - see Defects below. |
+| AC-08-40 | T | **PASS, both prior defects resolved/recorded** | This report. Backend `tests/test_autocount_*.py` at `d696daba`: **1363 passed / 0 failed** (Defect 1 - the stale `EtlTaskView` fixture - fixed in round 4, confirmed by name and assertion). Frontend vitest: 545 passed / 0 failed, re-confirmed at `d696daba`. Lint: 0 errors on the diff. Prod build: clean (rebuilt for round 4). `documentation/engineering/process-lessons.md` gains the AutoCount reference section (source-impl table, HTTP preset table, run-mode table, the `pageSize`-clamp gotcha) - added by commit `69ca640f` (SF-3), verified present. Backlog rows BL-SS-201/202/203/204/205 present; BL-SS-081 correctly marked "Superseded (sprint-5/08)". **Re-run at `3110490f` (round-5 verify pass):** backend `tests/test_autocount_*.py` full glob **1363 passed / 0 failed** (515.58s), unchanged count from `d696daba` (round 5 touched no test file's assertions, only production code + 2 new test cases in `activate-tab.test.tsx`/`autocount-service.real.test.ts`/`autocount-etl.test.ts` which are counted in the frontend total below); frontend scoped vitest on the round-5 diff's own test files (`services/autocount-service.real.test.ts`, `lib/autocount-etl.test.ts`, `activate-tab.test.tsx`) **99 passed / 0 failed**; `npm run lint` **0 errors** (239 pre-existing `jsx-a11y` warnings on unrelated files, same class as round 4's note, not new). **Defect 2 (transient Activate/Run-now crash) is now CLOSED at `3110490f`** - re-verified live (see AC-08-37 above and `08-evidence/round5-verify/`). **One new, OPEN staleness finding recorded against AC-08-20's neighbourhood** (Review & Activate's `Activate` gate doesn't refresh within the same task-editor mount after Save + a second Test - see AC-08-20 above and Defect 3 below), found while investigating the coordinator's round-5 staleness probe request; not fixed by the tester. |
 
 ## Defects found this pass
 
@@ -144,8 +151,58 @@ gained `+2` lines per `git show d696daba --stat`; the full glob is 1363 passed /
 this HEAD, and the file's own test was independently re-run to confirm). This was the "one
 `F`" the coordinator's stray sweep saw. No further action needed.
 
-**Defect 2 (OPEN) - Activate/Run now transiently crashes the app on an `autocount_http`
-task's first in-place status transition; recoverable via Reset/reload, backend unaffected.**
+**Defect 2 - FIXED at `3110490f` (round 5).** Activate/Run now transiently crashed the app on
+an `autocount_http` task's first in-place status transition (recoverable via Reset/reload,
+backend always unaffected) - root cause was exactly as this report's round-4 suspicion named
+it: `activateEtlTask`/`pauseEtlTask`/`resumeEtlTask`/`runEtlTaskNow`/`previewEtlTask` answered
+the same real-backend shape as `getEtlTask` (an `autocount_http` task's `sourceConfig` omits
+the SQL-shape keys entirely, so it has no `query` field), but only `getEtlTask`/`updateEtlTask`
+ran the response through `normalizeEtlTask` - the round-5 fix (`3110490f`,
+`service_frontend/services/autocount-service.real.ts`) normalizes every endpoint that returns
+or embeds an `AutocountEtlTask`, at the same wire boundary as the loader.
+
+**Independently re-verified this pass** (`08-evidence/round5-verify/README.md`, backend and
+frontend NOT restarted/rebuilt - both already serving `3110490f`): on the same logging-sink
+Mocha company's real, already-active `warehouse` task, a live sequence of **Pause -> Resume
+-> Run now** (the exact in-place status-transition path that crashed every single time at
+`d696daba`) produced **zero crashes and zero console errors** across all three transitions
+(`agent-browser errors`/`console` both empty after each click); the Runs tab correctly shows
+the new run (`job_id 69deffb0-...`, `rows_scanned 21`, idempotent `added/updated/deleted 0`).
+Screenshots `02-warehouse-paused-1280.png`, `03-warehouse-resumed-active-1280.png`,
+`04-warehouse-after-run-now-1280.png`, `05-warehouse-runs-tab-new-run-{1280,375}.png`.
+
+**Also verified: the restored logging-sink warning** (part of the same round-5 commit).
+`data-testid="activate-logging-sink-warning"`, exact text `"Runs on this company are logged
+only - no records are delivered until a Sorento target is set."`, visible on the Review &
+Activate tab at both 1280 and 375 (`06-warehouse-review-activate-warning-{1280,375}.png`);
+`Activate`/`Run now` stayed enabled throughout - the warning is correctly non-blocking. No
+company's sink was switched to Sorento in this pass (Sorento pushes stay forbidden from this
+lane).
+
+**Defect 3 (OPEN, round-5) - the Review & Activate tab's `Activate` gate does not refresh
+within the SAME task-editor mount after Save + a second Test; only a fresh mount picks up the
+correct state.** Found while investigating a coordinator-requested staleness probe, not part
+of the original round-5 fix scope.
+
+- Repro (`08-evidence/round5-verify/README.md`, "Staleness probe" section): on a brand-new
+  `autocount_http` task (`unit_of_measure` on the Mocha company, `/itembypage` `distinctOf`
+  preset) - Source tab **Test** (succeeds) -> **Edit** -> **Save task** (succeeds, "Task
+  saved." toast) -> **Test** again on the same still-mounted Source tab (succeeds; confirmed
+  via `psql`: `last_preview_at` advanced to a new timestamp, `etl_status` still `draft`) ->
+  click the **Review & Activate** tab directly, WITHOUT navigating away from the task editor
+  or reloading the page: **`Activate` renders DISABLED**
+  (`08-evidence/round5-verify/07-staleness-probe-activate-disabled-{1280,375}.png`) even
+  though the server-side preview state is fresh and valid.
+- Leaving the task editor (back to the company's Entities tab) and re-entering the SAME task
+  (a fresh route mount, same `unit_of_measure` task, no new Test) shows `Activate` correctly
+  **ENABLED** (`08-evidence/round5-verify/08-staleness-probe-activate-enabled-after-remount-
+  1280.png`) - identical server state, only the component remount differs.
+- No crash, no console error accompanies this - a pure staleness/UX bug: the gate reads a
+  piece of local component state (most likely `task.lastPreviewAt`, per the coordinator's own
+  suspicion of `onHttpPreviewSuccess` never reloading the task after Save) that is not
+  refreshed by the Save-then-Test-again sequence within the same mount, even though the
+  underlying data the gate should be reading IS fresh on the server. Reporting for the coder
+  to isolate/fix; not fixed by the tester per the house rule.
 
 - Repro: on any `autocount_http` task, after a real click on **Activate** (Review & Activate
   tab) - or once, on **Run now** - the whole app renders the generic error boundary
@@ -212,10 +269,11 @@ task's first in-place status transition; recoverable via Reset/reload, backend u
 
 ## Servers left running
 
-- Backend `:8007` (uvicorn, `app.main:app`) at HEAD `d696daba`, cwd `s37/service_backend`.
-- Frontend `:3007` (`npx next start -p 3007`) serving a fresh `d696daba` prod build (rebuilt
-  for round 4's app-code changes).
-- `agent-browser --session s37-tester` closed at the end of this pass.
+- Backend `:8007` (uvicorn, `app.main:app`) at HEAD `3110490f` (pid 81585, cwd
+  `s37/service_backend`, NOT restarted for the round-5 verify pass - already current).
+- Frontend `:3007` (`npx next start -p 3007`, pid 98460) serving a fresh `3110490f` prod build
+  (NOT rebuilt for the round-5 verify pass - already current).
+- `agent-browser --session s37-verify` closed at the end of the round-5 verify pass.
 
 ## Evidence directories
 
@@ -226,3 +284,6 @@ task's first in-place status transition; recoverable via Reset/reload, backend u
 - `08-evidence/live-replay-T/` - AC-08-37/38/39 (T), README (round-4 re-run + round-3 history)
   + standalone scripts + captured output logs + screenshots (Activate-enabled, the Defect 2
   crash, post-recovery Active/Runs states at 1280 and 375).
+- `08-evidence/round5-verify/` - round-5 verify pass at HEAD `3110490f` (Defect 2 closure,
+  the restored logging-sink warning, the AC-08-40 suite re-run, and the coordinator-requested
+  staleness probe that surfaced Defect 3), README + `01`-`08` screenshots at 1280 and 375.
