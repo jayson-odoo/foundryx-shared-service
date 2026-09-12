@@ -4,7 +4,7 @@ Keyed to `08-autocount-http-source-acceptance-criteria.md` (AC-08-01..40). Execu
 on branch `sprint-5/08-autocount-http-source`, worktree `.claude/worktrees/s37`. Lane DB
 `foundryx_service_s37`, backend `:8007`, frontend `:3007`.
 
-Backend was tested across THREE HEADs as review-round fix commits landed mid-pass (coordinator
+Backend was tested across FOUR HEADs as review-round fix commits landed mid-pass (coordinator
 instruction); every AC-by-AC verdict below states the HEAD it was last verified against, and
 every backend re-check the coordinator asked for was independently re-run:
 
@@ -14,14 +14,19 @@ every backend re-check the coordinator asked for was independently re-run:
   SF-1..5, `process-lessons.md` AutoCount section added).
 - `da5c82d3` - review round 3 (activate-gate message now 409 with the real reason, page-guard
   reorder so a clamped-last-page-with-empty-Data terminates cleanly, brand-gate memo key fix).
-  **Final HEAD; the report's PASS/FAIL verdicts and suite counts below are all as of `da5c82d3`
-  unless a line says otherwise.**
+- `d696daba` - review round 4 (logging-sink activation unblocked: the anchor-code gate now
+  scopes to `sink_impl == 'sorento'` only, on both the backend gate and the FE
+  `activatePrerequisites` mirror; the stale `EtlTaskView` fixture - Defect 1 below - fixed).
+  **Final HEAD; the report's PASS/FAIL verdicts and suite counts below are all as of
+  `d696daba` unless a line says otherwise.**
 
 Backend restarted from HEAD after each fix commit (`kill` only the pid whose `cwd` was
 `s37/service_backend`, confirmed via `lsof` before every restart - never a bare `pkill`).
-Frontend was NOT rebuilt between commits: `git show <sha> --stat` for both fix commits touched
-ONLY `.test.tsx`/`.ts` test files under `service_frontend/`, zero app code, so the `.next`
-build already made from `1181e5df` stayed valid and current throughout.
+Frontend was NOT rebuilt between the round-2/round-3 commits (`git show <sha> --stat` for both
+touched ONLY `.test.tsx`/`.ts` test files, zero app code) but WAS rebuilt for round 4
+(`activate-tab.tsx`, `lib/autocount-etl.ts` changed): `rm -rf .next && npm run build` (clean)
+then `npx next start -p 3007` restarted (kill only the pid whose `cwd` was
+`s37/service_frontend`, confirmed via `lsof`).
 
 ## Environment
 
@@ -49,30 +54,34 @@ build already made from `1181e5df` stayed valid and current throughout.
   tooling quirk, not a product defect (plain buttons/links/`<a>` navigation all worked with
   BOTH methods; only click-open-a-portal controls needed the fallback).
 
-## Suite totals (final, at `da5c82d3`)
+## Suite totals (final, at `d696daba`)
 
-- Backend, full `tests/test_autocount_*.py` glob (run in full TWICE - once at `1181e5df`,
-  once at `da5c82d3` per the coordinator's correction to re-run the whole glob, not a
-  shortlist): **1360 passed, 1 failed** (523.89s at `da5c82d3`; 1359 passed/1 failed at
-  `69ca640f`; 1347 passed/1 failed at `1181e5df` - the failure count is CONSTANT across all
-  three HEADs, see Defect 1 below - it is unrelated to any of the three fix commits).
-- Backend, the coordinator's named HTTP-source file set at `da5c82d3`:
+- Backend, full `tests/test_autocount_*.py` glob (run in full at EVERY HEAD per the
+  coordinator's correction to re-run the whole glob, not a shortlist): **1363 passed, 0
+  failed** (520.07s at `d696daba` - Defect 1 fixed, confirmed); 1360 passed/1 failed at
+  `da5c82d3`; 1359 passed/1 failed at `69ca640f`; 1347 passed/1 failed at `1181e5df` (Defect 1
+  constant across the first three HEADs, unrelated to any of those fix commits, fixed only in
+  round 4).
+- Backend, the coordinator's named HTTP-source file set: at `d696daba`,
   `tests/test_autocount_http_*.py tests/test_autocount_open_company.py
   tests/test_autocount_brand.py tests/test_autocount_entity_parity.py
-  tests/test_autocount_reconcile_push.py` = **129 passed, 0 failed** (69.28s). Same set at
-  `69ca640f` (before `test_autocount_reconcile_push.py` was added to the list) = **114 passed,
-  0 failed** (60.59s), matching the coder's own reported count for that commit.
+  tests/test_autocount_reconcile_push.py tests/test_autocount_etl_routes.py` = **158 passed, 0
+  failed** (100.24s). At `da5c82d3` (before `test_autocount_etl_routes.py` was added to the
+  list) = **129 passed, 0 failed** (69.28s). At `69ca640f` (before
+  `test_autocount_reconcile_push.py` was added) = **114 passed, 0 failed** (60.59s), matching
+  the coder's own reported count for that commit.
 - Backend, targeted re-checks of the round-3 fix (independently re-run, not just cited):
   `pytest -q tests/test_autocount_http_source.py -k "clamped_last_page or
   ignores_page_fails_fast"` -> **2 passed**.
 - Frontend, scoped vitest (33 files covering every AutoCount/connection/column-picker
   surface touched by this plan's diff vs `1028bda2`, never the whole-repo suite): **545
-  passed, 0 failed** (5 "Unhandled Rejection" `URLSearchParams`/undici console noise entries
-  from `task-editor-view.*.test.tsx` files not in this run's assertions - pre-existing mock
-  teardown timing, all of those files' own tests still pass, not filed as a new defect; the
-  round-3 fix commit's own diff (`19 test_autocount_http_lifecycle.py` lines,
+  passed, 0 failed**, re-run and confirmed still green at `d696daba` (round 4 touched
+  `lib/autocount-etl.test.ts` too) - 5 "Unhandled Rejection" `URLSearchParams`/undici console
+  noise entries from `task-editor-view.*.test.tsx` files not in this run's assertions -
+  pre-existing mock teardown timing, all of those files' own tests still pass, not filed as a
+  new defect; the round-3 fix commit's own diff (`19 test_autocount_http_lifecycle.py` lines,
   `1 test-helpers.ts` new file) specifically targeted this exact noise for other files, per its
-  commit message).
+  commit message.
 - Frontend `npx eslint` on the diff (`git diff --name-only --diff-filter=d 1028bda2 -- .`,
   44 files): **0 errors**, 2 pre-existing `jsx-a11y` warnings on
   `use-entities-list-config.tsx`'s row action-menu wrapper `<div onClick=...>` - the SAME
@@ -121,33 +130,49 @@ build already made from `1181e5df` stayed valid and current throughout.
 | AC-08-34 | T | PASS | Plan `08-autocount-http-source.md` Appendix A delivered to the `autocount` peer session; the peer's corrections are recorded IN the plan itself, dated 2026-09-12 ("Sorento-side status 2026-09-12: plan + UAC drafted in sorento_crm... awaiting the OWNER's approval there before code" + the numbered "peer correction 2026-09-12" on adoption needing no code) - this IS the round-trip acknowledgement the AC asks for (a reply with corrective facts, not a rubber-stamp). |
 | AC-08-35 | BE | PASS | Existing `SorentoSink` 429/`Retry-After` handling, unchanged by this plan per the plan's own text; covered by the pre-existing push-chunk test suite (`test_autocount_push_marks_per_chunk.py`, in the full glob). |
 | AC-08-36 | E2E | **PARTIAL / DEFERRED** | `08-evidence/sorento-mixed/README.md` - see the environment-gap note there: no real `AED_SORENTO`/MSSQL tunnel is reachable from this lane (`nc -zv localhost 59773` refused; no `ac_company` row for it in `foundryx_service_s37`). The NEW mechanic the AC exists to prove (DB company defaults to Database with a real schema tree, toggles to a FREE API connection picker, Test shows the real page-count badge, Save persists the switch) was fully verified live on a substitute (but genuinely real, currently-running) SQL Database connection + the real Mocha wrapper. The specific "existing SQL PO task's Runs tab stays unchanged" sub-clause could not be checked (no pre-existing SQL task exists to compare, and typing into the CodeMirror SQL editor did not register via this session's `agent-browser` tooling - see the README for the exact methods tried). |
-| AC-08-37 | T | **FAIL / BLOCKED (root-caused, not a code defect under this plan)** | `08-evidence/live-replay-T/README.md`. Test succeeded live for all six entities against the real wrapper. Activate -> Run now is UNREACHABLE for a genuinely-`logging`-sink company: `CompanyService.set_sink_target` (`services/company_service.py`) unconditionally clears `sorento_company_code` when `sinkImpl == 'logging'`, and `EtlService.activate_task` (`services/etl_service.py`) unconditionally requires that code before ANY task activates - confirmed live via curl (409) AND on the frontend (`lib/autocount-etl.ts:118` `activatePrerequisites` disables the Activate button whenever `company.sinkImpl !== 'sorento'`, screenshot-verified `disabled: true` even after a full page reload). This is pre-existing since plan 22 (`80d648eb`), not introduced by sprint-5/08 - the AC's own precondition describes a state the product has never made reachable. The reconcile logic itself (what the idempotent-second-run / flip-a-field assertion is actually testing) IS proven, via the pytest suite and an independent tester script producing 0 added / 0 deleted / N updated on a real reconcile pass. |
+| AC-08-37 | T | **PASS at `d696daba`** (was FAIL/BLOCKED at `da5c82d3`, root-caused and fixed by round 4) | `08-evidence/live-replay-T/README.md` (full re-run section + round-3 history kept below it). Live, real clicks + real API against the real `db2` wrapper on the SAME logging-sink Mocha company throughout: Activate now renders enabled (`disabled: false`, screenshot `product-review-activate-enabled-1280.png`) after the round-4 fix scoped the anchor-code gate to `sink_impl == 'sorento'` only. Test -> Activate -> Run now -> idempotent second run proven end to end for **customer** (job `448ee13b`/`51372fbf`: 2508 added then 0/0/0), **product_category** (job `0a3a92ed`/`1d3e4a57`: 28 added then 0/0/0) and **warehouse** (job `cfcb5406`/`11647a18`: 21 added then 0/0/0, 21 matching the documented wrapper fact). **product**'s Run now hit a confirmed, currently-live EXTERNAL timeout on `/itembypage` (independently reproduced with raw `curl`: `pageSize>=100` hangs 15-60s, `pageSize=10` is instant) - `TRANSPORT` error code surfaced correctly, not a code defect. **brand** correctly 409s (0 real rows on Mocha, the round-2 empty-compared-set gate). Flip proof (`ac08-37-flip-proof-script.py`): 0 added, 0 deleted, **1 updated**. **Defect 2 found and reported** (below): Activate/Run now transiently crashes the app once per task (recoverable via Reset/reload, backend always succeeds) - a real, newly-exposed bug from round 4, cited with a repro and a suspected file/line. |
 | AC-08-38 | T | PASS | `08-evidence/live-replay-T/README.md`. `/autocount/http/preview` caps to page 1 by design (independently confirmed via a `get_http_transport`-dependency-override script - a page-3 stub never reaches it, 200 not 422). The actual multi-page walk failure IS proven via `test_preview_task_maps_http_source_failure_to_422_naming_page_and_status`, `test_preview_route_maps_http_source_failure_to_422_never_a_bare_500`, `test_run_autocount_sync_http_status_failure_sets_error_code_and_names_page` (error_code `HTTP_STATUS`, "page 3" named, NO stack trace logged) - all re-run green at `da5c82d3`. |
 | AC-08-39 | T | PASS | `08-evidence/live-replay-T/ac08-39-ref-parity-script.py` + `ac08-39-output.txt`. Run against the REAL Postgres lane DB using the production `HttpApiSource.fetch_changes`/`RowHashRepository`/`row_hash` code: `added_count=0, updated_count=5, delete_refs=[], rows_scanned=20` on a `sql_db`-hashed-state -> `autocount_http` switch with 5 of 20 keys carrying a changed field. Ref-parity: `AC0839_...:SRT-01`. Script cleans up its own rows on exit (verified 0 residue via psql). |
-| AC-08-40 | T | **PASS with ONE cited defect** | This report. Backend `tests/test_autocount_*.py`: 1360 passed / 1 failed (Defect 1, pre-existing across all three HEADs tested, unrelated to any round-2/3 change). Frontend vitest: 545 passed / 0 failed. Lint: 0 errors on the diff. Prod build: clean. `documentation/engineering/process-lessons.md` gains the AutoCount reference section (source-impl table, HTTP preset table, run-mode table, the `pageSize`-clamp gotcha) - added by commit `69ca640f` (SF-3), verified present. Backlog rows BL-SS-201/202/203/204/205 present; BL-SS-081 correctly marked "Superseded (sprint-5/08)". |
+| AC-08-40 | T | **PASS with ONE open defect** | This report. Backend `tests/test_autocount_*.py` at `d696daba`: **1363 passed / 0 failed** (Defect 1 - the stale `EtlTaskView` fixture - fixed in round 4, confirmed by name and assertion). Frontend vitest: 545 passed / 0 failed, re-confirmed at `d696daba`. Lint: 0 errors on the diff. Prod build: clean (rebuilt for round 4). `documentation/engineering/process-lessons.md` gains the AutoCount reference section (source-impl table, HTTP preset table, run-mode table, the `pageSize`-clamp gotcha) - added by commit `69ca640f` (SF-3), verified present. Backlog rows BL-SS-201/202/203/204/205 present; BL-SS-081 correctly marked "Superseded (sprint-5/08)". Defect 2 (transient Activate/Run-now crash, found during the AC-08-37 re-run at `d696daba`) is still OPEN - see Defects below. |
 
 ## Defects found this pass
 
-**Defect 1 - `tests/test_autocount_etl_routes.py::test_get_etl_task_returns_draft_defaults_for_a_configured_entity` fails on an exact-dict `==` comparison missing the new `brandContractGate` key.**
+**Defect 1 - FIXED at `d696daba`.** `tests/test_autocount_etl_routes.py::test_get_etl_task_returns_draft_defaults_for_a_configured_entity` failed on an exact-dict `==` comparison
+missing the (then-new, S4) `brandContractGate` key - constant across `1181e5df`/`69ca640f`/
+`da5c82d3` (1 failed each time), confirmed fixed at `d696daba` (`test_autocount_etl_routes.py`
+gained `+2` lines per `git show d696daba --stat`; the full glob is 1363 passed / 0 failed at
+this HEAD, and the file's own test was independently re-run to confirm). This was the "one
+`F`" the coordinator's stray sweep saw. No further action needed.
 
-- File/line: `service_backend/tests/test_autocount_etl_routes.py:411` (the `assert response.json()
-  == {...}` block for a `customer` entity's never-configured task).
-- Root cause: `EtlTaskView`/`EtlTaskResponse` gained `brandContractGate: Optional[BrandContractGate]
-  = None` in this plan's S4 (`schemas.py:782`, `routers/companies.py:486`), but this ONE
-  pre-existing test (in a file this plan otherwise edited, `bf553e08` "S3 fixups") was never
-  updated to include `"brandContractGate": None` in its expected literal. Every OTHER test in
-  the same file that reads specific keys (rather than `==` on the whole dict) is unaffected.
-- Reproduced fresh, isolated: `pytest tests/test_autocount_etl_routes.py::test_get_etl_task_returns_draft_defaults_for_a_configured_entity -x` -> `AssertionError`, diff shows `Left contains 1
-  more item: {'brandContractGate': None}`.
-- Constant across all three HEADs tested (`1181e5df`, `69ca640f`, `da5c82d3`) - confirms it is
-  NOT a regression from either review-round fix, it has been broken since S4 landed.
-- This is a TEST FIXTURE fix, not a product-code fix: add `"brandContractGate": None,` to the
-  expected dict at line ~436 (right after `"initialLoad": None,`). Per my brief I do not
-  patch product code or test files myself - reporting for the coder to fix in a follow-up
-  commit, and it should be included in the "pytest green" gate before this plan's final merge.
-- This is the "one `F`" the coordinator's stray sweep saw - confirmed by test name and
-  assertion; unrelated to the round-2/3 empty-compared-set / `_stamp_previewed` / HTTP-error
-  changes named in the coordinator's message.
+**Defect 2 (OPEN) - Activate/Run now transiently crashes the app on an `autocount_http`
+task's first in-place status transition; recoverable via Reset/reload, backend unaffected.**
+
+- Repro: on any `autocount_http` task, after a real click on **Activate** (Review & Activate
+  tab) - or once, on **Run now** - the whole app renders the generic error boundary
+  ("Something went wrong" / `Reset`), console `TypeError: Cannot read properties of undefined
+  (reading 'trim')`. Reproduced 3 times this pass (product's Activate, customer's Activate,
+  and once navigating away right after product_category's Activate). Screenshot:
+  `08-evidence/live-replay-T/defect2-activate-crash-1280.png`.
+- **The backend mutation always succeeds** - `GET .../etl-task` immediately after a crash
+  shows `etlStatus: "active"` every time - and clicking the error boundary's own `Reset`, or a
+  plain page reload, renders the correct post-mutation state perfectly on the very next
+  render (`08-evidence/live-replay-T/product-activated-review-tab-1280.png`,
+  `d696-product-category-runs-375.png`). Not a permanent blocker; did not stop this pass's
+  evidence collection.
+- Newly EXPOSED by round 4, not introduced by it: no `autocount_http` task could ever reach
+  `etl_status = 'active'` before this round's fix (the anchor-code gate blocked it
+  unconditionally), so this in-place active-state re-render path never fired in this plan
+  before now.
+- Suspected root cause (not conclusively isolated - the crash's stack trace is a minified
+  production bundle chunk with no source map in this session):
+  `service_frontend/app/(protected)/autocount/companies/[id]/entities/[entityType]/
+  components/task-editor-view.tsx` around lines 152 and 452 call `task.sourceConfig.query.
+  trim()` - the second one (`querySaved`, in the `resourceConfig` memo) runs UNCONDITIONALLY,
+  never gated on `sourceKind`/`sourceImpl` - while an `autocount_http` task's wire
+  `sourceConfig` never carries a `query` key at all (confirmed via `GET .../etl-task`: only
+  `path`/`keyFields`/etc.), so `task.sourceConfig.query` is `undefined` and `.trim()` throws.
+  Reporting for the coder to isolate/fix; not fixed by the tester per the house rule (tester
+  writes tests, never patches product or test-fixture code).
 
 ## Findings from this tester pass (not filed as defects)
 
@@ -187,9 +212,9 @@ build already made from `1181e5df` stayed valid and current throughout.
 
 ## Servers left running
 
-- Backend `:8007` (uvicorn, `app.main:app`) at HEAD `da5c82d3`, cwd `s37/service_backend`.
-- Frontend `:3007` (`npx next start -p 3007`) serving the `1181e5df` prod build (still current
-  - no frontend app-code changes across the two fix commits).
+- Backend `:8007` (uvicorn, `app.main:app`) at HEAD `d696daba`, cwd `s37/service_backend`.
+- Frontend `:3007` (`npx next start -p 3007`) serving a fresh `d696daba` prod build (rebuilt
+  for round 4's app-code changes).
 - `agent-browser --session s37-tester` closed at the end of this pass.
 
 ## Evidence directories
@@ -198,5 +223,6 @@ build already made from `1181e5df` stayed valid and current throughout.
 - `08-evidence/open-company/` - AC-08-11 (E2E), README + `00`-`04` screenshots.
 - `08-evidence/http-task/` - AC-08-21 (E2E), README + `01`-`09` screenshots.
 - `08-evidence/sorento-mixed/` - AC-08-36 (E2E, partial/deferred), README + `01`-`04` screenshots.
-- `08-evidence/live-replay-T/` - AC-08-37/38/39 (T), README + two standalone scripts + captured
-  output logs.
+- `08-evidence/live-replay-T/` - AC-08-37/38/39 (T), README (round-4 re-run + round-3 history)
+  + standalone scripts + captured output logs + screenshots (Activate-enabled, the Defect 2
+  crash, post-recovery Active/Runs states at 1280 and 375).
