@@ -506,6 +506,44 @@ def test_preview_http_rejects_another_tenants_connection_422_never_leaks(client,
     assert "connectionId" in response.json()["detail"]["fieldErrors"], response.text
 
 
+def test_preview_http_with_another_tenants_company_id_404s_never_leaks(client, headers, db):
+    """sprint-5/08 review round 8 - a `companyId` naming another tenant's
+    company reaches the service's tenant-scope guard (`CompanyNotFound`,
+    raised by `self.companies.get(tenant_id, company_id)` inside
+    `preview_http`). Only `EtlValidationError` was caught in the router, so
+    this used to be a bare 500 instead of a clean 404 - map it through the
+    SAME `_raise` translator every other autocount route uses."""
+    from app.models import Tenant
+    from modules.autocount.services.company_service import CompanyService as CS
+
+    other_tenant_id = "tenant-other-http-preview-company"
+    default_tenant = db.get(Tenant, DEFAULT_TENANT_ID)
+    if db.get(Tenant, other_tenant_id) is None:
+        db.add(
+            Tenant(
+                id=other_tenant_id, slug="other-co-http-preview-company",
+                name="Other Co 2", status_id=default_tenant.status_id,
+            )
+        )
+        db.commit()
+    foreign_conn = _open_connection(db, tenant_id=other_tenant_id)
+    foreign_company = CS(db).create_from_open_connection(
+        other_tenant_id, foreign_conn, name="Foreign Co", ref_prefix="FOREIGNCO",
+        transport=_transport([{"Location": "A1"}]),
+    )
+
+    conn = _open_connection(db)
+    response = client.post(
+        "/autocount/http/preview",
+        json={
+            "connectionId": conn.id, "path": "/itembypage",
+            "companyId": foreign_company.id, "entityType": ENTITY_PRODUCT,
+        },
+        headers=headers,
+    )
+    assert response.status_code == 404, response.text
+
+
 # ── S7 (sprint-5/08 review round 1, AC-08-16 second clause) ─────────────────
 
 

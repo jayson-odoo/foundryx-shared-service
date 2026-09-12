@@ -372,8 +372,18 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   const onCancel = useCallback(() => {
     setConfig(baseline ? { ...baseline } : null);
     setSourceKind(baselineSourceKind);
+    // B1 round 8 - re-derive the previewed pair from the baseline task rather
+    // than leaving it pointed at whatever was Tested during the discarded
+    // edit. Without this, Save on the SAVED, already-proved config stays
+    // disabled after a Cancel that follows an edit + Test on a different
+    // path (the seed-once effect above never re-fires - `prev` is non-null).
+    setHttpPreviewedFor(
+      task && task.resultColumns.length > 0 && task.sourceConfig.connectionId && task.sourceConfig.path?.trim()
+        ? { connectionId: task.sourceConfig.connectionId, path: task.sourceConfig.path }
+        : null,
+    );
     draft.reset();
-  }, [baseline, baselineSourceKind, draft]);
+  }, [baseline, baselineSourceKind, draft, task]);
 
   const onRan = useCallback(() => setRunsKey((k) => k + 1), []);
 

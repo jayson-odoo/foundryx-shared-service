@@ -2241,7 +2241,15 @@ export const mockAutocountService: AutocountService = {
     // 7): a clean Test that names both `companyId`/`entityType` ALSO stamps
     // `resultColumns`/`lastPreviewAt` on the task and echoes it back, so the
     // editor's `apply()` path is exercised the same way against the mock.
-    if (input.companyId && input.entityType) {
+    //
+    // Round 8 nit: the backend only stamps/echoes when an `ac_entity_config`
+    // row already exists (`self.configs.get(...)` is not `None`) - a
+    // never-configured entity's task stays `null`. `etlTaskFor` would happily
+    // auto-create a blank draft here, which the OLD code then echoed back as
+    // if it were a real, already-anchored task; gate on `etlTasks` already
+    // holding a row for the pair so a truly never-touched entity gets the
+    // bare preview, matching the backend.
+    if (input.companyId && input.entityType && etlTasks.has(taskKey(input.companyId, input.entityType))) {
       const o = overlayFor(input.companyId, input.entityType);
       o.resultColumns = preview.columns.map((c) => c.name);
       o.lastPreviewAt = nowIso();

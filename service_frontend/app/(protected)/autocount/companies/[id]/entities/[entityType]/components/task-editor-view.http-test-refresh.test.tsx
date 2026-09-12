@@ -1,4 +1,4 @@
-import { act, fireEvent, render as rtlRender, screen } from '@testing-library/react';
+import { act, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsProvider } from '@/providers/settings-provider';
@@ -302,5 +302,66 @@ describe('TaskEditorView - Source tab Test echoes the stamped task (sprint-5/08 
     });
 
     expect(saveButton()).toBeDisabled();
+  });
+
+  /**
+   * sprint-5/08 review round 8 - AC-08-20's seed effect only ever ran once,
+   * seeding from an ALREADY-provable task the FIRST time the editor mounts.
+   * That original AC never pinned a case where the seed itself matters (both
+   * this file's and `http-save-gate`'s fixtures used `resultColumns: []`) -
+   * this locks in the "re-opening an already-tested task never demands a
+   * redundant re-test" half of the contract.
+   */
+  it('Save is enabled on mount for an already-previewed task, with no Test call (AC-08-20 seed path)', async () => {
+    getEtlTask.mockResolvedValue(
+      savedHttpTask({ resultColumns: ['ItemCode'], lastPreviewAt: '2026-09-11T00:00:00Z' }),
+    );
+    render(<TaskEditorView companyId="company-http" entityType="product" />);
+    await screen.findByRole('tab', { name: /Source/i });
+    fireEvent.click(editButton());
+
+    expect(saveButton()).toBeEnabled();
+    expect(previewHttp).not.toHaveBeenCalled();
+  });
+
+  /**
+   * sprint-5/08 review round 8 (B1) - `onCancel` used to leave
+   * `httpPreviewedFor` pointed at whatever path the discarded edit had just
+   * Tested. Saved `{conn, /itembypage}` (already proved) -> Edit -> change
+   * path to `/itembypage2` -> Test succeeds there too -> Cancel (discards
+   * back to the saved `/itembypage`) -> Edit again: Save must be enabled for
+   * the saved, already-proved config with no further Test.
+   */
+  it('Save enables after Cancel + a new Edit, following an edit + Test on a DIFFERENT path (round 8)', async () => {
+    getEtlTask.mockResolvedValue(
+      savedHttpTask({ resultColumns: ['ItemCode'], lastPreviewAt: '2026-09-11T00:00:00Z' }),
+    );
+    previewHttp.mockResolvedValue({
+      envelope: 'paged', totalCount: 1, columns: [{ name: 'ItemCode', sample: 'A1' }],
+      rows: [{ ItemCode: 'A1' }], durationMs: 20,
+      // The echo carries the SAVED sourceConfig (still `/itembypage`) - the
+      // backend never persists the tested-but-unsaved path (round 7's B1).
+      task: stampedTaskEcho(),
+    });
+    const user = userEvent.setup();
+    render(<TaskEditorView companyId="company-http" entityType="product" />);
+    await screen.findByRole('tab', { name: /Source/i });
+    await user.click(editButton());
+
+    fireEvent.change(pathInput(), { target: { value: '/itembypage2' } });
+    await act(async () => {
+      fireEvent.click(testButton());
+      await Promise.resolve();
+    });
+    expect(saveButton()).toBeEnabled();
+
+    await user.click(screen.getByRole('button', { name: /^Cancel$/ }));
+    await waitFor(() => expect(screen.getByText('Discard changes?')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /Discard changes/i }));
+
+    await waitFor(() => expect(editButton()).toBeInTheDocument());
+    await user.click(editButton());
+    expect(saveButton()).toBeEnabled();
+    expect(previewHttp).toHaveBeenCalledTimes(1);
   });
 });

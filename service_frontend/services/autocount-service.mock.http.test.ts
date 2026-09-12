@@ -333,3 +333,34 @@ describe('getMapping - HTTP preset rows (AC-08-16/21) vs the legacy vendor custo
     expect(view.rows.map((r) => r.canonicalField)).toEqual(['code', 'name', 'phone_number', 'is_active']);
   });
 });
+
+describe('previewHttp - the task echo only fires for a config that actually exists (review round 8)', () => {
+  it('never echoes a task for an entity with no config row at all - no prior getEtlTask/updateEtlTask this session, matching the real backend\'s `task: null`', async () => {
+    const preview = await service.previewHttp({
+      connectionId: 'conn-api-mocha',
+      path: '/itembypage',
+      companyId: 'company-http',
+      entityType: 'never-touched-entity',
+    });
+    expect(preview.task).toBeUndefined();
+  });
+
+  it('echoes the stamped task once the entity has a real config row', async () => {
+    // The real backend only stamps/echoes when `ac_entity_config` already has
+    // a row for the pair - `getEtlTask` synthesizes an in-memory draft for a
+    // GET, but `updateEtlTask` is what actually persists one.
+    const task = await service.getEtlTask('company-http', 'product');
+    await service.updateEtlTask('company-http', 'product', {
+      sourceImpl: 'autocount_http',
+      sourceConfig: { ...task.sourceConfig, connectionId: 'conn-api-mocha', path: '/itembypage', keyFields: ['ItemCode'] },
+    });
+    const preview = await service.previewHttp({
+      connectionId: 'conn-api-mocha',
+      path: '/itembypage',
+      companyId: 'company-http',
+      entityType: 'product',
+    });
+    expect(preview.task).toBeDefined();
+    expect(preview.task!.resultColumns).toEqual(expect.arrayContaining(['ItemCode']));
+  });
+});

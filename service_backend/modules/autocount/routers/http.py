@@ -17,10 +17,10 @@ from app.dependencies import require_permission
 from app.models.user import User
 
 from ..schemas import HttpConnectionItem, HttpPreviewColumnOut, HttpPreviewRequest, HttpPreviewResponse
-from ..services import EtlService, EtlValidationError
+from ..services import AutocountServiceError, EtlService, EtlValidationError
 from ..provider import auth_mode
 from ..http_client import get_http_transport
-from .companies import _field_errors, _task_response
+from .companies import _field_errors, _raise, _task_response
 
 router = APIRouter()
 
@@ -60,6 +60,12 @@ def preview_http(
     converter - so the Source tab's Test button can adopt the freshly-stamped
     ``lastPreviewAt``/``resultColumns`` directly, with no second GET to race
     a concurrent Save.
+
+    A ``companyId`` naming another tenant's company (or a company that does
+    not exist) raises ``CompanyNotFound`` from the service's tenant-scope
+    guard - reused through the SAME ``_raise`` translator ``routers/
+    companies.py`` uses (404, no leak) rather than a bare 500 (review
+    round 8).
     """
     try:
         result, task_view = EtlService(db).preview_http(
@@ -73,6 +79,8 @@ def preview_http(
         )
     except EtlValidationError as exc:
         return _field_errors(exc.field_errors, exc.message)
+    except AutocountServiceError as exc:
+        _raise(exc)
     return HttpPreviewResponse(
         envelope=result.envelope,
         totalCount=result.total_count,

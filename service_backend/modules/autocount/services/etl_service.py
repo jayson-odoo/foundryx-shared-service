@@ -109,7 +109,12 @@ from .company_service import (
 )
 from ..presets import seed_document_mapping, seed_http_preset_mapping
 from ..mapping import SCOPE_HEADER, SCOPE_LINE
-from ..http_source.preview import HttpPreviewError, run_http_preview, validate_http_path
+from ..http_source.preview import (
+    HttpPreviewError,
+    HttpPreviewResult,
+    run_http_preview,
+    validate_http_path,
+)
 from ..provider import AUTH_NONE, PROVIDER_KEY, auth_mode
 from ..sql_source.hashing import compared_columns_for
 
@@ -796,7 +801,7 @@ class EtlService:
         company_id: Optional[str] = None,
         entity_type: Optional[str] = None,
         transport: Any = None,
-    ) -> Tuple[Any, Optional["EtlTaskView"]]:
+    ) -> Tuple[HttpPreviewResult, Optional["EtlTaskView"]]:
         """One page-1 sample against an OPEN connection (AC-08-14).
 
         ``connectionId`` is tenant- AND provider-scoped and must be a no-auth
