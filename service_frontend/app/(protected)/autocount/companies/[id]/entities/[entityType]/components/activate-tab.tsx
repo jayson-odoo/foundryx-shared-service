@@ -242,7 +242,12 @@ export function ActivateTab({
           <AlertIcon>
             <TriangleAlert />
           </AlertIcon>
-          <AlertTitle>{sinkWarning}</AlertTitle>
+          <AlertTitle>
+            {sinkWarning}{' '}
+            <Link href={acCompanyHref(task.companyId)} className="underline">
+              Open company
+            </Link>
+          </AlertTitle>
         </Alert>
       )}
 

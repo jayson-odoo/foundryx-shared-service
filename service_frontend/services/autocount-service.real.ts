@@ -318,16 +318,6 @@ export const realAutocountService: AutocountService = {
     }).then((result) => ({ ...result, task: normalizeEtlTask(result.task) }));
   },
 
-  // Round 5 fix (tester, live at d696daba) - `activate`/`pause`/`resume`/`run`
-  // answer the SAME real-backend shape as `getEtlTask` (an `autocount_http`
-  // task's `sourceConfig` omits the SQL-shape keys entirely), but only
-  // `getEtlTask`/`updateEtlTask` ran the response through `normalizeEtlTask`.
-  // `task-editor-view.tsx` adopts whatever these return via `apply()`
-  // straight into component state, so an un-normalized response crashed
-  // `task.sourceConfig.query.trim()` the first time a lifecycle action
-  // mutated an http task's status in place. Normalized HERE, at the SAME
-  // wire boundary as the loader, for every endpoint that returns or embeds
-  // an `AutocountEtlTask`.
   activateEtlTask(companyId, entityType) {
     return apiFetch<AutocountEtlTask>(`${etlTaskPath(companyId, entityType)}/activate`, {
       method: 'POST',

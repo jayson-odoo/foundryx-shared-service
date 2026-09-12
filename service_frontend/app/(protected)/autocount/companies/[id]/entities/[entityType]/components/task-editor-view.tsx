@@ -290,8 +290,21 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     }
   }, [task]);
   const onHttpPreviewSuccess = useCallback(
-    (target: { connectionId: string; path: string }) => setHttpPreviewedFor(target),
-    [],
+    (target: { connectionId: string; path: string }) => {
+      setHttpPreviewedFor(target);
+      // Defect 3 (review round 6): a clean Test also stamps `resultColumns`/
+      // `lastPreviewAt` on the task SERVER-SIDE (`preview_http`'s task echo,
+      // AC-08-14) - the ONLY place Activate reads it is `task` state here, so
+      // a Test success must re-fetch it, or a Test -> Save -> Test cycle
+      // leaves Activate reading a stale null until the operator remounts the
+      // editor. Safe against unsaved edits: `reload()` only replaces `task`,
+      // and the working `config`/`sourceKind` reseed off `baselineKey`
+      // (derived from `sourceConfig` alone, above) - `lastPreviewAt`/
+      // `resultColumns` changing does not change that key, so a dirty draft
+      // survives the refetch untouched.
+      reload();
+    },
+    [reload],
   );
   const httpPreviewValid = Boolean(
     config &&

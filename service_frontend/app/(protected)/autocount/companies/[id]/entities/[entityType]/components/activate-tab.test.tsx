@@ -398,6 +398,12 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
     expect(screen.getByTestId('activate-logging-sink-warning')).toHaveTextContent(
       'Runs on this company are logged only - no records are delivered until a Sorento target is set.',
     );
+    // Nit (review round 6) - same escape hatch the companyCode prerequisite
+    // gives, so the warning is never a dead end.
+    expect(screen.getByTestId('activate-logging-sink-warning')).toHaveTextContent(/Open company/);
+    expect(
+      screen.getByRole('link', { name: 'Open company' }),
+    ).toHaveAttribute('href', '/autocount/companies/c1');
     expect(screen.getByTestId('etl-activate')).toBeEnabled();
   });
 
