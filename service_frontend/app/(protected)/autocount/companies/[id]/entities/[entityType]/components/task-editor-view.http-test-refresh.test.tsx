@@ -1,4 +1,5 @@
 import { act, fireEvent, render as rtlRender, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsProvider } from '@/providers/settings-provider';
 import type { AutocountCompanyDetail, AutocountEtlTask } from '@/types/autocount';
@@ -8,14 +9,23 @@ import { stubAuthFetch } from './task-editor-view.test-helpers';
 stubAuthFetch();
 
 /**
- * Defect 3 (tester, review round 6, live at 3110490f) - a successful
- * Source-tab Test on the API branch only set the LOCAL `httpPreviewedFor`
- * guard; nothing re-read the task, so `task.lastPreviewAt` (the ONLY thing
- * that unlocks Activate, AC-22-18) stayed stale in state after
- * Test -> Save -> Test again, until the operator left and re-entered the
- * editor. The fix: `onHttpPreviewSuccess` must call the hook's own
- * `reload()` (already used elsewhere in this file) so the freshly-stamped
- * `lastPreviewAt`/`resultColumns` land in `task` without a remount.
+ * sprint-5/08 review round 7 - B1: round 6's fix called `reload()` inside
+ * `onHttpPreviewSuccess`, which re-triggered the `[task]`-keyed seed effect
+ * with the SAVED connectionId/path pair, overwriting the just-tested
+ * (possibly UNSAVED) pair `onHttpPreviewSuccess` had just set. Save would go
+ * from enabled back to disabled with no explanation, and a changed
+ * endpoint/connection could never be saved.
+ *
+ * The fix: the backend's `preview_http` echoes the task AFTER stamping as an
+ * additive `HttpPreview.task` (round 7); `onHttpPreviewSuccess` `apply()`s it
+ * directly (no second GET to race a concurrent Save), and the seed effect
+ * only seeds `httpPreviewedFor` ONCE (`prev ?? seeded`) rather than on every
+ * `task` change.
+ *
+ * Unlike the round-6 version of this file, `useAutocountEtlTask` and
+ * `useHttpPreview` are the REAL hooks here (mocked at the SERVICE layer) -
+ * a fully-mocked hook could not have caught B1, since the bug lived in how
+ * the real seed effect reacted to a real `apply()`.
  */
 function render(ui: React.ReactElement) {
   return rtlRender(<SettingsProvider>{ui}</SettingsProvider>);
@@ -25,7 +35,90 @@ vi.mock('@/hooks/use-can', () => ({
   useCan: () => ({ can: () => true, ready: true }),
 }));
 
-function unpreviewedHttpTask(): AutocountEtlTask {
+// The Review & Activate tab (`ActivateTab`) reads `useDatetime()` ->
+// `useSession()` - unrelated to this suite's Test/apply() seam, stubbed the
+// same way `app/(protected)/settings/general/page.test.tsx` does.
+vi.mock('next-auth/react', () => ({
+  useSession: () => ({ status: 'authenticated', data: { user: { id: 'u1', timezone: 'UTC' } } }),
+  SessionProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
+const getEtlTask = vi.fn();
+const updateEtlTask = vi.fn();
+const previewHttp = vi.fn();
+vi.mock('@/services/autocount-service', () => ({
+  autocountService: {
+    getEtlTask: (...args: unknown[]) => getEtlTask(...args),
+    updateEtlTask: (...args: unknown[]) => updateEtlTask(...args),
+    previewHttp: (...args: unknown[]) => previewHttp(...args),
+  },
+}));
+
+vi.mock('@/hooks/use-autocount-etl', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/use-autocount-etl')>();
+  return {
+    // `useAutocountEtlTask`/`useHttpPreview` stay REAL - the exact seam B1
+    // lived in. Every other hook this editor pulls in is unrelated to the
+    // Source-tab Test flow and stays a plain stub (unmocked, it would need
+    // its own service wiring for no benefit to this suite).
+    ...actual,
+    useLineFetcher: () => ({ fetchLines: vi.fn().mockResolvedValue([]) }),
+    useAutocountSqlConnections: () => ({
+      connections: [{ id: 'conn-sql-1', name: 'AutoCount DB', dialect: 'mssql', database: 'AED_2024' }],
+      isLoading: false,
+      error: null,
+    }),
+    useAutocountApiConnections: () => ({
+      connections: [
+        { id: 'conn-api-mocha', name: 'Mocha REST', baseUrl: 'https://hapi.sorento.cc.cd/api/db2', auth: 'none' as const },
+      ],
+      isLoading: false,
+      error: null,
+    }),
+    useAutocountSqlSchema: () => ({ schema: null, isLoading: false, error: null, refresh: vi.fn() }),
+    useEtlTaskLifecycle: () => ({
+      busy: null, error: null, activate: vi.fn(), pause: vi.fn(), resume: vi.fn(), runNow: vi.fn(),
+      clearError: vi.fn(),
+    }),
+    useEtlTaskPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), reset: vi.fn() }),
+    useSqlPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), reset: vi.fn() }),
+  };
+});
+
+vi.mock('@/hooks/use-autocount-mapping', () => ({
+  useAutocountMappingPresets: () => ({ presets: [], isLoading: false }),
+  useAutocountMapping: () => ({
+    view: null,
+    isLoading: false,
+    notFound: false,
+    saveError: null,
+    isSaving: false,
+    save: vi.fn(),
+    reload: vi.fn(),
+    testFormula: vi.fn(),
+    simulate: vi.fn(),
+  }),
+}));
+
+vi.mock('../../../../components/use-runs-list-config', () => ({
+  useAutocountRunsListConfig: () => ({}),
+}));
+
+const detailBox = vi.hoisted(() => ({ current: null as unknown }));
+
+vi.mock('@/hooks/use-autocount-company', () => ({
+  useAutocountCompany: () => ({
+    detail: detailBox.current,
+    isLoading: false,
+    notFound: false,
+    reload: vi.fn(),
+  }),
+}));
+
+/** A saved (never previewed this session) HTTP task - `resultColumns: []`,
+ * `lastPreviewAt: null` - matches what a real `GET .../etl-task` returns for
+ * a task that was configured, then saved, but never Tested. */
+function savedHttpTask(overrides: Partial<AutocountEtlTask> = {}): AutocountEtlTask {
   return {
     companyId: 'company-http',
     entityType: 'product',
@@ -60,6 +153,7 @@ function unpreviewedHttpTask(): AutocountEtlTask {
     lastRunErrorCode: null,
     nextIncrementalAt: null,
     nextReconcileAt: null,
+    ...overrides,
   };
 }
 
@@ -83,130 +177,130 @@ function httpCompanyDetail(): AutocountCompanyDetail {
   };
 }
 
-const detailBox = vi.hoisted(() => ({ current: null as unknown }));
-const taskBox = vi.hoisted(() => ({ current: null as unknown }));
-const httpRunSpy = vi.hoisted(() => vi.fn());
-const reloadSpy = vi.hoisted(() => vi.fn());
-
-vi.mock('@/hooks/use-autocount-company', () => ({
-  useAutocountCompany: () => ({
-    detail: detailBox.current,
-    isLoading: false,
-    notFound: false,
-    reload: vi.fn(),
-  }),
-}));
-
-vi.mock('@/hooks/use-autocount-etl', () => ({
-  useLineFetcher: () => ({ fetchLines: vi.fn().mockResolvedValue([]) }),
-  useAutocountEtlTask: () => ({
-    task: taskBox.current,
-    isLoading: false,
-    notFound: false,
-    saveError: null,
-    fieldErrors: {},
-    isSaving: false,
-    save: vi.fn().mockResolvedValue(true),
-    apply: vi.fn(),
-    reload: reloadSpy,
-  }),
-  useAutocountSqlConnections: () => ({
-    connections: [{ id: 'conn-sql-1', name: 'AutoCount DB', dialect: 'mssql', database: 'AED_2024' }],
-    isLoading: false,
-    error: null,
-  }),
-  useAutocountApiConnections: () => ({
-    connections: [
-      { id: 'conn-api-mocha', name: 'Mocha REST', baseUrl: 'https://hapi.sorento.cc.cd/api/db2', auth: 'none' as const },
-    ],
-    isLoading: false,
-    error: null,
-  }),
-  useAutocountSqlSchema: () => ({ schema: null, isLoading: false, error: null, refresh: vi.fn() }),
-  useEtlTaskLifecycle: () => ({
-    busy: null, error: null, activate: vi.fn(), pause: vi.fn(), resume: vi.fn(), runNow: vi.fn(),
-    clearError: vi.fn(),
-  }),
-  useEtlTaskPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), reset: vi.fn() }),
-  useSqlPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), reset: vi.fn() }),
-  useHttpPreview: () => ({ state: { status: 'idle' }, run: httpRunSpy, fieldErrors: {}, reset: vi.fn() }),
-}));
-
-vi.mock('@/hooks/use-autocount-mapping', () => ({
-  useAutocountMappingPresets: () => ({ presets: [], isLoading: false }),
-  useAutocountMapping: () => ({
-    view: null,
-    isLoading: false,
-    notFound: false,
-    saveError: null,
-    isSaving: false,
-    save: vi.fn(),
-    reload: vi.fn(),
-    testFormula: vi.fn(),
-    simulate: vi.fn(),
-  }),
-}));
-
-vi.mock('../../../../components/use-runs-list-config', () => ({
-  useAutocountRunsListConfig: () => ({}),
-}));
+/** The backend's own stamped-task echo (`HttpPreviewResponse.task`) - the
+ * SAVED `sourceConfig` is UNCHANGED (`preview_http` never persists the
+ * tested path/connectionId, only `resultColumns`/`lastPreviewAt` on
+ * whatever config already exists) - this is exactly the shape that used to
+ * trigger B1 when the tested path differed from the saved one. */
+function stampedTaskEcho(overrides: Partial<AutocountEtlTask> = {}): AutocountEtlTask {
+  return savedHttpTask({
+    resultColumns: ['ItemCode', 'LastModified'],
+    lastPreviewAt: '2026-09-12T05:00:00Z',
+    ...overrides,
+  });
+}
 
 function editButton() {
   return screen.getByRole('button', { name: /^Edit$/ });
 }
+function saveButton() {
+  return screen.getByRole('button', { name: /^Save/i });
+}
+function pathInput() {
+  return screen.getByLabelText('Endpoint path');
+}
+function testButton() {
+  return screen.getByTestId('http-test-path');
+}
+function activateTab() {
+  return screen.getByRole('tab', { name: /Review & Activate/i });
+}
+function activateButton() {
+  return screen.getByTestId('etl-activate');
+}
 
 beforeEach(() => {
-  httpRunSpy.mockReset();
-  reloadSpy.mockReset();
+  getEtlTask.mockReset();
+  updateEtlTask.mockReset();
+  previewHttp.mockReset();
   detailBox.current = httpCompanyDetail();
-  taskBox.current = unpreviewedHttpTask();
+  getEtlTask.mockResolvedValue(savedHttpTask());
 });
 
-describe('TaskEditorView - Source tab Test refresh (Defect 3, review round 6)', () => {
-  it('reloads the task after a successful HTTP Test so lastPreviewAt/resultColumns never go stale', async () => {
-    httpRunSpy.mockResolvedValue(true);
+describe('TaskEditorView - Source tab Test echoes the stamped task (sprint-5/08 review round 7)', () => {
+  it('a successful Test at the SAVED path enables Activate without a remount (AC-08-14/AC-22-18)', async () => {
+    previewHttp.mockResolvedValue({
+      envelope: 'paged', totalCount: 1, columns: [{ name: 'ItemCode', sample: 'A1' }],
+      rows: [{ ItemCode: 'A1' }], durationMs: 20,
+      task: stampedTaskEcho(),
+    });
+    const user = userEvent.setup();
     render(<TaskEditorView companyId="company-http" entityType="product" />);
+    await screen.findByRole('tab', { name: /Source/i });
     fireEvent.click(editButton());
 
+    // Before any Test, the never-previewed task withholds Activate.
+    await user.click(activateTab());
+    expect(activateButton()).toBeDisabled();
+
+    await user.click(screen.getByRole('tab', { name: /Source/i }));
     await act(async () => {
-      fireEvent.click(screen.getByTestId('http-test-path'));
+      fireEvent.click(testButton());
       await Promise.resolve();
     });
 
-    expect(reloadSpy).toHaveBeenCalledTimes(1);
+    // Same component instance, only a tab switch - never a remount.
+    await user.click(activateTab());
+    expect(activateButton()).toBeEnabled();
   });
 
-  it('a second successful Test (post-Save) reloads again - Activate never needs a remount to see it', async () => {
-    httpRunSpy.mockResolvedValue(true);
+  it('Save stays ENABLED after a Test at an edited path that differs from the saved one (B1)', async () => {
     render(<TaskEditorView companyId="company-http" entityType="product" />);
+    await screen.findByRole('tab', { name: /Source/i });
     fireEvent.click(editButton());
 
+    fireEvent.change(pathInput(), { target: { value: '/itembypage2' } });
+    expect(saveButton()).toBeDisabled();
+
+    // The backend's echo carries the SAVED path ('/itembypage') - it never
+    // persists the tested one - which is exactly what used to re-clobber
+    // `httpPreviewedFor` back to the saved pair (B1).
+    previewHttp.mockResolvedValue({
+      envelope: 'paged', totalCount: 1, columns: [{ name: 'ItemCode', sample: 'A1' }],
+      rows: [{ ItemCode: 'A1' }], durationMs: 20,
+      task: stampedTaskEcho(),
+    });
     await act(async () => {
-      fireEvent.click(screen.getByTestId('http-test-path'));
+      fireEvent.click(testButton());
       await Promise.resolve();
     });
-    // Simulate the Save that follows a Test clearing `lastPreviewAt` server-side
-    // (the PUT contract) - the task the hook reports now reflects that PUT.
-    taskBox.current = { ...unpreviewedHttpTask(), lastPreviewAt: null, resultColumns: [] };
 
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('http-test-path'));
-      await Promise.resolve();
-    });
-
-    expect(reloadSpy).toHaveBeenCalledTimes(2);
+    expect(previewHttp).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'conn-api-mocha', path: '/itembypage2' }),
+    );
+    expect(saveButton()).toBeEnabled();
   });
 
-  it('a FAILED Test never reloads the task', async () => {
-    httpRunSpy.mockResolvedValue(false);
+  it('an unsaved path edit survives the Test (the working draft is never reseeded by the echoed task)', async () => {
+    previewHttp.mockResolvedValue({
+      envelope: 'paged', totalCount: 1, columns: [{ name: 'ItemCode', sample: 'A1' }],
+      rows: [{ ItemCode: 'A1' }], durationMs: 20,
+      task: stampedTaskEcho(),
+    });
     render(<TaskEditorView companyId="company-http" entityType="product" />);
+    await screen.findByRole('tab', { name: /Source/i });
     fireEvent.click(editButton());
 
+    fireEvent.change(pathInput(), { target: { value: '/itembypage2' } });
     await act(async () => {
-      fireEvent.click(screen.getByTestId('http-test-path'));
+      fireEvent.click(testButton());
       await Promise.resolve();
     });
 
-    expect(reloadSpy).not.toHaveBeenCalled();
+    expect(pathInput()).toHaveValue('/itembypage2');
+  });
+
+  it('a FAILED Test never adopts a task and Save stays disabled', async () => {
+    previewHttp.mockRejectedValue(new Error('boom'));
+    render(<TaskEditorView companyId="company-http" entityType="product" />);
+    await screen.findByRole('tab', { name: /Source/i });
+    fireEvent.click(editButton());
+
+    await act(async () => {
+      fireEvent.click(testButton());
+      await Promise.resolve();
+    });
+
+    expect(saveButton()).toBeDisabled();
   });
 });

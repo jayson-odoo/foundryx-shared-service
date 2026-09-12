@@ -289,6 +289,45 @@ def test_preview_http_paged(client, headers, db):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["envelope"] == "paged"
+    # No companyId/entityType on this request -> nothing to stamp, no echo.
+    assert body.get("task") is None
+
+
+def test_preview_http_echoes_stamped_task_when_company_and_entity_given(client, headers, db):
+    """sprint-5/08 review round 7 - a Test that names both `companyId`/
+    `entityType` must echo the task AFTER stamping (the SAME shape every
+    lifecycle route returns) so the Source tab's Test button can `apply()`
+    it directly, with no second GET racing a concurrent Save (round 6's
+    `reload()` bug)."""
+    from app.main import app
+    from modules.autocount.http_client import get_http_transport
+
+    company, conn = _open_company(db)
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT,
+        _http_raw(connectionId=conn.id, path="/itembypage", keyFields=["ItemCode"]),
+    )
+    app.dependency_overrides[get_http_transport] = lambda: _transport(
+        {"TotalCount": 1, "Page": 1, "PageSize": 50, "TotalPages": 1,
+         "Data": [{"ItemCode": "A1", "LastModified": "2026-08-01T09:00:00"}]}
+    )
+    try:
+        response = client.post(
+            "/autocount/http/preview",
+            json={
+                "connectionId": conn.id, "path": "/itembypage",
+                "companyId": company.id, "entityType": ENTITY_PRODUCT,
+            },
+            headers=headers,
+        )
+    finally:
+        app.dependency_overrides.pop(get_http_transport, None)
+    assert response.status_code == 200, response.text
+    task = response.json()["task"]
+    assert task is not None
+    assert task["lastPreviewAt"] is not None
+    assert "ItemCode" in task["resultColumns"]
+    assert "LastModified" in task["resultColumns"]
 
 
 def test_preview_http_bad_connection_422(client, headers, db):

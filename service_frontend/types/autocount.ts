@@ -837,6 +837,13 @@ export interface HttpPreviewColumn {
  * definition). `paged` = a `{TotalCount,Page,PageSize,TotalPages,Data[]}`
  * envelope (a run walks every page); `list` = a bare JSON array (one
  * request). `totalCount` is present for `paged` only.
+ *
+ * `task` (sprint-5/08 review round 7) - the task AFTER stamping, present
+ * only when the request named both `companyId`/`entityType` and the
+ * preview succeeded (the SAME gate the backend's own stamping applies).
+ * The Source tab's Test button adopts this directly (`apply()`) instead of
+ * a second GET, which used to race a concurrent Save (round 6's `reload()`
+ * bug - see `task-editor-view.tsx`'s `onHttpPreviewSuccess`).
  */
 export interface HttpPreview {
   envelope: 'paged' | 'list';
@@ -844,6 +851,7 @@ export interface HttpPreview {
   columns: HttpPreviewColumn[];
   rows: Array<Record<string, unknown>>;
   durationMs: number;
+  task?: AutocountEtlTask;
 }
 
 /** `POST /autocount/http/preview` body. */

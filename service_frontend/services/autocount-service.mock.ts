@@ -2237,6 +2237,19 @@ export const mockAutocountService: AutocountService = {
       httpPreviewKey(input.connectionId, input.path, input.distinctOf),
       preview.columns.map((c) => c.name),
     );
+    // Mirrors the real backend's `preview_http` (sprint-5/08 review round
+    // 7): a clean Test that names both `companyId`/`entityType` ALSO stamps
+    // `resultColumns`/`lastPreviewAt` on the task and echoes it back, so the
+    // editor's `apply()` path is exercised the same way against the mock.
+    if (input.companyId && input.entityType) {
+      const o = overlayFor(input.companyId, input.entityType);
+      o.resultColumns = preview.columns.map((c) => c.name);
+      o.lastPreviewAt = nowIso();
+      return {
+        ...preview,
+        task: cloneJson(applyTaskOverlay(etlTaskFor(input.companyId, input.entityType))),
+      };
+    }
     return preview;
   },
 };

@@ -20,7 +20,7 @@ from ..schemas import HttpConnectionItem, HttpPreviewColumnOut, HttpPreviewReque
 from ..services import EtlService, EtlValidationError
 from ..provider import auth_mode
 from ..http_client import get_http_transport
-from .companies import _field_errors
+from .companies import _field_errors, _task_response
 
 router = APIRouter()
 
@@ -52,9 +52,17 @@ def preview_http(
     transport: Optional[Any] = Depends(get_http_transport),
 ):
     """Page-1 sample against an open (no-auth) connection (AC-08-14). A bad
-    connection or a bad path is a 422 naming the field."""
+    connection or a bad path is a 422 naming the field.
+
+    ``task`` (sprint-5/08 review round 7) echoes the task AFTER stamping when
+    the request named both ``companyId``/``entityType`` - the SAME shape
+    every lifecycle route returns, built through the ONE ``_task_response``
+    converter - so the Source tab's Test button can adopt the freshly-stamped
+    ``lastPreviewAt``/``resultColumns`` directly, with no second GET to race
+    a concurrent Save.
+    """
     try:
-        result = EtlService(db).preview_http(
+        result, task_view = EtlService(db).preview_http(
             current_user.tenant_id,
             body.connectionId,
             body.path,
@@ -77,4 +85,5 @@ def preview_http(
         ],
         rows=result.rows,
         durationMs=result.duration_ms,
+        task=_task_response(task_view) if task_view is not None else None,
     )

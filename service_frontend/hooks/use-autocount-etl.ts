@@ -484,17 +484,19 @@ export interface UseHttpPreviewResult {
   /**
    * Run the endpoint path (page 1, <=50 rows). Never throws - errors land
    * in state, the field they belong to read via `readFieldErrors`. Resolves
-   * `true` only when THIS call's own preview is the one that landed
-   * (AC-08-20 - the Source tab's save gate needs to know a specific
-   * connectionId/path pair was proved, never just "some preview succeeded
-   * at some point"); a superseded/failed run resolves `false`.
+   * the landed `HttpPreview` only when THIS call's own preview is the one
+   * that landed (AC-08-20 - the Source tab's save gate needs to know a
+   * specific connectionId/path pair was proved, never just "some preview
+   * succeeded at some point"; the caller also reads `preview.task` off it,
+   * sprint-5/08 review round 7, to `apply()` the freshly-stamped task with
+   * no second fetch); a superseded/failed run resolves `false`.
    */
   run: (
     connectionId: string,
     path: string,
     distinctOf?: string[],
     options?: HttpPreviewRunOptions,
-  ) => Promise<boolean>;
+  ) => Promise<HttpPreview | false>;
   /** The 422's field (`connectionId` | `path`), when the last run failed on
    * a specific field rather than a generic error. */
   fieldErrors: Record<string, string>;
@@ -512,7 +514,7 @@ export function useHttpPreview(): UseHttpPreviewResult {
       path: string,
       distinctOf?: string[],
       options?: HttpPreviewRunOptions,
-    ): Promise<boolean> => {
+    ): Promise<HttpPreview | false> => {
       const id = ++runId.current;
       setState({ status: 'loading' });
       setFieldErrors({});
@@ -526,7 +528,7 @@ export function useHttpPreview(): UseHttpPreviewResult {
         });
         if (id !== runId.current) return false;
         setState({ status: 'success', preview });
-        return true;
+        return preview;
       } catch (e) {
         if (id !== runId.current) return false;
         const errors = e instanceof ApiError ? readFieldErrors(e.detail) : {};

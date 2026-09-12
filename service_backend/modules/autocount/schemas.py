@@ -642,16 +642,6 @@ class HttpPreviewColumnOut(ApiModel):
     sample: Optional[str] = None
 
 
-class HttpPreviewResponse(ApiModel):
-    """``POST /autocount/http/preview`` - one page-1 sample (AC-08-14)."""
-
-    envelope: Literal["paged", "list"]
-    totalCount: Optional[int] = None
-    columns: List[HttpPreviewColumnOut] = []
-    rows: List[Dict[str, Any]] = []
-    durationMs: int = 0
-
-
 class EtlSourceConfigIn(ApiModel):
     """The task's ``source_config`` document as the editor sends it (plan 22
     §2.4). Every field is optional on the wire - a draft may be partial; the
@@ -780,6 +770,27 @@ class EtlTaskResponse(ApiModel):
     # sprint-5/08 (AC-08-33/AC-08-20 S5) - non-null only for a `brand` task
     # on a Sorento-sink company whose consumer does not yet accept brands.
     brandContractGate: Optional[BrandContractGate] = None
+
+
+class HttpPreviewResponse(ApiModel):
+    """``POST /autocount/http/preview`` - one page-1 sample (AC-08-14).
+
+    ``task`` (sprint-5/08 review round 7) echoes the SAME task shape
+    ``EtlPreviewResponse.task``/every lifecycle route already returns -
+    non-null only when the request named both ``companyId``/``entityType``
+    AND the preview succeeded (the service's own stamping gate). The Source
+    tab's Test button reads it to `apply()` the freshly-stamped
+    ``lastPreviewAt``/``resultColumns`` directly, with no second fetch and no
+    race against a save landing in between (round 6 tried a `reload()`
+    instead - superseded, see ``task-editor-view.tsx``'s ``onHttpPreviewSuccess``).
+    """
+
+    envelope: Literal["paged", "list"]
+    totalCount: Optional[int] = None
+    columns: List[HttpPreviewColumnOut] = []
+    rows: List[Dict[str, Any]] = []
+    durationMs: int = 0
+    task: Optional[EtlTaskResponse] = None
 
 
 class EtlPreviewResponse(ApiModel):

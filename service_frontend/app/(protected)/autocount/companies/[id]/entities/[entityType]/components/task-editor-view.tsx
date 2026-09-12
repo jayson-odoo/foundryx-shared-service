@@ -276,6 +276,15 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   const [httpPreviewedFor, setHttpPreviewedFor] = useState<
     { connectionId: string; path: string } | null
   >(null);
+  // Seed-ONLY-when-unset (B1, review round 7): this effect must never
+  // overwrite a session value `onHttpPreviewSuccess` already set. It used to
+  // run unconditionally on every `task` change, including the `apply()`
+  // right below - which re-seeded the SAVED connectionId/path pair over top
+  // of a just-tested UNSAVED one (edit path -> Test -> Save enabled -> the
+  // apply()'d task echoes back the SAVED pair -> Save disabled again, no
+  // message, re-Test loops). A Save always clears `lastPreviewAt`
+  // server-side (AC-22-18 parity), so the session value this effect seeds
+  // once is never staler than the saved pair it would otherwise re-derive.
   useEffect(() => {
     if (
       task &&
@@ -283,28 +292,25 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       task.sourceConfig.connectionId &&
       task.sourceConfig.path?.trim()
     ) {
-      setHttpPreviewedFor({
+      const seeded = {
         connectionId: task.sourceConfig.connectionId,
         path: task.sourceConfig.path,
-      });
+      };
+      setHttpPreviewedFor((prev) => prev ?? seeded);
     }
   }, [task]);
   const onHttpPreviewSuccess = useCallback(
-    (target: { connectionId: string; path: string }) => {
+    (target: { connectionId: string; path: string }, previewedTask?: AutocountEtlTask) => {
       setHttpPreviewedFor(target);
-      // Defect 3 (review round 6): a clean Test also stamps `resultColumns`/
-      // `lastPreviewAt` on the task SERVER-SIDE (`preview_http`'s task echo,
-      // AC-08-14) - the ONLY place Activate reads it is `task` state here, so
-      // a Test success must re-fetch it, or a Test -> Save -> Test cycle
-      // leaves Activate reading a stale null until the operator remounts the
-      // editor. Safe against unsaved edits: `reload()` only replaces `task`,
-      // and the working `config`/`sourceKind` reseed off `baselineKey`
-      // (derived from `sourceConfig` alone, above) - `lastPreviewAt`/
-      // `resultColumns` changing does not change that key, so a dirty draft
-      // survives the refetch untouched.
-      reload();
+      // sprint-5/08 review round 7 - the backend's `preview_http` echoes the
+      // task AFTER stamping (`HttpPreview.task`, built off the SAME PUT
+      // config the sink Test just proved) as an additive `task` field;
+      // `apply()` adopts it directly so `task.lastPreviewAt`/`resultColumns`
+      // (Activate's own read) are fresh with no second fetch - closing the
+      // race a plain `reload()` had against a concurrent Save (round 6).
+      if (previewedTask) apply(previewedTask);
     },
-    [reload],
+    [apply],
   );
   const httpPreviewValid = Boolean(
     config &&

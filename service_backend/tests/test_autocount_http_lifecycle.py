@@ -383,10 +383,12 @@ def test_activate_logging_sink_company_without_code_succeeds_and_runs(db, monkey
         {"TotalCount": 1, "Page": 1, "PageSize": 50, "TotalPages": 1,
          "Data": [{"ItemCode": "A1", "LastModified": "2026-08-01T09:00:00"}]}
     )
-    EtlService(db).preview_http(
+    _, previewed_task = EtlService(db).preview_http(
         DEFAULT_TENANT_ID, conn.id, "/itembypage",
         company_id=company.id, entity_type=ENTITY_PRODUCT, transport=preview_transport,
     )
+    assert previewed_task is not None
+    assert previewed_task.last_preview_at is not None
 
     view = EtlService(db).activate_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
     assert view.etl_status == ETL_STATUS_ACTIVE

@@ -796,7 +796,7 @@ class EtlService:
         company_id: Optional[str] = None,
         entity_type: Optional[str] = None,
         transport: Any = None,
-    ):
+    ) -> Tuple[Any, Optional["EtlTaskView"]]:
         """One page-1 sample against an OPEN connection (AC-08-14).
 
         ``connectionId`` is tenant- AND provider-scoped and must be a no-auth
@@ -804,6 +804,14 @@ class EtlService:
         404 (the id may be perfectly real, just not usable here). When both
         ``company_id``/``entity_type`` are given, a clean result also stamps
         ``result_columns``/``last_preview_at`` on the task, tenant-scoped.
+
+        Returns ``(HttpPreviewResult, EtlTaskView | None)`` - the second
+        element is the task AFTER stamping, non-``None`` only when
+        ``company_id``/``entity_type`` were both given and the config exists
+        (sprint-5/08 review round 7). This is the ONE place the stamped task
+        is read back, so the router's response and the caller never drift
+        against what actually got committed (a separate GET raced a
+        concurrent Save - review round 6's ``reload()`` bug).
 
         ``transport``, when given, is a FULL ``httpx.Client`` used AS-IS
         (house convention - see ``probe_open_connection``) - production
@@ -828,6 +836,7 @@ class EtlService:
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc
 
+        task_view: Optional["EtlTaskView"] = None
         if company_id and entity_type:
             self.companies.get(tenant_id, company_id)  # tenant-scope guard
             config = self.configs.get(tenant_id, company_id, entity_type)
@@ -835,7 +844,10 @@ class EtlService:
                 config.result_columns = list(result.columns)
                 config.last_preview_at = datetime.now(timezone.utc)
                 self.db.commit()
-        return result
+                task_view = self._task_view(
+                    company_id, entity_type, config, tenant_id=tenant_id
+                )
+        return result, task_view
 
     # ── task (AC-22-11) ──────────────────────────────────────────────────────
 

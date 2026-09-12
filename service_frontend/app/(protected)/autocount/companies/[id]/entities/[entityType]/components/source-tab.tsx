@@ -37,6 +37,7 @@ import type {
   AutocountApiConnection,
   AutocountConnectionAuth,
   AutocountEtlSourceConfig,
+  AutocountEtlTask,
   AutocountFormulaTestResult,
   AutocountMappingPreset,
   AutocountSqlConnection,
@@ -126,8 +127,17 @@ export interface SourceTabProps {
    * CURRENT config (an edit to either field invalidates the previous
    * success by comparing against it, never a separate reset call). Omitted
    * only in tests that render the tab standalone with no save gate to feed.
+   *
+   * `task` (sprint-5/08 review round 7) is the response's own stamped task
+   * (`HttpPreview.task`) when the backend echoed one - `TaskEditorView`
+   * `apply()`s it directly, replacing the round-6 `reload()` that raced a
+   * concurrent Save. `undefined` for a mocked `httpPreview.run` that still
+   * resolves a bare `true` (kept tolerant on purpose, see `onTestHttp`).
    */
-  onHttpPreviewSuccess?: (target: { connectionId: string; path: string }) => void;
+  onHttpPreviewSuccess?: (
+    target: { connectionId: string; path: string },
+    task?: AutocountEtlTask,
+  ) => void;
 }
 
 const NO_WATERMARK = '';
@@ -354,16 +364,18 @@ export function SourceTab({
     if (!config.connectionId || !config.path) return;
     const target = { connectionId: config.connectionId, path: config.path };
     // `Promise.resolve(...)` tolerates a test double whose mocked `run`
-    // returns a plain value (or nothing) rather than a real promise - only
-    // a REAL `true` (this exact connectionId/path pair proved) ever reports
-    // success upward (AC-08-20).
+    // returns a plain boolean rather than the real `HttpPreview | false` -
+    // any truthy result (this exact connectionId/path pair proved) reports
+    // success upward (AC-08-20); `result.task` (sprint-5/08 review round 7,
+    // absent on a plain-boolean test double) is forwarded so the editor can
+    // `apply()` it without a second fetch.
     void Promise.resolve(
       httpPreview.run(config.connectionId, config.path, config.distinctOf ?? undefined, {
         companyId,
         entityType,
       }),
-    ).then((ok) => {
-      if (ok) onHttpPreviewSuccess?.(target);
+    ).then((result) => {
+      if (result) onHttpPreviewSuccess?.(target, typeof result === 'object' ? result.task : undefined);
     });
   }, [companyId, config.connectionId, config.distinctOf, config.path, entityType, httpPreview, onHttpPreviewSuccess]);
 

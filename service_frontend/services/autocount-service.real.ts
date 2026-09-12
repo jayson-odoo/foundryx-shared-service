@@ -95,6 +95,11 @@ const SQL_SHAPE_DEFAULTS: Pick<
   filterFormula: null,
 };
 
+// Every route that returns (or echoes) an `AutocountEtlTask` pipes it through
+// this ONE normalizer - a saved HTTP task's wire `sourceConfig` carries only
+// its OWN keys (AC-08-30), so the SQL-shape fields the editor's single
+// `AutocountEtlSourceConfig` type still declares (`query`/`keyColumns`/...)
+// would otherwise be `undefined`, not the shape's own defaults.
 function normalizeEtlTask(task: AutocountEtlTask): AutocountEtlTask {
   return { ...task, sourceConfig: { ...SQL_SHAPE_DEFAULTS, ...task.sourceConfig } };
 }
@@ -364,7 +369,9 @@ export const realAutocountService: AutocountService = {
     return apiFetch<HttpPreview>('/autocount/http/preview', {
       method: 'POST',
       body: JSON.stringify(input),
-    });
+    }).then((result) =>
+      result.task ? { ...result, task: normalizeEtlTask(result.task) } : result,
+    );
   },
 };
 
