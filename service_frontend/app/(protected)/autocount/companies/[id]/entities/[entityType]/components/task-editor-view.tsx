@@ -265,6 +265,41 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   const derivedImpl: 'sql_db' | 'autocount_http' | 'autocount_read' =
     sourceKind === 'db' ? 'sql_db' : derivedApiAuth === 'none' ? 'autocount_http' : 'autocount_read';
 
+  // AC-08-20 - Save on the API branch is withheld until a Test succeeded for
+  // the config's CURRENT connectionId/path pair (mirrors the SQL branch's
+  // server-side "Test a query first" 422, but client-side so the operator
+  // never hits it in the first place). Seeded from the SAVED task's own last
+  // preview (`resultColumns` non-empty against the SAME saved connection/
+  // path) so re-opening an already-tested, already-active task never demands
+  // a redundant re-test; an edit to either field simply stops matching the
+  // comparison below - no separate "reset" call needed.
+  const [httpPreviewedFor, setHttpPreviewedFor] = useState<
+    { connectionId: string; path: string } | null
+  >(null);
+  useEffect(() => {
+    if (
+      task &&
+      task.resultColumns.length > 0 &&
+      task.sourceConfig.connectionId &&
+      task.sourceConfig.path?.trim()
+    ) {
+      setHttpPreviewedFor({
+        connectionId: task.sourceConfig.connectionId,
+        path: task.sourceConfig.path,
+      });
+    }
+  }, [task]);
+  const onHttpPreviewSuccess = useCallback(
+    (target: { connectionId: string; path: string }) => setHttpPreviewedFor(target),
+    [],
+  );
+  const httpPreviewValid = Boolean(
+    config &&
+      httpPreviewedFor &&
+      httpPreviewedFor.connectionId === (config.connectionId ?? '') &&
+      httpPreviewedFor.path === (config.path ?? ''),
+  );
+
   const onSave = useCallback(async (): Promise<boolean> => {
     if (!config) return false;
     if (derivedImpl === 'autocount_read') {
@@ -550,6 +585,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 lockedApiConnection={lockedApiConnection}
                 httpPreview={httpPreview}
                 companyId={companyId}
+                onHttpPreviewSuccess={onHttpPreviewSuccess}
               />
             </div>
           ),
@@ -669,6 +705,10 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       editable: true,
       editPermission: AC_COMPANIES_MANAGE,
       isDirty: dirty,
+      // AC-08-20 - withheld until Test proved the CURRENT path/connectionId
+      // pair; never affects the Database branch (`derivedImpl !==
+      // 'autocount_http'` there).
+      saveDisabled: derivedImpl === 'autocount_http' && !httpPreviewValid,
       onSave,
       onCancel,
     };
@@ -688,6 +728,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     fieldErrors,
     headerPreviewRows,
     httpPreview,
+    httpPreviewValid,
     initialTab,
     lifecycle,
     lineColumnTypes,
@@ -699,6 +740,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     onCancel,
     onChange,
     onFetchLines,
+    onHttpPreviewSuccess,
     onRan,
     onSave,
     onSourceKindChange,

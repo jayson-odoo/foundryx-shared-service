@@ -184,6 +184,23 @@ export function productDependencyWarning(
   return 'No active category or unit-of-measure task yet - products may not sync until one runs.';
 }
 
+/**
+ * The Review & Activate banner for a `brand` task whose consumer contract
+ * does not yet accept brands (sprint-5/08, AC-08-33) - a WARNING, never a
+ * block: the task still activates and runs, it simply falls back to the
+ * logging sink for `brand` until the consumer deploys the entity. `null`
+ * once `task.brandContractGate` is absent (every non-brand task, and a
+ * brand task the consumer already accepts).
+ */
+export function brandContractBanner(
+  task: Pick<AutocountEtlTask, 'brandContractGate'>,
+): string | null {
+  const gate = task.brandContractGate;
+  if (!gate) return null;
+  const version = gate.version ?? 'unknown';
+  return `Consumer contract ${version} - brands land when ${gate.requiredVersion} is deployed`;
+}
+
 const ANCHOR_TITLES: Record<AutocountAnchorErrorCode, string> = {
   COMPANY_ANCHOR_REQUIRED: 'Sorento company code required',
   UNKNOWN_COMPANY: 'Unknown Sorento company',

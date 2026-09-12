@@ -26,6 +26,7 @@ import { useDatetime } from '@/hooks/use-datetime';
 import {
   activatePrerequisites,
   anchorErrorTitle,
+  brandContractBanner,
   previewFailedBlocksActivation,
   productDependencyWarning,
 } from '@/lib/autocount-etl';
@@ -107,6 +108,7 @@ export function ActivateTab({
   // makes activating a `product` task before its category/UOM dependency
   // perfectly safe - it just resolves on a later run instead of the next one.
   const dependencyWarning = productDependencyWarning(task.entityType, entities);
+  const brandBanner = brandContractBanner(task);
   const status = task.etlStatus;
   const busy = lifecycle.busy !== null || preview.state.status === 'loading';
   const previewOk = Boolean(task.lastPreviewAt);
@@ -230,6 +232,15 @@ export function ActivateTab({
             <TriangleAlert />
           </AlertIcon>
           <AlertTitle>{dependencyWarning}</AlertTitle>
+        </Alert>
+      )}
+
+      {brandBanner && (
+        <Alert variant="warning" appearance="light" data-testid="activate-brand-contract-gate">
+          <AlertIcon>
+            <TriangleAlert />
+          </AlertIcon>
+          <AlertTitle>{brandBanner}</AlertTitle>
         </Alert>
       )}
 

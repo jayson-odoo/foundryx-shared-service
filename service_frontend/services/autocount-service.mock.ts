@@ -670,6 +670,23 @@ function nextRunsFor(etlStatus: AutocountEtlTask['etlStatus'], sourceConfig: Aut
   return computeMockNextRunTimes(sourceConfig);
 }
 
+/**
+ * AC-08-33/AC-08-20 S5 - the Review & Activate banner's mock source of
+ * truth: a `brand` task on a Sorento-sink company reads GATED (contract 2.2)
+ * by default, the SAME real-world state the backend probe reports today.
+ * The operator flips it OPEN by setting the Sorento company code to
+ * `BRANDS23` (2.3, the consumer now advertises brands) - the SAME
+ * "pick a company-code sentinel" convention `anchorError`/the `DOWN` code
+ * already use above, never a hidden toggle with no on-screen control.
+ */
+function brandContractGateFor(task: AutocountEtlTask): AutocountEtlTask['brandContractGate'] {
+  if (task.entityType !== 'brand') return null;
+  const company = applyCompanyOverlay(mockCompanyState(task.companyId));
+  if (company.sinkImpl !== 'sorento') return null;
+  if ((company.sorentoCompanyCode ?? '').trim().toUpperCase() === 'BRANDS23') return null;
+  return { version: 2.2, requiredVersion: 2.3 };
+}
+
 /** Lay the session's lifecycle state over a (real or mock) task. */
 function applyTaskOverlay(task: AutocountEtlTask): AutocountEtlTask {
   const o = overlayFor(task.companyId, task.entityType);
@@ -682,6 +699,7 @@ function applyTaskOverlay(task: AutocountEtlTask): AutocountEtlTask {
     // entity-level 'autocount_read' override never touches the TASK's own
     // impl (there is no task on that path at all).
     sourceImpl: impl === 'autocount_http' ? 'autocount_http' : 'sql_db',
+    brandContractGate: brandContractGateFor(task),
     ...nextRunsFor(o.etlStatus, task.sourceConfig),
   };
 }

@@ -102,7 +102,11 @@ from ..repositories import (
     WatermarkRepository,
 )
 from ..sinks import EntitySink, UnknownSinkImpl, sink_for
-from ..sinks_sorento import sorento_sink_from_connection, sorento_supports_entity
+from ..sinks_sorento import (
+    BRAND_REQUIRED_CONTRACT_VERSION,
+    sorento_sink_from_connection,
+    sorento_supports_entity,
+)
 from ..sorento_provider import SORENTO_PROVIDER_KEY
 from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
 from ..sql_source.errors import SqlProbeFailed
@@ -789,6 +793,47 @@ class CompanyService:
             f"Company '{company.database_name}' is configured with an unknown "
             f"push sink '{impl}'."
         )
+
+    def brand_contract_gate(
+        self, tenant_id: str, company: AcCompany
+    ) -> Optional[Dict[str, Any]]:
+        """The Review & Activate banner's source of truth for a `brand` task
+        (sprint-5/08, AC-08-33/AC-08-20 S5) - the SAME live
+        ``fetch_contract_detail`` -> ``sorento_supports_entity`` probe
+        ``sink_for_company``'s brand branch already runs at push time, read
+        here for the READ path so the banner is there the moment the tab
+        opens rather than only after the operator clicks Preview/Run.
+
+        ``None`` = nothing to warn about (the company doesn't push to
+        Sorento at all, or Sorento already accepts brands) - the caller adds
+        no banner. Otherwise ``{"version": <float|None>, "requiredVersion":
+        BRAND_REQUIRED_CONTRACT_VERSION}`` - ``version`` is ``None`` only
+        when the consumer could not be reached (advisory, never raised).
+        """
+        if company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id:
+            return None
+        try:
+            conn = self._consumer_connection(tenant_id, company.sink_connection_id)
+            sink = sorento_sink_from_connection(
+                conn.config_json or {},
+                self.credentials(conn),
+                entity_type=ENTITY_BRAND,
+                company_code=company.sorento_company_code,
+            )
+        except Exception:  # noqa: BLE001 - advisory only, never blocks the read
+            return None
+        contract = sink.fetch_contract_detail()
+        supported = sorento_supports_entity(
+            ENTITY_BRAND,
+            contract_version=(contract.version if contract else None),
+            contract_entities=(contract.entities if contract else None),
+        )
+        if supported:
+            return None
+        return {
+            "version": contract.version if contract else None,
+            "requiredVersion": BRAND_REQUIRED_CONTRACT_VERSION,
+        }
 
     def set_sink_target(
         self,

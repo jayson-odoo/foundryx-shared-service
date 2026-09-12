@@ -29,6 +29,7 @@ from ..schemas import (
     EtlPreviewResponse,
     EtlRepushResponse,
     EtlRunStartResponse,
+    BrandContractGate,
     EtlTaskResponse,
     EtlTaskUpdate,
     FormulaTestRequest,
@@ -482,6 +483,11 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         nextIncrementalAt=view.next_incremental_at,
         nextReconcileAt=view.next_reconcile_at,
         initialLoad=view.initial_load,
+        brandContractGate=(
+            BrandContractGate(**view.brand_contract_gate)
+            if view.brand_contract_gate
+            else None
+        ),
     )
 
 

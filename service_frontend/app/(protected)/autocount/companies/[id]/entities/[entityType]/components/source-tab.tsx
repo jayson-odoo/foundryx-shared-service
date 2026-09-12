@@ -120,6 +120,14 @@ export interface SourceTabProps {
    * by Review & Activate's own "Preview" ceremony, never the Source tab's
    * own Test button. */
   companyId: string;
+  /**
+   * A Test succeeded for exactly this `connectionId`/`path` pair (AC-08-20) -
+   * `TaskEditorView` tracks it to withhold Save until it happens for the
+   * CURRENT config (an edit to either field invalidates the previous
+   * success by comparing against it, never a separate reset call). Omitted
+   * only in tests that render the tab standalone with no save gate to feed.
+   */
+  onHttpPreviewSuccess?: (target: { connectionId: string; path: string }) => void;
 }
 
 const NO_WATERMARK = '';
@@ -154,6 +162,7 @@ export function SourceTab({
   lockedApiConnection = null,
   httpPreview,
   companyId,
+  onHttpPreviewSuccess,
 }: SourceTabProps) {
   const isDocument = isDocumentEntity(entityType);
   const connection = connections.find((c) => c.id === config.connectionId) ?? null;
@@ -343,11 +352,20 @@ export function SourceTab({
 
   const onTestHttp = useCallback(() => {
     if (!config.connectionId || !config.path) return;
-    void httpPreview.run(config.connectionId, config.path, config.distinctOf ?? undefined, {
-      companyId,
-      entityType,
+    const target = { connectionId: config.connectionId, path: config.path };
+    // `Promise.resolve(...)` tolerates a test double whose mocked `run`
+    // returns a plain value (or nothing) rather than a real promise - only
+    // a REAL `true` (this exact connectionId/path pair proved) ever reports
+    // success upward (AC-08-20).
+    void Promise.resolve(
+      httpPreview.run(config.connectionId, config.path, config.distinctOf ?? undefined, {
+        companyId,
+        entityType,
+      }),
+    ).then((ok) => {
+      if (ok) onHttpPreviewSuccess?.(target);
     });
-  }, [companyId, config.connectionId, config.distinctOf, config.path, entityType, httpPreview]);
+  }, [companyId, config.connectionId, config.distinctOf, config.path, entityType, httpPreview, onHttpPreviewSuccess]);
 
   const onApiConnectionChange = useCallback(
     (id: string) => {

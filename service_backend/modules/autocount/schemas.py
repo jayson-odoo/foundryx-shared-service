@@ -708,6 +708,15 @@ class InitialLoadProgress(ApiModel):
     kind: Optional[str] = None
 
 
+class BrandContractGate(ApiModel):
+    """sprint-5/08 (AC-08-33/AC-08-20 S5) - non-null only for a `brand` task
+    whose consumer does not yet accept brands; drives the Review & Activate
+    banner ("Consumer contract 2.2 - brands land when 2.3 is deployed")."""
+
+    version: Optional[float] = None
+    requiredVersion: float
+
+
 class EtlTaskUpdate(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -768,6 +777,9 @@ class EtlTaskResponse(ApiModel):
     # (never configured, or the last one completed) - the FE offers no
     # "continues" affordance in that case.
     initialLoad: Optional[InitialLoadProgress] = None
+    # sprint-5/08 (AC-08-33/AC-08-20 S5) - non-null only for a `brand` task
+    # on a Sorento-sink company whose consumer does not yet accept brands.
+    brandContractGate: Optional[BrandContractGate] = None
 
 
 class EtlPreviewResponse(ApiModel):

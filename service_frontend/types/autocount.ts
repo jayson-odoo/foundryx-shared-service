@@ -923,6 +923,24 @@ export interface AutocountEtlTask {
    */
   nextIncrementalAt: string | null; // ISO Z
   nextReconcileAt: string | null; // ISO Z
+  /**
+   * sprint-5/08 (AC-08-33/AC-08-20 S5) - non-null ONLY for a `brand` task
+   * whose consumer does not yet accept brands (the live
+   * `fetch_contract_detail` -> `sorento_supports_entity` probe, read the
+   * moment the task loads rather than only after Preview/Run). Drives the
+   * Review & Activate banner ("Consumer contract 2.2 - brands land when 2.3
+   * is deployed"). Optional/absent reads as `null` (back-compat with every
+   * fixture/task built before this field existed, same convention as
+   * `sourceImpl` above) - nothing to warn about.
+   */
+  brandContractGate?: AutocountBrandContractGate | null;
+}
+
+/** `AutocountEtlTask.brandContractGate` (AC-08-33/AC-08-20 S5). `version` is
+ * `null` only when the consumer could not be reached (advisory). */
+export interface AutocountBrandContractGate {
+  version: number | null;
+  requiredVersion: number;
 }
 
 /** `PUT .../etl-task` body - replaces the task's source config (draft save). */

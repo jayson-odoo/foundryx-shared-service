@@ -212,6 +212,55 @@ def test_sink_for_company_brand_falls_back_to_logging_on_2_2_contract(monkeypatc
     assert sink.name == SINK_LOGGING
 
 
+# ── S5 (sprint-5/08 review round 1 follow-up, AC-08-33/AC-08-20 S5) ─────────
+# `EtlService.get_task`/`_task_view` surface the SAME live contract gate on
+# the READ path (`EtlTaskView.brand_contract_gate`), not only at push time -
+# the Review & Activate banner must be there the moment the tab opens,
+# never only after the operator clicks Preview/Run.
+
+
+def test_get_task_brand_contract_gate_populated_on_2_2_contract(monkeypatch, _brand_gate_rig):
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.services.etl_service import EtlService
+    from modules.autocount.sinks_sorento import SorentoContractInfo
+
+    monkeypatch.setattr(
+        SorentoSink, "fetch_contract_detail",
+        lambda self: SorentoContractInfo(version=2.2, entities=["suppliers", "customers"]),
+    )
+    db, company = _brand_gate_rig
+    view = EtlService(db).get_task(DEFAULT_TENANT_ID, company.id, ENTITY_BRAND)
+    assert view.brand_contract_gate == {"version": 2.2, "requiredVersion": 2.3}
+
+
+def test_get_task_brand_contract_gate_none_once_2_3_advertises_brands(monkeypatch, _brand_gate_rig):
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.services.etl_service import EtlService
+    from modules.autocount.sinks_sorento import SorentoContractInfo
+
+    monkeypatch.setattr(
+        SorentoSink, "fetch_contract_detail",
+        lambda self: SorentoContractInfo(version=2.3, entities=["brands"]),
+    )
+    db, company = _brand_gate_rig
+    view = EtlService(db).get_task(DEFAULT_TENANT_ID, company.id, ENTITY_BRAND)
+    assert view.brand_contract_gate is None
+
+
+def test_get_task_brand_contract_gate_none_for_a_non_brand_entity(monkeypatch, _brand_gate_rig):
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.services.etl_service import EtlService
+    from modules.autocount.sinks_sorento import SorentoContractInfo
+
+    monkeypatch.setattr(
+        SorentoSink, "fetch_contract_detail",
+        lambda self: SorentoContractInfo(version=2.2, entities=["suppliers"]),
+    )
+    db, company = _brand_gate_rig
+    view = EtlService(db).get_task(DEFAULT_TENANT_ID, company.id, "product")
+    assert view.brand_contract_gate is None
+
+
 # ── AC-08-35: 429 mid-batch sleeps Retry-After capped at 60s, once, retries ──
 
 

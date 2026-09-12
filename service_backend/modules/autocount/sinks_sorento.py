@@ -149,6 +149,13 @@ _DEPENDENT_ENTITIES = {
 }
 
 
+# The consumer contract `brand` needs (sprint-5/08, AC-08-33/AC-08-20's S5
+# banner field) - named so the ONE literal is shared between the gate check
+# below and whatever reports it to the operator, rather than the same magic
+# number typed twice and drifting the day 2.3 actually ships.
+BRAND_REQUIRED_CONTRACT_VERSION = 2.3
+
+
 def sorento_supports_entity(
     entity_type: str,
     *,
@@ -181,7 +188,7 @@ def sorento_supports_entity(
         return True
     if contract_version is None or contract_entities is None:
         return False
-    return contract_version >= 2.3 and "brands" in contract_entities
+    return contract_version >= BRAND_REQUIRED_CONTRACT_VERSION and "brands" in contract_entities
 
 
 def sorento_supported_entities_label() -> str:

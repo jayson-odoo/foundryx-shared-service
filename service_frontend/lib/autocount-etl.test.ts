@@ -7,6 +7,7 @@ import {
   STATUS_VOCABULARY,
   activatePrerequisites,
   anchorErrorTitle,
+  brandContractBanner,
   derivePrefix,
   formatDurationMs,
   httpPreviewAsSqlPreview,
@@ -416,6 +417,22 @@ describe('productDependencyWarning (plan 22 S4, AC-22-23)', () => {
         { entityType: 'unit_of_measure', etlStatus: 'active' },
       ]),
     ).toBeNull();
+  });
+});
+
+describe('brandContractBanner (sprint-5/08, AC-08-33/AC-08-20 S5)', () => {
+  it('names the real advertised version when the consumer does not yet accept brands', () => {
+    expect(brandContractBanner({ brandContractGate: { version: 2.2, requiredVersion: 2.3 } })).toBe(
+      'Consumer contract 2.2 - brands land when 2.3 is deployed',
+    );
+  });
+
+  it('is null once the gate clears (contract 2.3 with brands advertised)', () => {
+    expect(brandContractBanner({ brandContractGate: null })).toBeNull();
+  });
+
+  it('is null when the field is absent (every non-brand task, back-compat fixtures)', () => {
+    expect(brandContractBanner({})).toBeNull();
   });
 });
 

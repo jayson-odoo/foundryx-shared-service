@@ -481,14 +481,20 @@ export interface HttpPreviewRunOptions {
 
 export interface UseHttpPreviewResult {
   state: HttpPreviewState;
-  /** Run the endpoint path (page 1, <=50 rows). Never throws - errors land
-   * in state, the field they belong to read via `readFieldErrors`. */
+  /**
+   * Run the endpoint path (page 1, <=50 rows). Never throws - errors land
+   * in state, the field they belong to read via `readFieldErrors`. Resolves
+   * `true` only when THIS call's own preview is the one that landed
+   * (AC-08-20 - the Source tab's save gate needs to know a specific
+   * connectionId/path pair was proved, never just "some preview succeeded
+   * at some point"); a superseded/failed run resolves `false`.
+   */
   run: (
     connectionId: string,
     path: string,
     distinctOf?: string[],
     options?: HttpPreviewRunOptions,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   /** The 422's field (`connectionId` | `path`), when the last run failed on
    * a specific field rather than a generic error. */
   fieldErrors: Record<string, string>;
@@ -506,7 +512,7 @@ export function useHttpPreview(): UseHttpPreviewResult {
       path: string,
       distinctOf?: string[],
       options?: HttpPreviewRunOptions,
-    ) => {
+    ): Promise<boolean> => {
       const id = ++runId.current;
       setState({ status: 'loading' });
       setFieldErrors({});
@@ -518,15 +524,18 @@ export function useHttpPreview(): UseHttpPreviewResult {
           companyId: options?.companyId,
           entityType: options?.entityType,
         });
-        if (id === runId.current) setState({ status: 'success', preview });
+        if (id !== runId.current) return false;
+        setState({ status: 'success', preview });
+        return true;
       } catch (e) {
-        if (id !== runId.current) return;
+        if (id !== runId.current) return false;
         const errors = e instanceof ApiError ? readFieldErrors(e.detail) : {};
         setFieldErrors(errors);
         setState({
           status: 'error',
           message: e instanceof ApiError ? e.message : 'The preview could not be run.',
         });
+        return false;
       }
     },
     [],

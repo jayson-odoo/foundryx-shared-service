@@ -266,6 +266,12 @@ class EtlTaskView:
     next_reconcile_at: Optional[datetime] = None
     # ── continuation (plan sprint-5/03 S1/S4, AC-03-03/21) ───────────────────
     initial_load: Optional[Dict[str, Any]] = None
+    # sprint-5/08 (AC-08-33/AC-08-20 S5) - non-null ONLY for a `brand` task on
+    # a Sorento-sink company whose consumer does not yet accept brands:
+    # ``{"version": <float|None>, "requiredVersion": 2.3}``. Drives the
+    # Review & Activate banner ("Consumer contract 2.2 - brands land when 2.3
+    # is deployed") without the operator having to run Preview first.
+    brand_contract_gate: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -843,10 +849,15 @@ class EtlService:
     def get_task(self, tenant_id: str, company_id: str, entity_type: str) -> EtlTaskView:
         self._require_task_entity(tenant_id, company_id, entity_type)
         config = self.configs.get(tenant_id, company_id, entity_type)
-        return self._task_view(company_id, entity_type, config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
 
     def _task_view(
-        self, company_id: str, entity_type: str, config: Optional[AcEntityConfig]
+        self,
+        company_id: str,
+        entity_type: str,
+        config: Optional[AcEntityConfig],
+        *,
+        tenant_id: Optional[str] = None,
     ) -> EtlTaskView:
         source_impl = (
             (config.source_impl if config is not None else None) or SOURCE_IMPL_SQL_DB
@@ -892,7 +903,25 @@ class EtlService:
                 config.next_reconcile_at if config is not None else None
             ),
             initial_load=self._initial_load(company_id, entity_type, config),
+            brand_contract_gate=self._brand_contract_gate(tenant_id, company_id, entity_type),
         )
+
+    def _brand_contract_gate(
+        self, tenant_id: Optional[str], company_id: str, entity_type: str
+    ) -> Optional[Dict[str, Any]]:
+        """AC-08-33/AC-08-20 S5 - gated to `brand` only, so the overwhelming
+        majority of task-view reads (every other entity) never touch the
+        network here. `tenant_id` absent (no call site should ever omit it,
+        but the keyword stays optional so an unrelated future caller of
+        `_task_view` cannot be forced to thread one through) reads as "not
+        provable", same as an unreachable consumer."""
+        if entity_type != ENTITY_BRAND or tenant_id is None:
+            return None
+        try:
+            company = self.companies.get(tenant_id, company_id)
+        except Exception:  # noqa: BLE001 - advisory only, never blocks the read
+            return None
+        return self.companies.brand_contract_gate(tenant_id, company)
 
     def _initial_load(
         self, company_id: str, entity_type: str, config: Optional[AcEntityConfig]
@@ -1204,7 +1233,7 @@ class EtlService:
 
         self.db.commit()
         self.db.refresh(config)
-        return self._task_view(company_id, entity_type, config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
 
     def update_task(
         self, tenant_id: str, company_id: str, entity_type: str, raw: Dict[str, Any]
@@ -1543,7 +1572,7 @@ class EtlService:
                 )
         self.db.commit()
         self.db.refresh(config)
-        return self._task_view(company_id, entity_type, config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
 
     # ── task lifecycle (plan 22 §2.6, AC-22-18/19/20) ────────────────────────
     #
@@ -1698,7 +1727,7 @@ class EtlService:
                 warnings["pagedPreview"] = True
             if warnings:
                 payload["warnings"] = warnings
-            return self._task_view(company_id, entity_type, config), payload
+            return self._task_view(company_id, entity_type, config, tenant_id=tenant_id), payload
 
         try:
             result = sink.dry_run([r for r in records if r is not None])
@@ -1749,7 +1778,7 @@ class EtlService:
         }
         if warnings:
             payload["warnings"] = warnings
-        return self._task_view(company_id, entity_type, config), payload
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id), payload
 
     def _preview_warnings(
         self,
@@ -2032,7 +2061,7 @@ class EtlService:
         config.next_incremental_at = now
         self.db.commit()
         self.db.refresh(config)
-        return self._task_view(company_id, entity_type, config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
 
     def pause_task(self, tenant_id: str, company_id: str, entity_type: str) -> EtlTaskView:
         """active → paused. The sweep stops dispatching; an in-flight run
@@ -2045,7 +2074,7 @@ class EtlService:
         config.next_reconcile_at = None
         self.db.commit()
         self.db.refresh(config)
-        return self._task_view(company_id, entity_type, config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
 
     def resume_task(self, tenant_id: str, company_id: str, entity_type: str) -> EtlTaskView:
         """paused → active, with NO re-preview ceremony (AC-22-19). Pausing is
@@ -2061,7 +2090,7 @@ class EtlService:
         )
         self.db.commit()
         self.db.refresh(config)
-        return self._task_view(company_id, entity_type, config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
 
     def run_task_now(
         self,
@@ -2118,7 +2147,7 @@ class EtlService:
             "run_id": run.id if run is not None else "",
             "job_id": job.id,
             "status": job.status,
-            "task": self._task_view(company_id, entity_type, config),
+            "task": self._task_view(company_id, entity_type, config, tenant_id=tenant_id),
         }
 
     def _in_flight_guard(

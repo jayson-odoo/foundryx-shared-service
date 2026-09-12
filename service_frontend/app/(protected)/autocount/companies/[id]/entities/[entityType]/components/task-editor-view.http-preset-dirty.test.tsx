@@ -1,4 +1,4 @@
-import { fireEvent, render as rtlRender, screen } from '@testing-library/react';
+import { act, fireEvent, render as rtlRender, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsProvider } from '@/providers/settings-provider';
 import type { AutocountCompanyDetail, AutocountEtlTask } from '@/types/autocount';
@@ -117,7 +117,15 @@ vi.mock('@/hooks/use-autocount-etl', () => ({
   }),
   useEtlTaskPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), reset: vi.fn() }),
   useSqlPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), reset: vi.fn() }),
-  useHttpPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), fieldErrors: {}, reset: vi.fn() }),
+  // sprint-5/08 S5 (AC-08-20) - `run` resolves `true` so a Test click proves
+  // the save gate; the tests below click Test before Save exactly as the
+  // gate now requires.
+  useHttpPreview: () => ({
+    state: { status: 'idle' },
+    run: vi.fn().mockResolvedValue(true),
+    fieldErrors: {},
+    reset: vi.fn(),
+  }),
 }));
 
 vi.mock('@/hooks/use-autocount-mapping', () => ({
@@ -163,15 +171,25 @@ describe('TaskEditorView - a never-configured HTTP task is dirty from the first 
   it('clicking Save actually calls the save() hook (not a fake "Task saved." with nothing persisted)', async () => {
     render(<TaskEditorView companyId="company-http" entityType="product" />);
     fireEvent.click(editButton());
+    // AC-08-20 - Save is withheld until Test proves the preset-filled path/
+    // connection; this session's Test click satisfies it.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('http-test-path'));
+      await Promise.resolve();
+    });
     fireEvent.click(saveButton());
     expect(etlSaveSpy).toHaveBeenCalled();
     // The derived impl (API + no-auth connection) travels as the second arg.
     expect(etlSaveSpy.mock.calls[0][1]).toBe('autocount_http');
   });
 
-  it('the saved config carries the preset path/keyFields, not a blank draft', () => {
+  it('the saved config carries the preset path/keyFields, not a blank draft', async () => {
     render(<TaskEditorView companyId="company-http" entityType="product" />);
     fireEvent.click(editButton());
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('http-test-path'));
+      await Promise.resolve();
+    });
     fireEvent.click(saveButton());
     const [sentConfig] = etlSaveSpy.mock.calls[0];
     expect(sentConfig.path).toBe('/itembypage');
