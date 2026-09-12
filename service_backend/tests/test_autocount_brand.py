@@ -371,3 +371,58 @@ def test_sink_429_mid_batch_sleeps_retry_after_capped_once_and_retries(monkeypat
     assert len(attempts) == 2  # one 429, one retry that succeeded
     assert sleeps == [60]  # capped, slept exactly once
     assert results[0].outcome == "created"
+
+
+# ── Round 9 (user-found defect) - ``mapping_catalog.SORENTO_FIELDS`` has an
+# entry for every OTHER master (product_category, warehouse, product,
+# sales_agent, ...) but none for ``brand`` - ``accepted_fields("brand")`` is
+# empty, ``sorento_field_for`` returns ``None`` for every brand row, and the
+# Mapping tab's "Not delivered to Sorento" projection (plus the PUT guard's
+# ``accepted_field_names``, AC-15-42) admits nothing. A company with a brand
+# task shows "No deliverable fields mapped yet." even with real rows saved.
+
+
+def test_accepted_field_names_brand_matches_canonical_sink_fields_minus_minted():
+    from modules.autocount.mapping_catalog import accepted_field_names
+
+    assert accepted_field_names(ENTITY_BRAND) == {"source_doc_no", "code", "name", "description", "is_active"}
+    assert "source_ref" not in accepted_field_names(ENTITY_BRAND)  # minted, never mapped
+
+
+def test_required_field_names_brand_is_code_name_is_active():
+    from modules.autocount.mapping_catalog import required_field_names
+
+    assert required_field_names(ENTITY_BRAND) == {"code", "name", "is_active"}
+
+
+def test_sorento_field_for_brand_resolves_code_name_description():
+    from modules.autocount.mapping_catalog import sorento_field_for
+
+    assert sorento_field_for(ENTITY_BRAND, "code") == "code"
+    assert sorento_field_for(ENTITY_BRAND, "name") == "name"
+    assert sorento_field_for(ENTITY_BRAND, "description") == "description"
+    assert sorento_field_for(ENTITY_BRAND, "source_ref") is None  # still minted
+
+
+def test_replace_mapping_accepts_a_brand_row_that_would_have_422d_before_the_fix(_brand_gate_rig):
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.models import AcEntityConfig, ETL_STATUS_ACTIVE
+    from modules.autocount.services.company_service import CompanyService, MappingWriteRow
+
+    db, company = _brand_gate_rig
+    db.add(AcEntityConfig(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_BRAND,
+        source_impl="sql_db", etl_status=ETL_STATUS_ACTIVE,
+    ))
+    db.commit()
+    view = CompanyService(db).replace_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_BRAND,
+        [
+            MappingWriteRow("ItemBrand", "string", "code"),
+            MappingWriteRow("ItemBrand", "string", "name"),
+            MappingWriteRow("Description", "string", "description"),
+            MappingWriteRow("IsActive", "t_f_bool", "is_active"),
+        ],
+    )
+    fields = {row.sorento_field for row in view.rows if row.sorento_field}
+    assert {"code", "name", "description", "is_active"} <= fields

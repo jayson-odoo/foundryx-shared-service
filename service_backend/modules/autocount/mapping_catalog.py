@@ -36,6 +36,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
 from .canonical.masters import (
+    ENTITY_BRAND,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
@@ -43,6 +44,7 @@ from .canonical.masters import (
     ENTITY_SUPPLIER,
     ENTITY_UNIT_OF_MEASURE,
     ENTITY_WAREHOUSE,
+    CanonicalBrand,
     CanonicalCustomer,
     CanonicalProduct,
     CanonicalProductCategory,
@@ -209,6 +211,13 @@ SORENTO_FIELDS: Dict[str, Tuple[SorentoFieldDef, ...]] = {
     ENTITY_WAREHOUSE: _accepted(CanonicalWarehouse.SINK_FIELDS),
     ENTITY_PRODUCT: _accepted(CanonicalProduct.SINK_FIELDS),
     ENTITY_SALES_AGENT: _accepted(CanonicalSalesAgent.SINK_FIELDS),
+    # sprint-5/08 (AC-08-31) round-9 fix (user-found defect) - without this
+    # entry `accepted_fields("brand")` is empty exactly like the masters
+    # fan-out gap above once was: every brand mapping row projects as "Not
+    # delivered to Sorento" and the PUT guard's `accepted_field_names`
+    # admits nothing, so the Mapping tab shows "No deliverable fields mapped
+    # yet." even with real rows saved.
+    ENTITY_BRAND: _accepted(CanonicalBrand.SINK_FIELDS),
     # Plan 22 S5 (AC-22-24) - HEADER fields. sprint-5/02 (AC-02-02) adds the
     # LINE catalog below (``SORENTO_LINE_FIELDS``) - a document's lines are
     # now first-class operator-editable rows, not a fixed column-name
