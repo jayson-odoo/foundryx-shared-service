@@ -27,16 +27,19 @@ import { StatusBadge } from '@/components/platform/status-badge';
 import { useAutocountCompany } from '@/hooks/use-autocount-company';
 import { useCan } from '@/hooks/use-can';
 import {
+  useAutocountApiConnections,
   useAutocountEtlTask,
   useAutocountSqlConnections,
   useAutocountSqlSchema,
   useEtlTaskLifecycle,
   useEtlTaskPreview,
+  useHttpPreview,
   useLineFetcher,
   useSqlPreview,
 } from '@/hooks/use-autocount-etl';
 import { useAutocountMapping, useAutocountMappingPresets } from '@/hooks/use-autocount-mapping';
-import { isDocumentEntity, mappingSourceColumns } from '@/lib/autocount-etl';
+import { HTTP_PRESETS, isDocumentEntity, mappingSourceColumns } from '@/lib/autocount-etl';
+import { autocountService } from '@/services/autocount-service';
 import type {
   AutocountEtlSourceConfig,
   AutocountEtlStatus,
@@ -56,7 +59,12 @@ import { useAutocountRunsListConfig } from '../../../../components/use-runs-list
 import { MappingEditorBody } from '../mapping/components/mapping-editor-body';
 import { useMappingDraft } from '../mapping/components/use-mapping-draft';
 import { ActivateTab } from './activate-tab';
-import { QueryTab, type LockedConnection } from './query-tab';
+import {
+  SourceTab,
+  type LockedApiConnection,
+  type LockedConnection,
+  type SourceKind,
+} from './source-tab';
 import { ScheduleTab } from './schedule-tab';
 
 export interface TaskEditorViewProps {
@@ -81,6 +89,8 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   const { task, isLoading, notFound, saveError, fieldErrors, save, apply, reload } =
     useAutocountEtlTask(companyId, entityType);
   const sqlConnections = useAutocountSqlConnections();
+  const apiConnections = useAutocountApiConnections();
+  const httpPreview = useHttpPreview();
   const mapping = useAutocountMapping(companyId, entityType);
   const draft = useMappingDraft(mapping.view);
   const { presets } = useAutocountMappingPresets(companyId, entityType);
@@ -91,9 +101,13 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   const [runsKey, setRunsKey] = useState(0);
 
   const [config, setConfig] = useState<AutocountEtlSourceConfig | null>(null);
+  // The task's Source (sprint-5/08, D13) - API | Database, the ONE place the
+  // choice is made. Lifted here (not local to `SourceTab`) so the shell's
+  // dirty guard and the derived-impl save both see it.
+  const [sourceKind, setSourceKind] = useState<SourceKind>('db');
 
   // A DB company's task is locked to the company connection (AC-01-19) - the
-  // Query tab shows it read-only (`name · database`) instead of the picker.
+  // Database branch shows it read-only (`name · database`) instead of the picker.
   const company = detail?.company ?? null;
   const lockedConnection = useMemo<LockedConnection | null>(() => {
     if (!company || company.sourceKind !== 'db') return null;
@@ -104,22 +118,83 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     };
   }, [company, sqlConnections.connections]);
 
+  // An http/api company's API branch is locked to the company's OWN
+  // connection (sprint-5/08, AC-08-19) - only a `db` company keeps the free
+  // cross-tenant picker (AC-08-13: an HTTP task on a DB company may
+  // reference ANY open connection of the tenant).
+  const lockedApiConnection = useMemo<LockedApiConnection | null>(() => {
+    if (!company || (company.sourceKind !== 'http' && company.sourceKind !== 'api')) return null;
+    const conn = apiConnections.connections.find((c) => c.id === company.connectionId);
+    return {
+      id: company.connectionId,
+      label: conn?.name ?? company.databaseName ?? company.name,
+      auth: conn?.auth ?? (company.sourceKind === 'http' ? 'none' : 'basic'),
+    };
+  }, [apiConnections.connections, company]);
+
+  // The Source toggle's default per company kind (AC-08-18): `db` -> Database,
+  // `http`/`api` -> API.
+  const defaultSourceKind: SourceKind = company?.sourceKind === 'db' ? 'db' : 'api';
+
   // The saved config is the dirty BASELINE. A never-configured entity's draft
-  // carries `connectionId: null`, so on a DB company the locked connection is
-  // seeded here (not patched after mount): an untouched editor stays clean
-  // (no "Discard changes?" on Edit -> Cancel) and the first save carries the
-  // company connection without the operator having to notice.
+  // carries `connectionId: null`, so the locked connection (whichever branch
+  // applies) is seeded here (not patched after mount): an untouched editor
+  // stays clean (no "Discard changes?" on Edit -> Cancel) and the first save
+  // carries the company connection without the operator having to notice.
+  // The task's saved Source: an `autocount_http` task reads 'api'; a
+  // `sql_db` task with a saved query reads 'db' regardless of the company's
+  // own default (an already-configured task is never silently re-toggled);
+  // a never-configured task falls through to the company default (AC-08-18).
+  const baselineSourceKind = useMemo<SourceKind>(() => {
+    if (!task) return defaultSourceKind;
+    const impl = task.sourceImpl ?? 'sql_db';
+    if (impl === 'autocount_http') return 'api';
+    if (task.sourceConfig.query.trim()) return 'db';
+    return defaultSourceKind;
+  }, [defaultSourceKind, task]);
+
   const baseline = useMemo<AutocountEtlSourceConfig | null>(() => {
     const saved = task?.sourceConfig ?? null;
-    if (!saved || !lockedConnection) return saved;
-    return { ...saved, connectionId: saved.connectionId ?? lockedConnection.id };
-  }, [lockedConnection, task?.sourceConfig]);
+    if (!saved) return saved;
+    const lockId = lockedConnection?.id ?? lockedApiConnection?.id;
+    if (!lockId) return saved;
+    return { ...saved, connectionId: saved.connectionId ?? lockId };
+  }, [lockedApiConnection, lockedConnection, task?.sourceConfig]);
 
-  // Seed the working config from the baseline. Keyed on the config signature
-  // so a background reload with identical values never wipes an edit.
-  const baselineKey = useMemo(() => JSON.stringify(baseline), [baseline]);
+  // Seed the working config + Source toggle from the baseline. Keyed on the
+  // config signature so a background reload with identical values never
+  // wipes an edit. Foolproof-UI (AC-08-16): a never-configured task that
+  // opens straight onto API (the company's own default, AC-08-18) is
+  // pre-filled from its HTTP preset HERE, onto the WORKING config only -
+  // never baked into `baseline` itself (unlike the connection lock above).
+  // The preset is a genuinely unsaved change: nothing has reached the
+  // backend/mock yet, so `configDirty` must read true (a real Save is
+  // needed) rather than looking already-clean against a baseline that
+  // quietly carried the same values.
+  const baselineKey = useMemo(
+    () => JSON.stringify({ baseline, baselineSourceKind }),
+    [baseline, baselineSourceKind],
+  );
   useEffect(() => {
-    setConfig(baseline ? { ...baseline } : null);
+    let seeded = baseline ? { ...baseline } : null;
+    if (seeded && baselineSourceKind === 'api' && !seeded.path?.trim() && !seeded.query.trim()) {
+      const preset = HTTP_PRESETS[entityType];
+      if (preset) {
+        seeded = {
+          ...seeded,
+          path: preset.path,
+          keyFields: preset.keyFields,
+          watermarkField: preset.watermarkField,
+          // Mirrors onto the SQL field name too - ScheduleTab's incremental-
+          // floor check reads `watermarkColumn` unconditionally (AC-08-19).
+          watermarkColumn: preset.watermarkField,
+          comparedFields: preset.comparedFields,
+          distinctOf: preset.distinctOf,
+        };
+      }
+    }
+    setConfig(seeded);
+    setSourceKind(baselineSourceKind);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baselineKey]);
 
@@ -129,17 +204,141 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   // its own loading/error/success state, independent of the header preview.
   const linePreview = useSqlPreview();
 
-  const configDirty = useMemo(() => JSON.stringify(config) !== baselineKey, [config, baselineKey]);
-  const dirty = configDirty || draft.dirty;
+  const configDirty = useMemo(() => JSON.stringify(config) !== JSON.stringify(baseline), [config, baseline]);
+  const sourceKindDirty = sourceKind !== baselineSourceKind;
+  const dirty = configDirty || sourceKindDirty || draft.dirty;
 
   const onChange = useCallback((patch: Partial<AutocountEtlSourceConfig>) => {
     setConfig((prev) => (prev ? { ...prev, ...patch } : prev));
   }, []);
 
+  const onSourceKindChange = useCallback(
+    (kind: SourceKind) => {
+      setSourceKind(kind);
+      preview.reset();
+      linePreview.reset();
+      httpPreview.reset();
+      setConfig((prev) => {
+        if (!prev) return prev;
+        if (kind === 'db') {
+          const id =
+            lockedConnection?.id ??
+            (sqlConnections.connections.some((c) => c.id === prev.connectionId) ? prev.connectionId : null);
+          return { ...prev, connectionId: id };
+        }
+        const id =
+          lockedApiConnection?.id ??
+          (apiConnections.connections.some((c) => c.id === prev.connectionId) ? prev.connectionId : null);
+        // Foolproof-UI (AC-08-16): a never-configured HTTP-capable entity's
+        // Source tab opens pre-filled from its preset the FIRST time API is
+        // picked - never overwriting an operator's own already-typed path.
+        const preset = !prev.path?.trim() ? HTTP_PRESETS[entityType] : null;
+        return {
+          ...prev,
+          connectionId: id,
+          ...(preset
+            ? {
+                path: preset.path,
+                keyFields: preset.keyFields,
+                watermarkField: preset.watermarkField,
+                watermarkColumn: preset.watermarkField,
+                comparedFields: preset.comparedFields,
+                distinctOf: preset.distinctOf,
+              }
+            : {}),
+        };
+      });
+    },
+    [apiConnections.connections, entityType, httpPreview, linePreview, lockedApiConnection, lockedConnection, preview, sqlConnections.connections],
+  );
+
+  // The derived source impl (sprint-5/08 D13/plan §2.8): Database -> `sql_db`;
+  // API + a no-auth connection -> `autocount_http`; API + a basic-auth
+  // connection -> `autocount_read` (the OLD vendor-login entity path - no
+  // task at all, saved through `updateEntityConfig` instead of `save()`).
+  const derivedApiAuth =
+    sourceKind === 'api'
+      ? (lockedApiConnection?.auth ??
+        apiConnections.connections.find((c) => c.id === config?.connectionId)?.auth ??
+        null)
+      : null;
+  const derivedImpl: 'sql_db' | 'autocount_http' | 'autocount_read' =
+    sourceKind === 'db' ? 'sql_db' : derivedApiAuth === 'none' ? 'autocount_http' : 'autocount_read';
+
+  // AC-08-20 - Save on the API branch is withheld until a Test succeeded for
+  // the config's CURRENT connectionId/path pair (mirrors the SQL branch's
+  // server-side "Test a query first" 422, but client-side so the operator
+  // never hits it in the first place). Seeded from the SAVED task's own last
+  // preview (`resultColumns` non-empty against the SAME saved connection/
+  // path) so re-opening an already-tested, already-active task never demands
+  // a redundant re-test; an edit to either field simply stops matching the
+  // comparison below - no separate "reset" call needed.
+  const [httpPreviewedFor, setHttpPreviewedFor] = useState<
+    { connectionId: string; path: string } | null
+  >(null);
+  // Seed-ONLY-when-unset (B1, review round 7): this effect must never
+  // overwrite a session value `onHttpPreviewSuccess` already set. It used to
+  // run unconditionally on every `task` change, including the `apply()`
+  // right below - which re-seeded the SAVED connectionId/path pair over top
+  // of a just-tested UNSAVED one (edit path -> Test -> Save enabled -> the
+  // apply()'d task echoes back the SAVED pair -> Save disabled again, no
+  // message, re-Test loops). A Save always clears `lastPreviewAt`
+  // server-side (AC-22-18 parity), so the session value this effect seeds
+  // once is never staler than the saved pair it would otherwise re-derive.
+  useEffect(() => {
+    if (
+      task &&
+      task.resultColumns.length > 0 &&
+      task.sourceConfig.connectionId &&
+      task.sourceConfig.path?.trim()
+    ) {
+      const seeded = {
+        connectionId: task.sourceConfig.connectionId,
+        path: task.sourceConfig.path,
+      };
+      setHttpPreviewedFor((prev) => prev ?? seeded);
+    }
+  }, [task]);
+  const onHttpPreviewSuccess = useCallback(
+    (target: { connectionId: string; path: string }, previewedTask?: AutocountEtlTask) => {
+      setHttpPreviewedFor(target);
+      // sprint-5/08 review round 7 - the backend's `preview_http` echoes the
+      // task AFTER stamping (`HttpPreview.task`, built off the SAME PUT
+      // config the sink Test just proved) as an additive `task` field;
+      // `apply()` adopts it directly so `task.lastPreviewAt`/`resultColumns`
+      // (Activate's own read) are fresh with no second fetch - closing the
+      // race a plain `reload()` had against a concurrent Save (round 6).
+      if (previewedTask) apply(previewedTask);
+    },
+    [apply],
+  );
+  const httpPreviewValid = Boolean(
+    config &&
+      httpPreviewedFor &&
+      httpPreviewedFor.connectionId === (config.connectionId ?? '') &&
+      httpPreviewedFor.path === (config.path ?? ''),
+  );
+
   const onSave = useCallback(async (): Promise<boolean> => {
     if (!config) return false;
-    if (configDirty) {
-      const ok = await save({ ...config, query: config.query.trim() });
+    if (derivedImpl === 'autocount_read') {
+      // The vendor-login path (sprint-5/08 D13): no task, no mapping draft to
+      // fold in - a bare entity-config PATCH, mirroring the old
+      // `EntitySourceDialog`'s save.
+      try {
+        await autocountService.updateEntityConfig(companyId, entityType, {
+          sourceImpl: 'autocount_read',
+        });
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'That source could not be saved.');
+        return false;
+      }
+      toast.success('Task saved.');
+      reload();
+      return true;
+    }
+    if (configDirty || sourceKindDirty) {
+      const ok = await save({ ...config, query: config.query.trim() }, derivedImpl);
       if (!ok) return false;
       // A document entity's FIRST clean config save seeds its field mapping
       // server-side (`seed_document_mapping`) - the Mapping tab's own hook
@@ -168,12 +367,23 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     }
     toast.success('Task saved.');
     return true;
-  }, [config, configDirty, draft, mapping, save]);
+  }, [companyId, config, configDirty, derivedImpl, draft, entityType, mapping, reload, save, sourceKindDirty]);
 
   const onCancel = useCallback(() => {
     setConfig(baseline ? { ...baseline } : null);
+    setSourceKind(baselineSourceKind);
+    // B1 round 8 - re-derive the previewed pair from the baseline task rather
+    // than leaving it pointed at whatever was Tested during the discarded
+    // edit. Without this, Save on the SAVED, already-proved config stays
+    // disabled after a Cancel that follows an edit + Test on a different
+    // path (the seed-once effect above never re-fires - `prev` is non-null).
+    setHttpPreviewedFor(
+      task && task.resultColumns.length > 0 && task.sourceConfig.connectionId && task.sourceConfig.path?.trim()
+        ? { connectionId: task.sourceConfig.connectionId, path: task.sourceConfig.path }
+        : null,
+    );
     draft.reset();
-  }, [baseline, draft]);
+  }, [baseline, baselineSourceKind, draft, task]);
 
   const onRan = useCallback(() => setRunsKey((k) => k + 1), []);
 
@@ -262,11 +472,24 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     if (!task || !config) return null;
     const companyName = detail?.company.name;
     const label = entityLabel(entityType);
-    // A query with no key columns cannot mint source_refs - shown as a
-    // prerequisite warning (foolproof), never a silent later failure.
-    const keysMissing = config.query.trim().length > 0 && config.keyColumns.length === 0;
-    const querySaved = task.sourceConfig.query.trim().length > 0;
+    // A query/endpoint with no key columns cannot mint source_refs - shown
+    // as a prerequisite warning (foolproof), never a silent later failure.
+    const keysMissing =
+      sourceKind === 'db'
+        ? config.query.trim().length > 0 && config.keyColumns.length === 0
+        : Boolean(config.path?.trim()) && (config.keyFields?.length ?? 0) === 0;
+    const querySaved =
+      task.sourceConfig.query.trim().length > 0 || Boolean(task.sourceConfig.path?.trim());
     const status = task.etlStatus as AutocountEtlStatus;
+    // AC-08-28 - a task demoted back to draft by a source change (impl,
+    // connection, or path) keeps its `activatedAt` stamp, so a draft task
+    // that HAS one was active before this save - never a fresh, never-run task.
+    const revertedBySourceChange = status === 'draft' && Boolean(task.activatedAt);
+    // AC-08-18: derived from the WORKING Source-tab state (`derivedImpl`),
+    // never the saved task alone - a never-configured task's `sourceImpl` is
+    // absent, so reading `task.sourceImpl` straight would badge "Database"
+    // even on an `http` company's freshly-opened, never-saved editor.
+    const sourceBadgeLabel = derivedImpl === 'autocount_http' ? 'Open API' : 'Database';
 
     // The lifecycle in the form "…" so it is reachable from every tab; the
     // Review & Activate tab carries the same buttons beside the preview.
@@ -336,7 +559,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
           {companyName && <span>{companyName}</span>}
           <Badge variant="secondary" appearance="light">
             <Database className="size-3" />
-            Database
+            {sourceBadgeLabel}
           </Badge>
           <StatusBadge status={status} registry={AC_ETL_STATUS_REGISTRY} />
           {task.lastRunError && (
@@ -349,7 +572,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       tabs: [
         {
           id: 'query',
-          label: 'Query',
+          label: 'Source',
           icon: Database,
           render: ({ editing }) => (
             <div className="flex flex-col gap-4 py-2">
@@ -369,9 +592,11 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                   <AlertTitle>No key columns picked yet.</AlertTitle>
                 </Alert>
               )}
-              <QueryTab
+              <SourceTab
                 editing={editing}
                 entityType={entityType}
+                sourceKind={sourceKind}
+                onSourceKindChange={onSourceKindChange}
                 config={config}
                 onChange={onChange}
                 connections={sqlConnections.connections}
@@ -384,6 +609,12 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 presets={presets}
                 onUsePreset={onUsePreset}
                 onServerTest={mapping.testFormula}
+                apiConnections={apiConnections.connections}
+                apiConnectionsLoading={apiConnections.isLoading}
+                lockedApiConnection={lockedApiConnection}
+                httpPreview={httpPreview}
+                companyId={companyId}
+                onHttpPreviewSuccess={onHttpPreviewSuccess}
               />
             </div>
           ),
@@ -452,7 +683,18 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
           icon: CircleCheck,
           disabled: !querySaved,
           render: () => (
-            <div className="py-2">
+            <div className="flex flex-col gap-4 py-2">
+              {revertedBySourceChange && (
+                <Alert variant="warning" appearance="light" data-testid="task-source-reverted">
+                  <AlertIcon>
+                    <TriangleAlert />
+                  </AlertIcon>
+                  <AlertTitle>
+                    Changing the source returned this task to draft - test and re-activate to
+                    resume syncing.
+                  </AlertTitle>
+                </Alert>
+              )}
               <ActivateTab
                 company={detail?.company ?? null}
                 task={task}
@@ -492,14 +734,21 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       editable: true,
       editPermission: AC_COMPANIES_MANAGE,
       isDirty: dirty,
+      // AC-08-20 - withheld until Test proved the CURRENT path/connectionId
+      // pair; never affects the Database branch (`derivedImpl !==
+      // 'autocount_http'` there).
+      saveDisabled: derivedImpl === 'autocount_http' && !httpPreviewValid,
       onSave,
       onCancel,
     };
   }, [
+    apiConnections.connections,
+    apiConnections.isLoading,
     can,
     columnTypes,
     companyId,
     config,
+    derivedImpl,
     detail,
     dirty,
     draft,
@@ -507,18 +756,23 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     etlPreview,
     fieldErrors,
     headerPreviewRows,
+    httpPreview,
+    httpPreviewValid,
     initialTab,
     lifecycle,
     lineColumnTypes,
     linePreview,
     lineSourceColumns,
+    lockedApiConnection,
     lockedConnection,
     mapping,
     onCancel,
     onChange,
     onFetchLines,
+    onHttpPreviewSuccess,
     onRan,
     onSave,
+    onSourceKindChange,
     onUsePreset,
     presets,
     preview,
@@ -528,6 +782,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     saveError,
     schema,
     sourceColumns,
+    sourceKind,
     sqlConnections.connections,
     sqlConnections.isLoading,
     task,

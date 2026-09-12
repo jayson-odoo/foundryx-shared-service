@@ -31,7 +31,6 @@ import {
   type AutocountCompany,
   type AutocountEntityConfig,
   type AutocountSinkImpl,
-  type AutocountSourceImpl,
 } from '@/types/autocount';
 import {
   AC_COMPANIES_MANAGE,
@@ -47,7 +46,6 @@ import { AddEntityControl } from './add-entity-control';
 import { DetailRow } from './detail-row';
 import { DocumentPrerequisiteCard } from './document-prerequisite-card';
 import { EntityLookbackDialog } from './entity-lookback-dialog';
-import { EntitySourceDialog } from './entity-source-dialog';
 import { SinkTargetSection } from './sink-target-section';
 import { useAutocountEntitiesListConfig } from './use-entities-list-config';
 import { useAutocountRunsListConfig } from './use-runs-list-config';
@@ -73,7 +71,6 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   const [runsKey, setRunsKey] = useState(0);
   const [outcome, setOutcome] = useState<SyncOutcome | null>(null);
   const [editing, setEditing] = useState<AutocountEntityConfig | null>(null);
-  const [switching, setSwitching] = useState<AutocountEntityConfig | null>(null);
 
   // Push-target working state - lifted here so the ONE Overview Resource form
   // owns its dirty flag + single save (AC-15-20), not a detached card button.
@@ -218,30 +215,6 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     [companyId, router],
   );
 
-  const onChangeSource = useCallback((entity: AutocountEntityConfig) => {
-    setSwitching(entity);
-  }, []);
-
-  const onSaveSource = useCallback(
-    async (entityType: string, sourceImpl: AutocountSourceImpl) => {
-      try {
-        await autocountService.updateEntityConfig(companyId, entityType, { sourceImpl });
-        toast.success(
-          sourceImpl === 'sql_db'
-            ? 'Source switched to the database task.'
-            : 'Source switched to the AutoCount API.',
-        );
-        setSwitching(null);
-        reload();
-      } catch (error) {
-        toast.error(
-          error instanceof ApiError ? error.message : 'That source could not be switched.',
-        );
-      }
-    },
-    [companyId, reload],
-  );
-
   const onConfigureTask = useCallback(
     (entity: AutocountEntityConfig) => {
       router.push(acTaskHref(companyId, entity.entityType));
@@ -305,7 +278,6 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
     onRefetch,
     onConfigureMapping,
     onConfigureTask,
-    onChangeSource,
   });
 
   const config = useMemo<ResourceFormConfig<AutocountCompany> | null>(() => {
@@ -506,11 +478,6 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
         entity={editing}
         onClose={() => setEditing(null)}
         onSave={onSaveLookback}
-      />
-      <EntitySourceDialog
-        entity={switching}
-        onClose={() => setSwitching(null)}
-        onSave={onSaveSource}
       />
     </Container>
   );

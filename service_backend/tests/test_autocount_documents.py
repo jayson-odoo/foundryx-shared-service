@@ -360,9 +360,15 @@ def test_sorento_supported_entities_label_is_derived_from_the_entity_path_map():
         "shipping order",
     ):
         assert entity_type in label
-    assert label.endswith("purchase order and shipping order")
+    assert label.endswith("shipping order")
     assert "goods received note" not in label
     assert "grn" not in label.lower()
+    # S3 (sprint-5/08 review round 1) - `brand` is CONTRACT-GATED
+    # (AC-08-33): it must NOT appear in the plain "Sorento accepts ... only"
+    # sentence, which would otherwise contradict `sorento_supports_entity
+    # ("brand")` answering False for the exact same (no contract kwargs)
+    # call on every consumer that has not shipped contract 2.3 yet.
+    assert "brand" not in label
 
 
 def test_an_unknown_master_ref_is_retryable_not_a_defect_signal():

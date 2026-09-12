@@ -11,6 +11,7 @@ import type {
   AutocountEtlTaskError,
   AutocountSqlPreview,
   AutocountSqlSchema,
+  HttpPreview,
 } from '@/types/autocount';
 
 /**
@@ -95,7 +96,7 @@ export function todayDateString(): string {
 // ── plan 22 S2 - activation gate, anchor errors, run cost ────────────────────
 
 /** Why Activate / Run preview is withheld (foolproof-UI: stated, never silent). */
-export type EtlPrerequisiteKind = 'company' | 'sink' | 'companyCode' | 'query' | 'keys' | 'unsaved';
+export type EtlPrerequisiteKind = 'company' | 'companyCode' | 'query' | 'keys' | 'unsaved';
 
 export interface EtlPrerequisite {
   kind: EtlPrerequisiteKind;
@@ -116,16 +117,30 @@ export function activatePrerequisites(input: {
   const out: EtlPrerequisite[] = [];
   if (!company) {
     out.push({ kind: 'company', message: 'Company details are still loading.' });
-  } else if (company.sinkImpl !== 'sorento') {
-    out.push({ kind: 'sink', message: 'This company has no delivery target (logging only).' });
-  } else if (!(company.sorentoCompanyCode ?? '').trim()) {
+  } else if (company.sinkImpl === 'sorento' && !(company.sorentoCompanyCode ?? '').trim()) {
+    // sprint-5/08 review round 4 - the logging sink is a legitimate
+    // configured default (`CompanyService.sink_for_company`), not an
+    // unfinished setup: it needs no company code (`set_sink_target` clears
+    // it on that switch) and the server anchor gate
+    // (`EtlService.activate_task`) only ever requires one for the Sorento
+    // sink. Blocking Activate here for a logging-sink company made the
+    // AC's own "Activate -> Run now with the logging sink" precondition
+    // unreachable through the real UI.
     out.push({ kind: 'companyCode', message: 'This company has no Sorento company code.' });
   }
+  // sprint-5/08 D13 - an `autocount_http` task never has a `query`/
+  // `keyColumns` (only `path`/`keyFields`); check whichever pair the task's
+  // OWN impl actually uses, never the SQL-only fields unconditionally.
+  const isHttp = task.sourceImpl === 'autocount_http';
+  const configured = isHttp ? Boolean(task.sourceConfig.path?.trim()) : task.sourceConfig.query.trim();
+  const keysPicked = isHttp
+    ? (task.sourceConfig.keyFields?.length ?? 0) > 0
+    : task.sourceConfig.keyColumns.length > 0;
   if (configDirty) {
     out.push({ kind: 'unsaved', message: 'Save the task first.' });
-  } else if (!task.sourceConfig.query.trim()) {
-    out.push({ kind: 'query', message: 'No query saved yet.' });
-  } else if (task.sourceConfig.keyColumns.length === 0) {
+  } else if (!configured) {
+    out.push({ kind: 'query', message: isHttp ? 'No endpoint saved yet.' : 'No query saved yet.' });
+  } else if (!keysPicked) {
     out.push({ kind: 'keys', message: 'No key columns picked yet.' });
   }
   return out;
@@ -158,6 +173,24 @@ const PRODUCT_DEPENDENCIES: { entityType: string; label: string }[] = [
 ];
 
 /**
+ * Foolproof-UI (sprint-5/08 review round 5) - the ONE signal a logging-sink
+ * company delivers nowhere. Round 4 correctly dropped the `'sink'`
+ * PREREQUISITE (a logging sink is a legitimate configured default, not an
+ * unfinished setup - it must not block Activate/Run now), but that also
+ * deleted the operator's only heads-up that runs land in the log only. A
+ * NON-blocking warning, same shape as `productDependencyWarning`: it never
+ * withholds Activate, it only states the fact plainly. `null` once a
+ * company is still loading (nothing to warn about yet) or already points
+ * at Sorento.
+ */
+export function loggingSinkWarning(
+  company: Pick<AutocountCompany, 'sinkImpl'> | null,
+): string | null {
+  if (!company || company.sinkImpl !== 'logging') return null;
+  return 'Runs on this company are logged only - no records are delivered until a Sorento target is set.';
+}
+
+/**
  * Non-null only for a `product` task whose company has no ACTIVE category
  * and/or unit-of-measure task yet - such a product lands `retryable` on
  * Sorento until that dependency syncs (AC-22-23), which resolves on its own
@@ -173,6 +206,23 @@ export function productDependencyWarning(
   );
   if (!missing) return null;
   return 'No active category or unit-of-measure task yet - products may not sync until one runs.';
+}
+
+/**
+ * The Review & Activate banner for a `brand` task whose consumer contract
+ * does not yet accept brands (sprint-5/08, AC-08-33) - a WARNING, never a
+ * block: the task still activates and runs, it simply falls back to the
+ * logging sink for `brand` until the consumer deploys the entity. `null`
+ * once `task.brandContractGate` is absent (every non-brand task, and a
+ * brand task the consumer already accepts).
+ */
+export function brandContractBanner(
+  task: Pick<AutocountEtlTask, 'brandContractGate'>,
+): string | null {
+  const gate = task.brandContractGate;
+  if (!gate) return null;
+  const version = gate.version ?? 'unknown';
+  return `Consumer contract ${version} - brands land when ${gate.requiredVersion} is deployed`;
 }
 
 const ANCHOR_TITLES: Record<AutocountAnchorErrorCode, string> = {
@@ -391,3 +441,183 @@ export const STATUS_VOCABULARY: readonly string[] = [
  * emits `partial` by default (AC-02-15). */
 export const DEFAULT_STATUS_FORMULA =
   'if(Cancelled == "T", "cancelled", if(lines.open_count == 0, "closed", "open"))';
+
+// ── open REST API source (sprint-5/08) ────────────────────────────────────────
+
+/**
+ * The connect form's default reference-prefix text (AC-08-09): the picked
+ * connection's own NAME (never the auth-badged option label), upper-cased,
+ * every run of non-alphanumeric characters collapsed to one `_`, trimmed of
+ * leading/trailing `_`. Editable afterwards - this only seeds the field.
+ */
+export function derivePrefix(name: string): string {
+  return name
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+/** The backend's own format guard (AC-08-07), mirrored client-side so the
+ * inline hint / Create-disabled state never round-trips to learn it. */
+export const REF_PREFIX_RE = /^[A-Z0-9_]{2,32}$/;
+
+/** One entity's open-API preset (AC-08-16) - path, key/watermark/compared
+ * picks, and the "derived from" chip list for a distinct-values entity
+ * (`unit_of_measure`). Pure data, no fetch - the Source tab pre-fills a
+ * never-configured HTTP task from this the moment "API" + a no-auth
+ * connection is picked. */
+/** One preset mapping row: a source field -> (transform) -> canonical field,
+ * mirroring `AutocountMappingRow` minus the wire-only bookkeeping fields. */
+export interface HttpPresetMappingRow {
+  sourcePath: string;
+  transform: string;
+  canonicalField: string;
+  required?: boolean;
+}
+
+export interface HttpPreset {
+  path: string;
+  keyFields: string[];
+  watermarkField: string | null;
+  comparedFields: string[];
+  distinctOf: string[] | null;
+  /** Seeded on the entity's first clean save (AC-08-16) - the Mapping tab's
+   * starting rows, never a constant (the mapping engine has none). */
+  mapping: HttpPresetMappingRow[];
+}
+
+/**
+ * `HTTP_PRESETS` (AC-08-16) - keys pinned to `AC_HTTP_ENTITY_TYPES`
+ * (`autocount-meta.ts`); a parity test (S3 backend, `test_autocount_entity_
+ * parity.py`) pins this against the server's own `presets.HTTP_PRESETS`.
+ *
+ * PHASE 1 MOCK ONLY (sprint-5/08 review round 1, NIT) - this table is what a
+ * newborn `autocount_http` task's Source tab pre-fills FROM, client-side,
+ * before any save (`task-editor-view.tsx`'s "pick API for the first time"
+ * and "first mount with no path yet" seeds). The backend now carries the
+ * identical data (`modules/autocount/presets.py::HTTP_PRESETS`, exposed via
+ * `GET /autocount/presets/{entityType}?companyId=`, S7), so this duplicate
+ * copy is a drift risk: a future preset edit (a path change, a new default
+ * field) made only on the backend leaves the frontend's OWN pre-fill stale
+ * even though the parity test still passes (it checks KEYS, not values).
+ * Not swapped in this round - doing so means the Source tab's first-mount
+ * effect awaiting a network round trip before it can seed, a behaviour
+ * change beyond this round's scope. Tracked for a follow-up: read the
+ * preset from `GET /autocount/presets/{entityType}` instead of this local
+ * table once that round exists.
+ */
+export const HTTP_PRESETS: Record<string, HttpPreset> = {
+  product: {
+    path: '/itembypage',
+    keyFields: ['ItemCode'],
+    watermarkField: 'LastModified',
+    comparedFields: [],
+    distinctOf: null,
+    mapping: [
+      { sourcePath: 'ItemCode', transform: 'string', canonicalField: 'code', required: true },
+      { sourcePath: 'Description', transform: 'string', canonicalField: 'name', required: true },
+      { sourcePath: 'Desc2', transform: 'string', canonicalField: 'description' },
+      { sourcePath: 'ItemGroup', transform: 'string', canonicalField: 'category_code' },
+      { sourcePath: 'ItemBrand', transform: 'string', canonicalField: 'brand_code' },
+      { sourcePath: 'BaseUOM', transform: 'string', canonicalField: 'uom_code' },
+      { sourcePath: 'IsActive', transform: 't_f_bool', canonicalField: 'is_active', required: true },
+      { sourcePath: 'Discontinued', transform: 't_f_bool', canonicalField: 'is_discontinued' },
+    ],
+  },
+  customer: {
+    path: '/debtorbypage',
+    keyFields: ['AccNo'],
+    watermarkField: 'LastModified',
+    comparedFields: [],
+    distinctOf: null,
+    mapping: [
+      { sourcePath: 'AccNo', transform: 'string', canonicalField: 'code', required: true },
+      { sourcePath: 'CompanyName', transform: 'string', canonicalField: 'name', required: true },
+      { sourcePath: 'Phone1', transform: 'string', canonicalField: 'phone_number' },
+      { sourcePath: 'IsActive', transform: 't_f_bool', canonicalField: 'is_active', required: true },
+    ],
+  },
+  warehouse: {
+    path: '/location',
+    keyFields: ['Location'],
+    watermarkField: null,
+    comparedFields: [],
+    distinctOf: null,
+    mapping: [
+      { sourcePath: 'Location', transform: 'string', canonicalField: 'code', required: true },
+      { sourcePath: 'Description', transform: 'string', canonicalField: 'name', required: true },
+      { sourcePath: 'Address1', transform: 'string', canonicalField: 'location' },
+      { sourcePath: 'IsActive', transform: 't_f_bool', canonicalField: 'is_active', required: true },
+    ],
+  },
+  product_category: {
+    path: '/ItemGroup',
+    keyFields: ['ItemGroup'],
+    watermarkField: null,
+    comparedFields: [],
+    distinctOf: null,
+    mapping: [
+      { sourcePath: 'ItemGroup', transform: 'string', canonicalField: 'code', required: true },
+      { sourcePath: 'Description', transform: 'string', canonicalField: 'name', required: true },
+      { sourcePath: 'Desc2', transform: 'string', canonicalField: 'description' },
+    ],
+  },
+  brand: {
+    path: '/ItemBrand',
+    keyFields: ['ItemBrand'],
+    watermarkField: null,
+    comparedFields: [],
+    distinctOf: null,
+    mapping: [
+      { sourcePath: 'ItemBrand', transform: 'string', canonicalField: 'code', required: true },
+      { sourcePath: 'ItemBrand', transform: 'string', canonicalField: 'name', required: true },
+      { sourcePath: 'Description', transform: 'string', canonicalField: 'description' },
+    ],
+  },
+  unit_of_measure: {
+    path: '/itembypage',
+    keyFields: ['value'],
+    watermarkField: null,
+    comparedFields: [],
+    distinctOf: ['BaseUOM', 'SalesUOM', 'PurchaseUOM'],
+    mapping: [
+      { sourcePath: 'value', transform: 'string', canonicalField: 'code', required: true },
+      { sourcePath: 'value', transform: 'string', canonicalField: 'name', required: true },
+    ],
+  },
+};
+
+/**
+ * The HTTP preview's envelope badge (D14): "a run walks every page" is
+ * spelled out for a paged envelope so the page-count is never a mystery
+ * number; a list envelope states it is one request.
+ */
+export function httpPreviewBadgeText(preview: HttpPreview): string {
+  if (preview.envelope === 'list') {
+    const rows = preview.rows.length;
+    return `List · ${rows} row${rows === 1 ? '' : 's'} · one request`;
+  }
+  const total = preview.totalCount ?? 0;
+  const pages = Math.max(1, Math.ceil(total / 1000));
+  return `Paged · ${total.toLocaleString('en-US')} total · ${pages} page${pages === 1 ? '' : 's'} of 1000 - a run walks every page`;
+}
+
+/**
+ * Adapts an `HttpPreview` into the SAME shape `SqlPreviewGrid` already
+ * renders (AC-08-19: "reuse SqlPreviewGrid", never a parallel grid) - a
+ * column's SAMPLE value stands in for the SQL grid's reported TYPE (the open
+ * API carries no schema at all), and every row/duration passes through
+ * untouched.
+ */
+export function httpPreviewAsSqlPreview(preview: HttpPreview): AutocountSqlPreview {
+  return {
+    columns: preview.columns.map((c) => ({
+      name: c.name,
+      type: c.sample === null || c.sample === undefined ? '' : String(c.sample),
+    })),
+    rows: preview.rows,
+    rowCount: preview.rows.length,
+    truncated: false,
+    durationMs: preview.durationMs,
+  };
+}

@@ -55,6 +55,7 @@ from .canonical.documents import (
     ENTITY_SHIPPING_ORDER,
 )
 from .canonical.masters import (
+    ENTITY_BRAND,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
@@ -104,6 +105,11 @@ _ENTITY_PATH: Dict[str, str] = {
     # sprint-5/02 S3 (addendum section 3) - a LINE-SET entity on Sorento's
     # side (`spo_allocations`, no header table) but a normal ingest path.
     ENTITY_SHIPPING_ORDER: "shipping_orders",
+    # sprint-5/08 (AC-08-32) - contract 2.3 (Appendix A). Present in
+    # ``_ENTITY_PATH`` unconditionally; ``sorento_supports_entity`` is what
+    # actually gates it behind the consumer's advertised contract, since a
+    # 2.2 consumer has no ``/ingest/brands`` route yet.
+    ENTITY_BRAND: "brands",
 }
 
 # Outcomes Sorento may report per record. `created`/`updated` = delivered;
@@ -143,7 +149,19 @@ _DEPENDENT_ENTITIES = {
 }
 
 
-def sorento_supports_entity(entity_type: str) -> bool:
+# The consumer contract `brand` needs (sprint-5/08, AC-08-33/AC-08-20's S5
+# banner field) - named so the ONE literal is shared between the gate check
+# below and whatever reports it to the operator, rather than the same magic
+# number typed twice and drifting the day 2.3 actually ships.
+BRAND_REQUIRED_CONTRACT_VERSION = 2.3
+
+
+def sorento_supports_entity(
+    entity_type: str,
+    *,
+    contract_version: Optional[float] = None,
+    contract_entities: Optional[Sequence[str]] = None,
+) -> bool:
     """Whether Sorento's ingest API accepts this canonical entity yet.
 
     Sorento ingests masters (suppliers, customers, product categories, units
@@ -154,8 +172,23 @@ def sorento_supports_entity(entity_type: str) -> bool:
     logging sink for it (stages + logs, delivering nothing) rather than
     erroring on a missing path - *deliverability*, an expected not-yet-built
     state, not a misconfiguration.
+
+    ``brand`` (sprint-5/08, AC-08-33) is CONTRACT-GATED on top of the plain
+    membership check every other entity gets: it needs consumer contract
+    ``>= 2.3`` AND ``"brands"`` advertised in ``GET /external/contract``'s
+    ``entities`` list. ``contract_version``/``contract_entities`` unknown
+    (the plain 1-arg call every OTHER caller still makes) reads as "not yet
+    provable" - the SAME logging-sink fallback a 2.2 consumer gets, never a
+    422. Every other entity's signature/behaviour is BYTE-IDENTICAL to
+    before this kwarg pair existed.
     """
-    return entity_type in _ENTITY_PATH
+    if entity_type not in _ENTITY_PATH:
+        return False
+    if entity_type != ENTITY_BRAND:
+        return True
+    if contract_version is None or contract_entities is None:
+        return False
+    return contract_version >= BRAND_REQUIRED_CONTRACT_VERSION and "brands" in contract_entities
 
 
 def sorento_supported_entities_label() -> str:
@@ -166,8 +199,21 @@ def sorento_supported_entities_label() -> str:
     future entity join (another document, another master) can never leave
     the operator-facing "not previewable" reason stale again the way "it
     currently accepts suppliers and customers only" did the moment documents
-    joined the map (plan 22 S5)."""
-    names = [entity_type.replace("_", " ") for entity_type in _ENTITY_PATH]
+    joined the map (plan 22 S5).
+
+    S3 (sprint-5/08 review round 1) - CONTRACT-GATED entities (``brand``,
+    AC-08-33) are EXCLUDED: unqualified membership in ``_ENTITY_PATH`` is
+    not the same claim as "Sorento accepts this today" for an entity whose
+    real answer depends on the consumer's advertised contract version, and
+    this sentence was previously saying "...and brand" on every 2.2
+    consumer while ``sorento_supports_entity("brand")`` (no contract kwargs)
+    answered ``False`` for the exact same request - a direct contradiction
+    an operator would read as a bug report against us."""
+    names = [
+        entity_type.replace("_", " ")
+        for entity_type in _ENTITY_PATH
+        if entity_type != ENTITY_BRAND
+    ]
     if len(names) <= 1:
         return names[0] if names else ""
     return ", ".join(names[:-1]) + f" and {names[-1]}"
@@ -213,6 +259,18 @@ def contract_major(version: Any, *, default: Optional[int] = None) -> Optional[i
         return int(version)
     head = str(version).strip().split(".", 1)[0]
     return int(head) if head.isdigit() else default
+
+
+@dataclass(frozen=True)
+class SorentoContractInfo:
+    """``GET /external/contract``'s full answer (S2, sprint-5/08 review
+    round 1) - the RAW version (a float; ``fetch_contract``'s major-only int
+    cannot satisfy a ``>= 2.3`` gate) and the advertised ``entities`` list,
+    so ``sorento_supports_entity``'s contract-gate kwargs (AC-08-33) have a
+    real caller."""
+
+    version: float
+    entities: List[str]
 
 
 class SorentoSinkError(Exception):
@@ -716,6 +774,59 @@ class SorentoSink:
 
     # ── contract (addendum section 11/12, AC-02-14) ──────────────────────────
 
+    def fetch_contract_detail(self) -> Optional["SorentoContractInfo"]:
+        """``GET /api/v1/external/contract`` -> the FULL version (a float,
+        e.g. ``2.3`` - ``fetch_contract`` below truncates to the major int,
+        which cannot ever satisfy a ``>= 2.3`` gate) plus the advertised
+        ``entities`` list, or ``None`` on ANY failure (network, non-200,
+        malformed body) - the SAME "unprovable = not yet provable" contract
+        ``fetch_contract`` follows.
+
+        S2 (sprint-5/08 review round 1) - ``sorento_supports_entity``'s
+        ``contract_version``/``contract_entities`` kwargs (AC-08-33) existed
+        with nothing feeding them: every call site only ever called
+        ``fetch_contract()`` (major-only) or nothing at all, so the
+        ``brand`` gate could never open even against a genuinely-2.3
+        consumer.
+        """
+        url = f"{self._base_url}/api/v1/external/contract"
+        headers = {"X-API-Key": self._api_key}
+        try:
+            with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
+                response = client.get(url, headers=headers)
+            if response.status_code != 200:
+                return None
+            body = response.json()
+            if not isinstance(body, dict):
+                return None
+            raw_version = body.get("version")
+            if isinstance(raw_version, bool) or raw_version is None:
+                version = 1.0
+            elif isinstance(raw_version, (int, float)):
+                version = float(raw_version)
+            else:
+                text = str(raw_version).strip()
+                try:
+                    version = float(text)
+                except ValueError:
+                    # Nit (sprint-5/08 review round 2) - a bare ``float()``
+                    # rejects a three-part semver-style string (``"2.3.1"``)
+                    # outright, so a consumer advertising a patch version
+                    # could never open the brand gate. Parse major.minor
+                    # from the first two dot-separated ints instead.
+                    parts = text.split(".")
+                    try:
+                        major = int(parts[0])
+                        minor = int(parts[1]) if len(parts) > 1 else 0
+                        version = float(f"{major}.{minor}")
+                    except (ValueError, IndexError):
+                        return None
+            entities = body.get("entities")
+            entities_list = [str(e) for e in entities] if isinstance(entities, list) else []
+            return SorentoContractInfo(version=version, entities=entities_list)
+        except Exception:  # noqa: BLE001 - advisory only, must never propagate
+            return None
+
     def fetch_contract(self) -> Optional[int]:
         """``GET /api/v1/external/contract`` -> the version Sorento advertises,
         or ``None`` on ANY failure (network, non-200, malformed body).
@@ -1179,13 +1290,17 @@ def sorento_sink_from_connection(
     entity_type: str,
     company_code: Optional[str] = None,
     transport: Optional[httpx.BaseTransport] = None,
+    timeout: Optional[float] = None,
 ) -> SorentoSink:
     """Build a sink from a ``consumer`` connection's config + DECRYPTED creds.
 
     Credentials arrive already decrypted via ``app/secrets.py`` - this module
     never handles ciphertext. ``apiKey`` is refused if it is the legacy
     ``EXTERNAL_API_KEY`` shape is out of scope here; the operator supplies the
-    integration's own minted key.
+    integration's own minted key. ``timeout`` overrides the LIVE push setting
+    below - SF-1 (sprint-5/08 review round 2): a READ-path advisory probe
+    (``CompanyService.brand_contract_gate``) must never share the push
+    budget (300s, sized for a real ingest batch) with a plain task-view GET.
     """
     from app.config import settings  # read at CALL time (round 5), never cached
 
@@ -1201,8 +1316,11 @@ def sorento_sink_from_connection(
         company_code=company_code,
         # The LIVE setting (round 5), never the class default - an operator
         # whose Sorento endpoint needs a longer (or shorter) budget retunes
-        # it without a code change.
-        timeout=settings.autocount_sink_timeout_seconds,
+        # it without a code change. An explicit ``timeout`` (the read-path
+        # probe) always wins.
+        timeout=(
+            timeout if timeout is not None else settings.autocount_sink_timeout_seconds
+        ),
         # Records per ingest POST, read at CALL time like ``timeout`` (default
         # 200 since the 2026-09-06 prod 504; ceiling ``SORENTO_MAX_BATCH``).
         batch_size=settings.autocount_sink_batch_size,

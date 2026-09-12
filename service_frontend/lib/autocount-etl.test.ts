@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_STATUS_FORMULA,
+  HTTP_PRESETS,
   LINE_AGGREGATES,
+  REF_PREFIX_RE,
   STATUS_VOCABULARY,
   activatePrerequisites,
   anchorErrorTitle,
+  brandContractBanner,
+  derivePrefix,
   formatDurationMs,
+  httpPreviewAsSqlPreview,
+  httpPreviewBadgeText,
   incrementalFloorMinutes,
   isDocumentEntity,
+  loggingSinkWarning,
   mappingSourceColumns,
   pickerColumnOptions,
   productDependencyWarning,
@@ -23,7 +30,7 @@ import {
   validateReconcileHours,
 } from './autocount-etl';
 import { evaluateFormula, validateFormula } from './autocount-formula';
-import type { AutocountSqlPreview, AutocountSqlSchema } from '@/types/autocount';
+import type { AutocountSqlPreview, AutocountSqlSchema, HttpPreview } from '@/types/autocount';
 
 const SCHEMA: AutocountSqlSchema = {
   connectionId: 'conn-sql-1',
@@ -179,13 +186,13 @@ describe('activatePrerequisites (foolproof gate, AC-22-18)', () => {
     expect(activatePrerequisites({ company: company(), task: task(), configDirty: false })).toEqual([]);
   });
 
-  it('withholds when the company delivers nowhere (logging sink)', () => {
+  it('is clear for a logging-sink company (a legitimate configured default, not an unfinished setup)', () => {
     const reasons = activatePrerequisites({
       company: company({ sinkImpl: 'logging', sinkConnectionId: null, sorentoCompanyCode: null }),
       task: task(),
       configDirty: false,
     });
-    expect(reasons.map((r) => r.kind)).toEqual(['sink']);
+    expect(reasons).toEqual([]);
   });
 
   it('withholds when the Sorento company code is blank', () => {
@@ -215,6 +222,35 @@ describe('activatePrerequisites (foolproof gate, AC-22-18)', () => {
 
   it('is unknown-company-safe: no company loaded = withheld, not clear', () => {
     expect(activatePrerequisites({ company: null, task: task(), configDirty: false }).length).toBe(1);
+  });
+
+  // sprint-5/08 fix (found via the agent-browser evidence run): an HTTP task
+  // never has a `query`/`keyColumns` - the gate must check `path`/`keyFields`
+  // for one, never the SQL-only fields unconditionally.
+  it('an HTTP task with a saved path + key fields is clear, even though query/keyColumns are blank', () => {
+    const httpTask = task({
+      sourceImpl: 'autocount_http',
+      sourceConfig: { ...task().sourceConfig, query: '', keyColumns: [], path: '/itembypage', keyFields: ['ItemCode'] },
+    });
+    expect(activatePrerequisites({ company: company(), task: httpTask, configDirty: false })).toEqual([]);
+  });
+
+  it('an HTTP task with no path yet reads "No endpoint saved yet."', () => {
+    const httpTask = task({
+      sourceImpl: 'autocount_http',
+      sourceConfig: { ...task().sourceConfig, query: '', keyColumns: [], path: '', keyFields: [] },
+    });
+    const reasons = activatePrerequisites({ company: company(), task: httpTask, configDirty: false });
+    expect(reasons).toEqual([{ kind: 'query', message: 'No endpoint saved yet.' }]);
+  });
+
+  it('an HTTP task with a path but no key fields reads "No key columns picked yet."', () => {
+    const httpTask = task({
+      sourceImpl: 'autocount_http',
+      sourceConfig: { ...task().sourceConfig, query: '', keyColumns: [], path: '/itembypage', keyFields: [] },
+    });
+    const reasons = activatePrerequisites({ company: company(), task: httpTask, configDirty: false });
+    expect(reasons).toEqual([{ kind: 'keys', message: 'No key columns picked yet.' }]);
   });
 });
 
@@ -385,6 +421,43 @@ describe('productDependencyWarning (plan 22 S4, AC-22-23)', () => {
   });
 });
 
+describe('loggingSinkWarning (sprint-5/08 review round 5 - foolproof-UI)', () => {
+  // Round 4 removed the `'sink'` prerequisite (the logging sink is a
+  // legitimate configured default, not an unfinished setup) - this
+  // NON-blocking warning restores the one signal a logging-sink company
+  // delivers nowhere, without re-blocking Activate.
+  const WARNING =
+    'Runs on this company are logged only - no records are delivered until a Sorento target is set.';
+
+  it('warns for a logging-sink company', () => {
+    expect(loggingSinkWarning({ sinkImpl: 'logging' })).toBe(WARNING);
+  });
+
+  it('is null for a sorento-sink company', () => {
+    expect(loggingSinkWarning({ sinkImpl: 'sorento' })).toBeNull();
+  });
+
+  it('is null while the company is still loading', () => {
+    expect(loggingSinkWarning(null)).toBeNull();
+  });
+});
+
+describe('brandContractBanner (sprint-5/08, AC-08-33/AC-08-20 S5)', () => {
+  it('names the real advertised version when the consumer does not yet accept brands', () => {
+    expect(brandContractBanner({ brandContractGate: { version: 2.2, requiredVersion: 2.3 } })).toBe(
+      'Consumer contract 2.2 - brands land when 2.3 is deployed',
+    );
+  });
+
+  it('is null once the gate clears (contract 2.3 with brands advertised)', () => {
+    expect(brandContractBanner({ brandContractGate: null })).toBeNull();
+  });
+
+  it('is null when the field is absent (every non-brand task, back-compat fixtures)', () => {
+    expect(brandContractBanner({})).toBeNull();
+  });
+});
+
 // ── sprint-5/02 - shipping_order is a document entity, line aggregates ──────
 
 describe('isDocumentEntity - sprint-5/02', () => {
@@ -423,5 +496,115 @@ describe('LINE_AGGREGATES / STATUS_VOCABULARY / DEFAULT_STATUS_FORMULA (AC-02-07
     expect(
       evaluateFormula(DEFAULT_STATUS_FORMULA, null, { Cancelled: 'F', 'lines.open_count': 2 }),
     ).toBe('open');
+  });
+});
+
+// ── open REST API source (sprint-5/08, S1 frontend mock) ─────────────────────
+
+describe('derivePrefix (AC-08-09)', () => {
+  it('upper-cases and collapses non-alphanumerics to one underscore', () => {
+    expect(derivePrefix('Mocha REST')).toBe('MOCHA_REST');
+    expect(derivePrefix('Sorento - db2 (branch)')).toBe('SORENTO_DB2_BRANCH');
+  });
+
+  it('trims leading/trailing underscores', () => {
+    expect(derivePrefix('  !!Mocha!!  ')).toBe('MOCHA');
+  });
+});
+
+describe('REF_PREFIX_RE (AC-08-07)', () => {
+  it('accepts the backend format and rejects anything shorter/foreign', () => {
+    expect(REF_PREFIX_RE.test('MOCHA')).toBe(true);
+    expect(REF_PREFIX_RE.test('MOCHA_2')).toBe(true);
+    expect(REF_PREFIX_RE.test('M')).toBe(false);
+    expect(REF_PREFIX_RE.test('mocha')).toBe(false);
+    expect(REF_PREFIX_RE.test('MOCHA-2')).toBe(false);
+    expect(REF_PREFIX_RE.test('')).toBe(false);
+  });
+});
+
+describe('HTTP_PRESETS (AC-08-16)', () => {
+  it('has exactly the six confirmed masters, each with a leading-slash path and key field(s)', () => {
+    expect(Object.keys(HTTP_PRESETS)).toEqual([
+      'product',
+      'customer',
+      'warehouse',
+      'product_category',
+      'brand',
+      'unit_of_measure',
+    ]);
+    for (const preset of Object.values(HTTP_PRESETS)) {
+      expect(preset.path.startsWith('/')).toBe(true);
+      expect(preset.keyFields.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('unit_of_measure is derived from distinct UOM columns, keyed "value"', () => {
+    expect(HTTP_PRESETS.unit_of_measure.distinctOf).toEqual(['BaseUOM', 'SalesUOM', 'PurchaseUOM']);
+    expect(HTTP_PRESETS.unit_of_measure.keyFields).toEqual(['value']);
+  });
+
+  it('only product/customer carry a watermark (LastModified) - the four lookup lists have none', () => {
+    expect(HTTP_PRESETS.product.watermarkField).toBe('LastModified');
+    expect(HTTP_PRESETS.customer.watermarkField).toBe('LastModified');
+    expect(HTTP_PRESETS.warehouse.watermarkField).toBeNull();
+    expect(HTTP_PRESETS.product_category.watermarkField).toBeNull();
+    expect(HTTP_PRESETS.brand.watermarkField).toBeNull();
+    expect(HTTP_PRESETS.unit_of_measure.watermarkField).toBeNull();
+  });
+});
+
+function httpPreview(over: Partial<HttpPreview> = {}): HttpPreview {
+  return {
+    envelope: 'paged',
+    totalCount: 11826,
+    columns: [{ name: 'ItemCode', sample: 'SRT-01' }],
+    rows: [{ ItemCode: 'SRT-01' }],
+    durationMs: 240,
+    ...over,
+  };
+}
+
+describe('httpPreviewBadgeText (D14 - the page walk is explicit)', () => {
+  it('states the page count and that a run walks every page', () => {
+    expect(httpPreviewBadgeText(httpPreview({ totalCount: 11826 }))).toBe(
+      'Paged · 11,826 total · 12 pages of 1000 - a run walks every page',
+    );
+  });
+
+  it('a list envelope states one request, no page math', () => {
+    const rows = Array.from({ length: 60 }, (_, i) => ({ ItemGroup: `G${i}` }));
+    expect(
+      httpPreviewBadgeText(
+        httpPreview({ envelope: 'list', totalCount: undefined, rows, columns: [{ name: 'ItemGroup', sample: 'G0' }] }),
+      ),
+    ).toBe('List · 60 rows · one request');
+  });
+
+  it('a single page still reads "1 page"', () => {
+    expect(httpPreviewBadgeText(httpPreview({ totalCount: 60 }))).toBe(
+      'Paged · 60 total · 1 page of 1000 - a run walks every page',
+    );
+  });
+});
+
+describe('httpPreviewAsSqlPreview (AC-08-19 - reuse SqlPreviewGrid, never a parallel grid)', () => {
+  it('maps each column\'s sample value into the type slot and passes rows through', () => {
+    const preview = httpPreview({
+      columns: [
+        { name: 'ItemCode', sample: 'SRT-01' },
+        { name: 'IsActive', sample: null },
+      ],
+      rows: [{ ItemCode: 'SRT-01', IsActive: null }],
+    });
+    const adapted = httpPreviewAsSqlPreview(preview);
+    expect(adapted.columns).toEqual([
+      { name: 'ItemCode', type: 'SRT-01' },
+      { name: 'IsActive', type: '' },
+    ]);
+    expect(adapted.rows).toBe(preview.rows);
+    expect(adapted.rowCount).toBe(1);
+    expect(adapted.truncated).toBe(false);
+    expect(adapted.durationMs).toBe(240);
   });
 });

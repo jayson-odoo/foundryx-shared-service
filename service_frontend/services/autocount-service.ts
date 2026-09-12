@@ -14,6 +14,7 @@
  * on install): `autocount.companies.read/manage`, `autocount.sync.read/run`.
  */
 import type {
+  AutocountApiConnection,
   AutocountApprovalResult,
   AutocountCompany,
   AutocountCompanyCreateInput,
@@ -42,9 +43,14 @@ import type {
   AutocountSyncJob,
   AutocountSyncJobBatch,
   AutocountSyncRun,
+  HttpPreview,
+  HttpPreviewInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
 import { realAutocountService } from './autocount-service.real';
+// `mockAutocountService` stays imported by the Vitest suite directly
+// (the house service-trio pattern) - no need to import it here just to
+// keep it compiling.
 
 export interface AutocountListQuery {
   page?: number; // 0-based
@@ -425,17 +431,70 @@ export interface AutocountService {
     companyId: string,
     entityType: string,
   ): Promise<AutocountMappingPreset[]>;
+
+  // ── open REST API source (sprint-5/08, S1 - AC-08-06/09/14/15) ─────────────
+  //
+  // Wire contract (kept as documentation post-S5; the backend now implements
+  // this byte for byte - `modules/autocount/routers/{http,companies}.py`,
+  // `.../schemas.py`).
+  //
+  //   GET /autocount/http/connections
+  //        → AutocountApiConnection[] {id, name, baseUrl, auth}  - EVERY
+  //          `autocount` connection of the tenant (both auths), tenant-scoped,
+  //          gated `autocount.read` (AC-08-15). Feeds BOTH the connect-company
+  //          picker (badging + the ref-prefix reveal, AC-08-09) and the task
+  //          Source tab's connection picker (badging + impl derivation,
+  //          AC-08-19) - ONE endpoint, not two.
+  //
+  //   POST /autocount/companies  {connectionId, name?, refPrefix?}
+  //        → AutocountCompany - gains `refPrefix` (AC-08-06/07): REQUIRED
+  //          (422 `{fieldErrors: {refPrefix}}`) when `connectionId` names an
+  //          open (`auth: 'none'`) connection; trimmed, upper-cased,
+  //          `^[A-Z0-9_]{2,32}$` server-side (`REF_PREFIX_RE` mirrors it
+  //          client-side for the disabled-until-valid gate only - the 422 is
+  //          still authoritative). Ignored (422 "not applicable") for a
+  //          vendor/SQL connection. `AutocountCompany.sourceKind` gains
+  //          `'http'` for an open company.
+  //
+  //   POST /autocount/http/preview  {connectionId, path, distinctOf?}
+  //        → HttpPreview {envelope: 'paged'|'list', totalCount?, columns:
+  //          [{name, sample}], rows (<=50), durationMs}  (AC-08-14). `paged`
+  //          = a `{TotalCount,Page,PageSize,TotalPages,Data[]}` envelope
+  //          (page 1, pageSize 50); `list` = a bare JSON array capped to 50.
+  //          `distinctOf` set → rows are the distinct `{value}` projection,
+  //          `columns == [{name:'value', sample:<first value>}]`. Errors map
+  //          to 422 naming the step (`connectionId` for a non-open/foreign
+  //          connection, `path` for a 404/non-JSON/timeout/`..`/query-string).
+  //        Gated `autocount.manage` (same bucket as `/autocount/sql/preview`).
+  //
+  //   `AutocountEtlTask` (existing `/etl-task` routes) gains `sourceImpl`
+  //        ('sql_db'|'autocount_http') and, when 'autocount_http', the task's
+  //        `sourceConfig` carries `path`/`keyFields`/`watermarkField`/
+  //        `comparedFields`/`distinctOf` ALONGSIDE the (unused, defaulted)
+  //        SQL fields - ONE envelope, not a discriminated union on the wire,
+  //        so Mapping/Schedule/Review & Activate/Runs keep reading the SAME
+  //        `AutocountEtlTask.sourceConfig` shape unchanged (AC-08-19).
+  //        CONFIRMED against the real backend (S5): `EtlSourceConfigIn`
+  //        (`modules/autocount/schemas.py`) is that same flat envelope; the
+  //        `sourceImpl` that picks which half of it is live is sent as a
+  //        TOP-LEVEL sibling of `sourceConfig` on `PUT .../etl-task`
+  //        (`EtlTaskUpdate.sourceImpl`, review round 1 B1 - it is NOT nested
+  //        inside `sourceConfig` on the wire, only in this FE's local draft
+  //        state).
+
+  /** Every `autocount` connection of the tenant, badged by auth. */
+  listApiConnections(): Promise<AutocountApiConnection[]>;
+  /** Page-1 sample of an open-API endpoint path (<=50 rows), writes nothing. */
+  previewHttp(input: HttpPreviewInput): Promise<HttpPreview>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// The whole AutoCount surface is backed by FastAPI end to end (companies,
-// sync, staged review, ETL tasks, document field mapping incl. line rows/
-// aggregates/status formula/presets/Simulate-with-lines - sprint-5/02
-// S1-S3). The `withPhase1DocumentMappingMock` overlay this used to carry is
-// gone now that `GET /autocount/presets/{entityType}` and
-// `CompanyService.simulate_mapping`'s `lines=` param are both real
-// (`modules/autocount/routers/sync.py`/`services/company_service.py`); a
-// `.mock` sibling still exists as frontend-first scaffolding for the
-// Vitest suite (the house service-trio pattern).
+// S5 (sprint-5/08) - swapped to the REAL service. The open REST API source
+// (`listApiConnections`/`previewHttp`, the `refPrefix` company-create path,
+// the `autocount_http` task fields documented above) is now backed by
+// FastAPI end to end (S2 provider/company, S3 source/task, S4 brand, review
+// round 1 fixes B1-B4/S1-S13). `mockAutocountService` stays as the frontend
+// Vitest fixture only - import it directly in a test, never through this
+// module.
 // ═══════════════════════════════════════════════════════════════════════════
 export const autocountService: AutocountService = realAutocountService;

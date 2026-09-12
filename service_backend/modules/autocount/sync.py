@@ -64,6 +64,7 @@ from .canonical.masters import (
     VENDOR_LAST_MODIFIED_PATH,
 )
 from .client import AutoCountError
+from .http_source.errors import HttpSourceError
 from .mapping import (
     UNQUALIFIED_REF_ENTITIES,
     MappedDocument,
@@ -79,6 +80,7 @@ from .models import (
     RUN_MODE_MANUAL,
     RUN_MODE_RECONCILE,
     RUN_SUCCESS,
+    SOURCE_IMPL_AUTOCOUNT_HTTP,
     SOURCE_IMPL_SQL_DB,
     STAGED,
     STAGED_FAILED,
@@ -564,6 +566,46 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             error_code="FILTER_FORMULA",
         )
         return
+    except HttpSourceError as exc:
+        # SF-2 (sprint-5/08 review round 2) - the open-API source's own
+        # failures (transport, HTTP status, shape, row cap, delete guard)
+        # are a REPORTED fault, not a crash - the SAME WARNING/`error_code`
+        # treatment the SQL delete guard already gets above (`code=
+        # "delete_guard"` upper-cases to the identical "DELETE_GUARD" the
+        # SQL twin uses). `exc.message` already names the page and, when
+        # known, the status (AC-08-23/38) - never re-wrapped here.
+        logger.warning(
+            "autocount HTTP source fetch failed for job %s: %s", job.id, exc.message
+        )
+        record_client_calls(
+            db,
+            source,
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        record_activity(
+            db,
+            tenant_id=tenant_id,
+            operation=f"sync {entity_type}",
+            status=ACTIVITY_ERROR,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            error_message=exc.message,
+        )
+        _fail(
+            db,
+            service,
+            job,
+            run,
+            watermark_row,
+            exc.message,
+            started,
+            config=config,
+            error_code=(exc.code.upper() if exc.code else None),
+        )
+        return
     except Exception as exc:  # noqa: BLE001
         logger.exception("autocount sync fetch failed for job %s", job.id)
         record_client_calls(
@@ -660,10 +702,20 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         # ``Data.0.AutoKey``; a DB task's rows are FLAT, so identity is minted
         # from the task's key columns (AC-22-09/10). Using the API profile on
         # flat rows fails EVERY record with "carries no Data.0.AutoKey" - which
-        # reads like a mapping mistake and is not one.
+        # reads like a mapping mistake and is not one. An HTTP (open REST)
+        # task's rows are flat too (sprint-5/08) - its key list lives under
+        # ``keyFields``, not the DB path's ``keyColumns``.
         profile=(
-            flat_profile(entity_type, (config.source_config or {}).get("keyColumns") or [])
-            if config.source_impl == SOURCE_IMPL_SQL_DB
+            flat_profile(
+                entity_type,
+                (config.source_config or {}).get(
+                    "keyColumns"
+                    if config.source_impl == SOURCE_IMPL_SQL_DB
+                    else "keyFields"
+                )
+                or [],
+            )
+            if config.source_impl in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)
             else None
         ),
         # Masters mint a COMPANY-QUALIFIED ``source_ref`` (AC-14-10). The name
@@ -750,11 +802,13 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     # Sorento dry-run of the initial load, then an explicit Activate. After it,
     # scheduled runs deliver without a per-run click - otherwise a minutely task
     # would build a queue nobody can drain. The API path's ``needs_review`` gate
-    # is untouched; this branch is entered only for an ACTIVE ``sql_db`` task.
+    # is untouched; this branch is entered only for an ACTIVE ``sql_db`` OR
+    # ``autocount_http`` task (sprint-5/08 AC-08-25: run semantics mirror
+    # ``sql_db`` exactly).
     pushed_count = 0
     push_summary: Optional[Dict[str, Any]] = None
     if (
-        config.source_impl == SOURCE_IMPL_SQL_DB
+        config.source_impl in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)
         and config.etl_status == ETL_STATUS_ACTIVE
     ):
         from .services.sync_service import SyncService

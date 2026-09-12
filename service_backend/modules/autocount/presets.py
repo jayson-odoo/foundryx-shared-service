@@ -31,6 +31,14 @@ from .canonical.documents import (
     ENTITY_SALES_ORDER,
     ENTITY_SHIPPING_ORDER,
 )
+from .canonical.masters import (
+    ENTITY_BRAND,
+    ENTITY_CUSTOMER,
+    ENTITY_PRODUCT,
+    ENTITY_PRODUCT_CATEGORY,
+    ENTITY_UNIT_OF_MEASURE,
+    ENTITY_WAREHOUSE,
+)
 from .mapping import DEFAULT_STATUS_FORMULA, SCOPE_HEADER, SCOPE_LINE
 from .models import AcFieldMapping
 
@@ -570,22 +578,186 @@ def list_mapping_presets(entity_type: str, database_name: str) -> List[Dict[str,
     preset (a non-document entity, or a document family not yet documented).
     """
     preset = DOCUMENT_PRESETS.get(entity_type)
+    if preset is not None:
+        return [
+            {
+                "entityType": entity_type,
+                "label": preset.label,
+                "headerQuery": preset.header_query.replace("{database}", database_name),
+                "lineQuery": preset.line_query.replace("{database}", database_name),
+                "keyColumns": list(preset.key_columns),
+                "watermarkColumn": preset.watermark_column,
+                "docDateColumn": preset.doc_date_column,
+                "fromDate": preset.from_date or None,
+                "filterFormula": preset.filter_formula,
+                "fingerprintQuery": (
+                    preset.fingerprint_query.replace("{database}", database_name)
+                    if preset.fingerprint_query else None
+                ),
+            }
+        ]
+    # S7 (sprint-5/08 review round 1, AC-08-16 second clause) - this endpoint
+    # used to answer ``[]`` for every HTTP entity (product/customer/
+    # warehouse/product_category/brand/unit_of_measure): it only ever
+    # checked ``DOCUMENT_PRESETS``, so the Mapping tab's "Use preset" action
+    # had nothing to show for the entities this plan actually added. No
+    # ``{database}`` substitution applies to an HTTP preset - there is no
+    # query text, only the endpoint path + field picks.
+    http_preset = HTTP_PRESETS.get(entity_type)
+    if http_preset is not None:
+        return [
+            {
+                "entityType": entity_type,
+                "label": http_preset.label,
+                "path": http_preset.path,
+                "keyFields": list(http_preset.key_fields),
+                "watermarkField": http_preset.watermark_field,
+                "distinctOf": (
+                    list(http_preset.distinct_of) if http_preset.distinct_of else None
+                ),
+            }
+        ]
+    return []
+
+
+# ── open REST API presets (sprint-5/08, AC-08-16) ─────────────────────────────
+#
+# The six confirmed ``hapi.sorento.cc.cd`` entities' default task config
+# (endpoint path + key/watermark/distinctOf) and seeded mapping rows - the
+# HTTP-source counterpart of ``DOCUMENT_PRESETS`` above, seeded the SAME
+# seed-if-absent way (``EtlService.update_task``'s HTTP branch), never
+# re-applied once an operator has edited the mapping.
+
+
+@dataclass(frozen=True)
+class HttpPreset:
+    """One HTTP-source entity's default task config + seeded mapping rows."""
+
+    label: str
+    path: str
+    key_fields: Tuple[str, ...]
+    watermark_field: Optional[str]
+    distinct_of: Optional[Tuple[str, ...]]
+    rows: Tuple[PresetField, ...]
+
+
+PRODUCT_HTTP_PRESET = HttpPreset(
+    label="Item (open REST API)",
+    path="/itembypage",
+    key_fields=("ItemCode",),
+    watermark_field="LastModified",
+    distinct_of=None,
+    rows=(
+        PresetField("ItemCode", "code", "string", required=True),
+        PresetField("Description", "name", "string"),
+        PresetField("Desc2", "description", "string"),
+        PresetField("ItemGroup", "category_code", "string"),
+        PresetField("ItemBrand", "brand_code", "string"),
+        PresetField("BaseUOM", "uom_code", "string"),
+        PresetField("IsActive", "is_active", "t_f_bool"),
+        PresetField("Discontinued", "is_discontinued", "t_f_bool"),
+    ),
+)
+
+CUSTOMER_HTTP_PRESET = HttpPreset(
+    label="Debtor (open REST API)",
+    path="/debtorbypage",
+    key_fields=("AccNo",),
+    watermark_field="LastModified",
+    distinct_of=None,
+    rows=(
+        PresetField("AccNo", "code", "string", required=True),
+        PresetField("CompanyName", "name", "string"),
+        PresetField("Phone1", "phone_number", "string"),
+        PresetField("IsActive", "is_active", "t_f_bool"),
+    ),
+)
+
+WAREHOUSE_HTTP_PRESET = HttpPreset(
+    label="Location (open REST API)",
+    path="/location",
+    key_fields=("Location",),
+    watermark_field=None,
+    distinct_of=None,
+    rows=(
+        PresetField("Location", "code", "string", required=True),
+        PresetField("Description", "name", "string"),
+        PresetField("Address1", "location", "string"),
+        PresetField("IsActive", "is_active", "t_f_bool"),
+    ),
+)
+
+PRODUCT_CATEGORY_HTTP_PRESET = HttpPreset(
+    label="Item group (open REST API)",
+    path="/ItemGroup",
+    key_fields=("ItemGroup",),
+    watermark_field=None,
+    distinct_of=None,
+    rows=(
+        PresetField("ItemGroup", "code", "string", required=True),
+        PresetField("Description", "name", "string", required=True),
+        PresetField("Desc2", "description", "string"),
+    ),
+)
+
+BRAND_HTTP_PRESET = HttpPreset(
+    label="Item brand (open REST API)",
+    path="/ItemBrand",
+    key_fields=("ItemBrand",),
+    watermark_field=None,
+    distinct_of=None,
+    rows=(
+        PresetField("ItemBrand", "code", "string", required=True),
+        # The vendor list's own ``Description`` is blank on every probed row
+        # (UAC AC-08-16) - name = code, matching what Sorento's product path
+        # already auto-creates today.
+        PresetField("ItemBrand", "name", "string"),
+        PresetField("Description", "description", "string"),
+    ),
+)
+
+UNIT_OF_MEASURE_HTTP_PRESET = HttpPreset(
+    label="Item UOM (open REST API, distinct)",
+    path="/itembypage",
+    key_fields=("value",),
+    watermark_field=None,
+    distinct_of=("BaseUOM", "SalesUOM", "PurchaseUOM"),
+    rows=(
+        PresetField("value", "code", "string", required=True),
+        PresetField("value", "name", "string"),
+    ),
+)
+
+HTTP_PRESETS: Dict[str, HttpPreset] = {
+    ENTITY_PRODUCT: PRODUCT_HTTP_PRESET,
+    ENTITY_CUSTOMER: CUSTOMER_HTTP_PRESET,
+    ENTITY_WAREHOUSE: WAREHOUSE_HTTP_PRESET,
+    ENTITY_PRODUCT_CATEGORY: PRODUCT_CATEGORY_HTTP_PRESET,
+    ENTITY_BRAND: BRAND_HTTP_PRESET,
+    ENTITY_UNIT_OF_MEASURE: UNIT_OF_MEASURE_HTTP_PRESET,
+}
+
+# Parity-pinned (AC-08-17): backend keys == frontend `AC_HTTP_ENTITY_TYPES`.
+HTTP_ENTITY_TYPES: Tuple[str, ...] = tuple(HTTP_PRESETS.keys())
+
+
+def seed_http_preset_mapping(
+    db: Session,
+    tenant_id: str,
+    company_id: str,
+    entity_type: str,
+    *,
+    columns: Optional[Dict[str, str]],
+) -> int:
+    """Seed an HTTP task's preset mapping rows on its first clean save
+    (AC-08-16) - the SAME seed-if-absent contract as ``seed_document_mapping``
+    (the caller only invokes this when the entity's mapping is empty).
+    Returns the count created (0 when no preset is registered)."""
+    preset = HTTP_PRESETS.get(entity_type)
     if preset is None:
-        return []
-    return [
-        {
-            "entityType": entity_type,
-            "label": preset.label,
-            "headerQuery": preset.header_query.replace("{database}", database_name),
-            "lineQuery": preset.line_query.replace("{database}", database_name),
-            "keyColumns": list(preset.key_columns),
-            "watermarkColumn": preset.watermark_column,
-            "docDateColumn": preset.doc_date_column,
-            "fromDate": preset.from_date or None,
-            "filterFormula": preset.filter_formula,
-            "fingerprintQuery": (
-                preset.fingerprint_query.replace("{database}", database_name)
-                if preset.fingerprint_query else None
-            ),
-        }
-    ]
+        return 0
+    created = _seed_rows(
+        db, tenant_id, company_id, entity_type, SCOPE_HEADER, preset.rows, columns
+    )
+    db.flush()
+    return created

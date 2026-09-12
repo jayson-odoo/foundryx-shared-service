@@ -4,6 +4,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsProvider } from '@/providers/settings-provider';
 import type { AutocountEtlTask, AutocountMappingView } from '@/types/autocount';
 import { TaskEditorView } from './task-editor-view';
+import { stubAuthFetch } from './task-editor-view.test-helpers';
+
+stubAuthFetch();
 
 /**
  * SF1 (final reviewer pass) - `onSave` unconditionally calls `mapping.reload()`
@@ -118,6 +121,7 @@ vi.mock('@/hooks/use-autocount-etl', () => ({
     isLoading: false,
     error: null,
   }),
+  useAutocountApiConnections: () => ({ connections: [], isLoading: false, error: null }),
   useAutocountSqlSchema: () => ({ schema: null, isLoading: false, error: null, refresh: vi.fn() }),
   useEtlTaskLifecycle: () => ({
     busy: null, error: null, activate: vi.fn(), pause: vi.fn(), resume: vi.fn(), runNow: vi.fn(),
@@ -125,6 +129,7 @@ vi.mock('@/hooks/use-autocount-etl', () => ({
   }),
   useEtlTaskPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), reset: vi.fn() }),
   useSqlPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), reset: vi.fn() }),
+  useHttpPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), fieldErrors: {}, reset: vi.fn() }),
 }));
 
 const mappingSaveSpy = vi.hoisted(() => vi.fn().mockResolvedValue(true));

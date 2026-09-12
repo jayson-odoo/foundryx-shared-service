@@ -5,11 +5,13 @@
  */
 import { apiFetch } from '@/lib/api-client';
 import type {
+  AutocountApiConnection,
   AutocountApprovalResult,
   AutocountCompany,
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
   AutocountEntityConfig,
+  AutocountEtlSourceConfig,
   AutocountEtlPreviewResult,
   AutocountEtlRepushResult,
   AutocountEtlRunStart,
@@ -30,6 +32,8 @@ import type {
   AutocountSyncJob,
   AutocountSyncJobBatch,
   AutocountSyncRun,
+  HttpPreview,
+  HttpPreviewInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
 import type { AutocountStagedQuery } from '@/types/autocount';
@@ -52,6 +56,54 @@ function stagedParams(query: AutocountStagedQuery = {}): URLSearchParams {
   return p;
 }
 
+// sprint-5/08 review round 1 (S5 live-verify DEFECT found against the real
+// backend, NOT patched around) - `default_http_source_config()`
+// (`modules/autocount/services/etl_service.py`) DELIBERATELY never merges
+// the SQL-shape keys (AC-08-30: "never a stray SQL key round-trips onto an
+// HTTP task's wire config"), so a REAL saved `autocount_http` task's
+// `sourceConfig` omits `query`/`lineQuery`/`keyColumns`/`watermarkColumn`/
+// `comparedColumns`/`fromDate`/`docDateColumn`/`filterFormula` entirely.
+// Every FE consumer (`task-editor-view.tsx`'s baseline dirty-check,
+// `SourceTab`'s `canTest`, ...) was written against the `AutocountEtlTask`
+// TYPE contract, which declares those fields non-optional (the mock always
+// filled them) - `seeded.query.trim()` crashed with "Cannot read properties
+// of undefined" live-verifying AC-08-21 (Add entity -> Test -> Save on a
+// fresh HTTP task). Normalized HERE, at the wire boundary, rather than
+// `?.`-guarding every read site across the component tree - applied to
+// EVERY endpoint that returns or embeds an `AutocountEtlTask` (`getEtlTask`,
+// `updateEtlTask`, `activateEtlTask`, `pauseEtlTask`, `resumeEtlTask`,
+// `runEtlTaskNow`, `previewEtlTask` - round 5 fix extended it past the first
+// two, see `autocount-service.real.test.ts`).
+const SQL_SHAPE_DEFAULTS: Pick<
+  AutocountEtlSourceConfig,
+  | 'query'
+  | 'lineQuery'
+  | 'keyColumns'
+  | 'watermarkColumn'
+  | 'comparedColumns'
+  | 'fromDate'
+  | 'docDateColumn'
+  | 'filterFormula'
+> = {
+  query: '',
+  lineQuery: null,
+  keyColumns: [],
+  watermarkColumn: null,
+  comparedColumns: [],
+  fromDate: null,
+  docDateColumn: null,
+  filterFormula: null,
+};
+
+// Every route that returns (or echoes) an `AutocountEtlTask` pipes it through
+// this ONE normalizer - a saved HTTP task's wire `sourceConfig` carries only
+// its OWN keys (AC-08-30), so the SQL-shape fields the editor's single
+// `AutocountEtlSourceConfig` type still declares (`query`/`keyColumns`/...)
+// would otherwise be `undefined`, not the shape's own defaults.
+function normalizeEtlTask(task: AutocountEtlTask): AutocountEtlTask {
+  return { ...task, sourceConfig: { ...SQL_SHAPE_DEFAULTS, ...task.sourceConfig } };
+}
+
 export const realAutocountService: AutocountService = {
   // Companies: `sourceKind` (list + detail) and `documentPrerequisites`
   // (detail; the list sends `[]`) ride the backend JSON through untouched
@@ -69,7 +121,15 @@ export const realAutocountService: AutocountService = {
   createCompany(input: AutocountCompanyCreateInput) {
     return apiFetch<AutocountCompany>('/autocount/companies', {
       method: 'POST',
-      body: JSON.stringify({ connectionId: input.connectionId, name: input.name ?? '' }),
+      body: JSON.stringify({
+        connectionId: input.connectionId,
+        name: input.name ?? '',
+        // Only sent when set - an open (no-auth) connection requires it
+        // server-side (sprint-5/08 AC-08-06/07); any other connection kind
+        // ignores/422s it, so a vendor/SQL create never carries the key at
+        // all rather than an empty string.
+        ...(input.refPrefix ? { refPrefix: input.refPrefix } : {}),
+      }),
     });
   },
 
@@ -238,14 +298,20 @@ export const realAutocountService: AutocountService = {
   getEtlTask(companyId, entityType) {
     return apiFetch<AutocountEtlTask>(
       `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/etl-task`,
-    );
+    ).then(normalizeEtlTask);
   },
 
   updateEtlTask(companyId, entityType, input: AutocountEtlTaskUpdate) {
     return apiFetch<AutocountEtlTask>(
       `${etlTaskPath(companyId, entityType)}`,
-      { method: 'PUT', body: JSON.stringify({ sourceConfig: input.sourceConfig }) },
-    );
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          sourceConfig: input.sourceConfig,
+          ...(input.sourceImpl ? { sourceImpl: input.sourceImpl } : {}),
+        }),
+      },
+    ).then(normalizeEtlTask);
   },
 
   // ── direct-DB ETL (plan 22 S2) - endpoints per the contract documented on
@@ -254,31 +320,31 @@ export const realAutocountService: AutocountService = {
   previewEtlTask(companyId, entityType) {
     return apiFetch<AutocountEtlPreviewResult>(`${etlTaskPath(companyId, entityType)}/preview`, {
       method: 'POST',
-    });
+    }).then((result) => ({ ...result, task: normalizeEtlTask(result.task) }));
   },
 
   activateEtlTask(companyId, entityType) {
     return apiFetch<AutocountEtlTask>(`${etlTaskPath(companyId, entityType)}/activate`, {
       method: 'POST',
-    });
+    }).then(normalizeEtlTask);
   },
 
   pauseEtlTask(companyId, entityType) {
     return apiFetch<AutocountEtlTask>(`${etlTaskPath(companyId, entityType)}/pause`, {
       method: 'POST',
-    });
+    }).then(normalizeEtlTask);
   },
 
   resumeEtlTask(companyId, entityType) {
     return apiFetch<AutocountEtlTask>(`${etlTaskPath(companyId, entityType)}/resume`, {
       method: 'POST',
-    });
+    }).then(normalizeEtlTask);
   },
 
   runEtlTaskNow(companyId, entityType) {
     return apiFetch<AutocountEtlRunStart>(`${etlTaskPath(companyId, entityType)}/run`, {
       method: 'POST',
-    });
+    }).then((started) => ({ ...started, task: normalizeEtlTask(started.task) }));
   },
 
   listEtlRuns(companyId, entityType, query = {}) {
@@ -292,6 +358,20 @@ export const realAutocountService: AutocountService = {
     return apiFetch<AutocountEtlRepushResult>(`${etlTaskPath(companyId, entityType)}/repush`, {
       method: 'POST',
     });
+  },
+
+  // sprint-5/08 (S2 backend) - contract documented on `AutocountService`.
+  listApiConnections() {
+    return apiFetch<AutocountApiConnection[]>('/autocount/http/connections');
+  },
+
+  previewHttp(input: HttpPreviewInput) {
+    return apiFetch<HttpPreview>('/autocount/http/preview', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }).then((result) =>
+      result.task ? { ...result, task: normalizeEtlTask(result.task) } : result,
+    );
   },
 };
 

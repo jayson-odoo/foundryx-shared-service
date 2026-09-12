@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsProvider } from '@/providers/settings-provider';
 import type { AutocountEtlTask } from '@/types/autocount';
 import { TaskEditorView } from './task-editor-view';
+import { stubAuthFetch } from './task-editor-view.test-helpers';
+
+stubAuthFetch();
 
 /** Container/Toolbar read layout settings - provide the real provider. */
 function render(ui: React.ReactElement) {
@@ -93,6 +96,7 @@ vi.mock('@/hooks/use-autocount-etl', () => ({
     reload: vi.fn(),
   }),
   useAutocountSqlConnections: () => ({ connections: [], isLoading: false, error: null }),
+  useAutocountApiConnections: () => ({ connections: [], isLoading: false, error: null }),
   useAutocountSqlSchema: () => ({ schema: null, isLoading: false, error: null, refresh: vi.fn() }),
   useEtlTaskLifecycle: () => ({
     busy: null,
@@ -105,6 +109,7 @@ vi.mock('@/hooks/use-autocount-etl', () => ({
   }),
   useEtlTaskPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), reset: vi.fn() }),
   useSqlPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), reset: vi.fn() }),
+  useHttpPreview: () => ({ state: { status: 'idle' }, run: vi.fn(), fieldErrors: {}, reset: vi.fn() }),
 }));
 
 vi.mock('@/hooks/use-autocount-mapping', () => ({

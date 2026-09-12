@@ -382,6 +382,106 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
     expect(screen.queryByTestId('activate-dependency-warning')).not.toBeInTheDocument();
   });
 
+  // ── logging-sink delivery warning (sprint-5/08 review round 5) ────────────
+
+  it('warns, but does NOT block, a logging-sink company', () => {
+    render(
+      <ActivateTab
+        company={company({ sinkImpl: 'logging', sorentoCompanyCode: null })}
+        task={task({ lastPreviewAt: '2026-08-30T06:21:00Z' })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('activate-logging-sink-warning')).toHaveTextContent(
+      'Runs on this company are logged only - no records are delivered until a Sorento target is set.',
+    );
+    // Nit (review round 6) - same escape hatch the companyCode prerequisite
+    // gives, so the warning is never a dead end.
+    expect(screen.getByTestId('activate-logging-sink-warning')).toHaveTextContent(/Open company/);
+    expect(
+      screen.getByRole('link', { name: 'Open company' }),
+    ).toHaveAttribute('href', '/autocount/companies/c1');
+    expect(screen.getByTestId('etl-activate')).toBeEnabled();
+  });
+
+  it('shows no logging-sink warning for a company pointed at Sorento', () => {
+    render(
+      <ActivateTab
+        company={company({ sinkImpl: 'sorento' })}
+        task={task({ lastPreviewAt: '2026-08-30T06:21:00Z' })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('activate-logging-sink-warning')).not.toBeInTheDocument();
+  });
+
+  // ── brand consumer-contract gate (sprint-5/08, AC-08-33/AC-08-20 S5) ──────
+
+  it('shows the contract-gate banner for a brand task on a 2.2 consumer, naming the real advertised version', () => {
+    render(
+      <ActivateTab
+        company={company()}
+        task={task({
+          entityType: 'brand',
+          lastPreviewAt: '2026-08-30T06:21:00Z',
+          brandContractGate: { version: 2.2, requiredVersion: 2.3 },
+        })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('activate-brand-contract-gate')).toHaveTextContent(
+      'Consumer contract 2.2 - brands land when 2.3 is deployed',
+    );
+    // A warning, never a block - the task still activates (falls back to
+    // logging for brand until the consumer deploys the entity).
+    expect(screen.getByTestId('etl-activate')).toBeEnabled();
+  });
+
+  it('hides the banner for a brand task once the consumer contract accepts brands (2.3, gate cleared server-side)', () => {
+    render(
+      <ActivateTab
+        company={company()}
+        task={task({
+          entityType: 'brand',
+          lastPreviewAt: '2026-08-30T06:21:00Z',
+          brandContractGate: null,
+        })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('activate-brand-contract-gate')).not.toBeInTheDocument();
+  });
+
+  it('hides the banner entirely for a non-brand entity', () => {
+    render(
+      <ActivateTab
+        company={company()}
+        task={task({ entityType: 'product', lastPreviewAt: '2026-08-30T06:21:00Z' })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+        entities={[
+          entityConfig({ id: 'cat', entityType: 'product_category', etlStatus: 'active' }),
+          entityConfig({ id: 'uom', entityType: 'unit_of_measure', etlStatus: 'active' }),
+        ]}
+      />,
+    );
+    expect(screen.queryByTestId('activate-brand-contract-gate')).not.toBeInTheDocument();
+  });
+
   // ── "Re-push all" (plan sprint-5/07, AC-07-20..24) ─────────────────────────
 
   describe('Re-push all', () => {

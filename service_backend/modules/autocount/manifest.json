@@ -1,6 +1,6 @@
 {
   "module_name": "autocount",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "author": "Foundryx",
   "title": "AutoCount ESB",
   "description": "Sync masters and documents between customer-hosted AutoCount installations and Foundryx consumer products. One whitelisted egress IP, an anti-corruption layer over the vendor API, and per-company credentials, watermarks and field mappings.",
@@ -23,6 +23,10 @@
     {
       "name": "sync",
       "prefix": "/autocount"
+    },
+    {
+      "name": "http",
+      "prefix": "/autocount/http"
     }
   ],
   "permissions_csv": "permissions/permissions.csv"

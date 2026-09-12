@@ -47,6 +47,7 @@ from ..canonical.documents import (
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
 from ..formula import FormulaError, known_filter_variables, parse_formula
 from ..canonical.masters import (
+    ENTITY_BRAND,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
@@ -60,6 +61,8 @@ from ..models import (
     ETL_STATUS_DRAFT,
     ETL_STATUS_PAUSED,
     RUN_MODE_MANUAL,
+    SINK_IMPL_SORENTO,
+    SOURCE_IMPL_AUTOCOUNT_HTTP,
     SOURCE_IMPL_SQL_DB,
     SYNC_MODE_SCHEDULED_REVIEW,
     AcEntityConfig,
@@ -97,14 +100,23 @@ from ..sql_source.source import (
     build_incremental_wrap,
 )
 from .company_service import (
+    HTTP_CAPABLE_ENTITY_TYPES,
     SOURCE_KIND_DB,
     AutocountServiceError,
     CompanyService,
     ConnectionNotFound,
     EntityConfigNotFound,
 )
-from ..presets import seed_document_mapping
+from ..presets import seed_document_mapping, seed_http_preset_mapping
 from ..mapping import SCOPE_HEADER, SCOPE_LINE
+from ..http_source.preview import (
+    HttpPreviewError,
+    HttpPreviewResult,
+    run_http_preview,
+    validate_http_path,
+)
+from ..provider import AUTH_NONE, PROVIDER_KEY, auth_mode
+from ..sql_source.hashing import compared_columns_for
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -129,6 +141,9 @@ ETL_ENTITY_TYPES = (
     ENTITY_PURCHASE_ORDER,
     ENTITY_SHIPPING_ORDER,
     ENTITY_GOODS_RECEIVED_NOTE,
+    # sprint-5/08 (AC-08-31) - a DB task may feed `brand` too (the open REST
+    # API is not the only source), so it joins the DB-extractable catalogue.
+    ENTITY_BRAND,
 )
 
 # ── schedule floors (AC-22-12, Q17) ──────────────────────────────────────────
@@ -230,6 +245,10 @@ class EtlTaskView:
     etl_status: str
     activated_at: Optional[datetime]
     source_config: Dict[str, Any] = field(default_factory=dict)
+    # sprint-5/08 (AC-08-30) - which fetch implementation this task saves as
+    # (``sql_db`` | ``autocount_http``). Defaults to ``sql_db`` for a
+    # never-configured entity (the editor's own create-time default).
+    source_impl: str = SOURCE_IMPL_SQL_DB
     # ── read-only task state (plan 22 S2, all stamped server-side) ───────────
     # The SAVED query's result column names, from the validation preview every
     # PUT runs - so the Mapping tab offers them without re-running the query.
@@ -253,6 +272,12 @@ class EtlTaskView:
     next_reconcile_at: Optional[datetime] = None
     # ── continuation (plan sprint-5/03 S1/S4, AC-03-03/21) ───────────────────
     initial_load: Optional[Dict[str, Any]] = None
+    # sprint-5/08 (AC-08-33/AC-08-20 S5) - non-null ONLY for a `brand` task on
+    # a Sorento-sink company whose consumer does not yet accept brands:
+    # ``{"version": <float|None>, "requiredVersion": 2.3}``. Drives the
+    # Review & Activate banner ("Consumer contract 2.2 - brands land when 2.3
+    # is deployed") without the operator having to run Preview first.
+    brand_contract_gate: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -287,6 +312,25 @@ def default_source_config(entity_type: str, *, today: Optional[date] = None) -> 
         # are GONE - a document's line fields are persisted `ac_field_mapping`
         # rows now (AC-02-01), not source_config picks.
         "filterFormula": None,
+        "incrementalMinutes": DEFAULT_INCREMENTAL_MINUTES,
+        "reconcileMode": RECONCILE_MODE_DAILY_AT,
+        "reconcileHours": None,
+        "reconcileAt": DEFAULT_RECONCILE_AT,
+    }
+
+
+def default_http_source_config() -> Dict[str, Any]:
+    """The draft an ``autocount_http`` task starts from - the OWN shape
+    (sprint-5/08, AC-08-30): never merged onto ``default_source_config``'s
+    SQL keys, so a never-saved SQL key (``query``/``keyColumns``/...) never
+    round-trips onto an HTTP task's wire config."""
+    return {
+        "connectionId": None,
+        "path": "",
+        "keyFields": [],
+        "watermarkField": None,
+        "comparedFields": [],
+        "distinctOf": None,
         "incrementalMinutes": DEFAULT_INCREMENTAL_MINUTES,
         "reconcileMode": RECONCILE_MODE_DAILY_AT,
         "reconcileHours": None,
@@ -739,6 +783,77 @@ class EtlService:
             response=response,
         )
 
+    # ── open REST API (sprint-5/08, AC-08-14/15) ─────────────────────────────
+
+    def list_http_connections(self, tenant_id: str) -> List[Connection]:
+        """Every tenant ``autocount`` connection, BOTH auths (AC-08-15) - the
+        Source tab's API picker badges each option from this. Tenant-scoped;
+        the router projects the wire shape (auth is derived, not a column)."""
+        return self.connections.list_for_provider(tenant_id, PROVIDER_KEY)
+
+    def preview_http(
+        self,
+        tenant_id: str,
+        connection_id: str,
+        path: str,
+        *,
+        distinct_of: Optional[List[str]] = None,
+        company_id: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        transport: Any = None,
+    ) -> Tuple[HttpPreviewResult, Optional["EtlTaskView"]]:
+        """One page-1 sample against an OPEN connection (AC-08-14).
+
+        ``connectionId`` is tenant- AND provider-scoped and must be a no-auth
+        connection - a vendor/SQL id is a 422 naming ``connectionId``, never a
+        404 (the id may be perfectly real, just not usable here). When both
+        ``company_id``/``entity_type`` are given, a clean result also stamps
+        ``result_columns``/``last_preview_at`` on the task, tenant-scoped.
+
+        Returns ``(HttpPreviewResult, EtlTaskView | None)`` - the second
+        element is the task AFTER stamping, non-``None`` only when
+        ``company_id``/``entity_type`` were both given and the config exists
+        (sprint-5/08 review round 7). This is the ONE place the stamped task
+        is read back, so the router's response and the caller never drift
+        against what actually got committed (a separate GET raced a
+        concurrent Save - review round 6's ``reload()`` bug).
+
+        ``transport``, when given, is a FULL ``httpx.Client`` used AS-IS
+        (house convention - see ``probe_open_connection``) - production
+        never passes one (a real network call); the router injects a stub
+        ONLY via the ``get_http_transport`` dependency override, so a test
+        exercising the real ``POST /autocount/http/preview`` route never
+        reaches ``hapi.sorento.cc.cd`` (sprint-5/08 review round 1, B4).
+        """
+        conn = self.connections.get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
+        if conn is None or auth_mode(conn.config_json or {}) != AUTH_NONE:
+            raise EtlValidationError(
+                {"connectionId": "Choose an open (no-auth) AutoCount API connection."}
+            )
+        base_url = str((conn.config_json or {}).get("baseUrl") or "").strip()
+        path_error = validate_http_path(path)
+        if path_error:
+            raise EtlValidationError({"path": path_error})
+        try:
+            result = run_http_preview(
+                base_url, path, distinct_of=distinct_of, transport=transport
+            )
+        except HttpPreviewError as exc:
+            raise EtlValidationError({exc.field: exc.message}) from exc
+
+        task_view: Optional["EtlTaskView"] = None
+        if company_id and entity_type:
+            self.companies.get(tenant_id, company_id)  # tenant-scope guard
+            config = self.configs.get(tenant_id, company_id, entity_type)
+            if config is not None:
+                config.result_columns = list(result.columns)
+                config.last_preview_at = datetime.now(timezone.utc)
+                self.db.commit()
+                task_view = self._task_view(
+                    company_id, entity_type, config, tenant_id=tenant_id
+                )
+        return result, task_view
+
     # ── task (AC-22-11) ──────────────────────────────────────────────────────
 
     def _require_task_entity(self, tenant_id: str, company_id: str, entity_type: str):
@@ -752,14 +867,28 @@ class EtlService:
     def get_task(self, tenant_id: str, company_id: str, entity_type: str) -> EtlTaskView:
         self._require_task_entity(tenant_id, company_id, entity_type)
         config = self.configs.get(tenant_id, company_id, entity_type)
-        return self._task_view(company_id, entity_type, config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
 
     def _task_view(
-        self, company_id: str, entity_type: str, config: Optional[AcEntityConfig]
+        self,
+        company_id: str,
+        entity_type: str,
+        config: Optional[AcEntityConfig],
+        *,
+        tenant_id: Optional[str] = None,
     ) -> EtlTaskView:
-        # Stored keys win; new keys fall back to the draft defaults so an older
-        # document always round-trips whole.
-        merged = default_source_config(entity_type)
+        source_impl = (
+            (config.source_impl if config is not None else None) or SOURCE_IMPL_SQL_DB
+        )
+        # Stored keys win; new keys fall back to the draft defaults so an
+        # older document always round-trips whole. An HTTP task starts from
+        # its OWN defaults (AC-08-30) - never the SQL shape's keys, so a
+        # stray SQL key never round-trips onto an HTTP task's wire config.
+        merged = (
+            default_http_source_config()
+            if source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP
+            else default_source_config(entity_type)
+        )
         if config is not None and isinstance(config.source_config, dict):
             merged.update(config.source_config)
         return EtlTaskView(
@@ -768,6 +897,7 @@ class EtlService:
             etl_status=(config.etl_status if config is not None else None) or ETL_STATUS_DRAFT,
             activated_at=config.activated_at if config is not None else None,
             source_config=merged,
+            source_impl=source_impl,
             result_columns=[
                 str(c) for c in ((config.result_columns if config is not None else None) or [])
             ],
@@ -791,7 +921,25 @@ class EtlService:
                 config.next_reconcile_at if config is not None else None
             ),
             initial_load=self._initial_load(company_id, entity_type, config),
+            brand_contract_gate=self._brand_contract_gate(tenant_id, company_id, entity_type),
         )
+
+    def _brand_contract_gate(
+        self, tenant_id: Optional[str], company_id: str, entity_type: str
+    ) -> Optional[Dict[str, Any]]:
+        """AC-08-33/AC-08-20 S5 - gated to `brand` only, so the overwhelming
+        majority of task-view reads (every other entity) never touch the
+        network here. `tenant_id` absent (no call site should ever omit it,
+        but the keyword stays optional so an unrelated future caller of
+        `_task_view` cannot be forced to thread one through) reads as "not
+        provable", same as an unreachable consumer."""
+        if entity_type != ENTITY_BRAND or tenant_id is None:
+            return None
+        try:
+            company = self.companies.get(tenant_id, company_id)
+        except Exception:  # noqa: BLE001 - advisory only, never blocks the read
+            return None
+        return self.companies.brand_contract_gate(tenant_id, company)
 
     def _initial_load(
         self, company_id: str, entity_type: str, config: Optional[AcEntityConfig]
@@ -889,6 +1037,226 @@ class EtlService:
         with open_readonly(engine, timeout_s=QUERY_TIMEOUT_SECONDS, secrets=secrets) as conn:
             conn.execute(sa.text(probe_sql), {"from_date": date.today()}).close()
 
+    # ── HTTP task (sprint-5/08, AC-08-12/13/16/28/30) ─────────────────────────
+
+    def _validate_http_config(
+        self,
+        tenant_id: str,
+        raw: Dict[str, Any],
+        *,
+        existing_result_columns: Optional[List[str]],
+    ) -> Tuple[Dict[str, Any], Dict[str, str]]:
+        """Normalise + validate an ``autocount_http`` task's ``source_config``
+        (AC-08-13). ONE envelope with the SQL shape - a stray SQL key on the
+        raw payload is simply not copied into ``clean`` (dropped, never a
+        422). ``existing_result_columns`` is the task's CURRENT stored
+        ``result_columns`` (from the last ``/autocount/http/preview`` call
+        that named this task) - ``None`` when it has never been previewed,
+        in which case key/watermark picks are accepted un-checked (nothing
+        to check against yet) rather than refused.
+        """
+        errors: Dict[str, str] = {}
+
+        connection_id = str(raw.get("connectionId") or "").strip() or None
+        if connection_id:
+            conn = self.connections.get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
+            if conn is None or auth_mode(conn.config_json or {}) != AUTH_NONE:
+                errors["connectionId"] = (
+                    "Choose an open (no-auth) AutoCount API connection of this tenant."
+                )
+                connection_id = None
+        else:
+            errors["connectionId"] = "Choose an open (no-auth) AutoCount API connection."
+
+        path = str(raw.get("path") or "").strip()
+        if not path:
+            errors["path"] = "Enter the endpoint path."
+        else:
+            # S4 (sprint-5/08 review round 1) - the SAME rule set the
+            # preview route now applies (``validate_http_path``), so a path
+            # can never pass save-time validation and then fail differently
+            # (or not at all) against the preview endpoint.
+            path_error = validate_http_path(path)
+            if path_error:
+                errors["path"] = path_error
+
+        key_fields = _clean_list(raw.get("keyFields"))
+        distinct_of = _clean_list(raw.get("distinctOf")) or None
+        if not key_fields:
+            errors["keyFields"] = "Choose at least one key field."
+        elif distinct_of and key_fields != ["value"]:
+            errors["keyFields"] = (
+                "A distinct-values field can only key on 'value'."
+            )
+        elif existing_result_columns is not None:
+            missing = [c for c in key_fields if c not in existing_result_columns]
+            if missing:
+                errors["keyFields"] = (
+                    f"Not in the last preview: {', '.join(missing)}. Test the "
+                    f"endpoint first."
+                )
+
+        watermark_field = str(raw.get("watermarkField") or "").strip() or None
+        if (
+            watermark_field
+            and existing_result_columns is not None
+            and watermark_field not in existing_result_columns
+        ):
+            errors["watermarkField"] = f"'{watermark_field}' is not in the last preview."
+
+        configured_compared = _clean_list(raw.get("comparedFields"))
+        compared_fields = compared_columns_for(
+            configured=configured_compared,
+            result_columns=existing_result_columns or configured_compared,
+            key_columns=key_fields,
+        )
+
+        # ── schedule floors (AC-22-12, reused verbatim) ──────────────────────
+        minutes = _clean_int(raw.get("incrementalMinutes"))
+        floor = (
+            MIN_INCREMENTAL_MINUTES if watermark_field else MIN_INCREMENTAL_MINUTES_NO_WATERMARK
+        )
+        if minutes is None:
+            errors["incrementalMinutes"] = "Enter the incremental interval in minutes."
+            minutes = DEFAULT_INCREMENTAL_MINUTES
+        elif minutes < floor:
+            errors["incrementalMinutes"] = (
+                f"At least {floor} minute{'s' if floor != 1 else ''}"
+                + (" without a watermark field." if not watermark_field else ".")
+            )
+
+        mode = str(raw.get("reconcileMode") or "").strip()
+        hours: Optional[int] = None
+        at: Optional[str] = None
+        if mode not in RECONCILE_MODES:
+            errors["reconcileMode"] = "Choose how to reconcile: every N hours or daily at a time."
+            mode = RECONCILE_MODE_DAILY_AT
+        elif mode == RECONCILE_MODE_INTERVAL:
+            hours = _clean_int(raw.get("reconcileHours"))
+            if hours is None:
+                errors["reconcileHours"] = "Enter the reconcile interval in hours."
+            elif hours < MIN_RECONCILE_HOURS:
+                errors["reconcileHours"] = f"At least {MIN_RECONCILE_HOURS} hour."
+        else:
+            at = str(raw.get("reconcileAt") or "").strip() or None
+            if at is None or not _TIME_RE.match(at):
+                errors["reconcileAt"] = "Enter the daily reconcile time as HH:MM."
+
+        clean = {
+            "connectionId": connection_id,
+            "path": path,
+            "keyFields": key_fields,
+            "watermarkField": watermark_field,
+            "comparedFields": compared_fields,
+            "distinctOf": distinct_of,
+            "incrementalMinutes": minutes,
+            "reconcileMode": mode,
+            "reconcileHours": hours,
+            "reconcileAt": at,
+        }
+        return clean, errors
+
+    def _update_http_task(
+        self, tenant_id: str, company_id: str, entity_type: str, raw: Dict[str, Any]
+    ) -> EtlTaskView:
+        """Draft-save an ``autocount_http`` task (AC-08-13/16/28/30).
+
+        Deliberately NO network call here - the SQL path's "fresh preview on
+        every save" discipline would mean a live GET to a customer's server
+        on every keystroke-driven save; the open API's Test button
+        (``/autocount/http/preview``) is the one place that talks to the
+        source, and it is what stamps ``result_columns``/``last_preview_at``
+        (AC-08-14). A save therefore only validates the STATIC shape, keeps
+        (or seeds) the mapping and demotes an active task whose identity
+        changed (AC-08-28) - never an SQL engine, never an HTTP request.
+        """
+        self._require_task_entity(tenant_id, company_id, entity_type)
+        if entity_type not in HTTP_CAPABLE_ENTITY_TYPES:
+            # Nit (sprint-5/08 review round 2) - the refusal is about the
+            # ENTITY the operator picked, never the path they typed (which
+            # is not even read for an entity with no open REST API route at
+            # all) - blame `entityType`.
+            raise EtlValidationError(
+                {"entityType": f"'{entity_type}' has no open REST API route."}
+            )
+
+        config = self.configs.get(tenant_id, company_id, entity_type)
+        existing_result_columns = (
+            list(config.result_columns)
+            if config is not None and config.result_columns
+            else None
+        )
+        clean, errors = self._validate_http_config(
+            tenant_id, raw, existing_result_columns=existing_result_columns
+        )
+        if errors:
+            raise EtlValidationError(errors)
+
+        previous_source_config: Optional[Dict[str, Any]] = (
+            dict(config.source_config)
+            if config is not None and isinstance(config.source_config, dict)
+            else None
+        )
+        previous_source_impl = config.source_impl if config is not None else None
+
+        if config is None:
+            config = self.configs.add(
+                AcEntityConfig(
+                    tenant_id=tenant_id,
+                    company_id=company_id,
+                    entity_type=entity_type,
+                    sync_mode=SYNC_MODE_SCHEDULED_REVIEW,
+                    source_impl=SOURCE_IMPL_AUTOCOUNT_HTTP,
+                    initial_load=INITIAL_LOAD_FULL,
+                    enabled=True,
+                    etl_status=ETL_STATUS_DRAFT,
+                )
+            )
+
+        #     !!  AC-08-28: sourceImpl/connectionId/path change on an ACTIVE
+        #         task demotes it to draft - hashes are KEPT.  !!
+        demote = False
+        if previous_source_impl is not None and previous_source_impl != SOURCE_IMPL_AUTOCOUNT_HTTP:
+            demote = True
+        elif previous_source_config is not None and (
+            previous_source_config.get("connectionId") != clean.get("connectionId")
+            or previous_source_config.get("path") != clean.get("path")
+        ):
+            demote = True
+
+        config.source_impl = SOURCE_IMPL_AUTOCOUNT_HTTP
+        config.source_config = clean
+        if demote and config.etl_status == ETL_STATUS_ACTIVE:
+            config.etl_status = ETL_STATUS_DRAFT
+
+        # Every save invalidates the activation gate (AC-22-18 parity) - the
+        # operator must Test again before Activate/re-activate.
+        config.last_preview_at = None
+        config.last_preview_failed_count = None
+        if config.etl_status == ETL_STATUS_ACTIVE:
+            # ``next_run_times`` reads the SQL key name - translated so an
+            # active HTTP task's schedule floor still reflects whether it
+            # carries a watermark.
+            config.next_incremental_at, config.next_reconcile_at = self.next_run_times(
+                {**clean, "watermarkColumn": clean.get("watermarkField")},
+                now=datetime.now(timezone.utc),
+            )
+
+        #     !!  FIRST CLEAN SAVE SEEDS THE HTTP PRESET (AC-08-16).  !!
+        # Only when the entity's mapping is still completely empty (an
+        # operator who already started mapping, or a second save, is never
+        # re-seeded) - the same seed-if-absent contract every other preset
+        # in this module follows. ``columns=None`` (no live preview here)
+        # seeds every row ENABLED, matching "nothing proven wrong yet".
+        if self.companies.mappings.count(tenant_id, company_id, entity_type) == 0:
+            seed_http_preset_mapping(
+                self.db, tenant_id, company_id, entity_type, columns=None
+            )
+
+        self.db.commit()
+        self.db.refresh(config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
+
     def update_task(
         self, tenant_id: str, company_id: str, entity_type: str, raw: Dict[str, Any]
     ) -> EtlTaskView:
@@ -903,7 +1271,16 @@ class EtlService:
         with a watermark column and no errors so far, PROBE the exact
         incremental statement shape the real run will execute (BLOCKER 2) -
         every failure names its field.
+
+        sprint-5/08 (AC-08-13/30): ``raw.sourceImpl == 'autocount_http'``
+        dispatches to ``_update_http_task`` FIRST, before a single line of
+        the SQL machinery below runs - no SQL engine is ever built for an
+        HTTP task (asserted with a spy in
+        ``tests/test_autocount_http_lifecycle.py``).
         """
+        if str(raw.get("sourceImpl") or "") == SOURCE_IMPL_AUTOCOUNT_HTTP:
+            return self._update_http_task(tenant_id, company_id, entity_type, raw)
+
         company = self._require_task_entity(tenant_id, company_id, entity_type)
         errors: Dict[str, str] = {}
 
@@ -1034,6 +1411,10 @@ class EtlService:
             if config is not None and isinstance(config.source_config, dict)
             else None
         )
+        # sprint-5/08 review round 1 (B2) - captured BEFORE the branch below
+        # may create a fresh row (whose ``source_impl`` starts at
+        # ``sql_db`` and has nothing to demote from).
+        previous_source_impl = config.source_impl if config is not None else None
         if config is None:
             # A row that exists ONLY for the DB path is born on the DB source.
             # Existing rows (API-path entities) keep their source_impl - the
@@ -1051,6 +1432,23 @@ class EtlService:
                 )
             )
         config.source_config = clean
+        #     !!  AC-08-28: sourceImpl CHANGE ON AN ACTIVE TASK DEMOTES IT TO
+        #         DRAFT - EVERY DIRECTION, NOT JUST HTTP -> SQL (B2, review
+        #         round 1: this branch used to never write ``source_impl`` at
+        #         all, so an HTTP task saved through the SQL editor kept
+        #         reporting ``autocount_http`` while carrying a SQL-shaped
+        #         ``source_config`` - and an ACTIVE HTTP task saved this way
+        #         never demoted).  !!
+        # Hashes are KEPT (mirrors ``_update_http_task``) - the first
+        # reconcile after a switch reports updates for changed hashes, never
+        # a phantom mass-delete, as long as the key shape is unchanged.
+        if (
+            previous_source_impl is not None
+            and previous_source_impl != SOURCE_IMPL_SQL_DB
+            and config.etl_status == ETL_STATUS_ACTIVE
+        ):
+            config.etl_status = ETL_STATUS_DRAFT
+        config.source_impl = SOURCE_IMPL_SQL_DB
         #     !!  A NARROWED POPULATION MUST RE-BASELINE, NEVER DELETE.  !!
         # (F1, sprint-5/02 review round - BLOCKER.) A document task's
         # `ac_row_hash` rows are a diff baseline for the set `query` +
@@ -1196,7 +1594,7 @@ class EtlService:
                 )
         self.db.commit()
         self.db.refresh(config)
-        return self._task_view(company_id, entity_type, config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
 
     # ── task lifecycle (plan 22 §2.6, AC-22-18/19/20) ────────────────────────
     #
@@ -1220,12 +1618,31 @@ class EtlService:
     @staticmethod
     def _require_runnable(config) -> None:
         source = config.source_config or {}
+        if config.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP:
+            if not str(source.get("path") or "").strip():
+                raise EtlStateError("Save the endpoint path for this task first.")
+            if not [c for c in (source.get("keyFields") or []) if str(c).strip()]:
+                raise EtlStateError(
+                    "Choose the key fields that identify a row before running this task."
+                )
+            return
         if not str(source.get("query") or "").strip():
             raise EtlStateError("Save a query for this task first.")
         if not [c for c in (source.get("keyColumns") or []) if str(c).strip()]:
             raise EtlStateError(
                 "Choose the key columns that identify a row before running this task."
             )
+
+    @staticmethod
+    def _schedule_source_config(config: AcEntityConfig) -> Dict[str, Any]:
+        """``config.source_config`` translated for ``next_run_times`` (which
+        reads the SQL key name ``watermarkColumn`` for its floor/cadence
+        decision) - an ``autocount_http`` task's watermark lives under
+        ``watermarkField`` instead (sprint-5/08)."""
+        source = dict(config.source_config or {})
+        if config.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP:
+            source["watermarkColumn"] = source.get("watermarkField")
+        return source
 
     @staticmethod
     def next_run_times(
@@ -1309,10 +1726,16 @@ class EtlService:
 
         if not previewable:
             # A logging-sink company has no consumer to ask. Reported honestly
-            # rather than as a failure - and deliberately NOT stamped, so the
-            # activation gate stays shut (a DB task auto-pushes; activating one
-            # with nowhere to push would be a task that runs and delivers
-            # nothing, forever).
+            # rather than as a failure - and deliberately NOT stamped here.
+            # This only actually withholds `last_preview_at` from a SQL
+            # (`sql_db`) task: it has no other way to earn the stamp, so it
+            # stays un-activatable on a logging-sink company until Sorento is
+            # wired up. An `autocount_http` task earns the SAME stamp through
+            # the Source tab's own Test button (`preview_http`, above) - which
+            # runs the real HTTP call independently of any sink - so it IS
+            # activatable on a logging-sink company by design (runs then log
+            # only, deliver nothing, until a Sorento target is set - the
+            # Review & Activate tab warns of exactly this, non-blocking).
             payload: Dict[str, Any] = {
                 "previewable": False,
                 "sink": sink.name,
@@ -1332,7 +1755,7 @@ class EtlService:
                 warnings["pagedPreview"] = True
             if warnings:
                 payload["warnings"] = warnings
-            return self._task_view(company_id, entity_type, config), payload
+            return self._task_view(company_id, entity_type, config, tenant_id=tenant_id), payload
 
         try:
             result = sink.dry_run([r for r in records if r is not None])
@@ -1383,7 +1806,7 @@ class EtlService:
         }
         if warnings:
             payload["warnings"] = warnings
-        return self._task_view(company_id, entity_type, config), payload
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id), payload
 
     def _preview_warnings(
         self,
@@ -1482,23 +1905,53 @@ class EtlService:
         from ..sources import SourceContext, Watermark
         from ..sql_source.source import PageCursor, SqlDbSource
 
-        source = SqlDbSource(
-            SourceContext(
-                db=self.db,
-                tenant_id=tenant_id,
-                company=company,
-                entity_config=config,
-                company_service=self.companies,
-            ),
-            entity_type=entity_type,
-            # A dry run must leave no trace: the FIRST real run has to report
-            # its rows as adds, which it cannot do if the preview already
-            # recorded their hashes.
-            persist_hashes=False,
-        )
+        #     !!  B3 (sprint-5/08 review round 1): DISPATCH ON source_impl -
+        #         NEVER HARDCODE SqlDbSource.  !!
+        # Before this fix, Review & Activate's consumer dry-run always built
+        # a ``SqlDbSource`` regardless of the task's actual implementation,
+        # so an ``autocount_http`` task's "Preview" either crashed (no
+        # ``query``/``keyColumns``) or silently mapped nothing - and
+        # ``activate_task`` had to carve out a special bypass of the
+        # "run a preview first" gate for HTTP tasks as a result (removed
+        # below, now that this dry-run genuinely covers them too).
+        is_http = config.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP
+        if is_http:
+            from ..http_source.source import HttpApiSource
+
+            source = HttpApiSource(
+                SourceContext(
+                    db=self.db,
+                    tenant_id=tenant_id,
+                    company=company,
+                    entity_config=config,
+                    company_service=self.companies,
+                ),
+                entity_type=entity_type,
+                mode=RUN_MODE_MANUAL,
+                # A dry run must leave no trace (same contract as the SQL
+                # branch below): the FIRST real run has to report its rows
+                # as adds, which it cannot do if the preview already
+                # recorded their hashes.
+                persist_hashes=False,
+            )
+        else:
+            source = SqlDbSource(
+                SourceContext(
+                    db=self.db,
+                    tenant_id=tenant_id,
+                    company=company,
+                    entity_config=config,
+                    company_service=self.companies,
+                ),
+                entity_type=entity_type,
+                # A dry run must leave no trace: the FIRST real run has to report
+                # its rows as adds, which it cannot do if the preview already
+                # recorded their hashes.
+                persist_hashes=False,
+            )
         page_complete: Optional[bool] = None
         try:
-            if source.watermark_column:
+            if not is_http and source.watermark_column:
                 page = source.fetch_page(PageCursor())
                 #     !!  PREVIEW MAPS EVERY CANDIDATE, NOT JUST CHANGED ONES
                 #         (R2-S1, review round 3).  !!
@@ -1515,8 +1968,12 @@ class EtlService:
             else:
                 # ``Watermark()`` = no mark, so this is the INITIAL LOAD -
                 # exactly what the activation gate is meant to show
-                # (AC-22-18). Only reachable for a task with no watermark
-                # column configured at all, which has no page concept.
+                # (AC-22-18). For SQL this is only reachable for a task with
+                # no watermark column at all; an HTTP task ALWAYS takes this
+                # branch - it has no page-limited preview concept, it walks
+                # the whole population every run by design (plan §2.4), so
+                # its dry run does too. ``page_complete`` stays ``None`` for
+                # it (not a partial look - a genuine full walk).
                 result = source.fetch_changes(Watermark())
                 raw_records = result.records
                 current_refs = list(result.current_refs)
@@ -1524,9 +1981,12 @@ class EtlService:
             source.close()
 
         try:
-            profile = flat_profile(
-                entity_type, (config.source_config or {}).get("keyColumns") or []
-            )
+            key_columns = (
+                (config.source_config or {}).get("keyFields")
+                if is_http
+                else (config.source_config or {}).get("keyColumns")
+            ) or []
+            profile = flat_profile(entity_type, key_columns)
         except UnknownEntityProfile as exc:
             # NIT (S2 review): ``ETL_ENTITY_TYPES`` (a task CAN be saved for
             # this entity) is wider than ``mapping.ENTITY_PROFILES`` (mapping
@@ -1541,12 +2001,14 @@ class EtlService:
         # ``ac_field_mapping`` rows now, not a code-generated fixed-column
         # convention. ``build_mapping_rows_for_run`` is the ONE gate here (S5
         # review NIT - shared with ``sync.py``'s real-run path so the two can
-        # never drift). This method only ever runs against a freshly-built
-        # ``SqlDbSource`` above - always the DB source, never the API path.
+        # never drift). This method now runs against EITHER a freshly-built
+        # ``SqlDbSource`` OR (sprint-5/08 B3) an ``HttpApiSource`` above -
+        # ``is_sql_db_source`` is currently unused by the function itself
+        # (see its docstring) but kept honest for a future reader/caller.
         rows = build_mapping_rows_for_run(
             entity_type,
             self.companies.mapping_rows(tenant_id, company.id, entity_type),
-            is_sql_db_source=True,
+            is_sql_db_source=not is_http,
             source_config=config.source_config,
         )
         engine = MappingEngine(
@@ -1574,6 +2036,17 @@ class EtlService:
         self._require_runnable(config)
         if config.etl_status == ETL_STATUS_ACTIVE:
             raise EtlStateError("This task is already active.")
+        #     !!  ACTIVATE-ONCE GATE - NOW UNIFORM ACROSS BOTH source_impl
+        #         VALUES (sprint-5/08 review round 1, B3).  !!
+        # ``_extract_and_map`` (``preview_task``'s dry-run) dispatches on
+        # ``source_impl`` and builds a real ``HttpApiSource`` for an HTTP
+        # task exactly as it builds a ``SqlDbSource`` for a SQL one, so this
+        # gate no longer needs (or gets) a bypass for HTTP: ``last_preview_at``
+        # is stamped by EITHER a successful ``preview_task`` run OR the
+        # Source tab's own Test button (``/autocount/http/preview`` with
+        # ``companyId``/``entityType`` set, AC-08-14) - foolproof-UI: the
+        # operator only ever has to click Test once, never a second
+        # ceremony.
         if config.last_preview_at is None:
             raise EtlStateError(
                 "Run a successful preview of the initial load before activating."
@@ -1591,7 +2064,45 @@ class EtlService:
                 f"failed row(s) - re-run preview after fixing the mapping "
                 f"before activating."
             )
-        if not (company.sorento_company_code or "").strip():
+        #     !!  B-A (sprint-5/08 review round 2 blocker).  !!
+        # An `autocount_http` task's compared set can be persisted EMPTY two
+        # ways that skip a real preview entirely: (a) Test an endpoint that
+        # returns zero rows on save day (`result_columns = []`, the Source
+        # tab's save gate only checks connection + path); (b) an API-direct
+        # PUT with `result_columns` still None (never previewed at all) -
+        # `_validate_http_config` accepts key/watermark picks unchecked in
+        # that case. Either way `row_hash(row, [])` is `sha256("")` for every
+        # row FOREVER once the endpoint starts returning data - change
+        # detection dies silently. `last_preview_at` alone does not prove
+        # this: the Source tab's own Test button stamps it without ever
+        # calling `activate_task`'s sibling `preview_task`. Refuse here,
+        # same shape as the two sibling activate gates above (409, not 422 -
+        # sprint-5/08 review round 3 SHOULD-FIX 1: an ``EtlValidationError``
+        # here is dropped by ``_raise_task``'s field-error branch since this
+        # task never went through ``_field_errors``, leaving the operator
+        # with a generic "fix the highlighted fields" and nothing
+        # highlighted).
+        if config.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP:
+            persisted_compared = _clean_list((config.source_config or {}).get("comparedFields"))
+            persisted_result_columns = _clean_list(config.result_columns)
+            if not persisted_compared and not persisted_result_columns:
+                raise EtlStateError(
+                    "Test the endpoint again so a real preview can "
+                    "confirm which fields to watch for changes "
+                    "before activating."
+                )
+        #     !!  ONLY ANCHOR-GATE A SORENTO-BOUND COMPANY  !!
+        # (sprint-5/08 review round 4.) ``set_sink_target`` already REQUIRES
+        # (and ``sink_for_company`` already ANCHORS on) ``sorento_company_code``
+        # for ``sink_impl == 'sorento'``, and clears it whenever the company
+        # switches to the logging sink. Gating on the bare code here for
+        # EVERY company made "Activate -> Run now" on a logging-sink company
+        # (the lane-safe verification path, and the AC's own precondition)
+        # permanently unreachable: 409 forever, with no code to set because
+        # the logging sink never anchors on one.
+        if company.sink_impl == SINK_IMPL_SORENTO and not (
+            company.sorento_company_code or ""
+        ).strip():
             raise EtlStateError(
                 "Set the Sorento company code on this company before activating - "
                 "every push is anchored to it."
@@ -1601,10 +2112,13 @@ class EtlService:
         config.activated_at = now
         # Activation IS the switch to the DB path: an active task that still
         # read from the vendor API would auto-push records the operator
-        # previewed from a different source entirely.
-        config.source_impl = SOURCE_IMPL_SQL_DB
+        # previewed from a different source entirely. sprint-5/08: an
+        # ``autocount_http`` task is left AS-IS - it is not the legacy
+        # vendor-API default this switch exists to escape.
+        if config.source_impl not in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP):
+            config.source_impl = SOURCE_IMPL_SQL_DB
         _, config.next_reconcile_at = self.next_run_times(
-            config.source_config or {}, now=now
+            self._schedule_source_config(config), now=now
         )
         # plan sprint-5/03 §2.4 - the initial (paged) pass starts on the
         # FIRST tick after activation, not after a full ``incrementalMinutes``
@@ -1613,7 +2127,7 @@ class EtlService:
         config.next_incremental_at = now
         self.db.commit()
         self.db.refresh(config)
-        return self._task_view(company_id, entity_type, config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
 
     def pause_task(self, tenant_id: str, company_id: str, entity_type: str) -> EtlTaskView:
         """active → paused. The sweep stops dispatching; an in-flight run
@@ -1626,7 +2140,7 @@ class EtlService:
         config.next_reconcile_at = None
         self.db.commit()
         self.db.refresh(config)
-        return self._task_view(company_id, entity_type, config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
 
     def resume_task(self, tenant_id: str, company_id: str, entity_type: str) -> EtlTaskView:
         """paused → active, with NO re-preview ceremony (AC-22-19). Pausing is
@@ -1638,11 +2152,11 @@ class EtlService:
         now = datetime.now(timezone.utc)
         config.etl_status = ETL_STATUS_ACTIVE
         config.next_incremental_at, config.next_reconcile_at = self.next_run_times(
-            config.source_config or {}, now=now
+            self._schedule_source_config(config), now=now
         )
         self.db.commit()
         self.db.refresh(config)
-        return self._task_view(company_id, entity_type, config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
 
     def run_task_now(
         self,
@@ -1699,7 +2213,7 @@ class EtlService:
             "run_id": run.id if run is not None else "",
             "job_id": job.id,
             "status": job.status,
-            "task": self._task_view(company_id, entity_type, config),
+            "task": self._task_view(company_id, entity_type, config, tenant_id=tenant_id),
         }
 
     def _in_flight_guard(
@@ -1768,8 +2282,10 @@ class EtlService:
         already-committed deletion.
         """
         _company, config = self._task_config(tenant_id, company_id, entity_type)
-        if config.source_impl != SOURCE_IMPL_SQL_DB:
-            raise EtlStateError("Re-push applies to database tasks only.")
+        if config.source_impl not in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP):
+            raise EtlStateError(
+                "Re-push applies to a database task or an open-API task only."
+            )
         if config.etl_status == ETL_STATUS_DRAFT:
             raise EtlStateError(
                 "Activate the task first - a draft has nothing to re-push."

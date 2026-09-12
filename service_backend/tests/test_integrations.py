@@ -161,6 +161,58 @@ def test_erp_provider_allows_several_connections_per_tenant(client):
     assert client.post("/integrations/connections", json=SMTP_PAYLOAD, headers=h).status_code == 409
 
 
+AUTOCOUNT_OPEN_PAYLOAD = {
+    "provider": "autocount",
+    "name": "Mocha REST",
+    "config": {"auth": "none", "baseUrl": "https://hapi.sorento.cc.cd/api/db2"},
+    "credentials": {},
+}
+
+
+def test_autocount_baseurl_scheme_rejected_at_save_not_only_at_test(client):
+    """S5 (sprint-5/08 review round 1) - `AutoCountProvider.test()` already
+    rejected a non-http(s) scheme, but ONLY when the operator clicked Test;
+    a bad scheme typed into the wizard and saved WITHOUT ever clicking Test
+    sat in storage unvalidated. `IntegrationService.create`/`update` now
+    call the provider's own `validate_config` (a generic, opt-in hook - see
+    `IntegrationProvider.fields` docstring) at save time too."""
+    h = _demo_headers(client)
+    bad = {
+        **AUTOCOUNT_OPEN_PAYLOAD,
+        "config": {**AUTOCOUNT_OPEN_PAYLOAD["config"], "baseUrl": "javascript:alert(1)"},
+    }
+    res = client.post("/integrations/connections", json=bad, headers=h)
+    assert res.status_code == 422, res.text
+    assert "http" in res.json()["detail"].lower()
+
+
+def test_autocount_baseurl_good_scheme_saves_clean(client):
+    h = _demo_headers(client)
+    created = _create(client, h, AUTOCOUNT_OPEN_PAYLOAD)
+    assert created["config"]["baseUrl"] == "https://hapi.sorento.cc.cd/api/db2"
+
+
+def test_autocount_baseurl_scheme_rejected_on_update_too(client):
+    h = _demo_headers(client)
+    created = _create(client, h, AUTOCOUNT_OPEN_PAYLOAD)
+    res = client.patch(
+        f"/integrations/connections/{created['id']}",
+        json={"config": {"baseUrl": "ftp://hapi.sorento.cc.cd/api/db2"}},
+        headers=h,
+    )
+    assert res.status_code == 422, res.text
+    assert "http" in res.json()["detail"].lower()
+
+
+def test_smtp_provider_has_no_validate_config_hook_unaffected(client):
+    """Every provider without a `validate_config` (SMTP, still - S5 must
+    change behaviour for NO existing provider) keeps saving whatever
+    `required` already accepted."""
+    h = _demo_headers(client)
+    created = _create(client, h)
+    assert created["provider"] == "smtp"
+
+
 def test_unknown_provider_rejected(client):
     h = _demo_headers(client)
     res = client.post(

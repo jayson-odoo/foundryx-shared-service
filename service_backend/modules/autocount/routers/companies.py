@@ -4,7 +4,7 @@ No DB query and no raw SQL lives here (code-review hard-fail). Every handler
 takes the tenant from the authenticated user - NEVER from client input - and
 hands off to a service.
 """
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
@@ -14,6 +14,7 @@ from app.database import get_db
 from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
+from ..http_client import get_http_transport
 from ..canonical.documents import is_document_entity
 from ..mapping import SCOPE_LINE
 from ..schemas import (
@@ -28,6 +29,7 @@ from ..schemas import (
     EtlPreviewResponse,
     EtlRepushResponse,
     EtlRunStartResponse,
+    BrandContractGate,
     EtlTaskResponse,
     EtlTaskUpdate,
     FormulaTestRequest,
@@ -62,6 +64,7 @@ from ..services import (
     SinkTargetValidationError,
     document_prerequisites,
 )
+from ..http_source.errors import HttpSourceError
 from ..sql_source.errors import SqlSourceError
 from .sql import raise_sql_error
 
@@ -129,16 +132,27 @@ def create_company(
     body: CompanyCreate,
     current_user: User = Depends(require_permission("autocount.companies.manage")),
     db: Session = Depends(get_db),
+    transport: Optional[Any] = Depends(get_http_transport),
 ):
     """Register an AutoCount company by DISCOVERING it from its connection -
     the vendor login for an ``autocount`` connection, the connection's own
     ``database`` (verified by a live probe) for a ``sql_database`` one (plan
     sprint-5/01 AC-01-01). A probe mismatch / connect failure is a per-field
-    422 on ``connectionId`` (AC-01-02)."""
+    422 on ``connectionId`` (AC-01-02).
+
+    ``transport`` (sprint-5/08 review round 1, B4) is the SAME dependency
+    seam ``/autocount/http/preview`` uses - production leaves it ``None``
+    (a real network call for the open-company reachability probe), tests
+    override it so this route never reaches ``hapi.sorento.cc.cd``.
+    """
     service = CompanyService(db)
     try:
         company = service.create(
-            current_user.tenant_id, body.connectionId, name=body.name
+            current_user.tenant_id,
+            body.connectionId,
+            name=body.name,
+            ref_prefix=body.refPrefix,
+            transport=transport,
         )
     except ConnectionValidationError as exc:
         return _field_errors(exc.field_errors, exc.message)
@@ -458,6 +472,7 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         entityType=view.entity_type,
         etlStatus=view.etl_status,
         activatedAt=view.activated_at,
+        sourceImpl=view.source_impl,
         sourceConfig=view.source_config,
         resultColumns=view.result_columns,
         lineResultColumns=view.line_result_columns,
@@ -469,6 +484,11 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         nextIncrementalAt=view.next_incremental_at,
         nextReconcileAt=view.next_reconcile_at,
         initialLoad=view.initial_load,
+        brandContractGate=(
+            BrandContractGate(**view.brand_contract_gate)
+            if view.brand_contract_gate
+            else None
+        ),
     )
 
 
@@ -482,6 +502,12 @@ def _raise_task(exc: Exception):
       Sorento's own code (Appendix A6) - the surface names the wiring that is
       wrong instead of showing a bare delivery failure.
     * ``PreviewUnavailable`` → **502**: the consumer, not us, failed.
+    * ``HttpSourceError`` → **422** (B-B, sprint-5/08 review round 2 blocker):
+      an open-API task's dry-run failure (transport, HTTP status, shape
+      change, row cap) - this is the SOURCE side of an HTTP preview, the
+      exact same authority ``SqlSourceError`` already has below.
+      ``exc.message`` already names the page and, when known, the status
+      (AC-08-23) - never a bare 500.
     * Anything else (``SqlConnectError``/``SqlQueryError``/
       ``SqlTaskNotConfigured`` - the SOURCE side of a preview, S2 review
       SHOULD-FIX 4) falls through to the SAME translator ``routers/sql.py``
@@ -496,6 +522,14 @@ def _raise_task(exc: Exception):
             }
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=content)
     if isinstance(exc, EtlAnchorError):
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "detail": {"code": exc.code, "message": exc.message},
+                "message": exc.message,
+            },
+        )
+    if isinstance(exc, HttpSourceError):
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={
@@ -551,11 +585,18 @@ def update_etl_task(
     apply → ``422 {fieldErrors}``. ``connectionId`` is re-validated against
     the tenant on every use. Reuses ``autocount.companies.manage``."""
     try:
+        # sprint-5/08 review round 1 (B1) - the FE sends ``sourceImpl`` as a
+        # TOP-LEVEL sibling of ``sourceConfig``; prefer it, falling back to a
+        # nested ``sourceConfig.sourceImpl`` only if a caller ever sends that
+        # shape instead (never both silently disagreeing - the top-level one
+        # wins, matching what ``EtlService.update_task`` dispatches on).
+        raw = body.sourceConfig.model_dump()
+        raw["sourceImpl"] = body.sourceImpl or body.sourceConfig.sourceImpl
         view = EtlService(db).update_task(
             current_user.tenant_id,
             company_id,
             entity_type,
-            body.sourceConfig.model_dump(),
+            raw,
         )
     except EtlValidationError as exc:
         return _field_errors(exc.field_errors, exc.message)
@@ -593,7 +634,7 @@ def preview_etl_task(
         view, preview = EtlService(db).preview_task(
             current_user.tenant_id, company_id, entity_type
         )
-    except (AutocountServiceError, SqlSourceError) as exc:
+    except (AutocountServiceError, SqlSourceError, HttpSourceError) as exc:
         return _raise_task(exc)
     return EtlPreviewResponse(task=_task_response(view), preview=preview)
 

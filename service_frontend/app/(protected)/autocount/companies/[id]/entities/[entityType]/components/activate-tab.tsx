@@ -26,6 +26,8 @@ import { useDatetime } from '@/hooks/use-datetime';
 import {
   activatePrerequisites,
   anchorErrorTitle,
+  brandContractBanner,
+  loggingSinkWarning,
   previewFailedBlocksActivation,
   productDependencyWarning,
 } from '@/lib/autocount-etl';
@@ -107,6 +109,8 @@ export function ActivateTab({
   // makes activating a `product` task before its category/UOM dependency
   // perfectly safe - it just resolves on a later run instead of the next one.
   const dependencyWarning = productDependencyWarning(task.entityType, entities);
+  const brandBanner = brandContractBanner(task);
+  const sinkWarning = loggingSinkWarning(company);
   const status = task.etlStatus;
   const busy = lifecycle.busy !== null || preview.state.status === 'loading';
   const previewOk = Boolean(task.lastPreviewAt);
@@ -212,7 +216,7 @@ export function ActivateTab({
           </AlertIcon>
           <AlertTitle>
             {p.message}
-            {(p.kind === 'sink' || p.kind === 'companyCode') && (
+            {p.kind === 'companyCode' && (
               <>
                 {' '}
                 <Link href={acCompanyHref(task.companyId)} className="underline">
@@ -230,6 +234,29 @@ export function ActivateTab({
             <TriangleAlert />
           </AlertIcon>
           <AlertTitle>{dependencyWarning}</AlertTitle>
+        </Alert>
+      )}
+
+      {sinkWarning && (
+        <Alert variant="warning" appearance="light" data-testid="activate-logging-sink-warning">
+          <AlertIcon>
+            <TriangleAlert />
+          </AlertIcon>
+          <AlertTitle>
+            {sinkWarning}{' '}
+            <Link href={acCompanyHref(task.companyId)} className="underline">
+              Open company
+            </Link>
+          </AlertTitle>
+        </Alert>
+      )}
+
+      {brandBanner && (
+        <Alert variant="warning" appearance="light" data-testid="activate-brand-contract-gate">
+          <AlertIcon>
+            <TriangleAlert />
+          </AlertIcon>
+          <AlertTitle>{brandBanner}</AlertTitle>
         </Alert>
       )}
 

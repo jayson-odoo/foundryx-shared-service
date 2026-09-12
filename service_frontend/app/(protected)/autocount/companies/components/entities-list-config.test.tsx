@@ -40,7 +40,6 @@ const onEditLookback = vi.fn();
 const onRefetch = vi.fn();
 const onConfigureMapping = vi.fn();
 const onConfigureTask = vi.fn();
-const onChangeSource = vi.fn();
 
 function config(
   entities: AutocountEntityConfig[],
@@ -57,7 +56,6 @@ function config(
       onRefetch,
       onConfigureMapping,
       onConfigureTask,
-      onChangeSource,
     }),
   ).result.current;
 }
@@ -68,7 +66,6 @@ beforeEach(() => {
   onRefetch.mockReset();
   onConfigureMapping.mockReset();
   onConfigureTask.mockReset();
-  onChangeSource.mockReset();
 });
 
 describe('entities list config', () => {
@@ -180,39 +177,32 @@ describe('entities actions', () => {
   });
 });
 
-describe('entity source (plan 22 S2, AC-22-08)', () => {
-  it('offers "Configure database query" ONLY on a database-sourced entity', () => {
+describe('entity source (sprint-5/08 D13 - "Configure source" replaces the old task action + the "Change source" dialog)', () => {
+  it('offers "Configure source" on EVERY row regardless of its current impl - the Source tab is the one place to change it', () => {
     const c = config([entity()]);
     const task = c.actions.find((a) => a.id === 'configure-task')!;
     expect(task.permission).toBe('autocount.companies.manage');
-    expect(task.isVisible?.([entity({ sourceImpl: 'autocount_read' })])).toBe(false);
-    expect(task.isVisible?.([entity({ sourceImpl: 'sql_db' })])).toBe(true);
+    expect(task.label).toBe('Configure source');
+    expect(task.isVisible).toBeUndefined();
     const row = entity({ sourceImpl: 'sql_db' });
     task.run([row], { reload: vi.fn() });
     expect(onConfigureTask).toHaveBeenCalledWith(row);
   });
 
-  it('offers the guarded "Change source" on every API-company row, gated on manage', () => {
+  it('has no "change-source" action any more (removed with entity-source-dialog.tsx)', () => {
     const c = config([entity()]);
-    const change = c.actions.find((a) => a.id === 'change-source')!;
-    expect(change.permission).toBe('autocount.companies.manage');
-    expect(change.isVisible?.([entity()])).toBe(true);
-    const row = entity();
-    change.run([row], { reload: vi.fn() });
-    expect(onChangeSource).toHaveBeenCalledWith(row);
+    expect(c.actions.find((a) => a.id === 'change-source')).toBeUndefined();
   });
 });
 
 describe('DB company - API-only actions hidden (plan sprint-5/01, AC-01-18)', () => {
   const dbRow = entity({ entityType: 'customer', sourceImpl: 'sql_db', watermarkAt: null });
 
-  it('never offers "Edit first-run window" nor "Change source" on a DB company', () => {
+  it('never offers "Edit first-run window" on a DB company', () => {
     const c = config([dbRow], true, 'db');
     const edit = c.actions.find((a) => a.id === 'edit-lookback')!;
-    const change = c.actions.find((a) => a.id === 'change-source')!;
     // Even before the first sync (where an API row WOULD offer the window edit).
     expect(edit.isVisible?.([dbRow])).toBe(false);
-    expect(change.isVisible?.([dbRow])).toBe(false);
   });
 
   it('keeps configure-task, sync-now, configure-mapping and refetch-history on a DB company', () => {
@@ -222,17 +212,21 @@ describe('DB company - API-only actions hidden (plan sprint-5/01, AC-01-18)', ()
     expect(ids).toEqual(
       expect.arrayContaining(['configure-task', 'sync-now', 'configure-mapping', 'refetch-history']),
     );
-    expect(c.actions.find((a) => a.id === 'configure-task')!.isVisible?.([synced])).toBe(true);
     expect(c.actions.find((a) => a.id === 'refetch-history')!.isVisible?.([synced])).toBe(true);
     expect(c.actions.find((a) => a.id === 'configure-mapping')!.isVisible).toBeUndefined();
     expect(c.actions.find((a) => a.id === 'sync-now')!.isDisabled?.([synced])).toBe(false);
+  });
+
+  it("an open (http) company also never offers Edit first-run window (sprint-5/08, AC-08-10)", () => {
+    const httpRow = entity({ entityType: 'product', sourceImpl: 'autocount_http', watermarkAt: null });
+    const c = config([httpRow], true, 'http');
+    expect(c.actions.find((a) => a.id === 'edit-lookback')!.isVisible?.([httpRow])).toBe(false);
   });
 
   it('an API company\'s rows are unchanged (regression pin)', () => {
     const apiRow = entity({ watermarkAt: null });
     const c = config([apiRow], true, 'api');
     expect(c.actions.find((a) => a.id === 'edit-lookback')!.isVisible?.([apiRow])).toBe(true);
-    expect(c.actions.find((a) => a.id === 'change-source')!.isVisible?.([apiRow])).toBe(true);
   });
 });
 
@@ -280,31 +274,25 @@ describe('sync summary parsing (the zero-record case)', () => {
 });
 
 // fix/db-company-seed-source: a DB company can carry a row stranded on the
-// vendor-API source (seeded before the seed followed the source kind). The
-// only way out is "Change source", so it must be offered PER ROW - on the
-// stranded row - never hidden for the whole company.
-describe('DB company - "Change source" is per row, offered on a stranded API-sourced row', () => {
+// vendor-API source (seeded before the seed followed the source kind). Since
+// sprint-5/08 D13, "Configure source" (always visible, every row) is the ONE
+// way out - it opens the row's task editor Source tab regardless of the
+// row's current impl, replacing the old per-row "Change source" dialog.
+describe('DB company - "Configure source" is per row, reaches a stranded API-sourced row too', () => {
   const stranded = entity({ entityType: 'customer', sourceImpl: 'autocount_read', watermarkAt: null });
   const dbSourced = entity({ entityType: 'supplier', sourceImpl: 'sql_db', watermarkAt: null });
 
-  it('offers "Change source" on a DB company row still at autocount_read', () => {
+  it('opens the task editor from a DB company row still at autocount_read', () => {
     const c = config([stranded, dbSourced], true, 'db');
-    const change = c.actions.find((a) => a.id === 'change-source')!;
-    expect(change.isVisible?.([stranded])).toBe(true);
-    change.run([stranded], { reload: vi.fn() });
-    expect(onChangeSource).toHaveBeenCalledWith(stranded);
+    const task = c.actions.find((a) => a.id === 'configure-task')!;
+    task.run([stranded], { reload: vi.fn() });
+    expect(onConfigureTask).toHaveBeenCalledWith(stranded);
   });
 
-  it('keeps "Change source" hidden on a DB company row already at sql_db', () => {
+  it('opens the task editor from a DB company row already at sql_db too', () => {
     const c = config([stranded, dbSourced], true, 'db');
-    const change = c.actions.find((a) => a.id === 'change-source')!;
-    expect(change.isVisible?.([dbSourced])).toBe(false);
-  });
-
-  it('an API company offers "Change source" on every row regardless of sourceImpl (regression pin)', () => {
-    const c = config([stranded, dbSourced], true, 'api');
-    const change = c.actions.find((a) => a.id === 'change-source')!;
-    expect(change.isVisible?.([stranded])).toBe(true);
-    expect(change.isVisible?.([dbSourced])).toBe(true);
+    const task = c.actions.find((a) => a.id === 'configure-task')!;
+    task.run([dbSourced], { reload: vi.fn() });
+    expect(onConfigureTask).toHaveBeenCalledWith(dbSourced);
   });
 });

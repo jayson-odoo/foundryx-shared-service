@@ -413,6 +413,10 @@ def test_get_etl_task_returns_draft_defaults_for_a_configured_entity(client, ses
         "entityType": "customer",
         "etlStatus": "draft",
         "activatedAt": None,
+        # sprint-5/08 (AC-08-30) - which fetch implementation this task
+        # saves as; `customer` is one of the vendor-API seeded entities
+        # (`CompanyService.SEEDED_ENTITIES`), so it is born `autocount_read`.
+        "sourceImpl": "autocount_read",
         "sourceConfig": _config(),
         # Read-only task state (plan 22 S2) - all empty on a never-saved task.
         "resultColumns": [],
@@ -430,6 +434,8 @@ def test_get_etl_task_returns_draft_defaults_for_a_configured_entity(client, ses
         # Continuation state (plan sprint-5/03, AC-03-21) - NULL when no
         # paged pass is open.
         "initialLoad": None,
+        # Brand-contract read-path advisory probe (S4) - no brand config yet.
+        "brandContractGate": None,
     }
 
 

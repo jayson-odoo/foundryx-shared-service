@@ -43,6 +43,7 @@ from .models import (
     RUN_MODE_INCREMENTAL,
     RUN_MODE_RECONCILE,
     RUN_MODE_SKIPPED,
+    SOURCE_IMPL_AUTOCOUNT_HTTP,
     SOURCE_IMPL_SQL_DB,
     AcEntityConfig,
     AcSyncRun,
@@ -97,7 +98,9 @@ def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str,
         )
         .filter(
             AcEntityConfig.etl_status == ETL_STATUS_ACTIVE,
-            AcEntityConfig.source_impl == SOURCE_IMPL_SQL_DB,
+            AcEntityConfig.source_impl.in_(
+                (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)
+            ),
             Status.blocks_access.is_(False),
             Status.is_archived.is_(False),
             or_(

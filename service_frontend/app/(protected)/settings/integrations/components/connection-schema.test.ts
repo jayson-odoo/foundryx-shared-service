@@ -4,6 +4,7 @@ import {
   connectionFormSchema,
   defaultsForProvider,
   dependentDefault,
+  isFieldVisible,
   requiredFieldErrors,
   storedOrEffective,
   toConnectionInput,
@@ -242,5 +243,112 @@ describe('Sorento sink concurrency read-mode / edit prefill (feat/sink-concurren
       config: { baseUrl: 'https://sorento.example.com' },
     });
     expect(values.config.sorentoContractVersion).toBe('1');
+  });
+});
+
+// sprint-5/08 D11 (AC-08-01/04) - the generic `showWhen` mechanism, fabricated
+// on a fixture provider ahead of the real `autocount` `auth` field (S2
+// backend). Provider-agnostic on purpose: it must work for ANY future
+// conditional field, not just this one.
+describe('showWhen (plan sprint-5/08, D11/AC-08-01/04)', () => {
+  const openApi: IntegrationProvider = {
+    provider: 'fixture-open-api',
+    type: 'erp',
+    title: 'Fixture open API',
+    description: '',
+    icon: null,
+    testLabel: 'Test',
+    testTarget: null,
+    fields: [
+      {
+        key: 'auth',
+        label: 'Auth',
+        type: 'select',
+        required: true,
+        defaultValue: 'basic',
+        options: [
+          { value: 'basic', label: 'Basic auth' },
+          { value: 'none', label: 'No auth' },
+        ],
+      },
+      { key: 'baseUrl', label: 'Base URL', type: 'text', required: true },
+      {
+        key: 'appId',
+        label: 'AppId',
+        type: 'text',
+        required: true,
+        showWhen: { field: 'auth', values: ['basic'] },
+      },
+      {
+        key: 'password',
+        label: 'Password',
+        type: 'password',
+        required: true,
+        secret: true,
+        showWhen: { field: 'auth', values: ['basic'] },
+      },
+    ],
+  };
+  const appId = openApi.fields.find((f) => f.key === 'appId')!;
+  const baseUrl = openApi.fields.find((f) => f.key === 'baseUrl')!;
+
+  it('isFieldVisible: absent showWhen is always visible; a matching driver value is visible', () => {
+    expect(isFieldVisible(baseUrl, { auth: 'none' })).toBe(true);
+    expect(isFieldVisible(appId, { auth: 'basic' })).toBe(true);
+  });
+
+  it('isFieldVisible: a non-matching (or missing) driver value is hidden', () => {
+    expect(isFieldVisible(appId, { auth: 'none' })).toBe(false);
+    expect(isFieldVisible(appId, {})).toBe(false);
+  });
+
+  it('requiredFieldErrors drops a hidden required field entirely', () => {
+    const values = defaultsForProvider(openApi);
+    values.config.auth = 'none';
+    values.config.baseUrl = 'https://hapi.example/api/db1';
+    const errors = requiredFieldErrors(openApi, values, true);
+    expect(errors.map((e) => e.path)).not.toContain('config.appId');
+    expect(errors.map((e) => e.path)).not.toContain('credentials.password');
+  });
+
+  it('requiredFieldErrors still requires a hidden field\'s driver-matching sibling', () => {
+    const values = defaultsForProvider(openApi);
+    values.config.auth = 'basic';
+    values.config.baseUrl = 'https://hapi.example/api/db1';
+    const errors = requiredFieldErrors(openApi, values, true);
+    expect(errors.map((e) => e.path)).toEqual(
+      expect.arrayContaining(['config.appId', 'credentials.password']),
+    );
+  });
+
+  it('toConnectionInput drops a hidden field from BOTH config and credentials', () => {
+    const values = defaultsForProvider(openApi);
+    values.config.auth = 'none';
+    values.config.baseUrl = 'https://hapi.example/api/db1';
+    // A stale AppId/password left over from switching Auth to "none" -
+    // must never reach the wire even though the RHF values still carry it.
+    values.config.appId = 'STALE';
+    values.credentials.password = 'stale-secret';
+    const input = toConnectionInput(values, openApi);
+    expect(input.config).toEqual({ auth: 'none', baseUrl: 'https://hapi.example/api/db1' });
+    expect(input.credentials).toEqual({});
+  });
+
+  it('toConnectionInput keeps every field when the provider is omitted (back-compat)', () => {
+    const values = defaultsForProvider(openApi);
+    values.config.auth = 'none';
+    values.config.appId = 'STALE';
+    const input = toConnectionInput(values);
+    expect(input.config.appId).toBe('STALE');
+  });
+
+  it('toConnectionInput sends a visible field normally', () => {
+    const values = defaultsForProvider(openApi);
+    values.config.auth = 'basic';
+    values.config.appId = 'HQ01';
+    values.credentials.password = 'secret';
+    const input = toConnectionInput(values, openApi);
+    expect(input.config.appId).toBe('HQ01');
+    expect(input.credentials.password).toBe('secret');
   });
 });

@@ -38,6 +38,10 @@ class CompanyCreate(ApiModel):
 
     connectionId: str
     name: str = ""
+    # sprint-5/08 (AC-08-06/07) - required, operator-typed, ONLY for an open
+    # (no-auth) API connection; ``None`` for every other connection kind
+    # (a value here on a vendor/SQL connection is a 422 "not applicable").
+    refPrefix: Optional[str] = None
 
 
 class EntityConfigItem(ApiModel):
@@ -143,7 +147,7 @@ class CompanyItem(ApiModel):
     # company is connected (``'api'`` = vendor HTTP API, ``'db'`` = a direct
     # ``sql_database`` connection) and, on the DETAIL only, the prerequisite-
     # master status of each configured document entity.
-    sourceKind: str = "api"
+    sourceKind: Literal["api", "db", "http"] = "api"
     documentPrerequisites: List[DocumentPrerequisiteOut] = []
 
 
@@ -452,13 +456,22 @@ class MappingPresetOut(ApiModel):
 
     entityType: str
     label: str
-    headerQuery: str
+    # sprint-5/08 review round 1 (S7) - was a REQUIRED field, which made an
+    # HTTP-source preset (no query text at all) impossible to return from
+    # this same endpoint. Defaulted rather than split into a second route:
+    # a document preset still always sends a real string.
+    headerQuery: str = ""
     lineQuery: Optional[str] = None
     keyColumns: List[str] = []
     watermarkColumn: Optional[str] = None
     docDateColumn: Optional[str] = None
     fromDate: Optional[str] = None
     filterFormula: Optional[str] = None
+    # ── HTTP-source preset fields only (S7) - null for a document preset ────
+    path: Optional[str] = None
+    keyFields: List[str] = []
+    watermarkField: Optional[str] = None
+    distinctOf: Optional[List[str]] = None
 
 
 class SyncRunItem(ApiModel):
@@ -594,6 +607,41 @@ class SqlPreviewResponse(ApiModel):
     durationMs: int
 
 
+# ── open REST API source (sprint-5/08, AC-08-14/15) ───────────────────────────
+
+
+class HttpConnectionItem(ApiModel):
+    """One tenant ``autocount`` connection the Source tab's API picker may
+    pick, badged by its auth mode (AC-08-15)."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    name: str
+    baseUrl: str = Field(default="", validation_alias="base_url")
+    auth: Literal["basic", "none"] = "basic"
+
+
+class HttpPreviewRequest(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    connectionId: str
+    path: str = ""
+    distinctOf: Optional[List[str]] = None
+    # When both are given, the preview also records `resultColumns`/
+    # `lastPreviewAt` on the task (AC-08-14) - exactly as the SQL preview
+    # does, so the Source tab's column pickers see it without a second call.
+    companyId: Optional[str] = None
+    entityType: Optional[str] = None
+
+
+class HttpPreviewColumnOut(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str
+    sample: Optional[str] = None
+
+
 class EtlSourceConfigIn(ApiModel):
     """The task's ``source_config`` document as the editor sends it (plan 22
     §2.4). Every field is optional on the wire - a draft may be partial; the
@@ -602,6 +650,12 @@ class EtlSourceConfigIn(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
     connectionId: Optional[str] = None
+    # sprint-5/08 (AC-08-13) - which fetch implementation this task saves as.
+    # ``None``/``'sql_db'`` keep the SQL shape below; ``'autocount_http'``
+    # routes to the HTTP shape at the bottom of this schema - ONE envelope,
+    # never a second endpoint. A stray key from the OTHER shape is simply not
+    # copied into the clean config the service persists (dropped, never 422).
+    sourceImpl: Optional[str] = None
     query: str = ""
     lineQuery: Optional[str] = None
     keyColumns: List[str] = []
@@ -624,6 +678,12 @@ class EtlSourceConfigIn(ApiModel):
     reconcileMode: str = "dailyAt"
     reconcileHours: Optional[int] = None
     reconcileAt: Optional[str] = None
+    # ── HTTP (open REST API) shape only (sprint-5/08, AC-08-13) ──────────────
+    path: Optional[str] = None
+    keyFields: List[str] = []
+    watermarkField: Optional[str] = None
+    comparedFields: List[str] = []
+    distinctOf: Optional[List[str]] = None
 
 
 class InitialLoadProgress(ApiModel):
@@ -638,10 +698,30 @@ class InitialLoadProgress(ApiModel):
     kind: Optional[str] = None
 
 
+class BrandContractGate(ApiModel):
+    """sprint-5/08 (AC-08-33/AC-08-20 S5) - non-null only for a `brand` task
+    whose consumer does not yet accept brands; drives the Review & Activate
+    banner ("Consumer contract 2.2 - brands land when 2.3 is deployed")."""
+
+    version: Optional[float] = None
+    requiredVersion: float
+
+
 class EtlTaskUpdate(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
     sourceConfig: EtlSourceConfigIn
+    # sprint-5/08 review round 1 (B1) - the FE's real service posts
+    # ``sourceImpl`` as a TOP-LEVEL sibling of ``sourceConfig`` (see
+    # ``autocount-service.real.ts``'s ``updateEtlTask``), never nested inside
+    # it. Without this field Pydantic silently drops the incoming key (this
+    # schema has no ``model_config = ConfigDict(extra="forbid")``, so it is
+    # not even a 422 - the save just falls through to the SQL branch of
+    # ``EtlService.update_task`` and 422s on a missing ``query``). Kept
+    # OPTIONAL and merged with ``EtlSourceConfigIn.sourceImpl`` at the router
+    # (a nested value, if a caller ever sends one, still wins nothing over an
+    # explicit top-level one - the router prefers the top-level field).
+    sourceImpl: Optional[str] = None
 
 
 class EtlTaskResponse(ApiModel):
@@ -656,6 +736,8 @@ class EtlTaskResponse(ApiModel):
     entityType: str
     etlStatus: str
     activatedAt: Optional[datetime] = None
+    # sprint-5/08 (AC-08-30) - which fetch implementation this task saves as.
+    sourceImpl: str = "sql_db"
     sourceConfig: Dict[str, Any]
     # The saved query's result columns, from the validation preview every PUT
     # runs - the Mapping tab's source picker (AC-22-09).
@@ -685,6 +767,30 @@ class EtlTaskResponse(ApiModel):
     # (never configured, or the last one completed) - the FE offers no
     # "continues" affordance in that case.
     initialLoad: Optional[InitialLoadProgress] = None
+    # sprint-5/08 (AC-08-33/AC-08-20 S5) - non-null only for a `brand` task
+    # on a Sorento-sink company whose consumer does not yet accept brands.
+    brandContractGate: Optional[BrandContractGate] = None
+
+
+class HttpPreviewResponse(ApiModel):
+    """``POST /autocount/http/preview`` - one page-1 sample (AC-08-14).
+
+    ``task`` (sprint-5/08 review round 7) echoes the SAME task shape
+    ``EtlPreviewResponse.task``/every lifecycle route already returns -
+    non-null only when the request named both ``companyId``/``entityType``
+    AND the preview succeeded (the service's own stamping gate). The Source
+    tab's Test button reads it to `apply()` the freshly-stamped
+    ``lastPreviewAt``/``resultColumns`` directly, with no second fetch and no
+    race against a save landing in between (round 6 tried a `reload()`
+    instead - superseded, see ``task-editor-view.tsx``'s ``onHttpPreviewSuccess``).
+    """
+
+    envelope: Literal["paged", "list"]
+    totalCount: Optional[int] = None
+    columns: List[HttpPreviewColumnOut] = []
+    rows: List[Dict[str, Any]] = []
+    durationMs: int = 0
+    task: Optional[EtlTaskResponse] = None
 
 
 class EtlPreviewResponse(ApiModel):

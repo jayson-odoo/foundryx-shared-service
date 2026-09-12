@@ -65,22 +65,38 @@ const DB_OPTIONS = [
   { label: 'SQL Branch · AED_BRANCH', value: 'conn-sql-2' },
 ];
 
-function both(): UseAutocountSourceConnectionsResult {
+/** Default: no API connection has an inferrable auth (regression coverage
+ * for callers not exercising sprint-5/08's badged picker). */
+function result(
+  over: Partial<UseAutocountSourceConnectionsResult> = {},
+): UseAutocountSourceConnectionsResult {
   return {
-    api: state({ options: API_OPTIONS, hasAny: true }),
-    db: state({ options: DB_OPTIONS, hasAny: true }),
+    api: state(),
+    db: state(),
     isLoading: false,
     defaultKind: 'api',
+    apiConnectionsById: {},
+    ...over,
   };
 }
 
+function both(): UseAutocountSourceConnectionsResult {
+  return result({
+    api: state({ options: API_OPTIONS, hasAny: true }),
+    db: state({ options: DB_OPTIONS, hasAny: true }),
+    defaultKind: 'api',
+    apiConnectionsById: {
+      'conn-api-1': { id: 'conn-api-1', name: 'AutoCount HQ', baseUrl: 'https://api.example', auth: 'basic' },
+    },
+  });
+}
+
 function dbOnly(): UseAutocountSourceConnectionsResult {
-  return {
+  return result({
     api: state(),
     db: state({ options: DB_OPTIONS, hasAny: true }),
-    isLoading: false,
     defaultKind: 'db',
-  };
+  });
 }
 
 function segment(name: string) {
@@ -144,12 +160,9 @@ describe('ConnectCompanyView - Source toggle (AC-01-12)', () => {
 
 describe('ConnectCompanyView - per-source banners + Create gate (AC-01-13)', () => {
   it('SQL source with no connection at all: banner + link to Integrations', () => {
-    sources.mockReturnValue({
-      api: state({ options: API_OPTIONS, hasAny: true }),
-      db: state(),
-      isLoading: false,
-      defaultKind: 'api',
-    });
+    sources.mockReturnValue(
+      result({ api: state({ options: API_OPTIONS, hasAny: true }), db: state(), defaultKind: 'api' }),
+    );
     render(<ConnectCompanyView />);
     fireEvent.click(segment('SQL database'));
     const banner = screen.getByTestId('connect-company-banner');
@@ -161,12 +174,13 @@ describe('ConnectCompanyView - per-source banners + Create gate (AC-01-13)', () 
   });
 
   it('SQL source with every connection bound: the all-bound banner', () => {
-    sources.mockReturnValue({
-      api: state({ options: API_OPTIONS, hasAny: true }),
-      db: state({ hasAny: true, allBound: true }),
-      isLoading: false,
-      defaultKind: 'api',
-    });
+    sources.mockReturnValue(
+      result({
+        api: state({ options: API_OPTIONS, hasAny: true }),
+        db: state({ hasAny: true, allBound: true }),
+        defaultKind: 'api',
+      }),
+    );
     render(<ConnectCompanyView />);
     fireEvent.click(segment('SQL database'));
     expect(screen.getByTestId('connect-company-banner')).toHaveTextContent(
@@ -175,13 +189,17 @@ describe('ConnectCompanyView - per-source banners + Create gate (AC-01-13)', () 
   });
 
   it('the API source keeps today\'s two banners (regression pin)', () => {
-    sources.mockReturnValue({ api: state(), db: state({ options: DB_OPTIONS, hasAny: true }), isLoading: false, defaultKind: 'db' });
+    sources.mockReturnValue(
+      result({ api: state(), db: state({ options: DB_OPTIONS, hasAny: true }), defaultKind: 'db' }),
+    );
     render(<ConnectCompanyView />);
     fireEvent.click(segment('AutoCount API'));
     expect(screen.getByTestId('connect-company-banner')).toHaveTextContent(
       'No AutoCount integration is connected yet.',
     );
-    sources.mockReturnValue({ api: state({ hasAny: true, allBound: true }), db: state(), isLoading: false, defaultKind: 'api' });
+    sources.mockReturnValue(
+      result({ api: state({ hasAny: true, allBound: true }), db: state(), defaultKind: 'api' }),
+    );
     render(<ConnectCompanyView />);
     expect(
       screen.getByText('Every AutoCount connection is already registered as a company.'),
@@ -256,5 +274,111 @@ describe('ConnectCompanyView - Create + errors (AC-01-14)', () => {
       }),
     );
     expect(screen.queryByTestId('connection-error')).not.toBeInTheDocument();
+  });
+});
+
+describe('ConnectCompanyView - open (no-auth) API connection (sprint-5/08, AC-08-09)', () => {
+  function withApiAuth() {
+    sources.mockReturnValue(
+      result({
+        api: state({
+          options: [
+            { label: 'Sorento REST (No auth)', value: 'conn-api-open' },
+            { label: 'AutoCount HQ (Basic auth)', value: 'conn-api-basic' },
+          ],
+          hasAny: true,
+        }),
+        db: state(),
+        defaultKind: 'api',
+        apiConnectionsById: {
+          'conn-api-open': {
+            id: 'conn-api-open',
+            name: 'Sorento REST',
+            baseUrl: 'https://hapi.sorento.cc.cd/api/db1',
+            auth: 'none',
+          },
+          'conn-api-basic': {
+            id: 'conn-api-basic',
+            name: 'AutoCount HQ',
+            baseUrl: 'https://api.example',
+            auth: 'basic',
+          },
+        },
+      }),
+    );
+  }
+
+  it('a Basic-auth pick keeps today\'s flow - no reference-prefix field', async () => {
+    withApiAuth();
+    render(<ConnectCompanyView />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'AutoCount connection' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'AutoCount HQ (Basic auth)' }));
+    expect(screen.queryByLabelText('Reference prefix')).not.toBeInTheDocument();
+    expect(screen.getByTestId('create')).toBeEnabled();
+  });
+
+  it('a No-auth pick reveals the reference-prefix field, pre-filled from the connection name, with the exact helper text', async () => {
+    withApiAuth();
+    render(<ConnectCompanyView />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'AutoCount connection' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Sorento REST (No auth)' }));
+    const prefix = await screen.findByLabelText('Reference prefix');
+    expect(prefix).toHaveValue('SORENTO_REST');
+    expect(
+      screen.getByText(
+        'Prefixes every record reference sent to the consumer. Cannot be changed later.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('Create stays disabled until the prefix is a valid format, and an edited prefix is not overwritten', async () => {
+    withApiAuth();
+    render(<ConnectCompanyView />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'AutoCount connection' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Sorento REST (No auth)' }));
+    const prefix = await screen.findByLabelText('Reference prefix');
+    fireEvent.change(prefix, { target: { value: 'M' } });
+    expect(screen.getByTestId('create')).toBeDisabled();
+    fireEvent.change(prefix, { target: { value: 'MOCHA_01' } });
+    expect(screen.getByTestId('create')).toBeEnabled();
+  });
+
+  it('sends refPrefix on create for a No-auth connection', async () => {
+    withApiAuth();
+    createCompany.mockResolvedValue({ id: 'company-http-1', databaseName: 'MOCHA' });
+    render(<ConnectCompanyView />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'AutoCount connection' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Sorento REST (No auth)' }));
+    fireEvent.click(screen.getByTestId('create'));
+    await waitFor(() =>
+      expect(createCompany).toHaveBeenCalledWith({
+        connectionId: 'conn-api-open',
+        name: '',
+        refPrefix: 'SORENTO_REST',
+      }),
+    );
+  });
+
+  it('a 422 on refPrefix lands inline under the field, not as a toast', async () => {
+    withApiAuth();
+    createCompany.mockRejectedValue(
+      new ApiError('Already in use.', 422, null, { fieldErrors: { refPrefix: 'Already in use.' } }),
+    );
+    render(<ConnectCompanyView />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'AutoCount connection' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Sorento REST (No auth)' }));
+    fireEvent.click(screen.getByTestId('create'));
+    expect(await screen.findByTestId('ref-prefix-error')).toHaveTextContent('Already in use.');
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('switching Source away from API clears the prefix field state', async () => {
+    withApiAuth();
+    render(<ConnectCompanyView />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'AutoCount connection' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Sorento REST (No auth)' }));
+    await screen.findByLabelText('Reference prefix');
+    fireEvent.click(segment('SQL database'));
+    expect(screen.queryByLabelText('Reference prefix')).not.toBeInTheDocument();
   });
 });

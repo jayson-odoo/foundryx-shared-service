@@ -51,21 +51,63 @@ def test_ac_sql_db_entity_types_is_every_extractable_entity_minus_grn():
     entity a database task can extract AND mapping can shape - ``ENTITY_PROFILES``
     (= ``ETL_ENTITY_TYPES``) minus GRN, which has no Sorento path and an
     API-only envelope (AC-01-10). Ten with `shipping_order` (sprint-5/02,
-    AC-02-10); an entity added to either side without the other fails LOUDLY
-    here.
-
-    RED until AC-02-10 lands: today neither `ENTITY_PROFILES`/
-    `ETL_ENTITY_TYPES` nor `autocount-meta.ts`'s `AC_SQL_DB_ENTITY_TYPES`
-    carry `shipping_order` yet, so this fails at 9, not 10.
+    AC-02-10), eleven with `brand` (sprint-5/08, AC-08-31 - "a DB task can
+    feed it too"); an entity added to either side without the other fails
+    LOUDLY here.
     """
     src = TS_PATH.read_text()
     ts_sql_db = _string_array(src, "AC_SQL_DB_ENTITY_TYPES")
     assert ts_sql_db == set(ENTITY_PROFILES) - {ENTITY_GOODS_RECEIVED_NOTE}
     assert ts_sql_db == set(ETL_ENTITY_TYPES) - {ENTITY_GOODS_RECEIVED_NOTE}
-    assert len(ts_sql_db) == 10, (
-        "AC_SQL_DB_ENTITY_TYPES must include shipping_order (AC-02-10) - "
-        f"got {len(ts_sql_db)}: {sorted(ts_sql_db)}"
+    assert len(ts_sql_db) == 11, (
+        "AC_SQL_DB_ENTITY_TYPES must include shipping_order (AC-02-10) and "
+        f"brand (AC-08-31) - got {len(ts_sql_db)}: {sorted(ts_sql_db)}"
     )
     assert "shipping_order" in ts_sql_db, (
         "AC_SQL_DB_ENTITY_TYPES is missing shipping_order (AC-02-10)"
     )
+    assert "brand" in ts_sql_db, (
+        "AC_SQL_DB_ENTITY_TYPES is missing brand (AC-08-31)"
+    )
+
+
+# ── sprint-5/08 S3 extension (AC-08-17) ───────────────────────────────────────
+#
+# RED before the coder: ``modules.autocount.presets`` carries no
+# ``HTTP_PRESETS`` registry yet (read 2026-09-12, only ``DOCUMENT_PRESETS``
+# exists) - this import fails, failing every test below it in this block at
+# collection.
+
+
+def test_http_presets_parity_backend_and_frontend():
+    from modules.autocount.presets import HTTP_PRESETS
+
+    try:
+        from modules.autocount.presets import HTTP_ENTITY_TYPES
+    except ImportError:  # pragma: no cover - tolerate either export shape
+        HTTP_ENTITY_TYPES = set(HTTP_PRESETS)
+
+    src = TS_PATH.read_text()
+    ts_http = _string_array(src, "AC_HTTP_ENTITY_TYPES")
+
+    assert set(HTTP_PRESETS.keys()) == set(HTTP_ENTITY_TYPES)
+    assert set(HTTP_PRESETS.keys()) == ts_http, (
+        f"backend HTTP_PRESETS {sorted(HTTP_PRESETS)} != frontend "
+        f"AC_HTTP_ENTITY_TYPES {sorted(ts_http)}"
+    )
+    assert ts_http == {
+        "product", "customer", "warehouse", "product_category", "brand", "unit_of_measure",
+    }
+
+
+def test_http_preset_canonical_fields_exist_on_their_entity_class():
+    from modules.autocount.presets import HTTP_PRESETS
+
+    for entity_type, preset in HTTP_PRESETS.items():
+        profile = ENTITY_PROFILES[entity_type]
+        declared = set(profile.record_model.model_fields)
+        for row in preset.rows:
+            assert row.canonical_field in declared, (
+                f"{entity_type} preset row maps to '{row.canonical_field}', "
+                f"not a field on {profile.record_model.__name__}"
+            )

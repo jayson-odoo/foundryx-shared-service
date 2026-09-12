@@ -15,12 +15,14 @@ Company identity is therefore ``database_name``, enforced UNIQUE per tenant by
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from cryptography.fernet import InvalidToken
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.connection import Connection
@@ -75,6 +77,7 @@ from ..models import (
     ETL_STATUS_PAUSED,
     SINK_IMPL_LOGGING,
     SINK_IMPL_SORENTO,
+    SOURCE_IMPL_AUTOCOUNT_HTTP,
     SOURCE_IMPL_AUTOCOUNT_READ,
     SOURCE_IMPL_SQL_DB,
     SYNC_MODE_SCHEDULED_REVIEW,
@@ -83,11 +86,14 @@ from ..models import (
     AcFieldMapping,
 )
 
-# The two implementations behind the ``EntitySource`` seam an operator may pick
-# (AC-22-08). Anything else is a 422 - a silent fallback would sync a customer
-# with the wrong strategy and look like it worked.
-SOURCE_IMPLS = (SOURCE_IMPL_AUTOCOUNT_READ, SOURCE_IMPL_SQL_DB)
-from ..provider import PROVIDER_KEY, client_from_connection
+# The three implementations behind the ``EntitySource`` seam an operator may
+# pick (AC-22-08, ``autocount_http`` added sprint-5/08 AC-08-12). Anything
+# else is a 422 - a silent fallback would sync a customer with the wrong
+# strategy and look like it worked.
+SOURCE_IMPLS = (SOURCE_IMPL_AUTOCOUNT_READ, SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)
+from ..http_client import OpenProbeError, probe_open_connection
+from ..presets import HTTP_ENTITY_TYPES as _PRESET_HTTP_ENTITY_TYPES
+from ..provider import PROVIDER_KEY, auth_mode, client_from_connection, is_open_connection
 from ..repositories import (
     CompanyRepository,
     ConnectionRepository,
@@ -96,7 +102,11 @@ from ..repositories import (
     WatermarkRepository,
 )
 from ..sinks import EntitySink, UnknownSinkImpl, sink_for
-from ..sinks_sorento import sorento_sink_from_connection, sorento_supports_entity
+from ..sinks_sorento import (
+    BRAND_REQUIRED_CONTRACT_VERSION,
+    sorento_sink_from_connection,
+    sorento_supports_entity,
+)
 from ..sorento_provider import SORENTO_PROVIDER_KEY
 from ..sql_provider import SQL_DATABASE_PROVIDER_KEY
 from ..sql_source.errors import SqlProbeFailed
@@ -123,7 +133,7 @@ logger = logging.getLogger("foundryx.autocount")
 # `AC_API_CAPABLE_ENTITY_TYPES` in `autocount-meta.ts`, drift-checked by
 # `tests/test_autocount_entity_parity.py`.
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE  # noqa: E402
-from ..canonical.masters import ENTITY_CUSTOMER, ENTITY_SUPPLIER  # noqa: E402
+from ..canonical.masters import ENTITY_BRAND, ENTITY_CUSTOMER, ENTITY_SUPPLIER  # noqa: E402
 from ..envelopes import ENVELOPE_ROW_ARRAY, ENVELOPE_STATUS_DICT  # noqa: E402
 from ..sources import INITIAL_LOAD_FULL, INITIAL_LOAD_WINDOWED  # noqa: E402
 
@@ -137,9 +147,27 @@ SEEDED_ENTITIES = (ENTITY_GOODS_RECEIVED_NOTE, ENTITY_SUPPLIER, ENTITY_CUSTOMER)
 # as ``api`` so the row stays renderable (the historical default kind).
 SOURCE_KIND_API = "api"
 SOURCE_KIND_DB = "db"
+# sprint-5/08 (AC-08-08): an OPEN (no-auth) ``autocount`` connection - the
+# vendor HTTP API exists but carries no credentials at all.
+SOURCE_KIND_HTTP = "http"
 # The providers a company's source connection may carry - ``_source_connection``
 # resolves against exactly these (any other provider is a uniform 404).
 SOURCE_PROVIDERS = (PROVIDER_KEY, SQL_DATABASE_PROVIDER_KEY)
+
+# sprint-5/08 (AC-08-12): the six entities the open REST API can extract - a
+# `sourceImpl='autocount_http'` switch is only ever offered/accepted for one
+# of these (mirrors `SEEDED_ENTITIES`'s "confirmed vendor payload" guard).
+# NIT (sprint-5/08 review round 1) - derived from `presets.HTTP_ENTITY_TYPES`
+# (the preset registry's OWN key set) rather than hand-duplicated: the two
+# used to list the same six entities independently, which is exactly the
+# kind of pair a future 7th entity join could add to one and forget the
+# other. `test_autocount_entity_parity.py` pins the parity anyway; this
+# just makes drift structurally impossible instead of merely tested.
+HTTP_CAPABLE_ENTITY_TYPES = _PRESET_HTTP_ENTITY_TYPES
+
+# sprint-5/08 (AC-08-07): the reference-prefix grammar for an open company's
+# `database_name` - trimmed, upper-cased, 2..32 chars of A-Z/0-9/_.
+REF_PREFIX_PATTERN = re.compile(r"^[A-Z0-9_]{2,32}$")
 
 # ── document prerequisites (AC-01-11, decision Q17) ──────────────────────────
 # The masters a document's rows reference and Sorento cannot NULL: a sales
@@ -163,10 +191,13 @@ NOT_API_BACKED_MESSAGE = (
 
 
 def source_kind(connection: Optional[Connection]) -> str:
-    """``'db'`` for a ``sql_database`` connection, ``'api'`` otherwise
+    """``'db'`` for a ``sql_database`` connection, ``'http'`` for an OPEN
+    (no-auth) ``autocount`` connection (AC-08-08), ``'api'`` otherwise
     (including a deleted connection, AC-01-07)."""
     if connection is not None and connection.provider == SQL_DATABASE_PROVIDER_KEY:
         return SOURCE_KIND_DB
+    if is_open_connection(connection):
+        return SOURCE_KIND_HTTP
     return SOURCE_KIND_API
 
 
@@ -264,11 +295,16 @@ class ConnectionValidationError(AutocountServiceError):
     landed on a different database than the connection names, or the source
     could not be opened. Rendered ``422 {fieldErrors: {connectionId}}`` so the
     message sits under the picker the operator is looking at (the
-    ``SinkTargetValidationError`` shape)."""
+    ``SinkTargetValidationError`` shape).
 
-    def __init__(self, message: str):
+    ``field`` (sprint-5/08, AC-08-07) lets an open-company create reject on
+    ``refPrefix`` instead - every pre-existing call site (positional message
+    only) is byte-for-byte unchanged, since it still lands on ``connectionId``.
+    """
+
+    def __init__(self, message: str, *, field: str = "connectionId"):
         super().__init__(message)
-        self.field_errors = {"connectionId": message}
+        self.field_errors = {field: message}
 
 
 @dataclass(frozen=True)
@@ -429,6 +465,15 @@ class MappingView:
     line_ac_fields: List[str] = field(default_factory=list)
 
 
+#     !!  SF-1 (sprint-5/08 review round 2).  !!
+# `brand_contract_gate` is a READ-path advisory probe (the Review & Activate
+# banner), never a push - sharing `settings.autocount_sink_timeout_seconds`
+# (300s, sized for a 1,000-record ingest batch) would let one slow/dead
+# consumer stall a plain task-view GET for 5 minutes. Short and fixed:
+# nothing here is retuned per-tenant, unlike the push budget.
+BRAND_CONTRACT_GATE_PROBE_TIMEOUT_SECONDS = 5.0
+
+
 class CompanyService:
     def __init__(self, db: Session):
         self.db = db
@@ -436,6 +481,17 @@ class CompanyService:
         self.configs = EntityConfigRepository(db)
         self.mappings = FieldMappingRepository(db)
         self.connections = ConnectionRepository(db)
+        # SF-1 - `brand_contract_gate` is read on every brand-task read/save/
+        # activate/pause/resume (`_task_view`); memoised per SERVICE INSTANCE
+        # (one per request via `Depends`) so a request that reads the same
+        # company's gate more than once never re-hits the network twice.
+        # Round 3 nit: keyed on (tenant_id, company.id) - `company.id` alone
+        # would let a cache hit on ONE service instance leak a cross-tenant
+        # gate result if a company id were ever reused/guessed across
+        # tenants (the polymorphic-stored-id class of bug).
+        self._brand_contract_gate_cache: Dict[
+            Tuple[str, str], Optional[Dict[str, Any]]
+        ] = {}
         self.watermarks = WatermarkRepository(db)
 
     # ── reads ────────────────────────────────────────────────────────────────
@@ -533,14 +589,28 @@ class CompanyService:
                     f"Unknown source '{source_impl}'. Choose "
                     f"{' or '.join(SOURCE_IMPLS)}."
                 )
-            # A DB company has no vendor API to switch to (AC-01-08) - a named
-            # 409, checked BEFORE the entity-catalogue guard below so the
-            # operator reads the real reason, not a catalogue message.
+            # A DB or OPEN (no-auth) company has no vendor SESSION API to
+            # switch to (AC-01-08, AC-08-08) - a named 409, checked BEFORE
+            # the entity-catalogue guard below so the operator reads the
+            # real reason, not a catalogue message.
             if (
                 source_impl == SOURCE_IMPL_AUTOCOUNT_READ
-                and self.source_kind_for(tenant_id, company) == SOURCE_KIND_DB
+                and self.source_kind_for(tenant_id, company) != SOURCE_KIND_API
             ):
                 raise CompanyNotApiBacked()
+            #     !!  ``autocount_http`` IS OFFERED FOR THE SIX CONFIRMED
+            #         HTTP-CAPABLE ENTITIES ONLY (AC-08-12).  !!
+            # Every other entity (GRN, supplier, sales_agent, documents...)
+            # has no confirmed open-REST payload - a guaranteed dead end,
+            # refused by name rather than left to fail mid-run.
+            if (
+                source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP
+                and entity_type not in HTTP_CAPABLE_ENTITY_TYPES
+            ):
+                raise AutocountServiceError(
+                    f"'{entity_type}' has no open REST API route - it can "
+                    f"only be synced from a database task or the vendor API."
+                )
             #     !!  NEVER OFFER "AutoCount API" FOR AN ENTITY WITH NO PROBED
             #         VENDOR PAYLOAD.  !!
             # (Plan 22 S4.) ``SEEDED_ENTITIES`` is exactly the entity catalogue
@@ -692,7 +762,15 @@ class CompanyService:
             # swappable the same way the Sorento sink is chosen - one seam.
             return sink_for(SINK_IMPL_LOGGING)
         if impl == SINK_IMPL_SORENTO:
-            if not sorento_supports_entity(entity_type):
+            # S2 (sprint-5/08 review round 1, AC-08-33) - ``brand`` is
+            # CONTRACT-GATED: unlike every other entity here, whether
+            # Sorento accepts it depends on the CONSUMER's own advertised
+            # ``/external/contract`` (version >= 2.3 AND ``"brands"`` in its
+            # ``entities``), so the plain membership check
+            # (``sorento_supports_entity(entity_type)``, no kwargs) can
+            # never open for it - it needs a LIVE contract read. Every other
+            # entity keeps the original zero-network early-out unchanged.
+            if entity_type != ENTITY_BRAND and not sorento_supports_entity(entity_type):
                 # Sorento ingests masters only; a document entity (GRN, PO, …)
                 # has no ingest endpoint yet. Route it to the logging sink so it
                 # stages + logs cleanly instead of raising on a missing ingest
@@ -705,7 +783,7 @@ class CompanyService:
                     "connection configured. Choose a target connection first."
                 )
             conn = self._consumer_connection(tenant_id, company.sink_connection_id)
-            return sorento_sink_from_connection(
+            sink = sorento_sink_from_connection(
                 conn.config_json or {},
                 self.credentials(conn),  # clean InvalidToken reject, never 500
                 entity_type=entity_type,
@@ -717,10 +795,81 @@ class CompanyService:
                 # answers the authoritative COMPANY_ANCHOR_REQUIRED.
                 company_code=company.sorento_company_code,
             )
+            if entity_type == ENTITY_BRAND:
+                contract = sink.fetch_contract_detail()
+                supported = sorento_supports_entity(
+                    entity_type,
+                    contract_version=(contract.version if contract else None),
+                    contract_entities=(contract.entities if contract else None),
+                )
+                if not supported:
+                    # AC-08-33 - never a 422 from Sorento; a 2.2 consumer (or
+                    # an unreachable one) falls back to the logging sink,
+                    # exactly the "deliverability" story every other
+                    # not-yet-built entity already gets.
+                    return sink_for(SINK_IMPL_LOGGING)
+            return sink
         raise UnknownSinkImpl(
             f"Company '{company.database_name}' is configured with an unknown "
             f"push sink '{impl}'."
         )
+
+    def brand_contract_gate(
+        self, tenant_id: str, company: AcCompany
+    ) -> Optional[Dict[str, Any]]:
+        """The Review & Activate banner's source of truth for a `brand` task
+        (sprint-5/08, AC-08-33/AC-08-20 S5) - the SAME live
+        ``fetch_contract_detail`` -> ``sorento_supports_entity`` probe
+        ``sink_for_company``'s brand branch already runs at push time, read
+        here for the READ path so the banner is there the moment the tab
+        opens rather than only after the operator clicks Preview/Run.
+
+        ``None`` = nothing to warn about (the company doesn't push to
+        Sorento at all, or Sorento already accepts brands) - the caller adds
+        no banner. Otherwise ``{"version": <float|None>, "requiredVersion":
+        BRAND_REQUIRED_CONTRACT_VERSION}`` - ``version`` is ``None`` only
+        when the consumer could not be reached (advisory, never raised).
+        """
+        if company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id:
+            return None
+        # SF-1 - memoised per service instance/request: a request that reads
+        # this company's gate more than once (e.g. a save followed by the
+        # view it returns) must probe the consumer at most once.
+        cache_key = (tenant_id, company.id)
+        if cache_key in self._brand_contract_gate_cache:
+            return self._brand_contract_gate_cache[cache_key]
+        result: Optional[Dict[str, Any]]
+        try:
+            conn = self._consumer_connection(tenant_id, company.sink_connection_id)
+            sink = sorento_sink_from_connection(
+                conn.config_json or {},
+                self.credentials(conn),
+                entity_type=ENTITY_BRAND,
+                company_code=company.sorento_company_code,
+                # SF-1 - the READ-path probe's OWN short budget, never the
+                # 300s push timeout (`app/config.py:360`): this sink is
+                # never used to push anything.
+                timeout=BRAND_CONTRACT_GATE_PROBE_TIMEOUT_SECONDS,
+            )
+            contract = sink.fetch_contract_detail()
+        except Exception:  # noqa: BLE001 - advisory only, never blocks the read
+            result = None
+        else:
+            supported = sorento_supports_entity(
+                ENTITY_BRAND,
+                contract_version=(contract.version if contract else None),
+                contract_entities=(contract.entities if contract else None),
+            )
+            result = (
+                None
+                if supported
+                else {
+                    "version": contract.version if contract else None,
+                    "requiredVersion": BRAND_REQUIRED_CONTRACT_VERSION,
+                }
+            )
+        self._brand_contract_gate_cache[cache_key] = result
+        return result
 
     def set_sink_target(
         self,
@@ -844,11 +993,12 @@ class CompanyService:
     def client_for(
         self, tenant_id: str, company: AcCompany, *, transport: Any = None
     ) -> AutoCountClient:
-        """The vendor HTTP client for an API company. A DB company has no
-        vendor API at all - refused by NAME (``CompanyNotApiBacked``, AC-01-08)
-        before the provider-pinned lookup below could misreport it as a
-        missing connection."""
-        if self.source_kind_for(tenant_id, company) == SOURCE_KIND_DB:
+        """The vendor SESSION-AUTH HTTP client for a basic-auth API company.
+        A DB company has no vendor API at all, and an OPEN (no-auth) company
+        has no session to log in to (AC-08-08) - both are refused by NAME
+        (``CompanyNotApiBacked``, AC-01-08) before the provider-pinned
+        lookup below could misreport either as a missing connection."""
+        if self.source_kind_for(tenant_id, company) != SOURCE_KIND_API:
             raise CompanyNotApiBacked()
         conn = self._connection(tenant_id, company.connection_id)
         return client_from_connection(
@@ -863,17 +1013,41 @@ class CompanyService:
         connection_id: str,
         *,
         name: str = "",
+        ref_prefix: Optional[str] = None,
         transport: Any = None,
     ) -> AcCompany:
         """Register a company from its connection, branching on the
-        connection's PROVIDER (plan sprint-5/01 AC-01-01): ``autocount`` signs
-        in and discovers the company (``create_from_connection``, unchanged);
-        ``sql_database`` derives it from the connection itself
-        (``create_from_sql_connection``). One tenant-scoped resolution; any
-        other provider / another tenant's row = the uniform 404."""
+        connection's PROVIDER and auth mode (plan sprint-5/01 AC-01-01,
+        sprint-5/08 AC-08-06): ``sql_database`` derives it from the
+        connection itself (``create_from_sql_connection``); an OPEN
+        (no-auth) ``autocount`` connection reaches the reference-prefix
+        onboarding path (``create_from_open_connection``, AC-08-06) and
+        NEVER attempts a vendor login; a ``basic`` ``autocount`` connection
+        keeps signing in and discovering the company
+        (``create_from_connection``, unchanged). ``ref_prefix`` is only ever
+        valid on the open path - given for any other kind it is a 422
+        "not applicable" (AC-08-07) rather than silently ignored. One
+        tenant-scoped resolution; any other provider / another tenant's row
+        = the uniform 404."""
         conn = self._source_connection(tenant_id, connection_id)
         if conn.provider == SQL_DATABASE_PROVIDER_KEY:
+            if ref_prefix is not None:
+                raise ConnectionValidationError(
+                    "A reference prefix only applies to a no-auth API "
+                    "connection.",
+                    field="refPrefix",
+                )
             return self.create_from_sql_connection(tenant_id, conn, name=name)
+        if is_open_connection(conn):
+            return self.create_from_open_connection(
+                tenant_id, conn, name=name, ref_prefix=ref_prefix or "",
+                transport=transport,
+            )
+        if ref_prefix is not None:
+            raise ConnectionValidationError(
+                "A reference prefix only applies to a no-auth API connection.",
+                field="refPrefix",
+            )
         return self.create_from_connection(
             tenant_id, connection_id, name=name, transport=transport
         )
@@ -976,6 +1150,127 @@ class CompanyService:
             error_message=message,
             request={"source": SQL_DATABASE_PROVIDER_KEY},
         )
+
+    @staticmethod
+    def _normalize_ref_prefix(ref_prefix: str) -> str:
+        """Trim + upper-case + validate an operator-typed reference prefix
+        (AC-08-07): ``^[A-Z0-9_]{2,32}$``. Raised as a per-field 422 on
+        ``refPrefix``, never ``connectionId`` - the operator is looking at
+        the prefix field when this fails."""
+        prefix = (ref_prefix or "").strip().upper()
+        if not prefix:
+            raise ConnectionValidationError(
+                "Enter a reference prefix.", field="refPrefix"
+            )
+        if not REF_PREFIX_PATTERN.match(prefix):
+            raise ConnectionValidationError(
+                "The reference prefix must be 2-32 characters: letters, "
+                "numbers and underscores only.",
+                field="refPrefix",
+            )
+        return prefix
+
+    def create_from_open_connection(
+        self,
+        tenant_id: str,
+        conn: Connection,
+        *,
+        name: str = "",
+        ref_prefix: str,
+        transport: Any = None,
+    ) -> AcCompany:
+        """Register an OPEN (no-auth) company (AC-08-06/07).
+
+        There is no login here at all - a no-auth connection has nothing to
+        sign in to (D16's "never ask for something we cannot use" extends to
+        "never attempt a step that does not exist"). Instead: (1) one
+        primary company per connection, unchanged; (2) a reachability probe
+        (``GET {baseUrl}/location``) - a connect failure or a non-array body
+        is a 422 on ``connectionId`` and creates NOTHING; (3) the operator-
+        typed reference prefix becomes ``database_name`` - the column every
+        ref minter reads (``mapping.company_qualified_identity``), unique
+        per tenant through the existing ``ac_company`` constraint. Mirrors
+        ``create_from_sql_connection`` (D13): NO ``seed_company_defaults`` -
+        an open company has no vendor-API-shaped entities to seed; every
+        HTTP task is born later from the entities list.
+        """
+        existing_for_conn = self.companies.get_by_connection(tenant_id, conn.id)
+        if existing_for_conn is not None:
+            raise CompanyAlreadyExists(
+                self._already_connected_message(existing_for_conn)
+            )
+
+        prefix = self._normalize_ref_prefix(ref_prefix)
+
+        holder = self.companies.get_by_database_name(tenant_id, prefix)
+        if holder is not None:
+            raise CompanyAlreadyExists(
+                f"'{prefix}' is already connected as company "
+                f"'{holder.name or holder.database_name}'."
+            )
+
+        config = conn.config_json or {}
+        base_url = str(config.get("baseUrl") or "").strip()
+        trace_id = f"acdiscover-{uuid.uuid4()}"
+        try:
+            rows = probe_open_connection(base_url, transport=transport)
+        except OpenProbeError as exc:
+            record_activity(
+                self.db,
+                tenant_id=tenant_id,
+                operation="discover company",
+                status=ACTIVITY_ERROR,
+                trace_id=trace_id,
+                external_ref=conn.id,
+                error_message=exc.message,
+                request={"source": SOURCE_IMPL_AUTOCOUNT_HTTP},
+            )
+            raise ConnectionValidationError(exc.message) from exc
+
+        record_activity(
+            self.db,
+            tenant_id=tenant_id,
+            operation="discover company",
+            status=ACTIVITY_SUCCESS,
+            trace_id=trace_id,
+            external_ref=prefix,
+            response={
+                "databaseName": prefix,
+                "companyName": (name or prefix).strip(),
+                "source": SOURCE_IMPL_AUTOCOUNT_HTTP,
+                "rowCount": len(rows),
+            },
+        )
+
+        # S13 (sprint-5/08 review round 1, AC-08-07) - the ``get_by_database_
+        # name`` pre-check above closes the common race window, but two
+        # concurrent creates for the SAME prefix can still both pass it and
+        # both reach this ``add()``; only the DB's own unique constraint
+        # (``uq_ac_company_tenant_db``) catches that. Mirrors the house
+        # pattern (``AuthService.create_user``'s ``IntegrityError`` ->
+        # ``EmailAlreadyExists``) - a clean 409 naming the holder, never a
+        # raw 500.
+        try:
+            company = self.companies.add(
+                AcCompany(
+                    tenant_id=tenant_id,
+                    connection_id=conn.id,
+                    database_name=prefix,
+                    company_name=(name or prefix).strip(),
+                    name=(name or prefix).strip(),
+                    is_active=True,
+                )
+            )
+            # Deliberately NO ``seed_company_defaults`` (D13) - see the docstring.
+            self.db.commit()
+        except IntegrityError as exc:
+            self.db.rollback()
+            holder = self.companies.get_by_database_name(tenant_id, prefix)
+            holder_name = holder.name or holder.database_name if holder else prefix
+            raise CompanyAlreadyExists(
+                f"'{prefix}' is already connected as company '{holder_name}'."
+            ) from exc
+        return company
 
     def create_from_connection(
         self,

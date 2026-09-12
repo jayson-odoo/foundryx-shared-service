@@ -41,6 +41,7 @@ from .canonical.grn import (
     CanonicalGrnLine,
 )
 from .canonical.masters import (
+    ENTITY_BRAND,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
@@ -50,6 +51,7 @@ from .canonical.masters import (
     ENTITY_WAREHOUSE,
     VENDOR_AUTOKEY_PATH,
     VENDOR_LAST_MODIFIED_PATH,
+    CanonicalBrand,
     CanonicalCustomer,
     CanonicalProduct,
     CanonicalProductCategory,
@@ -1059,6 +1061,18 @@ SALES_AGENT_PROFILE = EntityProfile(
     identity_path="Code",
 )
 
+# sprint-5/08 (AC-08-31) - the open REST API's ``ItemBrand`` lookup. Every
+# real task runs FLAT (``flat_profile``, exactly like its five DB-fan-out
+# siblings above) whether fed by an ``autocount_http`` task or a ``sql_db``
+# one (AC-08-31: "a DB task can feed it too").
+BRAND_PROFILE = EntityProfile(
+    entity_type=ENTITY_BRAND,
+    record_model=CanonicalBrand,
+    identity=company_qualified_identity,
+    display_path="Code",
+    identity_path="Code",
+)
+
 # ── plan 22 S5 documents (AC-22-24) - DB-source ONLY, same reasoning as the S4
 # masters fan-out above: no confirmed AutoCount API payload backs a document
 # task, so `identity`/`display_path`/`identity_path` below are API-path-shape
@@ -1115,6 +1129,7 @@ ENTITY_PROFILES: Dict[str, EntityProfile] = {
     WAREHOUSE_PROFILE.entity_type: WAREHOUSE_PROFILE,
     PRODUCT_PROFILE.entity_type: PRODUCT_PROFILE,
     SALES_AGENT_PROFILE.entity_type: SALES_AGENT_PROFILE,
+    BRAND_PROFILE.entity_type: BRAND_PROFILE,
     SALES_ORDER_PROFILE.entity_type: SALES_ORDER_PROFILE,
     PURCHASE_ORDER_PROFILE.entity_type: PURCHASE_ORDER_PROFILE,
     SHIPPING_ORDER_PROFILE.entity_type: SHIPPING_ORDER_PROFILE,
