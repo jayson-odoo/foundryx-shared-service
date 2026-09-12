@@ -320,16 +320,21 @@ def test_activate_http_task_without_a_preview_409(db):
     assert "preview" in str(exc.value).lower()
 
 
-def test_activate_http_task_refused_422_when_never_previewed_result_columns_none(db):
+def test_activate_http_task_refused_409_when_never_previewed_result_columns_none(db):
     """B-A (sprint-5/08 review round 2 blocker), route (b): an API-direct PUT
     with no preview ever run leaves `result_columns` None and
     `comparedFields` resolves to `[]` - `_stamp_previewed` here fakes ONLY
     `last_preview_at` (the way an operator hand-editing the row, or a client
     calling the API directly and never hitting `/autocount/http/preview`,
-    would leave the task), so the activate-once gate must refuse with a 422
-    on `comparedFields` rather than let a task with no working change
-    detection go active."""
-    from modules.autocount.services.etl_service import EtlValidationError
+    would leave the task), so the activate-once gate must refuse rather than
+    let a task with no working change detection go active.
+
+    Round 3 SHOULD-FIX 1: this is an `EtlStateError` (409), same shape as
+    the two sibling activate gates above - an `EtlValidationError` here was
+    dropped by `_raise_task`'s `EtlStateError` branch (this task never went
+    through `_field_errors`), leaving the operator with a generic "fix the
+    highlighted fields" and nothing highlighted."""
+    from modules.autocount.services.etl_service import EtlStateError
 
     conn = _open_connection(db)
     company = _company(db, conn.id)
@@ -338,9 +343,9 @@ def test_activate_http_task_refused_422_when_never_previewed_result_columns_none
     )
     # last_preview_at only - result_columns stays None (never previewed).
     _stamp_previewed(db, company.id, stamp_result_columns=False)
-    with pytest.raises(EtlValidationError) as exc:
+    with pytest.raises(EtlStateError) as exc:
         EtlService(db).activate_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
-    assert "comparedFields" in exc.value.field_errors
+    assert "Test the endpoint again" in str(exc.value)
 
 
 def test_extract_and_map_dispatches_http_api_source_never_sql_engine(db, monkeypatch):

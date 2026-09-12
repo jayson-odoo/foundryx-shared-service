@@ -2052,19 +2052,20 @@ class EtlService:
         # detection dies silently. `last_preview_at` alone does not prove
         # this: the Source tab's own Test button stamps it without ever
         # calling `activate_task`'s sibling `preview_task`. Refuse here,
-        # same shape as every other save-time field error.
+        # same shape as the two sibling activate gates above (409, not 422 -
+        # sprint-5/08 review round 3 SHOULD-FIX 1: an ``EtlValidationError``
+        # here is dropped by ``_raise_task``'s field-error branch since this
+        # task never went through ``_field_errors``, leaving the operator
+        # with a generic "fix the highlighted fields" and nothing
+        # highlighted).
         if config.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP:
             persisted_compared = _clean_list((config.source_config or {}).get("comparedFields"))
             persisted_result_columns = _clean_list(config.result_columns)
             if not persisted_compared and not persisted_result_columns:
-                raise EtlValidationError(
-                    {
-                        "comparedFields": (
-                            "Test the endpoint again so a real preview can "
-                            "confirm which fields to watch for changes "
-                            "before activating."
-                        )
-                    }
+                raise EtlStateError(
+                    "Test the endpoint again so a real preview can "
+                    "confirm which fields to watch for changes "
+                    "before activating."
                 )
         if not (company.sorento_company_code or "").strip():
             raise EtlStateError(

@@ -485,7 +485,13 @@ class CompanyService:
         # activate/pause/resume (`_task_view`); memoised per SERVICE INSTANCE
         # (one per request via `Depends`) so a request that reads the same
         # company's gate more than once never re-hits the network twice.
-        self._brand_contract_gate_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+        # Round 3 nit: keyed on (tenant_id, company.id) - `company.id` alone
+        # would let a cache hit on ONE service instance leak a cross-tenant
+        # gate result if a company id were ever reused/guessed across
+        # tenants (the polymorphic-stored-id class of bug).
+        self._brand_contract_gate_cache: Dict[
+            Tuple[str, str], Optional[Dict[str, Any]]
+        ] = {}
         self.watermarks = WatermarkRepository(db)
 
     # ── reads ────────────────────────────────────────────────────────────────
@@ -829,8 +835,9 @@ class CompanyService:
         # SF-1 - memoised per service instance/request: a request that reads
         # this company's gate more than once (e.g. a save followed by the
         # view it returns) must probe the consumer at most once.
-        if company.id in self._brand_contract_gate_cache:
-            return self._brand_contract_gate_cache[company.id]
+        cache_key = (tenant_id, company.id)
+        if cache_key in self._brand_contract_gate_cache:
+            return self._brand_contract_gate_cache[cache_key]
         result: Optional[Dict[str, Any]]
         try:
             conn = self._consumer_connection(tenant_id, company.sink_connection_id)
@@ -861,7 +868,7 @@ class CompanyService:
                     "requiredVersion": BRAND_REQUIRED_CONTRACT_VERSION,
                 }
             )
-        self._brand_contract_gate_cache[company.id] = result
+        self._brand_contract_gate_cache[cache_key] = result
         return result
 
     def set_sink_target(

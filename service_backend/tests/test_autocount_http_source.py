@@ -236,6 +236,34 @@ def test_a_server_that_ignores_page_fails_fast_never_spins(rig):
     ) == {}
 
 
+def test_clamped_last_page_empty_data_terminates_cleanly(rig):
+    """Round 3 nit: some servers clamp the echoed ``Page`` back to the LAST
+    real page once the walk runs past the end, rather than advancing it -
+    page 1 answers ``Page: 1`` (no ``TotalPages``, so the walk keeps going),
+    page 2 answers the SAME ``Page: 1`` again but with ``Data: []``. The
+    page-advance guard (SF-5) must never fire on the page that is ENDING the
+    scan: an empty page always terminates cleanly, never raises `shape`."""
+    db, company, conn = rig
+    config = _config(db, company, connection_id=conn.id)
+    calls: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx.Response(
+                200,
+                json={"Page": 1, "PageSize": 1000, "Data": [_item("A1")]},
+            )
+        return httpx.Response(200, json={"Page": 1, "PageSize": 1000, "Data": []})
+
+    source = HttpApiSource(
+        _ctx(db, company, config), entity_type=ENTITY_PRODUCT, transport=_transport(handler),
+    )
+    result = source.fetch_changes(Watermark())
+    assert len(calls) == 2
+    assert len(result.records) == 1
+
+
 def test_bare_array_single_request(rig):
     db, company, conn = rig
     config = _config(db, company, connection_id=conn.id, path="/location", entity_type=ENTITY_WAREHOUSE, key_fields=("Location",), watermark_field=None)

@@ -202,6 +202,27 @@ class HttpApiSource:
                     status=response.status_code,
                 )
 
+            scanned.extend(parsed.rows)
+            if parsed.total_count is not None:
+                reported_total = parsed.total_count
+
+            if len(scanned) > self.row_limit:
+                raise HttpSourceError(
+                    f"This task's extract exceeded the {self.row_limit} row cap.",
+                    code="row_limit",
+                    page=page,
+                )
+
+            if parsed.kind == ENVELOPE_LIST:
+                break
+            if not parsed.rows:
+                # round 3 nit: an empty page always terminates cleanly, even
+                # from a server that clamps the echoed `Page` to the last
+                # page (e.g. `{"Page": 1, "Data": []}` after page 1 already
+                # answered `{"Page": 1, ...}`) - the page-advance guard below
+                # must never fire on the page that is ending the scan.
+                break
+
             # SF-5 - a server that ignores the `page` param and echoes the
             # SAME `Page` back on every request must fail fast (the SECOND
             # request, as soon as the echoed value fails to advance) rather
@@ -222,21 +243,6 @@ class HttpApiSource:
                 )
             previous_reported_page = parsed.page
 
-            scanned.extend(parsed.rows)
-            if parsed.total_count is not None:
-                reported_total = parsed.total_count
-
-            if len(scanned) > self.row_limit:
-                raise HttpSourceError(
-                    f"This task's extract exceeded the {self.row_limit} row cap.",
-                    code="row_limit",
-                    page=page,
-                )
-
-            if parsed.kind == ENVELOPE_LIST:
-                break
-            if not parsed.rows:
-                break
             total_pages = parsed.total_pages
             current_page = parsed.page if parsed.page is not None else page
             if total_pages is not None and current_page >= total_pages:
