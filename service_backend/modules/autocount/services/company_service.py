@@ -465,6 +465,15 @@ class MappingView:
     line_ac_fields: List[str] = field(default_factory=list)
 
 
+#     !!  SF-1 (sprint-5/08 review round 2).  !!
+# `brand_contract_gate` is a READ-path advisory probe (the Review & Activate
+# banner), never a push - sharing `settings.autocount_sink_timeout_seconds`
+# (300s, sized for a 1,000-record ingest batch) would let one slow/dead
+# consumer stall a plain task-view GET for 5 minutes. Short and fixed:
+# nothing here is retuned per-tenant, unlike the push budget.
+BRAND_CONTRACT_GATE_PROBE_TIMEOUT_SECONDS = 5.0
+
+
 class CompanyService:
     def __init__(self, db: Session):
         self.db = db
@@ -472,6 +481,11 @@ class CompanyService:
         self.configs = EntityConfigRepository(db)
         self.mappings = FieldMappingRepository(db)
         self.connections = ConnectionRepository(db)
+        # SF-1 - `brand_contract_gate` is read on every brand-task read/save/
+        # activate/pause/resume (`_task_view`); memoised per SERVICE INSTANCE
+        # (one per request via `Depends`) so a request that reads the same
+        # company's gate more than once never re-hits the network twice.
+        self._brand_contract_gate_cache: Dict[str, Optional[Dict[str, Any]]] = {}
         self.watermarks = WatermarkRepository(db)
 
     # ── reads ────────────────────────────────────────────────────────────────
@@ -812,6 +826,12 @@ class CompanyService:
         """
         if company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id:
             return None
+        # SF-1 - memoised per service instance/request: a request that reads
+        # this company's gate more than once (e.g. a save followed by the
+        # view it returns) must probe the consumer at most once.
+        if company.id in self._brand_contract_gate_cache:
+            return self._brand_contract_gate_cache[company.id]
+        result: Optional[Dict[str, Any]]
         try:
             conn = self._consumer_connection(tenant_id, company.sink_connection_id)
             sink = sorento_sink_from_connection(
@@ -819,21 +839,30 @@ class CompanyService:
                 self.credentials(conn),
                 entity_type=ENTITY_BRAND,
                 company_code=company.sorento_company_code,
+                # SF-1 - the READ-path probe's OWN short budget, never the
+                # 300s push timeout (`app/config.py:360`): this sink is
+                # never used to push anything.
+                timeout=BRAND_CONTRACT_GATE_PROBE_TIMEOUT_SECONDS,
             )
+            contract = sink.fetch_contract_detail()
         except Exception:  # noqa: BLE001 - advisory only, never blocks the read
-            return None
-        contract = sink.fetch_contract_detail()
-        supported = sorento_supports_entity(
-            ENTITY_BRAND,
-            contract_version=(contract.version if contract else None),
-            contract_entities=(contract.entities if contract else None),
-        )
-        if supported:
-            return None
-        return {
-            "version": contract.version if contract else None,
-            "requiredVersion": BRAND_REQUIRED_CONTRACT_VERSION,
-        }
+            result = None
+        else:
+            supported = sorento_supports_entity(
+                ENTITY_BRAND,
+                contract_version=(contract.version if contract else None),
+                contract_entities=(contract.entities if contract else None),
+            )
+            result = (
+                None
+                if supported
+                else {
+                    "version": contract.version if contract else None,
+                    "requiredVersion": BRAND_REQUIRED_CONTRACT_VERSION,
+                }
+            )
+        self._brand_contract_gate_cache[company.id] = result
+        return result
 
     def set_sink_target(
         self,
@@ -1227,13 +1256,13 @@ class CompanyService:
             )
             # Deliberately NO ``seed_company_defaults`` (D13) - see the docstring.
             self.db.commit()
-        except IntegrityError:
+        except IntegrityError as exc:
             self.db.rollback()
             holder = self.companies.get_by_database_name(tenant_id, prefix)
             holder_name = holder.name or holder.database_name if holder else prefix
             raise CompanyAlreadyExists(
                 f"'{prefix}' is already connected as company '{holder_name}'."
-            )
+            ) from exc
         return company
 
     def create_from_connection(

@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsProvider } from '@/providers/settings-provider';
 import type { AutocountEtlTask } from '@/types/autocount';
 import { TaskEditorView } from './task-editor-view';
+import { stubAuthFetch } from './task-editor-view.test-helpers';
+
+stubAuthFetch();
 
 /** Container/Toolbar read layout settings - provide the real provider. */
 function render(ui: React.ReactElement) {

@@ -113,16 +113,24 @@ def _transport(rows=None):
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
-def _stamp_previewed(db, company_id: str, entity_type: str = ENTITY_PRODUCT) -> None:
+def _stamp_previewed(
+    db, company_id: str, entity_type: str = ENTITY_PRODUCT, *, stamp_result_columns: bool = True
+) -> None:
     """B3 (sprint-5/08 review round 1) widened ``activate_task``'s
     "run a preview first" gate to HTTP tasks too (it used to bypass them
     entirely) - these lifecycle tests are about DEMOTION/repush, not the
     preview gate itself, so they stamp it directly rather than running a
-    real dry-run against a consumer."""
+    real dry-run against a consumer. ``stamp_result_columns`` defaults True
+    (a REAL preview always stamps `result_columns` alongside
+    `last_preview_at`, `services/etl_service.py:834`) - pass False to
+    reproduce the round-2 B-A bug scenario (an API-direct save/activate that
+    never ran a preview at all leaves `result_columns` None)."""
     from modules.autocount.repositories import EntityConfigRepository
 
     config = EntityConfigRepository(db).get(DEFAULT_TENANT_ID, company_id, entity_type)
     config.last_preview_at = NOW
+    if stamp_result_columns:
+        config.result_columns = ["ItemCode", "Description", "LastModified", "IsActive"]
     db.commit()
 
 
@@ -312,6 +320,29 @@ def test_activate_http_task_without_a_preview_409(db):
     assert "preview" in str(exc.value).lower()
 
 
+def test_activate_http_task_refused_422_when_never_previewed_result_columns_none(db):
+    """B-A (sprint-5/08 review round 2 blocker), route (b): an API-direct PUT
+    with no preview ever run leaves `result_columns` None and
+    `comparedFields` resolves to `[]` - `_stamp_previewed` here fakes ONLY
+    `last_preview_at` (the way an operator hand-editing the row, or a client
+    calling the API directly and never hitting `/autocount/http/preview`,
+    would leave the task), so the activate-once gate must refuse with a 422
+    on `comparedFields` rather than let a task with no working change
+    detection go active."""
+    from modules.autocount.services.etl_service import EtlValidationError
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, _http_raw(connectionId=conn.id)
+    )
+    # last_preview_at only - result_columns stays None (never previewed).
+    _stamp_previewed(db, company.id, stamp_result_columns=False)
+    with pytest.raises(EtlValidationError) as exc:
+        EtlService(db).activate_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    assert "comparedFields" in exc.value.field_errors
+
+
 def test_extract_and_map_dispatches_http_api_source_never_sql_engine(db, monkeypatch):
     """B3 - ``preview_task``'s dry-run (``_extract_and_map``) used to
     unconditionally build a ``SqlDbSource``, so an HTTP task's Review &
@@ -365,3 +396,190 @@ def test_extract_and_map_dispatches_http_api_source_never_sql_engine(db, monkeyp
     assert page_complete is None
     assert current_refs == ["MOCHA:A1"]
     assert len(records) == 1
+
+
+# ── B-B (sprint-5/08 review round 2 blocker) - preview_task never catches
+# HttpSourceError, so Review & Activate's Preview on an HTTP task escaped as
+# a bare 500 for every source failure (a 404 path, timeout, shape change) -
+# AC-08-23 requires the failure to name page + status. ──────────────────────
+
+
+class _PreviewableDummySink:
+    """`hasattr(sink, "dry_run")` is all `preview_task` checks to flip
+    `previewable` True - the source must fail BEFORE `dry_run` is ever
+    reached, so this stub asserts it never is."""
+
+    name = "sorento"
+
+    def dry_run(self, records):  # pragma: no cover - must never be reached
+        raise AssertionError("the source must fail before the sink is asked anything")
+
+
+def test_preview_task_maps_http_source_failure_to_422_naming_page_and_status(db, monkeypatch):
+    import modules.autocount.http_source.source as http_source_module
+    from modules.autocount.http_source.client import HttpApiClient
+    from modules.autocount.services.etl_service import EtlAnchorError
+
+    monkeypatch.setattr(
+        CompanyService, "sink_for_company",
+        lambda self, tenant_id, company, entity_type: _PreviewableDummySink(),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="upstream boom")
+
+    stub_transport = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        http_source_module,
+        "HttpApiClient",
+        lambda base_url, **kw: HttpApiClient(base_url, transport=stub_transport),
+    )
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT,
+        _http_raw(connectionId=conn.id, path="/itembypage", keyFields=["ItemCode"]),
+    )
+    from modules.autocount.http_source.errors import HttpSourceError
+
+    with pytest.raises(HttpSourceError) as exc:
+        EtlService(db).preview_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    assert exc.value.page == 1
+    assert exc.value.status == 500
+    assert "page 1" in exc.value.message
+
+
+def test_preview_route_maps_http_source_failure_to_422_never_a_bare_500(client, db, monkeypatch):
+    import modules.autocount.http_source.source as http_source_module
+    from modules.autocount.http_source.client import HttpApiClient
+
+    monkeypatch.setattr(
+        CompanyService, "sink_for_company",
+        lambda self, tenant_id, company, entity_type: _PreviewableDummySink(),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="upstream boom")
+
+    stub_transport = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        http_source_module,
+        "HttpApiClient",
+        lambda base_url, **kw: HttpApiClient(base_url, transport=stub_transport),
+    )
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT,
+        _http_raw(connectionId=conn.id, path="/itembypage", keyFields=["ItemCode"]),
+    )
+
+    login = client.post("/auth/login", json={"email": "demo@example.com", "password": "demo1234"})
+    assert login.status_code == 200, login.text
+    token = login.json()["access_token"]
+    response = client.post(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_PRODUCT}/etl-task/preview",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert "page 1" in body["message"]
+    assert "500" in body["message"]
+
+
+# ── SF-2 (sprint-5/08 review round 2) - a real RUN's HTTP source failures must
+# land as a WARNING with `error_code` set (mirrors the SQL delete guard's own
+# DELETE_GUARD branch), never the generic `except Exception` crash branch
+# (stack trace, `last_run_error_code = None`) - AC-08-38 needs the Runs tab to
+# show the error code AND page number. ─────────────────────────────────────
+
+
+def test_run_autocount_sync_http_status_failure_sets_error_code_and_names_page(
+    db, monkeypatch, caplog
+):
+    import logging
+
+    import modules.autocount.http_source.source as http_source_module
+    from app.jobs.service import JobService
+    from modules.autocount.http_source.client import HttpApiClient
+    from modules.autocount.repositories import EntityConfigRepository
+    from modules.autocount.sync import AUTOCOUNT_SYNC, run_autocount_sync
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        if page == 3:
+            return httpx.Response(500, text="boom")
+        return httpx.Response(
+            200,
+            json={
+                "TotalCount": 3, "Page": page, "PageSize": 1, "TotalPages": 3,
+                "Data": [{"ItemCode": f"A{page}", "LastModified": "2026-08-01T09:00:00", "IsActive": "T"}],
+            },
+        )
+
+    stub_transport = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        http_source_module,
+        "HttpApiClient",
+        lambda base_url, **kw: HttpApiClient(base_url, transport=stub_transport),
+    )
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT,
+        _http_raw(connectionId=conn.id, path="/itembypage", keyFields=["ItemCode"]),
+    )
+
+    job = JobService(db).create(
+        type=AUTOCOUNT_SYNC, tenant_id=DEFAULT_TENANT_ID,
+        payload={"companyId": company.id, "entityType": ENTITY_PRODUCT, "mode": "manual"},
+    )
+    with caplog.at_level(logging.WARNING, logger="foundryx.autocount"):
+        run_autocount_sync(db, job)
+
+    config = EntityConfigRepository(db).get(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    assert config.last_run_error_code == "HTTP_STATUS"
+    assert "page 3" in (config.last_run_error or "")
+    assert not any(r.exc_info for r in caplog.records), (
+        "an HTTP source failure must log a WARNING, never a stack trace"
+    )
+
+
+def test_run_autocount_sync_http_delete_guard_maps_to_delete_guard_code(db, monkeypatch):
+    import modules.autocount.http_source.source as http_source_module
+    from app.jobs.service import JobService
+    from modules.autocount.http_source.client import HttpApiClient
+    from modules.autocount.repositories import EntityConfigRepository, RowHashRepository
+    from modules.autocount.sync import AUTOCOUNT_SYNC, run_autocount_sync
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"TotalCount": 0, "Page": 1, "PageSize": 1000, "TotalPages": 1, "Data": []})
+
+    stub_transport = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        http_source_module,
+        "HttpApiClient",
+        lambda base_url, **kw: HttpApiClient(base_url, transport=stub_transport),
+    )
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT,
+        _http_raw(connectionId=conn.id, path="/itembypage", keyFields=["ItemCode"]),
+    )
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, {"MOCHA:GONE": "x" * 64}, seen_at=None,
+    )
+
+    job = JobService(db).create(
+        type=AUTOCOUNT_SYNC, tenant_id=DEFAULT_TENANT_ID,
+        payload={"companyId": company.id, "entityType": ENTITY_PRODUCT, "mode": "reconcile"},
+    )
+    run_autocount_sync(db, job)
+
+    config = EntityConfigRepository(db).get(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    assert config.last_run_error_code == "DELETE_GUARD"

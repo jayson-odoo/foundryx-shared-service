@@ -64,6 +64,7 @@ from .canonical.masters import (
     VENDOR_LAST_MODIFIED_PATH,
 )
 from .client import AutoCountError
+from .http_source.errors import HttpSourceError
 from .mapping import (
     UNQUALIFIED_REF_ENTITIES,
     MappedDocument,
@@ -563,6 +564,46 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             started,
             config=config,
             error_code="FILTER_FORMULA",
+        )
+        return
+    except HttpSourceError as exc:
+        # SF-2 (sprint-5/08 review round 2) - the open-API source's own
+        # failures (transport, HTTP status, shape, row cap, delete guard)
+        # are a REPORTED fault, not a crash - the SAME WARNING/`error_code`
+        # treatment the SQL delete guard already gets above (`code=
+        # "delete_guard"` upper-cases to the identical "DELETE_GUARD" the
+        # SQL twin uses). `exc.message` already names the page and, when
+        # known, the status (AC-08-23/38) - never re-wrapped here.
+        logger.warning(
+            "autocount HTTP source fetch failed for job %s: %s", job.id, exc.message
+        )
+        record_client_calls(
+            db,
+            source,
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        record_activity(
+            db,
+            tenant_id=tenant_id,
+            operation=f"sync {entity_type}",
+            status=ACTIVITY_ERROR,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            error_message=exc.message,
+        )
+        _fail(
+            db,
+            service,
+            job,
+            run,
+            watermark_row,
+            exc.message,
+            started,
+            config=config,
+            error_code=(exc.code.upper() if exc.code else None),
         )
         return
     except Exception as exc:  # noqa: BLE001

@@ -151,6 +151,21 @@ def test_http_impl_rejected_for_non_http_entities_422(db):
         )
 
 
+def test_update_task_http_on_a_non_http_entity_blames_entity_type_not_path(db):
+    """Nit (sprint-5/08 review round 2) - the refusal is about the ENTITY
+    the operator picked, not the path they typed (which is not even read
+    when the entity itself has no open REST API route) - the field error
+    must name `entityType`, never `path`."""
+    company, conn = _open_company(db)
+    with pytest.raises(EtlValidationError) as exc:
+        EtlService(db).update_task(
+            DEFAULT_TENANT_ID, company.id, ENTITY_GOODS_RECEIVED_NOTE,
+            _http_raw(connectionId=conn.id),
+        )
+    assert "entityType" in exc.value.field_errors
+    assert "path" not in exc.value.field_errors
+
+
 # ── AC-08-13: validate_source_config for autocount_http ──────────────────────
 
 

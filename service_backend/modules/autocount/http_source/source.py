@@ -30,7 +30,6 @@ Rules worth restating here (mirrors the SQL source's own docstring):
 from __future__ import annotations
 
 import logging
-import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -155,6 +154,11 @@ class HttpApiSource:
         scanned: List[Dict[str, Any]] = []
         established_kind: Optional[str] = None
         reported_total: Optional[int] = None
+        # SF-5 (sprint-5/08 review round 2) - a server that ignores the
+        # `page` query param and echoes the SAME `Page` forever would
+        # otherwise spin until the row-limit guard tripped (`MAX_EXTRACT_
+        # ROWS`, 200,000) hammering the endpoint the entire way there.
+        previous_reported_page: Optional[int] = None
         page = 1
         while True:
             try:
@@ -197,6 +201,26 @@ class HttpApiSource:
                     page=page,
                     status=response.status_code,
                 )
+
+            # SF-5 - a server that ignores the `page` param and echoes the
+            # SAME `Page` back on every request must fail fast (the SECOND
+            # request, as soon as the echoed value fails to advance) rather
+            # than spin toward the row-limit guard.
+            if (
+                page > 1
+                and parsed.page is not None
+                and previous_reported_page is not None
+                and parsed.page == previous_reported_page
+            ):
+                raise HttpSourceError(
+                    f"The echoed page did not advance past {parsed.page} after "
+                    f"requesting page {page} - this endpoint appears to be "
+                    f"ignoring the page parameter.",
+                    code="shape",
+                    page=page,
+                    status=response.status_code,
+                )
+            previous_reported_page = parsed.page
 
             scanned.extend(parsed.rows)
             if parsed.total_count is not None:
@@ -342,12 +366,24 @@ class HttpApiSource:
         hashes: Dict[str, str] = {}
         current_refs: set = set()
         added = updated = 0
+        # B-A (sprint-5/08 review round 2 blocker) - an empty effective
+        # compared set (never previewed: `result_columns` is None/empty AND
+        # nothing configured) would make `row_hash(row, [])` == sha256("")
+        # for EVERY row, silently killing change detection forever
+        # (`updated_count` stuck at 0). Fall back to the row's own non-key
+        # fields at hash time - never done when `distinctOf` is set, since
+        # the projected `{"value": v}` rows have no "own fields" to fall
+        # back to and are already correctly keyed on their sole field.
+        fall_back_to_row_fields = not self.compared_columns and not self.distinct_of
         for row in working_rows:
             ref = self.source_ref(row)
             if ref is None:
                 continue
             current_refs.add(ref)
-            value_hash = row_hash(row, self.compared_columns)
+            compared = self.compared_columns
+            if fall_back_to_row_fields:
+                compared = sorted(k for k in row.keys() if k not in self.key_fields)
+            value_hash = row_hash(row, compared)
             hashes[ref] = value_hash
             if ref not in known:
                 added += 1

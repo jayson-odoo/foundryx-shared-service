@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsProvider } from '@/providers/settings-provider';
 import type { AutocountCompanyDetail, AutocountEtlTask } from '@/types/autocount';
 import { TaskEditorView } from './task-editor-view';
+import { stubAuthFetch } from './task-editor-view.test-helpers';
+
+stubAuthFetch();
 
 /**
  * Plan sprint-5/01 review SHOULD-FIX - a DB company's locked connection is

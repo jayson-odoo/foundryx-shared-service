@@ -4,6 +4,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsProvider } from '@/providers/settings-provider';
 import type { AutocountEtlTask, AutocountMappingView } from '@/types/autocount';
 import { TaskEditorView } from './task-editor-view';
+import { stubAuthFetch } from './task-editor-view.test-helpers';
+
+stubAuthFetch();
 
 /**
  * SF1 (final reviewer pass) - `onSave` unconditionally calls `mapping.reload()`

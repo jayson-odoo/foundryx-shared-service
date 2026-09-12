@@ -151,6 +151,23 @@ def test_fetch_contract_detail_none_on_failure():
     assert sink.fetch_contract_detail() is None
 
 
+def test_fetch_contract_detail_parses_a_three_part_patch_version():
+    """Nit (sprint-5/08 review round 2) - a bare ``float()`` rejects a
+    three-part semver-style version string (``"2.3.1"``) outright, so a
+    consumer advertising a patch version could never open the brand gate at
+    all. Parse major.minor from the first two dot-separated ints instead."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"version": "2.3.1", "entities": ["brands"]})
+
+    sink = SorentoSink(
+        base_url="https://sorento.example.com", api_key="k", entity_type=ENTITY_BRAND,
+        transport=httpx.MockTransport(handler),
+    )
+    detail = sink.fetch_contract_detail()
+    assert detail is not None
+    assert detail.version == 2.3
+
+
 @pytest.fixture
 def _brand_gate_rig(session_factory):
     from app.models import DEFAULT_TENANT_ID
@@ -259,6 +276,70 @@ def test_get_task_brand_contract_gate_none_for_a_non_brand_entity(monkeypatch, _
     db, company = _brand_gate_rig
     view = EtlService(db).get_task(DEFAULT_TENANT_ID, company.id, "product")
     assert view.brand_contract_gate is None
+
+
+# ── SF-1 (sprint-5/08 review round 2) - the READ-path probe must not share the
+# push path's 300s ``autocount_sink_timeout_seconds`` budget, and must not
+# re-hit the network on every call within the same request. ──────────────────
+
+
+def test_brand_contract_gate_probe_uses_its_own_short_timeout_not_the_push_budget(
+    monkeypatch, _brand_gate_rig
+):
+    import modules.autocount.services.company_service as company_module
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.services.company_service import CompanyService
+
+    captured: dict = {}
+    real = company_module.sorento_sink_from_connection
+
+    def spy(config, credentials, *, entity_type, company_code=None, transport=None, **kw):
+        captured.update(kw)
+        return real(
+            config, credentials, entity_type=entity_type, company_code=company_code,
+            transport=transport, **kw,
+        )
+
+    monkeypatch.setattr(company_module, "sorento_sink_from_connection", spy)
+    monkeypatch.setattr(SorentoSink, "fetch_contract_detail", lambda self: None)
+    db, company = _brand_gate_rig
+    CompanyService(db).brand_contract_gate(DEFAULT_TENANT_ID, company)
+    assert "timeout" in captured, "the read-path probe must pass its own timeout override"
+    assert captured["timeout"] != 300  # never the 300s push budget (app/config.py:360)
+    assert captured["timeout"] <= 10
+
+
+def test_brand_contract_gate_memoises_the_probe_per_service_instance(monkeypatch, _brand_gate_rig):
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.services.company_service import CompanyService
+    from modules.autocount.sinks_sorento import SorentoContractInfo
+
+    calls = {"n": 0}
+
+    def counted(self):
+        calls["n"] += 1
+        return SorentoContractInfo(version=2.2, entities=["suppliers"])
+
+    monkeypatch.setattr(SorentoSink, "fetch_contract_detail", counted)
+    db, company = _brand_gate_rig
+    service = CompanyService(db)
+    first = service.brand_contract_gate(DEFAULT_TENANT_ID, company)
+    second = service.brand_contract_gate(DEFAULT_TENANT_ID, company)
+    assert first == second == {"version": 2.2, "requiredVersion": 2.3}
+    assert calls["n"] == 1, "the probe must be memoised per service instance/request"
+
+
+def test_brand_contract_gate_raising_probe_yields_none_never_raises(monkeypatch, _brand_gate_rig):
+    from app.models import DEFAULT_TENANT_ID
+    from modules.autocount.services.company_service import CompanyService
+
+    def boom(self):
+        raise httpx.ConnectError("no route to host")
+
+    monkeypatch.setattr(SorentoSink, "fetch_contract_detail", boom)
+    db, company = _brand_gate_rig
+    result = CompanyService(db).brand_contract_gate(DEFAULT_TENANT_ID, company)
+    assert result is None
 
 
 # ── AC-08-35: 429 mid-batch sleeps Retry-After capped at 60s, once, retries ──

@@ -64,6 +64,7 @@ from ..services import (
     SinkTargetValidationError,
     document_prerequisites,
 )
+from ..http_source.errors import HttpSourceError
 from ..sql_source.errors import SqlSourceError
 from .sql import raise_sql_error
 
@@ -501,6 +502,12 @@ def _raise_task(exc: Exception):
       Sorento's own code (Appendix A6) - the surface names the wiring that is
       wrong instead of showing a bare delivery failure.
     * ``PreviewUnavailable`` → **502**: the consumer, not us, failed.
+    * ``HttpSourceError`` → **422** (B-B, sprint-5/08 review round 2 blocker):
+      an open-API task's dry-run failure (transport, HTTP status, shape
+      change, row cap) - this is the SOURCE side of an HTTP preview, the
+      exact same authority ``SqlSourceError`` already has below.
+      ``exc.message`` already names the page and, when known, the status
+      (AC-08-23) - never a bare 500.
     * Anything else (``SqlConnectError``/``SqlQueryError``/
       ``SqlTaskNotConfigured`` - the SOURCE side of a preview, S2 review
       SHOULD-FIX 4) falls through to the SAME translator ``routers/sql.py``
@@ -515,6 +522,14 @@ def _raise_task(exc: Exception):
             }
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=content)
     if isinstance(exc, EtlAnchorError):
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={
+                "detail": {"code": exc.code, "message": exc.message},
+                "message": exc.message,
+            },
+        )
+    if isinstance(exc, HttpSourceError):
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={
@@ -619,7 +634,7 @@ def preview_etl_task(
         view, preview = EtlService(db).preview_task(
             current_user.tenant_id, company_id, entity_type
         )
-    except (AutocountServiceError, SqlSourceError) as exc:
+    except (AutocountServiceError, SqlSourceError, HttpSourceError) as exc:
         return _raise_task(exc)
     return EtlPreviewResponse(task=_task_response(view), preview=preview)
 

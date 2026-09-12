@@ -1154,8 +1154,12 @@ class EtlService:
         """
         self._require_task_entity(tenant_id, company_id, entity_type)
         if entity_type not in HTTP_CAPABLE_ENTITY_TYPES:
+            # Nit (sprint-5/08 review round 2) - the refusal is about the
+            # ENTITY the operator picked, never the path they typed (which
+            # is not even read for an entity with no open REST API route at
+            # all) - blame `entityType`.
             raise EtlValidationError(
-                {"path": f"'{entity_type}' has no open REST API route."}
+                {"entityType": f"'{entity_type}' has no open REST API route."}
             )
 
         config = self.configs.get(tenant_id, company_id, entity_type)
@@ -2036,6 +2040,32 @@ class EtlService:
                 f"failed row(s) - re-run preview after fixing the mapping "
                 f"before activating."
             )
+        #     !!  B-A (sprint-5/08 review round 2 blocker).  !!
+        # An `autocount_http` task's compared set can be persisted EMPTY two
+        # ways that skip a real preview entirely: (a) Test an endpoint that
+        # returns zero rows on save day (`result_columns = []`, the Source
+        # tab's save gate only checks connection + path); (b) an API-direct
+        # PUT with `result_columns` still None (never previewed at all) -
+        # `_validate_http_config` accepts key/watermark picks unchecked in
+        # that case. Either way `row_hash(row, [])` is `sha256("")` for every
+        # row FOREVER once the endpoint starts returning data - change
+        # detection dies silently. `last_preview_at` alone does not prove
+        # this: the Source tab's own Test button stamps it without ever
+        # calling `activate_task`'s sibling `preview_task`. Refuse here,
+        # same shape as every other save-time field error.
+        if config.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP:
+            persisted_compared = _clean_list((config.source_config or {}).get("comparedFields"))
+            persisted_result_columns = _clean_list(config.result_columns)
+            if not persisted_compared and not persisted_result_columns:
+                raise EtlValidationError(
+                    {
+                        "comparedFields": (
+                            "Test the endpoint again so a real preview can "
+                            "confirm which fields to watch for changes "
+                            "before activating."
+                        )
+                    }
+                )
         if not (company.sorento_company_code or "").strip():
             raise EtlStateError(
                 "Set the Sorento company code on this company before activating - "

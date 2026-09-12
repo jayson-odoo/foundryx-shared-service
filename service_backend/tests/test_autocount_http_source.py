@@ -204,6 +204,38 @@ def test_page_past_end_empty_stops(rig):
     assert result.records == []
 
 
+def test_a_server_that_ignores_page_fails_fast_never_spins(rig):
+    """SF-5 (sprint-5/08 review round 2) - a server that ignores the
+    requested ``page`` and echoes the SAME ``Page``/``TotalPages`` forever
+    must not spin the walk loop endlessly: detected as soon as the echoed
+    ``Page`` fails to advance (the SECOND request), raised as a `shape`
+    failure before any hash/watermark state is touched."""
+    db, company, conn = rig
+    config = _config(db, company, connection_id=conn.id)
+    calls: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(
+            200,
+            json={"TotalCount": 12, "Page": 1, "PageSize": 1, "TotalPages": 12, "Data": [_item("A1")]},
+        )
+
+    source = HttpApiSource(
+        _ctx(db, company, config), entity_type=ENTITY_PRODUCT, transport=_transport(handler),
+        # Bounds a pre-fix run (which would otherwise spin to `row_limit`
+        # before ever raising) to a fast, deterministic failure either way.
+        row_limit=5,
+    )
+    with pytest.raises(HttpSourceError) as exc:
+        source.fetch_changes(Watermark())
+    assert exc.value.code == "shape"
+    assert len(calls) == 2, "must fail fast after the SECOND request, never keep spinning"
+    assert RowHashRepository(db).all_hashes(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT
+    ) == {}
+
+
 def test_bare_array_single_request(rig):
     db, company, conn = rig
     config = _config(db, company, connection_id=conn.id, path="/location", entity_type=ENTITY_WAREHOUSE, key_fields=("Location",), watermark_field=None)
@@ -557,6 +589,51 @@ def test_reconcile_classifies_added_updated_deleted_via_row_hash(rig):
     result = source.fetch_changes(Watermark())
     assert result.added_count == 1  # NEWONE
     assert f"{DB_NAME}:GONE" in result.delete_refs
+
+
+def test_empty_compared_columns_falls_back_to_row_own_fields_for_hashing(rig):
+    """B-A (sprint-5/08 review round 2 blocker) - a task with an empty
+    effective compared set (never previewed: ``result_columns`` is None,
+    ``comparedFields`` is ``[]``) must still detect a genuine field change on
+    the SAME key between two runs. Before the fix ``row_hash(row, [])`` is
+    ``sha256("")`` for every row, so ``updated_count`` is stuck at 0 forever
+    even though the row's data changed."""
+    db, company, conn = rig
+    config = _config(db, company, connection_id=conn.id, compared_fields=())
+    assert config.result_columns is None  # never previewed
+
+    call_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count["n"] += 1
+        description = "First" if call_count["n"] == 1 else "Second"
+        return httpx.Response(
+            200,
+            json={
+                "TotalCount": 1, "Page": 1, "PageSize": 1000, "TotalPages": 1,
+                "Data": [{
+                    "ItemCode": "A1", "Description": description,
+                    "LastModified": "2026-08-01T09:00:00", "IsActive": "T",
+                }],
+            },
+        )
+
+    def make_source() -> HttpApiSource:
+        return HttpApiSource(
+            _ctx(db, company, config), entity_type=ENTITY_PRODUCT, mode=RUN_MODE_RECONCILE,
+            transport=_transport(handler),
+        )
+
+    first = make_source()
+    assert first.compared_columns == []
+    result1 = first.fetch_changes(Watermark())
+    assert result1.added_count == 1
+
+    result2 = make_source().fetch_changes(Watermark())
+    assert result2.updated_count == 1, (
+        "Description changed between runs but the hash didn't move - an "
+        "empty compared set fell back to sha256('') for every row."
+    )
 
 
 def test_reconcile_delete_guard_fires_on_mass_disappearance(rig):

@@ -60,3 +60,47 @@ Building a slice with a subagent team (coder → tester → reviewer, looped on 
 - **Sequential coders on a shared branch** (not parallel same-tree) when tasks touch overlapping files - parallel edits to one working tree race. Use worktree isolation only when tasks are file-disjoint AND each worktree has its own node_modules/.venv.
 - **Tester verifies from the USER's perspective** (real clicks, real data, fresh build) and writes an AC-id-keyed PASS/FAIL/DEFERRED report - not just green pytest. The reviewer re-checks the recurring-gap gate, not only correctness.
 - **A deploy drain is not a run boundary.** Blue/green stops the old colour after 30s; any worker job longer than that (a 4-minute PO sync, 2026-09-07) dies mid-run with its `running` status intact and its task skipped by every later tick. A long job must heartbeat at every checkpoint and a sweep (startup + scheduler) must release the orphan; a human running SQL is the failure mode, not the fix (`storage-and-background-jobs.md`, job liveness bullet).
+
+## AutoCount Service reference tables + gotchas (plan 22, sprint-5/01..08)
+
+`modules/autocount/` (ERP -> Sorento ESB): a task's `AcEntityConfig.source_impl` decides
+which extraction engine reads it. `autocount_http` (sprint-5/08, AC-08-40) is the newest and
+the ONLY open-(no-auth)-connection path; the earlier two stay the SQL/legacy-vendor-API
+options.
+
+### Source-impl table
+
+| `source_impl` | Reads | Registered in | Notes |
+|---|---|---|---|
+| `sql_db` | Direct read-only SQL, any dialect | `sql_source/source.py` (`register_sql_db_source`) | plan 22; the paged watermark loop lives in `sync.py`'s `_run_paged_sql_db` |
+| `autocount_http` | AutoCount's own open (no-auth) REST API, one page at a time | `http_source/source.py` (`register_http_source`) | sprint-5/08; only the six entities in `presets.HTTP_ENTITY_TYPES` (product, customer, warehouse, product_category, brand, unit_of_measure) |
+| `autocount_read` | Legacy session-authenticated vendor HTTP wrapper | `sources.py` (`_autocount_read_factory`) | plans 13-16; still the path for SO/PO/SPO document tasks against a BASIC-auth connection |
+
+### `autocount_http` preset table (`presets.HTTP_PRESETS`)
+
+| Entity | Path | Key field(s) | Watermark | `distinctOf` |
+|---|---|---|---|---|
+| product | `/itembypage` | `ItemCode` | `LastModified` | - |
+| customer | `/debtorbypage` | `AccNo` | `LastModified` | - |
+| warehouse | `/location` | `Location` | none | - |
+| product_category | `/ItemGroup` | `ItemGroup` | none | - |
+| brand | `/ItemBrand` | `ItemBrand` | none | - |
+| unit_of_measure | `/itembypage` | `value` (synthetic) | none | `BaseUOM`, `SalesUOM`, `PurchaseUOM` |
+
+### Run-mode table (shared by `sql_db` and `autocount_http`)
+
+| Mode | Trigger | Behaviour |
+|---|---|---|
+| `manual` | operator clicks Run Now / Preview | one pass against the watermark (a full extract only when the task has no watermark field) |
+| `incremental` | sweep, due `next_incremental_at` | same read as `manual`, scheduled |
+| `reconcile` | sweep, due `next_reconcile_at`, or an operator repush | full extract, hash-diffs every row against `ac_row_hash`, stages missing refs as deletes (20% / 50-row safety guard) |
+
+### Gotcha: `pageSize` above ~1000 silently clamps, trust the ECHOED paging fields
+
+`autocount_http`'s page walk REQUESTS `pageSize=1000` (`http_source/source.py:
+DEFAULT_PAGE_SIZE`), but the live wrapper (`hapi.sorento.cc.cd`) has been observed CLAMPING a
+larger request (5000 tried live) down to roughly 200 with no error status at all - it just
+echoes the CLAMPED `PageSize`/`TotalPages`/`Page` back in the response body. The walk loop
+must therefore trust the ECHOED values on every page, never the value it requested, and must
+never assume the population fits in one page just because the requested `pageSize` implied it
+would.

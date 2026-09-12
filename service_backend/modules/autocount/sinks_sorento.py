@@ -805,10 +805,22 @@ class SorentoSink:
             elif isinstance(raw_version, (int, float)):
                 version = float(raw_version)
             else:
+                text = str(raw_version).strip()
                 try:
-                    version = float(str(raw_version).strip())
+                    version = float(text)
                 except ValueError:
-                    return None
+                    # Nit (sprint-5/08 review round 2) - a bare ``float()``
+                    # rejects a three-part semver-style string (``"2.3.1"``)
+                    # outright, so a consumer advertising a patch version
+                    # could never open the brand gate. Parse major.minor
+                    # from the first two dot-separated ints instead.
+                    parts = text.split(".")
+                    try:
+                        major = int(parts[0])
+                        minor = int(parts[1]) if len(parts) > 1 else 0
+                        version = float(f"{major}.{minor}")
+                    except (ValueError, IndexError):
+                        return None
             entities = body.get("entities")
             entities_list = [str(e) for e in entities] if isinstance(entities, list) else []
             return SorentoContractInfo(version=version, entities=entities_list)
@@ -1278,13 +1290,17 @@ def sorento_sink_from_connection(
     entity_type: str,
     company_code: Optional[str] = None,
     transport: Optional[httpx.BaseTransport] = None,
+    timeout: Optional[float] = None,
 ) -> SorentoSink:
     """Build a sink from a ``consumer`` connection's config + DECRYPTED creds.
 
     Credentials arrive already decrypted via ``app/secrets.py`` - this module
     never handles ciphertext. ``apiKey`` is refused if it is the legacy
     ``EXTERNAL_API_KEY`` shape is out of scope here; the operator supplies the
-    integration's own minted key.
+    integration's own minted key. ``timeout`` overrides the LIVE push setting
+    below - SF-1 (sprint-5/08 review round 2): a READ-path advisory probe
+    (``CompanyService.brand_contract_gate``) must never share the push
+    budget (300s, sized for a real ingest batch) with a plain task-view GET.
     """
     from app.config import settings  # read at CALL time (round 5), never cached
 
@@ -1300,8 +1316,11 @@ def sorento_sink_from_connection(
         company_code=company_code,
         # The LIVE setting (round 5), never the class default - an operator
         # whose Sorento endpoint needs a longer (or shorter) budget retunes
-        # it without a code change.
-        timeout=settings.autocount_sink_timeout_seconds,
+        # it without a code change. An explicit ``timeout`` (the read-path
+        # probe) always wins.
+        timeout=(
+            timeout if timeout is not None else settings.autocount_sink_timeout_seconds
+        ),
         # Records per ingest POST, read at CALL time like ``timeout`` (default
         # 200 since the 2026-09-06 prod 504; ceiling ``SORENTO_MAX_BATCH``).
         batch_size=settings.autocount_sink_batch_size,
