@@ -1709,10 +1709,16 @@ class EtlService:
 
         if not previewable:
             # A logging-sink company has no consumer to ask. Reported honestly
-            # rather than as a failure - and deliberately NOT stamped, so the
-            # activation gate stays shut (a DB task auto-pushes; activating one
-            # with nowhere to push would be a task that runs and delivers
-            # nothing, forever).
+            # rather than as a failure - and deliberately NOT stamped here.
+            # This only actually withholds `last_preview_at` from a SQL
+            # (`sql_db`) task: it has no other way to earn the stamp, so it
+            # stays un-activatable on a logging-sink company until Sorento is
+            # wired up. An `autocount_http` task earns the SAME stamp through
+            # the Source tab's own Test button (`preview_http`, above) - which
+            # runs the real HTTP call independently of any sink - so it IS
+            # activatable on a logging-sink company by design (runs then log
+            # only, deliver nothing, until a Sorento target is set - the
+            # Review & Activate tab warns of exactly this, non-blocking).
             payload: Dict[str, Any] = {
                 "previewable": False,
                 "sink": sink.name,

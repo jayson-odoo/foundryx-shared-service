@@ -68,8 +68,12 @@ function stagedParams(query: AutocountStagedQuery = {}): URLSearchParams {
 // TYPE contract, which declares those fields non-optional (the mock always
 // filled them) - `seeded.query.trim()` crashed with "Cannot read properties
 // of undefined" live-verifying AC-08-21 (Add entity -> Test -> Save on a
-// fresh HTTP task). Normalized HERE, ONCE, at the wire boundary, rather than
-// `?.`-guarding every read site across the component tree.
+// fresh HTTP task). Normalized HERE, at the wire boundary, rather than
+// `?.`-guarding every read site across the component tree - applied to
+// EVERY endpoint that returns or embeds an `AutocountEtlTask` (`getEtlTask`,
+// `updateEtlTask`, `activateEtlTask`, `pauseEtlTask`, `resumeEtlTask`,
+// `runEtlTaskNow`, `previewEtlTask` - round 5 fix extended it past the first
+// two, see `autocount-service.real.test.ts`).
 const SQL_SHAPE_DEFAULTS: Pick<
   AutocountEtlSourceConfig,
   | 'query'
@@ -311,31 +315,41 @@ export const realAutocountService: AutocountService = {
   previewEtlTask(companyId, entityType) {
     return apiFetch<AutocountEtlPreviewResult>(`${etlTaskPath(companyId, entityType)}/preview`, {
       method: 'POST',
-    });
+    }).then((result) => ({ ...result, task: normalizeEtlTask(result.task) }));
   },
 
+  // Round 5 fix (tester, live at d696daba) - `activate`/`pause`/`resume`/`run`
+  // answer the SAME real-backend shape as `getEtlTask` (an `autocount_http`
+  // task's `sourceConfig` omits the SQL-shape keys entirely), but only
+  // `getEtlTask`/`updateEtlTask` ran the response through `normalizeEtlTask`.
+  // `task-editor-view.tsx` adopts whatever these return via `apply()`
+  // straight into component state, so an un-normalized response crashed
+  // `task.sourceConfig.query.trim()` the first time a lifecycle action
+  // mutated an http task's status in place. Normalized HERE, at the SAME
+  // wire boundary as the loader, for every endpoint that returns or embeds
+  // an `AutocountEtlTask`.
   activateEtlTask(companyId, entityType) {
     return apiFetch<AutocountEtlTask>(`${etlTaskPath(companyId, entityType)}/activate`, {
       method: 'POST',
-    });
+    }).then(normalizeEtlTask);
   },
 
   pauseEtlTask(companyId, entityType) {
     return apiFetch<AutocountEtlTask>(`${etlTaskPath(companyId, entityType)}/pause`, {
       method: 'POST',
-    });
+    }).then(normalizeEtlTask);
   },
 
   resumeEtlTask(companyId, entityType) {
     return apiFetch<AutocountEtlTask>(`${etlTaskPath(companyId, entityType)}/resume`, {
       method: 'POST',
-    });
+    }).then(normalizeEtlTask);
   },
 
   runEtlTaskNow(companyId, entityType) {
     return apiFetch<AutocountEtlRunStart>(`${etlTaskPath(companyId, entityType)}/run`, {
       method: 'POST',
-    });
+    }).then((started) => ({ ...started, task: normalizeEtlTask(started.task) }));
   },
 
   listEtlRuns(companyId, entityType, query = {}) {

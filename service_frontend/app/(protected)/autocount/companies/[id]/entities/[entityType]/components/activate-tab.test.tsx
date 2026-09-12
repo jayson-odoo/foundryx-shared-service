@@ -382,6 +382,39 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
     expect(screen.queryByTestId('activate-dependency-warning')).not.toBeInTheDocument();
   });
 
+  // ── logging-sink delivery warning (sprint-5/08 review round 5) ────────────
+
+  it('warns, but does NOT block, a logging-sink company', () => {
+    render(
+      <ActivateTab
+        company={company({ sinkImpl: 'logging', sorentoCompanyCode: null })}
+        task={task({ lastPreviewAt: '2026-08-30T06:21:00Z' })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('activate-logging-sink-warning')).toHaveTextContent(
+      'Runs on this company are logged only - no records are delivered until a Sorento target is set.',
+    );
+    expect(screen.getByTestId('etl-activate')).toBeEnabled();
+  });
+
+  it('shows no logging-sink warning for a company pointed at Sorento', () => {
+    render(
+      <ActivateTab
+        company={company({ sinkImpl: 'sorento' })}
+        task={task({ lastPreviewAt: '2026-08-30T06:21:00Z' })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('activate-logging-sink-warning')).not.toBeInTheDocument();
+  });
+
   // ── brand consumer-contract gate (sprint-5/08, AC-08-33/AC-08-20 S5) ──────
 
   it('shows the contract-gate banner for a brand task on a 2.2 consumer, naming the real advertised version', () => {

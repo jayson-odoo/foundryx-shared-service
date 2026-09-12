@@ -14,6 +14,7 @@ import {
   httpPreviewBadgeText,
   incrementalFloorMinutes,
   isDocumentEntity,
+  loggingSinkWarning,
   mappingSourceColumns,
   pickerColumnOptions,
   productDependencyWarning,
@@ -417,6 +418,27 @@ describe('productDependencyWarning (plan 22 S4, AC-22-23)', () => {
         { entityType: 'unit_of_measure', etlStatus: 'active' },
       ]),
     ).toBeNull();
+  });
+});
+
+describe('loggingSinkWarning (sprint-5/08 review round 5 - foolproof-UI)', () => {
+  // Round 4 removed the `'sink'` prerequisite (the logging sink is a
+  // legitimate configured default, not an unfinished setup) - this
+  // NON-blocking warning restores the one signal a logging-sink company
+  // delivers nowhere, without re-blocking Activate.
+  const WARNING =
+    'Runs on this company are logged only - no records are delivered until a Sorento target is set.';
+
+  it('warns for a logging-sink company', () => {
+    expect(loggingSinkWarning({ sinkImpl: 'logging' })).toBe(WARNING);
+  });
+
+  it('is null for a sorento-sink company', () => {
+    expect(loggingSinkWarning({ sinkImpl: 'sorento' })).toBeNull();
+  });
+
+  it('is null while the company is still loading', () => {
+    expect(loggingSinkWarning(null)).toBeNull();
   });
 });
 

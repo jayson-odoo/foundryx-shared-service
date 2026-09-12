@@ -173,6 +173,24 @@ const PRODUCT_DEPENDENCIES: { entityType: string; label: string }[] = [
 ];
 
 /**
+ * Foolproof-UI (sprint-5/08 review round 5) - the ONE signal a logging-sink
+ * company delivers nowhere. Round 4 correctly dropped the `'sink'`
+ * PREREQUISITE (a logging sink is a legitimate configured default, not an
+ * unfinished setup - it must not block Activate/Run now), but that also
+ * deleted the operator's only heads-up that runs land in the log only. A
+ * NON-blocking warning, same shape as `productDependencyWarning`: it never
+ * withholds Activate, it only states the fact plainly. `null` once a
+ * company is still loading (nothing to warn about yet) or already points
+ * at Sorento.
+ */
+export function loggingSinkWarning(
+  company: Pick<AutocountCompany, 'sinkImpl'> | null,
+): string | null {
+  if (!company || company.sinkImpl !== 'logging') return null;
+  return 'Runs on this company are logged only - no records are delivered until a Sorento target is set.';
+}
+
+/**
  * Non-null only for a `product` task whose company has no ACTIVE category
  * and/or unit-of-measure task yet - such a product lands `retryable` on
  * Sorento until that dependency syncs (AC-22-23), which resolves on its own

@@ -25,7 +25,7 @@ import httpx
 import pytest
 
 from app.models import DEFAULT_TENANT_ID
-from app.models.background_job import BackgroundJob
+from app.models.background_job import JOB_DONE, BackgroundJob
 from app.models.connection import Connection
 from modules.autocount.canonical.masters import ENTITY_PRODUCT
 from modules.autocount.models import (
@@ -408,7 +408,6 @@ def test_activate_logging_sink_company_without_code_succeeds_and_runs(db, monkey
     )
     result = EtlService(db).run_task_now(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
     assert result["run_id"]
-    from app.models.background_job import JOB_DONE
 
     job = db.get(BackgroundJob, result["job_id"])
     assert job.status == JOB_DONE

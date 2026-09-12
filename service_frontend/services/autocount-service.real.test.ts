@@ -105,4 +105,60 @@ describe('realAutocountService - HTTP task sourceConfig normalization', () => {
     expect(task.sourceConfig.query).toBe('SELECT 1');
     expect(task.sourceConfig.keyColumns).toEqual(['id']);
   });
+
+  /**
+   * Round 5 defect (tester, live at d696daba): clicking Activate (once also
+   * Run now) on a real `autocount_http` task crashed the page with
+   * "Cannot read properties of undefined (reading 'trim')" the first time
+   * the task's status transitioned in place. Root cause: `activateEtlTask` /
+   * `pauseEtlTask` / `resumeEtlTask` / `runEtlTaskNow` / `previewEtlTask`
+   * answer the SAME real-backend shape as `getEtlTask` (SQL-shape keys
+   * omitted for an http task) but never ran it through `normalizeEtlTask` -
+   * only `getEtlTask`/`updateEtlTask` did. `task-editor-view.tsx` then adopts
+   * that un-normalized task via `apply()`, and `task.sourceConfig.query.trim()`
+   * throws.
+   */
+  it('activateEtlTask normalizes the response the same way as getEtlTask', async () => {
+    apiFetchMock.mockResolvedValue(realHttpTaskWire());
+    const task = await realAutocountService.activateEtlTask('company-1', 'product');
+    expect(task.sourceConfig.query).toBe('');
+    expect(task.sourceConfig.keyColumns).toEqual([]);
+    expect(task.sourceConfig.path).toBe('/itembypage');
+  });
+
+  it('pauseEtlTask normalizes the response the same way as getEtlTask', async () => {
+    apiFetchMock.mockResolvedValue(realHttpTaskWire());
+    const task = await realAutocountService.pauseEtlTask('company-1', 'product');
+    expect(task.sourceConfig.query).toBe('');
+    expect(task.sourceConfig.watermarkColumn).toBeNull();
+  });
+
+  it('resumeEtlTask normalizes the response the same way as getEtlTask', async () => {
+    apiFetchMock.mockResolvedValue(realHttpTaskWire());
+    const task = await realAutocountService.resumeEtlTask('company-1', 'product');
+    expect(task.sourceConfig.query).toBe('');
+    expect(task.sourceConfig.comparedColumns).toEqual([]);
+  });
+
+  it('runEtlTaskNow normalizes the embedded task the same way as getEtlTask', async () => {
+    apiFetchMock.mockResolvedValue({
+      runId: 'run-1',
+      jobId: 'job-1',
+      status: 'done',
+      task: realHttpTaskWire(),
+    });
+    const started = await realAutocountService.runEtlTaskNow('company-1', 'product');
+    expect(started.task.sourceConfig.query).toBe('');
+    expect(started.task.sourceConfig.fromDate).toBeNull();
+  });
+
+  it('previewEtlTask normalizes the embedded task the same way as getEtlTask', async () => {
+    apiFetchMock.mockResolvedValue({
+      task: realHttpTaskWire(),
+      preview: { columns: [], rows: [], truncated: false },
+    });
+    const result = await realAutocountService.previewEtlTask('company-1', 'product');
+    expect(result.task.sourceConfig.query).toBe('');
+    expect(result.task.sourceConfig.docDateColumn).toBeNull();
+  });
 });
