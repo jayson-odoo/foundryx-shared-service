@@ -434,6 +434,8 @@ def test_get_etl_task_returns_draft_defaults_for_a_configured_entity(client, ses
         # Continuation state (plan sprint-5/03, AC-03-21) - NULL when no
         # paged pass is open.
         "initialLoad": None,
+        # Brand-contract read-path advisory probe (S4) - no brand config yet.
+        "brandContractGate": None,
     }
 
 

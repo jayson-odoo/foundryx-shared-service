@@ -96,7 +96,7 @@ export function todayDateString(): string {
 // ── plan 22 S2 - activation gate, anchor errors, run cost ────────────────────
 
 /** Why Activate / Run preview is withheld (foolproof-UI: stated, never silent). */
-export type EtlPrerequisiteKind = 'company' | 'sink' | 'companyCode' | 'query' | 'keys' | 'unsaved';
+export type EtlPrerequisiteKind = 'company' | 'companyCode' | 'query' | 'keys' | 'unsaved';
 
 export interface EtlPrerequisite {
   kind: EtlPrerequisiteKind;
@@ -117,9 +117,15 @@ export function activatePrerequisites(input: {
   const out: EtlPrerequisite[] = [];
   if (!company) {
     out.push({ kind: 'company', message: 'Company details are still loading.' });
-  } else if (company.sinkImpl !== 'sorento') {
-    out.push({ kind: 'sink', message: 'This company has no delivery target (logging only).' });
-  } else if (!(company.sorentoCompanyCode ?? '').trim()) {
+  } else if (company.sinkImpl === 'sorento' && !(company.sorentoCompanyCode ?? '').trim()) {
+    // sprint-5/08 review round 4 - the logging sink is a legitimate
+    // configured default (`CompanyService.sink_for_company`), not an
+    // unfinished setup: it needs no company code (`set_sink_target` clears
+    // it on that switch) and the server anchor gate
+    // (`EtlService.activate_task`) only ever requires one for the Sorento
+    // sink. Blocking Activate here for a logging-sink company made the
+    // AC's own "Activate -> Run now with the logging sink" precondition
+    // unreachable through the real UI.
     out.push({ kind: 'companyCode', message: 'This company has no Sorento company code.' });
   }
   // sprint-5/08 D13 - an `autocount_http` task never has a `query`/

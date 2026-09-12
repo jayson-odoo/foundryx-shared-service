@@ -214,7 +214,7 @@ export function ActivateTab({
           </AlertIcon>
           <AlertTitle>
             {p.message}
-            {(p.kind === 'sink' || p.kind === 'companyCode') && (
+            {p.kind === 'companyCode' && (
               <>
                 {' '}
                 <Link href={acCompanyHref(task.companyId)} className="underline">

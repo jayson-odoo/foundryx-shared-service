@@ -61,6 +61,7 @@ from ..models import (
     ETL_STATUS_DRAFT,
     ETL_STATUS_PAUSED,
     RUN_MODE_MANUAL,
+    SINK_IMPL_SORENTO,
     SOURCE_IMPL_AUTOCOUNT_HTTP,
     SOURCE_IMPL_SQL_DB,
     SYNC_MODE_SCHEDULED_REVIEW,
@@ -2067,7 +2068,18 @@ class EtlService:
                     "confirm which fields to watch for changes "
                     "before activating."
                 )
-        if not (company.sorento_company_code or "").strip():
+        #     !!  ONLY ANCHOR-GATE A SORENTO-BOUND COMPANY  !!
+        # (sprint-5/08 review round 4.) ``set_sink_target`` already REQUIRES
+        # (and ``sink_for_company`` already ANCHORS on) ``sorento_company_code``
+        # for ``sink_impl == 'sorento'``, and clears it whenever the company
+        # switches to the logging sink. Gating on the bare code here for
+        # EVERY company made "Activate -> Run now" on a logging-sink company
+        # (the lane-safe verification path, and the AC's own precondition)
+        # permanently unreachable: 409 forever, with no code to set because
+        # the logging sink never anchors on one.
+        if company.sink_impl == SINK_IMPL_SORENTO and not (
+            company.sorento_company_code or ""
+        ).strip():
             raise EtlStateError(
                 "Set the Sorento company code on this company before activating - "
                 "every push is anchored to it."

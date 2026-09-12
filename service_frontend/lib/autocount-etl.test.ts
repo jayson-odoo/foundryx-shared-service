@@ -185,13 +185,13 @@ describe('activatePrerequisites (foolproof gate, AC-22-18)', () => {
     expect(activatePrerequisites({ company: company(), task: task(), configDirty: false })).toEqual([]);
   });
 
-  it('withholds when the company delivers nowhere (logging sink)', () => {
+  it('is clear for a logging-sink company (a legitimate configured default, not an unfinished setup)', () => {
     const reasons = activatePrerequisites({
       company: company({ sinkImpl: 'logging', sinkConnectionId: null, sorentoCompanyCode: null }),
       task: task(),
       configDirty: false,
     });
-    expect(reasons.map((r) => r.kind)).toEqual(['sink']);
+    expect(reasons).toEqual([]);
   });
 
   it('withholds when the Sorento company code is blank', () => {

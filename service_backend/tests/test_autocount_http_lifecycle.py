@@ -348,6 +348,93 @@ def test_activate_http_task_refused_409_when_never_previewed_result_columns_none
     assert "Test the endpoint again" in str(exc.value)
 
 
+# ── sprint-5/08 review round 4 - the logging sink is a legitimate configured
+# default (`CompanyService.sink_for_company`), not an unfinished setup: it
+# needs no Sorento company code (`set_sink_target` clears it on that switch),
+# so `activate_task` must only anchor-gate a company whose EFFECTIVE sink is
+# Sorento. AC-08-37's own precondition ("each task Test -> Activate -> Run
+# now with the LOGGING sink") was otherwise unreachable through the real
+# API/UI: a permanent 409 with no code to set. ─────────────────────────────
+
+
+def test_activate_logging_sink_company_without_code_succeeds_and_runs(db, monkeypatch):
+    """Test (the Source tab's own ``/autocount/http/preview`` seam) ->
+    Activate -> Run now, all against a company that never called
+    ``set_sink_target`` at all - ``sink_impl`` stays the model's own
+    ``'logging'`` default and ``sorento_company_code`` is blank, exactly the
+    lane-safe verification path AC-08-37 exercises."""
+    import modules.autocount.http_source.source as http_source_module
+    from modules.autocount.http_source.client import HttpApiClient
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    company.sorento_company_code = None
+    db.commit()
+    assert company.sink_impl == "logging"
+
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT,
+        _http_raw(connectionId=conn.id, path="/itembypage", keyFields=["ItemCode"]),
+    )
+
+    # The Source tab's Test button - a real call through `preview_http`,
+    # never `_stamp_previewed`, proving the reachable path end to end.
+    preview_transport = _transport(
+        {"TotalCount": 1, "Page": 1, "PageSize": 50, "TotalPages": 1,
+         "Data": [{"ItemCode": "A1", "LastModified": "2026-08-01T09:00:00"}]}
+    )
+    EtlService(db).preview_http(
+        DEFAULT_TENANT_ID, conn.id, "/itembypage",
+        company_id=company.id, entity_type=ENTITY_PRODUCT, transport=preview_transport,
+    )
+
+    view = EtlService(db).activate_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    assert view.etl_status == ETL_STATUS_ACTIVE
+
+    # Run now - the sweep's own extraction transport is stubbed the same way
+    # the sibling lifecycle tests below stub it, so the run touches no socket.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"TotalCount": 1, "Page": 1, "PageSize": 1000, "TotalPages": 1,
+                  "Data": [{"ItemCode": "A1", "LastModified": "2026-08-01T09:00:00", "IsActive": "T"}]},
+        )
+
+    run_transport = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        http_source_module,
+        "HttpApiClient",
+        lambda base_url, **kw: HttpApiClient(base_url, transport=run_transport),
+    )
+    result = EtlService(db).run_task_now(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    assert result["run_id"]
+    from app.models.background_job import JOB_DONE
+
+    job = db.get(BackgroundJob, result["job_id"])
+    assert job.status == JOB_DONE
+
+
+def test_activate_sorento_sink_company_without_code_still_409(db):
+    """The anchor gate stays shut for the sink that actually needs it - only
+    the LOGGING default was ever the false positive."""
+    from modules.autocount.services.etl_service import EtlStateError
+    from modules.autocount.models import SINK_IMPL_SORENTO
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    company.sink_impl = SINK_IMPL_SORENTO
+    company.sorento_company_code = None
+    db.commit()
+
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, _http_raw(connectionId=conn.id)
+    )
+    _stamp_previewed(db, company.id)
+    with pytest.raises(EtlStateError) as exc:
+        EtlService(db).activate_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    assert "company code" in str(exc.value).lower()
+
+
 def test_extract_and_map_dispatches_http_api_source_never_sql_engine(db, monkeypatch):
     """B3 - ``preview_task``'s dry-run (``_extract_and_map``) used to
     unconditionally build a ``SqlDbSource``, so an HTTP task's Review &
