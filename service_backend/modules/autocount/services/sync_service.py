@@ -87,6 +87,7 @@ from ..sinks import EntitySink, WriteResult
 from ..sinks_sorento import (
     SinkAnchorError,
     SorentoSinkError,
+    codes_from_refs,
     sorento_supported_entities_label,
     sorento_supports_entity,
     describe_consumer_failure,
@@ -964,14 +965,38 @@ class SyncService:
             beat()
 
         refs = [row.source_ref for row in pending]
+        #     !!  AC-10-72 - `codes` ON PRODUCT DELETIONS, GUARDED + FAIL-SAFE.  !!
+        # At most ONE contract probe for this WHOLE call (never per chunk):
+        # only for `product`, only when there is at least one delete to
+        # send, only when the task's own key fields are exactly single-key
+        # ItemCode (``codes_from_refs``'s own guard covers the ref-shape
+        # half). A missing Sorento connection, a probe failure, or a
+        # confirmed version below contract 2.4 all fall through to
+        # ``codes=None`` - optional on the wire, so omitting it always
+        # delivers exactly today's body.
+        codes: Optional[Dict[str, str]] = None
+        if entity_type == ENTITY_PRODUCT and refs:
+            config = self.configs.get(tenant_id, company_id, entity_type)
+            key_fields = (
+                (config.source_config or {}).get("keyFields")
+                or (config.source_config or {}).get("keyColumns")
+                or []
+            ) if config is not None else []
+            key_fields = tuple(str(c) for c in key_fields if str(c).strip())
+            if key_fields == ("ItemCode",):
+                company = self.companies.get(tenant_id, company_id)
+                if self.companies.product_delete_codes_gate(tenant_id, company):
+                    codes = codes_from_refs(refs, key_fields=key_fields) or None
         try:
             if hasattr(sink, "delete_batch"):
-                kwargs: Dict[str, Any] = {}
-                if "on_chunk" in inspect.signature(sink.delete_batch).parameters:
-                    kwargs["on_chunk"] = apply_chunk
-                    sink.delete_batch(refs, **kwargs)
+                params = inspect.signature(sink.delete_batch).parameters
+                extra_kwargs: Dict[str, Any] = {}
+                if codes and "codes" in params:
+                    extra_kwargs["codes"] = codes
+                if "on_chunk" in params:
+                    sink.delete_batch(refs, on_chunk=apply_chunk, **extra_kwargs)
                 else:
-                    result = sink.delete_batch(refs)
+                    result = sink.delete_batch(refs, **extra_kwargs)
                     apply_chunk(refs, (result or {}).get("records") or [], None)
             # else: no delete support on this sink at all - every ref stays
             # STAGED, same posture as a `retryable` upsert.

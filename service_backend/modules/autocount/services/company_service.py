@@ -955,6 +955,35 @@ class CompanyService:
         self._contract_gate_cache[cache_key] = result
         return result
 
+    def product_delete_codes_gate(self, tenant_id: str, company: AcCompany) -> bool:
+        """sprint-5/10 (AC-10-72) - whether the consumer's contract CONFIRMS
+        ``>= PRODUCT_CODE_WINS_CONTRACT_VERSION``, for deciding whether a
+        product delete batch may carry ``codes``. Deliberately conservative
+        and NOT the same convention as ``contract_gate`` above: no Sorento
+        connection, a probe failure, or an unconfirmed/below version ALL
+        answer ``False`` - ``codes`` is optional on the wire (contract 2.4),
+        so omitting it is always safe, guessing it is not. Uses the SAME
+        injectable transport seam ``contract_gate``/``brand_contract_gate``
+        do (``sorento_sink_from_connection``, module-level so a test can
+        monkeypatch it), never a second probe mechanism.
+        """
+        if company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id:
+            return False
+        try:
+            conn = self._consumer_connection(tenant_id, company.sink_connection_id)
+            sink = sorento_sink_from_connection(
+                conn.config_json or {},
+                self.credentials(conn),
+                entity_type=ENTITY_PRODUCT,
+                company_code=company.sorento_company_code,
+                timeout=BRAND_CONTRACT_GATE_PROBE_TIMEOUT_SECONDS,
+            )
+            contract = sink.fetch_contract_detail()
+        except Exception:  # noqa: BLE001 - conservative: unprovable = False
+            return False
+        version = contract.version if contract else None
+        return version is not None and version >= PRODUCT_CODE_WINS_CONTRACT_VERSION
+
     def set_sink_target(
         self,
         tenant_id: str,
