@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { AutocountEtlSourceConfig, AutocountEtlTask } from '@/types/autocount';
 import { ScheduleTab } from './schedule-tab';
@@ -60,6 +60,8 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         onChange={vi.fn()}
         task={task()}
         fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
       />,
     );
     expect(screen.getByTestId('etl-incremental-minutes')).toHaveAttribute('min', '15');
@@ -72,6 +74,8 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         onChange={vi.fn()}
         task={task()}
         fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
       />,
     );
     expect(screen.getByTestId('etl-incremental-minutes')).toHaveAttribute('min', '1');
@@ -86,6 +90,8 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         onChange={vi.fn()}
         task={task()}
         fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
       />,
     );
     expect(screen.getByTestId('etl-incremental-error')).toHaveTextContent(/at least 15 minutes/i);
@@ -100,6 +106,8 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         onChange={vi.fn()}
         task={task()}
         fieldErrors={{ incrementalMinutes: 'Server-side rejection.' }}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
       />,
     );
     expect(screen.getByTestId('etl-incremental-error')).toHaveTextContent('Server-side rejection.');
@@ -114,6 +122,8 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         onChange={vi.fn()}
         task={task()}
         fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
       />,
     );
     expect(screen.getByTestId('etl-reconcile-at')).toBeInTheDocument();
@@ -132,6 +142,8 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         onChange={vi.fn()}
         task={task()}
         fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
       />,
     );
     expect(screen.getByTestId('etl-reconcile-hours')).toBeInTheDocument();
@@ -148,6 +160,8 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         onChange={vi.fn()}
         task={task()}
         fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
       />,
     );
     expect(screen.queryByTestId('etl-incremental-minutes')).not.toBeInTheDocument();
@@ -165,6 +179,8 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         onChange={vi.fn()}
         task={task({ etlStatus: 'paused', nextIncrementalAt: '2026-08-30T06:15:00Z' })}
         fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
       />,
     );
     expect(screen.queryByTestId('etl-next-incremental-badge')).not.toBeInTheDocument();
@@ -181,6 +197,8 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
           nextReconcileAt: '2026-08-31T02:00:00Z',
         })}
         fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
       />,
     );
     expect(screen.getByTestId('etl-next-incremental-badge')).toHaveTextContent('2026-08-30T06:15:00Z');
@@ -196,6 +214,8 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         onChange={vi.fn()}
         task={task()}
         fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
       />,
     );
     expect(screen.getByTestId('etl-delete-guard-threshold')).toHaveTextContent('20% of known rows (minimum 50)');
@@ -209,8 +229,82 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         onChange={vi.fn()}
         task={task({ entityType: 'sales_order' })}
         fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
       />,
     );
     expect(screen.getByTestId('etl-schedule-from-date')).toHaveTextContent('2026-08-01');
+  });
+});
+
+describe('ScheduleTab delivery toggle (sprint-5/10, AC-10-16)', () => {
+  it('Pull hides the incremental/reconcile cadence controls entirely, keeping their values in config', () => {
+    render(
+      <ScheduleTab
+        editing
+        entityType="product"
+        config={config({ incrementalMinutes: 42 })}
+        onChange={vi.fn()}
+        task={task()}
+        fieldErrors={{}}
+        deliveryMode="pull"
+        onDeliveryModeChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('etl-incremental-minutes')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('etl-reconcile-at')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('etl-delete-guard-threshold')).not.toBeInTheDocument();
+  });
+
+  it('Push restores the cadence controls unchanged', () => {
+    render(
+      <ScheduleTab
+        editing
+        entityType="product"
+        config={config({ incrementalMinutes: 42 })}
+        onChange={vi.fn()}
+        task={task()}
+        fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('etl-incremental-minutes')).toHaveValue(42);
+  });
+
+  it('the toggle calls onDeliveryModeChange', () => {
+    const onDeliveryModeChange = vi.fn();
+    render(
+      <ScheduleTab
+        editing
+        entityType="product"
+        config={config()}
+        onChange={vi.fn()}
+        task={task()}
+        fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={onDeliveryModeChange}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('etl-delivery-pull'));
+    expect(onDeliveryModeChange).toHaveBeenCalledWith('pull');
+  });
+
+  it('a pull-only entity (push gate shut) shows a read-only badge, no toggle at all', () => {
+    render(
+      <ScheduleTab
+        editing
+        entityType="stock_balance"
+        config={config()}
+        onChange={vi.fn()}
+        task={task({ entityType: 'stock_balance' })}
+        fieldErrors={{}}
+        deliveryMode="pull"
+        onDeliveryModeChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('etl-delivery-push')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('etl-delivery-pull')).not.toBeInTheDocument();
+    expect(screen.getByText('Pull on request')).toBeInTheDocument();
   });
 });

@@ -112,6 +112,8 @@ function renderSourceTab(over: {
       lockedApiConnection={null}
       httpPreview={{ state: { status: 'idle' }, run: vi.fn(), fieldErrors: {}, reset: vi.fn() }}
       companyId="company-1"
+      columnsProbe={{ columnsByKey: {}, loadingKeys: {}, errorsByKey: {}, run: vi.fn() }}
+      onCombineFormulaTest={passThroughServer}
     />,
   );
   return { onChange, onUsePreset };
@@ -435,6 +437,8 @@ function renderApiBranch(over: {
       lockedApiConnection={over.lockedApiConnection ?? null}
       httpPreview={over.httpPreview ?? idleHttpPreview()}
       companyId="company-1"
+      columnsProbe={{ columnsByKey: {}, loadingKeys: {}, errorsByKey: {}, run: vi.fn() }}
+      onCombineFormulaTest={passThroughServer}
     />,
   );
   return { onChange, onSourceKindChange };

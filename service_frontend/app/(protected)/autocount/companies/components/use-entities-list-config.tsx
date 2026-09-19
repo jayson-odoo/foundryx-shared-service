@@ -16,11 +16,13 @@ import { ClampedText } from '@/components/platform/clamped-text';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { embeddedListConfig } from '@/components/platform/resource-list/embedded-list-config';
 import type { ResourceAction, ResourceListConfig } from '@/components/platform/resource-list';
+import { StatusBadge } from '@/components/platform/status-badge';
 import { useDatetime } from '@/hooks/use-datetime';
-import type { AutocountEntityConfig, AutocountSourceKind } from '@/types/autocount';
+import type { AutocountDeliveryMode, AutocountEntityConfig, AutocountSourceKind } from '@/types/autocount';
 import type { ListQuery, ListResult } from '@/types/resource';
 import {
   AC_COMPANIES_MANAGE,
+  AC_DELIVERY_MODE_REGISTRY,
   AC_SYNC_RUN,
   entityLabel,
   sourceImplLabel,
@@ -324,6 +326,24 @@ export function useAutocountEntitiesListConfig({
             </div>
           );
         },
+        size: 150,
+        enableSorting: false,
+      },
+      {
+        // sprint-5/10 (AC-10-17) - Push vs Pull on request, per entity.
+        id: 'deliveryMode',
+        accessorFn: (row) => row.deliveryMode ?? 'push',
+        meta: { headerTitle: 'Delivery' },
+        header: ({ column }) => <DataGridColumnHeader title="Delivery" column={column} />,
+        cell: ({ row }) => (
+          <div className="flex items-start">
+            <StatusBadge
+              status={(row.original.deliveryMode ?? 'push') as AutocountDeliveryMode}
+              registry={AC_DELIVERY_MODE_REGISTRY}
+              size="sm"
+            />
+          </div>
+        ),
         size: 150,
         enableSorting: false,
       },

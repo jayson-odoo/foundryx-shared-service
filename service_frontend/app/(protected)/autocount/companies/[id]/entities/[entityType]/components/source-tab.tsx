@@ -21,6 +21,7 @@ import type {
   UseHttpPreviewResult,
   UseSqlPreviewResult,
 } from '@/hooks/use-autocount-etl';
+import type { UsePreviewColumnsMapResult } from '@/hooks/use-autocount-pull';
 import {
   AC_API_CAPABLE_ENTITY_TYPES,
   entityLabel,
@@ -42,6 +43,8 @@ import type {
   AutocountMappingPreset,
   AutocountSqlConnection,
 } from '@/types/autocount';
+import { CombineEditor } from './combine-editor';
+import { LookupsEditor } from './lookups-editor';
 
 /**
  * The company connection a DB company's task is locked to (AC-01-19): shown
@@ -138,6 +141,14 @@ export interface SourceTabProps {
     target: { connectionId: string; path: string },
     task?: AutocountEtlTask,
   ) => void;
+  /**
+   * The Lookups editor's own per-row remote-column probe (sprint-5/10,
+   * AC-10-05/09) - owned by the caller so it survives a Source-tab re-render
+   * (it tracks state per lookup row).
+   */
+  columnsProbe: UsePreviewColumnsMapResult;
+  /** Server-authoritative formula eval for the Combine editor's builder. */
+  onCombineFormulaTest: (formula: string, value: unknown) => Promise<AutocountFormulaTestResult>;
 }
 
 const NO_WATERMARK = '';
@@ -173,6 +184,8 @@ export function SourceTab({
   httpPreview,
   companyId,
   onHttpPreviewSuccess,
+  columnsProbe,
+  onCombineFormulaTest,
 }: SourceTabProps) {
   const isDocument = isDocumentEntity(entityType);
   const connection = connections.find((c) => c.id === config.connectionId) ?? null;
@@ -335,6 +348,14 @@ export function SourceTab({
     [httpPreviewColumns, httpSavedPicks],
   );
   const httpKeyFields = useMemo(() => config.keyFields ?? [], [config.keyFields]);
+  // sprint-5/10 (AC-10-01, D23) - a lookup alias may never be a key or
+  // watermark field (a miss leaves it absent); it IS offered in the
+  // compared-fields picker and the Mapping source picker (which reads
+  // `httpPreviewColumns` directly, unaffected by this exclusion).
+  const lookupAliases = useMemo(
+    () => new Set((config.lookups ?? []).flatMap((l) => l.fields.map((f) => f.as).filter(Boolean))),
+    [config.lookups],
+  );
   const httpComparedOptions = useMemo(
     () => httpColumnOptions.filter((o) => !httpKeyFields.includes(o.value)),
     [httpColumnOptions, httpKeyFields],
@@ -342,16 +363,20 @@ export function SourceTab({
   const httpKeyOptions = useMemo(
     () =>
       httpColumnOptions.filter(
-        (o) => o.value !== config.watermarkField || httpKeyFields.includes(o.value),
+        (o) =>
+          !lookupAliases.has(o.value) &&
+          (o.value !== config.watermarkField || httpKeyFields.includes(o.value)),
       ),
-    [httpColumnOptions, httpKeyFields, config.watermarkField],
+    [httpColumnOptions, httpKeyFields, config.watermarkField, lookupAliases],
   );
   const httpWatermarkOptions = useMemo(() => {
     const base = httpColumnOptions.filter(
-      (o) => !httpKeyFields.includes(o.value) || o.value === config.watermarkField,
+      (o) =>
+        !lookupAliases.has(o.value) &&
+        (!httpKeyFields.includes(o.value) || o.value === config.watermarkField),
     );
     return [{ label: 'None', value: NO_WATERMARK }, ...base];
-  }, [httpColumnOptions, httpKeyFields, config.watermarkField]);
+  }, [httpColumnOptions, httpKeyFields, config.watermarkField, lookupAliases]);
   const httpPickersEnabled = editing && httpColumnOptions.length > 0;
 
   const canTestHttp =
@@ -373,11 +398,21 @@ export function SourceTab({
       httpPreview.run(config.connectionId, config.path, config.distinctOf ?? undefined, {
         companyId,
         entityType,
+        lookups: config.lookups,
       }),
     ).then((result) => {
       if (result) onHttpPreviewSuccess?.(target, typeof result === 'object' ? result.task : undefined);
     });
-  }, [companyId, config.connectionId, config.distinctOf, config.path, entityType, httpPreview, onHttpPreviewSuccess]);
+  }, [
+    companyId,
+    config.connectionId,
+    config.distinctOf,
+    config.lookups,
+    config.path,
+    entityType,
+    httpPreview,
+    onHttpPreviewSuccess,
+  ]);
 
   const onApiConnectionChange = useCallback(
     (id: string) => {
@@ -786,6 +821,32 @@ export function SourceTab({
                   <ColumnChips values={config.distinctOf} empty="-" />
                 </div>
               )}
+
+              {/* Lookups + Combine rows (sprint-5/10, R9/R11, AC-10-09/82) -
+                  operator-configurable cross-endpoint joins and row
+                  collapsing, ANY API task. Below the path, above the
+                  key/watermark/compared pickers. */}
+              <LookupsEditor
+                editing={editing}
+                lookups={config.lookups ?? []}
+                onChange={(lookups) => onChange({ lookups })}
+                sourceColumns={httpPreviewColumns}
+                connectionId={config.connectionId}
+                columnsProbe={columnsProbe}
+                lookupResults={httpPreview.state.status === 'success' ? httpPreview.state.preview.lookups : []}
+              />
+
+              <CombineEditor
+                editing={editing}
+                combine={config.combine}
+                onChange={(combine) => onChange({ combine })}
+                columnOptions={[
+                  ...httpPreviewColumns,
+                  ...(config.lookups ?? []).flatMap((l) => l.fields.map((f) => f.as)),
+                ]}
+                sampleRows={httpPreview.state.status === 'success' ? httpPreview.state.preview.rows : []}
+                onServerTest={onCombineFormulaTest}
+              />
 
               <SqlPreviewGrid
                 state={

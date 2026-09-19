@@ -38,6 +38,7 @@ import {
   useSqlPreview,
 } from '@/hooks/use-autocount-etl';
 import { useAutocountMapping, useAutocountMappingPresets } from '@/hooks/use-autocount-mapping';
+import { usePreviewColumnsMap, useSetDeliveryMode } from '@/hooks/use-autocount-pull';
 import { HTTP_PRESETS, isDocumentEntity, mappingSourceColumns } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
@@ -99,6 +100,19 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   const lifecycle = useEtlTaskLifecycle(companyId, entityType, apply);
   const runsConfig = useAutocountRunsListConfig(companyId, { variant: 'task', entityType });
   const [runsKey, setRunsKey] = useState(0);
+  const columnsProbe = usePreviewColumnsMap();
+  const deliveryModeSetter = useSetDeliveryMode();
+
+  // Delivery mode (sprint-5/10, AC-10-11/16) - a STANDALONE choice from the
+  // source config (its own PUT, never touching sourceConfig/mapping/
+  // resultColumns), but saved alongside the rest through the ONE Save button
+  // (the shell's single dirty-guard) - the same pattern the `autocount_read`
+  // branch already uses for a call that isn't `save()` either.
+  const [deliveryMode, setDeliveryMode] = useState<'push' | 'pull'>('push');
+  useEffect(() => {
+    setDeliveryMode(task?.deliveryMode ?? 'push');
+  }, [task?.deliveryMode]);
+  const deliveryModeDirty = deliveryMode !== (task?.deliveryMode ?? 'push');
 
   const [config, setConfig] = useState<AutocountEtlSourceConfig | null>(null);
   // The task's Source (sprint-5/08, D13) - API | Database, the ONE place the
@@ -206,7 +220,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
 
   const configDirty = useMemo(() => JSON.stringify(config) !== JSON.stringify(baseline), [config, baseline]);
   const sourceKindDirty = sourceKind !== baselineSourceKind;
-  const dirty = configDirty || sourceKindDirty || draft.dirty;
+  const dirty = configDirty || sourceKindDirty || draft.dirty || deliveryModeDirty;
 
   const onChange = useCallback((patch: Partial<AutocountEtlSourceConfig>) => {
     setConfig((prev) => (prev ? { ...prev, ...patch } : prev));
@@ -365,13 +379,36 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       const ok = await mapping.save(rows, lineRows);
       if (!ok) return false;
     }
+    if (deliveryModeDirty) {
+      const saved = await deliveryModeSetter.save(companyId, entityType, deliveryMode);
+      if (!saved) {
+        toast.error(deliveryModeSetter.error || 'The delivery mode could not be saved.');
+        return false;
+      }
+      reload();
+    }
     toast.success('Task saved.');
     return true;
-  }, [companyId, config, configDirty, derivedImpl, draft, entityType, mapping, reload, save, sourceKindDirty]);
+  }, [
+    companyId,
+    config,
+    configDirty,
+    deliveryMode,
+    deliveryModeDirty,
+    deliveryModeSetter,
+    derivedImpl,
+    draft,
+    entityType,
+    mapping,
+    reload,
+    save,
+    sourceKindDirty,
+  ]);
 
   const onCancel = useCallback(() => {
     setConfig(baseline ? { ...baseline } : null);
     setSourceKind(baselineSourceKind);
+    setDeliveryMode(task?.deliveryMode ?? 'push');
     // B1 round 8 - re-derive the previewed pair from the baseline task rather
     // than leaving it pointed at whatever was Tested during the discarded
     // edit. Without this, Save on the SAVED, already-proved config stays
@@ -615,6 +652,8 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 httpPreview={httpPreview}
                 companyId={companyId}
                 onHttpPreviewSuccess={onHttpPreviewSuccess}
+                columnsProbe={columnsProbe}
+                onCombineFormulaTest={mapping.testFormula}
               />
             </div>
           ),
@@ -673,6 +712,8 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 onChange={onChange}
                 task={task}
                 fieldErrors={fieldErrors}
+                deliveryMode={deliveryMode}
+                onDeliveryModeChange={setDeliveryMode}
               />
             </div>
           ),
@@ -746,8 +787,10 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     apiConnections.isLoading,
     can,
     columnTypes,
+    columnsProbe,
     companyId,
     config,
+    deliveryMode,
     derivedImpl,
     detail,
     dirty,
