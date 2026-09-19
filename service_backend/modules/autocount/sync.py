@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -58,6 +59,7 @@ from .canonical.grn import (
 )
 from .canonical.masters import (
     ENTITY_CUSTOMER,
+    ENTITY_PRODUCT,
     ENTITY_SUPPLIER,
     VENDOR_ENTITY_CUSTOMER,
     VENDOR_ENTITY_SUPPLIER,
@@ -66,6 +68,7 @@ from .canonical.masters import (
 from .client import AutoCountError
 from .http_source.errors import HttpSourceError
 from .mapping import (
+    SCOPE_HEADER,
     UNQUALIFIED_REF_ENTITIES,
     MappedDocument,
     MappingEngine,
@@ -73,12 +76,15 @@ from .mapping import (
     flat_profile,
 )
 from .models import (
+    DELIVERY_MODE_PULL,
+    DELIVERY_MODE_PUSH,
     ETL_STATUS_ACTIVE,
     RUN_ABORTED,
     RUN_FAILED,
     RUN_MODE_INCREMENTAL,
     RUN_MODE_MANUAL,
     RUN_MODE_RECONCILE,
+    RUN_MODE_SNAPSHOT,
     RUN_SUCCESS,
     SOURCE_IMPL_AUTOCOUNT_HTTP,
     SOURCE_IMPL_SQL_DB,
@@ -334,6 +340,24 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             job,
             status=JOB_FAILED,
             error=f"'{entity_type}' is not configured for sync on this company.",
+        )
+        return
+    #     !!  A ``pull`` TASK NEVER RUNS THIS JOB AT ALL (AC-10-12/13).  !!
+    # It never reaches the sweep (``scheduler.py``'s own filter) and this is
+    # the PUSH job - fetching/staging here for a task that is never reviewed
+    # through ``ac_staged_record`` in the first place would be pure churn,
+    # and staging it would risk a LATER accidental auto-push the moment the
+    # mode flips back. Its own extraction runs through the dedicated
+    # ``autocount_pull_snapshot`` job instead.
+    if config.delivery_mode == DELIVERY_MODE_PULL:
+        service.finish(
+            job,
+            status=JOB_DONE,
+            result={
+                "companyId": company_id,
+                "entityType": entity_type,
+                "skipped": "pull_delivery_mode",
+            },
         )
         return
 
@@ -810,6 +834,10 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     if (
         config.source_impl in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)
         and config.etl_status == ETL_STATUS_ACTIVE
+        # sprint-5/10 (AC-10-12) - a ``pull`` task never auto-pushes: it is
+        # extracted and staged like any other run, but delivery waits for a
+        # consumer/operator snapshot request instead.
+        and config.delivery_mode == DELIVERY_MODE_PUSH
     ):
         from .services.sync_service import SyncService
 
@@ -1873,7 +1901,9 @@ def _run_paged_sql_db(
     # ── auto-push (plan 22 §2.6, unchanged contract) ─────────────────────────
     pushed_count = 0
     push_summary: Optional[Dict[str, Any]] = None
-    if config.etl_status == ETL_STATUS_ACTIVE:
+    # sprint-5/10 (AC-10-12) - same delivery-mode gate as the plain path
+    # above: a ``pull`` task is extracted and staged, never auto-pushed.
+    if config.etl_status == ETL_STATUS_ACTIVE and config.delivery_mode == DELIVERY_MODE_PUSH:
         from .services.sync_service import SyncService
 
         push_summary = SyncService(db).auto_push(
@@ -2221,6 +2251,314 @@ def _abort(db: Session, service: JobService, run: AcSyncRun, started: float) -> 
     run.duration_ms = int((time.monotonic() - started) * 1000)
     db.commit()
     logger.info("autocount sync aborted; watermark held.")
+
+
+# ── pull snapshot build job (sprint-5/10 §2.4, AC-10-20..26/46/62/63) ────────
+# The registered ``background_jobs.type`` for a human-invoked pull build.
+AUTOCOUNT_PULL_SNAPSHOT = "autocount_pull_snapshot"
+
+
+def _classify_http_source_error(exc: HttpSourceError) -> str:
+    """The pinned gateway error-code ladder (AC-10-22/64): ``ROW_LIMIT`` by
+    its own code regardless of phase, ``ENRICH_FAILED`` for a lookup
+    endpoint fault (``_apply_lookups`` re-wraps with ``phase='enrich'``,
+    ``http_source/source.py``), ``SOURCE_PAGE_FAILED`` for everything else
+    on the main path."""
+    if exc.code == "row_limit":
+        return "ROW_LIMIT"
+    if getattr(exc, "phase", None) == "enrich":
+        return "ENRICH_FAILED"
+    return "SOURCE_PAGE_FAILED"
+
+
+def _excluded_row_entry(mapped: "MappedDocument") -> Dict[str, Any]:
+    """One ``excludedRows[]`` entry (AC-10-62): ``{source_ref, code, reason,
+    message}``. ``source_ref``/``code`` are read off the FIRST field error's
+    own ``doc_key``/the document's ``doc_no`` - both resolve even when the
+    failure is a header field OTHER than identity, since identity is mapped
+    before every other field (``mapping.map_document``)."""
+    source_ref = ""
+    if mapped.errors:
+        source_ref = mapped.errors[0].doc_key or ""
+    return {
+        "source_ref": source_ref,
+        "code": mapped.doc_no,
+        "reason": "mapping_failed",
+        "message": "; ".join(error.message() for error in mapped.errors),
+    }
+
+
+def _product_price_counters(
+    records: List["SourceRecord"], mapping_rows: List[Any]
+) -> Dict[str, int]:
+    """Product-only header counters (AC-10-63), computed generically - never
+    a hardcoded ``BaseUOMPrice`` - by finding the mapping row that actually
+    feeds ``list_price`` and reading ITS source column off every raw record
+    (post-lookup, pre-mapping): ``zeroListPriceCount`` counts a delivered
+    zero (post-clamp, so every clamped negative counts here too, R5/AC-10-59);
+    ``negativeListPriceCount`` counts only the SOURCE values that were
+    negative; ``enrichMissCount`` counts rows whose alias key never landed on
+    the row at all (an enrich miss, AC-10-02 - distinct from a present but
+    non-numeric value, which contributes to neither bucket)."""
+    price_row = next(
+        (
+            row
+            for row in mapping_rows
+            if row.scope == SCOPE_HEADER
+            and row.canonical_field == "list_price"
+            and row.is_enabled
+        ),
+        None,
+    )
+    zero = negative = missing = 0
+    if price_row is not None:
+        for record in records:
+            raw_value = record.raw.get(price_row.source_path)
+            if raw_value is None:
+                missing += 1
+                continue
+            try:
+                number = Decimal(str(raw_value).strip())
+            except (InvalidOperation, ValueError):
+                # Non-numeric and present - a per-record mapping failure will
+                # exclude this row separately; never miscounted as a price
+                # bucket here.
+                continue
+            if number < 0:
+                negative += 1
+                zero += 1
+            elif number == 0:
+                zero += 1
+    return {
+        "zeroListPriceCount": zero,
+        "negativeListPriceCount": negative,
+        "enrichMissCount": missing,
+    }
+
+
+def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
+    """The ``autocount_pull_snapshot`` job handler (AC-10-20/21).
+
+    Mirrors ``run_autocount_sync``'s own ``_fail`` pattern: every extraction
+    fault is isolated INTERNALLY (the snapshot is stamped ``failed`` with its
+    own ``error_code``) so ``PullService.request_build`` never raises for a
+    failed build - it raises only for the two pre-flight guards
+    (AC-10-26). Reuses the SAME source registry factory and mapping engine
+    the push path uses, with ``mode=reconcile``/``persist_hashes=False``: a
+    pull writes NO ``ac_staged_record``, NO ``ac_row_hash`` and advances NO
+    watermark (AC-10-21) - it is a full snapshot every time.
+    """
+    service = JobService(db)
+    payload = dict(job.payload_json or {})
+    tenant_id = job.tenant_id
+    company_id = str(payload.get("companyId") or "")
+    entity_type = str(payload.get("entityType") or "")
+    snapshot_id = str(payload.get("snapshotId") or "")
+    started = time.monotonic()
+    trace_id = trace_id_for_job(job.id)
+
+    from .repositories import PullSnapshotRepository
+    from .services.pull_service import (
+        AUTOCOUNT_PULL_SNAPSHOT_TTL_HOURS,
+        SnapshotService,
+        compute_content_hash,
+    )
+
+    snap_repo = PullSnapshotRepository(db)
+    snapshot_service = SnapshotService(db)
+    snapshot = snap_repo.get(tenant_id, snapshot_id)
+    company = CompanyRepository(db).get(tenant_id, company_id)
+    config = EntityConfigRepository(db).get(tenant_id, company_id, entity_type)
+
+    def _fail_snapshot(message: str, error_code: str) -> None:
+        if snapshot is not None:
+            try:
+                snapshot_service.stamp_failed(
+                    tenant_id, snapshot, error=message[:4000], error_code=error_code
+                )
+            except Exception:  # noqa: BLE001 - the job's own failure below still lands
+                logger.exception(
+                    "autocount pull snapshot %s could not be stamped failed", snapshot_id
+                )
+        service.finish(job, status=JOB_FAILED, error=message)
+
+    if snapshot is None or company is None or config is None:
+        _fail_snapshot(
+            "The pull task this build was requested for no longer exists.",
+            "SOURCE_PAGE_FAILED",
+        )
+        return
+
+    run = SyncRunRepository(db).add(
+        AcSyncRun(
+            tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
+            job_id=job.id, mode=RUN_MODE_SNAPSHOT,
+        )
+    )
+    db.commit()
+
+    from .services.company_service import CompanyService
+
+    companies = CompanyService(db)
+    ctx = SourceContext(
+        db=db, tenant_id=tenant_id, company=company, entity_config=config,
+        company_service=companies,
+    )
+
+    def _finish_run_failed(message: str) -> None:
+        run.outcome = RUN_FAILED
+        run.error = message[:4000]
+        run.finished_at = datetime.now(timezone.utc)
+        run.duration_ms = int((time.monotonic() - started) * 1000)
+        db.commit()
+
+    try:
+        source = source_factory(config.source_impl)(
+            ctx,
+            entity_type=entity_type,
+            vendor_entity=VENDOR_ENTITIES.get(entity_type, VENDOR_ENTITY),
+            record_cap=config.record_cap,
+            lookback_days=config.initial_lookback_days,
+            envelope=config.envelope,
+            initial_load=config.initial_load,
+            identifier_key=VENDOR_IDENTIFIER_KEYS.get(entity_type, "DocNo"),
+            last_modified_path=VENDOR_LAST_MODIFIED_PATHS.get(entity_type, "LastModified"),
+            mode=RUN_MODE_RECONCILE,
+            persist_hashes=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
+        _finish_run_failed(str(exc))
+        _fail_snapshot(str(exc), "SOURCE_PAGE_FAILED")
+        return
+
+    try:
+        result: FetchResult = source.fetch_changes(Watermark())
+    except HttpSourceError as exc:
+        record_client_calls(
+            db, source, tenant_id=tenant_id, trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        _finish_run_failed(exc.message)
+        _fail_snapshot(exc.message, _classify_http_source_error(exc))
+        return
+    except Exception as exc:  # noqa: BLE001
+        record_client_calls(
+            db, source, tenant_id=tenant_id, trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        _finish_run_failed(f"Fetch failed: {exc}")
+        _fail_snapshot(f"Fetch failed: {exc}", "SOURCE_PAGE_FAILED")
+        return
+    finally:
+        source.close()
+
+    record_client_calls(
+        db, source, tenant_id=tenant_id, trace_id=trace_id,
+        external_ref=company.database_name,
+    )
+
+    mapping_rows = build_mapping_rows_for_run(
+        entity_type,
+        companies.mapping_rows(tenant_id, company_id, entity_type),
+        is_sql_db_source=config.source_impl == SOURCE_IMPL_SQL_DB,
+        source_config=config.source_config,
+    )
+    engine = MappingEngine(
+        mapping_rows,
+        detail_key=None,
+        entity_type=entity_type,
+        profile=flat_profile(
+            entity_type,
+            (config.source_config or {}).get(
+                "keyColumns" if config.source_impl == SOURCE_IMPL_SQL_DB else "keyFields"
+            )
+            or [],
+        ),
+        database_name=company.database_name,
+    )
+
+    delivered: List[Tuple[str, Dict[str, Any]]] = []
+    excluded_rows: List[Dict[str, Any]] = []
+    for record in result.records:
+        mapped = engine.map_document(record.raw)
+        if mapped.record is None:
+            excluded_rows.append(_excluded_row_entry(mapped))
+            continue
+        delivered.append((mapped.record.source_ref, mapped.record.sink_payload()))
+
+    record_count = len(delivered)
+
+    #     !!  ZERO-ROW GUARD (AC-10-46).  !!
+    # A build that produced NOTHING while the most recent READY snapshot for
+    # this triple carried records looks like a broken extraction, not a
+    # genuine wipe - a first-ever build with zero rows is still allowed
+    # (nothing to contradict it).
+    previous_ready = snap_repo.latest_ready_for_triple(tenant_id, company_id, entity_type)
+    if record_count == 0 and previous_ready is not None and previous_ready.record_count > 0:
+        run.rows_scanned = (
+            result.rows_scanned if result.rows_scanned is not None else len(result.records)
+        )
+        _finish_run_failed(
+            "This build returned zero rows while a previous snapshot for this "
+            "entity carried records - treated as a broken extraction, never a "
+            "genuine wipe."
+        )
+        _fail_snapshot(
+            "This build returned zero rows while a previous snapshot for this "
+            "entity carried records.",
+            "EMPTY_EXTRACT",
+        )
+        return
+
+    for index, (source_ref, row_payload) in enumerate(delivered):
+        snapshot_service.insert_row(
+            tenant_id, snapshot, index,
+            company_id=company_id, source_ref=source_ref, payload=row_payload,
+        )
+
+    rows_scanned = result.rows_scanned if result.rows_scanned is not None else len(result.records)
+    complete = result.reported_total is None or rows_scanned == result.reported_total
+    content_hash = compute_content_hash([payload for _, payload in delivered])
+    metadata: Dict[str, Any] = {
+        "excludedRows": excluded_rows,
+        "excludedCount": len(excluded_rows),
+    }
+    if entity_type == ENTITY_PRODUCT:
+        metadata.update(_product_price_counters(result.records, mapping_rows))
+
+    extracted_at = datetime.now(timezone.utc)
+    expires_at = extracted_at + timedelta(hours=AUTOCOUNT_PULL_SNAPSHOT_TTL_HOURS)
+    snapshot_service.stamp_ready(
+        tenant_id, snapshot,
+        record_count=record_count, complete=complete, content_hash=content_hash,
+        metadata=metadata, extracted_at=extracted_at, expires_at=expires_at,
+    )
+
+    run.outcome = RUN_SUCCESS
+    run.rows_scanned = rows_scanned
+    run.added_count = record_count
+    run.finished_at = datetime.now(timezone.utc)
+    run.duration_ms = int((time.monotonic() - started) * 1000)
+    db.commit()
+
+    service.finish(
+        job, status=JOB_DONE,
+        result={"snapshotId": snapshot.id, "recordCount": record_count, "complete": complete},
+    )
+
+
+def register_pull_snapshot_handler() -> None:
+    """Register the ``autocount_pull_snapshot`` handler - imported in the
+    Celery worker path too (``app/workflow_engine/worker.py``), exactly like
+    ``register_autocount_sync_handler`` (its own docstring explains why)."""
+    register_job_handler(_PULL_SNAPSHOT_HANDLER_DEF)
+
+
+_PULL_SNAPSHOT_HANDLER_DEF = JobHandlerDef(
+    AUTOCOUNT_PULL_SNAPSHOT, _run_pull_snapshot, "AutoCount pull snapshot build",
+    heartbeats=True,
+)
+register_pull_snapshot_handler()
 
 
 # ── boot registration (idempotent) ────────────────────────────────────────────

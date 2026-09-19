@@ -78,6 +78,27 @@ RUN_FAILED = "FAILED"
 RUN_ABORTED = "ABORTED"
 RUN_OUTCOMES = (RUN_SUCCESS, RUN_FAILED, RUN_ABORTED)
 
+# ── delivery mode (sprint-5/10 §2.1, D1/D2, AC-10-10) ─────────────────────────
+# ``push`` = today's behaviour (an ACTIVE task delivers to the company's sink
+# on its schedule); ``pull`` = the task never auto-pushes and never runs on
+# the sweep - a consumer/operator request builds a snapshot on demand
+# instead. Every task that existed before this plan reads ``push``.
+DELIVERY_MODE_PUSH = "push"
+DELIVERY_MODE_PULL = "pull"
+DELIVERY_MODES = (DELIVERY_MODE_PUSH, DELIVERY_MODE_PULL)
+
+# ── pull snapshot lifecycle (sprint-5/10 §2.4, AC-10-19) ──────────────────────
+# Expiry is DERIVED from ``expires_at`` - never a stored fourth status a clock
+# skew could disagree with.
+PULL_SNAPSHOT_STATUS_BUILDING = "building"
+PULL_SNAPSHOT_STATUS_READY = "ready"
+PULL_SNAPSHOT_STATUS_FAILED = "failed"
+PULL_SNAPSHOT_STATUSES = (
+    PULL_SNAPSHOT_STATUS_BUILDING,
+    PULL_SNAPSHOT_STATUS_READY,
+    PULL_SNAPSHOT_STATUS_FAILED,
+)
+
 # ── direct-DB ETL (plan 22 §2.4/2.5/2.7) ──────────────────────────────────────
 # Source implementations behind the ``EntitySource`` seam.
 SOURCE_IMPL_AUTOCOUNT_READ = "autocount_read"  # HTTP wrapper (plans 13-16)
@@ -100,7 +121,17 @@ RUN_MODE_MANUAL = "manual"
 RUN_MODE_INCREMENTAL = "incremental"
 RUN_MODE_RECONCILE = "reconcile"
 RUN_MODE_SKIPPED = "skipped"
-RUN_MODES = (RUN_MODE_MANUAL, RUN_MODE_INCREMENTAL, RUN_MODE_RECONCILE, RUN_MODE_SKIPPED)
+# sprint-5/10 (AC-10-21) - a pull snapshot build. Writes NO staged record, NO
+# row hash and advances NO watermark; it still records ONE ``AcSyncRun`` so
+# the Runs tab shows a pull build exactly as it shows a push run.
+RUN_MODE_SNAPSHOT = "snapshot"
+RUN_MODES = (
+    RUN_MODE_MANUAL,
+    RUN_MODE_INCREMENTAL,
+    RUN_MODE_RECONCILE,
+    RUN_MODE_SKIPPED,
+    RUN_MODE_SNAPSHOT,
+)
 
 
 class AcCompany(AutocountBase):
@@ -196,6 +227,20 @@ class AcEntityConfig(AutocountBase):
     # entity ignores it entirely.
     initial_lookback_days = Column(Integer, nullable=False, default=30)
     enabled = Column(Boolean, nullable=False, default=True)
+    # sprint-5/10 (AC-10-10) - ``push`` (today's behaviour) or ``pull`` (never
+    # auto-pushes, never runs on the sweep - a consumer/operator request
+    # builds a snapshot on demand). The Alembic migration (0020) adds this
+    # column ``NOT NULL DEFAULT 'push'`` on real Postgres, matching AC-10-10
+    # verbatim; the ORM declaration below is deliberately ``nullable=True`` -
+    # not a laxer real constraint, but so a legacy-row backfill test can
+    # simulate a genuinely blank pre-migration row (a NOT-NULL SQLite column
+    # rejects an explicit ``NULL`` UPDATE outright, unlike Postgres before the
+    # column gains its constraint). ``backfill_delivery_mode_defaults`` is
+    # what actually normalises every row to ``push``, same contract as
+    # ``sink_impl``/``backfill_sink_impl_defaults`` above.
+    delivery_mode = Column(
+        String, nullable=True, default=DELIVERY_MODE_PUSH, server_default=DELIVERY_MODE_PUSH
+    )
 
     # ── direct-DB ETL task (plan 22 §2.4) - the per-(company, entity) task IS
     # this row (decision Q13: no free-form task entity). ───────────────────
@@ -497,3 +542,82 @@ class AcSyncRun(AutocountBase):
     started_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     finished_at = Column(UTCDateTime(), nullable=True)
     duration_ms = Column(Integer, nullable=True)
+
+
+class AcPullSnapshot(AutocountBase):
+    """One IMMUTABLE extraction of ONE (company, entity) at one instant
+    (sprint-5/10 §2.4, AC-10-18/19).
+
+    ``company_code`` is COPIED here at build time (never re-read from
+    ``ac_company.sorento_company_code``) so a later edit of the company's
+    consumer code cannot retarget an extraction already out for review.
+    Immutability once ``ready`` is STRUCTURAL: the repository exposes
+    insert-row and terminal-stamp methods only, and ``SnapshotService``
+    raises on any write against a snapshot whose status is not
+    ``building`` (AC-10-19) - never a convention an operator could bypass.
+    """
+
+    __tablename__ = "ac_pull_snapshot"
+    __table_args__ = (
+        Index(
+            "ix_ac_pull_snapshot_triple", "tenant_id", "company_id", "entity_type"
+        ),
+        Index("ix_ac_pull_snapshot_status", "tenant_id", "status"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    company_id = Column(String, nullable=False, index=True)
+    entity_type = Column(String, nullable=False)
+    # Copied from ``ac_company.sorento_company_code`` at build time (see the
+    # class docstring) - NULL only for a pull-only company on the logging
+    # sink, whose gateway header reports it as such.
+    company_code = Column(String, nullable=True)
+    status = Column(String, nullable=False, default=PULL_SNAPSHOT_STATUS_BUILDING)
+    # Core ``background_jobs.id`` of the build job - plain indexed column,
+    # never an FK (BL-030).
+    job_id = Column(String, nullable=True, index=True)
+    record_count = Column(Integer, nullable=False, default=0)
+    complete = Column(Boolean, nullable=False, default=False)
+    content_hash = Column(String, nullable=True)
+    # ``excludedRows``/``excludedCount`` (every entity) plus the per-entity
+    # counters (AC-10-63/66/81) - the ONE place they live; the gateway header
+    # is a thin projection of this column plus the row's own base fields.
+    metadata_json = Column(_JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    # One of the pinned gateway codes (AC-10-64): SOURCE_PAGE_FAILED |
+    # ENRICH_FAILED | ROW_LIMIT | EMPTY_EXTRACT.
+    error_code = Column(String, nullable=True)
+    requested_via = Column(String, nullable=False, default="operator")
+    requested_by = Column(String, nullable=True)
+
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    # The BUILD END (never its start) - a 25-minute build still leaves a full
+    # TTL window of review time (plan §2.4).
+    extracted_at = Column(UTCDateTime(), nullable=True)
+    expires_at = Column(UTCDateTime(), nullable=True, index=True)
+
+
+class AcPullSnapshotRow(AutocountBase):
+    """One delivered row of a snapshot, served exactly as stored - no
+    re-projection at read time (AC-10-18, AC-10-33).
+
+    The composite primary key IS the "no update-row method" guarantee
+    (AC-10-19): there is no legal way to overwrite a row short of deleting
+    the whole snapshot and rebuilding it, which is a different operation.
+    """
+
+    __tablename__ = "ac_pull_snapshot_row"
+    __table_args__ = (
+        Index("ix_ac_pull_snapshot_row_snapshot", "tenant_id", "snapshot_id"),
+    )
+
+    tenant_id = Column(String, primary_key=True)
+    snapshot_id = Column(String, primary_key=True)
+    row_index = Column(Integer, primary_key=True)
+    company_id = Column(String, nullable=False, index=True)
+    source_ref = Column(String, nullable=False)
+    # Exactly ``CanonicalRecord.sink_payload()`` - the same shape a push
+    # delivers (AC-10-23's content-hash formula depends on this being the
+    # EXACT stored dict, never a re-projection).
+    payload_json = Column(_JSON, nullable=False)

@@ -74,6 +74,14 @@ celery_app.conf.beat_schedule = {
     # ACTIVE sql_db tasks and enqueues the SAME `autocount_sync` job the
     # manual Run-now button uses. Same 60s tick; does no extraction itself.
     "autocount-etl-sweep": {"task": "autocount.etl_sweep", "schedule": 60.0},
+    # AutoCount pull snapshot prune (sprint-5/10 §2.4, AC-10-25) - deletes
+    # every EXPIRED snapshot (+ its rows) and drops any READY snapshot beyond
+    # the newest 3 per (tenant, company, entity) triple. Hourly, beside the
+    # ETL sweep above - snapshots are held for 24h, so a sub-minute tick
+    # would buy nothing.
+    "autocount-prune-pull-snapshots": {
+        "task": "autocount.prune_pull_snapshots", "schedule": 3600.0,
+    },
     # Deferred actions (sprint-4/23, T5, AC-DLA-41) - commits every pending
     # row whose grace window has closed. Under eager dev (no beat process)
     # the frontend's lapse-time `GET current` performs the lazy commit
@@ -279,6 +287,24 @@ def autocount_etl_sweep_task() -> dict:
         db.close()
 
 
+@celery_app.task(name="autocount.prune_pull_snapshots")
+def autocount_prune_pull_snapshots_task() -> dict:
+    """The pull-snapshot prune beat (sprint-5/10 §2.4, AC-10-25).
+    Failure-isolated like every other tick on this beat."""
+    from app.database import SessionLocal
+    from modules.autocount.services.pull_service import prune_pull_snapshots
+
+    db = SessionLocal()
+    try:
+        return prune_pull_snapshots(db)
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("autocount pull-snapshot prune tick failed")
+        db.rollback()
+        return {"expired": 0, "retentionPruned": 0}
+    finally:
+        db.close()
+
+
 @celery_app.task(name="pending_actions.commit_due")
 def pending_actions_commit_due_task() -> dict:
     """Deferred-actions beat sweep (sprint-4/23, T5, AC-DLA-41) - commits
@@ -388,5 +414,5 @@ def wake_serialized_task(tenant_id: str, workflow_id: str, digest: str) -> dict:
 # (silent stall - the storage-migration job hangs Pending forever).
 import app.jobs.worker  # noqa: E402,F401 - registers the `jobs.run` Celery task
 import app.storage_migration.service  # noqa: E402,F401 - module-level register_storage_migration_handler()
-import modules.autocount.sync  # noqa: E402,F401 - registers the `autocount_sync` job handler
+import modules.autocount.sync  # noqa: E402,F401 - registers the `autocount_sync` AND `autocount_pull_snapshot` job handlers
 import modules.meetings.jobs  # noqa: E402,F401 - registers the `meetings.calendar_sync` handler

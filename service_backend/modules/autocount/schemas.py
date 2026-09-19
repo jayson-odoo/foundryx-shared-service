@@ -87,6 +87,16 @@ class EntityConfigItem(ApiModel):
     # the task editor's Review & Activate tab can warn a `product` task's
     # activation of a missing category/UOM prerequisite without a second fetch.
     etlStatus: str = Field(default="draft", validation_alias="etl_status")
+    # sprint-5/10 (AC-10-11/17) - the Delivery column, no per-row fetch.
+    deliveryMode: str = Field(default="push", validation_alias="delivery_mode")
+
+
+class EntityDeliveryModeUpdate(ApiModel):
+    """``PUT .../entities/{entityType}/delivery-mode`` body (AC-10-11)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    deliveryMode: str
 
 
 class EntityConfigUpdate(ApiModel):
@@ -745,6 +755,17 @@ class BrandContractGate(ApiModel):
     requiredVersion: float
 
 
+class ContractGate(ApiModel):
+    """sprint-5/10 (AC-10-69) - the GENERALISED replacement
+    ``brandContractGate`` folds into by VALUE (never removed from the wire -
+    see ``EtlTaskResponse``'s own note). Non-null whenever the task's own
+    entity has something to warn about."""
+
+    entity: str
+    version: Optional[float] = None
+    requiredVersion: float
+
+
 class EtlTaskUpdate(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -807,7 +828,15 @@ class EtlTaskResponse(ApiModel):
     initialLoad: Optional[InitialLoadProgress] = None
     # sprint-5/08 (AC-08-33/AC-08-20 S5) - non-null only for a `brand` task
     # on a Sorento-sink company whose consumer does not yet accept brands.
+    # KEPT AS-IS (ruling, sprint-5/10 coordinator): the frontend type still
+    # reads only this field; its rename/removal is a later FE slice.
     brandContractGate: Optional[BrandContractGate] = None
+    # sprint-5/10 (AC-10-69) - the GENERALISED gate (today: `brand`,
+    # `product`), added alongside `brandContractGate` above, never replacing
+    # it in this slice.
+    contractGate: Optional[ContractGate] = None
+    # sprint-5/10 (AC-10-10) - `push` (default) or `pull`.
+    deliveryMode: str = "push"
 
 
 class HttpPreviewResponse(ApiModel):
@@ -873,3 +902,67 @@ class PreviewResponse(ApiModel):
 
     jobId: str
     preview: Dict[str, Any]
+
+
+# ── human-invoked pull (sprint-5/10 §2.4/2.6, AC-10-32/33/37) ────────────────
+
+
+class PullSnapshotOut(ApiModel):
+    """One snapshot's header (AC-10-32) - the wire shape the operator routes
+    AND (later, S4) the public gateway both project from
+    ``services.pull_service.snapshot_header``. Per-entity counters are
+    optional so ONE shape covers every entity without a discriminated union
+    the caller must branch on to read it."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    entityType: str
+    companyId: str
+    companyCode: Optional[str] = None
+    status: str
+    requestedVia: str
+    createdAt: Optional[datetime] = None
+    extractedAt: Optional[datetime] = None
+    expiresAt: Optional[datetime] = None
+    recordCount: int = 0
+    complete: bool = False
+    contentHash: Optional[str] = None
+    sourcePageSize: Optional[int] = None
+    error: Optional[Dict[str, Any]] = None
+    excludedCount: int = 0
+    excludedRows: List[Dict[str, Any]] = []
+    # product-only (AC-10-63)
+    zeroListPriceCount: Optional[int] = None
+    negativeListPriceCount: Optional[int] = None
+    enrichMissCount: Optional[int] = None
+    # stock-only (AC-10-42/43/66/81, S5b)
+    zeroPairs: Optional[int] = None
+    negativePairs: Optional[int] = None
+    fractionalPairs: Optional[int] = None
+    excludedNonzeroCount: Optional[int] = None
+    negativePairList: Optional[List[Dict[str, Any]]] = None
+
+
+class PullSnapshotListResponse(ApiModel):
+    data: List[PullSnapshotOut]
+    total: int
+    page: int
+
+
+class PullSnapshotRowsPageOut(ApiModel):
+    """``GET .../rows`` - one page, served exactly as stored (AC-10-33)."""
+
+    snapshotId: str
+    page: int
+    pageSize: int
+    totalPages: int
+    recordCount: int
+    rows: List[Dict[str, Any]]
+
+
+class PullSnapshotBuildRequest(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    companyId: str
+    entityType: str

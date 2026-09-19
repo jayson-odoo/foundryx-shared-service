@@ -58,6 +58,9 @@ from ..canonical.masters import (
     ENTITY_WAREHOUSE,
 )
 from ..models import (
+    DELIVERY_MODE_PULL,
+    DELIVERY_MODE_PUSH,
+    DELIVERY_MODES,
     ETL_STATUS_ACTIVE,
     ETL_STATUS_DRAFT,
     ETL_STATUS_PAUSED,
@@ -147,6 +150,13 @@ ETL_ENTITY_TYPES = (
     # API is not the only source), so it joins the DB-extractable catalogue.
     ENTITY_BRAND,
 )
+
+# sprint-5/10 (AC-10-11/15) - entities a task may be switched to ``pull``
+# for. ``stock_balance`` joins this set in S5b (a pull-only entity, gated by
+# its own contract - it has no consumer ingest path at all yet); for now
+# only ``product`` may flip. A task outside this set 422s naming the entity
+# rather than silently accepting a mode it can never be served under.
+PULL_CAPABLE_ENTITY_TYPES = (ENTITY_PRODUCT,)
 
 # ── schedule floors (AC-22-12, Q17) ──────────────────────────────────────────
 MIN_INCREMENTAL_MINUTES = 1
@@ -280,6 +290,15 @@ class EtlTaskView:
     # Review & Activate banner ("Consumer contract 2.2 - brands land when 2.3
     # is deployed") without the operator having to run Preview first.
     brand_contract_gate: Optional[Dict[str, Any]] = None
+    # sprint-5/10 (AC-10-10) - ``push`` (today's behaviour) or ``pull``.
+    delivery_mode: str = DELIVERY_MODE_PUSH
+    # sprint-5/10 (AC-10-69) - the GENERALISED replacement for
+    # ``brand_contract_gate`` above (which stays, untouched, for `brand`):
+    # ``{entity, version, requiredVersion}``, non-null whenever THIS
+    # entity's own contract gate has something to say. `brand_contract_gate`
+    # is folded in by VALUE (never removed from the wire - the frontend type
+    # still reads it; its rename is a later slice).
+    contract_gate: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -975,6 +994,10 @@ class EtlService:
             ),
             initial_load=self._initial_load(company_id, entity_type, config),
             brand_contract_gate=self._brand_contract_gate(tenant_id, company_id, entity_type),
+            delivery_mode=(
+                (config.delivery_mode if config is not None else None) or DELIVERY_MODE_PUSH
+            ),
+            contract_gate=self._contract_gate(tenant_id, company_id, entity_type),
         )
 
     def _brand_contract_gate(
@@ -993,6 +1016,22 @@ class EtlService:
         except Exception:  # noqa: BLE001 - advisory only, never blocks the read
             return None
         return self.companies.brand_contract_gate(tenant_id, company)
+
+    def _contract_gate(
+        self, tenant_id: Optional[str], company_id: str, entity_type: str
+    ) -> Optional[Dict[str, Any]]:
+        """sprint-5/10 (AC-10-69) - the GENERALISED probe, gated to the
+        entities ``CompanyService.contract_gate`` actually knows about
+        (``brand``/``product`` today) so every other entity's task-view read
+        never touches the network, same reasoning as ``_brand_contract_gate``
+        above."""
+        if tenant_id is None:
+            return None
+        try:
+            company = self.companies.get(tenant_id, company_id)
+        except Exception:  # noqa: BLE001 - advisory only, never blocks the read
+            return None
+        return self.companies.contract_gate(tenant_id, company, entity_type)
 
     def _initial_load(
         self, company_id: str, entity_type: str, config: Optional[AcEntityConfig]
@@ -2296,6 +2335,26 @@ class EtlService:
                 "Set the Sorento company code on this company before activating - "
                 "every push is anchored to it."
             )
+        #     !!  PRODUCT CODE-WINS CONTRACT GATE (R8, AC-10-69) - PUSH MODE
+        #         + A SORENTO SINK ONLY.  !!
+        # Unlike the brand gate, there is no safe logging-sink fallback here:
+        # pushing ItemCode-keyed refs at a consumer below contract 2.4 would
+        # fail roughly 9,067 already-linked records outright. PULL mode gets
+        # the banner only (never blocked - nothing lands on the consumer
+        # until ITS OWN Confirm), and a company with no Sorento sink at all
+        # has nothing to push to, so neither is gated here.
+        if (
+            entity_type == ENTITY_PRODUCT
+            and config.delivery_mode == DELIVERY_MODE_PUSH
+            and company.sink_impl == SINK_IMPL_SORENTO
+        ):
+            gate = self.companies.contract_gate(tenant_id, company, entity_type)
+            if gate is not None:
+                raise EtlStateError(
+                    f"This company's Sorento consumer is on contract "
+                    f"{gate.get('version')} - product push needs contract "
+                    f"{gate.get('requiredVersion')} before it can be activated."
+                )
         now = datetime.now(timezone.utc)
         config.etl_status = ETL_STATUS_ACTIVE
         config.activated_at = now
@@ -2306,14 +2365,72 @@ class EtlService:
         # vendor-API default this switch exists to escape.
         if config.source_impl not in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP):
             config.source_impl = SOURCE_IMPL_SQL_DB
-        _, config.next_reconcile_at = self.next_run_times(
-            self._schedule_source_config(config), now=now
-        )
-        # plan sprint-5/03 §2.4 - the initial (paged) pass starts on the
-        # FIRST tick after activation, not after a full ``incrementalMinutes``
-        # wait: 148k SO headers finish in hours unattended only if the sweep
-        # fires immediately.
-        config.next_incremental_at = now
+        # sprint-5/10 (AC-10-13/15) - a ``pull`` task arms NO schedule at
+        # all: it never runs on the sweep, so there is nothing to arm.
+        if config.delivery_mode == DELIVERY_MODE_PULL:
+            config.next_reconcile_at = None
+            config.next_incremental_at = None
+        else:
+            _, config.next_reconcile_at = self.next_run_times(
+                self._schedule_source_config(config), now=now
+            )
+            # plan sprint-5/03 §2.4 - the initial (paged) pass starts on the
+            # FIRST tick after activation, not after a full
+            # ``incrementalMinutes`` wait: 148k SO headers finish in hours
+            # unattended only if the sweep fires immediately.
+            config.next_incremental_at = now
+        self.db.commit()
+        self.db.refresh(config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
+
+    def set_delivery_mode(
+        self, tenant_id: str, company_id: str, entity_type: str, delivery_mode: str
+    ) -> EtlTaskView:
+        """``push`` <-> ``pull`` (sprint-5/10, AC-10-11). Touches ONLY the
+        mode + the schedule's armed times - never ``source_config``, the
+        mapping rows or ``result_columns`` (a round-trip is byte-identical,
+        AC-10-14)."""
+        if delivery_mode not in DELIVERY_MODES:
+            raise EtlValidationError(
+                {"deliveryMode": f"'{delivery_mode}' is not a known delivery mode."}
+            )
+        if entity_type not in PULL_CAPABLE_ENTITY_TYPES:
+            raise EtlValidationError(
+                {"deliveryMode": f"'{entity_type}' cannot be switched between push and pull."}
+            )
+        company = self.companies.get(tenant_id, company_id)  # tenant-scope guard
+        if delivery_mode == DELIVERY_MODE_PULL and not (
+            company.sorento_company_code or ""
+        ).strip():
+            raise EtlValidationError(
+                {
+                    "deliveryMode": (
+                        "Set a consumer company code on this company before "
+                        "enabling pull."
+                    )
+                }
+            )
+        config = self.configs.get(tenant_id, company_id, entity_type)
+        if config is None:
+            raise EtlStateError(
+                "Save this task's query and key columns before setting its delivery mode."
+            )
+        config.delivery_mode = delivery_mode
+        if delivery_mode == DELIVERY_MODE_PULL:
+            # A pull task never runs on the sweep - disarm immediately,
+            # regardless of the task's current lifecycle status (AC-10-13).
+            config.next_incremental_at = None
+            config.next_reconcile_at = None
+        elif config.etl_status == ETL_STATUS_ACTIVE:
+            # Re-arm from the SAVED source_config through the existing
+            # ``next_run_times`` - no re-mapping, no re-Test, no status
+            # change (AC-10-14). A draft/paused task stays disarmed either
+            # way (nothing has activated it yet).
+            now = datetime.now(timezone.utc)
+            config.next_incremental_at = now
+            _, config.next_reconcile_at = self.next_run_times(
+                self._schedule_source_config(config), now=now
+            )
         self.db.commit()
         self.db.refresh(config)
         return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
