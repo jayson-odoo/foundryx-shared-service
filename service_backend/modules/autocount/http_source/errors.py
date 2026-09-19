@@ -19,9 +19,16 @@ class HttpSourceError(Exception):
         code: Optional[str] = None,
         page: Optional[int] = None,
         status: Optional[int] = None,
+        # sprint-5/10 (AC-10-22/64) - which WALK this failure came from:
+        # ``"enrich"`` for a lookup endpoint (never the main path). ``None``
+        # (every pre-plan-10 raise) reads as the main path, so an unlabelled
+        # fault always classifies as a source-page failure, never silently
+        # as an enrich one.
+        phase: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
         self.page = page
         self.status = status
+        self.phase = phase

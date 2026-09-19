@@ -416,6 +416,11 @@ class HttpApiSource:
                     code=exc.code,
                     page=exc.page,
                     status=exc.status,
+                    # sprint-5/10 (AC-10-22/64) - a pull snapshot build tells
+                    # an enrich-endpoint fault apart from a main-path one
+                    # (``ENRICH_FAILED`` vs ``SOURCE_PAGE_FAILED``) by this
+                    # phase tag, never by parsing the message.
+                    phase="enrich",
                 ) from exc
             index = build_index(lookup_rows, on)
             try:

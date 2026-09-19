@@ -436,6 +436,12 @@ def test_get_etl_task_returns_draft_defaults_for_a_configured_entity(client, ses
         "initialLoad": None,
         # Brand-contract read-path advisory probe (S4) - no brand config yet.
         "brandContractGate": None,
+        # sprint-5/10 (AC-10-69) - the generalised gate; `customer` is not a
+        # contract-gated entity (only `brand`/`product` are), so this is
+        # always None for it.
+        "contractGate": None,
+        # sprint-5/10 (AC-10-10) - every task reads `push` until switched.
+        "deliveryMode": "push",
     }
 
 
