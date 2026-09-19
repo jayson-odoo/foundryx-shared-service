@@ -205,9 +205,12 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   existing seed-if-absent contract.
 - **AC-10-05 [BE]** `POST /autocount/http/preview` accepts the task's `lookups`, applies them in
   order over the sampled page, and returns the alias columns alongside the source columns plus a
-  per-lookup `{alias, matched, missed}` count - so the saved `result_columns` (and therefore the
-  Mapping tab's source picker, the key / watermark / compared pickers and the default
-  `comparedFields`) contain `BaseUOMPrice` and any operator alias. A companion
+  per-lookup `{alias, matched, missed}` count - so the task's `resultColumns` AS SERVED (stored
+  raw columns plus the configured lookups' own aliases, review round 1b) contain `BaseUOMPrice`
+  and any operator alias for the Mapping tab's source picker, the key / watermark / compared
+  pickers and the default `comparedFields`. The STORED `result_columns` itself holds the RAW
+  main-endpoint columns only (never a merged alias) - so AC-10-01's save-time collision check
+  (an alias colliding with a source column) is always exact, with no carve-out. A companion
   `POST /autocount/http/preview-columns {connectionId, path}` returns just the first page's
   column names, so the lookup editor offers REAL remote columns to pick from rather than free
   text. A preview whose lookup endpoint fails is a 422 naming `lookups[i].path` with the endpoint,
