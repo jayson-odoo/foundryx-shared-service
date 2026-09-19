@@ -76,6 +76,38 @@ except ImportError:  # pragma: no cover - expected until the coder adds them
 NOW = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _block_live_network(monkeypatch):
+    """Lane rule: no test in this file may touch the network. A real
+    ``httpx.Client``/``AsyncClient`` backed by an ACTUAL network transport
+    (``HTTPTransport``/``AsyncHTTPTransport`` - never a ``MockTransport``,
+    and never the FastAPI ``TestClient``'s in-process ASGI transport) raises
+    loudly instead of making a request. Coordinator finding 2026-09-20: an
+    earlier revision of ``test_sweep_fires_only_the_push_task_...`` made a
+    real ~8-minute call to ``hapi.sorento.cc.cd``."""
+    real_send = httpx.Client.send
+    real_async_send = httpx.AsyncClient.send
+
+    def guarded_send(self, request, *args, **kwargs):
+        if isinstance(self._transport, (httpx.HTTPTransport, httpx.AsyncHTTPTransport)):
+            raise RuntimeError(
+                f"blocked a LIVE network call to {request.url} - stub the "
+                "transport (httpx.MockTransport) instead."
+            )
+        return real_send(self, request, *args, **kwargs)
+
+    async def guarded_async_send(self, request, *args, **kwargs):
+        if isinstance(self._transport, (httpx.HTTPTransport, httpx.AsyncHTTPTransport)):
+            raise RuntimeError(
+                f"blocked a LIVE network call to {request.url} - stub the "
+                "transport (httpx.MockTransport) instead."
+            )
+        return await real_async_send(self, request, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "send", guarded_send)
+    monkeypatch.setattr(httpx.AsyncClient, "send", guarded_async_send)
+
+
 @pytest.fixture
 def db(session_factory):
     session = session_factory()
@@ -459,7 +491,27 @@ def test_run_autocount_sync_in_push_mode_control_still_calls_auto_push(db, monke
 # ── AC-10-13: a pull task never runs on the sweep; activate arms nothing ─────
 
 
-def test_sweep_fires_only_the_push_task_of_one_due_push_and_one_due_pull(db):
+def test_sweep_fires_only_the_push_task_of_one_due_push_and_one_due_pull(db, monkeypatch):
+    """The sweep's ``fired`` claim enqueues a REAL job which, under this
+    suite's eager job setting, runs ``run_autocount_sync`` INLINE before
+    ``sweep_etl_tasks`` returns - so the due PUSH task's own HTTP call must
+    be stubbed here too (coordinator finding 2026-09-20: an earlier revision
+    of this test made a real, ~8-minute call to ``hapi.sorento.cc.cd``)."""
+    import modules.autocount.http_source.source as http_source_module
+    from modules.autocount.http_source.client import HttpApiClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"TotalCount": 0, "Page": 1, "PageSize": 1000, "TotalPages": 1, "Data": []},
+        )
+
+    stub_transport = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        http_source_module, "HttpApiClient",
+        lambda base_url, **kw: HttpApiClient(base_url, transport=stub_transport),
+    )
+
     conn = _open_connection(db)
     company = _company(db, conn.id)
     db.add(
@@ -553,12 +605,11 @@ def test_flipping_pull_to_push_on_an_active_task_rearms_the_schedule(db):
     source_config = _http_raw(
         connectionId=conn.id, keyFields=["ItemCode"], incrementalMinutes=30,
     )
-    result_columns = ["ItemCode", "Description", "BaseUOM"]
     db.add(
         AcEntityConfig(
             tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_PRODUCT,
             source_impl="autocount_http", delivery_mode=DELIVERY_MODE_PULL,
-            source_config=source_config, result_columns=list(result_columns),
+            source_config=source_config, result_columns=["ItemCode", "Description", "BaseUOM"],
         )
     )
     db.commit()
@@ -569,6 +620,12 @@ def test_flipping_pull_to_push_on_an_active_task_rearms_the_schedule(db):
 
     config = EntityConfigRepository(db).get(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
     assert config.next_incremental_at is None  # control: pull activation arms nothing
+    # Captured AFTER `_stamp_previewed` (which overwrites `result_columns`
+    # itself, AC-10-11's OWN concern for a different call) and BEFORE the
+    # mode flips below - the byte-identical assertion must compare against
+    # what `set_delivery_mode` actually received, never a fixture value it
+    # never saw.
+    result_columns = list(config.result_columns)
 
     EtlService(db).set_delivery_mode(
         DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, DELIVERY_MODE_PUSH
