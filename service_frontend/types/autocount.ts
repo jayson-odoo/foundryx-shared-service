@@ -92,6 +92,16 @@ export interface AutocountEntityConfig {
    * prerequisite without a second fetch.
    */
   etlStatus: AutocountEtlStatus;
+  /**
+   * `push` (today's behaviour) or `pull` (sprint-5/10, D1/D2) - the task
+   * never auto-pushes and never runs on the sweep; a consumer/operator
+   * request builds a snapshot on demand instead. Every task before this
+   * plan reads `push`. Carried on the LIST so the Delivery column
+   * (AC-10-17) needs no per-row fetch. Optional/absent reads as `push`
+   * (back-compat with a fixture built before this field existed, same
+   * convention as `AutocountEtlTask.sourceImpl`).
+   */
+  deliveryMode?: AutocountDeliveryMode;
 }
 
 /**
@@ -791,6 +801,135 @@ export interface AutocountEtlSourceConfig {
   /** Set only for a "distinct values of" derived entity (unit_of_measure) -
    * mutually exclusive with a normal `keyFields` pick (must be `["value"]`). */
   distinctOf?: string[] | null;
+  /** Operator-authored cross-endpoint joins (sprint-5/10, R9) - API tasks
+   * only. Omitted/`undefined` reads as "none configured yet". */
+  lookups?: AutocountLookupSpec[];
+  /** The row-collapsing step (sprint-5/10, R11) - API tasks only. `null`/
+   * `undefined` = not configured (the common case for every entity but the
+   * stock preset). */
+  combine?: AutocountCombineConfig | null;
+}
+
+// ── lookups: operator-configurable cross-endpoint joins (sprint-5/10, R9) ────
+
+/** `exact` (default) or `casefold_trim` ("Ignore case and spaces"). */
+export type AutocountLookupMatch = 'exact' | 'casefold_trim';
+
+/** One join pair - a `local` column (a source column, or an earlier lookup's
+ * alias) matched against the lookup endpoint's own `remote` column. */
+export interface AutocountLookupJoinPair {
+  local: string;
+  remote: string;
+  match?: AutocountLookupMatch;
+}
+
+/** One remote column brought in under an operator-chosen alias. */
+export interface AutocountLookupField {
+  remote: string;
+  as: string;
+}
+
+/**
+ * One operator-authored cross-endpoint join (`source_config.lookups[i]`,
+ * AC-10-01). ORDERED - a later lookup may join on an earlier one's alias
+ * (multi-hop, AC-10-02). `as` is the lookup's own name (informational; the
+ * delivered columns are `fields[].as`, not this).
+ */
+export interface AutocountLookupSpec {
+  path: string;
+  as: string;
+  on: AutocountLookupJoinPair[];
+  fields: AutocountLookupField[];
+}
+
+/** One lookup's Test-time result (AC-10-05) - a SAMPLE count (the preview
+ * page size), never the whole population (BL-SS-222) - label it as such. */
+export interface AutocountLookupPreviewResult {
+  alias: string;
+  matched: number;
+  missed: number;
+}
+
+// ── combine rows: operator-configurable row collapsing (sprint-5/10, R11) ───
+
+/** One ordered computed column - may name any row column, any lookup alias,
+ * or an EARLIER computed alias (forward references are a save-time 422). */
+export interface AutocountCombineComputed {
+  alias: string;
+  formula: string;
+}
+
+/** A falsy result EXCLUDES the row, with `reason` recorded on the exclusion. */
+export interface AutocountCombineRequire {
+  name: string;
+  formula: string;
+  reason: string;
+}
+
+export type AutocountCombineMeasureOp = 'sum' | 'min' | 'max' | 'count' | 'first' | 'last';
+
+export interface AutocountCombineMeasure {
+  source: string;
+  op: AutocountCombineMeasureOp;
+  alias: string;
+}
+
+export type AutocountCombineRoundMode = 'none' | 'half_up';
+
+export interface AutocountCombineRound {
+  measure: string;
+  mode: AutocountCombineRoundMode;
+  dp: number;
+}
+
+/** An ordered drop rule - the FIRST matching rule drops the group, counted
+ * under its own `name`; `listRows` opts the dropped rows into the metadata
+ * (capped server-side). */
+export interface AutocountCombineDrop {
+  name: string;
+  formula: string;
+  listRows?: boolean;
+}
+
+/**
+ * `source_config.combine` (R11, AC-10-76) - at most ONE per task, runs after
+ * every lookup and before mapping. `groupBy` becomes the task's key fields
+ * (AC-10-80) - the Source tab's key picker turns into read-only chips once
+ * this is set.
+ */
+export interface AutocountCombineConfig {
+  computed: AutocountCombineComputed[];
+  require: AutocountCombineRequire[];
+  /** The designated quantity column - what a generic counter (e.g. a stock
+   * consumer's `excludedNonzeroCount`) reads without knowing the domain. */
+  measure: string;
+  groupBy: string[];
+  measures: AutocountCombineMeasure[];
+  carry: string[];
+  round: AutocountCombineRound[];
+  drop: AutocountCombineDrop[];
+}
+
+/** One drop rule's Test-time outcome (AC-10-81). */
+export interface AutocountCombineDropStat {
+  count: number;
+  rows?: Array<Record<string, unknown>>;
+}
+
+/**
+ * The combine step's Test funnel (AC-10-82) - rows in -> excluded -> groups
+ * -> dropped per rule -> rows out, entity-agnostic (the generic shape
+ * AC-10-81 maps onto the agreed Sorento stock header names).
+ */
+export interface AutocountCombinePreviewResult {
+  rowsIn: number;
+  excludedCount: number;
+  excludedRows: Array<Record<string, unknown>>;
+  groups: number;
+  dropped: Record<string, AutocountCombineDropStat>;
+  roundedCount: number;
+  rowsOut: number;
+  rows: Array<Record<string, unknown>>;
 }
 
 /**
@@ -852,6 +991,9 @@ export interface HttpPreview {
   rows: Array<Record<string, unknown>>;
   durationMs: number;
   task?: AutocountEtlTask;
+  /** Per-lookup `{alias, matched, missed}` counts (AC-10-05) - a SAMPLE,
+   * never the whole population. Empty when the preview carried no lookups. */
+  lookups?: AutocountLookupPreviewResult[];
 }
 
 /** `POST /autocount/http/preview` body. */
@@ -871,6 +1013,9 @@ export interface HttpPreviewInput {
    */
   companyId?: string;
   entityType?: string;
+  /** Operator-authored cross-endpoint joins, applied in order over the
+   * sampled page (sprint-5/10, AC-10-05). */
+  lookups?: AutocountLookupSpec[];
 }
 
 /**
@@ -942,6 +1087,13 @@ export interface AutocountEtlTask {
    * `sourceImpl` above) - nothing to warn about.
    */
   brandContractGate?: AutocountBrandContractGate | null;
+  /**
+   * `push` (default) or `pull` (sprint-5/10, D1/D2) - mirrors the entity
+   * config's own field so the task editor's Schedule/Activate tabs need no
+   * second fetch. Optional/absent reads as `push` (back-compat with a
+   * fixture built before this field existed).
+   */
+  deliveryMode?: AutocountDeliveryMode;
 }
 
 /** `AutocountEtlTask.brandContractGate` (AC-08-33/AC-08-20 S5). `version` is
@@ -1035,4 +1187,124 @@ export interface AutocountRecordDiff {
   isNew: boolean;
   /** Changed fields ONLY. Empty for a new record and for a no-change record. */
   changes: AutocountFieldChange[];
+}
+
+// ── human-invoked pull (sprint-5/10) ─────────────────────────────────────────
+
+/** A per (company, entity) choice (`ac_entity_config.delivery_mode`, D1/D2):
+ * `push` runs the task on the schedule as today; `pull` never auto-pushes -
+ * a consumer/operator request builds a snapshot on demand instead. */
+export type AutocountDeliveryMode = 'push' | 'pull';
+
+/** `PUT .../entities/{entityType}/delivery-mode` body (AC-10-11). */
+export interface AutocountDeliveryModeUpdate {
+  deliveryMode: AutocountDeliveryMode;
+}
+
+// ── pull snapshots (D6/D7/D8) ────────────────────────────────────────────────
+
+export type AutocountPullSnapshotStatus = 'building' | 'ready' | 'failed';
+
+/** `entity` on the wire is `products`/`stock_balances`; this side keeps the
+ * internal singular keys (`product`/`stock_balance`) throughout. */
+export type AutocountPullEntity = 'product' | 'stock_balance';
+
+/** A cheap, optional build-progress hint (AC-10-87) - absent whenever it is
+ * not known; never a percentage. */
+export interface AutocountPullSnapshotProgress {
+  pagesDone: number;
+  pagesTotal: number;
+  stage: string;
+}
+
+/** One record the extraction read but could not deliver (R6). Shape is per
+ * entity (`source_ref`/`code` for products, `item_code`/`location_code`/
+ * `uom`/`qty` for stock) - kept as an open bag rather than a union so a new
+ * entity's shape needs no FE type change. */
+export interface AutocountPullExcludedRow {
+  [key: string]: unknown;
+  reason: string;
+}
+
+/** One negative-pair row (stock only, AC-10-42). */
+export interface AutocountPullNegativePair {
+  item_code: string;
+  location_code: string;
+  qty: number;
+}
+
+/**
+ * One snapshot's header (AC-10-32) - the ONE place the entity-specific
+ * counters appear. Product/stock counters are optional so a single type
+ * covers both entities without a discriminated union the UI must branch on
+ * for every read; `entityType` is what actually decides which counters are
+ * meaningful.
+ */
+export interface AutocountPullSnapshot {
+  id: string;
+  entityType: AutocountPullEntity | string;
+  companyId: string;
+  companyCode: string;
+  status: AutocountPullSnapshotStatus;
+  requestedVia: 'operator' | 'gateway';
+  createdAt: string | null; // ISO Z
+  extractedAt: string | null; // ISO Z
+  expiresAt: string | null; // ISO Z
+  recordCount: number;
+  complete: boolean;
+  contentHash: string | null;
+  sourcePageSize: number | null;
+  /** Absent whenever it is not known (AC-10-87) - never guessed. */
+  progress?: AutocountPullSnapshotProgress | null;
+  error?: { code: string; message: string } | null;
+  excludedCount: number;
+  excludedRows: AutocountPullExcludedRow[];
+  // product-only (AC-10-63)
+  zeroListPriceCount?: number;
+  negativeListPriceCount?: number;
+  enrichMissCount?: number;
+  // stock-only (AC-10-42/43/66/81)
+  zeroPairs?: number;
+  negativePairs?: number;
+  fractionalPairs?: number;
+  excludedNonzeroCount?: number;
+  negativePairList?: AutocountPullNegativePair[];
+}
+
+/** `GET .../rows?page=&pageSize=` - one page, served exactly as stored
+ * (AC-10-33). Row shape is per entity (`CanonicalProduct.sink_payload()` /
+ * the stock row shape, Appendix A4), so this stays `Record<string, unknown>`
+ * like every other preview grid's row type. */
+export interface AutocountPullSnapshotRowsPage {
+  snapshotId: string;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  recordCount: number;
+  rows: Array<Record<string, unknown>>;
+}
+
+/** `GET/POST /autocount/pull/keys` list item (AC-10-27/37). Never carries the
+ * plaintext - that is returned ONCE, on issue, in `AutocountPullApiKeyIssued`. */
+export interface AutocountPullApiKey {
+  id: string;
+  name: string;
+  companyIds: string[];
+  keyPrefix: string;
+  createdAt: string | null; // ISO Z
+  lastUsedAt: string | null; // ISO Z
+  revokedAt: string | null; // ISO Z
+}
+
+/** `POST /autocount/pull/keys` body - name + the explicit company set. */
+export interface AutocountPullApiKeyCreateInput {
+  name: string;
+  companyIds: string[];
+}
+
+/** Issue result - `plaintext` is shown exactly ONCE (AC-10-28), never
+ * persisted or re-derivable afterwards. */
+export interface AutocountPullApiKeyIssued {
+  key: AutocountPullApiKey;
+  plaintext: string;
 }

@@ -19,6 +19,7 @@ import type {
   AutocountCompany,
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
+  AutocountDeliveryMode,
   AutocountEntityConfig,
   AutocountEntityConfigUpdate,
   AutocountEtlPreviewResult,
@@ -33,6 +34,11 @@ import type {
   AutocountMappingView,
   AutocountMappingWriteRow,
   AutocountPreviewResult,
+  AutocountPullApiKey,
+  AutocountPullApiKeyCreateInput,
+  AutocountPullApiKeyIssued,
+  AutocountPullSnapshot,
+  AutocountPullSnapshotRowsPage,
   AutocountSimulateResult,
   AutocountSinkTargetInput,
   AutocountSqlConnection,
@@ -47,10 +53,8 @@ import type {
   HttpPreviewInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
+import { withPhase1PullMock } from './autocount-service.mock';
 import { realAutocountService } from './autocount-service.real';
-// `mockAutocountService` stays imported by the Vitest suite directly
-// (the house service-trio pattern) - no need to import it here just to
-// keep it compiling.
 
 export interface AutocountListQuery {
   page?: number; // 0-based
@@ -486,15 +490,81 @@ export interface AutocountService {
   listApiConnections(): Promise<AutocountApiConnection[]>;
   /** Page-1 sample of an open-API endpoint path (<=50 rows), writes nothing. */
   previewHttp(input: HttpPreviewInput): Promise<HttpPreview>;
+  /**
+   * `POST /autocount/http/preview-columns {connectionId, path}` (AC-10-05) -
+   * the lookup editor's own probe: page-1 column NAMES only, against ANY
+   * endpoint on the task's connection, reusing the same path-safety rule the
+   * main path already enforces.
+   */
+  previewColumns(connectionId: string, path: string): Promise<string[]>;
+
+  // ── human-invoked pull (sprint-5/10) - AC-10-11/27..38/48 ───────────────────
+  //
+  // BACKEND CONTRACT (S3/S4 must match this EXACTLY - the mock is the spec
+  // until then, `withPhase1PullMock` in `autocount-service.mock.ts`):
+  //
+  //   PUT /autocount/companies/{id}/entities/{entityType}/delivery-mode
+  //        {deliveryMode} -> AutocountEntityConfig  (AC-10-11). `pull`
+  //        requires the company's `sorentoCompanyCode` AND the entity to be
+  //        pull-capable (422 naming the field otherwise).
+  //        Gated `autocount.companies.manage`.
+  //
+  //   GET/POST /autocount/pull/keys -> AutocountPullApiKey[] /
+  //        AutocountPullApiKeyIssued (plaintext shown once, AC-10-28).
+  //   POST /autocount/pull/keys/{id}/revoke -> AutocountPullApiKey (the
+  //        server-side target of the deferred-action commit; the operator
+  //        UI itself never calls this directly - Revoke is the CORE
+  //        deferred-action grace window, AC-10-38).
+  //        Gated `autocount.pull.manage`.
+  //
+  //   GET /autocount/pull/snapshots -> ListResult<AutocountPullSnapshot>
+  //        (tenant-scoped, newest first). GET .../snapshots/{id} -> the
+  //        header. GET .../snapshots/{id}/rows?page=&pageSize= -> one page.
+  //        POST /autocount/pull/snapshots {companyId, entityType} ->
+  //        AutocountPullSnapshot (`requestedVia: 'operator'`; re-attaches to
+  //        an in-flight build for the same triple, AC-10-26/88).
+  //        Gated `autocount.pull.read` (reads) / `autocount.pull.manage`
+  //        (build).
+
+  /** The entity's push/pull choice (AC-10-11). */
+  setDeliveryMode(
+    companyId: string,
+    entityType: string,
+    deliveryMode: AutocountDeliveryMode,
+  ): Promise<AutocountEntityConfig>;
+  /** Every pull API key of the tenant (AC-10-37). */
+  listPullKeys(): Promise<AutocountPullApiKey[]>;
+  /** Issue a key - the plaintext is returned ONCE (AC-10-28). */
+  issuePullKey(input: AutocountPullApiKeyCreateInput): Promise<AutocountPullApiKeyIssued>;
+  /** The revoke ROUTE (AC-10-37) - the operator UI reaches this through the
+   * deferred-action grace window instead (AC-10-38), never directly. */
+  revokePullKey(id: string): Promise<AutocountPullApiKey>;
+  /** Snapshots of the tenant, newest first (AC-10-37). */
+  listPullSnapshots(
+    query?: AutocountListQuery & { companyId?: string; entityType?: string },
+  ): Promise<ListResult<AutocountPullSnapshot>>;
+  /** One snapshot's header (AC-10-32). */
+  getPullSnapshot(id: string): Promise<AutocountPullSnapshot>;
+  /** One page of a snapshot's rows (AC-10-33). */
+  getPullSnapshotRows(
+    id: string,
+    page?: number,
+    pageSize?: number,
+  ): Promise<AutocountPullSnapshotRowsPage>;
+  /** Build a snapshot as the operator (`requestedVia: 'operator'`, AC-10-37). */
+  buildPullSnapshot(companyId: string, entityType: string): Promise<AutocountPullSnapshot>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// S5 (sprint-5/08) - swapped to the REAL service. The open REST API source
-// (`listApiConnections`/`previewHttp`, the `refPrefix` company-create path,
-// the `autocount_http` task fields documented above) is now backed by
-// FastAPI end to end (S2 provider/company, S3 source/task, S4 brand, review
-// round 1 fixes B1-B4/S1-S13). `mockAutocountService` stays as the frontend
-// Vitest fixture only - import it directly in a test, never through this
-// module.
+// PHASE 1 MOCK (sprint-5/10 S2) - everything through S1 above (companies,
+// sync, mapping, direct-DB/open-API ETL, lookups/`preview-columns`) is real
+// (S5 swap, still live). The human-invoked pull surface - delivery mode,
+// pull API keys, snapshots - has no backend yet (S3/S4 land it); until then
+// `withPhase1PullMock` wraps `realAutocountService`, overlaying ONLY the
+// pull-shaped calls with in-memory session state so every AC-10-48 state is
+// tunable with no backend while the rest of AutoCount keeps its real data.
+// Phase 2 swap = `export const autocountService = realAutocountService`.
+// `mockAutocountService` stays importable by the Vitest suite directly (the
+// house service-trio pattern).
 // ═══════════════════════════════════════════════════════════════════════════
-export const autocountService: AutocountService = realAutocountService;
+export const autocountService: AutocountService = withPhase1PullMock(realAutocountService);

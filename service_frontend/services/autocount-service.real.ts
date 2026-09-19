@@ -10,6 +10,7 @@ import type {
   AutocountCompany,
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
+  AutocountDeliveryMode,
   AutocountEntityConfig,
   AutocountEtlSourceConfig,
   AutocountEtlPreviewResult,
@@ -24,6 +25,11 @@ import type {
   AutocountMappingView,
   AutocountMappingWriteRow,
   AutocountPreviewResult,
+  AutocountPullApiKey,
+  AutocountPullApiKeyCreateInput,
+  AutocountPullApiKeyIssued,
+  AutocountPullSnapshot,
+  AutocountPullSnapshotRowsPage,
   AutocountSimulateResult,
   AutocountSqlConnection,
   AutocountSqlPreview,
@@ -372,6 +378,70 @@ export const realAutocountService: AutocountService = {
     }).then((result) =>
       result.task ? { ...result, task: normalizeEtlTask(result.task) } : result,
     );
+  },
+
+  previewColumns(connectionId, path) {
+    return apiFetch<{ columns: string[] }>('/autocount/http/preview-columns', {
+      method: 'POST',
+      body: JSON.stringify({ connectionId, path }),
+    }).then((result) => result.columns);
+  },
+
+  // ── human-invoked pull (sprint-5/10) - contract documented on
+  // `AutocountService`. `withPhase1PullMock` (autocount-service.mock.ts)
+  // overlays these with in-memory fixtures until S3/S4 land the backend.
+
+  setDeliveryMode(companyId, entityType, deliveryMode: AutocountDeliveryMode) {
+    return apiFetch<AutocountEntityConfig>(
+      `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/delivery-mode`,
+      { method: 'PUT', body: JSON.stringify({ deliveryMode }) },
+    );
+  },
+
+  listPullKeys() {
+    return apiFetch<AutocountPullApiKey[]>('/autocount/pull/keys');
+  },
+
+  issuePullKey(input: AutocountPullApiKeyCreateInput) {
+    return apiFetch<AutocountPullApiKeyIssued>('/autocount/pull/keys', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  revokePullKey(id) {
+    return apiFetch<AutocountPullApiKey>(`/autocount/pull/keys/${id}/revoke`, {
+      method: 'POST',
+    });
+  },
+
+  listPullSnapshots(query = {}) {
+    const p = pageParams(query);
+    if (query.companyId) p.set('companyId', query.companyId);
+    if (query.entityType) p.set('entityType', query.entityType);
+    return apiFetch<ListResult<AutocountPullSnapshot>>(
+      `/autocount/pull/snapshots?${p.toString()}`,
+    );
+  },
+
+  getPullSnapshot(id) {
+    return apiFetch<AutocountPullSnapshot>(`/autocount/pull/snapshots/${id}`);
+  },
+
+  getPullSnapshotRows(id, page = 0, pageSize = 1000) {
+    const p = new URLSearchParams();
+    p.set('page', String(page + 1)); // the gateway's own pages are 1-based
+    p.set('pageSize', String(pageSize));
+    return apiFetch<AutocountPullSnapshotRowsPage>(
+      `/autocount/pull/snapshots/${id}/rows?${p.toString()}`,
+    );
+  },
+
+  buildPullSnapshot(companyId, entityType) {
+    return apiFetch<AutocountPullSnapshot>('/autocount/pull/snapshots', {
+      method: 'POST',
+      body: JSON.stringify({ companyId, entityType }),
+    });
   },
 };
 

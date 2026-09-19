@@ -2,8 +2,10 @@ import type { StatusRegistry } from '@/components/platform/status-badge';
 import { humanizeFieldKey } from '@/lib/autocount-diff';
 import { PRESETS, TRANSFORM_PRESET } from '@/lib/autocount-formula';
 import type {
+  AutocountDeliveryMode,
   AutocountEtlStatus,
   AutocountJobStatus,
+  AutocountPullSnapshotStatus,
   AutocountRunMode,
   AutocountRunOutcome,
   AutocountSourceKind,
@@ -15,11 +17,15 @@ export const AC_COMPANIES_READ = 'autocount.companies.read';
 export const AC_COMPANIES_MANAGE = 'autocount.companies.manage';
 export const AC_SYNC_READ = 'autocount.sync.read';
 export const AC_SYNC_RUN = 'autocount.sync.run';
+// sprint-5/10 (AC-10-36) - the pull gateway's operator-side permissions.
+export const AC_PULL_READ = 'autocount.pull.read';
+export const AC_PULL_MANAGE = 'autocount.pull.manage';
 
 // ── routes ───────────────────────────────────────────────────────────────────
 export const AC_COMPANIES_PATH = '/autocount/companies';
 export const AC_COMPANY_NEW_PATH = '/autocount/companies/new';
 export const AC_REVIEW_PATH = '/autocount/review';
+export const AC_PULL_PATH = '/autocount/pull';
 
 export function acCompanyHref(id: string): string {
   return `${AC_COMPANIES_PATH}/${id}`;
@@ -28,6 +34,11 @@ export function acCompanyHref(id: string): string {
 export function acReviewHref(jobId: string, from?: string): string {
   const suffix = from ? `?from=${encodeURIComponent(from)}` : '';
   return `${AC_REVIEW_PATH}/${jobId}${suffix}`;
+}
+
+/** The snapshot detail surface (AC-10-49). */
+export function acPullSnapshotHref(id: string): string {
+  return `${AC_PULL_PATH}/snapshots/${id}`;
 }
 
 /** The per-(company, entity) field-mapping editor (AC-15-40). */
@@ -181,6 +192,71 @@ export function entitiesForSourceKind(kind: AutocountSourceKind): string[] {
   if (kind === 'http') return AC_HTTP_ENTITY_TYPES;
   return AC_NEW_MASTER_ENTITY_TYPES;
 }
+
+// ── human-invoked pull (sprint-5/10) ──────────────────────────────────────────
+
+/**
+ * Entities a consumer can pull today (AC-10-15) - the Schedule tab's Delivery
+ * toggle renders ONLY for these; every other entity keeps `push` with no
+ * Delivery UI at all (foolproof-UI: only offer valid options). `stock_balance`
+ * has no push path yet at all (its gate stays shut until the consumer's
+ * contract opens it, S7) - see `AC_PULL_ONLY_ENTITY_TYPES`.
+ *
+ * PARITY-PINNED (S3+): mirrors the backend's `PULL_CAPABLE_ENTITY_TYPES`
+ * (`modules/autocount/services/etl_service.py`) once that lands.
+ */
+export const AC_PULL_CAPABLE_ENTITY_TYPES: string[] = ['product', 'stock_balance'];
+
+/** Entities whose push gate is shut (AC-10-15) - the Schedule tab shows a
+ * read-only "Pull on request" `StatusBadge`, never a toggle. */
+export const AC_PULL_ONLY_ENTITY_TYPES: string[] = ['stock_balance'];
+
+export function isPullCapable(entityType: string): boolean {
+  return AC_PULL_CAPABLE_ENTITY_TYPES.includes(entityType);
+}
+
+export function isPullOnly(entityType: string): boolean {
+  return AC_PULL_ONLY_ENTITY_TYPES.includes(entityType);
+}
+
+const DELIVERY_MODE_LABELS: Record<AutocountDeliveryMode, string> = {
+  push: 'Push',
+  pull: 'Pull on request',
+};
+
+export function deliveryModeLabel(mode: AutocountDeliveryMode | string): string {
+  return DELIVERY_MODE_LABELS[mode as AutocountDeliveryMode] ?? humanizeFieldKey(mode);
+}
+
+/** The entities list's Delivery column (AC-10-17). */
+export const AC_DELIVERY_MODE_REGISTRY: StatusRegistry<AutocountDeliveryMode> = {
+  push: { label: 'Push', tone: 'secondary' },
+  pull: { label: 'Pull on request', tone: 'info' },
+};
+
+/** `entity` on the wire (`products`/`stock_balances`) <-> this side's
+ * internal singular keys - ONE map, both directions derive from it. */
+const PULL_ENTITY_WIRE: Record<string, string> = {
+  product: 'products',
+  stock_balance: 'stock_balances',
+};
+const PULL_ENTITY_INTERNAL: Record<string, string> = Object.fromEntries(
+  Object.entries(PULL_ENTITY_WIRE).map(([internal, wire]) => [wire, internal]),
+);
+
+export function pullEntityToWire(entityType: string): string {
+  return PULL_ENTITY_WIRE[entityType] ?? entityType;
+}
+
+export function pullEntityFromWire(wireEntity: string): string {
+  return PULL_ENTITY_INTERNAL[wireEntity] ?? wireEntity;
+}
+
+export const AC_PULL_SNAPSHOT_STATUS_REGISTRY: StatusRegistry<AutocountPullSnapshotStatus> = {
+  building: { label: 'Building', tone: 'info' },
+  ready: { label: 'Ready', tone: 'success' },
+  failed: { label: 'Failed', tone: 'destructive' },
+};
 
 // ── transforms (mapping editor picker; mirrors backend mapping.py TRANSFORMS) ──
 
