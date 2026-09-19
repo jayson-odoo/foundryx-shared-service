@@ -659,7 +659,11 @@ ahead of both because PRINCIPLES mandates it.
   over `PREVIEW_PAGE_SIZE` (50) rows of the main endpoint and the SAME cap on the lookup endpoint
   (review round 1 should-fix 8) - never the full population. The S2 editor must label these as
   sample counts, not "the" matched/missed totals, or an operator will misread a 2/50 miss rate as
-  the whole task's enrich-miss rate.
+  the whole task's enrich-miss rate. The preview lookup PROBE itself (unlike a real run's
+  `_walk_endpoint`) walks PAGE 1 only, capped, never the whole lookup endpoint - so a match that
+  sits on the lookup's page 2 (or beyond) reads as a miss at preview time even though the SAME row
+  would match at run time, when the full page walk runs. Sample matched counts under-report for
+  this reason too, not only the 50-row main-page sample size.
 - **BL-SS-221** - **An operator formula naming a lookup alias fails to parse (not just "returns
   null") on a row that MISSED the lookup**, because the miss leaves the alias key ABSENT
   (AC-10-02) and `evaluate_formula`'s own `known_variables` gate is derived from the CURRENT row's
