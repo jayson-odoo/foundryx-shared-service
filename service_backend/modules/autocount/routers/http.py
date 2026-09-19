@@ -16,7 +16,15 @@ from app.database import get_db
 from app.dependencies import require_permission
 from app.models.user import User
 
-from ..schemas import HttpConnectionItem, HttpPreviewColumnOut, HttpPreviewRequest, HttpPreviewResponse
+from ..schemas import (
+    HttpConnectionItem,
+    HttpPreviewColumnOut,
+    HttpPreviewColumnsRequest,
+    HttpPreviewRequest,
+    HttpPreviewResponse,
+    LookupPreviewCountOut,
+    PreviewColumnsResponse,
+)
 from ..services import AutocountServiceError, EtlService, EtlValidationError
 from ..provider import auth_mode
 from ..http_client import get_http_transport
@@ -42,6 +50,28 @@ def list_http_connections(
         )
         for conn in connections
     ]
+
+
+@router.post("/preview-columns", response_model=PreviewColumnsResponse)
+def preview_http_columns(
+    body: HttpPreviewColumnsRequest,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+    transport: Optional[Any] = Depends(get_http_transport),
+):
+    """The Lookups editor's own probe (AC-10-05): just the first page's
+    column names against ANY endpoint on an open connection, reusing the
+    SAME connection + path rules ``/preview`` already applies - the editor
+    can never reach an endpoint the main path could not."""
+    try:
+        columns = EtlService(db).preview_http_columns(
+            current_user.tenant_id, body.connectionId, body.path, transport=transport,
+        )
+    except EtlValidationError as exc:
+        return _field_errors(exc.field_errors, exc.message)
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return PreviewColumnsResponse(columns=columns)
 
 
 @router.post("/preview", response_model=HttpPreviewResponse)
@@ -73,6 +103,7 @@ def preview_http(
             body.connectionId,
             body.path,
             distinct_of=body.distinctOf,
+            lookups=body.lookups,
             company_id=body.companyId,
             entity_type=body.entityType,
             transport=transport,
@@ -94,4 +125,8 @@ def preview_http(
         rows=result.rows,
         durationMs=result.duration_ms,
         task=_task_response(task_view) if task_view is not None else None,
+        lookups=[
+            LookupPreviewCountOut(alias=entry.alias, matched=entry.matched, missed=entry.missed)
+            for entry in result.lookups
+        ],
     )

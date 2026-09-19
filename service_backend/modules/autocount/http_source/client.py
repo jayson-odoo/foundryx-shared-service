@@ -31,14 +31,31 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 # a full product walk is ~12 pages; generous headroom, never unbounded.
 MAX_BUFFERED_CALLS = 200
 
+# AC-10-08 - an explicit, honest User-Agent on every open-REST request.
+# Cloudflare 403s the default python-urllib UA, and the default httpx UA
+# (``python-httpx/<version>``) is not something to depend on either. This
+# restates the module's own ``manifest.json`` version (there is no DB/tenant
+# context here to look up the per-tenant INSTALLED version via
+# ``app.dependencies.module_version``) - keep it in sync on every bump.
+USER_AGENT = "Foundryx-AutoCount-ESB/0.10.0"
+
 
 class HttpTransportError(Exception):
     """The host could not be reached, or timed out. Distinct from an HTTP
-    status the server actually answered."""
+    status the server actually answered.
 
-    def __init__(self, message: str):
+    ``is_timeout`` (AC-10-75) tells the retry ladder in ``source.py`` which
+    of the two bounded-retry policies applies: a TIMEOUT (incl. how a
+    Cloudflare 524 is CLASSIFIED, not raised here - that arrives as an
+    ordinary 200-range-failing response) gets exactly one retry before the
+    page-size-halving decision; a connect error or another 5xx gets up to
+    two retries with a longer backoff and never halves.
+    """
+
+    def __init__(self, message: str, *, is_timeout: bool = False):
         super().__init__(message)
         self.message = message
+        self.is_timeout = is_timeout
 
 
 class HttpApiClient:
@@ -84,21 +101,23 @@ class HttpApiClient:
             response = self._client.get(
                 url,
                 params=params,
-                headers={"Accept": "application/json"},
+                headers={"Accept": "application/json", "User-Agent": USER_AGENT},
                 timeout=self.timeout_seconds,
             )
         except httpx.TimeoutException as exc:
             self._record_call(path, params, None, started, error=f"timeout: {exc}")
             raise HttpTransportError(
                 f"{self.base_url}{path} did not respond within "
-                f"{self.timeout_seconds:g}s."
+                f"{self.timeout_seconds:g}s.",
+                is_timeout=True,
             ) from exc
         except httpx.HTTPError as exc:
             self._record_call(
                 path, params, None, started, error=f"{type(exc).__name__}: {exc}"
             )
             raise HttpTransportError(
-                f"Could not reach {self.base_url}{path} ({type(exc).__name__})."
+                f"Could not reach {self.base_url}{path} ({type(exc).__name__}).",
+                is_timeout=False,
             ) from exc
         self._record_call(path, params, response, started)
         return response

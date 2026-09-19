@@ -107,8 +107,9 @@ from .company_service import (
     ConnectionNotFound,
     EntityConfigNotFound,
 )
-from ..presets import seed_document_mapping, seed_http_preset_mapping
+from ..presets import HTTP_PRESETS, seed_document_mapping, seed_http_preset_mapping
 from ..mapping import SCOPE_HEADER, SCOPE_LINE
+from ..http_source.lookups import validate_lookups
 from ..http_source.preview import (
     HttpPreviewError,
     HttpPreviewResult,
@@ -791,6 +792,31 @@ class EtlService:
         the router projects the wire shape (auth is derived, not a column)."""
         return self.connections.list_for_provider(tenant_id, PROVIDER_KEY)
 
+    def preview_http_columns(
+        self, tenant_id: str, connection_id: str, path: str, *, transport: Any = None,
+    ) -> List[str]:
+        """``POST /autocount/http/preview-columns`` (AC-10-05) - the lookup
+        editor's own probe: just the first page's column names against ANY
+        endpoint on an open connection, so the editor offers REAL remote
+        columns to pick from rather than free text. Reuses the SAME
+        connection + path rules the main preview already applies - the
+        lookup editor can never reach an endpoint the main path could not.
+        """
+        conn = self.connections.get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
+        if conn is None or auth_mode(conn.config_json or {}) != AUTH_NONE:
+            raise EtlValidationError(
+                {"connectionId": "Choose an open (no-auth) AutoCount API connection."}
+            )
+        base_url = str((conn.config_json or {}).get("baseUrl") or "").strip()
+        path_error = validate_http_path(path)
+        if path_error:
+            raise EtlValidationError({"path": path_error})
+        try:
+            result = run_http_preview(base_url, path, transport=transport)
+        except HttpPreviewError as exc:
+            raise EtlValidationError({exc.field: exc.message}) from exc
+        return result.columns
+
     def preview_http(
         self,
         tenant_id: str,
@@ -798,6 +824,7 @@ class EtlService:
         path: str,
         *,
         distinct_of: Optional[List[str]] = None,
+        lookups: Optional[List[Dict[str, Any]]] = None,
         company_id: Optional[str] = None,
         entity_type: Optional[str] = None,
         transport: Any = None,
@@ -836,7 +863,7 @@ class EtlService:
             raise EtlValidationError({"path": path_error})
         try:
             result = run_http_preview(
-                base_url, path, distinct_of=distinct_of, transport=transport
+                base_url, path, distinct_of=distinct_of, lookups=lookups, transport=transport
             )
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc
@@ -1111,6 +1138,23 @@ class EtlService:
             key_columns=key_fields,
         )
 
+        # ── lookups (sprint-5/10, AC-10-01, R9) ───────────────────────────────
+        raw_lookups = raw.get("lookups")
+        lookups: List[Dict[str, Any]] = (
+            [dict(item) for item in raw_lookups if isinstance(item, dict)]
+            if isinstance(raw_lookups, list)
+            else []
+        )
+        if lookups and existing_result_columns is not None:
+            # Never previewed yet -> nothing to check against, the SAME
+            # "accepted un-checked" rule `keyFields` follows a few lines up.
+            # ``validate_lookups`` deliberately excludes a name this task's
+            # OWN last preview already carries because an earlier lookup
+            # produced it (see its own docstring) - a re-save of an
+            # already-working lookup can never 422 against itself.
+            for key, message in validate_lookups(lookups, existing_result_columns).items():
+                errors[key] = message
+
         # ── schedule floors (AC-22-12, reused verbatim) ──────────────────────
         minutes = _clean_int(raw.get("incrementalMinutes"))
         floor = (
@@ -1153,6 +1197,7 @@ class EtlService:
             "reconcileMode": mode,
             "reconcileHours": hours,
             "reconcileAt": at,
+            "lookups": lookups,
         }
         return clean, errors
 
@@ -1252,6 +1297,18 @@ class EtlService:
             seed_http_preset_mapping(
                 self.db, tenant_id, company_id, entity_type, columns=None
             )
+            # sprint-5/10 (AC-10-04) - the SAME seed-if-absent gate seeds
+            # ``source_config.lookups`` too, so the owner's ItemUOM lookup
+            # needs zero configuration on a fresh product task. Never
+            # re-applied once the operator has saved any lookups of their
+            # own (an empty list IS "none saved yet" here, mirroring the
+            # mapping-row seed's own "still completely empty" gate).
+            preset = HTTP_PRESETS.get(entity_type)
+            if preset is not None and preset.lookups and not config.source_config.get("lookups"):
+                config.source_config = {
+                    **config.source_config,
+                    "lookups": [dict(lookup) for lookup in preset.lookups],
+                }
 
         self.db.commit()
         self.db.refresh(config)

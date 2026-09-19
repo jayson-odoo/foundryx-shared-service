@@ -628,6 +628,13 @@ class HttpPreviewRequest(ApiModel):
     connectionId: str
     path: str = ""
     distinctOf: Optional[List[str]] = None
+    # sprint-5/10 (AC-10-05, R9) - operator-authored cross-endpoint joins,
+    # applied in order over the sampled page. Plain dicts, never a typed
+    # nested schema - ``as`` is a reserved Python keyword and every entry's
+    # shape is validated dict-by-dict in the service
+    # (``http_source.lookups.validate_lookups``) at SAVE time; the preview
+    # route only walks what it is given.
+    lookups: Optional[List[Dict[str, Any]]] = None
     # When both are given, the preview also records `resultColumns`/
     # `lastPreviewAt` on the task (AC-08-14) - exactly as the SQL preview
     # does, so the Source tab's column pickers see it without a second call.
@@ -635,11 +642,35 @@ class HttpPreviewRequest(ApiModel):
     entityType: Optional[str] = None
 
 
+class HttpPreviewColumnsRequest(ApiModel):
+    """``POST /autocount/http/preview-columns`` (AC-10-05) - the lookup
+    editor's own probe: just a connection + a path, no distinct/lookups."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    connectionId: str
+    path: str = ""
+
+
+class PreviewColumnsResponse(ApiModel):
+    columns: List[str] = []
+
+
 class HttpPreviewColumnOut(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
     name: str
     sample: Optional[str] = None
+
+
+class LookupPreviewCountOut(ApiModel):
+    """One lookup's Test-time result (AC-10-05)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    alias: str
+    matched: int
+    missed: int
 
 
 class EtlSourceConfigIn(ApiModel):
@@ -684,6 +715,9 @@ class EtlSourceConfigIn(ApiModel):
     watermarkField: Optional[str] = None
     comparedFields: List[str] = []
     distinctOf: Optional[List[str]] = None
+    # sprint-5/10 (AC-10-01, R9) - see ``HttpPreviewRequest.lookups`` for why
+    # this stays a plain dict list rather than a typed nested schema.
+    lookups: List[Dict[str, Any]] = []
 
 
 class InitialLoadProgress(ApiModel):
@@ -791,6 +825,8 @@ class HttpPreviewResponse(ApiModel):
     rows: List[Dict[str, Any]] = []
     durationMs: int = 0
     task: Optional[EtlTaskResponse] = None
+    # sprint-5/10 (AC-10-05) - per-lookup {alias, matched, missed} counts.
+    lookups: List[LookupPreviewCountOut] = []
 
 
 class EtlPreviewResponse(ApiModel):

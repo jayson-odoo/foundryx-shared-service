@@ -430,7 +430,10 @@ def test_first_clean_save_seeds_http_preset_product(db):
         .filter(AcFieldMapping.company_id == company.id, AcFieldMapping.entity_type == ENTITY_PRODUCT)
         .all()
     )
-    assert len(rows) == 8, [r.canonical_field for r in rows]
+    # sprint-5/10 (AC-10-04) - the shipped preset gains the
+    # `BaseUOMPrice -> list_price` row (R5's clamp formula), so a first
+    # clean save now seeds 9 rows, not 8.
+    assert len(rows) == 9, [r.canonical_field for r in rows]
     by_source = {r.source_path: r for r in rows}
     assert by_source["IsActive"].transform == "t_f_bool"
     assert by_source["Discontinued"].transform == "t_f_bool"

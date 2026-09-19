@@ -57,12 +57,25 @@ class HttpPreviewError(Exception):
 
 
 @dataclass
+class LookupPreviewCount:
+    """One lookup's Test-time result (AC-10-05): how many of the sampled
+    rows matched vs missed against it."""
+
+    alias: str
+    matched: int
+    missed: int
+
+
+@dataclass
 class HttpPreviewResult:
     envelope: str
     columns: List[str] = field(default_factory=list)
     rows: List[Dict[str, Any]] = field(default_factory=list)
     total_count: Optional[int] = None
     duration_ms: int = 0
+    # sprint-5/10 (AC-10-05) - per-lookup {alias, matched, missed} counts,
+    # empty when the request carried none.
+    lookups: List[LookupPreviewCount] = field(default_factory=list)
 
 
 def run_http_preview(
@@ -70,8 +83,14 @@ def run_http_preview(
     path: str,
     *,
     distinct_of: Optional[List[str]] = None,
+    lookups: Optional[List[Dict[str, Any]]] = None,
     transport: Optional[httpx.Client] = None,
 ) -> HttpPreviewResult:
+    # Local import (AC-10-05) - ``http_source.lookups`` imports
+    # ``validate_http_path`` FROM this module at ITS OWN top level, so a
+    # module-level import back here would cycle.
+    from .lookups import build_index, merge_onto_rows
+
     client = HttpApiClient(base_url, transport=transport)
     started = time.monotonic()
     try:
@@ -120,6 +139,52 @@ def run_http_preview(
                 duration_ms=duration_ms,
             )
 
+        # AC-10-05 - lookups applied IN ORDER over the sampled page, so the
+        # returned columns (and per-lookup counts) match what a real run
+        # would merge onto every row.
+        lookup_counts: List[LookupPreviewCount] = []
+        for i, spec in enumerate(lookups or []):
+            lookup_path = str(spec.get("path") or "")
+            alias_name = str(spec.get("as") or "")
+            try:
+                lookup_response = client.get(
+                    lookup_path, {"page": 1, "pageSize": PREVIEW_PAGE_SIZE}
+                )
+            except HttpTransportError as exc:
+                raise HttpPreviewError(
+                    f"The '{alias_name}' lookup endpoint '{lookup_path}' failed: "
+                    f"{exc.message}",
+                    field=f"lookups[{i}].path",
+                ) from exc
+            if not (200 <= lookup_response.status_code < 300):
+                raise HttpPreviewError(
+                    f"The '{alias_name}' lookup endpoint '{lookup_path}' answered "
+                    f"HTTP {lookup_response.status_code}.",
+                    field=f"lookups[{i}].path",
+                )
+            try:
+                lookup_body = lookup_response.json()
+            except ValueError as exc:
+                raise HttpPreviewError(
+                    f"The '{alias_name}' lookup endpoint '{lookup_path}' did not "
+                    f"answer JSON.",
+                    field=f"lookups[{i}].path",
+                ) from exc
+            try:
+                lookup_parsed = parse_page(lookup_body)
+            except ValueError as exc:
+                raise HttpPreviewError(str(exc), field=f"lookups[{i}].path") from exc
+
+            on = spec.get("on") or []
+            fields = spec.get("fields") or []
+            index = build_index(lookup_parsed.rows, on)
+            misses = merge_onto_rows(rows, index, on, fields)
+            lookup_counts.append(
+                LookupPreviewCount(
+                    alias=alias_name, matched=len(rows) - misses, missed=misses
+                )
+            )
+
         columns: List[str] = []
         for row in rows:
             for key in row.keys():
@@ -132,6 +197,7 @@ def run_http_preview(
             rows=rows,
             total_count=parsed.total_count,
             duration_ms=duration_ms,
+            lookups=lookup_counts,
         )
     finally:
         client.close()
