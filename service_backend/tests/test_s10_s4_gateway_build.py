@@ -32,6 +32,13 @@ transient `status: "building"` value a slow real build would still be
 showing when a consumer's poll actually lands (that timing is not
 reproducible under eager settings and is not what AC-10-29 itself pins).
 
+Coordinator ruling 2026-09-20 (was an ambiguity, now settled): Appendix A6
+governs even a NATIVE pydantic request-validation failure on this gateway -
+the flat `{code,message,companyCode,entity}` shape applies there too, never
+core's global `{"error": {...}}` `/api/v1/*` wrapper
+(`app/api_errors.py::install_api_error_handler`'s `RequestValidationError`
+handler).
+
 Kill-test notes are per section below.
 """
 from __future__ import annotations
@@ -183,6 +190,40 @@ def test_an_unrecognised_entity_is_a_422_naming_the_accepted_set(client, db):
         headers={"X-API-Key": key},
     )
     assert response.status_code == 422, response.text
+    # Coordinator ruling 1 (2026-09-20): flat everywhere on this gateway,
+    # INCLUDING request-validation failures - never core's `{"error": {...}}`
+    # wrapper (`app/api_errors.py`'s global `RequestValidationError` handler,
+    # which every OTHER `/api/v1/*` route gets).
+    body = response.json()
+    assert "error" not in body
+    assert body.get("code")
+    assert body.get("message")
+
+
+def test_a_malformed_request_body_is_still_the_flat_envelope_never_cores_wrapper(client, db):
+    """Coordinator ruling 1: a missing/wrong-typed field (here `entity`
+    omitted entirely) is a NATIVE pydantic body-validation failure - the
+    kind `app/api_errors.py`'s global handler would otherwise wrap as
+    `{"error": {"code": "invalid_request", ...}}` for every OTHER
+    `/api/v1/*` route. This gateway must still answer flat."""
+    conn = _connection(db)
+    company = _company(db, conn.id)
+    key = _issue_key(db, company_ids=[company.id])
+
+    response = client.post(
+        f"{GATEWAY_PREFIX}/snapshots",
+        json={"companyCode": "SRT"},  # `entity` missing entirely
+        headers={"X-API-Key": key},
+    )
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert "error" not in body, (
+        "the core /api/v1/* envelope leaked through - this route must "
+        "answer the flat Appendix A6 shape even for a native validation "
+        "failure, per the coordinator's ruling"
+    )
+    assert body.get("code")
+    assert body.get("message")
 
 
 def test_company_code_resolves_case_insensitively_and_trimmed(client, db, monkeypatch):

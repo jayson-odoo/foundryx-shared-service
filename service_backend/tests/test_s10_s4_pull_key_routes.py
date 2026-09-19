@@ -36,8 +36,12 @@ ASSUMED NAMES:
   `modules/autocount/permissions/permissions.csv` (AC-10-36) - verified
   against core for collisions; `update_tenant` re-runs the tenant Admin
   grant sweep so an ALREADY-PROVISIONED tenant's Admin gets both keys.
-* Deferred action (plan §2.6): key `"autocount_pull_key.revoke"`, entity
-  type `"autocount_pull_key"`, permission `"autocount.pull.manage"`,
+* Deferred action (plan §2.6): key `"autocount_pull_api_key.revoke"`,
+  entity type `"autocount_pull_api_key"` - pinned to the shipped FE contract
+  (`service_frontend/app/(protected)/autocount/pull/components/
+  use-pull-list-config.tsx:290`, `lib/deferred-verb.ts`'s `ENTITY_NOUNS`
+  row), consistent with the table name `ac_pull_api_key` - permission
+  `"autocount.pull.manage"`,
   registered in `modules/autocount/deferred_actions.py` beside
   `autocount_etl_task.repush`, executor calling
   `PullKeyService.revoke(tenant_id, entity_id)`.
@@ -60,8 +64,8 @@ from app.security import hash_password
 from sqlalchemy.sql import func
 
 OTHER_TENANT = "tenant-other-s10-s4-key-routes"
-ACTION_KEY = "autocount_pull_key.revoke"
-ENTITY_TYPE = "autocount_pull_key"
+ACTION_KEY = "autocount_pull_api_key.revoke"
+ENTITY_TYPE = "autocount_pull_api_key"
 
 
 @pytest.fixture(autouse=True)
