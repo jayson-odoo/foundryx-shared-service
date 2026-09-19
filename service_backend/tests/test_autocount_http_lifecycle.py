@@ -462,7 +462,12 @@ def test_extract_and_map_dispatches_http_api_source_never_sql_engine(db, monkeyp
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=[{"ItemCode": "A1", "Description": "Item A1"}])
+        # sprint-5/10 - the live wrapper carries a `Desc2` key on every item
+        # row (null when empty, keys uniform across rows); this stub now
+        # matches that shape rather than omitting the key entirely.
+        return httpx.Response(
+            200, json=[{"ItemCode": "A1", "Description": "Item A1", "Desc2": None}]
+        )
 
     stub_transport = httpx.Client(transport=httpx.MockTransport(handler))
     monkeypatch.setattr(
