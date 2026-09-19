@@ -99,16 +99,55 @@ def test_product_preset_ships_the_pre_filled_item_uom_lookup():
     assert lookup["fields"] == [{"remote": "Price", "as": "BaseUOMPrice"}]
 
 
+def _product_preset_lookup_aliases() -> set:
+    return {
+        field_spec["as"]
+        for lookup in PRODUCT_HTTP_PRESET.lookups
+        for field_spec in lookup.get("fields", [])
+    }
+
+
 def test_product_preset_lookup_validates_clean():
     """The shipped lookup must itself pass AC-10-01's own validator against
     the product preset's OWN source columns - a preset that fails its own
     save gate would be a foolproof-UI regression the moment the operator
-    opens a fresh task."""
+    opens a fresh task.
+
+    review round 1b (orchestrator-authorized fixture fix, assertion
+    unchanged): under the raw-only rule, `source_columns` means the task's
+    STORED, RAW main-endpoint columns - never a lookup's own alias (which
+    is derived at read time, never stored). The old fixture modelled the
+    pre-round-1b mixed `result_columns` by using every mapping row's
+    `source_path` verbatim, which includes `BaseUOMPrice` only because the
+    list_price mapping row's source_path equals the lookup's alias
+    (AC-10-04) - not because it is ever a genuine raw column. Excluding the
+    preset's own lookup aliases (derived from `PRODUCT_HTTP_PRESET.lookups`
+    itself, never hardcoded) makes this fixture model a genuinely raw set.
+    """
     from modules.autocount.http_source.lookups import validate_lookups
 
-    source_columns = [f.source_path for f in PRODUCT_HTTP_PRESET.rows]
+    lookup_aliases = _product_preset_lookup_aliases()
+    source_columns = [
+        f.source_path for f in PRODUCT_HTTP_PRESET.rows if f.source_path not in lookup_aliases
+    ]
     errors = validate_lookups(list(PRODUCT_HTTP_PRESET.lookups), source_columns)
     assert errors == {}, errors
+
+
+def test_product_preset_lookup_rejects_when_its_alias_is_a_raw_column():
+    """The sibling of the test above: the SAME preset lookup, validated
+    against a column set that DOES contain `BaseUOMPrice` as a genuine raw
+    column, must be rejected - pinning that the collision check is exact
+    (never vacuously empty because this fixture happens to exclude it),
+    not just that the "clean" case above passes."""
+    from modules.autocount.http_source.lookups import validate_lookups
+
+    lookup_aliases = _product_preset_lookup_aliases()
+    source_columns = [
+        f.source_path for f in PRODUCT_HTTP_PRESET.rows if f.source_path not in lookup_aliases
+    ] + sorted(lookup_aliases)
+    errors = validate_lookups(list(PRODUCT_HTTP_PRESET.lookups), source_columns)
+    assert "lookups[0].fields[0].as" in errors, errors
 
 
 # ── AC-10-59: the clamp formula, on the DELIVERED wire value ─────────────────
