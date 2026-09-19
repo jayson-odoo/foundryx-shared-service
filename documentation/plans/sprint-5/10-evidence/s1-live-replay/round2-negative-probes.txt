@@ -1,0 +1,49 @@
+Post-review re-check (HEAD 819a8ce1) - negative API probes, all live against :8009.
+
+=== probe 1: POST /autocount/http/preview, lookup path "/../db2/itembypage" ===
+HTTP 422
+{"detail":{"fieldErrors":{"lookups[0].path":"The path may not contain '..'."}},"message":"The task could not be saved. Fix the highlighted fields."}
+No outbound request: confirmed via public.integration_activity (0 new rows after the probe timestamp, baseline captured immediately before both path probes).
+
+=== probe 2: POST /autocount/http/preview-columns, path "/../db2/itembypage" ===
+HTTP 422
+{"detail":{"fieldErrors":{"path":"The path may not contain '..'."}},"message":"The task could not be saved. Fix the highlighted fields."}
+No outbound request (same integration_activity check).
+
+=== probe 3: PUT .../etl-task, 6 lookups ===
+HTTP 422
+{"detail":{"fieldErrors":{"lookups":"No more than 5 lookups are allowed on one task."}},"message":"The task could not be saved. Fix the highlighted fields."}
+
+=== probe 4: PUT .../etl-task, lookup alias "Description" (a real raw column) ===
+HTTP 200 - SAVE ACCEPTED. This is BY DESIGN, not a defect: the save-time gate calls
+validate_lookups(clean_lookups, None) with source_columns=None when the task's own stored
+result_columns/lookups do not yet reflect this alias (services/etl_service.py:873, and the
+save-path's own comment at ~1160-1168 names this exact "Description" example verbatim: "a new
+lookup aliased the same as a genuine stored raw column ... saved clean, even though it would
+still fail loudly at preview/run time"). Confirmed live:
+
+=== probe 4b: POST /autocount/http/preview, SAME lookup alias "Description" ===
+HTTP 422
+{"detail":{"fieldErrors":{"lookups[0].as":"'Description' is already a source column."}},"message":"The task could not be saved. Fix the highlighted fields."}
+
+Run-time guard confirmed by code inspection (not re-run live to avoid a further ~9-minute
+mutation cycle - the mechanism is unit-tested and unambiguous):
+http_source/lookups.py:326 raises AliasCollisionError when a merge would overwrite an existing
+row key; http_source/source.py:421-432 catches it and raises HttpSourceError("... would
+overwrite an existing column of the same name - nothing was staged or pushed.",
+code="alias_collision") - fails the WHOLE run, fail-before-state, exactly as designed.
+
+Task restored to the clean ItemUOM lookup immediately after probe 4 (verified via GET before
+probe 5).
+
+=== probe 5: PUT .../etl-task, keyFields ["ItemCode", "BaseUOMPrice"] (BaseUOMPrice is an alias) ===
+HTTP 422
+{"detail":{"fieldErrors":{"keyFields":"'BaseUOMPrice' comes from a lookup, which can be absent on a miss - choose a source column."}},"message":"The task could not be saved. Fix the highlighted fields."}
+Task config unmutated by the failed save (verified via GET: keyFields still ["ItemCode"],
+lookups still the clean ItemUOM one).
+
+=== probe 6: PUT .../etl-task OMITTING "lookups" entirely from sourceConfig ===
+HTTP 200
+Response sourceConfig.lookups: [{"path": "/itemuombypage", "as": "uom", "on": [...], "fields":
+[{"remote": "Price", "as": "BaseUOMPrice"}]}] - the stored lookup SURVIVED the omission (point 4
+in the brief: "lookups omitted on save = keep stored").
