@@ -393,10 +393,16 @@ def test_enrich_endpoint_failure_fails_the_run_before_any_state_touched(rig):
     assert db.query(AcRowHash).count() == before_hash_count
 
 
-# ── AC-10-06: an enrich-only change is a genuine `updated` ───────────────────
+# ── AC-10-06 / AC-10-54: an enrich-only change is a genuine `updated`,   ─────
+# ── and a third, identical run afterwards reports 0/0/0 (mutation replay) ───
 
 
-def test_enrich_only_price_change_reports_updated_count_one(rig):
+def test_enrich_only_price_change_reports_updated_count_one_then_0_0_0(rig):
+    """AC-10-06 (run 1 -> run 2, ONLY the enriched Price changed for one
+    item) chained into AC-10-54's own mutation-replay shape (a THIRD,
+    identical run afterwards reports 0 added / 0 updated / 0 deleted) -
+    a smaller fixture (2 items, not the AC's illustrative 20) since the
+    COUNT is not the pinned property, the BEHAVIOUR is."""
     db, company, conn = rig
     config = _config(db, company, connection_id=conn.id, lookups=[ITEM_UOM_LOOKUP])
     calls: List[httpx.Request] = []
@@ -428,6 +434,17 @@ def test_enrich_only_price_change_reports_updated_count_one(rig):
     result2 = second.fetch_changes(Watermark())
     assert result2.added_count == 0
     assert result2.updated_count == 1, "ONLY the enriched Price changed for SRT-11"
+    assert result2.delete_refs == []
+
+    # AC-10-54: a THIRD run, byte-identical to the second, reports 0/0/0.
+    third = HttpApiSource(
+        _ctx(db, company, config), entity_type=ENTITY_PRODUCT, mode=RUN_MODE_RECONCILE,
+        transport=_transport(_multi_handler(make_pages(70.0), calls)),
+    )
+    result3 = third.fetch_changes(Watermark())
+    assert result3.added_count == 0
+    assert result3.updated_count == 0
+    assert result3.delete_refs == []
 
 
 # ── AC-10-60(a): a trimmed key view is used for the JOIN, never written back ─
