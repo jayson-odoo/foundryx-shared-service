@@ -654,6 +654,32 @@ ahead of both because PRINCIPLES mandates it.
 
 ## 6. Backlog
 
+- **BL-SS-222** - **Preview matched/missed counts are a 50-row SAMPLE.**
+  `POST /autocount/http/preview`'s per-lookup `{alias, matched, missed}` (AC-10-05) is computed
+  over `PREVIEW_PAGE_SIZE` (50) rows of the main endpoint and the SAME cap on the lookup endpoint
+  (review round 1 should-fix 8) - never the full population. The S2 editor must label these as
+  sample counts, not "the" matched/missed totals, or an operator will misread a 2/50 miss rate as
+  the whole task's enrich-miss rate.
+- **BL-SS-221** - **An operator formula naming a lookup alias fails to parse (not just "returns
+  null") on a row that MISSED the lookup**, because the miss leaves the alias key ABSENT
+  (AC-10-02) and `evaluate_formula`'s own `known_variables` gate is derived from the CURRENT row's
+  raw dict keys (`_header_facts` = `dict(raw)`) - a formula referencing an absent name cannot even
+  parse, which fails that ONE record (visible as `STAGED_FAILED` / an excluded row, review round 1
+  finding while diagnosing a `test_autocount_http_lifecycle.py` regression whose OWN cause was
+  unrelated - a missing raw `Desc2` key, not a lookup miss - but the SAME mechanism). No shipped
+  preset does this today (the clamp formula's own source, `BaseUOMPrice`, sits on the SAME row the
+  lookup wrote it onto, never referenced from a DIFFERENT row's formula). Consider an
+  alias-aware `known_variables` (treat a configured lookup alias as always-known, defaulting to
+  absent/None when missed) before an operator-authored formula ever names one.
+- **BL-SS-220** - **AC-10-75's halving budget is PER ENDPOINT WALK, not shared per run.** Each of
+  the main path and every lookup gets its OWN independent "at most two halvings" budget
+  (`http_source/source.py`'s `_walk_endpoint`), so a task with the maximum 5 lookups plus the main
+  path could in the worst case halve 6 times across one run (2 halvings x 6 endpoints) before the
+  existing failure rule applies to any ONE of them. The plan's own text left "per run" ambiguous
+  between "one `fetch_changes` call" and "one endpoint walk"; taken as per-endpoint-walk since no
+  AC-10-75 test forced a shared reading and a shared counter would let a slow lookup exhaust the
+  main path's own retry budget. Revisit if a slow book's worst-case build time needs a tighter
+  cross-endpoint bound.
 - **BL-SS-219** - **Vendor-side db2 (Mocha) wrapper performance.** Measured 2026-09-19/20:
   roughly 0.2 s per row against about 0.02 s on db1, with Cloudflare 524-ing any request past
   about 100 s (`pageSize=1000` failed 9 of 9 attempts at about 125 s; 100 rows took 22 s, 300 rows
