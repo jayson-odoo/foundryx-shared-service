@@ -174,3 +174,117 @@ coder as a pre-existing staging-dedup gap worth a backlog entry, not filed as a 
 Backend `:8009` (pid 90663) killed after confirming its `cwd` was `s40/service_backend`;
 `lsof -i :8009 -sTCP:LISTEN` confirmed free afterward. No frontend was started (this pass was
 API-only, per the brief - `[T]` live replay, not `[E2E]`).
+
+---
+
+## Post-review re-check (HEAD 819a8ce1, 2026-09-19/20 UTC)
+
+Review rounds 1 and 1b landed after the original replay (HEAD `ce15df69`). Worktree confirmed
+clean (`git status --porcelain` empty) before starting; the earlier "uncommitted modifications"
+were the coder's in-flight round-1 work, now committed. Same lane (`s40`, :8009, DB
+`foundryx_service_s40`), same company/connection/task reused, logging sink throughout, db2
+never touched.
+
+### Part A - pytest
+
+```
+.venv/bin/python -m pytest -q tests/test_s10_*.py tests/test_autocount_http_source.py \
+  tests/test_autocount_http_lifecycle.py tests/test_autocount_http_task_config.py \
+  tests/test_autocount_so_ref.py
+```
+
+**198 passed, 0 failed, 87.53s** (92.32s wall including collection) - up from 136 tests/93.06s
+in the first pass (more tests: round 1/1b's own red-then-green coverage plus
+`test_autocount_so_ref.py`), and markedly faster per-test now that sleeps are patched in the
+retry-path tests.
+
+### Part B - live, db1 only
+
+Backend restarted on :8009 from HEAD `819a8ce1` (new pid, confirmed `cwd` before kill at the
+end). Logged in as `demo@example.com` - no throttle.
+
+**1. `resultColumns` derive-at-read (point 1).** The reused task's `GET .../etl-task` already
+showed `resultColumns` ending in `BaseUOMPrice` (stale from before round 1b). Re-previewed via
+`POST /autocount/http/preview` with the SAME lookup (fresh `lastPreviewAt` stamped,
+`totalCount: 11840`, `lookups: [{"alias":"uom","matched":50,"missed":0}]`) - the returned
+`task.resultColumns` contains `BaseUOMPrice` exactly ONCE (20 entries, `count == 1`). A
+follow-up plain `GET .../etl-task` confirms the same: exactly one `BaseUOMPrice`, no duplicate.
+Confirmed directly against Postgres: `ac_entity_config.result_columns` stores only the 19 RAW
+main-endpoint columns (`BaseUOMPrice` absent from the stored JSON) - the alias is derived at
+read time, never persisted twice.
+
+**2/3. Three unchanged runs.** Run 1 (`20:02:31` -> `20:10:41`, ~8m10s): `outcome SUCCESS,
+rows_scanned 11840, added 0, updated 0, deleted 0`. The brief flagged that the first run after
+the fix MAY legitimately show updates because the compared set changed shape - it did not: the
+underlying enriched value (`BaseUOMPrice`) was already being hashed before round 1b too (it was
+stored inline in `result_columns` then), so the row_hash inputs ended up byte-identical and 0/0/0
+is the correct, explainable outcome here, not a gap in the probe. Run 2 (`20:10:56` ->
+`20:19:55`) and Run 3 (`20:20:02` -> `20:29:08`): both `rows_scanned 11840, added 0, updated 0,
+deleted 0`. **Three consecutive stable runs**, confirmed via `ac_sync_run`.
+
+Both Run 1 and the ORIGINAL round-1 pass independently hit the live wrapper's real timeout
+behaviour again this pass too (page 8 at `pageSize=1000` timed out twice, halved to 500,
+restarted from page 1) - a further, independent live confirmation of AC-10-75, not re-excerpted
+here (same pattern as `ac10-75-retry-halving-activity-run1.txt`).
+
+**Re-measured payload facts, DISTINCT products only** (`measure-round2-distinct.py`/
+`measure-round2-distinct-counts.txt` - `DISTINCT ON (source_ref)` picking the latest row, since
+repeated unchanged runs keep adding physical `ac_staged_record` rows per the pile-up mechanism
+below, and a plain `COUNT(*)` would double/triple-count the same product):
+
+| Fact | First replay (ce15df69) | Post-review (819a8ce1) | Delta |
+|---|---|---|---|
+| Distinct products | 11,840 | 11,840 | none |
+| Enrich match rate | 100% (0 missed) | 100% (0 missed) | none |
+| Delivered `list_price == 0` | 5,129 | 5,129 | none |
+| Negative source price clamped | 121 | 121 | none |
+| `source_ref` prefix correct | 11,840 / 11,840 | 11,840 / 11,840 | none |
+| `list_price` JSON string | 11,840 / 11,840 | 11,840 / 11,840 | none |
+| Forbidden keys (`uom_code`/`cost_price`/`remark`/`is_discontinued`) | 0/0/0/0 | 0/0/0/0 | none |
+| Description internal double space | 2,768 | 2,768 | none |
+
+**Byte-identical wire content** across the round-1b refactor (raw-only stored `resultColumns`,
+alias derived at read) - exactly what the refactor promised: a storage-shape change with no
+delivery-content change.
+
+**4. Negative probes** (full request/response bodies in `round2-negative-probes.txt`):
+
+| # | Probe | Result |
+|---|---|---|
+| 1 | `preview` with lookup path `/../db2/itembypage` | 422 naming `lookups[0].path`; zero outbound requests (confirmed via `integration_activity`) |
+| 2 | `preview-columns` with the same path | 422 naming `path`; zero outbound requests |
+| 3 | save with 6 lookups | 422 naming `lookups` ("No more than 5 lookups...") |
+| 4 | save with lookup alias `Description` (a real raw column) | **200, accepted** - confirmed BY DESIGN (save-time validates with `source_columns=None`; the code's own round-1b comment names this exact case). The SAME config immediately 422s at `preview` (`"'Description' is already a source column."`) and is coded to fail the whole run at execution time (`AliasCollisionError` -> `HttpSourceError`, `code="alias_collision"`) - "preview 422, run fails loudly" confirmed exactly as stated, task restored clean afterward |
+| 5 | save with `keyFields: ["ItemCode", "BaseUOMPrice"]` | 422 naming `keyFields` ("comes from a lookup, which can be absent on a miss") |
+| 6 | save OMITTING `lookups` entirely | 200; the stored ItemUOM lookup SURVIVED (not cleared) |
+
+**5. `MASTER_RECORD_CAP=5000` staged-row pile-up - mechanism (pre-existing, NOT a plan-10/S1
+defect).**
+
+`company_service.py`'s `MASTER_RECORD_CAP = 5000` at `c1c5906a` is the SOURCE-side unbounded-read
+cap for a master's initial load, unrelated to this. The actual mechanism is
+`AutocountRepository.list_pending_for_entity(..., limit: int = 5000)` (pre-existing, plan 22) -
+auto-push offers at most 5000 `STAGED` rows per run, oldest-`last_offered_at`-first, then
+`source_last_modified` DESC as the tie-break among never-offered (`NULL`) rows. Every RECONCILE
+run re-extracts and re-diffs the FULL 11,840-row set unconditionally (`sync.py`'s staging step
+has no hash short-circuit before writing `ac_staged_record`): a `source_ref` whose PRIOR staged
+row was already `PUSHED` gets a brand-new row inserted (fresh `last_offered_at = NULL`); a
+`source_ref` still `STAGED` (never pushed) gets its existing row updated in place.
+
+**Verdict: these rows are NOT harmless leftovers - they WILL re-deliver.** `list_pending_for_entity`
+selects by `status == STAGED` alone, with no "is this actually different from what was last
+pushed" filter, so every piled-up row - including ones representing NO real change - is eligible
+for a future push and eventually gets one (idempotent content, but genuine redundant delivery
+traffic, and each fresh duplicate's `NULL last_offered_at` lets it out-compete the true backlog on
+`source_last_modified` DESC). Live counts after 5 total runs across both passes (2 + 3): **31,840
+physical `ac_staged_record` rows, 11,840 distinct products** - `PUSHED 25,000` (exactly `5 runs x
+5000`) / `STAGED 6,840` (the SAME 6,840 refs stuck un-pushed both passes - they lose the
+`source_last_modified` DESC tie-break to the 5,000 most-recently-AutoCount-edited items every
+single run, a starvation interaction between the reconcile-always-restages design and the
+offer-ordering guard). Confirmed via `psql` counts, not fixed (out of scope, flagged for the plan
+owner as a backlog candidate).
+
+### Servers
+
+Backend `:8009` (pid confirmed `cwd = s40/service_backend` before kill) stopped;
+`lsof -i :8009 -sTCP:LISTEN` confirmed free afterward.
