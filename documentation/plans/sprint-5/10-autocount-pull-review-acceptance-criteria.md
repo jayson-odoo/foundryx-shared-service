@@ -7,7 +7,7 @@ head `0019_autocount_so_ref`). Lane ports backend :8009 / frontend :3009, DB
 
 Owner intent (grill 2026-09-19): item master and stock balance are uploaded into Sorento BY
 HAND today (Excel). The owner does not want auto-push for them yet. Wanted flow: a Sorento
-user presses a button, Sorento pulls from FoundryX (sourced from the AutoCount hapi wrapper),
+user presses a button, Sorento pulls from Foundryx (sourced from the AutoCount hapi wrapper),
 reviews the result against the manual upload (with an optional xlsx download), and Confirms.
 After a few days of human-checked runs each entity flips to auto-push independently. SO / PO /
 SPO stay on push, unchanged. Both company books are in scope from day one: `db1` (Sorento) and
@@ -34,7 +34,7 @@ SPO stay on push, unchanged. Both company books are in scope from day one: `db1`
   upsert is non-destructive) and Sorento lists them on the review page. Stock: unchanged strict
   rule - Sorento refuses Confirm while any excluded row has `qty != 0`.
 
-- **R7 (2026-09-19, from the peer's macro-workbook measurement)** - **FoundryX delivers EVERY
+- **R7 (2026-09-19, from the peer's macro-workbook measurement)** - **Foundryx delivers EVERY
   positive (item, location) pair; there is NO location allow-list on this side.** The manual
   macro workbook was proven to be `Master` (11,205 raw rows) filtered by an `Active Loc` sheet
   (60 locations) AND `On Hand Qty > 0`, giving exactly its 6,591 `Template` rows - a LOCATION
@@ -45,12 +45,12 @@ SPO stay on push, unchanged. Both company books are in scope from day one: `db1`
   whose warehouse is ACTIVE in Sorento and lists inactive / unknown-location rows on its review
   page as "not applied" with counts. No contract change; the stock slice is not gated.
 
-- **R8 (2026-09-19, locked): CODE WINS for product identity.** FoundryX keys EVERY product
+- **R8 (2026-09-19, locked): CODE WINS for product identity.** Foundryx keys EVERY product
   `<refPrefix>:<ItemCode>` on BOTH books, from the HTTP source, using `PRODUCT_HTTP_PRESET` as it
   stands - no DB-source variant, no `AutoKey`/`DocKey` scheme. The 9,067 live
   `AED_SORENTO:<numeric>` product refs were minted by SO/PO LINE ingest (the document resolver
   links a line's `product_ref` when the `product_code` rung hits), never by a product master push
-  - the FoundryX `SRT` Product task has never run. Sorento's `integration_references` is UNIQUE on
+  - the Foundryx `SRT` Product task has never run. Sorento's `integration_references` is UNIQUE on
   `(entity_type, entity_id)`, so alias refs are impossible; instead Sorento changes
   `MasterIngestService` for `products` ONLY: a ref miss whose `code` matches a product already
   linked under the SAME source system and company UPDATES that product, KEEPS the existing ref
@@ -587,7 +587,7 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   remains the authoritative full total. Test: 3 excluded rows of which 2 carry `qty != 0` yields
   `excludedCount: 3`, `excludedNonzeroCount: 2`, `truncated` absent.
 
-- **AC-10-68 [BE]** **No location allow-list, no active filter, no item filter in FoundryX
+- **AC-10-68 [BE]** **No location allow-list, no active filter, no item filter in Foundryx
   (R7).** The stock preset's combine step cuts on quantity only (its two drop rules). A fixture whose locations include ones that
   are inactive in AutoCount (`PRJ-ACT`, `LOC1`, `PRJ-JW`, `BEYOND`, `SAMPLE` are the live
   stock-bearing examples) and ones absent from the consumer entirely (`BRW-VAR`) delivers every
@@ -877,7 +877,7 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
     for any product whose AutoCount data has not changed since the last manual upload - every
     remaining diff row explainable, row by row.
   - **joint run 2** stock, `SRT` then `MCH` (their SR4), recording BOTH numbers: rows delivered by
-    FoundryX and rows applied by Sorento after its active-warehouse filter (R7).
+    Foundryx and rows applied by Sorento after its active-warehouse filter (R7).
 - **AC-10-67 [T]** S0 ships recorded sample fixtures for the Sorento mock build under
   `documentation/plans/sprint-5/10-fixtures/`: per entity (`products`, `stock_balances`) a
   snapshot header JSON and one 10-row page JSON, plus one 409 body and one `status: "failed"`

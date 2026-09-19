@@ -17,7 +17,7 @@ uploads an Excel file. The owner will not hand that to an unattended push yet (g
 2026-09-19). The wanted flow is a human in the loop on the CONSUMER side:
 
 1. A Sorento user presses a button.
-2. Sorento calls FoundryX server-side and pulls the extract (sourced from the AutoCount hapi
+2. Sorento calls Foundryx server-side and pulls the extract (sourced from the AutoCount hapi
    wrapper this module already reads).
 3. Sorento shows a review page (plus an optional xlsx download in the manual template shape),
    the user compares it against what the manual upload produced, and presses Confirm.
@@ -29,7 +29,7 @@ SO / PO / SPO stay on push exactly as they are. Both books are in scope from day
 wrong:
 
 - **No route a consumer can call.** Everything this module does is outbound push
-  (`sinks_sorento.SorentoSink`). Nothing outbound Sorento -> FoundryX exists.
+  (`sinks_sorento.SorentoSink`). Nothing outbound Sorento -> Foundryx exists.
 - **No held extraction.** A pull that re-reads the ERP on Confirm would confirm a DIFFERENT set
   than the one reviewed.
 - **No stock balance and no list price.** `CanonicalProduct.list_price` exists in `SINK_FIELDS`
@@ -247,7 +247,7 @@ the same data after a LOCATION filter (`Master` filtered by an `Active Loc` shee
 and `On Hand Qty > 0`), and Sorento's `warehouses.is_active` already mirrors that sheet almost row
 for row. So the filter lives where the flag lives: Sorento applies only rows whose warehouse is
 active there and lists the rest as "not applied" with counts. Putting a copy of that list in
-FoundryX would be a second source of truth that silently drifts the first time a warehouse is
+Foundryx would be a second source of truth that silently drifts the first time a warehouse is
 activated. Of the 75 stock-bearing locations: 43 active in Sorento, 25 present but inactive
 (5,476 pairs, led by `CON` 1,596 / `BRW-DFCT` 982 / `JB SHOWR` 571), 7 missing entirely
 (155 pairs, led by `BRW-VAR` 142). AC-10-68 pins the absence of a filter here.
@@ -415,7 +415,7 @@ same product is impossible, and today `MasterIngestService` raises `ReferenceCon
 FAILED) when a ref misses but the code matches an already-linked product. An ItemCode-keyed `SRT`
 pull against contract 2.3 would therefore fail roughly 9,067 records.
 
-The owner's ruling is the simple one: **code wins.** FoundryX keeps `PRODUCT_HTTP_PRESET` exactly
+The owner's ruling is the simple one: **code wins.** Foundryx keeps `PRODUCT_HTTP_PRESET` exactly
 as it is (`key_fields = ("ItemCode",)`) on BOTH books - no DB-source product variant, no `AutoKey`
 scheme, nothing conditional per book. Sorento changes `MasterIngestService` for `products` only:
 a ref miss whose code matches a product already linked under the same source system and company
@@ -600,7 +600,7 @@ ahead of both because PRINCIPLES mandates it.
   This is the same exposure as today (new items arrive only when the item Excel is uploaded), so
   parity - but the product pull is what unblocks those lines, which is one more reason the
   products flip to push should not wait long after the check days.
-- **Stock scope and warehouse coverage.** Closed by R7: FoundryX ships every positive pair, the
+- **Stock scope and warehouse coverage.** Closed by R7: Foundryx ships every positive pair, the
   consumer filters on its own active flag. S5 is not gated.
 - **The `db2` (Mocha) wrapper is roughly 0.2 s PER ROW and Cloudflare cuts at about 100 s.**
   Measured 2026-09-19/20: `pageSize=1000` -> 524 after about 125 s on 9 of 9 attempts (pages 1-3),
@@ -696,7 +696,7 @@ ahead of both because PRINCIPLES mandates it.
   problem on Sorento's review pages.
 - **BL-SS-207** - **PLANNED follow-up slice S7**, after the human-checked period and gated on
   Sorento's SR5: the `stock_balances` ingest entity (contract **2.5**, moved from 2.4 when 2.4 was
-  taken by R8's products code-wins change) and the FoundryX flip of stock from pull to auto-push.
+  taken by R8's products code-wins change) and the Foundryx flip of stock from pull to auto-push.
   Deliberately OUT of this plan's Definition of Done - the gate (AC-10-15) is what opens it, and
   no reducer, preset or lookup has to change. Links BL-SS-041, BL-SS-203.
 - **BL-SS-208** - **Pulled into scope by owner ruling R9** (operator-authored lookups). Kept as a
@@ -728,7 +728,7 @@ ahead of both because PRINCIPLES mandates it.
 - **BL-SS-214** - Server-side filtering on `/itembatchbalqtybypage` (the walk reads 68,612 rows
   to emit ~12k). Extends BL-SS-204 (the same ask for `LastModified`).
 - **BL-SS-041 / BL-SS-203** (existing) - update the rows to note that stock balance now has a
-  FoundryX-side canonical entity and a pull path, and that only the Sorento ingest half remains.
+  Foundryx-side canonical entity and a pull path, and that only the Sorento ingest half remains.
 
 ## 7. Decision log
 
@@ -744,10 +744,10 @@ ahead of both because PRINCIPLES mandates it.
 | D15 | Negative `list_price` is clamped to 0 by the preset mapping row's FORMULA `if(number(value) < 0, 0, number(value))`, not by the canonical model (R5) | 121 active db1 items carry the `-1.0` sentinel and `list_price` is `ge=0`. The operator must be able to SEE and edit the rule; the Mapping tab, its formula builder and its simulator already exist. One mapper means the push path gets it too |
 | D16 (owner approved 2026-09-19) | Snapshot header carries `excludedCount` + `excludedRows[]` for BOTH entities and `negativeListPriceCount` for products; `zeroListPriceCount` is POST-clamp | The consumer needs to show its user exactly what did not come through, and two counters that could be read as overlapping must have one stated definition |
 | D22 | Manual-upload parity is enforced as a GATE (visible description formula here + a two-path parity pytest on Sorento + an explainable-diff exit criterion on joint run 1), and `uom_code` is withheld until the push flip (R10) | Owner: pull must behave exactly like the manual Excel upload. Both paths derive `is_discontinued` and L/W/H from the description text, so parity is won by sending the right description - not by a second code path (R1 stands). Inner whitespace is never collapsed: 2,786 live rows carry a double space because the Excel path joins raw |
-| D19 | Products are keyed `<prefix>:<ItemCode>` on both books; Sorento makes CODE WIN for `products` (contract 2.4) rather than FoundryX adopting the AutoKey refs (R8) | The 9,067 numeric refs came from LINE ingest, not a master push, and their `integration_references` cannot hold an alias. Keying on AutoKey would need a DB-source product variant per book and would still leave MCH (zero refs) different. One key, one preset, one rule |
+| D19 | Products are keyed `<prefix>:<ItemCode>` on both books; Sorento makes CODE WIN for `products` (contract 2.4) rather than Foundryx adopting the AutoKey refs (R8) | The 9,067 numeric refs came from LINE ingest, not a master push, and their `integration_references` cannot hold an alias. Keying on AutoKey would need a DB-source product variant per book and would still leave MCH (zero refs) different. One key, one preset, one rule |
 | D20 (owner approved 2026-09-19) | The product contract gate REFUSES push activation below 2.4 (unlike the brand gate's logging-sink fallback), warns in pull mode, and warns with `version: null` when there is no Sorento connection to probe | Brand had no rows on the consumer to damage; products have roughly 9,067. Never let the UI be configured into a certain runtime error, and never guess a contract we cannot see |
 | D21 (owner approved 2026-09-19) | `codes` on product deletions is DERIVED from the ref (`{prefix}:{ItemCode}`), single-key-guarded, shipped in S3 | R8 makes the ref code-bearing, so no column, no migration and no backfill are needed - and the push flip is unsafe without it |
-| D18 | Stock: FoundryX is a FAITHFUL source (quantity cut only); the active-location filter lives on the consumer, which lists "not applied" rows (R7) | The macro workbook's filter is a LOCATION list that Sorento's `warehouses.is_active` already mirrors. A copy of it here would be a second source of truth that drifts the first time a warehouse is activated - and AutoCount's own `IsActive` is a different list that cannot stand in for it |
+| D18 | Stock: Foundryx is a FAITHFUL source (quantity cut only); the active-location filter lives on the consumer, which lists "not applied" rows (R7) | The macro workbook's filter is a LOCATION list that Sorento's `warehouses.is_active` already mirrors. A copy of it here would be a second source of truth that drifts the first time a warehouse is activated - and AutoCount's own `IsActive` is a different list that cannot stand in for it |
 | D17 | The trim rule is scoped to the raw dict LOOKUPS (enrich index, stock grouping) and is never written back onto the row; identity and `code` need no change (revised 2026-09-19) | Verified: `flat_source_ref` and every `string` transform already `.strip()`, and Sorento strips canonical strings on ingest - so there is no ref hazard and no carve-out to make. Not writing back keeps `row_hash` stable, so no one-time re-push wave |
 | D8 (owner approved 2026-09-19) | Public gateway at `/api/v1/autocount/*`, `X-API-Key`, key-derived tenancy, uniform 404 across tenants | Mirrors the omnichannel gateway precedent at the loader level and the module's own outbound header choice |
 | D9 (owner approved 2026-09-19) | The API-key pattern is re-implemented module-locally, not imported from omnichannel | Cross-module table reads are forbidden (capability soft-refs only). Duplication is acknowledged in BL-SS-210 |
@@ -767,7 +767,7 @@ corrections; this side has not written code yet.
 
 The earlier draft of this contract used snake_case header keys (`snapshot_id`, `record_count`,
 `content_hash`, ...). **Final ruling: envelope and metadata keys are camelCase; ROW object keys
-are snake_case.** Reasons: FoundryX already sends `companyCode` as the top-level key on every
+are snake_case.** Reasons: Foundryx already sends `companyCode` as the top-level key on every
 ingest / read / delete call to Sorento, and the product row must be `CanonicalProduct.
 sink_payload()` byte for byte (locked: zero contract change for products), which is snake_case.
 Mapping from the earlier draft: `snapshot_id -> snapshotId`, `record_count -> recordCount`,
@@ -779,10 +779,10 @@ Objects INSIDE `negativePairList` / `excludedRows` are row-shaped and therefore 
 
 ### A2. Auth and company identity
 
-- Header `X-API-Key: fxa_live_...`, issued by the FoundryX operator per tenant, bound to an
+- Header `X-API-Key: fxa_live_...`, issued by the Foundryx operator per tenant, bound to an
   explicit set of companies. Store it as a secret on your side; it is shown once.
-- `companyCode` is the SAME string FoundryX already sends as the top-level `companyCode` on
-  push. Verified in FoundryX code: it is `ac_company.sorento_company_code`
+- `companyCode` is the SAME string Foundryx already sends as the top-level `companyCode` on
+  push. Verified in Foundryx code: it is `ac_company.sorento_company_code`
   (`sinks_sorento.py:507-514` sets `body["companyCode"]`; `company_service.py:796/848` passes
   it). It is NOT the reference prefix that qualifies `source_ref` (`AED_SORENTO:...`).
   Confirmed by the peer: Sorento sends `companies.code` ONLY (`autocount_ref` is empty in prod
@@ -791,7 +791,7 @@ Objects INSIDE `negativePairList` / `excludedRows` are row-shaped and therefore 
   **`MCH`** (Mocha - NOT `MOCHA`). The gateway matches the code trimmed and case-insensitively
   within the key's tenant.
 - **Pre-flight (owner action, prod, before the first live pull):** verify
-  `ac_company.sorento_company_code` is exactly `SRT` and `MCH` on the two FoundryX companies. A
+  `ac_company.sorento_company_code` is exactly `SRT` and `MCH` on the two Foundryx companies. A
   mismatch is a 404 `UNKNOWN_COMPANY` on pull and a `COMPANY_ANCHOR` fault on push - the same one
   string governs both directions.
 - `entity` on the wire is `products` or `stock_balances`.
@@ -890,10 +890,10 @@ rule as your manual Excel path.
   "uom_code": "UNIT", "qty": 37 }
 ```
 `item_description` is included so your Stock List xlsx (Item Code, Item Description, Location,
-On Hand Qty) needs no second lookup. `location_code` equals the warehouse master code FoundryX
+On Hand Qty) needs no second lookup. `location_code` equals the warehouse master code Foundryx
 pushes, TRIMMED on both sides (live dirt: `'MBS '` with a trailing space; your matching is
 case-insensitive but does not trim). Zero and negative pairs are NOT rows - they are counted in
-the header. `source_ref` is present and ignorable. **FoundryX applies no location filter at all
+the header. `source_ref` is present and ignorable. **Foundryx applies no location filter at all
 (owner ruling R7):** every positive pair ships, roughly 12,133 for `SRT` over 75 locations. Your
 side decides what to apply.
 
@@ -921,10 +921,10 @@ side decides what to apply.
 - **Re-clicking Pull while a build is still running re-attaches to the SAME `snapshotId`**, for as
   long as that build is alive, with no time limit. So stopping your poll at 60 minutes is safe: a
   later click returns the same id and the same extraction, never a second one. If the build's
-  worker died, FoundryX marks that snapshot `failed` with `BUILD_ABANDONED` (liveness-based, once
+  worker died, Foundryx marks that snapshot `failed` with `BUILD_ABANDONED` (liveness-based, once
   its heartbeat has been silent past the orphan window) and only then does a new request start a
   fresh build.
-- FoundryX keeps only the newest 3 ready snapshots per (company, entity), so **a snapshot MAY
+- Foundryx keeps only the newest 3 ready snapshots per (company, entity), so **a snapshot MAY
   vanish before its `expiresAt`** if three newer ones were built. Treat `404 UNKNOWN_SNAPSHOT`
   and `410 SNAPSHOT_EXPIRED` identically: pull again.
 - `contentHash` is a BEST-EFFORT integrity check. It is sha256 over
@@ -999,7 +999,7 @@ build was unusually slow. The owner is raising the db2 performance with the wrap
   header (`zeroListPriceCount` / `negativeListPriceCount`) or from your own `dry_run` diff.
 - **SR3 - products Confirm via `MasterIngestService`** (owner ruling R1): `dry_run` for the diff,
   then the SAME ingest service on Confirm. Not the Excel bulk-import path. **Joint run 1:
-  products, `SRT` then `MCH`** (mirrored in FoundryX slice S6).
+  products, `SRT` then `MCH`** (mirrored in Foundryx slice S6).
 - **SR4 - stock preview / pull / guard / Confirm + Stock List xlsx.** Apply the
   **active-warehouse filter BEFORE `process_stock_import`** (owner ruling R7): only rows whose
   warehouse is ACTIVE in Sorento are fed in; inactive-warehouse and unknown-location rows are
@@ -1011,18 +1011,18 @@ build was unusually slow. The owner is raising the db2 performance with the wrap
   and carries those too) - and EXCLUDES the inactive / unknown-location "not applied" rows.
   Guard on `excludedNonzeroCount > 0`. Known quirks on your
   side: the import clamps `<= 0` to 0 and applies `int()`; the zero-out skips inactive
-  warehouses; stock is keyed by product + warehouse only (no batch, no UOM). FoundryX sends only
+  warehouses; stock is keyed by product + warehouse only (no batch, no UOM). Foundryx sends only
   nonzero positive integer pairs in base UOM, so the clamp should never fire. **Joint run 2:
   stock, `SRT` then `MCH`** - no longer gated (owner ruling R7).
 - **SR5 - later (contract 2.5, NOT now)**: a real `stock_balances` ingest entity so stock can
-  flip to auto-push like products will. FoundryX tracks it as BL-SS-207; the row shape in A4 is
+  flip to auto-push like products will. Foundryx tracks it as BL-SS-207; the row shape in A4 is
   the proposed starting point.
 - **Ordering guard (recorded, no contract impact).** Sorento WARNS, and does not block, on
   `would_skip` `PRODUCT_NOT_FOUND` / `WAREHOUSE_NOT_FOUND` rows, showing the qty total. Relevant
   because Sorento holds 83 `SRT` warehouses against 154 AutoCount locations.
 - **Permissions** (your default, recorded here only): one slug per entity covering Pull +
   Confirm - `master_data.products.autocount_pull`, `inventory.stock.autocount_pull`.
-- **Fixtures.** FoundryX ships recorded samples for your mock build at
+- **Fixtures.** Foundryx ships recorded samples for your mock build at
   `documentation/plans/sprint-5/10-fixtures/`: per entity a header JSON and one 10-row page JSON,
   plus one 409 body and one `status: "failed"` body.
 
@@ -1031,13 +1031,13 @@ build was unusually slow. The owner is raising the db2 performance with the wrap
 The pulled product set must land exactly as the manual Excel upload would have left it. Your
 code-level matrix (2026-09-20) is the basis; recorded here so neither side drifts.
 
-| Field | Excel path (X) | Ingest path (I) | Consequence for FoundryX |
+| Field | Excel path (X) | Ingest path (I) | Consequence for Foundryx |
 |---|---|---|---|
 | `is_discontinued` | explicit flag wins, else `description.lstrip().startswith("****")` | SAME function | Nothing to send - it follows from the description text we send. 2,882 live `SRT` descriptions start `****` |
 | L/W/H | `parse_dimensions` over the description | SAME function | Same - follows from the description text |
-| `description` | `Description + " " + Desc2` when `Desc2` non-empty, RAW join, `.strip()` ENDS only; else `Description` | `payload.description` when non-blank, else `payload.name` | FoundryX now sends the JOINED value, built by a visible mapping formula (AC-10-73). Inner whitespace NEVER collapsed - 2,786 live rows hold a double space because X joins raw |
+| `description` | `Description + " " + Desc2` when `Desc2` non-empty, RAW join, `.strip()` ENDS only; else `Description` | `payload.description` when non-blank, else `payload.name` | Foundryx now sends the JOINED value, built by a visible mapping formula (AC-10-73). Inner whitespace NEVER collapsed - 2,786 live rows hold a double space because X joins raw |
 | `product_name` | Item Code | `payload.code`, ALWAYS (peer correction 2026-09-20 - `name` is only a fallback for `description` when that is blank) | Both paths store the Item Code as `product_name`. We send `name = Description` only because the contract requires the field |
-| `unit` / `uom_code` | no column in the template - X FORCES the configured default UOM onto every row it touches (peer correction 2026-09-20) | with `uom_code` omitted: untouched on update, default on create | NEAR-parity, not identity. Measured delta: `SRT` 11,850 on `EA` + 26 still on `L`, `MCH` all `EA` - so 26 residual `SRT` products that a next manual upload resets to `EA` and a pull leaves on `L`. Never a `dry_run` diff row (the key is absent). FoundryX still withholds `uom_code` for the check period (AC-10-74); enabling it is on the push-flip checklist |
+| `unit` / `uom_code` | no column in the template - X FORCES the configured default UOM onto every row it touches (peer correction 2026-09-20) | with `uom_code` omitted: untouched on update, default on create | NEAR-parity, not identity. Measured delta: `SRT` 11,850 on `EA` + 26 still on `L`, `MCH` all `EA` - so 26 residual `SRT` products that a next manual upload resets to `EA` and a pull leaves on `L`. Never a `dry_run` diff row (the key is absent). Foundryx still withholds `uom_code` for the check period (AC-10-74); enabling it is on the push-flip checklist |
 | `cost_price` | derived by nothing | derived by nothing | Never sent (the ~60 percent values in prod came from outside this pipeline) |
 | `remark` | X never writes it | - | Declared on `CanonicalProduct` (`Optional`, max 500) but never sent by either side |
 | `description` edge whitespace | X keeps it | ingest strips string ENDS on everything it receives | The "edge whitespace trimmed by ingest" diff class, about 45 rows - detailed below the table |
@@ -1047,7 +1047,7 @@ code-level matrix (2026-09-20) is the basis; recorded here so neither side drift
 **The gate.** Sorento adds a parity pytest that feeds the SAME items through X (template rows)
 and I (our canonical rows) into two scratch companies and asserts identical `products` columns:
 name, description, category, brand, `list_price`, `is_active`, `is_discontinued`, L/W/H and
-default supplier. FoundryX's S0 product fixture carries the awkward rows it needs: a `****` item,
+default supplier. Foundryx's S0 product fixture carries the awkward rows it needs: a `****` item,
 an item with dimensions in the description, an item WITH `Desc2` (including one whose raw join
 yields a double space), a `-1.0` price item, a `0` price item and an edge-whitespace-code item.
 **Joint run 1 exit criterion:** your `dry_run` over the pulled `SRT` set shows NO description,
@@ -1073,7 +1073,7 @@ expect roughly 45 such rows.
 
 ### A9. Product identity: code wins (contract 2.4)
 
-Owner ruling R8, 2026-09-19, locked. FoundryX keys every product `<refPrefix>:<ItemCode>` on BOTH
+Owner ruling R8, 2026-09-19, locked. Foundryx keys every product `<refPrefix>:<ItemCode>` on BOTH
 books (e.g. `AED_SORENTO:BRACD7455C`, `MCH:BRACD7455C`) - no AutoKey scheme, no per-book variant.
 Sorento carries the reconciliation, for entity `products` ONLY:
 
@@ -1084,14 +1084,14 @@ Sorento carries the reconciliation, for entity `products` ONLY:
    every other entity and every other source system. This mirrors the rule your document-line
    resolver already applies.
 2. **Warnings.** No new shape: record results carry `"warnings": ["<code>", ...]`, stable string
-   codes, omitted when empty. `ref_mismatch` already exists and already reaches FoundryX on
+   codes, omitted when empty. `ref_mismatch` already exists and already reaches Foundryx on
    `sales_orders` / `purchase_orders` records. Example product record:
    ```json
    { "source_ref": "AED_SORENTO:SRT-01", "outcome": "updated", "entity_id": "...",
      "diff": { "list_price": { "current": "63.00", "incoming": "0" } },
      "warnings": ["ref_mismatch"] }
    ```
-   FoundryX side, verified: `SorentoSink._result_for` keys on `outcome` alone
+   Foundryx side, verified: `SorentoSink._result_for` keys on `outcome` alone
    (`_OUTCOME_DELIVERED = {"created", "updated"}`) and never reads `warnings`, so this already
    parses as SUCCESS with no change; we are adding only a per-code count on the run's activity.
    An unknown code is informational and never downgrades an outcome.
@@ -1104,14 +1104,14 @@ Sorento carries the reconciliation, for entity `products` ONLY:
    MISS with `codes[ref]` present, Sorento matches `product_code` in the anchored company and
    proceeds only if that product is unlinked or linked under the same source system; otherwise
    `not_found`. Outcomes unchanged (`deleted` / `deactivated` / `not_found`) plus
-   `warnings: ["ref_mismatch"]` when the code rung matched. FoundryX derives `codes` from the ref
+   `warnings: ["ref_mismatch"]` when the code rung matched. Foundryx derives `codes` from the ref
    itself (it IS `{prefix}:{ItemCode}`), emits it only for single-key ItemCode tasks, and only
    once the contract gate reports `>= 2.4`.
-4. **Read-back** for products stays ref-only; FoundryX does not rely on it.
+4. **Read-back** for products stays ref-only; Foundryx does not rely on it.
 5. **Versioning.** Contract **2.4** = products code-wins + optional `codes` on product deletions.
-   The `stock_balances` ingest entity moves to **2.5**. FoundryX gates product PUSH activation on
+   The `stock_balances` ingest entity moves to **2.5**. Foundryx gates product PUSH activation on
    `>= 2.4` and shows a banner in pull mode.
 
-Nothing is open. The stock scope question is closed by owner ruling R7 (FoundryX ships every
+Nothing is open. The stock scope question is closed by owner ruling R7 (Foundryx ships every
 positive pair; you filter on your own active flag) and product identity by R8 (code wins,
 contract 2.4 - A9). The only sequencing constraint left is SR0 before joint run 1 on `SRT`.
