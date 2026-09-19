@@ -254,35 +254,84 @@ delivery-content change.
 | 1 | `preview` with lookup path `/../db2/itembypage` | 422 naming `lookups[0].path`; zero outbound requests (confirmed via `integration_activity`) |
 | 2 | `preview-columns` with the same path | 422 naming `path`; zero outbound requests |
 | 3 | save with 6 lookups | 422 naming `lookups` ("No more than 5 lookups...") |
-| 4 | save with lookup alias `Description` (a real raw column) | **200, accepted** - confirmed BY DESIGN (save-time validates with `source_columns=None`; the code's own round-1b comment names this exact case). The SAME config immediately 422s at `preview` (`"'Description' is already a source column."`) and is coded to fail the whole run at execution time (`AliasCollisionError` -> `HttpSourceError`, `code="alias_collision"`) - "preview 422, run fails loudly" confirmed exactly as stated, task restored clean afterward |
+| 4 | save with lookup alias `Description` (a real raw column) | **CORRECTED 2026-09-20, see the "Corrections" section below - the original probe here set the LOOKUP's own label to `Description`, not the FIELD alias that actually collides, so its "200, accepted, by design" reading was wrong. The genuine field-alias collision is a save-time 422 as of round-2 fix `4c5ce70d`.** |
 | 5 | save with `keyFields: ["ItemCode", "BaseUOMPrice"]` | 422 naming `keyFields` ("comes from a lookup, which can be absent on a miss") |
 | 6 | save OMITTING `lookups` entirely | 200; the stored ItemUOM lookup SURVIVED (not cleared) |
 
-**5. `MASTER_RECORD_CAP=5000` staged-row pile-up - mechanism (pre-existing, NOT a plan-10/S1
-defect).**
+**5. Staged-row growth - mechanism, CORRECTED 2026-09-20 (see the "Corrections" section below;
+pre-existing, NOT a plan-10/S1 defect).**
 
-`company_service.py`'s `MASTER_RECORD_CAP = 5000` at `c1c5906a` is the SOURCE-side unbounded-read
-cap for a master's initial load, unrelated to this. The actual mechanism is
-`AutocountRepository.list_pending_for_entity(..., limit: int = 5000)` (pre-existing, plan 22) -
-auto-push offers at most 5000 `STAGED` rows per run, oldest-`last_offered_at`-first, then
-`source_last_modified` DESC as the tie-break among never-offered (`NULL`) rows. Every RECONCILE
-run re-extracts and re-diffs the FULL 11,840-row set unconditionally (`sync.py`'s staging step
-has no hash short-circuit before writing `ac_staged_record`): a `source_ref` whose PRIOR staged
-row was already `PUSHED` gets a brand-new row inserted (fresh `last_offered_at = NULL`); a
-`source_ref` still `STAGED` (never pushed) gets its existing row updated in place.
+Verified mechanism (half of the original verdict was wrong, per an Opus review of the code at
+`c1c5906a` plus a re-run of the lane DB queries below): this task's `watermarkField` is `null`
+(the open REST product endpoint carries no timestamp), so EVERY run is a full extract, and
+`sync._stage_documents` stages every extracted record UNCONDITIONALLY - there is no hash
+short-circuit before an `ac_staged_record` row is written. A `source_ref` whose prior staged row
+was already `PUSHED` gets a brand-new row (redundant, idempotent content); a `source_ref` still
+`STAGED` gets its row updated in place. So a run that reports `0 added / 0 updated / 0 deleted`
+still stages all 11,840 rows, and `AutocountRepository.list_pending_for_entity(limit=5000)`
+(the documented `BL-SS-092` push-cap-per-run setting, pre-existing plan 22/03 infra) then pushes
+up to 5,000 of them through the sink again - roughly 5,000 REDUNDANT idempotent deliveries per
+unchanged run, and unbounded `ac_staged_record` growth over time. This part of the original
+finding was TRUE and stands.
 
-**Verdict: these rows are NOT harmless leftovers - they WILL re-deliver.** `list_pending_for_entity`
-selects by `status == STAGED` alone, with no "is this actually different from what was last
-pushed" filter, so every piled-up row - including ones representing NO real change - is eligible
-for a future push and eventually gets one (idempotent content, but genuine redundant delivery
-traffic, and each fresh duplicate's `NULL last_offered_at` lets it out-compete the true backlog on
-`source_last_modified` DESC). Live counts after 5 total runs across both passes (2 + 3): **31,840
-physical `ac_staged_record` rows, 11,840 distinct products** - `PUSHED 25,000` (exactly `5 runs x
-5000`) / `STAGED 6,840` (the SAME 6,840 refs stuck un-pushed both passes - they lose the
-`source_last_modified` DESC tie-break to the 5,000 most-recently-AutoCount-edited items every
-single run, a starvation interaction between the reconcile-always-restages design and the
-offer-ordering guard). Confirmed via `psql` counts, not fixed (out of scope, flagged for the plan
-owner as a backlog candidate).
+**The starvation claim in the original write-up was FALSE - retracted.** The offer query filters
+`status == STAGED` and drains oldest-`last_offered_at`-first with no favoured subset; the lane DB
+shows ZERO never-pushed refs. Re-run push-count-per-ref query:
+
+```sql
+SELECT push_count, count(*) AS ref_count FROM (
+  SELECT source_ref, count(*) FILTER (WHERE status='PUSHED') AS push_count
+  FROM app_autocount.ac_staged_record
+  WHERE company_id='...' AND entity_type='product' GROUP BY source_ref
+) t GROUP BY push_count ORDER BY push_count;
+```
+
+result: `1x1,840 / 2x6,840 / 3x3,160` (all 11,840 distinct refs pushed at least once; 0 rows at
+`push_count = 0`) - an even, fair distribution across 5 total runs, not a stuck head. Live counts
+unchanged since the round-2 pass (no new runs executed in the corrections pass): **31,840
+physical `ac_staged_record` rows, 11,840 distinct products**, `PUSHED 25,000` (`5 runs x 5000`
+cap) / `STAGED 6,840` awaiting their next offer. Not fixed (out of scope), flagged for the plan
+owner as a backlog candidate: the real gap is "reconcile stages unconditionally, so an unchanged
+run still spends its push budget on redundant re-delivery" - not starvation.
+
+---
+
+## Corrections (HEAD `6c038d37`, 2026-09-20 UTC)
+
+Two corrections to the post-review re-check section above, both from the coordinator's review.
+Backend restarted on :8009 from `6c038d37`, same lane company/connection/task reused, logging
+sink throughout. Full request/response bodies: `round3-corrections.txt`.
+
+**(a) Probe 4's original "200, accepted, by design" reading was based on a mistaken probe
+shape, not a real design nuance.** A lookup spec has TWO different `as` fields: the lookup's own
+top-level `as` (its label/namespace, e.g. `"uom"` - checked only for format/cap/forward-reference,
+never against raw source columns) and `fields[].as` (the alias actually merged onto the row,
+checked against raw columns by `validate_lookups`). The original probe set the LOOKUP's `as` to
+`"Description"` while leaving `fields[0].as` as `"BaseUOMPrice"` - so it never exercised a real
+alias/raw-column collision at all, at either `ce15df69` or `819a8ce1`; the 200 was correct given
+what was actually sent, not evidence of a save-time gap.
+
+Re-probed on CURRENT HEAD (`6c038d37`) with the CORRECT shape - the FIELD alias itself set to
+`Description`:
+
+```
+PUT .../etl-task, lookups=[{"path":"/itemuombypage","as":"uom2","on":[...],
+  "fields":[{"remote":"Price","as":"Description"}]}]
+-> HTTP 422 {"detail":{"fieldErrors":{"lookups[0].fields[0].as":
+    "'Description' is already a source column."}}}
+```
+
+This confirms what round-2 fix `4c5ce70d` actually changed: at `819a8ce1` (before `4c5ce70d`),
+the save-time tolerance (`stored_raw_columns`) was built from the INCOMING lookups being
+validated THIS save, so a brand-new lookup's own field alias could strip itself out of its own
+collision check and save clean. `4c5ce70d` rebuilds that tolerance from the task's PREVIOUSLY
+SAVED lookups only, closing the hole: a genuinely new field alias equal to a real stored raw
+column is now a SAVE-time 422 naming `lookups[i].fields[k].as`, never reaching `preview` or a run
+with a poisoned config. Task restored to the clean ItemUOM lookup immediately after, confirmed
+via `GET`.
+
+**(b) Staged-row verdict corrected** - see the rewritten point 5 above (starvation claim
+retracted, redundant-idempotent-delivery mechanism kept and clarified).
 
 ### Servers
 
