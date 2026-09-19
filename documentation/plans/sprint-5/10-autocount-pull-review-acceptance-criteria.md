@@ -137,9 +137,11 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   `{item_code, location_code, uom, qty, reason}`.
 - **clamp** - the explicit `list_price` floor at 0 (R5), expressed as the preset mapping row's
   FORMULA so it is visible and editable in the Mapping tab, never a model-level coercion.
-- **trimmed key view** - `str(value).strip()` applied ONCE by the HTTP source to every key field
-  and every enrich join field, written back onto the raw row before enrich, de-duplication,
-  hashing, reduction and mapping (AC-10-60).
+- **trimmed key view** - `str(value).strip()` (+ casefold for a `casefold_trim` join pair) applied
+  by the HTTP source to every lookup join key, used ONLY for the enrich index and its lookups and
+  for the stock reducer's group key. NEVER written back onto the row - identity (`flat_source_ref`,
+  `code`) is already trimmed via `t_string`, so `row_hash` stays byte-identical and this plan causes
+  no one-time re-push wave (AC-10-60).
 - **complete** - `true` only when the extraction walked the FULL company set: for a paged
   endpoint, raw scanned rows == the wrapper's echoed `TotalCount`; for a bare-array endpoint,
   always true (one request). It says nothing about data quality.
