@@ -155,6 +155,15 @@ _DEPENDENT_ENTITIES = {
 # number typed twice and drifting the day 2.3 actually ships.
 BRAND_REQUIRED_CONTRACT_VERSION = 2.3
 
+# sprint-5/10 (R8, AC-10-69) - the consumer contract that carries "code
+# wins" product identity (``MasterIngestService`` UPDATEs a code-matched
+# product instead of raising ``ReferenceConflict`` on a ref miss) plus
+# optional ``codes`` on product deletions (AC-10-72). Unlike ``brand``,
+# products already have an ingest path at EVERY contract version - this is
+# a PUSH-mode activation refusal (``EtlService.activate_task``), never a
+# membership check inside ``sorento_supports_entity``.
+PRODUCT_CODE_WINS_CONTRACT_VERSION = 2.4
+
 
 def sorento_supports_entity(
     entity_type: str,
@@ -217,6 +226,37 @@ def sorento_supported_entities_label() -> str:
     if len(names) <= 1:
         return names[0] if names else ""
     return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+# ── product code recovery (sprint-5/10, R8, AC-10-72) ────────────────────────
+
+
+def codes_from_refs(
+    refs: Sequence[str], *, key_fields: Sequence[str]
+) -> Dict[str, str]:
+    """``{ref: ItemCode}`` recovered by splitting each ref once on ``":"`` -
+    pure, never raises. Guarded exactly as AC-10-72 states: only when the
+    task's ``key_fields`` is EXACTLY ``("ItemCode",)`` (a multi-key task has
+    no single code to recover) and only for a ref whose SUFFIX (everything
+    after the first ``:``) carries no ``"|"`` (a multi-key ref, however
+    produced). Either guard failing for the whole call returns ``{}`` -
+    never a guess for SOME refs and a miss for others.
+
+    No column, no migration: under R8 the ref already IS
+    ``{refPrefix}:{ItemCode}``, so the code is exactly the ref's own suffix.
+    """
+    if tuple(key_fields) != ("ItemCode",):
+        return {}
+    codes: Dict[str, str] = {}
+    for ref in refs:
+        prefix_and_suffix = str(ref or "").split(":", 1)
+        if len(prefix_and_suffix) != 2:
+            continue
+        suffix = prefix_and_suffix[1]
+        if "|" in suffix or not suffix:
+            continue
+        codes[ref] = suffix
+    return codes
 
 
 # ── company anchor (plan 22 Appendix A6/A7) ───────────────────────────────────
@@ -659,6 +699,12 @@ class SorentoSink:
         on_chunk: Optional[
             Callable[[List[str], Optional[List[Dict[str, Any]]], Optional[BaseException]], None]
         ] = None,
+        # sprint-5/10 (R8, AC-10-72) - ``{ref: ItemCode}`` for `products`
+        # ONLY (``codes_from_refs``'s own guard decides which refs, if any,
+        # are eligible); each chunk's POST body carries ``codes`` restricted
+        # to THAT chunk's own refs, never the whole map. Omitted entirely
+        # when ``None`` or empty - contract 2.4 optional field.
+        codes: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """``POST /api/v1/external/ingest/{entity}/deletions``.
 
@@ -708,7 +754,7 @@ class SorentoSink:
         if concurrency == 1:
             #     !!  BYTE-IDENTICAL TO BEFORE feat/sink-concurrency-ui.  !!
             for chunk in chunks:
-                partial, chunk_records, error = self._run_delete_chunk(chunk, dry_run)
+                partial, chunk_records, error = self._run_delete_chunk(chunk, dry_run, codes)
                 if error is not None:
                     if on_chunk is not None:
                         on_chunk(chunk, None, error)
@@ -720,7 +766,7 @@ class SorentoSink:
         else:
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 futures = [
-                    executor.submit(self._run_delete_chunk, chunk, dry_run)
+                    executor.submit(self._run_delete_chunk, chunk, dry_run, codes)
                     for chunk in chunks
                 ]
                 try:
@@ -744,7 +790,10 @@ class SorentoSink:
         return {"dry_run": dry_run, "summary": summary, "records": results}
 
     def _run_delete_chunk(
-        self, chunk: List[str], dry_run: bool
+        self,
+        chunk: List[str],
+        dry_run: bool,
+        codes: Optional[Dict[str, str]] = None,
     ) -> Tuple[Optional[Dict[str, int]], Optional[List[Dict[str, Any]]], Optional[BaseException]]:
         """One deletion chunk POST, shared by ``delete_batch``'s sequential
         and concurrent paths so a ``SinkUnknownEntity`` (addendum section 5)
@@ -755,10 +804,18 @@ class SorentoSink:
         attempt); anything else NOT transient re-raises straight through, on
         whichever thread is running it.
         """
+        body_out: Dict[str, Any] = {"source_refs": chunk}
+        if codes:
+            # sprint-5/10 (AC-10-72) - restricted to THIS chunk's own refs,
+            # never the caller's whole map; a ref absent from ``codes`` is
+            # simply omitted from the sub-map rather than sent as ``null``.
+            restricted = {ref: codes[ref] for ref in chunk if ref in codes}
+            if restricted:
+                body_out["codes"] = restricted
         try:
             body, error = self._post_with_retry(
                 f"ingest/{self._path_segment}/deletions",
-                {"source_refs": chunk},
+                body_out,
                 dry_run=dry_run,
             )
         except SinkUnknownEntity:
@@ -1077,9 +1134,13 @@ class SorentoSink:
         outcome = str(verdict.get("outcome") or "")
         delivered = outcome in _OUTCOME_DELIVERED
         if delivered:
+            # sprint-5/10 (AC-10-70) - carried through verbatim on the
+            # DELIVERED branch only; an unknown code is informational and
+            # never downgrades this outcome.
+            warnings = tuple(str(w) for w in (verdict.get("warnings") or ()))
             return WriteResult(
                 ok=True, sink=self.name, external_id=verdict.get("entity_id"),
-                delivered=True, message=outcome, outcome=outcome,
+                delivered=True, message=outcome, outcome=outcome, warnings=warnings,
             )
         if outcome == "retryable":
             if self.entity_type in _DEPENDENT_ENTITIES:

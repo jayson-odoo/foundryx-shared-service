@@ -579,6 +579,11 @@ class SyncService:
             # ── delete-push verdicts (plan 22 S3, AC-22-21) ──────────────────
             "deletedHandled": 0,
             "deleteFailures": [],
+            # sprint-5/10 (AC-10-70) - one entry per DISTINCT warning code
+            # across this run's DELIVERED results (e.g. ``ref_mismatch``
+            # under R8's code-wins rule) - reset per call, never accumulated
+            # across runs.
+            "warningCounts": {},
         }
         try:
             company = self.companies.get(tenant_id, company_id)
@@ -760,6 +765,12 @@ class SyncService:
                 if result.ok:
                     chunk_pushed.append(row)
                     summary["delivered"] = summary["delivered"] or result.delivered
+                    # sprint-5/10 (AC-10-70) - one entry per DISTINCT warning
+                    # code across the run's DELIVERED results.
+                    if result.warnings:
+                        counts = summary.setdefault("warningCounts", {})
+                        for code in result.warnings:
+                            counts[code] = counts.get(code, 0) + 1
                     continue
                 failures.append({"sourceRef": row.source_ref, "error": result.message})
                 #     !!  RETRY ``retryable``; QUARANTINE ``failed``.  !!

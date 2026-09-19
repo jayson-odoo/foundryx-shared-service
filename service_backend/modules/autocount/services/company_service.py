@@ -73,6 +73,7 @@ from ..mapping_catalog import (
     sorento_field_for,
 )
 from ..models import (
+    DELIVERY_MODE_PUSH,
     ETL_STATUS_ACTIVE,
     ETL_STATUS_DRAFT,
     ETL_STATUS_PAUSED,
@@ -105,6 +106,7 @@ from ..repositories import (
 from ..sinks import EntitySink, UnknownSinkImpl, sink_for
 from ..sinks_sorento import (
     BRAND_REQUIRED_CONTRACT_VERSION,
+    PRODUCT_CODE_WINS_CONTRACT_VERSION,
     sorento_sink_from_connection,
     sorento_supports_entity,
 )
@@ -134,7 +136,12 @@ logger = logging.getLogger("foundryx.autocount")
 # `AC_API_CAPABLE_ENTITY_TYPES` in `autocount-meta.ts`, drift-checked by
 # `tests/test_autocount_entity_parity.py`.
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE  # noqa: E402
-from ..canonical.masters import ENTITY_BRAND, ENTITY_CUSTOMER, ENTITY_SUPPLIER  # noqa: E402
+from ..canonical.masters import (  # noqa: E402
+    ENTITY_BRAND,
+    ENTITY_CUSTOMER,
+    ENTITY_PRODUCT,
+    ENTITY_SUPPLIER,
+)
 from ..envelopes import ENVELOPE_ROW_ARRAY, ENVELOPE_STATUS_DICT  # noqa: E402
 from ..sources import INITIAL_LOAD_FULL, INITIAL_LOAD_WINDOWED  # noqa: E402
 
@@ -394,6 +401,9 @@ class EntityState:
     # tab can warn a `product` task's activation of a missing category/UOM
     # dependency without a second fetch (AC-22-23, FE-only prerequisite chip).
     etl_status: str = ETL_STATUS_DRAFT
+    # sprint-5/10 (AC-10-11/17) - the entities LIST's Delivery column needs
+    # no per-row fetch either.
+    delivery_mode: str = DELIVERY_MODE_PUSH
 
 
 @dataclass(frozen=True)
@@ -493,6 +503,12 @@ class CompanyService:
         self._brand_contract_gate_cache: Dict[
             Tuple[str, str], Optional[Dict[str, Any]]
         ] = {}
+        # sprint-5/10 (AC-10-69) - the generalised gate's own cache, keyed
+        # additionally on ``entity_type`` (a company may be probed for more
+        # than one contract-gated entity in one request).
+        self._contract_gate_cache: Dict[
+            Tuple[str, str, str], Optional[Dict[str, Any]]
+        ] = {}
         self.watermarks = WatermarkRepository(db)
 
     # ── reads ────────────────────────────────────────────────────────────────
@@ -544,6 +560,7 @@ class CompanyService:
                     consecutive_failures=(mark.consecutive_failures or 0) if mark else 0,
                     last_error=mark.last_error if mark else None,
                     etl_status=config.etl_status or ETL_STATUS_DRAFT,
+                    delivery_mode=config.delivery_mode or DELIVERY_MODE_PUSH,
                 )
             )
         return states
@@ -870,6 +887,72 @@ class CompanyService:
                 }
             )
         self._brand_contract_gate_cache[cache_key] = result
+        return result
+
+    # sprint-5/10 (AC-10-69) - the entities a task view's own generic
+    # ``contractGate`` probes, and the version each needs. ``brand``'s own
+    # ``brand_contract_gate`` above is UNCHANGED (a regression-control test
+    # pins it byte-identical) - this dict/method is the NEW generalisation
+    # AC-10-69 itself names ("built by generalising the brand gate, not
+    # beside it"), used for every OTHER contract-gated entity.
+    _CONTRACT_GATE_REQUIRED_VERSIONS: Dict[str, float] = {
+        ENTITY_BRAND: BRAND_REQUIRED_CONTRACT_VERSION,
+        ENTITY_PRODUCT: PRODUCT_CODE_WINS_CONTRACT_VERSION,
+    }
+
+    def contract_gate(
+        self, tenant_id: str, company: AcCompany, entity_type: str
+    ) -> Optional[Dict[str, Any]]:
+        """The generic Review & Activate banner's source of truth
+        (AC-10-69). ``None`` = nothing to warn about for THIS entity.
+        Otherwise ``{"entity", "version": <float|None>, "requiredVersion"}``.
+
+        Unlike ``brand_contract_gate``, a `product` company with NO Sorento
+        sink connection at all still answers a banner (``version: None``) -
+        "the gateway genuinely cannot see the consumer's contract" is itself
+        the thing worth surfacing for an entity whose PUSH-mode activation
+        this gate can refuse (AC-10-69's own third bullet); `brand` keeps
+        its existing "nothing to warn about" `None` in that case (no push
+        refusal exists for it, so a banner with no consumer to name would
+        be noise).
+        """
+        required = self._CONTRACT_GATE_REQUIRED_VERSIONS.get(entity_type)
+        if required is None:
+            return None
+        no_sorento_connection = (
+            company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id
+        )
+        if no_sorento_connection:
+            if entity_type == ENTITY_PRODUCT:
+                return {"entity": entity_type, "version": None, "requiredVersion": required}
+            return None
+        cache_key = (tenant_id, company.id, entity_type)
+        if cache_key in self._contract_gate_cache:
+            return self._contract_gate_cache[cache_key]
+        result: Optional[Dict[str, Any]]
+        try:
+            conn = self._consumer_connection(tenant_id, company.sink_connection_id)
+            sink = sorento_sink_from_connection(
+                conn.config_json or {},
+                self.credentials(conn),
+                entity_type=entity_type,
+                company_code=company.sorento_company_code,
+                # The READ-path probe's OWN short budget, never the push
+                # timeout (same reasoning as ``brand_contract_gate``).
+                timeout=BRAND_CONTRACT_GATE_PROBE_TIMEOUT_SECONDS,
+            )
+            contract = sink.fetch_contract_detail()
+        except Exception:  # noqa: BLE001 - advisory only, never blocks the read
+            result = None
+        else:
+            version = contract.version if contract else None
+            supported = version is not None and version >= required
+            result = (
+                None
+                if supported
+                else {"entity": entity_type, "version": version, "requiredVersion": required}
+            )
+        self._contract_gate_cache[cache_key] = result
         return result
 
     def set_sink_target(
