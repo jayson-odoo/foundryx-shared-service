@@ -1099,6 +1099,7 @@ class EtlService:
         *,
         existing_result_columns: Optional[List[str]],
         existing_lookups: Optional[List[Dict[str, Any]]] = None,
+        existing_key_fields: Optional[List[str]] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, str]]:
         """Normalise + validate an ``autocount_http`` task's ``source_config``
         (AC-08-13). ONE envelope with the SQL shape - a stray SQL key on the
@@ -1111,6 +1112,11 @@ class EtlService:
         against yet) rather than refused. ``existing_lookups`` is the
         task's CURRENTLY STORED ``lookups`` (review round 1 should-fix 4) -
         what a client that omits ``lookups`` on the wire keeps.
+        ``existing_key_fields`` is the task's CURRENTLY STORED ``keyFields``
+        (review round 2 fix 1b) - what the PREVIOUS default ``comparedFields``
+        would have been computed from, so a save can tell "the incoming
+        comparedFields still equals the old default" apart from "the
+        operator customised it".
         """
         errors: Dict[str, str] = {}
 
@@ -1154,12 +1160,18 @@ class EtlService:
         # reference never need `existing_result_columns` at all; only the
         # "local is known" and "collides with a source column" checks stay
         # skipped pre-preview (`validate_lookups`'s own docstring).
-        # review round 1b - checked against the TOLERANT raw set
-        # (`stored_raw_columns`), never the bare stored value, so a row
-        # stamped by the OLD (pre-round-1b) preview - which merged an alias
-        # straight into `result_columns` - never 422s against its own alias.
+        # review round 1b / round 2 fix 2 - checked against the TOLERANT
+        # raw set (`stored_raw_columns`), never the bare stored value, so a
+        # row stamped by the OLD (pre-round-1b) preview - which merged an
+        # alias straight into `result_columns` - never 422s against its own
+        # alias. Built from the task's EXISTING STORED lookups, never the
+        # INCOMING ones: using the incoming list let a BRAND-NEW lookup's
+        # own alias strip itself out of the tolerance and reopen AC-10-01's
+        # save-time collision check - a new lookup aliased the same as a
+        # genuine stored raw column (e.g. `Description`) saved clean,
+        # even though it would still fail loudly at preview/run time.
         raw_columns_for_validation = (
-            stored_raw_columns(existing_result_columns, lookups)
+            stored_raw_columns(existing_result_columns, existing_lookups)
             if existing_result_columns is not None
             else None
         )
@@ -1209,10 +1221,43 @@ class EtlService:
         ):
             errors["watermarkField"] = f"'{watermark_field}' is not in the last preview."
 
+        # review round 2 fix 1 - AC-10-06 on the REAL save path: the
+        # DEFAULT comparedFields (operator left it blank) is computed
+        # against the union of raw columns + configured lookup aliases,
+        # never the bare raw `existing_result_columns` - otherwise a
+        # previewed-then-saved task PERSISTS an explicit list missing the
+        # alias, and that non-empty list narrows the run-time effective set
+        # back down (an enrich-only value change would never register as
+        # `updated`).
+        new_effective_columns = effective_result_columns(existing_result_columns, lookups)
         configured_compared = _clean_list(raw.get("comparedFields"))
+        # review round 2 fix 1b - a client that round-trips the PREVIOUSLY
+        # PERSISTED default list unchanged must not have it treated as an
+        # operator customisation forever after: if the incoming
+        # comparedFields equals what the PREVIOUS default would have been
+        # (previous effective columns minus the PREVIOUS key fields,
+        # order-insensitive), it is still "default" - recompute it fresh
+        # against the NEW effective columns/keys. A genuinely customised
+        # list (different from the previous default) wins untouched;
+        # `compared_columns_for`'s own configured-intersect-available
+        # already prunes a name no longer in the effective set, the SAME
+        # silent-drop behaviour an unknown configured column always had.
+        if existing_result_columns is not None and configured_compared:
+            previous_effective_columns = effective_result_columns(
+                existing_result_columns, existing_lookups
+            )
+            previous_default = set(
+                compared_columns_for(
+                    configured=[],
+                    result_columns=previous_effective_columns,
+                    key_columns=existing_key_fields or [],
+                )
+            )
+            if set(configured_compared) == previous_default:
+                configured_compared = []
         compared_fields = compared_columns_for(
             configured=configured_compared,
-            result_columns=existing_result_columns or configured_compared,
+            result_columns=new_effective_columns or configured_compared,
             key_columns=key_fields,
         )
 
@@ -1301,11 +1346,20 @@ class EtlService:
             if config is not None and isinstance(config.source_config, dict)
             else []
         )
+        # review round 2 fix 1b - the PREVIOUSLY saved key fields, so
+        # `_validate_http_config` can recompute what the previous DEFAULT
+        # comparedFields would have been.
+        existing_key_fields = (
+            [str(c) for c in (config.source_config.get("keyFields") or [])]
+            if config is not None and isinstance(config.source_config, dict)
+            else []
+        )
         clean, errors = self._validate_http_config(
             tenant_id,
             raw,
             existing_result_columns=existing_result_columns,
             existing_lookups=existing_lookups,
+            existing_key_fields=existing_key_fields,
         )
         if errors:
             raise EtlValidationError(errors)
