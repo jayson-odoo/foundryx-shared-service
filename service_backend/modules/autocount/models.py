@@ -229,17 +229,15 @@ class AcEntityConfig(AutocountBase):
     enabled = Column(Boolean, nullable=False, default=True)
     # sprint-5/10 (AC-10-10) - ``push`` (today's behaviour) or ``pull`` (never
     # auto-pushes, never runs on the sweep - a consumer/operator request
-    # builds a snapshot on demand). The Alembic migration (0020) adds this
-    # column ``NOT NULL DEFAULT 'push'`` on real Postgres, matching AC-10-10
-    # verbatim; the ORM declaration below is deliberately ``nullable=True`` -
-    # not a laxer real constraint, but so a legacy-row backfill test can
-    # simulate a genuinely blank pre-migration row (a NOT-NULL SQLite column
-    # rejects an explicit ``NULL`` UPDATE outright, unlike Postgres before the
-    # column gains its constraint). ``backfill_delivery_mode_defaults`` is
-    # what actually normalises every row to ``push``, same contract as
-    # ``sink_impl``/``backfill_sink_impl_defaults`` above.
+    # builds a snapshot on demand). A ``server_default`` is REQUIRED (not
+    # just the Python ``default``) - same reasoning as ``sink_impl`` above:
+    # on a create_all-first host the ADD carries it to existing rows, and on
+    # a stamped host the migration's (0020) ADD does - either way no
+    # ``ac_entity_config`` row is ever left NULL against this NOT NULL
+    # column. ``backfill_delivery_mode_defaults`` is the belt-and-braces
+    # sweep, same contract as ``backfill_sink_impl_defaults``.
     delivery_mode = Column(
-        String, nullable=True, default=DELIVERY_MODE_PUSH, server_default=DELIVERY_MODE_PUSH
+        String, nullable=False, default=DELIVERY_MODE_PUSH, server_default=DELIVERY_MODE_PUSH
     )
 
     # ── direct-DB ETL task (plan 22 §2.4) - the per-(company, entity) task IS

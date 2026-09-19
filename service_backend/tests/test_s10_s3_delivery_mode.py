@@ -198,13 +198,14 @@ def test_every_existing_task_reads_push_by_default(db):
 
 
 def test_backfill_delivery_mode_defaults_fills_blank_rows_only(db):
-    """Mirrors ``backfill_sink_impl_defaults``'s own contract test shape: a
-    row a ``create_all``-first host may have left NULL/blank against the NOT
-    NULL column is filled to ``push``; a row already holding an opinion (here
-    ``pull``) is untouched. CONTROL: the blank row is asserted BEFORE the
-    backfill runs too, proving the SQL bypass below genuinely produced an
-    unbackfilled row (a test that only checked the post-state could pass even
-    if ``server_default`` alone already fixed it on this dialect)."""
+    """Mirrors ``test_the_sink_impl_backfill_fills_blank_rows``'s own
+    contract test shape byte for byte (``tests/test_autocount_pipeline.py``)
+    - orchestrator-authorized edit, 2026-09-20: ``delivery_mode`` is
+    ``nullable=False`` in the ORM (aligned with migration 0020's ``NOT NULL``
+    on real Postgres), so a legacy row is simulated with an EMPTY STRING,
+    blank, not NULL - the column is NOT NULL, so a legacy create_all-first
+    host lands it blank, exactly like ``sink_impl``. A row already holding
+    an opinion (here ``pull``) is untouched."""
     from modules.autocount.backfill import backfill_delivery_mode_defaults
 
     conn = _open_connection(db)
@@ -220,11 +221,13 @@ def test_backfill_delivery_mode_defaults_fills_blank_rows_only(db):
     db.add_all([blank, opinionated])
     db.commit()
     # Simulate a legacy row (the ADD-without-server_default order): bypass the
-    # ORM default with a raw UPDATE so the row genuinely holds NULL/blank.
+    # ORM default with a raw UPDATE so the row genuinely holds blank - never a
+    # real NULL, which the NOT NULL column rejects outright (same reasoning
+    # as the sink_impl precedent).
     db.execute(
         AcEntityConfig.__table__.update()
         .where(AcEntityConfig.id == blank.id)
-        .values(delivery_mode=None)
+        .values(delivery_mode="")
     )
     db.execute(
         AcEntityConfig.__table__.update()
@@ -234,7 +237,7 @@ def test_backfill_delivery_mode_defaults_fills_blank_rows_only(db):
     db.commit()
     db.refresh(blank)
     db.refresh(opinionated)
-    assert blank.delivery_mode is None  # control: genuinely blank pre-backfill
+    assert blank.delivery_mode == ""  # control: genuinely blank pre-backfill
 
     touched = backfill_delivery_mode_defaults(db.connection(), schema=None)
 
