@@ -125,11 +125,19 @@ _SO_LINE_QUERY_FINGERPRINT = (
 _SO_FINGERPRINT_QUERY_FINGERPRINT = (
     "e54b9cb32c3483c7649a5cf1a6665144d7580f2d5a97893e9b6ed7b1b286750f"
 )
+# sprint-5/10 review round 1 (should-fix 7) - RE-BASELINED: `PresetField`
+# gained an `enabled: bool = True` field (AC-10-74) visible in `repr()` on
+# EVERY row across the whole file (SO/PO/SPO included, not just the HTTP
+# presets this lane owns) - a `repr=False` field would have blinded this
+# exact drift guard, so the field stays reprable and these two constants
+# move instead. Verified zero row-content change: every SO/PO/SPO row's
+# `.enabled` is `True` (its default) both before and after - see
+# ``test_every_so_po_spo_preset_row_is_enabled`` below.
 _PO_PRESET_FINGERPRINT = (
-    "00ec63627403c3dcd4237fa483fe93c1e2423ddc0eea2972ee9e5653d4e8ecde"
+    "b6ef289e74983b4e62525296fbd314b198585375344a90d324e84b07583bfd5c"
 )
 _SPO_PRESET_FINGERPRINT = (
-    "60312b8f728464663dfa837234c305383f825ead7b19a23a71a477e7eebe72d3"
+    "d6474d64f424e5dcd47e0c095caf3a01eef14155d7956c7d837162c479d51678"
 )
 
 

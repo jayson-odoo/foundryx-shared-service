@@ -130,7 +130,16 @@ def _stamp_previewed(
     config = EntityConfigRepository(db).get(DEFAULT_TENANT_ID, company_id, entity_type)
     config.last_preview_at = NOW
     if stamp_result_columns:
-        config.result_columns = ["ItemCode", "Description", "LastModified", "IsActive"]
+        # sprint-5/10 review round 1 - widened to the REAL `/itembypage`
+        # column set (verified against the live wrapper): a product task's
+        # seeded ItemUOM lookup joins on `BaseUOM`, so a stub missing it
+        # made a plain re-save 422 the moment an omitted `lookups` key
+        # started KEEPING (not silently wiping) the seeded lookup
+        # (should-fix 4) and it was re-validated against this stamp.
+        config.result_columns = [
+            "ItemCode", "Description", "Desc2", "ItemGroup", "ItemBrand",
+            "BaseUOM", "IsActive", "Discontinued", "LastModified",
+        ]
     db.commit()
 
 

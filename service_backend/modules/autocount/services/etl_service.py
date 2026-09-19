@@ -15,6 +15,7 @@ Two security invariants every method honours:
 """
 from __future__ import annotations
 
+import copy
 import logging
 import re
 from dataclasses import dataclass, field
@@ -861,9 +862,20 @@ class EtlService:
         path_error = validate_http_path(path)
         if path_error:
             raise EtlValidationError({"path": path_error})
+        # review round 1 blocker 1(b) - every STRUCTURAL lookup rule (path,
+        # alias regex, the 5-cap, empty on/fields, a duplicate alias, a
+        # forward reference) runs BEFORE a single outbound request, even on
+        # a never-previewed task (`source_columns=None`) - the reviewer
+        # proved live that a `/../db2/itembypage` lookup path was fetched
+        # with no check at all.
+        clean_lookups = [dict(item) for item in (lookups or []) if isinstance(item, dict)]
+        if clean_lookups:
+            lookup_errors = validate_lookups(clean_lookups, None)
+            if lookup_errors:
+                raise EtlValidationError(lookup_errors)
         try:
             result = run_http_preview(
-                base_url, path, distinct_of=distinct_of, lookups=lookups, transport=transport
+                base_url, path, distinct_of=distinct_of, lookups=clean_lookups, transport=transport
             )
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc
@@ -1072,6 +1084,7 @@ class EtlService:
         raw: Dict[str, Any],
         *,
         existing_result_columns: Optional[List[str]],
+        existing_lookups: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, str]]:
         """Normalise + validate an ``autocount_http`` task's ``source_config``
         (AC-08-13). ONE envelope with the SQL shape - a stray SQL key on the
@@ -1080,7 +1093,11 @@ class EtlService:
         ``result_columns`` (from the last ``/autocount/http/preview`` call
         that named this task) - ``None`` when it has never been previewed,
         in which case key/watermark picks are accepted un-checked (nothing
-        to check against yet) rather than refused.
+        to check against yet) rather than refused. ``existing_lookups`` is
+        the task's CURRENTLY STORED ``lookups`` (review round 1 should-fix
+        4/blocker 2(iii)) - the "explained" set ``validate_lookups`` uses to
+        let a re-save of an unchanged lookup pass, and (via ``raw['lookups']
+        is None`` below) what a client that omits the key on the wire keeps.
         """
         errors: Dict[str, str] = {}
 
@@ -1139,21 +1156,26 @@ class EtlService:
         )
 
         # ── lookups (sprint-5/10, AC-10-01, R9) ───────────────────────────────
+        # review round 1 should-fix 4 - the wire key is optional: omitted
+        # (`None`) KEEPS whatever is already stored (a client that does not
+        # round-trip the field must never silently wipe a saved lookup); an
+        # EXPLICIT `[]` clears it.
         raw_lookups = raw.get("lookups")
-        lookups: List[Dict[str, Any]] = (
-            [dict(item) for item in raw_lookups if isinstance(item, dict)]
-            if isinstance(raw_lookups, list)
-            else []
-        )
-        if lookups and existing_result_columns is not None:
-            # Never previewed yet -> nothing to check against, the SAME
-            # "accepted un-checked" rule `keyFields` follows a few lines up.
-            # ``validate_lookups`` deliberately excludes a name this task's
-            # OWN last preview already carries because an earlier lookup
-            # produced it (see its own docstring) - a re-save of an
-            # already-working lookup can never 422 against itself.
-            for key, message in validate_lookups(lookups, existing_result_columns).items():
-                errors[key] = message
+        if raw_lookups is None:
+            lookups: List[Dict[str, Any]] = [dict(item) for item in (existing_lookups or [])]
+        elif isinstance(raw_lookups, list):
+            lookups = [dict(item) for item in raw_lookups if isinstance(item, dict)]
+        else:
+            lookups = []
+        # review round 1 blocker 1(a) - runs UNCONDITIONALLY: path, alias
+        # regex, the 5-cap, empty on/fields, a duplicate alias and a forward
+        # reference never need `existing_result_columns` at all; only the
+        # "local is known" and "collides with a REAL source column" checks
+        # stay skipped pre-preview (`validate_lookups`'s own docstring).
+        for key, message in validate_lookups(
+            lookups, existing_result_columns, previously_saved_lookups=existing_lookups
+        ).items():
+            errors[key] = message
 
         # ── schedule floors (AC-22-12, reused verbatim) ──────────────────────
         minutes = _clean_int(raw.get("incrementalMinutes"))
@@ -1231,8 +1253,20 @@ class EtlService:
             if config is not None and config.result_columns
             else None
         )
+        existing_lookups = (
+            [
+                dict(item)
+                for item in (config.source_config.get("lookups") or [])
+                if isinstance(item, dict)
+            ]
+            if config is not None and isinstance(config.source_config, dict)
+            else []
+        )
         clean, errors = self._validate_http_config(
-            tenant_id, raw, existing_result_columns=existing_result_columns
+            tenant_id,
+            raw,
+            existing_result_columns=existing_result_columns,
+            existing_lookups=existing_lookups,
         )
         if errors:
             raise EtlValidationError(errors)
@@ -1305,9 +1339,14 @@ class EtlService:
             # mapping-row seed's own "still completely empty" gate).
             preset = HTTP_PRESETS.get(entity_type)
             if preset is not None and preset.lookups and not config.source_config.get("lookups"):
+                # review round 1 nit - `copy.deepcopy`, not a shallow
+                # `dict(lookup)`: the nested `on`/`fields` lists were still
+                # the SAME list/dict objects as the module-level preset, so
+                # an in-place mutation anywhere downstream would corrupt
+                # every OTHER tenant's freshly-seeded task sharing them.
                 config.source_config = {
                     **config.source_config,
-                    "lookups": [dict(lookup) for lookup in preset.lookups],
+                    "lookups": copy.deepcopy(list(preset.lookups)),
                 }
 
         self.db.commit()

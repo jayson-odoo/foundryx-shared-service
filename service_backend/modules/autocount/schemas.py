@@ -717,7 +717,11 @@ class EtlSourceConfigIn(ApiModel):
     distinctOf: Optional[List[str]] = None
     # sprint-5/10 (AC-10-01, R9) - see ``HttpPreviewRequest.lookups`` for why
     # this stays a plain dict list rather than a typed nested schema.
-    lookups: List[Dict[str, Any]] = []
+    # review round 1 should-fix 4 - ``Optional[...] = None``, NOT a `[]`
+    # default: a client that omits the key on the wire must KEEP whatever is
+    # already stored (``_validate_http_config`` reads ``None`` that way);
+    # only an EXPLICIT `[]` clears a task's saved lookups.
+    lookups: Optional[List[Dict[str, Any]]] = None
 
 
 class InitialLoadProgress(ApiModel):

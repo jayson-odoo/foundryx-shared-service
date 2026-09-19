@@ -89,7 +89,7 @@ def run_http_preview(
     # Local import (AC-10-05) - ``http_source.lookups`` imports
     # ``validate_http_path`` FROM this module at ITS OWN top level, so a
     # module-level import back here would cycle.
-    from .lookups import build_index, merge_onto_rows
+    from .lookups import AliasCollisionError, build_index, merge_onto_rows
 
     client = HttpApiClient(base_url, transport=transport)
     started = time.monotonic()
@@ -139,6 +139,32 @@ def run_http_preview(
                 duration_ms=duration_ms,
             )
 
+        # review round 1 blocker 2(i) - PREVIEW holds the raw main-endpoint
+        # columns before any lookup has merged anything onto the sample;
+        # this is the ONE place that can tell a genuine raw column apart
+        # from an alias with total certainty, so an alias (a lookup's own
+        # ``as`` or any ``fields[].as``) equal to one is an unconditional
+        # 422 here - no carve-out, unlike the save-time gate, which cannot
+        # always distinguish the two (AC-10-05's own stamped columns).
+        raw_columns: set = set()
+        for row in rows:
+            raw_columns.update(row.keys())
+        for i, spec in enumerate(lookups or []):
+            as_name = spec.get("as")
+            if isinstance(as_name, str) and as_name in raw_columns:
+                raise HttpPreviewError(
+                    f"'{as_name}' is already a source column.", field=f"lookups[{i}].as"
+                )
+            for j, field_spec in enumerate(spec.get("fields") or []):
+                if not isinstance(field_spec, dict):
+                    continue
+                alias = field_spec.get("as")
+                if isinstance(alias, str) and alias in raw_columns:
+                    raise HttpPreviewError(
+                        f"'{alias}' is already a source column.",
+                        field=f"lookups[{i}].fields[{j}].as",
+                    )
+
         # AC-10-05 - lookups applied IN ORDER over the sampled page, so the
         # returned columns (and per-lookup counts) match what a real run
         # would merge onto every row.
@@ -177,8 +203,20 @@ def run_http_preview(
 
             on = spec.get("on") or []
             fields = spec.get("fields") or []
-            index = build_index(lookup_parsed.rows, on)
-            misses = merge_onto_rows(rows, index, on, fields)
+            # should-fix 8 (review round 1) - cap the lookup probe rows the
+            # SAME way the main path is capped a few lines up; a server
+            # that ignores `pageSize` must not blow the preview's cost open.
+            index = build_index(lookup_parsed.rows[:PREVIEW_PAGE_SIZE], on)
+            try:
+                misses = merge_onto_rows(rows, index, on, fields)
+            except AliasCollisionError as exc:
+                # Belt and suspenders - the raw-column check above and the
+                # pre-network `validate_lookups` call already catch every
+                # reachable case; this never fires in practice.
+                raise HttpPreviewError(
+                    f"'{exc.alias}' would overwrite an existing column.",
+                    field=f"lookups[{i}].fields",
+                ) from exc
             lookup_counts.append(
                 LookupPreviewCount(
                     alias=alias_name, matched=len(rows) - misses, missed=misses

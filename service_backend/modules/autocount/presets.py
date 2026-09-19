@@ -21,7 +21,7 @@ never two copies to drift apart.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
@@ -58,13 +58,16 @@ class PresetField:
     # ``_seed_rows``'s own column-not-found ``is_enabled`` computation, so a
     # disabled preset row stays disabled even on a genuinely-first save
     # (``available_columns=None``, "nothing proven wrong yet" would
-    # otherwise enable everything). ``repr=False`` - this field touches
-    # EVERY ``PresetField`` in the file (SO/PO/SPO document presets too),
-    # and `tests/test_autocount_so_ref.py` pins several of them by
-    # ``sha256(repr(...))`` to prove an unrelated lane never edits them;
-    # excluding it from the generated ``repr()`` keeps that fingerprint
-    # byte-identical for every preset that never sets it explicitly.
-    enabled: bool = field(default=True, repr=False)
+    # otherwise enable everything).
+    #
+    # review round 1 should-fix 7 - NOT ``repr=False``: hiding a real field
+    # from ``repr()`` blinds `tests/test_autocount_so_ref.py`'s
+    # ``sha256(repr(PO_PRESET))``/``SPO_PRESET`` drift guard to a genuine
+    # future edit of any SO/PO/SPO preset row (the very thing that fingerprint
+    # exists to catch). The fingerprint constants are RE-BASELINED instead
+    # (their `enabled=True` is now visible on every row, zero row content
+    # change) - see that file's own commit note.
+    enabled: bool = True
 
 
 @dataclass(frozen=True)

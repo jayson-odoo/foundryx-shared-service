@@ -47,7 +47,8 @@ from ..sql_source.source import CURSOR_COLUMN, CURSOR_MARK, MAX_EXTRACT_ROWS
 from .client import HttpApiClient, HttpTransportError
 from .envelope import ENVELOPE_LIST, parse_page
 from .errors import HttpSourceError
-from .lookups import build_index, merge_onto_rows
+from .lookups import AliasCollisionError, build_index, merge_onto_rows
+from .preview import validate_http_path
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -139,10 +140,28 @@ class HttpApiSource:
         self.result_columns = [
             str(c) for c in (getattr(ctx.entity_config, "result_columns", None) or [])
         ]
+        # review round 1 blocker 3 - AC-10-06 union every configured
+        # lookup's own field aliases INTO the compared-column baseline. The
+        # stamped `result_columns` reflects whatever the LAST preview
+        # happened to include (which may predate the lookup, or predate a
+        # preview that ever merged one in at all); without this, an
+        # enrich-only value change on a task whose last preview ran without
+        # the alias would never register as `updated` - AC-10-06's whole
+        # point. An operator's EXPLICIT `comparedFields` still wins
+        # (`compared_columns_for` only ever narrows to the configured pick).
+        lookup_alias_columns = [
+            str(field_spec.get("as"))
+            for lookup in self.lookups
+            for field_spec in (lookup.get("fields") or [])
+            if isinstance(field_spec, dict) and field_spec.get("as")
+        ]
+        effective_result_columns = list(
+            dict.fromkeys([*self.result_columns, *lookup_alias_columns])
+        )
         configured_compared = [str(c) for c in (config.get("comparedFields") or [])]
         self.compared_columns = compared_columns_for(
             configured=configured_compared,
-            result_columns=self.result_columns or configured_compared,
+            result_columns=effective_result_columns or configured_compared,
             key_columns=self.key_fields,
         )
 
@@ -191,37 +210,46 @@ class HttpApiSource:
         connect error or another 5xx gets up to
         ``len(TRANSPORT_RETRY_BACKOFFS_SECONDS)`` retries (1s then 4s) and
         never halves. A 4xx, a non-JSON body or a shape change is never
-        retried here - the caller's job, unchanged from before this AC."""
-        attempt = 0
+        retried here - the caller's job, unchanged from before this AC.
+
+        review round 1 nit - the timeout counter and the transport-retry
+        counter are SEPARATE: a 5xx followed by ONE timeout must not halve
+        (only a SECOND consecutive timeout does), so a page that failed once
+        for an unrelated reason is never one timeout away from a halve."""
+        timeout_attempts = 0
+        transport_attempts = 0
         while True:
-            attempt += 1
             try:
                 response = self._client.get(path, {"page": page, "pageSize": page_size})
             except HttpTransportError as exc:
                 if exc.is_timeout:
-                    if attempt >= MAX_TIMEOUT_ATTEMPTS_PER_PAGE:
+                    timeout_attempts += 1
+                    if timeout_attempts >= MAX_TIMEOUT_ATTEMPTS_PER_PAGE:
                         raise _PageTimedOutTwice() from exc
                     time.sleep(TIMEOUT_RETRY_BACKOFF_SECONDS)
                     continue
-                if attempt > len(TRANSPORT_RETRY_BACKOFFS_SECONDS):
+                transport_attempts += 1
+                if transport_attempts > len(TRANSPORT_RETRY_BACKOFFS_SECONDS):
                     raise HttpSourceError(exc.message, code="transport", page=page) from exc
-                time.sleep(TRANSPORT_RETRY_BACKOFFS_SECONDS[attempt - 1])
+                time.sleep(TRANSPORT_RETRY_BACKOFFS_SECONDS[transport_attempts - 1])
                 continue
 
             if response.status_code == CLOUDFLARE_TIMEOUT_STATUS:
-                if attempt >= MAX_TIMEOUT_ATTEMPTS_PER_PAGE:
+                timeout_attempts += 1
+                if timeout_attempts >= MAX_TIMEOUT_ATTEMPTS_PER_PAGE:
                     raise _PageTimedOutTwice()
                 time.sleep(TIMEOUT_RETRY_BACKOFF_SECONDS)
                 continue
             if response.status_code >= 500:
-                if attempt > len(TRANSPORT_RETRY_BACKOFFS_SECONDS):
+                transport_attempts += 1
+                if transport_attempts > len(TRANSPORT_RETRY_BACKOFFS_SECONDS):
                     raise HttpSourceError(
                         f"AutoCount answered HTTP {response.status_code} on page {page}.",
                         code="http_status",
                         page=page,
                         status=response.status_code,
                     )
-                time.sleep(TRANSPORT_RETRY_BACKOFFS_SECONDS[attempt - 1])
+                time.sleep(TRANSPORT_RETRY_BACKOFFS_SECONDS[transport_attempts - 1])
                 continue
             return response
 
@@ -370,11 +398,22 @@ class HttpApiSource:
         ``HttpSourceError`` path a source page failure does (AC-10-03) - the
         message is re-wrapped so it NAMES the lookup and its endpoint,
         because the underlying walk's own message never mentions either."""
-        for lookup in self.lookups:
+        for i, lookup in enumerate(self.lookups):
             path = str(lookup.get("path") or "")
             alias_name = str(lookup.get("as") or "")
             on = lookup.get("on") or []
             fields = lookup.get("fields") or []
+            # review round 1 blocker 1(c) - defence in depth: refuse a
+            # lookup path that fails the SAME rule the editor/save gate
+            # enforces, so a row saved BEFORE this fix (or edited directly
+            # in the DB) is never walked, not even once.
+            path_error = validate_http_path(path)
+            if path_error:
+                raise HttpSourceError(
+                    f"Lookup {i} ('{alias_name}')'s path '{path}' is invalid: "
+                    f"{path_error} Nothing was staged or pushed.",
+                    code="lookup_path",
+                )
             try:
                 lookup_rows, _ = self._walk_endpoint(path)
             except HttpSourceError as exc:
@@ -385,7 +424,19 @@ class HttpApiSource:
                     status=exc.status,
                 ) from exc
             index = build_index(lookup_rows, on)
-            misses = merge_onto_rows(rows, index, on, fields)
+            try:
+                misses = merge_onto_rows(rows, index, on, fields)
+            except AliasCollisionError as exc:
+                # review round 1 blocker 2(ii) - a poisoned alias (one that
+                # would overwrite a REAL column or an earlier lookup's own
+                # alias) fails the whole run, fail-before-state, rather than
+                # silently deliver the overwritten value.
+                raise HttpSourceError(
+                    f"Lookup {i} ('{alias_name}')'s field alias '{exc.alias}' "
+                    f"would overwrite an existing column of the same name - "
+                    f"nothing was staged or pushed.",
+                    code="alias_collision",
+                ) from exc
             if misses:
                 # AC-10-03 - a miss is counted, never fatal: ONE warning
                 # activity note (never a per-row note) naming the entity,

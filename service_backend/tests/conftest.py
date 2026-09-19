@@ -1,4 +1,6 @@
 """Test fixtures: isolated in-memory SQLite + seeded default tenant/users."""
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -293,6 +295,22 @@ def ideation_session_factory():
     db.close()
 
     yield TestingSessionLocal
+
+
+_HTTP_RETRY_TEST_FILE_RE = re.compile(r"^test_(autocount_http_|s10_)")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleep_in_autocount_http_tests(request, monkeypatch):
+    """sprint-5/10 S1 review round 1 (should-fix 6) - AC-10-75's bounded
+    retry ladder makes a genuine ``time.sleep`` call on a real timeout/5xx;
+    several PRE-EXISTING ``test_autocount_http_*`` failure tests never
+    monkeypatch it (only ``test_s10_http_retry.py`` did), so they now really
+    sleep (~1-5s each) - noticeable machine-wide. Scoped by FILENAME, not a
+    blanket suite-wide patch, so a test elsewhere that genuinely wants real
+    timing (there are none today, but this stays narrow on principle)."""
+    if _HTTP_RETRY_TEST_FILE_RE.match(request.node.fspath.basename):
+        monkeypatch.setattr("time.sleep", lambda seconds: None)
 
 
 @pytest.fixture
