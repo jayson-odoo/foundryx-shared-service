@@ -9,6 +9,7 @@ import type {
   AutocountEtlSourceConfig,
   AutocountEtlTask,
   AutocountEtlTaskError,
+  AutocountPullSnapshotRowsPage,
   AutocountSqlPreview,
   AutocountSqlSchema,
   HttpPreview,
@@ -619,5 +620,27 @@ export function httpPreviewAsSqlPreview(preview: HttpPreview): AutocountSqlPrevi
     rowCount: preview.rows.length,
     truncated: false,
     durationMs: preview.durationMs,
+  };
+}
+
+/**
+ * Adapts one page of a pull snapshot's rows into the SAME shape
+ * `SqlPreviewGrid` renders (sprint-5/10, AC-10-49 - "reuse the EXISTING
+ * preview grid", never a second one). Column names are derived from the
+ * UNION of every row's own keys (a snapshot row has no reported type, so a
+ * blank type reads simply as "no type", matching the HTTP branch's own
+ * no-schema convention above).
+ */
+export function pullSnapshotRowsAsSqlPreview(page: AutocountPullSnapshotRowsPage): AutocountSqlPreview {
+  const names = new Set<string>();
+  for (const row of page.rows) {
+    for (const key of Object.keys(row)) names.add(key);
+  }
+  return {
+    columns: Array.from(names).map((name) => ({ name, type: '' })),
+    rows: page.rows,
+    rowCount: page.rows.length,
+    truncated: page.totalPages > page.page,
+    durationMs: 0,
   };
 }

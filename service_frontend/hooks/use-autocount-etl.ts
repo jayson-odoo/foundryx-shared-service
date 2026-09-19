@@ -9,6 +9,7 @@ import type {
   AutocountEtlSourceConfig,
   AutocountEtlTask,
   AutocountEtlTaskError,
+  AutocountLookupSpec,
   AutocountPreview,
   AutocountSqlConnection,
   AutocountSqlPreview,
@@ -477,6 +478,9 @@ export type HttpPreviewState =
 export interface HttpPreviewRunOptions {
   companyId?: string;
   entityType?: string;
+  /** Operator-authored cross-endpoint joins (sprint-5/10, AC-10-05) applied
+   * over the sampled page, in order. */
+  lookups?: AutocountLookupSpec[];
 }
 
 export interface UseHttpPreviewResult {
@@ -525,6 +529,7 @@ export function useHttpPreview(): UseHttpPreviewResult {
           distinctOf,
           companyId: options?.companyId,
           entityType: options?.entityType,
+          lookups: options?.lookups,
         });
         if (id !== runId.current) return false;
         setState({ status: 'success', preview });
