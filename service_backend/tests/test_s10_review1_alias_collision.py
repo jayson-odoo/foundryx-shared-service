@@ -59,18 +59,29 @@ def test_save_time_fresh_alias_colliding_with_a_real_column_rejected():
 
 
 def test_save_time_still_exempts_a_previously_saved_lookups_own_alias():
-    """The re-save flow must not regress: an ALREADY-SAVED lookup's alias
-    reappearing in `result_columns` (because ITS OWN prior preview put it
-    there) is not a fresh collision."""
+    """The re-save flow must not regress. Superseded by review round 1b's
+    ruling: raw-only storage means ``validate_lookups`` no longer accepts a
+    ``previously_saved_lookups`` carve-out at all (removed - see
+    ``lookups.py``'s own docstring) - the caller (``EtlService.
+    _validate_http_config``) is instead responsible for passing a
+    TOLERANT, ALIAS-STRIPPED raw column set (``lookups.stored_raw_columns``),
+    so an already-saved lookup's own alias reappearing in a pre-fix row's
+    stored ``result_columns`` is never treated as a genuine collision. This
+    pins that stripping directly, mirroring the real save-time call."""
+    from modules.autocount.http_source.lookups import stored_raw_columns
+
     lookup = {
         "path": "/itemuombypage", "as": "uom",
         "on": [{"local": "ItemCode", "remote": "ItemCode"}],
         "fields": [{"remote": "Price", "as": "MyOwnAlias"}],
     }
-    source_columns = ["ItemCode", "Description", "MyOwnAlias"]
-    errors = validate_lookups(
-        [lookup], source_columns, previously_saved_lookups=[lookup]
-    )
+    # A pre-round-1b row's stored result_columns may still literally carry
+    # the alias (the OLD preview merged it in) - the tolerance strips it.
+    stale_stored_columns = ["ItemCode", "Description", "MyOwnAlias"]
+    tolerant_columns = stored_raw_columns(stale_stored_columns, [lookup])
+    assert tolerant_columns == ["ItemCode", "Description"], tolerant_columns
+
+    errors = validate_lookups([lookup], tolerant_columns)
     assert errors == {}, errors
 
 

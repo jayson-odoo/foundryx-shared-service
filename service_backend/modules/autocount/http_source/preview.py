@@ -69,6 +69,8 @@ class LookupPreviewCount:
 @dataclass
 class HttpPreviewResult:
     envelope: str
+    # ``columns`` - the WIRE response shape, unchanged by review round 1b:
+    # raw columns AND every merged lookup alias, in row-insertion order.
     columns: List[str] = field(default_factory=list)
     rows: List[Dict[str, Any]] = field(default_factory=list)
     total_count: Optional[int] = None
@@ -76,6 +78,13 @@ class HttpPreviewResult:
     # sprint-5/10 (AC-10-05) - per-lookup {alias, matched, missed} counts,
     # empty when the request carried none.
     lookups: List[LookupPreviewCount] = field(default_factory=list)
+    # review round 1b - the RAW main-endpoint columns ONLY, captured BEFORE
+    # any lookup merges anything onto the sample. This is what the caller
+    # (``EtlService.preview_http``) now stores as the task's
+    # ``result_columns`` - aliases are derived at read time
+    # (``lookups.effective_result_columns``), never stored, so a save-time
+    # collision check against the stored value is exact with no carve-out.
+    raw_columns: List[str] = field(default_factory=list)
 
 
 def run_http_preview(
@@ -137,6 +146,7 @@ def run_http_preview(
                 rows=[{"value": v} for v in values],
                 total_count=parsed.total_count,
                 duration_ms=duration_ms,
+                raw_columns=["value"],
             )
 
         # review round 1 blocker 2(i) - PREVIEW holds the raw main-endpoint
@@ -146,9 +156,14 @@ def run_http_preview(
         # ``as`` or any ``fields[].as``) equal to one is an unconditional
         # 422 here - no carve-out, unlike the save-time gate, which cannot
         # always distinguish the two (AC-10-05's own stamped columns).
-        raw_columns: set = set()
+        # review round 1b - also captured, ORDERED, as ``raw_columns`` -
+        # what ``EtlService.preview_http`` now stores as ``result_columns``.
+        raw_columns_ordered: List[str] = []
         for row in rows:
-            raw_columns.update(row.keys())
+            for key in row.keys():
+                if key not in raw_columns_ordered:
+                    raw_columns_ordered.append(key)
+        raw_columns = set(raw_columns_ordered)
         for i, spec in enumerate(lookups or []):
             as_name = spec.get("as")
             if isinstance(as_name, str) and as_name in raw_columns:
@@ -236,6 +251,7 @@ def run_http_preview(
             total_count=parsed.total_count,
             duration_ms=duration_ms,
             lookups=lookup_counts,
+            raw_columns=raw_columns_ordered,
         )
     finally:
         client.close()

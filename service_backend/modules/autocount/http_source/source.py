@@ -47,7 +47,7 @@ from ..sql_source.source import CURSOR_COLUMN, CURSOR_MARK, MAX_EXTRACT_ROWS
 from .client import HttpApiClient, HttpTransportError
 from .envelope import ENVELOPE_LIST, parse_page
 from .errors import HttpSourceError
-from .lookups import AliasCollisionError, build_index, merge_onto_rows
+from .lookups import AliasCollisionError, build_index, effective_result_columns, merge_onto_rows
 from .preview import validate_http_path
 
 logger = logging.getLogger("foundryx.autocount")
@@ -140,28 +140,22 @@ class HttpApiSource:
         self.result_columns = [
             str(c) for c in (getattr(ctx.entity_config, "result_columns", None) or [])
         ]
-        # review round 1 blocker 3 - AC-10-06 union every configured
-        # lookup's own field aliases INTO the compared-column baseline. The
-        # stamped `result_columns` reflects whatever the LAST preview
-        # happened to include (which may predate the lookup, or predate a
-        # preview that ever merged one in at all); without this, an
-        # enrich-only value change on a task whose last preview ran without
-        # the alias would never register as `updated` - AC-10-06's whole
-        # point. An operator's EXPLICIT `comparedFields` still wins
-        # (`compared_columns_for` only ever narrows to the configured pick).
-        lookup_alias_columns = [
-            str(field_spec.get("as"))
-            for lookup in self.lookups
-            for field_spec in (lookup.get("fields") or [])
-            if isinstance(field_spec, dict) and field_spec.get("as")
-        ]
-        effective_result_columns = list(
-            dict.fromkeys([*self.result_columns, *lookup_alias_columns])
-        )
+        # review round 1 blocker 3 / round 1b - AC-10-06: the compared-column
+        # baseline is derived through the ONE shared helper
+        # (``effective_result_columns``), which unions every configured
+        # lookup's own field alias onto the STORED (raw-only as of round
+        # 1b) result columns. The stamped `result_columns` reflects
+        # whatever the LAST preview happened to include (which may predate
+        # the lookup, or predate a preview that ever merged one in at all);
+        # without this, an enrich-only value change on a task whose last
+        # preview ran without the alias would never register as `updated` -
+        # AC-10-06's whole point. An operator's EXPLICIT `comparedFields`
+        # still wins (`compared_columns_for` only ever narrows to it).
+        effective_columns = effective_result_columns(self.result_columns, self.lookups)
         configured_compared = [str(c) for c in (config.get("comparedFields") or [])]
         self.compared_columns = compared_columns_for(
             configured=configured_compared,
-            result_columns=effective_result_columns or configured_compared,
+            result_columns=effective_columns or configured_compared,
             key_columns=self.key_fields,
         )
 

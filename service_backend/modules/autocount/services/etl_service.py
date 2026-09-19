@@ -110,7 +110,7 @@ from .company_service import (
 )
 from ..presets import HTTP_PRESETS, seed_document_mapping, seed_http_preset_mapping
 from ..mapping import SCOPE_HEADER, SCOPE_LINE
-from ..http_source.lookups import validate_lookups
+from ..http_source.lookups import effective_result_columns, stored_raw_columns, validate_lookups
 from ..http_source.preview import (
     HttpPreviewError,
     HttpPreviewResult,
@@ -885,7 +885,13 @@ class EtlService:
             self.companies.get(tenant_id, company_id)  # tenant-scope guard
             config = self.configs.get(tenant_id, company_id, entity_type)
             if config is not None:
-                config.result_columns = list(result.columns)
+                # review round 1b - STORE the raw main-endpoint columns
+                # ONLY (never the alias-merged wire shape); every consumer
+                # that needs the alias derives it via
+                # ``lookups.effective_result_columns`` at read time, so the
+                # save-time collision check (``validate_lookups``) always
+                # compares against a genuinely raw set with no carve-out.
+                config.result_columns = list(result.raw_columns)
                 config.last_preview_at = datetime.now(timezone.utc)
                 self.db.commit()
                 task_view = self._task_view(
@@ -937,9 +943,17 @@ class EtlService:
             activated_at=config.activated_at if config is not None else None,
             source_config=merged,
             source_impl=source_impl,
-            result_columns=[
-                str(c) for c in ((config.result_columns if config is not None else None) or [])
-            ],
+            # review round 1b - the WIRE resultColumns is the task read
+            # shape: stored raw columns + the configured lookups' own
+            # aliases (AC-10-05's intent - the Mapping tab's source picker,
+            # the key/watermark/compared pickers and the default
+            # comparedFields all read THIS, never the bare stored value).
+            # ``merged.get('lookups')`` is only ever populated for an HTTP
+            # task (the SQL shape's defaults carry no such key).
+            result_columns=effective_result_columns(
+                config.result_columns if config is not None else None,
+                merged.get("lookups"),
+            ),
             line_result_columns=[
                 str(c)
                 for c in ((config.line_result_columns if config is not None else None) or [])
@@ -1091,13 +1105,12 @@ class EtlService:
         raw payload is simply not copied into ``clean`` (dropped, never a
         422). ``existing_result_columns`` is the task's CURRENT stored
         ``result_columns`` (from the last ``/autocount/http/preview`` call
-        that named this task) - ``None`` when it has never been previewed,
-        in which case key/watermark picks are accepted un-checked (nothing
-        to check against yet) rather than refused. ``existing_lookups`` is
-        the task's CURRENTLY STORED ``lookups`` (review round 1 should-fix
-        4/blocker 2(iii)) - the "explained" set ``validate_lookups`` uses to
-        let a re-save of an unchanged lookup pass, and (via ``raw['lookups']
-        is None`` below) what a client that omits the key on the wire keeps.
+        that named this task, RAW main-endpoint columns only as of review
+        round 1b) - ``None`` when it has never been previewed, in which
+        case key/watermark picks are accepted un-checked (nothing to check
+        against yet) rather than refused. ``existing_lookups`` is the
+        task's CURRENTLY STORED ``lookups`` (review round 1 should-fix 4) -
+        what a client that omits ``lookups`` on the wire keeps.
         """
         errors: Dict[str, str] = {}
 
@@ -1124,37 +1137,6 @@ class EtlService:
             if path_error:
                 errors["path"] = path_error
 
-        key_fields = _clean_list(raw.get("keyFields"))
-        distinct_of = _clean_list(raw.get("distinctOf")) or None
-        if not key_fields:
-            errors["keyFields"] = "Choose at least one key field."
-        elif distinct_of and key_fields != ["value"]:
-            errors["keyFields"] = (
-                "A distinct-values field can only key on 'value'."
-            )
-        elif existing_result_columns is not None:
-            missing = [c for c in key_fields if c not in existing_result_columns]
-            if missing:
-                errors["keyFields"] = (
-                    f"Not in the last preview: {', '.join(missing)}. Test the "
-                    f"endpoint first."
-                )
-
-        watermark_field = str(raw.get("watermarkField") or "").strip() or None
-        if (
-            watermark_field
-            and existing_result_columns is not None
-            and watermark_field not in existing_result_columns
-        ):
-            errors["watermarkField"] = f"'{watermark_field}' is not in the last preview."
-
-        configured_compared = _clean_list(raw.get("comparedFields"))
-        compared_fields = compared_columns_for(
-            configured=configured_compared,
-            result_columns=existing_result_columns or configured_compared,
-            key_columns=key_fields,
-        )
-
         # ── lookups (sprint-5/10, AC-10-01, R9) ───────────────────────────────
         # review round 1 should-fix 4 - the wire key is optional: omitted
         # (`None`) KEEPS whatever is already stored (a client that does not
@@ -1170,12 +1152,69 @@ class EtlService:
         # review round 1 blocker 1(a) - runs UNCONDITIONALLY: path, alias
         # regex, the 5-cap, empty on/fields, a duplicate alias and a forward
         # reference never need `existing_result_columns` at all; only the
-        # "local is known" and "collides with a REAL source column" checks
-        # stay skipped pre-preview (`validate_lookups`'s own docstring).
-        for key, message in validate_lookups(
-            lookups, existing_result_columns, previously_saved_lookups=existing_lookups
-        ).items():
+        # "local is known" and "collides with a source column" checks stay
+        # skipped pre-preview (`validate_lookups`'s own docstring).
+        # review round 1b - checked against the TOLERANT raw set
+        # (`stored_raw_columns`), never the bare stored value, so a row
+        # stamped by the OLD (pre-round-1b) preview - which merged an alias
+        # straight into `result_columns` - never 422s against its own alias.
+        raw_columns_for_validation = (
+            stored_raw_columns(existing_result_columns, lookups)
+            if existing_result_columns is not None
+            else None
+        )
+        for key, message in validate_lookups(lookups, raw_columns_for_validation).items():
             errors[key] = message
+
+        # review round 1b - the alias set THIS save's lookups would
+        # produce, for the key/watermark rule below: an alias may never be
+        # a key or watermark field, because a lookup MISS leaves it ABSENT
+        # (AC-10-02) - a keyed row with a miss could never be identified,
+        # and a watermarked row with a miss could never advance the mark.
+        alias_names = set(effective_result_columns([], lookups))
+
+        key_fields = _clean_list(raw.get("keyFields"))
+        distinct_of = _clean_list(raw.get("distinctOf")) or None
+        if not key_fields:
+            errors["keyFields"] = "Choose at least one key field."
+        elif distinct_of and key_fields != ["value"]:
+            errors["keyFields"] = (
+                "A distinct-values field can only key on 'value'."
+            )
+        else:
+            aliased_keys = [c for c in key_fields if c in alias_names]
+            if aliased_keys:
+                errors["keyFields"] = (
+                    f"'{aliased_keys[0]}' comes from a lookup, which can be absent "
+                    f"on a miss - choose a source column."
+                )
+            elif existing_result_columns is not None:
+                missing = [c for c in key_fields if c not in existing_result_columns]
+                if missing:
+                    errors["keyFields"] = (
+                        f"Not in the last preview: {', '.join(missing)}. Test the "
+                        f"endpoint first."
+                    )
+
+        watermark_field = str(raw.get("watermarkField") or "").strip() or None
+        if watermark_field and watermark_field in alias_names:
+            errors["watermarkField"] = (
+                f"'{watermark_field}' comes from a lookup, which can be absent on "
+                f"a miss - choose a source column."
+            )
+        elif (
+            watermark_field
+            and existing_result_columns is not None
+            and watermark_field not in existing_result_columns
+        ):
+            errors["watermarkField"] = f"'{watermark_field}' is not in the last preview."
+
+        configured_compared = _clean_list(raw.get("comparedFields"))
+        compared_fields = compared_columns_for(
+            configured=configured_compared,
+            result_columns=existing_result_columns or configured_compared,
+            key_columns=key_fields,
+        )
 
         # ── schedule floors (AC-22-12, reused verbatim) ──────────────────────
         minutes = _clean_int(raw.get("incrementalMinutes"))

@@ -20,7 +20,6 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ..presets import HTTP_PRESETS
 from .preview import validate_http_path
 
 # AC-10-01 - "more than MAX_LOOKUPS (5) entries" is a save-time 422.
@@ -49,11 +48,60 @@ def _lookup_field_aliases(lookups: Sequence[Dict[str, Any]]) -> set:
     return aliases
 
 
+def _ordered_lookup_aliases(lookups: Sequence[Dict[str, Any]]) -> List[str]:
+    """Every ``fields[].as`` alias across ``lookups``, in LIST order
+    (lookup order, then field order), de-duplicated - the companion of
+    ``_lookup_field_aliases`` for a caller that needs the order, not just
+    membership (``effective_result_columns`` below)."""
+    ordered: List[str] = []
+    for spec in lookups:
+        if not isinstance(spec, dict):
+            continue
+        for field_spec in spec.get("fields") or []:
+            if isinstance(field_spec, dict) and isinstance(field_spec.get("as"), str):
+                alias = field_spec["as"]
+                if alias not in ordered:
+                    ordered.append(alias)
+    return ordered
+
+
+def stored_raw_columns(
+    result_columns: Optional[Sequence[str]],
+    lookups: Optional[Sequence[Dict[str, Any]]],
+) -> List[str]:
+    """Tolerance for a row stamped BEFORE review round 1b (lane DB only, no
+    migration): the OLD ``preview_http`` merged a lookup alias straight
+    into ``result_columns``, so a pre-fix row's stored value may still
+    literally contain one. Strips any entry equal to one of the task's OWN
+    CURRENTLY-configured lookup aliases, so it reads as the alias it is,
+    never a genuine raw column - the save-time collision check
+    (``validate_lookups``) and ``effective_result_columns`` below both go
+    through this so a pre-fix row never 422s against its own alias."""
+    alias_set = _lookup_field_aliases(lookups or ())
+    return [str(c) for c in (result_columns or []) if str(c) not in alias_set]
+
+
+def effective_result_columns(
+    result_columns: Optional[Sequence[str]],
+    lookups: Optional[Sequence[Dict[str, Any]]],
+) -> List[str]:
+    """review round 1b - the ONE place "what columns can this task's wire
+    shape / mapping picker / compared-column baseline / key-watermark
+    validation see" is derived from: the STORED ``result_columns`` (raw
+    main-endpoint columns ONLY as of this change - ``EtlService.
+    preview_http`` never merges a lookup alias into what it stamps, closing
+    review round 1 blocker 2 without a carve-out), tolerantly stripped of
+    any pre-fix leftover alias (``stored_raw_columns``), plus every
+    configured lookup's own ``fields[].as`` aliases, in list order,
+    appended after the raw columns, de-duplicated.
+    """
+    raw = stored_raw_columns(result_columns, lookups)
+    aliases = _ordered_lookup_aliases(lookups or ())
+    return list(dict.fromkeys([*raw, *aliases]))
+
+
 def validate_lookups(
-    lookups: List[Dict[str, Any]],
-    source_columns: Optional[Sequence[str]],
-    *,
-    previously_saved_lookups: Optional[Sequence[Dict[str, Any]]] = None,
+    lookups: List[Dict[str, Any]], source_columns: Optional[Sequence[str]]
 ) -> Dict[str, str]:
     """The save-time 422 gate for a task's ``source_config.lookups``
     (AC-10-01). Empty dict when every entry is clean, else
@@ -61,37 +109,29 @@ def validate_lookups(
     (``lookups[0].on[0].local``, ``lookups[0].fields[1].as``) extends the
     same bracket convention one level for the two list-of-dict sub-fields.
 
-    ``source_columns`` is the task's own RAW previewed columns, or ``None``
-    when the task has never been previewed (review round 1 blocker 1a) -
-    EVERY structural rule still runs regardless (path, alias regex, the
-    5-cap, empty ``on``/``fields``, a duplicate alias, a forward reference);
-    only the "local is a known column" and "alias collides with a REAL
-    source column" checks are skipped when there is nothing to check them
-    against yet, mirroring the ``keyFields`` "accepted un-checked" rule a
-    few lines up the caller.
+    ``source_columns`` is the task's STORED, RAW ``result_columns`` (review
+    round 1b - ``EtlService.preview_http`` never merges a lookup alias into
+    what it stores, so this set is ALWAYS genuinely raw; a caller reading a
+    pre-fix row applies ``effective_result_columns``'s own tolerance rule
+    before it ever reaches here), or ``None`` when the task has never been
+    previewed (review round 1 blocker 1a) - EVERY structural rule still
+    runs regardless (path, alias regex, the 5-cap, empty ``on``/``fields``,
+    a duplicate alias, a forward reference); only the "local is a known
+    column" and "alias collides with a source column" checks are skipped
+    when there is nothing to check them against yet, mirroring the
+    ``keyFields`` "accepted un-checked" rule a few lines up the caller.
 
     Two collision rules are genuinely distinct per AC-10-01: a field alias
     colliding with a source column, and a field alias colliding with an
-    EARLIER lookup's own alias. The former deliberately excludes a name that
-    is (a) produced by one of THIS invocation's own lookups, (b) never ALSO
-    used as a join key (``on[].local``/``on[].remote``) anywhere in this
-    invocation, AND (c) already EXPLAINED - either by ``previously_saved_
-    lookups`` (the task's OWN stored lookups before this save, so a re-save
-    of an unchanged lookup can never 422 against the alias its own last
-    preview stamped into ``result_columns``, AC-10-05) or by ANY registered
-    HTTP preset's own shipped lookup (AC-10-04's ``BaseUOMPrice`` validates
-    on a brand-new task with nothing saved yet). (review round 1 blocker 2 -
-    the reviewer proved live that a bare "produced by this call" carve-out
-    lets a FRESH, unrelated alias (``as: "Description"``) silently shadow a
-    genuine raw column of the same name; explaining it only via what is
-    ALREADY on record closes that hole while keeping the preset and the
-    re-save flows working with zero operator action.) A name doing double
-    duty as a join key stays flagged either way - shadowing a column the
-    operator is actively joining on is exactly the ambiguity this rule
-    exists to catch.
+    EARLIER lookup's own alias - checked with NO carve-out on either side
+    (review round 1b removes the "produced by this call" exemption round 1
+    added: raw-only storage means the shipped preset's own alias, e.g.
+    ``BaseUOMPrice``, is simply never IN the stored raw set to begin with,
+    so it never needed a carve-out - and a fresh, unrelated alias can no
+    longer silently shadow a genuine raw column of the same name, which is
+    exactly the hole round 1's carve-out reopened for a BRAND-NEW lookup).
 
-    Never mutates ``lookups``, ``previously_saved_lookups`` or any entry in
-    either.
+    Never mutates ``lookups`` or any entry in it.
     """
     errors: Dict[str, str] = {}
     if not lookups:
@@ -104,33 +144,11 @@ def validate_lookups(
         None if source_columns is None else {str(c) for c in source_columns}
     )
 
-    # Precompute, across the WHOLE list, which alias names this call would
-    # itself produce and which names are used as a join key anywhere in it.
+    # Every alias this call's OWN lookups would produce - used only to
+    # detect a FORWARD reference (naming a LATER lookup's alias in
+    # ``on[].local``), which is purely about THIS submission's ordering and
+    # needs no source columns at all.
     all_field_aliases = _lookup_field_aliases(lookups)
-    all_join_key_names: set = set()
-    for spec in lookups:
-        if not isinstance(spec, dict):
-            continue
-        for pair in spec.get("on") or []:
-            if not isinstance(pair, dict):
-                continue
-            local, remote = pair.get("local"), pair.get("remote")
-            if isinstance(local, str):
-                all_join_key_names.add(local)
-            if isinstance(remote, str):
-                all_join_key_names.add(remote)
-
-    # "Explained" aliases (review round 1 blocker 2(iii)): the task's OWN
-    # previously-saved lookups, union EVERY registered preset's own shipped
-    # lookup aliases - never simply "produced by this call" (see docstring).
-    explained_aliases = _lookup_field_aliases(previously_saved_lookups or ())
-    for preset in HTTP_PRESETS.values():
-        explained_aliases |= _lookup_field_aliases(preset.lookups)
-
-    self_produced_safe = (all_field_aliases & explained_aliases) - all_join_key_names
-    column_collision_set: Optional[set] = (
-        None if known_source_columns is None else known_source_columns - self_produced_safe
-    )
 
     # `on[].local` validity grows with EARLIER lookups' own aliases only
     # (multi-hop, AC-10-02) - a forward reference (naming a LATER lookup's
@@ -213,7 +231,7 @@ def validate_lookups(
                         "Give this field a short name using letters, numbers "
                         "and underscores only."
                     )
-                elif column_collision_set is not None and alias in column_collision_set:
+                elif known_source_columns is not None and alias in known_source_columns:
                     errors[field_key] = f"'{alias}' is already a source column."
                 elif alias in produced_aliases:
                     errors[field_key] = f"'{alias}' is already used by an earlier lookup."

@@ -35,6 +35,7 @@ from ..activity import (
     record_client_calls,
 )
 from ..client import AutoCountClient, AutoCountError
+from ..http_source.lookups import effective_result_columns
 from ..mapping import (
     DEFAULT_MAPPINGS,
     FIELD_REF_TRANSFORMS,
@@ -1499,7 +1500,14 @@ class CompanyService:
         config = self.configs.get(tenant_id, company_id, entity_type)
         header_ac_fields: List[str] = list(ac_source_fields(entity_type))
         if config is not None and config.result_columns:
-            header_ac_fields = [str(c) for c in config.result_columns]
+            # review round 1b - the Mapping tab's source picker sees the
+            # configured lookups' own aliases too (AC-10-05's intent),
+            # derived through the ONE shared helper - `result_columns` is
+            # raw-only as stored.
+            header_ac_fields = effective_result_columns(
+                config.result_columns,
+                config.source_config.get("lookups") if isinstance(config.source_config, dict) else None,
+            )
         if is_document_entity(entity_type):
             line_sorento_fields = list(line_accepted_fields(entity_type))
             if config is not None:
@@ -1614,7 +1622,15 @@ class CompanyService:
         # The header's own AC source columns + the line aggregates - a
         # header formula may name either (AC-02-07/09). `result_columns` is
         # NULL until the header query has previewed clean at least once.
-        known_vars = frozenset(config.result_columns or []) | LINE_AGGREGATE_NAMES
+        # review round 1b - unioned with the configured lookups' own
+        # aliases (raw-only storage, aliases derived at read time), so a
+        # formula may legitimately name one too.
+        known_vars = frozenset(
+            effective_result_columns(
+                config.result_columns,
+                config.source_config.get("lookups") if isinstance(config.source_config, dict) else None,
+            )
+        ) | LINE_AGGREGATE_NAMES
         seen: set = set()
         clean: List[MappingWriteRow] = []
         for row in rows:
@@ -2045,7 +2061,13 @@ class CompanyService:
         """
         header_draft = [r for r in draft_rows if getattr(r, "scope", SCOPE_HEADER) != SCOPE_LINE]
         line_draft = [r for r in draft_rows if getattr(r, "scope", SCOPE_HEADER) == SCOPE_LINE]
-        header_known_vars = frozenset(config.result_columns or []) | LINE_AGGREGATE_NAMES
+        # review round 1b - mirrors the save gate's own union above.
+        header_known_vars = frozenset(
+            effective_result_columns(
+                config.result_columns,
+                config.source_config.get("lookups") if isinstance(config.source_config, dict) else None,
+            )
+        ) | LINE_AGGREGATE_NAMES
         line_known_vars = frozenset(config.line_result_columns or [])
 
         engine_rows: List[MappingRow] = []

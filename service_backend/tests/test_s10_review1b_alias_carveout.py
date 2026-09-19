@@ -117,9 +117,14 @@ def test_a_brand_new_lookup_previewed_then_saved_succeeds(db):
     service.update_task(DEFAULT_TENANT_ID, company.id, ENTITY_WAREHOUSE, _http_raw(connectionId=conn.id))
 
     # 2) The operator adds SUPPLIER_LOOKUP in the editor and clicks Test -
-    #    the SAME /autocount/http/preview call, WITH companyId/entityType so
-    #    the stamp lands (AC-10-05) - this is what puts "SupplierName" into
-    #    the task's stamped result_columns.
+    #    the SAME /autocount/http/preview call, WITH companyId/entityType.
+    #    Round 1b's own ruling: stored result_columns is RAW-ONLY - the
+    #    /preview RESPONSE still carries the merged alias (AC-10-05,
+    #    unchanged wire shape) but the task's OWN stamped result_columns
+    #    (and therefore its wire resultColumns, via effective_result_
+    #    columns) reflects only the SAVED source_config.lookups, which does
+    #    not include this not-yet-saved lookup yet - checked below, after
+    #    the save.
     transport = _multi_transport({
         "/location": {
             "TotalCount": 1, "Page": 1, "PageSize": 50, "TotalPages": 1,
@@ -136,7 +141,10 @@ def test_a_brand_new_lookup_previewed_then_saved_succeeds(db):
     )
     assert "SupplierName" in result.columns, result.columns
     assert task_view is not None
-    assert "SupplierName" in task_view.result_columns, task_view.result_columns
+    assert "SupplierName" not in task_view.result_columns, (
+        "stored result_columns is raw-only - the alias only appears once "
+        f"the lookup is SAVED: {task_view.result_columns}"
+    )
 
     # 3) The operator saves - this is the flow blocker 2(iii) exists to
     #    serve (R9: general, operator-authored lookups) and must succeed.
@@ -145,6 +153,10 @@ def test_a_brand_new_lookup_previewed_then_saved_succeeds(db):
         _http_raw(connectionId=conn.id, lookups=[SUPPLIER_LOOKUP]),
     )
     assert saved.source_config.get("lookups") == [SUPPLIER_LOOKUP]
+    # Now that the lookup is SAVED, the wire resultColumns (AC-10-05's
+    # intent) carries its alias - effective_result_columns unions the
+    # task's CONFIGURED lookups onto the stored raw columns.
+    assert "SupplierName" in saved.result_columns, saved.result_columns
 
 
 def test_a_second_brand_new_lookup_previewed_then_saved_also_succeeds(db):
@@ -203,3 +215,5 @@ def test_a_second_brand_new_lookup_previewed_then_saved_also_succeeds(db):
         _http_raw(connectionId=conn.id, lookups=both_lookups),
     )
     assert saved.source_config.get("lookups") == both_lookups
+    assert "SupplierName" in saved.result_columns, saved.result_columns
+    assert "GroupLabel" in saved.result_columns, saved.result_columns
