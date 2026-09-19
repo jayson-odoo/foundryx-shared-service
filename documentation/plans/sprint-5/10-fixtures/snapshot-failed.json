@@ -1,0 +1,10 @@
+{
+  "snapshotId": "d4b7f2a1-9e3c-4f8b-8a1d-5c6e7f2a3b9d",
+  "entity": "products",
+  "companyCode": "MCH",
+  "status": "failed",
+  "error": {
+    "code": "SOURCE_PAGE_FAILED",
+    "message": "Source page 3 of 4 failed after retries (timeout)."
+  }
+}

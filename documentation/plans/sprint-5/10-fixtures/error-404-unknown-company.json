@@ -1,0 +1,6 @@
+{
+  "code": "UNKNOWN_COMPANY",
+  "message": "No company with that code for this key.",
+  "companyCode": "XYZ",
+  "entity": "products"
+}
