@@ -469,6 +469,51 @@ already uses); no stored id resolved without its tenant scope (the recurring pol
 leak class); audit rows carry no payload. Snapshot ids are uuid4 and are additionally scoped to
 the key's tenant and company set on every read - possession of an id is not authorisation.
 
+S6 security round (AC-10-58), the five rulings that needed one:
+
+- **Failed-header prose is fixed per code.** A gateway `failed` header's `error.message` is the
+  ONE operator-safe sentence mapped from its `error_code`
+  (`pull_gateway_service.GATEWAY_FAILED_MESSAGES`, generic fallback for an unmapped code), never
+  the stored `snapshot.error` - that text names this deployment's own source host, port and
+  endpoint path, and the gateway's reader is a third party. `error.code` is unchanged and stays
+  the thing a consumer branches on (Appendix A6); the operator header and `integration_activity`
+  keep the verbatim text.
+- **Outbound egress guard on `baseUrl`.** An `autocount` connection's base URL is a stored,
+  operator-supplied outbound target, so it runs through the house SSRF guard
+  (`app/services/url_guard.assert_deliverable`, https-only, blocks private/loopback/link-local/
+  reserved/multicast targets given as a literal OR resolved from a hostname) at SAVE
+  (`AutoCountProvider.validate_config`, a 422 naming `baseUrl`) and again immediately before
+  every request, at the two outbound chokepoints: `http_source.client.HttpApiClient.get` (the
+  paged walk, every lookup and the preview sample all route through it) and
+  `http_client.probe_open_connection` (the Test button and open-company onboarding). Re-checking
+  at request time is the point - DNS can be re-pointed after a URL is accepted. ONE carve-out,
+  the BL-SS-166 precedent shape (a `settings.environment == "development"` flag, never a
+  request-controlled input): a LOOPBACK host (`localhost`, `127.0.0.0/8`) is allowed in
+  development so a local wrapper still works for live-verify. The carve-out does not extend to
+  any other private range, and a metadata address (`169.254.169.254`) stays refused even in
+  development.
+- **In-tenant `COMPANY_NOT_ALLOWED` vs `UNKNOWN_COMPANY` is by design.** A key presented for a
+  code that exists in its own tenant but is outside the key's company set answers 403
+  `COMPANY_NOT_ALLOWED`, while a code that exists in no company of that tenant answers 404
+  `UNKNOWN_COMPANY` - so a key holder can distinguish the two WITHIN the tenant it already
+  authenticates to. Deliberate: the caller is a known consumer of that tenant's own books, the
+  distinction is what makes a misconfigured key diagnosable rather than a support ticket, and
+  the leak is bounded by the tenant it already holds a credential for. Across tenants there is
+  no distinction at all (uniform 404), which is the boundary that matters.
+- **XFF posture.** `settings.trust_proxy_headers` is FALSE by default, so `client_ip` reads the
+  socket peer and every gateway caller behind the production reverse proxy shares ONE per-IP
+  throttle bucket (the per-KEY budget, which is unaffected, is what actually bounds an
+  individual consumer). Turning it on is safe only if Caddy OVERWRITES `X-Forwarded-For` rather
+  than appending to a client-supplied value - otherwise a caller spoofs its way into a fresh
+  bucket per request. Owner decision, not taken in this slice.
+- **Pruning.** The retention sweep never deletes a `building` snapshot (a stale `expires_at` on a
+  re-attached row must not tear down a live build), and `PullSnapshotRepository.delete` takes the
+  owning `tenant_id` - the cross-tenant sweep still visits every tenant, one tenant-scoped delete
+  at a time. The gateway's audit write on an error path is best-effort (an exception raised
+  inside an `except` block escapes the whole `try`, which would turn a clean flat 403/404/429
+  into an unhandled error); `last_used_at` is stamped only once the service gate passes, so a
+  suspended tenant's key never records a call it was not served.
+
 ## 3. Files
 
 Backend (`service_backend/modules/autocount/`):
