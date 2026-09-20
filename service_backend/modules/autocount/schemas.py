@@ -645,6 +645,12 @@ class HttpPreviewRequest(ApiModel):
     # (``http_source.lookups.validate_lookups``) at SAVE time; the preview
     # route only walks what it is given.
     lookups: Optional[List[Dict[str, Any]]] = None
+    # sprint-5/10 S5a follow-up (AC-10-82) - the operator's DRAFT combine
+    # step, same "plain dict, service validates" contract as `lookups`
+    # above (`http_source.combine.validate_combine` at the service layer;
+    # the preview route only runs what it is given). Omitted (`None`) never
+    # runs combine at all - the response is unaffected.
+    combine: Optional[Dict[str, Any]] = None
     # When both are given, the preview also records `resultColumns`/
     # `lastPreviewAt` on the task (AC-08-14) - exactly as the SQL preview
     # does, so the Source tab's column pickers see it without a second call.
@@ -860,6 +866,17 @@ class HttpPreviewResponse(ApiModel):
     task: Optional[EtlTaskResponse] = None
     # sprint-5/10 (AC-10-05) - per-lookup {alias, matched, missed} counts.
     lookups: List[LookupPreviewCountOut] = []
+    # sprint-5/10 S5a follow-up (AC-10-82) - the combine funnel, present
+    # ONLY when the request carried a `combine` block (`rows`/`columns`
+    # above are then the COMBINED shape, not the pre-combine sample); every
+    # field stays `None`/omitted for a plain lookup preview, so that
+    # response is unaffected.
+    rowsIn: Optional[int] = None
+    excludedCount: Optional[int] = None
+    groups: Optional[int] = None
+    droppedByRule: Optional[Dict[str, int]] = None
+    rowsOut: Optional[int] = None
+    roundedCount: Optional[int] = None
 
 
 class EtlPreviewResponse(ApiModel):

@@ -113,7 +113,7 @@ from .company_service import (
 )
 from ..presets import HTTP_PRESETS, seed_document_mapping, seed_http_preset_mapping
 from ..mapping import SCOPE_HEADER, SCOPE_LINE
-from ..http_source.combine import validate_combine
+from ..http_source.combine import apply_combine, validate_combine
 from ..http_source.lookups import effective_result_columns, stored_raw_columns, validate_lookups
 from ..http_source.preview import (
     HttpPreviewError,
@@ -846,6 +846,7 @@ class EtlService:
         *,
         distinct_of: Optional[List[str]] = None,
         lookups: Optional[List[Dict[str, Any]]] = None,
+        combine: Optional[Dict[str, Any]] = None,
         company_id: Optional[str] = None,
         entity_type: Optional[str] = None,
         transport: Any = None,
@@ -872,6 +873,16 @@ class EtlService:
         ONLY via the ``get_http_transport`` dependency override, so a test
         exercising the real ``POST /autocount/http/preview`` route never
         reaches ``hapi.sorento.cc.cd`` (sprint-5/08 review round 1, B4).
+
+        ``combine`` (sprint-5/10 S5a follow-up, AC-10-82), when given, is
+        validated against THIS preview's own sampled columns + lookup
+        aliases (mirroring ``lookups`` - a draft never yet saved can still
+        be tested), then applied to the lookup-merged sample the SAME order
+        the push path runs it in (AC-10-80). The returned ``result.rows``/
+        ``columns`` become the COMBINED shape and ``result.combine_funnel``
+        carries the generic counters; omitted (``None``) leaves ``result``
+        exactly as a plain lookup preview would - no combine block, no
+        funnel, the response unchanged.
         """
         conn = self.connections.get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
         if conn is None or auth_mode(conn.config_json or {}) != AUTH_NONE:
@@ -899,6 +910,55 @@ class EtlService:
             )
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc
+
+        # ── combine (sprint-5/10 S5a follow-up, AC-10-82) - runs AFTER every
+        # lookup and BEFORE the response is built, mirroring the push path's
+        # own stage order (AC-10-80: identity and the row hash both run on
+        # the COMBINED rows, so the preview grid must show the same thing a
+        # real run would produce, never the pre-combine sample) ───────────
+        if combine is not None:
+            lookup_alias_names = effective_result_columns([], clean_lookups)
+            combine_errors = validate_combine(combine, result.raw_columns, lookup_alias_names)
+            if combine_errors:
+                raise EtlValidationError(combine_errors)
+            rows_in = len(result.rows)
+            combine_result = apply_combine(result.rows, combine)
+            dropped = combine_result.metadata.get("dropped") or {}
+            rows_out = len(combine_result.rows)
+            # Every dropped bucket is exactly ONE group (drop runs over the
+            # GROUPED rows, AC-10-79) - the group count survives regardless
+            # of which drop rule (if any) later removed it.
+            groups = rows_out + sum(bucket.get("count", 0) for bucket in dropped.values())
+            result.combine_funnel = {
+                "rowsIn": rows_in,
+                "excludedCount": combine_result.metadata.get("excludedCount", 0),
+                "groups": groups,
+                "droppedByRule": {
+                    name: bucket.get("count", 0) for name, bucket in dropped.items()
+                },
+                "rowsOut": rows_out,
+                "roundedCount": combine_result.metadata.get("roundedCount", 0),
+            }
+            # The combined, POST-GROUP schema - groupBy + carry + measure
+            # aliases, in that declared order, de-duplicated (the same
+            # projection shape ``combine.py``'s own
+            # ``_metadata_row_projection`` uses for a dropped/listed row,
+            # widened here with ``carry`` since the full grid, not just a
+            # funnel entry, is being replaced).
+            result.columns = list(
+                dict.fromkeys(
+                    [
+                        *[str(c) for c in (combine.get("groupBy") or [])],
+                        *[str(c) for c in (combine.get("carry") or [])],
+                        *[
+                            str(spec.get("alias"))
+                            for spec in (combine.get("measures") or [])
+                            if isinstance(spec, dict) and spec.get("alias")
+                        ],
+                    ]
+                )
+            )
+            result.rows = combine_result.rows
 
         task_view: Optional["EtlTaskView"] = None
         if company_id and entity_type:

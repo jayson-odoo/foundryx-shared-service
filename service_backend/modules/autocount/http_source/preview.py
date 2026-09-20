@@ -85,6 +85,15 @@ class HttpPreviewResult:
     # (``lookups.effective_result_columns``), never stored, so a save-time
     # collision check against the stored value is exact with no carve-out.
     raw_columns: List[str] = field(default_factory=list)
+    # sprint-5/10 S5a follow-up (AC-10-82) - the generic funnel counters
+    # (``rowsIn``/``excludedCount``/``groups``/``droppedByRule``/``rowsOut``/
+    # ``roundedCount``), set by ``EtlService.preview_http`` ONLY when the
+    # request carried a ``combine`` block; ``None`` otherwise, so a plain
+    # preview's response is unaffected. ``rows``/``columns`` above are
+    # overwritten with the COMBINED shape in that same case (AC-10-80 - the
+    # push path itself runs combine before hashing, so the preview grid
+    # must show what a real run would produce, not the pre-combine sample).
+    combine_funnel: Optional[Dict[str, Any]] = None
 
 
 def run_http_preview(
