@@ -1,3 +1,88 @@
+# Run 4 (HEAD 17dc2c61, 2026-09-20 UTC, approx 13:00-13:15Z) - re-verify Revoke end to end + the grace-window owner question + AC-10-85 bonus check
+
+Lane: backend `:8009`, frontend `:3009` (already running from the same session's `pull-setup`/
+`pull-stock`/`flip-push` work - no restart between runs, `rm -rf .next && npm run build` had
+already run once this session). DB `foundryx_service_s40`. Tenant/user: `default`,
+`demo@example.com` (Admin). Scope: full Revoke journey at BOTH viewports (Run 3 only covered
+375px + a single 1280px list screenshot without exercising Revoke itself at 1280px), plus the
+owner's own open question from the brief ("record whether the key still works DURING the grace
+window") and the AC-10-85 bonus connection-fields check.
+
+## Revoke, end to end, both viewports - now fully working (Run 3's 404 is fixed)
+
+Run 3 found Revoke reachable via a real `ActionMenu` but every attempt 404'd
+(`autocount_pull_api_key 'pull-key-active' not found.`) because the Pull page's list data was
+still the Phase-1 mock overlay while the mutation correctly targeted the real backend - a pure
+read/write mismatch, not a backend bug (see Run 3's own root-cause writeup below, still accurate
+history). That gap is now closed: the phase-2 swap landed (`994ca215`, an ancestor of this HEAD),
+so the Keys/Snapshots list IS the real backend data.
+
+This run issued its OWN fresh, timestamped keys (`S6 pull-setup 20260920T124430Z` at 375px,
+`AC-10-50 pull-setup 1280 20260920T131041Z` at 1280px - see `pull-setup/README.md` for the Issue
+key journey) and revoked each one plus every leftover key found in the Keys list at session start
+(residue from earlier tester sessions this lane: `AC-10-50 pull-setup 1280 20260920T105051Z`,
+`AC-10-50 pull-setup 20260920T103828Z`, `S6 live replay 20260920T095117Z`, plus `S6 flip-push
+probe 20260920T130458Z` issued and consumed by `flip-push/README.md`'s own journey) - 6 keys
+revoked in total this run, leaving the Keys list clean of active residue.
+
+**375px:** Keys segment -> target row's "..." **Actions** menu (required `scrollintoview` to reach
+the Actions column, off-screen by default) -> **Revoke** menuitem.
+`run4-01-key-actions-menu-375.png`. Clicking it immediately shows a deferred-action toast
+**"Revoking in 9s / Cancel"** (no error this time - contrast Run 3's 404).
+`run4-02-revoke-grace-window-375.png`. After the countdown, the toast resolves to "Key revoked."
+and the row's Status column flips to `Revoked`. `run4-03-after-error-row-state-375.png` (filename
+kept from the original brief naming; this run's capture shows the FINAL post-revoke row state, not
+an error - Run 3's error is fully retired). A `curl GET .../snapshots/{id}` using the now-revoked
+key returns `401 {"code":"INVALID_API_KEY","message":"Missing, malformed, unknown or revoked
+key."}`. **PASS.**
+
+**1280px:** identical journey, independent key. `run4-04-key-actions-menu-1280.png` (Actions menu
+open), `run4-05-revoke-grace-window-1280.png` ("Revoking in 9s" toast), `run4-06-after-revoke-row-
+state-1280.png` (Status `Revoked`, confirmed via `get text`: 6 `Revoked` rows total by the end of
+this run, one per key). A second `curl GET .../snapshots/{id}` using THIS revoked key also returns
+`401 INVALID_API_KEY`. **PASS.**
+
+## The grace-window owner question, answered: YES, a key still works during the 9s countdown
+
+While revoking the FIRST key of this run (375px pass), a `curl POST .../snapshots
+{"companyCode":"SRT","entity":"products"}` using that SAME key was issued deliberately DURING the
+visible "Revoking in 9s" countdown (originally intended only to probe whether a revoked key could
+still reach the endpoint, before realising the revoke had not yet actually committed). The call
+succeeded: `HTTP 202 {"snapshotId":"b7b1e8de-...","status":"ready",...}` - the gateway accepted a
+brand-new build request using the key. Cross-checked against the DB immediately after: the key's
+`ac_pull_api_key.revoked_at` timestamp is `2026-09-20 21:57:46.817+09`, while the snapshot row this
+same call created carries `created_at 2026-09-20 21:57:46.003+09` - **the gateway accepted the
+request ~0.8 SECONDS BEFORE the revoke actually committed to the database.** This confirms
+definitively: the deferred-action countdown is not merely a UI affordance layered on top of an
+already-committed mutation - the ACTUAL backend revoke does not fire until the countdown
+completes (or would have been cancelled entirely by clicking the toast's own **Cancel**). A key
+issued moments before a Revoke click remains fully live and usable for the full ~9 second grace
+window. This is not filed as a defect (it is consistent with, and arguably the whole point of, a
+deferred/undoable action), but it IS a fact the plan owner should know when reasoning about how
+fast a compromised-key revocation actually takes effect - flagged as a design note in
+`pull-setup/README.md` Finding B as well.
+
+## AC-10-85 bonus check (1280 only, cross-referenced from `pull-setup/README.md` Finding C)
+
+Settings -> Integrations -> the lane's open AutoCount connection (`S40 db1 SRT ...`) -> Edit:
+`Page size` and `Request timeout (seconds)` number fields ARE present, correctly gated to render
+only for an open (`auth: none`) connection. Screenshot lives in `pull-setup/28-connection-sizing-
+fields-1280.png` (not duplicated here). Both fields render blank with no default-value placeholder
+- see `pull-setup/README.md` Finding C for the full writeup. No changes saved (Cancel clicked).
+**PASS on presence + gating, minor UX finding on the missing placeholder.**
+
+## AC verdict (Run 4)
+
+- **AC-10-38 [FE] Revoke:** **PASS**, fully, both viewports - the Phase-2 swap (already landed
+  before this HEAD) closes the gap Run 3 found; Revoke now round-trips against the real backend
+  end to end (menu -> grace countdown -> commit -> `401` on the revoked key) with no defects.
+- Owner question (grace-window key validity): **answered - YES, the key remains valid for the
+  full countdown window**, documented above and in `pull-setup/README.md` Finding B.
+- **AC-10-85 [BE]/[FE] bonus:** **PASS** on presence/gating; minor UX finding (Finding C in
+  `pull-setup/README.md`) on the missing default placeholder, not a hard fail.
+
+---
+
 # Run 3 (HEAD 29c02190, 2026-09-20 UTC) - re-verify SF8 (Revoke reachability), AC-10-38
 
 Lane: backend `:8009`, frontend `:3009` (fresh `rm -rf .next && npm run build` + `npx next start
