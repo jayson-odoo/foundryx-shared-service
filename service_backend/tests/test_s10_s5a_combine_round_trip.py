@@ -21,7 +21,7 @@ from app.models import DEFAULT_TENANT_ID
 from app.models.connection import Connection
 from modules.autocount.canonical.masters import ENTITY_WAREHOUSE
 from modules.autocount.models import AcCompany
-from modules.autocount.services.etl_service import EtlService
+from modules.autocount.services.etl_service import EtlService, EtlValidationError
 
 COMBINE: Dict[str, Any] = {
     "computed": [],
@@ -115,3 +115,25 @@ def test_an_explicit_combine_replaces_the_previously_saved_one(db):
 
     assert view.source_config["combine"] == other_combine
     assert view.source_config["keyFields"] == ["Name"]
+
+
+def test_a_round_rule_naming_a_column_that_is_not_a_declared_measure_alias_fails_closed(db):
+    """Coordinator ruling (S5a follow-up, unpinned R11 decision) - a
+    ``round[i].measure`` that is not one of THIS save's own ``measures[].
+    alias`` entries must fail the save with a named ``combine.round[i].
+    measure`` field error rather than reach ``apply_combine`` at all, where
+    an unknown alias would silently never appear in a grouped row and the
+    rounding step would be a no-op for it. ``EtlService.update_task`` wires
+    straight into ``validate_combine`` (``http_source/combine.py``), which
+    already checks ``round[i].measure in measure_alias_set`` - this pins
+    that behaviour through the SERVICE round trip, not just the bare
+    validator, so a future refactor of the wiring cannot silently drop it."""
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    bad_combine = {**COMBINE, "round": [{"measure": "not_a_measure", "mode": "half_up", "dp": 0}]}
+    raw = _raw(connectionId=conn.id, keyFields=[], combine=bad_combine)
+
+    with pytest.raises(EtlValidationError) as exc_info:
+        EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_WAREHOUSE, raw)
+
+    assert "combine.round[0].measure" in exc_info.value.field_errors
