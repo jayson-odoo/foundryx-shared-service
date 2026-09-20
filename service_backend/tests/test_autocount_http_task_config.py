@@ -485,6 +485,63 @@ def test_put_etl_task_rejects_another_tenants_connection_422_never_leaks(client,
     assert "connectionId" in response.json()["detail"]["fieldErrors"], response.text
 
 
+# ── review round 5 (R5-B): the ROUTER's own model_fields_set distinction ────
+#
+# `EtlSourceConfigIn.model_dump()` always emits every declared field
+# (`combine` defaulted to `None` when the wire omits it), so the ROUTER -
+# not just the service layer's own `"combine" in raw` gate - must be the one
+# telling "the JSON never mentioned combine at all" from "the JSON explicitly
+# set it to null" apart BEFORE the dict reaches `EtlService.update_task`.
+
+_ROUTER_TEST_COMBINE = {
+    "computed": [], "require": [], "measure": "ItemCode",
+    "groupBy": ["ItemCode"], "measures": [{"source": "ItemCode", "op": "count", "alias": "n"}],
+    "carry": [], "round": [], "drop": [],
+}
+
+
+def test_put_etl_task_omitted_combine_keeps_it_explicit_null_clears_it(client, headers, db):
+    company, conn = _open_company(db)
+
+    first = client.put(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_PRODUCT}/etl-task",
+        json={
+            "sourceConfig": _http_raw(
+                connectionId=conn.id, keyFields=[], combine=_ROUTER_TEST_COMBINE
+            )
+        },
+        headers=headers,
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["sourceConfig"]["combine"] == _ROUTER_TEST_COMBINE
+
+    # A second PUT whose JSON body carries NO "combine" key at all (a client
+    # that does not round-trip the field) must not wipe it.
+    second_body = _http_raw(connectionId=conn.id, watermarkField="LastModified")
+    assert "combine" not in second_body
+    second = client.put(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_PRODUCT}/etl-task",
+        json={"sourceConfig": second_body},
+        headers=headers,
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["sourceConfig"]["combine"] == _ROUTER_TEST_COMBINE
+
+    # A THIRD PUT with an EXPLICIT `"combine": null` clears it.
+    third = client.put(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_PRODUCT}/etl-task",
+        json={
+            "sourceConfig": _http_raw(
+                connectionId=conn.id, keyFields=["ItemCode"], combine=None
+            )
+        },
+        headers=headers,
+    )
+    assert third.status_code == 200, third.text
+    assert third.json()["sourceConfig"]["combine"] is None
+    assert third.json()["combineOutputColumns"] == []
+
+
 def test_preview_http_rejects_another_tenants_connection_422_never_leaks(client, headers, db):
     from app.models import Tenant
 

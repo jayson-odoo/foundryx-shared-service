@@ -170,7 +170,10 @@ def test_no_combine_leaves_the_response_unaffected(client, headers, db):
     response = _preview(client, headers, db, rows=_funnel_rows())
     assert response.status_code == 200, response.text
     body = response.json()
-    for key in ("rowsIn", "excludedCount", "groups", "droppedByRule", "rowsOut", "roundedCount"):
+    for key in (
+        "rowsIn", "excludedCount", "groups", "droppedByRule", "rowsOut", "roundedCount",
+        "preCombineColumns",
+    ):
         assert body.get(key) is None, (key, body)
     assert len(body["rows"]) == len(_funnel_rows())
     column_names = {c["name"] for c in body["columns"]}
@@ -207,6 +210,29 @@ def test_combine_returns_the_funnel_and_the_combined_rows(client, headers, db):
     assert column_names == {
         "item_code", "location_code", "ItemDescription", "ItemBaseUOM", "qty"
     }, column_names
+
+
+# ── R5-A (review round 5) - preCombineColumns: raw+lookup+computed only ─────
+
+
+def test_the_pre_combine_columns_carry_raw_and_computed_aliases_never_the_grouped_output(
+    client, headers, db
+):
+    """The Source tab's group-by/measure/require pickers must stay
+    PRE-combine (what a formula may REFERENCE), never the grouped
+    ``combineOutputColumns`` shape - so ``qty`` (a `measures[].alias`, only
+    created AFTER grouping) must NOT appear, while the combine's OWN
+    `computed` aliases (`item_code`/`location_code`/`base_qty`, available to
+    every LATER stage) must."""
+    response = _preview(client, headers, db, combine=STOCK_COMBINE)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    pre_combine = set(body["preCombineColumns"])
+    assert pre_combine == {
+        "ItemCode", "UOM", "ItemBaseUOM", "Location", "BatchNo", "BalQty",
+        "ItemDescription", "UomRate", "item_code", "location_code", "base_qty",
+    }, pre_combine
+    assert "qty" not in pre_combine, pre_combine
 
 
 # ── a computed-stage runtime error surfaces as excludedCount ────────────────

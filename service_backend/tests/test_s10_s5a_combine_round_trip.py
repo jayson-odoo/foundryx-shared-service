@@ -102,6 +102,46 @@ def test_omitting_combine_key_keeps_the_previously_saved_combine(db):
     assert view.source_config["keyFields"] == ["Code"]
 
 
+def test_an_explicit_null_combine_clears_the_previously_saved_one(db):
+    """R5-B (review round 5) - an EXPLICIT ``null`` (the key present, value
+    ``None`` - the Combine-rows switch turned OFF) CLEARS the stored
+    combine outright, unlike an omitted key
+    (``test_omitting_combine_key_keeps_the_previously_saved_combine`` above),
+    which keeps it. ``combineOutputColumns`` follows to ``[]`` for free
+    (derived from ``combine`` at read time, AC-10-80)."""
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    raw = _raw(connectionId=conn.id, keyFields=[], combine=COMBINE)
+    EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_WAREHOUSE, raw)
+
+    # The operator must re-pick manual key fields in the SAME request (or a
+    # later one) - clearing combine does not itself supply new keys, the
+    # SAME rule any other combine-less task already follows.
+    raw_clear = _raw(connectionId=conn.id, keyFields=["Code"], combine=None)
+    assert "combine" in raw_clear
+    view = EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_WAREHOUSE, raw_clear)
+
+    assert view.source_config["combine"] is None
+    assert view.source_config["keyFields"] == ["Code"]
+    assert view.combine_output_columns == []
+
+
+def test_an_explicit_null_combine_with_no_manual_keys_422s_like_any_other_task(db):
+    """CONTROL - clearing combine does not itself supply new keys; the
+    operator must still pick at least one, the SAME rule any other
+    combine-less HTTP task already follows (AC-10-80's own "operator must
+    re-pick keys" text)."""
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    raw = _raw(connectionId=conn.id, keyFields=[], combine=COMBINE)
+    EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_WAREHOUSE, raw)
+
+    raw_clear = _raw(connectionId=conn.id, keyFields=[], combine=None)
+    with pytest.raises(EtlValidationError) as exc_info:
+        EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_WAREHOUSE, raw_clear)
+    assert "keyFields" in exc_info.value.field_errors
+
+
 def test_an_explicit_combine_replaces_the_previously_saved_one(db):
     conn = _open_connection(db)
     company = _company(db, conn.id)
