@@ -143,6 +143,36 @@ def _other_tenant(db) -> None:
         db.commit()
 
 
+def _company(
+    db, tenant_id=DEFAULT_TENANT_ID, *, database_name="AED_SORENTO", sorento_company_code="SRT",
+):
+    """Security round 1 HIGH 2 knock-on: `PullKeyService.issue` now validates
+    every `companyIds` entry against a REAL, tenant-scoped `AcCompany` row -
+    a fake placeholder like `"co-1"` is rightly refused. Distinct
+    `database_name`/`sorento_company_code` per call avoid
+    `uq_ac_company_tenant_db` (bit the last tester when two companies in the
+    SAME tenant shared a `database_name`)."""
+    from app.models.connection import Connection
+    from modules.autocount.models import AcCompany
+
+    conn = Connection(
+        tenant_id=tenant_id, provider="autocount", type="erp", name=f"db1 REST {database_name}",
+        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"},
+        credentials_json=None, is_active=True,
+    )
+    db.add(conn)
+    db.commit()
+    company = AcCompany(
+        tenant_id=tenant_id, connection_id=conn.id, database_name=database_name,
+        company_name="Sorento", name="Sorento", is_active=True,
+        sorento_company_code=sorento_company_code,
+    )
+    db.add(company)
+    db.commit()
+    db.refresh(company)
+    return company
+
+
 def _now():
     return datetime.now(timezone.utc)
 
@@ -177,24 +207,26 @@ def test_an_already_provisioned_tenants_admin_holds_both_keys_after_update(db):
 
 def test_issue_key_route_returns_the_plaintext_once_never_persisted_looking(client, db):
     headers = _auth(client)
+    company = _company(db)
     response = client.post(
         "/autocount/pull/keys",
-        json={"name": "SRT integration", "companyIds": ["co-1"]},
+        json={"name": "SRT integration", "companyIds": [company.id]},
         headers=headers,
     )
     assert response.status_code in (200, 201), response.text
     body = response.json()
     assert body["plaintext"].startswith("fxa_live_")
     assert body["key"]["name"] == "SRT integration"
-    assert body["key"]["companyIds"] == ["co-1"]
+    assert body["key"]["companyIds"] == [company.id]
     assert "plaintext" not in body["key"]
     assert body["key"]["revokedAt"] is None
 
 
 def test_list_keys_route_returns_a_bare_array_never_the_plaintext(client, db):
     headers = _auth(client)
+    company = _company(db)
     client.post(
-        "/autocount/pull/keys", json={"name": "k1", "companyIds": ["co-1"]}, headers=headers,
+        "/autocount/pull/keys", json={"name": "k1", "companyIds": [company.id]}, headers=headers,
     )
     response = client.get("/autocount/pull/keys", headers=headers)
     assert response.status_code == 200, response.text
@@ -242,7 +274,11 @@ def test_key_routes_scoped_to_the_tenant(client, db):
     db.commit()
 
     mine = _auth(client)
-    client.post("/autocount/pull/keys", json={"name": "mine", "companyIds": ["co-1"]}, headers=mine)
+    mine_company = _company(db)
+    client.post(
+        "/autocount/pull/keys", json={"name": "mine", "companyIds": [mine_company.id]},
+        headers=mine,
+    )
 
     # `AuthService.resolve_tenant(None)` always resolves the bare-host
     # `default` tenant - a user provisioned under a SECOND tenant must log
@@ -261,8 +297,9 @@ def test_key_routes_scoped_to_the_tenant(client, db):
 
 def test_revoke_route_returns_the_updated_key_synchronously(client, db):
     headers = _auth(client)
+    company = _company(db)
     issued = client.post(
-        "/autocount/pull/keys", json={"name": "k", "companyIds": ["co-1"]}, headers=headers,
+        "/autocount/pull/keys", json={"name": "k", "companyIds": [company.id]}, headers=headers,
     ).json()
     key_id = issued["key"]["id"]
 
@@ -277,8 +314,9 @@ def test_revoke_route_404s_for_another_tenants_key(client, db):
     _other_tenant(db)
     from modules.autocount.services.pull_key_service import PullKeyService
 
+    their_company = _company(db, OTHER_TENANT)
     theirs, _plaintext = PullKeyService(db).issue(
-        OTHER_TENANT, name="theirs", company_ids=["co-x"],
+        OTHER_TENANT, name="theirs", company_ids=[their_company.id],
     )
 
     headers = _auth(client)
@@ -315,8 +353,9 @@ def test_revoke_action_is_registered_beside_repush():
 def test_park_then_lapsed_commit_revokes_the_key(db):
     from modules.autocount.services.pull_key_service import PullKeyService
 
+    company = _company(db)
     key, _plaintext = PullKeyService(db).issue(
-        DEFAULT_TENANT_ID, name="k", company_ids=["co-1"],
+        DEFAULT_TENANT_ID, name="k", company_ids=[company.id],
     )
     assert key.revoked_at is None  # control: unrevoked before the park/commit
     admin = _admin(db)
@@ -332,8 +371,9 @@ def test_park_on_another_tenants_key_is_404(client, db):
     _other_tenant(db)
     from modules.autocount.services.pull_key_service import PullKeyService
 
+    their_company = _company(db, OTHER_TENANT)
     theirs, _plaintext = PullKeyService(db).issue(
-        OTHER_TENANT, name="theirs", company_ids=["co-x"],
+        OTHER_TENANT, name="theirs", company_ids=[their_company.id],
     )
 
     response = client.post(
@@ -347,8 +387,9 @@ def test_park_on_another_tenants_key_is_404(client, db):
 def test_park_by_a_read_only_user_is_403(client, db):
     from modules.autocount.services.pull_key_service import PullKeyService
 
+    company = _company(db)
     key, _plaintext = PullKeyService(db).issue(
-        DEFAULT_TENANT_ID, name="k", company_ids=["co-1"],
+        DEFAULT_TENANT_ID, name="k", company_ids=[company.id],
     )
     _limited_user(db, ["autocount.pull.read"], "readonly-revoke@example.com")
 

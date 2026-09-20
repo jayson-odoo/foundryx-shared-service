@@ -105,18 +105,49 @@ def _other_tenant(db) -> None:
         db.commit()
 
 
+def _company(
+    db, tenant_id=DEFAULT_TENANT_ID, *, database_name="AED_SORENTO", sorento_company_code="SRT",
+):
+    """Security round 1 HIGH 2 knock-on: `PullKeyService.issue` now validates
+    every `company_ids` entry against a REAL, tenant-scoped `AcCompany` row -
+    a fake placeholder like `"co-1"` is rightly refused. Distinct
+    `database_name`/`sorento_company_code` per call avoid
+    `uq_ac_company_tenant_db` (bit the last tester when two companies in the
+    SAME tenant shared a `database_name`)."""
+    from app.models.connection import Connection
+    from modules.autocount.models import AcCompany
+
+    conn = Connection(
+        tenant_id=tenant_id, provider="autocount", type="erp", name=f"db1 REST {database_name}",
+        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"},
+        credentials_json=None, is_active=True,
+    )
+    db.add(conn)
+    db.commit()
+    company = AcCompany(
+        tenant_id=tenant_id, connection_id=conn.id, database_name=database_name,
+        company_name="Sorento", name="Sorento", is_active=True,
+        sorento_company_code=sorento_company_code,
+    )
+    db.add(company)
+    db.commit()
+    db.refresh(company)
+    return company
+
+
 # ── AC-10-28: issuance - scheme, hashing, plaintext-once ─────────────────────
 
 
 def test_issue_returns_a_plaintext_key_with_the_right_scheme(db):
     from modules.autocount.services.pull_key_service import KEY_SCHEME, PullKeyService
 
+    company = _company(db)
     key, plaintext = PullKeyService(db).issue(
-        DEFAULT_TENANT_ID, name="SRT integration", company_ids=["co-1"],
+        DEFAULT_TENANT_ID, name="SRT integration", company_ids=[company.id],
     )
     assert plaintext.startswith(KEY_SCHEME)
     assert key.name == "SRT integration"
-    assert key.company_ids == ["co-1"]
+    assert key.company_ids == [company.id]
     assert key.revoked_at is None
     assert key.last_used_at is None
 
@@ -128,8 +159,9 @@ def test_issue_stores_only_a_hash_and_an_8_char_prefix_never_the_plaintext(db):
         PullKeyService,
     )
 
+    company = _company(db)
     key, plaintext = PullKeyService(db).issue(
-        DEFAULT_TENANT_ID, name="k", company_ids=["co-1"],
+        DEFAULT_TENANT_ID, name="k", company_ids=[company.id],
     )
     assert len(key.key_prefix) == PREFIX_LEN
     assert key.key_prefix == plaintext[len(KEY_SCHEME) : len(KEY_SCHEME) + PREFIX_LEN]
@@ -141,11 +173,12 @@ def test_issue_stores_only_a_hash_and_an_8_char_prefix_never_the_plaintext(db):
 def test_two_issued_keys_never_collide(db):
     from modules.autocount.services.pull_key_service import PullKeyService
 
+    company = _company(db)
     _key1, plaintext1 = PullKeyService(db).issue(
-        DEFAULT_TENANT_ID, name="a", company_ids=["co-1"],
+        DEFAULT_TENANT_ID, name="a", company_ids=[company.id],
     )
     _key2, plaintext2 = PullKeyService(db).issue(
-        DEFAULT_TENANT_ID, name="b", company_ids=["co-1"],
+        DEFAULT_TENANT_ID, name="b", company_ids=[company.id],
     )
     assert plaintext1 != plaintext2
 
@@ -157,7 +190,8 @@ def test_resolve_a_freshly_issued_key_returns_its_row_and_stamps_last_used_at(db
     from modules.autocount.services.pull_key_service import PullKeyService
 
     service = PullKeyService(db)
-    key, plaintext = service.issue(DEFAULT_TENANT_ID, name="k", company_ids=["co-1"])
+    company = _company(db)
+    key, plaintext = service.issue(DEFAULT_TENANT_ID, name="k", company_ids=[company.id])
     assert key.last_used_at is None  # control: unstamped before any resolve
 
     resolved = service.resolve(plaintext)
@@ -185,7 +219,8 @@ def test_resolve_returns_none_for_a_revoked_key(db):
     from modules.autocount.services.pull_key_service import PullKeyService
 
     service = PullKeyService(db)
-    key, plaintext = service.issue(DEFAULT_TENANT_ID, name="k", company_ids=["co-1"])
+    company = _company(db)
+    key, plaintext = service.issue(DEFAULT_TENANT_ID, name="k", company_ids=[company.id])
     service.revoke(DEFAULT_TENANT_ID, key.id)
 
     assert service.resolve(plaintext) is None
@@ -198,7 +233,8 @@ def test_resolve_never_matches_a_similar_but_wrong_key_control(db):
     from modules.autocount.services.pull_key_service import PREFIX_LEN, PullKeyService
 
     service = PullKeyService(db)
-    key, plaintext = service.issue(DEFAULT_TENANT_ID, name="k", company_ids=["co-1"])
+    company = _company(db)
+    key, plaintext = service.issue(DEFAULT_TENANT_ID, name="k", company_ids=[company.id])
     tampered = plaintext[: len(plaintext) - 1] + (
         "0" if plaintext[-1] != "0" else "1"
     )
@@ -217,7 +253,8 @@ def test_revoke_sets_revoked_at_and_is_idempotent(db):
     from modules.autocount.services.pull_key_service import PullKeyService
 
     service = PullKeyService(db)
-    key, _plaintext = service.issue(DEFAULT_TENANT_ID, name="k", company_ids=["co-1"])
+    company = _company(db)
+    key, _plaintext = service.issue(DEFAULT_TENANT_ID, name="k", company_ids=[company.id])
 
     revoked = service.revoke(DEFAULT_TENANT_ID, key.id)
     assert revoked.revoked_at is not None
@@ -235,7 +272,10 @@ def test_revoke_on_another_tenants_key_raises_not_found(db):
 
     _other_tenant(db)
     service = PullKeyService(db)
-    theirs, _plaintext = service.issue(OTHER_TENANT, name="theirs", company_ids=["co-x"])
+    their_company = _company(db, OTHER_TENANT)
+    theirs, _plaintext = service.issue(
+        OTHER_TENANT, name="theirs", company_ids=[their_company.id]
+    )
 
     with pytest.raises(PullKeyNotFound):
         service.revoke(DEFAULT_TENANT_ID, theirs.id)
@@ -251,8 +291,10 @@ def test_list_for_tenant_never_returns_another_tenants_keys(db):
 
     _other_tenant(db)
     service = PullKeyService(db)
-    service.issue(DEFAULT_TENANT_ID, name="mine", company_ids=["co-1"])
-    service.issue(OTHER_TENANT, name="theirs", company_ids=["co-x"])
+    mine_company = _company(db)
+    their_company = _company(db, OTHER_TENANT)
+    service.issue(DEFAULT_TENANT_ID, name="mine", company_ids=[mine_company.id])
+    service.issue(OTHER_TENANT, name="theirs", company_ids=[their_company.id])
 
     mine = service.list_for_tenant(DEFAULT_TENANT_ID)
     assert [k.name for k in mine] == ["mine"]
