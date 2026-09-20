@@ -13,7 +13,7 @@ Phase-1 frontend contract already shipped on this branch
 (``service_frontend/services/autocount-service.real.ts``): internal ids/
 entity keys, camelCase envelope + row keys, session auth.
 """
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -23,12 +23,16 @@ from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
 from ..schemas import (
+    PullApiKeyCreateInput,
+    PullApiKeyIssuedOut,
+    PullApiKeyOut,
     PullSnapshotBuildRequest,
     PullSnapshotListResponse,
     PullSnapshotOut,
     PullSnapshotRowsPageOut,
 )
 from ..services.company_service import AutocountServiceError
+from ..services.pull_key_service import PullKeyNotFound, PullKeyService
 from ..services.pull_service import (
     PullBuildCooldownError,
     PullService,
@@ -41,7 +45,7 @@ router = APIRouter()
 
 def _raise(exc: AutocountServiceError) -> None:
     """ONE translator for this router's service errors -> HTTP."""
-    if isinstance(exc, PullSnapshotNotFound):
+    if isinstance(exc, (PullSnapshotNotFound, PullKeyNotFound)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
     if isinstance(exc, PullBuildCooldownError):
         raise HTTPException(
@@ -50,6 +54,51 @@ def _raise(exc: AutocountServiceError) -> None:
             headers={"Retry-After": str(exc.retry_after_seconds)},
         ) from exc
     raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message) from exc
+
+
+# ── pull API keys (sprint-5/10 S4, AC-10-36/37) - ALL gated `.manage`, ──────
+# never `.read`: a key is a live secret-bearing credential, not read-only
+# reporting data like a snapshot.
+
+
+@router.get("/keys", response_model=List[PullApiKeyOut])
+def list_pull_keys(
+    current_user: User = Depends(require_permission("autocount.pull.manage")),
+    db: Session = Depends(get_db),
+) -> List[PullApiKeyOut]:
+    keys = PullKeyService(db).list_for_tenant(current_user.tenant_id)
+    return [PullApiKeyOut.model_validate(key) for key in keys]
+
+
+@router.post(
+    "/keys", response_model=PullApiKeyIssuedOut, status_code=status.HTTP_201_CREATED
+)
+def issue_pull_key(
+    body: PullApiKeyCreateInput,
+    current_user: User = Depends(require_permission("autocount.pull.manage")),
+    actor_id: str = Depends(get_actor_user_id),
+    db: Session = Depends(get_db),
+) -> PullApiKeyIssuedOut:
+    key, plaintext = PullKeyService(db).issue(
+        current_user.tenant_id,
+        name=body.name,
+        company_ids=body.companyIds,
+        created_by=actor_id,
+    )
+    return PullApiKeyIssuedOut(key=PullApiKeyOut.model_validate(key), plaintext=plaintext)
+
+
+@router.post("/keys/{key_id}/revoke", response_model=PullApiKeyOut)
+def revoke_pull_key(
+    key_id: str,
+    current_user: User = Depends(require_permission("autocount.pull.manage")),
+    db: Session = Depends(get_db),
+) -> PullApiKeyOut:
+    try:
+        key = PullKeyService(db).revoke(current_user.tenant_id, key_id)
+    except AutocountServiceError as exc:
+        _raise(exc)
+    return PullApiKeyOut.model_validate(key)
 
 
 @router.get("/snapshots", response_model=PullSnapshotListResponse)

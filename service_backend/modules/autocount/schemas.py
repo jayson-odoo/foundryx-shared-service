@@ -966,3 +966,37 @@ class PullSnapshotBuildRequest(ApiModel):
 
     companyId: str
     entityType: str
+
+
+class PullApiKeyOut(ApiModel):
+    """One issued key - never the plaintext, never the hash (AC-10-27/37).
+    Wire shape pinned by the shipped frontend contract
+    (``service_frontend/types/autocount.ts::AutocountPullApiKey``)."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    name: str
+    companyIds: List[str] = Field(validation_alias="company_ids")
+    keyPrefix: str = Field(validation_alias="key_prefix")
+    createdAt: Optional[datetime] = Field(default=None, validation_alias="created_at")
+    lastUsedAt: Optional[datetime] = Field(default=None, validation_alias="last_used_at")
+    revokedAt: Optional[datetime] = Field(default=None, validation_alias="revoked_at")
+
+
+class PullApiKeyCreateInput(ApiModel):
+    """``POST /autocount/pull/keys`` body - pinned by
+    ``AutocountPullApiKeyCreateInput``."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str
+    companyIds: List[str] = []
+
+
+class PullApiKeyIssuedOut(ApiModel):
+    """The ONE moment the plaintext key is ever shown - pinned by
+    ``AutocountPullApiKeyIssued``."""
+
+    key: PullApiKeyOut
+    plaintext: str

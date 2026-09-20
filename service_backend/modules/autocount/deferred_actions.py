@@ -85,7 +85,59 @@ ETL_TASK_REPUSH = DeferredActionDef(
     exists=_etl_task_exists,
 )
 
-_ALL = (ETL_TASK_REPUSH,)
+
+# ── pull API key revoke (sprint-5/10 S4, AC-10-37) - a SECOND entry point ────
+# over the SAME ``PullKeyService.revoke`` the direct
+# ``POST /autocount/pull/keys/{id}/revoke`` route already calls (mirrors the
+# repush pattern above: both stay, wired to one service method). Entity id:
+# ``ac_pull_api_key.id``. `entity_type="autocount_pull_api_key"` is the
+# shipped frontend contract's own choice
+# (``service_frontend/lib/deferred-verb.ts``'s ``ENTITY_NOUNS`` row,
+# ``use-pull-list-config.tsx``'s ``deferred: {...}``) - never re-derive it.
+
+AC_PULL_MANAGE = "autocount.pull.manage"
+
+
+def _pull_key_row(db: Session, tenant_id: str, entity_id: str):
+    """Tenant-scoped, never a bare id lookup (the polymorphic-target_id
+    rule)."""
+    from .models import AcPullApiKey
+
+    return (
+        db.query(AcPullApiKey)
+        .filter(AcPullApiKey.id == entity_id, AcPullApiKey.tenant_id == tenant_id)
+        .first()
+    )
+
+
+def _pull_key_exists(db: Session, tenant_id: str, entity_id: str) -> bool:
+    return _pull_key_row(db, tenant_id, entity_id) is not None
+
+
+def _pull_key_revoke(
+    db: Session, tenant_id: str, entity_id: str, payload: dict, actor_user_id: str
+) -> None:
+    """The commit-time handler. ``PullKeyService.revoke`` already commits on
+    success and raises ``PullKeyNotFound`` for a vanished/cross-tenant key -
+    the same failed-commit path every other deferred action's handler uses,
+    no special-casing needed here."""
+    from .services.pull_key_service import PullKeyService
+
+    PullKeyService(db).revoke(tenant_id, entity_id)
+
+
+PULL_API_KEY_REVOKE = DeferredActionDef(
+    key="autocount_pull_api_key.revoke",
+    module="autocount",
+    entity_type="autocount_pull_api_key",
+    permission=AC_PULL_MANAGE,
+    window="destructive",
+    label="Revoke",
+    execute=_pull_key_revoke,
+    exists=_pull_key_exists,
+)
+
+_ALL = (ETL_TASK_REPUSH, PULL_API_KEY_REVOKE)
 
 
 def register_autocount_deferred_actions() -> None:
