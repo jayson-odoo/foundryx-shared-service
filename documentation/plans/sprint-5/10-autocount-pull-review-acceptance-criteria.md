@@ -497,8 +497,10 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   `deferred_actions.py` beside `autocount_etl_task.repush`, never a hand-rolled confirm dialog.
 
 - **AC-10-64 [BE]** The gateway's failed-status code set is exactly `SOURCE_PAGE_FAILED`,
-  `ENRICH_FAILED`, `ROW_LIMIT`, `EMPTY_EXTRACT` (R6). `MAPPING_FAILED` is NOT a snapshot status
-  code and never appears in a `status: "failed"` body; `mapping_failed` exists only as an
+  `ENRICH_FAILED`, `ROW_LIMIT`, `EMPTY_EXTRACT` (R6), plus `BUILD_ABANDONED` (AC-10-88, an
+  orphan-reclaimed build) and `COMBINE_RULE_FAILED` (review round 4, SF-3 - a `combine` drop
+  rule that raises at runtime during a pull build, AC-10-79). `MAPPING_FAILED` is NOT a snapshot
+  status code and never appears in a `status: "failed"` body; `mapping_failed` exists only as an
   `excludedRows[].reason` on a `ready` snapshot. Pinned by a test asserting the code set, so the
   consumer's error switch cannot be broken by a later addition without a contract change.
 

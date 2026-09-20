@@ -112,9 +112,10 @@ from .company_service import (
     EntityConfigNotFound,
 )
 from ..presets import HTTP_PRESETS, seed_document_mapping, seed_http_preset_mapping
-from ..mapping import SCOPE_HEADER, SCOPE_LINE
+from ..mapping import SCOPE_HEADER, SCOPE_LINE, TransformError
 from ..http_source.combine import (
     CombineDropError,
+    CombineMeasureError,
     apply_combine,
     combine_output_columns,
     validate_combine,
@@ -305,6 +306,17 @@ class EtlTaskView:
     # is folded in by VALUE (never removed from the wire - the frontend type
     # still reads it; its rename is a later slice).
     contract_gate: Optional[Dict[str, Any]] = None
+    # sprint-5/10 review round 4 (SF-4) - the COMBINED, POST-GROUP schema a
+    # combine-carrying task's own output rows carry (``groupBy + carry +
+    # measures[].alias``, ``http_source.combine.combine_output_columns``);
+    # ``[]`` when no combine step is configured. ADDITIVE alongside
+    # ``result_columns`` above, never a replacement for it: the Source tab's
+    # raw/lookup pickers still need the PRE-combine set, but the Mapping
+    # tab's source picker for a combine-carrying task needs THIS one - a
+    # combined row never carries its pre-combine raw/lookup columns at all
+    # (AC-10-80). Wiring the Mapping tab's picker onto this field is a
+    # separate FE slice; this field only makes the schema available.
+    combine_output_columns: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -374,6 +386,19 @@ def _clean_list(value: Any) -> List[str]:
         if text and text not in out:
             out.append(text)
     return out
+
+
+def _normalize_combine_for_demote(combine: Any) -> Optional[Dict[str, Any]]:
+    """NIT (iv, review round 4) - the S3 demote comparison below is a
+    genuine identity/hash check (AC-10-80), never a literal byte-for-byte
+    diff: an OMITTED optional list key (``"round"`` not sent at all) and an
+    EXPLICIT empty one (``"round": []``) mean exactly the same thing ("no
+    rounding configured") and must never register as a change on their
+    own. Drops every key whose value is ``None`` or an empty list before
+    comparing, so only a GENUINE combine edit ever demotes."""
+    if not isinstance(combine, dict):
+        return None
+    return {key: value for key, value in combine.items() if value is not None and value != []}
 
 
 def _clean_int(value: Any) -> Optional[int]:
@@ -939,12 +964,30 @@ class EtlService:
             # above, which skips a row a formula merely raised on) must
             # 422 with the failing rule named, never bubble into a bare
             # 500 - the funnel is a preview, not a live run.
+            # review round 4 (SF-1) - widened to a numeric measure's own
+            # runtime ``TransformError`` (AC-10-76's own "a runtime
+            # non-numeric still raises the normal named TransformError"
+            # text - the sample-based numeric check can be clean and a
+            # DIFFERENT sample row still non-numeric): ``CombineMeasureError``
+            # carries the measure's own list index, so this keys the 422 to
+            # ``combine.measures[i].source`` exactly like a drop-rule
+            # failure keys to ``combine.drop[i].formula`` - never a bare
+            # 500 for a preview.
             try:
                 combine_result = apply_combine(result.rows, combine)
             except CombineDropError as exc:
                 raise EtlValidationError(
                     {f"combine.drop[{exc.index}].formula": str(exc)}
                 ) from exc
+            except CombineMeasureError as exc:
+                raise EtlValidationError(
+                    {f"combine.measures[{exc.index}].source": str(exc)}
+                ) from exc
+            except TransformError as exc:
+                # No known call site raises a bare (non-Combine*) TransformError
+                # out of `apply_combine` today - kept as a fail-closed 422,
+                # never a 500, should one ever be added.
+                raise EtlValidationError({"combine": str(exc)}) from exc
             dropped = combine_result.metadata.get("dropped") or {}
             rows_out = len(combine_result.rows)
             # Every dropped bucket is exactly ONE group (drop runs over the
@@ -1069,6 +1112,11 @@ class EtlService:
                 (config.delivery_mode if config is not None else None) or DELIVERY_MODE_PUSH
             ),
             contract_gate=self._contract_gate(tenant_id, company_id, entity_type),
+            # review round 4 (SF-4) - derived from THIS task's own stored
+            # (or draft-default) ``combine``, the SAME helper the save path
+            # and the preview route already derive it from - never a second
+            # computation that could drift.
+            combine_output_columns=combine_output_columns(merged.get("combine")),
         )
 
     def _brand_contract_gate(
@@ -1363,8 +1411,22 @@ class EtlService:
         else:
             key_fields = _clean_list(raw.get("keyFields"))
             distinct_of = _clean_list(raw.get("distinctOf")) or None
+            # NIT (iii, review round 4) - `combine_group_by` is empty here
+            # for TWO different reasons: "no combine step configured at
+            # all" (the normal manual-key flow, `raw_combine is None`) or
+            # "a combine WAS submitted but is itself invalid" (S1: a
+            # non-dict `combine`; or a dict whose own `groupBy` failed
+            # validation). In the second case a missing `keyFields` is not
+            # a SEPARATE operator mistake - the operator meant the combine
+            # step to derive the keys - so the redundant "choose at least
+            # one key field" is suppressed while `combine`'s own error(s)
+            # already name the real problem.
+            combine_itself_invalid = raw_combine is not None and any(
+                key == "combine" or key.startswith("combine.") for key in errors
+            )
             if not key_fields:
-                errors["keyFields"] = "Choose at least one key field."
+                if not combine_itself_invalid:
+                    errors["keyFields"] = "Choose at least one key field."
             elif distinct_of and key_fields != ["value"]:
                 errors["keyFields"] = (
                     "A distinct-values field can only key on 'value'."
@@ -1624,12 +1686,10 @@ class EtlService:
         # SAME combine object again (dict equality - key order never
         # matters) is not a change - no demote.
         if not demote and previous_source_config is not None:
-            previous_combine = previous_source_config.get("combine")
-            previous_combine_norm = (
-                previous_combine if isinstance(previous_combine, dict) else None
+            previous_combine_norm = _normalize_combine_for_demote(
+                previous_source_config.get("combine")
             )
-            new_combine = clean.get("combine")
-            new_combine_norm = new_combine if isinstance(new_combine, dict) else None
+            new_combine_norm = _normalize_combine_for_demote(clean.get("combine"))
             if previous_combine_norm != new_combine_norm:
                 demote = True
 

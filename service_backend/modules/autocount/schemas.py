@@ -843,6 +843,12 @@ class EtlTaskResponse(ApiModel):
     contractGate: Optional[ContractGate] = None
     # sprint-5/10 (AC-10-10) - `push` (default) or `pull`.
     deliveryMode: str = "push"
+    # sprint-5/10 review round 4 (SF-4) - the COMBINED, POST-GROUP schema a
+    # combine-carrying task's own rows carry (`groupBy + carry +
+    # measures[].alias`); `[]` when no combine step is configured. ADDITIVE
+    # alongside `resultColumns` above (the pre-combine raw/lookup set,
+    # unchanged) - never a replacement for it.
+    combineOutputColumns: List[str] = []
 
 
 class HttpPreviewResponse(ApiModel):

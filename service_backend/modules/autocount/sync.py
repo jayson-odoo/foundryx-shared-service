@@ -66,6 +66,7 @@ from .canonical.masters import (
     VENDOR_LAST_MODIFIED_PATH,
 )
 from .client import AutoCountError
+from .http_source.combine import CombineDropError
 from .http_source.envelope import ENVELOPE_LIST
 from .http_source.errors import HttpSourceError
 from .mapping import (
@@ -589,6 +590,45 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             started,
             config=config,
             error_code="FILTER_FORMULA",
+        )
+        return
+    except CombineDropError as exc:
+        # review round 4 (SF-3) - same treatment as the delete guard/filter
+        # formula faults above: a drop rule that raises at RUNTIME
+        # (AC-10-79) is a deliberate safety stop, not a transport/driver
+        # fault. `str(exc)` already names the failing rule
+        # (``CombineDropError.__init__``'s own "Drop rule '<name>': ..."
+        # message), so the push run's own error string names it too.
+        logger.warning(
+            "autocount combine drop rule failed for job %s: %s", job.id, str(exc)
+        )
+        record_client_calls(
+            db,
+            source,
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        record_activity(
+            db,
+            tenant_id=tenant_id,
+            operation=f"sync {entity_type}",
+            status=ACTIVITY_ERROR,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            error_message=str(exc),
+        )
+        _fail(
+            db,
+            service,
+            job,
+            run,
+            watermark_row,
+            str(exc),
+            started,
+            config=config,
+            error_code="COMBINE_RULE_FAILED",
         )
         return
     except HttpSourceError as exc:
@@ -2310,6 +2350,13 @@ ERROR_CODE_ENRICH_FAILED = "ENRICH_FAILED"
 ERROR_CODE_ROW_LIMIT = "ROW_LIMIT"
 ERROR_CODE_EMPTY_EXTRACT = "EMPTY_EXTRACT"
 ERROR_CODE_BUILD_ABANDONED = "BUILD_ABANDONED"
+# sprint-5/10 review round 4 (SF-3) - a `combine` drop rule that raises at
+# RUNTIME during a pull build (AC-10-79's "a drop formula that raises is a
+# named task error, not a silent keep") is a genuine EXTRACTION failure, the
+# SAME category as `SOURCE_PAGE_FAILED` - never folded onto it, because an
+# operator debugging "why did this build fail" needs to land on the combine
+# rule, not go looking at the source connection first.
+ERROR_CODE_COMBINE_RULE_FAILED = "COMBINE_RULE_FAILED"
 
 PULL_SNAPSHOT_FAILED_CODES: Tuple[str, ...] = (
     ERROR_CODE_SOURCE_PAGE_FAILED,
@@ -2317,6 +2364,7 @@ PULL_SNAPSHOT_FAILED_CODES: Tuple[str, ...] = (
     ERROR_CODE_ENRICH_FAILED,
     ERROR_CODE_ROW_LIMIT,
     ERROR_CODE_BUILD_ABANDONED,
+    ERROR_CODE_COMBINE_RULE_FAILED,
 )
 
 
@@ -2544,6 +2592,18 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
             external_ref=company.database_name,
         )
         _finish_abandoned(exc)
+        return
+    except CombineDropError as exc:
+        # review round 4 (SF-3) - a named build failure, distinct from a
+        # source/enrich fault: the message already names the failing rule
+        # (``CombineDropError.__init__``), so this never needs to re-derive
+        # it from ``exc.index``/``exc.rule_name``.
+        record_client_calls(
+            db, source, tenant_id=tenant_id, trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        _finish_run_failed(str(exc))
+        _fail_snapshot(str(exc), ERROR_CODE_COMBINE_RULE_FAILED)
         return
     except HttpSourceError as exc:
         record_client_calls(

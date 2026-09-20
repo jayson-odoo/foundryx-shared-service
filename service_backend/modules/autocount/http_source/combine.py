@@ -148,12 +148,36 @@ class CombineDropError(FormulaError):
     a named task error, not a silent keep", review round 3 B2). Carries
     the rule's list INDEX and NAME so any caller (the preview route, a
     real run) can name the failing rule without re-walking ``combine``
-    itself to find it."""
+    itself to find it.
+
+    review round 4 - ``rule_name`` used to be dead: ``str(exc)`` was only
+    the underlying formula error's own message, so a caller that logged
+    ``str(exc)`` (the push run) never actually named the rule. The message
+    itself now carries it too, so every consumer of ``str(exc)`` gets the
+    rule name, not only the ones that reach into ``.rule_name``."""
 
     def __init__(self, index: int, name: str, message: str):
-        super().__init__(message)
+        super().__init__(f"Drop rule '{name}': {message}")
         self.index = index
         self.rule_name = name
+
+
+class CombineMeasureError(TransformError):
+    """A numeric measure op (``sum``/``min``/``max``, AC-10-76) hit a
+    non-numeric value at RUNTIME - the SAMPLE-based save-time check
+    (``_sample_numeric_errors``) could not have caught it (the sample was
+    clean, the task was never previewed, or the offending row simply was
+    not in the sample). AC-10-76's own text: "a runtime non-numeric still
+    raises the normal named ``TransformError`` - stated, not pretended
+    away". Carries the measure's list INDEX and its ``source`` column name
+    so a caller (``preview_http``) can key the 422 to
+    ``combine.measures[i].source`` without re-walking ``combine`` itself,
+    mirroring ``CombineDropError`` exactly (review round 4, SF-1)."""
+
+    def __init__(self, index: int, source_name: str, message: str):
+        super().__init__(message)
+        self.index = index
+        self.source_name = source_name
 
 
 def _sample_boolean_errors(
@@ -200,22 +224,31 @@ def _sample_boolean_errors(
                 facts[alias] = evaluate_formula(formula_text, None, facts=facts)
         except FormulaError:
             continue
+        # NIT (ii, review round 4) - honours the SAME "first falsy/raising
+        # rule excludes the row" short-circuit `apply_combine` enforces at
+        # runtime (AC-10-77): a raising or falsy require rule is itself an
+        # exclusion, so a LATER rule never actually sees this row - the
+        # sample walk must stop at the same point, never pass a type
+        # verdict on a rule that could never even run against this row.
         for i, spec in enumerate(require_specs):
-            key = f"combine.require[{i}].formula"
-            if key in errors or not isinstance(spec, dict):
+            if not isinstance(spec, dict):
                 continue
             formula_text = spec.get("formula")
             if not isinstance(formula_text, str) or not formula_text.strip():
                 continue
+            key = f"combine.require[{i}].formula"
             try:
                 result = evaluate_formula(formula_text, None, facts=facts)
             except FormulaError:
-                continue
+                break
             if not isinstance(result, bool):
                 errors[key] = (
                     "This formula must produce true or false, not a number or "
                     "piece of text."
                 )
+                break
+            if not result:
+                break
 
     # ── drop: evaluated against the GROUPED sample (computed, require and
     # grouping already applied - drop is a POST-GROUP stage). Reuses
@@ -227,6 +260,18 @@ def _sample_boolean_errors(
         try:
             grouped = apply_combine(rows, {**combine, "drop": []}).rows
         except (FormulaError, TransformError):
+            # NIT (i, review round 4) - this used to look like it could
+            # silently skip the drop check ("not checked" reading as
+            # "clean"), but neither branch is actually reachable with
+            # anything left unreported: a ``FormulaError`` from the
+            # computed/require stages is caught INSIDE `apply_combine`'s
+            # own per-row loop as a `computed_error`/`require_error`
+            # exclusion (never propagates here - `drop` is emptied, so no
+            # `CombineDropError` is possible either), and a numeric-measure
+            # `TransformError` is now independently caught and named by
+            # `_sample_numeric_errors` below, in the SAME validation pass.
+            # `grouped = []` therefore only means "nothing to check the
+            # drop formulas AGAINST", never "the problem went unreported".
             grouped = []
         for out_row in grouped:
             for i, spec in enumerate(drop_specs):
@@ -245,6 +290,86 @@ def _sample_boolean_errors(
                         "This formula must produce true or false, not a number "
                         "or piece of text."
                     )
+
+    return errors
+
+
+def _sample_numeric_errors(
+    combine: Dict[str, Any], sample: Sequence[Dict[str, Any]]
+) -> Dict[str, str]:
+    """AC-10-76's own save-time rule (review round 4, SF-2): "a numeric op
+    (``sum``/``min``/``max``) over a column whose previewed sample values
+    are non-numeric with no computed cast" is a 422 named
+    ``combine.measures[i].source``. Evaluated against the SAME
+    computed-enriched sample facts a measure's ``source`` sees at run time
+    (AC-10-77 stage order: computed runs BEFORE grouping/measures), so a
+    computed cast (``number(x)``) that turns a text column numeric clears
+    the measure that reads it. ``None``/blank sample values are skipped
+    (absent is not non-numeric - the SAME rule ``t_decimal`` itself
+    already applies); a ``number()``-coercible string counts as numeric
+    (``t_decimal``'s own dialect, reused so this check speaks the exact
+    numeric dialect the runtime reducer does).
+
+    A RUNTIME non-numeric that this sample never caught still raises the
+    normal named ``TransformError`` (``CombineMeasureError`` - stated in
+    AC-10-76's own text, not pretended away by this check).
+
+    Bounded to the first ``SAMPLE_TYPE_CHECK_ROWS`` rows, mirroring
+    ``_sample_boolean_errors`` exactly.
+    """
+    errors: Dict[str, str] = {}
+    if not sample:
+        return errors
+    measures_raw = _as_list(combine.get("measures"))
+    numeric_measures = [
+        (i, spec.get("source"))
+        for i, spec in enumerate(measures_raw)
+        if isinstance(spec, dict)
+        and spec.get("op") in _NUMERIC_MEASURE_OPS
+        and isinstance(spec.get("source"), str)
+        and spec.get("source")
+    ]
+    if not numeric_measures:
+        return errors
+
+    rows = list(sample)[:SAMPLE_TYPE_CHECK_ROWS]
+    computed_specs = _as_list(combine.get("computed"))
+
+    # ── one enriched fact set per sample row (computed columns applied),
+    # shared across every measure below - never re-derived per measure ────
+    enriched_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        facts: Dict[str, Any] = dict(row)
+        try:
+            for spec in computed_specs:
+                if not isinstance(spec, dict):
+                    continue
+                alias = spec.get("alias")
+                formula_text = spec.get("formula")
+                if not isinstance(alias, str) or not isinstance(formula_text, str):
+                    continue
+                facts[alias] = evaluate_formula(formula_text, None, facts=facts)
+        except FormulaError:
+            # Same "skip, never a type-inference signal" treatment
+            # `_sample_boolean_errors` gives a per-row computed fault.
+            continue
+        enriched_rows.append(facts)
+
+    for i, source in numeric_measures:
+        key = f"combine.measures[{i}].source"
+        for facts in enriched_rows:
+            value = facts.get(source)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                continue
+            try:
+                t_decimal(value)
+            except TransformError:
+                errors[key] = (
+                    f"'{source}' is not a number in the previewed sample - "
+                    f"sum, min and max need a numeric column (add a computed "
+                    f"cast if it needs converting)."
+                )
+                break
 
     return errors
 
@@ -482,14 +607,18 @@ def validate_combine(
             except FormulaParseError as exc:
                 errors[formula_key] = str(exc)
 
-    # ── AC-10-76's own boolean-type rule for require/drop, SAMPLE-based
-    # (review round 3, B2) - only attempted once every STRUCTURAL check
+    # ── AC-10-76's own SAMPLE-based rules - the require/drop boolean-type
+    # check (review round 3, B2) and the sum/min/max numeric-op check
+    # (review round 4, SF-2) - only attempted once every STRUCTURAL check
     # above is already clean, so a malformed spec (an unknown column, a
     # bad alias, ...) is never masked by a confusing second error from
     # evaluating a formula that could not even be trusted to mean what it
-    # says yet ─────────────────────────────────────────────────────────
+    # says yet. The two checks are independent of EACH OTHER (different
+    # keys - `combine.require`/`combine.drop` vs `combine.measures`), so
+    # both always run together rather than one gating the other ─────────
     if sample and not errors:
         errors.update(_sample_boolean_errors(combine, sample))
+        errors.update(_sample_numeric_errors(combine, sample))
 
     return errors
 
@@ -647,12 +776,22 @@ def apply_combine(rows: Sequence[Dict[str, Any]], combine: Dict[str, Any]) -> Co
             out_row[col] = value
         for carry_col in carry_cols:
             out_row[carry_col] = members[0].get(carry_col)
-        for spec in measures_specs:
+        for measure_index, spec in enumerate(measures_specs):
             source = spec.get("source")
             op = spec.get("op")
             alias = spec.get("alias")
             values = [member.get(source) for member in members]
-            out_row[alias] = _apply_measure_op(op, values, source)
+            try:
+                out_row[alias] = _apply_measure_op(op, values, source)
+            except TransformError as exc:
+                # review round 4 (SF-1) - a RUNTIME non-numeric on a
+                # sum/min/max measure (AC-10-76's own "a runtime non-numeric
+                # still raises the normal named TransformError" text): wrap
+                # with the measure's own list INDEX so a caller
+                # (``preview_http``) can key the 422 to
+                # ``combine.measures[i].source`` without re-walking
+                # ``combine`` itself, mirroring ``CombineDropError`` exactly.
+                raise CombineMeasureError(measure_index, str(source), str(exc)) from exc
         grouped_rows.append(out_row)
 
     # ── round (AC-10-79) ─────────────────────────────────────────────────

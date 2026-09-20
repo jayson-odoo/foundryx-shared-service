@@ -525,6 +525,7 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
             ContractGate(**view.contract_gate) if view.contract_gate else None
         ),
         deliveryMode=view.delivery_mode,
+        combineOutputColumns=view.combine_output_columns,
     )
 
 

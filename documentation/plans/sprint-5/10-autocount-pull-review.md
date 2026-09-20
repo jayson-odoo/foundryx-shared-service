@@ -951,7 +951,7 @@ side decides what to apply.
 | 410 | `SNAPSHOT_EXPIRED` | Build a fresh snapshot |
 | 404 | `UNKNOWN_SNAPSHOT` | Unknown id, or not yours. Uniform |
 | 429 | `TOO_MANY_BUILDS` | Within the 60 s build cooldown; honour `Retry-After` |
-| 5xx / `status: "failed"` | `SOURCE_PAGE_FAILED`, `ENRICH_FAILED`, `EMPTY_EXTRACT`, `ROW_LIMIT` | Extraction failed; nothing partial is ever served. This list is exhaustive and pinned by a test - switch on it safely |
+| 5xx / `status: "failed"` | `SOURCE_PAGE_FAILED`, `ENRICH_FAILED`, `EMPTY_EXTRACT`, `ROW_LIMIT`, `BUILD_ABANDONED`, `COMBINE_RULE_FAILED` | Extraction failed; nothing partial is ever served. This list is exhaustive and pinned by a test - switch on it safely |
 
 `MAPPING_FAILED` is deliberately NOT in that list (owner ruling R6): a record that cannot be
 mapped is an EXCLUDED ROW on a `ready` snapshot, never a snapshot failure. `mapping_failed` appears
