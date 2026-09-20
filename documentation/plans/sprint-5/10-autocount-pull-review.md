@@ -840,6 +840,7 @@ A STOCK header carries instead:
   "snapshotId": "c22a...", "entity": "stock_balances", "companyCode": "SRT",
   "status": "ready", "extractedAt": "...", "expiresAt": "...",
   "recordCount": 12175, "complete": true, "contentHash": "9ab1...",
+  "sourcePageSize": 1000,
   "zeroPairs": 56422, "negativePairs": 42, "fractionalPairs": 0,
   "excludedCount": 5, "excludedNonzeroCount": 0,
   "negativePairList": [ {"item_code": "SRT-01", "location_code": "MBS", "qty": -3} ],
@@ -858,6 +859,20 @@ engine has no way to single out generically) plus the exclusion's `reason`. The 
 originally showed a `"uom": "ctn"` key with no mechanism to produce it and `"qty"` instead of
 `"measure"` - corrected here rather than extending the engine to carry a third, entity-specific
 column for one consumer's worked example.
+
+**Amended (S5b review round 5, coordinator ruling 2026-09-20):** `sourcePageSize` added to the
+example above - it is on the real header for every entity (review round 2, AC-10-32/A7) and was
+missing here by omission only, never a stock-specific difference. Also: a STOCK snapshot's
+`excludedRows` today mixes two distinct shapes depending on which STAGE produced the exclusion -
+a COMBINE-stage exclusion (the `uom_rate_unresolved` example above, `apply_combine`'s own
+require-stage output) carries `{<groupBy cols>, measure, reason}` with no `message`; a
+MAPPING-stage exclusion (a row that survived combine intact but then failed a canonical field
+constraint, e.g. stock's `qty >= 0`) is normalised to the SAME `{<groupBy cols>, measure, reason:
+"mapping_failed", message}` shape rather than the generic per-record `{source_ref, code, reason,
+message}` shape a task with NO combine step keeps - ONE shape per combine-carrying task,
+regardless of which stage excluded the row, so the consumer's `excludedNonzeroCount` reads every
+exclusion uniformly. A task with no `combine` step (every non-stock HTTP entity today) is
+byte-identical to before this amendment.
 
 **Pages.** `GET /api/v1/autocount/snapshots/{snapshotId}/rows?page=1&pageSize=1000`
 ```json
