@@ -89,6 +89,13 @@ class Settings(BaseSettings):
     # not spend an IP token at all - see `routers/webchat_public.py`.
     throttle_webchat_max_fails: int = 600
     throttle_webchat_window_minutes: int = 5
+    # AutoCount pull gateway per IP (sprint-5/10 S4, AC-10-35) - own bucket,
+    # mirrors throttle_embed_*. A 401 (missing/malformed/unknown/revoked key)
+    # records one failure; every other outcome (403/404/409/429/2xx) never
+    # touches it - the gateway's own business gates (one `building` snapshot
+    # per triple, the 60s build cooldown) bound volume structurally.
+    throttle_pull_max_fails: int = 30
+    throttle_pull_window_minutes: int = 15
     # Profile Portal email one-time-code TTL (short - emailed login fallback).
     profile_otp_ttl_minutes: int = 10
     # Form upload caps (D12). Per-file hard ceiling (DoS guard - capped reads
