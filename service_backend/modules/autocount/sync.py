@@ -66,7 +66,7 @@ from .canonical.masters import (
     VENDOR_LAST_MODIFIED_PATH,
 )
 from .client import AutoCountError
-from .http_source.combine import CombineDropError
+from .http_source.combine import CombineDropError, apply_pull_metadata_map
 from .http_source.envelope import ENVELOPE_LIST
 from .http_source.errors import HttpSourceError
 from .mapping import (
@@ -76,6 +76,7 @@ from .mapping import (
     MappingEngine,
     build_mapping_rows_for_run,
     flat_profile,
+    profile_for,
 )
 from .models import (
     DELIVERY_MODE_PULL,
@@ -2658,6 +2659,18 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
             continue
         delivered.append((mapped.record.source_ref, mapped.record.sink_payload()))
 
+    # sprint-5/10 S5b (AC-10-42/44/65/66) - a combine-stage exclusion (a row
+    # whose `require`/`computed` stage excluded it, e.g. stock's own
+    # `uom_rate_unresolved`/`computed_error`) never reaches `result.records`
+    # at all (`HttpApiSource.fetch_changes` drops it BEFORE any
+    # `SourceRecord` is built) - merged in here so the snapshot's own
+    # `excludedRows`/`excludedCount` report BOTH per-record mapping
+    # failures and combine-stage exclusions, never just the former.
+    # `None` for every task with no `combine` step configured (every
+    # existing entity today) - byte-identical to before this change.
+    if result.combine_metadata:
+        excluded_rows = excluded_rows + list(result.combine_metadata.get("excludedRows") or [])
+
     record_count = len(delivered)
 
     #     !!  ZERO-ROW GUARD (AC-10-46).  !!
@@ -2732,6 +2745,17 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
         }
         if entity_type == ENTITY_PRODUCT:
             metadata.update(_product_price_counters(result.records, mapping_rows))
+        # sprint-5/10 S5b (AC-10-81, R11) - ONE declarative map, read off
+        # the entity's own profile, from the combine engine's generic
+        # metadata onto the agreed per-entity wire names (stock:
+        # zeroPairs/negativePairs/negativePairList/fractionalPairs/
+        # excludedNonzeroCount). A PRODUCT snapshot's profile carries no
+        # map (`pull_metadata_map` is `None`), so this is a no-op for every
+        # entity but stock today (AC-10-65's own control test).
+        if result.combine_metadata:
+            metadata_map = profile_for(entity_type).pull_metadata_map
+            if metadata_map:
+                metadata.update(apply_pull_metadata_map(result.combine_metadata, metadata_map))
 
         extracted_at = datetime.now(timezone.utc)
         expires_at = extracted_at + timedelta(hours=AUTOCOUNT_PULL_SNAPSHOT_TTL_HOURS)

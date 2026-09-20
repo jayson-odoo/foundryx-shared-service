@@ -864,3 +864,66 @@ def apply_combine(rows: Sequence[Dict[str, Any]], combine: Dict[str, Any]) -> Co
         "roundedCount": rounded_count,
     }
     return CombineResult(rows=output_rows, metadata=metadata)
+
+
+def _json_safe(value: Any) -> Any:
+    """A ``Decimal`` (a rounded measure, AC-10-43) is not JSON-serializable
+    as-is; every quantity this map ever projects is already a WHOLE number
+    by the time it reaches here (the stock preset's own ``round`` rule), so
+    a lossless ``Decimal`` -> ``int`` cast is always safe. Falls back to
+    ``float`` for the (currently unreached, defence-in-depth) case of a
+    genuinely fractional value, rather than raising deep inside a snapshot
+    build."""
+    if isinstance(value, Decimal):
+        as_int = int(value)
+        return as_int if Decimal(as_int) == value else float(value)
+    return value
+
+
+def _json_safe_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: _json_safe(value) for key, value in row.items()}
+
+
+def apply_pull_metadata_map(
+    combine_metadata: Dict[str, Any], metadata_map: Dict[str, Any]
+) -> Dict[str, Any]:
+    """sprint-5/10 S5b (AC-10-81, R11) - the ONE declarative map from this
+    module's own generic ``{excludedRows, excludedCount, dropped,
+    roundedCount}`` shape onto an entity's agreed per-entity wire names
+    (e.g. stock's ``zeroPairs``/``negativePairs``/``negativePairList``/
+    ``fractionalPairs``/``excludedNonzeroCount``). ``metadata_map`` lives on
+    the entity's own ``EntityProfile.pull_metadata_map`` (``mapping.py``);
+    this is the ONE place that reads it, so RENAMING a drop rule 422s at
+    save time (the map itself would need editing to match) instead of
+    silently changing what a consumer reads off the snapshot header.
+
+    ``metadata_map`` shape::
+
+        {"dropCounts": {<rule>: <wireKey>}, "dropRows": {<rule>: <wireKey>},
+         "roundedCountAs": <wireKey>, "excludedNonzeroCountAs": <wireKey>}
+
+    Every part is optional - an entity's map may use any subset. Rows under
+    ``dropRows`` are JSON-sanitised (``Decimal`` -> ``int``, AC-10-43) since
+    they land straight in a JSON column, unlike ``excludedRows``' own
+    ``measure`` (already a plain ``float``/``None`` from ``number()``).
+
+    ``excludedNonzeroCountAs`` counts every ``excludedRows`` entry whose
+    ``measure`` is not exactly ``0`` - a MISSING/``None`` measure (a
+    ``computed_error``, AC-10-77 ruling 4) counts as non-zero, fail-closed:
+    an unresolved quantity is never provably safe to treat as zero.
+    """
+    dropped = combine_metadata.get("dropped") or {}
+    excluded_rows = combine_metadata.get("excludedRows") or []
+    out: Dict[str, Any] = {}
+    for rule_name, wire_key in (metadata_map.get("dropCounts") or {}).items():
+        out[wire_key] = (dropped.get(rule_name) or {}).get("count", 0)
+    for rule_name, wire_key in (metadata_map.get("dropRows") or {}).items():
+        rows = (dropped.get(rule_name) or {}).get("rows") or []
+        out[wire_key] = [_json_safe_row(row) for row in rows]
+    rounded_as = metadata_map.get("roundedCountAs")
+    if rounded_as:
+        out[rounded_as] = combine_metadata.get("roundedCount", 0)
+    nonzero_as = metadata_map.get("excludedNonzeroCountAs")
+    if nonzero_as:
+        out[nonzero_as] = sum(1 for row in excluded_rows if row.get("measure") != 0)
+    return out
