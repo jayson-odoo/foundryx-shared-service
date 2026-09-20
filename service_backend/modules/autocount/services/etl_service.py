@@ -121,6 +121,7 @@ from ..http_source.combine import (
     combine_output_columns,
     validate_combine,
 )
+from ..http_source.client import connection_sizing
 from ..http_source.lookups import effective_result_columns, stored_raw_columns, validate_lookups
 from ..http_source.preview import (
     HttpPreviewError,
@@ -891,8 +892,15 @@ class EtlService:
         path_error = validate_http_path(path)
         if path_error:
             raise EtlValidationError({"path": path_error})
+        # sprint-5/10 confirm-3 S1 - the SAME connection sizing a real run
+        # would use (``http_source.client.connection_sizing``), so this
+        # probe respects the connection's own ``requestTimeoutSeconds``
+        # instead of always building its client at the bare module default.
+        _page_size, timeout_seconds = connection_sizing(conn.config_json or {})
         try:
-            result = run_http_preview(base_url, path, transport=transport)
+            result = run_http_preview(
+                base_url, path, transport=transport, timeout_seconds=timeout_seconds
+            )
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc
         return result.columns
@@ -963,9 +971,19 @@ class EtlService:
             lookup_errors = validate_lookups(clean_lookups, None)
             if lookup_errors:
                 raise EtlValidationError(lookup_errors)
+        # sprint-5/10 confirm-3 S1 - the SAME connection sizing a real run
+        # would use (``http_source.client.connection_sizing``); a preview
+        # against a connection with a raised ``requestTimeoutSeconds`` used
+        # to always time out at the bare module default instead.
+        _page_size, timeout_seconds = connection_sizing(conn.config_json or {})
         try:
             result = run_http_preview(
-                base_url, path, distinct_of=distinct_of, lookups=clean_lookups, transport=transport
+                base_url,
+                path,
+                distinct_of=distinct_of,
+                lookups=clean_lookups,
+                transport=transport,
+                timeout_seconds=timeout_seconds,
             )
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc

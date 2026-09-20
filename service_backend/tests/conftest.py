@@ -350,17 +350,6 @@ def _stub_dns_in_autocount_http_tests(request, monkeypatch):
 
 @pytest.fixture
 def client(session_factory):
-    # FastAPI builds the OpenAPI schema LAZILY, on the event loop, the first
-    # time `/openapi.json` is served - about a second of pure CPU for an app
-    # this size, cached on `app.openapi_schema` afterwards. Warm it once here
-    # (cached app-wide, so only the first `client` fixture in a session pays)
-    # so a test that races a real request against `/openapi.json` while
-    # something else runs - `test_s10_s6_gateway_nonblocking.py` - measures
-    # event-loop STARVATION, which is what it is about, and not that one-off
-    # framework schema build, which happens with or without the code under
-    # test.
-    app.openapi()
-
     def override_get_db():
         db = session_factory()
         try:

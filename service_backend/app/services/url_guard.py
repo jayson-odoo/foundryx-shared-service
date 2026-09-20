@@ -9,23 +9,34 @@ instead of keeping its own copy (a second copy would drift, the exact
 failure mode this extraction exists to prevent).
 
 Security invariants (unchanged from the original):
-- https-only.
+- https-only, for every caller that keeps the ``validate_public_https_url``/
+  ``assert_deliverable`` names (webhooks, the core ``http.request`` action).
 - Rejects private/loopback/link-local/reserved/multicast/unspecified targets
   given as an IP literal (dotted, decimal, or hex), OR a hostname that
-  RESOLVES to one (DNS-rebinding guard).
+  RESOLVES to one (DNS-rebinding guard) - regardless of scheme.
 - ``assert_deliverable`` re-runs the check immediately before EVERY delivery
   attempt - not only at registration/save time - because DNS can be
   re-pointed after a URL is accepted.
+
+``validate_public_url`` (sprint-5/10 confirm-3 B1) is the scheme-configurable
+sibling behind both of the above: the SAME target check, but the allowed
+scheme set is a parameter instead of a hardcoded ``https``. It exists for ONE
+caller today - the AutoCount open-REST egress guard
+(``modules.autocount.http_client.assert_autocount_base_url_deliverable``),
+which must accept a plain ``http://`` wrapper (an operator's own on-prem
+AutoCount box, still resolution/target-restricted the same as everything
+else) while every other caller in this codebase stays https-only.
 """
 import ipaddress
 import socket
+from typing import Iterable, Tuple
 from urllib.parse import urlparse
 
 
 class UrlGuardError(Exception):
-    """A URL failed the outbound SSRF guard (non-https, private/loopback/
-    link-local/reserved/multicast/unspecified target, or unresolvable under
-    ``strict_dns=True``)."""
+    """A URL failed the outbound SSRF guard (a scheme outside the caller's
+    allow-list, private/loopback/link-local/reserved/multicast/unspecified
+    target, or unresolvable under ``strict_dns=True``)."""
 
 
 def _is_blocked_ip(ip: "ipaddress._BaseAddress") -> bool:
@@ -39,13 +50,27 @@ def _is_blocked_ip(ip: "ipaddress._BaseAddress") -> bool:
     )
 
 
-def validate_public_https_url(
-    url: str, *, strict_dns: bool = False, subject: str = "URL"
+def validate_public_url(
+    url: str,
+    *,
+    allowed_schemes: Iterable[str] = ("https",),
+    strict_dns: bool = False,
+    subject: str = "URL",
 ) -> str:
-    """HTTPS-only + block SSRF targets. Rejects private/loopback/link-local/
-    reserved IPs whether given as a literal, a numeric/hex-encoded IP, OR a
-    hostname that RESOLVES to one (e.g. an A record pointing at
-    169.254.169.254). ``strict_dns`` also rejects a host we cannot resolve.
+    """Scheme-configurable SSRF guard (sprint-5/10 confirm-3 B1). Rejects
+    private/loopback/link-local/reserved IPs whether given as a literal, a
+    numeric/hex-encoded IP, OR a hostname that RESOLVES to one (e.g. an A
+    record pointing at 169.254.169.254) - regardless of which of
+    ``allowed_schemes`` the URL uses. ``strict_dns`` also rejects a host we
+    cannot resolve.
+
+    ``allowed_schemes`` defaults to ``("https",)``, matching every existing
+    caller's behaviour byte-for-byte (``validate_public_https_url`` below is
+    a thin wrapper over this). A caller that also has a legitimate reason to
+    accept plain ``http://`` (an operator-controlled, resolvable/PUBLIC
+    on-prem endpoint) passes ``allowed_schemes=("http", "https")`` - the
+    target restriction below is completely unchanged either way; only the
+    scheme allow-list moves.
 
     ``subject`` names the thing being validated in every raised message
     (plan sprint-4/31 S5 review) - the pre-extraction consumer-webhook guard
@@ -62,8 +87,10 @@ def validate_public_https_url(
     before EVERY delivery/request attempt."""
     url = (url or "").strip()
     parsed = urlparse(url)
-    if parsed.scheme != "https":
-        raise UrlGuardError(f"{subject} must use https://.")
+    allowed: Tuple[str, ...] = tuple(allowed_schemes)
+    if parsed.scheme not in allowed:
+        schemes_text = " or ".join(f"{scheme}://" for scheme in allowed)
+        raise UrlGuardError(f"{subject} must use {schemes_text}.")
     host = parsed.hostname
     if not host:
         raise UrlGuardError(f"{subject} is missing a host.")
@@ -97,6 +124,18 @@ def validate_public_https_url(
         except ValueError:
             continue
     return url
+
+
+def validate_public_https_url(
+    url: str, *, strict_dns: bool = False, subject: str = "URL"
+) -> str:
+    """HTTPS-only + block SSRF targets. Thin wrapper over
+    ``validate_public_url`` (sprint-5/10 confirm-3 B1) with
+    ``allowed_schemes=("https",)`` - byte-identical behaviour to before that
+    extraction; see ``validate_public_url`` for the full docstring."""
+    return validate_public_url(
+        url, allowed_schemes=("https",), strict_dns=strict_dns, subject=subject
+    )
 
 
 def assert_deliverable(url: str, *, subject: str = "URL") -> None:

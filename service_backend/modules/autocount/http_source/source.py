@@ -51,7 +51,12 @@ from ..sources import (
 )
 from ..sql_source.hashing import compared_columns_for, row_hash
 from ..sql_source.source import CURSOR_COLUMN, CURSOR_MARK, MAX_EXTRACT_ROWS
-from .client import DEFAULT_TIMEOUT_SECONDS, HttpApiClient, HttpTransportError
+from .client import (
+    MIN_PAGE_SIZE,
+    HttpApiClient,
+    HttpTransportError,
+    connection_sizing,
+)
 from .combine import apply_combine, combine_output_columns
 from .envelope import ENVELOPE_LIST, parse_page
 from .errors import HttpSourceError
@@ -60,19 +65,15 @@ from .preview import validate_http_path
 
 logger = logging.getLogger("foundryx.autocount")
 
-# The page size the walk itself requests - the source's OWN choice, never the
-# vendor's cap (AC-08-22 "1000 requested, the echoed PageSize/TotalPages
-# trusted").
-DEFAULT_PAGE_SIZE = 1000
-
 # AC-10-75 (the db2 524-timeout ops finding, 2026-09-19) - a page that has
-# now timed out TWICE at the same page size halves it (floor MIN_PAGE_SIZE)
-# and restarts the walk from page 1, at most MAX_PAGE_HALVINGS times per
-# walk before the existing failure rule applies unchanged. A connect error
-# or another 5xx (never a timeout, never a 4xx) gets its own, separate
-# ladder - up to ``len(TRANSPORT_RETRY_BACKOFFS_SECONDS)`` retries with a
-# longer backoff and NO halving.
-MIN_PAGE_SIZE = 50
+# now timed out TWICE at the same page size halves it (floor MIN_PAGE_SIZE,
+# imported from ``.client`` since sprint-5/10 confirm-3 S1 - see
+# ``connection_sizing``'s own docstring) and restarts the walk from page 1,
+# at most MAX_PAGE_HALVINGS times per walk before the existing failure rule
+# applies unchanged. A connect error or another 5xx (never a timeout, never
+# a 4xx) gets its own, separate ladder - up to
+# ``len(TRANSPORT_RETRY_BACKOFFS_SECONDS)`` retries with a longer backoff
+# and NO halving.
 MAX_PAGE_HALVINGS = 2
 MAX_TIMEOUT_ATTEMPTS_PER_PAGE = 2
 TIMEOUT_RETRY_BACKOFF_SECONDS = 1.0
@@ -87,45 +88,6 @@ CLOUDFLARE_TIMEOUT_STATUS = 524
 # semantics, not a second policy to drift from the first).
 DELETE_GUARD_RATIO = 0.2
 DELETE_GUARD_MIN_ABSOLUTE = 50
-
-
-def _configured_page_size(config: Dict[str, Any]) -> int:
-    """AC-10-85 - the connection's own ``pageSize`` (a wire string, e.g.
-    ``"250"``), falling back to ``DEFAULT_PAGE_SIZE`` for a blank/missing/
-    unparsable value - a legacy connection saved before this field existed
-    behaves exactly as it always has.
-
-    CLAMPED to the same ``MIN_PAGE_SIZE..DEFAULT_PAGE_SIZE`` window the
-    provider's save-time 422 enforces: the runtime must not trust a stored
-    value (a row written before that validator existed, or by hand) - a 0 or
-    negative page size would ask the wrapper for nothing, page after page."""
-    raw = (config or {}).get("pageSize")
-    text = str(raw).strip() if raw is not None else ""
-    if not text:
-        return DEFAULT_PAGE_SIZE
-    try:
-        value = int(text)
-    except (TypeError, ValueError):
-        return DEFAULT_PAGE_SIZE
-    return max(MIN_PAGE_SIZE, min(value, DEFAULT_PAGE_SIZE))
-
-
-def _configured_timeout_seconds(config: Dict[str, Any]) -> float:
-    """AC-10-85 - the connection's own ``requestTimeoutSeconds``, falling
-    back to ``http_source.client.DEFAULT_TIMEOUT_SECONDS`` (now 90s, was
-    30s) for a blank/missing/unparsable value - and for a stored value that
-    is not a positive number at all (same "never trust a stored value"
-    reason as the page size above; a zero/negative timeout would fail every
-    request instantly)."""
-    raw = (config or {}).get("requestTimeoutSeconds")
-    text = str(raw).strip() if raw is not None else ""
-    if not text:
-        return DEFAULT_TIMEOUT_SECONDS
-    try:
-        value = float(text)
-    except (TypeError, ValueError):
-        return DEFAULT_TIMEOUT_SECONDS
-    return value if value > 0 else DEFAULT_TIMEOUT_SECONDS
 
 
 class _PageTimedOutTwice(Exception):
@@ -275,13 +237,15 @@ class HttpApiSource:
         conn_config = conn.config_json or {}
         base_url = str(conn_config.get("baseUrl") or "").strip()
         # AC-10-85 - the connection's OWN pageSize/requestTimeoutSeconds
-        # (falling back to the module defaults above for a legacy row),
-        # never the fixed module constants a run used to always start from.
-        self._page_size = _configured_page_size(conn_config)
+        # (falling back to the module defaults for a legacy row), never the
+        # fixed module constants a run used to always start from. Sprint-5/10
+        # confirm-3 S1 - ``connection_sizing`` is now shared with the preview
+        # path (``http_source.preview.run_http_preview`` via
+        # ``services.etl_service.EtlService.preview_http``), so the two
+        # never disagree on either knob.
+        self._page_size, timeout_seconds = connection_sizing(conn_config)
         self._client = HttpApiClient(
-            base_url,
-            transport=transport,
-            timeout_seconds=_configured_timeout_seconds(conn_config),
+            base_url, transport=transport, timeout_seconds=timeout_seconds
         )
 
     # ── identity ───────────────────────────────────────────────────────────

@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from .client import HttpApiClient, HttpTransportError
+from .client import DEFAULT_TIMEOUT_SECONDS, HttpApiClient, HttpTransportError
 from .envelope import parse_page
 
 PREVIEW_PAGE_SIZE = 50
@@ -107,13 +107,22 @@ def run_http_preview(
     distinct_of: Optional[List[str]] = None,
     lookups: Optional[List[Dict[str, Any]]] = None,
     transport: Optional[httpx.Client] = None,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> HttpPreviewResult:
     # Local import (AC-10-05) - ``http_source.lookups`` imports
     # ``validate_http_path`` FROM this module at ITS OWN top level, so a
     # module-level import back here would cycle.
     from .lookups import AliasCollisionError, build_index, merge_onto_rows
 
-    client = HttpApiClient(base_url, transport=transport)
+    # sprint-5/10 confirm-3 S1 - was always the bare module default
+    # (``DEFAULT_TIMEOUT_SECONDS``, now 90s), ignoring the connection's OWN
+    # ``requestTimeoutSeconds`` entirely; a preview against a wrapper slow
+    # enough to need a raised connection timeout used to time out at the
+    # default regardless. Callers (``services.etl_service.EtlService.
+    # preview_http``/``preview_http_columns``) now pass the SAME value
+    # ``http_source.source.HttpApiSource`` builds a real run's client with
+    # (``http_source.client.connection_sizing``).
+    client = HttpApiClient(base_url, transport=transport, timeout_seconds=timeout_seconds)
     started = time.monotonic()
     try:
         try:

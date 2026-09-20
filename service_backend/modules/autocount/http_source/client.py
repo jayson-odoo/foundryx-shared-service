@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -32,13 +32,66 @@ logger = logging.getLogger("foundryx.autocount")
 # page size within the old 30s ceiling (300 rows -> ~65s per plan Appendix
 # A7). This is now only the FALLBACK for a connection with no
 # `requestTimeoutSeconds` of its own (a legacy row, or one never opened in
-# the wizard) - `HttpApiSource.__init__` reads the connection's own value
-# first (`provider.py`'s `pageSize`/`requestTimeoutSeconds` fields, 50-1000
-# / up to 100).
+# the wizard) - readers of a connection's own value go through
+# ``connection_sizing`` below first (`provider.py`'s `pageSize`/
+# `requestTimeoutSeconds` fields, 50-1000 / up to 100).
 DEFAULT_TIMEOUT_SECONDS = 90.0
 # Bounds the in-memory buffer, like ``AutoCountClient.MAX_BUFFERED_CALLS`` -
 # a full product walk is ~12 pages; generous headroom, never unbounded.
 MAX_BUFFERED_CALLS = 200
+
+# The page size a WALK itself requests when nothing on the connection
+# overrides it - the source's OWN choice, never the vendor's cap (AC-08-22
+# "1000 requested, the echoed PageSize/TotalPages trusted"). Lives here
+# (rather than only in `source.py`, its sole pre-confirm-3 reader) so
+# `connection_sizing` below can share it with `preview.py`.
+DEFAULT_PAGE_SIZE = 1000
+# AC-10-75's halving floor - also the low end of the `pageSize` connection
+# field's own save-time range (`provider.py`'s `PAGE_SIZE_FIELD_MIN`).
+MIN_PAGE_SIZE = 50
+
+
+def connection_sizing(config: Optional[Dict[str, Any]]) -> Tuple[int, float]:
+    """AC-10-85 / sprint-5/10 confirm-3 S1 - the ONE reader of an
+    ``autocount`` open-REST connection's own ``pageSize``/
+    ``requestTimeoutSeconds`` (wire-shaped strings, e.g. ``"250"``),
+    returning ``(page_size, timeout_seconds)``. Shared by every caller that
+    used to read these independently (``http_source.source.HttpApiSource.
+    __init__`` for a real run; ``http_source.preview.run_http_preview`` via
+    ``services.etl_service.EtlService.preview_http``/``preview_http_columns``
+    for a Test-button sample) so a preview and a real run against the SAME
+    connection always agree on both knobs - previously the preview silently
+    ignored the connection's ``requestTimeoutSeconds`` entirely and always
+    built its client at the bare module default.
+
+    ``page_size`` is CLAMPED to ``MIN_PAGE_SIZE..DEFAULT_PAGE_SIZE``;
+    ``timeout_seconds`` falls back to ``DEFAULT_TIMEOUT_SECONDS`` for a
+    blank/missing/unparsable/non-positive value - a stored row is never
+    trusted outright (a legacy row written before either field existed, or
+    a 0/negative value hand-edited into the table, must not ask the
+    wrapper for nothing or fail every request instantly)."""
+    cfg = config or {}
+
+    page_raw = str(cfg.get("pageSize") or "").strip()
+    if page_raw:
+        try:
+            page_size = max(MIN_PAGE_SIZE, min(int(page_raw), DEFAULT_PAGE_SIZE))
+        except (TypeError, ValueError):
+            page_size = DEFAULT_PAGE_SIZE
+    else:
+        page_size = DEFAULT_PAGE_SIZE
+
+    timeout_raw = str(cfg.get("requestTimeoutSeconds") or "").strip()
+    timeout_seconds = DEFAULT_TIMEOUT_SECONDS
+    if timeout_raw:
+        try:
+            timeout_value = float(timeout_raw)
+        except (TypeError, ValueError):
+            timeout_value = DEFAULT_TIMEOUT_SECONDS
+        if timeout_value > 0:
+            timeout_seconds = timeout_value
+
+    return page_size, timeout_seconds
 
 # AC-10-08 - an explicit, honest User-Agent on every open-REST request.
 # Cloudflare 403s the default python-urllib UA, and the default httpx UA
