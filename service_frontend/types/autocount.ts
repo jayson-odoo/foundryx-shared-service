@@ -1094,11 +1094,30 @@ export interface AutocountEtlTask {
    * fixture built before this field existed).
    */
   deliveryMode?: AutocountDeliveryMode;
+  /**
+   * sprint-5/10 (AC-10-69) - the GENERALISED contract gate (entity +
+   * version + requiredVersion), landing beside `brandContractGate` on the
+   * wire (S3 backend). `brandContractGate` is unchanged and NOT folded into
+   * this on the frontend yet - no UI reads this field in S2; declared now
+   * so the type compiles against the real backend response once S3 ships
+   * it. Optional/absent (every fixture/task built before this field
+   * existed, and every entity the gate does not apply to).
+   */
+  contractGate?: AutocountContractGate | null;
 }
 
 /** `AutocountEtlTask.brandContractGate` (AC-08-33/AC-08-20 S5). `version` is
  * `null` only when the consumer could not be reached (advisory). */
 export interface AutocountBrandContractGate {
+  version: number | null;
+  requiredVersion: number;
+}
+
+/** `AutocountEtlTask.contractGate` (sprint-5/10, AC-10-69) - the same
+ * nullable-version shape as `AutocountBrandContractGate`, generalised with
+ * the entity it gates (`product` today; `stock_balance` at 2.5, S7). */
+export interface AutocountContractGate {
+  entity: string;
   version: number | null;
   requiredVersion: number;
 }

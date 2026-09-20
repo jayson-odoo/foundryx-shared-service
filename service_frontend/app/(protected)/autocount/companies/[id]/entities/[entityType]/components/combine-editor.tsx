@@ -14,6 +14,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { AutocountFormulaBuilder } from '@/components/platform/autocount/formula-builder';
+import { ClampedText } from '@/components/platform/clamped-text';
 import { MultiSelect } from '@/components/platform/multi-select';
 import { SearchSelect } from '@/components/platform/search-select';
 
@@ -147,9 +148,11 @@ export function CombineEditor({
                   className="w-40 font-mono"
                   aria-label={`Computed column ${i + 1} alias`}
                 />
-                <span className="max-w-md flex-1 truncate rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-xs">
-                  {step.formula || '-'}
-                </span>
+                <ClampedText
+                  text={step.formula || '-'}
+                  lines={1}
+                  className="max-w-md flex-1 rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-xs"
+                />
                 {editing && (
                   <>
                     <Button
@@ -219,9 +222,11 @@ export function CombineEditor({
                   className="w-40 font-mono"
                   aria-label={`Require rule ${i + 1} name`}
                 />
-                <span className="max-w-sm flex-1 truncate rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-xs">
-                  {rule.formula || '-'}
-                </span>
+                <ClampedText
+                  text={rule.formula || '-'}
+                  lines={1}
+                  className="max-w-sm flex-1 rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-xs"
+                />
                 <Input
                   value={rule.reason}
                   onChange={(e) =>
@@ -533,9 +538,11 @@ export function CombineEditor({
                   className="w-32 font-mono"
                   aria-label={`Drop rule ${i + 1} name`}
                 />
-                <span className="max-w-sm flex-1 truncate rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-xs">
-                  {rule.formula || '-'}
-                </span>
+                <ClampedText
+                  text={rule.formula || '-'}
+                  lines={1}
+                  className="max-w-sm flex-1 rounded-md border border-border bg-muted/30 px-3 py-2 font-mono text-xs"
+                />
                 {editing && (
                   <Button
                     type="button"

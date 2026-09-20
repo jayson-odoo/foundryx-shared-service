@@ -1658,7 +1658,7 @@ function productSnapshotHeader(
     expiresAt: '2026-09-20T22:05:11Z',
     recordCount: 11830,
     complete: true,
-    contentHash: '57f0462741425519df34d21ecbf4602f94ccd810bd5933a841ed1ecce8580a5',
+    contentHash: '57f0462741425519df34d21ecbf4602f94ccd810bd5933a841ed1ecce8580a5f',
     sourcePageSize: 1000,
     zeroListPriceCount: 5129,
     negativeListPriceCount: 121,
@@ -1689,7 +1689,7 @@ function stockSnapshotHeader(overrides: Partial<AutocountPullSnapshot> = {}): Au
     expiresAt: '2026-09-20T22:41:37Z',
     recordCount: 12133,
     complete: true,
-    contentHash: '3a8d5693f4e86fc1ee64d7e971d0d2efe2dfd783b8752a7f448db3dcf5118d2',
+    contentHash: '3a8d5693f4e86fc1ee64d7e971d0d2efe2dfd783b8752a7f448db3dcf5118d2a',
     sourcePageSize: 1000,
     zeroPairs: 56422,
     negativePairs: 42,
@@ -3250,11 +3250,28 @@ export function withPhase1PullMock(real: AutocountService): AutocountService {
 
     async buildPullSnapshot(companyId, entityType) {
       await pause(250);
+      const detail = await real.getCompany(companyId);
+      // Appendix A6 / AC-10-31 - a book that has flipped to automatic
+      // refuses a NEW build with 409 PUSH_ACTIVE, mirroring the gateway's
+      // own error ladder (review round 1 item 2: reachable through a mock
+      // fixture, not only hand-built inside a test).
+      const entity = detail.entities.find((e) => e.entityType === entityType);
+      if (entity && (entity.deliveryMode ?? 'push') === 'push' && entity.etlStatus === 'active') {
+        throw new ApiError('This book is now automatic.', 409, null, {
+          code: 'PUSH_ACTIVE',
+          message: 'This book is now automatic.',
+          companyCode: detail.company.sorentoCompanyCode ?? '',
+          // Appendix A2 - `entity` on the wire is `products`/`stock_balances`,
+          // never the internal singular key (kept local to this mock, not
+          // imported from the app-level `autocount-meta.ts` - services stay
+          // app-agnostic, same rule `PULL_ONLY_ENTITY_TYPES` above follows).
+          entity: entityType === 'stock_balance' ? 'stock_balances' : 'products',
+        });
+      }
       const inFlight = overlaySnapshots.find(
         (s) => s.companyId === companyId && s.entityType === entityType && s.status === 'building',
       );
       if (inFlight) return { ...inFlight };
-      const detail = await real.getCompany(companyId);
       overlaySnapshotSeq += 1;
       const id = `snap-${entityType}-${overlaySnapshotSeq}`;
       const totalPages = entityType === 'stock_balance' ? 69 : 12;

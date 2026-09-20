@@ -162,3 +162,49 @@ describe('realAutocountService - HTTP task sourceConfig normalization', () => {
     expect(result.task.sourceConfig.docDateColumn).toBeNull();
   });
 });
+
+// sprint-5/10 review round 1, item 5 - the `lookups` save round trip
+// (`EtlSourceConfigIn.lookups: Optional[...] = None` - omit the key on the
+// wire to KEEP whatever is stored; only an explicit `[]` clears it, per the
+// backend docstring `services/etl_service.py`).
+describe('realAutocountService - lookups save round trip (AC-10-01)', () => {
+  it('an untouched editor omits the key entirely - the backend keeps what it has', async () => {
+    apiFetchMock.mockResolvedValue(realHttpTaskWire());
+    const { lookups: _omit, ...configWithoutLookups } = { ...realHttpTaskWire().sourceConfig } as never;
+    void _omit;
+    await realAutocountService.updateEtlTask('company-1', 'product', {
+      sourceConfig: configWithoutLookups as never,
+      sourceImpl: 'autocount_http',
+    });
+    const body = JSON.parse(apiFetchMock.mock.calls[0][1].body);
+    expect(Object.prototype.hasOwnProperty.call(body.sourceConfig, 'lookups')).toBe(false);
+  });
+
+  it('clearing every lookup row sends an explicit [] (never omitted)', async () => {
+    apiFetchMock.mockResolvedValue(realHttpTaskWire());
+    await realAutocountService.updateEtlTask('company-1', 'product', {
+      sourceConfig: { ...realHttpTaskWire().sourceConfig, lookups: [] } as never,
+      sourceImpl: 'autocount_http',
+    });
+    const body = JSON.parse(apiFetchMock.mock.calls[0][1].body);
+    expect(body.sourceConfig.lookups).toEqual([]);
+  });
+
+  it('an edited lookup set sends the whole array', async () => {
+    apiFetchMock.mockResolvedValue(realHttpTaskWire());
+    const lookups = [
+      {
+        path: '/itemuombypage',
+        as: 'uom',
+        on: [{ local: 'ItemCode', remote: 'ItemCode' }],
+        fields: [{ remote: 'Price', as: 'BaseUOMPrice' }],
+      },
+    ];
+    await realAutocountService.updateEtlTask('company-1', 'product', {
+      sourceConfig: { ...realHttpTaskWire().sourceConfig, lookups } as never,
+      sourceImpl: 'autocount_http',
+    });
+    const body = JSON.parse(apiFetchMock.mock.calls[0][1].body);
+    expect(body.sourceConfig.lookups).toEqual(lookups);
+  });
+});

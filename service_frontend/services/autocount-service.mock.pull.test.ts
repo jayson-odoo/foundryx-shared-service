@@ -197,7 +197,38 @@ describe('withPhase1PullMock (the runtime overlay `autocount-service.ts` binds)'
     expect(detail.entities[0].deliveryMode).toBe('pull');
   });
 
-  it('a 409 PUSH_ACTIVE is reachable through the SAME error ladder shape other codes use', () => {
+  it('buildPullSnapshot throws the Appendix A6 PUSH_ACTIVE body for a push+active pair (review round 1 item 2)', async () => {
+    const overlay = withPhase1PullMock({
+      ...fakeReal(),
+      getCompany: async (id) => ({
+        company: company({ id, sorentoCompanyCode: 'SRT' }),
+        entities: [
+          {
+            id: 'e1',
+            entityType: 'product',
+            syncMode: 'AUTO',
+            sourceImpl: 'autocount_http',
+            recordCap: 5000,
+            initialLookbackDays: 30,
+            enabled: true,
+            lastSuccessAt: null,
+            lastAttemptAt: null,
+            watermarkAt: null,
+            consecutiveFailures: 0,
+            lastError: null,
+            etlStatus: 'active',
+            deliveryMode: 'push',
+          },
+        ],
+      }),
+    });
+    await expect(overlay.buildPullSnapshot('c1', 'product')).rejects.toMatchObject({
+      status: 409,
+      detail: { code: 'PUSH_ACTIVE', companyCode: 'SRT', entity: 'products' },
+    });
+  });
+
+  it('a 409 PUSH_ACTIVE carries the SAME error ladder shape other codes use', () => {
     // The gateway 409 itself is server-side (S4); this pins the FE type the
     // snapshot detail / pull page must be able to render for it (AC-10-31).
     const error = new ApiError('This book is now automatic.', 409, null, {

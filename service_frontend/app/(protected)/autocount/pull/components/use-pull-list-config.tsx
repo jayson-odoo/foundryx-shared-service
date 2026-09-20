@@ -13,6 +13,7 @@ import { autocountService } from '@/services/autocount-service';
 import type { AutocountCompany, AutocountPullSnapshotStatus } from '@/types/autocount';
 import type { ListQuery, ListResult } from '@/types/resource';
 import {
+  AC_PULL_KEY_STATUS_REGISTRY,
   AC_PULL_MANAGE,
   AC_PULL_SNAPSHOT_STATUS_REGISTRY,
   acPullSnapshotHref,
@@ -117,9 +118,11 @@ export function useAutocountPullListConfig({
         header: ({ column }) => <DataGridColumnHeader title="Status" column={column} />,
         cell: ({ row }) =>
           row.original.kind === 'key' ? (
-            <Badge variant={row.original.revokedAt ? 'secondary' : 'success'} appearance="light" size="sm">
-              {row.original.revokedAt ? 'Revoked' : 'Active'}
-            </Badge>
+            <StatusBadge
+              status={row.original.revokedAt ? 'revoked' : 'active'}
+              registry={AC_PULL_KEY_STATUS_REGISTRY}
+              size="sm"
+            />
           ) : null,
         size: 120,
         enableSorting: false,

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Play } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -14,9 +14,10 @@ import {
 } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { SearchSelect } from '@/components/platform/search-select';
+import { useAutocountCompany } from '@/hooks/use-autocount-company';
 import { useBuildPullSnapshot } from '@/hooks/use-autocount-pull';
 import type { AutocountCompany } from '@/types/autocount';
-import { AC_PULL_CAPABLE_ENTITY_TYPES, acPullSnapshotHref, entityLabel } from '../../components/autocount-meta';
+import { acPullSnapshotHref, entityLabel } from '../../components/autocount-meta';
 
 export interface BuildSnapshotDialogProps {
   open: boolean;
@@ -36,6 +37,11 @@ export function BuildSnapshotDialog({ open, onOpenChange, companies, onBuilt }: 
   const { building, error, build, reset } = useBuildPullSnapshot();
   const [companyId, setCompanyId] = useState('');
   const [entityType, setEntityType] = useState('');
+  // The selected company's OWN entities - the entity picker offers only the
+  // ones actually enabled for pull on THIS company (review round 1 item 2:
+  // foolproof-UI, never offer an entity the build would 409 PULL_NOT_ENABLED
+  // for). `companyId` starts blank; the hook harmlessly no-ops until picked.
+  const { detail } = useAutocountCompany(companyId);
 
   useEffect(() => {
     if (!open) {
@@ -45,12 +51,24 @@ export function BuildSnapshotDialog({ open, onOpenChange, companies, onBuilt }: 
     }
   }, [open, reset]);
 
+  // Picking a different company invalidates the previous entity pick - the
+  // two pull-capable entities are not the same set across every company.
+  useEffect(() => {
+    setEntityType('');
+  }, [companyId]);
+
   // Only companies with a Sorento company code can be pulled from
   // (AC-10-11) - foolproof-UI: never offer a company that would 422.
   const companyOptions = companies
     .filter((c) => Boolean(c.sorentoCompanyCode?.trim()))
     .map((c) => ({ label: c.name, value: c.id }));
-  const entityOptions = AC_PULL_CAPABLE_ENTITY_TYPES.map((e) => ({ label: entityLabel(e), value: e }));
+  const entityOptions = useMemo(
+    () =>
+      (detail?.entities ?? [])
+        .filter((e) => e.deliveryMode === 'pull')
+        .map((e) => ({ label: entityLabel(e.entityType), value: e.entityType })),
+    [detail?.entities],
+  );
 
   async function submit() {
     const snapshot = await build(companyId, entityType);

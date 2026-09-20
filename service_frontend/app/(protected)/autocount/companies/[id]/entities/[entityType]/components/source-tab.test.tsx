@@ -571,3 +571,72 @@ describe('SourceTab - API branch, basic-auth connection (D13 - no endpoint to co
     expect(screen.getByRole('option', { name: 'Sorento REST (No auth)' })).toBeInTheDocument();
   });
 });
+
+// sprint-5/10 (AC-10-01, D23) - a lookup alias may never be offered as a key
+// or watermark field (a miss leaves it absent), but IS offered as a compared
+// field (Mapping's own separate picker reads the SAME `httpPreviewColumns`/
+// `resultColumns` untouched, so it carries the alias by construction - not
+// re-tested here).
+describe('SourceTab - a lookup alias is excluded from key/watermark, offered in compared (AC-10-01)', () => {
+  function previewWithAlias(): UseHttpPreviewResult {
+    return {
+      state: {
+        status: 'success',
+        preview: {
+          envelope: 'paged',
+          totalCount: 11826,
+          columns: [
+            { name: 'ItemCode', sample: 'SRT-01' },
+            { name: 'LastModified', sample: '2026-08-01T00:00:00' },
+            { name: 'BaseUOMPrice', sample: '63.00' },
+          ],
+          rows: [],
+          durationMs: 220,
+          lookups: [{ alias: 'uom', matched: 48, missed: 2 }],
+        },
+      },
+      run: vi.fn(),
+      fieldErrors: {},
+      reset: vi.fn(),
+    };
+  }
+
+  function cfgWithLookup() {
+    return httpConfig({
+      lookups: [
+        {
+          path: '/itemuombypage',
+          as: 'uom',
+          on: [{ local: 'ItemCode', remote: 'ItemCode' }],
+          fields: [{ remote: 'Price', as: 'BaseUOMPrice' }],
+        },
+      ],
+    });
+  }
+
+  it('the key-columns picker never offers the alias', () => {
+    renderApiBranch({ cfg: cfgWithLookup(), httpPreview: previewWithAlias() });
+    const keyColumnsLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
+    );
+    const keyColumnsBox = keyColumnsLabel.parentElement as HTMLElement;
+    fireEvent.click(within(keyColumnsBox).getByRole('combobox'));
+    expect(screen.queryByRole('option', { name: 'BaseUOMPrice' })).not.toBeInTheDocument();
+  });
+
+  it('the watermark picker never offers the alias', () => {
+    renderApiBranch({ cfg: cfgWithLookup(), httpPreview: previewWithAlias() });
+    fireEvent.click(screen.getByLabelText('Watermark column'));
+    expect(screen.queryByRole('option', { name: 'BaseUOMPrice' })).not.toBeInTheDocument();
+  });
+
+  it('the compared-fields picker DOES offer the alias', () => {
+    renderApiBranch({ cfg: cfgWithLookup(), httpPreview: previewWithAlias() });
+    const comparedLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Compared columns'),
+    );
+    const comparedBox = comparedLabel.parentElement as HTMLElement;
+    fireEvent.click(within(comparedBox).getByRole('combobox'));
+    expect(screen.getByRole('option', { name: 'BaseUOMPrice' })).toBeInTheDocument();
+  });
+});

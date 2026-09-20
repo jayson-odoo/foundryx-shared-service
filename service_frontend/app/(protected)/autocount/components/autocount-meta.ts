@@ -258,6 +258,16 @@ export const AC_PULL_SNAPSHOT_STATUS_REGISTRY: StatusRegistry<AutocountPullSnaps
   failed: { label: 'Failed', tone: 'destructive' },
 };
 
+/** A pull API key's status is DERIVED from `revokedAt` (never a stored
+ * enum) - the Keys segment's status column reads it through this registry
+ * like every other status pill (AC-10-38, review round 1 item 3). */
+export type AutocountPullKeyStatus = 'active' | 'revoked';
+
+export const AC_PULL_KEY_STATUS_REGISTRY: StatusRegistry<AutocountPullKeyStatus> = {
+  active: { label: 'Active', tone: 'success' },
+  revoked: { label: 'Revoked', tone: 'secondary' },
+};
+
 // ── transforms (mapping editor picker; mirrors backend mapping.py TRANSFORMS) ──
 
 /**
