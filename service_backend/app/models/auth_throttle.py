@@ -40,6 +40,15 @@ THROTTLE_SCOPE_WEBCHAT = "webchat"
 # staff login bucket and vice versa. Window-throttle like IP (no permanent
 # lock) - a legitimate integration client retrying a stale key must self-heal.
 THROTTLE_SCOPE_PULL = "pull"
+# AutoCount pull gateway - PER-KEY request budget (sprint-5/10 S4 security
+# round 1, MEDIUM 4). AC-10-35 itself only asks for the per-IP `pull` scope
+# above (a failure-only counter); this is ADDITIVE, settings-driven, generous
+# defaults - a valid-but-narrowly-scoped key could otherwise probe unlimited
+# out-of-scope ids (403/404/409, never a 401) at zero throttle cost, since
+# THROTTLE_SCOPE_PULL only ever counts 401s. Counted on every authenticated
+# call regardless of outcome (mirrors `record_webchat`'s IP bucket - "not a
+# failed credential attempt", same reused counter mechanism).
+THROTTLE_SCOPE_PULL_KEY = "pull_key"
 
 
 class AuthThrottle(Base):

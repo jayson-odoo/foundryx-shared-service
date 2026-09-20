@@ -32,6 +32,7 @@ from app.models.auth_throttle import (
     THROTTLE_SCOPE_IP,
     THROTTLE_SCOPE_PORTAL,
     THROTTLE_SCOPE_PULL,
+    THROTTLE_SCOPE_PULL_KEY,
     THROTTLE_SCOPE_WEBCHAT,
     AuthThrottle,
 )
@@ -93,6 +94,12 @@ def _scope_policy(scope: str) -> tuple[int, timedelta, Optional[timedelta]]:
         return (
             settings.throttle_pull_max_fails,
             timedelta(minutes=settings.throttle_pull_window_minutes),
+            None,  # over-limit throttles until the window rolls over (like IP)
+        )
+    if scope == THROTTLE_SCOPE_PULL_KEY:
+        return (
+            settings.throttle_pull_key_max_requests,
+            timedelta(minutes=settings.throttle_pull_key_window_minutes),
             None,  # over-limit throttles until the window rolls over (like IP)
         )
     return (
@@ -337,3 +344,14 @@ class ThrottleService:
 
     def record_pull_failure(self, *, ip: str) -> None:
         self.store.record_failure(THROTTLE_SCOPE_PULL, ip)
+
+    # ---- AutoCount pull gateway - per-KEY request budget (own bucket,
+    # sprint-5/10 S4 security round 1, MEDIUM 4; additive to AC-10-35) ----
+
+    def enforce_pull_key(self, *, key_id: str) -> None:
+        retry = self.store.check(THROTTLE_SCOPE_PULL_KEY, key_id)
+        if retry is not None:
+            raise Throttled(retry)
+
+    def record_pull_key_request(self, *, key_id: str) -> None:
+        self.store.record_failure(THROTTLE_SCOPE_PULL_KEY, key_id)

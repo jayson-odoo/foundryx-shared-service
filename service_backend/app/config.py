@@ -96,6 +96,12 @@ class Settings(BaseSettings):
     # per triple, the 60s build cooldown) bound volume structurally.
     throttle_pull_max_fails: int = 30
     throttle_pull_window_minutes: int = 15
+    # Per-KEY request budget (sprint-5/10 S4 security round 1, MEDIUM 4) -
+    # generous defaults: Appendix A7 suggests a consumer polls a snapshot
+    # every 5s, so 600 requests / 5 minutes is comfortably above legitimate
+    # traffic for one key while still bounding an out-of-scope probing spree.
+    throttle_pull_key_max_requests: int = 600
+    throttle_pull_key_window_minutes: int = 5
     # Profile Portal email one-time-code TTL (short - emailed login fallback).
     profile_otp_ttl_minutes: int = 10
     # Form upload caps (D12). Per-file hard ceiling (DoS guard - capped reads
