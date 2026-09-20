@@ -98,56 +98,13 @@ def db(session_factory):
         session.close()
 
 
-ITEM_LOOKUP = {
-    "path": "/itembypage",
-    "as": "item",
-    "on": [{"local": "ItemCode", "remote": "ItemCode"}],
-    "fields": [
-        {"remote": "BaseUOM", "as": "ItemBaseUOM"},
-        {"remote": "Description", "as": "ItemDescription"},
-    ],
-}
-ITEM_UOM_LOOKUP = {
-    "path": "/itemuombypage",
-    "as": "uom",
-    "on": [
-        {"local": "ItemCode", "remote": "ItemCode"},
-        {"local": "UOM", "remote": "UOM", "match": "casefold_trim"},
-    ],
-    "fields": [{"remote": "Rate", "as": "UomRate"}],
-}
-STOCK_COMBINE = {
-    "computed": [
-        {"alias": "item_code", "formula": "trim(ItemCode)"},
-        {"alias": "location_code", "formula": "trim(Location)"},
-        {
-            "alias": "base_qty",
-            "formula": (
-                "if(lower(trim(UOM)) == lower(trim(ItemBaseUOM)), "
-                "number(BalQty), number(BalQty) * number(UomRate))"
-            ),
-        },
-    ],
-    "require": [
-        {
-            "name": "uom_rate",
-            "formula": (
-                "lower(trim(UOM)) == lower(trim(ItemBaseUOM)) or "
-                "number(default(UomRate, 0)) > 0"
-            ),
-            "reason": "uom_rate_unresolved",
-        }
-    ],
-    "measure": "base_qty",
-    "groupBy": ["item_code", "location_code"],
-    "measures": [{"source": "base_qty", "op": "sum", "alias": "qty"}],
-    "carry": ["ItemDescription", "ItemBaseUOM"],
-    "round": [{"measure": "qty", "mode": "half_up", "dp": 0}],
-    "drop": [
-        {"name": "zero", "formula": "qty == 0"},
-        {"name": "negative", "formula": "qty < 0", "listRows": True},
-    ],
-}
+# N1 (review round 5) - imported from the REAL preset rather than a local
+# copy, so a preset edit (e.g. dropping `listRows`) fails a registration
+# test too instead of silently drifting from what actually ships.
+from modules.autocount.presets import STOCK_BALANCE_HTTP_PRESET  # noqa: E402
+
+ITEM_LOOKUP, ITEM_UOM_LOOKUP = STOCK_BALANCE_HTTP_PRESET.lookups
+STOCK_COMBINE = STOCK_BALANCE_HTTP_PRESET.combine
 
 
 def _http_raw(connection_id):
@@ -408,6 +365,289 @@ def test_switching_a_stock_task_to_pull_is_always_allowed_control(db):
     assert view.etl_status is not None  # the call succeeded without raising
 
 
+# ── S3 (review round 5, AC-10-40/41/84): "the owner configures nothing" ────
+
+
+def _bare_stock_http_raw(connection_id):
+    """A genuinely bare add-entity request: no `combine`, no manual
+    `keyFields` - exactly what the owner submits when they add the entity
+    and configure nothing at all."""
+    raw = dict(_http_raw(connection_id))
+    raw.pop("combine", None)
+    raw["keyFields"] = []
+    return raw
+
+
+def test_adding_a_fresh_stock_entity_seeds_combine_and_derives_key_fields(db):
+    """S3 - a bare add-entity request 422ed before this fix (no combine, no
+    manual keyFields -> "Choose at least one key field."); it must instead
+    seed `source_config.combine` from the preset and derive `keyFields`
+    from ITS `groupBy` (AC-10-80), saving cleanly."""
+    from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
+    from modules.autocount.models import DELIVERY_MODE_PULL
+    from modules.autocount.services.etl_service import EtlService
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+
+    view = EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, _bare_stock_http_raw(conn.id)
+    )
+
+    assert view.source_config["combine"] == STOCK_COMBINE, view.source_config["combine"]
+    assert view.source_config["keyFields"] == ["item_code", "location_code"]
+
+    config = EtlService(db).configs.get(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE)
+    assert config.delivery_mode == DELIVERY_MODE_PULL
+
+
+def _bare_product_http_raw(connection_id):
+    return {
+        "sourceImpl": "autocount_http",
+        "connectionId": connection_id,
+        "path": "/itembypage",
+        "keyFields": ["ItemCode"],
+        "watermarkField": None,
+        "comparedFields": [],
+        "distinctOf": None,
+        "incrementalMinutes": 15,
+        "reconcileMode": "dailyAt",
+        "reconcileHours": None,
+        "reconcileAt": "02:00",
+        "lookups": [],
+    }
+
+
+def test_adding_a_fresh_product_entity_is_unaffected_by_the_combine_seed(db):
+    """S3 CONTROL - `product`'s own HTTP preset carries no `combine`
+    (only stock's does today), so this save is byte-identical to before
+    the fix: its own manually-picked `keyFields` win, `combine` stays
+    unset."""
+    from modules.autocount.canonical.masters import ENTITY_PRODUCT
+    from modules.autocount.services.etl_service import EtlService
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+
+    view = EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, _bare_product_http_raw(conn.id)
+    )
+    assert view.source_config.get("combine") is None
+    assert view.source_config["keyFields"] == ["ItemCode"]
+
+
+# ── N3 (review round 5, AC-10-15): activate re-checks the push gate too ────
+
+
+def _activatable_stock_config(db, company_id, connection_id):
+    from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
+    from modules.autocount.services.etl_service import EtlService
+
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company_id, ENTITY_STOCK_BALANCE, _http_raw(connection_id)
+    )
+    config = EtlService(db).configs.get(DEFAULT_TENANT_ID, company_id, ENTITY_STOCK_BALANCE)
+    # Mirrors a real "Test" having already succeeded (AC-22-18's own
+    # activation precondition) - `update_task` itself always clears these.
+    config.last_preview_at = NOW
+    config.last_preview_failed_count = 0
+    db.commit()
+    return config
+
+
+def test_activating_a_stock_task_refuses_once_the_push_gate_regresses(db, monkeypatch):
+    """N3 - a task SAVED in push mode while the gate was open (the
+    consumer served 2.5) must be re-checked again on its way to `active`,
+    not just on the `push` switch itself: the consumer's contract
+    REGRESSES between the switch and activation here."""
+    from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
+    from modules.autocount.models import DELIVERY_MODE_PUSH, SINK_IMPL_SORENTO
+    from modules.autocount.services.etl_service import EtlService, EtlStateError
+
+    conn = _open_connection(db)
+    sorento = Connection(
+        tenant_id=DEFAULT_TENANT_ID, provider="sorento", type="consumer", name="sorento conn",
+        config_json={"baseUrl": "https://sorento.example.com"},
+        credentials_json=encrypt_secret({"apiKey": "k"}), is_active=True,
+    )
+    db.add(sorento)
+    db.commit()
+    db.refresh(sorento)
+    company = _company(db, conn.id, sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id)
+    _activatable_stock_config(db, company.id, conn.id)
+
+    class _ContractOk:
+        version = 2.5
+        entities = ["products", "stock_balances"]
+
+    monkeypatch.setattr(
+        "modules.autocount.sinks_sorento.SorentoSink.fetch_contract_detail",
+        lambda self: _ContractOk(),
+    )
+    EtlService(db).set_delivery_mode(
+        DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, DELIVERY_MODE_PUSH
+    )
+    # `set_delivery_mode` re-fetched/committed its own `config` row - restamp
+    # the activation preconditions on a FRESH instance.
+    _activatable_stock_config(db, company.id, conn.id)
+
+    class _ContractRegressed:
+        version = 2.4
+        entities = ["products"]
+
+    monkeypatch.setattr(
+        "modules.autocount.sinks_sorento.SorentoSink.fetch_contract_detail",
+        lambda self: _ContractRegressed(),
+    )
+
+    with pytest.raises(EtlStateError) as exc_info:
+        # A FRESH EtlService/CompanyService instance - review round 5's own
+        # memoisation (N4) must never leak a stale result ACROSS instances,
+        # only within one.
+        EtlService(db).activate_task(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE)
+    message = str(exc_info.value)
+    assert "stock_balance" in message, message
+    assert "2.5" in message, message
+
+
+def test_activating_a_pull_mode_stock_task_never_probes_the_push_gate(db, monkeypatch):
+    """N3 CONTROL - pull mode carries no push gate at all: activation must
+    never even ATTEMPT the contract probe."""
+    from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
+    from modules.autocount.services.etl_service import EtlService
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    _activatable_stock_config(db, company.id, conn.id)
+
+    def _boom(self):
+        raise AssertionError("the push gate must never probe a pull-mode task")
+
+    monkeypatch.setattr(
+        "modules.autocount.sinks_sorento.SorentoSink.fetch_contract_detail", _boom
+    )
+    view = EtlService(db).activate_task(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE)
+    assert view.etl_status == "active"
+
+
+# ── N4 (review round 5): a config fault is never the SAME refusal as an ────
+# ── old contract, and the gate is memoised per service instance ───────────
+
+
+def test_stock_push_gate_reports_a_distinct_message_for_a_config_fault(db, monkeypatch):
+    """A decrypt/config fault (a rotated FERNET_KEY, here simulated
+    directly) refuses with a message naming the CONNECTION, never "needs
+    contract 2.5" - conflating the two would send an operator with a fine,
+    merely-outdated Sorento contract off to fix a connection that is not
+    broken."""
+    from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
+    from modules.autocount.models import DELIVERY_MODE_PUSH, SINK_IMPL_SORENTO
+    from modules.autocount.services.etl_service import EtlService, EtlValidationError
+
+    conn = _open_connection(db)
+    sorento = Connection(
+        tenant_id=DEFAULT_TENANT_ID, provider="sorento", type="consumer", name="sorento conn",
+        config_json={"baseUrl": "https://sorento.example.com"},
+        credentials_json=encrypt_secret({"apiKey": "k"}), is_active=True,
+    )
+    db.add(sorento)
+    db.commit()
+    db.refresh(sorento)
+    company = _company(db, conn.id, sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id)
+    EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, _http_raw(conn.id))
+
+    from cryptography.fernet import InvalidToken
+
+    def _raise_invalid_token(_token):
+        raise InvalidToken()
+
+    monkeypatch.setattr(
+        "modules.autocount.services.company_service.decrypt_secret", _raise_invalid_token
+    )
+
+    with pytest.raises(EtlValidationError) as exc_info:
+        EtlService(db).set_delivery_mode(
+            DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, DELIVERY_MODE_PUSH
+        )
+    message = exc_info.value.field_errors["deliveryMode"]
+    assert "connection" in message.lower(), message
+    assert "2.5" not in message, message
+
+
+def test_stock_push_gate_reports_the_2_5_message_for_a_genuinely_old_contract(db, monkeypatch):
+    """CONTROL - a REACHABLE consumer on a contract below 2.5 keeps the
+    original "needs contract 2.5" message, distinct from a config fault."""
+    from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
+    from modules.autocount.models import DELIVERY_MODE_PUSH, SINK_IMPL_SORENTO
+    from modules.autocount.services.etl_service import EtlService, EtlValidationError
+
+    conn = _open_connection(db)
+    sorento = Connection(
+        tenant_id=DEFAULT_TENANT_ID, provider="sorento", type="consumer", name="sorento conn",
+        config_json={"baseUrl": "https://sorento.example.com"},
+        credentials_json=encrypt_secret({"apiKey": "k"}), is_active=True,
+    )
+    db.add(sorento)
+    db.commit()
+    db.refresh(sorento)
+    company = _company(db, conn.id, sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id)
+    EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, _http_raw(conn.id))
+
+    class _OldContract:
+        version = 2.4
+        entities = ["products"]
+
+    monkeypatch.setattr(
+        "modules.autocount.sinks_sorento.SorentoSink.fetch_contract_detail",
+        lambda self: _OldContract(),
+    )
+
+    with pytest.raises(EtlValidationError) as exc_info:
+        EtlService(db).set_delivery_mode(
+            DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, DELIVERY_MODE_PUSH
+        )
+    message = exc_info.value.field_errors["deliveryMode"]
+    assert "2.5" in message, message
+    assert "connection" not in message.lower(), message
+
+
+def test_stock_push_gate_is_memoised_per_service_instance(db, monkeypatch):
+    """N4 - the SAME mechanism `contract_gate` already gets: a SECOND read
+    on the SAME `CompanyService` instance never re-probes the network."""
+    from modules.autocount.models import SINK_IMPL_SORENTO
+    from modules.autocount.services.company_service import CompanyService
+
+    conn = _open_connection(db)
+    sorento = Connection(
+        tenant_id=DEFAULT_TENANT_ID, provider="sorento", type="consumer", name="sorento conn",
+        config_json={"baseUrl": "https://sorento.example.com"},
+        credentials_json=encrypt_secret({"apiKey": "k"}), is_active=True,
+    )
+    db.add(sorento)
+    db.commit()
+    db.refresh(sorento)
+    company = _company(db, conn.id, sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id)
+
+    calls = {"count": 0}
+
+    class _ContractOk:
+        version = 2.5
+        entities = ["products", "stock_balances"]
+
+    def _fetch(self):
+        calls["count"] += 1
+        return _ContractOk()
+
+    monkeypatch.setattr(
+        "modules.autocount.sinks_sorento.SorentoSink.fetch_contract_detail", _fetch
+    )
+    service = CompanyService(db)
+    first = service.stock_push_gate_error(DEFAULT_TENANT_ID, company)
+    second = service.stock_push_gate_error(DEFAULT_TENANT_ID, company)
+    assert first == second
+    assert calls["count"] == 1, calls
+
+
 # ── kill tests ────────────────────────────────────────────────────────────
 #
 # * test_constructing_a_sorento_sink_for_stock_balance_raises dies the moment
@@ -422,3 +662,21 @@ def test_switching_a_stock_task_to_pull_is_always_allowed_control(db):
 # * test_switching_a_stock_task_to_push_is_allowed_once_the_contract_reports_2_5
 #   dies if the refusal is unconditional (a hardcoded "stock never pushes"
 #   forever rule) rather than the contract GATE the plan calls for.
+# * test_adding_a_fresh_stock_entity_seeds_combine_and_derives_key_fields dies
+#   with a "Choose at least one key field." 422 if the coder seeds `combine`
+#   only AFTER validation (mirroring the lookups seed's own post-save spot)
+#   instead of before it.
+# * test_adding_a_fresh_product_entity_is_unaffected_by_the_combine_seed dies
+#   if the seed is wired unconditionally (every entity gets a combine) rather
+#   than reading it off THAT entity's own `HTTP_PRESETS` entry.
+# * test_activating_a_stock_task_refuses_once_the_push_gate_regresses dies if
+#   `activate_task` never re-checks the gate at all (a push task set up while
+#   the gate was open sails through activation regardless of the consumer's
+#   CURRENT contract).
+# * test_activating_a_pull_mode_stock_task_never_probes_the_push_gate dies if
+#   the new activate-time check is not gated on `delivery_mode == 'push'`.
+# * test_stock_push_gate_reports_a_distinct_message_for_a_config_fault dies if
+#   the coder keeps the original bare `except Exception` (every fault reports
+#   the SAME "needs contract 2.5" message).
+# * test_stock_push_gate_is_memoised_per_service_instance dies if
+#   `stock_push_gate_error` still probes the network on every call.

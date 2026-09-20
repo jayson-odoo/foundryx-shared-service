@@ -11,21 +11,17 @@ Sorento wire names (``zeroPairs``, ``negativePairs``, ``negativePairList``,
 ``fractionalPairs``, ``excludedNonzeroCount``) - every assertion below on
 ``snapshot.metadata_json`` is a plain, real assertion failure.
 
-**A discrepancy worth flagging rather than papering over** (see the tester's
-final report): the plan's Appendix A3 worked example shows a stock
-``excludedRows`` entry carrying a ``"uom"`` key
-(``{"item_code": "SRT-99", "location_code": "HQ", "uom": "ctn", "qty": 0,
-"reason": "uom_rate_unresolved"}``), but the ALREADY-SHIPPED, ALREADY-GREEN
-generic exclusion shape AC-10-77 pins (``combine.py``'s own
-``apply_combine``, S5a) captures ONLY the ``groupBy`` columns plus the raw
-DESIGNATED MEASURE value plus ``reason`` for a require-stage exclusion -
-literally no mechanism carries a THIRD, non-group-by, non-measure raw
-column like ``uom`` along for the ride. This file therefore pins AC-10-81's
-own precise, unambiguous declarative-map TEXT (quoted in full below) rather
-than attempting a literal byte-for-byte JSON compare against Appendix A3's
-example, which is unreachable without extending the require-rule shape
-(e.g. an optional ``capture`` list) - a genuine open question for the
-planner/coder, not a decision this test file should make unilaterally.
+**Resolved (S5b review round 5, S1)**: the discrepancy this file originally
+flagged (the plan's Appendix A3 worked example showing a stock
+``excludedRows`` entry with a ``"uom"``/``"qty"`` key no mechanism could
+produce) was fixed by AMENDING Appendix A3 itself (405185bd) to match the
+ALREADY-SHIPPED, ALREADY-GREEN generic exclusion shape ``combine.py``'s own
+``apply_combine`` produces - ``{<groupBy cols>, measure, reason}`` for a
+require-stage exclusion. Appendix A3 is now the SOURCE OF TRUTH the pin
+below compares against byte for byte (ids/timestamps normalised) - a
+renamed, added or dropped header key now fails this file directly, not just
+AC-10-81's own declarative-map text (still quoted below as the map's own
+spec, unchanged).
 """
 from __future__ import annotations
 
@@ -44,54 +40,13 @@ REF_PREFIX = "AED_SORENTO"
 BASE_URL = "https://hapi.sorento.cc.cd/api/db1"
 NOW = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
 
-ITEM_LOOKUP = {
-    "path": "/itembypage", "as": "item",
-    "on": [{"local": "ItemCode", "remote": "ItemCode"}],
-    "fields": [
-        {"remote": "BaseUOM", "as": "ItemBaseUOM"},
-        {"remote": "Description", "as": "ItemDescription"},
-    ],
-}
-ITEM_UOM_LOOKUP = {
-    "path": "/itemuombypage", "as": "uom",
-    "on": [
-        {"local": "ItemCode", "remote": "ItemCode"},
-        {"local": "UOM", "remote": "UOM", "match": "casefold_trim"},
-    ],
-    "fields": [{"remote": "Rate", "as": "UomRate"}],
-}
-STOCK_COMBINE: Dict[str, Any] = {
-    "computed": [
-        {"alias": "item_code", "formula": "trim(ItemCode)"},
-        {"alias": "location_code", "formula": "trim(Location)"},
-        {
-            "alias": "base_qty",
-            "formula": (
-                "if(lower(trim(UOM)) == lower(trim(ItemBaseUOM)), "
-                "number(BalQty), number(BalQty) * number(UomRate))"
-            ),
-        },
-    ],
-    "require": [
-        {
-            "name": "uom_rate",
-            "formula": (
-                "lower(trim(UOM)) == lower(trim(ItemBaseUOM)) or "
-                "number(default(UomRate, 0)) > 0"
-            ),
-            "reason": "uom_rate_unresolved",
-        }
-    ],
-    "measure": "base_qty",
-    "groupBy": ["item_code", "location_code"],
-    "measures": [{"source": "base_qty", "op": "sum", "alias": "qty"}],
-    "carry": ["ItemDescription", "ItemBaseUOM"],
-    "round": [{"measure": "qty", "mode": "half_up", "dp": 0}],
-    "drop": [
-        {"name": "zero", "formula": "qty == 0"},
-        {"name": "negative", "formula": "qty < 0", "listRows": True},
-    ],
-}
+# N1 (review round 5) - imported from the REAL preset rather than a local
+# copy, so a preset edit (e.g. dropping `listRows`) fails a header test too
+# instead of silently drifting from what actually ships.
+from modules.autocount.presets import STOCK_BALANCE_HTTP_PRESET  # noqa: E402
+
+ITEM_LOOKUP, ITEM_UOM_LOOKUP = STOCK_BALANCE_HTTP_PRESET.lookups
+STOCK_COMBINE: Dict[str, Any] = STOCK_BALANCE_HTTP_PRESET.combine
 
 
 @pytest.fixture(autouse=True)
@@ -350,6 +305,109 @@ def test_the_operator_and_gateway_headers_both_project_the_stock_keys(db, monkey
     json.dumps(gateway_header, default=str)
 
 
+def test_the_gateway_header_is_byte_for_byte_appendix_a3s_amended_stock_example(db, monkeypatch):
+    """S1 (review round 5) - the FULL, real ``gateway_snapshot_header`` dict
+    compared key for key against Appendix A3's amended stock example (ids/
+    timestamps/hash normalised to placeholders below), so an added, renamed
+    or dropped header key fails HERE, not just via the individual-key
+    assertions above. ``gateway_snapshot_header``'s own docstring is explicit
+    that its shape IS Appendix A3 ("every key here is one Appendix A names
+    for THIS status, and no other") - the operator route's
+    ``pull_service.snapshot_header`` is a DIFFERENT, internal shape by
+    design (``id``/``entityType``/``companyId``/``requestedVia``/
+    ``createdAt`` - never claimed to match A3), so it gets its OWN full-dict
+    pin below instead of a literal comparison against the same example."""
+    from modules.autocount.services.pull_gateway_service import gateway_snapshot_header
+    from modules.autocount.services.pull_service import snapshot_header
+
+    snapshot = _build_stock_snapshot(db, monkeypatch)
+
+    gateway_header = gateway_snapshot_header(snapshot)
+    normalised = {
+        **gateway_header,
+        "snapshotId": "<snapshotId>",
+        "extractedAt": "<timestamp>",
+        "expiresAt": "<timestamp>",
+        "contentHash": "<hash>",
+    }
+    assert normalised == {
+        "snapshotId": "<snapshotId>",
+        "entity": "stock_balances",
+        "companyCode": "SRT",
+        "status": "ready",
+        "extractedAt": "<timestamp>",
+        "expiresAt": "<timestamp>",
+        "recordCount": 2,
+        "complete": True,
+        "contentHash": "<hash>",
+        "sourcePageSize": 1000,
+        "zeroPairs": 1,
+        "negativePairs": 1,
+        "fractionalPairs": 1,
+        "excludedCount": 2,
+        "excludedNonzeroCount": 1,
+        "negativePairList": [{"item_code": "SRT-02", "location_code": "MBS", "qty": -3}],
+        "excludedRows": [
+            {
+                "item_code": "SRT-04", "location_code": "PRJ-ACT",
+                "measure": 0, "reason": "uom_rate_unresolved",
+            },
+            {
+                "item_code": "SRT-05", "location_code": "BRW-VAR",
+                "measure": None, "reason": "computed_error",
+            },
+        ],
+    }, normalised
+    # N2 (review round 5) - dict `==` treats `0.0 == 0`, so the comparison
+    # above alone cannot catch a float slipping onto the wire where A3 pins
+    # a plain int; pinned explicitly by TYPE.
+    assert type(gateway_header["excludedRows"][0]["measure"]) is int, gateway_header
+
+    # The operator route's OWN full shape, pinned separately (see docstring
+    # above for why it is never compared against the SAME A3 example).
+    operator_header = snapshot_header(snapshot)
+    normalised_operator = {
+        **operator_header,
+        "id": "<snapshotId>",
+        "companyId": "<companyId>",
+        "createdAt": "<timestamp>",
+        "extractedAt": "<timestamp>",
+        "expiresAt": "<timestamp>",
+        "contentHash": "<hash>",
+    }
+    assert normalised_operator == {
+        "id": "<snapshotId>",
+        "entityType": "stock_balance",
+        "companyId": "<companyId>",
+        "companyCode": "SRT",
+        "status": "ready",
+        "requestedVia": "operator",
+        "createdAt": "<timestamp>",
+        "extractedAt": "<timestamp>",
+        "expiresAt": "<timestamp>",
+        "recordCount": 2,
+        "complete": True,
+        "contentHash": "<hash>",
+        "sourcePageSize": 1000,
+        "excludedCount": 2,
+        "excludedRows": [
+            {
+                "item_code": "SRT-04", "location_code": "PRJ-ACT",
+                "measure": 0, "reason": "uom_rate_unresolved",
+            },
+            {
+                "item_code": "SRT-05", "location_code": "BRW-VAR",
+                "measure": None, "reason": "computed_error",
+            },
+        ],
+        "zeroPairs": 1,
+        "negativePairs": 1,
+        "fractionalPairs": 1,
+        "excludedNonzeroCount": 1,
+        "negativePairList": [{"item_code": "SRT-02", "location_code": "MBS", "qty": -3}],
+    }, normalised_operator
+
+
 # ── AC-10-65: exclusion semantics differ by entity, never the header shape ─
 
 
@@ -422,6 +480,133 @@ def test_a_product_snapshot_with_exclusions_never_carries_stock_only_keys(db, mo
         assert stock_only_key not in meta, (stock_only_key, meta)
 
 
+# ── review round 5 (B1/S2): a MAPPING-stage exclusion must count too ───────
+
+
+def _stock_task_no_negative_drop(db, company, connection_id):
+    """Same task/mapping shape as ``_stock_task`` above, but the combine's
+    OWN ``negative`` drop rule is removed on purpose - so a group whose
+    combined quantity is negative SURVIVES combine intact and reaches the
+    mapping stage instead, where ``CanonicalStockBalance.qty``'s own
+    ``ge=0`` constraint rejects it (a genuine MAPPING-stage exclusion, never
+    a combine-stage one) - the exact class of row B1 names."""
+    from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
+    from modules.autocount.models import AcEntityConfig, AcFieldMapping, DELIVERY_MODE_PULL, ETL_STATUS_ACTIVE
+
+    combine_no_negative_drop = {**STOCK_COMBINE, "drop": [STOCK_COMBINE["drop"][0]]}
+    config = AcEntityConfig(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_STOCK_BALANCE,
+        source_impl="autocount_http", etl_status=ETL_STATUS_ACTIVE,
+        delivery_mode=DELIVERY_MODE_PULL,
+        source_config={
+            "connectionId": connection_id, "path": "/itembatchbalqtybypage",
+            "keyFields": ["item_code", "location_code"], "watermarkField": None,
+            "comparedFields": [], "distinctOf": None, "incrementalMinutes": 15,
+            "reconcileMode": "dailyAt", "reconcileAt": "02:00",
+            "lookups": [ITEM_LOOKUP, ITEM_UOM_LOOKUP], "combine": combine_no_negative_drop,
+        },
+        last_preview_at=NOW,
+        result_columns=["ItemCode", "UOM", "Location", "BatchNo", "BalQty"],
+    )
+    db.add(config)
+    db.commit()
+    for i, row in enumerate([
+        _row("item_code", "item_code", required=True),
+        _row("location_code", "location_code", required=True),
+        _row("ItemDescription", "item_description"),
+        _row("ItemBaseUOM", "uom_code"),
+        _row("qty", "qty", "int"),
+    ]):
+        db.add(
+            AcFieldMapping(
+                tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+                entity_type=ENTITY_STOCK_BALANCE, scope="header", sort_order=i, **row,
+            )
+        )
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+def _build_stock_snapshot_with_negative_mapping_exclusion(db, monkeypatch):
+    """One (item, location) pair whose COMBINED quantity is negative
+    (-8, PoC per B1) and whose ONLY exclusion is this mapping-stage one -
+    no other row in the fixture is excluded at any stage, so
+    ``excludedCount``/``excludedNonzeroCount`` isolate exactly this case."""
+    from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
+    from modules.autocount.services.pull_service import PullService
+
+    conn = _connection(db)
+    company = _company(db, conn.id)
+    _stock_task_no_negative_drop(db, company, conn.id)
+    rows = [_bal_row(ItemCode="SRT-02", UOM="UNIT", Location="MBS", BalQty=-8)]
+    transport_pages = {
+        "/itembatchbalqtybypage": _envelope(rows),
+        "/itembypage": _envelope([{"ItemCode": "SRT-02", "BaseUOM": "UNIT", "Description": "Item SRT-02"}]),
+        "/itemuombypage": _envelope([{"ItemCode": "SRT-02", "UOM": "UNIT", "Rate": 1.0}]),
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = next(p for p in transport_pages if request.url.path.endswith(p))
+        return httpx.Response(200, json=transport_pages[path])
+
+    _patch_transport(monkeypatch, httpx.Client(transport=httpx.MockTransport(handler)))
+    snapshot = PullService(db).request_build(
+        DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, requested_via="operator", now=NOW,
+    )
+    db.refresh(snapshot)
+    return snapshot
+
+
+def test_a_mapping_stage_exclusion_counts_toward_excluded_nonzero_count(db, monkeypatch):
+    """B1 (review round 5, AC-10-65/66) - a real stock pair excluded at the
+    MAPPING stage (never the combine stage) must still be reachable through
+    `excludedNonzeroCount`, the ONE number the consumer's Confirm guard
+    reads - before the fix this row never reached
+    `apply_pull_metadata_map` at all (only `result.combine_metadata`'s own
+    combine-stage-only `excludedRows` did), so `excludedNonzeroCount`
+    under-reported and the consumer's import would have zeroed this pair."""
+    from modules.autocount.services.pull_gateway_service import gateway_snapshot_header
+    from modules.autocount.services.pull_service import snapshot_header
+
+    snapshot = _build_stock_snapshot_with_negative_mapping_exclusion(db, monkeypatch)
+    meta = snapshot.metadata_json
+
+    assert meta.get("excludedCount") == 1, meta
+    assert meta.get("excludedNonzeroCount") == 1, meta
+
+    operator_header = snapshot_header(snapshot)
+    gateway_header = gateway_snapshot_header(snapshot)
+    for header in (operator_header, gateway_header):
+        assert header["excludedCount"] == 1, header
+        assert header["excludedNonzeroCount"] == 1, header
+
+
+def test_the_mapping_stage_exclusion_entry_uses_the_combine_carrying_shape(db, monkeypatch):
+    """S2 (review round 5, coordinator ruling 2026-09-20) - ONE
+    `excludedRows` shape for a combine-carrying task: this mapping-stage
+    exclusion carries `{item_code, location_code, measure, reason,
+    message}`, NEVER the generic `{source_ref, code, reason, message}`
+    shape a task with no combine step keeps - `measure` reads off the
+    combine's own grouped `qty` alias (the `measures[]` entry whose
+    `source` is the designated `base_qty` column), fail-closed to `None`
+    when unresolvable, never a raw pre-group column that does not survive
+    grouping."""
+    snapshot = _build_stock_snapshot_with_negative_mapping_exclusion(db, monkeypatch)
+    excluded_rows = snapshot.metadata_json.get("excludedRows") or []
+    assert len(excluded_rows) == 1, excluded_rows
+    entry = excluded_rows[0]
+    assert entry == {
+        "item_code": "SRT-02", "location_code": "MBS",
+        "measure": -8, "reason": "mapping_failed",
+        "message": entry.get("message"),
+    }, entry
+    assert entry["message"], entry
+    assert set(entry.keys()) == {"item_code", "location_code", "measure", "reason", "message"}
+    assert "source_ref" not in entry, entry
+    assert "code" not in entry, entry
+
+
 # ── kill tests ────────────────────────────────────────────────────────────
 #
 # * test_stock_header_serialises_the_agreed_wire_names_from_generic_metadata
@@ -435,3 +620,14 @@ def test_a_product_snapshot_with_exclusions_never_carries_stock_only_keys(db, mo
 #   the coder writes the stock keys somewhere OTHER than
 #   `AcPullSnapshot.metadata_json` (e.g. a parallel column) that the two
 #   EXISTING header projections never read.
+# * test_the_gateway_header_is_byte_for_byte_appendix_a3s_amended_stock_example
+#   dies on ANY added, renamed or dropped key in either header projection -
+#   not just the stock-only subset the earlier tests check.
+# * test_a_mapping_stage_exclusion_counts_toward_excluded_nonzero_count dies
+#   if `apply_pull_metadata_map` is fed `result.combine_metadata` directly
+#   (the pre-fix B1 bug) instead of the MERGED `excluded_rows` list -
+#   `excludedNonzeroCount` reports 0 instead of 1.
+# * test_the_mapping_stage_exclusion_entry_uses_the_combine_carrying_shape
+#   dies if `_excluded_row_entry` keeps building the generic
+#   `{source_ref, code, reason, message}` shape for a combine-carrying task
+#   instead of normalising through `excluded_row_for_mapping_failure`.

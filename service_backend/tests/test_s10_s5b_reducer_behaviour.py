@@ -48,56 +48,13 @@ BASE_URL = "https://hapi.sorento.cc.cd/api/db1"
 
 NOW = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
 
-ITEM_LOOKUP = {
-    "path": "/itembypage",
-    "as": "item",
-    "on": [{"local": "ItemCode", "remote": "ItemCode"}],
-    "fields": [
-        {"remote": "BaseUOM", "as": "ItemBaseUOM"},
-        {"remote": "Description", "as": "ItemDescription"},
-    ],
-}
-ITEM_UOM_LOOKUP = {
-    "path": "/itemuombypage",
-    "as": "uom",
-    "on": [
-        {"local": "ItemCode", "remote": "ItemCode"},
-        {"local": "UOM", "remote": "UOM", "match": "casefold_trim"},
-    ],
-    "fields": [{"remote": "Rate", "as": "UomRate"}],
-}
-STOCK_COMBINE: Dict[str, Any] = {
-    "computed": [
-        {"alias": "item_code", "formula": "trim(ItemCode)"},
-        {"alias": "location_code", "formula": "trim(Location)"},
-        {
-            "alias": "base_qty",
-            "formula": (
-                "if(lower(trim(UOM)) == lower(trim(ItemBaseUOM)), "
-                "number(BalQty), number(BalQty) * number(UomRate))"
-            ),
-        },
-    ],
-    "require": [
-        {
-            "name": "uom_rate",
-            "formula": (
-                "lower(trim(UOM)) == lower(trim(ItemBaseUOM)) or "
-                "number(default(UomRate, 0)) > 0"
-            ),
-            "reason": "uom_rate_unresolved",
-        }
-    ],
-    "measure": "base_qty",
-    "groupBy": ["item_code", "location_code"],
-    "measures": [{"source": "base_qty", "op": "sum", "alias": "qty"}],
-    "carry": ["ItemDescription", "ItemBaseUOM"],
-    "round": [{"measure": "qty", "mode": "half_up", "dp": 0}],
-    "drop": [
-        {"name": "zero", "formula": "qty == 0"},
-        {"name": "negative", "formula": "qty < 0", "listRows": True},
-    ],
-}
+# N1 (review round 5) - imported from the REAL preset rather than a local
+# copy, so a preset edit (e.g. dropping `listRows`) fails a reducer test too
+# instead of silently drifting from what actually ships.
+from modules.autocount.presets import STOCK_BALANCE_HTTP_PRESET  # noqa: E402
+
+ITEM_LOOKUP, ITEM_UOM_LOOKUP = STOCK_BALANCE_HTTP_PRESET.lookups
+STOCK_COMBINE: Dict[str, Any] = STOCK_BALANCE_HTTP_PRESET.combine
 
 
 @pytest.fixture(autouse=True)

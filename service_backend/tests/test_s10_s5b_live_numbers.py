@@ -7,6 +7,19 @@ RED before the coder: ``ENTITY_STOCK_BALANCE``/``CanonicalStockBalance`` do
 not exist yet, so this file fails at collection with a plain ``ImportError``
 exactly like its four siblings.
 
+**Review round 5 (S4)** - the capture used to live ONLY under a session
+scratchpad dir (``/private/tmp/claude-501/.../scratchpad/probe``), which is
+reaped between sessions; when that happened this whole file SKIPPED
+silently and AC-10-84's proof quietly stopped running. The capture is now
+also copied to a stable, non-git path (``~/.foundryx/autocount-probe/
+db1-2026-09-19/``, 93 page files + ``location.json``, ~19 MB - never
+committed to the repo). The probe dir resolves from the ``AUTOCOUNT_PROBE_DIR``
+env var first, falling back to that stable path - the scratchpad path is no
+longer referenced at all. The skip reason (when the dir is genuinely
+missing) names both the env var and the stable path it fell back to, so a
+future reader knows exactly how to restore the proof rather than treating a
+silent skip as "passing".
+
 **Ground truth, independently computed and cross-checked against the UAC's
 own probe notes before this file was written** (not asserted on faith - run
 via ``modules.autocount.http_source.combine.apply_combine`` directly against
@@ -38,10 +51,10 @@ import pytest
 from app.models import DEFAULT_TENANT_ID
 from app.models.connection import Connection
 
-PROBE_DIR = (
-    "/private/tmp/claude-501/-Users-tehjayson-Documents-foundryx-foundryx-shared-service/"
-    "50d47831-315e-4257-9732-fe1acb44c646/scratchpad/probe"
-)
+# S4 (review round 5) - stable, non-git home-dir path, never reaped between
+# sessions; `AUTOCOUNT_PROBE_DIR` overrides it (e.g. for a fresh capture).
+STABLE_PROBE_DIR = os.path.expanduser("~/.foundryx/autocount-probe/db1-2026-09-19")
+PROBE_DIR = os.environ.get("AUTOCOUNT_PROBE_DIR") or STABLE_PROBE_DIR
 
 BAL_PAGES = 69
 ITEM_PAGES = 12
@@ -49,7 +62,11 @@ ITEM_UOM_PAGES = 12
 
 _skip_reason = None
 if not os.path.isdir(PROBE_DIR):
-    _skip_reason = f"recorded db1 probe directory not found at {PROBE_DIR}"
+    _skip_reason = (
+        f"recorded db1 probe directory not found at {PROBE_DIR} - set "
+        f"AUTOCOUNT_PROBE_DIR to a capture, or restore the stable copy at "
+        f"{STABLE_PROBE_DIR} (documentation/plans/sprint-5/10-evidence/combine/PROBE.md)"
+    )
 else:
     _missing = [
         name
@@ -59,60 +76,20 @@ else:
     ]
     if _missing:
         _skip_reason = (
-            f"recorded db1 probe directory is missing {len(_missing)} expected page(s), "
-            f"e.g. {_missing[0]} - cannot prove AC-10-84 against a partial capture"
+            f"recorded db1 probe directory at {PROBE_DIR} is missing {len(_missing)} "
+            f"expected page(s), e.g. {_missing[0]} - cannot prove AC-10-84 against a "
+            f"partial capture (AUTOCOUNT_PROBE_DIR / {STABLE_PROBE_DIR})"
         )
 
 pytestmark = pytest.mark.skipif(_skip_reason is not None, reason=_skip_reason or "")
 
-ITEM_LOOKUP = {
-    "path": "/itembypage", "as": "item",
-    "on": [{"local": "ItemCode", "remote": "ItemCode"}],
-    "fields": [
-        {"remote": "BaseUOM", "as": "ItemBaseUOM"},
-        {"remote": "Description", "as": "ItemDescription"},
-    ],
-}
-ITEM_UOM_LOOKUP = {
-    "path": "/itemuombypage", "as": "uom",
-    "on": [
-        {"local": "ItemCode", "remote": "ItemCode"},
-        {"local": "UOM", "remote": "UOM", "match": "casefold_trim"},
-    ],
-    "fields": [{"remote": "Rate", "as": "UomRate"}],
-}
-STOCK_COMBINE: Dict[str, Any] = {
-    "computed": [
-        {"alias": "item_code", "formula": "trim(ItemCode)"},
-        {"alias": "location_code", "formula": "trim(Location)"},
-        {
-            "alias": "base_qty",
-            "formula": (
-                "if(lower(trim(UOM)) == lower(trim(ItemBaseUOM)), "
-                "number(BalQty), number(BalQty) * number(UomRate))"
-            ),
-        },
-    ],
-    "require": [
-        {
-            "name": "uom_rate",
-            "formula": (
-                "lower(trim(UOM)) == lower(trim(ItemBaseUOM)) or "
-                "number(default(UomRate, 0)) > 0"
-            ),
-            "reason": "uom_rate_unresolved",
-        }
-    ],
-    "measure": "base_qty",
-    "groupBy": ["item_code", "location_code"],
-    "measures": [{"source": "base_qty", "op": "sum", "alias": "qty"}],
-    "carry": ["ItemDescription", "ItemBaseUOM"],
-    "round": [{"measure": "qty", "mode": "half_up", "dp": 0}],
-    "drop": [
-        {"name": "zero", "formula": "qty == 0"},
-        {"name": "negative", "formula": "qty < 0", "listRows": True},
-    ],
-}
+# N1 (review round 5) - imported from the REAL preset rather than a local
+# copy, so a preset edit (e.g. dropping `listRows`) fails THIS proof too
+# instead of silently drifting from what actually ships.
+from modules.autocount.presets import STOCK_BALANCE_HTTP_PRESET  # noqa: E402
+
+ITEM_LOOKUP, ITEM_UOM_LOOKUP = STOCK_BALANCE_HTTP_PRESET.lookups
+STOCK_COMBINE: Dict[str, Any] = STOCK_BALANCE_HTTP_PRESET.combine
 
 
 @pytest.fixture(autouse=True)
