@@ -182,13 +182,21 @@ def test_the_pinned_failed_code_set_is_exhaustive_and_excludes_mapping_failed():
     from modules.autocount import sync as sync_module
     from modules.autocount.http_source.errors import HttpSourceError
 
+    # review round 2 (coordinator-authorized change, item 1): the set is now
+    # a NAMED constant (``sync.PULL_SNAPSHOT_FAILED_CODES``) that also
+    # includes ``BUILD_ABANDONED`` (AC-10-88 - a genuine fifth code, an
+    # orphan-reclaimed build, never folded onto ``SOURCE_PAGE_FAILED``) - so
+    # this test asserts against THAT constant rather than a hand-typed set
+    # that would otherwise need updating by hand every time the ladder
+    # grows.
     reachable = {
         sync_module._classify_http_source_error(HttpSourceError("boom", code="row_limit")),
         sync_module._classify_http_source_error(HttpSourceError("boom", phase="enrich")),
         sync_module._classify_http_source_error(HttpSourceError("boom")),
         "EMPTY_EXTRACT",
+        "BUILD_ABANDONED",
     }
-    assert reachable == {"SOURCE_PAGE_FAILED", "ENRICH_FAILED", "ROW_LIMIT", "EMPTY_EXTRACT"}
+    assert reachable == set(sync_module.PULL_SNAPSHOT_FAILED_CODES)
     assert "MAPPING_FAILED" not in reachable
     # `MAPPING_FAILED` must never appear anywhere in the module as a
     # snapshot-level error code literal (a lightweight source-grep control -

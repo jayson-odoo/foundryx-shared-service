@@ -23,9 +23,42 @@ from 1 to 2.
 """
 from __future__ import annotations
 
+import httpx
+import pytest
 import sqlalchemy as sa
 
 from modules.autocount.models import AcPullSnapshot, AcPullSnapshotRow
+
+
+@pytest.fixture(autouse=True)
+def _block_live_network(monkeypatch):
+    """Lane rule: no test in this file may touch the network. See
+    ``test_s10_s3_delivery_mode.py``'s copy of this fixture for the full
+    rationale (coordinator finding 2026-09-20). Review round 2 nit (item 6) -
+    this file makes no HTTP call at all (pure ORM/inspector checks), but
+    carried no explicit guard against a future addition that did."""
+
+    real_send = httpx.Client.send
+    real_async_send = httpx.AsyncClient.send
+
+    def guarded_send(self, request, *args, **kwargs):
+        if isinstance(self._transport, (httpx.HTTPTransport, httpx.AsyncHTTPTransport)):
+            raise RuntimeError(
+                f"blocked a LIVE network call to {request.url} - stub the "
+                "transport (httpx.MockTransport) instead."
+            )
+        return real_send(self, request, *args, **kwargs)
+
+    async def guarded_async_send(self, request, *args, **kwargs):
+        if isinstance(self._transport, (httpx.HTTPTransport, httpx.AsyncHTTPTransport)):
+            raise RuntimeError(
+                f"blocked a LIVE network call to {request.url} - stub the "
+                "transport (httpx.MockTransport) instead."
+            )
+        return await real_async_send(self, request, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "send", guarded_send)
+    monkeypatch.setattr(httpx.AsyncClient, "send", guarded_async_send)
 
 
 def _indexes_covering(table: sa.Table, column_name: str) -> list:

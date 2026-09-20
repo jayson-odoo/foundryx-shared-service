@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
 from app.models import DEFAULT_TENANT_ID
@@ -41,6 +42,37 @@ from modules.autocount.models import (
 )
 
 NOW = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _block_live_network(monkeypatch):
+    """Lane rule: no test in this file may touch the network. See
+    ``test_s10_s3_delivery_mode.py``'s copy of this fixture for the full
+    rationale (coordinator finding 2026-09-20). Review round 2 nit (item 6) -
+    this file makes no HTTP call of its own (``sql_database`` sources only),
+    but carried no explicit guard against a future addition that did."""
+
+    real_send = httpx.Client.send
+    real_async_send = httpx.AsyncClient.send
+
+    def guarded_send(self, request, *args, **kwargs):
+        if isinstance(self._transport, (httpx.HTTPTransport, httpx.AsyncHTTPTransport)):
+            raise RuntimeError(
+                f"blocked a LIVE network call to {request.url} - stub the "
+                "transport (httpx.MockTransport) instead."
+            )
+        return real_send(self, request, *args, **kwargs)
+
+    async def guarded_async_send(self, request, *args, **kwargs):
+        if isinstance(self._transport, (httpx.HTTPTransport, httpx.AsyncHTTPTransport)):
+            raise RuntimeError(
+                f"blocked a LIVE network call to {request.url} - stub the "
+                "transport (httpx.MockTransport) instead."
+            )
+        return await real_async_send(self, request, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "send", guarded_send)
+    monkeypatch.setattr(httpx.AsyncClient, "send", guarded_async_send)
 
 
 @pytest.fixture
