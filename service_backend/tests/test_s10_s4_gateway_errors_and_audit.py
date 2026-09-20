@@ -47,7 +47,15 @@ from modules.autocount.canonical.masters import ENTITY_PRODUCT
 from modules.autocount.models import AcCompany
 
 GATEWAY_PREFIX = "/api/v1/autocount"
-NOW = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
+# Anchored on the REAL wall clock (coordinator fix, 2026-09-20): the gateway's
+# `SNAPSHOT_EXPIRED` check compares `expires_at` against `datetime.now(utc)`
+# at REQUEST time - there is no `now=` seam to inject on an unauthenticated
+# GET, unlike `PullService.request_build`'s own `now` parameter. A fixed
+# calendar constant here would make `test_410_snapshot_expired_full_body`
+# pass only before its own hardcoded clock-time on one specific day, and
+# would make every OTHER "not yet expired" fixture in this file a ticking
+# time bomb once real time passed its hardcoded window.
+NOW = datetime.now(timezone.utc)
 
 
 @pytest.fixture(autouse=True)
@@ -89,7 +97,7 @@ def db(session_factory):
         session.close()
 
 
-def _company(db, *, sorento_company_code="SRT") -> AcCompany:
+def _company(db, *, sorento_company_code="SRT", database_name="AED_SORENTO") -> AcCompany:
     conn = Connection(
         tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="db1 REST",
         config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"},
@@ -98,7 +106,7 @@ def _company(db, *, sorento_company_code="SRT") -> AcCompany:
     db.add(conn)
     db.commit()
     company = AcCompany(
-        tenant_id=DEFAULT_TENANT_ID, connection_id=conn.id, database_name="AED_SORENTO",
+        tenant_id=DEFAULT_TENANT_ID, connection_id=conn.id, database_name=database_name,
         company_name="Sorento", name="Sorento", is_active=True,
         sorento_company_code=sorento_company_code,
     )
@@ -252,7 +260,7 @@ def test_a_read_within_the_keys_own_tenant_but_wrong_company_still_writes_one_au
     from modules.autocount.models import AcPullAudit
 
     company = _company(db)
-    other_company = _company(db, sorento_company_code="MCH")
+    other_company = _company(db, sorento_company_code="MCH", database_name="MOCHA")
     snap = _ready_snapshot(db, other_company, extracted_at=NOW, expires_at=NOW + timedelta(hours=1))
     key, plaintext = _issue_key(db, company_ids=[company.id])
 

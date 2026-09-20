@@ -103,9 +103,11 @@ def _connection(db) -> Connection:
     return conn
 
 
-def _company(db, connection_id, *, sorento_company_code="SRT") -> AcCompany:
+def _company(
+    db, connection_id, *, sorento_company_code="SRT", database_name="AED_SORENTO",
+) -> AcCompany:
     company = AcCompany(
-        tenant_id=DEFAULT_TENANT_ID, connection_id=connection_id, database_name="AED_SORENTO",
+        tenant_id=DEFAULT_TENANT_ID, connection_id=connection_id, database_name=database_name,
         company_name="Sorento", name="Sorento", is_active=True,
         sorento_company_code=sorento_company_code,
     )
@@ -180,6 +182,12 @@ def test_build_returns_202_with_the_documented_envelope(client, db, monkeypatch)
 
 
 def test_an_unrecognised_entity_is_a_422_naming_the_accepted_set(client, db):
+    """The coder's own two additive validation codes (coordinator message,
+    2026-09-20) - NEITHER is in Appendix A6's table, which only pins the 9
+    codes reachable AFTER a request parses cleanly. Noted here, once, for
+    whoever next edits the cross-repo contract docs: `UNKNOWN_ENTITY` (this
+    test) and `INVALID_REQUEST` (the sibling test below) need adding to the
+    Sorento-facing addendum alongside the existing ladder."""
     conn = _connection(db)
     company = _company(db, conn.id)
     key = _issue_key(db, company_ids=[company.id])
@@ -196,8 +204,8 @@ def test_an_unrecognised_entity_is_a_422_naming_the_accepted_set(client, db):
     # which every OTHER `/api/v1/*` route gets).
     body = response.json()
     assert "error" not in body
-    assert body.get("code")
-    assert body.get("message")
+    assert body["code"] == "UNKNOWN_ENTITY"
+    assert "products" in body["message"] and "stock_balances" in body["message"]
 
 
 def test_a_malformed_request_body_is_still_the_flat_envelope_never_cores_wrapper(client, db):
@@ -205,7 +213,9 @@ def test_a_malformed_request_body_is_still_the_flat_envelope_never_cores_wrapper
     omitted entirely) is a NATIVE pydantic body-validation failure - the
     kind `app/api_errors.py`'s global handler would otherwise wrap as
     `{"error": {"code": "invalid_request", ...}}` for every OTHER
-    `/api/v1/*` route. This gateway must still answer flat."""
+    `/api/v1/*` route. This gateway must still answer flat, with the coder's
+    own additive `INVALID_REQUEST` code (NOT in Appendix A6's table - see
+    the sibling test above's note; needs adding to the contract docs)."""
     conn = _connection(db)
     company = _company(db, conn.id)
     key = _issue_key(db, company_ids=[company.id])
@@ -222,7 +232,7 @@ def test_a_malformed_request_body_is_still_the_flat_envelope_never_cores_wrapper
         "answer the flat Appendix A6 shape even for a native validation "
         "failure, per the coordinator's ruling"
     )
-    assert body.get("code")
+    assert body["code"] == "INVALID_REQUEST"
     assert body.get("message")
 
 
@@ -310,7 +320,9 @@ def test_403_company_not_allowed_full_body(client, db):
     company = _company(db, conn.id)
     _pull_task(db, company)
     other_conn = _connection(db)
-    other_company = _company(db, other_conn.id, sorento_company_code="MCH")
+    other_company = _company(
+        db, other_conn.id, sorento_company_code="MCH", database_name="MOCHA",
+    )
     # Key scoped to `other_company` only - `company` (SRT) is a real
     # company in this key's OWN tenant, just outside its explicit scope.
     key = _issue_key(db, company_ids=[other_company.id])

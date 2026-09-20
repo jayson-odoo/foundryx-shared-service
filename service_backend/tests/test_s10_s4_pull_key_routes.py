@@ -64,6 +64,7 @@ from app.security import hash_password
 from sqlalchemy.sql import func
 
 OTHER_TENANT = "tenant-other-s10-s4-key-routes"
+OTHER_TENANT_SLUG = "other-s10-s4-key-routes"
 ACTION_KEY = "autocount_pull_api_key.revoke"
 ENTITY_TYPE = "autocount_pull_api_key"
 
@@ -107,8 +108,11 @@ def db(session_factory):
         session.close()
 
 
-def _auth(client, email="demo@example.com", password="demo1234"):
-    response = client.post("/auth/login", json={"email": email, "password": password})
+def _auth(client, email="demo@example.com", password="demo1234", tenant_slug=None):
+    payload = {"email": email, "password": password}
+    if tenant_slug is not None:
+        payload["tenantSlug"] = tenant_slug
+    response = client.post("/auth/login", json=payload)
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
@@ -132,7 +136,7 @@ def _other_tenant(db) -> None:
         default_tenant = db.get(Tenant, DEFAULT_TENANT_ID)
         db.add(
             Tenant(
-                id=OTHER_TENANT, slug="other-s10-s4-key-routes", name="Other Co",
+                id=OTHER_TENANT, slug=OTHER_TENANT_SLUG, name="Other Co",
                 status_id=default_tenant.status_id,
             )
         )
@@ -214,7 +218,10 @@ def test_key_routes_require_manage_not_merely_read(client, db):
 def test_key_routes_scoped_to_the_tenant(client, db):
     """AC-10-47: keys are never resolved unscoped - a second tenant's Admin
     never sees this tenant's keys."""
+    from app.services.app_store_service import AppStoreService
+
     _other_tenant(db)
+    AppStoreService(db).install(OTHER_TENANT, "autocount")
     default_tenant = db.get(Tenant, DEFAULT_TENANT_ID)
     role = Role(
         tenant_id=OTHER_TENANT, name="Admin", description="", is_system=True,
@@ -237,7 +244,13 @@ def test_key_routes_scoped_to_the_tenant(client, db):
     mine = _auth(client)
     client.post("/autocount/pull/keys", json={"name": "mine", "companyIds": ["co-1"]}, headers=mine)
 
-    theirs = _auth(client, "other-admin@example.com", "limited1234")
+    # `AuthService.resolve_tenant(None)` always resolves the bare-host
+    # `default` tenant - a user provisioned under a SECOND tenant must log
+    # in WITH that tenant's slug, the same idiom every other two-tenant test
+    # in this suite uses (`tests/test_deferred_actions.py::_login`).
+    theirs = _auth(
+        client, "other-admin@example.com", "limited1234", tenant_slug=OTHER_TENANT_SLUG,
+    )
     response = client.get("/autocount/pull/keys", headers=theirs)
     assert response.status_code == 200, response.text
     assert response.json() == []

@@ -95,7 +95,10 @@ def db(session_factory):
         session.close()
 
 
-def _company(db, *, tenant_id=DEFAULT_TENANT_ID, sorento_company_code="SRT") -> AcCompany:
+def _company(
+    db, *, tenant_id=DEFAULT_TENANT_ID, sorento_company_code="SRT",
+    database_name="AED_SORENTO",
+) -> AcCompany:
     conn = Connection(
         tenant_id=tenant_id, provider="autocount", type="erp", name="db1 REST",
         config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"},
@@ -104,7 +107,7 @@ def _company(db, *, tenant_id=DEFAULT_TENANT_ID, sorento_company_code="SRT") -> 
     db.add(conn)
     db.commit()
     company = AcCompany(
-        tenant_id=tenant_id, connection_id=conn.id, database_name="AED_SORENTO",
+        tenant_id=tenant_id, connection_id=conn.id, database_name=database_name,
         company_name="Sorento", name="Sorento", is_active=True,
         sorento_company_code=sorento_company_code,
     )
@@ -141,7 +144,14 @@ def _other_tenant(db) -> None:
         db.commit()
 
 
-NOW = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
+# Anchored on the REAL wall clock (coordinator fix, 2026-09-20): every
+# `_ready_snapshot` in this file defaults `expires_at = NOW + 24h`, and the
+# gateway's header route treats a snapshot whose `expires_at` has passed as
+# `SNAPSHOT_EXPIRED` (410) using the REAL current time, not an injectable
+# `now=`. A fixed calendar constant here is a ticking time bomb - every
+# "ready and readable" assertion in this file would start failing the
+# moment real time passed the hardcoded window.
+NOW = datetime.now(timezone.utc)
 
 
 def _building_snapshot(db, company, *, tenant_id=DEFAULT_TENANT_ID):
@@ -321,7 +331,7 @@ def test_gateway_rows_equal_the_operator_routes_rows_one_data_path(client, db):
 
 def test_a_snapshot_outside_the_keys_company_scope_reads_as_unknown_snapshot(client, db):
     company = _company(db)
-    other_company = _company(db, sorento_company_code="MCH")
+    other_company = _company(db, sorento_company_code="MCH", database_name="MOCHA")
     snap = _ready_snapshot(db, other_company)
     key = _issue_key(db, company_ids=[company.id])  # scoped to `company`, NOT `other_company`
 

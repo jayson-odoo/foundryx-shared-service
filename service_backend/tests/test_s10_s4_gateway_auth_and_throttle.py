@@ -240,6 +240,11 @@ def test_settings_carry_the_two_pull_throttle_knobs():
 
 
 def test_repeated_401s_from_the_same_ip_eventually_429(client, monkeypatch):
+    """Coordinator message (2026-09-20): the IP-throttle 429 carries its own
+    additive code `TOO_MANY_REQUESTS` - NOT in Appendix A6's table (which
+    only lists the build-cooldown's `TOO_MANY_BUILDS`) and DISTINCT from it;
+    needs adding to the contract docs alongside `UNKNOWN_ENTITY`/
+    `INVALID_REQUEST` (see `test_s10_s4_gateway_build.py`'s own note)."""
     from app.config import settings
 
     monkeypatch.setattr(settings, "throttle_pull_max_fails", 2)
@@ -250,6 +255,9 @@ def test_repeated_401s_from_the_same_ip_eventually_429(client, monkeypatch):
     third = client.get(f"{GATEWAY_PREFIX}/snapshots/does-not-exist", headers=unauthed)
     assert third.status_code == 429, third.text
     assert third.headers.get("Retry-After")
+    body = third.json()
+    assert body["code"] == "TOO_MANY_REQUESTS"
+    assert body["code"] != "TOO_MANY_BUILDS"
 
 
 def test_a_successful_call_never_consumes_the_pull_throttle_bucket(client, db, monkeypatch):
