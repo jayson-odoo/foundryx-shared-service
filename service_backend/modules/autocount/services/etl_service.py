@@ -113,6 +113,7 @@ from .company_service import (
 )
 from ..presets import HTTP_PRESETS, seed_document_mapping, seed_http_preset_mapping
 from ..mapping import SCOPE_HEADER, SCOPE_LINE
+from ..http_source.combine import validate_combine
 from ..http_source.lookups import effective_result_columns, stored_raw_columns, validate_lookups
 from ..http_source.preview import (
     HttpPreviewError,
@@ -1139,6 +1140,7 @@ class EtlService:
         existing_result_columns: Optional[List[str]],
         existing_lookups: Optional[List[Dict[str, Any]]] = None,
         existing_key_fields: Optional[List[str]] = None,
+        existing_combine: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, str]]:
         """Normalise + validate an ``autocount_http`` task's ``source_config``
         (AC-08-13). ONE envelope with the SQL shape - a stray SQL key on the
@@ -1155,7 +1157,10 @@ class EtlService:
         (review round 2 fix 1b) - what the PREVIOUS default ``comparedFields``
         would have been computed from, so a save can tell "the incoming
         comparedFields still equals the old default" apart from "the
-        operator customised it".
+        operator customised it". ``existing_combine`` is the task's
+        CURRENTLY STORED ``combine`` (sprint-5/10 S5a, AC-10-76/80) - what a
+        client that omits ``combine`` on the wire keeps, mirroring
+        ``existing_lookups`` exactly.
         """
         errors: Dict[str, str] = {}
 
@@ -1224,28 +1229,67 @@ class EtlService:
         # and a watermarked row with a miss could never advance the mark.
         alias_names = set(effective_result_columns([], lookups))
 
-        key_fields = _clean_list(raw.get("keyFields"))
-        distinct_of = _clean_list(raw.get("distinctOf")) or None
-        if not key_fields:
-            errors["keyFields"] = "Choose at least one key field."
-        elif distinct_of and key_fields != ["value"]:
-            errors["keyFields"] = (
-                "A distinct-values field can only key on 'value'."
+        # ── combine (sprint-5/10 S5a, AC-10-76/80, R11) ────────────────────
+        # Mirrors `lookups`'s own round-trip contract exactly: omitted
+        # (`None`) KEEPS whatever is already stored; an explicit object
+        # replaces it (including an invalid `{}` - "no combine configured"
+        # and "an explicitly empty combine" are deliberately NOT the same
+        # thing, `validate_combine` 422s the latter for its missing
+        # `groupBy`). Validated against THIS save's own raw source columns
+        # and THIS save's own lookup aliases - a combine formula may name
+        # any lookup the SAME request configures.
+        raw_combine = raw.get("combine")
+        if raw_combine is None:
+            combine: Optional[Dict[str, Any]] = (
+                dict(existing_combine) if isinstance(existing_combine, dict) else None
             )
+        elif isinstance(raw_combine, dict):
+            combine = dict(raw_combine)
         else:
-            aliased_keys = [c for c in key_fields if c in alias_names]
-            if aliased_keys:
+            combine = None
+        for key, message in validate_combine(
+            combine, raw_columns_for_validation, sorted(alias_names)
+        ).items():
+            errors[key] = message
+
+        # AC-10-80 - when a combine step is configured its `groupBy` IS the
+        # task's key fields, derived, never separately typed.
+        combine_group_by = (
+            [str(c) for c in (combine.get("groupBy") or [])] if combine is not None else []
+        )
+
+        if combine_group_by:
+            # The Source tab's key picker becomes READ-ONLY chips: even a
+            # plausible-looking client-submitted `keyFields` is overridden,
+            # and the "choose at least one key field"/"not in the last
+            # preview" rules do not apply (a combine groupBy column is
+            # typically a COMPUTED alias that can never appear in
+            # `result_columns`).
+            key_fields = combine_group_by
+            distinct_of = _clean_list(raw.get("distinctOf")) or None
+        else:
+            key_fields = _clean_list(raw.get("keyFields"))
+            distinct_of = _clean_list(raw.get("distinctOf")) or None
+            if not key_fields:
+                errors["keyFields"] = "Choose at least one key field."
+            elif distinct_of and key_fields != ["value"]:
                 errors["keyFields"] = (
-                    f"'{aliased_keys[0]}' comes from a lookup, which can be absent "
-                    f"on a miss - choose a source column."
+                    "A distinct-values field can only key on 'value'."
                 )
-            elif existing_result_columns is not None:
-                missing = [c for c in key_fields if c not in existing_result_columns]
-                if missing:
+            else:
+                aliased_keys = [c for c in key_fields if c in alias_names]
+                if aliased_keys:
                     errors["keyFields"] = (
-                        f"Not in the last preview: {', '.join(missing)}. Test the "
-                        f"endpoint first."
+                        f"'{aliased_keys[0]}' comes from a lookup, which can be absent "
+                        f"on a miss - choose a source column."
                     )
+                elif existing_result_columns is not None:
+                    missing = [c for c in key_fields if c not in existing_result_columns]
+                    if missing:
+                        errors["keyFields"] = (
+                            f"Not in the last preview: {', '.join(missing)}. Test the "
+                            f"endpoint first."
+                        )
 
         watermark_field = str(raw.get("watermarkField") or "").strip() or None
         if watermark_field and watermark_field in alias_names:
@@ -1343,6 +1387,7 @@ class EtlService:
             "reconcileHours": hours,
             "reconcileAt": at,
             "lookups": lookups,
+            "combine": combine,
         }
         return clean, errors
 
@@ -1393,12 +1438,23 @@ class EtlService:
             if config is not None and isinstance(config.source_config, dict)
             else []
         )
+        # sprint-5/10 S5a - the task's CURRENTLY STORED `combine`, what a
+        # client that omits `combine` on the wire keeps (mirrors
+        # `existing_lookups` exactly).
+        existing_combine = (
+            dict(config.source_config.get("combine"))
+            if config is not None
+            and isinstance(config.source_config, dict)
+            and isinstance(config.source_config.get("combine"), dict)
+            else None
+        )
         clean, errors = self._validate_http_config(
             tenant_id,
             raw,
             existing_result_columns=existing_result_columns,
             existing_lookups=existing_lookups,
             existing_key_fields=existing_key_fields,
+            existing_combine=existing_combine,
         )
         if errors:
             raise EtlValidationError(errors)
@@ -1434,6 +1490,26 @@ class EtlService:
             or previous_source_config.get("path") != clean.get("path")
         ):
             demote = True
+        # AC-10-80 - a combine step's `groupBy` IS the task's identity (the
+        # SAME rule AC-08-28 already applies to connectionId/path): changing
+        # it changes both `source_ref` and the row hash of every row, so it
+        # demotes an ACTIVE task exactly like a connection/path change does.
+        # Saving the SAME groupBy again is not a change - no demote.
+        if not demote and previous_source_config is not None:
+            previous_combine = previous_source_config.get("combine")
+            previous_group_by = (
+                list(previous_combine.get("groupBy") or [])
+                if isinstance(previous_combine, dict)
+                else []
+            )
+            new_combine = clean.get("combine")
+            new_group_by = (
+                list(new_combine.get("groupBy") or [])
+                if isinstance(new_combine, dict)
+                else []
+            )
+            if previous_group_by != new_group_by:
+                demote = True
 
         config.source_impl = SOURCE_IMPL_AUTOCOUNT_HTTP
         config.source_config = clean

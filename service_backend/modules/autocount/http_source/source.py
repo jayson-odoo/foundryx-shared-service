@@ -52,6 +52,7 @@ from ..sources import (
 from ..sql_source.hashing import compared_columns_for, row_hash
 from ..sql_source.source import CURSOR_COLUMN, CURSOR_MARK, MAX_EXTRACT_ROWS
 from .client import HttpApiClient, HttpTransportError
+from .combine import apply_combine
 from .envelope import ENVELOPE_LIST, parse_page
 from .errors import HttpSourceError
 from .lookups import AliasCollisionError, build_index, effective_result_columns, merge_onto_rows
@@ -131,6 +132,17 @@ class HttpApiSource:
         # onto ``FetchResult.lookup_verification``. Keyed by alias; a lookup
         # that is never walked (an empty ``self.lookups``) leaves this empty.
         self._lookup_verification: Dict[str, LookupVerification] = {}
+        # review round 2 (item 2, AC-10-32/A7) - the effective page size the
+        # MAIN walk (``_walk``, never a lookup's own walk) settled on, post
+        # any AC-10-75 halving. ``None`` until the first successful walk;
+        # read back by ``sync._run_pull_snapshot`` onto the snapshot's own
+        # ``metadata_json.sourcePageSize``.
+        self.source_page_size: Optional[int] = None
+        # Set by ``_walk_endpoint`` on EVERY successful walk it completes
+        # (main path AND every lookup) - purely internal bookkeeping;
+        # ``_walk`` alone promotes it onto the public attribute above,
+        # immediately after the MAIN walk and before any lookup ever runs.
+        self._last_walked_page_size: Optional[int] = None
 
         config = getattr(ctx.entity_config, "source_config", None) or {}
         if not isinstance(config, dict):
@@ -155,6 +167,13 @@ class HttpApiSource:
         self.lookups: List[Dict[str, Any]] = [
             dict(item) for item in (config.get("lookups") or []) if isinstance(item, dict)
         ]
+        # sprint-5/10 S5a (AC-10-76..81, R11) - the entity-agnostic combine
+        # step, already validated at save time; trusted as-is here exactly
+        # like ``self.lookups`` above. ``None`` when the task carries none.
+        combine_config = config.get("combine")
+        self.combine: Optional[Dict[str, Any]] = (
+            combine_config if isinstance(combine_config, dict) else None
+        )
 
         self.result_columns = [
             str(c) for c in (getattr(ctx.entity_config, "result_columns", None) or [])
@@ -404,7 +423,12 @@ class HttpApiSource:
         halvings = 0
         while True:
             try:
-                return self._walk_path(path, page_size)
+                result = self._walk_path(path, page_size)
+                # review round 2 (item 2) - the page size THIS walk actually
+                # succeeded at, main path AND every lookup alike; ``_walk``
+                # alone promotes it onto the public ``source_page_size``.
+                self._last_walked_page_size = page_size
+                return result
             except _PageTimedOutTwice as exc:
                 if halvings >= MAX_PAGE_HALVINGS:
                     raise HttpSourceError(
@@ -424,7 +448,14 @@ class HttpApiSource:
                 )
 
     def _walk(self) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
-        return self._walk_endpoint(self.path)
+        result = self._walk_endpoint(self.path)
+        # review round 2 (item 2, AC-10-32/A7) - captured HERE, immediately
+        # after the MAIN walk and before any lookup's own ``_walk_endpoint``
+        # call ever runs (``_apply_lookups`` fires later in
+        # ``fetch_changes``), so this is always the main path's OWN value,
+        # never a lookup's.
+        self.source_page_size = self._last_walked_page_size
+        return result
 
     # ── lookups (AC-10-01/02/03, R9) ──────────────────────────────────────
 
@@ -574,6 +605,11 @@ class HttpApiSource:
     # ── fetch ──────────────────────────────────────────────────────────────
 
     def fetch_changes(self, since: Watermark) -> FetchResult:
+        # review round 2 (item 6) - reset EVERY call: an instance reused
+        # across two ``fetch_changes`` calls (this class carries no other
+        # such per-call state) must never leak a stale alias from a PRIOR
+        # call's lookups into this one's own ``FetchResult``.
+        self._lookup_verification = {}
         full_extract = self.mode == RUN_MODE_RECONCILE or not self.watermark_field
 
         # MUST-FIX 2 (AC-10-24) - ``envelope_kind`` is the MAIN path's own
@@ -592,10 +628,21 @@ class HttpApiSource:
             self._apply_lookups(scanned_rows)
         rows_scanned = len(scanned_rows)
 
+        # sprint-5/10 S5a (AC-10-80) - combine runs AFTER lookups (may
+        # reference a merged alias) and BEFORE de-dup/hashing: de-dup,
+        # source_ref minting and row_hash all run on the COMBINED rows, so a
+        # push task combines exactly as a pull task does. ``None`` for every
+        # existing/control call site - byte-identical output.
+        combine_metadata: Optional[Dict[str, Any]] = None
         if self.distinct_of:
             working_rows = self._project_distinct(scanned_rows)
         else:
-            working_rows = self._dedupe(scanned_rows)
+            reduced_rows = scanned_rows
+            if self.combine:
+                combine_result = apply_combine(scanned_rows, self.combine)
+                reduced_rows = combine_result.rows
+                combine_metadata = combine_result.metadata
+            working_rows = self._dedupe(reduced_rows)
 
         # New mark = max seen ACROSS THE WHOLE WALK (AC-08-25) - the watermark
         # must reflect what was truly out there this pass, independent of
@@ -725,6 +772,7 @@ class HttpApiSource:
             ),
             envelope_kind=envelope_kind,
             lookup_verification=dict(self._lookup_verification),
+            combine_metadata=combine_metadata,
         )
 
     # ── observability ──────────────────────────────────────────────────────

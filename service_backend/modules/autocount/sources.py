@@ -193,6 +193,11 @@ class FetchResult:
     # keeps every existing caller - including the PUSH path, which never
     # reads this field at all - byte-identical.
     lookup_verification: Dict[str, LookupVerification] = field(default_factory=dict)
+    # sprint-5/10 S5a (AC-10-81) - the combine step's own generic metadata
+    # (``{excludedRows, excludedCount, dropped, roundedCount}``), entity-
+    # agnostic. ``None`` when the task carries no ``combine`` step - every
+    # existing/control call site stays byte-identical.
+    combine_metadata: Optional[Dict[str, Any]] = None
 
 
 class EntitySource(Protocol):
