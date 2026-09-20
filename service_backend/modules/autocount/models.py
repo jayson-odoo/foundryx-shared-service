@@ -611,8 +611,9 @@ class AcPullSnapshot(AutocountBase):
     # is a thin projection of this column plus the row's own base fields.
     metadata_json = Column(_JSON, nullable=True)
     error = Column(Text, nullable=True)
-    # One of the pinned gateway codes (AC-10-64): SOURCE_PAGE_FAILED |
-    # ENRICH_FAILED | ROW_LIMIT | EMPTY_EXTRACT.
+    # One of the pinned gateway codes (AC-10-64/88,
+    # ``sync.PULL_SNAPSHOT_FAILED_CODES``): SOURCE_PAGE_FAILED |
+    # ENRICH_FAILED | ROW_LIMIT | EMPTY_EXTRACT | BUILD_ABANDONED.
     error_code = Column(String, nullable=True)
     requested_via = Column(String, nullable=False, default="operator")
     requested_by = Column(String, nullable=True)
@@ -679,6 +680,12 @@ class AcPullAudit(AutocountBase):
         Index("ix_ac_pull_audit_tenant", "tenant_id"),
         Index("ix_ac_pull_audit_snapshot", "snapshot_id"),
         Index("ix_ac_pull_audit_key", "key_id"),
+        # review round 2 (item 5) - the 90-day prune
+        # (``pull_service.prune_pull_snapshots``/``PullAuditRepository.
+        # delete_older_than``) full-scans this table without it; migration
+        # 0021 (unreleased) is amended IN PLACE to add the matching index,
+        # never a follow-up migration.
+        Index("ix_ac_pull_audit_created_at", "created_at"),
     )
 
     id = Column(String, primary_key=True, default=_uuid)

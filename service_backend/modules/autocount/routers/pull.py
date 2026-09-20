@@ -13,7 +13,7 @@ Phase-1 frontend contract already shipped on this branch
 (``service_frontend/services/autocount-service.real.ts``): internal ids/
 entity keys, camelCase envelope + row keys, session auth.
 """
-from typing import List, Optional
+from typing import List, NoReturn, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
@@ -40,6 +40,7 @@ from ..services.pull_key_service import (
 )
 from ..services.pull_service import (
     PullBuildCooldownError,
+    PullPushActiveError,
     PullService,
     PullSnapshotNotFound,
     snapshot_header,
@@ -48,8 +49,11 @@ from ..services.pull_service import (
 router = APIRouter()
 
 
-def _raise(exc: AutocountServiceError) -> None:
-    """ONE translator for this router's service errors -> HTTP."""
+def _raise(exc: AutocountServiceError) -> NoReturn:
+    """ONE translator for this router's service errors -> HTTP. Typed
+    ``NoReturn`` (review round 2, item 6) so every call site's own
+    subsequent code is never flagged as reachable with an unbound variable -
+    this function always raises, in every branch."""
     if isinstance(exc, (PullSnapshotNotFound, PullKeyNotFound)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
     if isinstance(exc, PullBuildCooldownError):
@@ -58,6 +62,8 @@ def _raise(exc: AutocountServiceError) -> None:
             detail=exc.message,
             headers={"Retry-After": str(exc.retry_after_seconds)},
         ) from exc
+    if isinstance(exc, PullPushActiveError):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message) from exc
     raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message) from exc
 
 

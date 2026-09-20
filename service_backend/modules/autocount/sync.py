@@ -2297,17 +2297,41 @@ class _BuildAbandoned(Exception):
     message."""
 
 
+# review round 2 (item 1, AC-10-64/88) - the FULL pinned failed-status code
+# ladder as ONE named tuple, so the classifier below, the orphan-sweep hook
+# (``bootstrap.on_job_orphaned``) and the gateway's own pinned exhaustive-set
+# test (``test_s10_s4_gateway_errors_and_audit.py``) all read the SAME set -
+# never hand-typed literals that can silently drift apart. ``BUILD_ABANDONED``
+# (AC-10-88) is a genuine FIFTH code, deliberately never folded onto
+# ``SOURCE_PAGE_FAILED`` - that would misreport an orphan-reclaimed build as
+# a source fault when nothing about the source ever failed.
+ERROR_CODE_SOURCE_PAGE_FAILED = "SOURCE_PAGE_FAILED"
+ERROR_CODE_ENRICH_FAILED = "ENRICH_FAILED"
+ERROR_CODE_ROW_LIMIT = "ROW_LIMIT"
+ERROR_CODE_EMPTY_EXTRACT = "EMPTY_EXTRACT"
+ERROR_CODE_BUILD_ABANDONED = "BUILD_ABANDONED"
+
+PULL_SNAPSHOT_FAILED_CODES: Tuple[str, ...] = (
+    ERROR_CODE_SOURCE_PAGE_FAILED,
+    ERROR_CODE_EMPTY_EXTRACT,
+    ERROR_CODE_ENRICH_FAILED,
+    ERROR_CODE_ROW_LIMIT,
+    ERROR_CODE_BUILD_ABANDONED,
+)
+
+
 def _classify_http_source_error(exc: HttpSourceError) -> str:
     """The pinned gateway error-code ladder (AC-10-22/64): ``ROW_LIMIT`` by
     its own code regardless of phase, ``ENRICH_FAILED`` for a lookup
     endpoint fault (``_apply_lookups`` re-wraps with ``phase='enrich'``,
     ``http_source/source.py``), ``SOURCE_PAGE_FAILED`` for everything else
-    on the main path."""
+    on the main path. Every branch returns a member of
+    ``PULL_SNAPSHOT_FAILED_CODES``."""
     if exc.code == "row_limit":
-        return "ROW_LIMIT"
+        return ERROR_CODE_ROW_LIMIT
     if getattr(exc, "phase", None) == "enrich":
-        return "ENRICH_FAILED"
-    return "SOURCE_PAGE_FAILED"
+        return ERROR_CODE_ENRICH_FAILED
+    return ERROR_CODE_SOURCE_PAGE_FAILED
 
 
 def _excluded_row_entry(mapped: "MappedDocument") -> Dict[str, Any]:
@@ -2410,6 +2434,13 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
     config = EntityConfigRepository(db).get(tenant_id, company_id, entity_type)
 
     def _fail_snapshot(message: str, error_code: str) -> None:
+        # review round 2 (item 1) - fail CLOSED on an un-pinned code: every
+        # ``error_code`` this handler ever stamps must be a member of the
+        # ONE named ladder, so a future call site can never silently drift
+        # from AC-10-64's exhaustive set.
+        assert error_code in PULL_SNAPSHOT_FAILED_CODES, (
+            f"unpinned pull-snapshot failed-status code {error_code!r}"
+        )
         if snapshot is not None:
             try:
                 snapshot_service.stamp_failed(
@@ -2424,7 +2455,7 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
     if snapshot is None or company is None or config is None:
         _fail_snapshot(
             "The pull task this build was requested for no longer exists.",
-            "SOURCE_PAGE_FAILED",
+            ERROR_CODE_SOURCE_PAGE_FAILED,
         )
         return
 
@@ -2502,7 +2533,7 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
         )
     except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
         _finish_run_failed(str(exc))
-        _fail_snapshot(str(exc), "SOURCE_PAGE_FAILED")
+        _fail_snapshot(str(exc), ERROR_CODE_SOURCE_PAGE_FAILED)
         return
 
     try:
@@ -2528,7 +2559,7 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
             external_ref=company.database_name,
         )
         _finish_run_failed(f"Fetch failed: {exc}")
-        _fail_snapshot(f"Fetch failed: {exc}", "SOURCE_PAGE_FAILED")
+        _fail_snapshot(f"Fetch failed: {exc}", ERROR_CODE_SOURCE_PAGE_FAILED)
         return
     finally:
         source.close()
@@ -2587,7 +2618,7 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
         _fail_snapshot(
             "This build returned zero rows while a previous snapshot for this "
             "entity carried records.",
-            "EMPTY_EXTRACT",
+            ERROR_CODE_EMPTY_EXTRACT,
         )
         return
 
@@ -2634,6 +2665,10 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
         metadata: Dict[str, Any] = {
             "excludedRows": excluded_rows,
             "excludedCount": len(excluded_rows),
+            # review round 2 (item 2, AC-10-32/A7) - the effective page size
+            # the MAIN walk settled on (post any AC-10-75 halving), so both
+            # headers can finally serve the key they already read.
+            "sourcePageSize": getattr(source, "source_page_size", None),
         }
         if entity_type == ENTITY_PRODUCT:
             metadata.update(_product_price_counters(result.records, mapping_rows))

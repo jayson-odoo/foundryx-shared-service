@@ -16,6 +16,14 @@
 Revision ID: 0020_autocount_pull_snapshot   (29 chars <= 32)
 Revises: 0019_autocount_so_ref
 Create Date: 2026-09-20
+
+Both this revision and its child, 0021, were amended IN PLACE at least once
+before either ever shipped (this file's own SHOULD-FIX 4 partial-unique-index
+addition, then 0021's review round 2 ``ac_pull_audit.created_at`` index) - the
+only stamped host at every amendment was the lane Postgres
+(``foundryx_service_s40``), re-verified each time with a downgrade-then-
+upgrade against it. Amend in place while unreleased; add a new revision only
+once a migration has actually shipped.
 """
 from typing import Any, List, Sequence, Union
 

@@ -297,7 +297,7 @@ def on_job_orphaned(
         AcPullSnapshot,
         AcSyncRun,
     )
-    from .sync import AUTOCOUNT_PULL_SNAPSHOT, AUTOCOUNT_SYNC
+    from .sync import AUTOCOUNT_PULL_SNAPSHOT, AUTOCOUNT_SYNC, ERROR_CODE_BUILD_ABANDONED
 
     job_type = getattr(job, "type", None)
     if job_type not in (AUTOCOUNT_SYNC, AUTOCOUNT_PULL_SNAPSHOT):
@@ -333,7 +333,7 @@ def on_job_orphaned(
         if snapshot is not None:
             snapshot.status = PULL_SNAPSHOT_STATUS_FAILED
             snapshot.error = "The worker stopped before this build finished."
-            snapshot.error_code = "BUILD_ABANDONED"
+            snapshot.error_code = ERROR_CODE_BUILD_ABANDONED
     db.flush()
 
 

@@ -21,13 +21,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import (
+    DELIVERY_MODE_PUSH,
+    ETL_STATUS_ACTIVE,
     PULL_SNAPSHOT_STATUS_BUILDING,
     PULL_SNAPSHOT_STATUS_FAILED,
     PULL_SNAPSHOT_STATUS_READY,
     AcPullSnapshot,
     AcPullSnapshotRow,
 )
-from ..repositories import PullAuditRepository, PullSnapshotRepository
+from ..repositories import EntityConfigRepository, PullAuditRepository, PullSnapshotRepository
 from .company_service import AutocountServiceError
 
 # The build-end TTL (AC-10-25). Kept as a module constant rather than an
@@ -74,6 +76,20 @@ class PullBuildCooldownError(AutocountServiceError):
             f"{BUILD_COOLDOWN_SECONDS} seconds ago. Try again shortly."
         )
         self.retry_after_seconds = max(1, int(retry_after_seconds))
+
+
+class PullPushActiveError(AutocountServiceError):
+    """A build was requested for a (company, entity) that has flipped to
+    automatic PUSH (AC-10-15's pull-only rule) - review round 2 (item 4):
+    refused HERE, at the seam BOTH the operator route and the public
+    gateway call, never only in the gateway's own pre-check (which left the
+    operator route free to start a real extraction on a push-active pair)."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "This book/entity has flipped to automatic push and can no "
+            "longer be pulled."
+        )
 
 
 class SnapshotService:
@@ -330,10 +346,33 @@ class PullService:
             # A consumer that stopped polling re-clicks and lands on the SAME
             # snapshot id, never a second extraction (AC-10-26/88). A build
             # that genuinely died is closed by the module's orphan hook, not
-            # by age here.
+            # by age here. Re-attach wins over EVERY other guard below,
+            # including a task that has since flipped to push - a build
+            # already in flight is never killed mid-walk by a config change.
             return existing
-        if existing is not None and existing.extracted_at is not None:
-            elapsed = (now - existing.extracted_at).total_seconds()
+
+        # review round 2 (item 4, AC-10-15) - refused HERE, at the seam BOTH
+        # the operator route and the public gateway share, not only in the
+        # gateway's own pre-check (which left the operator route free to
+        # start a real extraction against a push-active pair).
+        config = EntityConfigRepository(self.db).get(tenant_id, company_id, entity_type)
+        if (
+            config is not None
+            and config.delivery_mode == DELIVERY_MODE_PUSH
+            and config.etl_status == ETL_STATUS_ACTIVE
+        ):
+            raise PullPushActiveError()
+
+        if existing is not None:
+            # review round 2 (item 3, AC-10-26) - keyed on ``extracted_at``
+            # when present (a READY snapshot's own explicit build-end
+            # timestamp, unchanged from before) OR ``created_at`` as the
+            # fallback (a FAILED snapshot never gets an ``extracted_at`` at
+            # all, so the cooldown was silently skipped for every failed
+            # build until now - a consumer could hammer a consistently
+            # broken extraction at unlimited rate).
+            basis = existing.extracted_at or existing.created_at
+            elapsed = (now - basis).total_seconds()
             if elapsed < BUILD_COOLDOWN_SECONDS:
                 raise PullBuildCooldownError(
                     retry_after_seconds=BUILD_COOLDOWN_SECONDS - int(elapsed)

@@ -263,8 +263,19 @@ def test_repeated_401s_from_the_same_ip_eventually_429(client, monkeypatch):
 def test_a_successful_call_never_consumes_the_pull_throttle_bucket(client, db, monkeypatch):
     """CONTROL: enough SUCCESSFUL calls to exceed the same numeric limit a
     401 would trip must NOT throttle - proves the bucket only counts
-    failures, never merely traffic."""
+    failures, never merely traffic.
+
+    review round 2 (item 3, AC-10-26) - driven at a READ route
+    (``GET .../snapshots/{id}``) rather than repeated ``POST /snapshots``:
+    the build cooldown now correctly applies even to a FAILED build (this
+    file's own ``_block_live_network`` fixture makes every real extraction
+    fail immediately), so a tight loop of real builds would collide with
+    THAT unrelated 60s guard instead of exercising the throttle bucket this
+    test targets. A read has no such cooldown at all."""
+    from datetime import datetime, timedelta, timezone
+
     from app.config import settings
+    from modules.autocount.services.pull_service import SnapshotService
 
     monkeypatch.setattr(settings, "throttle_pull_max_fails", 2)
     company = _company(db)
@@ -272,13 +283,22 @@ def test_a_successful_call_never_consumes_the_pull_throttle_bucket(client, db, m
     key = _issue_key(db, company_ids=[company.id])
     headers = {"X-API-Key": key}
 
+    now = datetime.now(timezone.utc)
+    snapshot = SnapshotService(db).create_building(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT,
+        company_code=company.sorento_company_code, requested_via="gateway",
+    )
+    snapshot = SnapshotService(db).stamp_ready(
+        DEFAULT_TENANT_ID, snapshot, record_count=0, complete=True,
+        content_hash="a" * 64, metadata={"excludedRows": [], "excludedCount": 0},
+        extracted_at=now, expires_at=now + timedelta(hours=24),
+    )
+
     for _ in range(5):
-        response = client.post(
-            f"{GATEWAY_PREFIX}/snapshots",
-            json={"companyCode": "SRT", "entity": "products"},
-            headers=headers,
+        response = client.get(
+            f"{GATEWAY_PREFIX}/snapshots/{snapshot.id}", headers=headers,
         )
-        assert response.status_code in (200, 202), response.text
+        assert response.status_code == 200, response.text
 
 
 # ── kill tests ────────────────────────────────────────────────────────────

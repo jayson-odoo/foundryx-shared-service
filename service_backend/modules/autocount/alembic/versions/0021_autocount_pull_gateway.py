@@ -11,6 +11,12 @@
 Revision ID: 0021_autocount_pull_gateway   (29 chars <= 32)
 Revises: 0020_autocount_pull_snapshot
 Create Date: 2026-09-20
+
+Amended in place (review round 2, item 5, still unreleased at the time of
+this amendment - the only stamped host was the lane Postgres
+``foundryx_service_s40``, re-run downgrade-then-upgrade against it): adds
+``ix_ac_pull_audit_created_at`` so the 90-day audit prune
+(``prune_pull_snapshots``) no longer full-scans the table as it grows.
 """
 from typing import Sequence, Union
 
@@ -93,6 +99,9 @@ def upgrade() -> None:
     add_index("ix_ac_pull_audit_tenant", "ac_pull_audit", ["tenant_id"])
     add_index("ix_ac_pull_audit_snapshot", "ac_pull_audit", ["snapshot_id"])
     add_index("ix_ac_pull_audit_key", "ac_pull_audit", ["key_id"])
+    # review round 2 (item 5) - the 90-day prune sweep's own WHERE clause
+    # (``created_at < cutoff``), matching the ORM's own new ``Index``.
+    add_index("ix_ac_pull_audit_created_at", "ac_pull_audit", ["created_at"])
 
 
 def downgrade() -> None:

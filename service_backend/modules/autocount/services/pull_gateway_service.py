@@ -31,7 +31,12 @@ from ..repositories import (
     PullSnapshotRepository,
 )
 from .company_service import CompanyNotFound
-from .pull_service import MAX_PULL_PAGE_SIZE, PullBuildCooldownError, PullService
+from .pull_service import (
+    MAX_PULL_PAGE_SIZE,
+    PullBuildCooldownError,
+    PullPushActiveError,
+    PullService,
+)
 
 # entity=`products`/`stock_balances` on the wire (Appendix A2), translated by
 # ONE map to the internal canonical keys (AC-10-29). `stock_balance` has no
@@ -212,6 +217,16 @@ class PullGatewayService:
                 "A build was requested for this book/entity less than 60 seconds ago.",
                 company_id=company.id,
             ).with_retry_after(exc.retry_after_seconds)
+        except PullPushActiveError:
+            # review round 2 (item 4) - the gateway's OWN pre-check above
+            # already refuses a push-active pair before ever calling
+            # ``request_build``, so this branch is defence in depth (the
+            # SERVICE guard is now authoritative for both callers) rather
+            # than the primary path for this route.
+            raise PullGatewayError(
+                409, "PUSH_ACTIVE", "This book is now automatic.",
+                company_id=company.id,
+            )
         except CompanyNotFound:
             # Security round 1 HIGH 1 - a TOCTOU race (the company vanished
             # between our own resolution above and this call's internal
