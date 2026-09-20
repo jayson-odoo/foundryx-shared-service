@@ -107,6 +107,7 @@ from ..sinks import EntitySink, UnknownSinkImpl, sink_for
 from ..sinks_sorento import (
     BRAND_REQUIRED_CONTRACT_VERSION,
     PRODUCT_CODE_WINS_CONTRACT_VERSION,
+    STOCK_BALANCES_CONTRACT_VERSION,
     sorento_sink_from_connection,
     sorento_supports_entity,
 )
@@ -983,6 +984,54 @@ class CompanyService:
             return False
         version = contract.version if contract else None
         return version is not None and version >= PRODUCT_CODE_WINS_CONTRACT_VERSION
+
+    def stock_push_gate_error(
+        self, tenant_id: str, company: AcCompany
+    ) -> Optional[Dict[str, Any]]:
+        """sprint-5/10 S5b (AC-10-15) - whether ``stock_balance``'s
+        ``delivery_mode`` may switch to ``push``. UNLIKE ``contract_gate``
+        above (a BANNER: an unreachable consumer answers "nothing to warn
+        about" for any non-product entity), this is a REFUSAL gate: stock
+        has no `_ENTITY_PATH` entry at all yet (AC-10-39), so there is no
+        safe "allow and let it fail at push time" fallback the way that
+        gate's banner-only branches have - "never guess a contract we
+        cannot see" means an ABSENT Sorento connection or an
+        unreachable/malformed probe REFUSES, exactly like a too-low
+        version. ``None`` = push is allowed; otherwise
+        ``{"version": <float|None>, "requiredVersion":
+        STOCK_BALANCES_CONTRACT_VERSION}``.
+
+        The probe sink is constructed with ``entity_type=ENTITY_PRODUCT``
+        (any ``_ENTITY_PATH`` member does) purely because
+        ``fetch_contract_detail`` reads ``GET /external/contract``
+        unconditionally, never the entity's own ingest path -
+        ``stock_balance`` genuinely has no path to build a sink against
+        directly (``SorentoSink.__init__``'s own guard would raise).
+        """
+        if company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id:
+            return {"version": None, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
+        try:
+            conn = self._consumer_connection(tenant_id, company.sink_connection_id)
+            sink = sorento_sink_from_connection(
+                conn.config_json or {},
+                self.credentials(conn),
+                entity_type=ENTITY_PRODUCT,
+                company_code=company.sorento_company_code,
+                timeout=BRAND_CONTRACT_GATE_PROBE_TIMEOUT_SECONDS,
+            )
+            contract = sink.fetch_contract_detail()
+        except Exception:  # noqa: BLE001 - unprovable = refused, never a guess
+            return {"version": None, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
+        version = contract.version if contract else None
+        entities = contract.entities if contract else []
+        supported = (
+            version is not None
+            and version >= STOCK_BALANCES_CONTRACT_VERSION
+            and "stock_balances" in entities
+        )
+        if supported:
+            return None
+        return {"version": version, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
 
     def set_sink_target(
         self,

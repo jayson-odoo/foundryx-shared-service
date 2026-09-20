@@ -53,6 +53,7 @@ from ..canonical.masters import (
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_SALES_AGENT,
+    ENTITY_STOCK_BALANCE,
     ENTITY_SUPPLIER,
     ENTITY_UNIT_OF_MEASURE,
     ENTITY_WAREHOUSE,
@@ -156,14 +157,19 @@ ETL_ENTITY_TYPES = (
     # sprint-5/08 (AC-08-31) - a DB task may feed `brand` too (the open REST
     # API is not the only source), so it joins the DB-extractable catalogue.
     ENTITY_BRAND,
+    # sprint-5/10 S5b (AC-10-39) - HTTP-only (no `sql_db` variant exists or
+    # is planned, D4), but still needs an entry here: `_require_task_entity`
+    # (the generic "may a task be configured for this entity at all" gate)
+    # is source-impl-agnostic, and `_update_http_task` runs through it too.
+    ENTITY_STOCK_BALANCE,
 )
 
 # sprint-5/10 (AC-10-11/15) - entities a task may be switched to ``pull``
 # for. ``stock_balance`` joins this set in S5b (a pull-only entity, gated by
-# its own contract - it has no consumer ingest path at all yet); for now
-# only ``product`` may flip. A task outside this set 422s naming the entity
-# rather than silently accepting a mode it can never be served under.
-PULL_CAPABLE_ENTITY_TYPES = (ENTITY_PRODUCT,)
+# its own contract - it has no consumer ingest path at all yet). A task
+# outside this set 422s naming the entity rather than silently accepting a
+# mode it can never be served under.
+PULL_CAPABLE_ENTITY_TYPES = (ENTITY_PRODUCT, ENTITY_STOCK_BALANCE)
 
 # ── schedule floors (AC-22-12, Q17) ──────────────────────────────────────────
 MIN_INCREMENTAL_MINUTES = 1
@@ -1658,6 +1664,17 @@ class EtlService:
                     initial_load=INITIAL_LOAD_FULL,
                     enabled=True,
                     etl_status=ETL_STATUS_DRAFT,
+                    # AC-10-15 - a FRESH stock_balance task is created in
+                    # PULL mode, never the column's own 'push'
+                    # server_default: push has no route to succeed on at
+                    # all until Sorento serves 2.5. Every other entity keeps
+                    # the column's own default (explicit here only to make
+                    # the carve-out visible, not to change their behaviour).
+                    delivery_mode=(
+                        DELIVERY_MODE_PULL
+                        if entity_type == ENTITY_STOCK_BALANCE
+                        else DELIVERY_MODE_PUSH
+                    ),
                 )
             )
 
@@ -2657,6 +2674,27 @@ class EtlService:
                 {"deliveryMode": f"'{entity_type}' cannot be switched between push and pull."}
             )
         company = self.companies.get(tenant_id, company_id)  # tenant-scope guard
+        #     !!  STOCK'S OWN PUSH GATE (AC-10-15) - A REFUSAL, NOT A BANNER.  !!
+        # The same `fetch_contract_detail` probe pattern AC-10-69 generalises
+        # for product, but stock has no safe "allow and let it fail at push
+        # time" outcome the way that gate's banner-only branches do (it has
+        # no `_ENTITY_PATH` entry at all to push against yet) - an absent
+        # Sorento connection or an unreachable/malformed probe REFUSES,
+        # exactly like a too-low version ("never guess a contract we cannot
+        # see"). Opens on its own the moment Sorento serves 2.5 with
+        # `stock_balances` advertised - never a hardcoded forever rule.
+        if delivery_mode == DELIVERY_MODE_PUSH and entity_type == ENTITY_STOCK_BALANCE:
+            gate = self.companies.stock_push_gate_error(tenant_id, company)
+            if gate is not None:
+                raise EtlValidationError(
+                    {
+                        "deliveryMode": (
+                            f"'{entity_type}' needs Sorento contract "
+                            f"{gate['requiredVersion']} with stock balances "
+                            f"advertised before it can push."
+                        )
+                    }
+                )
         if delivery_mode == DELIVERY_MODE_PULL and not (
             company.sorento_company_code or ""
         ).strip():

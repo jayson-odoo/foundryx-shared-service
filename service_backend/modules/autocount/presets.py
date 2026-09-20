@@ -36,6 +36,7 @@ from .canonical.masters import (
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
+    ENTITY_STOCK_BALANCE,
     ENTITY_UNIT_OF_MEASURE,
     ENTITY_WAREHOUSE,
 )
@@ -664,6 +665,11 @@ class HttpPreset:
     # validate_lookups`` checks (``{path, as, on, fields}``) - a preset row,
     # never a special code path.
     lookups: Tuple[Dict[str, Any], ...] = ()
+    # sprint-5/10 S5b (AC-10-40/41, R11) - ANY preset MAY carry a pre-filled
+    # ``combine`` block (the SAME operator-editable shape
+    # ``http_source.combine.validate_combine`` checks); ``None`` for every
+    # OTHER preset in this file, unaffected.
+    combine: Optional[Dict[str, Any]] = None
 
 
 PRODUCT_HTTP_PRESET = HttpPreset(
@@ -793,6 +799,83 @@ UNIT_OF_MEASURE_HTTP_PRESET = HttpPreset(
     ),
 )
 
+# sprint-5/10 S5b (AC-10-40/41) - the stock balance preset: two ordered
+# lookups (item master for BaseUOM/Description, then ItemUOM for the
+# conversion Rate) + a PRE-FILLED ``combine`` block that expresses exactly
+# what the old named reducer did (D4/D5) - the owner configures nothing.
+# Every formula/shape here is byte-identical to
+# ``test_s10_s5a_preview_funnel.py``'s own already-GREEN ``STOCK_COMBINE``
+# fixture (S5a) - the two must never quietly drift apart.
+_STOCK_ITEM_LOOKUP: Dict[str, Any] = {
+    "path": "/itembypage",
+    "as": "item",
+    "on": [{"local": "ItemCode", "remote": "ItemCode"}],
+    "fields": [
+        {"remote": "BaseUOM", "as": "ItemBaseUOM"},
+        {"remote": "Description", "as": "ItemDescription"},
+    ],
+}
+_STOCK_ITEM_UOM_LOOKUP: Dict[str, Any] = {
+    "path": "/itemuombypage",
+    "as": "uom",
+    "on": [
+        {"local": "ItemCode", "remote": "ItemCode"},
+        {"local": "UOM", "remote": "UOM", "match": "casefold_trim"},
+    ],
+    "fields": [{"remote": "Rate", "as": "UomRate"}],
+}
+_STOCK_COMBINE: Dict[str, Any] = {
+    "computed": [
+        {"alias": "item_code", "formula": "trim(ItemCode)"},
+        {"alias": "location_code", "formula": "trim(Location)"},
+        {
+            "alias": "base_qty",
+            "formula": (
+                "if(lower(trim(UOM)) == lower(trim(ItemBaseUOM)), "
+                "number(BalQty), number(BalQty) * number(UomRate))"
+            ),
+        },
+    ],
+    "require": [
+        {
+            "name": "uom_rate",
+            "formula": (
+                "lower(trim(UOM)) == lower(trim(ItemBaseUOM)) or "
+                "number(default(UomRate, 0)) > 0"
+            ),
+            "reason": "uom_rate_unresolved",
+        }
+    ],
+    "measure": "base_qty",
+    "groupBy": ["item_code", "location_code"],
+    "measures": [{"source": "base_qty", "op": "sum", "alias": "qty"}],
+    "carry": ["ItemDescription", "ItemBaseUOM"],
+    "round": [{"measure": "qty", "mode": "half_up", "dp": 0}],
+    "drop": [
+        {"name": "zero", "formula": "qty == 0"},
+        {"name": "negative", "formula": "qty < 0", "listRows": True},
+    ],
+}
+
+STOCK_BALANCE_HTTP_PRESET = HttpPreset(
+    label="Stock balance (open REST API)",
+    path="/itembatchbalqtybypage",
+    # AC-10-40 - key fields are DERIVED from `combine.groupBy` at save time
+    # (`EtlService._update_http_task`), never typed on the preset itself.
+    key_fields=(),
+    watermark_field=None,
+    distinct_of=None,
+    lookups=(_STOCK_ITEM_LOOKUP, _STOCK_ITEM_UOM_LOOKUP),
+    combine=_STOCK_COMBINE,
+    rows=(
+        PresetField("item_code", "item_code", "string", required=True),
+        PresetField("location_code", "location_code", "string", required=True),
+        PresetField("ItemDescription", "item_description", "string"),
+        PresetField("ItemBaseUOM", "uom_code", "string"),
+        PresetField("qty", "qty", "int", required=True),
+    ),
+)
+
 HTTP_PRESETS: Dict[str, HttpPreset] = {
     ENTITY_PRODUCT: PRODUCT_HTTP_PRESET,
     ENTITY_CUSTOMER: CUSTOMER_HTTP_PRESET,
@@ -800,6 +883,7 @@ HTTP_PRESETS: Dict[str, HttpPreset] = {
     ENTITY_PRODUCT_CATEGORY: PRODUCT_CATEGORY_HTTP_PRESET,
     ENTITY_BRAND: BRAND_HTTP_PRESET,
     ENTITY_UNIT_OF_MEASURE: UNIT_OF_MEASURE_HTTP_PRESET,
+    ENTITY_STOCK_BALANCE: STOCK_BALANCE_HTTP_PRESET,
 }
 
 # Parity-pinned (AC-08-17): backend keys == frontend `AC_HTTP_ENTITY_TYPES`.

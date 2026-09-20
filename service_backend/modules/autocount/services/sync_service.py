@@ -53,6 +53,7 @@ from ..canonical.masters import (
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_SALES_AGENT,
+    ENTITY_STOCK_BALANCE,
     ENTITY_SUPPLIER,
     ENTITY_UNIT_OF_MEASURE,
     ENTITY_WAREHOUSE,
@@ -61,6 +62,7 @@ from ..canonical.masters import (
     CanonicalProduct,
     CanonicalProductCategory,
     CanonicalSalesAgent,
+    CanonicalStockBalance,
     CanonicalSupplier,
     CanonicalUnitOfMeasure,
     CanonicalWarehouse,
@@ -114,6 +116,13 @@ CANONICAL_MODELS = {
     ENTITY_SALES_ORDER: CanonicalSalesOrder,
     ENTITY_PURCHASE_ORDER: CanonicalPurchaseOrder,
     ENTITY_SHIPPING_ORDER: CanonicalShippingOrder,
+    # sprint-5/10 S5b (AC-10-39) - never actually rehydrated for a push
+    # (stock is pull-only, no `_ENTITY_PATH` entry, so no staged row for it
+    # is ever created), but `ETL_ENTITY_TYPES` membership alone is what
+    # `test_every_etl_entity_type_has_a_canonical_model` checks - registered
+    # here so that drift guard stays generic rather than carving out an
+    # exception for one entity.
+    ENTITY_STOCK_BALANCE: CanonicalStockBalance,
 }
 
 

@@ -46,6 +46,7 @@ from .canonical.masters import (
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_SALES_AGENT,
+    ENTITY_STOCK_BALANCE,
     ENTITY_SUPPLIER,
     ENTITY_UNIT_OF_MEASURE,
     ENTITY_WAREHOUSE,
@@ -56,6 +57,7 @@ from .canonical.masters import (
     CanonicalProduct,
     CanonicalProductCategory,
     CanonicalSalesAgent,
+    CanonicalStockBalance,
     CanonicalSupplier,
     CanonicalUnitOfMeasure,
     CanonicalWarehouse,
@@ -977,6 +979,16 @@ class EntityProfile:
     # for every non-document profile - `MappingEngine` skips aggregate
     # computation entirely rather than guess a field name.
     line_fulfilled_field: Optional[str] = None
+    # sprint-5/10 S5b (AC-10-81, R11) - ONE declarative map from the combine
+    # engine's generic ``{excludedRows, excludedCount, dropped, roundedCount}``
+    # metadata shape onto this entity's own agreed wire names (stock:
+    # ``zeroPairs``/``negativePairs``/``negativePairList``/``fractionalPairs``/
+    # ``excludedNonzeroCount``), read by ``sync._run_pull_snapshot`` through
+    # ``http_source.combine.apply_pull_metadata_map``. ``None`` (every other
+    # entity today) means a pull snapshot's ``metadata_json`` carries none of
+    # those keys - a renamed drop rule 422s at save time instead of silently
+    # changing what the consumer reads.
+    pull_metadata_map: Optional[Dict[str, Any]] = None
 
     def record_fields(self) -> set:
         return set(self.record_model.model_fields) - {"lines", "extras"}
@@ -1073,6 +1085,27 @@ BRAND_PROFILE = EntityProfile(
     identity_path="Code",
 )
 
+# sprint-5/10 S5b (AC-10-39/80/81) - a combine-carrying task runs through
+# ``flat_profile`` exactly like the masters fan-out above: identity and the
+# display path below are placeholders whose real values (the combine step's
+# own ``groupBy`` columns) ``flat_profile`` re-derives at task-save time -
+# every real stock task runs flat regardless of what is registered here.
+STOCK_BALANCE_PULL_METADATA_MAP: Dict[str, Any] = {
+    "dropCounts": {"zero": "zeroPairs", "negative": "negativePairs"},
+    "dropRows": {"negative": "negativePairList"},
+    "roundedCountAs": "fractionalPairs",
+    "excludedNonzeroCountAs": "excludedNonzeroCount",
+}
+
+STOCK_BALANCE_PROFILE = EntityProfile(
+    entity_type=ENTITY_STOCK_BALANCE,
+    record_model=CanonicalStockBalance,
+    identity=company_qualified_identity,
+    display_path="item_code",
+    identity_path="item_code",
+    pull_metadata_map=STOCK_BALANCE_PULL_METADATA_MAP,
+)
+
 # ── plan 22 S5 documents (AC-22-24) - DB-source ONLY, same reasoning as the S4
 # masters fan-out above: no confirmed AutoCount API payload backs a document
 # task, so `identity`/`display_path`/`identity_path` below are API-path-shape
@@ -1130,6 +1163,7 @@ ENTITY_PROFILES: Dict[str, EntityProfile] = {
     PRODUCT_PROFILE.entity_type: PRODUCT_PROFILE,
     SALES_AGENT_PROFILE.entity_type: SALES_AGENT_PROFILE,
     BRAND_PROFILE.entity_type: BRAND_PROFILE,
+    STOCK_BALANCE_PROFILE.entity_type: STOCK_BALANCE_PROFILE,
     SALES_ORDER_PROFILE.entity_type: SALES_ORDER_PROFILE,
     PURCHASE_ORDER_PROFILE.entity_type: PURCHASE_ORDER_PROFILE,
     SHIPPING_ORDER_PROFILE.entity_type: SHIPPING_ORDER_PROFILE,

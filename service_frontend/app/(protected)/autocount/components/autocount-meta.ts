@@ -130,14 +130,15 @@ export function sourceKindLabel(kind: string): string {
 
 /**
  * Every entity the open REST API (sprint-5/08) can extract - the six masters
- * with a confirmed `hapi.sorento.cc.cd` payload (UAC Definitions). An `http`
- * company's "Add entity" picker offers exactly this set; a `db`/`api`
- * company's task Source tab offers it too when toggled to API + a no-auth
- * connection.
+ * with a confirmed `hapi.sorento.cc.cd` payload (UAC Definitions), plus
+ * `stock_balance` (sprint-5/10 S5b, AC-10-40) - a reduced (item, location)
+ * balance, pull-only (see `AC_PULL_ONLY_ENTITY_TYPES`). An `http` company's
+ * "Add entity" picker offers exactly this set; a `db`/`api` company's task
+ * Source tab offers it too when toggled to API + a no-auth connection.
  *
- * PARITY-PINNED (S1): `tests/test_autocount_http_source.py` (S3) will pin
- * this literal against the backend's `HTTP_ENTITY_TYPES` / `HTTP_PRESETS`
- * keys - edit both sides together once that lands.
+ * PARITY-PINNED: `tests/test_autocount_entity_parity.py` pins this literal
+ * against the backend's `HTTP_ENTITY_TYPES` / `HTTP_PRESETS` keys - edit
+ * both sides together.
  */
 export const AC_HTTP_ENTITY_TYPES: string[] = [
   'product',
@@ -146,6 +147,7 @@ export const AC_HTTP_ENTITY_TYPES: string[] = [
   'product_category',
   'brand',
   'unit_of_measure',
+  'stock_balance',
 ];
 
 /**

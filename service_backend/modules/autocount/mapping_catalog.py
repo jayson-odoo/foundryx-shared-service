@@ -41,6 +41,7 @@ from .canonical.masters import (
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_SALES_AGENT,
+    ENTITY_STOCK_BALANCE,
     ENTITY_SUPPLIER,
     ENTITY_UNIT_OF_MEASURE,
     ENTITY_WAREHOUSE,
@@ -49,6 +50,7 @@ from .canonical.masters import (
     CanonicalProduct,
     CanonicalProductCategory,
     CanonicalSalesAgent,
+    CanonicalStockBalance,
     CanonicalSupplier,
     CanonicalUnitOfMeasure,
     CanonicalWarehouse,
@@ -71,6 +73,11 @@ _MINTED_FIELDS = ("source_ref",)
 
 # From Sorento's canonical_masters.py (code, name) + masters.py (is_active).
 _REQUIRED_MASTER_FIELDS = frozenset({"code", "name", "is_active"})
+
+# sprint-5/10 S5b - `stock_balance` is not a `CanonicalMaster` (its own
+# docstring explains why), so it gets its own required set rather than the
+# code/name/is_active one above, which it does not declare at all.
+_REQUIRED_STOCK_FIELDS = frozenset({"item_code", "location_code", "qty"})
 
 # Sorento's canonical_documents.py marks `so_number`/`po_number` and `status`
 # required (plan 22 S5, Appendix A6 item 2/3) - the mapping editor's Sorento
@@ -211,6 +218,9 @@ SORENTO_FIELDS: Dict[str, Tuple[SorentoFieldDef, ...]] = {
     ENTITY_WAREHOUSE: _accepted(CanonicalWarehouse.SINK_FIELDS),
     ENTITY_PRODUCT: _accepted(CanonicalProduct.SINK_FIELDS),
     ENTITY_SALES_AGENT: _accepted(CanonicalSalesAgent.SINK_FIELDS),
+    # sprint-5/10 S5b (AC-10-39) - pull-only, own required set (no
+    # code/name/is_active - see `CanonicalStockBalance`'s own docstring).
+    ENTITY_STOCK_BALANCE: _accepted(CanonicalStockBalance.SINK_FIELDS, _REQUIRED_STOCK_FIELDS),
     # sprint-5/08 (AC-08-31) round-9 fix (user-found defect) - without this
     # entry `accepted_fields("brand")` is empty exactly like the masters
     # fan-out gap above once was: every brand mapping row projects as "Not

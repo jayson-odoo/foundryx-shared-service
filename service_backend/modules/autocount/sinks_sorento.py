@@ -164,6 +164,14 @@ BRAND_REQUIRED_CONTRACT_VERSION = 2.3
 # membership check inside ``sorento_supports_entity``.
 PRODUCT_CODE_WINS_CONTRACT_VERSION = 2.4
 
+# sprint-5/10 S5b (AC-10-15) - the consumer contract stock's PUSH switch
+# needs (`CompanyService.stock_push_gate_error`, `services/etl_service.py`'s
+# `set_delivery_mode`). Stock has NO `_ENTITY_PATH` entry at all (S7's own
+# job to add one), so this is never a `sorento_supports_entity` membership
+# check either - a plain version+entities probe named here so the literal
+# is shared between the gate and whatever reports it to the operator.
+STOCK_BALANCES_CONTRACT_VERSION = 2.5
+
 
 def sorento_supports_entity(
     entity_type: str,
