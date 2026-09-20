@@ -15,6 +15,7 @@ Two security invariants every method honours:
 """
 from __future__ import annotations
 
+import copy
 import logging
 import re
 from dataclasses import dataclass, field
@@ -107,8 +108,9 @@ from .company_service import (
     ConnectionNotFound,
     EntityConfigNotFound,
 )
-from ..presets import seed_document_mapping, seed_http_preset_mapping
+from ..presets import HTTP_PRESETS, seed_document_mapping, seed_http_preset_mapping
 from ..mapping import SCOPE_HEADER, SCOPE_LINE
+from ..http_source.lookups import effective_result_columns, stored_raw_columns, validate_lookups
 from ..http_source.preview import (
     HttpPreviewError,
     HttpPreviewResult,
@@ -791,6 +793,31 @@ class EtlService:
         the router projects the wire shape (auth is derived, not a column)."""
         return self.connections.list_for_provider(tenant_id, PROVIDER_KEY)
 
+    def preview_http_columns(
+        self, tenant_id: str, connection_id: str, path: str, *, transport: Any = None,
+    ) -> List[str]:
+        """``POST /autocount/http/preview-columns`` (AC-10-05) - the lookup
+        editor's own probe: just the first page's column names against ANY
+        endpoint on an open connection, so the editor offers REAL remote
+        columns to pick from rather than free text. Reuses the SAME
+        connection + path rules the main preview already applies - the
+        lookup editor can never reach an endpoint the main path could not.
+        """
+        conn = self.connections.get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
+        if conn is None or auth_mode(conn.config_json or {}) != AUTH_NONE:
+            raise EtlValidationError(
+                {"connectionId": "Choose an open (no-auth) AutoCount API connection."}
+            )
+        base_url = str((conn.config_json or {}).get("baseUrl") or "").strip()
+        path_error = validate_http_path(path)
+        if path_error:
+            raise EtlValidationError({"path": path_error})
+        try:
+            result = run_http_preview(base_url, path, transport=transport)
+        except HttpPreviewError as exc:
+            raise EtlValidationError({exc.field: exc.message}) from exc
+        return result.columns
+
     def preview_http(
         self,
         tenant_id: str,
@@ -798,6 +825,7 @@ class EtlService:
         path: str,
         *,
         distinct_of: Optional[List[str]] = None,
+        lookups: Optional[List[Dict[str, Any]]] = None,
         company_id: Optional[str] = None,
         entity_type: Optional[str] = None,
         transport: Any = None,
@@ -834,9 +862,20 @@ class EtlService:
         path_error = validate_http_path(path)
         if path_error:
             raise EtlValidationError({"path": path_error})
+        # review round 1 blocker 1(b) - every STRUCTURAL lookup rule (path,
+        # alias regex, the 5-cap, empty on/fields, a duplicate alias, a
+        # forward reference) runs BEFORE a single outbound request, even on
+        # a never-previewed task (`source_columns=None`) - the reviewer
+        # proved live that a `/../db2/itembypage` lookup path was fetched
+        # with no check at all.
+        clean_lookups = [dict(item) for item in (lookups or []) if isinstance(item, dict)]
+        if clean_lookups:
+            lookup_errors = validate_lookups(clean_lookups, None)
+            if lookup_errors:
+                raise EtlValidationError(lookup_errors)
         try:
             result = run_http_preview(
-                base_url, path, distinct_of=distinct_of, transport=transport
+                base_url, path, distinct_of=distinct_of, lookups=clean_lookups, transport=transport
             )
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc
@@ -846,7 +885,13 @@ class EtlService:
             self.companies.get(tenant_id, company_id)  # tenant-scope guard
             config = self.configs.get(tenant_id, company_id, entity_type)
             if config is not None:
-                config.result_columns = list(result.columns)
+                # review round 1b - STORE the raw main-endpoint columns
+                # ONLY (never the alias-merged wire shape); every consumer
+                # that needs the alias derives it via
+                # ``lookups.effective_result_columns`` at read time, so the
+                # save-time collision check (``validate_lookups``) always
+                # compares against a genuinely raw set with no carve-out.
+                config.result_columns = list(result.raw_columns)
                 config.last_preview_at = datetime.now(timezone.utc)
                 self.db.commit()
                 task_view = self._task_view(
@@ -898,9 +943,17 @@ class EtlService:
             activated_at=config.activated_at if config is not None else None,
             source_config=merged,
             source_impl=source_impl,
-            result_columns=[
-                str(c) for c in ((config.result_columns if config is not None else None) or [])
-            ],
+            # review round 1b - the WIRE resultColumns is the task read
+            # shape: stored raw columns + the configured lookups' own
+            # aliases (AC-10-05's intent - the Mapping tab's source picker,
+            # the key/watermark/compared pickers and the default
+            # comparedFields all read THIS, never the bare stored value).
+            # ``merged.get('lookups')`` is only ever populated for an HTTP
+            # task (the SQL shape's defaults carry no such key).
+            result_columns=effective_result_columns(
+                config.result_columns if config is not None else None,
+                merged.get("lookups"),
+            ),
             line_result_columns=[
                 str(c)
                 for c in ((config.line_result_columns if config is not None else None) or [])
@@ -1045,15 +1098,25 @@ class EtlService:
         raw: Dict[str, Any],
         *,
         existing_result_columns: Optional[List[str]],
+        existing_lookups: Optional[List[Dict[str, Any]]] = None,
+        existing_key_fields: Optional[List[str]] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, str]]:
         """Normalise + validate an ``autocount_http`` task's ``source_config``
         (AC-08-13). ONE envelope with the SQL shape - a stray SQL key on the
         raw payload is simply not copied into ``clean`` (dropped, never a
         422). ``existing_result_columns`` is the task's CURRENT stored
         ``result_columns`` (from the last ``/autocount/http/preview`` call
-        that named this task) - ``None`` when it has never been previewed,
-        in which case key/watermark picks are accepted un-checked (nothing
-        to check against yet) rather than refused.
+        that named this task, RAW main-endpoint columns only as of review
+        round 1b) - ``None`` when it has never been previewed, in which
+        case key/watermark picks are accepted un-checked (nothing to check
+        against yet) rather than refused. ``existing_lookups`` is the
+        task's CURRENTLY STORED ``lookups`` (review round 1 should-fix 4) -
+        what a client that omits ``lookups`` on the wire keeps.
+        ``existing_key_fields`` is the task's CURRENTLY STORED ``keyFields``
+        (review round 2 fix 1b) - what the PREVIOUS default ``comparedFields``
+        would have been computed from, so a save can tell "the incoming
+        comparedFields still equals the old default" apart from "the
+        operator customised it".
         """
         errors: Dict[str, str] = {}
 
@@ -1080,6 +1143,48 @@ class EtlService:
             if path_error:
                 errors["path"] = path_error
 
+        # ── lookups (sprint-5/10, AC-10-01, R9) ───────────────────────────────
+        # review round 1 should-fix 4 - the wire key is optional: omitted
+        # (`None`) KEEPS whatever is already stored (a client that does not
+        # round-trip the field must never silently wipe a saved lookup); an
+        # EXPLICIT `[]` clears it.
+        raw_lookups = raw.get("lookups")
+        if raw_lookups is None:
+            lookups: List[Dict[str, Any]] = [dict(item) for item in (existing_lookups or [])]
+        elif isinstance(raw_lookups, list):
+            lookups = [dict(item) for item in raw_lookups if isinstance(item, dict)]
+        else:
+            lookups = []
+        # review round 1 blocker 1(a) - runs UNCONDITIONALLY: path, alias
+        # regex, the 5-cap, empty on/fields, a duplicate alias and a forward
+        # reference never need `existing_result_columns` at all; only the
+        # "local is known" and "collides with a source column" checks stay
+        # skipped pre-preview (`validate_lookups`'s own docstring).
+        # review round 1b / round 2 fix 2 - checked against the TOLERANT
+        # raw set (`stored_raw_columns`), never the bare stored value, so a
+        # row stamped by the OLD (pre-round-1b) preview - which merged an
+        # alias straight into `result_columns` - never 422s against its own
+        # alias. Built from the task's EXISTING STORED lookups, never the
+        # INCOMING ones: using the incoming list let a BRAND-NEW lookup's
+        # own alias strip itself out of the tolerance and reopen AC-10-01's
+        # save-time collision check - a new lookup aliased the same as a
+        # genuine stored raw column (e.g. `Description`) saved clean,
+        # even though it would still fail loudly at preview/run time.
+        raw_columns_for_validation = (
+            stored_raw_columns(existing_result_columns, existing_lookups)
+            if existing_result_columns is not None
+            else None
+        )
+        for key, message in validate_lookups(lookups, raw_columns_for_validation).items():
+            errors[key] = message
+
+        # review round 1b - the alias set THIS save's lookups would
+        # produce, for the key/watermark rule below: an alias may never be
+        # a key or watermark field, because a lookup MISS leaves it ABSENT
+        # (AC-10-02) - a keyed row with a miss could never be identified,
+        # and a watermarked row with a miss could never advance the mark.
+        alias_names = set(effective_result_columns([], lookups))
+
         key_fields = _clean_list(raw.get("keyFields"))
         distinct_of = _clean_list(raw.get("distinctOf")) or None
         if not key_fields:
@@ -1088,26 +1193,71 @@ class EtlService:
             errors["keyFields"] = (
                 "A distinct-values field can only key on 'value'."
             )
-        elif existing_result_columns is not None:
-            missing = [c for c in key_fields if c not in existing_result_columns]
-            if missing:
+        else:
+            aliased_keys = [c for c in key_fields if c in alias_names]
+            if aliased_keys:
                 errors["keyFields"] = (
-                    f"Not in the last preview: {', '.join(missing)}. Test the "
-                    f"endpoint first."
+                    f"'{aliased_keys[0]}' comes from a lookup, which can be absent "
+                    f"on a miss - choose a source column."
                 )
+            elif existing_result_columns is not None:
+                missing = [c for c in key_fields if c not in existing_result_columns]
+                if missing:
+                    errors["keyFields"] = (
+                        f"Not in the last preview: {', '.join(missing)}. Test the "
+                        f"endpoint first."
+                    )
 
         watermark_field = str(raw.get("watermarkField") or "").strip() or None
-        if (
+        if watermark_field and watermark_field in alias_names:
+            errors["watermarkField"] = (
+                f"'{watermark_field}' comes from a lookup, which can be absent on "
+                f"a miss - choose a source column."
+            )
+        elif (
             watermark_field
             and existing_result_columns is not None
             and watermark_field not in existing_result_columns
         ):
             errors["watermarkField"] = f"'{watermark_field}' is not in the last preview."
 
+        # review round 2 fix 1 - AC-10-06 on the REAL save path: the
+        # DEFAULT comparedFields (operator left it blank) is computed
+        # against the union of raw columns + configured lookup aliases,
+        # never the bare raw `existing_result_columns` - otherwise a
+        # previewed-then-saved task PERSISTS an explicit list missing the
+        # alias, and that non-empty list narrows the run-time effective set
+        # back down (an enrich-only value change would never register as
+        # `updated`).
+        new_effective_columns = effective_result_columns(existing_result_columns, lookups)
         configured_compared = _clean_list(raw.get("comparedFields"))
+        # review round 2 fix 1b - a client that round-trips the PREVIOUSLY
+        # PERSISTED default list unchanged must not have it treated as an
+        # operator customisation forever after: if the incoming
+        # comparedFields equals what the PREVIOUS default would have been
+        # (previous effective columns minus the PREVIOUS key fields,
+        # order-insensitive), it is still "default" - recompute it fresh
+        # against the NEW effective columns/keys. A genuinely customised
+        # list (different from the previous default) wins untouched;
+        # `compared_columns_for`'s own configured-intersect-available
+        # already prunes a name no longer in the effective set, the SAME
+        # silent-drop behaviour an unknown configured column always had.
+        if existing_result_columns is not None and configured_compared:
+            previous_effective_columns = effective_result_columns(
+                existing_result_columns, existing_lookups
+            )
+            previous_default = set(
+                compared_columns_for(
+                    configured=[],
+                    result_columns=previous_effective_columns,
+                    key_columns=existing_key_fields or [],
+                )
+            )
+            if set(configured_compared) == previous_default:
+                configured_compared = []
         compared_fields = compared_columns_for(
             configured=configured_compared,
-            result_columns=existing_result_columns or configured_compared,
+            result_columns=new_effective_columns or configured_compared,
             key_columns=key_fields,
         )
 
@@ -1153,6 +1303,7 @@ class EtlService:
             "reconcileMode": mode,
             "reconcileHours": hours,
             "reconcileAt": at,
+            "lookups": lookups,
         }
         return clean, errors
 
@@ -1186,8 +1337,29 @@ class EtlService:
             if config is not None and config.result_columns
             else None
         )
+        existing_lookups = (
+            [
+                dict(item)
+                for item in (config.source_config.get("lookups") or [])
+                if isinstance(item, dict)
+            ]
+            if config is not None and isinstance(config.source_config, dict)
+            else []
+        )
+        # review round 2 fix 1b - the PREVIOUSLY saved key fields, so
+        # `_validate_http_config` can recompute what the previous DEFAULT
+        # comparedFields would have been.
+        existing_key_fields = (
+            [str(c) for c in (config.source_config.get("keyFields") or [])]
+            if config is not None and isinstance(config.source_config, dict)
+            else []
+        )
         clean, errors = self._validate_http_config(
-            tenant_id, raw, existing_result_columns=existing_result_columns
+            tenant_id,
+            raw,
+            existing_result_columns=existing_result_columns,
+            existing_lookups=existing_lookups,
+            existing_key_fields=existing_key_fields,
         )
         if errors:
             raise EtlValidationError(errors)
@@ -1252,6 +1424,23 @@ class EtlService:
             seed_http_preset_mapping(
                 self.db, tenant_id, company_id, entity_type, columns=None
             )
+            # sprint-5/10 (AC-10-04) - the SAME seed-if-absent gate seeds
+            # ``source_config.lookups`` too, so the owner's ItemUOM lookup
+            # needs zero configuration on a fresh product task. Never
+            # re-applied once the operator has saved any lookups of their
+            # own (an empty list IS "none saved yet" here, mirroring the
+            # mapping-row seed's own "still completely empty" gate).
+            preset = HTTP_PRESETS.get(entity_type)
+            if preset is not None and preset.lookups and not config.source_config.get("lookups"):
+                # review round 1 nit - `copy.deepcopy`, not a shallow
+                # `dict(lookup)`: the nested `on`/`fields` lists were still
+                # the SAME list/dict objects as the module-level preset, so
+                # an in-place mutation anywhere downstream would corrupt
+                # every OTHER tenant's freshly-seeded task sharing them.
+                config.source_config = {
+                    **config.source_config,
+                    "lookups": copy.deepcopy(list(preset.lookups)),
+                }
 
         self.db.commit()
         self.db.refresh(config)

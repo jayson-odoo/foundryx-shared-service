@@ -130,7 +130,16 @@ def _stamp_previewed(
     config = EntityConfigRepository(db).get(DEFAULT_TENANT_ID, company_id, entity_type)
     config.last_preview_at = NOW
     if stamp_result_columns:
-        config.result_columns = ["ItemCode", "Description", "LastModified", "IsActive"]
+        # sprint-5/10 review round 1 - widened to the REAL `/itembypage`
+        # column set (verified against the live wrapper): a product task's
+        # seeded ItemUOM lookup joins on `BaseUOM`, so a stub missing it
+        # made a plain re-save 422 the moment an omitted `lookups` key
+        # started KEEPING (not silently wiping) the seeded lookup
+        # (should-fix 4) and it was re-validated against this stamp.
+        config.result_columns = [
+            "ItemCode", "Description", "Desc2", "ItemGroup", "ItemBrand",
+            "BaseUOM", "IsActive", "Discontinued", "LastModified",
+        ]
     db.commit()
 
 
@@ -462,7 +471,12 @@ def test_extract_and_map_dispatches_http_api_source_never_sql_engine(db, monkeyp
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=[{"ItemCode": "A1", "Description": "Item A1"}])
+        # sprint-5/10 - the live wrapper carries a `Desc2` key on every item
+        # row (null when empty, keys uniform across rows); this stub now
+        # matches that shape rather than omitting the key entirely.
+        return httpx.Response(
+            200, json=[{"ItemCode": "A1", "Description": "Item A1", "Desc2": None}]
+        )
 
     stub_transport = httpx.Client(transport=httpx.MockTransport(handler))
     monkeypatch.setattr(

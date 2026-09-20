@@ -30,8 +30,11 @@ Rules worth restating here (mirrors the SQL source's own docstring):
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+import httpx
 
 from ..client import parse_last_modified
 from ..mapping import IdentityError, flat_source_ref
@@ -44,6 +47,8 @@ from ..sql_source.source import CURSOR_COLUMN, CURSOR_MARK, MAX_EXTRACT_ROWS
 from .client import HttpApiClient, HttpTransportError
 from .envelope import ENVELOPE_LIST, parse_page
 from .errors import HttpSourceError
+from .lookups import AliasCollisionError, build_index, effective_result_columns, merge_onto_rows
+from .preview import validate_http_path
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -52,11 +57,35 @@ logger = logging.getLogger("foundryx.autocount")
 # trusted").
 DEFAULT_PAGE_SIZE = 1000
 
+# AC-10-75 (the db2 524-timeout ops finding, 2026-09-19) - a page that has
+# now timed out TWICE at the same page size halves it (floor MIN_PAGE_SIZE)
+# and restarts the walk from page 1, at most MAX_PAGE_HALVINGS times per
+# walk before the existing failure rule applies unchanged. A connect error
+# or another 5xx (never a timeout, never a 4xx) gets its own, separate
+# ladder - up to ``len(TRANSPORT_RETRY_BACKOFFS_SECONDS)`` retries with a
+# longer backoff and NO halving.
+MIN_PAGE_SIZE = 50
+MAX_PAGE_HALVINGS = 2
+MAX_TIMEOUT_ATTEMPTS_PER_PAGE = 2
+TIMEOUT_RETRY_BACKOFF_SECONDS = 1.0
+TRANSPORT_RETRY_BACKOFFS_SECONDS: Tuple[float, ...] = (1.0, 4.0)
+# Cloudflare answers a 524 (a gateway-level timeout) as an ordinary HTTP
+# response, not a transport exception - AC-10-75 is explicit this must be
+# treated as a TIMEOUT, never as "just another 5xx to give up on".
+CLOUDFLARE_TIMEOUT_STATUS = 524
+
 # The 20% / 50-row safety net a reconcile's delete diff must clear before it
 # is trusted (mirrors ``sql_source.source``'s own constants exactly - shared
 # semantics, not a second policy to drift from the first).
 DELETE_GUARD_RATIO = 0.2
 DELETE_GUARD_MIN_ABSOLUTE = 50
+
+
+class _PageTimedOutTwice(Exception):
+    """Internal signal only (AC-10-75): ONE page has now timed out on BOTH
+    its attempts at the CURRENT page size. Caught by ``_walk_endpoint``,
+    which owns the halving budget - ``_fetch_page``/``_walk_path`` know
+    nothing about it."""
 
 
 class HttpApiTaskNotConfigured(HttpSourceError):
@@ -101,14 +130,32 @@ class HttpApiSource:
         self.distinct_of = [
             str(c) for c in (config.get("distinctOf") or []) if str(c).strip()
         ] or None
+        # sprint-5/10 (AC-10-01/02, R9) - operator-authored cross-endpoint
+        # joins, already validated at save time; trusted as-is here (the SQL
+        # source's own runtime trusts its saved config the same way).
+        self.lookups: List[Dict[str, Any]] = [
+            dict(item) for item in (config.get("lookups") or []) if isinstance(item, dict)
+        ]
 
         self.result_columns = [
             str(c) for c in (getattr(ctx.entity_config, "result_columns", None) or [])
         ]
+        # review round 1 blocker 3 / round 1b - AC-10-06: the compared-column
+        # baseline is derived through the ONE shared helper
+        # (``effective_result_columns``), which unions every configured
+        # lookup's own field alias onto the STORED (raw-only as of round
+        # 1b) result columns. The stamped `result_columns` reflects
+        # whatever the LAST preview happened to include (which may predate
+        # the lookup, or predate a preview that ever merged one in at all);
+        # without this, an enrich-only value change on a task whose last
+        # preview ran without the alias would never register as `updated` -
+        # AC-10-06's whole point. An operator's EXPLICIT `comparedFields`
+        # still wins (`compared_columns_for` only ever narrows to it).
+        effective_columns = effective_result_columns(self.result_columns, self.lookups)
         configured_compared = [str(c) for c in (config.get("comparedFields") or [])]
         self.compared_columns = compared_columns_for(
             configured=configured_compared,
-            result_columns=self.result_columns or configured_compared,
+            result_columns=effective_columns or configured_compared,
             key_columns=self.key_fields,
         )
 
@@ -148,9 +195,66 @@ class HttpApiSource:
 
     # ── page walk ──────────────────────────────────────────────────────────
 
-    def _walk(self) -> Tuple[List[Dict[str, Any]], Optional[int]]:
-        """GET every page, returning ``(rows, reported_total)``. Raises
-        ``HttpSourceError`` before touching any downstream state."""
+    def _fetch_page(self, path: str, page: int, page_size: int) -> httpx.Response:
+        """One page GET with the bounded retry ladder (AC-10-75). A TIMEOUT
+        (incl. a Cloudflare 524, answered as an ordinary response - never a
+        transport exception) gets exactly one retry after a 1s backoff; a
+        SECOND timeout of the SAME page+size raises ``_PageTimedOutTwice``
+        so ``_walk_endpoint`` (which owns the halving budget) can decide. A
+        connect error or another 5xx gets up to
+        ``len(TRANSPORT_RETRY_BACKOFFS_SECONDS)`` retries (1s then 4s) and
+        never halves. A 4xx, a non-JSON body or a shape change is never
+        retried here - the caller's job, unchanged from before this AC.
+
+        review round 1 nit - the timeout counter and the transport-retry
+        counter are SEPARATE: a 5xx followed by ONE timeout must not halve
+        (only a SECOND consecutive timeout does), so a page that failed once
+        for an unrelated reason is never one timeout away from a halve."""
+        timeout_attempts = 0
+        transport_attempts = 0
+        while True:
+            try:
+                response = self._client.get(path, {"page": page, "pageSize": page_size})
+            except HttpTransportError as exc:
+                if exc.is_timeout:
+                    timeout_attempts += 1
+                    if timeout_attempts >= MAX_TIMEOUT_ATTEMPTS_PER_PAGE:
+                        raise _PageTimedOutTwice() from exc
+                    time.sleep(TIMEOUT_RETRY_BACKOFF_SECONDS)
+                    continue
+                transport_attempts += 1
+                if transport_attempts > len(TRANSPORT_RETRY_BACKOFFS_SECONDS):
+                    raise HttpSourceError(exc.message, code="transport", page=page) from exc
+                time.sleep(TRANSPORT_RETRY_BACKOFFS_SECONDS[transport_attempts - 1])
+                continue
+
+            if response.status_code == CLOUDFLARE_TIMEOUT_STATUS:
+                timeout_attempts += 1
+                if timeout_attempts >= MAX_TIMEOUT_ATTEMPTS_PER_PAGE:
+                    raise _PageTimedOutTwice()
+                time.sleep(TIMEOUT_RETRY_BACKOFF_SECONDS)
+                continue
+            if response.status_code >= 500:
+                transport_attempts += 1
+                if transport_attempts > len(TRANSPORT_RETRY_BACKOFFS_SECONDS):
+                    raise HttpSourceError(
+                        f"AutoCount answered HTTP {response.status_code} on page {page}.",
+                        code="http_status",
+                        page=page,
+                        status=response.status_code,
+                    )
+                time.sleep(TRANSPORT_RETRY_BACKOFFS_SECONDS[transport_attempts - 1])
+                continue
+            return response
+
+    def _walk_path(
+        self, path: str, page_size: int
+    ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+        """GET every page of ONE endpoint at a FIXED page size, returning
+        ``(rows, reported_total)``. Raises ``HttpSourceError`` before
+        touching any downstream state, or ``_PageTimedOutTwice`` when a page
+        has now timed out on both its attempts (the caller decides whether
+        to halve and restart)."""
         scanned: List[Dict[str, Any]] = []
         established_kind: Optional[str] = None
         reported_total: Optional[int] = None
@@ -161,12 +265,7 @@ class HttpApiSource:
         previous_reported_page: Optional[int] = None
         page = 1
         while True:
-            try:
-                response = self._client.get(
-                    self.path, {"page": page, "pageSize": DEFAULT_PAGE_SIZE}
-                )
-            except HttpTransportError as exc:
-                raise HttpSourceError(exc.message, code="transport", page=page) from exc
+            response = self._fetch_page(path, page, page_size)
 
             if not (200 <= response.status_code < 300):
                 raise HttpSourceError(
@@ -251,6 +350,99 @@ class HttpApiSource:
 
         return scanned, reported_total
 
+    def _walk_endpoint(self, path: str) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+        """The full page walk for ONE endpoint - the main path OR a lookup
+        (AC-10-02: "the SAME page walker"), with AC-10-75's bounded per-page
+        retry and page-size halving. Each endpoint walked gets its OWN
+        halving budget - the main path and every lookup share the exact
+        mechanics, never a counter one could exhaust for the other."""
+        page_size = DEFAULT_PAGE_SIZE
+        halvings = 0
+        while True:
+            try:
+                return self._walk_path(path, page_size)
+            except _PageTimedOutTwice as exc:
+                if halvings >= MAX_PAGE_HALVINGS:
+                    raise HttpSourceError(
+                        f"'{path}' timed out repeatedly even after {halvings} "
+                        f"halving(s) of the page size.",
+                        code="transport",
+                    ) from exc
+                page_size = max(page_size // 2, MIN_PAGE_SIZE)
+                halvings += 1
+                # AC-10-75 - "the restart and the effective page size are
+                # recorded in the run's CallRecord activity" (every retry
+                # attempt is already its own CallRecord via `_record_call`).
+                self._client.record_note(
+                    f"'{path}' timed out twice at the previous page size - "
+                    f"halving to {page_size} and restarting from page 1.",
+                    ok=False,
+                )
+
+    def _walk(self) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+        return self._walk_endpoint(self.path)
+
+    # ── lookups (AC-10-01/02/03, R9) ──────────────────────────────────────
+
+    def _apply_lookups(self, rows: List[Dict[str, Any]]) -> None:
+        """Merge every configured lookup onto ``rows`` IN PLACE, in list
+        order (multi-hop - a later lookup may join on an earlier one's own
+        alias, since it is already written onto the row by then). An
+        endpoint failure fails the WHOLE run through the same
+        ``HttpSourceError`` path a source page failure does (AC-10-03) - the
+        message is re-wrapped so it NAMES the lookup and its endpoint,
+        because the underlying walk's own message never mentions either."""
+        for i, lookup in enumerate(self.lookups):
+            path = str(lookup.get("path") or "")
+            alias_name = str(lookup.get("as") or "")
+            on = lookup.get("on") or []
+            fields = lookup.get("fields") or []
+            # review round 1 blocker 1(c) - defence in depth: refuse a
+            # lookup path that fails the SAME rule the editor/save gate
+            # enforces, so a row saved BEFORE this fix (or edited directly
+            # in the DB) is never walked, not even once.
+            path_error = validate_http_path(path)
+            if path_error:
+                raise HttpSourceError(
+                    f"Lookup {i} ('{alias_name}')'s path '{path}' is invalid: "
+                    f"{path_error} Nothing was staged or pushed.",
+                    code="lookup_path",
+                )
+            try:
+                lookup_rows, _ = self._walk_endpoint(path)
+            except HttpSourceError as exc:
+                raise HttpSourceError(
+                    f"The '{alias_name}' lookup endpoint '{path}' failed: {exc.message}",
+                    code=exc.code,
+                    page=exc.page,
+                    status=exc.status,
+                ) from exc
+            index = build_index(lookup_rows, on)
+            try:
+                misses = merge_onto_rows(rows, index, on, fields)
+            except AliasCollisionError as exc:
+                # review round 1 blocker 2(ii) - a poisoned alias (one that
+                # would overwrite a REAL column or an earlier lookup's own
+                # alias) fails the whole run, fail-before-state, rather than
+                # silently deliver the overwritten value.
+                raise HttpSourceError(
+                    f"Lookup {i} ('{alias_name}')'s field alias '{exc.alias}' "
+                    f"would overwrite an existing column of the same name - "
+                    f"nothing was staged or pushed.",
+                    code="alias_collision",
+                ) from exc
+            if misses:
+                # AC-10-03 - a miss is counted, never fatal: ONE warning
+                # activity note (never a per-row note) naming the entity,
+                # the enrich alias and the miss count.
+                field_names = ", ".join(str(f.get("as")) for f in fields) or "its fields"
+                self._client.record_note(
+                    f"{misses} row(s) had no match for the '{alias_name}' lookup "
+                    f"('{path}') for '{self.entity_type}' - {field_names} left "
+                    f"unset for them.",
+                    ok=False,
+                )
+
     # ── de-dup / distinctOf ───────────────────────────────────────────────
 
     def _dedupe(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -312,6 +504,12 @@ class HttpApiSource:
         full_extract = self.mode == RUN_MODE_RECONCILE or not self.watermark_field
 
         scanned_rows, reported_total = self._walk()
+        # AC-10-02 - lookups merge onto every source row BEFORE de-dup, the
+        # row hash and mapping; ``distinctOf`` short-circuits below into an
+        # entirely different `{"value": v}` row shape, so a lookup (which
+        # names real columns) never applies to it.
+        if not self.distinct_of:
+            self._apply_lookups(scanned_rows)
         rows_scanned = len(scanned_rows)
 
         if self.distinct_of:

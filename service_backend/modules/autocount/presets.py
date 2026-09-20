@@ -22,7 +22,7 @@ never two copies to drift apart.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -52,6 +52,22 @@ class PresetField:
     transform: str
     formula: Optional[str] = None
     required: bool = False
+    # sprint-5/10 (AC-10-74, R10) - present but seeded DISABLED, never
+    # omitted: the operator can SEE the row exists and turn it on
+    # deliberately, which an absent row cannot express. ANDed into
+    # ``_seed_rows``'s own column-not-found ``is_enabled`` computation, so a
+    # disabled preset row stays disabled even on a genuinely-first save
+    # (``available_columns=None``, "nothing proven wrong yet" would
+    # otherwise enable everything).
+    #
+    # review round 1 should-fix 7 - NOT ``repr=False``: hiding a real field
+    # from ``repr()`` blinds `tests/test_autocount_so_ref.py`'s
+    # ``sha256(repr(PO_PRESET))``/``SPO_PRESET`` drift guard to a genuine
+    # future edit of any SO/PO/SPO preset row (the very thing that fingerprint
+    # exists to catch). The fingerprint constants are RE-BASELINED instead
+    # (their `enabled=True` is now visible on every row, zero row content
+    # change) - see that file's own commit note.
+    enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -512,7 +528,10 @@ def _seed_rows(
                 # (AC-02-16) - `available_columns=None` (query never
                 # previewed) seeds every row enabled, matching "nothing
                 # proven wrong yet".
-                is_enabled=(available_columns is None or spec.source_path in known),
+                is_enabled=(
+                    spec.enabled
+                    and (available_columns is None or spec.source_path in known)
+                ),
                 sort_order=order,
             )
         )
@@ -639,6 +658,12 @@ class HttpPreset:
     watermark_field: Optional[str]
     distinct_of: Optional[Tuple[str, ...]]
     rows: Tuple[PresetField, ...]
+    # sprint-5/10 (AC-10-04, R9) - ANY preset MAY carry pre-filled lookups;
+    # defaults empty so every OTHER preset in this file is unaffected. Each
+    # entry is the SAME operator-editable shape ``http_source.lookups.
+    # validate_lookups`` checks (``{path, as, on, fields}``) - a preset row,
+    # never a special code path.
+    lookups: Tuple[Dict[str, Any], ...] = ()
 
 
 PRODUCT_HTTP_PRESET = HttpPreset(
@@ -647,15 +672,55 @@ PRODUCT_HTTP_PRESET = HttpPreset(
     key_fields=("ItemCode",),
     watermark_field="LastModified",
     distinct_of=None,
+    lookups=(
+        {
+            "path": "/itemuombypage",
+            "as": "uom",
+            "on": [
+                {"local": "ItemCode", "remote": "ItemCode"},
+                {"local": "BaseUOM", "remote": "UOM", "match": "casefold_trim"},
+            ],
+            "fields": [{"remote": "Price", "as": "BaseUOMPrice"}],
+        },
+    ),
     rows=(
         PresetField("ItemCode", "code", "string", required=True),
         PresetField("Description", "name", "string"),
-        PresetField("Desc2", "description", "string"),
+        # AC-10-73 (R10) - REPLACES the old `Desc2 -> description` row: the
+        # manual Excel path writes `Description + " " + Desc2` (RAW join,
+        # `.strip()` on the ENDS only - inner whitespace, e.g. a double
+        # space, is NEVER collapsed) when `Desc2` is non-empty, else plain
+        # `Description`. Sorento derives `is_discontinued`/L-W-H from this
+        # TEXT, so parity is won here, not by a second code path.
+        PresetField(
+            "Description",
+            "description",
+            "string",
+            formula=(
+                'trim(if(default(Desc2, "") != "", concat(Description, " ", '
+                'Desc2), Description))'
+            ),
+        ),
         PresetField("ItemGroup", "category_code", "string"),
         PresetField("ItemBrand", "brand_code", "string"),
-        PresetField("BaseUOM", "uom_code", "string"),
+        # AC-10-74 (R10) - withheld during the check period: sending
+        # `uom_code` would make a pull diverge from a manual upload on every
+        # product (the manual template carries no UOM column). Seeded
+        # PRESENT but DISABLED so the operator can see and re-enable it
+        # deliberately - one item on the push-flip checklist.
+        PresetField("BaseUOM", "uom_code", "string", enabled=False),
         PresetField("IsActive", "is_active", "t_f_bool"),
         PresetField("Discontinued", "is_discontinued", "t_f_bool"),
+        # AC-10-59 (R5) - the pre-filled ItemUOM lookup's own alias, clamped
+        # to 0 on a negative source price (a vendor sentinel, `-1.0`, not a
+        # genuine price) as a VISIBLE, editable formula - never a coercion
+        # hidden in `CanonicalProduct`. `<= 0` (not `< 0`) deliberately:
+        # `-0.0` passes the model's `ge=0` bound and would otherwise be
+        # delivered as the string `"-0.0"`.
+        PresetField(
+            "BaseUOMPrice", "list_price", "string",
+            formula="if(number(value) <= 0, 0, number(value))",
+        ),
     ),
 )
 
