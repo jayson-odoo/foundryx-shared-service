@@ -53,11 +53,15 @@ from ..canonical.masters import (
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_SALES_AGENT,
+    ENTITY_STOCK_BALANCE,
     ENTITY_SUPPLIER,
     ENTITY_UNIT_OF_MEASURE,
     ENTITY_WAREHOUSE,
 )
 from ..models import (
+    DELIVERY_MODE_PULL,
+    DELIVERY_MODE_PUSH,
+    DELIVERY_MODES,
     ETL_STATUS_ACTIVE,
     ETL_STATUS_DRAFT,
     ETL_STATUS_PAUSED,
@@ -109,7 +113,15 @@ from .company_service import (
     EntityConfigNotFound,
 )
 from ..presets import HTTP_PRESETS, seed_document_mapping, seed_http_preset_mapping
-from ..mapping import SCOPE_HEADER, SCOPE_LINE
+from ..mapping import SCOPE_HEADER, SCOPE_LINE, TransformError
+from ..http_source.combine import (
+    CombineDropError,
+    CombineMeasureError,
+    apply_combine,
+    combine_output_columns,
+    validate_combine,
+)
+from ..http_source.client import connection_sizing
 from ..http_source.lookups import effective_result_columns, stored_raw_columns, validate_lookups
 from ..http_source.preview import (
     HttpPreviewError,
@@ -146,7 +158,19 @@ ETL_ENTITY_TYPES = (
     # sprint-5/08 (AC-08-31) - a DB task may feed `brand` too (the open REST
     # API is not the only source), so it joins the DB-extractable catalogue.
     ENTITY_BRAND,
+    # sprint-5/10 S5b (AC-10-39) - HTTP-only (no `sql_db` variant exists or
+    # is planned, D4), but still needs an entry here: `_require_task_entity`
+    # (the generic "may a task be configured for this entity at all" gate)
+    # is source-impl-agnostic, and `_update_http_task` runs through it too.
+    ENTITY_STOCK_BALANCE,
 )
+
+# sprint-5/10 (AC-10-11/15) - entities a task may be switched to ``pull``
+# for. ``stock_balance`` joins this set in S5b (a pull-only entity, gated by
+# its own contract - it has no consumer ingest path at all yet). A task
+# outside this set 422s naming the entity rather than silently accepting a
+# mode it can never be served under.
+PULL_CAPABLE_ENTITY_TYPES = (ENTITY_PRODUCT, ENTITY_STOCK_BALANCE)
 
 # ── schedule floors (AC-22-12, Q17) ──────────────────────────────────────────
 MIN_INCREMENTAL_MINUTES = 1
@@ -280,6 +304,26 @@ class EtlTaskView:
     # Review & Activate banner ("Consumer contract 2.2 - brands land when 2.3
     # is deployed") without the operator having to run Preview first.
     brand_contract_gate: Optional[Dict[str, Any]] = None
+    # sprint-5/10 (AC-10-10) - ``push`` (today's behaviour) or ``pull``.
+    delivery_mode: str = DELIVERY_MODE_PUSH
+    # sprint-5/10 (AC-10-69) - the GENERALISED replacement for
+    # ``brand_contract_gate`` above (which stays, untouched, for `brand`):
+    # ``{entity, version, requiredVersion}``, non-null whenever THIS
+    # entity's own contract gate has something to say. `brand_contract_gate`
+    # is folded in by VALUE (never removed from the wire - the frontend type
+    # still reads it; its rename is a later slice).
+    contract_gate: Optional[Dict[str, Any]] = None
+    # sprint-5/10 review round 4 (SF-4) - the COMBINED, POST-GROUP schema a
+    # combine-carrying task's own output rows carry (``groupBy + carry +
+    # measures[].alias``, ``http_source.combine.combine_output_columns``);
+    # ``[]`` when no combine step is configured. ADDITIVE alongside
+    # ``result_columns`` above, never a replacement for it: the Source tab's
+    # raw/lookup pickers still need the PRE-combine set, but the Mapping
+    # tab's source picker for a combine-carrying task needs THIS one - a
+    # combined row never carries its pre-combine raw/lookup columns at all
+    # (AC-10-80). Wiring the Mapping tab's picker onto this field is a
+    # separate FE slice; this field only makes the schema available.
+    combine_output_columns: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -349,6 +393,42 @@ def _clean_list(value: Any) -> List[str]:
         if text and text not in out:
             out.append(text)
     return out
+
+
+def _normalize_combine_for_demote(combine: Any) -> Optional[Dict[str, Any]]:
+    """NIT (iv, review round 4) - the S3 demote comparison below is a
+    genuine identity/hash check (AC-10-80), never a literal byte-for-byte
+    diff: an OMITTED optional list key (``"round"`` not sent at all) and an
+    EXPLICIT empty one (``"round": []``) mean exactly the same thing ("no
+    rounding configured") and must never register as a change on their
+    own. Drops every key whose value is ``None`` or an empty list before
+    comparing, so only a GENUINE combine edit ever demotes."""
+    if not isinstance(combine, dict):
+        return None
+    return {key: value for key, value in combine.items() if value is not None and value != []}
+
+
+def _stock_push_gate_message(entity_type: str, gate: Dict[str, Any], clause: str) -> str:
+    """sprint-5/10 S5b review round 5 (N4) - the ONE place
+    ``CompanyService.stock_push_gate_error``'s refusal becomes operator
+    copy, shared by `set_delivery_mode` and `activate_task` so the two
+    surfaces never drift (``clause`` is what follows "before it can " -
+    "push" there, "be activated in push mode" here). ``gate["reason"] ==
+    "config_error"`` (the connection's config/credentials could not even be
+    CHECKED - a decrypt fault, a missing consumer connection) gets a
+    DISTINCT message from an old/unreachable contract - conflating the two
+    would tell an operator with a perfectly fine, merely-outdated Sorento
+    contract to go fix their connection instead."""
+    if gate.get("reason") == "config_error":
+        return (
+            f"'{entity_type}' cannot {clause} - this company's Sorento "
+            f"connection configuration or credentials could not be checked. "
+            f"Fix the connection and try again."
+        )
+    return (
+        f"'{entity_type}' needs Sorento contract {gate['requiredVersion']} "
+        f"with stock balances advertised before it can {clause}."
+    )
 
 
 def _clean_int(value: Any) -> Optional[int]:
@@ -812,8 +892,15 @@ class EtlService:
         path_error = validate_http_path(path)
         if path_error:
             raise EtlValidationError({"path": path_error})
+        # sprint-5/10 confirm-3 S1 - the SAME connection sizing a real run
+        # would use (``http_source.client.connection_sizing``), so this
+        # probe respects the connection's own ``requestTimeoutSeconds``
+        # instead of always building its client at the bare module default.
+        _page_size, timeout_seconds = connection_sizing(conn.config_json or {})
         try:
-            result = run_http_preview(base_url, path, transport=transport)
+            result = run_http_preview(
+                base_url, path, transport=transport, timeout_seconds=timeout_seconds
+            )
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc
         return result.columns
@@ -826,6 +913,7 @@ class EtlService:
         *,
         distinct_of: Optional[List[str]] = None,
         lookups: Optional[List[Dict[str, Any]]] = None,
+        combine: Optional[Dict[str, Any]] = None,
         company_id: Optional[str] = None,
         entity_type: Optional[str] = None,
         transport: Any = None,
@@ -852,6 +940,16 @@ class EtlService:
         ONLY via the ``get_http_transport`` dependency override, so a test
         exercising the real ``POST /autocount/http/preview`` route never
         reaches ``hapi.sorento.cc.cd`` (sprint-5/08 review round 1, B4).
+
+        ``combine`` (sprint-5/10 S5a follow-up, AC-10-82), when given, is
+        validated against THIS preview's own sampled columns + lookup
+        aliases (mirroring ``lookups`` - a draft never yet saved can still
+        be tested), then applied to the lookup-merged sample the SAME order
+        the push path runs it in (AC-10-80). The returned ``result.rows``/
+        ``columns`` become the COMBINED shape and ``result.combine_funnel``
+        carries the generic counters; omitted (``None``) leaves ``result``
+        exactly as a plain lookup preview would - no combine block, no
+        funnel, the response unchanged.
         """
         conn = self.connections.get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
         if conn is None or auth_mode(conn.config_json or {}) != AUTH_NONE:
@@ -873,12 +971,110 @@ class EtlService:
             lookup_errors = validate_lookups(clean_lookups, None)
             if lookup_errors:
                 raise EtlValidationError(lookup_errors)
+        # sprint-5/10 confirm-3 S1 - the SAME connection sizing a real run
+        # would use (``http_source.client.connection_sizing``); a preview
+        # against a connection with a raised ``requestTimeoutSeconds`` used
+        # to always time out at the bare module default instead.
+        _page_size, timeout_seconds = connection_sizing(conn.config_json or {})
         try:
             result = run_http_preview(
-                base_url, path, distinct_of=distinct_of, lookups=clean_lookups, transport=transport
+                base_url,
+                path,
+                distinct_of=distinct_of,
+                lookups=clean_lookups,
+                transport=transport,
+                timeout_seconds=timeout_seconds,
             )
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc
+
+        # ── combine (sprint-5/10 S5a follow-up, AC-10-82) - runs AFTER every
+        # lookup and BEFORE the response is built, mirroring the push path's
+        # own stage order (AC-10-80: identity and the row hash both run on
+        # the COMBINED rows, so the preview grid must show the same thing a
+        # real run would produce, never the pre-combine sample) ───────────
+        if combine is not None:
+            lookup_alias_names = effective_result_columns([], clean_lookups)
+            # review round 3 (AC-10-76) - the ONE place the save-time
+            # boolean-type gate for a require/drop formula has real sample
+            # DATA to check against (a real task save never does - there is
+            # no stored sample, only column names): the SAME sampled rows
+            # ``apply_combine`` is about to reduce.
+            combine_errors = validate_combine(
+                combine, result.raw_columns, lookup_alias_names, sample=result.rows
+            )
+            if combine_errors:
+                raise EtlValidationError(combine_errors)
+            rows_in = len(result.rows)
+            # review round 3 (S4) - a drop formula that raises at RUNTIME
+            # over the sample (never caught by the sample-based type check
+            # above, which skips a row a formula merely raised on) must
+            # 422 with the failing rule named, never bubble into a bare
+            # 500 - the funnel is a preview, not a live run.
+            # review round 4 (SF-1) - widened to a numeric measure's own
+            # runtime ``TransformError`` (AC-10-76's own "a runtime
+            # non-numeric still raises the normal named TransformError"
+            # text - the sample-based numeric check can be clean and a
+            # DIFFERENT sample row still non-numeric): ``CombineMeasureError``
+            # carries the measure's own list index, so this keys the 422 to
+            # ``combine.measures[i].source`` exactly like a drop-rule
+            # failure keys to ``combine.drop[i].formula`` - never a bare
+            # 500 for a preview.
+            try:
+                combine_result = apply_combine(result.rows, combine)
+            except CombineDropError as exc:
+                raise EtlValidationError(
+                    {f"combine.drop[{exc.index}].formula": str(exc)}
+                ) from exc
+            except CombineMeasureError as exc:
+                raise EtlValidationError(
+                    {f"combine.measures[{exc.index}].source": str(exc)}
+                ) from exc
+            except TransformError as exc:
+                # No known call site raises a bare (non-Combine*) TransformError
+                # out of `apply_combine` today - kept as a fail-closed 422,
+                # never a 500, should one ever be added.
+                raise EtlValidationError({"combine": str(exc)}) from exc
+            dropped = combine_result.metadata.get("dropped") or {}
+            rows_out = len(combine_result.rows)
+            # Every dropped bucket is exactly ONE group (drop runs over the
+            # GROUPED rows, AC-10-79) - the group count survives regardless
+            # of which drop rule (if any) later removed it.
+            groups = rows_out + sum(bucket.get("count", 0) for bucket in dropped.values())
+            result.combine_funnel = {
+                "rowsIn": rows_in,
+                "excludedCount": combine_result.metadata.get("excludedCount", 0),
+                "groups": groups,
+                "droppedByRule": {
+                    name: bucket.get("count", 0) for name, bucket in dropped.items()
+                },
+                "rowsOut": rows_out,
+                "roundedCount": combine_result.metadata.get("roundedCount", 0),
+            }
+            # review round 5 (R5-A) - captured BEFORE `result.columns` is
+            # overwritten below: raw + lookup aliases (`result.columns` at
+            # this point, unchanged since `run_http_preview`) plus the
+            # combine's OWN `computed` alias names (in declared order,
+            # de-duplicated) - everything a `groupBy`/`measures[].source`/
+            # `require`/`drop` formula may reference, i.e. the pre-GROUP
+            # schema, never the post-group `combineOutputColumns` shape.
+            pre_combine_columns = list(result.columns)
+            for spec in combine.get("computed") or []:
+                if not isinstance(spec, dict):
+                    continue
+                alias = spec.get("alias")
+                if alias and alias not in pre_combine_columns:
+                    pre_combine_columns.append(str(alias))
+            result.pre_combine_columns = pre_combine_columns
+
+            # The combined, POST-GROUP schema - groupBy + carry + measure
+            # aliases, in that declared order, de-duplicated. ONE shared
+            # helper (review round 3, B1) - the same projection
+            # ``HttpApiSource.__init__`` now derives its compared-column
+            # set from, so the preview grid, the Mapping tab's picker and
+            # the row hash can never drift against one another.
+            result.columns = combine_output_columns(combine)
+            result.rows = combine_result.rows
 
         task_view: Optional["EtlTaskView"] = None
         if company_id and entity_type:
@@ -975,6 +1171,15 @@ class EtlService:
             ),
             initial_load=self._initial_load(company_id, entity_type, config),
             brand_contract_gate=self._brand_contract_gate(tenant_id, company_id, entity_type),
+            delivery_mode=(
+                (config.delivery_mode if config is not None else None) or DELIVERY_MODE_PUSH
+            ),
+            contract_gate=self._contract_gate(tenant_id, company_id, entity_type),
+            # review round 4 (SF-4) - derived from THIS task's own stored
+            # (or draft-default) ``combine``, the SAME helper the save path
+            # and the preview route already derive it from - never a second
+            # computation that could drift.
+            combine_output_columns=combine_output_columns(merged.get("combine")),
         )
 
     def _brand_contract_gate(
@@ -993,6 +1198,22 @@ class EtlService:
         except Exception:  # noqa: BLE001 - advisory only, never blocks the read
             return None
         return self.companies.brand_contract_gate(tenant_id, company)
+
+    def _contract_gate(
+        self, tenant_id: Optional[str], company_id: str, entity_type: str
+    ) -> Optional[Dict[str, Any]]:
+        """sprint-5/10 (AC-10-69) - the GENERALISED probe, gated to the
+        entities ``CompanyService.contract_gate`` actually knows about
+        (``brand``/``product`` today) so every other entity's task-view read
+        never touches the network, same reasoning as ``_brand_contract_gate``
+        above."""
+        if tenant_id is None:
+            return None
+        try:
+            company = self.companies.get(tenant_id, company_id)
+        except Exception:  # noqa: BLE001 - advisory only, never blocks the read
+            return None
+        return self.companies.contract_gate(tenant_id, company, entity_type)
 
     def _initial_load(
         self, company_id: str, entity_type: str, config: Optional[AcEntityConfig]
@@ -1100,6 +1321,7 @@ class EtlService:
         existing_result_columns: Optional[List[str]],
         existing_lookups: Optional[List[Dict[str, Any]]] = None,
         existing_key_fields: Optional[List[str]] = None,
+        existing_combine: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, str]]:
         """Normalise + validate an ``autocount_http`` task's ``source_config``
         (AC-08-13). ONE envelope with the SQL shape - a stray SQL key on the
@@ -1116,7 +1338,10 @@ class EtlService:
         (review round 2 fix 1b) - what the PREVIOUS default ``comparedFields``
         would have been computed from, so a save can tell "the incoming
         comparedFields still equals the old default" apart from "the
-        operator customised it".
+        operator customised it". ``existing_combine`` is the task's
+        CURRENTLY STORED ``combine`` (sprint-5/10 S5a, AC-10-76/80) - what a
+        client that omits ``combine`` on the wire keeps, mirroring
+        ``existing_lookups`` exactly.
         """
         errors: Dict[str, str] = {}
 
@@ -1185,28 +1410,117 @@ class EtlService:
         # and a watermarked row with a miss could never advance the mark.
         alias_names = set(effective_result_columns([], lookups))
 
-        key_fields = _clean_list(raw.get("keyFields"))
-        distinct_of = _clean_list(raw.get("distinctOf")) or None
-        if not key_fields:
-            errors["keyFields"] = "Choose at least one key field."
-        elif distinct_of and key_fields != ["value"]:
-            errors["keyFields"] = (
-                "A distinct-values field can only key on 'value'."
+        # ── combine (sprint-5/10 S5a, AC-10-76/80, R11) ────────────────────
+        # Mirrors `lookups`'s own round-trip contract, with one necessary
+        # difference (R5-B, review round 5): `lookups` is a LIST, so it
+        # already has a third wire value (`[]`) distinct from "omitted"
+        # (`None`) to mean "explicit clear"; `combine` is a nullable OBJECT,
+        # so an explicit `null` and an omitted key would otherwise both
+        # decode to the SAME Python `None`. The KEY's presence itself is
+        # therefore the signal: genuinely ABSENT (`"combine" not in raw` -
+        # the router strips it when the wire never sent it, since
+        # `model_dump()` would otherwise always emit it defaulted) KEEPS
+        # whatever is already stored; an EXPLICIT `null` (`"combine" in raw`
+        # and `raw["combine"] is None` - the Combine-rows switch turned
+        # OFF) CLEARS it outright; an explicit object REPLACES it (including
+        # an invalid `{}` - "no combine configured" and "an explicitly
+        # empty combine" are deliberately NOT the same thing,
+        # `validate_combine` 422s the latter for its missing `groupBy`).
+        # Validated against THIS save's own raw source columns and THIS
+        # save's own lookup aliases - a combine formula may name any lookup
+        # the SAME request configures.
+        raw_combine = raw.get("combine")
+        if "combine" not in raw:
+            combine: Optional[Dict[str, Any]] = (
+                dict(existing_combine) if isinstance(existing_combine, dict) else None
             )
+            combine_for_validation: Any = combine
+        elif raw_combine is None:
+            combine = None
+            combine_for_validation = None
+        elif isinstance(raw_combine, dict):
+            combine = dict(raw_combine)
+            combine_for_validation = combine
         else:
-            aliased_keys = [c for c in key_fields if c in alias_names]
-            if aliased_keys:
-                errors["keyFields"] = (
-                    f"'{aliased_keys[0]}' comes from a lookup, which can be absent "
-                    f"on a miss - choose a source column."
+            # S1 (review round 3) - a malformed non-dict `combine` (e.g. an
+            # array) is NOT silently treated as "no combine configured":
+            # the RAW value is passed to `validate_combine`, so its own
+            # "The combine step must be an object." 422 is reachable - the
+            # previous code dropped it here, before `validate_combine` ever
+            # saw it. `combine` itself still collapses to `None` for every
+            # downstream computation below (`combine_group_by`, key
+            # derivation, the compared-column schema, the demote check) -
+            # none of those may ever call `.get()` on a non-dict - and the
+            # malformed value can never reach `clean`/persistence anyway:
+            # `errors` is non-empty below, so the whole save is rejected.
+            combine = None
+            combine_for_validation = raw_combine
+        for key, message in validate_combine(
+            combine_for_validation, raw_columns_for_validation, sorted(alias_names)
+        ).items():
+            errors[key] = message
+
+        # AC-10-80 - when a combine step is configured its `groupBy` IS the
+        # task's key fields, derived, never separately typed.
+        combine_group_by = (
+            [str(c) for c in (combine.get("groupBy") or [])] if combine is not None else []
+        )
+
+        if combine_group_by:
+            # The Source tab's key picker becomes READ-ONLY chips: even a
+            # plausible-looking client-submitted `keyFields` is overridden,
+            # and the "choose at least one key field"/"not in the last
+            # preview" rules do not apply (a combine groupBy column is
+            # typically a COMPUTED alias that can never appear in
+            # `result_columns`).
+            key_fields = combine_group_by
+            distinct_of = _clean_list(raw.get("distinctOf")) or None
+            # S2 (review round 3) - `distinctOf` short-circuits BEFORE
+            # combine ever runs (`HttpApiSource.fetch_changes`'s own
+            # `if self.distinct_of:` branch), so the two together save
+            # clean and then silently skip the combine step at every real
+            # run - a save-time 422, not a runtime surprise nobody sees.
+            if distinct_of:
+                errors["combine"] = (
+                    "A distinct-values task cannot also use Combine rows."
                 )
-            elif existing_result_columns is not None:
-                missing = [c for c in key_fields if c not in existing_result_columns]
-                if missing:
+        else:
+            key_fields = _clean_list(raw.get("keyFields"))
+            distinct_of = _clean_list(raw.get("distinctOf")) or None
+            # NIT (iii, review round 4) - `combine_group_by` is empty here
+            # for TWO different reasons: "no combine step configured at
+            # all" (the normal manual-key flow, `raw_combine is None`) or
+            # "a combine WAS submitted but is itself invalid" (S1: a
+            # non-dict `combine`; or a dict whose own `groupBy` failed
+            # validation). In the second case a missing `keyFields` is not
+            # a SEPARATE operator mistake - the operator meant the combine
+            # step to derive the keys - so the redundant "choose at least
+            # one key field" is suppressed while `combine`'s own error(s)
+            # already name the real problem.
+            combine_itself_invalid = raw_combine is not None and any(
+                key == "combine" or key.startswith("combine.") for key in errors
+            )
+            if not key_fields:
+                if not combine_itself_invalid:
+                    errors["keyFields"] = "Choose at least one key field."
+            elif distinct_of and key_fields != ["value"]:
+                errors["keyFields"] = (
+                    "A distinct-values field can only key on 'value'."
+                )
+            else:
+                aliased_keys = [c for c in key_fields if c in alias_names]
+                if aliased_keys:
                     errors["keyFields"] = (
-                        f"Not in the last preview: {', '.join(missing)}. Test the "
-                        f"endpoint first."
+                        f"'{aliased_keys[0]}' comes from a lookup, which can be absent "
+                        f"on a miss - choose a source column."
                     )
+                elif existing_result_columns is not None:
+                    missing = [c for c in key_fields if c not in existing_result_columns]
+                    if missing:
+                        errors["keyFields"] = (
+                            f"Not in the last preview: {', '.join(missing)}. Test the "
+                            f"endpoint first."
+                        )
 
         watermark_field = str(raw.get("watermarkField") or "").strip() or None
         if watermark_field and watermark_field in alias_names:
@@ -1229,7 +1543,22 @@ class EtlService:
         # alias, and that non-empty list narrows the run-time effective set
         # back down (an enrich-only value change would never register as
         # `updated`).
-        new_effective_columns = effective_result_columns(existing_result_columns, lookups)
+        # review round 3 (B1) - a combine-carrying task's compared-column
+        # baseline is the COMBINE OUTPUT SCHEMA (`groupBy + carry +
+        # measures[].alias`), never the pre-combine raw+lookup set: a
+        # combined row does not carry its raw/lookup source columns at all
+        # (AC-10-80), so comparing against them hashes columns that are
+        # always absent and an explicit `comparedFields` pick (e.g.
+        # `["qty"]`, a measure alias) would otherwise be PRUNED to `[]` by
+        # `compared_columns_for`'s own configured-intersect-available rule
+        # - silently discarding the operator's own choice. Mirrors
+        # `HttpApiSource.__init__`'s identical fix exactly, so a save and a
+        # run can never derive two different compared-column sets for the
+        # SAME combine config.
+        new_effective_columns = (
+            combine_output_columns(combine) if combine_group_by
+            else effective_result_columns(existing_result_columns, lookups)
+        )
         configured_compared = _clean_list(raw.get("comparedFields"))
         # review round 2 fix 1b - a client that round-trips the PREVIOUSLY
         # PERSISTED default list unchanged must not have it treated as an
@@ -1243,8 +1572,19 @@ class EtlService:
         # already prunes a name no longer in the effective set, the SAME
         # silent-drop behaviour an unknown configured column always had.
         if existing_result_columns is not None and configured_compared:
-            previous_effective_columns = effective_result_columns(
-                existing_result_columns, existing_lookups
+            # B1, mirrored for the PREVIOUS save's own effective columns -
+            # the task's previously stored `combine` (if any) determines
+            # what the previous default was actually computed from, the
+            # SAME rule `new_effective_columns` above just applied to THIS
+            # save's `combine`.
+            previous_combine_group_by = (
+                [str(c) for c in (existing_combine.get("groupBy") or [])]
+                if isinstance(existing_combine, dict)
+                else []
+            )
+            previous_effective_columns = (
+                combine_output_columns(existing_combine) if previous_combine_group_by
+                else effective_result_columns(existing_result_columns, existing_lookups)
             )
             previous_default = set(
                 compared_columns_for(
@@ -1304,6 +1644,7 @@ class EtlService:
             "reconcileHours": hours,
             "reconcileAt": at,
             "lookups": lookups,
+            "combine": combine,
         }
         return clean, errors
 
@@ -1354,12 +1695,57 @@ class EtlService:
             if config is not None and isinstance(config.source_config, dict)
             else []
         )
+        # sprint-5/10 S5a - the task's CURRENTLY STORED `combine`, what a
+        # client that omits `combine` on the wire keeps (mirrors
+        # `existing_lookups` exactly).
+        existing_combine = (
+            dict(config.source_config.get("combine"))
+            if config is not None
+            and isinstance(config.source_config, dict)
+            and isinstance(config.source_config.get("combine"), dict)
+            else None
+        )
+        # sprint-5/10 S5b review round 5 (S3, AC-10-40/41/84) - "the owner
+        # configures nothing": when NOTHING is stored yet AND this save's
+        # own raw payload is silent on `combine` (mirrors the round-trip
+        # contract above - an operator's own explicit `combine` on the
+        # wire, even a deliberately invalid `{}`, is never overridden),
+        # seed it from the entity's HTTP preset - the SAME seed-if-absent
+        # contract `preset.lookups` already gets below (AC-08-16), just
+        # applied HERE, BEFORE validation, since `combine.groupBy` derives
+        # the REQUIRED `keyFields` (AC-10-80) and a fresh stock task submits
+        # none: a bare "add this entity" request must not 422 for a missing
+        # manual key pick the operator was never asked to make.
+        # `copy.deepcopy` for the SAME reason the lookups seed uses it below
+        # - never share the module-level preset's own nested lists across
+        # tenants. A no-op for every entity whose preset carries no
+        # `combine` (every entity but stock today).
+        # R5-B (review round 5) - also gated on the wire key being genuinely
+        # ABSENT (never sent at all), not merely ``None``: an EXPLICIT
+        # ``"combine": null`` (the Combine-rows switch turned OFF) must
+        # CLEAR, never be silently re-seeded back from the preset.
+        # confirm round 2 (item 3) - and gated on the entity row being
+        # CREATED, which is the only moment "the owner configured nothing"
+        # can be true. Neither ``existing_combine is None`` (confirm round 5)
+        # nor "the stored config has no ``combine`` key" (B-2) can say that:
+        # a plan-08 HTTP row predates the field entirely, so a BARE save of
+        # one seeded the preset behind the operator's back - rewriting the
+        # derived ``keyFields`` and demoting an ACTIVE task to draft with
+        # nothing changed. An existing row switching ``db``/``api`` -> http
+        # is seeded by the FE itself (``task-editor-view.tsx``'s
+        # ``onSourceKindChange``), so it arrives here with an explicit
+        # ``combine`` on the wire.
+        if config is None and "combine" not in raw:
+            preset_for_combine_seed = HTTP_PRESETS.get(entity_type)
+            if preset_for_combine_seed is not None and preset_for_combine_seed.combine:
+                existing_combine = copy.deepcopy(dict(preset_for_combine_seed.combine))
         clean, errors = self._validate_http_config(
             tenant_id,
             raw,
             existing_result_columns=existing_result_columns,
             existing_lookups=existing_lookups,
             existing_key_fields=existing_key_fields,
+            existing_combine=existing_combine,
         )
         if errors:
             raise EtlValidationError(errors)
@@ -1382,6 +1768,17 @@ class EtlService:
                     initial_load=INITIAL_LOAD_FULL,
                     enabled=True,
                     etl_status=ETL_STATUS_DRAFT,
+                    # AC-10-15 - a FRESH stock_balance task is created in
+                    # PULL mode, never the column's own 'push'
+                    # server_default: push has no route to succeed on at
+                    # all until Sorento serves 2.5. Every other entity keeps
+                    # the column's own default (explicit here only to make
+                    # the carve-out visible, not to change their behaviour).
+                    delivery_mode=(
+                        DELIVERY_MODE_PULL
+                        if entity_type == ENTITY_STOCK_BALANCE
+                        else DELIVERY_MODE_PUSH
+                    ),
                 )
             )
 
@@ -1395,6 +1792,27 @@ class EtlService:
             or previous_source_config.get("path") != clean.get("path")
         ):
             demote = True
+        # AC-10-80 - a combine step's `groupBy` IS the task's identity (the
+        # SAME rule AC-08-28 already applies to connectionId/path): changing
+        # it changes both `source_ref` and the row hash of every row, so it
+        # demotes an ACTIVE task exactly like a connection/path change does.
+        # S3 (review round 3) - widened from `groupBy` alone to the WHOLE
+        # combine object: a `measures`/`round`/`drop`/`computed`/`require`/
+        # `carry` edit changes the ROW HASH of every combined row just as
+        # surely as a `groupBy` edit changes its identity (AC-10-80's own
+        # text - "editing the combine config changes both the identity and
+        # the hash of every row"), and the first reconcile after a
+        # measures-only edit must report genuine updates, never silently
+        # reuse a hash computed under the OLD combine shape. Saving the
+        # SAME combine object again (dict equality - key order never
+        # matters) is not a change - no demote.
+        if not demote and previous_source_config is not None:
+            previous_combine_norm = _normalize_combine_for_demote(
+                previous_source_config.get("combine")
+            )
+            new_combine_norm = _normalize_combine_for_demote(clean.get("combine"))
+            if previous_combine_norm != new_combine_norm:
+                demote = True
 
         config.source_impl = SOURCE_IMPL_AUTOCOUNT_HTTP
         config.source_config = clean
@@ -2296,6 +2714,41 @@ class EtlService:
                 "Set the Sorento company code on this company before activating - "
                 "every push is anchored to it."
             )
+        #     !!  PRODUCT CODE-WINS CONTRACT GATE (R8, AC-10-69) - PUSH MODE
+        #         + A SORENTO SINK ONLY.  !!
+        # Unlike the brand gate, there is no safe logging-sink fallback here:
+        # pushing ItemCode-keyed refs at a consumer below contract 2.4 would
+        # fail roughly 9,067 already-linked records outright. PULL mode gets
+        # the banner only (never blocked - nothing lands on the consumer
+        # until ITS OWN Confirm), and a company with no Sorento sink at all
+        # has nothing to push to, so neither is gated here.
+        if (
+            entity_type == ENTITY_PRODUCT
+            and config.delivery_mode == DELIVERY_MODE_PUSH
+            and company.sink_impl == SINK_IMPL_SORENTO
+        ):
+            gate = self.companies.contract_gate(tenant_id, company, entity_type)
+            if gate is not None:
+                raise EtlStateError(
+                    f"This company's Sorento consumer is on contract "
+                    f"{gate.get('version')} - product push needs contract "
+                    f"{gate.get('requiredVersion')} before it can be activated."
+                )
+        #     !!  STOCK'S OWN PUSH GATE - ALSO ON ACTIVATE (N3, review round
+        #         5).  !!
+        # `set_delivery_mode` already refuses a `push` switch while the
+        # consumer's contract is below 2.5 - but a task already SAVED in
+        # `push` mode (set while the gate was open) has no code path that
+        # re-checks it on its way to `active`: without this, an operator
+        # could activate a push task straight past a consumer that has
+        # since regressed below contract 2.5. Pull mode is unaffected (no
+        # push gate applies to it at all).
+        if entity_type == ENTITY_STOCK_BALANCE and config.delivery_mode == DELIVERY_MODE_PUSH:
+            stock_gate = self.companies.stock_push_gate_error(tenant_id, company)
+            if stock_gate is not None:
+                raise EtlStateError(
+                    _stock_push_gate_message(entity_type, stock_gate, "be activated in push mode")
+                )
         now = datetime.now(timezone.utc)
         config.etl_status = ETL_STATUS_ACTIVE
         config.activated_at = now
@@ -2306,14 +2759,87 @@ class EtlService:
         # vendor-API default this switch exists to escape.
         if config.source_impl not in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP):
             config.source_impl = SOURCE_IMPL_SQL_DB
-        _, config.next_reconcile_at = self.next_run_times(
-            self._schedule_source_config(config), now=now
-        )
-        # plan sprint-5/03 §2.4 - the initial (paged) pass starts on the
-        # FIRST tick after activation, not after a full ``incrementalMinutes``
-        # wait: 148k SO headers finish in hours unattended only if the sweep
-        # fires immediately.
-        config.next_incremental_at = now
+        # sprint-5/10 (AC-10-13/15) - a ``pull`` task arms NO schedule at
+        # all: it never runs on the sweep, so there is nothing to arm.
+        if config.delivery_mode == DELIVERY_MODE_PULL:
+            config.next_reconcile_at = None
+            config.next_incremental_at = None
+        else:
+            _, config.next_reconcile_at = self.next_run_times(
+                self._schedule_source_config(config), now=now
+            )
+            # plan sprint-5/03 §2.4 - the initial (paged) pass starts on the
+            # FIRST tick after activation, not after a full
+            # ``incrementalMinutes`` wait: 148k SO headers finish in hours
+            # unattended only if the sweep fires immediately.
+            config.next_incremental_at = now
+        self.db.commit()
+        self.db.refresh(config)
+        return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
+
+    def set_delivery_mode(
+        self, tenant_id: str, company_id: str, entity_type: str, delivery_mode: str
+    ) -> EtlTaskView:
+        """``push`` <-> ``pull`` (sprint-5/10, AC-10-11). Touches ONLY the
+        mode + the schedule's armed times - never ``source_config``, the
+        mapping rows or ``result_columns`` (a round-trip is byte-identical,
+        AC-10-14)."""
+        if delivery_mode not in DELIVERY_MODES:
+            raise EtlValidationError(
+                {"deliveryMode": f"'{delivery_mode}' is not a known delivery mode."}
+            )
+        if entity_type not in PULL_CAPABLE_ENTITY_TYPES:
+            raise EtlValidationError(
+                {"deliveryMode": f"'{entity_type}' cannot be switched between push and pull."}
+            )
+        company = self.companies.get(tenant_id, company_id)  # tenant-scope guard
+        #     !!  STOCK'S OWN PUSH GATE (AC-10-15) - A REFUSAL, NOT A BANNER.  !!
+        # The same `fetch_contract_detail` probe pattern AC-10-69 generalises
+        # for product, but stock has no safe "allow and let it fail at push
+        # time" outcome the way that gate's banner-only branches do (it has
+        # no `_ENTITY_PATH` entry at all to push against yet) - an absent
+        # Sorento connection or an unreachable/malformed probe REFUSES,
+        # exactly like a too-low version ("never guess a contract we cannot
+        # see"). Opens on its own the moment Sorento serves 2.5 with
+        # `stock_balances` advertised - never a hardcoded forever rule.
+        if delivery_mode == DELIVERY_MODE_PUSH and entity_type == ENTITY_STOCK_BALANCE:
+            gate = self.companies.stock_push_gate_error(tenant_id, company)
+            if gate is not None:
+                raise EtlValidationError(
+                    {"deliveryMode": _stock_push_gate_message(entity_type, gate, "push")}
+                )
+        if delivery_mode == DELIVERY_MODE_PULL and not (
+            company.sorento_company_code or ""
+        ).strip():
+            raise EtlValidationError(
+                {
+                    "deliveryMode": (
+                        "Set a consumer company code on this company before "
+                        "enabling pull."
+                    )
+                }
+            )
+        config = self.configs.get(tenant_id, company_id, entity_type)
+        if config is None:
+            raise EtlStateError(
+                "Save this task's query and key columns before setting its delivery mode."
+            )
+        config.delivery_mode = delivery_mode
+        if delivery_mode == DELIVERY_MODE_PULL:
+            # A pull task never runs on the sweep - disarm immediately,
+            # regardless of the task's current lifecycle status (AC-10-13).
+            config.next_incremental_at = None
+            config.next_reconcile_at = None
+        elif config.etl_status == ETL_STATUS_ACTIVE:
+            # Re-arm from the SAVED source_config through the existing
+            # ``next_run_times`` - no re-mapping, no re-Test, no status
+            # change (AC-10-14). A draft/paused task stays disarmed either
+            # way (nothing has activated it yet).
+            now = datetime.now(timezone.utc)
+            config.next_incremental_at = now
+            _, config.next_reconcile_at = self.next_run_times(
+                self._schedule_source_config(config), now=now
+            )
         self.db.commit()
         self.db.refresh(config)
         return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
@@ -2367,6 +2893,15 @@ class EtlService:
         self._require_runnable(config)
         if config.etl_status != ETL_STATUS_ACTIVE:
             raise EtlStateError("Activate this task before running it.")
+        # sprint-5/10 review round 1 NIT (foolproof-UI) - a pull task never
+        # auto-pushes (AC-10-12) and this button exists to move data NOW, so
+        # accepting the click and silently doing nothing is the exact
+        # "never accept an action that will do nothing" failure mode.
+        if config.delivery_mode == DELIVERY_MODE_PULL:
+            raise EtlStateError(
+                "This task is in pull mode - it never runs on its own. "
+                "Build a pull snapshot instead of running it."
+            )
 
         in_flight = SyncJobRepository(self.db).first_unfinished(
             tenant_id, AUTOCOUNT_SYNC, company_id, entity_type
@@ -2478,6 +3013,14 @@ class EtlService:
         if config.etl_status == ETL_STATUS_DRAFT:
             raise EtlStateError(
                 "Activate the task first - a draft has nothing to re-push."
+            )
+        # sprint-5/10 review round 1 NIT (foolproof-UI) - same reasoning as
+        # `run_task_now`: a pull task never auto-pushes, so re-pushing it
+        # would clear tracked rows for a push that never happens.
+        if config.delivery_mode == DELIVERY_MODE_PULL:
+            raise EtlStateError(
+                "This task is in pull mode - it never auto-pushes, so there "
+                "is nothing to re-push."
             )
         self._in_flight_guard(tenant_id, company_id, entity_type)
 

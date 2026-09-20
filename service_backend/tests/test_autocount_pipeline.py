@@ -1179,12 +1179,19 @@ def test_a_handler_crash_never_propagates_to_the_caller(db, transports, monkeypa
 
 
 def test_every_module_table_carries_tenant_and_company(db):
-    """AC-13-41, structurally. ``ac_company``'s own id IS the company id."""
+    """AC-13-41, structurally. ``ac_company``'s own id IS the company id.
+
+    ``ac_pull_api_key`` (sprint-5/10 S4, AC-10-27) is the second deliberate
+    exception: a pull gateway key is scoped to an explicit SET of companies
+    (``company_ids``, a JSON list validated tenant-side at issue time and
+    re-checked at every gateway call), never a single owning company - the
+    same reason ``ac_company`` itself is exempted, one level up."""
     from modules.autocount.db import AutocountBase
 
+    single_company_exempt = {"ac_company", "ac_pull_api_key"}
     for table in AutocountBase.metadata.sorted_tables:
         assert "tenant_id" in table.c, table.name
-        if table.name != "ac_company":
+        if table.name not in single_company_exempt:
             assert "company_id" in table.c, table.name
 
 

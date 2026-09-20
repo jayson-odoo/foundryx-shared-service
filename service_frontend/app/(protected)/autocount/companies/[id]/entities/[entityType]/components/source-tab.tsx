@@ -21,6 +21,7 @@ import type {
   UseHttpPreviewResult,
   UseSqlPreviewResult,
 } from '@/hooks/use-autocount-etl';
+import type { UsePreviewColumnsMapResult } from '@/hooks/use-autocount-pull';
 import {
   AC_API_CAPABLE_ENTITY_TYPES,
   entityLabel,
@@ -35,6 +36,7 @@ import {
 } from '@/lib/autocount-etl';
 import type {
   AutocountApiConnection,
+  AutocountCombinePreviewResult,
   AutocountConnectionAuth,
   AutocountEtlSourceConfig,
   AutocountEtlTask,
@@ -42,6 +44,8 @@ import type {
   AutocountMappingPreset,
   AutocountSqlConnection,
 } from '@/types/autocount';
+import { CombineEditor } from './combine-editor';
+import { LookupsEditor } from './lookups-editor';
 
 /**
  * The company connection a DB company's task is locked to (AC-01-19): shown
@@ -138,6 +142,14 @@ export interface SourceTabProps {
     target: { connectionId: string; path: string },
     task?: AutocountEtlTask,
   ) => void;
+  /**
+   * The Lookups editor's own per-row remote-column probe (sprint-5/10,
+   * AC-10-05/09) - owned by the caller so it survives a Source-tab re-render
+   * (it tracks state per lookup row).
+   */
+  columnsProbe: UsePreviewColumnsMapResult;
+  /** Server-authoritative formula eval for the Combine editor's builder. */
+  onCombineFormulaTest: (formula: string, value: unknown) => Promise<AutocountFormulaTestResult>;
 }
 
 const NO_WATERMARK = '';
@@ -173,6 +185,8 @@ export function SourceTab({
   httpPreview,
   companyId,
   onHttpPreviewSuccess,
+  columnsProbe,
+  onCombineFormulaTest,
 }: SourceTabProps) {
   const isDocument = isDocumentEntity(entityType);
   const connection = connections.find((c) => c.id === config.connectionId) ?? null;
@@ -317,42 +331,145 @@ export function SourceTab({
     }));
   const isBasicAuth = apiConnectionAuth === 'basic';
 
+  // sprint-5/10 (AC-10-01, D23) - a lookup alias may never be a key or
+  // watermark field (a miss leaves it absent); it IS offered in the
+  // compared-fields picker, the Combine editor's column options, and the
+  // Mapping source picker. Declared ahead of `httpPreviewColumns` below -
+  // both need it.
+  const lookupAliases = useMemo(
+    () => new Set((config.lookups ?? []).flatMap((l) => l.fields.map((f) => f.as.trim()).filter(Boolean))),
+    [config.lookups],
+  );
+  // Review round 1 B1 (AC-10-82/AC-10-40/41) - NEVER keyed off the echoed
+  // `task`: a brand-new entity carries no `ac_entity_config` row yet, so
+  // the backend withholds `task` on its very FIRST Test - and a stock task's
+  // first Test sends `combine` from its preset, so falling back to the bare
+  // (then COMBINED) `columns` leaked post-group names like `qty` into the
+  // watermark/compared/Lookups/Combine pickers. The SERVER's own
+  // `preCombineColumns` (sent exactly when the request carried `combine`)
+  // IS the pre-combine, alias-inclusive set (raw + lookup aliases +
+  // computed aliases); for a plain (no-combine) Test the bare `columns`
+  // already IS pre-combine (the combine stage never ran). This is the
+  // PICKER base only - the Lookups editor's alias self-collision check reads
+  // the server's own `rawColumns` instead (`rawSourceColumns` below).
+  const previewBaseColumns = useMemo(() => {
+    if (httpPreview.state.status !== 'success') return [];
+    const preview = httpPreview.state.preview;
+    return preview.preCombineColumns ?? preview.columns.map((c) => c.name);
+  }, [httpPreview.state]);
+  // Unioned with every alias the DRAFT's lookups currently name (S2 - an
+  // added-but-not-yet-re-Tested lookup's alias must not vanish from the
+  // watermark/compared/Combine pickers, which read THIS, never the bare
+  // server base).
   const httpPreviewColumns = useMemo(
-    () =>
-      httpPreview.state.status === 'success' ? httpPreview.state.preview.columns.map((c) => c.name) : [],
-    [httpPreview.state],
+    () => Array.from(new Set([...previewBaseColumns, ...Array.from(lookupAliases)])),
+    [previewBaseColumns, lookupAliases],
   );
-  const httpSavedPicks = useMemo(
-    () => [
-      ...(config.keyFields ?? []),
-      ...(config.watermarkField ? [config.watermarkField] : []),
-      ...(config.comparedFields ?? []),
-    ],
-    [config.comparedFields, config.keyFields, config.watermarkField],
-  );
-  const httpColumnOptions = useMemo(
-    () => pickerColumnOptions(httpPreviewColumns, httpSavedPicks).map((c) => ({ label: c, value: c })),
-    [httpPreviewColumns, httpSavedPicks],
-  );
+  // The Combine editor's own funnel (AC-10-82) - the SAME six server counts
+  // the Source tab's Test just landed, present only when that Test's
+  // request carried `combine` (`rowsIn` is the funnel's own presence
+  // signal - a plain lookup preview never sets it).
+  const combineFunnel = useMemo<AutocountCombinePreviewResult | null>(() => {
+    if (httpPreview.state.status !== 'success') return null;
+    const preview = httpPreview.state.preview;
+    if (preview.rowsIn == null) return null;
+    return {
+      rowsIn: preview.rowsIn,
+      excludedCount: preview.excludedCount ?? 0,
+      groups: preview.groups ?? 0,
+      droppedByRule: preview.droppedByRule ?? {},
+      rowsOut: preview.rowsOut ?? 0,
+      roundedCount: preview.roundedCount ?? 0,
+    };
+  }, [httpPreview.state]);
+  // Browser round 1 fix (AC-10-09), closed for good in confirm round 2 (B1):
+  // the Lookups editor's alias collision check runs against the SERVER's own
+  // `rawColumns` and nothing else. Every other set on this tab is merged by
+  // design - `preview.columns` is raw UNION every alias the REQUEST's lookups
+  // carried, and `preCombineColumns` folds in the combine's computed aliases
+  // on top - so each one makes an alias collide with itself the moment the
+  // Test that introduced it lands. No subtraction, no echo: an absent
+  // `rawColumns` (no Test yet, or a pre-`rawColumns` backend) means "nothing
+  // is known to be taken", never "everything in `columns` is taken".
+  // `lib/autocount-lookups.ts` still owns the EARLIER-alias half of the rule,
+  // and a clash with a combine computed alias stays the combine's own 422
+  // (`combine.computed[i].alias`), never reported here.
+  const rawSourceColumns = useMemo(() => {
+    if (httpPreview.state.status !== 'success') return [];
+    return httpPreview.state.preview.rawColumns ?? [];
+  }, [httpPreview.state]);
+  // sprint-5/10 browser round S6 defect D1 - each picker's saved-value
+  // carry-over (the "stale but visible" half of `pickerColumnOptions`) is
+  // now scoped to ITS OWN stored value, never a shared pool: a saved
+  // combine task's `comparedFields` (which MAY legitimately hold a combine
+  // measure alias like `qty` - AC-10-80 constrains only the key fields,
+  // nothing forbids a measure in compared) was previously unioned with
+  // `keyFields`/`watermarkField` into ONE `httpSavedPicks` list feeding
+  // every picker, so a saved `qty` compared pick leaked into the watermark
+  // (and key) picker's own options too.
   const httpKeyFields = useMemo(() => config.keyFields ?? [], [config.keyFields]);
+  const httpComparedFields = useMemo(() => config.comparedFields ?? [], [config.comparedFields]);
+  const httpKeyPickerOptions = useMemo(
+    () => pickerColumnOptions(httpPreviewColumns, httpKeyFields).map((c) => ({ label: c, value: c })),
+    [httpPreviewColumns, httpKeyFields],
+  );
+  const httpWatermarkPickerOptions = useMemo(
+    () =>
+      pickerColumnOptions(httpPreviewColumns, config.watermarkField ? [config.watermarkField] : []).map(
+        (c) => ({ label: c, value: c }),
+      ),
+    [httpPreviewColumns, config.watermarkField],
+  );
+  const httpComparedPickerOptions = useMemo(
+    () => pickerColumnOptions(httpPreviewColumns, httpComparedFields).map((c) => ({ label: c, value: c })),
+    [httpPreviewColumns, httpComparedFields],
+  );
+  // Belt and braces (S6 defect D1) - a combine `measures[].alias` is a
+  // POST-group output column, computed AFTER `groupBy` runs: it can never be
+  // a key or watermark (both are pre-group row identity) no matter which
+  // picker's own saved-value carry-over might otherwise surface it. The
+  // compared picker is deliberately NOT filtered by this set - see above.
+  const measureAliases = useMemo(
+    () => new Set((config.combine?.measures ?? []).map((m) => m.alias)),
+    [config.combine],
+  );
+  // sprint-5/10 (AC-10-80) - a combine-carrying task's key fields are the
+  // combine's OWN `groupBy` columns, derived, never separately typed: the
+  // Key fields picker becomes read-only chips of `groupBy` the moment one is
+  // set (the server derives the saved `keyFields` the SAME way at save
+  // time, `EtlService._update_http_task`).
+  const combineGroupBy = useMemo(() => config.combine?.groupBy ?? [], [config.combine]);
+  const combineKeyLocked = combineGroupBy.length > 0;
+  const httpKeyFieldsDisplay = combineKeyLocked ? combineGroupBy : httpKeyFields;
   const httpComparedOptions = useMemo(
-    () => httpColumnOptions.filter((o) => !httpKeyFields.includes(o.value)),
-    [httpColumnOptions, httpKeyFields],
+    () => httpComparedPickerOptions.filter((o) => !httpKeyFields.includes(o.value)),
+    [httpComparedPickerOptions, httpKeyFields],
   );
   const httpKeyOptions = useMemo(
     () =>
-      httpColumnOptions.filter(
-        (o) => o.value !== config.watermarkField || httpKeyFields.includes(o.value),
+      httpKeyPickerOptions.filter(
+        (o) =>
+          !lookupAliases.has(o.value) &&
+          !measureAliases.has(o.value) &&
+          (o.value !== config.watermarkField || httpKeyFields.includes(o.value)),
       ),
-    [httpColumnOptions, httpKeyFields, config.watermarkField],
+    [httpKeyPickerOptions, httpKeyFields, config.watermarkField, lookupAliases, measureAliases],
   );
   const httpWatermarkOptions = useMemo(() => {
-    const base = httpColumnOptions.filter(
-      (o) => !httpKeyFields.includes(o.value) || o.value === config.watermarkField,
+    const base = httpWatermarkPickerOptions.filter(
+      (o) =>
+        !lookupAliases.has(o.value) &&
+        !measureAliases.has(o.value) &&
+        (!httpKeyFields.includes(o.value) || o.value === config.watermarkField),
     );
     return [{ label: 'None', value: NO_WATERMARK }, ...base];
-  }, [httpColumnOptions, httpKeyFields, config.watermarkField]);
-  const httpPickersEnabled = editing && httpColumnOptions.length > 0;
+  }, [httpWatermarkPickerOptions, httpKeyFields, config.watermarkField, lookupAliases, measureAliases]);
+  const httpPickersEnabled =
+    editing &&
+    (httpPreviewColumns.length > 0 ||
+      httpKeyFields.length > 0 ||
+      Boolean(config.watermarkField) ||
+      httpComparedFields.length > 0);
 
   const canTestHttp =
     Boolean(config.connectionId) &&
@@ -373,11 +490,26 @@ export function SourceTab({
       httpPreview.run(config.connectionId, config.path, config.distinctOf ?? undefined, {
         companyId,
         entityType,
+        lookups: config.lookups,
+        // sprint-5/10 S5b-FE (AC-10-82) - the SAME Test proves the combine
+        // step too: sent only when the task carries one, so a plain
+        // lookup-only task's response is unaffected.
+        combine: config.combine,
       }),
     ).then((result) => {
       if (result) onHttpPreviewSuccess?.(target, typeof result === 'object' ? result.task : undefined);
     });
-  }, [companyId, config.connectionId, config.distinctOf, config.path, entityType, httpPreview, onHttpPreviewSuccess]);
+  }, [
+    companyId,
+    config.combine,
+    config.connectionId,
+    config.distinctOf,
+    config.lookups,
+    config.path,
+    entityType,
+    httpPreview,
+    onHttpPreviewSuccess,
+  ]);
 
   const onApiConnectionChange = useCallback(
     (id: string) => {
@@ -787,6 +919,29 @@ export function SourceTab({
                 </div>
               )}
 
+              {/* Lookups + Combine rows (sprint-5/10, R9/R11, AC-10-09/82) -
+                  operator-configurable cross-endpoint joins and row
+                  collapsing, ANY API task. Below the path, above the
+                  key/watermark/compared pickers. */}
+              <LookupsEditor
+                editing={editing}
+                lookups={config.lookups ?? []}
+                onChange={(lookups) => onChange({ lookups })}
+                sourceColumns={rawSourceColumns}
+                connectionId={config.connectionId}
+                columnsProbe={columnsProbe}
+                lookupResults={httpPreview.state.status === 'success' ? httpPreview.state.preview.lookups : []}
+              />
+
+              <CombineEditor
+                editing={editing}
+                combine={config.combine}
+                onChange={(combine) => onChange({ combine })}
+                columnOptions={httpPreviewColumns}
+                funnel={combineFunnel}
+                onServerTest={onCombineFormulaTest}
+              />
+
               <SqlPreviewGrid
                 state={
                   httpPreview.state.status === 'success'
@@ -800,8 +955,9 @@ export function SourceTab({
                 keyOptions={httpKeyOptions}
                 watermarkOptions={httpWatermarkOptions}
                 comparedOptions={httpComparedOptions}
-                keyValue={httpKeyFields}
+                keyValue={httpKeyFieldsDisplay}
                 onKeyChange={onHttpKeyFieldsChange}
+                keyReadOnly={combineKeyLocked}
                 watermarkValue={config.watermarkField ?? NO_WATERMARK}
                 onWatermarkChange={(v) => {
                   const next = v === NO_WATERMARK ? null : v;

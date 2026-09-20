@@ -36,6 +36,11 @@ export interface ColumnPickersProps {
   comparedOptions: SearchSelectOption[];
   keyValue: string[];
   onKeyChange: (value: string[]) => void;
+  /** True when the key columns are DERIVED elsewhere (sprint-5/10, AC-10-80
+   * - a combine step's `groupBy`) rather than operator-picked - forces the
+   * key section to read-only chips regardless of `editing`, while the
+   * watermark/compared sections stay exactly as `editing` says. */
+  keyReadOnly?: boolean;
   /** `''` = no watermark. */
   watermarkValue: string;
   onWatermarkChange: (value: string) => void;
@@ -62,6 +67,7 @@ export function ColumnPickers({
   comparedOptions,
   keyValue,
   onKeyChange,
+  keyReadOnly = false,
   watermarkValue,
   onWatermarkChange,
   comparedValue,
@@ -75,7 +81,7 @@ export function ColumnPickers({
         <Label>
           Key columns <span className="text-destructive">*</span>
         </Label>
-        {editing ? (
+        {editing && !keyReadOnly ? (
           <MultiSelect
             options={keyOptions}
             value={keyValue}

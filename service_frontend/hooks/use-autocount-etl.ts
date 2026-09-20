@@ -6,9 +6,11 @@ import { readFieldErrors, readTaskError } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
   AutocountApiConnection,
+  AutocountCombineConfig,
   AutocountEtlSourceConfig,
   AutocountEtlTask,
   AutocountEtlTaskError,
+  AutocountLookupSpec,
   AutocountPreview,
   AutocountSqlConnection,
   AutocountSqlPreview,
@@ -477,6 +479,13 @@ export type HttpPreviewState =
 export interface HttpPreviewRunOptions {
   companyId?: string;
   entityType?: string;
+  /** Operator-authored cross-endpoint joins (sprint-5/10, AC-10-05) applied
+   * over the sampled page, in order. */
+  lookups?: AutocountLookupSpec[];
+  /** The task's own combine step (sprint-5/10 S5a follow-up, AC-10-82) -
+   * sent ONLY when the caller has one; the response's `rows`/`columns`
+   * become the COMBINED shape and the funnel fields populate. */
+  combine?: AutocountCombineConfig | null;
 }
 
 export interface UseHttpPreviewResult {
@@ -525,6 +534,8 @@ export function useHttpPreview(): UseHttpPreviewResult {
           distinctOf,
           companyId: options?.companyId,
           entityType: options?.entityType,
+          lookups: options?.lookups,
+          combine: options?.combine,
         });
         if (id !== runId.current) return false;
         setState({ status: 'success', preview });

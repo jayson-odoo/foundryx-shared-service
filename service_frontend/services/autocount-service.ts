@@ -1,17 +1,18 @@
 /**
  * AutoCount ESB service (sprint-4/13, slice 1) - the boundary the
  * `/autocount/*` surfaces talk to via hooks. The interface IS the backend
- * contract: `modules/autocount/routers/{companies,sync}.py`.
+ * contract: `modules/autocount/routers/{companies,sync,pull}.py`.
  *
- * The shipped binding is the BARE `.real` service - the whole surface (S1-S3)
- * is backed by FastAPI end to end, including the schedule fields
- * (`nextIncrementalAt`/`nextReconcileAt`, plan 22 S3). A `.mock` sibling also
- * exists as frontend-first scaffolding for the dry-run review states
- * (previewable / not-previewable / failure) and the Vitest suite (the house
- * service-trio pattern).
+ * The shipped binding is the BARE `.real` service - the whole surface,
+ * including the human-invoked pull surface (delivery mode, pull API keys,
+ * snapshots - sprint-5/10 S6 phase 2 swap), is backed by FastAPI end to end.
+ * A `.mock` sibling also exists as frontend-first scaffolding for the dry-run
+ * review states (previewable / not-previewable / failure) and the Vitest
+ * suite (the house service-trio pattern).
  *
  * Permission gates (module CSV, granted to tenant Admin by `AppStoreService`
- * on install): `autocount.companies.read/manage`, `autocount.sync.read/run`.
+ * on install): `autocount.companies.read/manage`, `autocount.sync.read/run`,
+ * `autocount.pull.read/manage`.
  */
 import type {
   AutocountApiConnection,
@@ -19,6 +20,7 @@ import type {
   AutocountCompany,
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
+  AutocountDeliveryMode,
   AutocountEntityConfig,
   AutocountEntityConfigUpdate,
   AutocountEtlPreviewResult,
@@ -33,6 +35,11 @@ import type {
   AutocountMappingView,
   AutocountMappingWriteRow,
   AutocountPreviewResult,
+  AutocountPullApiKey,
+  AutocountPullApiKeyCreateInput,
+  AutocountPullApiKeyIssued,
+  AutocountPullSnapshot,
+  AutocountPullSnapshotRowsPage,
   AutocountSimulateResult,
   AutocountSinkTargetInput,
   AutocountSqlConnection,
@@ -48,9 +55,6 @@ import type {
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
 import { realAutocountService } from './autocount-service.real';
-// `mockAutocountService` stays imported by the Vitest suite directly
-// (the house service-trio pattern) - no need to import it here just to
-// keep it compiling.
 
 export interface AutocountListQuery {
   page?: number; // 0-based
@@ -192,7 +196,8 @@ export interface AutocountService {
 
   // ── direct-DB ETL (plan 22, slice S1 - AC-22-04..07/11) ────────────────────
   //
-  // BACKEND CONTRACT (phase 2 must match this EXACTLY - the mock is the spec):
+  // BACKEND CONTRACT (LIVE - `modules/autocount/routers/sql.py`,
+  // `.../companies.py`, `.../schemas.py`):
   //
   //   GET  /autocount/sql/connections
   //        → AutocountSqlConnection[]  (tenant's `sql_database` connections
@@ -263,8 +268,8 @@ export interface AutocountService {
 
   // ── direct-DB ETL (plan 22, slice S2 - AC-22-08..11/17/18/19, Appendix A6) ──
   //
-  // BACKEND CONTRACT (phase 2 must match this EXACTLY - the mock is the spec).
-  // Additions to EXISTING routes first:
+  // BACKEND CONTRACT (LIVE - `modules/autocount/routers/companies.py`,
+  // `.../schemas.py`). Additions to EXISTING routes first:
   //
   //   PATCH /autocount/companies/{id}/entities/{entityType}
   //        body gains `sourceImpl: 'autocount_read' | 'sql_db'` (AC-22-08).
@@ -358,7 +363,8 @@ export interface AutocountService {
 
   // ── "Re-push all" (plan sprint-5/07, AC-07-13..24) ─────────────────────────
   //
-  // BACKEND CONTRACT (S2b must match this EXACTLY - the mock is the spec):
+  // BACKEND CONTRACT (LIVE - `modules/autocount/routers/companies.py`,
+  // `.../schemas.py`):
   //
   //   POST /autocount/companies/{companyId}/entities/{entityType}/etl-task/repush
   //        → 200 AutocountEtlRepushResult {clearedCount, nextReconcileAt, status}
@@ -388,8 +394,8 @@ export interface AutocountService {
 
   // ── document mapping (sprint-5/02, S1 - AC-02-01..09/16..22) ───────────────
   //
-  // BACKEND CONTRACT (S2/S3 backend must match this EXACTLY - the mock is the
-  // spec). Additions to EXISTING routes first:
+  // BACKEND CONTRACT (LIVE - `modules/autocount/routers/sync.py`,
+  // `.../schemas.py`). Additions to EXISTING routes first:
   //
   //   GET .../mapping  →  AutocountMappingView gains `lineSorentoFields` +
   //        `lineAcFields` (AC-02-02) - both empty for a master/GRN entity, so
@@ -486,15 +492,79 @@ export interface AutocountService {
   listApiConnections(): Promise<AutocountApiConnection[]>;
   /** Page-1 sample of an open-API endpoint path (<=50 rows), writes nothing. */
   previewHttp(input: HttpPreviewInput): Promise<HttpPreview>;
+  /**
+   * `POST /autocount/http/preview-columns {connectionId, path}` (AC-10-05) -
+   * the lookup editor's own probe: page-1 column NAMES only, against ANY
+   * endpoint on the task's connection, reusing the same path-safety rule the
+   * main path already enforces.
+   */
+  previewColumns(connectionId: string, path: string): Promise<string[]>;
+
+  // ── human-invoked pull (sprint-5/10) - AC-10-11/27..38/48 ───────────────────
+  //
+  // BACKEND CONTRACT (LIVE since S3/S4/S6 - `modules/autocount/routers/
+  // pull.py` + `schemas.py`; `mockAutocountService` in `autocount-service.
+  // mock.ts` mirrors it as the Vitest fixture double, never a runtime
+  // overlay):
+  //
+  //   PUT /autocount/companies/{id}/entities/{entityType}/delivery-mode
+  //        {deliveryMode} -> AutocountEntityConfig  (AC-10-11). `pull`
+  //        requires the company's `sorentoCompanyCode` AND the entity to be
+  //        pull-capable (422 naming the field otherwise).
+  //        Gated `autocount.companies.manage`.
+  //
+  //   GET/POST /autocount/pull/keys -> AutocountPullApiKey[] /
+  //        AutocountPullApiKeyIssued (plaintext shown once, AC-10-28).
+  //   POST /autocount/pull/keys/{id}/revoke -> AutocountPullApiKey (the
+  //        server-side target of the deferred-action commit; the operator
+  //        UI itself never calls this directly - Revoke is the CORE
+  //        deferred-action grace window, AC-10-38).
+  //        Gated `autocount.pull.manage`.
+  //
+  //   GET /autocount/pull/snapshots -> ListResult<AutocountPullSnapshot>
+  //        (tenant-scoped, newest first). GET .../snapshots/{id} -> the
+  //        header. GET .../snapshots/{id}/rows?page=&pageSize= -> one page.
+  //        POST /autocount/pull/snapshots {companyId, entityType} ->
+  //        AutocountPullSnapshot (`requestedVia: 'operator'`; re-attaches to
+  //        an in-flight build for the same triple, AC-10-26/88).
+  //        Gated `autocount.pull.read` (reads) / `autocount.pull.manage`
+  //        (build).
+
+  /** The entity's push/pull choice (AC-10-11). */
+  setDeliveryMode(
+    companyId: string,
+    entityType: string,
+    deliveryMode: AutocountDeliveryMode,
+  ): Promise<AutocountEntityConfig>;
+  /** Every pull API key of the tenant (AC-10-37). */
+  listPullKeys(): Promise<AutocountPullApiKey[]>;
+  /** Issue a key - the plaintext is returned ONCE (AC-10-28). */
+  issuePullKey(input: AutocountPullApiKeyCreateInput): Promise<AutocountPullApiKeyIssued>;
+  /** The revoke ROUTE (AC-10-37) - the operator UI reaches this through the
+   * deferred-action grace window instead (AC-10-38), never directly. */
+  revokePullKey(id: string): Promise<AutocountPullApiKey>;
+  /** Snapshots of the tenant, newest first (AC-10-37). */
+  listPullSnapshots(
+    query?: AutocountListQuery & { companyId?: string; entityType?: string },
+  ): Promise<ListResult<AutocountPullSnapshot>>;
+  /** One snapshot's header (AC-10-32). */
+  getPullSnapshot(id: string): Promise<AutocountPullSnapshot>;
+  /** One page of a snapshot's rows (AC-10-33). */
+  getPullSnapshotRows(
+    id: string,
+    page?: number,
+    pageSize?: number,
+  ): Promise<AutocountPullSnapshotRowsPage>;
+  /** Build a snapshot as the operator (`requestedVia: 'operator'`, AC-10-37). */
+  buildPullSnapshot(companyId: string, entityType: string): Promise<AutocountPullSnapshot>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// S5 (sprint-5/08) - swapped to the REAL service. The open REST API source
-// (`listApiConnections`/`previewHttp`, the `refPrefix` company-create path,
-// the `autocount_http` task fields documented above) is now backed by
-// FastAPI end to end (S2 provider/company, S3 source/task, S4 brand, review
-// round 1 fixes B1-B4/S1-S13). `mockAutocountService` stays as the frontend
-// Vitest fixture only - import it directly in a test, never through this
-// module.
+// The shipped binding is the BARE `.real` service - every surface above,
+// including the human-invoked pull surface (delivery mode, pull API keys,
+// snapshots - sprint-5/10 S6 phase 2 swap), is backed by FastAPI end to end.
+// `mockAutocountService` (`autocount-service.mock.ts`) stays importable by
+// the Vitest suite directly (the house service-trio pattern) - there is no
+// runtime mock overlay to bind here anymore.
 // ═══════════════════════════════════════════════════════════════════════════
 export const autocountService: AutocountService = realAutocountService;

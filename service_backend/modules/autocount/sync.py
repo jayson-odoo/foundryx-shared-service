@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -58,27 +59,39 @@ from .canonical.grn import (
 )
 from .canonical.masters import (
     ENTITY_CUSTOMER,
+    ENTITY_PRODUCT,
     ENTITY_SUPPLIER,
     VENDOR_ENTITY_CUSTOMER,
     VENDOR_ENTITY_SUPPLIER,
     VENDOR_LAST_MODIFIED_PATH,
 )
 from .client import AutoCountError
+from .http_source.combine import (
+    CombineDropError,
+    apply_pull_metadata_map,
+    excluded_row_for_mapping_failure,
+)
+from .http_source.envelope import ENVELOPE_LIST
 from .http_source.errors import HttpSourceError
 from .mapping import (
+    SCOPE_HEADER,
     UNQUALIFIED_REF_ENTITIES,
     MappedDocument,
     MappingEngine,
     build_mapping_rows_for_run,
     flat_profile,
+    profile_for,
 )
 from .models import (
+    DELIVERY_MODE_PULL,
     ETL_STATUS_ACTIVE,
+    PULL_SNAPSHOT_STATUS_BUILDING,
     RUN_ABORTED,
     RUN_FAILED,
     RUN_MODE_INCREMENTAL,
     RUN_MODE_MANUAL,
     RUN_MODE_RECONCILE,
+    RUN_MODE_SNAPSHOT,
     RUN_SUCCESS,
     SOURCE_IMPL_AUTOCOUNT_HTTP,
     SOURCE_IMPL_SQL_DB,
@@ -336,6 +349,24 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             error=f"'{entity_type}' is not configured for sync on this company.",
         )
         return
+    #     !!  A ``pull`` TASK NEVER RUNS THIS JOB AT ALL (AC-10-12/13).  !!
+    # It never reaches the sweep (``scheduler.py``'s own filter) and this is
+    # the PUSH job - fetching/staging here for a task that is never reviewed
+    # through ``ac_staged_record`` in the first place would be pure churn,
+    # and staging it would risk a LATER accidental auto-push the moment the
+    # mode flips back. Its own extraction runs through the dedicated
+    # ``autocount_pull_snapshot`` job instead.
+    if config.delivery_mode == DELIVERY_MODE_PULL:
+        service.finish(
+            job,
+            status=JOB_DONE,
+            result={
+                "companyId": company_id,
+                "entityType": entity_type,
+                "skipped": "pull_delivery_mode",
+            },
+        )
+        return
 
     watermarks = WatermarkRepository(db)
     watermark_row = watermarks.get_or_create(tenant_id, company_id, entity_type)
@@ -564,6 +595,45 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
             started,
             config=config,
             error_code="FILTER_FORMULA",
+        )
+        return
+    except CombineDropError as exc:
+        # review round 4 (SF-3) - same treatment as the delete guard/filter
+        # formula faults above: a drop rule that raises at RUNTIME
+        # (AC-10-79) is a deliberate safety stop, not a transport/driver
+        # fault. `str(exc)` already names the failing rule
+        # (``CombineDropError.__init__``'s own "Drop rule '<name>': ..."
+        # message), so the push run's own error string names it too.
+        logger.warning(
+            "autocount combine drop rule failed for job %s: %s", job.id, str(exc)
+        )
+        record_client_calls(
+            db,
+            source,
+            tenant_id=tenant_id,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        record_activity(
+            db,
+            tenant_id=tenant_id,
+            operation=f"sync {entity_type}",
+            status=ACTIVITY_ERROR,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            error_message=str(exc),
+        )
+        _fail(
+            db,
+            service,
+            job,
+            run,
+            watermark_row,
+            str(exc),
+            started,
+            config=config,
+            error_code="COMBINE_RULE_FAILED",
         )
         return
     except HttpSourceError as exc:
@@ -807,6 +877,17 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     # ``sql_db`` exactly).
     pushed_count = 0
     push_summary: Optional[Dict[str, Any]] = None
+    # sprint-5/10 review round 1 kill-test finding (AC-10-12) - a
+    # ``delivery_mode == DELIVERY_MODE_PUSH`` condition used to sit here too.
+    # It is CONFIRMED DEAD CODE, not merely untested: the pull short-circuit
+    # above (this function's own "a pull TASK NEVER RUNS THIS JOB AT ALL"
+    # guard) returns BEFORE ``config.source_impl``/``etl_status`` are even
+    # inspected, let alone before this branch - so by the time execution
+    # reaches here, ``config.delivery_mode`` can only ever be ``push``
+    # (``config`` is loaded once at the top of this function and never
+    # re-fetched, so even a concurrent PUT flipping the DB row mid-run could
+    # not change what THIS in-memory check would have read). Removed rather
+    # than kept as an untestable no-op a reviewer could mistake for coverage.
     if (
         config.source_impl in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)
         and config.etl_status == ETL_STATUS_ACTIVE
@@ -1873,6 +1954,20 @@ def _run_paged_sql_db(
     # ── auto-push (plan 22 §2.6, unchanged contract) ─────────────────────────
     pushed_count = 0
     push_summary: Optional[Dict[str, Any]] = None
+    # sprint-5/10 review round 1 kill-test finding (AC-10-12) - the twin of
+    # the plain path's own note above: a ``delivery_mode == DELIVERY_MODE_
+    # PUSH`` condition used to sit here too. It is EQUALLY dead code, by the
+    # SAME reasoning - ``_run_paged_sql_db`` (this function) is only ever
+    # dispatched into from ``run_autocount_sync`` AFTER that function's own
+    # pull short-circuit has already returned for a pull-mode task (line
+    # ~354), so ``config.delivery_mode`` can only be ``push`` by the time
+    # execution reaches here either. Confirmed by
+    # ``tests/test_s10_s3_review1_dead_gates.py::
+    # test_pull_mode_never_reaches_the_paged_dispatch_or_either_inline_gate``
+    # (a SOURCE_IMPL_SQL_DB pull-mode config, the only source impl that can
+    # reach this function at all): ``source_factory`` and this function are
+    # both never called. Removed rather than kept as an untestable no-op a
+    # reviewer could mistake for coverage.
     if config.etl_status == ETL_STATUS_ACTIVE:
         from .services.sync_service import SyncService
 
@@ -2221,6 +2316,541 @@ def _abort(db: Session, service: JobService, run: AcSyncRun, started: float) -> 
     run.duration_ms = int((time.monotonic() - started) * 1000)
     db.commit()
     logger.info("autocount sync aborted; watermark held.")
+
+
+# ── pull snapshot build job (sprint-5/10 §2.4, AC-10-20..26/46/62/63) ────────
+# The registered ``background_jobs.type`` for a human-invoked pull build.
+AUTOCOUNT_PULL_SNAPSHOT = "autocount_pull_snapshot"
+
+# sprint-5/10 review round 1 MUST-FIX 1 (AC-10-26) - beat once per source
+# page (threaded into ``HttpApiSource`` itself) AND every N delivered rows
+# inserted, so a slow book's insert phase (thousands of rows, no network
+# calls at all) still beats often enough that the orphan sweep's
+# ``background_job_orphan_after_minutes`` window is never crossed by
+# in-process work alone.
+ROW_INSERT_HEARTBEAT_INTERVAL = 200
+
+
+class _BuildAbandoned(Exception):
+    """Internal signal ONLY (MUST-FIX 1) - this build's own snapshot was
+    found non-``building`` mid-build (the orphan sweep's
+    ``BUILD_ABANDONED``, or anything else that moved it to a terminal
+    state). Caught inside ``_run_pull_snapshot`` itself: the handler must
+    stop cleanly - no further row inserts, no re-stamp of an already-
+    terminal snapshot (that would itself raise
+    ``SnapshotNotBuildingError``), the JOB ends FAILED with a clear
+    message."""
+
+
+# review round 2 (item 1, AC-10-64/88) - the FULL pinned failed-status code
+# ladder as ONE named tuple, so the classifier below, the orphan-sweep hook
+# (``bootstrap.on_job_orphaned``) and the gateway's own pinned exhaustive-set
+# test (``test_s10_s4_gateway_errors_and_audit.py``) all read the SAME set -
+# never hand-typed literals that can silently drift apart. ``BUILD_ABANDONED``
+# (AC-10-88) is a genuine FIFTH code, deliberately never folded onto
+# ``SOURCE_PAGE_FAILED`` - that would misreport an orphan-reclaimed build as
+# a source fault when nothing about the source ever failed.
+ERROR_CODE_SOURCE_PAGE_FAILED = "SOURCE_PAGE_FAILED"
+ERROR_CODE_ENRICH_FAILED = "ENRICH_FAILED"
+ERROR_CODE_ROW_LIMIT = "ROW_LIMIT"
+ERROR_CODE_EMPTY_EXTRACT = "EMPTY_EXTRACT"
+ERROR_CODE_BUILD_ABANDONED = "BUILD_ABANDONED"
+# sprint-5/10 review round 4 (SF-3) - a `combine` drop rule that raises at
+# RUNTIME during a pull build (AC-10-79's "a drop formula that raises is a
+# named task error, not a silent keep") is a genuine EXTRACTION failure, the
+# SAME category as `SOURCE_PAGE_FAILED` - never folded onto it, because an
+# operator debugging "why did this build fail" needs to land on the combine
+# rule, not go looking at the source connection first.
+ERROR_CODE_COMBINE_RULE_FAILED = "COMBINE_RULE_FAILED"
+
+PULL_SNAPSHOT_FAILED_CODES: Tuple[str, ...] = (
+    ERROR_CODE_SOURCE_PAGE_FAILED,
+    ERROR_CODE_EMPTY_EXTRACT,
+    ERROR_CODE_ENRICH_FAILED,
+    ERROR_CODE_ROW_LIMIT,
+    ERROR_CODE_BUILD_ABANDONED,
+    ERROR_CODE_COMBINE_RULE_FAILED,
+)
+
+
+def _classify_http_source_error(exc: HttpSourceError) -> str:
+    """The pinned gateway error-code ladder (AC-10-22/64): ``ROW_LIMIT`` by
+    its own code regardless of phase, ``ENRICH_FAILED`` for a lookup
+    endpoint fault (``_apply_lookups`` re-wraps with ``phase='enrich'``,
+    ``http_source/source.py``), ``SOURCE_PAGE_FAILED`` for everything else
+    on the main path. Every branch returns a member of
+    ``PULL_SNAPSHOT_FAILED_CODES``."""
+    if exc.code == "row_limit":
+        return ERROR_CODE_ROW_LIMIT
+    if getattr(exc, "phase", None) == "enrich":
+        return ERROR_CODE_ENRICH_FAILED
+    return ERROR_CODE_SOURCE_PAGE_FAILED
+
+
+def _excluded_row_entry(
+    mapped: "MappedDocument", *, combine: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """One ``excludedRows[]`` entry. A task with NO combine step keeps the
+    ORIGINAL shape (AC-10-62): ``{source_ref, code, reason, message}`` -
+    ``source_ref``/``code`` are read off the FIRST field error's own
+    ``doc_key``/the document's ``doc_no``, both resolve even when the
+    failure is a header field OTHER than identity, since identity is mapped
+    before every other field (``mapping.map_document``).
+
+    sprint-5/10 S5b review round 5 (S2) - a COMBINE-carrying task's mapping
+    failure instead gets the SAME ``{<groupBy cols>, measure, reason,
+    message}`` shape the combine engine's own require-stage exclusions use
+    (``excluded_row_for_mapping_failure``, AC-10-77), read off ``mapped.raw``
+    (the post-combine row a combine-carrying task's mapping stage always
+    sees) - ONE shape per combine-carrying task, never a mix of the two.
+    """
+    message = "; ".join(error.message() for error in mapped.errors)
+    if combine:
+        return excluded_row_for_mapping_failure(mapped.raw, combine, message)
+    source_ref = ""
+    if mapped.errors:
+        source_ref = mapped.errors[0].doc_key or ""
+    return {
+        "source_ref": source_ref,
+        "code": mapped.doc_no,
+        "reason": "mapping_failed",
+        "message": message,
+    }
+
+
+def _product_price_counters(
+    records: List["SourceRecord"], mapping_rows: List[Any]
+) -> Dict[str, int]:
+    """Product-only header counters (AC-10-63), computed generically - never
+    a hardcoded ``BaseUOMPrice`` - by finding the mapping row that actually
+    feeds ``list_price`` and reading ITS source column off every raw record
+    (post-lookup, pre-mapping): ``zeroListPriceCount`` counts a delivered
+    zero (post-clamp, so every clamped negative counts here too, R5/AC-10-59);
+    ``negativeListPriceCount`` counts only the SOURCE values that were
+    negative; ``enrichMissCount`` counts rows whose alias key never landed on
+    the row at all (an enrich miss, AC-10-02 - distinct from a present but
+    non-numeric value, which contributes to neither bucket)."""
+    price_row = next(
+        (
+            row
+            for row in mapping_rows
+            if row.scope == SCOPE_HEADER
+            and row.canonical_field == "list_price"
+            and row.is_enabled
+        ),
+        None,
+    )
+    zero = negative = missing = 0
+    if price_row is not None:
+        for record in records:
+            raw_value = record.raw.get(price_row.source_path)
+            if raw_value is None:
+                missing += 1
+                continue
+            try:
+                number = Decimal(str(raw_value).strip())
+            except (InvalidOperation, ValueError):
+                # Non-numeric and present - a per-record mapping failure will
+                # exclude this row separately; never miscounted as a price
+                # bucket here.
+                continue
+            if number < 0:
+                negative += 1
+                zero += 1
+            elif number == 0:
+                zero += 1
+    return {
+        "zeroListPriceCount": zero,
+        "negativeListPriceCount": negative,
+        "enrichMissCount": missing,
+    }
+
+
+def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
+    """The ``autocount_pull_snapshot`` job handler (AC-10-20/21).
+
+    Mirrors ``run_autocount_sync``'s own ``_fail`` pattern: every extraction
+    fault is isolated INTERNALLY (the snapshot is stamped ``failed`` with its
+    own ``error_code``) so ``PullService.request_build`` never raises for a
+    failed build - it raises only for the two pre-flight guards
+    (AC-10-26). Reuses the SAME source registry factory and mapping engine
+    the push path uses, with ``mode=reconcile``/``persist_hashes=False``: a
+    pull writes NO ``ac_staged_record``, NO ``ac_row_hash`` and advances NO
+    watermark (AC-10-21) - it is a full snapshot every time.
+    """
+    service = JobService(db)
+    payload = dict(job.payload_json or {})
+    tenant_id = job.tenant_id
+    company_id = str(payload.get("companyId") or "")
+    entity_type = str(payload.get("entityType") or "")
+    snapshot_id = str(payload.get("snapshotId") or "")
+    started = time.monotonic()
+    trace_id = trace_id_for_job(job.id)
+
+    from .repositories import PullSnapshotRepository
+    from .services.pull_service import (
+        AUTOCOUNT_PULL_SNAPSHOT_TTL_HOURS,
+        SnapshotService,
+        compute_content_hash,
+    )
+
+    snap_repo = PullSnapshotRepository(db)
+    snapshot_service = SnapshotService(db)
+    snapshot = snap_repo.get(tenant_id, snapshot_id)
+    company = CompanyRepository(db).get(tenant_id, company_id)
+    config = EntityConfigRepository(db).get(tenant_id, company_id, entity_type)
+
+    def _fail_snapshot(message: str, error_code: str) -> None:
+        # review round 2 (item 1) - fail CLOSED on an un-pinned code: every
+        # ``error_code`` this handler ever stamps must be a member of the
+        # ONE named ladder, so a future call site can never silently drift
+        # from AC-10-64's exhaustive set.
+        assert error_code in PULL_SNAPSHOT_FAILED_CODES, (
+            f"unpinned pull-snapshot failed-status code {error_code!r}"
+        )
+        if snapshot is not None:
+            try:
+                snapshot_service.stamp_failed(
+                    tenant_id, snapshot, error=message[:4000], error_code=error_code
+                )
+            except Exception:  # noqa: BLE001 - the job's own failure below still lands
+                logger.exception(
+                    "autocount pull snapshot %s could not be stamped failed", snapshot_id
+                )
+        service.finish(job, status=JOB_FAILED, error=message)
+
+    if snapshot is None or company is None or config is None:
+        _fail_snapshot(
+            "The pull task this build was requested for no longer exists.",
+            ERROR_CODE_SOURCE_PAGE_FAILED,
+        )
+        return
+
+    run = SyncRunRepository(db).add(
+        AcSyncRun(
+            tenant_id=tenant_id, company_id=company_id, entity_type=entity_type,
+            job_id=job.id, mode=RUN_MODE_SNAPSHOT,
+        )
+    )
+    db.commit()
+
+    from .services.company_service import CompanyService
+
+    companies = CompanyService(db)
+    ctx = SourceContext(
+        db=db, tenant_id=tenant_id, company=company, entity_config=config,
+        company_service=companies,
+    )
+
+    def _finish_run_failed(message: str) -> None:
+        run.outcome = RUN_FAILED
+        run.error = message[:4000]
+        run.finished_at = datetime.now(timezone.utc)
+        run.duration_ms = int((time.monotonic() - started) * 1000)
+        db.commit()
+
+    def _finish_abandoned(exc: "_BuildAbandoned") -> None:
+        """MUST-FIX 1 - the snapshot is ALREADY in a terminal, non-building
+        state (someone else's - the orphan sweep's - write): never re-stamp
+        it (that would itself raise ``SnapshotNotBuildingError``), just close
+        the RUN and the JOB cleanly with a clear message. No further row
+        inserts happen - every call site below returns immediately after
+        this."""
+        message = str(exc)
+        _finish_run_failed(message)
+        service.finish(job, status=JOB_FAILED, error=message)
+
+    def _beat_and_check() -> None:
+        """Liveness stamp (MUST-FIX 1, AC-10-26) fired per source page (main
+        path AND every lookup, via ``HttpApiSource``'s own ``heartbeat``
+        callback) and every ``ROW_INSERT_HEARTBEAT_INTERVAL`` delivered
+        rows below - so a 25-30 minute Mocha build (plan Appendix A7) never
+        crosses ``background_job_orphan_after_minutes`` (15) on beats alone.
+        Re-reads the snapshot's OWN row FRESH (never trusts the in-memory
+        ``snapshot`` object, which the orphan sweep writes to from a
+        DIFFERENT session/process) and raises ``_BuildAbandoned`` the
+        INSTANT it is no longer ``building`` - stopping the walk/insert loop
+        immediately, before another page is requested or another row
+        inserted."""
+        _heartbeat(service, job.id)
+        current = snap_repo.get(tenant_id, snapshot_id)
+        if current is None or current.status != PULL_SNAPSHOT_STATUS_BUILDING:
+            raise _BuildAbandoned(
+                f"This build was abandoned before it finished (snapshot "
+                f"{snapshot_id} is no longer building)."
+            )
+
+    try:
+        source = source_factory(config.source_impl)(
+            ctx,
+            entity_type=entity_type,
+            vendor_entity=VENDOR_ENTITIES.get(entity_type, VENDOR_ENTITY),
+            record_cap=config.record_cap,
+            lookback_days=config.initial_lookback_days,
+            envelope=config.envelope,
+            initial_load=config.initial_load,
+            identifier_key=VENDOR_IDENTIFIER_KEYS.get(entity_type, "DocNo"),
+            last_modified_path=VENDOR_LAST_MODIFIED_PATHS.get(entity_type, "LastModified"),
+            mode=RUN_MODE_RECONCILE,
+            persist_hashes=False,
+            # MUST-FIX 1 - swallowed harmlessly by the sql_db factory
+            # (``**_extra``); ``HttpApiSource`` fires it after every page,
+            # main path AND every lookup.
+            heartbeat=_beat_and_check,
+        )
+    except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
+        _finish_run_failed(str(exc))
+        _fail_snapshot(str(exc), ERROR_CODE_SOURCE_PAGE_FAILED)
+        return
+
+    try:
+        result: FetchResult = source.fetch_changes(Watermark())
+    except _BuildAbandoned as exc:
+        record_client_calls(
+            db, source, tenant_id=tenant_id, trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        _finish_abandoned(exc)
+        return
+    except CombineDropError as exc:
+        # review round 4 (SF-3) - a named build failure, distinct from a
+        # source/enrich fault: the message already names the failing rule
+        # (``CombineDropError.__init__``), so this never needs to re-derive
+        # it from ``exc.index``/``exc.rule_name``.
+        record_client_calls(
+            db, source, tenant_id=tenant_id, trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        _finish_run_failed(str(exc))
+        _fail_snapshot(str(exc), ERROR_CODE_COMBINE_RULE_FAILED)
+        return
+    except HttpSourceError as exc:
+        record_client_calls(
+            db, source, tenant_id=tenant_id, trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        _finish_run_failed(exc.message)
+        _fail_snapshot(exc.message, _classify_http_source_error(exc))
+        return
+    except Exception as exc:  # noqa: BLE001
+        record_client_calls(
+            db, source, tenant_id=tenant_id, trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        _finish_run_failed(f"Fetch failed: {exc}")
+        _fail_snapshot(f"Fetch failed: {exc}", ERROR_CODE_SOURCE_PAGE_FAILED)
+        return
+    finally:
+        source.close()
+
+    record_client_calls(
+        db, source, tenant_id=tenant_id, trace_id=trace_id,
+        external_ref=company.database_name,
+    )
+
+    mapping_rows = build_mapping_rows_for_run(
+        entity_type,
+        companies.mapping_rows(tenant_id, company_id, entity_type),
+        is_sql_db_source=config.source_impl == SOURCE_IMPL_SQL_DB,
+        source_config=config.source_config,
+    )
+    engine = MappingEngine(
+        mapping_rows,
+        detail_key=None,
+        entity_type=entity_type,
+        profile=flat_profile(
+            entity_type,
+            (config.source_config or {}).get(
+                "keyColumns" if config.source_impl == SOURCE_IMPL_SQL_DB else "keyFields"
+            )
+            or [],
+        ),
+        database_name=company.database_name,
+    )
+
+    delivered: List[Tuple[str, Dict[str, Any]]] = []
+    excluded_rows: List[Dict[str, Any]] = []
+    # S2 (review round 5) - `None` for every source without a `combine`
+    # step (`SqlDbSource` carries no `.combine` attribute at all), so this
+    # is byte-identical for every existing entity.
+    task_combine: Optional[Dict[str, Any]] = getattr(source, "combine", None)
+    for record in result.records:
+        mapped = engine.map_document(record.raw)
+        if mapped.record is None:
+            excluded_rows.append(_excluded_row_entry(mapped, combine=task_combine))
+            continue
+        delivered.append((mapped.record.source_ref, mapped.record.sink_payload()))
+
+    # sprint-5/10 S5b (AC-10-42/44/65/66) - a combine-stage exclusion (a row
+    # whose `require`/`computed` stage excluded it, e.g. stock's own
+    # `uom_rate_unresolved`/`computed_error`) never reaches `result.records`
+    # at all (`HttpApiSource.fetch_changes` drops it BEFORE any
+    # `SourceRecord` is built) - merged in here so the snapshot's own
+    # `excludedRows`/`excludedCount` report BOTH per-record mapping
+    # failures and combine-stage exclusions, never just the former.
+    # `None` for every task with no `combine` step configured (every
+    # existing entity today) - byte-identical to before this change.
+    if result.combine_metadata:
+        excluded_rows = excluded_rows + list(result.combine_metadata.get("excludedRows") or [])
+
+    record_count = len(delivered)
+
+    #     !!  ZERO-ROW GUARD (AC-10-46).  !!
+    # A build that produced NOTHING while the most recent READY snapshot for
+    # this triple carried records looks like a broken extraction, not a
+    # genuine wipe - a first-ever build with zero rows is still allowed
+    # (nothing to contradict it).
+    previous_ready = snap_repo.latest_ready_for_triple(tenant_id, company_id, entity_type)
+    if record_count == 0 and previous_ready is not None and previous_ready.record_count > 0:
+        run.rows_scanned = (
+            result.rows_scanned if result.rows_scanned is not None else len(result.records)
+        )
+        _finish_run_failed(
+            "This build returned zero rows while a previous snapshot for this "
+            "entity carried records - treated as a broken extraction, never a "
+            "genuine wipe."
+        )
+        _fail_snapshot(
+            "This build returned zero rows while a previous snapshot for this "
+            "entity carried records.",
+            ERROR_CODE_EMPTY_EXTRACT,
+        )
+        return
+
+    try:
+        for index, (source_ref, row_payload) in enumerate(delivered):
+            # MUST-FIX 1 - a beat (+ abandonment check) every N rows, so the
+            # INSERT phase (thousands of rows, zero network calls) still
+            # beats regularly even after the walk itself is long done.
+            if index and index % ROW_INSERT_HEARTBEAT_INTERVAL == 0:
+                _beat_and_check()
+            snapshot_service.insert_row(
+                tenant_id, snapshot, index,
+                company_id=company_id, source_ref=source_ref, payload=row_payload,
+            )
+
+        rows_scanned = (
+            result.rows_scanned if result.rows_scanned is not None else len(result.records)
+        )
+        #     !!  MUST-FIX 2 (AC-10-24) - COMPLETE IS NEVER A GUESS.  !!
+        # A bare-array endpoint (``ENVELOPE_LIST``) has no total to compare
+        # against BY DESIGN - one request, unconditionally complete. A PAGED
+        # endpoint that omitted or nulled ``TotalCount`` is UNVERIFIED, never
+        # silently "complete" - the worst failure mode this plan names
+        # (Sorento zeroes every stock pair absent from a fed set).
+        # ``envelope_kind is None`` (a source that never reported one, e.g.
+        # a future ``sql_db`` pull) is treated the SAME conservative way as
+        # a paged mismatch: unverified, so ``False``.
+        main_verified = (
+            result.envelope_kind == ENVELOPE_LIST
+            or (result.reported_total is not None and rows_scanned == result.reported_total)
+        )
+        # review round 1 follow-up (coordinator ruling 2026-09-20) - AC-10-24
+        # applied honestly: the LOOKUPS are part of the extraction too, so a
+        # verified main walk is not enough - a truncated lookup silently
+        # turns matches into misses. No new wire key: ``complete`` alone
+        # carries this (the consumer already refuses Confirm on
+        # ``complete: false``); the unverified alias(es) are named in ONE
+        # activity note below, never on the snapshot header/metadata_json.
+        unverified_lookups = [
+            (alias, v) for alias, v in result.lookup_verification.items() if not v.verified
+        ]
+        complete = main_verified and not unverified_lookups
+        content_hash = compute_content_hash([payload for _, payload in delivered])
+        metadata: Dict[str, Any] = {
+            "excludedRows": excluded_rows,
+            "excludedCount": len(excluded_rows),
+            # review round 2 (item 2, AC-10-32/A7) - the effective page size
+            # the MAIN walk settled on (post any AC-10-75 halving), so both
+            # headers can finally serve the key they already read.
+            "sourcePageSize": getattr(source, "source_page_size", None),
+        }
+        if entity_type == ENTITY_PRODUCT:
+            metadata.update(_product_price_counters(result.records, mapping_rows))
+        # sprint-5/10 S5b (AC-10-81, R11) - ONE declarative map, read off
+        # the entity's own profile, from the combine engine's generic
+        # metadata onto the agreed per-entity wire names (stock:
+        # zeroPairs/negativePairs/negativePairList/fractionalPairs/
+        # excludedNonzeroCount). A PRODUCT snapshot's profile carries no
+        # map (`pull_metadata_map` is `None`), so this is a no-op for every
+        # entity but stock today (AC-10-65's own control test).
+        if result.combine_metadata:
+            metadata_map = profile_for(entity_type).pull_metadata_map
+            if metadata_map:
+                # B1 (review round 5, AC-10-65/66) - the MERGED
+                # `excluded_rows` (combine-stage exclusions AND mapping-stage
+                # ones, S2's own normalised shape for the latter), never
+                # `result.combine_metadata`'s own combine-stage-only list:
+                # a mapping-stage exclusion of a real stock pair (e.g. a
+                # negative quantity that survived combine but failed the
+                # canonical model's `qty >= 0`) must count toward
+                # `excludedNonzeroCount` exactly like a combine-stage one -
+                # the consumer's Confirm guard reads that ONE integer, never
+                # a per-stage split (AC-10-65's "both entities are reported
+                # identically").
+                combine_metadata_for_map = {
+                    **result.combine_metadata,
+                    "excludedRows": excluded_rows,
+                }
+                metadata.update(apply_pull_metadata_map(combine_metadata_for_map, metadata_map))
+
+        extracted_at = datetime.now(timezone.utc)
+        expires_at = extracted_at + timedelta(hours=AUTOCOUNT_PULL_SNAPSHOT_TTL_HOURS)
+        snapshot_service.stamp_ready(
+            tenant_id, snapshot,
+            record_count=record_count, complete=complete, content_hash=content_hash,
+            metadata=metadata, extracted_at=extracted_at, expires_at=expires_at,
+        )
+        if unverified_lookups:
+            # review round 1 follow-up - ONE note, right after the commit
+            # ``stamp_ready`` just made (``record_activity`` commits its own
+            # session - never mid-transaction), naming every unverified
+            # alias with its scanned-vs-reported counts. Never on the
+            # snapshot's own wire shape (Appendix A is agreed cross-repo) -
+            # this is an operator/Developer-Logs note only.
+            names = ", ".join(
+                f"'{alias}' (scanned {v.rows_scanned} of reported "
+                f"{v.reported_total if v.reported_total is not None else 'unknown'})"
+                for alias, v in unverified_lookups
+            )
+            record_activity(
+                db, tenant_id=tenant_id, operation=f"pull snapshot {entity_type}",
+                status=ACTIVITY_ERROR, trace_id=trace_id,
+                external_ref=company.database_name,
+                error_message=(
+                    f"This snapshot is marked incomplete: the following lookup(s) "
+                    f"could not be verified as fully walked - {names}."
+                ),
+            )
+    except _BuildAbandoned as exc:
+        _finish_abandoned(exc)
+        return
+
+    run.outcome = RUN_SUCCESS
+    run.rows_scanned = rows_scanned
+    run.added_count = record_count
+    run.finished_at = datetime.now(timezone.utc)
+    run.duration_ms = int((time.monotonic() - started) * 1000)
+    db.commit()
+
+    service.finish(
+        job, status=JOB_DONE,
+        result={"snapshotId": snapshot.id, "recordCount": record_count, "complete": complete},
+    )
+
+
+def register_pull_snapshot_handler() -> None:
+    """Register the ``autocount_pull_snapshot`` handler - imported in the
+    Celery worker path too (``app/workflow_engine/worker.py``), exactly like
+    ``register_autocount_sync_handler`` (its own docstring explains why)."""
+    register_job_handler(_PULL_SNAPSHOT_HANDLER_DEF)
+
+
+_PULL_SNAPSHOT_HANDLER_DEF = JobHandlerDef(
+    AUTOCOUNT_PULL_SNAPSHOT, _run_pull_snapshot, "AutoCount pull snapshot build",
+    heartbeats=True,
+)
+register_pull_snapshot_handler()
 
 
 # ── boot registration (idempotent) ────────────────────────────────────────────

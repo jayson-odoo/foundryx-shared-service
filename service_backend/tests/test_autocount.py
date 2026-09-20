@@ -126,9 +126,17 @@ def test_provider_fields_have_no_appsecret_and_no_company(client):
     sprint-5/08 (AC-08-01): the ``auth`` select now LEADS the field list (it
     decides whether the three credential fields even show); see
     ``tests/test_autocount_http_provider.py`` for the ``showWhen`` pin.
+
+    sprint-5/10 S6 (AC-10-85): the open REST wrapper's two host-latency
+    knobs close the list (``pageSize``/``requestTimeoutSeconds``, both
+    ``showWhen`` auth = none) - pinned in full by
+    ``tests/test_s10_s6_connection_sizing.py``.
     """
     keys = [f["key"] for f in AutoCountProvider().fields()]
-    assert keys == ["auth", "baseUrl", "appId", "userId", "password"]
+    assert keys == [
+        "auth", "baseUrl", "appId", "userId", "password",
+        "pageSize", "requestTimeoutSeconds",
+    ]
 
     fields = {f["key"]: f for f in AutoCountProvider().fields()}
     assert fields["appId"]["secret"] is True
@@ -497,7 +505,7 @@ def test_test_rejects_a_missing_or_non_http_base_url():
     assert provider.test({}, {}).ok is False
     result = provider.test({"baseUrl": "autocount.example.com"}, {})
     assert result.ok is False
-    assert "http://" in result.message
+    assert "https://" in result.message
 
 
 # ── the Sorento consumer provider (plan 14 Task A, AC-14-15) ──────────────

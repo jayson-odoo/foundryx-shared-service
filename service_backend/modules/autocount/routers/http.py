@@ -104,6 +104,7 @@ def preview_http(
             body.path,
             distinct_of=body.distinctOf,
             lookups=body.lookups,
+            combine=body.combine,
             company_id=body.companyId,
             entity_type=body.entityType,
             transport=transport,
@@ -112,6 +113,7 @@ def preview_http(
         return _field_errors(exc.field_errors, exc.message)
     except AutocountServiceError as exc:
         _raise(exc)
+    funnel = result.combine_funnel or {}
     return HttpPreviewResponse(
         envelope=result.envelope,
         totalCount=result.total_count,
@@ -129,4 +131,21 @@ def preview_http(
             LookupPreviewCountOut(alias=entry.alias, matched=entry.matched, missed=entry.missed)
             for entry in result.lookups
         ],
+        # sprint-5/10 S5a follow-up (AC-10-82) - present ONLY when the
+        # request carried a `combine` block (`EtlService.preview_http`
+        # leaves `combine_funnel` `None` otherwise).
+        rowsIn=funnel.get("rowsIn"),
+        excludedCount=funnel.get("excludedCount"),
+        groups=funnel.get("groups"),
+        droppedByRule=funnel.get("droppedByRule"),
+        rowsOut=funnel.get("rowsOut"),
+        roundedCount=funnel.get("roundedCount"),
+        # review round 5 (R5-A) - `None` unless the request carried a
+        # `combine` block (`EtlService.preview_http` leaves
+        # `pre_combine_columns` `None` otherwise, same gate as the funnel).
+        preCombineColumns=result.pre_combine_columns,
+        # confirm round 2 (B1) - unconditional: `run_http_preview` captures
+        # the pre-lookup set on every path (including the `distinctOf`
+        # projection, whose raw set is the single `value` column).
+        rawColumns=list(result.raw_columns),
     )

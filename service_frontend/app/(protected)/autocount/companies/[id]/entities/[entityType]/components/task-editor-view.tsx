@@ -38,7 +38,13 @@ import {
   useSqlPreview,
 } from '@/hooks/use-autocount-etl';
 import { useAutocountMapping, useAutocountMappingPresets } from '@/hooks/use-autocount-mapping';
-import { HTTP_PRESETS, isDocumentEntity, mappingSourceColumns } from '@/lib/autocount-etl';
+import { usePreviewColumnsMap, useSetDeliveryMode } from '@/hooks/use-autocount-pull';
+import {
+  HTTP_PRESETS,
+  isDocumentEntity,
+  mappingSourceColumns,
+  mappingSourceColumnsForTask,
+} from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
   AutocountEtlSourceConfig,
@@ -99,6 +105,19 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   const lifecycle = useEtlTaskLifecycle(companyId, entityType, apply);
   const runsConfig = useAutocountRunsListConfig(companyId, { variant: 'task', entityType });
   const [runsKey, setRunsKey] = useState(0);
+  const columnsProbe = usePreviewColumnsMap();
+  const deliveryModeSetter = useSetDeliveryMode();
+
+  // Delivery mode (sprint-5/10, AC-10-11/16) - a STANDALONE choice from the
+  // source config (its own PUT, never touching sourceConfig/mapping/
+  // resultColumns), but saved alongside the rest through the ONE Save button
+  // (the shell's single dirty-guard) - the same pattern the `autocount_read`
+  // branch already uses for a call that isn't `save()` either.
+  const [deliveryMode, setDeliveryMode] = useState<'push' | 'pull'>('push');
+  useEffect(() => {
+    setDeliveryMode(task?.deliveryMode ?? 'push');
+  }, [task?.deliveryMode]);
+  const deliveryModeDirty = deliveryMode !== (task?.deliveryMode ?? 'push');
 
   const [config, setConfig] = useState<AutocountEtlSourceConfig | null>(null);
   // The task's Source (sprint-5/08, D13) - API | Database, the ONE place the
@@ -190,6 +209,16 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
           watermarkColumn: preset.watermarkField,
           comparedFields: preset.comparedFields,
           distinctOf: preset.distinctOf,
+          // sprint-5/10 S5b-FE (AC-10-40/41) - a preset MAY also pre-fill
+          // Lookups/Combine rows (the stock preset ships both); every other
+          // preset carries neither, so this is a no-op for them.
+          // N2 (review round 1) - `structuredClone`, never the module-level
+          // `HTTP_PRESETS` array BY REFERENCE: an in-place edit (Combine
+          // editor mutates arrays via `onChange`) would otherwise corrupt
+          // the shared preset constant for the rest of the session/every
+          // other task that reads it.
+          ...(preset.lookups ? { lookups: structuredClone(preset.lookups) } : {}),
+          ...(preset.combine ? { combine: structuredClone(preset.combine) } : {}),
         };
       }
     }
@@ -206,7 +235,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
 
   const configDirty = useMemo(() => JSON.stringify(config) !== JSON.stringify(baseline), [config, baseline]);
   const sourceKindDirty = sourceKind !== baselineSourceKind;
-  const dirty = configDirty || sourceKindDirty || draft.dirty;
+  const dirty = configDirty || sourceKindDirty || draft.dirty || deliveryModeDirty;
 
   const onChange = useCallback((patch: Partial<AutocountEtlSourceConfig>) => {
     setConfig((prev) => (prev ? { ...prev, ...patch } : prev));
@@ -244,6 +273,12 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 watermarkColumn: preset.watermarkField,
                 comparedFields: preset.comparedFields,
                 distinctOf: preset.distinctOf,
+                // sprint-5/10 S5b-FE (AC-10-40/41) - see the mount-time seed
+                // effect above for why this is a no-op for every preset but
+                // stock_balance. N2 - `structuredClone`, same reference-leak
+                // guard as the mount-time seed above.
+                ...(preset.lookups ? { lookups: structuredClone(preset.lookups) } : {}),
+                ...(preset.combine ? { combine: structuredClone(preset.combine) } : {}),
               }
             : {}),
         };
@@ -365,13 +400,36 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       const ok = await mapping.save(rows, lineRows);
       if (!ok) return false;
     }
+    if (deliveryModeDirty) {
+      const saved = await deliveryModeSetter.save(companyId, entityType, deliveryMode);
+      if (!saved) {
+        toast.error(deliveryModeSetter.error || 'The delivery mode could not be saved.');
+        return false;
+      }
+      reload();
+    }
     toast.success('Task saved.');
     return true;
-  }, [companyId, config, configDirty, derivedImpl, draft, entityType, mapping, reload, save, sourceKindDirty]);
+  }, [
+    companyId,
+    config,
+    configDirty,
+    deliveryMode,
+    deliveryModeDirty,
+    deliveryModeSetter,
+    derivedImpl,
+    draft,
+    entityType,
+    mapping,
+    reload,
+    save,
+    sourceKindDirty,
+  ]);
 
   const onCancel = useCallback(() => {
     setConfig(baseline ? { ...baseline } : null);
     setSourceKind(baselineSourceKind);
+    setDeliveryMode(task?.deliveryMode ?? 'push');
     // B1 round 8 - re-derive the previewed pair from the baseline task rather
     // than leaving it pointed at whatever was Tested during the discarded
     // edit. Without this, Save on the SAVED, already-proved config stays
@@ -404,14 +462,36 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
         : {},
     [preview.state],
   );
+  // A combine-carrying task's own COMBINED preview columns this session
+  // (sprint-5/10 S5b-FE, AC-10-82) - `httpPreview.state.preview.columns` is
+  // the combined shape whenever the last Test carried `combine` (the Source
+  // tab always sends it once the task has one); feeds
+  // `mappingSourceColumnsForTask` below, never the Source tab's OWN pickers
+  // (those read `httpPreviewColumns` in `source-tab.tsx`, staying
+  // PRE-combine).
+  const combinedPreviewColumns = useMemo(
+    () =>
+      httpPreview.state.status === 'success'
+        ? httpPreview.state.preview.columns.map((c) => c.name)
+        : [],
+    [httpPreview.state],
+  );
   const sourceColumns = useMemo(
     () =>
-      mappingSourceColumns(
-        task?.resultColumns ?? [],
+      mappingSourceColumnsForTask({
+        resultColumns: task?.resultColumns ?? [],
+        combineOutputColumns: task?.combineOutputColumns ?? [],
         previewColumns,
-        draft.header.rows.map((r) => r.sourcePath),
-      ),
-    [draft.header.rows, previewColumns, task?.resultColumns],
+        combinedPreviewColumns,
+        mappedPaths: draft.header.rows.map((r) => r.sourcePath),
+      }),
+    [
+      combinedPreviewColumns,
+      draft.header.rows,
+      previewColumns,
+      task?.combineOutputColumns,
+      task?.resultColumns,
+    ],
   );
 
   // The Mapping tab's LINE source picker (sprint-5/02, AC-02-02/06) - the
@@ -474,10 +554,17 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     const label = entityLabel(entityType);
     // A query/endpoint with no key columns cannot mint source_refs - shown
     // as a prerequisite warning (foolproof), never a silent later failure.
+    // AC-10-80 (S1 review round 1 fix) - a combine-carrying task's key
+    // fields are DERIVED from `combine.groupBy` (the Key fields picker
+    // itself locks to read-only chips the moment one is set, `SourceTab`'s
+    // `combineKeyLocked`) - never "missing" just because the operator has
+    // not separately typed them into a picker that no longer accepts input.
+    const combineKeyed = (config.combine?.groupBy?.length ?? 0) > 0;
     const keysMissing =
-      sourceKind === 'db'
+      !combineKeyed &&
+      (sourceKind === 'db'
         ? config.query.trim().length > 0 && config.keyColumns.length === 0
-        : Boolean(config.path?.trim()) && (config.keyFields?.length ?? 0) === 0;
+        : Boolean(config.path?.trim()) && (config.keyFields?.length ?? 0) === 0);
     const querySaved =
       task.sourceConfig.query.trim().length > 0 || Boolean(task.sourceConfig.path?.trim());
     const status = task.etlStatus as AutocountEtlStatus;
@@ -615,6 +702,8 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 httpPreview={httpPreview}
                 companyId={companyId}
                 onHttpPreviewSuccess={onHttpPreviewSuccess}
+                columnsProbe={columnsProbe}
+                onCombineFormulaTest={mapping.testFormula}
               />
             </div>
           ),
@@ -673,6 +762,8 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 onChange={onChange}
                 task={task}
                 fieldErrors={fieldErrors}
+                deliveryMode={deliveryMode}
+                onDeliveryModeChange={setDeliveryMode}
               />
             </div>
           ),
@@ -746,8 +837,10 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     apiConnections.isLoading,
     can,
     columnTypes,
+    columnsProbe,
     companyId,
     config,
+    deliveryMode,
     derivedImpl,
     detail,
     dirty,

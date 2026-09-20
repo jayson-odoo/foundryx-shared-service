@@ -861,4 +861,52 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
       }
     });
   });
+
+  describe('delivery-mode banner (sprint-5/10, AC-10-17)', () => {
+    it('states what Activate means in Pull mode, only while draft', () => {
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ deliveryMode: 'pull' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle()}
+          onRan={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId('activate-delivery-banner')).toHaveTextContent(
+        'Activating lets the consumer request this extract.',
+      );
+    });
+
+    it("states today's push copy when the task is already push", () => {
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ deliveryMode: 'push' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle()}
+          onRan={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId('activate-delivery-banner')).toHaveTextContent(
+        'Activating starts delivering this entity on its schedule.',
+      );
+    });
+
+    it('the banner only shows while draft, not once active', () => {
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ deliveryMode: 'pull', etlStatus: 'active', activatedAt: '2026-09-19T00:00:00Z' })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle()}
+          onRan={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId('activate-delivery-banner')).not.toBeInTheDocument();
+    });
+  });
 });

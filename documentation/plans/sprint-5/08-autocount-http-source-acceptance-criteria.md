@@ -59,8 +59,11 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   "not JSON" / "HTTP 404") and never the raw body. Credentials are NOT required and a login is
   NEVER attempted in this mode. `auth == "basic"` is byte-for-byte today's behaviour.
 - **AC-08-03 [BE]** `base_url` validation for `none` is the same rule the provider applies
-  today (scheme `http`/`https`, no trailing whitespace); a trailing `/` is stripped once at
-  save so `{baseUrl}/location` never double-slashes.
+  today (scheme `https` only - superseded by the sprint-5/10 S6 security ruling, owner,
+  2026-09-20: the egress guard is https-only outside the one development loopback carve-out; a
+  bare `http://` prefix still passes this cheap pre-filter but is then refused by the guard
+  itself, so the wizard's own copy says `https://` only; no trailing whitespace); a trailing `/`
+  is stripped once at save so `{baseUrl}/location` never double-slashes.
 - **AC-08-04 [FE]** The core connection form renders `select` fields and honours `showWhen`:
   switching `auth` to `none` hides AppId / User ID / Password and clears their required
   state; switching back restores them. Unit test on `connection-schema.ts` + the field

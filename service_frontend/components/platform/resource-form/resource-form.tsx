@@ -303,9 +303,29 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
           // the fallback for the (currently unused) forms that leave it []
           // (BreadcrumbStep and PageHeaderCrumb share the same shape).
           crumbs={config.breadcrumb.length ? config.breadcrumb : undefined}
+          // A dirty, editing form must intercept EVERY link this header
+          // renders (crumbs AND Back) behind the same `guard()` the shell
+          // already uses for Cancel/RecordNav - unguarded before this fix,
+          // both silently discarded an in-progress edit (browser round 1,
+          // AC-10-16).
+          guardNav={editing && config.isDirty ? guard : undefined}
           actions={
             <Button variant="outline" size="sm" asChild>
-              <Link href={backHref ?? config.backHref}>
+              <Link
+                href={backHref ?? config.backHref}
+                onClick={(e) => {
+                  if (!editing || !config.isDirty) return;
+                  // Modifier clicks (open in new tab/window) bypass the
+                  // dirty-guard - the browser's own default handles them,
+                  // never our SPA push. A middle click never reaches
+                  // `onClick` at all (that is `auxclick`), so
+                  // `e.button === 1` here was dead.
+                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                  e.preventDefault();
+                  const target = backHref ?? config.backHref;
+                  guard(() => router.push(target));
+                }}
+              >
                 <ArrowLeft />
                 {config.backLabel ?? 'Back'}
               </Link>

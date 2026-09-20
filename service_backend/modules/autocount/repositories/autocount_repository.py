@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Sequence, Tuple
 
-from sqlalchemy import Text, cast, nulls_first, nulls_last, or_, select, update
+from sqlalchemy import Text, cast, func, nulls_first, nulls_last, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.background_job import (
@@ -27,6 +27,8 @@ from app.models.background_job import (
 from app.models.connection import Connection
 
 from ..models import (
+    PULL_SNAPSHOT_STATUS_BUILDING,
+    PULL_SNAPSHOT_STATUS_READY,
     STAGED,
     STAGED_DISCARDED,
     STAGED_FAILED,
@@ -36,6 +38,10 @@ from ..models import (
     AcDocFingerprint,
     AcEntityConfig,
     AcFieldMapping,
+    AcPullApiKey,
+    AcPullAudit,
+    AcPullSnapshot,
+    AcPullSnapshotRow,
     AcRowHash,
     AcStagedRecord,
     AcSyncRun,
@@ -181,6 +187,37 @@ class CompanyRepository:
             )
             .first()
         )
+
+    def find_by_sorento_company_code(
+        self, tenant_id: str, code: str
+    ) -> List[AcCompany]:
+        """Sprint-5/10 S4 (AC-10-30) - the gateway's own company resolution:
+        case-insensitive, trimmed, WITHIN the given tenant only. Compared in
+        Python (not SQL ``lower()``) so this behaves identically on SQLite
+        (tests) and Postgres (prod) - the company set per tenant is small.
+
+        Returns EVERY match, ordered deterministically (security round 1,
+        LOW 7): the save path does not (yet) prevent two companies in one
+        tenant from sharing a code, so the caller must refuse ambiguity
+        (409 `AMBIGUOUS_COMPANY`) rather than this method silently picking
+        one - an unordered single-row return previously let the DB's own
+        arbitrary row order decide."""
+        normalized = (code or "").strip().casefold()
+        if not normalized:
+            return []
+        rows = (
+            self.db.query(AcCompany)
+            .filter(
+                AcCompany.tenant_id == tenant_id,
+                AcCompany.sorento_company_code.isnot(None),
+            )
+            .order_by(AcCompany.created_at.asc(), AcCompany.id.asc())
+            .all()
+        )
+        return [
+            row for row in rows
+            if (row.sorento_company_code or "").strip().casefold() == normalized
+        ]
 
     def get_by_connection(
         self, tenant_id: str, connection_id: str
@@ -1277,3 +1314,300 @@ class SyncJobRepository:
             .all()
         )
         return rows, total
+
+
+class PullSnapshotRepository:
+    """Sprint-5/10 (§2.4, AC-10-18/19). Structurally immutability-preserving:
+    creation, an ordered row insert and the two TERMINAL stamps only - there
+    is NO update-row method and NO single-row delete, so a snapshot's own
+    composite-PK row store (``AcPullSnapshotRow``) can only ever be built up
+    once and torn down whole (``delete``, for pruning)."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def add(self, snapshot: AcPullSnapshot) -> AcPullSnapshot:
+        self.db.add(snapshot)
+        self.db.flush()
+        return snapshot
+
+    def get(self, tenant_id: str, snapshot_id: str) -> Optional[AcPullSnapshot]:
+        return (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.id == snapshot_id,
+            )
+            .first()
+        )
+
+    def get_scoped(
+        self, tenant_id: str, company_id: str, snapshot_id: str
+    ) -> Optional[AcPullSnapshot]:
+        """The gateway's own read - additionally scoped to the key's allowed
+        COMPANY, never the id alone (AC-10-30: possession of an id is not
+        authorisation)."""
+        return (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.company_id == company_id,
+                AcPullSnapshot.id == snapshot_id,
+            )
+            .first()
+        )
+
+    def get_for_key_scope(
+        self, tenant_id: str, company_ids: Sequence[str], snapshot_id: str
+    ) -> Optional[AcPullSnapshot]:
+        """Sprint-5/10 S4 (AC-10-30/47) - the PUBLIC gateway's own read,
+        scoped to a KEY's full company SET (a key may be bound to more than
+        one company, unlike ``get_scoped``'s single id). Possession of an id
+        is not authorisation: a snapshot outside every one of these company
+        ids, or outside this tenant, reads identically to unknown."""
+        ids = list(dict.fromkeys(company_ids or []))
+        if not ids:
+            return None
+        return (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.company_id.in_(ids),
+                AcPullSnapshot.id == snapshot_id,
+            )
+            .first()
+        )
+
+    def list(
+        self,
+        tenant_id: str,
+        *,
+        company_id: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        page: int = 0,
+        page_size: int = 25,
+    ) -> Tuple[List[AcPullSnapshot], int]:
+        q = self.db.query(AcPullSnapshot).filter(AcPullSnapshot.tenant_id == tenant_id)
+        if company_id:
+            q = q.filter(AcPullSnapshot.company_id == company_id)
+        if entity_type:
+            q = q.filter(AcPullSnapshot.entity_type == entity_type)
+        total = q.count()
+        rows = (
+            q.order_by(AcPullSnapshot.created_at.desc(), AcPullSnapshot.id.desc())
+            .offset(page * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return rows, total
+
+    def latest_for_triple(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> Optional[AcPullSnapshot]:
+        """The most recently CREATED snapshot for one (tenant, company,
+        entity) triple, any status - ``PullService.request_build``'s
+        re-attach/cooldown check (AC-10-26)."""
+        return (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.company_id == company_id,
+                AcPullSnapshot.entity_type == entity_type,
+            )
+            .order_by(AcPullSnapshot.created_at.desc(), AcPullSnapshot.id.desc())
+            .first()
+        )
+
+    def latest_ready_for_triple(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> Optional[AcPullSnapshot]:
+        """The newest READY snapshot for one triple - the zero-row guard's
+        (AC-10-46) "was there a genuine prior extract" check."""
+        return (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.company_id == company_id,
+                AcPullSnapshot.entity_type == entity_type,
+                AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_READY,
+            )
+            .order_by(AcPullSnapshot.extracted_at.desc())
+            .first()
+        )
+
+    def insert_row(self, row: AcPullSnapshotRow) -> None:
+        self.db.add(row)
+        self.db.flush()
+
+    def rows_page(
+        self, tenant_id: str, snapshot_id: str, *, page: int, page_size: int
+    ) -> Tuple[List[AcPullSnapshotRow], int]:
+        """``page`` is 1-BASED (AC-10-33) - the caller translates."""
+        q = self.db.query(AcPullSnapshotRow).filter(
+            AcPullSnapshotRow.tenant_id == tenant_id,
+            AcPullSnapshotRow.snapshot_id == snapshot_id,
+        )
+        total = q.count()
+        rows = (
+            q.order_by(AcPullSnapshotRow.row_index.asc())
+            .offset(max(page - 1, 0) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return rows, total
+
+    def expired_ids(self, now: datetime) -> List[Tuple[str, str]]:
+        """``(id, tenant_id)`` pairs for every snapshot past its
+        ``expires_at`` - the caller needs the tenant to scope the matching
+        ``delete`` call (AC-10-58 L2).
+
+        AC-10-58 L1 - excludes ``status == 'building'``: a snapshot only
+        ever gets an ``expires_at`` when it STAMPS ready (``SnapshotService.
+        stamp_ready``), so a building row's ``expires_at`` is always
+        ``None`` in practice - but a job that dies mid-build while carrying
+        a STALE ``expires_at`` from a prior attempt (re-attach reuses the
+        same row) must never be pruned out from under a build that is
+        genuinely still in flight."""
+        rows = (
+            self.db.query(AcPullSnapshot.id, AcPullSnapshot.tenant_id)
+            .filter(
+                AcPullSnapshot.expires_at.isnot(None),
+                AcPullSnapshot.expires_at <= now,
+                AcPullSnapshot.status != PULL_SNAPSHOT_STATUS_BUILDING,
+            )
+            .all()
+        )
+        return [(r[0], r[1]) for r in rows]
+
+    def ready_ids_beyond_newest(self, *, keep: int) -> List[Tuple[str, str]]:
+        """Every READY snapshot beyond the newest ``keep`` per (tenant,
+        company, entity) triple, ordered by ``extracted_at`` (AC-10-25) -
+        computed with a window function so the "per triple" cut is one
+        query, not an N+1 fan-out. Returns ``(id, tenant_id)`` pairs (AC-10-
+        58 L2) - the caller needs the tenant to scope the matching
+        ``delete`` call."""
+        row_number = (
+            func.row_number()
+            .over(
+                partition_by=(
+                    AcPullSnapshot.tenant_id,
+                    AcPullSnapshot.company_id,
+                    AcPullSnapshot.entity_type,
+                ),
+                order_by=AcPullSnapshot.extracted_at.desc(),
+            )
+            .label("rn")
+        )
+        subq = (
+            select(AcPullSnapshot.id, AcPullSnapshot.tenant_id, row_number)
+            .where(AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_READY)
+            .subquery()
+        )
+        rows = self.db.execute(
+            select(subq.c.id, subq.c.tenant_id).where(subq.c.rn > keep)
+        ).all()
+        return [(r[0], r[1]) for r in rows]
+
+    def delete(self, tenant_id: str, snapshot_id: str) -> None:
+        """Whole-snapshot deletion (pruning) - the ONE way a snapshot's rows
+        are ever removed; never a single-row delete (AC-10-19's immutability
+        holds even here - pruning tears down the whole thing, it never edits
+        one).
+
+        AC-10-58 L2 - now TENANT-SCOPED (house rule: every repository query
+        tenant-scoped, never a bare id) - a mismatched ``tenant_id`` is a
+        no-op, never a cross-tenant delete. The global pruning sweep
+        (``pull_service.prune_pull_snapshots``) already knows each row's
+        own tenant from ``expired_ids``/``ready_ids_beyond_newest`` above,
+        so this closes the class of bug without changing its cross-tenant
+        REACH (it still visits every tenant, one scoped delete at a time)."""
+        rows = (
+            self.db.query(AcPullSnapshotRow)
+            .filter(
+                AcPullSnapshotRow.tenant_id == tenant_id,
+                AcPullSnapshotRow.snapshot_id == snapshot_id,
+            )
+            .all()
+        )
+        for row in rows:
+            self.db.delete(row)
+        snapshot = (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.id == snapshot_id,
+            )
+            .first()
+        )
+        if snapshot is not None:
+            self.db.delete(snapshot)
+        self.db.flush()
+
+
+class PullKeyRepository:
+    """Sprint-5/10 S4 (AC-10-27/47). Mirrors ``PullSnapshotRepository``'s own
+    scoping discipline: every method taking a ``key_id`` ALSO takes
+    ``tenant_id``, except ``by_prefix`` - the ONE deliberate exception,
+    because ``PullKeyService.resolve`` genuinely does not know the tenant
+    until AFTER this lookup runs."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def add(self, key: AcPullApiKey) -> AcPullApiKey:
+        self.db.add(key)
+        self.db.flush()
+        return key
+
+    def get(self, tenant_id: str, key_id: str) -> Optional[AcPullApiKey]:
+        return (
+            self.db.query(AcPullApiKey)
+            .filter(AcPullApiKey.tenant_id == tenant_id, AcPullApiKey.id == key_id)
+            .first()
+        )
+
+    def list_for_tenant(self, tenant_id: str) -> List[AcPullApiKey]:
+        return (
+            self.db.query(AcPullApiKey)
+            .filter(AcPullApiKey.tenant_id == tenant_id)
+            .order_by(AcPullApiKey.created_at.desc())
+            .all()
+        )
+
+    def by_prefix(self, prefix: str) -> List[AcPullApiKey]:
+        """UNSCOPED by design (see class docstring) - only ever called from
+        ``PullKeyService.resolve``, which then verifies the full hash with
+        ``hmac.compare_digest`` before trusting any candidate."""
+        return (
+            self.db.query(AcPullApiKey)
+            .filter(
+                AcPullApiKey.key_prefix == prefix,
+                AcPullApiKey.revoked_at.is_(None),
+            )
+            .all()
+        )
+
+
+class PullAuditRepository:
+    """Sprint-5/10 S4 (AC-10-27/34) - append-only; no update, only the
+    bulk retention delete below (security round 1, MEDIUM 4)."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def add(self, row: AcPullAudit) -> AcPullAudit:
+        self.db.add(row)
+        self.db.commit()
+        return row
+
+    def delete_older_than(self, cutoff: datetime) -> int:
+        """Retention sweep only - never a single-row delete. The caller
+        (``pull_service.prune_pull_snapshots``) owns the commit."""
+        count = (
+            self.db.query(AcPullAudit).filter(AcPullAudit.created_at < cutoff).count()
+        )
+        if count:
+            self.db.query(AcPullAudit).filter(AcPullAudit.created_at < cutoff).delete(
+                synchronize_session=False
+            )
+        return count

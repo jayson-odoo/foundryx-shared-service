@@ -130,6 +130,31 @@ def backfill_sink_impl_defaults(
     return result.rowcount or 0
 
 
+def backfill_delivery_mode_defaults(
+    bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
+) -> int:
+    """Give every pre-existing ``ac_entity_config`` row a ``delivery_mode``
+    (sprint-5/10, AC-10-10). Returns the number of rows touched.
+
+    Same contract as ``backfill_sink_impl_defaults`` (see its own docstring):
+    an entity config that predates the column must land on ``'push'`` -
+    today's behaviour before this plan existed. Fills only NULL/blank rows
+    and is safe to run repeatedly; does **not** commit - the caller
+    (Alembic's own connection, or ``update_tenant``) owns that.
+    """
+    columns = existing_columns(bind, "ac_entity_config", schema=schema)
+    if columns is None or "delivery_mode" not in columns:
+        return 0
+    prefix = f'"{schema}".' if schema else ""
+    result = bind.execute(
+        sa.text(
+            f"UPDATE {prefix}ac_entity_config SET delivery_mode = 'push' "
+            f"WHERE delivery_mode IS NULL OR delivery_mode = ''"
+        )
+    )
+    return result.rowcount or 0
+
+
 def backfill_disable_credit_limit_mapping_rows(
     bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
 ) -> int:

@@ -296,3 +296,13 @@ describe('DB company - "Configure source" is per row, reaches a stranded API-sou
     expect(onConfigureTask).toHaveBeenCalledWith(dbSourced);
   });
 });
+
+describe('Delivery column (sprint-5/10, AC-10-17)', () => {
+  it('reads push/pull per row, defaulting to push for a legacy fixture', () => {
+    const c = config([entity({ deliveryMode: 'pull' }), entity({ entityType: 'supplier' })]);
+    const column = c.columns.find((col) => col.id === 'deliveryMode')!;
+    const accessor = column.accessorFn as (row: AutocountEntityConfig, index: number) => string;
+    expect(accessor(entity({ deliveryMode: 'pull' }), 0)).toBe('pull');
+    expect(accessor(entity({ entityType: 'supplier' }), 0)).toBe('push');
+  });
+});

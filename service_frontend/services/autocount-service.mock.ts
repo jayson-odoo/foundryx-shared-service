@@ -20,6 +20,7 @@
  * encodes lives in the "DB-only company fixtures" section below.
  */
 import { ApiError } from '@/lib/api-client';
+import { simulateCombine } from '@/lib/autocount-combine';
 import { testFormula as evalFormula } from '@/lib/autocount-formula';
 import {
   DEFAULT_STATUS_FORMULA,
@@ -33,10 +34,12 @@ import {
 import type {
   AutocountApiConnection,
   AutocountApprovalResult,
+  AutocountCombineConfig,
   AutocountCompany,
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
   AutocountDocumentPrerequisite,
+  AutocountDeliveryMode,
   AutocountEntityConfig,
   AutocountEntityConfigUpdate,
   AutocountEtlPreviewResult,
@@ -52,6 +55,11 @@ import type {
   AutocountMappingView,
   AutocountMappingWriteRow,
   AutocountPreviewResult,
+  AutocountPullApiKey,
+  AutocountPullApiKeyCreateInput,
+  AutocountPullApiKeyIssued,
+  AutocountPullSnapshot,
+  AutocountPullSnapshotRowsPage,
   AutocountSimulateFieldResult,
   AutocountSimulateResult,
   AutocountSinkTargetInput,
@@ -593,6 +601,22 @@ export function setMockRepushInFlight(runId: string | null): void {
   mockRepushInFlightRunId = runId;
 }
 
+// ── human-invoked pull (sprint-5/10) - mirrors the LIVE backend contract
+// (`modules/autocount/routers/pull.py`), as the Vitest fixture double ───────
+
+/** Mirrors `autocount-meta.ts`'s `AC_PULL_ONLY_ENTITY_TYPES` - kept as a
+ * small local literal rather than an app-level import (services stay
+ * app-agnostic). */
+const PULL_ONLY_ENTITY_TYPES = new Set(['stock_balance']);
+
+const deliveryModes = new Map<string, AutocountDeliveryMode>();
+
+function deliveryModeFor(companyId: string, entityType: string): AutocountDeliveryMode {
+  const stored = deliveryModes.get(taskKey(companyId, entityType));
+  if (stored) return stored;
+  return PULL_ONLY_ENTITY_TYPES.has(entityType) ? 'pull' : 'push';
+}
+
 function taskKey(companyId: string, entityType: string): string {
   return `${companyId}:${entityType}`;
 }
@@ -687,6 +711,15 @@ function brandContractGateFor(task: AutocountEtlTask): AutocountEtlTask['brandCo
   return { version: 2.2, requiredVersion: 2.3 };
 }
 
+/** `groupBy + carry + measures[].alias` (sprint-5/10 review round 4 SF-4,
+ * AC-10-82) - the combined, post-group schema a combine-carrying task's own
+ * rows carry. Mirrors the backend's `EtlTaskResponse.combineOutputColumns`
+ * (`schemas.py`) exactly; `[]` when no combine step is configured. */
+function combineOutputColumnsFor(combine: AutocountCombineConfig | null | undefined): string[] {
+  if (!combine) return [];
+  return [...combine.groupBy, ...combine.carry, ...combine.measures.map((m) => m.alias)];
+}
+
 /** Lay the session's lifecycle state over a (real or mock) task. */
 function applyTaskOverlay(task: AutocountEtlTask): AutocountEtlTask {
   const o = overlayFor(task.companyId, task.entityType);
@@ -700,6 +733,8 @@ function applyTaskOverlay(task: AutocountEtlTask): AutocountEtlTask {
     // impl (there is no task on that path at all).
     sourceImpl: impl === 'autocount_http' ? 'autocount_http' : 'sql_db',
     brandContractGate: brandContractGateFor(task),
+    deliveryMode: deliveryModeFor(task.companyId, task.entityType),
+    combineOutputColumns: combineOutputColumnsFor(task.sourceConfig.combine),
     ...nextRunsFor(o.etlStatus, task.sourceConfig),
   };
 }
@@ -793,7 +828,11 @@ function applyCompanyOverlay(company: AutocountCompany): AutocountCompany {
 
 function applyEntityOverlay(companyId: string, entity: AutocountEntityConfig): AutocountEntityConfig {
   const impl = sourceImpls.get(taskKey(companyId, entity.entityType));
-  return impl ? { ...entity, sourceImpl: impl } : entity;
+  return {
+    ...entity,
+    ...(impl ? { sourceImpl: impl } : {}),
+    deliveryMode: deliveryModeFor(companyId, entity.entityType),
+  };
 }
 
 function applyDetailOverlay(detail: AutocountCompanyDetail): AutocountCompanyDetail {
@@ -1245,6 +1284,9 @@ async function mockPreviewHttp(input: HttpPreviewInput): Promise<HttpPreview> {
       envelope: fixture.envelope,
       totalCount: fixture.envelope === 'paged' ? fixture.totalCount : undefined,
       columns: [{ name: 'value', sample: values[0] ?? null }],
+      // Mirrors the backend's own `distinctOf` projection, whose raw set IS
+      // the single synthesised `value` column.
+      rawColumns: ['value'],
       rows: values.map((value) => ({ value })),
       durationMs: 180,
     };
@@ -1254,6 +1296,13 @@ async function mockPreviewHttp(input: HttpPreviewInput): Promise<HttpPreview> {
     envelope: fixture.envelope,
     totalCount: fixture.envelope === 'paged' ? fixture.totalCount : undefined,
     columns: columnNames.map((name) => ({ name, sample: rows50[0]?.[name] ?? null })),
+    // confirm round 2 (B1) - the fixture's own RAW columns, the mock's
+    // mirror of `HttpPreviewResult.raw_columns`: this mock never merges
+    // lookup aliases into its rows, so raw and merged coincide HERE, but the
+    // field is reported separately all the same so the Lookups editor's
+    // collision check is exercised against the same shape the real backend
+    // sends.
+    rawColumns: columnNames,
     rows: rows50,
     durationMs: 220,
   };
@@ -1591,6 +1640,210 @@ async function mockCreateOpenCompany(
   return { ...company };
 }
 
+// ── pull keys + snapshots fixtures (AC-10-48 - every state reachable, no
+// backend). Company ids are the SAME fixture ids `mockCompanyState` resolves
+// (`company-1` is the default `mockCompany()` id), so the Keys list's
+// company pills and the Issue-key dialog's company picker read real names.
+
+let pullKeys: AutocountPullApiKey[] = [
+  {
+    id: 'pull-key-active',
+    name: 'Sorento production',
+    companyIds: ['company-1'],
+    keyPrefix: 'fxa_live_a1b2c3d4',
+    createdAt: '2026-09-10T08:00:00Z',
+    lastUsedAt: '2026-09-19T22:05:11Z',
+    revokedAt: null,
+  },
+  {
+    id: 'pull-key-revoked',
+    name: 'Old staging key',
+    companyIds: ['company-1'],
+    keyPrefix: 'fxa_live_9f8e7d6c',
+    createdAt: '2026-08-01T08:00:00Z',
+    lastUsedAt: '2026-08-15T10:00:00Z',
+    revokedAt: '2026-08-20T00:00:00Z',
+  },
+];
+
+function productSnapshotHeader(
+  overrides: Partial<AutocountPullSnapshot> = {},
+): AutocountPullSnapshot {
+  return {
+    id: 'snap-product-ready',
+    entityType: 'product',
+    companyId: 'company-1',
+    companyCode: 'SRT',
+    status: 'ready',
+    requestedVia: 'operator',
+    createdAt: '2026-09-19T21:40:00Z',
+    extractedAt: '2026-09-19T22:05:11Z',
+    expiresAt: '2026-09-20T22:05:11Z',
+    recordCount: 11830,
+    complete: true,
+    contentHash: '57f0462741425519df34d21ecbf4602f94ccd810bd5933a841ed1ecce8580a5f',
+    sourcePageSize: 1000,
+    zeroListPriceCount: 5129,
+    negativeListPriceCount: 121,
+    enrichMissCount: 1,
+    excludedCount: 10,
+    excludedRows: [
+      {
+        source_ref: 'AED_SORENTO:SRT-77',
+        code: 'SRT-77',
+        reason: 'mapping_failed',
+        message: 'name: this field is required',
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function stockSnapshotHeader(overrides: Partial<AutocountPullSnapshot> = {}): AutocountPullSnapshot {
+  return {
+    id: 'snap-stock-ready',
+    entityType: 'stock_balance',
+    companyId: 'company-1',
+    companyCode: 'SRT',
+    status: 'ready',
+    requestedVia: 'operator',
+    createdAt: '2026-09-19T22:20:00Z',
+    extractedAt: '2026-09-19T22:41:37Z',
+    expiresAt: '2026-09-20T22:41:37Z',
+    recordCount: 12133,
+    complete: true,
+    contentHash: '3a8d5693f4e86fc1ee64d7e971d0d2efe2dfd783b8752a7f448db3dcf5118d2a',
+    sourcePageSize: 1000,
+    zeroPairs: 56422,
+    negativePairs: 42,
+    fractionalPairs: 0,
+    excludedNonzeroCount: 0,
+    excludedCount: 5,
+    excludedRows: [
+      {
+        item_code: 'SRT-99',
+        location_code: 'HQ',
+        uom: 'ctn',
+        qty: 0,
+        reason: 'uom_rate_unresolved',
+      },
+    ],
+    negativePairList: [
+      { item_code: 'SRT-01', location_code: 'MBS', qty: -3 },
+      { item_code: 'AC-EXP-006', location_code: 'HQ', qty: -2437 },
+    ],
+    ...overrides,
+  };
+}
+
+/** Every AC-10-48 snapshot state, seeded once (and re-seeded by
+ * `resetEtlMockState`). Mutated in place by `buildPullSnapshot` so a
+ * session's own build is reachable too. */
+function seedPullSnapshots(): AutocountPullSnapshot[] {
+  return [
+    productSnapshotHeader(),
+    stockSnapshotHeader(),
+    {
+      id: 'snap-product-building',
+      entityType: 'product',
+      companyId: 'company-1',
+      companyCode: 'MCH',
+      status: 'building',
+      requestedVia: 'gateway',
+      createdAt: nowIso(),
+      extractedAt: null,
+      expiresAt: null,
+      recordCount: 0,
+      complete: false,
+      contentHash: null,
+      sourcePageSize: null,
+      progress: { pagesDone: 2, pagesTotal: 4, stage: 'lookup:uom' },
+      error: null,
+      excludedCount: 0,
+      excludedRows: [],
+    },
+    {
+      id: 'snap-product-failed',
+      entityType: 'product',
+      companyId: 'company-1',
+      companyCode: 'MCH',
+      status: 'failed',
+      requestedVia: 'operator',
+      createdAt: '2026-09-18T09:00:00Z',
+      extractedAt: null,
+      expiresAt: null,
+      recordCount: 0,
+      complete: false,
+      contentHash: null,
+      sourcePageSize: null,
+      error: { code: 'SOURCE_PAGE_FAILED', message: 'Source page 3 of 4 failed after retries (timeout).' },
+      excludedCount: 0,
+      excludedRows: [],
+    },
+    productSnapshotHeader({
+      id: 'snap-product-expired',
+      createdAt: '2026-09-10T08:00:00Z',
+      extractedAt: '2026-09-10T08:20:00Z',
+      expiresAt: '2026-09-11T08:20:00Z',
+      recordCount: 11812,
+    }),
+  ];
+}
+
+let pullSnapshots: AutocountPullSnapshot[] = seedPullSnapshots();
+
+const pullSnapshotRows: Record<string, Array<Record<string, unknown>>> = {
+  'snap-product-ready': [
+    {
+      source_ref: 'AED_SORENTO:ACC-SRT8001',
+      code: 'ACC-SRT8001',
+      name: '****SORENTO BATHTUB WASTE (WITH FOOT PRINT LOGO) ACC-SRT8001',
+      description: '****SORENTO BATHTUB WASTE (WITH FOOT PRINT LOGO) ACC-SRT8001',
+      category_code: 'SRTPART',
+      brand_code: 'SORENTO',
+      list_price: '150.0',
+      is_active: true,
+    },
+    {
+      source_ref: 'AED_SORENTO:AP4842',
+      code: 'AP4842',
+      name: 'CABANA KITCHEN SINK (480x420x160MM) SINGLE BOWL-AP4842',
+      description: 'CABANA KITCHEN SINK (480x420x160MM) SINGLE BOWL-AP4842',
+      category_code: 'PROJECT',
+      brand_code: 'CABANA',
+      list_price: '0.0',
+      is_active: true,
+    },
+  ],
+  'snap-stock-ready': [
+    {
+      source_ref: 'AED_SORENTO:1/2" ULTRA CIRCULAR|BRW-BB',
+      item_code: '1/2" ULTRA CIRCULAR',
+      item_description: '15MM X 500MM ULTRAGAL PIPE 1/2"',
+      location_code: 'BRW-BB',
+      uom_code: 'PC',
+      qty: 672,
+    },
+    {
+      source_ref: 'AED_SORENTO:32MM TAIL PIECE COUPLING|BRW',
+      item_code: '32MM TAIL PIECE COUPLING',
+      item_description: '32MM TAIL PIECE COUPLING (CHROME) FOR BOTTLE TRAP',
+      location_code: 'BRW',
+      uom_code: 'UNIT',
+      qty: 1216,
+    },
+  ],
+  'snap-product-expired': [],
+};
+
+function pullKeyOf(id: string): AutocountPullApiKey {
+  const found = pullKeys.find((k) => k.id === id);
+  if (!found) throw new ApiError('Key not found.', 404);
+  return found;
+}
+
+let pullKeySeq = 0;
+
 /** Test seam: forget every S2 session state (the Vitest suite isolates cases). */
 export function resetEtlMockState(): void {
   etlOverlays.clear();
@@ -1605,6 +1858,29 @@ export function resetEtlMockState(): void {
   createdOpenCompanies.clear();
   dbSeeded = false;
   mockRepushInFlightRunId = null;
+  deliveryModes.clear();
+  pullKeys = [
+    {
+      id: 'pull-key-active',
+      name: 'Sorento production',
+      companyIds: ['company-1'],
+      keyPrefix: 'fxa_live_a1b2c3d4',
+      createdAt: '2026-09-10T08:00:00Z',
+      lastUsedAt: '2026-09-19T22:05:11Z',
+      revokedAt: null,
+    },
+    {
+      id: 'pull-key-revoked',
+      name: 'Old staging key',
+      companyIds: ['company-1'],
+      keyPrefix: 'fxa_live_9f8e7d6c',
+      createdAt: '2026-08-01T08:00:00Z',
+      lastUsedAt: '2026-08-15T10:00:00Z',
+      revokedAt: '2026-08-20T00:00:00Z',
+    },
+  ];
+  pullSnapshots = seedPullSnapshots();
+  pullKeySeq = 0;
 }
 
 export const mockAutocountService: AutocountService = {
@@ -2235,8 +2511,55 @@ export const mockAutocountService: AutocountService = {
     const preview = await mockPreviewHttp(input);
     httpPreviewColumnsByKey.set(
       httpPreviewKey(input.connectionId, input.path, input.distinctOf),
+      // PRE-combine, unchanged (mirrors the backend's own `resultColumns`) -
+      // `combinedPreview` below may replace `rows`/`columns` on the RESPONSE,
+      // never on what this cache (or `resultColumns` just below) remembers.
       preview.columns.map((c) => c.name),
     );
+    // sprint-5/10 S5b-FE (AC-10-82) - PHASE 1 MOCK combine funnel: when the
+    // request carries a `combine` block, run it (`simulateCombine`, the
+    // former Combine editor's own client-side engine, now mock-only) over
+    // this session's sample rows and fold its six funnel counts + combined
+    // rows/columns into the response, mirroring the real backend's additive
+    // `HttpPreviewResponse` fields (`schemas.py`). A task with NO combine is
+    // completely unaffected (`combined` stays `null`).
+    const combined = input.combine ? simulateCombine(preview.rows, input.combine) : null;
+    const combinedColumnNames = combined ? combineOutputColumnsFor(input.combine) : [];
+    // sprint-5/10 S5b-FE review round 1 (AC-10-82/AC-10-40) - mirrors the
+    // backend's `preview_http`: captured BEFORE `columns` is overwritten
+    // below with the COMBINED shape, so a caller never has to fall back to
+    // the (possibly absent, possibly SAVED-not-draft) echoed `task` to
+    // recover the pre-combine set. Raw + lookup aliases (`preview.columns`,
+    // already lookup-merged by `mockPreviewHttp`) plus the combine's OWN
+    // `computed` alias names, in declared order, de-duplicated.
+    const preCombineColumns: string[] = combined
+      ? (() => {
+          const names = preview.columns.map((c) => c.name);
+          for (const step of input.combine?.computed ?? []) {
+            if (step.alias && !names.includes(step.alias)) names.push(step.alias);
+          }
+          return names;
+        })()
+      : [];
+    const combinedPreview: HttpPreview = combined
+      ? {
+          ...preview,
+          columns: combinedColumnNames.map((name) => ({
+            name,
+            sample: combined.rows[0]?.[name] ?? null,
+          })),
+          rows: combined.rows,
+          rowsIn: combined.rowsIn,
+          excludedCount: combined.excludedCount,
+          groups: combined.groups,
+          droppedByRule: Object.fromEntries(
+            Object.entries(combined.dropped).map(([name, stat]) => [name, stat.count]),
+          ),
+          rowsOut: combined.rowsOut,
+          roundedCount: combined.roundedCount,
+          preCombineColumns,
+        }
+      : preview;
     // Mirrors the real backend's `preview_http` (sprint-5/08 review round
     // 7): a clean Test that names both `companyId`/`entityType` ALSO stamps
     // `resultColumns`/`lastPreviewAt` on the task and echoes it back, so the
@@ -2254,11 +2577,198 @@ export const mockAutocountService: AutocountService = {
       o.resultColumns = preview.columns.map((c) => c.name);
       o.lastPreviewAt = nowIso();
       return {
-        ...preview,
+        ...combinedPreview,
         task: cloneJson(applyTaskOverlay(etlTaskFor(input.companyId, input.entityType))),
       };
     }
-    return preview;
+    return combinedPreview;
+  },
+
+  async previewColumns(connectionId: string, path: string): Promise<string[]> {
+    await pause(200);
+    const cached = httpPreviewColumnsByKey.get(httpPreviewKey(connectionId, path));
+    if (cached) return [...cached];
+    // A lookup endpoint nobody has Tested yet through the main preview -
+    // return a plausible column set so the editor's remote-column pickers
+    // are never permanently empty for the mock's own preset endpoints.
+    if (path === '/itemuombypage') return ['ItemCode', 'UOM', 'Rate', 'Price'];
+    if (path === '/itembypage') return ['ItemCode', 'Description', 'Desc2', 'BaseUOM', 'ItemGroup', 'ItemBrand'];
+    return [];
+  },
+
+  // ── human-invoked pull (sprint-5/10) - mirrors the LIVE backend contract ──
+
+  async setDeliveryMode(
+    companyId: string,
+    entityType: string,
+    deliveryMode: AutocountDeliveryMode,
+  ): Promise<AutocountEntityConfig> {
+    await pause(200);
+    if (deliveryMode === 'pull') {
+      const company = applyCompanyOverlay(mockCompanyState(companyId));
+      if (!(company.sorentoCompanyCode ?? '').trim()) {
+        throw new ApiError('Set a Sorento company code before enabling pull.', 422, null, {
+          fieldErrors: { deliveryMode: 'Set a Sorento company code before enabling pull.' },
+        });
+      }
+      if (!PULL_ONLY_ENTITY_TYPES.has(entityType) && entityType !== 'product') {
+        throw new ApiError(`${entityType} cannot be pulled yet.`, 422, null, {
+          fieldErrors: { deliveryMode: `${entityType} cannot be pulled yet.` },
+        });
+      }
+    } else if (PULL_ONLY_ENTITY_TYPES.has(entityType)) {
+      throw new ApiError(`${entityType} has no push path yet.`, 422, null, {
+        fieldErrors: { deliveryMode: `${entityType} has no push path yet.` },
+      });
+    }
+    deliveryModes.set(taskKey(companyId, entityType), deliveryMode);
+    const detail = await this.getCompany(companyId);
+    const entity = detail.entities.find((e) => e.entityType === entityType);
+    if (entity) return entity;
+    return {
+      id: `entity-${entityType}`,
+      entityType,
+      syncMode: 'MANUAL',
+      sourceImpl: 'autocount_http',
+      recordCap: 5000,
+      initialLookbackDays: 30,
+      enabled: true,
+      lastSuccessAt: null,
+      lastAttemptAt: null,
+      watermarkAt: null,
+      consecutiveFailures: 0,
+      lastError: null,
+      etlStatus: 'draft',
+      deliveryMode,
+    };
+  },
+
+  async listPullKeys(): Promise<AutocountPullApiKey[]> {
+    await pause(200);
+    return pullKeys.map((k) => ({ ...k }));
+  },
+
+  async issuePullKey(input: AutocountPullApiKeyCreateInput): Promise<AutocountPullApiKeyIssued> {
+    await pause(300);
+    const name = input.name.trim();
+    if (!name) {
+      throw new ApiError('Name the key.', 422, null, { fieldErrors: { name: 'Name the key.' } });
+    }
+    if (!input.companyIds || input.companyIds.length === 0) {
+      throw new ApiError('Pick at least one company.', 422, null, {
+        fieldErrors: { companyIds: 'Pick at least one company.' },
+      });
+    }
+    pullKeySeq += 1;
+    const key: AutocountPullApiKey = {
+      id: `pull-key-${pullKeySeq}`,
+      name,
+      companyIds: [...input.companyIds],
+      keyPrefix: `fxa_live_${Math.random().toString(36).slice(2, 10)}`,
+      createdAt: nowIso(),
+      lastUsedAt: null,
+      revokedAt: null,
+    };
+    pullKeys = [key, ...pullKeys];
+    return { key: { ...key }, plaintext: `fxa_live_${Math.random().toString(36).slice(2, 34)}` };
+  },
+
+  async revokePullKey(id: string): Promise<AutocountPullApiKey> {
+    await pause(200);
+    const key = pullKeyOf(id);
+    key.revokedAt = nowIso();
+    return { ...key };
+  },
+
+  async listPullSnapshots(
+    query: AutocountListQuery & { companyId?: string; entityType?: string } = {},
+  ): Promise<ListResult<AutocountPullSnapshot>> {
+    await pause(200);
+    let matched = [...pullSnapshots];
+    if (query.companyId) matched = matched.filter((s) => s.companyId === query.companyId);
+    if (query.entityType) matched = matched.filter((s) => s.entityType === query.entityType);
+    matched.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+    const page = query.page ?? 0;
+    const pageSize = query.pageSize ?? 25;
+    const start = page * pageSize;
+    return {
+      data: matched.slice(start, start + pageSize).map((s) => ({ ...s })),
+      total: matched.length,
+      page,
+    };
+  },
+
+  async getPullSnapshot(id: string): Promise<AutocountPullSnapshot> {
+    await pause(150);
+    const found = pullSnapshots.find((s) => s.id === id);
+    if (!found) throw new ApiError('Snapshot not found.', 404);
+    return { ...found };
+  },
+
+  async getPullSnapshotRows(
+    id: string,
+    page = 0,
+    pageSize = 1000,
+  ): Promise<AutocountPullSnapshotRowsPage> {
+    await pause(150);
+    const snapshot = pullSnapshots.find((s) => s.id === id);
+    if (!snapshot) throw new ApiError('Snapshot not found.', 404);
+    const rows = pullSnapshotRows[id] ?? [];
+    const start = page * pageSize;
+    return {
+      snapshotId: id,
+      page: page + 1,
+      pageSize,
+      totalPages: Math.max(1, Math.ceil(Math.max(rows.length, 1) / pageSize)),
+      recordCount: snapshot.recordCount,
+      rows: rows.slice(start, start + pageSize),
+    };
+  },
+
+  async buildPullSnapshot(companyId: string, entityType: string): Promise<AutocountPullSnapshot> {
+    await pause(300);
+    const inFlight = pullSnapshots.find(
+      (s) => s.companyId === companyId && s.entityType === entityType && s.status === 'building',
+    );
+    if (inFlight) return { ...inFlight };
+    const detail = await this.getCompany(companyId);
+    // A book that has flipped to automatic push refuses a NEW build (the
+    // operator UI's own picker already excludes this pairing,
+    // `BuildSnapshotDialog`; this is the server-shaped guard for a call that
+    // reaches here anyway, mirroring `PullService.request_build`'s
+    // `PullPushActiveError`). A PLAIN STRING `detail` - the structured
+    // `{code, companyCode, entity}` error ladder (AC-10-31) is the PUBLIC
+    // GATEWAY's contract only (`pull_gateway_service.py`'s `PullGatewayError`);
+    // this operator route (`routers/pull.py`) raises a bare `HTTPException`,
+    // and the dialog only ever reads `ApiError.message` regardless.
+    const entity = detail.entities.find((e) => e.entityType === entityType);
+    if (entity && (entity.deliveryMode ?? 'push') === 'push' && entity.etlStatus === 'active') {
+      const message = 'This book/entity has flipped to automatic push and can no longer be pulled.';
+      throw new ApiError(message, 409, null, message);
+    }
+    const company = detail.company;
+    const id = `snap-${entityType}-${Date.now()}`;
+    const building: AutocountPullSnapshot = {
+      id,
+      entityType,
+      companyId,
+      companyCode: company.sorentoCompanyCode ?? '',
+      status: 'building',
+      requestedVia: 'operator',
+      createdAt: nowIso(),
+      extractedAt: null,
+      expiresAt: null,
+      recordCount: 0,
+      complete: false,
+      contentHash: null,
+      sourcePageSize: null,
+      progress: { pagesDone: 0, pagesTotal: entityType === 'stock_balance' ? 69 : 12, stage: 'source' },
+      error: null,
+      excludedCount: 0,
+      excludedRows: [],
+    };
+    pullSnapshots = [building, ...pullSnapshots];
+    return { ...building };
   },
 };
 
@@ -2632,3 +3142,4 @@ function mockMappingPresets(databaseName: string, entityType: string): Autocount
 // `documentMappingView`/`mockMappingView` above remain as the Vitest
 // fixture data (`mockAutocountService`) the builder's frontend-first tests
 // exercise directly.
+

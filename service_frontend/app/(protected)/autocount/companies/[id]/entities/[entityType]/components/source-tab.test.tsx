@@ -13,6 +13,7 @@ import type {
   UseSqlPreviewResult,
 } from '@/hooks/use-autocount-etl';
 import type { AutocountApiConnection } from '@/types/autocount';
+import { emptyCombine } from '@/lib/autocount-combine';
 import { SourceTab, type LockedApiConnection, type LockedConnection } from './source-tab';
 
 /**
@@ -112,6 +113,8 @@ function renderSourceTab(over: {
       lockedApiConnection={null}
       httpPreview={{ state: { status: 'idle' }, run: vi.fn(), fieldErrors: {}, reset: vi.fn() }}
       companyId="company-1"
+      columnsProbe={{ columnsByKey: {}, loadingKeys: {}, errorsByKey: {}, run: vi.fn() }}
+      onCombineFormulaTest={passThroughServer}
     />,
   );
   return { onChange, onUsePreset };
@@ -435,6 +438,8 @@ function renderApiBranch(over: {
       lockedApiConnection={over.lockedApiConnection ?? null}
       httpPreview={over.httpPreview ?? idleHttpPreview()}
       companyId="company-1"
+      columnsProbe={{ columnsByKey: {}, loadingKeys: {}, errorsByKey: {}, run: vi.fn() }}
+      onCombineFormulaTest={passThroughServer}
     />,
   );
   return { onChange, onSourceKindChange };
@@ -565,5 +570,444 @@ describe('SourceTab - API branch, basic-auth connection (D13 - no endpoint to co
     fireEvent.click(screen.getByRole('combobox', { name: 'Connection' }));
     expect(screen.queryByRole('option', { name: 'AutoCount Vendor API (Basic auth)' })).not.toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'Sorento REST (No auth)' })).toBeInTheDocument();
+  });
+});
+
+// sprint-5/10 (AC-10-01, D23) - a lookup alias may never be offered as a key
+// or watermark field (a miss leaves it absent), but IS offered as a compared
+// field (Mapping's own separate picker reads the SAME `httpPreviewColumns`/
+// `resultColumns` untouched, so it carries the alias by construction - not
+// re-tested here).
+describe('SourceTab - a lookup alias is excluded from key/watermark, offered in compared (AC-10-01)', () => {
+  function previewWithAlias(): UseHttpPreviewResult {
+    return {
+      state: {
+        status: 'success',
+        preview: {
+          envelope: 'paged',
+          totalCount: 11826,
+          columns: [
+            { name: 'ItemCode', sample: 'SRT-01' },
+            { name: 'LastModified', sample: '2026-08-01T00:00:00' },
+            { name: 'BaseUOMPrice', sample: '63.00' },
+          ],
+          rows: [],
+          durationMs: 220,
+          lookups: [{ alias: 'uom', matched: 48, missed: 2 }],
+        },
+      },
+      run: vi.fn(),
+      fieldErrors: {},
+      reset: vi.fn(),
+    };
+  }
+
+  function cfgWithLookup() {
+    return httpConfig({
+      lookups: [
+        {
+          path: '/itemuombypage',
+          as: 'uom',
+          on: [{ local: 'ItemCode', remote: 'ItemCode' }],
+          fields: [{ remote: 'Price', as: 'BaseUOMPrice' }],
+        },
+      ],
+    });
+  }
+
+  it('the key-columns picker never offers the alias', () => {
+    renderApiBranch({ cfg: cfgWithLookup(), httpPreview: previewWithAlias() });
+    const keyColumnsLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
+    );
+    const keyColumnsBox = keyColumnsLabel.parentElement as HTMLElement;
+    fireEvent.click(within(keyColumnsBox).getByRole('combobox'));
+    expect(screen.queryByRole('option', { name: 'BaseUOMPrice' })).not.toBeInTheDocument();
+  });
+
+  it('the watermark picker never offers the alias', () => {
+    renderApiBranch({ cfg: cfgWithLookup(), httpPreview: previewWithAlias() });
+    fireEvent.click(screen.getByLabelText('Watermark column'));
+    expect(screen.queryByRole('option', { name: 'BaseUOMPrice' })).not.toBeInTheDocument();
+  });
+
+  it('the compared-fields picker DOES offer the alias', () => {
+    renderApiBranch({ cfg: cfgWithLookup(), httpPreview: previewWithAlias() });
+    const comparedLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Compared columns'),
+    );
+    const comparedBox = comparedLabel.parentElement as HTMLElement;
+    fireEvent.click(within(comparedBox).getByRole('combobox'));
+    expect(screen.getByRole('option', { name: 'BaseUOMPrice' })).toBeInTheDocument();
+  });
+});
+
+// sprint-5/10 S5b-FE (AC-10-82) - the Source tab's own Test button proves the
+// combine step: it sends `combine` in the request when the task carries one,
+// and the Combine editor renders the response's SERVER funnel, not a
+// client-side simulation.
+describe('SourceTab - Test sends the combine step + feeds the server funnel (AC-10-82)', () => {
+  function successHttpPreviewWithFunnel(): UseHttpPreviewResult {
+    return {
+      state: {
+        status: 'success',
+        preview: {
+          envelope: 'list',
+          columns: [
+            { name: 'item_code', sample: 'SRT-01' },
+            { name: 'qty', sample: 5 },
+          ],
+          rows: [{ item_code: 'SRT-01', qty: 5 }],
+          durationMs: 40,
+          rowsIn: 6,
+          excludedCount: 1,
+          groups: 2,
+          droppedByRule: { zero: 1 },
+          rowsOut: 1,
+          roundedCount: 0,
+        },
+      },
+      run: vi.fn(),
+      fieldErrors: {},
+      reset: vi.fn(),
+    };
+  }
+
+  it('Test sends the combine block when the task carries one', () => {
+    const httpPreview = idleHttpPreview();
+    const combine = { ...emptyCombine(), groupBy: ['item_code'] };
+    renderApiBranch({ httpPreview, cfg: httpConfig({ combine }) });
+    fireEvent.click(screen.getByTestId('http-test-path'));
+    expect(httpPreview.run).toHaveBeenCalledWith('conn-api-sorento', '/itembypage', undefined, {
+      companyId: 'company-1',
+      entityType: 'product',
+      lookups: undefined,
+      combine,
+    });
+  });
+
+  it('Test omits combine (undefined) for a task with none configured', () => {
+    const httpPreview = idleHttpPreview();
+    renderApiBranch({ httpPreview, cfg: httpConfig({ combine: null }) });
+    fireEvent.click(screen.getByTestId('http-test-path'));
+    expect(httpPreview.run).toHaveBeenCalledWith(
+      'conn-api-sorento',
+      '/itembypage',
+      undefined,
+      expect.objectContaining({ combine: null }),
+    );
+  });
+
+  it('feeds the Combine editor the SERVER funnel once a combine-inclusive Test lands, alongside the combined rows in the existing preview grid', () => {
+    renderApiBranch({
+      cfg: httpConfig({ combine: { ...emptyCombine(), groupBy: ['item_code'] } }),
+      httpPreview: successHttpPreviewWithFunnel(),
+    });
+    const funnel = screen.getByTestId('combine-funnel');
+    expect(funnel).toHaveTextContent('6 in');
+    expect(funnel).toHaveTextContent('1 excluded');
+    expect(funnel).toHaveTextContent('2 groups');
+    expect(funnel).toHaveTextContent('zero: 1 dropped');
+    expect(funnel).toHaveTextContent('1 out');
+    // The SAME response's combined rows land in the reused preview grid.
+    const grid = screen.getByTestId('sql-preview-success');
+    expect(within(grid).getByText('item_code')).toBeInTheDocument();
+  });
+
+  // B1 (blocker, review round 1, AC-10-82/AC-10-40/41) - a brand-new
+  // entity's FIRST Test never gets a `task` echo (no `ac_entity_config` row
+  // exists yet), and a preset-seeded stock task sends `combine` on that
+  // very first Test - so the old fallback-to-`preview.columns` read the
+  // COMBINED, post-group shape (`qty`) straight into the watermark/compared/
+  // Lookups/Combine pickers. This pair regresses if the pre-combine
+  // preference (`preview.preCombineColumns`) is ever removed.
+  // Two separate `it`s (one popover interaction each) - Radix's Popover
+  // leaves a transitional aria-hidden state on a same-test second open that
+  // has nothing to do with the app code under test.
+  function combinedNoTaskEchoPreview(): UseHttpPreviewResult {
+    return {
+      state: {
+        status: 'success',
+        preview: {
+          envelope: 'list',
+          columns: [
+            { name: 'item_code', sample: 'SRT-01' },
+            { name: 'qty', sample: 5 },
+          ],
+          rows: [{ item_code: 'SRT-01', qty: 5 }],
+          durationMs: 40,
+          rowsIn: 6,
+          excludedCount: 1,
+          groups: 2,
+          droppedByRule: { zero: 1 },
+          rowsOut: 1,
+          roundedCount: 0,
+          preCombineColumns: ['ItemCode', 'BalQty', 'UOM', 'ItemBaseUOM'],
+          // NO `task` - the entity has no config row yet.
+        },
+      },
+      run: vi.fn(),
+      fieldErrors: {},
+      reset: vi.fn(),
+    };
+  }
+
+  it('the watermark picker offers only PRE-combine names, never a measure alias like "qty" (combined preview, no task echo)', () => {
+    renderApiBranch({
+      cfg: httpConfig({
+        keyFields: [],
+        watermarkField: null,
+        combine: { ...emptyCombine(), groupBy: ['item_code'] },
+      }),
+      httpPreview: combinedNoTaskEchoPreview(),
+    });
+
+    fireEvent.click(screen.getByLabelText('Watermark column'));
+    expect(screen.getByRole('option', { name: 'ItemCode' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'qty' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'item_code' })).not.toBeInTheDocument();
+  });
+
+  it('the compared-fields picker offers only PRE-combine names, never a measure alias like "qty" (combined preview, no task echo)', () => {
+    renderApiBranch({
+      cfg: httpConfig({
+        keyFields: [],
+        watermarkField: null,
+        combine: { ...emptyCombine(), groupBy: ['item_code'] },
+      }),
+      httpPreview: combinedNoTaskEchoPreview(),
+    });
+
+    const comparedLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Compared columns'),
+    );
+    const comparedBox = comparedLabel.parentElement as HTMLElement;
+    fireEvent.click(within(comparedBox).getByRole('combobox'));
+    expect(screen.getByRole('option', { name: 'BalQty' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'qty' })).not.toBeInTheDocument();
+  });
+
+  // S2 (review round 1) - an unsaved lookup's alias must not vanish from the
+  // compared/Combine pickers just because the echoed `task` (when there is
+  // one) reflects only the SAVED lookups.
+  function draftLookupPreview(): UseHttpPreviewResult {
+    return {
+      state: {
+        status: 'success',
+        preview: {
+          envelope: 'list',
+          columns: [
+            { name: 'ItemCode', sample: 'SRT-01' },
+            { name: 'LastModified', sample: '2026-08-01T00:00:00' },
+          ],
+          rows: [],
+          durationMs: 40,
+          // NO `task` - a draft this session has not yet been saved.
+        },
+      },
+      run: vi.fn(),
+      fieldErrors: {},
+      reset: vi.fn(),
+    };
+  }
+
+  function cfgWithDraftLookup() {
+    return httpConfig({
+      lookups: [
+        {
+          path: '/itemuombypage',
+          as: 'uom',
+          on: [{ local: 'ItemCode', remote: 'ItemCode' }],
+          fields: [{ remote: 'Price', as: 'BaseUOMPrice' }],
+        },
+      ],
+    });
+  }
+
+  it('an unsaved (draft) lookup`s alias is offered in the compared picker even though the response carries no task echo', () => {
+    renderApiBranch({ cfg: cfgWithDraftLookup(), httpPreview: draftLookupPreview() });
+
+    const comparedLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Compared columns'),
+    );
+    const comparedBox = comparedLabel.parentElement as HTMLElement;
+    fireEvent.click(within(comparedBox).getByRole('combobox'));
+    expect(screen.getByRole('option', { name: 'BaseUOMPrice' })).toBeInTheDocument();
+  });
+
+  it('an unsaved (draft) lookup`s alias is never offered in the key-columns picker, even with no task echo', () => {
+    renderApiBranch({ cfg: cfgWithDraftLookup(), httpPreview: draftLookupPreview() });
+
+    const keyColumnsLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
+    );
+    const keyColumnsBox = keyColumnsLabel.parentElement as HTMLElement;
+    fireEvent.click(within(keyColumnsBox).getByRole('combobox'));
+    expect(screen.queryByRole('option', { name: 'BaseUOMPrice' })).not.toBeInTheDocument();
+  });
+
+  it('no funnel renders for a plain (no-combine) Test', () => {
+    // S4b (review round 1) - the ORIGINAL version of this test used
+    // `httpConfig()`'s default (`combine` absent entirely), so the Combine
+    // editor itself renders collapsed ("No combine step configured.") and
+    // never even reaches the funnel-rendering branch - a vacuous pass. A
+    // combine-CARRYING config (the switch is on) with a funnel-less success
+    // preview (`rowsIn` absent, as a Test run BEFORE this combine was added
+    // would be) is the real "no funnel yet" case.
+    renderApiBranch({
+      cfg: httpConfig({ combine: { ...emptyCombine(), groupBy: ['item_code'] } }),
+      httpPreview: successHttpPreview(),
+    });
+    expect(screen.queryByTestId('combine-funnel')).not.toBeInTheDocument();
+  });
+});
+
+// sprint-5/10 (AC-10-80) - a combine step's `groupBy` becomes the task's key
+// fields, derived, never separately typed: the Key fields picker turns into
+// read-only chips the moment one is set, and reverts the moment it is not.
+describe('SourceTab - combine groupBy locks the Key fields picker to read-only chips (AC-10-80)', () => {
+  function keyColumnsBox(): HTMLElement {
+    const label = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
+    );
+    return label.parentElement as HTMLElement;
+  }
+
+  it('renders chips of groupBy, no picker, when combine.groupBy is set', () => {
+    renderApiBranch({
+      cfg: httpConfig({
+        keyFields: [],
+        combine: { ...emptyCombine(), groupBy: ['item_code', 'location_code'] },
+      }),
+    });
+    const box = keyColumnsBox();
+    expect(within(box).queryByRole('combobox')).not.toBeInTheDocument();
+    expect(within(box).getByText('item_code')).toBeInTheDocument();
+    expect(within(box).getByText('location_code')).toBeInTheDocument();
+  });
+
+  it('the picker returns once combine is unset', () => {
+    renderApiBranch({ cfg: httpConfig({ keyFields: ['ItemCode'], combine: null }) });
+    expect(within(keyColumnsBox()).getByRole('combobox')).toBeInTheDocument();
+  });
+
+  it('the picker also returns for a combine with no groupBy yet (mid-edit, not yet locked)', () => {
+    renderApiBranch({ cfg: httpConfig({ keyFields: ['ItemCode'], combine: emptyCombine() }) });
+    expect(within(keyColumnsBox()).getByRole('combobox')).toBeInTheDocument();
+  });
+});
+
+// S6 browser round defect D1 - on an ALREADY-SAVED combine task the saved
+// `comparedFields` (which may legitimately hold a combine measure alias,
+// AC-10-80) must not leak into the key/watermark pickers' own options
+// through a shared saved-picks pool.
+describe('SourceTab - a saved combine task never leaks a measure alias into the watermark/key pickers (S6 defect D1)', () => {
+  function combinedSavedTaskPreview(): UseHttpPreviewResult {
+    return {
+      state: {
+        status: 'success',
+        preview: {
+          envelope: 'list',
+          columns: [
+            { name: 'item_code', sample: 'SRT-01' },
+            { name: 'location_code', sample: 'WH1' },
+            { name: 'qty', sample: 5 },
+          ],
+          rows: [{ item_code: 'SRT-01', location_code: 'WH1', qty: 5 }],
+          durationMs: 40,
+          rowsIn: 6,
+          excludedCount: 1,
+          groups: 2,
+          droppedByRule: { zero: 1 },
+          rowsOut: 1,
+          roundedCount: 0,
+          preCombineColumns: ['ItemCode', 'Location', 'BalQty', 'UOM', 'ItemBaseUOM'],
+        },
+      },
+      run: vi.fn(),
+      fieldErrors: {},
+      reset: vi.fn(),
+    };
+  }
+
+  function savedCombineConfig(over: Partial<AutocountEtlSourceConfig> = {}) {
+    return httpConfig({
+      keyFields: [],
+      watermarkField: null,
+      comparedFields: ['qty'],
+      combine: {
+        ...emptyCombine(),
+        groupBy: ['item_code', 'location_code'],
+        measures: [{ source: 'base_qty', op: 'sum', alias: 'qty' }],
+      },
+      ...over,
+    });
+  }
+
+  it('the watermark picker never offers the saved combine measure alias', () => {
+    renderApiBranch({ cfg: savedCombineConfig(), httpPreview: combinedSavedTaskPreview() });
+    fireEvent.click(screen.getByLabelText('Watermark column'));
+    expect(screen.queryByRole('option', { name: 'qty' })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'ItemCode' })).toBeInTheDocument();
+  });
+
+  it('the compared picker still shows the saved measure alias as its own selected pill', () => {
+    renderApiBranch({ cfg: savedCombineConfig(), httpPreview: combinedSavedTaskPreview() });
+    const comparedLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Compared columns'),
+    );
+    const comparedBox = comparedLabel.parentElement as HTMLElement;
+    expect(within(comparedBox).getByText('qty')).toBeInTheDocument();
+  });
+
+  it('the key picker (not locked - combine.groupBy empty mid-edit) never offers the saved measure alias', () => {
+    renderApiBranch({
+      cfg: savedCombineConfig({
+        combine: {
+          ...emptyCombine(),
+          groupBy: [],
+          measures: [{ source: 'base_qty', op: 'sum', alias: 'qty' }],
+        },
+      }),
+      httpPreview: combinedSavedTaskPreview(),
+    });
+    const keyColumnsLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
+    );
+    const keyColumnsBox = keyColumnsLabel.parentElement as HTMLElement;
+    fireEvent.click(within(keyColumnsBox).getByRole('combobox'));
+    expect(screen.queryByRole('option', { name: 'qty' })).not.toBeInTheDocument();
+  });
+
+  it('a saved compared pick that is NOT a measure alias and NOT a preview/preCombine column stays scoped to the compared picker only (per-picker scoping, independent of the measureAliases filter)', () => {
+    renderApiBranch({
+      cfg: savedCombineConfig({
+        keyFields: [],
+        watermarkField: null,
+        comparedFields: ['StaleCol'],
+        combine: {
+          ...emptyCombine(),
+          groupBy: [],
+          measures: [{ source: 'base_qty', op: 'sum', alias: 'qty' }],
+        },
+      }),
+      httpPreview: combinedSavedTaskPreview(),
+    });
+
+    fireEvent.click(screen.getByLabelText('Watermark column'));
+    expect(screen.queryByRole('option', { name: 'StaleCol' })).not.toBeInTheDocument();
+
+    const keyColumnsLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
+    );
+    const keyColumnsBox = keyColumnsLabel.parentElement as HTMLElement;
+    fireEvent.click(within(keyColumnsBox).getByRole('combobox', { hidden: true }));
+    expect(screen.queryByRole('option', { name: 'StaleCol' })).not.toBeInTheDocument();
+
+    const comparedLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Compared columns'),
+    );
+    const comparedBox = comparedLabel.parentElement as HTMLElement;
+    expect(within(comparedBox).getByText('StaleCol')).toBeInTheDocument();
   });
 });

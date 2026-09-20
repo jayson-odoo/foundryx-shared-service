@@ -16,6 +16,7 @@ import {
   isDocumentEntity,
   loggingSinkWarning,
   mappingSourceColumns,
+  mappingSourceColumnsForTask,
   pickerColumnOptions,
   productDependencyWarning,
   readTaskError,
@@ -80,6 +81,19 @@ describe('pickerColumnOptions', () => {
 
   it('is just the saved picks before any preview ran', () => {
     expect(pickerColumnOptions([], ['AccNo'])).toEqual(['AccNo']);
+  });
+
+  // S6 browser round defect D1 - `source-tab.tsx` calls this once PER
+  // picker now (key/watermark/compared each pass ONLY their own saved
+  // value), never one shared union fed to all three. A saved value stays
+  // scoped to whichever call it was passed to.
+  it('a saved value passed to one call never appears in a SIBLING call over the same preview columns (D1 regression)', () => {
+    const preview = ['ItemCode', 'BaseUOM'];
+    const keyOptions = pickerColumnOptions(preview, ['ItemCode']);
+    const watermarkOptions = pickerColumnOptions(preview, ['LastModified']);
+    expect(watermarkOptions).toContain('LastModified');
+    expect(keyOptions).not.toContain('LastModified');
+    expect(keyOptions).toContain('ItemCode');
   });
 });
 
@@ -311,6 +325,44 @@ describe('mappingSourceColumns (AC-22-09 source picker)', () => {
   });
 });
 
+describe('mappingSourceColumnsForTask (sprint-5/10 S5b-FE, AC-10-82)', () => {
+  it('reads the pre-combine resultColumns when no combine is configured', () => {
+    expect(
+      mappingSourceColumnsForTask({
+        resultColumns: ['ItemCode', 'Description'],
+        combineOutputColumns: [],
+        previewColumns: ['LastModified'],
+        combinedPreviewColumns: [],
+        mappedPaths: [],
+      }),
+    ).toEqual(['ItemCode', 'Description', 'LastModified']);
+  });
+
+  it('switches wholesale to combineOutputColumns once the task carries one - never unioned with resultColumns', () => {
+    expect(
+      mappingSourceColumnsForTask({
+        resultColumns: ['ItemCode', 'BalQty', 'UOM'],
+        combineOutputColumns: ['item_code', 'location_code', 'qty'],
+        previewColumns: ['ItemCode'],
+        combinedPreviewColumns: ['item_code', 'location_code', 'qty', 'ItemDescription'],
+        mappedPaths: [],
+      }),
+    ).toEqual(['item_code', 'location_code', 'qty', 'ItemDescription']);
+  });
+
+  it('still offers an already-mapped path even if it fell out of the combined set', () => {
+    expect(
+      mappingSourceColumnsForTask({
+        resultColumns: [],
+        combineOutputColumns: ['item_code', 'qty'],
+        previewColumns: [],
+        combinedPreviewColumns: [],
+        mappedPaths: ['legacy_col'],
+      }),
+    ).toEqual(['item_code', 'qty', 'legacy_col']);
+  });
+});
+
 // ── plan 22 S5 review SHOULD-FIX 4c - status seed formula (a VALUE, not copy) ─
 
 describe('statusFormulaSeed', () => {
@@ -524,7 +576,7 @@ describe('REF_PREFIX_RE (AC-08-07)', () => {
 });
 
 describe('HTTP_PRESETS (AC-08-16)', () => {
-  it('has exactly the six confirmed masters, each with a leading-slash path and key field(s)', () => {
+  it('has exactly the six confirmed masters plus stock_balance, each with a leading-slash path', () => {
     expect(Object.keys(HTTP_PRESETS)).toEqual([
       'product',
       'customer',
@@ -532,11 +584,27 @@ describe('HTTP_PRESETS (AC-08-16)', () => {
       'product_category',
       'brand',
       'unit_of_measure',
+      'stock_balance',
     ]);
     for (const preset of Object.values(HTTP_PRESETS)) {
       expect(preset.path.startsWith('/')).toBe(true);
+    }
+    // Every preset but `stock_balance` types its own key field(s); a
+    // combine-carrying task's are DERIVED from `combine.groupBy` instead
+    // (AC-10-80) - the preset itself ships an empty `keyFields`.
+    for (const [entityType, preset] of Object.entries(HTTP_PRESETS)) {
+      if (entityType === 'stock_balance') continue;
       expect(preset.keyFields.length).toBeGreaterThan(0);
     }
+    expect(HTTP_PRESETS.stock_balance.keyFields).toEqual([]);
+  });
+
+  it('stock_balance pre-fills two ordered lookups and a combine step (AC-10-40/41)', () => {
+    const preset = HTTP_PRESETS.stock_balance;
+    expect(preset.lookups?.map((l) => l.as)).toEqual(['item', 'uom']);
+    expect(preset.combine?.groupBy).toEqual(['item_code', 'location_code']);
+    expect(preset.combine?.drop.map((d) => d.name)).toEqual(['zero', 'negative']);
+    expect(preset.combine?.drop.find((d) => d.name === 'negative')?.listRows).toBe(true);
   });
 
   it('unit_of_measure is derived from distinct UOM columns, keyed "value"', () => {

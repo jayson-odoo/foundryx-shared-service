@@ -162,3 +162,126 @@ describe('realAutocountService - HTTP task sourceConfig normalization', () => {
     expect(result.task.sourceConfig.docDateColumn).toBeNull();
   });
 });
+
+// sprint-5/10 review round 1, item 5 - the `lookups` save round trip
+// (`EtlSourceConfigIn.lookups: Optional[...] = None` - omit the key on the
+// wire to KEEP whatever is stored; only an explicit `[]` clears it, per the
+// backend docstring `services/etl_service.py`).
+describe('realAutocountService - lookups save round trip (AC-10-01)', () => {
+  it('an untouched editor omits the key entirely - the backend keeps what it has', async () => {
+    apiFetchMock.mockResolvedValue(realHttpTaskWire());
+    const { lookups: _omit, ...configWithoutLookups } = { ...realHttpTaskWire().sourceConfig } as never;
+    void _omit;
+    await realAutocountService.updateEtlTask('company-1', 'product', {
+      sourceConfig: configWithoutLookups as never,
+      sourceImpl: 'autocount_http',
+    });
+    const body = JSON.parse(apiFetchMock.mock.calls[0][1].body);
+    expect(Object.prototype.hasOwnProperty.call(body.sourceConfig, 'lookups')).toBe(false);
+  });
+
+  it('clearing every lookup row sends an explicit [] (never omitted)', async () => {
+    apiFetchMock.mockResolvedValue(realHttpTaskWire());
+    await realAutocountService.updateEtlTask('company-1', 'product', {
+      sourceConfig: { ...realHttpTaskWire().sourceConfig, lookups: [] } as never,
+      sourceImpl: 'autocount_http',
+    });
+    const body = JSON.parse(apiFetchMock.mock.calls[0][1].body);
+    expect(body.sourceConfig.lookups).toEqual([]);
+  });
+
+  it('an edited lookup set sends the whole array', async () => {
+    apiFetchMock.mockResolvedValue(realHttpTaskWire());
+    const lookups = [
+      {
+        path: '/itemuombypage',
+        as: 'uom',
+        on: [{ local: 'ItemCode', remote: 'ItemCode' }],
+        fields: [{ remote: 'Price', as: 'BaseUOMPrice' }],
+      },
+    ];
+    await realAutocountService.updateEtlTask('company-1', 'product', {
+      sourceConfig: { ...realHttpTaskWire().sourceConfig, lookups } as never,
+      sourceImpl: 'autocount_http',
+    });
+    const body = JSON.parse(apiFetchMock.mock.calls[0][1].body);
+    expect(body.sourceConfig.lookups).toEqual(lookups);
+  });
+});
+
+// sprint-5/10 S6 phase 2 swap - pins every route path + method against the
+// LIVE backend contract (`modules/autocount/routers/{companies,pull}.py`,
+// `.../schemas.py`); the human-invoked pull surface stopped going through
+// `withPhase1PullMock` and now hits `realAutocountService` for real.
+describe('realAutocountService - human-invoked pull (AC-10-11/27..38)', () => {
+  it('setDeliveryMode PUTs the delivery-mode sub-resource', async () => {
+    apiFetchMock.mockResolvedValue({ id: 'e1', entityType: 'product', deliveryMode: 'pull' });
+    await realAutocountService.setDeliveryMode('company-1', 'product', 'pull');
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      '/autocount/companies/company-1/entities/product/delivery-mode',
+      { method: 'PUT', body: JSON.stringify({ deliveryMode: 'pull' }) },
+    );
+  });
+
+  it('listPullKeys GETs the tenant key list', async () => {
+    apiFetchMock.mockResolvedValue([]);
+    await realAutocountService.listPullKeys();
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/pull/keys');
+  });
+
+  it('issuePullKey POSTs name + companyIds', async () => {
+    apiFetchMock.mockResolvedValue({ key: { id: 'k1' }, plaintext: 'fxa_live_x' });
+    await realAutocountService.issuePullKey({ name: 'Sorento', companyIds: ['c1'] });
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/pull/keys', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Sorento', companyIds: ['c1'] }),
+    });
+  });
+
+  it('revokePullKey POSTs the revoke sub-resource', async () => {
+    apiFetchMock.mockResolvedValue({ id: 'k1', revokedAt: '2026-09-20T00:00:00Z' });
+    await realAutocountService.revokePullKey('k1');
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/pull/keys/k1/revoke', { method: 'POST' });
+  });
+
+  it('listPullSnapshots GETs with page/pageSize and the optional company/entity filters', async () => {
+    apiFetchMock.mockResolvedValue({ data: [], total: 0, page: 0 });
+    await realAutocountService.listPullSnapshots({
+      page: 1,
+      pageSize: 50,
+      companyId: 'c1',
+      entityType: 'product',
+    });
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      '/autocount/pull/snapshots?page=1&page_size=50&companyId=c1&entityType=product',
+    );
+  });
+
+  it('getPullSnapshot GETs the snapshot by id', async () => {
+    apiFetchMock.mockResolvedValue({ id: 's1' });
+    await realAutocountService.getPullSnapshot('s1');
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/pull/snapshots/s1');
+  });
+
+  it('getPullSnapshotRows GETs a 1-based page (the gateway/operator route convention, distinct from the list routes\' 0-based page)', async () => {
+    apiFetchMock.mockResolvedValue({
+      snapshotId: 's1',
+      page: 1,
+      pageSize: 1000,
+      totalPages: 1,
+      recordCount: 0,
+      rows: [],
+    });
+    await realAutocountService.getPullSnapshotRows('s1', 0, 1000);
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/pull/snapshots/s1/rows?page=1&pageSize=1000');
+  });
+
+  it('buildPullSnapshot POSTs companyId + entityType to the snapshots collection', async () => {
+    apiFetchMock.mockResolvedValue({ id: 's1', status: 'building' });
+    await realAutocountService.buildPullSnapshot('c1', 'product');
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/pull/snapshots', {
+      method: 'POST',
+      body: JSON.stringify({ companyId: 'c1', entityType: 'product' }),
+    });
+  });
+});

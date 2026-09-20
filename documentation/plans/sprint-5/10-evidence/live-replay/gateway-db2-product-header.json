@@ -1,0 +1,1 @@
+{"snapshotId":"1c89a3f4-f89d-4ee8-95aa-bb5a46d0872b","entity":"products","companyCode":"MCH","status":"failed","error":{"code":"SOURCE_PAGE_FAILED","message":"'/itembypage' timed out repeatedly even after 2 halving(s) of the page size."}}

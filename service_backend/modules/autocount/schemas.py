@@ -87,6 +87,16 @@ class EntityConfigItem(ApiModel):
     # the task editor's Review & Activate tab can warn a `product` task's
     # activation of a missing category/UOM prerequisite without a second fetch.
     etlStatus: str = Field(default="draft", validation_alias="etl_status")
+    # sprint-5/10 (AC-10-11/17) - the Delivery column, no per-row fetch.
+    deliveryMode: str = Field(default="push", validation_alias="delivery_mode")
+
+
+class EntityDeliveryModeUpdate(ApiModel):
+    """``PUT .../entities/{entityType}/delivery-mode`` body (AC-10-11)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    deliveryMode: str
 
 
 class EntityConfigUpdate(ApiModel):
@@ -635,6 +645,12 @@ class HttpPreviewRequest(ApiModel):
     # (``http_source.lookups.validate_lookups``) at SAVE time; the preview
     # route only walks what it is given.
     lookups: Optional[List[Dict[str, Any]]] = None
+    # sprint-5/10 S5a follow-up (AC-10-82) - the operator's DRAFT combine
+    # step, same "plain dict, service validates" contract as `lookups`
+    # above (`http_source.combine.validate_combine` at the service layer;
+    # the preview route only runs what it is given). Omitted (`None`) never
+    # runs combine at all - the response is unaffected.
+    combine: Optional[Dict[str, Any]] = None
     # When both are given, the preview also records `resultColumns`/
     # `lastPreviewAt` on the task (AC-08-14) - exactly as the SQL preview
     # does, so the Source tab's column pickers see it without a second call.
@@ -722,6 +738,18 @@ class EtlSourceConfigIn(ApiModel):
     # already stored (``_validate_http_config`` reads ``None`` that way);
     # only an EXPLICIT `[]` clears a task's saved lookups.
     lookups: Optional[List[Dict[str, Any]]] = None
+    # sprint-5/10 S5a follow-up (AC-10-76/80) - the operator's SAVED combine
+    # step, same "plain dict, service validates" contract as ``lookups``
+    # above. Review round 5 (R5-B): UNLIKE ``lookups`` (whose own empty-list
+    # sentinel already distinguishes "omitted" from "explicit clear"),
+    # ``combine`` has no such third value at the JSON level - an explicit
+    # ``null`` and an omitted key would otherwise both decode to the SAME
+    # Python ``None``. The router (``routers/companies.py``) reads
+    # ``model_fields_set`` to tell them apart BEFORE the dict reaches the
+    # service layer (a field genuinely absent from the wire is dropped from
+    # the raw dict entirely) - see ``EtlService._update_http_task``'s own
+    # ``"combine" in raw`` gate.
+    combine: Optional[Dict[str, Any]] = None
 
 
 class InitialLoadProgress(ApiModel):
@@ -741,6 +769,17 @@ class BrandContractGate(ApiModel):
     whose consumer does not yet accept brands; drives the Review & Activate
     banner ("Consumer contract 2.2 - brands land when 2.3 is deployed")."""
 
+    version: Optional[float] = None
+    requiredVersion: float
+
+
+class ContractGate(ApiModel):
+    """sprint-5/10 (AC-10-69) - the GENERALISED replacement
+    ``brandContractGate`` folds into by VALUE (never removed from the wire -
+    see ``EtlTaskResponse``'s own note). Non-null whenever the task's own
+    entity has something to warn about."""
+
+    entity: str
     version: Optional[float] = None
     requiredVersion: float
 
@@ -807,7 +846,21 @@ class EtlTaskResponse(ApiModel):
     initialLoad: Optional[InitialLoadProgress] = None
     # sprint-5/08 (AC-08-33/AC-08-20 S5) - non-null only for a `brand` task
     # on a Sorento-sink company whose consumer does not yet accept brands.
+    # KEPT AS-IS (ruling, sprint-5/10 coordinator): the frontend type still
+    # reads only this field; its rename/removal is a later FE slice.
     brandContractGate: Optional[BrandContractGate] = None
+    # sprint-5/10 (AC-10-69) - the GENERALISED gate (today: `brand`,
+    # `product`), added alongside `brandContractGate` above, never replacing
+    # it in this slice.
+    contractGate: Optional[ContractGate] = None
+    # sprint-5/10 (AC-10-10) - `push` (default) or `pull`.
+    deliveryMode: str = "push"
+    # sprint-5/10 review round 4 (SF-4) - the COMBINED, POST-GROUP schema a
+    # combine-carrying task's own rows carry (`groupBy + carry +
+    # measures[].alias`); `[]` when no combine step is configured. ADDITIVE
+    # alongside `resultColumns` above (the pre-combine raw/lookup set,
+    # unchanged) - never a replacement for it.
+    combineOutputColumns: List[str] = []
 
 
 class HttpPreviewResponse(ApiModel):
@@ -831,6 +884,38 @@ class HttpPreviewResponse(ApiModel):
     task: Optional[EtlTaskResponse] = None
     # sprint-5/10 (AC-10-05) - per-lookup {alias, matched, missed} counts.
     lookups: List[LookupPreviewCountOut] = []
+    # sprint-5/10 S5a follow-up (AC-10-82) - the combine funnel, present
+    # ONLY when the request carried a `combine` block (`rows`/`columns`
+    # above are then the COMBINED shape, not the pre-combine sample); every
+    # field stays `None`/omitted for a plain lookup preview, so that
+    # response is unaffected.
+    rowsIn: Optional[int] = None
+    excludedCount: Optional[int] = None
+    groups: Optional[int] = None
+    droppedByRule: Optional[Dict[str, int]] = None
+    rowsOut: Optional[int] = None
+    roundedCount: Optional[int] = None
+    # review round 5 (R5-A) - the PRE-combine column set the walk produced
+    # (raw source columns + lookup aliases + computed aliases, i.e. exactly
+    # what `columns` was before the combine step ran) - present ONLY when
+    # the request carried a `combine` block, same gate as the funnel fields
+    # above. The Source tab's group-by/measure/require pickers must stay
+    # pre-combine (they pick what a formula may REFERENCE, not the grouped
+    # OUTPUT `combineOutputColumns` already carries), and on the FIRST Test
+    # of a brand-new stock task there is no saved entity row yet to echo
+    # (`task` is null), so the FE has nothing else pre-combine to read.
+    preCombineColumns: Optional[List[str]] = None
+    # confirm round 2 (B1, AC-10-01/AC-10-09) - the RAW columns of the walked
+    # endpoint: never a lookup alias, never a combine computed alias, and
+    # ALWAYS present (lookups or not, combine or not), unlike the two
+    # combine-gated fields above. `columns` is by design the MERGED shape
+    # (raw UNION every alias the REQUEST's lookups carried, so the grid can
+    # show enriched values), which makes it useless as the Lookups editor's
+    # "names already taken" set - an alias the very same request introduced
+    # collided with itself. This is the one field that answers that question,
+    # and it is the SAME set the backend itself stores as `result_columns`
+    # and re-validates saves against.
+    rawColumns: List[str] = []
 
 
 class EtlPreviewResponse(ApiModel):
@@ -873,3 +958,101 @@ class PreviewResponse(ApiModel):
 
     jobId: str
     preview: Dict[str, Any]
+
+
+# ── human-invoked pull (sprint-5/10 §2.4/2.6, AC-10-32/33/37) ────────────────
+
+
+class PullSnapshotOut(ApiModel):
+    """One snapshot's header (AC-10-32) - the wire shape the operator routes
+    AND (later, S4) the public gateway both project from
+    ``services.pull_service.snapshot_header``. Per-entity counters are
+    optional so ONE shape covers every entity without a discriminated union
+    the caller must branch on to read it."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    entityType: str
+    companyId: str
+    companyCode: Optional[str] = None
+    status: str
+    requestedVia: str
+    createdAt: Optional[datetime] = None
+    extractedAt: Optional[datetime] = None
+    expiresAt: Optional[datetime] = None
+    recordCount: int = 0
+    complete: bool = False
+    contentHash: Optional[str] = None
+    sourcePageSize: Optional[int] = None
+    error: Optional[Dict[str, Any]] = None
+    excludedCount: int = 0
+    excludedRows: List[Dict[str, Any]] = []
+    # product-only (AC-10-63)
+    zeroListPriceCount: Optional[int] = None
+    negativeListPriceCount: Optional[int] = None
+    enrichMissCount: Optional[int] = None
+    # stock-only (AC-10-42/43/66/81, S5b)
+    zeroPairs: Optional[int] = None
+    negativePairs: Optional[int] = None
+    fractionalPairs: Optional[int] = None
+    excludedNonzeroCount: Optional[int] = None
+    negativePairList: Optional[List[Dict[str, Any]]] = None
+
+
+class PullSnapshotListResponse(ApiModel):
+    data: List[PullSnapshotOut]
+    total: int
+    page: int
+
+
+class PullSnapshotRowsPageOut(ApiModel):
+    """``GET .../rows`` - one page, served exactly as stored (AC-10-33)."""
+
+    snapshotId: str
+    page: int
+    pageSize: int
+    totalPages: int
+    recordCount: int
+    rows: List[Dict[str, Any]]
+
+
+class PullSnapshotBuildRequest(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    companyId: str
+    entityType: str
+
+
+class PullApiKeyOut(ApiModel):
+    """One issued key - never the plaintext, never the hash (AC-10-27/37).
+    Wire shape pinned by the shipped frontend contract
+    (``service_frontend/types/autocount.ts::AutocountPullApiKey``)."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    name: str
+    companyIds: List[str] = Field(validation_alias="company_ids")
+    keyPrefix: str = Field(validation_alias="key_prefix")
+    createdAt: Optional[datetime] = Field(default=None, validation_alias="created_at")
+    lastUsedAt: Optional[datetime] = Field(default=None, validation_alias="last_used_at")
+    revokedAt: Optional[datetime] = Field(default=None, validation_alias="revoked_at")
+
+
+class PullApiKeyCreateInput(ApiModel):
+    """``POST /autocount/pull/keys`` body - pinned by
+    ``AutocountPullApiKeyCreateInput``."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    name: str
+    companyIds: List[str] = []
+
+
+class PullApiKeyIssuedOut(ApiModel):
+    """The ONE moment the plaintext key is ever shown - pinned by
+    ``AutocountPullApiKeyIssued``."""
+
+    key: PullApiKeyOut
+    plaintext: str

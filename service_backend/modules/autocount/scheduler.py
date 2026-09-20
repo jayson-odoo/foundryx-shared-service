@@ -39,6 +39,7 @@ from app.models.status import Status
 from app.models.tenant import Tenant
 
 from .models import (
+    DELIVERY_MODE_PUSH,
     ETL_STATUS_ACTIVE,
     RUN_MODE_INCREMENTAL,
     RUN_MODE_RECONCILE,
@@ -101,6 +102,10 @@ def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str,
             AcEntityConfig.source_impl.in_(
                 (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)
             ),
+            # sprint-5/10 (AC-10-13) - a ``pull`` task never runs on the
+            # sweep at all: it is extracted on a consumer/operator request,
+            # never on a schedule.
+            AcEntityConfig.delivery_mode == DELIVERY_MODE_PUSH,
             Status.blocks_access.is_(False),
             Status.is_archived.is_(False),
             or_(

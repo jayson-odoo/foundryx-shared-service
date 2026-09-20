@@ -4,6 +4,7 @@ import Link from 'next/link';
 import {
   CircleCheck,
   Eye,
+  Info,
   LoaderCircleIcon,
   Pause,
   Play,
@@ -114,6 +115,12 @@ export function ActivateTab({
   const status = task.etlStatus;
   const busy = lifecycle.busy !== null || preview.state.status === 'loading';
   const previewOk = Boolean(task.lastPreviewAt);
+  // AC-10-17 - what Activate means differs by delivery mode; no hint copy,
+  // the banner IS the explanation.
+  const isPull = task.deliveryMode === 'pull';
+  const activateBanner = isPull
+    ? 'Activating lets the consumer request this extract.'
+    : 'Activating starts delivering this entity on its schedule.';
 
   // "Re-push all" (plan sprint-5/07, AC-07-20..24) - foolproof-UI: only a
   // database task that is actually running (active/paused) can be re-pushed,
@@ -227,6 +234,15 @@ export function ActivateTab({
           </AlertTitle>
         </Alert>
       ))}
+
+      {status === 'draft' && (
+        <Alert variant="info" appearance="light" data-testid="activate-delivery-banner">
+          <AlertIcon>
+            <Info />
+          </AlertIcon>
+          <AlertTitle>{activateBanner}</AlertTitle>
+        </Alert>
+      )}
 
       {dependencyWarning && (
         <Alert variant="warning" appearance="light" data-testid="activate-dependency-warning">

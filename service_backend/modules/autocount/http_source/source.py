@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -41,10 +41,23 @@ from ..mapping import IdentityError, flat_source_ref
 from ..models import RUN_MODE_MANUAL, RUN_MODE_RECONCILE, SOURCE_IMPL_AUTOCOUNT_HTTP
 from ..repositories import ConnectionRepository, RowHashRepository
 from ..provider import PROVIDER_KEY, is_open_connection
-from ..sources import FetchResult, SourceContext, SourceRecord, Watermark, register_source
+from ..sources import (
+    FetchResult,
+    LookupVerification,
+    SourceContext,
+    SourceRecord,
+    Watermark,
+    register_source,
+)
 from ..sql_source.hashing import compared_columns_for, row_hash
 from ..sql_source.source import CURSOR_COLUMN, CURSOR_MARK, MAX_EXTRACT_ROWS
-from .client import HttpApiClient, HttpTransportError
+from .client import (
+    MIN_PAGE_SIZE,
+    HttpApiClient,
+    HttpTransportError,
+    connection_sizing,
+)
+from .combine import apply_combine, combine_output_columns
 from .envelope import ENVELOPE_LIST, parse_page
 from .errors import HttpSourceError
 from .lookups import AliasCollisionError, build_index, effective_result_columns, merge_onto_rows
@@ -52,19 +65,15 @@ from .preview import validate_http_path
 
 logger = logging.getLogger("foundryx.autocount")
 
-# The page size the walk itself requests - the source's OWN choice, never the
-# vendor's cap (AC-08-22 "1000 requested, the echoed PageSize/TotalPages
-# trusted").
-DEFAULT_PAGE_SIZE = 1000
-
 # AC-10-75 (the db2 524-timeout ops finding, 2026-09-19) - a page that has
-# now timed out TWICE at the same page size halves it (floor MIN_PAGE_SIZE)
-# and restarts the walk from page 1, at most MAX_PAGE_HALVINGS times per
-# walk before the existing failure rule applies unchanged. A connect error
-# or another 5xx (never a timeout, never a 4xx) gets its own, separate
-# ladder - up to ``len(TRANSPORT_RETRY_BACKOFFS_SECONDS)`` retries with a
-# longer backoff and NO halving.
-MIN_PAGE_SIZE = 50
+# now timed out TWICE at the same page size halves it (floor MIN_PAGE_SIZE,
+# imported from ``.client`` since sprint-5/10 confirm-3 S1 - see
+# ``connection_sizing``'s own docstring) and restarts the walk from page 1,
+# at most MAX_PAGE_HALVINGS times per walk before the existing failure rule
+# applies unchanged. A connect error or another 5xx (never a timeout, never
+# a 4xx) gets its own, separate ladder - up to
+# ``len(TRANSPORT_RETRY_BACKOFFS_SECONDS)`` retries with a longer backoff
+# and NO halving.
 MAX_PAGE_HALVINGS = 2
 MAX_TIMEOUT_ATTEMPTS_PER_PAGE = 2
 TIMEOUT_RETRY_BACKOFF_SECONDS = 1.0
@@ -105,13 +114,36 @@ class HttpApiSource:
         persist_hashes: bool = True,
         row_limit: int = MAX_EXTRACT_ROWS,
         transport: Any = None,
+        # sprint-5/10 review round 1 MUST-FIX 1 (AC-10-26) - a liveness
+        # callback fired after EVERY page of EVERY endpoint walked (main
+        # path AND every lookup, since both route through ``_walk_path``).
+        # ``None`` (every push-path construction) is a no-op - the push
+        # path's own heartbeat discipline (``sync._heartbeat``) is untouched.
+        heartbeat: Optional[Callable[[], None]] = None,
         **_extra: Any,
     ) -> None:
         self.entity_type = entity_type
         self.mode = mode
         self.persist_hashes = persist_hashes
         self.row_limit = row_limit
+        self._on_page = heartbeat
         self._ctx = ctx
+        # sprint-5/10 review round 1 follow-up - per-lookup completeness,
+        # populated by ``_apply_lookups`` and read back by ``fetch_changes``
+        # onto ``FetchResult.lookup_verification``. Keyed by alias; a lookup
+        # that is never walked (an empty ``self.lookups``) leaves this empty.
+        self._lookup_verification: Dict[str, LookupVerification] = {}
+        # review round 2 (item 2, AC-10-32/A7) - the effective page size the
+        # MAIN walk (``_walk``, never a lookup's own walk) settled on, post
+        # any AC-10-75 halving. ``None`` until the first successful walk;
+        # read back by ``sync._run_pull_snapshot`` onto the snapshot's own
+        # ``metadata_json.sourcePageSize``.
+        self.source_page_size: Optional[int] = None
+        # Set by ``_walk_endpoint`` on EVERY successful walk it completes
+        # (main path AND every lookup) - purely internal bookkeeping;
+        # ``_walk`` alone promotes it onto the public attribute above,
+        # immediately after the MAIN walk and before any lookup ever runs.
+        self._last_walked_page_size: Optional[int] = None
 
         config = getattr(ctx.entity_config, "source_config", None) or {}
         if not isinstance(config, dict):
@@ -136,6 +168,13 @@ class HttpApiSource:
         self.lookups: List[Dict[str, Any]] = [
             dict(item) for item in (config.get("lookups") or []) if isinstance(item, dict)
         ]
+        # sprint-5/10 S5a (AC-10-76..81, R11) - the entity-agnostic combine
+        # step, already validated at save time; trusted as-is here exactly
+        # like ``self.lookups`` above. ``None`` when the task carries none.
+        combine_config = config.get("combine")
+        self.combine: Optional[Dict[str, Any]] = (
+            combine_config if isinstance(combine_config, dict) else None
+        )
 
         self.result_columns = [
             str(c) for c in (getattr(ctx.entity_config, "result_columns", None) or [])
@@ -151,7 +190,25 @@ class HttpApiSource:
         # preview ran without the alias would never register as `updated` -
         # AC-10-06's whole point. An operator's EXPLICIT `comparedFields`
         # still wins (`compared_columns_for` only ever narrows to it).
-        effective_columns = effective_result_columns(self.result_columns, self.lookups)
+        #
+        # review round 3 (B1) - a combine-carrying task's rows are the
+        # COMBINED shape by the time de-dup/hashing sees them (AC-10-80):
+        # ``self.result_columns``/``self.lookups`` name PRE-combine raw
+        # and lookup columns that simply do not exist on a combined row
+        # (a ``groupBy``/``measures[].source`` name is CONSUMED, never
+        # projected) - hashing a combined row against that stale set
+        # compares columns that are always absent, which silently kills
+        # change detection forever (proven live: groupBy ``g``, measure
+        # ``v`` -> ``total``; a second run with a different ``v`` reported
+        # ``updated_count == 0``). ``combine_output_columns`` is the SAME
+        # helper the save-time gate and the preview route use, so the
+        # compared set, the Mapping/preview picker and the row hash can
+        # never drift against one another for a combine-carrying task.
+        effective_columns = (
+            combine_output_columns(self.combine)
+            if self.combine
+            else effective_result_columns(self.result_columns, self.lookups)
+        )
         configured_compared = [str(c) for c in (config.get("comparedFields") or [])]
         self.compared_columns = compared_columns_for(
             configured=configured_compared,
@@ -177,8 +234,19 @@ class HttpApiSource:
             raise HttpApiTaskNotConfigured(
                 "The API connection this task reads from was not found."
             )
-        base_url = str((conn.config_json or {}).get("baseUrl") or "").strip()
-        self._client = HttpApiClient(base_url, transport=transport)
+        conn_config = conn.config_json or {}
+        base_url = str(conn_config.get("baseUrl") or "").strip()
+        # AC-10-85 - the connection's OWN pageSize/requestTimeoutSeconds
+        # (falling back to the module defaults for a legacy row), never the
+        # fixed module constants a run used to always start from. Sprint-5/10
+        # confirm-3 S1 - ``connection_sizing`` is now shared with the preview
+        # path (``http_source.preview.run_http_preview`` via
+        # ``services.etl_service.EtlService.preview_http``), so the two
+        # never disagree on either knob.
+        self._page_size, timeout_seconds = connection_sizing(conn_config)
+        self._client = HttpApiClient(
+            base_url, transport=transport, timeout_seconds=timeout_seconds
+        )
 
     # ── identity ───────────────────────────────────────────────────────────
 
@@ -249,12 +317,21 @@ class HttpApiSource:
 
     def _walk_path(
         self, path: str, page_size: int
-    ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+    ) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
         """GET every page of ONE endpoint at a FIXED page size, returning
-        ``(rows, reported_total)``. Raises ``HttpSourceError`` before
-        touching any downstream state, or ``_PageTimedOutTwice`` when a page
-        has now timed out on both its attempts (the caller decides whether
-        to halve and restart)."""
+        ``(rows, reported_total, envelope_kind)``. Raises ``HttpSourceError``
+        before touching any downstream state, or ``_PageTimedOutTwice`` when
+        a page has now timed out on both its attempts (the caller decides
+        whether to halve and restart). ``envelope_kind`` is the SAME shape
+        every page of this walk answered (paged vs bare array,
+        ``ENVELOPE_PAGED``/``ENVELOPE_LIST`` - a later page answering a
+        DIFFERENT shape already fails loudly above, so this is unambiguous).
+
+        sprint-5/10 review round 1 MUST-FIX 1 (AC-10-26) - fires the
+        constructor's ``heartbeat`` callback after EVERY successfully parsed
+        page, main path AND lookup endpoints alike (both route through this
+        one walker). A build abandoned mid-walk (the callback raises) stops
+        the walk immediately - no further pages are requested."""
         scanned: List[Dict[str, Any]] = []
         established_kind: Optional[str] = None
         reported_total: Optional[int] = None
@@ -305,6 +382,14 @@ class HttpApiSource:
             if parsed.total_count is not None:
                 reported_total = parsed.total_count
 
+            # MUST-FIX 1 - beat AFTER this page is durable in ``scanned``
+            # (never before it is parsed), so a heartbeat always corresponds
+            # to real, already-accounted progress. A raise here (the build
+            # was abandoned) stops the walk on THIS page - no further
+            # request is made.
+            if self._on_page is not None:
+                self._on_page()
+
             if len(scanned) > self.row_limit:
                 raise HttpSourceError(
                     f"This task's extract exceeded the {self.row_limit} row cap.",
@@ -348,19 +433,38 @@ class HttpApiSource:
                 break
             page += 1
 
-        return scanned, reported_total
+        return scanned, reported_total, established_kind
 
-    def _walk_endpoint(self, path: str) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+    def _walk_endpoint(
+        self, path: str
+    ) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
         """The full page walk for ONE endpoint - the main path OR a lookup
         (AC-10-02: "the SAME page walker"), with AC-10-75's bounded per-page
         retry and page-size halving. Each endpoint walked gets its OWN
         halving budget - the main path and every lookup share the exact
-        mechanics, never a counter one could exhaust for the other."""
-        page_size = DEFAULT_PAGE_SIZE
+        mechanics, never a counter one could exhaust for the other.
+
+        MUST-FIX 2 (AC-10-24) - a halving RESTART discards the PARTIAL
+        ``scanned``/``reported_total`` of the timed-out attempt entirely
+        (``_walk_path`` builds a fresh local ``scanned = []`` on every call);
+        only the FINAL, successfully-returned tuple from this method is ever
+        used - counts are never accumulated across a restart.
+
+        AC-10-85 - starts at THIS connection's own configured page size
+        (``self._page_size``, set once in ``__init__``), never the module
+        constant - the main path AND every lookup share the same starting
+        size and the same halving budget mechanics, since both route
+        through this one method."""
+        page_size = self._page_size
         halvings = 0
         while True:
             try:
-                return self._walk_path(path, page_size)
+                result = self._walk_path(path, page_size)
+                # review round 2 (item 2) - the page size THIS walk actually
+                # succeeded at, main path AND every lookup alike; ``_walk``
+                # alone promotes it onto the public ``source_page_size``.
+                self._last_walked_page_size = page_size
+                return result
             except _PageTimedOutTwice as exc:
                 if halvings >= MAX_PAGE_HALVINGS:
                     raise HttpSourceError(
@@ -379,8 +483,15 @@ class HttpApiSource:
                     ok=False,
                 )
 
-    def _walk(self) -> Tuple[List[Dict[str, Any]], Optional[int]]:
-        return self._walk_endpoint(self.path)
+    def _walk(self) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
+        result = self._walk_endpoint(self.path)
+        # review round 2 (item 2, AC-10-32/A7) - captured HERE, immediately
+        # after the MAIN walk and before any lookup's own ``_walk_endpoint``
+        # call ever runs (``_apply_lookups`` fires later in
+        # ``fetch_changes``), so this is always the main path's OWN value,
+        # never a lookup's.
+        self.source_page_size = self._last_walked_page_size
+        return result
 
     # ── lookups (AC-10-01/02/03, R9) ──────────────────────────────────────
 
@@ -409,14 +520,43 @@ class HttpApiSource:
                     code="lookup_path",
                 )
             try:
-                lookup_rows, _ = self._walk_endpoint(path)
+                # review round 1 follow-up (coordinator ruling 2026-09-20,
+                # AC-10-24 applied to lookups) - the lookup walk's OWN
+                # ``reported_total``/``envelope_kind`` are no longer thrown
+                # away: a pull snapshot build needs them to know whether
+                # THIS lookup's own walk was verified, by the exact same
+                # rule the main walk uses. The push path never reads
+                # ``FetchResult.lookup_verification``, so this is purely
+                # additional bookkeeping - the merge below is unchanged.
+                lookup_rows, lookup_total, lookup_kind = self._walk_endpoint(path)
             except HttpSourceError as exc:
                 raise HttpSourceError(
                     f"The '{alias_name}' lookup endpoint '{path}' failed: {exc.message}",
                     code=exc.code,
                     page=exc.page,
                     status=exc.status,
+                    # sprint-5/10 (AC-10-22/64) - a pull snapshot build tells
+                    # an enrich-endpoint fault apart from a main-path one
+                    # (``ENRICH_FAILED`` vs ``SOURCE_PAGE_FAILED``) by this
+                    # phase tag, never by parsing the message.
+                    phase="enrich",
                 ) from exc
+            # review round 1 follow-up - verified by the SAME rule the main
+            # walk uses (bare array = verified; paged = the scanned count
+            # matching the echoed total), counts from THIS walk only (a
+            # halving restart already discarded any earlier, timed-out
+            # attempt inside ``_walk_endpoint`` itself). An alias reused
+            # across a multi-hop lookup config (not possible today - ``as``
+            # is unique per task - kept simple: last write wins) never
+            # matters in practice.
+            self._lookup_verification[alias_name] = LookupVerification(
+                verified=(
+                    lookup_kind == ENVELOPE_LIST
+                    or (lookup_total is not None and len(lookup_rows) == lookup_total)
+                ),
+                rows_scanned=len(lookup_rows),
+                reported_total=lookup_total,
+            )
             index = build_index(lookup_rows, on)
             try:
                 misses = merge_onto_rows(rows, index, on, fields)
@@ -501,9 +641,21 @@ class HttpApiSource:
     # ── fetch ──────────────────────────────────────────────────────────────
 
     def fetch_changes(self, since: Watermark) -> FetchResult:
+        # review round 2 (item 6) - reset EVERY call: an instance reused
+        # across two ``fetch_changes`` calls (this class carries no other
+        # such per-call state) must never leak a stale alias from a PRIOR
+        # call's lookups into this one's own ``FetchResult``.
+        self._lookup_verification = {}
         full_extract = self.mode == RUN_MODE_RECONCILE or not self.watermark_field
 
-        scanned_rows, reported_total = self._walk()
+        # MUST-FIX 2 (AC-10-24) - ``envelope_kind`` is the MAIN path's own
+        # shape only, straight onto ``FetchResult`` below: a pull snapshot
+        # build needs it to know whether ``reported_total`` is even a thing
+        # this endpoint has (a bare-array endpoint has none, by design -
+        # ``complete`` is unconditionally true for it; a PAGED endpoint that
+        # omitted/nulled ``TotalCount`` must NOT read as complete just
+        # because ``reported_total is None``).
+        scanned_rows, reported_total, envelope_kind = self._walk()
         # AC-10-02 - lookups merge onto every source row BEFORE de-dup, the
         # row hash and mapping; ``distinctOf`` short-circuits below into an
         # entirely different `{"value": v}` row shape, so a lookup (which
@@ -512,10 +664,21 @@ class HttpApiSource:
             self._apply_lookups(scanned_rows)
         rows_scanned = len(scanned_rows)
 
+        # sprint-5/10 S5a (AC-10-80) - combine runs AFTER lookups (may
+        # reference a merged alias) and BEFORE de-dup/hashing: de-dup,
+        # source_ref minting and row_hash all run on the COMBINED rows, so a
+        # push task combines exactly as a pull task does. ``None`` for every
+        # existing/control call site - byte-identical output.
+        combine_metadata: Optional[Dict[str, Any]] = None
         if self.distinct_of:
             working_rows = self._project_distinct(scanned_rows)
         else:
-            working_rows = self._dedupe(scanned_rows)
+            reduced_rows = scanned_rows
+            if self.combine:
+                combine_result = apply_combine(scanned_rows, self.combine)
+                reduced_rows = combine_result.rows
+                combine_metadata = combine_result.metadata
+            working_rows = self._dedupe(reduced_rows)
 
         # New mark = max seen ACROSS THE WHOLE WALK (AC-08-25) - the watermark
         # must reflect what was truly out there this pass, independent of
@@ -643,6 +806,9 @@ class HttpApiSource:
                 if self.watermark_field and max_mark is not None
                 else None
             ),
+            envelope_kind=envelope_kind,
+            lookup_verification=dict(self._lookup_verification),
+            combine_metadata=combine_metadata,
         )
 
     # ── observability ──────────────────────────────────────────────────────

@@ -86,6 +86,9 @@ export const ENTITY_NOUNS: Record<string, { singular: string; plural: string }> 
   team: { singular: 'team', plural: 'teams' },
   // Plan 29 review round 1, S1: Delete migrated onto the deferred-actions engine.
   broadcast: { singular: 'broadcast', plural: 'broadcasts' },
+  // sprint-5/10 (AC-10-38) - pull API key revoke rides the CORE
+  // deferred-actions engine, never a hand-rolled confirm dialog.
+  autocount_pull_api_key: { singular: 'key', plural: 'keys' },
 };
 
 function capitalize(word: string): string {

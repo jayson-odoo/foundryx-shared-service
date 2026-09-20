@@ -155,14 +155,17 @@ describe('AutocountCompanyDetailView - Add entity per kind (AC-01-17, AC-08-18)'
     expect(names).not.toContain('Goods received note');
   });
 
-  it('an open (http) company offers exactly the six confirmed open-API masters', () => {
+  it('an open (http) company offers the six confirmed open-API masters plus stock_balance (sprint-5/10, AC-10-40)', () => {
     detailBox.current = detail({ sourceKind: 'http', connectionId: 'conn-api-mocha' });
     render(<AutocountCompanyDetailView companyId="c1" />);
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(6);
+    expect(names).toHaveLength(7);
     expect(names).toEqual(
-      expect.arrayContaining(['Product', 'Customer', 'Warehouse', 'Product category', 'Brand', 'Unit of measure']),
+      expect.arrayContaining([
+        'Product', 'Customer', 'Warehouse', 'Product category', 'Brand', 'Unit of measure',
+        'Stock balance',
+      ]),
     );
   });
 

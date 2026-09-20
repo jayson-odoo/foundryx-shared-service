@@ -113,6 +113,20 @@ class SourceRecord:
     error: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class LookupVerification:
+    """sprint-5/10 review round 1 follow-up (coordinator ruling, AC-10-24
+    applied honestly to lookups) - ONE lookup endpoint's own completeness,
+    by the SAME rule the main walk already uses (bare array = verified;
+    paged = ``reported_total is not None and rows_scanned == reported_
+    total``), counts from the FINAL walk only (a halving restart discards
+    the timed-out attempt entirely, same as the main path)."""
+
+    verified: bool
+    rows_scanned: int
+    reported_total: Optional[int] = None
+
+
 @dataclass
 class FetchResult:
     records: List[SourceRecord] = field(default_factory=list)
@@ -158,6 +172,32 @@ class FetchResult:
     # candidate (it never enters `current_refs` either), just excluded from
     # this run's population entirely. 0 for every non-document source.
     skipped_by_filter: int = 0
+    # sprint-5/10 review round 1 MUST-FIX 2 (AC-10-24) - the MAIN path's own
+    # envelope shape (``http_source.envelope.ENVELOPE_PAGED`` /
+    # ``ENVELOPE_LIST``), so a pull snapshot build can tell "no total to
+    # compare against because this is a genuinely bare-array endpoint" apart
+    # from "a paged endpoint that omitted/nulled TotalCount, so completeness
+    # is UNVERIFIED, not unconditionally true". ``None`` (every push-path
+    # fetch, and the SQL source, which has no such concept) means "not
+    # applicable" - the push path never reads this field, so its behaviour
+    # is unchanged by this default.
+    envelope_kind: Optional[str] = None
+    # sprint-5/10 review round 1 follow-up (coordinator ruling 2026-09-20) -
+    # AC-10-24's own definition applied to lookups too: the main walk being
+    # verified is not enough for a snapshot build's ``complete`` if a lookup
+    # walk was NOT - a truncated lookup silently turns matches into misses.
+    # Keyed by lookup alias (``lookups[i].as``). Empty dict (the default) =
+    # "no lookups configured, or this source never tracks them" (the SQL
+    # source, which has no lookup concept) - a pull snapshot build treats a
+    # MISSING alias as verified (nothing to contradict it), so this default
+    # keeps every existing caller - including the PUSH path, which never
+    # reads this field at all - byte-identical.
+    lookup_verification: Dict[str, LookupVerification] = field(default_factory=dict)
+    # sprint-5/10 S5a (AC-10-81) - the combine step's own generic metadata
+    # (``{excludedRows, excludedCount, dropped, roundedCount}``), entity-
+    # agnostic. ``None`` when the task carries no ``combine`` step - every
+    # existing/control call site stays byte-identical.
+    combine_metadata: Optional[Dict[str, Any]] = None
 
 
 class EntitySource(Protocol):

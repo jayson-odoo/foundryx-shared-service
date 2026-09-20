@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from .client import HttpApiClient, HttpTransportError
+from .client import DEFAULT_TIMEOUT_SECONDS, HttpApiClient, HttpTransportError
 from .envelope import parse_page
 
 PREVIEW_PAGE_SIZE = 50
@@ -85,6 +85,19 @@ class HttpPreviewResult:
     # (``lookups.effective_result_columns``), never stored, so a save-time
     # collision check against the stored value is exact with no carve-out.
     raw_columns: List[str] = field(default_factory=list)
+    # sprint-5/10 S5a follow-up (AC-10-82) - the generic funnel counters
+    # (``rowsIn``/``excludedCount``/``groups``/``droppedByRule``/``rowsOut``/
+    # ``roundedCount``), set by ``EtlService.preview_http`` ONLY when the
+    # request carried a ``combine`` block; ``None`` otherwise, so a plain
+    # preview's response is unaffected. ``rows``/``columns`` above are
+    # overwritten with the COMBINED shape in that same case (AC-10-80 - the
+    # push path itself runs combine before hashing, so the preview grid
+    # must show what a real run would produce, not the pre-combine sample).
+    combine_funnel: Optional[Dict[str, Any]] = None
+    # review round 5 (R5-A) - the PRE-combine column set (raw + lookup
+    # aliases + computed aliases), set by ``EtlService.preview_http`` ONLY
+    # alongside ``combine_funnel`` above - ``None`` for a plain preview.
+    pre_combine_columns: Optional[List[str]] = None
 
 
 def run_http_preview(
@@ -94,13 +107,22 @@ def run_http_preview(
     distinct_of: Optional[List[str]] = None,
     lookups: Optional[List[Dict[str, Any]]] = None,
     transport: Optional[httpx.Client] = None,
+    timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> HttpPreviewResult:
     # Local import (AC-10-05) - ``http_source.lookups`` imports
     # ``validate_http_path`` FROM this module at ITS OWN top level, so a
     # module-level import back here would cycle.
     from .lookups import AliasCollisionError, build_index, merge_onto_rows
 
-    client = HttpApiClient(base_url, transport=transport)
+    # sprint-5/10 confirm-3 S1 - was always the bare module default
+    # (``DEFAULT_TIMEOUT_SECONDS``, now 90s), ignoring the connection's OWN
+    # ``requestTimeoutSeconds`` entirely; a preview against a wrapper slow
+    # enough to need a raised connection timeout used to time out at the
+    # default regardless. Callers (``services.etl_service.EtlService.
+    # preview_http``/``preview_http_columns``) now pass the SAME value
+    # ``http_source.source.HttpApiSource`` builds a real run's client with
+    # (``http_source.client.connection_sizing``).
+    client = HttpApiClient(base_url, transport=transport, timeout_seconds=timeout_seconds)
     started = time.monotonic()
     try:
         try:

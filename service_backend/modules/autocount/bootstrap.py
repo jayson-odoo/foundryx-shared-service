@@ -101,7 +101,7 @@ def register_engine_entities() -> None:
     from .provider import AutoCountProvider
     from .sorento_provider import SorentoProvider
     from .sql_provider import SqlDatabaseProvider
-    from .sync import register_autocount_sync_handler
+    from .sync import register_autocount_sync_handler, register_pull_snapshot_handler
     from .http_source.source import register_http_source
 
     register_provider(AutoCountProvider())
@@ -113,6 +113,11 @@ def register_engine_entities() -> None:
     # provider, configured from the same surface.
     register_provider(SqlDatabaseProvider())
     register_autocount_sync_handler()
+    # sprint-5/10 (§2.4) - the human-invoked pull build job. Same reasoning
+    # as ``register_autocount_sync_handler`` above: the API process needs
+    # this at boot, the Celery worker gets it via an explicit import in
+    # ``app/workflow_engine/worker.py``.
+    register_pull_snapshot_handler()
     # The open (no-auth) REST API source (sprint-5/08, AC-08-12) - the third
     # ``EntitySource`` implementation the per-entity ``source_impl`` may pick.
     register_http_source()
@@ -183,6 +188,7 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     """
     from .backfill import (
         backfill_db_company_entity_sources,
+        backfill_delivery_mode_defaults,
         backfill_disable_credit_limit_mapping_rows,
         backfill_document_fingerprint_queries,
         backfill_document_line_linkage,
@@ -237,6 +243,11 @@ def update_tenant(db: Session, tenant_id: str, from_version: str) -> None:
     # preset query is rewritten to the NEW text carrying `h.Ref AS Ref`.
     # Module Alembic 0019 runs the same repair on deploy.
     backfill_sales_order_ref(db, schema=schema)
+    # 0.10.0 -> 0.11.0 (sprint-5/10, AC-10-10): every existing
+    # `ac_entity_config` row gets a `delivery_mode` of `push` - today's
+    # behaviour before this plan existed. Module Alembic 0020 runs the same
+    # repair on deploy.
+    backfill_delivery_mode_defaults(db, schema=schema)
 
     service = CompanyService(db)
     page = 0
@@ -258,19 +269,38 @@ def on_job_orphaned(
     """Core's orphan sweep (``JobService.fail_orphaned_running_jobs``) just
     failed ``job``; close THIS module's bookkeeping for it.
 
-    Only an ``autocount_sync`` job is ours. Its open ``ac_sync_run`` row(s)
-    (``job_id`` match, ``finished_at IS NULL``) get ``outcome=FAILED``, the
-    same "Interrupted" error, ``finished_at`` and a ``duration_ms`` from their
+    An ``autocount_sync`` job's open ``ac_sync_run`` row(s) (``job_id``
+    match, ``finished_at IS NULL``) get ``outcome=FAILED``, the same
+    "Interrupted" error, ``finished_at`` and a ``duration_ms`` from their
     own ``started_at`` - the Runs list then shows what happened instead of a
     run that is forever in progress. Staged rows are deliberately untouched:
     the watermark HELD, so the next run re-reads the window and re-offers
-    them (prod incident 2026-09-07, PO sync killed by a deploy drain). No
-    commit here - the sweep owns the transaction.
-    """
-    from .models import RUN_FAILED, AcSyncRun
-    from .sync import AUTOCOUNT_SYNC
+    them (prod incident 2026-09-07, PO sync killed by a deploy drain).
 
-    if getattr(job, "type", None) != AUTOCOUNT_SYNC:
+    sprint-5/10 (AC-10-26 risk "a building snapshot wedged forever") - an
+    ``autocount_pull_snapshot`` job ALSO closes its own OPEN ``ac_sync_run``
+    row(s) the same way, plus fails the ``building`` snapshot itself
+    (``BUILD_ABANDONED``) so a crashed build never blocks the next request
+    forever. A DIRECT column write here, deliberately NOT
+    ``SnapshotService.stamp_failed`` - that method commits, and this hook
+    runs inside the sweep's own per-hook SAVEPOINT
+    (``self.db.begin_nested()``, ``app/jobs/service.py``); committing here
+    would end the sweep's outer transaction early. Same convention the
+    ``ac_sync_run`` writes above already use in this function.
+
+    No commit here - the sweep owns the transaction.
+    """
+    from .models import (
+        PULL_SNAPSHOT_STATUS_BUILDING,
+        PULL_SNAPSHOT_STATUS_FAILED,
+        RUN_FAILED,
+        AcPullSnapshot,
+        AcSyncRun,
+    )
+    from .sync import AUTOCOUNT_PULL_SNAPSHOT, AUTOCOUNT_SYNC, ERROR_CODE_BUILD_ABANDONED
+
+    job_type = getattr(job, "type", None)
+    if job_type not in (AUTOCOUNT_SYNC, AUTOCOUNT_PULL_SNAPSHOT):
         return
     # The sweep's own clock, so the run's ``finished_at`` equals the job's.
     now = now or datetime.now(timezone.utc)
@@ -289,6 +319,21 @@ def on_job_orphaned(
         run.finished_at = now
         started = run.started_at
         run.duration_ms = int((now - started).total_seconds() * 1000) if started else 0
+
+    if job_type == AUTOCOUNT_PULL_SNAPSHOT:
+        snapshot = (
+            db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == job.tenant_id,
+                AcPullSnapshot.job_id == job.id,
+                AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_BUILDING,
+            )
+            .first()
+        )
+        if snapshot is not None:
+            snapshot.status = PULL_SNAPSHOT_STATUS_FAILED
+            snapshot.error = "The worker stopped before this build finished."
+            snapshot.error_code = ERROR_CODE_BUILD_ABANDONED
     db.flush()
 
 

@@ -23,9 +23,11 @@ from ..schemas import (
     CompanyItem,
     CompanyListResponse,
     CompanySinkUpdate,
+    ContractGate,
     DocumentPrerequisiteOut,
     EntityConfigItem,
     EntityConfigUpdate,
+    EntityDeliveryModeUpdate,
     EtlPreviewResponse,
     EtlRepushResponse,
     EtlRunStartResponse,
@@ -244,6 +246,36 @@ def update_entity_config(
         )
     except AutocountServiceError as exc:
         _raise(exc)
+    return EntityConfigItem.model_validate(state)
+
+
+@router.put(
+    "/{company_id}/entities/{entity_type}/delivery-mode",
+    response_model=EntityConfigItem,
+)
+def set_entity_delivery_mode(
+    company_id: str,
+    entity_type: str,
+    body: EntityDeliveryModeUpdate,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+) -> EntityConfigItem:
+    """``push`` <-> ``pull`` (sprint-5/10, AC-10-11). Reuses
+    ``autocount.companies.manage`` - the same "configure the company"
+    authority ``update_entity_config`` above already uses, so no new
+    permission needs a grant sweep for existing tenants."""
+    try:
+        EtlService(db).set_delivery_mode(
+            current_user.tenant_id, company_id, entity_type, body.deliveryMode
+        )
+        states = CompanyService(db).entity_states(current_user.tenant_id, company_id)
+    except EtlValidationError as exc:
+        return _field_errors(exc.field_errors, exc.message)
+    except AutocountServiceError as exc:
+        _raise(exc)
+    state = next((s for s in states if s.entity_type == entity_type), None)
+    if state is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
     return EntityConfigItem.model_validate(state)
 
 
@@ -489,6 +521,11 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
             if view.brand_contract_gate
             else None
         ),
+        contractGate=(
+            ContractGate(**view.contract_gate) if view.contract_gate else None
+        ),
+        deliveryMode=view.delivery_mode,
+        combineOutputColumns=view.combine_output_columns,
     )
 
 
@@ -592,6 +629,17 @@ def update_etl_task(
         # wins, matching what ``EtlService.update_task`` dispatches on).
         raw = body.sourceConfig.model_dump()
         raw["sourceImpl"] = body.sourceImpl or body.sourceConfig.sourceImpl
+        # review round 5 (R5-B) - ``model_dump()`` always emits every
+        # declared field (``combine`` included, defaulted to ``None`` when
+        # the wire omitted it) - so an explicit ``"combine": null`` and a
+        # genuinely omitted key are indistinguishable once flattened into a
+        # plain dict. Drop the key entirely when the client never sent it
+        # at all (``model_fields_set`` reflects the RAW JSON, not the
+        # default), so the service layer's own ``"combine" in raw`` check
+        # can tell "omitted - keep stored" from "explicit null - clear
+        # stored" (AC-10-80).
+        if "combine" not in body.sourceConfig.model_fields_set:
+            raw.pop("combine", None)
         view = EtlService(db).update_task(
             current_user.tenant_id,
             company_id,

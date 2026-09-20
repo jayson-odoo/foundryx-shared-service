@@ -834,8 +834,10 @@ def test_shipping_order_entity():
     assert len(payload["lines"]) == 1
 
     # DB company add-entity set: eleven entities (nine + shipping_order +
-    # brand, sprint-5/08 AC-08-31 - "a DB task can feed it too").
-    assert len(set(ENTITY_PROFILES) - {"goods_received_note"}) == 11
+    # brand, sprint-5/08 AC-08-31 - "a DB task can feed it too");
+    # `stock_balance` (sprint-5/10 S5b) is excluded alongside GRN - it is
+    # HTTP-only, no `sql_db` variant exists or is planned (AC-10-39/D4).
+    assert len(set(ENTITY_PROFILES) - {"goods_received_note", "stock_balance"}) == 11
 
 
 def test_filter_formula_skips_headers(session_factory):

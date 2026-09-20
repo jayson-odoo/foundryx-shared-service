@@ -20,9 +20,9 @@ Sorento's own shapes) is a later slice.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 from .canonical.base import CanonicalRecord
 
@@ -52,6 +52,11 @@ class WriteResult:
     # just re-fails forever and pins the task's health signal red. Empty for a
     # sink with no verdict vocabulary (the logging no-op).
     outcome: str = ""
+    # sprint-5/10 (AC-10-70) - stable string codes the consumer attaches to a
+    # DELIVERED verdict (today only ``ref_mismatch``, R8). Carried through
+    # verbatim, never interpreted here - an unknown code is informational,
+    # never a downgrade. Empty for every sink/verdict that carries none.
+    warnings: Tuple[str, ...] = field(default_factory=tuple)
 
 
 class EntitySink(Protocol):

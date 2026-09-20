@@ -66,6 +66,12 @@ ENTITY_BRAND = "brand"
 # dataclass (S2/S3); S4 gives it one (``CanonicalSalesAgent`` below) now that
 # it actually pushes to Sorento (Appendix A6 §6/A8).
 ENTITY_SALES_AGENT = "sales_agent"
+# sprint-5/10 S5b (AC-10-39) - the human-invoked PULL-ONLY entity (D4/D5): a
+# reduced (item, location) balance row, never a Sorento PUSH target today
+# (no ``sinks_sorento._ENTITY_PATH`` entry - see ``CanonicalStockBalance``'s
+# own docstring for why it lives outside the ``CanonicalMaster`` hierarchy).
+# Lives here for the same no-import-cycle reason as its siblings above.
+ENTITY_STOCK_BALANCE = "stock_balance"
 
 # The vendor entity names in the URL grammar: POST /api/{Entity}/Get{Entity}.
 VENDOR_ENTITY_SUPPLIER = "Creditor"
@@ -328,6 +334,58 @@ class CanonicalProduct(CanonicalMaster):
         "cost_price",
         "is_active",
     )
+
+
+class CanonicalStockBalance(CanonicalRecord):
+    """AutoCount stock balance -> Sorento ``stock_balances`` (sprint-5/10
+    S5b, AC-10-39). One row per (item, location), base UOM, whole units,
+    positive only - the reducer (``http_source/combine.py``'s
+    ``STOCK_BALANCE_HTTP_PRESET`` combine block) guarantees that shape
+    before mapping ever sees a row (AC-10-42).
+
+    **Deliberately NOT a ``CanonicalMaster`` subclass.** This entity is
+    PULL-ONLY (AC-10-15) - Sorento has no ingest path for it today
+    (``sinks_sorento._ENTITY_PATH`` carries no entry, and constructing a
+    ``SorentoSink`` for it raises) - and it carries none of
+    ``CanonicalMaster``'s push-oriented shape (``code``/``name``/
+    ``is_active``/``last_modified``/``extras``). Subclassing it would also
+    silently enrol this entity in the contract-2.1 master parity suite
+    (``test_autocount_contract_2_1_masters.py``, keyed off
+    ``CANONICAL_MODELS`` filtered to ``CanonicalMaster`` subclasses), whose
+    generic fixtures assume every master constructs from
+    ``{source_ref, code, name}`` alone - an assumption this entity's
+    required ``item_code``/``location_code``/``qty`` fields do not meet.
+    Deliberately excluded from ``MASTER_ENTITIES`` for the same reason.
+    """
+
+    entity_type: str = ENTITY_STOCK_BALANCE
+
+    item_code: str
+    item_description: Optional[str] = None
+    location_code: str
+    uom_code: Optional[str] = None
+    qty: int = Field(..., ge=0)
+
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "item_code",
+        "item_description",
+        "location_code",
+        "uom_code",
+        "qty",
+    )
+
+    def sink_payload(self) -> Dict[str, Any]:
+        """Mirrors ``CanonicalMaster.sink_payload`` exactly (omit ``None``,
+        keep falsy non-``None`` values) - duplicated in full rather than
+        inherited, so this entity never gains ``CanonicalMaster``'s
+        push-shaped fields by accident (see the class docstring)."""
+        data = self.model_dump(mode="json")
+        return {
+            key: data[key]
+            for key in self.SINK_FIELDS
+            if key in data and data[key] is not None
+        }
 
 
 class CanonicalSalesAgent(CanonicalMaster):

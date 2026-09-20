@@ -424,6 +424,11 @@ export const MENU_SIDEBAR: MenuConfig = [
         path: '/autocount/review',
         permission: 'autocount.sync.read',
       },
+      {
+        title: 'Pull',
+        path: '/autocount/pull',
+        permission: 'autocount.pull.read',
+      },
     ],
   },
 ];
@@ -597,6 +602,11 @@ export const MENU_MEGA: MenuConfig = [
                 path: '/autocount/review',
                 permission: 'autocount.sync.read',
               },
+              {
+                title: 'Pull',
+                path: '/autocount/pull',
+                permission: 'autocount.pull.read',
+              },
             ],
           },
         ],
@@ -751,6 +761,11 @@ export const MENU_MEGA_MOBILE: MenuConfig = [
         title: 'Review',
         path: '/autocount/review',
         permission: 'autocount.sync.read',
+      },
+      {
+        title: 'Pull',
+        path: '/autocount/pull',
+        permission: 'autocount.pull.read',
       },
     ],
   },

@@ -4,7 +4,7 @@
  * RecordActions right in order - pager, gear ("…" ActionMenu, secondary then
  * a separator then destructive last), primary (Edit / Cancel+Save).
  */
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { ResourceForm } from './resource-form';
@@ -168,6 +168,19 @@ describe('AC-DLA-28 ResourceForm header restructure', () => {
     const rt = run.mock.calls[0][1] as { backHref?: string };
     const backLinkHref = screen.getByRole('link', { name: /back/i }).getAttribute('href');
     expect(rt.backHref).toBe(backLinkHref);
+  });
+
+  it('Back opens the discard-changes guard on a plain click while dirty, but a modifier click bypasses it (open-in-new-tab, review nit)', async () => {
+    render(<ResourceForm config={baseConfig({ isDirty: true })} />);
+    const { default: userEvent } = await import('@testing-library/user-event');
+    await userEvent.click(screen.getByRole('button', { name: /edit/i }));
+    const back = screen.getByRole('link', { name: /back/i });
+
+    fireEvent.click(back, { ctrlKey: true });
+    expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument();
+
+    fireEvent.click(back);
+    expect(screen.getByText('Discard changes?')).toBeInTheDocument();
   });
 
   it('embedded mode renders no PageHeader toolbar row, uses onBack in RecordActions instead', () => {

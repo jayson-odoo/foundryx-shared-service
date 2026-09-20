@@ -118,16 +118,17 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
 });
 
 describe('AddEntityControl - open (http) company kind (sprint-5/08, AC-08-18)', () => {
-  it('an open company offers exactly the six confirmed open-API masters', () => {
+  it('an open company offers the six confirmed open-API masters plus stock_balance (sprint-5/10, AC-10-40)', () => {
     render(<AddEntityControl entities={[]} sourceKind="http" onAdd={vi.fn()} />);
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
     expect(names).toEqual(
       expect.arrayContaining([
         'Product', 'Customer', 'Warehouse', 'Product category', 'Brand', 'Unit of measure',
+        'Stock balance',
       ]),
     );
-    expect(names).toHaveLength(6);
+    expect(names).toHaveLength(7);
   });
 
   it("an open company's list drops entities already configured", () => {
@@ -140,7 +141,16 @@ describe('AddEntityControl - open (http) company kind (sprint-5/08, AC-08-18)', 
     );
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(5);
+    expect(names).toHaveLength(6);
     expect(names).not.toContain('Product');
+  });
+
+  it('picking Stock balance calls onAdd with the entity type (foolproof-UI: real click, not a URL)', async () => {
+    const onAdd = vi.fn();
+    render(<AddEntityControl entities={[]} sourceKind="http" onAdd={onAdd} />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Stock balance' }));
+    fireEvent.click(screen.getByTestId('add-entity-configure'));
+    expect(onAdd).toHaveBeenCalledWith('stock_balance');
   });
 });

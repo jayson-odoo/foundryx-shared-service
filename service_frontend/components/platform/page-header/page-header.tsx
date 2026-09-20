@@ -2,7 +2,7 @@
 
 import { Fragment, type ReactNode } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { MENU_SIDEBAR } from '@/config/menu.config';
 import { cn } from '@/lib/utils';
 import { useMenu } from '@/hooks/use-menu';
@@ -36,6 +36,14 @@ export interface PageHeaderProps {
   /** Optional meta line under the trail (kept from the retired `ToolbarDescription`). */
   description?: ReactNode;
   className?: string;
+  /**
+   * `ResourceForm`'s dirty-guard (`guard(proceed)`, AC-10-16): when supplied,
+   * every crumb link routes navigation through it instead of a bare
+   * client-side push, so an in-progress edit is never silently discarded by
+   * a breadcrumb click. Omitted on every non-form `PageHeader` (list pages
+   * have nothing to guard).
+   */
+  guardNav?: (proceed: () => void) => void;
 }
 
 const ROOT_CRUMB: PageHeaderCrumb = { label: 'Dashboard', href: '/' };
@@ -67,8 +75,10 @@ export function PageHeader({
   actions,
   description,
   className,
+  guardNav,
 }: PageHeaderProps) {
   const pathname = usePathname() ?? '/';
+  const router = useRouter();
   const { getBreadcrumb, getCurrentItem } = useMenu(pathname);
   const { labelPlural } = useTerminology();
 
@@ -127,7 +137,23 @@ export function PageHeader({
                       <BreadcrumbPage>{crumb.label}</BreadcrumbPage>
                     ) : crumb.href ? (
                       <BreadcrumbLink asChild>
-                        <Link href={crumb.href}>{crumb.label}</Link>
+                        <Link
+                          href={crumb.href}
+                          onClick={(e) => {
+                            if (!guardNav) return;
+                            // Modifier clicks (open in new tab/window) bypass
+                            // the dirty-guard - the browser's own default
+                            // handles them, never our SPA push. A middle
+                            // click never reaches `onClick` at all (that is
+                            // `auxclick`), so `e.button === 1` here was dead.
+                            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                            e.preventDefault();
+                            const target = crumb.href as string;
+                            guardNav(() => router.push(target));
+                          }}
+                        >
+                          {crumb.label}
+                        </Link>
                       </BreadcrumbLink>
                     ) : (
                       <span>{crumb.label}</span>

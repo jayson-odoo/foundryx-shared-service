@@ -485,6 +485,145 @@ def test_put_etl_task_rejects_another_tenants_connection_422_never_leaks(client,
     assert "connectionId" in response.json()["detail"]["fieldErrors"], response.text
 
 
+# ── review round 5 (R5-B): the ROUTER's own model_fields_set distinction ────
+#
+# `EtlSourceConfigIn.model_dump()` always emits every declared field
+# (`combine` defaulted to `None` when the wire omits it), so the ROUTER -
+# not just the service layer's own `"combine" in raw` gate - must be the one
+# telling "the JSON never mentioned combine at all" from "the JSON explicitly
+# set it to null" apart BEFORE the dict reaches `EtlService.update_task`.
+
+_ROUTER_TEST_COMBINE = {
+    "computed": [], "require": [], "measure": "ItemCode",
+    "groupBy": ["ItemCode"], "measures": [{"source": "ItemCode", "op": "count", "alias": "n"}],
+    "carry": [], "round": [], "drop": [],
+}
+
+
+def test_put_etl_task_omitted_combine_keeps_it_explicit_null_clears_it(client, headers, db):
+    company, conn = _open_company(db)
+
+    first = client.put(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_PRODUCT}/etl-task",
+        json={
+            "sourceConfig": _http_raw(
+                connectionId=conn.id, keyFields=[], combine=_ROUTER_TEST_COMBINE
+            )
+        },
+        headers=headers,
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["sourceConfig"]["combine"] == _ROUTER_TEST_COMBINE
+
+    # A second PUT whose JSON body carries NO "combine" key at all (a client
+    # that does not round-trip the field) must not wipe it.
+    second_body = _http_raw(connectionId=conn.id, watermarkField="LastModified")
+    assert "combine" not in second_body
+    second = client.put(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_PRODUCT}/etl-task",
+        json={"sourceConfig": second_body},
+        headers=headers,
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["sourceConfig"]["combine"] == _ROUTER_TEST_COMBINE
+
+    # A THIRD PUT with an EXPLICIT `"combine": null` clears it.
+    third = client.put(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_PRODUCT}/etl-task",
+        json={
+            "sourceConfig": _http_raw(
+                connectionId=conn.id, keyFields=["ItemCode"], combine=None
+            )
+        },
+        headers=headers,
+    )
+    assert third.status_code == 200, third.text
+    assert third.json()["sourceConfig"]["combine"] is None
+    assert third.json()["combineOutputColumns"] == []
+
+
+# ── S5b confirm round 5 (B-2, AC-10-80, AC-10-40/41): a DELIBERATE clear ────
+# ── must never be re-seeded by a LATER bare save ────────────────────────────
+#
+# ``test_put_etl_task_omitted_combine_keeps_it_explicit_null_clears_it``
+# above uses ``ENTITY_PRODUCT``, whose HTTP preset carries no ``combine`` at
+# all, so it cannot reproduce this: only ``stock_balance`` has a preset
+# ``combine`` to be wrongly re-seeded from.
+
+
+def test_put_etl_task_cleared_combine_survives_a_later_bare_save(client, headers, db):
+    """Reproduces the reviewer's repro exactly: stock entity, PUT #1 bare
+    add -> seeded from the preset; PUT #2 explicit ``combine: null`` ->
+    cleared; PUT #3 omitting the key entirely -> must STAY cleared, never
+    resurrect the preset (before the fix this re-seeded ``combine`` and flipped
+    ``keyFields`` back to the preset's, silently reverting the operator's
+    deliberate Combine-rows-off choice and demoting any active task)."""
+    from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
+    from modules.autocount.presets import STOCK_BALANCE_HTTP_PRESET
+
+    company, conn = _open_company(db)
+    preset_combine = STOCK_BALANCE_HTTP_PRESET.combine
+
+    def _stock_raw(**overrides) -> Dict[str, Any]:
+        base: Dict[str, Any] = {
+            "connectionId": conn.id,
+            "path": "/itembatchbalqtybypage",
+            "keyFields": [],
+            "watermarkField": None,
+        }
+        base.update(overrides)
+        return _http_raw(**base)
+
+    # PUT #1 - a bare add: no `combine`, no manual `keyFields` at all -
+    # exactly what an operator submits when they configure nothing.
+    first_body = _stock_raw()
+    assert "combine" not in first_body
+    first = client.put(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_STOCK_BALANCE}/etl-task",
+        json={"sourceConfig": first_body},
+        headers=headers,
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["sourceConfig"]["combine"] == preset_combine, first.json()["sourceConfig"]["combine"]
+    assert first.json()["sourceConfig"]["keyFields"] == ["item_code", "location_code"]
+
+    # PUT #2 - an EXPLICIT `combine: null` (the Combine-rows switch turned
+    # OFF), with a manual `keyFields` pick (required once combine no longer
+    # derives them).
+    second = client.put(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_STOCK_BALANCE}/etl-task",
+        json={"sourceConfig": _stock_raw(keyFields=["ItemCode"], combine=None)},
+        headers=headers,
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["sourceConfig"]["combine"] is None
+    assert second.json()["sourceConfig"]["keyFields"] == ["ItemCode"]
+
+    # PUT #3 - a bare save that OMITS `combine` entirely (no "combine" key
+    # on the wire at all). Must STAY cleared.
+    third_body = _stock_raw(keyFields=["ItemCode"])
+    assert "combine" not in third_body
+    third = client.put(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_STOCK_BALANCE}/etl-task",
+        json={"sourceConfig": third_body},
+        headers=headers,
+    )
+    assert third.status_code == 200, third.text
+    assert third.json()["sourceConfig"]["combine"] is None, third.json()["sourceConfig"]["combine"]
+    assert third.json()["sourceConfig"]["keyFields"] == ["ItemCode"], third.json()["sourceConfig"]["keyFields"]
+
+    # PUT #4 CONTROL - an explicit dict `combine` still re-applies normally;
+    # the clear is not a permanent lock on the field.
+    fourth = client.put(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_STOCK_BALANCE}/etl-task",
+        json={"sourceConfig": _stock_raw(combine=preset_combine)},
+        headers=headers,
+    )
+    assert fourth.status_code == 200, fourth.text
+    assert fourth.json()["sourceConfig"]["combine"] == preset_combine
+    assert fourth.json()["sourceConfig"]["keyFields"] == ["item_code", "location_code"]
+
+
 def test_preview_http_rejects_another_tenants_connection_422_never_leaks(client, headers, db):
     from app.models import Tenant
 
@@ -515,8 +654,17 @@ def test_preview_http_with_another_tenants_company_id_404s_never_leaks(client, h
     raised by `self.companies.get(tenant_id, company_id)` inside
     `preview_http`). Only `EtlValidationError` was caught in the router, so
     this used to be a bare 500 instead of a clean 404 - map it through the
-    SAME `_raise` translator every other autocount route uses."""
+    SAME `_raise` translator every other autocount route uses.
+
+    sprint-5/10 confirm-4: this posted to `/autocount/http/preview` with no
+    `get_http_transport` override, so - now that a live-network block is in
+    place (conftest) - it would raise before ever reaching the tenant-scope
+    guard this test exists to pin. Override the transport the SAME way
+    `test_preview_http_paged` above does; the guard fires before the
+    transport is ever used, so the canned response never matters."""
+    from app.main import app
     from app.models import Tenant
+    from modules.autocount.http_client import get_http_transport
     from modules.autocount.services.company_service import CompanyService as CS
 
     other_tenant_id = "tenant-other-http-preview-company"
@@ -536,14 +684,20 @@ def test_preview_http_with_another_tenants_company_id_404s_never_leaks(client, h
     )
 
     conn = _open_connection(db)
-    response = client.post(
-        "/autocount/http/preview",
-        json={
-            "connectionId": conn.id, "path": "/itembypage",
-            "companyId": foreign_company.id, "entityType": ENTITY_PRODUCT,
-        },
-        headers=headers,
+    app.dependency_overrides[get_http_transport] = lambda: _transport(
+        {"TotalCount": 1, "Page": 1, "PageSize": 50, "TotalPages": 1, "Data": [{"ItemCode": "A1"}]}
     )
+    try:
+        response = client.post(
+            "/autocount/http/preview",
+            json={
+                "connectionId": conn.id, "path": "/itembypage",
+                "companyId": foreign_company.id, "entityType": ENTITY_PRODUCT,
+            },
+            headers=headers,
+        )
+    finally:
+        app.dependency_overrides.pop(get_http_transport, None)
     assert response.status_code == 404, response.text
 
 

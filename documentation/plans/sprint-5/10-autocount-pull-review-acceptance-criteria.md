@@ -497,8 +497,10 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   `deferred_actions.py` beside `autocount_etl_task.repush`, never a hand-rolled confirm dialog.
 
 - **AC-10-64 [BE]** The gateway's failed-status code set is exactly `SOURCE_PAGE_FAILED`,
-  `ENRICH_FAILED`, `ROW_LIMIT`, `EMPTY_EXTRACT` (R6). `MAPPING_FAILED` is NOT a snapshot status
-  code and never appears in a `status: "failed"` body; `mapping_failed` exists only as an
+  `ENRICH_FAILED`, `ROW_LIMIT`, `EMPTY_EXTRACT` (R6), plus `BUILD_ABANDONED` (AC-10-88, an
+  orphan-reclaimed build) and `COMBINE_RULE_FAILED` (review round 4, SF-3 - a `combine` drop
+  rule that raises at runtime during a pull build, AC-10-79). `MAPPING_FAILED` is NOT a snapshot
+  status code and never appears in a `status: "failed"` body; `mapping_failed` exists only as an
   `excludedRows[].reason` on a `ready` snapshot. Pinned by a test asserting the code set, so the
   consumer's error switch cannot be broken by a later addition without a contract change.
 
@@ -706,7 +708,9 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   `combine.<part>[i]` for: an unknown column or alias; a forward reference (a computed formula
   naming a LATER computed alias, or `groupBy`/`measures`/`carry` naming an undefined one); an
   alias clashing with a source column, a lookup alias or another computed / measure alias; an
-  empty `groupBy`; a `measure` that is not one of the declared measure aliases; a numeric op
+  empty `groupBy`; a `measure` that does not name a known PRE-GROUP column (a raw source column,
+  a lookup alias or an earlier computed alias - never a `measures[].alias`, which does not exist
+  until AFTER grouping); a numeric op
   (`sum`/`min`/`max`) over a column whose previewed sample values are non-numeric with no
   computed cast (a SAMPLE-based check, so a runtime non-numeric still raises the normal named
   `TransformError` - stated, not pretended away); and a `require` or `drop` formula whose inferred
@@ -767,8 +771,13 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   Save.
 - **AC-10-84 [T]** The stock preset reproduces the live numbers end to end on `db1` with no
   operator configuration: 68,612 rows in -> 12,133 rows out, the `zero` rule dropping roughly
-  56,400, the `negative` rule dropping 42 and listing them, `roundedCount` 0, and the excluded set
-  matching the 5 known rate-unresolved rows. Report cites the snapshot id and the funnel counts.
+  56,400, the `negative` rule dropping 42 and listing them, `roundedCount` 0. **Measured figure
+  (S5b, 2026-09-20 recorded db1 capture, run directly against `apply_combine`/`fetch_changes`
+  over every recorded wrapper page): `excludedCount` is 0** - every `(ItemCode, UOM)` pair the
+  balance table names has a matching `/itemuombypage` rate row in this exact capture, so the
+  earlier "5 known rate-unresolved rows" narrative (an earlier/different probe) does not
+  reproduce here; amended rather than silently overridden. Report cites the snapshot id and the
+  funnel counts.
 
 - **AC-10-85 [BE]/[FE]** **Page size and request timeout are per-CONNECTION settings**, because
   they are a property of the book's host, not of a task: `AutoCountProvider.fields()` gains
