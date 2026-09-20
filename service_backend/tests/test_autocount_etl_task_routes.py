@@ -438,9 +438,16 @@ def test_the_company_code_is_trimmed_stored_and_echoed(client, session_factory):
     assert response.json()["sorentoCompanyCode"] == "SRT"
 
 
-def test_switching_to_logging_clears_the_company_code(client, session_factory, rig):
-    """A code left behind would silently anchor a later switch back to Sorento
-    at a company nobody re-chose."""
+def test_switching_to_logging_keeps_the_company_code(client, session_factory, rig):
+    """Sprint-5/10 S6 (live-replay Finding 0) - REVERSED on purpose. The code
+    used to be cleared with the sink target ("a code left behind would
+    silently anchor a later switch back to Sorento at a company nobody
+    re-chose"), but it is also the book's PUBLIC PULL identity: the pull
+    delivery-mode gate and the public gateway's company resolution both key
+    off it, so clearing it made a `logging`-sink company permanently unable
+    to use pull at all. Only the push target (`sinkConnectionId`) is cleared
+    now; switching BACK to Sorento still requires a code explicitly.
+    `tests/test_s10_s6_logging_sink_pull.py` owns the end-to-end pin."""
     company_id, _sql_id = rig
     response = client.patch(
         f"/autocount/companies/{company_id}/sink-target",
@@ -448,7 +455,9 @@ def test_switching_to_logging_clears_the_company_code(client, session_factory, r
         headers=_auth(client),
     )
     assert response.status_code == 200, response.text
-    assert response.json()["sorentoCompanyCode"] is None
+    body = response.json()
+    assert body["sorentoCompanyCode"] == CODE
+    assert body["sinkConnectionId"] is None
 
 
 # ── POST .../etl-task/preview (AC-22-18) ────────────────────────────────────

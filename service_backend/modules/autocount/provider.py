@@ -172,17 +172,24 @@ class AutoCountProvider:
                 "secret": True,
                 "showWhen": {"field": "auth", "values": [AUTH_BASIC]},
             },
+            # AC-10-85 - the open REST wrapper's own host-latency knobs;
+            # meaningless for the vendor session-auth flavour, which never
+            # runs a page walk against this client, hence the `showWhen`.
+            # BOTH default keys are declared on purpose: `default` (numeric)
+            # is this field schema's own contract, and `defaultValue` (a
+            # string) is the key the connection wizard's generic prefill
+            # actually reads (`connection-schema.ts defaultsForProvider`) -
+            # without it the operator would face a blank box instead of the
+            # AC's stated 1000 / 90.
             {
                 "key": "pageSize",
                 "label": "Page size",
                 "type": "number",
                 "required": False,
                 "default": PAGE_SIZE_FIELD_DEFAULT,
+                "defaultValue": str(PAGE_SIZE_FIELD_DEFAULT),
                 "min": PAGE_SIZE_FIELD_MIN,
                 "max": PAGE_SIZE_FIELD_MAX,
-                # AC-10-85 - the open REST wrapper's own host-latency knob;
-                # meaningless for the vendor session-auth flavour, which
-                # never runs a page walk against this client.
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
             },
             {
@@ -191,6 +198,7 @@ class AutoCountProvider:
                 "type": "number",
                 "required": False,
                 "default": REQUEST_TIMEOUT_FIELD_DEFAULT,
+                "defaultValue": str(REQUEST_TIMEOUT_FIELD_DEFAULT),
                 "max": REQUEST_TIMEOUT_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
             },
@@ -213,11 +221,6 @@ class AutoCountProvider:
         base_url = str((config or {}).get("baseUrl") or "").strip()
         if base_url and not base_url.lower().startswith(("http://", "https://")):
             return "The base URL must start with http:// or https://."
-        if base_url:
-            try:
-                assert_autocount_base_url_deliverable(base_url)
-            except OpenProbeError as exc:
-                return f"baseUrl: {exc.message}"
 
         page_size_raw = str((config or {}).get("pageSize") or "").strip()
         if page_size_raw:
@@ -242,6 +245,16 @@ class AutoCountProvider:
                     f"requestTimeoutSeconds must be at most "
                     f"{REQUEST_TIMEOUT_FIELD_MAX} seconds."
                 )
+
+        # LAST, because it is the only check here that can touch the network
+        # (the guard resolves the host to catch a name pointing at an internal
+        # address): a plain out-of-range number is refused without paying for
+        # a DNS lookup.
+        if base_url:
+            try:
+                assert_autocount_base_url_deliverable(base_url)
+            except OpenProbeError as exc:
+                return f"baseUrl: {exc.message}"
         return None
 
     def test(

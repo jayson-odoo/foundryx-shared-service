@@ -93,29 +93,39 @@ def _configured_page_size(config: Dict[str, Any]) -> int:
     """AC-10-85 - the connection's own ``pageSize`` (a wire string, e.g.
     ``"250"``), falling back to ``DEFAULT_PAGE_SIZE`` for a blank/missing/
     unparsable value - a legacy connection saved before this field existed
-    behaves exactly as it always has."""
+    behaves exactly as it always has.
+
+    CLAMPED to the same ``MIN_PAGE_SIZE..DEFAULT_PAGE_SIZE`` window the
+    provider's save-time 422 enforces: the runtime must not trust a stored
+    value (a row written before that validator existed, or by hand) - a 0 or
+    negative page size would ask the wrapper for nothing, page after page."""
     raw = (config or {}).get("pageSize")
     text = str(raw).strip() if raw is not None else ""
     if not text:
         return DEFAULT_PAGE_SIZE
     try:
-        return int(text)
+        value = int(text)
     except (TypeError, ValueError):
         return DEFAULT_PAGE_SIZE
+    return max(MIN_PAGE_SIZE, min(value, DEFAULT_PAGE_SIZE))
 
 
 def _configured_timeout_seconds(config: Dict[str, Any]) -> float:
     """AC-10-85 - the connection's own ``requestTimeoutSeconds``, falling
     back to ``http_source.client.DEFAULT_TIMEOUT_SECONDS`` (now 90s, was
-    30s) for a blank/missing/unparsable value."""
+    30s) for a blank/missing/unparsable value - and for a stored value that
+    is not a positive number at all (same "never trust a stored value"
+    reason as the page size above; a zero/negative timeout would fail every
+    request instantly)."""
     raw = (config or {}).get("requestTimeoutSeconds")
     text = str(raw).strip() if raw is not None else ""
     if not text:
         return DEFAULT_TIMEOUT_SECONDS
     try:
-        return float(text)
+        value = float(text)
     except (TypeError, ValueError):
         return DEFAULT_TIMEOUT_SECONDS
+    return value if value > 0 else DEFAULT_TIMEOUT_SECONDS
 
 
 class _PageTimedOutTwice(Exception):

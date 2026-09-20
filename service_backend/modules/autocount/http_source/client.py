@@ -102,7 +102,9 @@ class HttpApiClient:
 
     def get(self, path: str, params: Dict[str, Any]) -> httpx.Response:
         """One ``GET {base_url}{path}?params`` with ``Accept: application/
-        json`` and a 30s timeout (AC-08-23). Buffers a ``CallRecord`` on
+        json`` and this client's own ``timeout_seconds`` (AC-08-23; the
+        connection's ``requestTimeoutSeconds``, else
+        ``DEFAULT_TIMEOUT_SECONDS`` - AC-10-85). Buffers a ``CallRecord`` on
         both the success and the transport-failure path.
 
         AC-10-58 M2 - the outbound SSRF guard is re-run immediately before
