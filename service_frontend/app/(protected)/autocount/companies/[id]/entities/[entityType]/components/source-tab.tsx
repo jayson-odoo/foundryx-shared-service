@@ -335,6 +335,28 @@ export function SourceTab({
       httpPreview.state.status === 'success' ? httpPreview.state.preview.columns.map((c) => c.name) : [],
     [httpPreview.state],
   );
+  // Browser round 1 fix (AC-10-09) - a COMBINED preview's `columns` is, by
+  // backend design, RAW main-endpoint columns UNION every attached lookup's
+  // OWN alias (so the grid can show the enriched values) - `httpPreviewColumns`
+  // above is therefore NOT a pure raw-column list. The Lookups editor's alias
+  // collision check must only fire against a genuine raw column or an
+  // EARLIER lookup's alias (`lib/autocount-lookups.ts`'s own rule), never a
+  // lookup's OWN alias echoed back by the very test that proved it. The
+  // backend echoes the EXACT `sourceConfig` that produced this preview on
+  // `preview.task` (S5 review round 7) - its `lookups` are precisely the
+  // aliases already baked into `httpPreviewColumns`, so subtracting THOSE
+  // (never the live, possibly freshly-typed-and-UNTESTED `config.lookups`)
+  // recovers the true raw set without hiding a genuine collision against an
+  // untested alias (e.g. typing an existing raw column's name).
+  const testedLookupAliases = useMemo(() => {
+    const testedLookups =
+      httpPreview.state.status === 'success' ? httpPreview.state.preview.task?.sourceConfig.lookups : undefined;
+    return new Set((testedLookups ?? []).flatMap((l) => l.fields.map((f) => f.as.trim()).filter(Boolean)));
+  }, [httpPreview.state]);
+  const rawSourceColumns = useMemo(
+    () => httpPreviewColumns.filter((c) => !testedLookupAliases.has(c)),
+    [httpPreviewColumns, testedLookupAliases],
+  );
   const httpSavedPicks = useMemo(
     () => [
       ...(config.keyFields ?? []),
@@ -830,7 +852,7 @@ export function SourceTab({
                 editing={editing}
                 lookups={config.lookups ?? []}
                 onChange={(lookups) => onChange({ lookups })}
-                sourceColumns={httpPreviewColumns}
+                sourceColumns={rawSourceColumns}
                 connectionId={config.connectionId}
                 columnsProbe={columnsProbe}
                 lookupResults={httpPreview.state.status === 'success' ? httpPreview.state.preview.lookups : []}
