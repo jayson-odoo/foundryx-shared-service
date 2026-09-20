@@ -1,0 +1,1 @@
+{"snapshotId":"0a6d8373-765c-4a2c-bf31-ff1a1735c5b2","entity":"stock_balances","companyCode":"MCH","status":"failed","error":{"code":"ENRICH_FAILED","message":"The 'item' lookup endpoint '/itembypage' failed: '/itembypage' timed out repeatedly even after 2 halving(s) of the page size."}}

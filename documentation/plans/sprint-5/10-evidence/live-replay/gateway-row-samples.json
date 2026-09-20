@@ -1,0 +1,75 @@
+=== product rows page=1 pageSize=3 ===
+{
+    "snapshotId": "504088ab-c9ad-4d73-9632-43b49484c3d1",
+    "page": 1,
+    "pageSize": 3,
+    "totalPages": 3947,
+    "recordCount": 11840,
+    "rows": [
+        {
+            "source_ref": "AED_SORENTO:**NEW",
+            "code": "**NEW",
+            "name": "**NEW STOCK",
+            "description": "**NEW STOCK",
+            "category_code": "MISC",
+            "brand_code": "OTHERS",
+            "list_price": "0.0",
+            "is_active": true
+        },
+        {
+            "source_ref": "AED_SORENTO:**REPAIR",
+            "code": "**REPAIR",
+            "name": "**REPAIR",
+            "description": "**REPAIR",
+            "category_code": "MISC",
+            "brand_code": "OTHERS",
+            "list_price": "0.0",
+            "is_active": true
+        },
+        {
+            "source_ref": "AED_SORENTO:**REPLACE",
+            "code": "**REPLACE",
+            "name": "**REPLACEMENT UNIT**",
+            "description": "**REPLACEMENT UNIT**",
+            "category_code": "MISC",
+            "brand_code": "OTHERS",
+            "list_price": "0.0",
+            "is_active": true
+        }
+    ]
+}
+
+=== stock rows page=1 pageSize=3 ===
+{
+    "snapshotId": "428cf3fb-6233-4b91-9f15-e96756044d85",
+    "page": 1,
+    "pageSize": 3,
+    "totalPages": 4045,
+    "recordCount": 12133,
+    "rows": [
+        {
+            "source_ref": "AED_SORENTO:**REPLACE|BRW-NTC",
+            "item_code": "**REPLACE",
+            "item_description": "**REPLACEMENT UNIT**",
+            "location_code": "BRW-NTC",
+            "uom_code": "UNIT",
+            "qty": 4
+        },
+        {
+            "source_ref": "AED_SORENTO:1/2\" ULTRA CIRCULAR|BRW-BB",
+            "item_code": "1/2\" ULTRA CIRCULAR",
+            "item_description": "15MM X 500MM ULTRAGAL PIPE 1/2\"",
+            "location_code": "BRW-BB",
+            "uom_code": "PC",
+            "qty": 672
+        },
+        {
+            "source_ref": "AED_SORENTO:32MM TAIL PIECE COUPLING|BRW",
+            "item_code": "32MM TAIL PIECE COUPLING",
+            "item_description": "32MM TAIL PIECE COUPLING (CHROME) FOR BOTTLE TRAP",
+            "location_code": "BRW",
+            "uom_code": "UNIT",
+            "qty": 1216
+        }
+    ]
+}
