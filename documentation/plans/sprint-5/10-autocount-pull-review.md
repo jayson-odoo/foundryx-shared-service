@@ -707,6 +707,20 @@ ahead of both because PRINCIPLES mandates it.
 
 ## 6. Backlog
 
+- **BL-SS-243** - **Pre-existing flaky countdown assertion,
+  `components/platform/resource-form/resource-form.deferred.test.tsx`.** Under CPU contention the
+  deferred-delete countdown label can read "Trashing in 9s" instead of the asserted "10s" (a real
+  clock tick racing the test's own render), unrelated to any autocount work. Loosen the assertion
+  (a range, or the label's stable prefix) or fake timers more tightly. Review round confirm-4
+  (2026-09-20).
+- **BL-SS-242** - **A stronger event-loop-blocking harness for the gateway build route.**
+  `tests/test_s10_s6_gateway_nonblocking.py` pins the route-shape fact (`build_snapshot` is not a
+  coroutine function) but deleted its own behavioural race test (confirm-3 B2) because
+  `asyncio.create_task` only schedules, it does not start - the two tasks' relative starting order
+  is scheduler-dependent, not something that test pinned down. A stronger version would have the
+  stub handler set an explicit event and only start the concurrent request once the blocking
+  section is confirmably entered; today only the `iscoroutinefunction` pin enforces the sync
+  route. Review round confirm-4 (2026-09-20).
 - **BL-SS-241 (High)** - **An existing `http://` AutoCount connection fails EVERY walk after
   this change, outside the development loopback carve-out.** Review round confirm-3's owner
   ruling (section 2.10, D34) keeps the egress guard https-only; `provider.py`'s messages now say
