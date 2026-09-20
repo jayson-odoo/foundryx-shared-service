@@ -104,3 +104,67 @@ echoes the CLAMPED `PageSize`/`TotalPages`/`Page` back in the response body. The
 must therefore trust the ECHOED values on every page, never the value it requested, and must
 never assume the population fits in one page just because the requested `pageSize` implied it
 would.
+
+### AutoCount human-invoked pull (plan 10, sprint-5/10) - what each stage owns
+
+The pull path is a SNAPSHOT builder, not the push path's staged-diff machinery - no
+`ac_staged_record`, no `ac_row_hash`, no watermark advance, ever (D6). Four stages, in order:
+
+- **Delivery mode** - `delivery_mode` on the EXISTING `ac_entity_config` task row (`push`
+  default), activated per (company, entity) pair. A `pull` task never runs on the 60 s sweep; a
+  build is always operator- or consumer-triggered (D1/D2). `stock_balance` is pull-only today,
+  gated by contract version (D4) - the Push option is hidden, not removed, and opens with no code
+  change once Sorento serves contract 2.5 (BL-SS-207).
+- **Lookups / enrich** - a GENERAL, operator-configurable ordered list on ANY HTTP task (D3, R9),
+  not a product-only block: N endpoints, N join pairs, operator-named aliases, multi-hop by
+  evaluation order. Values MERGE onto the source row before de-dup/hash/mapping, so an alias reads
+  as an ordinary column everywhere downstream. Preview matched/missed counts are a 50-row SAMPLE
+  of BOTH the main page and the lookup page (BL-SS-222) - never the population; the S2 editor must
+  label them as samples, not totals. A formula naming an alias fails to PARSE (not just returns
+  null) on a row that missed the lookup, because the miss leaves the alias key absent from
+  `known_variables` (BL-SS-221).
+- **Combine/reduce** - a general, operator-configurable step on ANY HTTP task (D5, R11): computed
+  columns, require rules, group-by with measures and carried columns, per-measure rounding,
+  ordered drop rules - bounded (one per task, no joins, no nested grouping) and expressed entirely
+  in the EXISTING formula engine, never a hand-rolled reducer. Each formula stage gets its OWN
+  variable scope (D32) - a forward reference or a post-group name used pre-group is a save-time
+  422, not a runtime surprise. `combine: null` on the wire CLEARS the stored block; an omitted key
+  KEEPS it; a cleared combine is never auto-reseeded from the preset (D29). The ONLY place a
+  require/drop formula's return-type is checked against REAL sample data is `preview_http`
+  (BL-SS-226) - a real task Save has no stored sample to check against.
+- **Snapshot store + gateway** - a pull run writes ONE immutable snapshot row + its pages, kept
+  for the newest 3 per (company, entity) with a 24 h TTL (module constants today, BL-SS-231). The
+  public gateway (`/api/v1/autocount`, D8/D9, `X-API-Key`) and the session-authed operator routes
+  (`/autocount/pull`) both project the SAME `snapshot_header`/`gateway_snapshot_header` but with
+  DIFFERENT field names by design (`id`/`entityType`/`companyId` vs `snapshotId`/`entity`/
+  `companyCode`, BL-SS-228) - never assume the two schemas should converge. Every gateway response
+  carries `Cache-Control: no-store`; `page` is REJECTED past `1000000`, never clamped (only
+  `pageSize` clamps). See `documentation/plans/sprint-5/10-autocount-pull-review.md` Appendix A6
+  for the full, code-verified error-code ladder (six codes were added by the S4 security round and
+  went undocumented in the contract table for a full sprint - re-grep `code="` on every gateway
+  file whenever that appendix is touched, don't trust the table alone).
+
+### Agent-process lessons (plan 10 S6 docs pass, 2026-09-20)
+
+- **A tester agent must never edit application code, even as a throwaway scratch check** - a
+  scratch edit left uncommitted in a shared worktree is indistinguishable from a real change to
+  the next agent reading `git status`, and a shared Postgres means a "just checking" code path can
+  have side effects.
+- **`git stash` is forbidden in a shared worktree** (repeated house rule, worth restating because
+  plan 10's lane hosted coder, tester AND reviewer sessions across the same checkout at different
+  times) - the stash stack is process-global; a bare `git stash`/`pop` can swallow or apply another
+  session's work. Use a tagged WIP commit instead.
+- **A coder should diff their OWN pathspec before committing**, not `git add -A` - a shared
+  worktree accumulates other agents' in-flight edits (evidence dirs, scratch files) that a broad
+  add would sweep into an unrelated commit.
+- **`pytest tests/test_s10_` (bare prefix, no glob) collects ZERO tests** - pytest treats a bare
+  string as a path, not a name filter; the working forms are `pytest tests/ -k test_s10_` or a
+  real glob the shell expands (`pytest tests/test_s10_*.py`).
+- **`test_autocount*.py` does NOT match `test_s10_*.py`** - this plan's ~90 S1-S6 test files are
+  ALL named `test_s10_<slice>_<topic>.py`, a disjoint prefix from the module's ~45 pre-existing
+  `test_autocount_*.py` files. A "run the autocount suite" command using only the old glob silently
+  skips every plan-10 test with no error.
+- **A dirty working tree is not evidence of anything** - `git status --short` showing modified
+  files proves edits exist, not that they are correct, tested, or even related to the task at
+  hand; always re-run the specific test/build that proves the claim, never cite tree dirtiness as
+  a substitute.

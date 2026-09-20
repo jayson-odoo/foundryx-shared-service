@@ -730,6 +730,52 @@ ahead of both because PRINCIPLES mandates it.
 - **BL-SS-041 / BL-SS-203** (existing) - update the rows to note that stock balance now has a
   Foundryx-side canonical entity and a pull path, and that only the Sorento ingest half remains.
 
+**S6 docs pass (2026-09-20) - new deferrals found while writing the Test Execution Report /
+Appendix A6 verification, minted BL-SS-223..239 so this register and `backlog.md` agree:**
+
+- **BL-SS-223** - pre-existing vitest failure, `services/autocount-service.test.ts` (S2's
+  `normalizeEtlTask` overlay, `d83a0d1e`, throws on a stub task with no `sourceConfig`).
+- **BL-SS-224** - pre-existing vitest failure, `components/ui/pressed-class.inventory.test.ts`
+  (two un-allowlisted webchat-panel buttons, unrelated to autocount).
+- **BL-SS-225** - combine `excludedRows` carries only `{<groupBy cols>, measure, reason,
+  message?}` - no per-entity extra column (e.g. stock's own `uom`).
+- **BL-SS-226** - sample-type checks (boolean require/drop, numeric measure ops) run only inside
+  `preview_http`; Test clean -> edit formula -> Save never re-checks.
+- **BL-SS-227** - `ac_pull_api_key.last_used_at` commits on every successful gateway call,
+  uncoalesced.
+- **BL-SS-228** - the operator pull routes' header shape (`id`/`entityType`/`companyId`) differs
+  from the gateway's Appendix A3 shape (`snapshotId`/`entity`/`companyCode`) by design - worth a
+  doc note so it does not read as drift.
+- **BL-SS-229** - the Pull page's N-way segment reads `query.segment` as a fetcher-side channel
+  rather than a dedicated shell callback - the first list config to do this; generalise or
+  document before a second config copies it.
+- **BL-SS-230** - a pull snapshot build has no incremental "row ready" signal, only a per-page
+  liveness heartbeat - the whole snapshot must finish before any row is servable.
+- **BL-SS-231** - snapshot TTL (24 h) and audit retention (90 days) are module constants, not
+  `app/config.py` settings.
+- **BL-SS-232** - the `autocount_pull_snapshot` background job has no cooperative-cancellation
+  checkpoints.
+- **BL-SS-233** - `mockAutocountService.previewHttp` (PHASE 1 MOCK) applies no lookups at all.
+- **BL-SS-234** - the frontend `HTTP_PRESETS` table has no VALUE drift guard against the
+  backend's `presets.py::HTTP_PRESETS` (only the entity-type key set is parity-pinned).
+- **BL-SS-235** - the Companies > Entities list's row click only selects (`rowHref: () => '#'`);
+  Configure is reached only via the Actions menu - confirm as deliberate or wire `rowHref`.
+- **BL-SS-236** - the operator `PullSnapshotOut` schema carries no `progress` hint; AC-10-87
+  landed on the public gateway header only.
+- **BL-SS-237** - the core 10 s destructive deferred-action grace window keeps a "revoked" pull
+  API key live (still resolves/authenticates) for up to 10 more seconds after Revoke is clicked -
+  the core pattern working as designed (AC-10-38), flagged because a live credential during the
+  window is a different risk class than a soft-deleted list row.
+- **BL-SS-238** - pre-existing push-path re-staging defect (NOT plan-10 code): an HTTP product
+  task with `watermarkField: null` re-stages every record on every run (`ac_staged_record` grows
+  roughly 5,000/run, capped by BL-SS-092); found live during this plan's db1 replay, verified by
+  the Opus reviewer against `c1c5906a`, recorded per the PR #70 comment.
+- **BL-SS-239** - HIGH, pre-existing, separate from plan 10: `EtlSourceConfigIn` declares no
+  `fingerprintQuery` field, so `validate_source_config` always reads it as absent and (unlike
+  `combine`'s explicit `model_fields_set` guard) has no keep-if-absent branch - ANY operator save
+  of a document task silently wipes `fingerprintQuery` and disables the line-fingerprint sweep.
+  File as a GitHub issue.
+
 ## 7. Decision log
 
 | # | Decision | Why |
@@ -757,6 +803,16 @@ ahead of both because PRINCIPLES mandates it.
 | D13 (owner approved 2026-09-19) | `sorento_company_code` is required to enable pull and is no longer cleared by a switch to the logging sink while any entity is pull-enabled | A pull-only company on the logging sink would otherwise lose its identity |
 | D14 (owner approved 2026-09-19) | Lane s40, :8009/:3009, DB `foundryx_service_s40` | s37-s39 held by earlier sprint-5 lanes |
 | D23 (review round 1b) | Raw-only `result_columns`, aliases derived at read - closes review-1 blocker 2 without a carve-out | An HTTP task's stored `result_columns` holds the RAW main-endpoint columns ONLY; every consumer that needs an operator alias too (the wire `resultColumns`, the compared-column baseline, mapping-row formula validation, key/watermark validation) derives it through one helper (`effective_result_columns` = stored raw + the configured lookups' `fields[].as`, in order). The save-time collision check then compares an alias against a set that can NEVER legitimately contain it, so no carve-out (previously-saved lookups, registered presets) is needed at all - closing the false-422 a carve-out reopened for a brand-new, first-time-saved lookup (R9's whole point). An alias may never be a KEY or WATERMARK field (a miss leaves it absent) |
+| D24 (S6 docs pass, verified in code) | The preview/Source pickers offer TWO distinct column sets, never one flat list: `resultColumns` (stored raw + lookup aliases, `EtlSourceConfigIn`/`effective_result_columns`) for key/watermark/mapping picks vs `combineOutputColumns`/`preCombineColumns` (`schemas.py:863/907`) for the COMBINE output schema once a task has one | A combine-carrying task's mapping tab must see the POST-group shape (group-by + carry + measure aliases), while key/watermark pickers must still see the PRE-group raw/lookup names - collapsing the two into one set would offer either the wrong picks or the wrong mapping targets |
+| D25 (owner ruling R11, verified `formula.py:1229-1246`) | A `require`/`drop` combine formula that does not evaluate to a real boolean is a fail-closed `FormulaRuntimeError`, via the SAME `to_bool_strict` `not`/`and`/`or`/`if` already use - never a second, more permissive boolean dialect | Review round 3 finding: a non-empty-string result previously coerced to `True` unconditionally; foolproof-UI requires the SAME strict rule everywhere a formula is asked for true/false, not a locally-invented one for combine |
+| D26 (review round 4, SF-3) | `BUILD_ABANDONED` and `COMBINE_RULE_FAILED` are kept as ADDITIVE members of the ONE pinned failed-status code set (`sync.py::PULL_SNAPSHOT_FAILED_CODES`), never folded onto `SOURCE_PAGE_FAILED` | An orphan-reclaimed build and a runtime-raising drop rule are diagnostically distinct failures a consumer's error switch should be able to tell apart, even though both are terminal |
+| D27 (verified `http_source/combine.py:407/690/974`) | `combine.measure` is OPTIONAL (`combine.get("measure")`, never a required key) | Not every combine-carrying task needs a measure column (e.g. a pure dedup/require reduction with no numeric aggregate); requiring one would force a dummy column on tasks that have nothing to sum |
+| D28 (S5b review round 5, coordinator ruling) | ONE `excludedRows` entry shape per combine-carrying task, regardless of which STAGE excluded the row - a mapping-stage exclusion is normalised to the SAME `{<groupBy cols>, measure, reason: "mapping_failed", message}` shape a combine-stage exclusion already carries, rather than the generic per-record `{source_ref, code, reason, message}` shape a non-combine task keeps | So a consumer's `excludedNonzeroCount` guard (A5) reads every exclusion uniformly without branching on which stage produced it |
+| D29 (router `companies.py:632-642`, R9/R11) | An explicit `"combine": null` on the wire CLEARS the stored combine block; an OMITTED `combine` key KEEPS whatever is stored. A cleared combine is never automatically re-seeded from the entity's preset on a later save | `model_dump()` cannot distinguish "sent null" from "never sent" once flattened to a plain dict - the router drops the key from `raw` entirely unless `model_fields_set` shows the client actually sent it, so the service layer's `"combine" in raw` check can tell the two apart. Re-seeding on every save would silently resurrect a combine block an operator deliberately turned off (S5b confirm B-2, `0c6df8a9`) |
+| D30 (verified `presets.py:860-886`) | The stock preset SHIPS a pre-filled `combine` block (`STOCK_BALANCE_HTTP_PRESET`), and the entity's `keyFields` are DERIVED from `combine.groupBy` at save time rather than hand-configured | A stock row's real identity is the post-group (item, location) pair, not any pre-group raw column - deriving it keeps one source of truth instead of an operator having to keep two settings in sync |
+| D31 (`tests/test_s10_s5b_live_numbers.py:16-81`) | Live-probe captures for the S5b test suite are stored OUTSIDE git, resolved via `AUTOCOUNT_PROBE_DIR` with a stable fallback copy, never committed raw vendor data | The captures carry real db1/db2 field values; keeping them out of the repo (env override for a fresh capture, a checked-in "stable" summary only) avoids committing a customer's live ERP data under a test fixture |
+| D32 (verified `combine-editor.tsx:115-155`) | Each combine formula stage gets its OWN variable scope from the `AutocountFormulaBuilder`, never one flat list for every stage: `computed[i]` sees raw/lookup columns + EARLIER computed aliases only (a forward reference is the save-time 422); `require[i]` sees raw/lookup + ALL computed aliases (require runs after every computed step); `drop[i]` runs AFTER grouping and sees ONLY `groupBy` + `carry` + `measures[].alias` | S5b-FE defect 1: a formula that could reference a not-yet-computed alias, or a pre-group raw column after grouping, would parse in the editor and then 422 (or silently read `null`) at save/run time - scoping the picker per stage closes both classes at author time |
+| D33 (verified `canonical/masters.py:339-354`) | `CanonicalStockBalance` extends `CanonicalRecord` directly, deliberately NOT `CanonicalMaster` | It carries none of `CanonicalMaster`'s push-oriented shape (`code`/`name`/`is_active`/`last_modified`/`extras`) and is pull-only (AC-10-15, no `sinks_sorento._ENTITY_PATH` entry); subclassing `CanonicalMaster` would also silently enrol it in the contract-2.1 master-parity suite, which is keyed off `CanonicalMaster` subclasses |
 
 ## Appendix A - the cross-repo contract (for the Sorento `autocount` peer session)
 
@@ -975,11 +1031,28 @@ side decides what to apply.
 | 410 | `SNAPSHOT_EXPIRED` | Build a fresh snapshot |
 | 404 | `UNKNOWN_SNAPSHOT` | Unknown id, or not yours. Uniform |
 | 429 | `TOO_MANY_BUILDS` | Within the 60 s build cooldown; honour `Retry-After` |
+| 429 | `TOO_MANY_REQUESTS` (added S4 security round 1, additive) | Either the per-IP throttle (before your key even resolves - the SAME bucket a bad key trips) or a per-KEY request budget counted on every authenticated call, success or business error alike; honour `Retry-After` on both |
+| 409 | `AMBIGUOUS_COMPANY` (added S4 security round 1, additive) | More than one company in this tenant shares that `companyCode` (`set_sink_target` does not yet prevent it) - the gateway refuses rather than guessing which one you meant |
+| 422 | `INVALID_REQUEST` (added S4 security round 1, additive) | A malformed request: `companyCode`/`entity` missing on `POST /snapshots`, or `page` outside `1..1000000` on the rows route (rejected outright, never clamped - `pageSize` is the only field that clamps) |
+| 422 | `UNKNOWN_ENTITY` (added S4 security round 1, additive) | `entity` is not `products` or `stock_balances` |
+| 413 | `PAYLOAD_TOO_LARGE` (added S4 security round 1, additive) | Request body over 16 KB, checked on the raw bytes before any JSON parse |
+| 500 | `INTERNAL` (added S4 security round 1, additive) | Last-resort net for an unanticipated exception; the body never carries the exception text, class name or a stack frame (logged server-side only) |
 | 5xx / `status: "failed"` | `SOURCE_PAGE_FAILED`, `ENRICH_FAILED`, `EMPTY_EXTRACT`, `ROW_LIMIT`, `BUILD_ABANDONED`, `COMBINE_RULE_FAILED` | Extraction failed; nothing partial is ever served. This list is exhaustive and pinned by a test - switch on it safely |
 
 `MAPPING_FAILED` is deliberately NOT in that list (owner ruling R6): a record that cannot be
 mapped is an EXCLUDED ROW on a `ready` snapshot, never a snapshot failure. `mapping_failed` appears
 only as an `excludedRows[].reason`, alongside `uom_rate_unresolved` (stock).
+
+**Amended (S6 docs pass, verified against `pull_v1.py`/`pull_auth.py`/`pull_gateway_service.py`
+2026-09-20):** the six rows above marked "added S4 security round 1" were introduced by that
+review round (commit `2596cb46`, "internal errors, key validation, reflection, per-key throttle,
+no-store, ambiguous company") and were never folded into this table - closing that gap. Two
+further facts belong beside this ladder, also verified in code and previously undocumented here:
+every gateway response, success or error, carries `Cache-Control: no-store`
+(`pull_v1.py`'s `_json_response` / `PullGatewayError.to_response`) - never cache this surface, it
+serves a customer's ERP master data behind a bearer-style key; and `GET /snapshots/{id}/rows`'s
+`page` query param is REJECTED (422 `INVALID_REQUEST`), not clamped, once it exceeds `1000000`
+(`pull_v1.py`'s `MAX_PAGE`) - `pageSize` remains the only field that clamps instead of erroring.
 
 ### A7. Sizing (for your RQ timeouts)
 
