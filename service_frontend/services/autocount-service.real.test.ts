@@ -208,3 +208,80 @@ describe('realAutocountService - lookups save round trip (AC-10-01)', () => {
     expect(body.sourceConfig.lookups).toEqual(lookups);
   });
 });
+
+// sprint-5/10 S6 phase 2 swap - pins every route path + method against the
+// LIVE backend contract (`modules/autocount/routers/{companies,pull}.py`,
+// `.../schemas.py`); the human-invoked pull surface stopped going through
+// `withPhase1PullMock` and now hits `realAutocountService` for real.
+describe('realAutocountService - human-invoked pull (AC-10-11/27..38)', () => {
+  it('setDeliveryMode PUTs the delivery-mode sub-resource', async () => {
+    apiFetchMock.mockResolvedValue({ id: 'e1', entityType: 'product', deliveryMode: 'pull' });
+    await realAutocountService.setDeliveryMode('company-1', 'product', 'pull');
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      '/autocount/companies/company-1/entities/product/delivery-mode',
+      { method: 'PUT', body: JSON.stringify({ deliveryMode: 'pull' }) },
+    );
+  });
+
+  it('listPullKeys GETs the tenant key list', async () => {
+    apiFetchMock.mockResolvedValue([]);
+    await realAutocountService.listPullKeys();
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/pull/keys');
+  });
+
+  it('issuePullKey POSTs name + companyIds', async () => {
+    apiFetchMock.mockResolvedValue({ key: { id: 'k1' }, plaintext: 'fxa_live_x' });
+    await realAutocountService.issuePullKey({ name: 'Sorento', companyIds: ['c1'] });
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/pull/keys', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Sorento', companyIds: ['c1'] }),
+    });
+  });
+
+  it('revokePullKey POSTs the revoke sub-resource', async () => {
+    apiFetchMock.mockResolvedValue({ id: 'k1', revokedAt: '2026-09-20T00:00:00Z' });
+    await realAutocountService.revokePullKey('k1');
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/pull/keys/k1/revoke', { method: 'POST' });
+  });
+
+  it('listPullSnapshots GETs with page/pageSize and the optional company/entity filters', async () => {
+    apiFetchMock.mockResolvedValue({ data: [], total: 0, page: 0 });
+    await realAutocountService.listPullSnapshots({
+      page: 1,
+      pageSize: 50,
+      companyId: 'c1',
+      entityType: 'product',
+    });
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      '/autocount/pull/snapshots?page=1&page_size=50&companyId=c1&entityType=product',
+    );
+  });
+
+  it('getPullSnapshot GETs the snapshot by id', async () => {
+    apiFetchMock.mockResolvedValue({ id: 's1' });
+    await realAutocountService.getPullSnapshot('s1');
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/pull/snapshots/s1');
+  });
+
+  it('getPullSnapshotRows GETs a 1-based page (the gateway/operator route convention, distinct from the list routes\' 0-based page)', async () => {
+    apiFetchMock.mockResolvedValue({
+      snapshotId: 's1',
+      page: 1,
+      pageSize: 1000,
+      totalPages: 1,
+      recordCount: 0,
+      rows: [],
+    });
+    await realAutocountService.getPullSnapshotRows('s1', 0, 1000);
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/pull/snapshots/s1/rows?page=1&pageSize=1000');
+  });
+
+  it('buildPullSnapshot POSTs companyId + entityType to the snapshots collection', async () => {
+    apiFetchMock.mockResolvedValue({ id: 's1', status: 'building' });
+    await realAutocountService.buildPullSnapshot('c1', 'product');
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/pull/snapshots', {
+      method: 'POST',
+      body: JSON.stringify({ companyId: 'c1', entityType: 'product' }),
+    });
+  });
+});

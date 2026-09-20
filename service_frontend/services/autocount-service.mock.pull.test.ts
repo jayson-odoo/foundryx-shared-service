@@ -1,13 +1,12 @@
 /**
- * PHASE 1 MOCK state coverage (sprint-5/10, AC-10-48) - every pull state
- * `mockAutocountService` (the Vitest fixture double) and `withPhase1PullMock`
- * (the live-session overlay bound at `autocount-service.ts`) must serve with
- * no backend.
+ * Pull state coverage (sprint-5/10, AC-10-48) - every pull state
+ * `mockAutocountService` (the Vitest fixture double, exercised directly since
+ * the S6 phase 2 swap retired the `withPhase1PullMock` runtime overlay - the
+ * pull surface is real end to end now) must serve with no backend.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ApiError } from '@/lib/api-client';
-import type { AutocountCompany, AutocountEtlTask, AutocountService } from '@/types/autocount';
-import { mockAutocountService, resetEtlMockState, withPhase1PullMock } from './autocount-service.mock';
+import { mockAutocountService, resetEtlMockState } from './autocount-service.mock';
 
 beforeEach(() => resetEtlMockState());
 
@@ -76,219 +75,43 @@ describe('mockAutocountService - pull snapshot states (AC-10-48)', () => {
     const second = await mockAutocountService.buildPullSnapshot('company-1', 'product');
     expect(second.id).toBe(first.id);
   });
+
+  it('a push+active pair 409s (review round 1 item 2; operator route, plain-string detail per pull.py, AC-10-31 scopes the structured ladder to the gateway only)', async () => {
+    // `company-db`'s seeded `sales_order` task is `active`; its delivery
+    // mode defaults to `push` (only `stock_balance` defaults `pull` -
+    // `PULL_ONLY_ENTITY_TYPES`), and it carries no in-flight snapshot of its
+    // own, so the PUSH_ACTIVE guard - not the re-attach branch - is what
+    // fires.
+    await expect(mockAutocountService.buildPullSnapshot('company-db', 'sales_order')).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/flipped to automatic push/i),
+    });
+  });
 });
 
-function task(companyId = 'c1', entityType = 'product', over: Partial<AutocountEtlTask> = {}): AutocountEtlTask {
-  return {
-    companyId,
-    entityType,
-    etlStatus: 'draft',
-    activatedAt: null,
-    sourceConfig: {
-      connectionId: 'conn-1',
-      query: '',
-      lineQuery: null,
-      keyColumns: ['ItemCode'],
-      watermarkColumn: null,
-      comparedColumns: [],
-      fromDate: null,
-      docDateColumn: null,
-      filterFormula: null,
-      incrementalMinutes: 15,
-      reconcileMode: 'dailyAt',
-      reconcileHours: null,
-      reconcileAt: '02:00',
-    },
-    resultColumns: ['ItemCode'],
-    lastPreviewAt: null,
-    lastPreviewFailedCount: null,
-    lastRunAt: null,
-    lastRunError: null,
-    lastRunErrorCode: null,
-    nextIncrementalAt: null,
-    nextReconcileAt: null,
-    ...over,
-  };
-}
-
-function company(over: Partial<AutocountCompany> = {}): AutocountCompany {
-  return {
-    id: 'c1',
-    connectionId: 'conn-1',
-    databaseName: 'AED',
-    companyName: 'AED',
-    name: 'AED',
-    isActive: true,
-    sinkImpl: 'logging',
-    sinkConnectionId: null,
-    sorentoCompanyCode: 'SRT',
-    createdAt: null,
-    sourceKind: 'http',
-    documentPrerequisites: [],
-    ...over,
-  };
-}
-
-describe('withPhase1PullMock (the runtime overlay `autocount-service.ts` binds)', () => {
-  function fakeReal(): AutocountService {
-    return {
-      ...mockAutocountService,
-      getEtlTask: async (companyId, entityType) => task(companyId, entityType),
-      updateEtlTask: async (companyId, entityType, input) =>
-        task(companyId, entityType, { sourceConfig: { ...task().sourceConfig, ...input.sourceConfig } }),
-      getCompany: async (id) => ({ company: company({ id }), entities: [] }),
-    };
-  }
-
-  it('seeds one active and one revoked key, and every AC-10-48 snapshot state, from first render (browser round 1 fix)', async () => {
-    // Started genuinely empty pre-browser-round-1: the live app bound this
-    // overlay, so a tester could never reach a single AC-10-48 state without
-    // first performing the exact sequence of mutations by hand (and the
-    // Build-snapshot dialog's company/entity pickers had nothing to offer at
-    // all, since the lane's only REAL company carries no Sorento code). The
-    // fix seeds a SELF-CONTAINED fixture company (never touching `real`) the
-    // same way `mockAutocountService`'s own Vitest fixtures already do.
-    const overlay = withPhase1PullMock(fakeReal());
-    const keys = await overlay.listPullKeys();
-    expect(keys.some((k) => k.revokedAt === null)).toBe(true);
-    expect(keys.some((k) => k.revokedAt !== null)).toBe(true);
-
-    const snapshots = await overlay.listPullSnapshots();
-    const statuses = snapshots.data.map((s) => s.status);
-    expect(statuses).toContain('building');
-    expect(statuses).toContain('ready');
-    expect(statuses).toContain('failed');
-    const expired = snapshots.data.find((s) => s.id === 'snap-product-expired');
-    expect(expired).toBeDefined();
-    expect(new Date(expired!.expiresAt as string).getTime()).toBeLessThan(Date.now());
-    const stock = snapshots.data.find((s) => s.entityType === 'stock_balance');
-    expect(stock?.excludedCount ?? 0).toBeGreaterThan(0);
-    expect((stock?.negativePairList ?? []).length).toBeGreaterThan(0);
+describe('mockAutocountService - delivery mode (AC-10-11)', () => {
+  it('requires a Sorento company code before enabling pull', async () => {
+    // `company-1`'s default fixture carries no Sorento code.
+    await expect(mockAutocountService.setDeliveryMode('company-1', 'stock_balance', 'pull')).rejects.toThrow(
+      ApiError,
+    );
   });
 
-  it('the fixture company is offered alongside real companies, with a Sorento code and pull-capable entities', async () => {
-    const overlay = withPhase1PullMock(fakeReal());
-    const companies = await overlay.listCompanies();
-    const fixture = companies.data.find((c) => c.name === 'Pull demo (mock)');
-    expect(fixture).toBeDefined();
-    expect(fixture!.sorentoCompanyCode).toBeTruthy();
-    // Real companies (the `fakeReal()` stub returns none here) are never
-    // dropped - the fixture is APPENDED, not a replacement.
-    expect(companies.data.some((c) => c.id === fixture!.id)).toBe(true);
-
-    const detail = await overlay.getCompany(fixture!.id);
-    expect(detail.entities.some((e) => e.entityType === 'stock_balance' && e.deliveryMode === 'pull')).toBe(true);
-    // The `product` entity sits in push+active - the reachable A6
-    // PUSH_ACTIVE demo (never `real.getCompany`, which would 404 for an id
-    // the live backend never created).
-    const product = detail.entities.find((e) => e.entityType === 'product');
-    expect(product?.deliveryMode ?? 'push').toBe('push');
-    expect(product?.etlStatus).toBe('active');
-    await expect(overlay.buildPullSnapshot(fixture!.id, 'product')).rejects.toMatchObject({
-      status: 409,
-      detail: { code: 'PUSH_ACTIVE' },
+  it('a saved delivery mode is echoed back on the next getEtlTask (session state)', async () => {
+    // `company-db` carries no Sorento code by default - give it one first,
+    // the same prerequisite the Entities tab itself enforces.
+    await mockAutocountService.updateSinkTarget('company-db', {
+      sinkImpl: 'sorento',
+      sinkConnectionId: 'conn-sink-1',
+      sorentoCompanyCode: 'SRTD',
     });
-  });
-
-  it('setDeliveryMode requires a Sorento company code before pull', async () => {
-    const overlay = withPhase1PullMock({
-      ...fakeReal(),
-      getCompany: async (id) => ({ company: company({ id, sorentoCompanyCode: null }), entities: [] }),
-    });
-    await expect(overlay.setDeliveryMode('c1', 'product', 'pull')).rejects.toThrow(ApiError);
-  });
-
-  it('a saved deliveryMode is echoed back on the NEXT getEtlTask (session state)', async () => {
-    const overlay = withPhase1PullMock(fakeReal());
-    await overlay.setDeliveryMode('c1', 'product', 'pull');
-    const reloaded = await overlay.getEtlTask('c1', 'product');
+    await mockAutocountService.setDeliveryMode('company-db', 'product', 'pull');
+    const reloaded = await mockAutocountService.getEtlTask('company-db', 'product');
     expect(reloaded.deliveryMode).toBe('pull');
   });
 
-  it('a never-touched task defaults to push', async () => {
-    const overlay = withPhase1PullMock(fakeReal());
-    const loaded = await overlay.getEtlTask('c1', 'product');
+  it('a never-touched non-pull-only entity defaults to push', async () => {
+    const loaded = await mockAutocountService.getEtlTask('company-db', 'purchase_order');
     expect(loaded.deliveryMode).toBe('push');
-  });
-
-  it('the entities list reflects the same session delivery mode (getCompany overlay)', async () => {
-    const overlay = withPhase1PullMock({
-      ...fakeReal(),
-      getCompany: async (id) => ({
-        company: company({ id }),
-        entities: [
-          {
-            id: 'e1',
-            entityType: 'product',
-            syncMode: 'MANUAL',
-            sourceImpl: 'autocount_http',
-            recordCap: 5000,
-            initialLookbackDays: 30,
-            enabled: true,
-            lastSuccessAt: null,
-            lastAttemptAt: null,
-            watermarkAt: null,
-            consecutiveFailures: 0,
-            lastError: null,
-            etlStatus: 'draft',
-          },
-        ],
-      }),
-    });
-    await overlay.setDeliveryMode('c1', 'product', 'pull');
-    const detail = await overlay.getCompany('c1');
-    expect(detail.entities[0].deliveryMode).toBe('pull');
-  });
-
-  it('buildPullSnapshot throws the Appendix A6 PUSH_ACTIVE body for a push+active pair (review round 1 item 2)', async () => {
-    const overlay = withPhase1PullMock({
-      ...fakeReal(),
-      getCompany: async (id) => ({
-        company: company({ id, sorentoCompanyCode: 'SRT' }),
-        entities: [
-          {
-            id: 'e1',
-            entityType: 'product',
-            syncMode: 'AUTO',
-            sourceImpl: 'autocount_http',
-            recordCap: 5000,
-            initialLookbackDays: 30,
-            enabled: true,
-            lastSuccessAt: null,
-            lastAttemptAt: null,
-            watermarkAt: null,
-            consecutiveFailures: 0,
-            lastError: null,
-            etlStatus: 'active',
-            deliveryMode: 'push',
-          },
-        ],
-      }),
-    });
-    await expect(overlay.buildPullSnapshot('c1', 'product')).rejects.toMatchObject({
-      status: 409,
-      detail: { code: 'PUSH_ACTIVE', companyCode: 'SRT', entity: 'products' },
-    });
-  });
-
-  it('a 409 PUSH_ACTIVE carries the SAME error ladder shape other codes use', () => {
-    // The gateway 409 itself is server-side (S4); this pins the FE type the
-    // snapshot detail / pull page must be able to render for it (AC-10-31).
-    const error = new ApiError('This book is now automatic.', 409, null, {
-      code: 'PUSH_ACTIVE',
-      message: 'This book is now automatic.',
-      companyCode: 'SRT',
-      entity: 'products',
-    });
-    expect(error.status).toBe(409);
-    expect((error.detail as { code: string }).code).toBe('PUSH_ACTIVE');
-  });
-
-  it('building a snapshot re-attaches within the overlay too (AC-10-26)', async () => {
-    const overlay = withPhase1PullMock(fakeReal());
-    const first = await overlay.buildPullSnapshot('c1', 'product');
-    const second = await overlay.buildPullSnapshot('c1', 'product');
-    expect(second.id).toBe(first.id);
-    expect(second.status).toBe('building');
   });
 });

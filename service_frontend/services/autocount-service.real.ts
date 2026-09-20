@@ -388,8 +388,9 @@ export const realAutocountService: AutocountService = {
   },
 
   // ── human-invoked pull (sprint-5/10) - contract documented on
-  // `AutocountService`. `withPhase1PullMock` (autocount-service.mock.ts)
-  // overlays these with in-memory fixtures until S3/S4 land the backend.
+  // `AutocountService`. Live since S3/S4 (backend), bound here since S6
+  // (phase 2 swap) - `autocount-service.mock.ts`'s `mockAutocountService`
+  // mirrors the same shapes as the Vitest fixture double.
 
   setDeliveryMode(companyId, entityType, deliveryMode: AutocountDeliveryMode) {
     return apiFetch<AutocountEntityConfig>(
