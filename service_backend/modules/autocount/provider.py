@@ -43,7 +43,7 @@ CONNECTION_TYPE = "erp"
 
 # AC-10-85 (live-replay Finding 1) - per-CONNECTION overrides for the open
 # REST wrapper's own host-latency knobs, replacing the fixed module
-# constants ``http_source.source.DEFAULT_PAGE_SIZE`` /
+# constants ``http_source.client.DEFAULT_PAGE_SIZE`` /
 # ``http_source.client.DEFAULT_TIMEOUT_SECONDS`` used to always fall back
 # to. Duplicated here (rather than imported) to avoid a circular import -
 # ``http_source/source.py`` itself imports THIS module - and because these

@@ -334,7 +334,7 @@ def _stub_getaddrinfo(host, *_args, **_kwargs):
 @pytest.fixture(autouse=True)
 def _stub_dns_in_autocount_http_tests(request, monkeypatch):
     """sprint-5/10 confirm-3 N1 - the SAME filename scope as the sleep-stub
-    fixture above. ``app.services.url_guard.validate_public_url`` (called by
+    fixture above. ``app.services.url_guard.validate_public_https_url`` (called by
     ``modules.autocount.http_client.assert_autocount_base_url_deliverable``,
     the egress guard every open-REST request re-runs) resolves a non-IP-
     literal ``baseUrl`` host via ``socket.getaddrinfo`` before deciding
@@ -346,6 +346,60 @@ def _stub_dns_in_autocount_http_tests(request, monkeypatch):
     the guard's own ``ipaddress.ip_address`` branch runs first."""
     if _HTTP_RETRY_TEST_FILE_RE.match(request.node.fspath.basename):
         monkeypatch.setattr("socket.getaddrinfo", _stub_getaddrinfo)
+
+
+_LIVE_NETWORK_BLOCK_FILE_RE = re.compile(r"^test_(autocount|s10_)")
+
+
+class LiveNetworkAttempted(RuntimeError):
+    """A test tried to send an ``httpx`` request over a REAL transport
+    (``HTTPTransport``/``AsyncHTTPTransport``) instead of a stub. Raised by
+    ``_block_live_network_in_autocount_tests`` below - stub the transport
+    (``httpx.MockTransport``, or the ``get_http_transport`` FastAPI
+    dependency override) instead."""
+
+
+@pytest.fixture(autouse=True)
+def _block_live_network_in_autocount_tests(request, monkeypatch):
+    """sprint-5/10 confirm-4 - lane rule: no test under ``test_autocount*.py``
+    / ``test_s10_*.py`` may touch the network (the live wrapper 403s the
+    default UA and is slow; several individual s10 files already carried
+    their own copy of this guard under the name ``_block_live_network``,
+    first added 2026-09-20 after a coordinator finding that an earlier
+    revision of a delivery-mode test made a real ~8-minute call to
+    ``hapi.sorento.cc.cd``). This hoists the SAME guard so every file in the
+    glob is covered whether or not it remembered its own copy - a file that
+    already defines its own autouse ``_block_live_network`` fixture is left
+    alone (this fixture no-ops for it) rather than double-patched.
+    Raises the NAMED ``LiveNetworkAttempted`` (rather than a bare
+    ``RuntimeError``) so a test can assert on it directly."""
+    if not _LIVE_NETWORK_BLOCK_FILE_RE.match(request.node.fspath.basename):
+        return
+    if "_block_live_network" in request.fixturenames:
+        return
+    import httpx
+
+    real_send = httpx.Client.send
+    real_async_send = httpx.AsyncClient.send
+
+    def guarded_send(self, req, *args, **kwargs):
+        if isinstance(self._transport, (httpx.HTTPTransport, httpx.AsyncHTTPTransport)):
+            raise LiveNetworkAttempted(
+                f"blocked a LIVE network call to {req.url} - stub the "
+                "transport (httpx.MockTransport) instead."
+            )
+        return real_send(self, req, *args, **kwargs)
+
+    async def guarded_async_send(self, req, *args, **kwargs):
+        if isinstance(self._transport, (httpx.HTTPTransport, httpx.AsyncHTTPTransport)):
+            raise LiveNetworkAttempted(
+                f"blocked a LIVE network call to {req.url} - stub the "
+                "transport (httpx.MockTransport) instead."
+            )
+        return await real_async_send(self, req, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "send", guarded_send)
+    monkeypatch.setattr(httpx.AsyncClient, "send", guarded_async_send)
 
 
 @pytest.fixture

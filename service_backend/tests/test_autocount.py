@@ -505,7 +505,7 @@ def test_test_rejects_a_missing_or_non_http_base_url():
     assert provider.test({}, {}).ok is False
     result = provider.test({"baseUrl": "autocount.example.com"}, {})
     assert result.ok is False
-    assert "http://" in result.message
+    assert "https://" in result.message
 
 
 # ── the Sorento consumer provider (plan 14 Task A, AC-14-15) ──────────────

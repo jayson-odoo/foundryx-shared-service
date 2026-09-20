@@ -654,8 +654,17 @@ def test_preview_http_with_another_tenants_company_id_404s_never_leaks(client, h
     raised by `self.companies.get(tenant_id, company_id)` inside
     `preview_http`). Only `EtlValidationError` was caught in the router, so
     this used to be a bare 500 instead of a clean 404 - map it through the
-    SAME `_raise` translator every other autocount route uses."""
+    SAME `_raise` translator every other autocount route uses.
+
+    sprint-5/10 confirm-4: this posted to `/autocount/http/preview` with no
+    `get_http_transport` override, so - now that a live-network block is in
+    place (conftest) - it would raise before ever reaching the tenant-scope
+    guard this test exists to pin. Override the transport the SAME way
+    `test_preview_http_paged` above does; the guard fires before the
+    transport is ever used, so the canned response never matters."""
+    from app.main import app
     from app.models import Tenant
+    from modules.autocount.http_client import get_http_transport
     from modules.autocount.services.company_service import CompanyService as CS
 
     other_tenant_id = "tenant-other-http-preview-company"
@@ -675,14 +684,20 @@ def test_preview_http_with_another_tenants_company_id_404s_never_leaks(client, h
     )
 
     conn = _open_connection(db)
-    response = client.post(
-        "/autocount/http/preview",
-        json={
-            "connectionId": conn.id, "path": "/itembypage",
-            "companyId": foreign_company.id, "entityType": ENTITY_PRODUCT,
-        },
-        headers=headers,
+    app.dependency_overrides[get_http_transport] = lambda: _transport(
+        {"TotalCount": 1, "Page": 1, "PageSize": 50, "TotalPages": 1, "Data": [{"ItemCode": "A1"}]}
     )
+    try:
+        response = client.post(
+            "/autocount/http/preview",
+            json={
+                "connectionId": conn.id, "path": "/itembypage",
+                "companyId": foreign_company.id, "entityType": ENTITY_PRODUCT,
+            },
+            headers=headers,
+        )
+    finally:
+        app.dependency_overrides.pop(get_http_transport, None)
     assert response.status_code == 404, response.text
 
 

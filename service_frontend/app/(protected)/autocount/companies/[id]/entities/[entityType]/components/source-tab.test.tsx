@@ -978,4 +978,36 @@ describe('SourceTab - a saved combine task never leaks a measure alias into the 
     fireEvent.click(within(keyColumnsBox).getByRole('combobox'));
     expect(screen.queryByRole('option', { name: 'qty' })).not.toBeInTheDocument();
   });
+
+  it('a saved compared pick that is NOT a measure alias and NOT a preview/preCombine column stays scoped to the compared picker only (per-picker scoping, independent of the measureAliases filter)', () => {
+    renderApiBranch({
+      cfg: savedCombineConfig({
+        keyFields: [],
+        watermarkField: null,
+        comparedFields: ['StaleCol'],
+        combine: {
+          ...emptyCombine(),
+          groupBy: [],
+          measures: [{ source: 'base_qty', op: 'sum', alias: 'qty' }],
+        },
+      }),
+      httpPreview: combinedSavedTaskPreview(),
+    });
+
+    fireEvent.click(screen.getByLabelText('Watermark column'));
+    expect(screen.queryByRole('option', { name: 'StaleCol' })).not.toBeInTheDocument();
+
+    const keyColumnsLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
+    );
+    const keyColumnsBox = keyColumnsLabel.parentElement as HTMLElement;
+    fireEvent.click(within(keyColumnsBox).getByRole('combobox', { hidden: true }));
+    expect(screen.queryByRole('option', { name: 'StaleCol' })).not.toBeInTheDocument();
+
+    const comparedLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Compared columns'),
+    );
+    const comparedBox = comparedLabel.parentElement as HTMLElement;
+    expect(within(comparedBox).getByText('StaleCol')).toBeInTheDocument();
+  });
 });

@@ -38,8 +38,8 @@ order (and how many awaits each hits before yielding, e.g. more DB
 round-trips upstream of the build route's own synchronous section than
 ``GET /openapi.json`` needs) is scheduler-dependent, not something this test
 pinned down. A false green on a security-adjacent perf regression is worse
-than no coverage at all; see the backlog row added this round for a harder
-version (the stub setting an explicit event, the concurrent request
+than no coverage at all; see BL-SS-242 (backlog row added this round) for a
+harder version (the stub setting an explicit event, the concurrent request
 starting only once the blocking section is confirmably entered). The pin
 below is the one this file keeps: it is a structural fact about the route
 declaration, not a timing race, so it cannot flake either way, and it is
