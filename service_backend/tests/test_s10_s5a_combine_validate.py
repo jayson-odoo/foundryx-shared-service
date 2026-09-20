@@ -301,10 +301,18 @@ def test_computed_formula_forward_reference_rejected():
 
 
 def test_computed_formula_may_reference_a_lookup_alias():
+    # The override drops the stock preset's `base_qty` computed alias, so
+    # the DEFAULT `measures[0].source` ("base_qty") must be overridden too -
+    # otherwise this exercises an unrelated "unknown measure source" 422
+    # instead of the intended "a computed formula may reference a lookup
+    # alias" happy path (fixture defect, not an engine defect: coordinator
+    # ruling, sprint-5/10 S5a follow-up). `qty`/`priced` stay the alias
+    # names the rest of the fixture (round/drop) already depends on.
     combine = _stock_combine(
         computed=[{"alias": "priced", "formula": "number(UomRate) > 0"}],
         groupBy=["priced"],
         measure="priced",
+        measures=[{"source": "priced", "op": "count", "alias": "qty"}],
     )
     assert _errors(combine) == {}, _errors(combine)
 

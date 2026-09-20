@@ -131,7 +131,14 @@ def _stamp_previewed(db, company_id: str) -> None:
 
     config = EntityConfigRepository(db).get(DEFAULT_TENANT_ID, company_id, ENTITY_PRODUCT)
     config.last_preview_at = NOW
-    config.result_columns = ["ItemCode", "UOM", "Location", "BalQty"]
+    # sprint-5/10 S5a follow-up (fixture defect, coordinator ruling) -
+    # ENTITY_PRODUCT auto-seeds the PRODUCT_HTTP_PRESET's own ItemUOM lookup
+    # (``on[].local == "BaseUOM"``), so a re-save must find "BaseUOM" among
+    # the previously-stamped result columns or it 422s on
+    # ``lookups[0].on[1].local`` before this test's own combine assertion
+    # ever runs - the SAME gotcha ``test_autocount_http_lifecycle.py``'s own
+    # ``_stamp_previewed`` documents and stamps for.
+    config.result_columns = ["ItemCode", "UOM", "Location", "BalQty", "BaseUOM"]
     db.commit()
 
 
