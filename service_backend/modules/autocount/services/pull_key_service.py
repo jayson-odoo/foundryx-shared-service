@@ -4,7 +4,7 @@ Mirrors the omnichannel precedent (``modules.omnichannel.models.
 WorkspaceApiKey`` + ``services.api_key_service.ApiKeyService``) in SPIRIT -
 scheme-prefixed plaintext returned ONCE, only a sha256 hash + an 8-char
 indexed lookup prefix stored, ``hmac.compare_digest`` for the match,
-``last_used_at`` stamped on every successful resolve - but is REIMPLEMENTED
+``last_used_at`` stamped once a call is genuinely served - but is REIMPLEMENTED
 module-locally (D9): a cross-module table read is exactly what the module-
 governance rule forbids. The duplication is acknowledged (BL-SS-210).
 """
@@ -123,7 +123,13 @@ class PullKeyService:
         enumeration. The hash is computed REGARDLESS of the presented
         string's shape (dummy work on the invalid-shape path) precisely so a
         wrong-scheme key and a right-scheme-wrong-secret key cost the same,
-        never giving a timing oracle between the two."""
+        never giving a timing oracle between the two.
+
+        AC-10-58 L5 - resolution does NOT stamp ``last_used_at``: a key whose
+        tenant is suspended, or whose module is deactivated, is refused one
+        step later (``pull_auth._service_enabled``) and must not record usage
+        for a call that was never served. The caller stamps with
+        ``mark_used`` once that gate passes."""
         presented_hash = _hash_key(presented_key or "")
         valid_shape = (
             bool(presented_key)
@@ -136,11 +142,15 @@ class PullKeyService:
             if hmac.compare_digest(row.key_hash, presented_hash):
                 match = row
                 break
-        if match is None:
-            return None
-        match.last_used_at = datetime.now(timezone.utc)
-        self.db.commit()
         return match
+
+    def mark_used(self, key_row: AcPullApiKey) -> AcPullApiKey:
+        """Stamp ``last_used_at`` - called by ``pull_auth.resolve_pull_key``
+        only AFTER the service gate passes (AC-10-58 L5), so the column means
+        "this key last had a call served", never "somebody presented it"."""
+        key_row.last_used_at = datetime.now(timezone.utc)
+        self.db.commit()
+        return key_row
 
     # ── revoke / list (AC-10-27/47) ─────────────────────────────────────
 

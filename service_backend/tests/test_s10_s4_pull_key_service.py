@@ -26,8 +26,12 @@ branch):
     - deliberately NOT tenant-scoped as an input (tenant is DERIVED from the
       resolved key, mirroring `ApiKeyService.resolve`) - looks up by the
       8-char prefix, then `hmac.compare_digest` on the sha256 hash; returns
-      `None` for malformed/wrong-scheme/unknown/revoked, uniformly; stamps
-      `last_used_at` on every successful resolve.
+      `None` for malformed/wrong-scheme/unknown/revoked, uniformly.
+      (Sprint-5/10 S6, AC-10-58 L5: the `last_used_at` stamp moved OUT of
+      `resolve` into `PullKeyService.mark_used`, which
+      `pull_auth.resolve_pull_key` calls only once the service gate passes -
+      a suspended tenant's key must not record a call it never got served.
+      Pinned by `test_s10_s6_security_fixes.py`.)
   - `PullKeyService(db).revoke(tenant_id, key_id) -> AcPullApiKey` - raises
     `PullKeyNotFound` (exported from the same module) for an unknown id OR
     one belonging to another tenant (the polymorphic-id rule: revoke is
@@ -186,7 +190,10 @@ def test_two_issued_keys_never_collide(db):
 # ── AC-10-28: resolution - constant-time, uniform-miss, last_used_at ────────
 
 
-def test_resolve_a_freshly_issued_key_returns_its_row_and_stamps_last_used_at(db):
+def test_resolve_a_freshly_issued_key_returns_its_row_and_mark_used_stamps_it(db):
+    """Sprint-5/10 S6 (AC-10-58 L5) - `resolve` no longer stamps on its own;
+    `mark_used` does, and only `pull_auth.resolve_pull_key` calls it, after
+    the service gate. The end state for a SERVED call is unchanged."""
     from modules.autocount.services.pull_key_service import PullKeyService
 
     service = PullKeyService(db)
@@ -197,6 +204,9 @@ def test_resolve_a_freshly_issued_key_returns_its_row_and_stamps_last_used_at(db
     resolved = service.resolve(plaintext)
     assert resolved is not None
     assert resolved.id == key.id
+    assert resolved.last_used_at is None
+
+    service.mark_used(resolved)
     assert resolved.last_used_at is not None
 
 

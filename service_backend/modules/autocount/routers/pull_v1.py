@@ -202,6 +202,26 @@ def _finalize(db: Session, ctx: _CallContext, action: str, status_code: int) -> 
     )
 
 
+def _finalize_quietly(db: Session, ctx: _CallContext, action: str, status_code: int) -> None:
+    """AC-10-58 L4 - the audit write on an ERROR path, which runs INSIDE an
+    ``except`` block: an exception raised there escapes the whole ``try``
+    statement (a later ``except Exception`` of the same ``try`` never sees
+    it), so an audit-table hiccup would turn a clean flat 403/404/429 into an
+    unhandled error for the consumer. The audit row is best-effort HERE and
+    only here - the success path keeps calling ``_finalize`` directly, so a
+    failure there is still caught by the route's own last-resort net and
+    answered as a flat 500 (a 2xx must never be reported for a call that was
+    not audited)."""
+    try:
+        _finalize(db, ctx, action, status_code)
+    except Exception:  # noqa: BLE001 - observability NEVER breaks a response
+        logger.exception(
+            "autocount pull gateway failed to write an audit row (action=%s, status=%s)",
+            action,
+            status_code,
+        )
+
+
 def _internal_error_response(
     db: Session,
     ctx: _CallContext,
@@ -217,7 +237,7 @@ def _internal_error_response(
     carries only a stable, generic code/message - never the exception's own
     text, class name, or a stack frame."""
     logger.exception("autocount pull gateway internal error (action=%s)", action)
-    _finalize(db, ctx, action, 500)
+    _finalize_quietly(db, ctx, action, 500)
     body = {
         "code": "INTERNAL",
         "message": "An internal error occurred.",
@@ -298,7 +318,7 @@ def build_snapshot(
     except PullGatewayError as exc:
         _merge_error_context(ctx, exc)
         exc.with_context(company_code=company_code_hint, entity=entity_hint)
-        _finalize(db, ctx, "build", exc.status_code)
+        _finalize_quietly(db, ctx, "build", exc.status_code)
         return exc.to_response()
     except Exception:  # noqa: BLE001 - security round 1 HIGH 1, the last-resort net
         return _internal_error_response(
@@ -329,7 +349,7 @@ def get_snapshot_header_route(
         return _json_response(200, body)
     except PullGatewayError as exc:
         _merge_error_context(ctx, exc)
-        _finalize(db, ctx, "get_header", exc.status_code)
+        _finalize_quietly(db, ctx, "get_header", exc.status_code)
         return exc.to_response()
     except Exception:  # noqa: BLE001 - security round 1 HIGH 1, the last-resort net
         return _internal_error_response(db, ctx, "get_header")
@@ -378,7 +398,7 @@ def get_snapshot_rows_route(
         return _json_response(200, body)
     except PullGatewayError as exc:
         _merge_error_context(ctx, exc)
-        _finalize(db, ctx, "get_rows", exc.status_code)
+        _finalize_quietly(db, ctx, "get_rows", exc.status_code)
         return exc.to_response()
     except Exception:  # noqa: BLE001 - security round 1 HIGH 1, the last-resort net
         return _internal_error_response(db, ctx, "get_rows")

@@ -5,6 +5,6 @@
   "status": "failed",
   "error": {
     "code": "SOURCE_PAGE_FAILED",
-    "message": "Source page 3 of 4 failed after retries (timeout)."
+    "message": "The source system did not return a usable page for this book. Contact the data owner."
   }
 }

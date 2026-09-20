@@ -53,6 +53,49 @@ _PULL_NOT_ENABLED_MESSAGE = (
     "This book/entity was never enabled for pull, or is not active."
 )
 
+# AC-10-58 M1 (security round, sprint-5/10 S6) - the PUBLIC `failed` header's
+# ``error.message`` is a FIXED sentence per ``error_code``, never
+# ``snapshot.error``. The stored text is written for an operator and names
+# this deployment's own internals (the source host and port, an endpoint
+# path, a driver message); the gateway's reader is a THIRD PARTY holding an
+# API key. The code is what a consumer branches on (Appendix A6), so it stays
+# verbatim - only the prose is replaced. The operator header
+# (``pull_service.snapshot_header``) and ``integration_activity`` keep the
+# full text, which is where a support engineer looks. Keyed by the literal
+# code (never an import of ``..sync``, which imports the services package
+# back); ``test_s10_s6_security_fixes.py`` pins this map against
+# ``sync.PULL_SNAPSHOT_FAILED_CODES`` so a new code cannot drift in unmapped.
+GATEWAY_FAILED_MESSAGES: Dict[str, str] = {
+    "SOURCE_PAGE_FAILED": (
+        "The source system did not return a usable page for this book. "
+        "Contact the data owner."
+    ),
+    "EMPTY_EXTRACT": "The source system returned no rows for this book and entity.",
+    "ENRICH_FAILED": (
+        "A lookup this entity depends on did not return usable data. "
+        "Contact the data owner."
+    ),
+    "ROW_LIMIT": "This entity holds more rows than one snapshot may carry.",
+    "BUILD_ABANDONED": (
+        "The build stopped before it finished. Request a new snapshot."
+    ),
+    "COMBINE_RULE_FAILED": (
+        "A configured rule could not be applied to this data. "
+        "Contact the data owner."
+    ),
+}
+GATEWAY_FAILED_FALLBACK_MESSAGE = (
+    "This snapshot could not be built. Contact the data owner."
+)
+
+
+def gateway_failed_message(error_code: Optional[str]) -> str:
+    """The one operator-safe sentence for a failed snapshot's code. An
+    unmapped/absent code (a future build failure this map has not learned
+    yet) falls back to the generic sentence - it NEVER falls back to the
+    stored text, which is the whole point of the map."""
+    return GATEWAY_FAILED_MESSAGES.get(error_code or "", GATEWAY_FAILED_FALLBACK_MESSAGE)
+
 
 def translate_entity_wire(wire: str) -> Optional[str]:
     return ENTITY_WIRE_TO_INTERNAL.get(wire)
@@ -116,7 +159,13 @@ def gateway_snapshot_header(snapshot: AcPullSnapshot) -> Dict[str, Any]:
             if key in metadata:
                 header[key] = metadata[key]
     elif snapshot.status == PULL_SNAPSHOT_STATUS_FAILED:
-        header["error"] = {"code": snapshot.error_code, "message": snapshot.error}
+        # AC-10-58 M1 - the CODE is the contract, the prose is fixed per code
+        # (see ``GATEWAY_FAILED_MESSAGES``); ``snapshot.error`` itself never
+        # reaches this surface.
+        header["error"] = {
+            "code": snapshot.error_code,
+            "message": gateway_failed_message(snapshot.error_code),
+        }
     return header
 
 

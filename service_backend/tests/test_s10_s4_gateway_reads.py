@@ -233,6 +233,14 @@ def test_ready_header_carries_the_full_documented_shape(client, db):
 
 
 def test_failed_header_carries_only_the_documented_error_shape(client, db):
+    """Sprint-5/10 S6 (AC-10-58 M1) - `error.code` is still the contract,
+    but `error.message` is now the FIXED operator-safe sentence for that
+    code, never the stored `snapshot.error` (which names this deployment's
+    own source host/port). `test_s10_s6_security_fixes.py` owns the full
+    per-code map; this test keeps pinning the KEY SET plus the one fact
+    that matters here: the stored text does not reach this surface."""
+    from modules.autocount.services.pull_gateway_service import GATEWAY_FAILED_MESSAGES
+
     company = _company(db)
     key = _issue_key(db, company_ids=[company.id])
     snap = _failed_snapshot(db, company)
@@ -241,7 +249,11 @@ def test_failed_header_carries_only_the_documented_error_shape(client, db):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["status"] == "failed"
-    assert body["error"] == {"code": "SOURCE_PAGE_FAILED", "message": "Source page 2 of 3 failed."}
+    assert body["error"] == {
+        "code": "SOURCE_PAGE_FAILED",
+        "message": GATEWAY_FAILED_MESSAGES["SOURCE_PAGE_FAILED"],
+    }
+    assert "Source page 2 of 3 failed." not in response.text
     for absent_key in ("recordCount", "complete", "contentHash"):
         assert absent_key not in body
 

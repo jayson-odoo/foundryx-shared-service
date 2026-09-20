@@ -126,7 +126,8 @@ def resolve_pull_key(request: Request, db: Session) -> AcPullApiKey:
         ).with_retry_after(exc.retry_after_seconds)
 
     presented = request.headers.get("x-api-key")
-    key_row = PullKeyService(db).resolve(presented)
+    key_service = PullKeyService(db)
+    key_row = key_service.resolve(presented)
     if key_row is None:
         throttle.record_pull_failure(ip=ip)
         raise PullGatewayError(
@@ -136,6 +137,10 @@ def resolve_pull_key(request: Request, db: Session) -> AcPullApiKey:
         raise PullGatewayError(
             403, "SERVICE_NOT_ENABLED", "This service is not enabled for this tenant."
         )
+    # AC-10-58 L5 - stamped HERE, never inside `resolve`: a suspended tenant's
+    # (or a deactivated module's) key is refused above and must not record a
+    # usage it never got.
+    key_service.mark_used(key_row)
 
     # Security round 1 MEDIUM 4 - a per-KEY request budget, additive to
     # AC-10-35's own per-IP/401-only bucket above: a resolvable key that is

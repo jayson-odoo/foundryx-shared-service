@@ -44,7 +44,11 @@ Wire casing throughout: camelCase envelope/metadata keys, snake_case row keys (A
   bodies `{code, message, companyCode, entity}`.
 - **`snapshot-failed.json`** - a `status: "failed"` snapshot header (AC-10-22/AC-10-64),
   `error.code = SOURCE_PAGE_FAILED` (one of the pinned exhaustive set: `SOURCE_PAGE_FAILED`,
-  `ENRICH_FAILED`, `ROW_LIMIT`, `EMPTY_EXTRACT`).
+  `ENRICH_FAILED`, `ROW_LIMIT`, `EMPTY_EXTRACT`, `BUILD_ABANDONED`, `COMBINE_RULE_FAILED`).
+  `error.message` is the FIXED operator-safe sentence for that code (AC-10-58 M1,
+  `pull_gateway_service.GATEWAY_FAILED_MESSAGES`) - a consumer branches on `code`, never on the
+  prose, and the stored internal text (which names this deployment's own source host/port) stays
+  on the operator header and in `integration_activity`.
 - **`error-401-invalid-api-key.json`**, **`error-404-unknown-company.json`**,
   **`error-410-snapshot-expired.json`**, **`error-429-too-many-builds.json`** - the remaining A6
   error-ladder codes with a body shape (A6 defines one uniform shape for every code, so these
