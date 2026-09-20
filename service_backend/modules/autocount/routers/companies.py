@@ -629,6 +629,17 @@ def update_etl_task(
         # wins, matching what ``EtlService.update_task`` dispatches on).
         raw = body.sourceConfig.model_dump()
         raw["sourceImpl"] = body.sourceImpl or body.sourceConfig.sourceImpl
+        # review round 5 (R5-B) - ``model_dump()`` always emits every
+        # declared field (``combine`` included, defaulted to ``None`` when
+        # the wire omitted it) - so an explicit ``"combine": null`` and a
+        # genuinely omitted key are indistinguishable once flattened into a
+        # plain dict. Drop the key entirely when the client never sent it
+        # at all (``model_fields_set`` reflects the RAW JSON, not the
+        # default), so the service layer's own ``"combine" in raw`` check
+        # can tell "omitted - keep stored" from "explicit null - clear
+        # stored" (AC-10-80).
+        if "combine" not in body.sourceConfig.model_fields_set:
+            raw.pop("combine", None)
         view = EtlService(db).update_task(
             current_user.tenant_id,
             company_id,

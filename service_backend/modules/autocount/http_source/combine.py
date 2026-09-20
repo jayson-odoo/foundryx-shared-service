@@ -748,7 +748,14 @@ def apply_combine(rows: Sequence[Dict[str, Any]], combine: Dict[str, Any]) -> Co
             # R11 ruling 4 - a computed-stage failure never resolved the
             # designated measure column, so it reports as absent (``None``),
             # even when an EARLIER computed step happened to set it.
-            entry["measure"] = (
+            # N2 (review round 5) - `_json_safe`, the SAME normalisation
+            # `dropRows` already gets: `number()` (the formula engine's own
+            # numeric function) returns a plain Python `float`, so an
+            # integral value like `0.0` serialised on the wire as `0.0`
+            # where Appendix A3 pins a plain `0` - never left un-normalised
+            # just because this value happens to come from a DIFFERENT
+            # stage than `dropRows`' own Decimal one.
+            entry["measure"] = _json_safe(
                 None if reason == "computed_error"
                 else (row.get(measure_col) if measure_col else None)
             )
@@ -873,10 +880,19 @@ def _json_safe(value: Any) -> Any:
     a lossless ``Decimal`` -> ``int`` cast is always safe. Falls back to
     ``float`` for the (currently unreached, defence-in-depth) case of a
     genuinely fractional value, rather than raising deep inside a snapshot
-    build."""
+    build.
+
+    N2 (review round 5) - a PRE-GROUP ``measure`` (a require-stage
+    exclusion's own raw value, never rounded) comes straight off the
+    formula engine's ``number()``, a plain Python ``float`` - so an
+    integral ``0.0`` needs the SAME whole-number normalisation a rounded
+    ``Decimal`` already gets, or it serialises as ``0.0`` where Appendix A3
+    pins a plain ``0``."""
     if isinstance(value, Decimal):
         as_int = int(value)
         return as_int if Decimal(as_int) == value else float(value)
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
     return value
 
 
@@ -927,3 +943,44 @@ def apply_pull_metadata_map(
     if nonzero_as:
         out[nonzero_as] = sum(1 for row in excluded_rows if row.get("measure") != 0)
     return out
+
+
+def excluded_row_for_mapping_failure(
+    row: Dict[str, Any], combine: Dict[str, Any], message: str
+) -> Dict[str, Any]:
+    """sprint-5/10 S5b review round 5 (S2, coordinator ruling 2026-09-20) -
+    ONE ``excludedRows`` shape for a combine-carrying task, regardless of
+    WHICH stage produced the exclusion: a mapping-stage failure on the
+    COMBINED row (the row that made it all the way through
+    computed/require/group/round/drop and then failed a field constraint,
+    e.g. stock's own ``qty >= 0``) is normalised to the SAME
+    ``{<groupBy cols>, measure, reason, message}`` shape ``apply_combine``'s
+    own require-stage exclusions already use (AC-10-77) - never the
+    generic per-record ``{source_ref, code, reason, message}`` shape a
+    task with NO combine step keeps unchanged.
+
+    ``row`` is the POST-combine row (``combine_output_columns``:
+    ``groupBy + carry + measures[].alias`` ONLY) - it never carries the
+    PRE-group ``combine.measure`` column by that literal name, so the
+    designated measure's GROUPED value is found by locating the
+    ``measures[]`` entry whose ``source`` IS that designated column and
+    reading ITS alias off the row (e.g. stock's ``measure: "base_qty"`` ->
+    ``measures: [{source: "base_qty", alias: "qty"}]`` -> read ``row["qty"]``).
+    Fails closed to ``None`` when no such entry exists, or a groupBy/measure
+    column is genuinely absent from the row for any reason - an unresolved
+    quantity is never guessed.
+    """
+    group_by = [str(c) for c in (combine.get("groupBy") or [])]
+    measure_col = combine.get("measure")
+    measure_alias: Optional[str] = None
+    for spec in combine.get("measures") or []:
+        if spec.get("source") == measure_col:
+            measure_alias = spec.get("alias")
+            break
+    entry: Dict[str, Any] = {}
+    for col in group_by:
+        entry[col] = row.get(col)
+    entry["measure"] = _json_safe(row.get(measure_alias)) if measure_alias else None
+    entry["reason"] = "mapping_failed"
+    entry["message"] = message
+    return entry

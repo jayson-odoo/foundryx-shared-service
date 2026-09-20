@@ -738,6 +738,18 @@ class EtlSourceConfigIn(ApiModel):
     # already stored (``_validate_http_config`` reads ``None`` that way);
     # only an EXPLICIT `[]` clears a task's saved lookups.
     lookups: Optional[List[Dict[str, Any]]] = None
+    # sprint-5/10 S5a follow-up (AC-10-76/80) - the operator's SAVED combine
+    # step, same "plain dict, service validates" contract as ``lookups``
+    # above. Review round 5 (R5-B): UNLIKE ``lookups`` (whose own empty-list
+    # sentinel already distinguishes "omitted" from "explicit clear"),
+    # ``combine`` has no such third value at the JSON level - an explicit
+    # ``null`` and an omitted key would otherwise both decode to the SAME
+    # Python ``None``. The router (``routers/companies.py``) reads
+    # ``model_fields_set`` to tell them apart BEFORE the dict reaches the
+    # service layer (a field genuinely absent from the wire is dropped from
+    # the raw dict entirely) - see ``EtlService._update_http_task``'s own
+    # ``"combine" in raw`` gate.
+    combine: Optional[Dict[str, Any]] = None
 
 
 class InitialLoadProgress(ApiModel):
@@ -883,6 +895,16 @@ class HttpPreviewResponse(ApiModel):
     droppedByRule: Optional[Dict[str, int]] = None
     rowsOut: Optional[int] = None
     roundedCount: Optional[int] = None
+    # review round 5 (R5-A) - the PRE-combine column set the walk produced
+    # (raw source columns + lookup aliases + computed aliases, i.e. exactly
+    # what `columns` was before the combine step ran) - present ONLY when
+    # the request carried a `combine` block, same gate as the funnel fields
+    # above. The Source tab's group-by/measure/require pickers must stay
+    # pre-combine (they pick what a formula may REFERENCE, not the grouped
+    # OUTPUT `combineOutputColumns` already carries), and on the FIRST Test
+    # of a brand-new stock task there is no saved entity row yet to echo
+    # (`task` is null), so the FE has nothing else pre-combine to read.
+    preCombineColumns: Optional[List[str]] = None
 
 
 class EtlPreviewResponse(ApiModel):

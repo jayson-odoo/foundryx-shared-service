@@ -66,7 +66,11 @@ from .canonical.masters import (
     VENDOR_LAST_MODIFIED_PATH,
 )
 from .client import AutoCountError
-from .http_source.combine import CombineDropError, apply_pull_metadata_map
+from .http_source.combine import (
+    CombineDropError,
+    apply_pull_metadata_map,
+    excluded_row_for_mapping_failure,
+)
 from .http_source.envelope import ENVELOPE_LIST
 from .http_source.errors import HttpSourceError
 from .mapping import (
@@ -2383,12 +2387,26 @@ def _classify_http_source_error(exc: HttpSourceError) -> str:
     return ERROR_CODE_SOURCE_PAGE_FAILED
 
 
-def _excluded_row_entry(mapped: "MappedDocument") -> Dict[str, Any]:
-    """One ``excludedRows[]`` entry (AC-10-62): ``{source_ref, code, reason,
-    message}``. ``source_ref``/``code`` are read off the FIRST field error's
-    own ``doc_key``/the document's ``doc_no`` - both resolve even when the
+def _excluded_row_entry(
+    mapped: "MappedDocument", *, combine: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """One ``excludedRows[]`` entry. A task with NO combine step keeps the
+    ORIGINAL shape (AC-10-62): ``{source_ref, code, reason, message}`` -
+    ``source_ref``/``code`` are read off the FIRST field error's own
+    ``doc_key``/the document's ``doc_no``, both resolve even when the
     failure is a header field OTHER than identity, since identity is mapped
-    before every other field (``mapping.map_document``)."""
+    before every other field (``mapping.map_document``).
+
+    sprint-5/10 S5b review round 5 (S2) - a COMBINE-carrying task's mapping
+    failure instead gets the SAME ``{<groupBy cols>, measure, reason,
+    message}`` shape the combine engine's own require-stage exclusions use
+    (``excluded_row_for_mapping_failure``, AC-10-77), read off ``mapped.raw``
+    (the post-combine row a combine-carrying task's mapping stage always
+    sees) - ONE shape per combine-carrying task, never a mix of the two.
+    """
+    message = "; ".join(error.message() for error in mapped.errors)
+    if combine:
+        return excluded_row_for_mapping_failure(mapped.raw, combine, message)
     source_ref = ""
     if mapped.errors:
         source_ref = mapped.errors[0].doc_key or ""
@@ -2396,7 +2414,7 @@ def _excluded_row_entry(mapped: "MappedDocument") -> Dict[str, Any]:
         "source_ref": source_ref,
         "code": mapped.doc_no,
         "reason": "mapping_failed",
-        "message": "; ".join(error.message() for error in mapped.errors),
+        "message": message,
     }
 
 
@@ -2652,10 +2670,14 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
 
     delivered: List[Tuple[str, Dict[str, Any]]] = []
     excluded_rows: List[Dict[str, Any]] = []
+    # S2 (review round 5) - `None` for every source without a `combine`
+    # step (`SqlDbSource` carries no `.combine` attribute at all), so this
+    # is byte-identical for every existing entity.
+    task_combine: Optional[Dict[str, Any]] = getattr(source, "combine", None)
     for record in result.records:
         mapped = engine.map_document(record.raw)
         if mapped.record is None:
-            excluded_rows.append(_excluded_row_entry(mapped))
+            excluded_rows.append(_excluded_row_entry(mapped, combine=task_combine))
             continue
         delivered.append((mapped.record.source_ref, mapped.record.sink_payload()))
 
@@ -2755,7 +2777,22 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
         if result.combine_metadata:
             metadata_map = profile_for(entity_type).pull_metadata_map
             if metadata_map:
-                metadata.update(apply_pull_metadata_map(result.combine_metadata, metadata_map))
+                # B1 (review round 5, AC-10-65/66) - the MERGED
+                # `excluded_rows` (combine-stage exclusions AND mapping-stage
+                # ones, S2's own normalised shape for the latter), never
+                # `result.combine_metadata`'s own combine-stage-only list:
+                # a mapping-stage exclusion of a real stock pair (e.g. a
+                # negative quantity that survived combine but failed the
+                # canonical model's `qty >= 0`) must count toward
+                # `excludedNonzeroCount` exactly like a combine-stage one -
+                # the consumer's Confirm guard reads that ONE integer, never
+                # a per-stage split (AC-10-65's "both entities are reported
+                # identically").
+                combine_metadata_for_map = {
+                    **result.combine_metadata,
+                    "excludedRows": excluded_rows,
+                }
+                metadata.update(apply_pull_metadata_map(combine_metadata_for_map, metadata_map))
 
         extracted_at = datetime.now(timezone.utc)
         expires_at = extracted_at + timedelta(hours=AUTOCOUNT_PULL_SNAPSHOT_TTL_HOURS)

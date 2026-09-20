@@ -140,4 +140,8 @@ def preview_http(
         droppedByRule=funnel.get("droppedByRule"),
         rowsOut=funnel.get("rowsOut"),
         roundedCount=funnel.get("roundedCount"),
+        # review round 5 (R5-A) - `None` unless the request carried a
+        # `combine` block (`EtlService.preview_http` leaves
+        # `pre_combine_columns` `None` otherwise, same gate as the funnel).
+        preCombineColumns=result.pre_combine_columns,
     )

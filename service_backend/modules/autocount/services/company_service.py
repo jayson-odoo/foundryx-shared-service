@@ -510,6 +510,13 @@ class CompanyService:
         self._contract_gate_cache: Dict[
             Tuple[str, str, str], Optional[Dict[str, Any]]
         ] = {}
+        # sprint-5/10 S5b review round 5 (N4) - `stock_push_gate_error`'s own
+        # cache, the SAME per-service-instance mechanism as the two gates
+        # above (keyed on (tenant_id, company.id) - it probes one fixed
+        # entity_type internally, never a caller-supplied one).
+        self._stock_push_gate_cache: Dict[
+            Tuple[str, str], Optional[Dict[str, Any]]
+        ] = {}
         self.watermarks = WatermarkRepository(db)
 
     # ── reads ────────────────────────────────────────────────────────────────
@@ -999,7 +1006,7 @@ class CompanyService:
         unreachable/malformed probe REFUSES, exactly like a too-low
         version. ``None`` = push is allowed; otherwise
         ``{"version": <float|None>, "requiredVersion":
-        STOCK_BALANCES_CONTRACT_VERSION}``.
+        STOCK_BALANCES_CONTRACT_VERSION, "reason"?: "config_error"}``.
 
         The probe sink is constructed with ``entity_type=ENTITY_PRODUCT``
         (any ``_ENTITY_PATH`` member does) purely because
@@ -1007,9 +1014,30 @@ class CompanyService:
         unconditionally, never the entity's own ingest path -
         ``stock_balance`` genuinely has no path to build a sink against
         directly (``SorentoSink.__init__``'s own guard would raise).
+
+        Memoised per SERVICE INSTANCE (N4, review round 5) - the SAME
+        mechanism ``contract_gate`` uses above, keyed on
+        ``(tenant_id, company.id)`` - a request that reads this gate more
+        than once (e.g. `activate_task` re-checking what `set_delivery_mode`
+        already checked once this request) never re-probes the network
+        twice. The BUILD phase (resolving the consumer connection,
+        decrypting its credentials) and the PROBE phase (the actual network
+        call) are caught SEPARATELY: a config/credentials fault
+        (``AutocountServiceError`` - a decrypt failure, a missing consumer
+        connection) is never the SAME refusal as an old or unreachable
+        contract - conflating the two would tell an operator with a
+        perfectly fine, merely-outdated Sorento contract to go fix their
+        connection instead, so the config-fault branch carries
+        ``"reason": "config_error"`` for the caller's message to key off.
         """
+        cache_key = (tenant_id, company.id)
+        if cache_key in self._stock_push_gate_cache:
+            return self._stock_push_gate_cache[cache_key]
+        result: Optional[Dict[str, Any]]
         if company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id:
-            return {"version": None, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
+            result = {"version": None, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
+            self._stock_push_gate_cache[cache_key] = result
+            return result
         try:
             conn = self._consumer_connection(tenant_id, company.sink_connection_id)
             sink = sorento_sink_from_connection(
@@ -1019,9 +1047,20 @@ class CompanyService:
                 company_code=company.sorento_company_code,
                 timeout=BRAND_CONTRACT_GATE_PROBE_TIMEOUT_SECONDS,
             )
+        except AutocountServiceError:
+            result = {
+                "version": None,
+                "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION,
+                "reason": "config_error",
+            }
+            self._stock_push_gate_cache[cache_key] = result
+            return result
+        try:
             contract = sink.fetch_contract_detail()
-        except Exception:  # noqa: BLE001 - unprovable = refused, never a guess
-            return {"version": None, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
+        except Exception:  # noqa: BLE001 - the PROBE itself, unprovable = refused
+            result = {"version": None, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
+            self._stock_push_gate_cache[cache_key] = result
+            return result
         version = contract.version if contract else None
         entities = contract.entities if contract else []
         supported = (
@@ -1029,9 +1068,13 @@ class CompanyService:
             and version >= STOCK_BALANCES_CONTRACT_VERSION
             and "stock_balances" in entities
         )
-        if supported:
-            return None
-        return {"version": version, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
+        result = (
+            None
+            if supported
+            else {"version": version, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
+        )
+        self._stock_push_gate_cache[cache_key] = result
+        return result
 
     def set_sink_target(
         self,

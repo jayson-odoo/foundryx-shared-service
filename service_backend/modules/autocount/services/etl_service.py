@@ -407,6 +407,29 @@ def _normalize_combine_for_demote(combine: Any) -> Optional[Dict[str, Any]]:
     return {key: value for key, value in combine.items() if value is not None and value != []}
 
 
+def _stock_push_gate_message(entity_type: str, gate: Dict[str, Any], clause: str) -> str:
+    """sprint-5/10 S5b review round 5 (N4) - the ONE place
+    ``CompanyService.stock_push_gate_error``'s refusal becomes operator
+    copy, shared by `set_delivery_mode` and `activate_task` so the two
+    surfaces never drift (``clause`` is what follows "before it can " -
+    "push" there, "be activated in push mode" here). ``gate["reason"] ==
+    "config_error"`` (the connection's config/credentials could not even be
+    CHECKED - a decrypt fault, a missing consumer connection) gets a
+    DISTINCT message from an old/unreachable contract - conflating the two
+    would tell an operator with a perfectly fine, merely-outdated Sorento
+    contract to go fix their connection instead."""
+    if gate.get("reason") == "config_error":
+        return (
+            f"'{entity_type}' cannot {clause} - this company's Sorento "
+            f"connection configuration or credentials could not be checked. "
+            f"Fix the connection and try again."
+        )
+    return (
+        f"'{entity_type}' needs Sorento contract {gate['requiredVersion']} "
+        f"with stock balances advertised before it can {clause}."
+    )
+
+
 def _clean_int(value: Any) -> Optional[int]:
     if isinstance(value, bool):
         return None
@@ -1010,6 +1033,22 @@ class EtlService:
                 "rowsOut": rows_out,
                 "roundedCount": combine_result.metadata.get("roundedCount", 0),
             }
+            # review round 5 (R5-A) - captured BEFORE `result.columns` is
+            # overwritten below: raw + lookup aliases (`result.columns` at
+            # this point, unchanged since `run_http_preview`) plus the
+            # combine's OWN `computed` alias names (in declared order,
+            # de-duplicated) - everything a `groupBy`/`measures[].source`/
+            # `require`/`drop` formula may reference, i.e. the pre-GROUP
+            # schema, never the post-group `combineOutputColumns` shape.
+            pre_combine_columns = list(result.columns)
+            for spec in combine.get("computed") or []:
+                if not isinstance(spec, dict):
+                    continue
+                alias = spec.get("alias")
+                if alias and alias not in pre_combine_columns:
+                    pre_combine_columns.append(str(alias))
+            result.pre_combine_columns = pre_combine_columns
+
             # The combined, POST-GROUP schema - groupBy + carry + measure
             # aliases, in that declared order, de-duplicated. ONE shared
             # helper (review round 3, B1) - the same projection
@@ -1354,20 +1393,33 @@ class EtlService:
         alias_names = set(effective_result_columns([], lookups))
 
         # ── combine (sprint-5/10 S5a, AC-10-76/80, R11) ────────────────────
-        # Mirrors `lookups`'s own round-trip contract exactly: omitted
-        # (`None`) KEEPS whatever is already stored; an explicit object
-        # replaces it (including an invalid `{}` - "no combine configured"
-        # and "an explicitly empty combine" are deliberately NOT the same
-        # thing, `validate_combine` 422s the latter for its missing
-        # `groupBy`). Validated against THIS save's own raw source columns
-        # and THIS save's own lookup aliases - a combine formula may name
-        # any lookup the SAME request configures.
+        # Mirrors `lookups`'s own round-trip contract, with one necessary
+        # difference (R5-B, review round 5): `lookups` is a LIST, so it
+        # already has a third wire value (`[]`) distinct from "omitted"
+        # (`None`) to mean "explicit clear"; `combine` is a nullable OBJECT,
+        # so an explicit `null` and an omitted key would otherwise both
+        # decode to the SAME Python `None`. The KEY's presence itself is
+        # therefore the signal: genuinely ABSENT (`"combine" not in raw` -
+        # the router strips it when the wire never sent it, since
+        # `model_dump()` would otherwise always emit it defaulted) KEEPS
+        # whatever is already stored; an EXPLICIT `null` (`"combine" in raw`
+        # and `raw["combine"] is None` - the Combine-rows switch turned
+        # OFF) CLEARS it outright; an explicit object REPLACES it (including
+        # an invalid `{}` - "no combine configured" and "an explicitly
+        # empty combine" are deliberately NOT the same thing,
+        # `validate_combine` 422s the latter for its missing `groupBy`).
+        # Validated against THIS save's own raw source columns and THIS
+        # save's own lookup aliases - a combine formula may name any lookup
+        # the SAME request configures.
         raw_combine = raw.get("combine")
-        if raw_combine is None:
+        if "combine" not in raw:
             combine: Optional[Dict[str, Any]] = (
                 dict(existing_combine) if isinstance(existing_combine, dict) else None
             )
             combine_for_validation: Any = combine
+        elif raw_combine is None:
+            combine = None
+            combine_for_validation = None
         elif isinstance(raw_combine, dict):
             combine = dict(raw_combine)
             combine_for_validation = combine
@@ -1635,6 +1687,29 @@ class EtlService:
             and isinstance(config.source_config.get("combine"), dict)
             else None
         )
+        # sprint-5/10 S5b review round 5 (S3, AC-10-40/41/84) - "the owner
+        # configures nothing": when NOTHING is stored yet AND this save's
+        # own raw payload is silent on `combine` (mirrors the round-trip
+        # contract above - an operator's own explicit `combine` on the
+        # wire, even a deliberately invalid `{}`, is never overridden),
+        # seed it from the entity's HTTP preset - the SAME seed-if-absent
+        # contract `preset.lookups` already gets below (AC-08-16), just
+        # applied HERE, BEFORE validation, since `combine.groupBy` derives
+        # the REQUIRED `keyFields` (AC-10-80) and a fresh stock task submits
+        # none: a bare "add this entity" request must not 422 for a missing
+        # manual key pick the operator was never asked to make.
+        # `copy.deepcopy` for the SAME reason the lookups seed uses it below
+        # - never share the module-level preset's own nested lists across
+        # tenants. A no-op for every entity whose preset carries no
+        # `combine` (every entity but stock today).
+        # R5-B (review round 5) - gated on the key being genuinely ABSENT
+        # (never sent at all), not merely ``None`` - an EXPLICIT
+        # ``"combine": null`` (the Combine-rows switch turned OFF) must
+        # CLEAR, never be silently re-seeded back from the preset.
+        if existing_combine is None and "combine" not in raw:
+            preset_for_combine_seed = HTTP_PRESETS.get(entity_type)
+            if preset_for_combine_seed is not None and preset_for_combine_seed.combine:
+                existing_combine = copy.deepcopy(dict(preset_for_combine_seed.combine))
         clean, errors = self._validate_http_config(
             tenant_id,
             raw,
@@ -2630,6 +2705,21 @@ class EtlService:
                     f"{gate.get('version')} - product push needs contract "
                     f"{gate.get('requiredVersion')} before it can be activated."
                 )
+        #     !!  STOCK'S OWN PUSH GATE - ALSO ON ACTIVATE (N3, review round
+        #         5).  !!
+        # `set_delivery_mode` already refuses a `push` switch while the
+        # consumer's contract is below 2.5 - but a task already SAVED in
+        # `push` mode (set while the gate was open) has no code path that
+        # re-checks it on its way to `active`: without this, an operator
+        # could activate a push task straight past a consumer that has
+        # since regressed below contract 2.5. Pull mode is unaffected (no
+        # push gate applies to it at all).
+        if entity_type == ENTITY_STOCK_BALANCE and config.delivery_mode == DELIVERY_MODE_PUSH:
+            stock_gate = self.companies.stock_push_gate_error(tenant_id, company)
+            if stock_gate is not None:
+                raise EtlStateError(
+                    _stock_push_gate_message(entity_type, stock_gate, "be activated in push mode")
+                )
         now = datetime.now(timezone.utc)
         config.etl_status = ETL_STATUS_ACTIVE
         config.activated_at = now
@@ -2687,13 +2777,7 @@ class EtlService:
             gate = self.companies.stock_push_gate_error(tenant_id, company)
             if gate is not None:
                 raise EtlValidationError(
-                    {
-                        "deliveryMode": (
-                            f"'{entity_type}' needs Sorento contract "
-                            f"{gate['requiredVersion']} with stock balances "
-                            f"advertised before it can push."
-                        )
-                    }
+                    {"deliveryMode": _stock_push_gate_message(entity_type, gate, "push")}
                 )
         if delivery_mode == DELIVERY_MODE_PULL and not (
             company.sorento_company_code or ""

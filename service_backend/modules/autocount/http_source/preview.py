@@ -94,6 +94,10 @@ class HttpPreviewResult:
     # push path itself runs combine before hashing, so the preview grid
     # must show what a real run would produce, not the pre-combine sample).
     combine_funnel: Optional[Dict[str, Any]] = None
+    # review round 5 (R5-A) - the PRE-combine column set (raw + lookup
+    # aliases + computed aliases), set by ``EtlService.preview_http`` ONLY
+    # alongside ``combine_funnel`` above - ``None`` for a plain preview.
+    pre_combine_columns: Optional[List[str]] = None
 
 
 def run_http_preview(
