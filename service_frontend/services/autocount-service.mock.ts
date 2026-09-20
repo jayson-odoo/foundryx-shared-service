@@ -3059,18 +3059,86 @@ function mockMappingPresets(databaseName: string, entityType: string): Autocount
 // exercise directly.
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PHASE 1 MOCK OVERLAY (sprint-5/10 S2) - `withPhase1PullMock` is what
-// `autocount-service.ts` actually binds. Everything through the direct-DB/
-// open-API ETL surface (companies, sync, mapping, lookups, `preview-
-// columns`) stays REAL - delegated straight through. Only the human-invoked
-// pull surface (delivery mode, pull API keys, snapshots) has no backend yet
-// (S3/S4); this overlay serves it from in-memory session state so every
-// AC-10-48 state is reachable with no backend, exactly the `withPhase1EtlMock`
-// pattern plan 22 S2 used. Session-local `deliveryModes`/`overlayKeys`/
-// `overlaySnapshots` start EMPTY on purpose - the live app's own "no keys"
-// state is simply never having issued one, rather than a seeded fixture row
-// that would reference a company id the real backend never created.
+// PHASE 1 MOCK OVERLAY (sprint-5/10 S2, browser round 1 fix) - `withPhase1PullMock`
+// is what `autocount-service.ts` actually binds. Everything through the
+// direct-DB/open-API ETL surface (companies, sync, mapping, lookups,
+// `preview-columns`) stays REAL - delegated straight through. Only the
+// human-invoked pull surface (delivery mode, pull API keys, snapshots) has
+// no backend yet (S3/S4); this overlay serves it from in-memory session
+// state so every AC-10-48 state is reachable with no backend, exactly the
+// `withPhase1EtlMock` pattern plan 22 S2 used.
+//
+// DEFECT (browser round 1): the first cut started `overlayKeys`/
+// `overlaySnapshots` EMPTY and left the Build-snapshot dialog's company/
+// entity pickers reading ONLY the real backend (`real.getCompany`) - the
+// lane's one real company carries no `sorentoCompanyCode`, so NEITHER
+// picker ever offered anything and none of AC-10-48's states (one active +
+// one revoked key, building/ready/failed/expired snapshots, the stock
+// snapshot, the 409 PUSH_ACTIVE body) were reachable by clicking, even
+// though `mockAutocountService`'s OWN Vitest fixtures already prove the
+// shape is right. The fix: a SELF-CONTAINED fixture company
+// (`MOCK_PULL_COMPANY_ID`, never touching `real`) with a Sorento code and
+// pull-capable entities, seeded into `listCompanies`/`getCompany`, and
+// `overlayKeys`/`overlaySnapshots` seeded from the SAME fixture headers
+// `mockAutocountService` already defines (`productSnapshotHeader`/
+// `stockSnapshotHeader`) rather than starting empty.
 // ═══════════════════════════════════════════════════════════════════════════
+
+/** A company id no real tenant will ever mint (`ac_company.id` is a UUID) -
+ *  safe to special-case without colliding with a live company. */
+const MOCK_PULL_COMPANY_ID = 'ac-pull-fixture-company';
+
+function mockPullFixtureCompany(): AutocountCompany {
+  return {
+    id: MOCK_PULL_COMPANY_ID,
+    connectionId: 'conn-pull-fixture',
+    databaseName: 'PULL_FIXTURE',
+    companyName: 'Pull Fixture Sdn Bhd',
+    name: 'Pull demo (mock)',
+    isActive: true,
+    sinkImpl: 'sorento',
+    sinkConnectionId: 'conn-pull-fixture-sink',
+    sorentoCompanyCode: 'PULLFX',
+    createdAt: '2026-09-01T00:00:00Z',
+    sourceKind: 'db',
+    documentPrerequisites: [],
+  };
+}
+
+function mockPullFixtureEntity(overrides: Partial<AutocountEntityConfig>): AutocountEntityConfig {
+  return {
+    id: `entity-${overrides.entityType}`,
+    entityType: '',
+    syncMode: 'MANUAL',
+    sourceImpl: 'sql_db',
+    recordCap: 5000,
+    initialLookbackDays: 30,
+    enabled: true,
+    lastSuccessAt: null,
+    lastAttemptAt: null,
+    watermarkAt: null,
+    consecutiveFailures: 0,
+    lastError: null,
+    etlStatus: 'active',
+    deliveryMode: 'pull',
+    ...overrides,
+  };
+}
+
+/**
+ * The fixture company's CURRENT entities: `stock_balance` is pull-enabled
+ * (so a fresh Build reaches the building -> ready cycle); `product` sits in
+ * `push` + `active` (so Build on it reproduces the A6 `PUSH_ACTIVE` 409 -
+ * a book that already flipped to automatic). Historical snapshots below
+ * (building/ready/failed/expired) are read-only records - they never need
+ * the entity's CURRENT config to match.
+ */
+function mockPullFixtureEntities(): AutocountEntityConfig[] {
+  return [
+    mockPullFixtureEntity({ entityType: 'product', deliveryMode: 'push' }),
+    mockPullFixtureEntity({ entityType: 'stock_balance', deliveryMode: 'pull' }),
+  ];
+}
 
 function overlayTaskKey(companyId: string, entityType: string): string {
   return `${companyId}:${entityType}`;
@@ -3082,11 +3150,92 @@ export function withPhase1PullMock(real: AutocountService): AutocountService {
   // survives a save/reload round trip even though the real PUT silently
   // ignores the field today (pydantic ignores unknown keys, never a 422).
   const overlayCombine = new Map<string, AutocountEtlSourceConfig['combine']>();
-  const overlayKeys: AutocountPullApiKey[] = [];
-  const overlaySnapshots: AutocountPullSnapshot[] = [];
-  const overlaySnapshotRows = new Map<string, Array<Record<string, unknown>>>();
+  const overlayKeys: AutocountPullApiKey[] = [
+    {
+      id: 'pull-key-active',
+      name: 'Sorento production',
+      companyIds: [MOCK_PULL_COMPANY_ID],
+      keyPrefix: 'fxa_live_a1b2c3d4',
+      createdAt: '2026-09-10T08:00:00Z',
+      lastUsedAt: '2026-09-19T22:05:11Z',
+      revokedAt: null,
+    },
+    {
+      id: 'pull-key-revoked',
+      name: 'Old staging key',
+      companyIds: [MOCK_PULL_COMPANY_ID],
+      keyPrefix: 'fxa_live_9f8e7d6c',
+      createdAt: '2026-08-01T08:00:00Z',
+      lastUsedAt: '2026-08-15T10:00:00Z',
+      revokedAt: '2026-08-20T00:00:00Z',
+    },
+  ];
+  const overlaySnapshots: AutocountPullSnapshot[] = [
+    productSnapshotHeader({ companyId: MOCK_PULL_COMPANY_ID, companyCode: 'PULLFX' }),
+    stockSnapshotHeader({ companyId: MOCK_PULL_COMPANY_ID, companyCode: 'PULLFX' }),
+    {
+      id: 'snap-product-building',
+      entityType: 'product',
+      companyId: MOCK_PULL_COMPANY_ID,
+      companyCode: 'PULLFX',
+      status: 'building',
+      requestedVia: 'gateway',
+      createdAt: nowIso(),
+      extractedAt: null,
+      expiresAt: null,
+      recordCount: 0,
+      complete: false,
+      contentHash: null,
+      sourcePageSize: null,
+      progress: { pagesDone: 2, pagesTotal: 4, stage: 'lookup:uom' },
+      error: null,
+      excludedCount: 0,
+      excludedRows: [],
+    },
+    {
+      id: 'snap-product-failed',
+      entityType: 'product',
+      companyId: MOCK_PULL_COMPANY_ID,
+      companyCode: 'PULLFX',
+      status: 'failed',
+      requestedVia: 'operator',
+      createdAt: '2026-09-18T09:00:00Z',
+      extractedAt: null,
+      expiresAt: null,
+      recordCount: 0,
+      complete: false,
+      contentHash: null,
+      sourcePageSize: null,
+      error: { code: 'SOURCE_PAGE_FAILED', message: 'Source page 3 of 4 failed after retries (timeout).' },
+      excludedCount: 0,
+      excludedRows: [],
+    },
+    productSnapshotHeader({
+      id: 'snap-product-expired',
+      companyId: MOCK_PULL_COMPANY_ID,
+      companyCode: 'PULLFX',
+      createdAt: '2026-09-10T08:00:00Z',
+      extractedAt: '2026-09-10T08:20:00Z',
+      expiresAt: '2026-09-11T08:20:00Z',
+      recordCount: 11812,
+    }),
+  ];
+  const overlaySnapshotRows = new Map<string, Array<Record<string, unknown>>>([
+    ['snap-product-ready', pullSnapshotRows['snap-product-ready'] ?? []],
+    ['snap-stock-ready', pullSnapshotRows['snap-stock-ready'] ?? []],
+  ]);
   let overlayKeySeq = 0;
   let overlaySnapshotSeq = 0;
+
+  /** Every pull-shaped call resolves the company detail through here - the
+   *  fixture company NEVER reaches `real.getCompany` (it would 404 against
+   *  the live backend, which never created it). */
+  async function resolveCompanyDetail(companyId: string): Promise<AutocountCompanyDetail> {
+    if (companyId === MOCK_PULL_COMPANY_ID) {
+      return { company: mockPullFixtureCompany(), entities: mockPullFixtureEntities() };
+    }
+    return real.getCompany(companyId);
+  }
 
   function mergeTask(companyId: string, entityType: string, task: AutocountEtlTask): AutocountEtlTask {
     const key = overlayTaskKey(companyId, entityType);
@@ -3132,8 +3281,18 @@ export function withPhase1PullMock(real: AutocountService): AutocountService {
       return { ...started, task: mergeTask(companyId, entityType, started.task) };
     },
 
+    async listCompanies(query = {}) {
+      const result = await real.listCompanies(query);
+      if (result.data.some((c) => c.id === MOCK_PULL_COMPANY_ID)) return result;
+      // Appended, not prepended (browser round 1 fix, AC-10-38/48) - the
+      // real company (if any) stays the operator's first, obvious choice;
+      // the fixture company is what makes the Build-snapshot dialog's
+      // `sorentoCompanyCode`-gated picker non-empty in this phase.
+      return { ...result, data: [...result.data, mockPullFixtureCompany()], total: result.total + 1 };
+    },
+
     async getCompany(id) {
-      const detail = await real.getCompany(id);
+      const detail = await resolveCompanyDetail(id);
       return {
         ...detail,
         entities: detail.entities.map((entity) => ({
@@ -3146,7 +3305,7 @@ export function withPhase1PullMock(real: AutocountService): AutocountService {
 
     async setDeliveryMode(companyId, entityType, deliveryMode) {
       if (deliveryMode === 'pull') {
-        const detail = await real.getCompany(companyId);
+        const detail = await resolveCompanyDetail(companyId);
         if (!(detail.company.sorentoCompanyCode ?? '').trim()) {
           throw new ApiError('Set a Sorento company code before enabling pull.', 422, null, {
             fieldErrors: { deliveryMode: 'Set a Sorento company code before enabling pull.' },
@@ -3154,7 +3313,7 @@ export function withPhase1PullMock(real: AutocountService): AutocountService {
         }
       }
       overlayDeliveryModes.set(overlayTaskKey(companyId, entityType), deliveryMode);
-      const detail = await real.getCompany(companyId);
+      const detail = await resolveCompanyDetail(companyId);
       const entity = detail.entities.find((e) => e.entityType === entityType);
       if (entity) return { ...entity, deliveryMode };
       return {
@@ -3250,7 +3409,7 @@ export function withPhase1PullMock(real: AutocountService): AutocountService {
 
     async buildPullSnapshot(companyId, entityType) {
       await pause(250);
-      const detail = await real.getCompany(companyId);
+      const detail = await resolveCompanyDetail(companyId);
       // Appendix A6 / AC-10-31 - a book that has flipped to automatic
       // refuses a NEW build with 409 PUSH_ACTIVE, mirroring the gateway's
       // own error ladder (review round 1 item 2: reachable through a mock

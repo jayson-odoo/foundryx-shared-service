@@ -140,11 +140,54 @@ describe('withPhase1PullMock (the runtime overlay `autocount-service.ts` binds)'
     };
   }
 
-  it('starts with NO keys and NO snapshots - the live "no keys" state is simply never having issued one', async () => {
+  it('seeds one active and one revoked key, and every AC-10-48 snapshot state, from first render (browser round 1 fix)', async () => {
+    // Started genuinely empty pre-browser-round-1: the live app bound this
+    // overlay, so a tester could never reach a single AC-10-48 state without
+    // first performing the exact sequence of mutations by hand (and the
+    // Build-snapshot dialog's company/entity pickers had nothing to offer at
+    // all, since the lane's only REAL company carries no Sorento code). The
+    // fix seeds a SELF-CONTAINED fixture company (never touching `real`) the
+    // same way `mockAutocountService`'s own Vitest fixtures already do.
     const overlay = withPhase1PullMock(fakeReal());
-    expect(await overlay.listPullKeys()).toEqual([]);
+    const keys = await overlay.listPullKeys();
+    expect(keys.some((k) => k.revokedAt === null)).toBe(true);
+    expect(keys.some((k) => k.revokedAt !== null)).toBe(true);
+
     const snapshots = await overlay.listPullSnapshots();
-    expect(snapshots.data).toEqual([]);
+    const statuses = snapshots.data.map((s) => s.status);
+    expect(statuses).toContain('building');
+    expect(statuses).toContain('ready');
+    expect(statuses).toContain('failed');
+    const expired = snapshots.data.find((s) => s.id === 'snap-product-expired');
+    expect(expired).toBeDefined();
+    expect(new Date(expired!.expiresAt as string).getTime()).toBeLessThan(Date.now());
+    const stock = snapshots.data.find((s) => s.entityType === 'stock_balance');
+    expect(stock?.excludedCount ?? 0).toBeGreaterThan(0);
+    expect((stock?.negativePairList ?? []).length).toBeGreaterThan(0);
+  });
+
+  it('the fixture company is offered alongside real companies, with a Sorento code and pull-capable entities', async () => {
+    const overlay = withPhase1PullMock(fakeReal());
+    const companies = await overlay.listCompanies();
+    const fixture = companies.data.find((c) => c.name === 'Pull demo (mock)');
+    expect(fixture).toBeDefined();
+    expect(fixture!.sorentoCompanyCode).toBeTruthy();
+    // Real companies (the `fakeReal()` stub returns none here) are never
+    // dropped - the fixture is APPENDED, not a replacement.
+    expect(companies.data.some((c) => c.id === fixture!.id)).toBe(true);
+
+    const detail = await overlay.getCompany(fixture!.id);
+    expect(detail.entities.some((e) => e.entityType === 'stock_balance' && e.deliveryMode === 'pull')).toBe(true);
+    // The `product` entity sits in push+active - the reachable A6
+    // PUSH_ACTIVE demo (never `real.getCompany`, which would 404 for an id
+    // the live backend never created).
+    const product = detail.entities.find((e) => e.entityType === 'product');
+    expect(product?.deliveryMode ?? 'push').toBe('push');
+    expect(product?.etlStatus).toBe('active');
+    await expect(overlay.buildPullSnapshot(fixture!.id, 'product')).rejects.toMatchObject({
+      status: 409,
+      detail: { code: 'PUSH_ACTIVE' },
+    });
   });
 
   it('setDeliveryMode requires a Sorento company code before pull', async () => {
