@@ -844,11 +844,20 @@ A STOCK header carries instead:
   "excludedCount": 5, "excludedNonzeroCount": 0,
   "negativePairList": [ {"item_code": "SRT-01", "location_code": "MBS", "qty": -3} ],
   "excludedRows": [
-    {"item_code": "SRT-99", "location_code": "HQ", "uom": "ctn",
-     "qty": 0, "reason": "uom_rate_unresolved"}
+    {"item_code": "SRT-99", "location_code": "HQ",
+     "measure": 0, "reason": "uom_rate_unresolved"}
   ]
 }
 ```
+**Amended (S5b, coordinator ruling 2026-09-20):** an `excludedRows` entry's shape is
+`{<groupBy columns>, measure, reason}` exactly, straight off the entity-agnostic combine engine
+(`http_source/combine.py`'s `apply_combine`, S5a) - it carries the row's group-by columns (here
+`item_code`/`location_code`) plus the raw value of the combine step's DESIGNATED `measure` column
+(never a fixed `qty`/`uom` pair; those are two more of stock's OWN pre-group source columns the
+engine has no way to single out generically) plus the exclusion's `reason`. The example above
+originally showed a `"uom": "ctn"` key with no mechanism to produce it and `"qty"` instead of
+`"measure"` - corrected here rather than extending the engine to carry a third, entity-specific
+column for one consumer's worked example.
 
 **Pages.** `GET /api/v1/autocount/snapshots/{snapshotId}/rows?page=1&pageSize=1000`
 ```json

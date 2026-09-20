@@ -771,8 +771,13 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   Save.
 - **AC-10-84 [T]** The stock preset reproduces the live numbers end to end on `db1` with no
   operator configuration: 68,612 rows in -> 12,133 rows out, the `zero` rule dropping roughly
-  56,400, the `negative` rule dropping 42 and listing them, `roundedCount` 0, and the excluded set
-  matching the 5 known rate-unresolved rows. Report cites the snapshot id and the funnel counts.
+  56,400, the `negative` rule dropping 42 and listing them, `roundedCount` 0. **Measured figure
+  (S5b, 2026-09-20 recorded db1 capture, run directly against `apply_combine`/`fetch_changes`
+  over every recorded wrapper page): `excludedCount` is 0** - every `(ItemCode, UOM)` pair the
+  balance table names has a matching `/itemuombypage` rate row in this exact capture, so the
+  earlier "5 known rate-unresolved rows" narrative (an earlier/different probe) does not
+  reproduce here; amended rather than silently overridden. Report cites the snapshot id and the
+  funnel counts.
 
 - **AC-10-85 [BE]/[FE]** **Page size and request timeout are per-CONNECTION settings**, because
   they are a property of the book's host, not of a task: `AutoCountProvider.fields()` gains
