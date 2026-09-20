@@ -14,7 +14,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import { AutocountFormulaBuilder } from '@/components/platform/autocount/formula-builder';
+import {
+  AutocountFormulaBuilder,
+  type FormulaVariableGroup,
+} from '@/components/platform/autocount/formula-builder';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { MultiSelect } from '@/components/platform/multi-select';
 import { SearchSelect } from '@/components/platform/search-select';
@@ -32,6 +35,9 @@ const ROUND_MODES: { label: string; value: 'none' | 'half_up' }[] = [
   { label: 'None', value: 'none' },
   { label: 'Half up', value: 'half_up' },
 ];
+
+const toFormulaVariableItems = (names: string[]) =>
+  names.filter(Boolean).map((c) => ({ label: c, token: c }));
 
 export interface CombineEditorProps {
   editing: boolean;
@@ -105,6 +111,40 @@ export function CombineEditor({
         : formulaTarget?.kind === 'drop'
           ? config.drop[formulaTarget.index]?.formula
           : '';
+
+  // AC-10-76/77/79 (S5b-FE defect 1) - each combine formula only sees the
+  // names it is allowed to reference, NEVER the same flat set for every
+  // stage: `computed[i]` = raw/lookup columns + EARLIER computed aliases
+  // only (a forward reference is the save-time 422); `require[i]` = raw/
+  // lookup columns + ALL computed aliases (require runs after every
+  // computed step); `drop[i]` runs AFTER grouping, so it may name ONLY the
+  // post-group columns - `groupBy` + `carry` + `measures[].alias` - never a
+  // raw/lookup/computed name that was not carried or grouped. Groups always
+  // render (even empty) so the dialog stays in this multi-variable mode -
+  // no combine formula ever uses the single-`value` transform model.
+  const formulaVariableGroups = useMemo<FormulaVariableGroup[] | undefined>(() => {
+    if (!formulaTarget) return undefined;
+    if (formulaTarget.kind === 'computed') {
+      return [
+        { label: 'Columns', items: toFormulaVariableItems(columnOptions) },
+        {
+          label: 'Computed columns',
+          items: toFormulaVariableItems(computedAliases.slice(0, formulaTarget.index)),
+        },
+      ];
+    }
+    if (formulaTarget.kind === 'require') {
+      return [
+        { label: 'Columns', items: toFormulaVariableItems(columnOptions) },
+        { label: 'Computed columns', items: toFormulaVariableItems(computedAliases) },
+      ];
+    }
+    return [
+      { label: 'Group by', items: toFormulaVariableItems(config.groupBy) },
+      { label: 'Carry', items: toFormulaVariableItems(config.carry) },
+      { label: 'Measures', items: toFormulaVariableItems(measureAliases) },
+    ];
+  }, [formulaTarget, columnOptions, computedAliases, config.groupBy, config.carry, measureAliases]);
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border p-4">
@@ -672,12 +712,7 @@ export function CombineEditor({
           }
         }}
         onServerTest={onServerTest}
-        variables={[
-          {
-            label: 'Columns',
-            items: allColumnOptions.map((c) => ({ label: c, token: c })),
-          },
-        ]}
+        variables={formulaVariableGroups}
       />
     </div>
   );

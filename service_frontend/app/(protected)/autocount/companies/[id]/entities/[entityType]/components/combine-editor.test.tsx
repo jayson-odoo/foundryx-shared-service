@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { CombineEditor } from './combine-editor';
 import { emptyCombine } from '@/lib/autocount-combine';
@@ -98,6 +98,107 @@ describe('CombineEditor (AC-10-82)', () => {
     expect(funnel).toHaveTextContent('2 in');
     expect(funnel).toHaveTextContent('zero: 1 dropped');
     expect(funnel).toHaveTextContent('1 out');
+  });
+
+  // S5b-FE browser defect 1 (AC-10-76/77/79) - each formula stage only sees
+  // the names it is allowed to reference, never the same flat set.
+  describe('formula builder scope per stage (AC-10-76/77/79)', () => {
+    const preFilled = {
+      ...emptyCombine(),
+      computed: [
+        { alias: 'item_code', formula: 'trim(ItemCode)' },
+        { alias: 'location_code', formula: 'trim(Location)' },
+      ],
+      require: [{ name: 'uom_rate', formula: 'true', reason: 'uom_rate_unresolved' }],
+      groupBy: ['item_code', 'location_code'],
+      carry: ['ItemBaseUOM', 'ItemDescription'],
+      measure: 'qty',
+      measures: [{ source: 'base_qty', op: 'sum' as const, alias: 'qty' }],
+      drop: [
+        { name: 'zero', formula: 'qty == 0', listRows: false },
+        { name: 'negative', formula: 'qty < 0', listRows: true },
+      ],
+    };
+    const columnOptions = ['ItemCode', 'Location', 'UOM', 'BalQty', 'ItemBaseUOM', 'ItemDescription', 'UomRate'];
+
+    it('a drop rule offers post-group columns (groupBy + carry + measure alias), never a raw source column', () => {
+      render(
+        <CombineEditor
+          editing
+          combine={preFilled}
+          onChange={vi.fn()}
+          columnOptions={columnOptions}
+          funnel={null}
+          onServerTest={serverTest}
+        />,
+      );
+      fireEvent.click(screen.getAllByText('Edit formula').at(-1) as HTMLElement);
+      // The variable panel renders the column name twice per row (label +
+      // token) - assert PRESENCE/ABSENCE via `getAllByText`/`queryAllByText`,
+      // never the singular `getByText`, which would throw on the duplicate.
+      const dialog = within(screen.getByRole('dialog'));
+      expect(dialog.getAllByText('item_code').length).toBeGreaterThan(0);
+      expect(dialog.getAllByText('location_code').length).toBeGreaterThan(0);
+      expect(dialog.getAllByText('ItemDescription').length).toBeGreaterThan(0);
+      expect(dialog.getAllByText('ItemBaseUOM').length).toBeGreaterThan(0);
+      expect(dialog.getAllByText('qty').length).toBeGreaterThan(0);
+      expect(dialog.queryAllByText('BalQty').length).toBe(0);
+    });
+
+    it('Apply is enabled for a drop rule formula referencing the measure alias (qty < 0)', () => {
+      render(
+        <CombineEditor
+          editing
+          combine={preFilled}
+          onChange={vi.fn()}
+          columnOptions={columnOptions}
+          funnel={null}
+          onServerTest={serverTest}
+        />,
+      );
+      fireEvent.click(screen.getAllByText('Edit formula').at(-1) as HTMLElement);
+      expect(screen.getByLabelText('Formula expression')).toHaveValue('qty < 0');
+      expect(screen.getByTestId('formula-status')).toHaveTextContent(/valid formula/i);
+      expect(screen.getByRole('button', { name: 'Apply' })).toBeEnabled();
+    });
+
+    it('computed[1] offers computed[0]\'s alias but never its own or a later alias', () => {
+      render(
+        <CombineEditor
+          editing
+          combine={preFilled}
+          onChange={vi.fn()}
+          columnOptions={columnOptions}
+          funnel={null}
+          onServerTest={serverTest}
+        />,
+      );
+      // Second computed row's own "Edit formula" button.
+      const editButtons = screen.getAllByText('Edit formula');
+      fireEvent.click(editButtons[1]);
+      const dialog = within(screen.getByRole('dialog'));
+      expect(dialog.getAllByText('item_code').length).toBeGreaterThan(0);
+      expect(dialog.queryAllByText('location_code').length).toBe(0);
+    });
+
+    it('a require rule offers every computed alias', () => {
+      render(
+        <CombineEditor
+          editing
+          combine={preFilled}
+          onChange={vi.fn()}
+          columnOptions={columnOptions}
+          funnel={null}
+          onServerTest={serverTest}
+        />,
+      );
+      const editButtons = screen.getAllByText('Edit formula');
+      // computed[0], computed[1], require[0] in DOM order.
+      fireEvent.click(editButtons[2]);
+      const dialog = within(screen.getByRole('dialog'));
+      expect(dialog.getAllByText('item_code').length).toBeGreaterThan(0);
+      expect(dialog.getAllByText('location_code').length).toBeGreaterThan(0);
+    });
   });
 
   it('read-only when not editing - no Enable/Add controls', () => {

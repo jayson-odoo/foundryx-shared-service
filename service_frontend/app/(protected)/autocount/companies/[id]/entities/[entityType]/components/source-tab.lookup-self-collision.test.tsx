@@ -257,4 +257,98 @@ describe('SourceTab Lookups editor - self-collision false positive (browser roun
     });
     expect(screen.getByText('"ItemCode" is already a source column.')).toBeInTheDocument();
   });
+
+  // S5b-FE browser defect 3 (AC-10-01/AC-10-05) - `rawSourceColumns` must
+  // never be widened by the DRAFT's own (untested, or freshly-typed but not
+  // yet re-Tested) lookup aliases; only the SERVER's own base, minus the
+  // aliases the echoed task proves are already baked in.
+  it('a second field on an already-tested lookup, given a brand-new alias, keeps NO inline error (draft alias never widens the raw set)', () => {
+    const cfg = httpConfig({
+      lookups: [
+        {
+          path: '/itemuombypage',
+          as: 'uom',
+          on: [{ local: 'ItemCode', remote: 'ItemCode' }],
+          // Second field just added to the already-tested lookup - a brand
+          // new alias, never itself tested, and not a real raw column.
+          fields: [
+            { remote: 'Price', as: 'BaseUOMPrice' },
+            { remote: 'Rate', as: 'FreshAlias' },
+          ],
+        },
+      ],
+    });
+    renderApiBranch({
+      cfg,
+      httpPreview: combinedHttpPreview({
+        taskLookups: [
+          {
+            path: '/itemuombypage',
+            as: 'uom',
+            on: [{ local: 'ItemCode', remote: 'ItemCode' }],
+            // The echo only proves the FIRST field - `FreshAlias` was added
+            // to the draft after that Test landed.
+            fields: [{ remote: 'Price', as: 'BaseUOMPrice' }],
+          },
+        ],
+      }),
+    });
+    const aliasInput = screen.getByDisplayValue('FreshAlias');
+    expect(aliasInput).toHaveAttribute('aria-invalid', 'false');
+    expect(screen.queryByText('"FreshAlias" is already a source column.')).not.toBeInTheDocument();
+  });
+
+  it('a preset\'s pre-filled-but-never-tested lookup aliases keep NO inline error on the entity\'s FIRST Test (no echo yet)', () => {
+    const cfg = httpConfig({
+      lookups: [
+        {
+          path: '/itembypage',
+          as: 'item',
+          on: [{ local: 'ItemCode', remote: 'ItemCode' }],
+          fields: [
+            { remote: 'BaseUOM', as: 'ItemBaseUOM' },
+            { remote: 'Description', as: 'ItemDescription' },
+          ],
+        },
+        {
+          path: '/itemuombypage',
+          as: 'uom',
+          on: [{ local: 'ItemCode', remote: 'ItemCode' }],
+          fields: [{ remote: 'Rate', as: 'UomRate' }],
+        },
+      ],
+    });
+    // A brand-new entity's first-ever Test: the backend has no
+    // `ac_entity_config` row yet, so the response carries no `task` echo at
+    // all - `preview.task` is `undefined`.
+    const httpPreview: UseHttpPreviewResult = {
+      state: {
+        status: 'success',
+        preview: {
+          envelope: 'paged',
+          totalCount: 100,
+          columns: [
+            { name: 'ItemCode', sample: 'SRT-01' },
+            { name: 'Location', sample: 'MAIN' },
+            { name: 'BalQty', sample: '10' },
+          ],
+          rows: [],
+          durationMs: 180,
+          lookups: [
+            { alias: 'item', matched: 10, missed: 0 },
+            { alias: 'uom', matched: 10, missed: 0 },
+          ],
+          task: undefined,
+        },
+      },
+      run: vi.fn(),
+      fieldErrors: {},
+      reset: vi.fn(),
+    };
+    renderApiBranch({ cfg, httpPreview });
+    expect(screen.getByDisplayValue('ItemBaseUOM')).toHaveAttribute('aria-invalid', 'false');
+    expect(screen.getByDisplayValue('UomRate')).toHaveAttribute('aria-invalid', 'false');
+    expect(screen.queryByText('"ItemBaseUOM" is already a source column.')).not.toBeInTheDocument();
+    expect(screen.queryByText('"UomRate" is already a source column.')).not.toBeInTheDocument();
+  });
 });

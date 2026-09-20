@@ -158,6 +158,30 @@ describe('TaskEditorView - a new stock_balance task pre-fills lookups + combine 
     expect(screen.getByTestId('drop-list-rows-0')).toHaveAttribute('data-state', 'unchecked');
   });
 
+  // Opus confirm review addendum (S-1) - `keysMissing`'s `!combineKeyed &&`
+  // guard (`task-editor-view.tsx` ~562-567) had zero test coverage: a kill
+  // (deleting the guard) survived the full suite. A combine-keyed task must
+  // NOT show the warning even though `keyFields` itself is empty (AC-10-80 -
+  // keys are DERIVED from `combine.groupBy`); a task with neither combine
+  // nor keys still must.
+  it('a preset-seeded, never-saved stock task (combine-keyed) shows NO "no key columns" warning', async () => {
+    render(<TaskEditorView companyId="company-http" entityType="stock_balance" />);
+    await screen.findByRole('tab', { name: /Source/i });
+    expect(screen.queryByTestId('task-keys-missing')).not.toBeInTheDocument();
+  });
+
+  it('a task with a configured path but no combine and no key fields DOES show the warning', async () => {
+    // Path already set (so the preset-seeding effect never fires) - no
+    // `combine`, no `keyFields`: exactly the case the warning exists for.
+    taskBox.current = {
+      ...blankStockTask(),
+      sourceConfig: { ...blankStockTask().sourceConfig, path: '/itembatchbalqtybypage', keyFields: [] },
+    };
+    render(<TaskEditorView companyId="company-http" entityType="stock_balance" />);
+    await screen.findByRole('tab', { name: /Source/i });
+    expect(screen.getByTestId('task-keys-missing')).toBeInTheDocument();
+  });
+
   it('the pre-filled group-by locks the Key fields picker to read-only chips (AC-10-80)', async () => {
     render(<TaskEditorView companyId="company-http" entityType="stock_balance" />);
     await screen.findByRole('tab', { name: /Source/i });

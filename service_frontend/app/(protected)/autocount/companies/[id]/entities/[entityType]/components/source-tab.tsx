@@ -349,16 +349,23 @@ export function SourceTab({
   // `preCombineColumns` (sent exactly when the request carried `combine`)
   // IS the pre-combine, alias-inclusive set (raw + lookup aliases +
   // computed aliases); for a plain (no-combine) Test the bare `columns`
-  // already IS pre-combine (the combine stage never ran). Either way
-  // unioned with every alias the DRAFT's lookups currently name (S2 - an
-  // added-but-not-yet-re-Tested lookup's alias must not vanish from the
-  // compared/Combine pickers).
-  const httpPreviewColumns = useMemo(() => {
+  // already IS pre-combine (the combine stage never ran). Declared on its
+  // OWN (S5b-FE defect 3 fix, AC-10-01/AC-10-05) - the SERVER's reported
+  // set, before the draft-alias union below, is also the base the
+  // self-collision check (`rawSourceColumns`) needs.
+  const previewBaseColumns = useMemo(() => {
     if (httpPreview.state.status !== 'success') return [];
     const preview = httpPreview.state.preview;
-    const base = preview.preCombineColumns ?? preview.columns.map((c) => c.name);
-    return Array.from(new Set([...base, ...Array.from(lookupAliases)]));
-  }, [httpPreview.state, lookupAliases]);
+    return preview.preCombineColumns ?? preview.columns.map((c) => c.name);
+  }, [httpPreview.state]);
+  // Unioned with every alias the DRAFT's lookups currently name (S2 - an
+  // added-but-not-yet-re-Tested lookup's alias must not vanish from the
+  // watermark/compared/Combine pickers, which read THIS, never the bare
+  // server base).
+  const httpPreviewColumns = useMemo(
+    () => Array.from(new Set([...previewBaseColumns, ...Array.from(lookupAliases)])),
+    [previewBaseColumns, lookupAliases],
+  );
   // The Combine editor's own funnel (AC-10-82) - the SAME six server counts
   // the Source tab's Test just landed, present only when that Test's
   // request carried `combine` (`rowsIn` is the funnel's own presence
@@ -376,35 +383,34 @@ export function SourceTab({
       roundedCount: preview.roundedCount ?? 0,
     };
   }, [httpPreview.state]);
-  // Browser round 1 fix (AC-10-09), unchanged by the B1 fix above - a
+  // Browser round 1 fix (AC-10-09), sharpened by S5b-FE defect 3 - a
   // COMBINED-or-not preview's merged columns are, by backend design, RAW
-  // main-endpoint columns UNION every attached lookup's OWN alias (so the
-  // grid can show enriched values) - `httpPreviewColumns` above is
-  // therefore NOT a pure raw-column list. The Lookups editor's alias
-  // collision check must only fire against a genuine raw column or an
-  // EARLIER lookup's alias (`lib/autocount-lookups.ts`'s own rule), never a
-  // lookup's OWN alias echoed back by the very test that proved it - and
-  // NEVER against the live, possibly freshly-typed-and-UNTESTED value of
-  // the field being edited (subtracting the full DRAFT `lookupAliases`
-  // would do exactly that: a genuinely real raw column typed as a NEW,
-  // not-yet-tested alias - e.g. "Description" - would vanish from the raw
-  // set and the real collision would silently stop firing). The backend
-  // echoes the EXACT `sourceConfig` that produced this preview on
-  // `preview.task` (S5 review round 7) when the entity already has a
-  // config row - its `lookups` are precisely the aliases already proven
-  // and baked into `httpPreviewColumns`, so subtracting THOSE (never
-  // `config.lookups`) recovers the true raw set. A brand-new entity's
-  // first Test carries no `task` yet, so `testedLookupAliases` is empty
-  // there - matching the OLD behaviour for that case (B1's own fix already
-  // keeps `httpPreviewColumns` itself pre-combine in that scenario).
+  // main-endpoint columns UNION every attached lookup's OWN alias, so a bare
+  // "merged columns" list is never a pure raw-column list. The Lookups
+  // editor's alias collision check must only fire against a genuine raw
+  // column or an EARLIER lookup's alias (`lib/autocount-lookups.ts`'s own
+  // rule), never a lookup's OWN alias echoed back by the very test that
+  // proved it, and NEVER against a DRAFT alias that has not itself been
+  // tested yet either way (typed-but-unsaved, or freshly saved but this
+  // session's `httpPreview` still points at the pre-save Test response).
+  // `rawSourceColumns` is therefore derived from `previewBaseColumns` -
+  // the SERVER's own base, deliberately BEFORE the draft-alias union that
+  // built `httpPreviewColumns` above - minus `testedLookupAliases` (the
+  // exact aliases the backend-echoed `preview.task.sourceConfig.lookups`
+  // proves are already baked into that base). A brand-new entity's first
+  // Test carries no `task` yet, so `testedLookupAliases` is empty there -
+  // but `previewBaseColumns` never included the draft's own aliases to
+  // begin with, so a preset's pre-filled-but-unsaved lookup aliases
+  // (`ItemBaseUOM`, `UomRate`) never false-collide on that first Test
+  // either.
   const testedLookupAliases = useMemo(() => {
     const testedLookups =
       httpPreview.state.status === 'success' ? httpPreview.state.preview.task?.sourceConfig.lookups : undefined;
     return new Set((testedLookups ?? []).flatMap((l) => l.fields.map((f) => f.as.trim()).filter(Boolean)));
   }, [httpPreview.state]);
   const rawSourceColumns = useMemo(
-    () => httpPreviewColumns.filter((c) => !testedLookupAliases.has(c)),
-    [httpPreviewColumns, testedLookupAliases],
+    () => previewBaseColumns.filter((c) => !testedLookupAliases.has(c)),
+    [previewBaseColumns, testedLookupAliases],
   );
   const httpSavedPicks = useMemo(
     () => [
@@ -916,10 +922,7 @@ export function SourceTab({
                 editing={editing}
                 combine={config.combine}
                 onChange={(combine) => onChange({ combine })}
-                columnOptions={[
-                  ...httpPreviewColumns,
-                  ...(config.lookups ?? []).flatMap((l) => l.fields.map((f) => f.as)),
-                ]}
+                columnOptions={httpPreviewColumns}
                 funnel={combineFunnel}
                 onServerTest={onCombineFormulaTest}
               />
