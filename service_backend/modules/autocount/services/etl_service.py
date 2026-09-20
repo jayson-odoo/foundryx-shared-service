@@ -113,7 +113,12 @@ from .company_service import (
 )
 from ..presets import HTTP_PRESETS, seed_document_mapping, seed_http_preset_mapping
 from ..mapping import SCOPE_HEADER, SCOPE_LINE
-from ..http_source.combine import apply_combine, validate_combine
+from ..http_source.combine import (
+    CombineDropError,
+    apply_combine,
+    combine_output_columns,
+    validate_combine,
+)
 from ..http_source.lookups import effective_result_columns, stored_raw_columns, validate_lookups
 from ..http_source.preview import (
     HttpPreviewError,
@@ -918,11 +923,28 @@ class EtlService:
         # real run would produce, never the pre-combine sample) ───────────
         if combine is not None:
             lookup_alias_names = effective_result_columns([], clean_lookups)
-            combine_errors = validate_combine(combine, result.raw_columns, lookup_alias_names)
+            # review round 3 (AC-10-76) - the ONE place the save-time
+            # boolean-type gate for a require/drop formula has real sample
+            # DATA to check against (a real task save never does - there is
+            # no stored sample, only column names): the SAME sampled rows
+            # ``apply_combine`` is about to reduce.
+            combine_errors = validate_combine(
+                combine, result.raw_columns, lookup_alias_names, sample=result.rows
+            )
             if combine_errors:
                 raise EtlValidationError(combine_errors)
             rows_in = len(result.rows)
-            combine_result = apply_combine(result.rows, combine)
+            # review round 3 (S4) - a drop formula that raises at RUNTIME
+            # over the sample (never caught by the sample-based type check
+            # above, which skips a row a formula merely raised on) must
+            # 422 with the failing rule named, never bubble into a bare
+            # 500 - the funnel is a preview, not a live run.
+            try:
+                combine_result = apply_combine(result.rows, combine)
+            except CombineDropError as exc:
+                raise EtlValidationError(
+                    {f"combine.drop[{exc.index}].formula": str(exc)}
+                ) from exc
             dropped = combine_result.metadata.get("dropped") or {}
             rows_out = len(combine_result.rows)
             # Every dropped bucket is exactly ONE group (drop runs over the
@@ -940,24 +962,12 @@ class EtlService:
                 "roundedCount": combine_result.metadata.get("roundedCount", 0),
             }
             # The combined, POST-GROUP schema - groupBy + carry + measure
-            # aliases, in that declared order, de-duplicated (the same
-            # projection shape ``combine.py``'s own
-            # ``_metadata_row_projection`` uses for a dropped/listed row,
-            # widened here with ``carry`` since the full grid, not just a
-            # funnel entry, is being replaced).
-            result.columns = list(
-                dict.fromkeys(
-                    [
-                        *[str(c) for c in (combine.get("groupBy") or [])],
-                        *[str(c) for c in (combine.get("carry") or [])],
-                        *[
-                            str(spec.get("alias"))
-                            for spec in (combine.get("measures") or [])
-                            if isinstance(spec, dict) and spec.get("alias")
-                        ],
-                    ]
-                )
-            )
+            # aliases, in that declared order, de-duplicated. ONE shared
+            # helper (review round 3, B1) - the same projection
+            # ``HttpApiSource.__init__`` now derives its compared-column
+            # set from, so the preview grid, the Mapping tab's picker and
+            # the row hash can never drift against one another.
+            result.columns = combine_output_columns(combine)
             result.rows = combine_result.rows
 
         task_view: Optional["EtlTaskView"] = None
@@ -1303,12 +1313,26 @@ class EtlService:
             combine: Optional[Dict[str, Any]] = (
                 dict(existing_combine) if isinstance(existing_combine, dict) else None
             )
+            combine_for_validation: Any = combine
         elif isinstance(raw_combine, dict):
             combine = dict(raw_combine)
+            combine_for_validation = combine
         else:
+            # S1 (review round 3) - a malformed non-dict `combine` (e.g. an
+            # array) is NOT silently treated as "no combine configured":
+            # the RAW value is passed to `validate_combine`, so its own
+            # "The combine step must be an object." 422 is reachable - the
+            # previous code dropped it here, before `validate_combine` ever
+            # saw it. `combine` itself still collapses to `None` for every
+            # downstream computation below (`combine_group_by`, key
+            # derivation, the compared-column schema, the demote check) -
+            # none of those may ever call `.get()` on a non-dict - and the
+            # malformed value can never reach `clean`/persistence anyway:
+            # `errors` is non-empty below, so the whole save is rejected.
             combine = None
+            combine_for_validation = raw_combine
         for key, message in validate_combine(
-            combine, raw_columns_for_validation, sorted(alias_names)
+            combine_for_validation, raw_columns_for_validation, sorted(alias_names)
         ).items():
             errors[key] = message
 
@@ -1327,6 +1351,15 @@ class EtlService:
             # `result_columns`).
             key_fields = combine_group_by
             distinct_of = _clean_list(raw.get("distinctOf")) or None
+            # S2 (review round 3) - `distinctOf` short-circuits BEFORE
+            # combine ever runs (`HttpApiSource.fetch_changes`'s own
+            # `if self.distinct_of:` branch), so the two together save
+            # clean and then silently skip the combine step at every real
+            # run - a save-time 422, not a runtime surprise nobody sees.
+            if distinct_of:
+                errors["combine"] = (
+                    "A distinct-values task cannot also use Combine rows."
+                )
         else:
             key_fields = _clean_list(raw.get("keyFields"))
             distinct_of = _clean_list(raw.get("distinctOf")) or None
@@ -1372,7 +1405,22 @@ class EtlService:
         # alias, and that non-empty list narrows the run-time effective set
         # back down (an enrich-only value change would never register as
         # `updated`).
-        new_effective_columns = effective_result_columns(existing_result_columns, lookups)
+        # review round 3 (B1) - a combine-carrying task's compared-column
+        # baseline is the COMBINE OUTPUT SCHEMA (`groupBy + carry +
+        # measures[].alias`), never the pre-combine raw+lookup set: a
+        # combined row does not carry its raw/lookup source columns at all
+        # (AC-10-80), so comparing against them hashes columns that are
+        # always absent and an explicit `comparedFields` pick (e.g.
+        # `["qty"]`, a measure alias) would otherwise be PRUNED to `[]` by
+        # `compared_columns_for`'s own configured-intersect-available rule
+        # - silently discarding the operator's own choice. Mirrors
+        # `HttpApiSource.__init__`'s identical fix exactly, so a save and a
+        # run can never derive two different compared-column sets for the
+        # SAME combine config.
+        new_effective_columns = (
+            combine_output_columns(combine) if combine_group_by
+            else effective_result_columns(existing_result_columns, lookups)
+        )
         configured_compared = _clean_list(raw.get("comparedFields"))
         # review round 2 fix 1b - a client that round-trips the PREVIOUSLY
         # PERSISTED default list unchanged must not have it treated as an
@@ -1386,8 +1434,19 @@ class EtlService:
         # already prunes a name no longer in the effective set, the SAME
         # silent-drop behaviour an unknown configured column always had.
         if existing_result_columns is not None and configured_compared:
-            previous_effective_columns = effective_result_columns(
-                existing_result_columns, existing_lookups
+            # B1, mirrored for the PREVIOUS save's own effective columns -
+            # the task's previously stored `combine` (if any) determines
+            # what the previous default was actually computed from, the
+            # SAME rule `new_effective_columns` above just applied to THIS
+            # save's `combine`.
+            previous_combine_group_by = (
+                [str(c) for c in (existing_combine.get("groupBy") or [])]
+                if isinstance(existing_combine, dict)
+                else []
+            )
+            previous_effective_columns = (
+                combine_output_columns(existing_combine) if previous_combine_group_by
+                else effective_result_columns(existing_result_columns, existing_lookups)
             )
             previous_default = set(
                 compared_columns_for(
@@ -1554,21 +1613,24 @@ class EtlService:
         # SAME rule AC-08-28 already applies to connectionId/path): changing
         # it changes both `source_ref` and the row hash of every row, so it
         # demotes an ACTIVE task exactly like a connection/path change does.
-        # Saving the SAME groupBy again is not a change - no demote.
+        # S3 (review round 3) - widened from `groupBy` alone to the WHOLE
+        # combine object: a `measures`/`round`/`drop`/`computed`/`require`/
+        # `carry` edit changes the ROW HASH of every combined row just as
+        # surely as a `groupBy` edit changes its identity (AC-10-80's own
+        # text - "editing the combine config changes both the identity and
+        # the hash of every row"), and the first reconcile after a
+        # measures-only edit must report genuine updates, never silently
+        # reuse a hash computed under the OLD combine shape. Saving the
+        # SAME combine object again (dict equality - key order never
+        # matters) is not a change - no demote.
         if not demote and previous_source_config is not None:
             previous_combine = previous_source_config.get("combine")
-            previous_group_by = (
-                list(previous_combine.get("groupBy") or [])
-                if isinstance(previous_combine, dict)
-                else []
+            previous_combine_norm = (
+                previous_combine if isinstance(previous_combine, dict) else None
             )
             new_combine = clean.get("combine")
-            new_group_by = (
-                list(new_combine.get("groupBy") or [])
-                if isinstance(new_combine, dict)
-                else []
-            )
-            if previous_group_by != new_group_by:
+            new_combine_norm = new_combine if isinstance(new_combine, dict) else None
+            if previous_combine_norm != new_combine_norm:
                 demote = True
 
         config.source_impl = SOURCE_IMPL_AUTOCOUNT_HTTP

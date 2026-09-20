@@ -1236,6 +1236,16 @@ def _to_bool_strict(v: Value) -> bool:
     )
 
 
+# sprint-5/10 review round 3 (B2) - a public name for `_to_bool_strict`, for
+# a caller OUTSIDE this module (``http_source/combine.py``'s require/drop
+# stages) that wants the SAME fail-closed boolean coercion `not`/`and`/`or`/
+# `if` already use, rather than inventing a second, more permissive boolean
+# dialect (the review's own finding: a `drop`/`require` formula whose result
+# is a non-empty string previously coerced to True unconditionally, which
+# fails OPEN - the wrong direction for a row-exclusion/row-drop gate).
+to_bool_strict = _to_bool_strict
+
+
 def _eval_binary(node: _Binary, value: Value, facts: Optional[Dict[str, Any]] = None) -> Value:
     op = node.op
     if op == "and":

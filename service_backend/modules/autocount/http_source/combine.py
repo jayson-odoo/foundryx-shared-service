@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Dict, FrozenSet, List, Optional, Sequence, Tuple
 
-from ..formula import FormulaError, FormulaParseError, evaluate_formula, parse_formula
+from ..formula import FormulaError, FormulaParseError, evaluate_formula, parse_formula, to_bool_strict
 from ..mapping import TransformError, t_decimal
 
 # AC-10-76's own caps.
@@ -56,6 +56,12 @@ MAX_COMBINE_CARRY = 20
 
 # AC-10-79 - the dropped-rows LIST is capped; the "count" stays the full total.
 DROPPED_ROWS_CAP = 50
+
+# review round 3 (AC-10-76) - the SAMPLE-based require/drop boolean-type
+# check below is bounded to the first N previewed rows regardless of how
+# many the caller hands in, so a formula authored against a large preview
+# sample never turns Test into an O(sample x formulas) crawl.
+SAMPLE_TYPE_CHECK_ROWS = 50
 
 MEASURE_OPS = frozenset({"sum", "min", "max", "count", "first", "last"})
 _NUMERIC_MEASURE_OPS = frozenset({"sum", "min", "max"})
@@ -96,10 +102,158 @@ def _formula_known_variables(
     return known_source | frozenset(extra_known)
 
 
+def combine_output_columns(combine: Optional[Dict[str, Any]]) -> List[str]:
+    """The COMBINED, POST-GROUP column schema a ``combine`` step's own
+    output rows carry (review round 3, B1): ``groupBy + carry +
+    measures[].alias``, de-duplicated, in that declared order - the SAME
+    projection ``preview_http`` already builds inline for the response
+    grid and ``_metadata_row_projection`` builds (narrower - no ``carry``)
+    for a dropped/listed row.
+
+    This is the effective result-column set for a combine-carrying task
+    from de-dup / ``compared_columns_for`` / the row hash onward: a
+    combined row never carries its PRE-combine raw or lookup-alias columns
+    (a ``groupBy``/``measures[].source`` name is consumed, not projected),
+    so hashing against ``effective_result_columns`` (the raw+lookup set)
+    would compare columns that simply do not exist on the row it is
+    hashing - AC-10-80's "de-duplication, source_ref minting and row_hash
+    all run on the COMBINED rows" only holds when the compared-column set
+    itself is drawn from the SAME combined shape.
+
+    ``None`` / not a dict / an empty ``groupBy`` -> ``[]`` (no combine step
+    configured, or not yet valid enough to derive a schema from - the
+    caller falls back to the pre-combine effective columns in that case).
+    """
+    if not isinstance(combine, dict):
+        return []
+    group_by = [str(c) for c in (combine.get("groupBy") or []) if str(c)]
+    if not group_by:
+        return []
+    carry = [str(c) for c in (combine.get("carry") or []) if str(c)]
+    measure_aliases = [
+        str(spec.get("alias"))
+        for spec in (combine.get("measures") or [])
+        if isinstance(spec, dict) and spec.get("alias")
+    ]
+    seen: List[str] = []
+    for col in (*group_by, *carry, *measure_aliases):
+        if col not in seen:
+            seen.append(col)
+    return seen
+
+
+class CombineDropError(FormulaError):
+    """A ``drop`` rule's formula raised, or evaluated to something other
+    than true/false, at RUNTIME (AC-10-79 - "a drop formula that raises is
+    a named task error, not a silent keep", review round 3 B2). Carries
+    the rule's list INDEX and NAME so any caller (the preview route, a
+    real run) can name the failing rule without re-walking ``combine``
+    itself to find it."""
+
+    def __init__(self, index: int, name: str, message: str):
+        super().__init__(message)
+        self.index = index
+        self.rule_name = name
+
+
+def _sample_boolean_errors(
+    combine: Dict[str, Any], sample: Sequence[Dict[str, Any]]
+) -> Dict[str, str]:
+    """AC-10-76's own save-time rule: "a require or drop formula whose
+    inferred type is not boolean" is a 422. ``formula.py`` has no static
+    return-type inference (confirmed - it is a hand-written recursive-
+    descent evaluator with no type pass), so this is the documented
+    fallback: evaluate each ``require``/``drop`` formula against the
+    PREVIEWED SAMPLE and 422 the ones that ever produce a value that is
+    not a genuine ``bool``. A formula that RAISES on a given sample row is
+    a DIFFERENT problem (a per-row data fault, e.g. a lookup miss on that
+    one sample row) - not itself a type-inference signal, so that row is
+    skipped for THIS check (it may still be a perfectly boolean-typed
+    formula) and left to surface at run time under its own existing
+    fail-closed rule (``require_error`` exclusion / ``CombineDropError``).
+
+    Bounded to the first ``SAMPLE_TYPE_CHECK_ROWS`` rows and to require/
+    drop formulas that already parsed clean (a formula with its own
+    structural error is not re-evaluated here - that error already names
+    the field).
+    """
+    errors: Dict[str, str] = {}
+    if not sample:
+        return errors
+    rows = list(sample)[:SAMPLE_TYPE_CHECK_ROWS]
+    computed_specs = _as_list(combine.get("computed"))
+    require_specs = _as_list(combine.get("require"))
+
+    # ── require: evaluated against the SAMPLE'S computed-enriched facts,
+    # exactly the facts a require formula sees at run time (AC-10-77 stage
+    # order: computed THEN require) ──────────────────────────────────────
+    for row in rows:
+        facts: Dict[str, Any] = dict(row)
+        try:
+            for spec in computed_specs:
+                if not isinstance(spec, dict):
+                    continue
+                alias = spec.get("alias")
+                formula_text = spec.get("formula")
+                if not isinstance(alias, str) or not isinstance(formula_text, str):
+                    continue
+                facts[alias] = evaluate_formula(formula_text, None, facts=facts)
+        except FormulaError:
+            continue
+        for i, spec in enumerate(require_specs):
+            key = f"combine.require[{i}].formula"
+            if key in errors or not isinstance(spec, dict):
+                continue
+            formula_text = spec.get("formula")
+            if not isinstance(formula_text, str) or not formula_text.strip():
+                continue
+            try:
+                result = evaluate_formula(formula_text, None, facts=facts)
+            except FormulaError:
+                continue
+            if not isinstance(result, bool):
+                errors[key] = (
+                    "This formula must produce true or false, not a number or "
+                    "piece of text."
+                )
+
+    # ── drop: evaluated against the GROUPED sample (computed, require and
+    # grouping already applied - drop is a POST-GROUP stage). Reuses
+    # ``apply_combine`` itself with ``drop`` emptied out to get there,
+    # rather than duplicating the computed/require/group/measure/round
+    # pipeline a second time ─────────────────────────────────────────────
+    drop_specs = _as_list(combine.get("drop"))
+    if drop_specs:
+        try:
+            grouped = apply_combine(rows, {**combine, "drop": []}).rows
+        except (FormulaError, TransformError):
+            grouped = []
+        for out_row in grouped:
+            for i, spec in enumerate(drop_specs):
+                key = f"combine.drop[{i}].formula"
+                if key in errors or not isinstance(spec, dict):
+                    continue
+                formula_text = spec.get("formula")
+                if not isinstance(formula_text, str) or not formula_text.strip():
+                    continue
+                try:
+                    result = evaluate_formula(formula_text, None, facts=out_row)
+                except FormulaError:
+                    continue
+                if not isinstance(result, bool):
+                    errors[key] = (
+                        "This formula must produce true or false, not a number "
+                        "or piece of text."
+                    )
+
+    return errors
+
+
 def validate_combine(
     combine: Optional[Dict[str, Any]],
     source_columns: Optional[Sequence[str]],
     lookup_aliases: Optional[Sequence[str]] = None,
+    sample: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> Dict[str, str]:
     """The save-time 422 gate for a task's ``source_config.combine``
     (AC-10-76). Empty dict when clean (or when ``combine`` is ``None`` - no
@@ -277,6 +431,7 @@ def validate_combine(
     post_group_known = group_by_set | measure_alias_set | set(carry)
 
     # ── round (a measure alias, after grouping) ─────────────────────────
+    round_measures_seen: set = set()
     for i, spec in enumerate(round_raw):
         prefix = f"combine.round[{i}]"
         if not isinstance(spec, dict):
@@ -285,6 +440,16 @@ def validate_combine(
         round_measure = spec.get("measure")
         if not isinstance(round_measure, str) or round_measure not in measure_alias_set:
             errors[f"{prefix}.measure"] = f"'{round_measure}' is not a declared measure."
+        # N2 (review round 3) - a SECOND rounding rule for the same measure
+        # is never meaningful (the first application already changed the
+        # value the second one would read) and would silently double-round
+        # whichever one runs last - a save-time 422, not a runtime surprise.
+        elif round_measure in round_measures_seen:
+            errors[f"{prefix}.measure"] = (
+                f"'{round_measure}' already has an earlier rounding rule."
+            )
+        else:
+            round_measures_seen.add(round_measure)
         mode = spec.get("mode")
         if mode not in ROUND_MODES:
             errors[f"{prefix}.mode"] = "Choose 'None' or 'Half up'."
@@ -317,6 +482,15 @@ def validate_combine(
             except FormulaParseError as exc:
                 errors[formula_key] = str(exc)
 
+    # ── AC-10-76's own boolean-type rule for require/drop, SAMPLE-based
+    # (review round 3, B2) - only attempted once every STRUCTURAL check
+    # above is already clean, so a malformed spec (an unknown column, a
+    # bad alias, ...) is never masked by a confusing second error from
+    # evaluating a formula that could not even be trusted to mean what it
+    # says yet ─────────────────────────────────────────────────────────
+    if sample and not errors:
+        errors.update(_sample_boolean_errors(combine, sample))
+
     return errors
 
 
@@ -327,24 +501,6 @@ def validate_combine(
 class CombineResult:
     rows: List[Dict[str, Any]]
     metadata: Dict[str, Any]
-
-
-def _truthy(value: Any) -> bool:
-    """A permissive boolean coercion for a require/drop formula's result -
-    every test formula here already evaluates to a genuine ``bool`` via a
-    comparison/``or``, so this only needs to be forgiving, never clever."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    if isinstance(value, str):
-        token = value.strip().lower()
-        if token in {"t", "true", "y", "yes", "1"}:
-            return True
-        if token in {"f", "false", "n", "no", "0"}:
-            return False
-        return bool(token)
-    return bool(value)
 
 
 def _coerce_measure_number(value: Any, source_name: str) -> Decimal:
@@ -433,16 +589,24 @@ def apply_combine(rows: Sequence[Dict[str, Any]], combine: Dict[str, Any]) -> Co
             row[alias] = value
 
         # ── require (AC-10-77 stage 2, first falsy excludes) ────────────
+        # review round 3 (B2) - the result goes through the SAME strict
+        # boolean coercion `not`/`and`/`or`/`if` already use
+        # (``formula.to_bool_strict``), never a permissive second dialect:
+        # a non-boolean result (a raw string/number column with no
+        # comparison) is fail-closed exactly like a raising formula -
+        # "require_error" - never silently treated as truthy (which would
+        # exclude NOTHING, the exact opposite of a require gate's job).
         if not excluded:
             for spec in require_specs:
                 formula = spec.get("formula")
                 try:
                     result = evaluate_formula(formula, None, facts=row)
+                    passed = to_bool_strict(result)
                 except FormulaError:
                     excluded = True
                     reason = "require_error"
                     break
-                if not _truthy(result):
+                if not passed:
                     excluded = True
                     reason = spec.get("reason")
                     break
@@ -521,12 +685,24 @@ def apply_combine(rows: Sequence[Dict[str, Any]], combine: Dict[str, Any]) -> Co
     output_rows: List[Dict[str, Any]] = []
     for out_row in grouped_rows:
         matched_spec: Optional[Dict[str, Any]] = None
-        for spec in drop_specs:
+        for drop_index, spec in enumerate(drop_specs):
             formula = spec.get("formula")
-            # A drop formula that raises is a named task error, never a
-            # silent keep (AC-10-79) - propagates uncaught.
-            result = evaluate_formula(formula, None, facts=out_row)
-            if _truthy(result):
+            # A drop formula that raises - OR evaluates to something other
+            # than a genuine boolean, through the SAME strict coercion the
+            # require stage now uses (review round 3, B2: the previous
+            # permissive dialect treated any non-empty string as truthy,
+            # which DROPPED EVERY GROUP for a formula that merely named a
+            # string column) - is a named task error, never a silent keep
+            # (AC-10-79): propagates as ``CombineDropError``, carrying the
+            # rule's index/name so a caller need not re-walk ``combine``.
+            try:
+                result = evaluate_formula(formula, None, facts=out_row)
+                matched = to_bool_strict(result)
+            except FormulaError as exc:
+                raise CombineDropError(
+                    drop_index, str(spec.get("name")), str(exc)
+                ) from exc
+            if matched:
                 matched_spec = spec
                 break
         if matched_spec is None:

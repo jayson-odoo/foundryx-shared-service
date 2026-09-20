@@ -52,7 +52,7 @@ from ..sources import (
 from ..sql_source.hashing import compared_columns_for, row_hash
 from ..sql_source.source import CURSOR_COLUMN, CURSOR_MARK, MAX_EXTRACT_ROWS
 from .client import HttpApiClient, HttpTransportError
-from .combine import apply_combine
+from .combine import apply_combine, combine_output_columns
 from .envelope import ENVELOPE_LIST, parse_page
 from .errors import HttpSourceError
 from .lookups import AliasCollisionError, build_index, effective_result_columns, merge_onto_rows
@@ -189,7 +189,25 @@ class HttpApiSource:
         # preview ran without the alias would never register as `updated` -
         # AC-10-06's whole point. An operator's EXPLICIT `comparedFields`
         # still wins (`compared_columns_for` only ever narrows to it).
-        effective_columns = effective_result_columns(self.result_columns, self.lookups)
+        #
+        # review round 3 (B1) - a combine-carrying task's rows are the
+        # COMBINED shape by the time de-dup/hashing sees them (AC-10-80):
+        # ``self.result_columns``/``self.lookups`` name PRE-combine raw
+        # and lookup columns that simply do not exist on a combined row
+        # (a ``groupBy``/``measures[].source`` name is CONSUMED, never
+        # projected) - hashing a combined row against that stale set
+        # compares columns that are always absent, which silently kills
+        # change detection forever (proven live: groupBy ``g``, measure
+        # ``v`` -> ``total``; a second run with a different ``v`` reported
+        # ``updated_count == 0``). ``combine_output_columns`` is the SAME
+        # helper the save-time gate and the preview route use, so the
+        # compared set, the Mapping/preview picker and the row hash can
+        # never drift against one another for a combine-carrying task.
+        effective_columns = (
+            combine_output_columns(self.combine)
+            if self.combine
+            else effective_result_columns(self.result_columns, self.lookups)
+        )
         configured_compared = [str(c) for c in (config.get("comparedFields") or [])]
         self.compared_columns = compared_columns_for(
             configured=configured_compared,
