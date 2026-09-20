@@ -315,6 +315,17 @@ export function ResourceForm<T>({ config }: ResourceFormProps<T>) {
                 href={backHref ?? config.backHref}
                 onClick={(e) => {
                   if (!editing || !config.isDirty) return;
+                  // Modifier/middle clicks (open in new tab/window) bypass
+                  // the dirty-guard - the browser's own default handles
+                  // them, never our SPA push.
+                  if (
+                    e.metaKey ||
+                    e.ctrlKey ||
+                    e.shiftKey ||
+                    e.altKey ||
+                    e.button === 1
+                  )
+                    return;
                   e.preventDefault();
                   const target = backHref ?? config.backHref;
                   guard(() => router.push(target));

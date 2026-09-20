@@ -122,4 +122,28 @@ describe('useAutocountPullListConfig (AC-10-38)', () => {
     const result = config();
     expect(result.current.getEntityId?.({ kind: 'key', id: 'k1' } as never)).toBe('k1');
   });
+
+  it('the Keys table renders an "actions" column carrying the row ActionMenu (browser round 2 defect, AC-10-37/38: Revoke was unreachable with no column and rowHref "#")', async () => {
+    listPullKeys.mockResolvedValueOnce([]);
+    const result = config();
+    await act(async () => {
+      await result.current.fetcher({ page: 0, pageSize: 25, segment: 'keys' });
+    });
+    await waitFor(() => expect(result.current.columns.some((c) => c.id === 'name')).toBe(true));
+    expect(result.current.columns.some((c) => c.id === 'actions')).toBe(true);
+  });
+
+  it('Revoke is offered for an active key but hidden entirely for an already-revoked one (no disabled dead control)', () => {
+    const result = config();
+    const revoke = result.current.actions.find((a) => a.id === 'revoke')!;
+    const activeRow = { kind: 'key', id: 'k1', revokedAt: null } as never;
+    const revokedRow = { kind: 'key', id: 'k2', revokedAt: '2026-09-01T00:00:00Z' } as never;
+    expect(revoke.isVisible?.([activeRow])).toBe(true);
+    expect(revoke.isVisible?.([revokedRow])).toBe(false);
+  });
+
+  it('rowHref opts Key rows out of navigation ("#") since Snapshots is the only row with a detail page', () => {
+    const result = config();
+    expect(result.current.rowHref?.({ kind: 'key', id: 'k1' } as never)).toBe('#');
+  });
 });

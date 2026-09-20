@@ -141,6 +141,17 @@ export function PageHeader({
                           href={crumb.href}
                           onClick={(e) => {
                             if (!guardNav) return;
+                            // Modifier/middle clicks (open in new tab/window)
+                            // bypass the dirty-guard - the browser's own
+                            // default handles them, never our SPA push.
+                            if (
+                              e.metaKey ||
+                              e.ctrlKey ||
+                              e.shiftKey ||
+                              e.altKey ||
+                              e.button === 1
+                            )
+                              return;
                             e.preventDefault();
                             const target = crumb.href as string;
                             guardNav(() => router.push(target));

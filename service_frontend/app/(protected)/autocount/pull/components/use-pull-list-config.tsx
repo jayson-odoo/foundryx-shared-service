@@ -6,8 +6,9 @@ import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
 import { Badge } from '@/components/ui/badge';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { OverflowPills } from '@/components/platform/overflow-pills';
+import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { StatusBadge } from '@/components/platform/status-badge';
-import type { ResourceListConfig } from '@/components/platform/resource-list';
+import type { ResourceAction, ResourceListConfig } from '@/components/platform/resource-list';
 import { useDatetime } from '@/hooks/use-datetime';
 import { autocountService } from '@/services/autocount-service';
 import type { AutocountCompany, AutocountPullSnapshotStatus } from '@/types/autocount';
@@ -32,6 +33,9 @@ function companyName(companies: AutocountCompany[], id: string): string {
   return companies.find((c) => c.id === id)?.name ?? id;
 }
 
+/** A click inside the row's action cell must not also open the row. */
+const stopRowClick = (event: React.MouseEvent) => event.stopPropagation();
+
 /**
  * `/autocount/pull` (AC-10-38) - ONE `ResourceList`, Keys | Snapshots as an
  * N-way segment (rendered as a `SearchSelect` by the shell). Columns/actions
@@ -49,6 +53,31 @@ export function useAutocountPullListConfig({
   const [activeSegment, setActiveSegment] = useState<'keys' | 'snapshots'>('keys');
 
   return useMemo<ResourceListConfig<AutocountPullListRow>>(() => {
+    // Hoisted so the Keys table's own `actions` column (below) and the
+    // config-level `actions` field (bulk/card surfaces) share the SAME
+    // registry - browser round 2, AC-10-37/38: Revoke was declared here but
+    // never reachable because no column rendered an `ActionMenu` for the
+    // (non-card) table view, and Key rows carry `rowHref: '#'` so there is
+    // no row-click affordance either.
+    const actions: ResourceAction<AutocountPullListRow>[] = [
+      {
+        id: 'revoke',
+        label: 'Revoke',
+        tone: 'destructive',
+        surfaces: { row: true },
+        permission: AC_PULL_MANAGE,
+        // A revoked key offers no Revoke at all (foolproof-UI, the same
+        // dead-control rule the Entities tab's "Edit first-run window"
+        // follows) - the row's `StatusBadge` already reads "Revoked", so a
+        // second, disabled affordance would only invite a needless click.
+        isVisible: (rows) => rows[0]?.kind === 'key' && !rows[0].revokedAt,
+        // The CORE deferred-action grace window (AC-10-38) - never a
+        // hand-rolled confirm dialog. Registered server-side (S3/S4)
+        // beside `autocount_etl_task.repush`.
+        deferred: { actionKey: 'autocount_pull_api_key.revoke', entityType: 'autocount_pull_api_key' },
+      },
+    ];
+
     const keyColumns: ColumnDef<AutocountPullListRow>[] = [
       {
         id: 'name',
@@ -126,6 +155,28 @@ export function useAutocountPullListConfig({
           ) : null,
         size: 120,
         enableSorting: false,
+      },
+      {
+        // The table view renders the row `…` menu from an explicit column
+        // (the shell only auto-wraps it in CARD view) - same shape the
+        // Entities tab and Terminology/Connections/Workflows use.
+        id: 'actions',
+        meta: { reorderable: false },
+        header: () => null,
+        cell: ({ row, table }) =>
+          row.original.kind === 'key' ? (
+            <div onClick={stopRowClick} className="flex justify-end">
+              <ActionMenu
+                actions={actions}
+                rows={[row.original]}
+                runtime={{ reload: table.options.meta?.reload ?? (() => {}) }}
+                surface="row"
+              />
+            </div>
+          ) : null,
+        size: 60,
+        enableSorting: false,
+        enableHiding: false,
       },
     ];
 
@@ -278,21 +329,7 @@ export function useAutocountPullListConfig({
       searchPlaceholder: activeSegment === 'snapshots' ? 'Search snapshots' : 'Search keys',
       filterFields: [],
       exportColumns: [],
-      actions: [
-        {
-          id: 'revoke',
-          label: 'Revoke',
-          tone: 'destructive',
-          surfaces: { row: true },
-          permission: AC_PULL_MANAGE,
-          isVisible: (rows) => rows[0]?.kind === 'key',
-          isDisabled: (rows) => rows[0]?.kind === 'key' && Boolean(rows[0].revokedAt),
-          // The CORE deferred-action grace window (AC-10-38) - never a
-          // hand-rolled confirm dialog. Registered server-side (S3/S4)
-          // beside `autocount_etl_task.repush`.
-          deferred: { actionKey: 'autocount_pull_api_key.revoke', entityType: 'autocount_pull_api_key' },
-        },
-      ],
+      actions,
       enableStatusViews: false,
       segments: [
         { id: 'keys', label: 'Keys' },
