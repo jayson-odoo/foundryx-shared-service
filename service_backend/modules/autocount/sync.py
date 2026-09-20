@@ -78,7 +78,6 @@ from .mapping import (
 )
 from .models import (
     DELIVERY_MODE_PULL,
-    DELIVERY_MODE_PUSH,
     ETL_STATUS_ACTIVE,
     PULL_SNAPSHOT_STATUS_BUILDING,
     RUN_ABORTED,
@@ -1910,9 +1909,21 @@ def _run_paged_sql_db(
     # ── auto-push (plan 22 §2.6, unchanged contract) ─────────────────────────
     pushed_count = 0
     push_summary: Optional[Dict[str, Any]] = None
-    # sprint-5/10 (AC-10-12) - same delivery-mode gate as the plain path
-    # above: a ``pull`` task is extracted and staged, never auto-pushed.
-    if config.etl_status == ETL_STATUS_ACTIVE and config.delivery_mode == DELIVERY_MODE_PUSH:
+    # sprint-5/10 review round 1 kill-test finding (AC-10-12) - the twin of
+    # the plain path's own note above: a ``delivery_mode == DELIVERY_MODE_
+    # PUSH`` condition used to sit here too. It is EQUALLY dead code, by the
+    # SAME reasoning - ``_run_paged_sql_db`` (this function) is only ever
+    # dispatched into from ``run_autocount_sync`` AFTER that function's own
+    # pull short-circuit has already returned for a pull-mode task (line
+    # ~354), so ``config.delivery_mode`` can only be ``push`` by the time
+    # execution reaches here either. Confirmed by
+    # ``tests/test_s10_s3_review1_dead_gates.py::
+    # test_pull_mode_never_reaches_the_paged_dispatch_or_either_inline_gate``
+    # (a SOURCE_IMPL_SQL_DB pull-mode config, the only source impl that can
+    # reach this function at all): ``source_factory`` and this function are
+    # both never called. Removed rather than kept as an untestable no-op a
+    # reviewer could mistake for coverage.
+    if config.etl_status == ETL_STATUS_ACTIVE:
         from .services.sync_service import SyncService
 
         push_summary = SyncService(db).auto_push(

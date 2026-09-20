@@ -561,6 +561,18 @@ class AcPullSnapshot(AutocountBase):
             "ix_ac_pull_snapshot_triple", "tenant_id", "company_id", "entity_type"
         ),
         Index("ix_ac_pull_snapshot_status", "tenant_id", "status"),
+        # sprint-5/10 review round 1 SHOULD-FIX 3 - EXPLICIT, named indexes
+        # (matching migration 0020's own ``add_index`` names exactly) for
+        # ``job_id``/``expires_at``, so ``create_all`` (this suite's SQLite
+        # rig, and any create_all-first Postgres host) and the migration
+        # agree on ONE index per column - a column-level ``index=True`` here
+        # PLUS the migration's explicit ``CREATE INDEX`` minted TWO indexes
+        # on the same column on the lane Postgres (confirmed:
+        # ``ix_ac_pull_snapshot_expires_at`` beside the auto-named
+        # ``ix_app_autocount_ac_pull_snapshot_expires_at``, same for
+        # ``job_id``).
+        Index("ix_ac_pull_snapshot_expires_at", "expires_at"),
+        Index("ix_ac_pull_snapshot_job", "job_id"),
         # sprint-5/10 review round 1 SHOULD-FIX 4 (AC-10-26) - AT MOST ONE
         # ``building`` snapshot per (tenant, company, entity) triple, enforced
         # by the DATABASE, not just ``PullService.request_build``'s
@@ -587,8 +599,10 @@ class AcPullSnapshot(AutocountBase):
     company_code = Column(String, nullable=True)
     status = Column(String, nullable=False, default=PULL_SNAPSHOT_STATUS_BUILDING)
     # Core ``background_jobs.id`` of the build job - plain indexed column,
-    # never an FK (BL-030).
-    job_id = Column(String, nullable=True, index=True)
+    # never an FK (BL-030). Indexed by ``ix_ac_pull_snapshot_job`` above
+    # (review round 1 SHOULD-FIX 3) - no ``index=True`` here too, or
+    # ``create_all`` mints a SECOND, auto-named index on the same column.
+    job_id = Column(String, nullable=True)
     record_count = Column(Integer, nullable=False, default=0)
     complete = Column(Boolean, nullable=False, default=False)
     content_hash = Column(String, nullable=True)
@@ -607,7 +621,9 @@ class AcPullSnapshot(AutocountBase):
     # The BUILD END (never its start) - a 25-minute build still leaves a full
     # TTL window of review time (plan §2.4).
     extracted_at = Column(UTCDateTime(), nullable=True)
-    expires_at = Column(UTCDateTime(), nullable=True, index=True)
+    # Indexed by ``ix_ac_pull_snapshot_expires_at`` above (review round 1
+    # SHOULD-FIX 3) - see that index's own comment.
+    expires_at = Column(UTCDateTime(), nullable=True)
 
 
 class AcPullSnapshotRow(AutocountBase):
@@ -622,12 +638,18 @@ class AcPullSnapshotRow(AutocountBase):
     __tablename__ = "ac_pull_snapshot_row"
     __table_args__ = (
         Index("ix_ac_pull_snapshot_row_snapshot", "tenant_id", "snapshot_id"),
+        # sprint-5/10 review round 1 SHOULD-FIX 3 - explicit, named (matches
+        # migration 0020's ``ix_ac_pull_snapshot_row_company``); no
+        # ``index=True`` on the column below too, or ``create_all`` mints a
+        # second, auto-named duplicate on the same column (see the sibling
+        # comment on ``AcPullSnapshot.expires_at`` above).
+        Index("ix_ac_pull_snapshot_row_company", "company_id"),
     )
 
     tenant_id = Column(String, primary_key=True)
     snapshot_id = Column(String, primary_key=True)
     row_index = Column(Integer, primary_key=True)
-    company_id = Column(String, nullable=False, index=True)
+    company_id = Column(String, nullable=False)
     source_ref = Column(String, nullable=False)
     # Exactly ``CanonicalRecord.sink_payload()`` - the same shape a push
     # delivers (AC-10-23's content-hash formula depends on this being the

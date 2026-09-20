@@ -78,7 +78,7 @@ class SnapshotService:
         self.db = db
         self.repo = PullSnapshotRepository(db)
 
-    def create_building(
+    def add_building_row(
         self,
         tenant_id: str,
         company_id: str,
@@ -88,6 +88,14 @@ class SnapshotService:
         requested_via: str,
         requested_by: Optional[str] = None,
     ) -> AcPullSnapshot:
+        """Construct + ``flush`` (never ``commit``) ONE ``building`` row -
+        the shared core ``create_building`` and ``PullService.request_build``
+        (review round 1 SHOULD-FIX 4) both build on. Kept separate from
+        ``create_building`` precisely so a caller that needs the INSERT
+        inside its OWN transaction scope (a ``begin_nested`` SAVEPOINT, so a
+        losing INSERT's ``IntegrityError`` never discards unrelated
+        already-pending session state) never has to fight a ``commit()``
+        buried inside this helper."""
         snapshot = AcPullSnapshot(
             tenant_id=tenant_id,
             company_id=company_id,
@@ -98,6 +106,26 @@ class SnapshotService:
             requested_by=requested_by,
         )
         self.repo.add(snapshot)
+        return snapshot
+
+    def create_building(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        *,
+        company_code: Optional[str],
+        requested_via: str,
+        requested_by: Optional[str] = None,
+    ) -> AcPullSnapshot:
+        snapshot = self.add_building_row(
+            tenant_id,
+            company_id,
+            entity_type,
+            company_code=company_code,
+            requested_via=requested_via,
+            requested_by=requested_by,
+        )
         self.db.commit()
         self.db.refresh(snapshot)
         return snapshot
@@ -302,21 +330,27 @@ class PullService:
         # None``/not-building check above before either commits - the
         # partial unique index on ``(tenant_id, company_id, entity_type)
         # WHERE status = 'building'`` (``models.py``, migration 0020) is
-        # what actually closes that race. The LOSER's commit raises
-        # ``IntegrityError``; it rolls back its own attempt and RE-ATTACHES
-        # to the winner, exactly like the re-attach branch above - never a
-        # second extraction, never a raw 500.
+        # what actually closes that race. The INSERT runs inside its own
+        # SAVEPOINT (``begin_nested``, the SAME pattern ``NumberingRepository.
+        # get_or_create_counter_for_update`` already uses for this exact
+        # class of race) so the LOSER's ``IntegrityError`` unwinds only THIS
+        # attempt - a bare top-level ``self.db.rollback()`` here would
+        # discard any OTHER, unrelated work this session already staged
+        # earlier in the same request, which a losing build attempt has no
+        # business touching. The loser then RE-ATTACHES to the winner,
+        # exactly like the re-attach branch above - never a second
+        # extraction, never a raw 500.
         try:
-            snapshot = SnapshotService(self.db).create_building(
-                tenant_id,
-                company_id,
-                entity_type,
-                company_code=company.sorento_company_code,
-                requested_via=requested_via,
-                requested_by=requested_by,
-            )
+            with self.db.begin_nested():
+                snapshot = SnapshotService(self.db).add_building_row(
+                    tenant_id,
+                    company_id,
+                    entity_type,
+                    company_code=company.sorento_company_code,
+                    requested_via=requested_via,
+                    requested_by=requested_by,
+                )
         except IntegrityError:
-            self.db.rollback()
             winner = self.repo.latest_for_triple(tenant_id, company_id, entity_type)
             if winner is not None and winner.status == PULL_SNAPSHOT_STATUS_BUILDING:
                 return winner
