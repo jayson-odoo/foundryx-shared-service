@@ -87,9 +87,12 @@ class PullGatewayError(Exception):
             "companyCode": self.company_code,
             "entity": self.entity,
         }
-        return JSONResponse(
-            status_code=self.status_code, content=body, headers=self.headers or None
-        )
+        # Security round 1 MEDIUM 6 - this surface serves a customer's ERP
+        # master data behind a bearer-style key; nothing on it is ever
+        # cacheable by an intermediary, success OR error.
+        headers = {"Cache-Control": "no-store"}
+        headers.update(self.headers)
+        return JSONResponse(status_code=self.status_code, content=body, headers=headers)
 
 
 def _service_enabled(db: Session, tenant_id: str) -> bool:
@@ -104,13 +107,14 @@ def _service_enabled(db: Session, tenant_id: str) -> bool:
 
 
 def resolve_pull_key(request: Request, db: Session) -> AcPullApiKey:
-    """Enforces the ``pull`` throttle scope, then resolves ``X-API-Key``.
+    """Enforces the ``pull`` throttle scope, then resolves ``X-API-Key``,
+    then the per-KEY request budget.
 
-    Raises ``PullGatewayError``: 429 ``TOO_MANY_REQUESTS`` (over the
-    throttle, before key resolution even runs), 401 ``INVALID_API_KEY``
-    (missing/malformed/unknown/revoked, uniform - no oracle), 403
-    ``SERVICE_NOT_ENABLED`` (module inactive for this tenant, or the tenant
-    is suspended/archived).
+    Raises ``PullGatewayError``: 429 ``TOO_MANY_REQUESTS`` (over the IP
+    throttle, before key resolution even runs, OR over the per-key budget
+    below), 401 ``INVALID_API_KEY`` (missing/malformed/unknown/revoked,
+    uniform - no oracle), 403 ``SERVICE_NOT_ENABLED`` (module inactive for
+    this tenant, or the tenant is suspended/archived).
     """
     ip = client_ip(request)
     throttle = ThrottleService(db)
@@ -132,4 +136,19 @@ def resolve_pull_key(request: Request, db: Session) -> AcPullApiKey:
         raise PullGatewayError(
             403, "SERVICE_NOT_ENABLED", "This service is not enabled for this tenant."
         )
+
+    # Security round 1 MEDIUM 4 - a per-KEY request budget, additive to
+    # AC-10-35's own per-IP/401-only bucket above: a resolvable key that is
+    # simply narrowly scoped can otherwise probe unlimited out-of-scope ids
+    # (403/404/409, never a 401) at zero throttle cost. Counted on EVERY
+    # authenticated call, success or business error alike - never merely on
+    # a failure, since the exposure is request VOLUME, not credential abuse.
+    try:
+        throttle.enforce_pull_key(key_id=key_row.id)
+    except Throttled as exc:
+        raise PullGatewayError(
+            429, "TOO_MANY_REQUESTS", "Too many requests for this key. Try again shortly."
+        ).with_retry_after(exc.retry_after_seconds)
+    throttle.record_pull_key_request(key_id=key_row.id)
+
     return key_row

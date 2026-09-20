@@ -30,6 +30,7 @@ from ..repositories import (
     PullAuditRepository,
     PullSnapshotRepository,
 )
+from .company_service import CompanyNotFound
 from .pull_service import MAX_PULL_PAGE_SIZE, PullBuildCooldownError, PullService
 
 # entity=`products`/`stock_balances` on the wire (Appendix A2), translated by
@@ -154,13 +155,24 @@ class PullGatewayService:
     def build(
         self, key_row: AcPullApiKey, company_code_raw: str, internal_entity: str
     ) -> Tuple[AcCompany, AcPullSnapshot]:
-        company = CompanyRepository(self.db).get_by_sorento_company_code(
+        # Security round 1 LOW 7 - ALL matches, never pick one arbitrarily.
+        # `set_sink_target` does not (yet) prevent two companies in one
+        # tenant from sharing a code (backlogged, not fixed in this slice -
+        # existing data unknown), so the gateway itself must refuse rather
+        # than silently resolve a DB-order-dependent "first" row.
+        matches = CompanyRepository(self.db).find_by_sorento_company_code(
             key_row.tenant_id, company_code_raw
         )
-        if company is None:
+        if not matches:
             raise PullGatewayError(
                 404, "UNKNOWN_COMPANY", "No company with that code for this key."
             )
+        if len(matches) > 1:
+            raise PullGatewayError(
+                409, "AMBIGUOUS_COMPANY",
+                "More than one company in this tenant shares that code.",
+            )
+        company = matches[0]
         if company.id not in (key_row.company_ids or []):
             raise PullGatewayError(
                 403, "COMPANY_NOT_ALLOWED",
@@ -200,6 +212,13 @@ class PullGatewayService:
                 "A build was requested for this book/entity less than 60 seconds ago.",
                 company_id=company.id,
             ).with_retry_after(exc.retry_after_seconds)
+        except CompanyNotFound:
+            # Security round 1 HIGH 1 - a TOCTOU race (the company vanished
+            # between our own resolution above and this call's internal
+            # re-fetch): the contract's own 404, never a bare 500.
+            raise PullGatewayError(
+                404, "UNKNOWN_COMPANY", "No company with that code for this key."
+            )
         return company, snapshot
 
     # ── reads (GET /snapshots/{id}[/rows], AC-10-30/32/33) ──────────────

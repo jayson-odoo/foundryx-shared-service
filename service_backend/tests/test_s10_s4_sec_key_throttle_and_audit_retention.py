@@ -179,13 +179,18 @@ def test_prune_pull_snapshots_also_prunes_old_audit_rows(db):
     )
     db.add_all([old_row, recent_row])
     db.commit()
+    # Capture ids BEFORE the retention delete + its commit - `commit()`
+    # expires ORM instances by default, and re-reading an attribute off a
+    # row the sweep just deleted raises `ObjectDeletedError`, not a
+    # meaningful assertion failure.
+    old_id, recent_id = old_row.id, recent_row.id
 
     result = prune_pull_snapshots(db, now=now)
     assert result.get("auditPruned", 0) >= 1
 
     remaining_ids = {row.id for row in db.query(AcPullAudit).all()}
-    assert old_row.id not in remaining_ids
-    assert recent_row.id in remaining_ids
+    assert old_id not in remaining_ids
+    assert recent_id in remaining_ids
 
 
 # ── kill tests ────────────────────────────────────────────────────────────

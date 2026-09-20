@@ -12,6 +12,13 @@ therefore parsed MANUALLY: this router never lets FastAPI's automatic
 Pydantic body/query binding raise, since that raises straight past this
 file's own error handling and into core's global handler.
 
+Security round 1 (independent Opus review, HIGH 1) - EVERY route also
+catches a bare ``Exception``, never only ``PullGatewayError``: an unexpected
+failure anywhere downstream (a driver-level ``OverflowError``, a race, a
+future bug) must still render the flat envelope, still write one audit row,
+and must NEVER leak a traceback/exception text into the body - it is logged
+server-side instead.
+
 Router stays thin: every DB touch and business decision lives in
 ``PullAuthentication``/``PullGatewayService``/``PullService``/
 ``SnapshotService`` (already built by S3) - this file only parses, calls,
@@ -20,8 +27,10 @@ audits and shapes the HTTP response.
 from __future__ import annotations
 
 import json
+import logging
+import re
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -40,18 +49,63 @@ from ..services.pull_gateway_service import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+# Security round 1 MEDIUM 3 - an unauthenticated caller must never make this
+# gateway read/echo an unbounded body. Appendix A does not name a limit, so
+# a generous-for-a-two-field-JSON-body 16 KB is the cap; over it is a flat
+# 413, never a native starlette/FastAPI body-size error.
+MAX_BODY_BYTES = 16 * 1024
+# Security round 1 HIGH 1 - `page` must never reach the repository layer
+# unbounded (the PROVEN `OverflowError`/"OFFSET must be bigint" path).
+# `pageSize` already clamps (AC-10-33); `page` is REJECTED instead, since a
+# consumer paging past a legitimate `totalPages` is already served an empty
+# `rows` array (AC-10-33) - a page this large is never a legitimate request.
+MAX_PAGE = 10**6
+# Security round 1 MEDIUM 3 - a value echoed into an error body (from a
+# request that may not even be authenticated yet) is capped and sanitised
+# regardless of size/type.
+MAX_ECHO_LEN = 64
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+NO_STORE_HEADERS = {"Cache-Control": "no-store"}
+
+
+def _json_response(status_code: int, content: Any, headers: Optional[dict] = None) -> JSONResponse:
+    """Every gateway response - success or error - carries `Cache-Control:
+    no-store` (security round 1 MEDIUM 6): this surface serves a customer's
+    ERP master data behind a bearer-style key, never cacheable by an
+    intermediary."""
+    merged = dict(NO_STORE_HEADERS)
+    if headers:
+        merged.update(headers)
+    return JSONResponse(status_code=status_code, content=content, headers=merged)
+
+
+def _safe_echo(value: Any) -> Optional[str]:
+    """Security round 1 MEDIUM 3 - never reflect an unbounded/non-string/
+    control-character value into a response body, authenticated or not. A
+    non-string value (e.g. a JSON object where Appendix A6 expects a
+    string) echoes as ``None`` rather than leaking its raw shape."""
+    if not isinstance(value, str):
+        return None
+    return _CONTROL_CHARS_RE.sub("", value)[:MAX_ECHO_LEN]
 
 
 async def _read_json_body(request: Request) -> Any:
-    """Never raises - a missing/empty/malformed body reads as ``{}``, which
-    the caller's OWN validation turns into the flat 422 (Appendix A6), never
-    a native ``RequestValidationError``."""
+    """Never raises `RequestValidationError` - a missing/empty/malformed
+    body reads as ``{}``, which the caller's OWN validation turns into the
+    flat 422 (Appendix A6). An OVERSIZED body raises `PullGatewayError`
+    (413) directly - checked on the RAW bytes, before `json.loads` is even
+    attempted (security round 1 MEDIUM 3)."""
     try:
         raw_bytes = await request.body()
     except Exception:  # noqa: BLE001 - defensive; a body read genuinely never fails here
         return {}
     if not raw_bytes:
         return {}
+    if len(raw_bytes) > MAX_BODY_BYTES:
+        raise PullGatewayError(413, "PAYLOAD_TOO_LARGE", "Request body is too large.")
     try:
         return json.loads(raw_bytes)
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -70,6 +124,25 @@ def _parse_int_query(request: Request, name: str, default: int) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return default
+
+
+def _parse_bounded_page(request: Request, *, minimum: int, maximum: int) -> Tuple[Optional[int], bool]:
+    """Security round 1 HIGH 1 - unlike ``pageSize`` (silently clamped),
+    ``page`` is REJECTED outright when out of range: ``(value, True)`` on
+    success, ``(None, False)`` when missing bounds validation should 422.
+    Handles an arbitrarily large digit string with no `OverflowError` (a
+    Python `int()` never overflows; the danger was always downstream, at
+    the point a huge value gets bound as a SQL parameter)."""
+    raw = request.query_params.get("page")
+    if raw is None:
+        return minimum, True
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None, False
+    if value < minimum or value > maximum:
+        return None, False
+    return value, True
 
 
 @dataclass
@@ -117,25 +190,53 @@ def _finalize(db: Session, ctx: _CallContext, action: str, status_code: int) -> 
     )
 
 
+def _internal_error_response(
+    db: Session,
+    ctx: _CallContext,
+    action: str,
+    *,
+    company_code: Optional[str] = None,
+    entity: Optional[str] = None,
+) -> JSONResponse:
+    """Security round 1 HIGH 1 - the LAST-RESORT net: any exception this
+    router's own `except PullGatewayError` did not anticipate. Logged
+    server-side WITH the traceback (`logger.exception`, called from inside
+    the `except` block so `sys.exc_info()` is still live); the response body
+    carries only a stable, generic code/message - never the exception's own
+    text, class name, or a stack frame."""
+    logger.exception("autocount pull gateway internal error (action=%s)", action)
+    _finalize(db, ctx, action, 500)
+    body = {
+        "code": "INTERNAL",
+        "message": "An internal error occurred.",
+        "companyCode": company_code,
+        "entity": entity,
+    }
+    return _json_response(500, body)
+
+
 # ── POST /snapshots (AC-10-29/30/31) ─────────────────────────────────────
 
 
 @router.post("/snapshots")
 async def build_snapshot(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
-    raw = await _read_json_body(request)
-    company_code_hint = raw.get("companyCode") if isinstance(raw, dict) else None
-    entity_hint = raw.get("entity") if isinstance(raw, dict) else None
     ctx = _CallContext()
+    company_code_hint: Optional[str] = None
+    entity_hint: Optional[str] = None
     try:
+        raw = await _read_json_body(request)
+        company_code_hint = _safe_echo(raw.get("companyCode")) if isinstance(raw, dict) else None
+        entity_hint = _safe_echo(raw.get("entity")) if isinstance(raw, dict) else None
+
         key_row = resolve_pull_key(request, db)
         ctx.key_row = key_row
 
-        company_code_raw = raw.get("companyCode") if isinstance(raw, dict) else None
-        entity_wire = raw.get("entity") if isinstance(raw, dict) else None
+        company_code_raw = company_code_hint
+        entity_wire = entity_hint
         if (
-            not isinstance(company_code_raw, str)
+            not company_code_raw
             or not company_code_raw.strip()
-            or not isinstance(entity_wire, str)
+            or not entity_wire
             or not entity_wire.strip()
         ):
             raise PullGatewayError(
@@ -162,12 +263,16 @@ async def build_snapshot(request: Request, db: Session = Depends(get_db)) -> JSO
             "companyCode": company_code_raw,
         }
         _finalize(db, ctx, "build", 202)
-        return JSONResponse(status_code=202, content=body)
+        return _json_response(202, body)
     except PullGatewayError as exc:
         _merge_error_context(ctx, exc)
         exc.with_context(company_code=company_code_hint, entity=entity_hint)
         _finalize(db, ctx, "build", exc.status_code)
         return exc.to_response()
+    except Exception:  # noqa: BLE001 - security round 1 HIGH 1, the last-resort net
+        return _internal_error_response(
+            db, ctx, "build", company_code=company_code_hint, entity=entity_hint
+        )
 
 
 # ── GET /snapshots/{id} (AC-10-30/31/32) ─────────────────────────────────
@@ -190,11 +295,13 @@ def get_snapshot_header_route(
 
         body = gateway_snapshot_header(snapshot)
         _finalize(db, ctx, "get_header", 200)
-        return JSONResponse(status_code=200, content=body)
+        return _json_response(200, body)
     except PullGatewayError as exc:
         _merge_error_context(ctx, exc)
         _finalize(db, ctx, "get_header", exc.status_code)
         return exc.to_response()
+    except Exception:  # noqa: BLE001 - security round 1 HIGH 1, the last-resort net
+        return _internal_error_response(db, ctx, "get_header")
 
 
 # ── GET /snapshots/{id}/rows (AC-10-30/31/33) ────────────────────────────
@@ -205,12 +312,18 @@ def get_snapshot_rows_route(
     snapshot_id: str, request: Request, db: Session = Depends(get_db)
 ) -> JSONResponse:
     ctx = _CallContext()
-    page = max(_parse_int_query(request, "page", 1), 1)
-    page_size = max(_parse_int_query(request, "pageSize", 1000), 1)
-    ctx.page = page
     try:
         key_row = resolve_pull_key(request, db)
         ctx.key_row = key_row
+
+        page, page_ok = _parse_bounded_page(request, minimum=1, maximum=MAX_PAGE)
+        if not page_ok:
+            raise PullGatewayError(
+                422, "INVALID_REQUEST",
+                f"page must be an integer between 1 and {MAX_PAGE}.",
+            )
+        ctx.page = page
+        page_size = max(_parse_int_query(request, "pageSize", 1000), 1)
 
         snapshot = PullGatewayService(db).get_snapshot_for_key(key_row, snapshot_id)
         ctx.company_id = snapshot.company_id
@@ -231,8 +344,10 @@ def get_snapshot_rows_route(
             "rows": [row.payload_json for row in rows],
         }
         _finalize(db, ctx, "get_rows", 200)
-        return JSONResponse(status_code=200, content=body)
+        return _json_response(200, body)
     except PullGatewayError as exc:
         _merge_error_context(ctx, exc)
         _finalize(db, ctx, "get_rows", exc.status_code)
         return exc.to_response()
+    except Exception:  # noqa: BLE001 - security round 1 HIGH 1, the last-resort net
+        return _internal_error_response(db, ctx, "get_rows")

@@ -16,6 +16,7 @@ entity keys, camelCase envelope + row keys, session auth.
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -32,7 +33,11 @@ from ..schemas import (
     PullSnapshotRowsPageOut,
 )
 from ..services.company_service import AutocountServiceError
-from ..services.pull_key_service import PullKeyNotFound, PullKeyService
+from ..services.pull_key_service import (
+    PullKeyNotFound,
+    PullKeyService,
+    PullKeyValidationError,
+)
 from ..services.pull_service import (
     PullBuildCooldownError,
     PullService,
@@ -54,6 +59,15 @@ def _raise(exc: AutocountServiceError) -> None:
             headers={"Retry-After": str(exc.retry_after_seconds)},
         ) from exc
     raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message) from exc
+
+
+def _field_errors(field_errors: dict, message: str) -> JSONResponse:
+    """Mirrors ``routers/companies.py``'s own helper - ONE per-field 422
+    shape for every surface that has one."""
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": {"fieldErrors": field_errors}, "message": message},
+    )
 
 
 # ── pull API keys (sprint-5/10 S4, AC-10-36/37) - ALL gated `.manage`, ──────
@@ -78,13 +92,16 @@ def issue_pull_key(
     current_user: User = Depends(require_permission("autocount.pull.manage")),
     actor_id: str = Depends(get_actor_user_id),
     db: Session = Depends(get_db),
-) -> PullApiKeyIssuedOut:
-    key, plaintext = PullKeyService(db).issue(
-        current_user.tenant_id,
-        name=body.name,
-        company_ids=body.companyIds,
-        created_by=actor_id,
-    )
+):
+    try:
+        key, plaintext = PullKeyService(db).issue(
+            current_user.tenant_id,
+            name=body.name,
+            company_ids=body.companyIds,
+            created_by=actor_id,
+        )
+    except PullKeyValidationError as exc:
+        return _field_errors(exc.field_errors, exc.message)
     return PullApiKeyIssuedOut(key=PullApiKeyOut.model_validate(key), plaintext=plaintext)
 
 

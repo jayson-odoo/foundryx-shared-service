@@ -19,11 +19,17 @@ from typing import List, Optional, Sequence, Tuple
 from sqlalchemy.orm import Session
 
 from ..models import AcPullApiKey
-from ..repositories import PullKeyRepository
+from ..repositories import CompanyRepository, PullKeyRepository
 from .company_service import AutocountServiceError
 
 KEY_SCHEME = "fxa_live_"
 PREFIX_LEN = 8  # chars after the scheme used for the O(1) lookup
+
+# The ONE uniform message for every reason a company id could be rejected at
+# issue time (unknown entirely, or real but in another tenant) - the two
+# cases are deliberately indistinguishable on the wire (security round 1
+# HIGH 2's own "does not reveal whether the id exists in another tenant").
+_UNKNOWN_COMPANY_MESSAGE = "companyIds must name companies that exist in this tenant."
 
 
 class PullKeyNotFound(AutocountServiceError):
@@ -31,6 +37,19 @@ class PullKeyNotFound(AutocountServiceError):
     ALWAYS tenant-scoped (AC-10-47's polymorphic-id rule) - unlike
     ``resolve``, which genuinely does not know the tenant until AFTER it
     resolves the key."""
+
+
+class PullKeyValidationError(AutocountServiceError):
+    """Sprint-5/10 S4 security round 1, HIGH 2 - ``issue()`` rejected
+    ``company_ids`` at SAVE TIME (the polymorphic-stored-id rule: a stored
+    id needs save-time validation AND tenant-scoped resolution at use time -
+    this class was previously missing the first half). ``field_errors``
+    mirrors ``EtlValidationError``'s own per-field 422 shape so the router
+    can render it the same way."""
+
+    def __init__(self, field_errors: dict):
+        super().__init__("The key could not be issued. Fix the highlighted fields.")
+        self.field_errors = field_errors
 
 
 def _hash_key(full_key: str) -> str:
@@ -59,14 +78,36 @@ class PullKeyService:
     ) -> Tuple[AcPullApiKey, str]:
         """Create a key, returning ``(row, full_plaintext_key)``. The
         plaintext is the ONLY time the caller ever sees the full key - never
-        persisted, never re-derivable, never logged."""
+        persisted, never re-derivable, never logged.
+
+        Security round 1 HIGH 2 - ``company_ids`` is validated here, not
+        merely at use time: empty, a repeated id, or ANY id that does not
+        resolve to a company in THIS tenant (unknown entirely, or real but
+        belonging to another tenant - deliberately indistinguishable, see
+        ``_UNKNOWN_COMPANY_MESSAGE``) all raise ``PullKeyValidationError``
+        before a single row is written.
+        """
+        ids = list(company_ids or [])
+        if not ids:
+            raise PullKeyValidationError(
+                {"companyIds": "Choose at least one company."}
+            )
+        if len(ids) != len(set(ids)):
+            raise PullKeyValidationError(
+                {"companyIds": "companyIds must not repeat a company."}
+            )
+        company_repo = CompanyRepository(self.db)
+        for company_id in ids:
+            if company_repo.get(tenant_id, company_id) is None:
+                raise PullKeyValidationError({"companyIds": _UNKNOWN_COMPANY_MESSAGE})
+
         full_key = KEY_SCHEME + secrets.token_urlsafe(32)
         row = AcPullApiKey(
             tenant_id=tenant_id,
             name=(name or "").strip() or "Pull API key",
             key_prefix=_prefix_of(full_key),
             key_hash=_hash_key(full_key),
-            company_ids=list(dict.fromkeys(company_ids or [])),
+            company_ids=ids,
             created_by=created_by,
         )
         self.repo.add(row)

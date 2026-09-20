@@ -27,7 +27,7 @@ from ..models import (
     AcPullSnapshot,
     AcPullSnapshotRow,
 )
-from ..repositories import PullSnapshotRepository
+from ..repositories import PullAuditRepository, PullSnapshotRepository
 from .company_service import AutocountServiceError
 
 # The build-end TTL (AC-10-25). Kept as a module constant rather than an
@@ -43,6 +43,13 @@ BUILD_COOLDOWN_SECONDS = 60
 
 # Retention: keep only the newest N ready snapshots per triple (AC-10-25).
 PULL_SNAPSHOT_RETENTION_KEEP = 3
+
+# Security round 1 (MEDIUM 4) - `ac_pull_audit` has no bound otherwise: one
+# row per gateway call, forever. 90 days matches this module's other
+# retention-by-settings-module-constant precedent (the snapshot TTL above);
+# promoting it to an `app/config.py` setting is a fair follow-up if an
+# operator ever needs to tune it.
+AUTOCOUNT_PULL_AUDIT_RETENTION_DAYS = 90
 
 # A page never serves more than this many rows (AC-10-33: "above max is
 # clamped, not an error").
@@ -223,7 +230,12 @@ def prune_pull_snapshots(db: Session, *, now: Optional[datetime] = None) -> Dict
     every READY snapshot beyond the newest
     ``PULL_SNAPSHOT_RETENTION_KEEP`` per (tenant, company, entity) triple.
     Global (every tenant) - the module's own maintenance sweep, mirroring
-    ``scheduler.sweep_etl_tasks``'s cross-tenant reach."""
+    ``scheduler.sweep_etl_tasks``'s cross-tenant reach.
+
+    Security round 1 (MEDIUM 4) - the SAME tick also prunes ``ac_pull_audit``
+    rows older than ``AUTOCOUNT_PULL_AUDIT_RETENTION_DAYS``, since that table
+    had no retention sweep at all otherwise (unbounded growth, one row per
+    gateway call, forever)."""
     now = now or datetime.now(timezone.utc)
     repo = PullSnapshotRepository(db)
     expired_ids = repo.expired_ids(now)
@@ -236,8 +248,14 @@ def prune_pull_snapshots(db: Session, *, now: Optional[datetime] = None) -> Dict
     ]
     for snapshot_id in retained_over_ids:
         repo.delete(snapshot_id)
+    audit_cutoff = now - timedelta(days=AUTOCOUNT_PULL_AUDIT_RETENTION_DAYS)
+    audit_pruned = PullAuditRepository(db).delete_older_than(audit_cutoff)
     db.commit()
-    return {"expired": len(expired_ids), "retentionPruned": len(retained_over_ids)}
+    return {
+        "expired": len(expired_ids),
+        "retentionPruned": len(retained_over_ids),
+        "auditPruned": audit_pruned,
+    }
 
 
 def snapshot_header(snapshot: AcPullSnapshot) -> Dict[str, Any]:

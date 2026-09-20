@@ -187,28 +187,36 @@ class CompanyRepository:
             .first()
         )
 
-    def get_by_sorento_company_code(
+    def find_by_sorento_company_code(
         self, tenant_id: str, code: str
-    ) -> Optional[AcCompany]:
+    ) -> List[AcCompany]:
         """Sprint-5/10 S4 (AC-10-30) - the gateway's own company resolution:
         case-insensitive, trimmed, WITHIN the given tenant only. Compared in
         Python (not SQL ``lower()``) so this behaves identically on SQLite
-        (tests) and Postgres (prod) - the company set per tenant is small."""
+        (tests) and Postgres (prod) - the company set per tenant is small.
+
+        Returns EVERY match, ordered deterministically (security round 1,
+        LOW 7): the save path does not (yet) prevent two companies in one
+        tenant from sharing a code, so the caller must refuse ambiguity
+        (409 `AMBIGUOUS_COMPANY`) rather than this method silently picking
+        one - an unordered single-row return previously let the DB's own
+        arbitrary row order decide."""
         normalized = (code or "").strip().casefold()
         if not normalized:
-            return None
+            return []
         rows = (
             self.db.query(AcCompany)
             .filter(
                 AcCompany.tenant_id == tenant_id,
                 AcCompany.sorento_company_code.isnot(None),
             )
+            .order_by(AcCompany.created_at.asc(), AcCompany.id.asc())
             .all()
         )
-        for row in rows:
-            if (row.sorento_company_code or "").strip().casefold() == normalized:
-                return row
-        return None
+        return [
+            row for row in rows
+            if (row.sorento_company_code or "").strip().casefold() == normalized
+        ]
 
     def get_by_connection(
         self, tenant_id: str, connection_id: str
@@ -1550,7 +1558,8 @@ class PullKeyRepository:
 
 
 class PullAuditRepository:
-    """Sprint-5/10 S4 (AC-10-27/34) - append-only; no update, no delete."""
+    """Sprint-5/10 S4 (AC-10-27/34) - append-only; no update, only the
+    bulk retention delete below (security round 1, MEDIUM 4)."""
 
     def __init__(self, db: Session):
         self.db = db
@@ -1559,3 +1568,15 @@ class PullAuditRepository:
         self.db.add(row)
         self.db.commit()
         return row
+
+    def delete_older_than(self, cutoff: datetime) -> int:
+        """Retention sweep only - never a single-row delete. The caller
+        (``pull_service.prune_pull_snapshots``) owns the commit."""
+        count = (
+            self.db.query(AcPullAudit).filter(AcPullAudit.created_at < cutoff).count()
+        )
+        if count:
+            self.db.query(AcPullAudit).filter(AcPullAudit.created_at < cutoff).delete(
+                synchronize_session=False
+            )
+        return count
