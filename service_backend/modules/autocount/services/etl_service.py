@@ -1706,7 +1706,21 @@ class EtlService:
         # (never sent at all), not merely ``None`` - an EXPLICIT
         # ``"combine": null`` (the Combine-rows switch turned OFF) must
         # CLEAR, never be silently re-seeded back from the preset.
-        if existing_combine is None and "combine" not in raw:
+        # confirm round 5 (B-2) - ``existing_combine is None`` alone cannot
+        # tell "never configured" apart from "explicitly cleared last save":
+        # ``_validate_http_config`` always writes a ``combine`` key into the
+        # persisted ``source_config`` (even a clear stores ``None``), so a
+        # cleared task's ``config.source_config.get("combine")`` also reads
+        # back ``None`` on the NEXT save. Gate on the KEY's presence in the
+        # PRE-validation stored config instead - present-but-None means "the
+        # operator already decided", genuinely absent (a fresh task, or one
+        # that has never been saved through this HTTP shape) means "seed".
+        combine_key_ever_stored = (
+            config is not None
+            and isinstance(config.source_config, dict)
+            and "combine" in config.source_config
+        )
+        if not combine_key_ever_stored and "combine" not in raw:
             preset_for_combine_seed = HTTP_PRESETS.get(entity_type)
             if preset_for_combine_seed is not None and preset_for_combine_seed.combine:
                 existing_combine = copy.deepcopy(dict(preset_for_combine_seed.combine))
