@@ -561,6 +561,20 @@ class AcPullSnapshot(AutocountBase):
             "ix_ac_pull_snapshot_triple", "tenant_id", "company_id", "entity_type"
         ),
         Index("ix_ac_pull_snapshot_status", "tenant_id", "status"),
+        # sprint-5/10 review round 1 SHOULD-FIX 4 (AC-10-26) - AT MOST ONE
+        # ``building`` snapshot per (tenant, company, entity) triple, enforced
+        # by the DATABASE, not just ``PullService.request_build``'s
+        # read-then-write check (two concurrent Build clicks would otherwise
+        # both pass that check and start two extractions). A ``ready``/
+        # ``failed`` row never collides with this - the predicate is
+        # ``status = 'building'`` only.
+        Index(
+            "uq_ac_pull_snapshot_one_building",
+            "tenant_id", "company_id", "entity_type",
+            unique=True,
+            postgresql_where=Column("status") == PULL_SNAPSHOT_STATUS_BUILDING,
+            sqlite_where=Column("status") == PULL_SNAPSHOT_STATUS_BUILDING,
+        ),
     )
 
     id = Column(String, primary_key=True, default=_uuid)

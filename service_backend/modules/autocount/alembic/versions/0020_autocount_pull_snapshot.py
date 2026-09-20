@@ -17,7 +17,7 @@ Revision ID: 0020_autocount_pull_snapshot   (29 chars <= 32)
 Revises: 0019_autocount_so_ref
 Create Date: 2026-09-20
 """
-from typing import Sequence, Union
+from typing import Any, List, Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
@@ -45,10 +45,30 @@ def _columns(table: str) -> set:
     return {col["name"] for col in inspector.get_columns(table, schema=SCHEMA)}
 
 
+def _indexes(table: str) -> set:
+    inspector = sa.inspect(op.get_bind())
+    if table not in set(inspector.get_table_names(schema=SCHEMA)):
+        return set()
+    return {ix["name"] for ix in inspector.get_indexes(table, schema=SCHEMA)}
+
+
 def add_column(table: str, column: sa.Column) -> None:
-    """Existence-checked ADD (module Alembic house rule)."""
+    """Existence-checked ADD (module Alembic house rule, see 0007's own
+    ``add_column``): a create_all-first host already has this column from
+    ``models.py`` before this migration ever runs - a bare ``op.add_column``
+    would explode with ``DuplicateColumn``."""
     if column.name not in _columns(table):
         op.add_column(table, column, schema=SCHEMA)
+
+
+def add_index(name: str, table: str, columns: List[str], **kwargs: Any) -> None:
+    """Existence-checked CREATE INDEX (module Alembic house rule, see 0002's
+    own ``make_index``): a create_all-first host already has every index
+    ``models.py.__table_args__`` declares before this migration ever runs -
+    a bare ``op.create_index`` would explode with ``DuplicateTable``
+    (Postgres names index-creation failures that way)."""
+    if name not in _indexes(table):
+        op.create_index(name, table, columns, schema=SCHEMA, **kwargs)
 
 
 def upgrade() -> None:
@@ -90,33 +110,25 @@ def upgrade() -> None:
             sa.Column("expires_at", UTCDateTime(), nullable=True),
             schema=SCHEMA,
         )
-    op.create_index(
+    add_index(
         "ix_ac_pull_snapshot_triple",
         "ac_pull_snapshot",
         ["tenant_id", "company_id", "entity_type"],
-        unique=False,
-        schema=SCHEMA,
     )
-    op.create_index(
-        "ix_ac_pull_snapshot_status",
+    add_index("ix_ac_pull_snapshot_status", "ac_pull_snapshot", ["tenant_id", "status"])
+    add_index("ix_ac_pull_snapshot_expires_at", "ac_pull_snapshot", ["expires_at"])
+    add_index("ix_ac_pull_snapshot_job", "ac_pull_snapshot", ["job_id"])
+    # sprint-5/10 review round 1 SHOULD-FIX 4 (AC-10-26) - at most ONE
+    # ``building`` snapshot per (tenant, company, entity) triple, enforced by
+    # the database (mirrors ``models.py``'s own partial unique index - S4
+    # owns the NEXT revision id, so this amends 0020 rather than adding
+    # 0021).
+    add_index(
+        "uq_ac_pull_snapshot_one_building",
         "ac_pull_snapshot",
-        ["tenant_id", "status"],
-        unique=False,
-        schema=SCHEMA,
-    )
-    op.create_index(
-        "ix_ac_pull_snapshot_expires_at",
-        "ac_pull_snapshot",
-        ["expires_at"],
-        unique=False,
-        schema=SCHEMA,
-    )
-    op.create_index(
-        "ix_ac_pull_snapshot_job",
-        "ac_pull_snapshot",
-        ["job_id"],
-        unique=False,
-        schema=SCHEMA,
+        ["tenant_id", "company_id", "entity_type"],
+        unique=True,
+        postgresql_where=sa.text("status = 'building'"),
     )
 
     if "ac_pull_snapshot_row" not in _tables():
@@ -131,20 +143,12 @@ def upgrade() -> None:
             sa.PrimaryKeyConstraint("tenant_id", "snapshot_id", "row_index"),
             schema=SCHEMA,
         )
-    op.create_index(
+    add_index(
         "ix_ac_pull_snapshot_row_snapshot",
         "ac_pull_snapshot_row",
         ["tenant_id", "snapshot_id"],
-        unique=False,
-        schema=SCHEMA,
     )
-    op.create_index(
-        "ix_ac_pull_snapshot_row_company",
-        "ac_pull_snapshot_row",
-        ["company_id"],
-        unique=False,
-        schema=SCHEMA,
-    )
+    add_index("ix_ac_pull_snapshot_row_company", "ac_pull_snapshot_row", ["company_id"])
 
     # Runs on BOTH orderings (create_all-first vs a stamped host) - a no-op
     # after the ADD above already carried every row via the server default.

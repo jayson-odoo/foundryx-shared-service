@@ -158,6 +158,16 @@ class FetchResult:
     # candidate (it never enters `current_refs` either), just excluded from
     # this run's population entirely. 0 for every non-document source.
     skipped_by_filter: int = 0
+    # sprint-5/10 review round 1 MUST-FIX 2 (AC-10-24) - the MAIN path's own
+    # envelope shape (``http_source.envelope.ENVELOPE_PAGED`` /
+    # ``ENVELOPE_LIST``), so a pull snapshot build can tell "no total to
+    # compare against because this is a genuinely bare-array endpoint" apart
+    # from "a paged endpoint that omitted/nulled TotalCount, so completeness
+    # is UNVERIFIED, not unconditionally true". ``None`` (every push-path
+    # fetch, and the SQL source, which has no such concept) means "not
+    # applicable" - the push path never reads this field, so its behaviour
+    # is unchanged by this default.
+    envelope_kind: Optional[str] = None
 
 
 class EntitySource(Protocol):

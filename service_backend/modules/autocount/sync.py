@@ -66,6 +66,7 @@ from .canonical.masters import (
     VENDOR_LAST_MODIFIED_PATH,
 )
 from .client import AutoCountError
+from .http_source.envelope import ENVELOPE_LIST
 from .http_source.errors import HttpSourceError
 from .mapping import (
     SCOPE_HEADER,
@@ -79,6 +80,7 @@ from .models import (
     DELIVERY_MODE_PULL,
     DELIVERY_MODE_PUSH,
     ETL_STATUS_ACTIVE,
+    PULL_SNAPSHOT_STATUS_BUILDING,
     RUN_ABORTED,
     RUN_FAILED,
     RUN_MODE_INCREMENTAL,
@@ -831,13 +833,20 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     # ``sql_db`` exactly).
     pushed_count = 0
     push_summary: Optional[Dict[str, Any]] = None
+    # sprint-5/10 review round 1 kill-test finding (AC-10-12) - a
+    # ``delivery_mode == DELIVERY_MODE_PUSH`` condition used to sit here too.
+    # It is CONFIRMED DEAD CODE, not merely untested: the pull short-circuit
+    # above (this function's own "a pull TASK NEVER RUNS THIS JOB AT ALL"
+    # guard) returns BEFORE ``config.source_impl``/``etl_status`` are even
+    # inspected, let alone before this branch - so by the time execution
+    # reaches here, ``config.delivery_mode`` can only ever be ``push``
+    # (``config`` is loaded once at the top of this function and never
+    # re-fetched, so even a concurrent PUT flipping the DB row mid-run could
+    # not change what THIS in-memory check would have read). Removed rather
+    # than kept as an untestable no-op a reviewer could mistake for coverage.
     if (
         config.source_impl in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)
         and config.etl_status == ETL_STATUS_ACTIVE
-        # sprint-5/10 (AC-10-12) - a ``pull`` task never auto-pushes: it is
-        # extracted and staged like any other run, but delivery waits for a
-        # consumer/operator snapshot request instead.
-        and config.delivery_mode == DELIVERY_MODE_PUSH
     ):
         from .services.sync_service import SyncService
 
@@ -2257,6 +2266,25 @@ def _abort(db: Session, service: JobService, run: AcSyncRun, started: float) -> 
 # The registered ``background_jobs.type`` for a human-invoked pull build.
 AUTOCOUNT_PULL_SNAPSHOT = "autocount_pull_snapshot"
 
+# sprint-5/10 review round 1 MUST-FIX 1 (AC-10-26) - beat once per source
+# page (threaded into ``HttpApiSource`` itself) AND every N delivered rows
+# inserted, so a slow book's insert phase (thousands of rows, no network
+# calls at all) still beats often enough that the orphan sweep's
+# ``background_job_orphan_after_minutes`` window is never crossed by
+# in-process work alone.
+ROW_INSERT_HEARTBEAT_INTERVAL = 200
+
+
+class _BuildAbandoned(Exception):
+    """Internal signal ONLY (MUST-FIX 1) - this build's own snapshot was
+    found non-``building`` mid-build (the orphan sweep's
+    ``BUILD_ABANDONED``, or anything else that moved it to a terminal
+    state). Caught inside ``_run_pull_snapshot`` itself: the handler must
+    stop cleanly - no further row inserts, no re-stamp of an already-
+    terminal snapshot (that would itself raise
+    ``SnapshotNotBuildingError``), the JOB ends FAILED with a clear
+    message."""
+
 
 def _classify_http_source_error(exc: HttpSourceError) -> str:
     """The pinned gateway error-code ladder (AC-10-22/64): ``ROW_LIMIT`` by
@@ -2412,6 +2440,37 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
         run.duration_ms = int((time.monotonic() - started) * 1000)
         db.commit()
 
+    def _finish_abandoned(exc: "_BuildAbandoned") -> None:
+        """MUST-FIX 1 - the snapshot is ALREADY in a terminal, non-building
+        state (someone else's - the orphan sweep's - write): never re-stamp
+        it (that would itself raise ``SnapshotNotBuildingError``), just close
+        the RUN and the JOB cleanly with a clear message. No further row
+        inserts happen - every call site below returns immediately after
+        this."""
+        message = str(exc)
+        _finish_run_failed(message)
+        service.finish(job, status=JOB_FAILED, error=message)
+
+    def _beat_and_check() -> None:
+        """Liveness stamp (MUST-FIX 1, AC-10-26) fired per source page (main
+        path AND every lookup, via ``HttpApiSource``'s own ``heartbeat``
+        callback) and every ``ROW_INSERT_HEARTBEAT_INTERVAL`` delivered
+        rows below - so a 25-30 minute Mocha build (plan Appendix A7) never
+        crosses ``background_job_orphan_after_minutes`` (15) on beats alone.
+        Re-reads the snapshot's OWN row FRESH (never trusts the in-memory
+        ``snapshot`` object, which the orphan sweep writes to from a
+        DIFFERENT session/process) and raises ``_BuildAbandoned`` the
+        INSTANT it is no longer ``building`` - stopping the walk/insert loop
+        immediately, before another page is requested or another row
+        inserted."""
+        _heartbeat(service, job.id)
+        current = snap_repo.get(tenant_id, snapshot_id)
+        if current is None or current.status != PULL_SNAPSHOT_STATUS_BUILDING:
+            raise _BuildAbandoned(
+                f"This build was abandoned before it finished (snapshot "
+                f"{snapshot_id} is no longer building)."
+            )
+
     try:
         source = source_factory(config.source_impl)(
             ctx,
@@ -2425,6 +2484,10 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
             last_modified_path=VENDOR_LAST_MODIFIED_PATHS.get(entity_type, "LastModified"),
             mode=RUN_MODE_RECONCILE,
             persist_hashes=False,
+            # MUST-FIX 1 - swallowed harmlessly by the sql_db factory
+            # (``**_extra``); ``HttpApiSource`` fires it after every page,
+            # main path AND every lookup.
+            heartbeat=_beat_and_check,
         )
     except Exception as exc:  # noqa: BLE001 - a setup fault, reported cleanly
         _finish_run_failed(str(exc))
@@ -2433,6 +2496,13 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
 
     try:
         result: FetchResult = source.fetch_changes(Watermark())
+    except _BuildAbandoned as exc:
+        record_client_calls(
+            db, source, tenant_id=tenant_id, trace_id=trace_id,
+            external_ref=company.database_name,
+        )
+        _finish_abandoned(exc)
+        return
     except HttpSourceError as exc:
         record_client_calls(
             db, source, tenant_id=tenant_id, trace_id=trace_id,
@@ -2510,29 +2580,52 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
         )
         return
 
-    for index, (source_ref, row_payload) in enumerate(delivered):
-        snapshot_service.insert_row(
-            tenant_id, snapshot, index,
-            company_id=company_id, source_ref=source_ref, payload=row_payload,
+    try:
+        for index, (source_ref, row_payload) in enumerate(delivered):
+            # MUST-FIX 1 - a beat (+ abandonment check) every N rows, so the
+            # INSERT phase (thousands of rows, zero network calls) still
+            # beats regularly even after the walk itself is long done.
+            if index and index % ROW_INSERT_HEARTBEAT_INTERVAL == 0:
+                _beat_and_check()
+            snapshot_service.insert_row(
+                tenant_id, snapshot, index,
+                company_id=company_id, source_ref=source_ref, payload=row_payload,
+            )
+
+        rows_scanned = (
+            result.rows_scanned if result.rows_scanned is not None else len(result.records)
         )
+        #     !!  MUST-FIX 2 (AC-10-24) - COMPLETE IS NEVER A GUESS.  !!
+        # A bare-array endpoint (``ENVELOPE_LIST``) has no total to compare
+        # against BY DESIGN - one request, unconditionally complete. A PAGED
+        # endpoint that omitted or nulled ``TotalCount`` is UNVERIFIED, never
+        # silently "complete" - the worst failure mode this plan names
+        # (Sorento zeroes every stock pair absent from a fed set).
+        # ``envelope_kind is None`` (a source that never reported one, e.g.
+        # a future ``sql_db`` pull) is treated the SAME conservative way as
+        # a paged mismatch: unverified, so ``False``.
+        complete = (
+            result.envelope_kind == ENVELOPE_LIST
+            or (result.reported_total is not None and rows_scanned == result.reported_total)
+        )
+        content_hash = compute_content_hash([payload for _, payload in delivered])
+        metadata: Dict[str, Any] = {
+            "excludedRows": excluded_rows,
+            "excludedCount": len(excluded_rows),
+        }
+        if entity_type == ENTITY_PRODUCT:
+            metadata.update(_product_price_counters(result.records, mapping_rows))
 
-    rows_scanned = result.rows_scanned if result.rows_scanned is not None else len(result.records)
-    complete = result.reported_total is None or rows_scanned == result.reported_total
-    content_hash = compute_content_hash([payload for _, payload in delivered])
-    metadata: Dict[str, Any] = {
-        "excludedRows": excluded_rows,
-        "excludedCount": len(excluded_rows),
-    }
-    if entity_type == ENTITY_PRODUCT:
-        metadata.update(_product_price_counters(result.records, mapping_rows))
-
-    extracted_at = datetime.now(timezone.utc)
-    expires_at = extracted_at + timedelta(hours=AUTOCOUNT_PULL_SNAPSHOT_TTL_HOURS)
-    snapshot_service.stamp_ready(
-        tenant_id, snapshot,
-        record_count=record_count, complete=complete, content_hash=content_hash,
-        metadata=metadata, extracted_at=extracted_at, expires_at=expires_at,
-    )
+        extracted_at = datetime.now(timezone.utc)
+        expires_at = extracted_at + timedelta(hours=AUTOCOUNT_PULL_SNAPSHOT_TTL_HOURS)
+        snapshot_service.stamp_ready(
+            tenant_id, snapshot,
+            record_count=record_count, complete=complete, content_hash=content_hash,
+            metadata=metadata, extracted_at=extracted_at, expires_at=expires_at,
+        )
+    except _BuildAbandoned as exc:
+        _finish_abandoned(exc)
+        return
 
     run.outcome = RUN_SUCCESS
     run.rows_scanned = rows_scanned

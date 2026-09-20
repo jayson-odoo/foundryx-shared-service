@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -105,12 +105,19 @@ class HttpApiSource:
         persist_hashes: bool = True,
         row_limit: int = MAX_EXTRACT_ROWS,
         transport: Any = None,
+        # sprint-5/10 review round 1 MUST-FIX 1 (AC-10-26) - a liveness
+        # callback fired after EVERY page of EVERY endpoint walked (main
+        # path AND every lookup, since both route through ``_walk_path``).
+        # ``None`` (every push-path construction) is a no-op - the push
+        # path's own heartbeat discipline (``sync._heartbeat``) is untouched.
+        heartbeat: Optional[Callable[[], None]] = None,
         **_extra: Any,
     ) -> None:
         self.entity_type = entity_type
         self.mode = mode
         self.persist_hashes = persist_hashes
         self.row_limit = row_limit
+        self._on_page = heartbeat
         self._ctx = ctx
 
         config = getattr(ctx.entity_config, "source_config", None) or {}
@@ -249,12 +256,21 @@ class HttpApiSource:
 
     def _walk_path(
         self, path: str, page_size: int
-    ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+    ) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
         """GET every page of ONE endpoint at a FIXED page size, returning
-        ``(rows, reported_total)``. Raises ``HttpSourceError`` before
-        touching any downstream state, or ``_PageTimedOutTwice`` when a page
-        has now timed out on both its attempts (the caller decides whether
-        to halve and restart)."""
+        ``(rows, reported_total, envelope_kind)``. Raises ``HttpSourceError``
+        before touching any downstream state, or ``_PageTimedOutTwice`` when
+        a page has now timed out on both its attempts (the caller decides
+        whether to halve and restart). ``envelope_kind`` is the SAME shape
+        every page of this walk answered (paged vs bare array,
+        ``ENVELOPE_PAGED``/``ENVELOPE_LIST`` - a later page answering a
+        DIFFERENT shape already fails loudly above, so this is unambiguous).
+
+        sprint-5/10 review round 1 MUST-FIX 1 (AC-10-26) - fires the
+        constructor's ``heartbeat`` callback after EVERY successfully parsed
+        page, main path AND lookup endpoints alike (both route through this
+        one walker). A build abandoned mid-walk (the callback raises) stops
+        the walk immediately - no further pages are requested."""
         scanned: List[Dict[str, Any]] = []
         established_kind: Optional[str] = None
         reported_total: Optional[int] = None
@@ -305,6 +321,14 @@ class HttpApiSource:
             if parsed.total_count is not None:
                 reported_total = parsed.total_count
 
+            # MUST-FIX 1 - beat AFTER this page is durable in ``scanned``
+            # (never before it is parsed), so a heartbeat always corresponds
+            # to real, already-accounted progress. A raise here (the build
+            # was abandoned) stops the walk on THIS page - no further
+            # request is made.
+            if self._on_page is not None:
+                self._on_page()
+
             if len(scanned) > self.row_limit:
                 raise HttpSourceError(
                     f"This task's extract exceeded the {self.row_limit} row cap.",
@@ -348,14 +372,22 @@ class HttpApiSource:
                 break
             page += 1
 
-        return scanned, reported_total
+        return scanned, reported_total, established_kind
 
-    def _walk_endpoint(self, path: str) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+    def _walk_endpoint(
+        self, path: str
+    ) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
         """The full page walk for ONE endpoint - the main path OR a lookup
         (AC-10-02: "the SAME page walker"), with AC-10-75's bounded per-page
         retry and page-size halving. Each endpoint walked gets its OWN
         halving budget - the main path and every lookup share the exact
-        mechanics, never a counter one could exhaust for the other."""
+        mechanics, never a counter one could exhaust for the other.
+
+        MUST-FIX 2 (AC-10-24) - a halving RESTART discards the PARTIAL
+        ``scanned``/``reported_total`` of the timed-out attempt entirely
+        (``_walk_path`` builds a fresh local ``scanned = []`` on every call);
+        only the FINAL, successfully-returned tuple from this method is ever
+        used - counts are never accumulated across a restart."""
         page_size = DEFAULT_PAGE_SIZE
         halvings = 0
         while True:
@@ -379,7 +411,7 @@ class HttpApiSource:
                     ok=False,
                 )
 
-    def _walk(self) -> Tuple[List[Dict[str, Any]], Optional[int]]:
+    def _walk(self) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
         return self._walk_endpoint(self.path)
 
     # ── lookups (AC-10-01/02/03, R9) ──────────────────────────────────────
@@ -409,7 +441,13 @@ class HttpApiSource:
                     code="lookup_path",
                 )
             try:
-                lookup_rows, _ = self._walk_endpoint(path)
+                # review round 1 (AC-10-24 finding, see the module's own
+                # notes at the top of ``fetch_changes`` below) - a lookup
+                # endpoint's OWN completeness has no AC tying it to
+                # ``complete`` at all; a truncated lookup walk is already
+                # surfaced INDIRECTLY through the existing miss counter
+                # (AC-10-03) below, never silently.
+                lookup_rows, _, _ = self._walk_endpoint(path)
             except HttpSourceError as exc:
                 raise HttpSourceError(
                     f"The '{alias_name}' lookup endpoint '{path}' failed: {exc.message}",
@@ -508,7 +546,14 @@ class HttpApiSource:
     def fetch_changes(self, since: Watermark) -> FetchResult:
         full_extract = self.mode == RUN_MODE_RECONCILE or not self.watermark_field
 
-        scanned_rows, reported_total = self._walk()
+        # MUST-FIX 2 (AC-10-24) - ``envelope_kind`` is the MAIN path's own
+        # shape only, straight onto ``FetchResult`` below: a pull snapshot
+        # build needs it to know whether ``reported_total`` is even a thing
+        # this endpoint has (a bare-array endpoint has none, by design -
+        # ``complete`` is unconditionally true for it; a PAGED endpoint that
+        # omitted/nulled ``TotalCount`` must NOT read as complete just
+        # because ``reported_total is None``).
+        scanned_rows, reported_total, envelope_kind = self._walk()
         # AC-10-02 - lookups merge onto every source row BEFORE de-dup, the
         # row hash and mapping; ``distinctOf`` short-circuits below into an
         # entirely different `{"value": v}` row shape, so a lookup (which
@@ -648,6 +693,7 @@ class HttpApiSource:
                 if self.watermark_field and max_mark is not None
                 else None
             ),
+            envelope_kind=envelope_kind,
         )
 
     # ── observability ──────────────────────────────────────────────────────

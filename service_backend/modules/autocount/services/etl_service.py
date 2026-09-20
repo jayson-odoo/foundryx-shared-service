@@ -2484,6 +2484,15 @@ class EtlService:
         self._require_runnable(config)
         if config.etl_status != ETL_STATUS_ACTIVE:
             raise EtlStateError("Activate this task before running it.")
+        # sprint-5/10 review round 1 NIT (foolproof-UI) - a pull task never
+        # auto-pushes (AC-10-12) and this button exists to move data NOW, so
+        # accepting the click and silently doing nothing is the exact
+        # "never accept an action that will do nothing" failure mode.
+        if config.delivery_mode == DELIVERY_MODE_PULL:
+            raise EtlStateError(
+                "This task is in pull mode - it never runs on its own. "
+                "Build a pull snapshot instead of running it."
+            )
 
         in_flight = SyncJobRepository(self.db).first_unfinished(
             tenant_id, AUTOCOUNT_SYNC, company_id, entity_type
@@ -2595,6 +2604,14 @@ class EtlService:
         if config.etl_status == ETL_STATUS_DRAFT:
             raise EtlStateError(
                 "Activate the task first - a draft has nothing to re-push."
+            )
+        # sprint-5/10 review round 1 NIT (foolproof-UI) - same reasoning as
+        # `run_task_now`: a pull task never auto-pushes, so re-pushing it
+        # would clear tracked rows for a push that never happens.
+        if config.delivery_mode == DELIVERY_MODE_PULL:
+            raise EtlStateError(
+                "This task is in pull mode - it never auto-pushes, so there "
+                "is nothing to re-push."
             )
         self._in_flight_guard(tenant_id, company_id, entity_type)
 

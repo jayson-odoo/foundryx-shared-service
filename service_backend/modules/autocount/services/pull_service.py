@@ -17,6 +17,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -295,14 +296,31 @@ class PullService:
         from .company_service import CompanyService
 
         company = CompanyService(self.db).get(tenant_id, company_id)
-        snapshot = SnapshotService(self.db).create_building(
-            tenant_id,
-            company_id,
-            entity_type,
-            company_code=company.sorento_company_code,
-            requested_via=requested_via,
-            requested_by=requested_by,
-        )
+        #     !!  SHOULD-FIX 4 (AC-10-26) - THE DATABASE, NOT JUST THIS
+        #         READ-THEN-WRITE CHECK, ENFORCES "AT MOST ONE BUILDING".  !!
+        # Two concurrent Build clicks can both pass the ``existing is
+        # None``/not-building check above before either commits - the
+        # partial unique index on ``(tenant_id, company_id, entity_type)
+        # WHERE status = 'building'`` (``models.py``, migration 0020) is
+        # what actually closes that race. The LOSER's commit raises
+        # ``IntegrityError``; it rolls back its own attempt and RE-ATTACHES
+        # to the winner, exactly like the re-attach branch above - never a
+        # second extraction, never a raw 500.
+        try:
+            snapshot = SnapshotService(self.db).create_building(
+                tenant_id,
+                company_id,
+                entity_type,
+                company_code=company.sorento_company_code,
+                requested_via=requested_via,
+                requested_by=requested_by,
+            )
+        except IntegrityError:
+            self.db.rollback()
+            winner = self.repo.latest_for_triple(tenant_id, company_id, entity_type)
+            if winner is not None and winner.status == PULL_SNAPSHOT_STATUS_BUILDING:
+                return winner
+            raise
 
         #     !!  DEFERRED IMPORTS - MIRROR sync.py's OWN CYCLE AVOIDANCE.  !!
         # ``sync.py`` imports ``.services.*`` only inside functions (never at
