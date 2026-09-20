@@ -181,6 +181,86 @@ describe('CombineEditor (AC-10-82)', () => {
       expect(dialog.queryAllByText('location_code').length).toBe(0);
     });
 
+    // Confirm round 2 (S1) - after a combine-carrying Test the Source tab's
+    // `columnOptions` comes from `preCombineColumns`, which by backend design
+    // already CONTAINS every computed alias. The `Columns` group must still
+    // be raw/lookup names only, so a computed alias can never reach a stage
+    // that may not reference it (computed[0] referencing itself, or
+    // computed[0] referencing a LATER alias - both save-time 422s).
+    describe('columnOptions already carrying the computed aliases (post-Test)', () => {
+      const withComputed = [...columnOptions, 'item_code', 'location_code'];
+
+      it('computed[0] offers neither its own nor a later computed alias', () => {
+        render(
+          <CombineEditor
+            editing
+            combine={preFilled}
+            onChange={vi.fn()}
+            columnOptions={withComputed}
+            funnel={null}
+            onServerTest={serverTest}
+          />,
+        );
+        fireEvent.click(screen.getAllByText('Edit formula')[0]);
+        const dialog = within(screen.getByRole('dialog'));
+        expect(dialog.queryAllByText('item_code').length).toBe(0);
+        expect(dialog.queryAllByText('location_code').length).toBe(0);
+        expect(dialog.getAllByText('ItemCode').length).toBeGreaterThan(0);
+      });
+
+      it('computed[1] offers computed[0]\'s alias exactly once - from the Computed group, never the Columns group', () => {
+        render(
+          <CombineEditor
+            editing
+            combine={preFilled}
+            onChange={vi.fn()}
+            columnOptions={withComputed}
+            funnel={null}
+            onServerTest={serverTest}
+          />,
+        );
+        fireEvent.click(screen.getAllByText('Edit formula')[1]);
+        const dialog = within(screen.getByRole('dialog'));
+        expect(dialog.getAllByText('item_code').length).toBeGreaterThan(0);
+        expect(dialog.queryAllByText('location_code').length).toBe(0);
+      });
+
+      it('a require rule still offers every computed alias', () => {
+        render(
+          <CombineEditor
+            editing
+            combine={preFilled}
+            onChange={vi.fn()}
+            columnOptions={withComputed}
+            funnel={null}
+            onServerTest={serverTest}
+          />,
+        );
+        fireEvent.click(screen.getAllByText('Edit formula')[2]);
+        const dialog = within(screen.getByRole('dialog'));
+        expect(dialog.getAllByText('item_code').length).toBeGreaterThan(0);
+        expect(dialog.getAllByText('location_code').length).toBeGreaterThan(0);
+      });
+
+      it('a drop rule is unchanged - post-group names only', () => {
+        render(
+          <CombineEditor
+            editing
+            combine={preFilled}
+            onChange={vi.fn()}
+            columnOptions={withComputed}
+            funnel={null}
+            onServerTest={serverTest}
+          />,
+        );
+        fireEvent.click(screen.getAllByText('Edit formula').at(-1) as HTMLElement);
+        const dialog = within(screen.getByRole('dialog'));
+        expect(dialog.getAllByText('item_code').length).toBeGreaterThan(0);
+        expect(dialog.getAllByText('qty').length).toBeGreaterThan(0);
+        expect(dialog.queryAllByText('BalQty').length).toBe(0);
+      });
+    });
+
     it('a require rule offers every computed alias', () => {
       render(
         <CombineEditor

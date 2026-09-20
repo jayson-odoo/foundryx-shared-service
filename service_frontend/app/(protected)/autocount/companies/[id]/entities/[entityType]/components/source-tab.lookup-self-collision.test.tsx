@@ -10,15 +10,18 @@ import type { UseHttpPreviewResult, UseSqlPreviewResult } from '@/hooks/use-auto
 import { SourceTab } from './source-tab';
 
 /**
- * Browser round 1 defect (AC-10-09): a COMBINED preview's `columns` is RAW
- * main-endpoint columns UNION every attached lookup's own alias (so the grid
- * can show enriched values) - passing that straight through as the alias
- * editor's "source columns" made a pre-filled lookup's OWN, already-tested
- * alias falsely collide with itself. Fixed in `source-tab.tsx` by deriving
- * the collision check's raw-column set from the backend-echoed
- * `preview.task.sourceConfig.lookups` (the EXACT aliases baked into the
- * current merged columns) rather than the live, possibly freshly-typed
- * `config.lookups`.
+ * Browser round 1 defect (AC-10-09): a preview's `columns` is RAW
+ * main-endpoint columns UNION every alias the REQUEST's lookups carried (so
+ * the grid can show enriched values) - passing that straight through as the
+ * alias editor's "source columns" made a pre-filled lookup's OWN alias
+ * falsely collide with itself.
+ *
+ * Confirm round 2 (B1): fixed at the WIRE, not by subtraction. The response
+ * now carries `rawColumns` - the walked endpoint's own columns, never an
+ * alias, never a combine computed alias - and `source-tab.tsx` hands exactly
+ * that to the Lookups editor. Every fixture below therefore mirrors the REAL
+ * backend response: the request's aliases ARE in `columns`, and `rawColumns`
+ * is raw only.
  */
 
 function httpConfig(over: Partial<AutocountEtlSourceConfig> = {}): AutocountEtlSourceConfig {
@@ -83,10 +86,17 @@ function echoedTask(lookups: AutocountEtlSourceConfig['lookups']): AutocountEtlT
   };
 }
 
+/** The three RAW columns of `/itembypage` - what `rawColumns` reports and the
+ * ONLY names the alias editor may call taken. */
+const RAW_COLUMNS = ['ItemCode', 'Description', 'LastModified'];
+
 /** A COMBINED preview response, both lookups' aliases echoed in `columns`
  * (backend design) AND `task.sourceConfig.lookups` naming exactly what was
- * tested. */
-function combinedHttpPreview(over: { taskLookups?: AutocountEtlSourceConfig['lookups'] } = {}): UseHttpPreviewResult {
+ * tested. `extraColumns` widens the MERGED set the way a request carrying a
+ * freshly-typed draft alias really does. */
+function combinedHttpPreview(
+  over: { taskLookups?: AutocountEtlSourceConfig['lookups']; extraColumns?: string[] } = {},
+): UseHttpPreviewResult {
   const testedLookups =
     over.taskLookups ??
     ([
@@ -115,7 +125,9 @@ function combinedHttpPreview(over: { taskLookups?: AutocountEtlSourceConfig['loo
           { name: 'LastModified', sample: '2026-08-01T00:00:00' },
           { name: 'BaseUOMPrice', sample: '63.00' },
           { name: 'BaseUOMRate', sample: '1.2' },
+          ...(over.extraColumns ?? []).map((name) => ({ name, sample: null })),
         ],
+        rawColumns: RAW_COLUMNS,
         rows: [],
         durationMs: 220,
         lookups: [
@@ -258,11 +270,11 @@ describe('SourceTab Lookups editor - self-collision false positive (browser roun
     expect(screen.getByText('"ItemCode" is already a source column.')).toBeInTheDocument();
   });
 
-  // S5b-FE browser defect 3 (AC-10-01/AC-10-05) - `rawSourceColumns` must
-  // never be widened by the DRAFT's own (untested, or freshly-typed but not
-  // yet re-Tested) lookup aliases; only the SERVER's own base, minus the
-  // aliases the echoed task proves are already baked in.
-  it('a second field on an already-tested lookup, given a brand-new alias, keeps NO inline error (draft alias never widens the raw set)', () => {
+  // Confirm round 2, repro B (AC-10-01/AC-10-05) - the REAL response shape:
+  // the Test posts the DRAFT's lookups, so the merged `columns` comes back
+  // carrying `FreshAlias` even though the STORED (echoed) task predates it.
+  // Only `rawColumns` can tell the editor that name is still free.
+  it('a second field on an already-tested lookup, given a brand-new alias, keeps NO inline error (a merged alias is not a raw column)', () => {
     const cfg = httpConfig({
       lookups: [
         {
@@ -281,16 +293,18 @@ describe('SourceTab Lookups editor - self-collision false positive (browser roun
     renderApiBranch({
       cfg,
       httpPreview: combinedHttpPreview({
+        // The stored task still names only the FIRST field...
         taskLookups: [
           {
             path: '/itemuombypage',
             as: 'uom',
             on: [{ local: 'ItemCode', remote: 'ItemCode' }],
-            // The echo only proves the FIRST field - `FreshAlias` was added
-            // to the draft after that Test landed.
             fields: [{ remote: 'Price', as: 'BaseUOMPrice' }],
           },
         ],
+        // ...while the Test itself posted the draft, so the server merged
+        // `FreshAlias` into `columns`.
+        extraColumns: ['FreshAlias'],
       }),
     });
     const aliasInput = screen.getByDisplayValue('FreshAlias');
@@ -320,7 +334,9 @@ describe('SourceTab Lookups editor - self-collision false positive (browser roun
     });
     // A brand-new entity's first-ever Test: the backend has no
     // `ac_entity_config` row yet, so the response carries no `task` echo at
-    // all - `preview.task` is `undefined`.
+    // all - `preview.task` is `undefined`. The REQUEST still carried the
+    // preset's lookups, so all three aliases come back INSIDE `columns`;
+    // `rawColumns` is the only raw list.
     const httpPreview: UseHttpPreviewResult = {
       state: {
         status: 'success',
@@ -331,7 +347,11 @@ describe('SourceTab Lookups editor - self-collision false positive (browser roun
             { name: 'ItemCode', sample: 'SRT-01' },
             { name: 'Location', sample: 'MAIN' },
             { name: 'BalQty', sample: '10' },
+            { name: 'ItemBaseUOM', sample: 'UNIT' },
+            { name: 'ItemDescription', sample: 'Widget' },
+            { name: 'UomRate', sample: '1' },
           ],
+          rawColumns: ['ItemCode', 'Location', 'BalQty'],
           rows: [],
           durationMs: 180,
           lookups: [
@@ -347,8 +367,38 @@ describe('SourceTab Lookups editor - self-collision false positive (browser roun
     };
     renderApiBranch({ cfg, httpPreview });
     expect(screen.getByDisplayValue('ItemBaseUOM')).toHaveAttribute('aria-invalid', 'false');
+    expect(screen.getByDisplayValue('ItemDescription')).toHaveAttribute('aria-invalid', 'false');
     expect(screen.getByDisplayValue('UomRate')).toHaveAttribute('aria-invalid', 'false');
     expect(screen.queryByText('"ItemBaseUOM" is already a source column.')).not.toBeInTheDocument();
+    expect(screen.queryByText('"ItemDescription" is already a source column.')).not.toBeInTheDocument();
     expect(screen.queryByText('"UomRate" is already a source column.')).not.toBeInTheDocument();
+  });
+
+  // Confirm round 2, item 4 (AC-10-01) - a combine's COMPUTED alias is not a
+  // source column: the backend keys that clash to
+  // `combine.computed[i].alias`, so the Lookups editor must not duplicate it
+  // as "already a source column". Falls straight out of `rawColumns` never
+  // carrying a computed alias.
+  it('a lookup alias equal to a combine COMPUTED alias is never reported as a source column', () => {
+    const cfg = httpConfig({
+      lookups: [
+        {
+          path: '/itemuombypage',
+          as: 'uom',
+          on: [{ local: 'ItemCode', remote: 'ItemCode' }],
+          fields: [{ remote: 'Rate', as: 'item_code' }],
+        },
+      ],
+    });
+    renderApiBranch({
+      cfg,
+      httpPreview: combinedHttpPreview({
+        taskLookups: [],
+        // A combine-carrying Test echoes the computed alias in the merged
+        // `columns` (and in `preCombineColumns`), never in `rawColumns`.
+        extraColumns: ['item_code'],
+      }),
+    });
+    expect(screen.queryByText('"item_code" is already a source column.')).not.toBeInTheDocument();
   });
 });
