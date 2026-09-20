@@ -335,6 +335,29 @@ def test_no_rows_survive_to_output_when_all_dropped():
 # ── ordered drop rules: FIRST match wins, never double-counted ──────────────
 
 
+# ── S5 (review round 3 coverage hole): half_up ties AWAY from zero, never
+# Python's built-in bankers rounding ─────────────────────────────────────
+
+
+def test_half_up_rounds_a_true_tie_away_from_zero_both_signs():
+    """The reducer already uses ``Decimal(...).quantize(..., rounding=
+    ROUND_HALF_UP)``, which rounds a tie AWAY from zero on both sides
+    (2.5 -> 3, -2.5 -> -3) - never Python's built-in ``round()`` bankers
+    rounding (2.5 -> 2, -2.5 -> -2). This closes a previously untested
+    edge, it does not change behaviour."""
+    combine = {
+        "computed": [], "require": [], "measure": "v", "groupBy": ["g"],
+        "measures": [{"source": "v", "op": "sum", "alias": "qty"}],
+        "carry": [], "round": [{"measure": "qty", "mode": "half_up", "dp": 0}],
+        "drop": [],
+    }
+    positive = apply_combine([{"g": "A", "v": 2.5}], combine)
+    assert positive.rows[0]["qty"] == 3, positive.rows
+
+    negative = apply_combine([{"g": "B", "v": -2.5}], combine)
+    assert negative.rows[0]["qty"] == -3, negative.rows
+
+
 def test_first_matching_drop_rule_wins_no_double_count():
     rows = [{"g": "A", "v": 0}]
     combine = {
