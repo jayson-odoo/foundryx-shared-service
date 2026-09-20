@@ -19,6 +19,7 @@ Two shapes deviate from the other providers, both forced by the vendor API:
 banned - the operator has to know whether to fix the URL, the AppId, or the
 credentials.
 """
+import time
 from typing import Any, Dict, List, Optional
 
 from app.integrations.base import TestResult
@@ -31,10 +32,28 @@ from .client import (
     AutoCountRelayError,
     AutoCountTransportError,
 )
-from .http_client import OpenProbeError, probe_open_connection
+from .http_client import (
+    OpenProbeError,
+    assert_autocount_base_url_deliverable,
+    probe_open_connection,
+)
 
 PROVIDER_KEY = "autocount"
 CONNECTION_TYPE = "erp"
+
+# AC-10-85 (live-replay Finding 1) - per-CONNECTION overrides for the open
+# REST wrapper's own host-latency knobs, replacing the fixed module
+# constants ``http_source.source.DEFAULT_PAGE_SIZE`` /
+# ``http_source.client.DEFAULT_TIMEOUT_SECONDS`` used to always fall back
+# to. Duplicated here (rather than imported) to avoid a circular import -
+# ``http_source/source.py`` itself imports THIS module - and because these
+# are the FORM SCHEMA's own bounds, independent of the runtime fallback
+# value the source picks when a connection carries neither key at all.
+PAGE_SIZE_FIELD_DEFAULT = 1000
+PAGE_SIZE_FIELD_MIN = 50
+PAGE_SIZE_FIELD_MAX = 1000
+REQUEST_TIMEOUT_FIELD_DEFAULT = 90
+REQUEST_TIMEOUT_FIELD_MAX = 100
 
 # The two auth modes an ``autocount`` connection may carry (sprint-5/08,
 # AC-08-01). ``basic`` is the vendor session-auth grammar (AppId/UserId/
@@ -153,6 +172,28 @@ class AutoCountProvider:
                 "secret": True,
                 "showWhen": {"field": "auth", "values": [AUTH_BASIC]},
             },
+            {
+                "key": "pageSize",
+                "label": "Page size",
+                "type": "number",
+                "required": False,
+                "default": PAGE_SIZE_FIELD_DEFAULT,
+                "min": PAGE_SIZE_FIELD_MIN,
+                "max": PAGE_SIZE_FIELD_MAX,
+                # AC-10-85 - the open REST wrapper's own host-latency knob;
+                # meaningless for the vendor session-auth flavour, which
+                # never runs a page walk against this client.
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
+            {
+                "key": "requestTimeoutSeconds",
+                "label": "Request timeout (seconds)",
+                "type": "number",
+                "required": False,
+                "default": REQUEST_TIMEOUT_FIELD_DEFAULT,
+                "max": REQUEST_TIMEOUT_FIELD_MAX,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
         ]
 
     def validate_config(self, config: Dict[str, Any]) -> Optional[str]:
@@ -160,10 +201,47 @@ class AutoCountProvider:
         already applies, now also enforced at SAVE, not only when the
         operator happens to click Test. Blank is fine here (the `required`
         gate on `baseUrl` is the wizard's own job); only a present-but-bad
-        scheme is rejected."""
+        scheme is rejected.
+
+        AC-10-85 (live-replay Finding 1) - `pageSize`/`requestTimeoutSeconds`
+        are range-checked the same way, naming the offending field so the
+        422 is actionable.
+
+        AC-10-58 M2 - the outbound SSRF guard also runs here, at save time
+        (re-run again immediately before every actual request - see
+        `http_source.client.HttpApiClient.get`)."""
         base_url = str((config or {}).get("baseUrl") or "").strip()
         if base_url and not base_url.lower().startswith(("http://", "https://")):
             return "The base URL must start with http:// or https://."
+        if base_url:
+            try:
+                assert_autocount_base_url_deliverable(base_url)
+            except OpenProbeError as exc:
+                return f"baseUrl: {exc.message}"
+
+        page_size_raw = str((config or {}).get("pageSize") or "").strip()
+        if page_size_raw:
+            try:
+                page_size_value = int(page_size_raw)
+            except ValueError:
+                return "pageSize must be a whole number."
+            if not (PAGE_SIZE_FIELD_MIN <= page_size_value <= PAGE_SIZE_FIELD_MAX):
+                return (
+                    f"pageSize must be between {PAGE_SIZE_FIELD_MIN} and "
+                    f"{PAGE_SIZE_FIELD_MAX}."
+                )
+
+        timeout_raw = str((config or {}).get("requestTimeoutSeconds") or "").strip()
+        if timeout_raw:
+            try:
+                timeout_value = float(timeout_raw)
+            except ValueError:
+                return "requestTimeoutSeconds must be a number."
+            if timeout_value <= 0 or timeout_value > REQUEST_TIMEOUT_FIELD_MAX:
+                return (
+                    f"requestTimeoutSeconds must be at most "
+                    f"{REQUEST_TIMEOUT_FIELD_MAX} seconds."
+                )
         return None
 
     def test(
@@ -195,13 +273,21 @@ class AutoCountProvider:
             )
 
         if auth_mode(config) == AUTH_NONE:
+            # AC-10-85 - the Test button reports the MEASURED probe latency
+            # (never a canned "Reachable"), the ONE number that tells the
+            # operator whether a legacy 30s or the new 90s ceiling is safe
+            # for this wrapper's own real-world response time.
+            started = time.monotonic()
             try:
                 rows = probe_open_connection(base_url, transport=transport)
             except OpenProbeError as exc:
                 return TestResult(ok=False, message=exc.message)
+            elapsed_seconds = time.monotonic() - started
+            count = len(rows)
+            noun = "location" if count == 1 else "locations"
             return TestResult(
                 ok=True,
-                message=f"Reachable - {len(rows)} row(s) returned from /location.",
+                message=f"Reached in {elapsed_seconds:.2f} s, {count} {noun}.",
             )
 
         client = client_from_connection(config, credentials, transport=transport)

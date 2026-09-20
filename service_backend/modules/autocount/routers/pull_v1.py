@@ -92,16 +92,28 @@ def _safe_echo(value: Any) -> Optional[str]:
     return _CONTROL_CHARS_RE.sub("", value)[:MAX_ECHO_LEN]
 
 
-async def _read_json_body(request: Request) -> Any:
+async def _read_request_body_bytes(request: Request) -> bytes:
+    """Sprint-5/10 S6 (live-replay Finding 2) - a FastAPI dependency, so it
+    runs on the event loop BEFORE the (now plain-``def``, threadpooled)
+    route body starts, while remaining the only ``await`` this router
+    performs to read a request. Never raises - a read failure reads as
+    ``b""``, which ``_parse_json_body`` (called INSIDE the route's own
+    try/except, so it can render the flat Appendix A6 envelope) turns into
+    ``{}`` the same way the old combined function did."""
+    try:
+        return await request.body()
+    except Exception:  # noqa: BLE001 - defensive; a body read genuinely never fails here
+        return b""
+
+
+def _parse_json_body(raw_bytes: bytes) -> Any:
     """Never raises `RequestValidationError` - a missing/empty/malformed
     body reads as ``{}``, which the caller's OWN validation turns into the
     flat 422 (Appendix A6). An OVERSIZED body raises `PullGatewayError`
     (413) directly - checked on the RAW bytes, before `json.loads` is even
-    attempted (security round 1 MEDIUM 3)."""
-    try:
-        raw_bytes = await request.body()
-    except Exception:  # noqa: BLE001 - defensive; a body read genuinely never fails here
-        return {}
+    attempted (security round 1 MEDIUM 3). Synchronous on purpose: the
+    route that calls this is a plain ``def`` (Starlette threadpools it), so
+    parsing a bounded, already-read byte string here does no blocking I/O."""
     if not raw_bytes:
         return {}
     if len(raw_bytes) > MAX_BODY_BYTES:
@@ -219,12 +231,31 @@ def _internal_error_response(
 
 
 @router.post("/snapshots")
-async def build_snapshot(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+def build_snapshot(
+    request: Request,
+    db: Session = Depends(get_db),
+    raw_body: bytes = Depends(_read_request_body_bytes),
+) -> JSONResponse:
+    """Sprint-5/10 S6 (live-replay Finding 2) - a PLAIN ``def``, not
+    ``async def``. This route's own downstream call
+    (``PullGatewayService(db).build`` -> ... -> the eager job handler ->
+    the fully-synchronous paged extraction) can genuinely run for minutes
+    with NO ``await`` point of its own; declaring the route ``async def``
+    made FastAPI run all of that directly on the ASGI event loop (never
+    Starlette's automatic threadpool, which only plain ``def`` routes get),
+    freezing every OTHER request on the same worker - every tenant, every
+    route, including an unauthenticated ``/openapi.json`` - for the whole
+    build duration (reproduced and timed 3 times in the replay). Mirrors
+    ``routers/pull.py``'s own operator build route, which never exhibited
+    the freeze for exactly this reason. The one genuinely async step (the
+    body read) already happened on the event loop via the
+    ``_read_request_body_bytes`` dependency above, before this function's
+    body ever starts running in the threadpool."""
     ctx = _CallContext()
     company_code_hint: Optional[str] = None
     entity_hint: Optional[str] = None
     try:
-        raw = await _read_json_body(request)
+        raw = _parse_json_body(raw_body)
         company_code_hint = _safe_echo(raw.get("companyCode")) if isinstance(raw, dict) else None
         entity_hint = _safe_echo(raw.get("entity")) if isinstance(raw, dict) else None
 

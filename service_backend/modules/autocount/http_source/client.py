@@ -22,11 +22,20 @@ import httpx
 from app.integrations.masking import mask_payload
 
 from ..client import CallRecord
+from ..http_client import OpenProbeError, assert_autocount_base_url_deliverable
 from ..payloads import bound_payload, mark_truncated
 
 logger = logging.getLogger("foundryx.autocount")
 
-DEFAULT_TIMEOUT_SECONDS = 30.0
+# AC-10-85 (live-replay Finding 1, 2026-09-20) - was 30.0. Measured live:
+# db2's `/itembypage` never returned a single successful response at ANY
+# page size within the old 30s ceiling (300 rows -> ~65s per plan Appendix
+# A7). This is now only the FALLBACK for a connection with no
+# `requestTimeoutSeconds` of its own (a legacy row, or one never opened in
+# the wizard) - `HttpApiSource.__init__` reads the connection's own value
+# first (`provider.py`'s `pageSize`/`requestTimeoutSeconds` fields, 50-1000
+# / up to 100).
+DEFAULT_TIMEOUT_SECONDS = 90.0
 # Bounds the in-memory buffer, like ``AutoCountClient.MAX_BUFFERED_CALLS`` -
 # a full product walk is ~12 pages; generous headroom, never unbounded.
 MAX_BUFFERED_CALLS = 200
@@ -94,9 +103,23 @@ class HttpApiClient:
     def get(self, path: str, params: Dict[str, Any]) -> httpx.Response:
         """One ``GET {base_url}{path}?params`` with ``Accept: application/
         json`` and a 30s timeout (AC-08-23). Buffers a ``CallRecord`` on
-        both the success and the transport-failure path."""
-        url = f"{self.base_url}{path}"
+        both the success and the transport-failure path.
+
+        AC-10-58 M2 - the outbound SSRF guard is re-run immediately before
+        EVERY request this way (the main walk, every lookup, and the preview
+        sample all route through this one method) - never only once at
+        connection save, since DNS can be re-pointed afterwards. A blocked
+        target never reaches ``self._client.get`` at all; it raises the SAME
+        ``HttpTransportError`` a genuine unreachable host would, so every
+        existing caller (the retry ladder, the preview route's field-named
+        error) handles it without a new branch."""
         started = time.monotonic()
+        try:
+            assert_autocount_base_url_deliverable(self.base_url)
+        except OpenProbeError as exc:
+            self._record_call(path, params, None, started, error=f"blocked: {exc.message}")
+            raise HttpTransportError(exc.message, is_timeout=False) from exc
+        url = f"{self.base_url}{path}"
         try:
             response = self._client.get(
                 url,

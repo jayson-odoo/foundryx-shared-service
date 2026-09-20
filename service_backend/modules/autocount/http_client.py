@@ -13,8 +13,12 @@ response body beyond a bounded row count, and never persists anything.
 from __future__ import annotations
 
 from typing import Any, List, Optional
+from urllib.parse import urlsplit
 
 import httpx
+
+from app.config import settings
+from app.services.url_guard import UrlGuardError, assert_deliverable
 
 # 10s per AC-08-02 - a probe, not an extraction; a slow/hung wrapper must
 # fail fast rather than hold up the Test button or the create form.
@@ -50,6 +54,40 @@ def get_http_transport() -> Optional[httpx.Client]:
     return None
 
 
+def _is_dev_local_host(host: str) -> bool:
+    """The ONE dev-only carve-out for the egress guard below
+    (``ENVIRONMENT=development``, mirrors ``modules.omnichannel.routers.
+    webhooks._signature_valid``'s own fail-open-in-dev shape, BL-SS-166):
+    a bare ``localhost``/``127.0.0.1`` (or any other ``127.*`` loopback) -
+    never a broader private range, and never outside development - so a
+    local ``http://localhost:PORT`` AutoCount wrapper still resolves for
+    live-verify/E2E without opening up real internal-network targets."""
+    lowered = (host or "").strip().lower()
+    return lowered in ("localhost", "127.0.0.1") or lowered.startswith("127.")
+
+
+def assert_autocount_base_url_deliverable(base_url: str) -> None:
+    """AC-10-58 M2 - the outbound-egress guard: every AutoCount open-REST
+    ``baseUrl`` is re-checked against the house SSRF guard
+    (``app.services.url_guard.assert_deliverable``) immediately before it is
+    used, never only once at connection save - DNS can be re-pointed
+    afterwards (the guard's own rebinding rationale). Callers:
+    ``AutoCountProvider.validate_config`` (save time), this module's own
+    ``probe_open_connection`` (the provider Test button AND open-company
+    onboarding), and ``http_source.client.HttpApiClient.get`` (the paged
+    walk, every lookup, and the preview sample all share that one
+    request path). Raises ``OpenProbeError``, operator-safe, naming
+    ``baseUrl``.
+    """
+    host = urlsplit(base_url or "").hostname or ""
+    if settings.environment == "development" and _is_dev_local_host(host):
+        return
+    try:
+        assert_deliverable(base_url, subject="baseUrl")
+    except UrlGuardError as exc:
+        raise OpenProbeError(str(exc)) from exc
+
+
 def probe_open_connection(
     base_url: str, *, transport: Optional[httpx.Client] = None
 ) -> List[Any]:
@@ -61,6 +99,7 @@ def probe_open_connection(
     trailing slash on ``base_url`` is stripped exactly once so the built URL
     never double-slashes (AC-08-03).
     """
+    assert_autocount_base_url_deliverable(base_url)
     url = f"{(base_url or '').rstrip('/')}/location"
     client = transport if transport is not None else httpx.Client(
         timeout=OPEN_PROBE_TIMEOUT_SECONDS,

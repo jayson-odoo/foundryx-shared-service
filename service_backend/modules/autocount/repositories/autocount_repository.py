@@ -27,6 +27,7 @@ from app.models.background_job import (
 from app.models.connection import Connection
 
 from ..models import (
+    PULL_SNAPSHOT_STATUS_BUILDING,
     PULL_SNAPSHOT_STATUS_READY,
     STAGED,
     STAGED_DISCARDED,
@@ -1455,22 +1456,36 @@ class PullSnapshotRepository:
         )
         return rows, total
 
-    def expired_ids(self, now: datetime) -> List[str]:
+    def expired_ids(self, now: datetime) -> List[Tuple[str, str]]:
+        """``(id, tenant_id)`` pairs for every snapshot past its
+        ``expires_at`` - the caller needs the tenant to scope the matching
+        ``delete`` call (AC-10-58 L2).
+
+        AC-10-58 L1 - excludes ``status == 'building'``: a snapshot only
+        ever gets an ``expires_at`` when it STAMPS ready (``SnapshotService.
+        stamp_ready``), so a building row's ``expires_at`` is always
+        ``None`` in practice - but a job that dies mid-build while carrying
+        a STALE ``expires_at`` from a prior attempt (re-attach reuses the
+        same row) must never be pruned out from under a build that is
+        genuinely still in flight."""
         rows = (
-            self.db.query(AcPullSnapshot.id)
+            self.db.query(AcPullSnapshot.id, AcPullSnapshot.tenant_id)
             .filter(
                 AcPullSnapshot.expires_at.isnot(None),
                 AcPullSnapshot.expires_at <= now,
+                AcPullSnapshot.status != PULL_SNAPSHOT_STATUS_BUILDING,
             )
             .all()
         )
-        return [r[0] for r in rows]
+        return [(r[0], r[1]) for r in rows]
 
-    def ready_ids_beyond_newest(self, *, keep: int) -> List[str]:
+    def ready_ids_beyond_newest(self, *, keep: int) -> List[Tuple[str, str]]:
         """Every READY snapshot beyond the newest ``keep`` per (tenant,
         company, entity) triple, ordered by ``extracted_at`` (AC-10-25) -
         computed with a window function so the "per triple" cut is one
-        query, not an N+1 fan-out."""
+        query, not an N+1 fan-out. Returns ``(id, tenant_id)`` pairs (AC-10-
+        58 L2) - the caller needs the tenant to scope the matching
+        ``delete`` call."""
         row_number = (
             func.row_number()
             .over(
@@ -1484,28 +1499,44 @@ class PullSnapshotRepository:
             .label("rn")
         )
         subq = (
-            select(AcPullSnapshot.id, row_number)
+            select(AcPullSnapshot.id, AcPullSnapshot.tenant_id, row_number)
             .where(AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_READY)
             .subquery()
         )
-        rows = self.db.execute(select(subq.c.id).where(subq.c.rn > keep)).all()
-        return [r[0] for r in rows]
+        rows = self.db.execute(
+            select(subq.c.id, subq.c.tenant_id).where(subq.c.rn > keep)
+        ).all()
+        return [(r[0], r[1]) for r in rows]
 
-    def delete(self, snapshot_id: str) -> None:
+    def delete(self, tenant_id: str, snapshot_id: str) -> None:
         """Whole-snapshot deletion (pruning) - the ONE way a snapshot's rows
         are ever removed; never a single-row delete (AC-10-19's immutability
         holds even here - pruning tears down the whole thing, it never edits
-        one)."""
+        one).
+
+        AC-10-58 L2 - now TENANT-SCOPED (house rule: every repository query
+        tenant-scoped, never a bare id) - a mismatched ``tenant_id`` is a
+        no-op, never a cross-tenant delete. The global pruning sweep
+        (``pull_service.prune_pull_snapshots``) already knows each row's
+        own tenant from ``expired_ids``/``ready_ids_beyond_newest`` above,
+        so this closes the class of bug without changing its cross-tenant
+        REACH (it still visits every tenant, one scoped delete at a time)."""
         rows = (
             self.db.query(AcPullSnapshotRow)
-            .filter(AcPullSnapshotRow.snapshot_id == snapshot_id)
+            .filter(
+                AcPullSnapshotRow.tenant_id == tenant_id,
+                AcPullSnapshotRow.snapshot_id == snapshot_id,
+            )
             .all()
         )
         for row in rows:
             self.db.delete(row)
         snapshot = (
             self.db.query(AcPullSnapshot)
-            .filter(AcPullSnapshot.id == snapshot_id)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.id == snapshot_id,
+            )
             .first()
         )
         if snapshot is not None:

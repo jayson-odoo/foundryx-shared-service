@@ -51,7 +51,7 @@ from ..sources import (
 )
 from ..sql_source.hashing import compared_columns_for, row_hash
 from ..sql_source.source import CURSOR_COLUMN, CURSOR_MARK, MAX_EXTRACT_ROWS
-from .client import HttpApiClient, HttpTransportError
+from .client import DEFAULT_TIMEOUT_SECONDS, HttpApiClient, HttpTransportError
 from .combine import apply_combine, combine_output_columns
 from .envelope import ENVELOPE_LIST, parse_page
 from .errors import HttpSourceError
@@ -87,6 +87,35 @@ CLOUDFLARE_TIMEOUT_STATUS = 524
 # semantics, not a second policy to drift from the first).
 DELETE_GUARD_RATIO = 0.2
 DELETE_GUARD_MIN_ABSOLUTE = 50
+
+
+def _configured_page_size(config: Dict[str, Any]) -> int:
+    """AC-10-85 - the connection's own ``pageSize`` (a wire string, e.g.
+    ``"250"``), falling back to ``DEFAULT_PAGE_SIZE`` for a blank/missing/
+    unparsable value - a legacy connection saved before this field existed
+    behaves exactly as it always has."""
+    raw = (config or {}).get("pageSize")
+    text = str(raw).strip() if raw is not None else ""
+    if not text:
+        return DEFAULT_PAGE_SIZE
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return DEFAULT_PAGE_SIZE
+
+
+def _configured_timeout_seconds(config: Dict[str, Any]) -> float:
+    """AC-10-85 - the connection's own ``requestTimeoutSeconds``, falling
+    back to ``http_source.client.DEFAULT_TIMEOUT_SECONDS`` (now 90s, was
+    30s) for a blank/missing/unparsable value."""
+    raw = (config or {}).get("requestTimeoutSeconds")
+    text = str(raw).strip() if raw is not None else ""
+    if not text:
+        return DEFAULT_TIMEOUT_SECONDS
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return DEFAULT_TIMEOUT_SECONDS
 
 
 class _PageTimedOutTwice(Exception):
@@ -233,8 +262,17 @@ class HttpApiSource:
             raise HttpApiTaskNotConfigured(
                 "The API connection this task reads from was not found."
             )
-        base_url = str((conn.config_json or {}).get("baseUrl") or "").strip()
-        self._client = HttpApiClient(base_url, transport=transport)
+        conn_config = conn.config_json or {}
+        base_url = str(conn_config.get("baseUrl") or "").strip()
+        # AC-10-85 - the connection's OWN pageSize/requestTimeoutSeconds
+        # (falling back to the module defaults above for a legacy row),
+        # never the fixed module constants a run used to always start from.
+        self._page_size = _configured_page_size(conn_config)
+        self._client = HttpApiClient(
+            base_url,
+            transport=transport,
+            timeout_seconds=_configured_timeout_seconds(conn_config),
+        )
 
     # ── identity ───────────────────────────────────────────────────────────
 
@@ -436,8 +474,14 @@ class HttpApiSource:
         ``scanned``/``reported_total`` of the timed-out attempt entirely
         (``_walk_path`` builds a fresh local ``scanned = []`` on every call);
         only the FINAL, successfully-returned tuple from this method is ever
-        used - counts are never accumulated across a restart."""
-        page_size = DEFAULT_PAGE_SIZE
+        used - counts are never accumulated across a restart.
+
+        AC-10-85 - starts at THIS connection's own configured page size
+        (``self._page_size``, set once in ``__init__``), never the module
+        constant - the main path AND every lookup share the same starting
+        size and the same halving budget mechanics, since both route
+        through this one method."""
+        page_size = self._page_size
         halvings = 0
         while True:
             try:

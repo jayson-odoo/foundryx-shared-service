@@ -248,3 +248,17 @@ load_modules(app)
 @app.get("/")
 def root() -> dict:
     return {"name": "Foundryx EMS API", "status": "ok"}
+
+
+# Sprint-5/10 S6 (live-replay Finding 2 follow-up) - FastAPI's own
+# `/openapi.json` route (`FastAPI.setup`'s inline `async def openapi`) calls
+# the synchronous, CPU-bound `app.openapi()` schema builder DIRECTLY on the
+# event loop, with no threadpool offload of its own - and caches the result
+# on `app.openapi_schema` only AFTER the first call. Computed here instead,
+# once, at import time (LAST - after every route on this file, including
+# `root()` above, is registered; calling it any earlier caches against a
+# stale routes-version and gets silently recomputed on the first real hit
+# anyway) so the FIRST real request to `/openapi.json` is already served
+# from cache - never a ~1s cold-build stall of its own competing with (or
+# masquerading as) the gateway build route's own non-blocking fix.
+app.openapi()

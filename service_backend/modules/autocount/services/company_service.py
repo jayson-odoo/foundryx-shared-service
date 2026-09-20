@@ -1090,22 +1090,31 @@ class CompanyService:
         Validates the impl against the known set and, for ``'sorento'``, that the
         connection exists and is genuinely a Sorento ``consumer`` connection for
         THIS tenant (tenant- and provider-scoped, never a bare id). Switching to
-        ``'logging'`` clears any stale connection id so a later switch back can't
-        resurrect a wrong target.
+        ``'logging'`` clears the now-stale push connection id so a later switch
+        back can't resurrect a wrong target.
 
         ``sorento_company_code`` (plan 22 Appendix A6) is REQUIRED with the
         Sorento sink and is a per-field 422 when blank: without it every single
-        call answers ``COMPANY_ANCHOR_REQUIRED``, so accepting the save would
-        store a configuration that is guaranteed to fail (the foolproof-UI line
-        - never let the UI be configured into a certain runtime error).
+        push call answers ``COMPANY_ANCHOR_REQUIRED``, so accepting the save
+        would store a configuration that is guaranteed to fail (the
+        foolproof-UI line - never let the UI be configured into a certain
+        runtime error).
+
+        Sprint-5/10 S6 (live-replay Finding 0) - a switch to ``'logging'``
+        PRESERVES ``sorento_company_code``: the code is the company's public
+        PULL identity (``EtlService.set_delivery_mode``'s pull gate, the
+        public gateway's ``CompanyRepository.find_by_sorento_company_code``
+        resolution both key off it), not a push-sink artifact. Clearing it
+        here made a `logging`-sink company permanently unable to enable pull
+        at all - not the "banner only, never blocked" behaviour the product
+        contract gate already promises for a company with no live Sorento
+        connection. The push-target fields (``sink_connection_id``) are the
+        only ones a sink switch legitimately owns.
         """
         company = self.get(tenant_id, company_id)  # tenant-scope guard
         if sink_impl == SINK_IMPL_LOGGING:
             company.sink_impl = SINK_IMPL_LOGGING
             company.sink_connection_id = None
-            # Cleared with the target: a code left behind would silently anchor
-            # a later switch back to Sorento at a company nobody re-chose.
-            company.sorento_company_code = None
         elif sink_impl == SINK_IMPL_SORENTO:
             code = (sorento_company_code or "").strip()
             if not sink_connection_id:

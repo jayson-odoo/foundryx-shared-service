@@ -254,22 +254,27 @@ def prune_pull_snapshots(db: Session, *, now: Optional[datetime] = None) -> Dict
     gateway call, forever)."""
     now = now or datetime.now(timezone.utc)
     repo = PullSnapshotRepository(db)
-    expired_ids = repo.expired_ids(now)
-    for snapshot_id in expired_ids:
-        repo.delete(snapshot_id)
-    retained_over_ids = [
-        snapshot_id
-        for snapshot_id in repo.ready_ids_beyond_newest(keep=PULL_SNAPSHOT_RETENTION_KEEP)
-        if snapshot_id not in expired_ids
+    # AC-10-58 L1/L2 - `expired_ids`/`ready_ids_beyond_newest` now hand back
+    # `(id, tenant_id)` pairs (never `status == 'building'` for the former),
+    # so every `delete` call below is tenant-scoped even inside this
+    # cross-tenant sweep.
+    expired = repo.expired_ids(now)
+    expired_id_set = {snapshot_id for snapshot_id, _tenant_id in expired}
+    for snapshot_id, tenant_id in expired:
+        repo.delete(tenant_id, snapshot_id)
+    retained_over = [
+        (snapshot_id, tenant_id)
+        for snapshot_id, tenant_id in repo.ready_ids_beyond_newest(keep=PULL_SNAPSHOT_RETENTION_KEEP)
+        if snapshot_id not in expired_id_set
     ]
-    for snapshot_id in retained_over_ids:
-        repo.delete(snapshot_id)
+    for snapshot_id, tenant_id in retained_over:
+        repo.delete(tenant_id, snapshot_id)
     audit_cutoff = now - timedelta(days=AUTOCOUNT_PULL_AUDIT_RETENTION_DAYS)
     audit_pruned = PullAuditRepository(db).delete_older_than(audit_cutoff)
     db.commit()
     return {
-        "expired": len(expired_ids),
-        "retentionPruned": len(retained_over_ids),
+        "expired": len(expired),
+        "retentionPruned": len(retained_over),
         "auditPruned": audit_pruned,
     }
 
