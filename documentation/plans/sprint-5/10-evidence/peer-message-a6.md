@@ -74,3 +74,11 @@ This message is scoped to the error ladder + two small header/paging facts above
 
 Let us know if any of the six new codes need special handling on your side, or if the corrected
 stock `excludedRows` shape changes anything about your review-page rendering.
+
+## 6. Failed-snapshot message prose
+
+One more restated fact, added during review round "confirm-3" (2026-09-20): a failed snapshot's
+`error.message` is a FIXED, non-diagnostic sentence chosen from `error.code` - never the stored,
+internal error text (which names this deployment's own source host/port/endpoint path). Switch on
+`error.code`, never parse `error.message` - the exact prose is display-only and may change without
+notice.

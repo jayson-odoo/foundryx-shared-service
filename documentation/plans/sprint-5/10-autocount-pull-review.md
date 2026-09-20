@@ -480,8 +480,8 @@ S6 security round (AC-10-58), the five rulings that needed one:
   keep the verbatim text.
 - **Outbound egress guard on `baseUrl`.** An `autocount` connection's base URL is a stored,
   operator-supplied outbound target, so it runs through the house SSRF guard
-  (`app/services/url_guard.assert_deliverable`, https-only, blocks private/loopback/link-local/
-  reserved/multicast targets given as a literal OR resolved from a hostname) at SAVE
+  (`app/services/url_guard.validate_public_url`, blocks private/loopback/link-local/reserved/
+  multicast targets given as a literal OR resolved from a hostname) at SAVE
   (`AutoCountProvider.validate_config`, a 422 naming `baseUrl`) and again immediately before
   every request, at the two outbound chokepoints: `http_source.client.HttpApiClient.get` (the
   paged walk, every lookup and the preview sample all route through it) and
@@ -491,7 +491,16 @@ S6 security round (AC-10-58), the five rulings that needed one:
   request-controlled input): a LOOPBACK host (`localhost`, `127.0.0.0/8`) is allowed in
   development so a local wrapper still works for live-verify. The carve-out does not extend to
   any other private range, and a metadata address (`169.254.169.254`) stays refused even in
-  development.
+  development. **Review round confirm-3 ruling (2026-09-20):** the SCHEME is unrestricted - a
+  plain `http://` wrapper on a genuinely public, resolvable host is allowed exactly like an
+  `https://` one, matching `provider.py`'s own "must start with http:// or https://" copy, which
+  the guard used to silently contradict by refusing http outright. The TARGET restriction above is
+  completely unchanged on either scheme; `app.services.url_guard.validate_public_https_url` (every
+  OTHER caller - webhooks, the core `http.request` action) stays https-only, unaffected. Ops note:
+  `ENVIRONMENT` defaults to `development`, so the loopback carve-out above is LIVE by default
+  unless a deployment's `.env` sets `ENVIRONMENT=production` (same posture as BL-SS-166) - an
+  existing connection is re-validated at request time, so an operator whose wrapper resolves to a
+  private range outside development now fails with a named error on the next request (BL-SS-240).
 - **In-tenant `COMPANY_NOT_ALLOWED` vs `UNKNOWN_COMPANY` is by design.** A key presented for a
   code that exists in its own tenant but is outside the key's company set answers 403
   `COMPANY_NOT_ALLOWED`, while a code that exists in no company of that tenant answers 404
@@ -699,6 +708,14 @@ ahead of both because PRINCIPLES mandates it.
 
 ## 6. Backlog
 
+- **BL-SS-240** - **An existing `autocount` connection is re-validated by the egress guard at
+  REQUEST time, not only at save.** `ENVIRONMENT` defaults to `development` (the loopback
+  carve-out is live unless a deployment's `.env` explicitly sets `ENVIRONMENT=production`, same
+  posture as BL-SS-166), so an operator whose wrapper's `baseUrl` resolves to a private range
+  outside development now fails with a NAMED error (`baseUrl: ...`) on the next request, not a
+  silent skip - an ops note, not a defect, but worth surfacing so a deploy that forgets to set
+  `ENVIRONMENT=production` does not mistake a passing loopback connection for a validated one.
+  Review round confirm-3 (2026-09-20), closes alongside the B1 scheme ruling in section 2.10.
 - **BL-SS-222** - **Preview matched/missed counts are a 50-row SAMPLE.**
   `POST /autocount/http/preview`'s per-lookup `{alias, matched, missed}` (AC-10-05) is computed
   over `PREVIEW_PAGE_SIZE` (50) rows of the main endpoint and the SAME cap on the lookup endpoint
@@ -1065,6 +1082,10 @@ side decides what to apply.
 ### A6. Error ladder (stable codes, body
 `{"code","message","companyCode","entity"}`)
 
+A failed snapshot's `error.message` is a FIXED, non-diagnostic sentence per `error.code` (S6,
+AC-10-58 M1) - branch on `code`, never parse `message`; the exact prose is not part of this
+contract and may change without notice.
+
 | Status | code | Meaning / what to tell your user |
 |---|---|---|
 | 401 | `INVALID_API_KEY` | Missing, malformed, unknown or revoked key. Uniform, no enumeration |
@@ -1098,6 +1119,14 @@ every gateway response, success or error, carries `Cache-Control: no-store`
 serves a customer's ERP master data behind a bearer-style key; and `GET /snapshots/{id}/rows`'s
 `page` query param is REJECTED (422 `INVALID_REQUEST`), not clamped, once it exceeds `1000000`
 (`pull_v1.py`'s `MAX_PAGE`) - `pageSize` remains the only field that clamps instead of erroring.
+
+**Confirm-3 review round (2026-09-20) - a failed-snapshot message is fixed prose, not a log
+line.** Restating the note at the top of this table because it is easy to miss: a `5xx` /
+`status: "failed"` row's `error.message` (`pull_gateway_service.GATEWAY_FAILED_MESSAGES`, one
+sentence per `error_code`, generic fallback for an unmapped code) is operator-safe by
+construction - it never echoes the stored `snapshot.error`, which names this deployment's own
+source host/port/endpoint path. Treat `message` as display-only human copy that may be reworded
+without a contract bump; only `error.code` is the stable, switchable value.
 
 ### A7. Sizing (for your RQ timeouts)
 
