@@ -39,7 +39,12 @@ import {
 } from '@/hooks/use-autocount-etl';
 import { useAutocountMapping, useAutocountMappingPresets } from '@/hooks/use-autocount-mapping';
 import { usePreviewColumnsMap, useSetDeliveryMode } from '@/hooks/use-autocount-pull';
-import { HTTP_PRESETS, isDocumentEntity, mappingSourceColumns } from '@/lib/autocount-etl';
+import {
+  HTTP_PRESETS,
+  isDocumentEntity,
+  mappingSourceColumns,
+  mappingSourceColumnsForTask,
+} from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
   AutocountEtlSourceConfig,
@@ -204,6 +209,11 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
           watermarkColumn: preset.watermarkField,
           comparedFields: preset.comparedFields,
           distinctOf: preset.distinctOf,
+          // sprint-5/10 S5b-FE (AC-10-40/41) - a preset MAY also pre-fill
+          // Lookups/Combine rows (the stock preset ships both); every other
+          // preset carries neither, so this is a no-op for them.
+          ...(preset.lookups ? { lookups: preset.lookups } : {}),
+          ...(preset.combine ? { combine: preset.combine } : {}),
         };
       }
     }
@@ -258,6 +268,11 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 watermarkColumn: preset.watermarkField,
                 comparedFields: preset.comparedFields,
                 distinctOf: preset.distinctOf,
+                // sprint-5/10 S5b-FE (AC-10-40/41) - see the mount-time seed
+                // effect above for why this is a no-op for every preset but
+                // stock_balance.
+                ...(preset.lookups ? { lookups: preset.lookups } : {}),
+                ...(preset.combine ? { combine: preset.combine } : {}),
               }
             : {}),
         };
@@ -441,14 +456,36 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
         : {},
     [preview.state],
   );
+  // A combine-carrying task's own COMBINED preview columns this session
+  // (sprint-5/10 S5b-FE, AC-10-82) - `httpPreview.state.preview.columns` is
+  // the combined shape whenever the last Test carried `combine` (the Source
+  // tab always sends it once the task has one); feeds
+  // `mappingSourceColumnsForTask` below, never the Source tab's OWN pickers
+  // (those read `httpPreviewColumns` in `source-tab.tsx`, staying
+  // PRE-combine).
+  const combinedPreviewColumns = useMemo(
+    () =>
+      httpPreview.state.status === 'success'
+        ? httpPreview.state.preview.columns.map((c) => c.name)
+        : [],
+    [httpPreview.state],
+  );
   const sourceColumns = useMemo(
     () =>
-      mappingSourceColumns(
+      mappingSourceColumnsForTask(
         task?.resultColumns ?? [],
+        task?.combineOutputColumns ?? [],
         previewColumns,
+        combinedPreviewColumns,
         draft.header.rows.map((r) => r.sourcePath),
       ),
-    [draft.header.rows, previewColumns, task?.resultColumns],
+    [
+      combinedPreviewColumns,
+      draft.header.rows,
+      previewColumns,
+      task?.combineOutputColumns,
+      task?.resultColumns,
+    ],
   );
 
   // The Mapping tab's LINE source picker (sprint-5/02, AC-02-02/06) - the

@@ -82,7 +82,7 @@ describe('AC_SQL_DB_ENTITY_TYPES (AC-01-17)', () => {
 });
 
 describe('AC_HTTP_ENTITY_TYPES (AC-08-18)', () => {
-  it('is exactly the six confirmed open-API masters', () => {
+  it('is exactly the six confirmed open-API masters plus stock_balance (sprint-5/10, AC-10-40)', () => {
     expect(AC_HTTP_ENTITY_TYPES).toEqual([
       'product',
       'customer',
@@ -90,6 +90,7 @@ describe('AC_HTTP_ENTITY_TYPES (AC-08-18)', () => {
       'product_category',
       'brand',
       'unit_of_measure',
+      'stock_balance',
     ]);
   });
 });

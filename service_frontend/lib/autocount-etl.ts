@@ -4,11 +4,13 @@
  */
 import type {
   AutocountAnchorErrorCode,
+  AutocountCombineConfig,
   AutocountCompany,
   AutocountEntityConfig,
   AutocountEtlSourceConfig,
   AutocountEtlTask,
   AutocountEtlTaskError,
+  AutocountLookupSpec,
   AutocountPullSnapshotRowsPage,
   AutocountSqlPreview,
   AutocountSqlSchema,
@@ -363,6 +365,31 @@ export function mappingSourceColumns(
   return out;
 }
 
+/**
+ * The Mapping tab's header source-column picker, combine-aware (sprint-5/10
+ * S5b-FE review round 4 SF-4, AC-10-82): a combine-carrying task's mapping
+ * targets the COMBINED, post-group schema (`combineOutputColumns`) instead
+ * of the pre-combine `resultColumns` - a wholesale switch, never a union (a
+ * raw column and its combined replacement can share a name, e.g.
+ * `item_code`, and unioning would just relabel the same option twice). The
+ * Source tab's OWN pickers (key/watermark/compared, Lookups, the Combine
+ * editor's own group-by/measure/carry options) stay PRE-combine and are
+ * untouched by this function. Extracted from `mappingSourceColumns` above
+ * so the branch itself is unit-testable without mounting the task editor.
+ */
+export function mappingSourceColumnsForTask(
+  resultColumns: string[],
+  combineOutputColumns: string[],
+  previewColumns: string[],
+  combinedPreviewColumns: string[],
+  mappedPaths: string[],
+): string[] {
+  if (combineOutputColumns.length > 0) {
+    return mappingSourceColumns(combineOutputColumns, combinedPreviewColumns, mappedPaths);
+  }
+  return mappingSourceColumns(resultColumns, previewColumns, mappedPaths);
+}
+
 // ── plan 22 S5 review SHOULD-FIX 4c - a `status` seed formula, VALUE not copy ─
 
 /**
@@ -485,6 +512,13 @@ export interface HttpPreset {
   /** Seeded on the entity's first clean save (AC-08-16) - the Mapping tab's
    * starting rows, never a constant (the mapping engine has none). */
   mapping: HttpPresetMappingRow[];
+  /** sprint-5/10 S5b-FE (AC-10-04/41, R9) - ANY preset MAY pre-fill
+   * operator-editable lookups; absent for every preset before `stock_balance`. */
+  lookups?: AutocountLookupSpec[];
+  /** sprint-5/10 S5b-FE (AC-10-40/41, R11) - ANY preset MAY pre-fill a
+   * combine step, mirroring the backend's `STOCK_BALANCE_HTTP_PRESET`
+   * (`modules/autocount/presets.py`); `undefined` for every OTHER preset. */
+  combine?: AutocountCombineConfig;
 }
 
 /**
@@ -584,6 +618,74 @@ export const HTTP_PRESETS: Record<string, HttpPreset> = {
     mapping: [
       { sourcePath: 'value', transform: 'string', canonicalField: 'code', required: true },
       { sourcePath: 'value', transform: 'string', canonicalField: 'name', required: true },
+    ],
+  },
+  // sprint-5/10 S5b-FE (AC-10-40/41) - mirrors the backend's
+  // `STOCK_BALANCE_HTTP_PRESET` (`modules/autocount/presets.py`) byte for
+  // byte: two ordered lookups (item master for BaseUOM/Description, then
+  // ItemUOM for the conversion Rate) + a PRE-FILLED `combine` block that
+  // groups/converts/rounds/drops exactly like the old named reducer (D4/D5)
+  // - the operator configures nothing. `keyFields` stays empty: key fields
+  // are DERIVED from `combine.groupBy` (AC-10-80), never typed here.
+  stock_balance: {
+    path: '/itembatchbalqtybypage',
+    keyFields: [],
+    watermarkField: null,
+    comparedFields: [],
+    distinctOf: null,
+    lookups: [
+      {
+        path: '/itembypage',
+        as: 'item',
+        on: [{ local: 'ItemCode', remote: 'ItemCode' }],
+        fields: [
+          { remote: 'BaseUOM', as: 'ItemBaseUOM' },
+          { remote: 'Description', as: 'ItemDescription' },
+        ],
+      },
+      {
+        path: '/itemuombypage',
+        as: 'uom',
+        on: [
+          { local: 'ItemCode', remote: 'ItemCode' },
+          { local: 'UOM', remote: 'UOM', match: 'casefold_trim' },
+        ],
+        fields: [{ remote: 'Rate', as: 'UomRate' }],
+      },
+    ],
+    combine: {
+      computed: [
+        { alias: 'item_code', formula: 'trim(ItemCode)' },
+        { alias: 'location_code', formula: 'trim(Location)' },
+        {
+          alias: 'base_qty',
+          formula:
+            'if(lower(trim(UOM)) == lower(trim(ItemBaseUOM)), number(BalQty), number(BalQty) * number(UomRate))',
+        },
+      ],
+      require: [
+        {
+          name: 'uom_rate',
+          formula: 'lower(trim(UOM)) == lower(trim(ItemBaseUOM)) or number(default(UomRate, 0)) > 0',
+          reason: 'uom_rate_unresolved',
+        },
+      ],
+      measure: 'base_qty',
+      groupBy: ['item_code', 'location_code'],
+      measures: [{ source: 'base_qty', op: 'sum', alias: 'qty' }],
+      carry: ['ItemDescription', 'ItemBaseUOM'],
+      round: [{ measure: 'qty', mode: 'half_up', dp: 0 }],
+      drop: [
+        { name: 'zero', formula: 'qty == 0' },
+        { name: 'negative', formula: 'qty < 0', listRows: true },
+      ],
+    },
+    mapping: [
+      { sourcePath: 'item_code', transform: 'string', canonicalField: 'item_code', required: true },
+      { sourcePath: 'location_code', transform: 'string', canonicalField: 'location_code', required: true },
+      { sourcePath: 'ItemDescription', transform: 'string', canonicalField: 'item_description' },
+      { sourcePath: 'ItemBaseUOM', transform: 'string', canonicalField: 'uom_code' },
+      { sourcePath: 'qty', transform: 'int', canonicalField: 'qty', required: true },
     ],
   },
 };
