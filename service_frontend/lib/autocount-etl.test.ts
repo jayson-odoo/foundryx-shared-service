@@ -315,25 +315,37 @@ describe('mappingSourceColumns (AC-22-09 source picker)', () => {
 describe('mappingSourceColumnsForTask (sprint-5/10 S5b-FE, AC-10-82)', () => {
   it('reads the pre-combine resultColumns when no combine is configured', () => {
     expect(
-      mappingSourceColumnsForTask(['ItemCode', 'Description'], [], ['LastModified'], [], []),
+      mappingSourceColumnsForTask({
+        resultColumns: ['ItemCode', 'Description'],
+        combineOutputColumns: [],
+        previewColumns: ['LastModified'],
+        combinedPreviewColumns: [],
+        mappedPaths: [],
+      }),
     ).toEqual(['ItemCode', 'Description', 'LastModified']);
   });
 
   it('switches wholesale to combineOutputColumns once the task carries one - never unioned with resultColumns', () => {
     expect(
-      mappingSourceColumnsForTask(
-        ['ItemCode', 'BalQty', 'UOM'],
-        ['item_code', 'location_code', 'qty'],
-        ['ItemCode'],
-        ['item_code', 'location_code', 'qty', 'ItemDescription'],
-        [],
-      ),
+      mappingSourceColumnsForTask({
+        resultColumns: ['ItemCode', 'BalQty', 'UOM'],
+        combineOutputColumns: ['item_code', 'location_code', 'qty'],
+        previewColumns: ['ItemCode'],
+        combinedPreviewColumns: ['item_code', 'location_code', 'qty', 'ItemDescription'],
+        mappedPaths: [],
+      }),
     ).toEqual(['item_code', 'location_code', 'qty', 'ItemDescription']);
   });
 
   it('still offers an already-mapped path even if it fell out of the combined set', () => {
     expect(
-      mappingSourceColumnsForTask([], ['item_code', 'qty'], [], [], ['legacy_col']),
+      mappingSourceColumnsForTask({
+        resultColumns: [],
+        combineOutputColumns: ['item_code', 'qty'],
+        previewColumns: [],
+        combinedPreviewColumns: [],
+        mappedPaths: ['legacy_col'],
+      }),
     ).toEqual(['item_code', 'qty', 'legacy_col']);
   });
 });

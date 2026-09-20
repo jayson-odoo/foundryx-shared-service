@@ -109,6 +109,10 @@ describe('previewHttp - combine funnel (sprint-5/10 S5b-FE, AC-10-82)', () => {
     expect(preview.droppedByRule).toBeUndefined();
     expect(preview.rowsOut).toBeUndefined();
     expect(preview.roundedCount).toBeUndefined();
+    // review round 1 (B1/AC-10-82) - `preCombineColumns` only ever
+    // populates alongside a combine block; a plain preview's bare
+    // `columns` IS already the pre-combine set, so this stays absent too.
+    expect(preview.preCombineColumns).toBeUndefined();
   });
 
   it('groups, sums and drops - the six funnel keys land flat on the response, and rows/columns become the COMBINED shape', async () => {
@@ -139,6 +143,15 @@ describe('previewHttp - combine funnel (sprint-5/10 S5b-FE, AC-10-82)', () => {
     for (const row of preview.rows) {
       expect(row.count).toBe(5);
     }
+    // review round 1 (B1/AC-10-82/AC-10-40) - `preCombineColumns` carries
+    // the PRE-combine (raw + lookup) set even though `columns` above is
+    // now the COMBINED, post-group shape - the Source tab's key/watermark/
+    // compared/Lookups/Combine pickers read THIS, never `columns`, and
+    // never the (possibly-absent-on-a-first-Test) echoed `task`.
+    expect(preview.preCombineColumns).toEqual(
+      expect.arrayContaining(['ItemCode', 'Description', 'ItemGroup', 'ItemBrand', 'LastModified']),
+    );
+    expect(preview.preCombineColumns).not.toContain('count');
   });
 
   it('a dropped group is reflected in droppedByRule and excluded from rowsOut', async () => {

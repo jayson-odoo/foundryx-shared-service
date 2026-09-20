@@ -212,8 +212,13 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
           // sprint-5/10 S5b-FE (AC-10-40/41) - a preset MAY also pre-fill
           // Lookups/Combine rows (the stock preset ships both); every other
           // preset carries neither, so this is a no-op for them.
-          ...(preset.lookups ? { lookups: preset.lookups } : {}),
-          ...(preset.combine ? { combine: preset.combine } : {}),
+          // N2 (review round 1) - `structuredClone`, never the module-level
+          // `HTTP_PRESETS` array BY REFERENCE: an in-place edit (Combine
+          // editor mutates arrays via `onChange`) would otherwise corrupt
+          // the shared preset constant for the rest of the session/every
+          // other task that reads it.
+          ...(preset.lookups ? { lookups: structuredClone(preset.lookups) } : {}),
+          ...(preset.combine ? { combine: structuredClone(preset.combine) } : {}),
         };
       }
     }
@@ -270,9 +275,10 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 distinctOf: preset.distinctOf,
                 // sprint-5/10 S5b-FE (AC-10-40/41) - see the mount-time seed
                 // effect above for why this is a no-op for every preset but
-                // stock_balance.
-                ...(preset.lookups ? { lookups: preset.lookups } : {}),
-                ...(preset.combine ? { combine: preset.combine } : {}),
+                // stock_balance. N2 - `structuredClone`, same reference-leak
+                // guard as the mount-time seed above.
+                ...(preset.lookups ? { lookups: structuredClone(preset.lookups) } : {}),
+                ...(preset.combine ? { combine: structuredClone(preset.combine) } : {}),
               }
             : {}),
         };
@@ -472,13 +478,13 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   );
   const sourceColumns = useMemo(
     () =>
-      mappingSourceColumnsForTask(
-        task?.resultColumns ?? [],
-        task?.combineOutputColumns ?? [],
+      mappingSourceColumnsForTask({
+        resultColumns: task?.resultColumns ?? [],
+        combineOutputColumns: task?.combineOutputColumns ?? [],
         previewColumns,
         combinedPreviewColumns,
-        draft.header.rows.map((r) => r.sourcePath),
-      ),
+        mappedPaths: draft.header.rows.map((r) => r.sourcePath),
+      }),
     [
       combinedPreviewColumns,
       draft.header.rows,
@@ -548,10 +554,17 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     const label = entityLabel(entityType);
     // A query/endpoint with no key columns cannot mint source_refs - shown
     // as a prerequisite warning (foolproof), never a silent later failure.
+    // AC-10-80 (S1 review round 1 fix) - a combine-carrying task's key
+    // fields are DERIVED from `combine.groupBy` (the Key fields picker
+    // itself locks to read-only chips the moment one is set, `SourceTab`'s
+    // `combineKeyLocked`) - never "missing" just because the operator has
+    // not separately typed them into a picker that no longer accepts input.
+    const combineKeyed = (config.combine?.groupBy?.length ?? 0) > 0;
     const keysMissing =
-      sourceKind === 'db'
+      !combineKeyed &&
+      (sourceKind === 'db'
         ? config.query.trim().length > 0 && config.keyColumns.length === 0
-        : Boolean(config.path?.trim()) && (config.keyFields?.length ?? 0) === 0;
+        : Boolean(config.path?.trim()) && (config.keyFields?.length ?? 0) === 0);
     const querySaved =
       task.sourceConfig.query.trim().length > 0 || Boolean(task.sourceConfig.path?.trim());
     const status = task.etlStatus as AutocountEtlStatus;

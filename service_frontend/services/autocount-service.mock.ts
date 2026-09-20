@@ -2514,6 +2514,22 @@ export const mockAutocountService: AutocountService = {
     // completely unaffected (`combined` stays `null`).
     const combined = input.combine ? simulateCombine(preview.rows, input.combine) : null;
     const combinedColumnNames = combined ? combineOutputColumnsFor(input.combine) : [];
+    // sprint-5/10 S5b-FE review round 1 (AC-10-82/AC-10-40) - mirrors the
+    // backend's `preview_http`: captured BEFORE `columns` is overwritten
+    // below with the COMBINED shape, so a caller never has to fall back to
+    // the (possibly absent, possibly SAVED-not-draft) echoed `task` to
+    // recover the pre-combine set. Raw + lookup aliases (`preview.columns`,
+    // already lookup-merged by `mockPreviewHttp`) plus the combine's OWN
+    // `computed` alias names, in declared order, de-duplicated.
+    const preCombineColumns: string[] = combined
+      ? (() => {
+          const names = preview.columns.map((c) => c.name);
+          for (const step of input.combine?.computed ?? []) {
+            if (step.alias && !names.includes(step.alias)) names.push(step.alias);
+          }
+          return names;
+        })()
+      : [];
     const combinedPreview: HttpPreview = combined
       ? {
           ...preview,
@@ -2530,6 +2546,7 @@ export const mockAutocountService: AutocountService = {
           ),
           rowsOut: combined.rowsOut,
           roundedCount: combined.roundedCount,
+          preCombineColumns,
         }
       : preview;
     // Mirrors the real backend's `preview_http` (sprint-5/08 review round
@@ -3187,11 +3204,12 @@ function overlayTaskKey(companyId: string, entityType: string): string {
 }
 
 export function withPhase1PullMock(real: AutocountService): AutocountService {
+  // S3 (review round 1) - `combine` used to be shadowed here too ("has no
+  // backend yet"), but S5a landed it server-side: the real PUT/GET now
+  // persist/echo it for real, so overlaying it here would silently mask a
+  // genuine backend disagreement between the Source and Mapping tabs after
+  // a save. Only the genuinely-mock-only pull surface (delivery mode) stays.
   const overlayDeliveryModes = new Map<string, AutocountDeliveryMode>();
-  // `combine` has no backend yet (S5a) - kept here so a session's edit
-  // survives a save/reload round trip even though the real PUT silently
-  // ignores the field today (pydantic ignores unknown keys, never a 422).
-  const overlayCombine = new Map<string, AutocountEtlSourceConfig['combine']>();
   const overlayKeys: AutocountPullApiKey[] = [
     {
       id: 'pull-key-active',
@@ -3282,8 +3300,7 @@ export function withPhase1PullMock(real: AutocountService): AutocountService {
   function mergeTask(companyId: string, entityType: string, task: AutocountEtlTask): AutocountEtlTask {
     const key = overlayTaskKey(companyId, entityType);
     const deliveryMode = overlayDeliveryModes.get(key) ?? task.deliveryMode ?? 'push';
-    const combine = overlayCombine.has(key) ? overlayCombine.get(key) : task.sourceConfig.combine;
-    return { ...task, deliveryMode, sourceConfig: { ...task.sourceConfig, combine } };
+    return { ...task, deliveryMode };
   }
 
   async function withMergedTask(
@@ -3302,7 +3319,6 @@ export function withPhase1PullMock(real: AutocountService): AutocountService {
       return withMergedTask(companyId, entityType, () => real.getEtlTask(companyId, entityType));
     },
     async updateEtlTask(companyId, entityType, input) {
-      overlayCombine.set(overlayTaskKey(companyId, entityType), input.sourceConfig.combine);
       return withMergedTask(companyId, entityType, () => real.updateEtlTask(companyId, entityType, input));
     },
     async previewEtlTask(companyId, entityType) {

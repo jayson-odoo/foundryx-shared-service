@@ -1014,6 +1014,20 @@ export interface HttpPreview {
   droppedByRule?: Record<string, number>;
   rowsOut?: number;
   roundedCount?: number;
+  /**
+   * sprint-5/10 S5b-FE review round 1 (AC-10-82/AC-10-40) - present ONLY
+   * when the request carried a `combine` block (`schemas.py`'s
+   * `HttpPreviewResponse.preCombineColumns`): the PRE-combine column set
+   * (raw source + lookup aliases + computed aliases), i.e. what
+   * `columns`/`rows` above WOULD have been without the combine step. The
+   * Source tab's key/watermark/compared/Lookups/Combine pickers read THIS
+   * (never `columns`, which is the COMBINED shape whenever this is set, and
+   * never the echoed `task`, which a brand-new entity's first Test carries
+   * none of yet) - `source-tab.tsx`'s `httpPreviewColumns`. `null`/absent
+   * for a plain (no-combine) preview, where `columns` above already IS the
+   * pre-combine set.
+   */
+  preCombineColumns?: string[] | null;
 }
 
 /** `POST /autocount/http/preview` body. */

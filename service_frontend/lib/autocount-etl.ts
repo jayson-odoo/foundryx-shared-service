@@ -365,6 +365,14 @@ export function mappingSourceColumns(
   return out;
 }
 
+export interface MappingSourceColumnsForTaskInput {
+  resultColumns: string[];
+  combineOutputColumns: string[];
+  previewColumns: string[];
+  combinedPreviewColumns: string[];
+  mappedPaths: string[];
+}
+
 /**
  * The Mapping tab's header source-column picker, combine-aware (sprint-5/10
  * S5b-FE review round 4 SF-4, AC-10-82): a combine-carrying task's mapping
@@ -376,14 +384,18 @@ export function mappingSourceColumns(
  * editor's own group-by/measure/carry options) stay PRE-combine and are
  * untouched by this function. Extracted from `mappingSourceColumns` above
  * so the branch itself is unit-testable without mounting the task editor.
+ *
+ * A named-options object (review round 1, N3) rather than five positional
+ * `string[]` arguments - the original signature let two same-typed
+ * parameters swap silently at a call site with no type error.
  */
-export function mappingSourceColumnsForTask(
-  resultColumns: string[],
-  combineOutputColumns: string[],
-  previewColumns: string[],
-  combinedPreviewColumns: string[],
-  mappedPaths: string[],
-): string[] {
+export function mappingSourceColumnsForTask({
+  resultColumns,
+  combineOutputColumns,
+  previewColumns,
+  combinedPreviewColumns,
+  mappedPaths,
+}: MappingSourceColumnsForTaskInput): string[] {
   if (combineOutputColumns.length > 0) {
     return mappingSourceColumns(combineOutputColumns, combinedPreviewColumns, mappedPaths);
   }

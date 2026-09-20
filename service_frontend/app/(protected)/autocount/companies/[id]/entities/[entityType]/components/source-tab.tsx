@@ -331,21 +331,34 @@ export function SourceTab({
     }));
   const isBasicAuth = apiConnectionAuth === 'basic';
 
+  // sprint-5/10 (AC-10-01, D23) - a lookup alias may never be a key or
+  // watermark field (a miss leaves it absent); it IS offered in the
+  // compared-fields picker, the Combine editor's column options, and the
+  // Mapping source picker. Declared ahead of `httpPreviewColumns` below -
+  // both need it.
+  const lookupAliases = useMemo(
+    () => new Set((config.lookups ?? []).flatMap((l) => l.fields.map((f) => f.as.trim()).filter(Boolean))),
+    [config.lookups],
+  );
+  // Review round 1 B1 (AC-10-82/AC-10-40/41) - NEVER keyed off the echoed
+  // `task`: a brand-new entity carries no `ac_entity_config` row yet, so
+  // the backend withholds `task` on its very FIRST Test - and a stock task's
+  // first Test sends `combine` from its preset, so falling back to the bare
+  // (then COMBINED) `columns` leaked post-group names like `qty` into the
+  // watermark/compared/Lookups/Combine pickers. The SERVER's own
+  // `preCombineColumns` (sent exactly when the request carried `combine`)
+  // IS the pre-combine, alias-inclusive set (raw + lookup aliases +
+  // computed aliases); for a plain (no-combine) Test the bare `columns`
+  // already IS pre-combine (the combine stage never ran). Either way
+  // unioned with every alias the DRAFT's lookups currently name (S2 - an
+  // added-but-not-yet-re-Tested lookup's alias must not vanish from the
+  // compared/Combine pickers).
   const httpPreviewColumns = useMemo(() => {
     if (httpPreview.state.status !== 'success') return [];
-    // sprint-5/10 S5b-FE (AC-10-82) - once a combine-carrying task's Test
-    // sends `combine`, the response's OWN `columns` is the COMBINED,
-    // post-group shape (backend `schemas.py`) - the Lookups editor, the
-    // key/watermark/compared pickers and the Combine editor's OWN group-by/
-    // measure/carry pickers all need the PRE-combine raw+lookup set
-    // instead. The echoed task's `resultColumns` carries exactly that set,
-    // "unchanged" regardless of whether combine was sent, so prefer it
-    // whenever the response stamped one; falls back to the bare `columns`
-    // for a standalone/mocked `run` that echoes no task.
-    const resultColumns = httpPreview.state.preview.task?.resultColumns;
-    if (resultColumns && resultColumns.length > 0) return resultColumns;
-    return httpPreview.state.preview.columns.map((c) => c.name);
-  }, [httpPreview.state]);
+    const preview = httpPreview.state.preview;
+    const base = preview.preCombineColumns ?? preview.columns.map((c) => c.name);
+    return Array.from(new Set([...base, ...Array.from(lookupAliases)]));
+  }, [httpPreview.state, lookupAliases]);
   // The Combine editor's own funnel (AC-10-82) - the SAME six server counts
   // the Source tab's Test just landed, present only when that Test's
   // request carried `combine` (`rowsIn` is the funnel's own presence
@@ -363,19 +376,27 @@ export function SourceTab({
       roundedCount: preview.roundedCount ?? 0,
     };
   }, [httpPreview.state]);
-  // Browser round 1 fix (AC-10-09) - a COMBINED preview's `columns` is, by
-  // backend design, RAW main-endpoint columns UNION every attached lookup's
-  // OWN alias (so the grid can show the enriched values) - `httpPreviewColumns`
-  // above is therefore NOT a pure raw-column list. The Lookups editor's alias
+  // Browser round 1 fix (AC-10-09), unchanged by the B1 fix above - a
+  // COMBINED-or-not preview's merged columns are, by backend design, RAW
+  // main-endpoint columns UNION every attached lookup's OWN alias (so the
+  // grid can show enriched values) - `httpPreviewColumns` above is
+  // therefore NOT a pure raw-column list. The Lookups editor's alias
   // collision check must only fire against a genuine raw column or an
   // EARLIER lookup's alias (`lib/autocount-lookups.ts`'s own rule), never a
-  // lookup's OWN alias echoed back by the very test that proved it. The
-  // backend echoes the EXACT `sourceConfig` that produced this preview on
-  // `preview.task` (S5 review round 7) - its `lookups` are precisely the
-  // aliases already baked into `httpPreviewColumns`, so subtracting THOSE
-  // (never the live, possibly freshly-typed-and-UNTESTED `config.lookups`)
-  // recovers the true raw set without hiding a genuine collision against an
-  // untested alias (e.g. typing an existing raw column's name).
+  // lookup's OWN alias echoed back by the very test that proved it - and
+  // NEVER against the live, possibly freshly-typed-and-UNTESTED value of
+  // the field being edited (subtracting the full DRAFT `lookupAliases`
+  // would do exactly that: a genuinely real raw column typed as a NEW,
+  // not-yet-tested alias - e.g. "Description" - would vanish from the raw
+  // set and the real collision would silently stop firing). The backend
+  // echoes the EXACT `sourceConfig` that produced this preview on
+  // `preview.task` (S5 review round 7) when the entity already has a
+  // config row - its `lookups` are precisely the aliases already proven
+  // and baked into `httpPreviewColumns`, so subtracting THOSE (never
+  // `config.lookups`) recovers the true raw set. A brand-new entity's
+  // first Test carries no `task` yet, so `testedLookupAliases` is empty
+  // there - matching the OLD behaviour for that case (B1's own fix already
+  // keeps `httpPreviewColumns` itself pre-combine in that scenario).
   const testedLookupAliases = useMemo(() => {
     const testedLookups =
       httpPreview.state.status === 'success' ? httpPreview.state.preview.task?.sourceConfig.lookups : undefined;
@@ -406,14 +427,6 @@ export function SourceTab({
   const combineGroupBy = useMemo(() => config.combine?.groupBy ?? [], [config.combine]);
   const combineKeyLocked = combineGroupBy.length > 0;
   const httpKeyFieldsDisplay = combineKeyLocked ? combineGroupBy : httpKeyFields;
-  // sprint-5/10 (AC-10-01, D23) - a lookup alias may never be a key or
-  // watermark field (a miss leaves it absent); it IS offered in the
-  // compared-fields picker and the Mapping source picker (which reads
-  // `httpPreviewColumns` directly, unaffected by this exclusion).
-  const lookupAliases = useMemo(
-    () => new Set((config.lookups ?? []).flatMap((l) => l.fields.map((f) => f.as).filter(Boolean))),
-    [config.lookups],
-  );
   const httpComparedOptions = useMemo(
     () => httpColumnOptions.filter((o) => !httpKeyFields.includes(o.value)),
     [httpColumnOptions, httpKeyFields],

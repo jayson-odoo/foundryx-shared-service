@@ -1,23 +1,23 @@
 import { fireEvent, render as rtlRender, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsProvider } from '@/providers/settings-provider';
-import type { AutocountCompanyDetail, AutocountEtlTask } from '@/types/autocount';
+import type { AutocountCompanyDetail, AutocountEtlTask, AutocountEtlTaskUpdate } from '@/types/autocount';
 import { TaskEditorView } from './task-editor-view';
 import { stubAuthFetch } from './task-editor-view.test-helpers';
 
 stubAuthFetch();
 
 /**
- * sprint-5/10 S5b-FE (AC-10-40/41) - a never-configured `stock_balance` task
- * on an open (http) company opens with its Source tab ALREADY pre-filled
- * from `HTTP_PRESETS.stock_balance` (`lib/autocount-etl.ts`, mirroring the
- * backend's `STOCK_BALANCE_HTTP_PRESET`): two ordered lookups and a
- * Combine rows step with the `negative` drop rule's "list dropped rows"
- * switch already on - the operator configures nothing (foolproof-UI).
- * Mirrors `task-editor-view.http-preset-dirty.test.tsx`'s mocking pattern
- * (`useAutocountEtlTask` fully stubbed) rather than the SERVICE-mocking
- * pattern, since this suite never exercises Test/Save.
+ * S5 (review round 1) - the backend contract change landing alongside this
+ * round: explicit `combine: null` on `PUT .../etl-task` now CLEARS the
+ * stored combine server-side (an ABSENT `combine` key leaves it untouched).
+ * `AutocountEtlSourceConfig.combine` is a non-optional key (`| null`, never
+ * `?:`), so `{...config, combine: null}` already serialises as a genuine
+ * `"combine":null` on the wire (`JSON.stringify` only drops `undefined`) -
+ * this pins that turning the Combine rows switch off and saving actually
+ * sends the explicit clear, never an omitted key.
  */
+
 function render(ui: React.ReactElement) {
   return rtlRender(<SettingsProvider>{ui}</SettingsProvider>);
 }
@@ -26,14 +26,15 @@ vi.mock('@/hooks/use-can', () => ({
   useCan: () => ({ can: () => true, ready: true }),
 }));
 
-function blankStockTask(): AutocountEtlTask {
+function stockTaskWithCombine(): AutocountEtlTask {
   return {
     companyId: 'company-http',
     entityType: 'stock_balance',
-    etlStatus: 'draft',
-    activatedAt: null,
+    etlStatus: 'active',
+    activatedAt: '2026-09-01T00:00:00Z',
+    sourceImpl: 'autocount_http',
     sourceConfig: {
-      connectionId: null,
+      connectionId: 'conn-api-mocha',
       query: '',
       lineQuery: null,
       keyColumns: [],
@@ -42,13 +43,28 @@ function blankStockTask(): AutocountEtlTask {
       fromDate: null,
       docDateColumn: null,
       filterFormula: null,
-      incrementalMinutes: 5,
+      incrementalMinutes: 15,
       reconcileMode: 'dailyAt',
       reconcileHours: null,
       reconcileAt: '02:00',
+      path: '/itembatchbalqtybypage',
+      keyFields: [],
+      watermarkField: null,
+      comparedFields: [],
+      distinctOf: null,
+      combine: {
+        computed: [],
+        require: [],
+        measure: 'qty',
+        groupBy: ['item_code'],
+        measures: [{ source: 'BalQty', op: 'sum', alias: 'qty' }],
+        carry: [],
+        round: [],
+        drop: [],
+      },
     },
-    resultColumns: [],
-    lastPreviewAt: null,
+    resultColumns: ['ItemCode', 'BalQty'],
+    lastPreviewAt: '2026-09-19T00:00:00Z',
     lastPreviewFailedCount: null,
     lastRunAt: null,
     lastRunError: null,
@@ -81,6 +97,7 @@ function httpCompanyDetail(): AutocountCompanyDetail {
 
 const detailBox = vi.hoisted(() => ({ current: null as unknown }));
 const taskBox = vi.hoisted(() => ({ current: null as unknown }));
+const etlSaveSpy = vi.hoisted(() => vi.fn().mockResolvedValue(true));
 
 vi.mock('@/hooks/use-autocount-company', () => ({
   useAutocountCompany: () => ({
@@ -100,7 +117,7 @@ vi.mock('@/hooks/use-autocount-etl', () => ({
     saveError: null,
     fieldErrors: {},
     isSaving: false,
-    save: vi.fn().mockResolvedValue(true),
+    save: etlSaveSpy,
     apply: vi.fn(),
     reload: vi.fn(),
   }),
@@ -141,39 +158,31 @@ vi.mock('../../../../components/use-runs-list-config', () => ({
   useAutocountRunsListConfig: () => ({}),
 }));
 
+function editButton() {
+  return screen.getByRole('button', { name: /^Edit$/ });
+}
+function saveButton() {
+  return screen.getByRole('button', { name: /^Save/i });
+}
+
 beforeEach(() => {
-  taskBox.current = blankStockTask();
+  etlSaveSpy.mockClear();
+  taskBox.current = stockTaskWithCombine();
   detailBox.current = httpCompanyDetail();
 });
 
-describe('TaskEditorView - a new stock_balance task pre-fills lookups + combine (sprint-5/10, AC-10-40/41)', () => {
-  it('the Source tab shows the pre-filled negative drop rule with "list dropped rows" already on', async () => {
+describe('TaskEditorView - turning off Combine rows sends an explicit `combine: null` on save (S5, review round 1)', () => {
+  it('the save() payload carries combine: null, not an absent key', async () => {
     render(<TaskEditorView companyId="company-http" entityType="stock_balance" />);
     await screen.findByRole('tab', { name: /Source/i });
+    fireEvent.click(editButton());
 
-    expect(screen.getByLabelText('Endpoint path')).toHaveValue('/itembatchbalqtybypage');
-    expect(screen.getByLabelText('Drop rule 1 name')).toHaveValue('zero');
-    expect(screen.getByLabelText('Drop rule 2 name')).toHaveValue('negative');
-    expect(screen.getByTestId('drop-list-rows-1')).toHaveAttribute('data-state', 'checked');
-    expect(screen.getByTestId('drop-list-rows-0')).toHaveAttribute('data-state', 'unchecked');
-  });
+    fireEvent.click(screen.getByTestId('combine-enable'));
+    fireEvent.click(saveButton());
 
-  it('the pre-filled group-by locks the Key fields picker to read-only chips (AC-10-80)', async () => {
-    render(<TaskEditorView companyId="company-http" entityType="stock_balance" />);
-    await screen.findByRole('tab', { name: /Source/i });
-    // S4c (review round 1) - `ColumnPickers` renders read-only
-    // chips whenever `!editing` REGARDLESS of `keyReadOnly` (the shell's
-    // default view mode), so without clicking Edit this assertion passes
-    // even with `keyReadOnly` wired to nothing - a vacuous pass. Editing
-    // mode is the only state where `keyReadOnly` actually does anything.
-    fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
-
-    const keyColumnsLabel = screen.getByText(
-      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
-    );
-    const box = keyColumnsLabel.parentElement as HTMLElement;
-    expect(box.querySelector('[role="combobox"]')).not.toBeInTheDocument();
-    expect(box).toHaveTextContent('item_code');
-    expect(box).toHaveTextContent('location_code');
+    expect(etlSaveSpy).toHaveBeenCalled();
+    const [sentSourceConfig] = etlSaveSpy.mock.calls[0] as [AutocountEtlTaskUpdate['sourceConfig']];
+    expect(sentSourceConfig).toHaveProperty('combine');
+    expect(sentSourceConfig.combine).toBeNull();
   });
 });

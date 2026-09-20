@@ -714,8 +714,150 @@ describe('SourceTab - Test sends the combine step + feeds the server funnel (AC-
     expect(within(grid).getByText('item_code')).toBeInTheDocument();
   });
 
+  // B1 (blocker, review round 1, AC-10-82/AC-10-40/41) - a brand-new
+  // entity's FIRST Test never gets a `task` echo (no `ac_entity_config` row
+  // exists yet), and a preset-seeded stock task sends `combine` on that
+  // very first Test - so the old fallback-to-`preview.columns` read the
+  // COMBINED, post-group shape (`qty`) straight into the watermark/compared/
+  // Lookups/Combine pickers. This pair regresses if the pre-combine
+  // preference (`preview.preCombineColumns`) is ever removed.
+  // Two separate `it`s (one popover interaction each) - Radix's Popover
+  // leaves a transitional aria-hidden state on a same-test second open that
+  // has nothing to do with the app code under test.
+  function combinedNoTaskEchoPreview(): UseHttpPreviewResult {
+    return {
+      state: {
+        status: 'success',
+        preview: {
+          envelope: 'list',
+          columns: [
+            { name: 'item_code', sample: 'SRT-01' },
+            { name: 'qty', sample: 5 },
+          ],
+          rows: [{ item_code: 'SRT-01', qty: 5 }],
+          durationMs: 40,
+          rowsIn: 6,
+          excludedCount: 1,
+          groups: 2,
+          droppedByRule: { zero: 1 },
+          rowsOut: 1,
+          roundedCount: 0,
+          preCombineColumns: ['ItemCode', 'BalQty', 'UOM', 'ItemBaseUOM'],
+          // NO `task` - the entity has no config row yet.
+        },
+      },
+      run: vi.fn(),
+      fieldErrors: {},
+      reset: vi.fn(),
+    };
+  }
+
+  it('the watermark picker offers only PRE-combine names, never a measure alias like "qty" (combined preview, no task echo)', () => {
+    renderApiBranch({
+      cfg: httpConfig({
+        keyFields: [],
+        watermarkField: null,
+        combine: { ...emptyCombine(), groupBy: ['item_code'] },
+      }),
+      httpPreview: combinedNoTaskEchoPreview(),
+    });
+
+    fireEvent.click(screen.getByLabelText('Watermark column'));
+    expect(screen.getByRole('option', { name: 'ItemCode' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'qty' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'item_code' })).not.toBeInTheDocument();
+  });
+
+  it('the compared-fields picker offers only PRE-combine names, never a measure alias like "qty" (combined preview, no task echo)', () => {
+    renderApiBranch({
+      cfg: httpConfig({
+        keyFields: [],
+        watermarkField: null,
+        combine: { ...emptyCombine(), groupBy: ['item_code'] },
+      }),
+      httpPreview: combinedNoTaskEchoPreview(),
+    });
+
+    const comparedLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Compared columns'),
+    );
+    const comparedBox = comparedLabel.parentElement as HTMLElement;
+    fireEvent.click(within(comparedBox).getByRole('combobox'));
+    expect(screen.getByRole('option', { name: 'BalQty' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'qty' })).not.toBeInTheDocument();
+  });
+
+  // S2 (review round 1) - an unsaved lookup's alias must not vanish from the
+  // compared/Combine pickers just because the echoed `task` (when there is
+  // one) reflects only the SAVED lookups.
+  function draftLookupPreview(): UseHttpPreviewResult {
+    return {
+      state: {
+        status: 'success',
+        preview: {
+          envelope: 'list',
+          columns: [
+            { name: 'ItemCode', sample: 'SRT-01' },
+            { name: 'LastModified', sample: '2026-08-01T00:00:00' },
+          ],
+          rows: [],
+          durationMs: 40,
+          // NO `task` - a draft this session has not yet been saved.
+        },
+      },
+      run: vi.fn(),
+      fieldErrors: {},
+      reset: vi.fn(),
+    };
+  }
+
+  function cfgWithDraftLookup() {
+    return httpConfig({
+      lookups: [
+        {
+          path: '/itemuombypage',
+          as: 'uom',
+          on: [{ local: 'ItemCode', remote: 'ItemCode' }],
+          fields: [{ remote: 'Price', as: 'BaseUOMPrice' }],
+        },
+      ],
+    });
+  }
+
+  it('an unsaved (draft) lookup`s alias is offered in the compared picker even though the response carries no task echo', () => {
+    renderApiBranch({ cfg: cfgWithDraftLookup(), httpPreview: draftLookupPreview() });
+
+    const comparedLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Compared columns'),
+    );
+    const comparedBox = comparedLabel.parentElement as HTMLElement;
+    fireEvent.click(within(comparedBox).getByRole('combobox'));
+    expect(screen.getByRole('option', { name: 'BaseUOMPrice' })).toBeInTheDocument();
+  });
+
+  it('an unsaved (draft) lookup`s alias is never offered in the key-columns picker, even with no task echo', () => {
+    renderApiBranch({ cfg: cfgWithDraftLookup(), httpPreview: draftLookupPreview() });
+
+    const keyColumnsLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
+    );
+    const keyColumnsBox = keyColumnsLabel.parentElement as HTMLElement;
+    fireEvent.click(within(keyColumnsBox).getByRole('combobox'));
+    expect(screen.queryByRole('option', { name: 'BaseUOMPrice' })).not.toBeInTheDocument();
+  });
+
   it('no funnel renders for a plain (no-combine) Test', () => {
-    renderApiBranch({ httpPreview: successHttpPreview() });
+    // S4b (review round 1) - the ORIGINAL version of this test used
+    // `httpConfig()`'s default (`combine` absent entirely), so the Combine
+    // editor itself renders collapsed ("No combine step configured.") and
+    // never even reaches the funnel-rendering branch - a vacuous pass. A
+    // combine-CARRYING config (the switch is on) with a funnel-less success
+    // preview (`rowsIn` absent, as a Test run BEFORE this combine was added
+    // would be) is the real "no funnel yet" case.
+    renderApiBranch({
+      cfg: httpConfig({ combine: { ...emptyCombine(), groupBy: ['item_code'] } }),
+      httpPreview: successHttpPreview(),
+    });
     expect(screen.queryByTestId('combine-funnel')).not.toBeInTheDocument();
   });
 });
