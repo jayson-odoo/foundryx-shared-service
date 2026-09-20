@@ -313,6 +313,41 @@ def _no_real_sleep_in_autocount_http_tests(request, monkeypatch):
         monkeypatch.setattr("time.sleep", lambda seconds: None)
 
 
+# sprint-5/10 confirm-3 N1 - a PUBLIC-looking stub IP for every hostname the
+# autocount test files construct a connection/task against
+# (``hapi.sorento.cc.cd``, ``autocount.example.invalid``, etc). None of these
+# resolve for real, and none is meant to - the egress guard
+# (``app.services.url_guard``) falls back to "allow" under a resolution
+# failure (``strict_dns=False``), so an unstubbed hostname already passed the
+# guard, just by way of a REAL ``socket.getaddrinfo`` call reaching out
+# first. 8.8.8.8 is definitively public under ``ipaddress`` (unlike, say, the
+# TEST-NET-3 range, which the stdlib itself flags ``is_private``).
+_PUBLIC_DNS_STUB_IP = "8.8.8.8"
+
+
+def _stub_getaddrinfo(host, *_args, **_kwargs):
+    import socket as _socket_module
+
+    return [(_socket_module.AF_INET, _socket_module.SOCK_STREAM, 6, "", (_PUBLIC_DNS_STUB_IP, 0))]
+
+
+@pytest.fixture(autouse=True)
+def _stub_dns_in_autocount_http_tests(request, monkeypatch):
+    """sprint-5/10 confirm-3 N1 - the SAME filename scope as the sleep-stub
+    fixture above. ``app.services.url_guard.validate_public_url`` (called by
+    ``modules.autocount.http_client.assert_autocount_base_url_deliverable``,
+    the egress guard every open-REST request re-runs) resolves a non-IP-
+    literal ``baseUrl`` host via ``socket.getaddrinfo`` before deciding
+    public vs. private - a hostname test host (``hapi.sorento.cc.cd``, the
+    connection-sizing suite's own ``BASE_URL``) hit a REAL resolver on every
+    such test before this fixture existed. Every refusal test in this suite
+    uses an IP LITERAL (``169.254.169.254``, ``127.0.0.1``, ``192.168.x.x``)
+    so it never calls ``getaddrinfo`` at all and is UNAFFECTED by this stub -
+    the guard's own ``ipaddress.ip_address`` branch runs first."""
+    if _HTTP_RETRY_TEST_FILE_RE.match(request.node.fspath.basename):
+        monkeypatch.setattr("socket.getaddrinfo", _stub_getaddrinfo)
+
+
 @pytest.fixture
 def client(session_factory):
     # FastAPI builds the OpenAPI schema LAZILY, on the event loop, the first
