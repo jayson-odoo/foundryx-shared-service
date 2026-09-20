@@ -1,0 +1,236 @@
+"""Sprint-5/10 S4 - the public gateway's business logic (AC-10-29/30/31/32/
+33), sitting on top of the S3 snapshot store. The router
+(``routers/pull_v1.py``) stays HTTP + Pydantic-shape-only: every DB touch and
+every business decision (company/entity/delivery-mode resolution, the error
+ladder) lives here, raising ``PullGatewayError`` - never an HTTPException -
+so the router's ONE translator renders the flat Appendix A6 envelope.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
+
+from sqlalchemy.orm import Session
+
+from ..canonical.masters import ENTITY_PRODUCT
+from ..models import (
+    DELIVERY_MODE_PUSH,
+    ETL_STATUS_ACTIVE,
+    PULL_SNAPSHOT_STATUS_FAILED,
+    PULL_SNAPSHOT_STATUS_READY,
+    AcCompany,
+    AcPullApiKey,
+    AcPullAudit,
+    AcPullSnapshot,
+)
+from ..pull_auth import PullGatewayError
+from ..repositories import (
+    CompanyRepository,
+    EntityConfigRepository,
+    PullAuditRepository,
+    PullSnapshotRepository,
+)
+from .pull_service import MAX_PULL_PAGE_SIZE, PullBuildCooldownError, PullService
+
+# entity=`products`/`stock_balances` on the wire (Appendix A2), translated by
+# ONE map to the internal canonical keys (AC-10-29). `stock_balance` has no
+# module constant yet (lands with S5b's `ENTITY_STOCK_BALANCE`) - the wire
+# name is fixed by Appendix A4 today, so the literal is safe to hardcode
+# ahead of that slice.
+ENTITY_WIRE_TO_INTERNAL: Dict[str, str] = {
+    "products": ENTITY_PRODUCT,
+    "stock_balances": "stock_balance",
+}
+ENTITY_INTERNAL_TO_WIRE: Dict[str, str] = {v: k for k, v in ENTITY_WIRE_TO_INTERNAL.items()}
+
+_PULL_NOT_ENABLED_MESSAGE = (
+    "This book/entity was never enabled for pull, or is not active."
+)
+
+
+def translate_entity_wire(wire: str) -> Optional[str]:
+    return ENTITY_WIRE_TO_INTERNAL.get(wire)
+
+
+def translate_entity_internal(internal: str) -> str:
+    return ENTITY_INTERNAL_TO_WIRE.get(internal, internal)
+
+
+def _iso_z(value: Optional[datetime]) -> Optional[str]:
+    """Mirrors ``ApiModel``'s own Z-suffix serializer - this header is built
+    as a raw dict (never through a Pydantic response model), because the
+    OMISSION rules (AC-10-32: a `building`/`failed` header carries NONE of
+    the `ready`-only keys, not even as `null`) need per-status key presence
+    a fixed schema with defaults cannot express without also defaulting
+    `recordCount`/`complete` to 0/False (the exact bug the kill test
+    guards)."""
+    if value is None:
+        return None
+    aware = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(
+        timezone.utc
+    )
+    return aware.isoformat().replace("+00:00", "Z")
+
+
+def gateway_snapshot_header(snapshot: AcPullSnapshot) -> Dict[str, Any]:
+    """The PUBLIC gateway's own header shape (Appendix A3) - distinct from
+    the operator route's ``pull_service.snapshot_header``/``PullSnapshotOut``
+    (internal ids, always-present defaulted counters). Every key here is one
+    Appendix A names for THIS status, and no other."""
+    header: Dict[str, Any] = {
+        "snapshotId": snapshot.id,
+        "entity": translate_entity_internal(snapshot.entity_type),
+        "companyCode": snapshot.company_code,
+        "status": snapshot.status,
+    }
+    metadata = snapshot.metadata_json or {}
+    if snapshot.status == PULL_SNAPSHOT_STATUS_READY:
+        header.update(
+            {
+                "extractedAt": _iso_z(snapshot.extracted_at),
+                "expiresAt": _iso_z(snapshot.expires_at),
+                "recordCount": snapshot.record_count,
+                "complete": snapshot.complete,
+                "contentHash": snapshot.content_hash,
+                "sourcePageSize": metadata.get("sourcePageSize"),
+                "excludedCount": metadata.get("excludedCount", 0),
+                "excludedRows": metadata.get("excludedRows", []),
+            }
+        )
+        for key in (
+            "zeroListPriceCount",
+            "negativeListPriceCount",
+            "enrichMissCount",
+            "zeroPairs",
+            "negativePairs",
+            "fractionalPairs",
+            "excludedNonzeroCount",
+            "negativePairList",
+        ):
+            if key in metadata:
+                header[key] = metadata[key]
+    elif snapshot.status == PULL_SNAPSHOT_STATUS_FAILED:
+        header["error"] = {"code": snapshot.error_code, "message": snapshot.error}
+    return header
+
+
+def write_pull_audit(
+    db: Session,
+    *,
+    tenant_id: str,
+    key_id: Optional[str],
+    company_id: Optional[str],
+    entity_type: Optional[str],
+    snapshot_id: Optional[str],
+    action: str,
+    page: Optional[int],
+    record_count: Optional[int],
+    status_code: int,
+) -> None:
+    """AC-10-34's ONE write - key id, tenant, company, entity, snapshot,
+    route/action, page, record count, outcome code, timestamp. NO payload
+    field, NO plaintext key, no customer data - ever."""
+    PullAuditRepository(db).add(
+        AcPullAudit(
+            tenant_id=tenant_id,
+            key_id=key_id,
+            company_id=company_id,
+            entity_type=entity_type,
+            snapshot_id=snapshot_id,
+            action=action,
+            page=page,
+            record_count=record_count,
+            status_code=status_code,
+        )
+    )
+
+
+class PullGatewayService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    # ── build (POST /snapshots, AC-10-29/30/31) ─────────────────────────
+
+    def build(
+        self, key_row: AcPullApiKey, company_code_raw: str, internal_entity: str
+    ) -> Tuple[AcCompany, AcPullSnapshot]:
+        company = CompanyRepository(self.db).get_by_sorento_company_code(
+            key_row.tenant_id, company_code_raw
+        )
+        if company is None:
+            raise PullGatewayError(
+                404, "UNKNOWN_COMPANY", "No company with that code for this key."
+            )
+        if company.id not in (key_row.company_ids or []):
+            raise PullGatewayError(
+                403, "COMPANY_NOT_ALLOWED",
+                "This company is not in this key's allowed scope.",
+                company_id=company.id,
+            )
+
+        config = EntityConfigRepository(self.db).get(
+            key_row.tenant_id, company.id, internal_entity
+        )
+        if config is None:
+            raise PullGatewayError(
+                409, "PULL_NOT_ENABLED", _PULL_NOT_ENABLED_MESSAGE, company_id=company.id
+            )
+        if config.delivery_mode == DELIVERY_MODE_PUSH:
+            if config.etl_status == ETL_STATUS_ACTIVE:
+                raise PullGatewayError(
+                    409, "PUSH_ACTIVE", "This book is now automatic.",
+                    company_id=company.id,
+                )
+            raise PullGatewayError(
+                409, "PULL_NOT_ENABLED", _PULL_NOT_ENABLED_MESSAGE, company_id=company.id
+            )
+        if config.etl_status != ETL_STATUS_ACTIVE:
+            raise PullGatewayError(
+                409, "PULL_NOT_ENABLED", _PULL_NOT_ENABLED_MESSAGE, company_id=company.id
+            )
+
+        try:
+            snapshot = PullService(self.db).request_build(
+                key_row.tenant_id, company.id, internal_entity,
+                requested_via="gateway", requested_by=None,
+            )
+        except PullBuildCooldownError as exc:
+            raise PullGatewayError(
+                429, "TOO_MANY_BUILDS",
+                "A build was requested for this book/entity less than 60 seconds ago.",
+                company_id=company.id,
+            ).with_retry_after(exc.retry_after_seconds)
+        return company, snapshot
+
+    # ── reads (GET /snapshots/{id}[/rows], AC-10-30/32/33) ──────────────
+
+    def get_snapshot_for_key(self, key_row: AcPullApiKey, snapshot_id: str) -> AcPullSnapshot:
+        """Tenant AND full-company-SET scoped (a key may name more than one
+        company) - possession of an id is not authorisation (AC-10-30/47).
+        An id outside that scope reads IDENTICALLY to an unknown one."""
+        snapshot = PullSnapshotRepository(self.db).get_for_key_scope(
+            key_row.tenant_id, key_row.company_ids, snapshot_id
+        )
+        if snapshot is None:
+            raise PullGatewayError(404, "UNKNOWN_SNAPSHOT", "Unknown snapshot, or not yours.")
+        self._ensure_not_expired(snapshot)
+        return snapshot
+
+    def _ensure_not_expired(self, snapshot: AcPullSnapshot) -> None:
+        if snapshot.expires_at is not None and snapshot.expires_at <= datetime.now(timezone.utc):
+            raise PullGatewayError(
+                410, "SNAPSHOT_EXPIRED", "This snapshot has expired. Build a fresh one.",
+                company_code=snapshot.company_code,
+                entity=translate_entity_internal(snapshot.entity_type),
+                snapshot_id=snapshot.id, company_id=snapshot.company_id,
+                entity_type=snapshot.entity_type,
+            )
+
+    def rows_page(
+        self, snapshot: AcPullSnapshot, *, page: int, page_size: int
+    ) -> Tuple[list, int, int]:
+        clamped_size = min(max(page_size, 1), MAX_PULL_PAGE_SIZE)
+        rows, total = PullSnapshotRepository(self.db).rows_page(
+            snapshot.tenant_id, snapshot.id, page=max(page, 1), page_size=clamped_size
+        )
+        return rows, total, clamped_size
