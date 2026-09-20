@@ -82,6 +82,19 @@ describe('pickerColumnOptions', () => {
   it('is just the saved picks before any preview ran', () => {
     expect(pickerColumnOptions([], ['AccNo'])).toEqual(['AccNo']);
   });
+
+  // S6 browser round defect D1 - `source-tab.tsx` calls this once PER
+  // picker now (key/watermark/compared each pass ONLY their own saved
+  // value), never one shared union fed to all three. A saved value stays
+  // scoped to whichever call it was passed to.
+  it('a saved value passed to one call never appears in a SIBLING call over the same preview columns (D1 regression)', () => {
+    const preview = ['ItemCode', 'BaseUOM'];
+    const keyOptions = pickerColumnOptions(preview, ['ItemCode']);
+    const watermarkOptions = pickerColumnOptions(preview, ['LastModified']);
+    expect(watermarkOptions).toContain('LastModified');
+    expect(keyOptions).not.toContain('LastModified');
+    expect(keyOptions).toContain('ItemCode');
+  });
 });
 
 describe('previewBadgeText', () => {

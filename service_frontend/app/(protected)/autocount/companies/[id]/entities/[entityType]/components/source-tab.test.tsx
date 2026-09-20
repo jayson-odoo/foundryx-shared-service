@@ -896,3 +896,86 @@ describe('SourceTab - combine groupBy locks the Key fields picker to read-only c
     expect(within(keyColumnsBox()).getByRole('combobox')).toBeInTheDocument();
   });
 });
+
+// S6 browser round defect D1 - on an ALREADY-SAVED combine task the saved
+// `comparedFields` (which may legitimately hold a combine measure alias,
+// AC-10-80) must not leak into the key/watermark pickers' own options
+// through a shared saved-picks pool.
+describe('SourceTab - a saved combine task never leaks a measure alias into the watermark/key pickers (S6 defect D1)', () => {
+  function combinedSavedTaskPreview(): UseHttpPreviewResult {
+    return {
+      state: {
+        status: 'success',
+        preview: {
+          envelope: 'list',
+          columns: [
+            { name: 'item_code', sample: 'SRT-01' },
+            { name: 'location_code', sample: 'WH1' },
+            { name: 'qty', sample: 5 },
+          ],
+          rows: [{ item_code: 'SRT-01', location_code: 'WH1', qty: 5 }],
+          durationMs: 40,
+          rowsIn: 6,
+          excludedCount: 1,
+          groups: 2,
+          droppedByRule: { zero: 1 },
+          rowsOut: 1,
+          roundedCount: 0,
+          preCombineColumns: ['ItemCode', 'Location', 'BalQty', 'UOM', 'ItemBaseUOM'],
+        },
+      },
+      run: vi.fn(),
+      fieldErrors: {},
+      reset: vi.fn(),
+    };
+  }
+
+  function savedCombineConfig(over: Partial<AutocountEtlSourceConfig> = {}) {
+    return httpConfig({
+      keyFields: [],
+      watermarkField: null,
+      comparedFields: ['qty'],
+      combine: {
+        ...emptyCombine(),
+        groupBy: ['item_code', 'location_code'],
+        measures: [{ source: 'base_qty', op: 'sum', alias: 'qty' }],
+      },
+      ...over,
+    });
+  }
+
+  it('the watermark picker never offers the saved combine measure alias', () => {
+    renderApiBranch({ cfg: savedCombineConfig(), httpPreview: combinedSavedTaskPreview() });
+    fireEvent.click(screen.getByLabelText('Watermark column'));
+    expect(screen.queryByRole('option', { name: 'qty' })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'ItemCode' })).toBeInTheDocument();
+  });
+
+  it('the compared picker still shows the saved measure alias as its own selected pill', () => {
+    renderApiBranch({ cfg: savedCombineConfig(), httpPreview: combinedSavedTaskPreview() });
+    const comparedLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Compared columns'),
+    );
+    const comparedBox = comparedLabel.parentElement as HTMLElement;
+    expect(within(comparedBox).getByText('qty')).toBeInTheDocument();
+  });
+
+  it('the key picker (not locked - combine.groupBy empty mid-edit) never offers the saved measure alias', () => {
+    renderApiBranch({
+      cfg: savedCombineConfig({
+        combine: {
+          ...emptyCombine(),
+          groupBy: [],
+          measures: [{ source: 'base_qty', op: 'sum', alias: 'qty' }],
+        },
+      }),
+      httpPreview: combinedSavedTaskPreview(),
+    });
+    const keyColumnsLabel = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
+    );
+    const keyColumnsBox = keyColumnsLabel.parentElement as HTMLElement;
+    fireEvent.click(within(keyColumnsBox).getByRole('combobox'));
+    expect(screen.queryByRole('option', { name: 'qty' })).not.toBeInTheDocument();
+  });
+});

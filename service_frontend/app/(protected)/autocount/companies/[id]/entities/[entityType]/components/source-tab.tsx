@@ -398,19 +398,41 @@ export function SourceTab({
     if (httpPreview.state.status !== 'success') return [];
     return httpPreview.state.preview.rawColumns ?? [];
   }, [httpPreview.state]);
-  const httpSavedPicks = useMemo(
-    () => [
-      ...(config.keyFields ?? []),
-      ...(config.watermarkField ? [config.watermarkField] : []),
-      ...(config.comparedFields ?? []),
-    ],
-    [config.comparedFields, config.keyFields, config.watermarkField],
-  );
-  const httpColumnOptions = useMemo(
-    () => pickerColumnOptions(httpPreviewColumns, httpSavedPicks).map((c) => ({ label: c, value: c })),
-    [httpPreviewColumns, httpSavedPicks],
-  );
+  // sprint-5/10 browser round S6 defect D1 - each picker's saved-value
+  // carry-over (the "stale but visible" half of `pickerColumnOptions`) is
+  // now scoped to ITS OWN stored value, never a shared pool: a saved
+  // combine task's `comparedFields` (which MAY legitimately hold a combine
+  // measure alias like `qty` - AC-10-80 constrains only the key fields,
+  // nothing forbids a measure in compared) was previously unioned with
+  // `keyFields`/`watermarkField` into ONE `httpSavedPicks` list feeding
+  // every picker, so a saved `qty` compared pick leaked into the watermark
+  // (and key) picker's own options too.
   const httpKeyFields = useMemo(() => config.keyFields ?? [], [config.keyFields]);
+  const httpComparedFields = useMemo(() => config.comparedFields ?? [], [config.comparedFields]);
+  const httpKeyPickerOptions = useMemo(
+    () => pickerColumnOptions(httpPreviewColumns, httpKeyFields).map((c) => ({ label: c, value: c })),
+    [httpPreviewColumns, httpKeyFields],
+  );
+  const httpWatermarkPickerOptions = useMemo(
+    () =>
+      pickerColumnOptions(httpPreviewColumns, config.watermarkField ? [config.watermarkField] : []).map(
+        (c) => ({ label: c, value: c }),
+      ),
+    [httpPreviewColumns, config.watermarkField],
+  );
+  const httpComparedPickerOptions = useMemo(
+    () => pickerColumnOptions(httpPreviewColumns, httpComparedFields).map((c) => ({ label: c, value: c })),
+    [httpPreviewColumns, httpComparedFields],
+  );
+  // Belt and braces (S6 defect D1) - a combine `measures[].alias` is a
+  // POST-group output column, computed AFTER `groupBy` runs: it can never be
+  // a key or watermark (both are pre-group row identity) no matter which
+  // picker's own saved-value carry-over might otherwise surface it. The
+  // compared picker is deliberately NOT filtered by this set - see above.
+  const measureAliases = useMemo(
+    () => new Set((config.combine?.measures ?? []).map((m) => m.alias)),
+    [config.combine],
+  );
   // sprint-5/10 (AC-10-80) - a combine-carrying task's key fields are the
   // combine's OWN `groupBy` columns, derived, never separately typed: the
   // Key fields picker becomes read-only chips of `groupBy` the moment one is
@@ -420,27 +442,34 @@ export function SourceTab({
   const combineKeyLocked = combineGroupBy.length > 0;
   const httpKeyFieldsDisplay = combineKeyLocked ? combineGroupBy : httpKeyFields;
   const httpComparedOptions = useMemo(
-    () => httpColumnOptions.filter((o) => !httpKeyFields.includes(o.value)),
-    [httpColumnOptions, httpKeyFields],
+    () => httpComparedPickerOptions.filter((o) => !httpKeyFields.includes(o.value)),
+    [httpComparedPickerOptions, httpKeyFields],
   );
   const httpKeyOptions = useMemo(
     () =>
-      httpColumnOptions.filter(
+      httpKeyPickerOptions.filter(
         (o) =>
           !lookupAliases.has(o.value) &&
+          !measureAliases.has(o.value) &&
           (o.value !== config.watermarkField || httpKeyFields.includes(o.value)),
       ),
-    [httpColumnOptions, httpKeyFields, config.watermarkField, lookupAliases],
+    [httpKeyPickerOptions, httpKeyFields, config.watermarkField, lookupAliases, measureAliases],
   );
   const httpWatermarkOptions = useMemo(() => {
-    const base = httpColumnOptions.filter(
+    const base = httpWatermarkPickerOptions.filter(
       (o) =>
         !lookupAliases.has(o.value) &&
+        !measureAliases.has(o.value) &&
         (!httpKeyFields.includes(o.value) || o.value === config.watermarkField),
     );
     return [{ label: 'None', value: NO_WATERMARK }, ...base];
-  }, [httpColumnOptions, httpKeyFields, config.watermarkField, lookupAliases]);
-  const httpPickersEnabled = editing && httpColumnOptions.length > 0;
+  }, [httpWatermarkPickerOptions, httpKeyFields, config.watermarkField, lookupAliases, measureAliases]);
+  const httpPickersEnabled =
+    editing &&
+    (httpPreviewColumns.length > 0 ||
+      httpKeyFields.length > 0 ||
+      Boolean(config.watermarkField) ||
+      httpComparedFields.length > 0);
 
   const canTestHttp =
     Boolean(config.connectionId) &&
