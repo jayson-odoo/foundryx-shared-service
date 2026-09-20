@@ -187,7 +187,7 @@ with the stock preset shipping it PRE-FILLED so the owner configures nothing:
 combine: {
   computed: [ {alias, formula} ],          # ordered, may name earlier aliases
   require:  [ {name, formula, reason} ],   # falsy -> row EXCLUDED with that reason
-  measure:  "<measure alias>",             # the designated quantity, for generic counters
+  measure:  "<pre-group column>",          # the designated quantity, for generic counters
   groupBy:  ["..."],                       # picked columns, never typed
   measures: [ {source, op, alias} ],       # sum | min | max | count | first | last
   carry:    ["..."],                       # first value in the group

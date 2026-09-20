@@ -706,7 +706,9 @@ Tags: `[BE]` backend pytest, `[FE]` frontend vitest, `[E2E]` recorded agent-brow
   `combine.<part>[i]` for: an unknown column or alias; a forward reference (a computed formula
   naming a LATER computed alias, or `groupBy`/`measures`/`carry` naming an undefined one); an
   alias clashing with a source column, a lookup alias or another computed / measure alias; an
-  empty `groupBy`; a `measure` that is not one of the declared measure aliases; a numeric op
+  empty `groupBy`; a `measure` that does not name a known PRE-GROUP column (a raw source column,
+  a lookup alias or an earlier computed alias - never a `measures[].alias`, which does not exist
+  until AFTER grouping); a numeric op
   (`sum`/`min`/`max`) over a column whose previewed sample values are non-numeric with no
   computed cast (a SAMPLE-based check, so a runtime non-numeric still raises the normal named
   `TransformError` - stated, not pretended away); and a `require` or `drop` formula whose inferred
