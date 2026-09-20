@@ -62,17 +62,18 @@ export function BuildSnapshotDialog({ open, onOpenChange, companies, onBuilt }: 
   const companyOptions = companies
     .filter((c) => Boolean(c.sorentoCompanyCode?.trim()))
     .map((c) => ({ label: c.name, value: c.id }));
-  // Pull-CAPABLE entities only (`product`/`stock_balance`, never a plain
-  // push master like `supplier`), in `pull` mode OR currently `active`
-  // (browser round 1 fix, AC-10-38/48): a pull-capable book that already
-  // flipped back to automatic push still needs to be pickable so the
-  // operator can SEE the A6 `PUSH_ACTIVE` 409 rather than the option
-  // silently vanishing - a non-pull-capable entity stays excluded
-  // regardless of status (review round 1 item 2's original guard).
+  // Pull-CAPABLE entities (`product`/`stock_balance`, never a plain push
+  // master like `supplier`) that are actually in `pull` mode AND `active` -
+  // foolproof-UI: never offer a pair the build would 409 PULL_NOT_ENABLED
+  // for (the S6 phase 2 swap reverted the S2-browser-round-1 loosening that
+  // also offered a push+active pair - that widened filter existed only so
+  // the PHASE 1 mock's 409 PUSH_ACTIVE demo was clickable with no backend;
+  // the real backend's own consumer-gateway rule is exactly this narrower
+  // one, `modules/autocount/services/pull_gateway_service.py`).
   const entityOptions = useMemo(
     () =>
       (detail?.entities ?? [])
-        .filter((e) => isPullCapable(e.entityType) && (e.deliveryMode === 'pull' || e.etlStatus === 'active'))
+        .filter((e) => isPullCapable(e.entityType) && e.deliveryMode === 'pull' && e.etlStatus === 'active')
         .map((e) => ({ label: entityLabel(e.entityType), value: e.entityType })),
     [detail?.entities],
   );

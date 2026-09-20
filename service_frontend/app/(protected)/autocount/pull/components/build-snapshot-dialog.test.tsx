@@ -101,7 +101,7 @@ beforeEach(() => {
   buildPullSnapshot.mockReset();
 });
 
-describe('BuildSnapshotDialog (AC-10-37/50, review round 1 item 2)', () => {
+describe('BuildSnapshotDialog (AC-10-37/50, review round 1 item 2; S6 phase 2 swap AC-10-48)', () => {
   it('offers only the entities enabled for PULL on the selected company', async () => {
     getCompany.mockResolvedValue({
       company: COMPANIES[0],
@@ -121,6 +121,40 @@ describe('BuildSnapshotDialog (AC-10-37/50, review round 1 item 2)', () => {
     expect(labels).toContain('Product');
     expect(labels).toContain('Stock balance');
     expect(labels).not.toContain('Supplier');
+  });
+
+  it('a pull-capable entity that has flipped back to push+active is NOT offered (S6 phase 2 swap - pull-only, never the PHASE 1 loosened filter)', async () => {
+    getCompany.mockResolvedValue({
+      company: COMPANIES[0],
+      entities: [
+        entity({ entityType: 'product', deliveryMode: 'push', etlStatus: 'active' }),
+        entity({ entityType: 'stock_balance', deliveryMode: 'pull', etlStatus: 'active' }),
+      ],
+    });
+    render(<BuildSnapshotDialog open companies={COMPANIES} onOpenChange={vi.fn()} onBuilt={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'c1' } });
+    await waitFor(() => expect(getCompany).toHaveBeenCalledWith('c1'));
+
+    const entityOptions = screen.getByLabelText('Entity').querySelectorAll('option');
+    const labels = Array.from(entityOptions).map((o) => o.textContent);
+    expect(labels).toContain('Stock balance');
+    expect(labels).not.toContain('Product');
+  });
+
+  it('a pull-mode entity that is not yet active is NOT offered either', async () => {
+    getCompany.mockResolvedValue({
+      company: COMPANIES[0],
+      entities: [entity({ entityType: 'product', deliveryMode: 'pull', etlStatus: 'draft' })],
+    });
+    render(<BuildSnapshotDialog open companies={COMPANIES} onOpenChange={vi.fn()} onBuilt={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'c1' } });
+    await waitFor(() => expect(getCompany).toHaveBeenCalledWith('c1'));
+
+    const entityOptions = screen.getByLabelText('Entity').querySelectorAll('option');
+    const labels = Array.from(entityOptions).map((o) => o.textContent);
+    expect(labels).not.toContain('Product');
   });
 
   it('picking a different company clears the previous entity pick', async () => {
