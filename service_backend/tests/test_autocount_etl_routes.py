@@ -442,6 +442,9 @@ def test_get_etl_task_returns_draft_defaults_for_a_configured_entity(client, ses
         "contractGate": None,
         # sprint-5/10 (AC-10-10) - every task reads `push` until switched.
         "deliveryMode": "push",
+        # sprint-5/10 review round 4 (SF-4) - the combine step's own
+        # post-group schema; empty for a never-configured/no-combine task.
+        "combineOutputColumns": [],
     }
 
 

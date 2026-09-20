@@ -15,15 +15,22 @@ collection/attribute-access with an ``AttributeError``/``ImportError``.
 from __future__ import annotations
 
 
-def test_the_constant_is_exactly_the_five_pinned_codes():
+def test_the_constant_is_exactly_the_pinned_codes():
     from modules.autocount import sync as sync_module
 
+    # review round 4 (SF-3) - a SIXTH code, ``COMBINE_RULE_FAILED``: a
+    # ``combine`` drop rule that raises at runtime during a pull build
+    # (AC-10-79) is a genuine extraction failure, never folded onto
+    # ``SOURCE_PAGE_FAILED`` either, for the SAME "an operator debugging
+    # the failure needs to land on the actual cause" reasoning as
+    # ``BUILD_ABANDONED``.
     assert set(sync_module.PULL_SNAPSHOT_FAILED_CODES) == {
         "SOURCE_PAGE_FAILED",
         "ENRICH_FAILED",
         "ROW_LIMIT",
         "EMPTY_EXTRACT",
         "BUILD_ABANDONED",
+        "COMBINE_RULE_FAILED",
     }
     assert "MAPPING_FAILED" not in sync_module.PULL_SNAPSHOT_FAILED_CODES
 

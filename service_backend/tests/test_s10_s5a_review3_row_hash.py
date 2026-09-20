@@ -26,7 +26,7 @@ import pytest
 
 from app.models import DEFAULT_TENANT_ID
 from app.models.connection import Connection
-from modules.autocount.canonical.masters import ENTITY_PRODUCT, ENTITY_STOCK_BALANCE
+from modules.autocount.canonical.masters import ENTITY_PRODUCT, ENTITY_WAREHOUSE
 from modules.autocount.http_source.combine import combine_output_columns
 from modules.autocount.http_source.source import HttpApiSource
 from modules.autocount.models import AcCompany, AcEntityConfig
@@ -235,31 +235,35 @@ def test_explicit_compared_field_naming_a_measure_alias_survives_the_save(rig):
     assert source.compared_columns == ["total"], source.compared_columns
 
 
-def test_push_and_pull_tasks_derive_the_same_compared_columns_for_the_same_combine(rig):
+def test_two_different_entities_derive_the_same_compared_columns_for_the_same_combine(rig):
     """AC-10-80 - "a push task combines exactly as a pull task does": the
     compared-column set (and therefore the row hash) a combine-carrying
-    task uses must not depend on which entity/delivery flavour it is -
-    `HttpApiSource` never reads `delivery_mode` at all, this pins that the
-    B1 fix applies identically whether the task is a push-capable entity
-    (product) or the pull-only stock entity."""
+    task uses must not depend on which ENTITY it is configured for -
+    `HttpApiSource` never reads `delivery_mode` at all. There is no
+    pull-only entity fixture available at this point in the suite (the
+    stock balance entity lands in S5b), so this pins the same point across
+    TWO DIFFERENT push-capable entities (product, warehouse) instead: the
+    B1 fix is entity-agnostic, and `delivery_mode` never even enters the
+    derivation, so the conclusion carries over unchanged once a genuine
+    pull-only entity exists."""
     db, company, conn = rig
-    push_config = _config(
+    product_config = _config(
         db, company, entity_type=ENTITY_PRODUCT, connection_id=conn.id, path="/rows",
         key_fields=("g",), combine=SIMPLE_COMBINE, result_columns=["g", "v"],
     )
-    pull_config = _config(
-        db, company, entity_type=ENTITY_STOCK_BALANCE, connection_id=conn.id, path="/rows",
+    warehouse_config = _config(
+        db, company, entity_type=ENTITY_WAREHOUSE, connection_id=conn.id, path="/rows",
         key_fields=("g",), combine=SIMPLE_COMBINE, result_columns=["g", "v"],
     )
-    push_source = HttpApiSource(
-        _ctx(db, company, push_config), entity_type=ENTITY_PRODUCT,
+    product_source = HttpApiSource(
+        _ctx(db, company, product_config), entity_type=ENTITY_PRODUCT,
         transport=_transport(_multi_handler({"/rows": [_envelope([{"g": "A", "v": 1}])]})),
     )
-    pull_source = HttpApiSource(
-        _ctx(db, company, pull_config), entity_type=ENTITY_STOCK_BALANCE,
+    warehouse_source = HttpApiSource(
+        _ctx(db, company, warehouse_config), entity_type=ENTITY_WAREHOUSE,
         transport=_transport(_multi_handler({"/rows": [_envelope([{"g": "A", "v": 1}])]})),
     )
-    assert push_source.compared_columns == pull_source.compared_columns == ["total"]
+    assert product_source.compared_columns == warehouse_source.compared_columns == ["total"]
 
 
 # ── the SAVE path: EtlService._validate_http_config's own comparedFields
@@ -314,10 +318,27 @@ def _http_raw(**overrides: Any) -> Dict[str, Any]:
 
 
 def test_save_time_explicit_compared_field_naming_a_measure_alias_is_not_pruned(db):
-    from modules.autocount.canonical.masters import ENTITY_WAREHOUSE
-
+    """review round 4 (BL-2) - the FIRST save of a never-previewed task is
+    vacuous for this point: `existing_result_columns` is `None`, so
+    `new_effective_columns` ends up falsy and `compared_columns_for`'s own
+    `or configured_compared` escape hatch substitutes the configured list
+    straight back - the assertion below would pass whether or not the B1
+    fix is applied at all. A REALLY previewed task (`existing_result_columns`
+    genuinely stamped) is what actually exercises the fix: with the OLD
+    unconditional pre-combine `new_effective_columns`, "n" (a measure
+    alias, never a raw/lookup column) would be pruned to `[]` by
+    `compared_columns_for`'s configured-intersect-available rule."""
     conn = _open_connection(db)
     company = _company_for_service(db, conn.id)
     raw = _http_raw(connectionId=conn.id, combine=_combine_raw())
-    view = EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_WAREHOUSE, raw)
+    EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_WAREHOUSE, raw)
+
+    from modules.autocount.repositories import EntityConfigRepository
+
+    config = EntityConfigRepository(db).get(DEFAULT_TENANT_ID, company.id, ENTITY_WAREHOUSE)
+    config.result_columns = ["Code", "Name"]
+    db.commit()
+
+    raw2 = _http_raw(connectionId=conn.id, combine=_combine_raw())
+    view = EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_WAREHOUSE, raw2)
     assert view.source_config["comparedFields"] == ["n"], view.source_config

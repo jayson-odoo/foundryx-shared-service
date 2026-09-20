@@ -189,12 +189,19 @@ def test_the_pinned_failed_code_set_is_exhaustive_and_excludes_mapping_failed():
     # this test asserts against THAT constant rather than a hand-typed set
     # that would otherwise need updating by hand every time the ladder
     # grows.
+    # review round 4 (SF-3) - a SIXTH code, ``COMBINE_RULE_FAILED``: a
+    # ``combine`` drop rule that raises at runtime during a pull build
+    # (AC-10-79) is a genuine extraction failure, never folded onto
+    # ``SOURCE_PAGE_FAILED`` either, for the same "an operator debugging the
+    # failure needs to land on the actual cause" reasoning as
+    # ``BUILD_ABANDONED``.
     reachable = {
         sync_module._classify_http_source_error(HttpSourceError("boom", code="row_limit")),
         sync_module._classify_http_source_error(HttpSourceError("boom", phase="enrich")),
         sync_module._classify_http_source_error(HttpSourceError("boom")),
         "EMPTY_EXTRACT",
         "BUILD_ABANDONED",
+        "COMBINE_RULE_FAILED",
     }
     assert reachable == set(sync_module.PULL_SNAPSHOT_FAILED_CODES)
     assert "MAPPING_FAILED" not in reachable
