@@ -1702,25 +1702,22 @@ class EtlService:
         # - never share the module-level preset's own nested lists across
         # tenants. A no-op for every entity whose preset carries no
         # `combine` (every entity but stock today).
-        # R5-B (review round 5) - gated on the key being genuinely ABSENT
-        # (never sent at all), not merely ``None`` - an EXPLICIT
+        # R5-B (review round 5) - also gated on the wire key being genuinely
+        # ABSENT (never sent at all), not merely ``None``: an EXPLICIT
         # ``"combine": null`` (the Combine-rows switch turned OFF) must
         # CLEAR, never be silently re-seeded back from the preset.
-        # confirm round 5 (B-2) - ``existing_combine is None`` alone cannot
-        # tell "never configured" apart from "explicitly cleared last save":
-        # ``_validate_http_config`` always writes a ``combine`` key into the
-        # persisted ``source_config`` (even a clear stores ``None``), so a
-        # cleared task's ``config.source_config.get("combine")`` also reads
-        # back ``None`` on the NEXT save. Gate on the KEY's presence in the
-        # PRE-validation stored config instead - present-but-None means "the
-        # operator already decided", genuinely absent (a fresh task, or one
-        # that has never been saved through this HTTP shape) means "seed".
-        combine_key_ever_stored = (
-            config is not None
-            and isinstance(config.source_config, dict)
-            and "combine" in config.source_config
-        )
-        if not combine_key_ever_stored and "combine" not in raw:
+        # confirm round 2 (item 3) - and gated on the entity row being
+        # CREATED, which is the only moment "the owner configured nothing"
+        # can be true. Neither ``existing_combine is None`` (confirm round 5)
+        # nor "the stored config has no ``combine`` key" (B-2) can say that:
+        # a plan-08 HTTP row predates the field entirely, so a BARE save of
+        # one seeded the preset behind the operator's back - rewriting the
+        # derived ``keyFields`` and demoting an ACTIVE task to draft with
+        # nothing changed. An existing row switching ``db``/``api`` -> http
+        # is seeded by the FE itself (``task-editor-view.tsx``'s
+        # ``onSourceKindChange``), so it arrives here with an explicit
+        # ``combine`` on the wire.
+        if config is None and "combine" not in raw:
             preset_for_combine_seed = HTTP_PRESETS.get(entity_type)
             if preset_for_combine_seed is not None and preset_for_combine_seed.combine:
                 existing_combine = copy.deepcopy(dict(preset_for_combine_seed.combine))

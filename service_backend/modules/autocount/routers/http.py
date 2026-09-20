@@ -144,4 +144,8 @@ def preview_http(
         # `combine` block (`EtlService.preview_http` leaves
         # `pre_combine_columns` `None` otherwise, same gate as the funnel).
         preCombineColumns=result.pre_combine_columns,
+        # confirm round 2 (B1) - unconditional: `run_http_preview` captures
+        # the pre-lookup set on every path (including the `distinctOf`
+        # projection, whose raw set is the single `value` column).
+        rawColumns=list(result.raw_columns),
     )

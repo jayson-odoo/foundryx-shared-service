@@ -124,9 +124,17 @@ export function CombineEditor({
   // no combine formula ever uses the single-`value` transform model.
   const formulaVariableGroups = useMemo<FormulaVariableGroup[] | undefined>(() => {
     if (!formulaTarget) return undefined;
+    // Confirm round 2 (S1) - `columnOptions` arrives from the Source tab's
+    // `preCombineColumns`, which by backend design ALREADY carries every
+    // computed alias once a combine-carrying Test has landed. The `Columns`
+    // group is raw/lookup names only, so the ordered `Computed columns`
+    // group below stays the single authority on which computed aliases a
+    // stage may reference (without this, `computed[0]` was offered its own
+    // alias and every LATER one - both save-time 422s).
+    const sourceColumns = columnOptions.filter((c) => !computedAliases.includes(c));
     if (formulaTarget.kind === 'computed') {
       return [
-        { label: 'Columns', items: toFormulaVariableItems(columnOptions) },
+        { label: 'Columns', items: toFormulaVariableItems(sourceColumns) },
         {
           label: 'Computed columns',
           items: toFormulaVariableItems(computedAliases.slice(0, formulaTarget.index)),
@@ -135,7 +143,7 @@ export function CombineEditor({
     }
     if (formulaTarget.kind === 'require') {
       return [
-        { label: 'Columns', items: toFormulaVariableItems(columnOptions) },
+        { label: 'Columns', items: toFormulaVariableItems(sourceColumns) },
         { label: 'Computed columns', items: toFormulaVariableItems(computedAliases) },
       ];
     }

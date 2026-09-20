@@ -1284,6 +1284,9 @@ async function mockPreviewHttp(input: HttpPreviewInput): Promise<HttpPreview> {
       envelope: fixture.envelope,
       totalCount: fixture.envelope === 'paged' ? fixture.totalCount : undefined,
       columns: [{ name: 'value', sample: values[0] ?? null }],
+      // Mirrors the backend's own `distinctOf` projection, whose raw set IS
+      // the single synthesised `value` column.
+      rawColumns: ['value'],
       rows: values.map((value) => ({ value })),
       durationMs: 180,
     };
@@ -1293,6 +1296,13 @@ async function mockPreviewHttp(input: HttpPreviewInput): Promise<HttpPreview> {
     envelope: fixture.envelope,
     totalCount: fixture.envelope === 'paged' ? fixture.totalCount : undefined,
     columns: columnNames.map((name) => ({ name, sample: rows50[0]?.[name] ?? null })),
+    // confirm round 2 (B1) - the fixture's own RAW columns, the mock's
+    // mirror of `HttpPreviewResult.raw_columns`: this mock never merges
+    // lookup aliases into its rows, so raw and merged coincide HERE, but the
+    // field is reported separately all the same so the Lookups editor's
+    // collision check is exercised against the same shape the real backend
+    // sends.
+    rawColumns: columnNames,
     rows: rows50,
     durationMs: 220,
   };

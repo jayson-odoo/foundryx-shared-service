@@ -905,6 +905,17 @@ class HttpPreviewResponse(ApiModel):
     # of a brand-new stock task there is no saved entity row yet to echo
     # (`task` is null), so the FE has nothing else pre-combine to read.
     preCombineColumns: Optional[List[str]] = None
+    # confirm round 2 (B1, AC-10-01/AC-10-09) - the RAW columns of the walked
+    # endpoint: never a lookup alias, never a combine computed alias, and
+    # ALWAYS present (lookups or not, combine or not), unlike the two
+    # combine-gated fields above. `columns` is by design the MERGED shape
+    # (raw UNION every alias the REQUEST's lookups carried, so the grid can
+    # show enriched values), which makes it useless as the Lookups editor's
+    # "names already taken" set - an alias the very same request introduced
+    # collided with itself. This is the one field that answers that question,
+    # and it is the SAME set the backend itself stores as `result_columns`
+    # and re-validates saves against.
+    rawColumns: List[str] = []
 
 
 class EtlPreviewResponse(ApiModel):

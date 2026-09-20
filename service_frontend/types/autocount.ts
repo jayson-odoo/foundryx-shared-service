@@ -1028,6 +1028,18 @@ export interface HttpPreview {
    * pre-combine set.
    */
   preCombineColumns?: string[] | null;
+  /**
+   * sprint-5/10 confirm round 2 (AC-10-01/AC-10-09) - the RAW columns of the
+   * walked endpoint: never a lookup alias, never a combine computed alias,
+   * and (unlike `preCombineColumns`) present on EVERY response, lookups or
+   * not, combine or not. `columns` above is by design the MERGED shape (raw
+   * UNION every alias the REQUEST's lookups carried), so it can never serve
+   * as the Lookups editor's "names already taken" set - an alias the very
+   * same Test introduced collided with itself. Optional only for the wire's
+   * own tolerance: a consumer reading it falls back to an EMPTY set (nothing
+   * is taken), NEVER to `columns`.
+   */
+  rawColumns?: string[];
 }
 
 /** `POST /autocount/http/preview` body. */

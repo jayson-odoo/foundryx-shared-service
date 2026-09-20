@@ -349,10 +349,9 @@ export function SourceTab({
   // `preCombineColumns` (sent exactly when the request carried `combine`)
   // IS the pre-combine, alias-inclusive set (raw + lookup aliases +
   // computed aliases); for a plain (no-combine) Test the bare `columns`
-  // already IS pre-combine (the combine stage never ran). Declared on its
-  // OWN (S5b-FE defect 3 fix, AC-10-01/AC-10-05) - the SERVER's reported
-  // set, before the draft-alias union below, is also the base the
-  // self-collision check (`rawSourceColumns`) needs.
+  // already IS pre-combine (the combine stage never ran). This is the
+  // PICKER base only - the Lookups editor's alias self-collision check reads
+  // the server's own `rawColumns` instead (`rawSourceColumns` below).
   const previewBaseColumns = useMemo(() => {
     if (httpPreview.state.status !== 'success') return [];
     const preview = httpPreview.state.preview;
@@ -383,35 +382,22 @@ export function SourceTab({
       roundedCount: preview.roundedCount ?? 0,
     };
   }, [httpPreview.state]);
-  // Browser round 1 fix (AC-10-09), sharpened by S5b-FE defect 3 - a
-  // COMBINED-or-not preview's merged columns are, by backend design, RAW
-  // main-endpoint columns UNION every attached lookup's OWN alias, so a bare
-  // "merged columns" list is never a pure raw-column list. The Lookups
-  // editor's alias collision check must only fire against a genuine raw
-  // column or an EARLIER lookup's alias (`lib/autocount-lookups.ts`'s own
-  // rule), never a lookup's OWN alias echoed back by the very test that
-  // proved it, and NEVER against a DRAFT alias that has not itself been
-  // tested yet either way (typed-but-unsaved, or freshly saved but this
-  // session's `httpPreview` still points at the pre-save Test response).
-  // `rawSourceColumns` is therefore derived from `previewBaseColumns` -
-  // the SERVER's own base, deliberately BEFORE the draft-alias union that
-  // built `httpPreviewColumns` above - minus `testedLookupAliases` (the
-  // exact aliases the backend-echoed `preview.task.sourceConfig.lookups`
-  // proves are already baked into that base). A brand-new entity's first
-  // Test carries no `task` yet, so `testedLookupAliases` is empty there -
-  // but `previewBaseColumns` never included the draft's own aliases to
-  // begin with, so a preset's pre-filled-but-unsaved lookup aliases
-  // (`ItemBaseUOM`, `UomRate`) never false-collide on that first Test
-  // either.
-  const testedLookupAliases = useMemo(() => {
-    const testedLookups =
-      httpPreview.state.status === 'success' ? httpPreview.state.preview.task?.sourceConfig.lookups : undefined;
-    return new Set((testedLookups ?? []).flatMap((l) => l.fields.map((f) => f.as.trim()).filter(Boolean)));
+  // Browser round 1 fix (AC-10-09), closed for good in confirm round 2 (B1):
+  // the Lookups editor's alias collision check runs against the SERVER's own
+  // `rawColumns` and nothing else. Every other set on this tab is merged by
+  // design - `preview.columns` is raw UNION every alias the REQUEST's lookups
+  // carried, and `preCombineColumns` folds in the combine's computed aliases
+  // on top - so each one makes an alias collide with itself the moment the
+  // Test that introduced it lands. No subtraction, no echo: an absent
+  // `rawColumns` (no Test yet, or a pre-`rawColumns` backend) means "nothing
+  // is known to be taken", never "everything in `columns` is taken".
+  // `lib/autocount-lookups.ts` still owns the EARLIER-alias half of the rule,
+  // and a clash with a combine computed alias stays the combine's own 422
+  // (`combine.computed[i].alias`), never reported here.
+  const rawSourceColumns = useMemo(() => {
+    if (httpPreview.state.status !== 'success') return [];
+    return httpPreview.state.preview.rawColumns ?? [];
   }, [httpPreview.state]);
-  const rawSourceColumns = useMemo(
-    () => previewBaseColumns.filter((c) => !testedLookupAliases.has(c)),
-    [previewBaseColumns, testedLookupAliases],
-  );
   const httpSavedPicks = useMemo(
     () => [
       ...(config.keyFields ?? []),
