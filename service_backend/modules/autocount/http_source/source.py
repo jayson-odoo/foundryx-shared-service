@@ -41,7 +41,14 @@ from ..mapping import IdentityError, flat_source_ref
 from ..models import RUN_MODE_MANUAL, RUN_MODE_RECONCILE, SOURCE_IMPL_AUTOCOUNT_HTTP
 from ..repositories import ConnectionRepository, RowHashRepository
 from ..provider import PROVIDER_KEY, is_open_connection
-from ..sources import FetchResult, SourceContext, SourceRecord, Watermark, register_source
+from ..sources import (
+    FetchResult,
+    LookupVerification,
+    SourceContext,
+    SourceRecord,
+    Watermark,
+    register_source,
+)
 from ..sql_source.hashing import compared_columns_for, row_hash
 from ..sql_source.source import CURSOR_COLUMN, CURSOR_MARK, MAX_EXTRACT_ROWS
 from .client import HttpApiClient, HttpTransportError
@@ -119,6 +126,11 @@ class HttpApiSource:
         self.row_limit = row_limit
         self._on_page = heartbeat
         self._ctx = ctx
+        # sprint-5/10 review round 1 follow-up - per-lookup completeness,
+        # populated by ``_apply_lookups`` and read back by ``fetch_changes``
+        # onto ``FetchResult.lookup_verification``. Keyed by alias; a lookup
+        # that is never walked (an empty ``self.lookups``) leaves this empty.
+        self._lookup_verification: Dict[str, LookupVerification] = {}
 
         config = getattr(ctx.entity_config, "source_config", None) or {}
         if not isinstance(config, dict):
@@ -441,13 +453,15 @@ class HttpApiSource:
                     code="lookup_path",
                 )
             try:
-                # review round 1 (AC-10-24 finding, see the module's own
-                # notes at the top of ``fetch_changes`` below) - a lookup
-                # endpoint's OWN completeness has no AC tying it to
-                # ``complete`` at all; a truncated lookup walk is already
-                # surfaced INDIRECTLY through the existing miss counter
-                # (AC-10-03) below, never silently.
-                lookup_rows, _, _ = self._walk_endpoint(path)
+                # review round 1 follow-up (coordinator ruling 2026-09-20,
+                # AC-10-24 applied to lookups) - the lookup walk's OWN
+                # ``reported_total``/``envelope_kind`` are no longer thrown
+                # away: a pull snapshot build needs them to know whether
+                # THIS lookup's own walk was verified, by the exact same
+                # rule the main walk uses. The push path never reads
+                # ``FetchResult.lookup_verification``, so this is purely
+                # additional bookkeeping - the merge below is unchanged.
+                lookup_rows, lookup_total, lookup_kind = self._walk_endpoint(path)
             except HttpSourceError as exc:
                 raise HttpSourceError(
                     f"The '{alias_name}' lookup endpoint '{path}' failed: {exc.message}",
@@ -460,6 +474,22 @@ class HttpApiSource:
                     # phase tag, never by parsing the message.
                     phase="enrich",
                 ) from exc
+            # review round 1 follow-up - verified by the SAME rule the main
+            # walk uses (bare array = verified; paged = the scanned count
+            # matching the echoed total), counts from THIS walk only (a
+            # halving restart already discarded any earlier, timed-out
+            # attempt inside ``_walk_endpoint`` itself). An alias reused
+            # across a multi-hop lookup config (not possible today - ``as``
+            # is unique per task - kept simple: last write wins) never
+            # matters in practice.
+            self._lookup_verification[alias_name] = LookupVerification(
+                verified=(
+                    lookup_kind == ENVELOPE_LIST
+                    or (lookup_total is not None and len(lookup_rows) == lookup_total)
+                ),
+                rows_scanned=len(lookup_rows),
+                reported_total=lookup_total,
+            )
             index = build_index(lookup_rows, on)
             try:
                 misses = merge_onto_rows(rows, index, on, fields)
@@ -694,6 +724,7 @@ class HttpApiSource:
                 else None
             ),
             envelope_kind=envelope_kind,
+            lookup_verification=dict(self._lookup_verification),
         )
 
     # ── observability ──────────────────────────────────────────────────────

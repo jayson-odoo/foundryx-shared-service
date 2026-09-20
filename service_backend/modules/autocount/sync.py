@@ -2615,10 +2615,21 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
         # ``envelope_kind is None`` (a source that never reported one, e.g.
         # a future ``sql_db`` pull) is treated the SAME conservative way as
         # a paged mismatch: unverified, so ``False``.
-        complete = (
+        main_verified = (
             result.envelope_kind == ENVELOPE_LIST
             or (result.reported_total is not None and rows_scanned == result.reported_total)
         )
+        # review round 1 follow-up (coordinator ruling 2026-09-20) - AC-10-24
+        # applied honestly: the LOOKUPS are part of the extraction too, so a
+        # verified main walk is not enough - a truncated lookup silently
+        # turns matches into misses. No new wire key: ``complete`` alone
+        # carries this (the consumer already refuses Confirm on
+        # ``complete: false``); the unverified alias(es) are named in ONE
+        # activity note below, never on the snapshot header/metadata_json.
+        unverified_lookups = [
+            (alias, v) for alias, v in result.lookup_verification.items() if not v.verified
+        ]
+        complete = main_verified and not unverified_lookups
         content_hash = compute_content_hash([payload for _, payload in delivered])
         metadata: Dict[str, Any] = {
             "excludedRows": excluded_rows,
@@ -2634,6 +2645,27 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
             record_count=record_count, complete=complete, content_hash=content_hash,
             metadata=metadata, extracted_at=extracted_at, expires_at=expires_at,
         )
+        if unverified_lookups:
+            # review round 1 follow-up - ONE note, right after the commit
+            # ``stamp_ready`` just made (``record_activity`` commits its own
+            # session - never mid-transaction), naming every unverified
+            # alias with its scanned-vs-reported counts. Never on the
+            # snapshot's own wire shape (Appendix A is agreed cross-repo) -
+            # this is an operator/Developer-Logs note only.
+            names = ", ".join(
+                f"'{alias}' (scanned {v.rows_scanned} of reported "
+                f"{v.reported_total if v.reported_total is not None else 'unknown'})"
+                for alias, v in unverified_lookups
+            )
+            record_activity(
+                db, tenant_id=tenant_id, operation=f"pull snapshot {entity_type}",
+                status=ACTIVITY_ERROR, trace_id=trace_id,
+                external_ref=company.database_name,
+                error_message=(
+                    f"This snapshot is marked incomplete: the following lookup(s) "
+                    f"could not be verified as fully walked - {names}."
+                ),
+            )
     except _BuildAbandoned as exc:
         _finish_abandoned(exc)
         return
