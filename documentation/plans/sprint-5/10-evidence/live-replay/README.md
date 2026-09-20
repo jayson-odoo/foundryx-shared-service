@@ -325,3 +325,201 @@ successful (all `/itembatchbalqtybypage`, `/location`, discover-company) + 16 er
 - AC-10-87 - optional field, NOT IMPLEMENTED, no hard failure.
 - New finding (no AC id yet) - the gateway build event-loop-blocking defect (Finding 2) - a
   backlog-worthy, severe availability gap, recommend filing as a new BL-SS entry.
+
+## Run 2 - 2026-09-20 (dated) - db2/Mocha with AC-10-85 per-connection sizing
+
+New tester session, same lane (`s40`, `foundryx_service_s40`, backend `:8009`, no `--reload`).
+Boot HEAD `4997961b` (as briefed); a concurrent coder committed `6c150e73`/`d818ea4f`/`02837e11`/
+`17dc2c61` (S6 fix round: connection sizing AC-10-85, non-blocking gateway build, logging-sink
+pull AC-10-69, security fixes) then `e22746d4`/`8b2d0bc4`/`7ceb51b2` (confirm-3: scheme-
+configurable egress guard, preview sizing shared with the real-run path, a stale race test
+removed) WHILE this session's backend was already running - none of it was reached by MY server
+process (no `--reload`), and `git status` was clean by the time I checked (their WIP had already
+landed as commits). No coder file was touched by this session. This section does NOT rewrite
+anything above - it is a pure append, per the brief.
+
+### Summary verdict - **Finding 1 from Run 1 is RESOLVED.** db2/Mocha can now build BOTH pull
+snapshots end to end, repeatably, deterministically.
+
+| Book | Entity | Status | Records | sourcePageSize | Duration | Matches AC-10-86 estimate |
+|---|---|---|---|---|---|---|
+| db2 (MCH, `MOCHA`) | product | **ready** | 3,445 | 150 (halved once) | 20m 18.5s | close - AC text estimated "~3,438 items, ~25 min"; measured 3,445 items in 20m18s |
+| db2 (MCH, `MOCHA`) | stock_balance (build 2) | **ready** | 3,165 | 300 (no halving) | 20m 31.1s | "UNKNOWN" in the plan - now measured |
+| db2 (MCH, `MOCHA`) | stock_balance (build 3, re-attach/cooldown probe) | **ready** | 3,165 | 300 | 20m 24.8s | byte-identical `contentHash` to build 2 - confirms determinism |
+
+### Connection sizing (AC-10-85)
+
+- `PATCH /integrations/connections/{MCH connection id}` `{"config":{"auth":"none","baseUrl":
+  "https://hapi.sorento.cc.cd/api/db2","pageSize":"300","requestTimeoutSeconds":"90"}}` -> `200`,
+  GET echoes both fields back verbatim. **No 422** - the confirm-3 egress-guard change (scheme-
+  configurable `validate_public_url`) does not affect this https base URL at all; not blocked.
+- `POST .../test` (body `{}`) -> `{"ok":true,"message":"Reached in 0.55 s, 21 locations.",
+  "checkedAt":"2026-09-20T13:26:18.770886Z"}` - the MEASURED-latency message text AC-10-85
+  describes, confirmed live.
+
+### Preview (`POST /autocount/http/preview`, the actual Test-button route)
+
+**Tester process note, reported in full rather than silently corrected:** the FIRST preview
+attempt this session mistakenly called `POST .../entities/product/etl-task/preview` (the
+PUSH-path INITIAL LOAD dry run against the consumer, a different route than AC-10-85 names) instead
+of `POST /autocount/http/preview` (the Test button / AC-08-14 route). That mistaken call ran for
+**20m 23.5s** and then answered `HTTP 502` `{"detail":"The dry run against the consumer failed, so
+no prediction is available... Consumer unreachable: ConnectError: [Errno 8] nodename nor servname
+provided, or not known"}` - i.e. it walked the ENTIRE db2 product source successfully (no
+`SOURCE_PAGE_FAILED` this time, unlike Run 1) and only failed at the very end trying to
+dry-run-push against the intentionally-unroutable `.invalid` Sorento sink fixture (Finding 0 from
+Run 1's own setup). Reported because it is itself strong corroborating evidence that AC-10-85's
+sizing fixes db2 source extraction end to end, not just the sampled preview - caught and
+self-corrected before any further steps; the retry against the CORRECT route follows.
+
+- `POST /autocount/http/preview` `{connectionId, path:"/itembypage", lookups:[uom], companyId,
+  entityType:"product"}` -> `200` in **1.32s**, `totalCount: 3445`, lookup `uom` 50 matched / 0
+  missed, `lastPreviewAt` stamped.
+- `POST /autocount/http/preview` `{connectionId, path:"/itembatchbalqtybypage",
+  lookups:[item, uom], combine:<stock preset>, companyId, entityType:"stock_balance"}` -> `200` in
+  **1.13s**, `totalCount: 10555`, funnel `rowsIn:50, excludedCount:0, groups:50,
+  droppedByRule:{"zero":22}, rowsOut:28, roundedCount:0`, lookups `item` 50/0, `uom` 50/0,
+  `lastPreviewAt` stamped.
+
+Both entities then activated cleanly (`POST .../etl-task/activate` -> `200`, `etlStatus: active`)
+- Run 1's Finding 1 blocker ("neither MCH task could be Activated") no longer applies once a
+  preview against the CORRECT route succeeds.
+
+### Build headers (operator route, `POST /autocount/pull/snapshots`)
+
+`db2-product-header-run2.json` / `db2-stock-header-run2.json` (full headers, the SECOND stock
+build - `fda6cf2b-...`). Key facts:
+
+| Fact | product (`76892b73-...`) | stock_balance (`fda6cf2b-...`) |
+|---|---|---|
+| status | ready | ready |
+| recordCount | 3,445 | 3,165 |
+| complete | true | true |
+| contentHash | `559c77f9...` | `fb7abb88...` |
+| sourcePageSize | 150 (halved once from 300) | 300 (no halving on the main path) |
+| excludedCount | 0 | 0 |
+| product-only | zeroListPriceCount 333, negativeListPriceCount 0, enrichMissCount 0 | - |
+| stock-only | - | zeroPairs 7380, negativePairs 9 (all 9 listed), fractionalPairs 0, excludedNonzeroCount 0 |
+| duration | 20m 18.46s (13:49:22.875Z -> 14:09:41.339Z) | 20m 31.09s (14:10:22.866Z -> 14:30:53.955Z) |
+
+A THIRD build of stock (`0f7332c3-...`, triggered unintentionally when a cooldown probe landed
+just outside the 60s window - see Cooldown below) reproduced **byte-identical** `contentHash
+fb7abb88...` and the SAME `recordCount 3165` / `zeroPairs 7380` / `negativePairs 9` in
+20m 24.76s - confirms the pull path is deterministic across independent live builds on db2, the
+same property Run 1 proved on db1.
+
+### Backend responsiveness during the builds (operator route)
+
+`GET /openapi.json` polled every 30s throughout ALL THREE db2 builds (13:51:55Z through
+14:53:08Z, ~61 minutes of continuous coverage, `product-build-responsiveness.log`-style samples
+folded into this report): every sample **5-50ms**, no freeze observed at any point. This is
+consistent with Run 1's own finding: the OPERATOR route (`routers/pull.py`'s plain `def
+build_pull_snapshot`) is threadpooled by FastAPI/Starlette automatically and does not exhibit
+Finding 2's event-loop block - only the async-def PUBLIC GATEWAY route does (unchanged this
+session; not re-probed since Run 1 already reproduced and timed it precisely, and the fix is
+still outstanding per the confirm-3 commit history above, which did not touch `pull_v1.py`).
+
+### Request volume and the AC-10-75 retry-halve-restart ladder, observed live
+
+`db2-integration-activity-run2.txt` (grouped by operation/status): **204 successful + 9 error**
+calls to `MOCHA` this session (cumulative window `2026-09-20T13:26Z` onward, covering the
+connection Test, both previews, and all three builds). The 9 errors are exactly THREE occurrences
+of the SAME pattern - `GET /itembypage?page=10&pageSize=300` timing out on BOTH allowed attempts
+at almost exactly the new 90s ceiling (`90003ms`/`90656ms`, `90612ms`/`90204ms`,
+`90007ms`/`90405ms`), followed by a `NOTE .../api/db2` bookkeeping row - one per build that walked
+`/itembypage` at its default 300 (the product build once, main path; each stock build once, via
+the `item` lookup). Every single occurrence recovered cleanly via AC-10-75's halve-and-restart
+(300 -> 150) and the build still finished `ready` - the retry ladder worked exactly as designed,
+live, three times in a row. Per-page latency at the surviving sizes ranged from as low as 262ms
+(page 5 at pageSize 150) up to 84.4s (page 6 at pageSize 300, page 19 at pageSize 150 hit
+69.3s) - consistently UNDER the 90s ceiling except the one page-10 hot spot each run, confirming
+the 90s timeout (vs Run 1's fixed, un-overridable 30s) is what makes db2 tractable at all: Run 1
+measured `/itembypage` failing EVERY attempt at EVERY size (1000/500/250) at the old 30s ceiling;
+this run measured it succeeding at the vast majority of pages, with only the halving ladder
+needed as a safety net for the occasional page over 90s.
+
+### Gateway read shapes (AC-10-30/32/33, Appendix A3/A4) - db2/Mocha specifics
+
+`gateway-db2-product-header-run2.json` / `gateway-db2-stock-header-run2.json` (via
+`GET /api/v1/autocount/snapshots/{id}`, `X-API-Key`) - both match the `ready` Appendix A3 shape
+exactly, same key set as db1's own gateway headers in Run 1, Mocha-specific numbers.
+
+`gateway-db2-product-rows-run2.json` / `gateway-db2-stock-rows-run2.json` (`.../rows?page=1&
+pageSize=3`) - shapes match Appendix A4 exactly. Product row: `{source_ref, code, name,
+description, category_code, list_price (JSON STRING, e.g. "1.05"), is_active}`. **Mocha
+specific, confirmed**: no `brand_code` key at all in any sampled row (checked pages 1, 5, 50, 200
+and 500 at pageSize 5 - `ItemBrand` is blank for every Mocha product in this capture, matching the
+plan's own "MCH all EA... no brands" note) - unlike db1/SRT's rows in Run 1, which DID carry the
+key. Stock row: `{source_ref, item_code, item_description, location_code, uom_code, qty}` -
+`source_ref` format `MOCHA:<ItemCode>|<Location>`, `qty` an integer (`4670`, `15580`, ...).
+`totalPages` correctly derived (1,149 for product at pageSize 3; 1,055 for stock).
+
+### Cooldown / re-attach (AC-10-26/88) - db2
+
+`run2-cooldown-reattach-transcript.txt`. **Re-attach**: a build POST fired while status was
+`building` returned the SAME `snapshotId` in 34ms (confirmed on stock build `0f7332c3-...`).
+**Cooldown**: this session's first cooldown attempt accidentally landed 104s after the prior
+ready snapshot (just outside the 60s window, because gateway-read work took longer than expected
+in between) and so triggered a genuine THIRD build instead of a 429 - reported transparently
+rather than silently discarded; that build is `0f7332c3-...` itself, used above for the
+determinism/re-attach evidence. A SECOND cooldown attempt, fired programmatically the instant that
+build reached `ready`, got the expected `429` with `retry-after: 55` and the same
+`{"detail":"A snapshot for this entity was built less than 60 seconds ago. Try again shortly."}`
+body Run 1 recorded on db1 - confirms the 60s cooldown is entity/company-scoped and book-agnostic,
+not something db2's longer builds change.
+
+### Teardown
+
+- Pull API key issued this session (`bc94c093-...`, name `S6 db2 run2 20260920T144000Z`, scoped
+  to MCH only) - **revoked** (`POST /autocount/pull/keys/{id}/revoke` -> `200`,
+  `revokedAt` stamped).
+- MCH `product`/`stock_balance` entities: left `etlStatus: active`, `deliveryMode: pull` (both now
+  genuinely usable, unlike Run 1's `draft`/never-activatable state) - matches Run 1's own
+  reasoning for leaving SRT `product` on `pull` rather than re-arming a scheduled push nobody
+  intended to run against the `.invalid` fixture.
+- MCH company's sink target: unchanged (`sorento` + the same `.invalid` fixture + code `MCH`,
+  inert for the pull path exactly as Run 1's Finding 0 established) - not touched this session.
+- Three MCH pull snapshots now exist (`76892b73` product ready, `fda6cf2b` + `0f7332c3` stock
+  ready, plus the two Run-1-era `failed` rows) - left in place, lane-only state.
+- Backend `:8009` stopped after this session (own pid, `cwd` confirmed under
+  `s40/service_backend`); `lsof -i :8009 -sTCP:LISTEN` confirmed free afterward.
+
+### Run 2 report cross-reference
+
+- **AC-10-85 `[BE]/[FE]`** - now **PASS**, live-verified: `pageSize`/`requestTimeoutSeconds` are
+  read from the connection, the Test button reports measured latency, both the preview AND the
+  real-run path share the SAME `connection_sizing` helper (confirm-3 commit history), and db2's
+  `/itembypage` - the endpoint that failed 100% of the time in Run 1 - now succeeds the large
+  majority of the time at the raised 90s ceiling.
+- **AC-10-53 `[T]`** - now **PASS for db2 as well as db1**: both Mocha entities build `ready`
+  snapshots with plausible, internally-consistent numbers (product zero/negative-price counts,
+  stock zero/negative-pair counts), reproducible across independent builds (byte-identical
+  `contentHash` on stock builds 2 and 3), correct gateway shapes, correct Mocha-specific field
+  omissions (`brand_code`). Combined with Run 1's db1 pass, **AC-10-53 is now a full PASS across
+  both books.**
+- **AC-10-86 `[BE]`** - **PASS**: neither build hit any short global timeout: `sourcePageSize` is
+  correctly stamped on the header after halving (150 for product) and when unchanged (300 for
+  stock); the plan's own "roughly 25 minutes" estimate for Mocha product is close (measured 20m19s)
+  and Mocha stock duration, "UNKNOWN" in the plan, is now measured at ~20m25-31s.
+- **AC-10-75 `[BE]`** - **PASS, live-verified three times**: the halve-and-restart ladder fired on
+  the SAME hot page (`/itembypage` page 10 at pageSize 300) in all three builds that touched it,
+  every time recovering to a `ready` snapshot with no operator intervention.
+- **AC-10-26/88** (cooldown/re-attach) - **PASS**, reconfirmed on db2 (Run 1 only checked db1):
+  re-attach 34ms same id; cooldown 429 with `retry-after`.
+- **AC-10-30/32/33** (gateway shapes) - **PASS**, reconfirmed on db2 with Mocha-specific field
+  omissions correctly handled (no stray `brand_code` key).
+- **Finding 2** (gateway async-def event-loop block, filed in Run 1) - **still open**, not
+  re-probed this session (out of scope for this addendum's brief; the confirm-3 commits visible in
+  this session's `git log` did not touch `pull_v1.py`) - still recommend filing/tracking as a
+  backlog item if not already done.
+- **New tester-process note** (not a code defect): the FIRST preview call this session used the
+  wrong route (`etl-task/preview`, the push dry-run, instead of `/autocount/http/preview`, the
+  Test button) - self-caught, and incidentally proved db2 source extraction succeeds end-to-end
+  even on that heavier path (20m23s, no `SOURCE_PAGE_FAILED`, failed only on the unrelated
+  `.invalid` consumer fixture). No plan/AC text names this route by name, so this is not a
+  documentation gap - purely a tester slip, reported for transparency per the brief's evidence
+  standard.
+
+Final commit sha for this addendum's evidence: see this worktree's `git log` immediately after
+the commit whose message begins `test(autocount): sprint-5/10 S6 live replay run 2 - db2 with
+per-connection sizing`.

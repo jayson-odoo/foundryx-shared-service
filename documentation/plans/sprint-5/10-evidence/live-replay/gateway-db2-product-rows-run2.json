@@ -1,0 +1,36 @@
+{
+    "snapshotId": "76892b73-fc3e-4b75-be65-b3cf4b87d78e",
+    "page": 1,
+    "pageSize": 3,
+    "totalPages": 1149,
+    "recordCount": 3445,
+    "rows": [
+        {
+            "source_ref": "MOCHA:2001",
+            "code": "2001",
+            "name": "MBS 2\" ROLLEX ROLLER REFILL (2001)",
+            "description": "MBS 2\" ROLLEX ROLLER REFILL (2001)",
+            "category_code": "LCL PT",
+            "list_price": "1.05",
+            "is_active": true
+        },
+        {
+            "source_ref": "MOCHA:2002",
+            "code": "2002",
+            "name": "MBS 2\" TIGER ROLLER REFILL (2002)",
+            "description": "MBS 2\" TIGER ROLLER REFILL (2002)",
+            "category_code": "LCL PT",
+            "list_price": "1.05",
+            "is_active": true
+        },
+        {
+            "source_ref": "MOCHA:2003",
+            "code": "2003",
+            "name": "MBS 2\" EPOXY ROLLER REFILL (2003)",
+            "description": "MBS 2\" EPOXY ROLLER REFILL (2003)",
+            "category_code": "LCL PT",
+            "list_price": "1.05",
+            "is_active": true
+        }
+    ]
+}
