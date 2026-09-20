@@ -626,6 +626,74 @@ class AcPullSnapshot(AutocountBase):
     expires_at = Column(UTCDateTime(), nullable=True)
 
 
+class AcPullApiKey(AutocountBase):
+    """One issued pull gateway key (sprint-5/10 S4, AC-10-27/28).
+
+    Mirrors ``modules.omnichannel.models.WorkspaceApiKey`` in spirit -
+    scheme-prefixed plaintext returned ONCE, only a sha256 hash + an 8-char
+    indexed lookup prefix stored - but is a deliberate, acknowledged
+    duplication (D9/BL-SS-210): cross-module table reads are forbidden, so
+    this module cannot reuse omnichannel's table.
+
+    ``company_ids`` is the explicit SET of ``ac_company.id`` this key may
+    act on - validated to belong to ``tenant_id`` at issue time
+    (``PullKeyService.issue``) and re-checked at every gateway call (the
+    polymorphic-stored-id rule: save-time validation AND tenant-scoped
+    resolution at use time).
+    """
+
+    __tablename__ = "ac_pull_api_key"
+    __table_args__ = (
+        Index("ix_ac_pull_api_key_tenant", "tenant_id"),
+        # The O(1) lookup ``PullKeyService.resolve`` needs BEFORE it knows
+        # the tenant - deliberately NOT combined with tenant_id above.
+        Index("ix_ac_pull_api_key_prefix", "key_prefix"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False)
+    name = Column(String, nullable=False, default="")
+    key_prefix = Column(String, nullable=False)
+    key_hash = Column(String, nullable=False)
+    company_ids = Column(_JSON, nullable=False, default=list)
+    created_by = Column(String, nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    last_used_at = Column(UTCDateTime(), nullable=True)
+    revoked_at = Column(UTCDateTime(), nullable=True)
+
+
+class AcPullAudit(AutocountBase):
+    """One row per public gateway CALL (sprint-5/10 S4, AC-10-27/34) - who
+    (key), when, what (company/entity/snapshot/action/page), and the outcome
+    (``status_code``). Deliberately carries NO payload field and NO
+    plaintext key - the module's own "no PII/no payload in audit" rule.
+
+    A request whose key never resolved at all (missing/malformed/unknown/
+    revoked) writes NO row here (this file's own choice, stated once): there
+    is no tenant to attribute it to, and ``tenant_id`` is NOT NULL like
+    every other table in this module.
+    """
+
+    __tablename__ = "ac_pull_audit"
+    __table_args__ = (
+        Index("ix_ac_pull_audit_tenant", "tenant_id"),
+        Index("ix_ac_pull_audit_snapshot", "snapshot_id"),
+        Index("ix_ac_pull_audit_key", "key_id"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False)
+    company_id = Column(String, nullable=True)
+    entity_type = Column(String, nullable=True)
+    key_id = Column(String, nullable=True)
+    snapshot_id = Column(String, nullable=True)
+    action = Column(String, nullable=False)
+    page = Column(Integer, nullable=True)
+    record_count = Column(Integer, nullable=True)
+    status_code = Column(Integer, nullable=False)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
 class AcPullSnapshotRow(AutocountBase):
     """One delivered row of a snapshot, served exactly as stored - no
     re-projection at read time (AC-10-18, AC-10-33).

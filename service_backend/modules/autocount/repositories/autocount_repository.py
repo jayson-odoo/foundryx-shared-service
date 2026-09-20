@@ -37,6 +37,8 @@ from ..models import (
     AcDocFingerprint,
     AcEntityConfig,
     AcFieldMapping,
+    AcPullApiKey,
+    AcPullAudit,
     AcPullSnapshot,
     AcPullSnapshotRow,
     AcRowHash,
@@ -184,6 +186,29 @@ class CompanyRepository:
             )
             .first()
         )
+
+    def get_by_sorento_company_code(
+        self, tenant_id: str, code: str
+    ) -> Optional[AcCompany]:
+        """Sprint-5/10 S4 (AC-10-30) - the gateway's own company resolution:
+        case-insensitive, trimmed, WITHIN the given tenant only. Compared in
+        Python (not SQL ``lower()``) so this behaves identically on SQLite
+        (tests) and Postgres (prod) - the company set per tenant is small."""
+        normalized = (code or "").strip().casefold()
+        if not normalized:
+            return None
+        rows = (
+            self.db.query(AcCompany)
+            .filter(
+                AcCompany.tenant_id == tenant_id,
+                AcCompany.sorento_company_code.isnot(None),
+            )
+            .all()
+        )
+        for row in rows:
+            if (row.sorento_company_code or "").strip().casefold() == normalized:
+                return row
+        return None
 
     def get_by_connection(
         self, tenant_id: str, connection_id: str
@@ -1323,6 +1348,27 @@ class PullSnapshotRepository:
             .first()
         )
 
+    def get_for_key_scope(
+        self, tenant_id: str, company_ids: Sequence[str], snapshot_id: str
+    ) -> Optional[AcPullSnapshot]:
+        """Sprint-5/10 S4 (AC-10-30/47) - the PUBLIC gateway's own read,
+        scoped to a KEY's full company SET (a key may be bound to more than
+        one company, unlike ``get_scoped``'s single id). Possession of an id
+        is not authorisation: a snapshot outside every one of these company
+        ids, or outside this tenant, reads identically to unknown."""
+        ids = list(dict.fromkeys(company_ids or []))
+        if not ids:
+            return None
+        return (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.company_id.in_(ids),
+                AcPullSnapshot.id == snapshot_id,
+            )
+            .first()
+        )
+
     def list(
         self,
         tenant_id: str,
@@ -1457,3 +1503,59 @@ class PullSnapshotRepository:
         if snapshot is not None:
             self.db.delete(snapshot)
         self.db.flush()
+
+
+class PullKeyRepository:
+    """Sprint-5/10 S4 (AC-10-27/47). Mirrors ``PullSnapshotRepository``'s own
+    scoping discipline: every method taking a ``key_id`` ALSO takes
+    ``tenant_id``, except ``by_prefix`` - the ONE deliberate exception,
+    because ``PullKeyService.resolve`` genuinely does not know the tenant
+    until AFTER this lookup runs."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def add(self, key: AcPullApiKey) -> AcPullApiKey:
+        self.db.add(key)
+        self.db.flush()
+        return key
+
+    def get(self, tenant_id: str, key_id: str) -> Optional[AcPullApiKey]:
+        return (
+            self.db.query(AcPullApiKey)
+            .filter(AcPullApiKey.tenant_id == tenant_id, AcPullApiKey.id == key_id)
+            .first()
+        )
+
+    def list_for_tenant(self, tenant_id: str) -> List[AcPullApiKey]:
+        return (
+            self.db.query(AcPullApiKey)
+            .filter(AcPullApiKey.tenant_id == tenant_id)
+            .order_by(AcPullApiKey.created_at.desc())
+            .all()
+        )
+
+    def by_prefix(self, prefix: str) -> List[AcPullApiKey]:
+        """UNSCOPED by design (see class docstring) - only ever called from
+        ``PullKeyService.resolve``, which then verifies the full hash with
+        ``hmac.compare_digest`` before trusting any candidate."""
+        return (
+            self.db.query(AcPullApiKey)
+            .filter(
+                AcPullApiKey.key_prefix == prefix,
+                AcPullApiKey.revoked_at.is_(None),
+            )
+            .all()
+        )
+
+
+class PullAuditRepository:
+    """Sprint-5/10 S4 (AC-10-27/34) - append-only; no update, no delete."""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def add(self, row: AcPullAudit) -> AcPullAudit:
+        self.db.add(row)
+        self.db.commit()
+        return row
