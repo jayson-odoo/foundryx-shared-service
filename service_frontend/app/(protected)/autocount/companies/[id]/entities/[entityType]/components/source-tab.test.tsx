@@ -13,6 +13,7 @@ import type {
   UseSqlPreviewResult,
 } from '@/hooks/use-autocount-etl';
 import type { AutocountApiConnection } from '@/types/autocount';
+import { emptyCombine } from '@/lib/autocount-combine';
 import { SourceTab, type LockedApiConnection, type LockedConnection } from './source-tab';
 
 /**
@@ -638,5 +639,118 @@ describe('SourceTab - a lookup alias is excluded from key/watermark, offered in 
     const comparedBox = comparedLabel.parentElement as HTMLElement;
     fireEvent.click(within(comparedBox).getByRole('combobox'));
     expect(screen.getByRole('option', { name: 'BaseUOMPrice' })).toBeInTheDocument();
+  });
+});
+
+// sprint-5/10 S5b-FE (AC-10-82) - the Source tab's own Test button proves the
+// combine step: it sends `combine` in the request when the task carries one,
+// and the Combine editor renders the response's SERVER funnel, not a
+// client-side simulation.
+describe('SourceTab - Test sends the combine step + feeds the server funnel (AC-10-82)', () => {
+  function successHttpPreviewWithFunnel(): UseHttpPreviewResult {
+    return {
+      state: {
+        status: 'success',
+        preview: {
+          envelope: 'list',
+          columns: [
+            { name: 'item_code', sample: 'SRT-01' },
+            { name: 'qty', sample: 5 },
+          ],
+          rows: [{ item_code: 'SRT-01', qty: 5 }],
+          durationMs: 40,
+          rowsIn: 6,
+          excludedCount: 1,
+          groups: 2,
+          droppedByRule: { zero: 1 },
+          rowsOut: 1,
+          roundedCount: 0,
+        },
+      },
+      run: vi.fn(),
+      fieldErrors: {},
+      reset: vi.fn(),
+    };
+  }
+
+  it('Test sends the combine block when the task carries one', () => {
+    const httpPreview = idleHttpPreview();
+    const combine = { ...emptyCombine(), groupBy: ['item_code'] };
+    renderApiBranch({ httpPreview, cfg: httpConfig({ combine }) });
+    fireEvent.click(screen.getByTestId('http-test-path'));
+    expect(httpPreview.run).toHaveBeenCalledWith('conn-api-sorento', '/itembypage', undefined, {
+      companyId: 'company-1',
+      entityType: 'product',
+      lookups: undefined,
+      combine,
+    });
+  });
+
+  it('Test omits combine (undefined) for a task with none configured', () => {
+    const httpPreview = idleHttpPreview();
+    renderApiBranch({ httpPreview, cfg: httpConfig({ combine: null }) });
+    fireEvent.click(screen.getByTestId('http-test-path'));
+    expect(httpPreview.run).toHaveBeenCalledWith(
+      'conn-api-sorento',
+      '/itembypage',
+      undefined,
+      expect.objectContaining({ combine: null }),
+    );
+  });
+
+  it('feeds the Combine editor the SERVER funnel once a combine-inclusive Test lands, alongside the combined rows in the existing preview grid', () => {
+    renderApiBranch({
+      cfg: httpConfig({ combine: { ...emptyCombine(), groupBy: ['item_code'] } }),
+      httpPreview: successHttpPreviewWithFunnel(),
+    });
+    const funnel = screen.getByTestId('combine-funnel');
+    expect(funnel).toHaveTextContent('6 in');
+    expect(funnel).toHaveTextContent('1 excluded');
+    expect(funnel).toHaveTextContent('2 groups');
+    expect(funnel).toHaveTextContent('zero: 1 dropped');
+    expect(funnel).toHaveTextContent('1 out');
+    // The SAME response's combined rows land in the reused preview grid.
+    const grid = screen.getByTestId('sql-preview-success');
+    expect(within(grid).getByText('item_code')).toBeInTheDocument();
+  });
+
+  it('no funnel renders for a plain (no-combine) Test', () => {
+    renderApiBranch({ httpPreview: successHttpPreview() });
+    expect(screen.queryByTestId('combine-funnel')).not.toBeInTheDocument();
+  });
+});
+
+// sprint-5/10 (AC-10-80) - a combine step's `groupBy` becomes the task's key
+// fields, derived, never separately typed: the Key fields picker turns into
+// read-only chips the moment one is set, and reverts the moment it is not.
+describe('SourceTab - combine groupBy locks the Key fields picker to read-only chips (AC-10-80)', () => {
+  function keyColumnsBox(): HTMLElement {
+    const label = screen.getByText(
+      (_, el) => el?.tagName === 'LABEL' && (el.textContent ?? '').startsWith('Key columns'),
+    );
+    return label.parentElement as HTMLElement;
+  }
+
+  it('renders chips of groupBy, no picker, when combine.groupBy is set', () => {
+    renderApiBranch({
+      cfg: httpConfig({
+        keyFields: [],
+        combine: { ...emptyCombine(), groupBy: ['item_code', 'location_code'] },
+      }),
+    });
+    const box = keyColumnsBox();
+    expect(within(box).queryByRole('combobox')).not.toBeInTheDocument();
+    expect(within(box).getByText('item_code')).toBeInTheDocument();
+    expect(within(box).getByText('location_code')).toBeInTheDocument();
+  });
+
+  it('the picker returns once combine is unset', () => {
+    renderApiBranch({ cfg: httpConfig({ keyFields: ['ItemCode'], combine: null }) });
+    expect(within(keyColumnsBox()).getByRole('combobox')).toBeInTheDocument();
+  });
+
+  it('the picker also returns for a combine with no groupBy yet (mid-edit, not yet locked)', () => {
+    renderApiBranch({ cfg: httpConfig({ keyFields: ['ItemCode'], combine: emptyCombine() }) });
+    expect(within(keyColumnsBox()).getByRole('combobox')).toBeInTheDocument();
   });
 });

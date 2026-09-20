@@ -1,22 +1,37 @@
 /**
- * Combine-rows editor helpers (sprint-5/10, R11/AC-10-76..82) - pure, shared
- * by the Source tab's Combine rows section. No React, no fetch.
+ * Combine-rows editor helpers (sprint-5/10, R11/AC-10-76..82) - pure, no
+ * React, no fetch.
  *
- * `simulateCombine` is a CLIENT-SIDE, PHASE 1 MOCK funnel over the Test
- * preview's own SAMPLE rows (the same rows the Lookups Test already
- * produced) - the real combine ENGINE (computed / require / group / measure
- * / round / drop over the FULL walked set) lands server-side in S5a
- * (`http_source/combine.py`). Every formula still goes through the ONE
+ * `simulateCombine` is now a PHASE 1 MOCK-ONLY helper (sprint-5/10 S5b-FE
+ * review round 4 SF-4): `services/autocount-service.mock.ts`'s
+ * `previewHttp` runs it over the mock's own sample rows to fold the SAME
+ * six funnel counts the real backend returns (`AutocountCombinePreviewResult`,
+ * `types/autocount.ts`) into its response - the Combine editor itself no
+ * longer calls this directly, it only ever renders the funnel the SERVER
+ * (real or mocked) sent back. Every formula still goes through the ONE
  * hand-written engine (`evaluateFormula`, never `eval`) - the house
- * anti-SSTI line applied to this surface too, exactly as it will be
- * server-side.
+ * anti-SSTI line applied to this surface too, exactly as it is server-side.
  */
 import { evaluateFormula, resultToJson } from '@/lib/autocount-formula';
-import type {
-  AutocountCombineConfig,
-  AutocountCombineDropStat,
-  AutocountCombinePreviewResult,
-} from '@/types/autocount';
+import type { AutocountCombineConfig, AutocountCombineDropStat } from '@/types/autocount';
+
+/**
+ * `simulateCombine`'s own full computation result - PHASE 1 MOCK internal
+ * only, NOT the wire shape (that is `AutocountCombinePreviewResult`,
+ * `types/autocount.ts`, reconciled to the server's flat `droppedByRule`
+ * counts). The mock's `previewHttp` condenses `dropped`/`excludedRows` away
+ * before returning, so this richer internal shape never leaks past it.
+ */
+export interface AutocountCombineSimulateResult {
+  rowsIn: number;
+  excludedCount: number;
+  excludedRows: Array<Record<string, unknown>>;
+  groups: number;
+  dropped: Record<string, AutocountCombineDropStat>;
+  roundedCount: number;
+  rowsOut: number;
+  rows: Array<Record<string, unknown>>;
+}
 
 export const MAX_COMPUTED = 10;
 export const MAX_REQUIRE = 10;
@@ -48,7 +63,7 @@ function roundHalfUp(value: number, dp: number): number {
 export function simulateCombine(
   sampleRows: Array<Record<string, unknown>>,
   config: AutocountCombineConfig,
-): AutocountCombinePreviewResult {
+): AutocountCombineSimulateResult {
   const rowsIn = sampleRows.length;
   const excludedRows: Array<Record<string, unknown>> = [];
   let excludedCount = 0;

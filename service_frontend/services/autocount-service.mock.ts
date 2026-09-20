@@ -20,6 +20,7 @@
  * encodes lives in the "DB-only company fixtures" section below.
  */
 import { ApiError } from '@/lib/api-client';
+import { simulateCombine } from '@/lib/autocount-combine';
 import { testFormula as evalFormula } from '@/lib/autocount-formula';
 import {
   DEFAULT_STATUS_FORMULA,
@@ -33,6 +34,7 @@ import {
 import type {
   AutocountApiConnection,
   AutocountApprovalResult,
+  AutocountCombineConfig,
   AutocountCompany,
   AutocountCompanyCreateInput,
   AutocountCompanyDetail,
@@ -708,6 +710,15 @@ function brandContractGateFor(task: AutocountEtlTask): AutocountEtlTask['brandCo
   return { version: 2.2, requiredVersion: 2.3 };
 }
 
+/** `groupBy + carry + measures[].alias` (sprint-5/10 review round 4 SF-4,
+ * AC-10-82) - the combined, post-group schema a combine-carrying task's own
+ * rows carry. Mirrors the backend's `EtlTaskResponse.combineOutputColumns`
+ * (`schemas.py`) exactly; `[]` when no combine step is configured. */
+function combineOutputColumnsFor(combine: AutocountCombineConfig | null | undefined): string[] {
+  if (!combine) return [];
+  return [...combine.groupBy, ...combine.carry, ...combine.measures.map((m) => m.alias)];
+}
+
 /** Lay the session's lifecycle state over a (real or mock) task. */
 function applyTaskOverlay(task: AutocountEtlTask): AutocountEtlTask {
   const o = overlayFor(task.companyId, task.entityType);
@@ -722,6 +733,7 @@ function applyTaskOverlay(task: AutocountEtlTask): AutocountEtlTask {
     sourceImpl: impl === 'autocount_http' ? 'autocount_http' : 'sql_db',
     brandContractGate: brandContractGateFor(task),
     deliveryMode: deliveryModeFor(task.companyId, task.entityType),
+    combineOutputColumns: combineOutputColumnsFor(task.sourceConfig.combine),
     ...nextRunsFor(o.etlStatus, task.sourceConfig),
   };
 }
@@ -2488,8 +2500,38 @@ export const mockAutocountService: AutocountService = {
     const preview = await mockPreviewHttp(input);
     httpPreviewColumnsByKey.set(
       httpPreviewKey(input.connectionId, input.path, input.distinctOf),
+      // PRE-combine, unchanged (mirrors the backend's own `resultColumns`) -
+      // `combinedPreview` below may replace `rows`/`columns` on the RESPONSE,
+      // never on what this cache (or `resultColumns` just below) remembers.
       preview.columns.map((c) => c.name),
     );
+    // sprint-5/10 S5b-FE (AC-10-82) - PHASE 1 MOCK combine funnel: when the
+    // request carries a `combine` block, run it (`simulateCombine`, the
+    // former Combine editor's own client-side engine, now mock-only) over
+    // this session's sample rows and fold its six funnel counts + combined
+    // rows/columns into the response, mirroring the real backend's additive
+    // `HttpPreviewResponse` fields (`schemas.py`). A task with NO combine is
+    // completely unaffected (`combined` stays `null`).
+    const combined = input.combine ? simulateCombine(preview.rows, input.combine) : null;
+    const combinedColumnNames = combined ? combineOutputColumnsFor(input.combine) : [];
+    const combinedPreview: HttpPreview = combined
+      ? {
+          ...preview,
+          columns: combinedColumnNames.map((name) => ({
+            name,
+            sample: combined.rows[0]?.[name] ?? null,
+          })),
+          rows: combined.rows,
+          rowsIn: combined.rowsIn,
+          excludedCount: combined.excludedCount,
+          groups: combined.groups,
+          droppedByRule: Object.fromEntries(
+            Object.entries(combined.dropped).map(([name, stat]) => [name, stat.count]),
+          ),
+          rowsOut: combined.rowsOut,
+          roundedCount: combined.roundedCount,
+        }
+      : preview;
     // Mirrors the real backend's `preview_http` (sprint-5/08 review round
     // 7): a clean Test that names both `companyId`/`entityType` ALSO stamps
     // `resultColumns`/`lastPreviewAt` on the task and echoes it back, so the
@@ -2507,11 +2549,11 @@ export const mockAutocountService: AutocountService = {
       o.resultColumns = preview.columns.map((c) => c.name);
       o.lastPreviewAt = nowIso();
       return {
-        ...preview,
+        ...combinedPreview,
         task: cloneJson(applyTaskOverlay(etlTaskFor(input.companyId, input.entityType))),
       };
     }
-    return preview;
+    return combinedPreview;
   },
 
   async previewColumns(connectionId: string, path: string): Promise<string[]> {

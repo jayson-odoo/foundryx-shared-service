@@ -84,6 +84,31 @@ describe('ColumnPickers (sprint-5/08 D13 - shared by the SQL and API branches)',
     expect(onWatermarkChange).toHaveBeenCalledWith('LastModified');
   });
 
+  it('keyReadOnly forces chips for the key section even while editing, leaving watermark/compared as normal pickers (AC-10-80)', () => {
+    render(
+      <ColumnPickers
+        editing
+        keyOptions={OPTIONS}
+        watermarkOptions={[{ label: 'None', value: '' }, ...OPTIONS]}
+        comparedOptions={OPTIONS}
+        keyValue={['ItemCode', 'Description']}
+        onKeyChange={vi.fn()}
+        keyReadOnly
+        watermarkValue=""
+        onWatermarkChange={vi.fn()}
+        comparedValue={[]}
+        onComparedChange={vi.fn()}
+        pickersEnabled
+      />,
+    );
+    expect(screen.getByText('ItemCode')).toBeInTheDocument();
+    expect(screen.getByText('Description')).toBeInTheDocument();
+    // Watermark + compared still render their normal pickers - only the key
+    // section is forced to chips.
+    expect(screen.getAllByRole('combobox')).toHaveLength(2);
+    expect(screen.getByRole('combobox', { name: 'Watermark column' })).toBeInTheDocument();
+  });
+
   it('surfaces per-field errors', () => {
     render(
       <ColumnPickers

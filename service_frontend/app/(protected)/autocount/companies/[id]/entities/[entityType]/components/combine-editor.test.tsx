@@ -13,7 +13,7 @@ describe('CombineEditor (AC-10-82)', () => {
         combine={null}
         onChange={vi.fn()}
         columnOptions={['ItemCode']}
-        sampleRows={[]}
+        funnel={null}
         onServerTest={serverTest}
       />,
     );
@@ -28,7 +28,7 @@ describe('CombineEditor (AC-10-82)', () => {
         combine={null}
         onChange={onChange}
         columnOptions={['ItemCode']}
-        sampleRows={[]}
+        funnel={null}
         onServerTest={serverTest}
       />,
     );
@@ -44,7 +44,7 @@ describe('CombineEditor (AC-10-82)', () => {
         combine={emptyCombine()}
         onChange={onChange}
         columnOptions={['qty']}
-        sampleRows={[]}
+        funnel={null}
         onServerTest={serverTest}
       />,
     );
@@ -54,46 +54,50 @@ describe('CombineEditor (AC-10-82)', () => {
     );
   });
 
-  it('Test runs the client-side funnel over the sample rows and renders it', () => {
-    const combine = {
-      ...emptyCombine(),
-      groupBy: ['ItemCode'],
-      measure: 'qty',
-      measures: [{ source: 'qty', op: 'sum' as const, alias: 'qty' }],
-      drop: [{ name: 'zero', formula: 'qty == 0' }],
-    };
-    render(
-      <CombineEditor
-        editing
-        combine={combine}
-        onChange={vi.fn()}
-        columnOptions={['ItemCode', 'qty']}
-        sampleRows={[
-          { ItemCode: 'A', qty: 5 },
-          { ItemCode: 'B', qty: 0 },
-        ]}
-        onServerTest={serverTest}
-      />,
-    );
-    fireEvent.click(screen.getByTestId('combine-test'));
-    const funnel = screen.getByTestId('combine-funnel');
-    expect(funnel).toHaveTextContent('2 in');
-    expect(funnel).toHaveTextContent('zero: 1 dropped');
-    expect(funnel).toHaveTextContent('1 out');
-  });
-
-  it('Test is disabled with no sample rows to run against', () => {
+  it('no funnel section renders until the Source tab lands a server response (nothing to show yet)', () => {
     render(
       <CombineEditor
         editing
         combine={emptyCombine()}
         onChange={vi.fn()}
         columnOptions={[]}
-        sampleRows={[]}
+        funnel={null}
         onServerTest={serverTest}
       />,
     );
-    expect(screen.getByTestId('combine-test')).toBeDisabled();
+    expect(screen.queryByTestId('combine-funnel')).not.toBeInTheDocument();
+    // The editor never runs its own preview - no local Test control at all.
+    expect(screen.queryByTestId('combine-test')).not.toBeInTheDocument();
+  });
+
+  it('renders the SERVER funnel passed down from the Source tab Test (AC-10-82)', () => {
+    render(
+      <CombineEditor
+        editing
+        combine={{
+          ...emptyCombine(),
+          groupBy: ['ItemCode'],
+          measure: 'qty',
+          measures: [{ source: 'qty', op: 'sum', alias: 'qty' }],
+          drop: [{ name: 'zero', formula: 'qty == 0' }],
+        }}
+        onChange={vi.fn()}
+        columnOptions={['ItemCode', 'qty']}
+        funnel={{
+          rowsIn: 2,
+          excludedCount: 0,
+          groups: 2,
+          droppedByRule: { zero: 1 },
+          rowsOut: 1,
+          roundedCount: 0,
+        }}
+        onServerTest={serverTest}
+      />,
+    );
+    const funnel = screen.getByTestId('combine-funnel');
+    expect(funnel).toHaveTextContent('2 in');
+    expect(funnel).toHaveTextContent('zero: 1 dropped');
+    expect(funnel).toHaveTextContent('1 out');
   });
 
   it('read-only when not editing - no Enable/Add controls', () => {
@@ -103,7 +107,7 @@ describe('CombineEditor (AC-10-82)', () => {
         combine={emptyCombine()}
         onChange={vi.fn()}
         columnOptions={[]}
-        sampleRows={[]}
+        funnel={null}
         onServerTest={serverTest}
       />,
     );

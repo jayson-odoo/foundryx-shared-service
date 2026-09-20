@@ -910,26 +910,32 @@ export interface AutocountCombineConfig {
   drop: AutocountCombineDrop[];
 }
 
-/** One drop rule's Test-time outcome (AC-10-81). */
+/** One drop rule's Test-time outcome - PHASE 1 MOCK internal computation
+ * only (`lib/autocount-combine.ts`'s `simulateCombine`), never the wire
+ * shape (see `AutocountCombinePreviewResult` below). */
 export interface AutocountCombineDropStat {
   count: number;
   rows?: Array<Record<string, unknown>>;
 }
 
 /**
- * The combine step's Test funnel (AC-10-82) - rows in -> excluded -> groups
- * -> dropped per rule -> rows out, entity-agnostic (the generic shape
- * AC-10-81 maps onto the agreed Sorento stock header names).
+ * The combine step's Test funnel (AC-10-82), reconciled to the SERVER
+ * response shape (sprint-5/10 S5a/S5b-FE review round 4 SF-4) -
+ * `POST /autocount/http/preview`'s additive `rowsIn/excludedCount/groups/
+ * droppedByRule/rowsOut/roundedCount` fields (`HttpPreview` below),
+ * entity-agnostic (the generic shape AC-10-81 maps onto the agreed Sorento
+ * stock header names server-side). `droppedByRule` is a flat
+ * `{ruleName: count}` map - no per-rule dropped-rows list and no
+ * excluded-rows sample travel over the wire; the combined ROWS themselves
+ * ride the SAME response's own `rows`/`columns`, not this type.
  */
 export interface AutocountCombinePreviewResult {
   rowsIn: number;
   excludedCount: number;
-  excludedRows: Array<Record<string, unknown>>;
   groups: number;
-  dropped: Record<string, AutocountCombineDropStat>;
-  roundedCount: number;
+  droppedByRule: Record<string, number>;
   rowsOut: number;
-  rows: Array<Record<string, unknown>>;
+  roundedCount: number;
 }
 
 /**
@@ -994,6 +1000,20 @@ export interface HttpPreview {
   /** Per-lookup `{alias, matched, missed}` counts (AC-10-05) - a SAMPLE,
    * never the whole population. Empty when the preview carried no lookups. */
   lookups?: AutocountLookupPreviewResult[];
+  /**
+   * sprint-5/10 S5a follow-up (AC-10-82) - the combine funnel's six counts,
+   * flat on the response exactly like the backend's own additive
+   * `HttpPreviewResponse` fields (`schemas.py`) - present ONLY when the
+   * request carried a `combine` block; `rows`/`columns` above are then the
+   * COMBINED shape, not the pre-combine sample. Every field is `undefined`
+   * for a plain (no-combine) preview.
+   */
+  rowsIn?: number;
+  excludedCount?: number;
+  groups?: number;
+  droppedByRule?: Record<string, number>;
+  rowsOut?: number;
+  roundedCount?: number;
 }
 
 /** `POST /autocount/http/preview` body. */
@@ -1016,6 +1036,11 @@ export interface HttpPreviewInput {
   /** Operator-authored cross-endpoint joins, applied in order over the
    * sampled page (sprint-5/10, AC-10-05). */
   lookups?: AutocountLookupSpec[];
+  /** The operator's DRAFT combine step (sprint-5/10 S5a follow-up,
+   * AC-10-82) - sent ONLY when the task carries one; the response's
+   * `rows`/`columns` become the COMBINED shape and the funnel fields above
+   * populate. */
+  combine?: AutocountCombineConfig | null;
 }
 
 /**
@@ -1104,6 +1129,16 @@ export interface AutocountEtlTask {
    * existed, and every entity the gate does not apply to).
    */
   contractGate?: AutocountContractGate | null;
+  /**
+   * sprint-5/10 review round 4 (SF-4) - the COMBINED, POST-GROUP schema a
+   * combine-carrying task's own rows carry (`groupBy + carry +
+   * measures[].alias`); `[]`/absent when no combine step is configured
+   * (back-compat with every fixture/task built before this field existed).
+   * ADDITIVE alongside `resultColumns` above (the pre-combine raw/lookup
+   * set, unchanged) - the Mapping tab's source picker reads THIS instead of
+   * `resultColumns` once it is non-empty (`task-editor-view.tsx`).
+   */
+  combineOutputColumns?: string[];
 }
 
 /** `AutocountEtlTask.brandContractGate` (AC-08-33/AC-08-20 S5). `version` is

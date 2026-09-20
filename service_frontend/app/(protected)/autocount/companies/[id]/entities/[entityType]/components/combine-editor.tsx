@@ -1,13 +1,14 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Play, Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import type {
   AutocountCombineConfig,
   AutocountCombineMeasureOp,
+  AutocountCombinePreviewResult,
   AutocountFormulaTestResult,
 } from '@/types/autocount';
-import { emptyCombine, simulateCombine } from '@/lib/autocount-combine';
+import { emptyCombine } from '@/lib/autocount-combine';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -37,10 +38,15 @@ export interface CombineEditorProps {
   combine: AutocountCombineConfig | null | undefined;
   onChange: (combine: AutocountCombineConfig | null) => void;
   /** Source columns + lookup aliases - what a computed formula, a require
-   * rule, a group-by pick or a measure source may name. */
+   * rule, a group-by pick or a measure source may name (PRE-combine only -
+   * the caller derives this from the task's own raw+lookup result columns,
+   * never the last Test's possibly-COMBINED response columns). */
   columnOptions: string[];
-  /** The combined Test's own sample rows (post-lookup), for the funnel. */
-  sampleRows: Array<Record<string, unknown>>;
+  /** The Source tab's own Test button's SERVER funnel (AC-10-82, sprint-5/10
+   * S5a) - `null` until a Test that carried this `combine` block has landed
+   * a response. The combined rows themselves render in the Source tab's
+   * existing preview grid, not here. */
+  funnel: AutocountCombinePreviewResult | null;
   onServerTest: (
     formula: string,
     value: unknown,
@@ -51,16 +57,16 @@ export interface CombineEditorProps {
  * The Source tab's Combine rows section (R11, AC-10-82) - one bounded,
  * operator-configurable step: computed columns, require rules, group-by
  * with measures and carried columns, per-measure rounding, ordered drop
- * rules. A Test button runs the CLIENT-SIDE funnel simulator
- * (`lib/autocount-combine.ts`, PHASE 1 MOCK - the real engine lands S5a)
- * over the sample rows already on hand.
+ * rules. The funnel it renders comes from the SERVER (the Source tab's own
+ * "Test" button, above, sends `combine` and passes the response down as the
+ * `funnel` prop) - this editor never runs its own preview.
  */
 export function CombineEditor({
   editing,
   combine,
   onChange,
   columnOptions,
-  sampleRows,
+  funnel,
   onServerTest,
 }: CombineEditorProps) {
   const enabled = Boolean(combine);
@@ -71,9 +77,6 @@ export function CombineEditor({
     | { kind: 'drop'; index: number }
     | null
   >(null);
-  const [funnel, setFunnel] = useState<ReturnType<
-    typeof simulateCombine
-  > | null>(null);
 
   const computedAliases = config.computed.map((c) => c.alias).filter(Boolean);
   const measureAliases = config.measures.map((m) => m.alias).filter(Boolean);
@@ -608,48 +611,35 @@ export function CombineEditor({
             )}
           </section>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              variant="primary"
-              size="sm"
-              onClick={() => setFunnel(simulateCombine(sampleRows, config))}
-              disabled={sampleRows.length === 0}
-              data-testid="combine-test"
+          {funnel && (
+            <div
+              className="flex flex-wrap items-center gap-1.5"
+              data-testid="combine-funnel"
             >
-              <Play className="size-3.5" />
-              Test
-            </Button>
-            {funnel && (
-              <div
-                className="flex flex-wrap items-center gap-1.5"
-                data-testid="combine-funnel"
-              >
-                <Badge variant="secondary" appearance="light" size="sm">
-                  {funnel.rowsIn} in
+              <Badge variant="secondary" appearance="light" size="sm">
+                {funnel.rowsIn} in
+              </Badge>
+              <Badge variant="warning" appearance="light" size="sm">
+                {funnel.excludedCount} excluded
+              </Badge>
+              <Badge variant="info" appearance="light" size="sm">
+                {funnel.groups} groups
+              </Badge>
+              {Object.entries(funnel.droppedByRule).map(([name, count]) => (
+                <Badge
+                  key={name}
+                  variant="secondary"
+                  appearance="light"
+                  size="sm"
+                >
+                  {name}: {count} dropped
                 </Badge>
-                <Badge variant="warning" appearance="light" size="sm">
-                  {funnel.excludedCount} excluded
-                </Badge>
-                <Badge variant="info" appearance="light" size="sm">
-                  {funnel.groups} groups
-                </Badge>
-                {Object.entries(funnel.dropped).map(([name, stat]) => (
-                  <Badge
-                    key={name}
-                    variant="secondary"
-                    appearance="light"
-                    size="sm"
-                  >
-                    {name}: {stat.count} dropped
-                  </Badge>
-                ))}
-                <Badge variant="success" appearance="light" size="sm">
-                  {funnel.rowsOut} out
-                </Badge>
-              </div>
-            )}
-          </div>
+              ))}
+              <Badge variant="success" appearance="light" size="sm">
+                {funnel.rowsOut} out
+              </Badge>
+            </div>
+          )}
         </div>
       )}
 

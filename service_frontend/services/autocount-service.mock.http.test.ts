@@ -97,6 +97,72 @@ describe('previewHttp (AC-08-14/22, D14 page walk)', () => {
   });
 });
 
+// sprint-5/10 S5b-FE (AC-10-82) - the combine funnel is now the SERVER's
+// (the mock's own `simulateCombine` run, folded into the additive wire
+// fields), never the Combine editor's own client-side simulator.
+describe('previewHttp - combine funnel (sprint-5/10 S5b-FE, AC-10-82)', () => {
+  it('is absent when the request carries no combine (a plain lookup preview is unaffected)', async () => {
+    const preview = await service.previewHttp({ connectionId: 'conn-api-sorento', path: '/itembypage' });
+    expect(preview.rowsIn).toBeUndefined();
+    expect(preview.excludedCount).toBeUndefined();
+    expect(preview.groups).toBeUndefined();
+    expect(preview.droppedByRule).toBeUndefined();
+    expect(preview.rowsOut).toBeUndefined();
+    expect(preview.roundedCount).toBeUndefined();
+  });
+
+  it('groups, sums and drops - the six funnel keys land flat on the response, and rows/columns become the COMBINED shape', async () => {
+    // The `/itembypage` fixture's 30 rows cycle 6 `ItemBrand`s evenly (5
+    // rows each) - a deterministic group-by/count/drop to pin exact counts.
+    const preview = await service.previewHttp({
+      connectionId: 'conn-api-sorento',
+      path: '/itembypage',
+      combine: {
+        computed: [],
+        require: [],
+        measure: 'count',
+        groupBy: ['ItemBrand'],
+        measures: [{ source: 'ItemCode', op: 'count', alias: 'count' }],
+        carry: [],
+        round: [],
+        drop: [{ name: 'small', formula: 'count < 3' }],
+      },
+    });
+    expect(preview.rowsIn).toBe(30);
+    expect(preview.excludedCount).toBe(0);
+    expect(preview.groups).toBe(6);
+    expect(preview.droppedByRule).toEqual({ small: 0 });
+    expect(preview.rowsOut).toBe(6);
+    expect(preview.roundedCount).toBe(0);
+    expect(preview.columns.map((c) => c.name)).toEqual(['ItemBrand', 'count']);
+    expect(preview.rows).toHaveLength(6);
+    for (const row of preview.rows) {
+      expect(row.count).toBe(5);
+    }
+  });
+
+  it('a dropped group is reflected in droppedByRule and excluded from rowsOut', async () => {
+    const preview = await service.previewHttp({
+      connectionId: 'conn-api-sorento',
+      path: '/itembypage',
+      combine: {
+        computed: [],
+        require: [],
+        measure: 'count',
+        groupBy: ['ItemBrand'],
+        measures: [{ source: 'ItemCode', op: 'count', alias: 'count' }],
+        carry: [],
+        round: [],
+        drop: [{ name: 'all', formula: 'count >= 0' }],
+      },
+    });
+    expect(preview.groups).toBe(6);
+    expect(preview.droppedByRule).toEqual({ all: 6 });
+    expect(preview.rowsOut).toBe(0);
+    expect(preview.rows).toHaveLength(0);
+  });
+});
+
 describe('createCompany - open (no-auth) connection (AC-08-06/07)', () => {
   it('creates an open company keyed on the operator-typed reference prefix', async () => {
     const company = await service.createCompany({

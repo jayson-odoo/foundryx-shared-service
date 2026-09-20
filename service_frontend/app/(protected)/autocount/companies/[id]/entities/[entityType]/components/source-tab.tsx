@@ -36,6 +36,7 @@ import {
 } from '@/lib/autocount-etl';
 import type {
   AutocountApiConnection,
+  AutocountCombinePreviewResult,
   AutocountConnectionAuth,
   AutocountEtlSourceConfig,
   AutocountEtlTask,
@@ -330,11 +331,38 @@ export function SourceTab({
     }));
   const isBasicAuth = apiConnectionAuth === 'basic';
 
-  const httpPreviewColumns = useMemo(
-    () =>
-      httpPreview.state.status === 'success' ? httpPreview.state.preview.columns.map((c) => c.name) : [],
-    [httpPreview.state],
-  );
+  const httpPreviewColumns = useMemo(() => {
+    if (httpPreview.state.status !== 'success') return [];
+    // sprint-5/10 S5b-FE (AC-10-82) - once a combine-carrying task's Test
+    // sends `combine`, the response's OWN `columns` is the COMBINED,
+    // post-group shape (backend `schemas.py`) - the Lookups editor, the
+    // key/watermark/compared pickers and the Combine editor's OWN group-by/
+    // measure/carry pickers all need the PRE-combine raw+lookup set
+    // instead. The echoed task's `resultColumns` carries exactly that set,
+    // "unchanged" regardless of whether combine was sent, so prefer it
+    // whenever the response stamped one; falls back to the bare `columns`
+    // for a standalone/mocked `run` that echoes no task.
+    const resultColumns = httpPreview.state.preview.task?.resultColumns;
+    if (resultColumns && resultColumns.length > 0) return resultColumns;
+    return httpPreview.state.preview.columns.map((c) => c.name);
+  }, [httpPreview.state]);
+  // The Combine editor's own funnel (AC-10-82) - the SAME six server counts
+  // the Source tab's Test just landed, present only when that Test's
+  // request carried `combine` (`rowsIn` is the funnel's own presence
+  // signal - a plain lookup preview never sets it).
+  const combineFunnel = useMemo<AutocountCombinePreviewResult | null>(() => {
+    if (httpPreview.state.status !== 'success') return null;
+    const preview = httpPreview.state.preview;
+    if (preview.rowsIn == null) return null;
+    return {
+      rowsIn: preview.rowsIn,
+      excludedCount: preview.excludedCount ?? 0,
+      groups: preview.groups ?? 0,
+      droppedByRule: preview.droppedByRule ?? {},
+      rowsOut: preview.rowsOut ?? 0,
+      roundedCount: preview.roundedCount ?? 0,
+    };
+  }, [httpPreview.state]);
   // Browser round 1 fix (AC-10-09) - a COMBINED preview's `columns` is, by
   // backend design, RAW main-endpoint columns UNION every attached lookup's
   // OWN alias (so the grid can show the enriched values) - `httpPreviewColumns`
@@ -370,6 +398,14 @@ export function SourceTab({
     [httpPreviewColumns, httpSavedPicks],
   );
   const httpKeyFields = useMemo(() => config.keyFields ?? [], [config.keyFields]);
+  // sprint-5/10 (AC-10-80) - a combine-carrying task's key fields are the
+  // combine's OWN `groupBy` columns, derived, never separately typed: the
+  // Key fields picker becomes read-only chips of `groupBy` the moment one is
+  // set (the server derives the saved `keyFields` the SAME way at save
+  // time, `EtlService._update_http_task`).
+  const combineGroupBy = useMemo(() => config.combine?.groupBy ?? [], [config.combine]);
+  const combineKeyLocked = combineGroupBy.length > 0;
+  const httpKeyFieldsDisplay = combineKeyLocked ? combineGroupBy : httpKeyFields;
   // sprint-5/10 (AC-10-01, D23) - a lookup alias may never be a key or
   // watermark field (a miss leaves it absent); it IS offered in the
   // compared-fields picker and the Mapping source picker (which reads
@@ -421,12 +457,17 @@ export function SourceTab({
         companyId,
         entityType,
         lookups: config.lookups,
+        // sprint-5/10 S5b-FE (AC-10-82) - the SAME Test proves the combine
+        // step too: sent only when the task carries one, so a plain
+        // lookup-only task's response is unaffected.
+        combine: config.combine,
       }),
     ).then((result) => {
       if (result) onHttpPreviewSuccess?.(target, typeof result === 'object' ? result.task : undefined);
     });
   }, [
     companyId,
+    config.combine,
     config.connectionId,
     config.distinctOf,
     config.lookups,
@@ -866,7 +907,7 @@ export function SourceTab({
                   ...httpPreviewColumns,
                   ...(config.lookups ?? []).flatMap((l) => l.fields.map((f) => f.as)),
                 ]}
-                sampleRows={httpPreview.state.status === 'success' ? httpPreview.state.preview.rows : []}
+                funnel={combineFunnel}
                 onServerTest={onCombineFormulaTest}
               />
 
@@ -883,8 +924,9 @@ export function SourceTab({
                 keyOptions={httpKeyOptions}
                 watermarkOptions={httpWatermarkOptions}
                 comparedOptions={httpComparedOptions}
-                keyValue={httpKeyFields}
+                keyValue={httpKeyFieldsDisplay}
                 onKeyChange={onHttpKeyFieldsChange}
+                keyReadOnly={combineKeyLocked}
                 watermarkValue={config.watermarkField ?? NO_WATERMARK}
                 onWatermarkChange={(v) => {
                   const next = v === NO_WATERMARK ? null : v;
