@@ -1,3 +1,73 @@
+# Run 3 (HEAD 29c02190, 2026-09-20 UTC) - re-verify SF8 (Revoke reachability), AC-10-38
+
+Lane: backend `:8009`, frontend `:3009` (fresh `rm -rf .next && npm run build` + `npx next start
+-p 3009`), DB `foundryx_service_s40`. Tenant/user: `default`, `demo@example.com` (Admin). Scope:
+ONLY the Revoke action re-run requested for this pass (SF8 from round 3 review) - the rest of this
+file's Run 2 findings (Issue-key dialog, Build-snapshot picker, snapshot detail) were NOT
+re-exercised here and their verdicts stand as last recorded below.
+
+## Revoke IS now reachable (run 2's "no Revoke action" gap is fixed) - but the commit 404s
+
+Run 2 found NO way to trigger Revoke at all (missing `ActionMenu` column in
+`use-pull-list-config.tsx`). On this HEAD that gap is closed: the Keys segment's row now carries a
+working "..." **Actions** menu with a single, correctly-styled destructive **Revoke** menuitem,
+confirmed by real clicks (open Actions -> menu renders "Revoke" -> click). Screenshots
+`run3-01-key-actions-menu-375.png` (375px, menu open over the "Sorento production" row),
+`run3-04-pull-page-1280.png` (1280px Keys table before revoking, "Sorento production" = Active,
+"Old staging key" = Revoked).
+
+Clicking **Revoke** immediately surfaces an error toast: **`autocount_pull_api_key 'pull-key-
+active' not found.`** - at BOTH 375px (`run3-02-revoke-grace-window-375.png`) and 1280px
+(`run3-05-revoke-error-1280.png`). The row's Status stays `Active` afterward (no optimistic update
+applied or it was rolled back) - screenshot `run3-03-after-error-row-state-375.png`. Reproduced
+identically twice (once per viewport), same exact error text both times.
+
+**Root cause, confirmed by reading the source (read-only, no edits made):** the Pull page's list
+DATA still comes entirely from the frontend Phase-1 mock overlay
+(`services/autocount-service.mock.ts`, `withPhase1PullMock` - its own top comment still reads
+"Only the human-invoked pull surface ... has no backend yet"), which seeds the Keys table with two
+fixture rows whose ids are the LITERAL strings `pull-key-active` / `pull-key-revoked` bound to a
+fixture company id `ac-pull-fixture-company` (rendered as "Pull demo (mock)"). Meanwhile the real
+backend for this exact surface IS fully implemented and mounted (confirmed via `GET /openapi.json`
+on this lane's running `:8009`): `GET/POST /autocount/pull/keys`, `POST
+/autocount/pull/keys/{key_id}/revoke`, `GET/POST /autocount/pull/snapshots`, plus the public
+gateway `/api/v1/autocount/snapshots...` - all present and routable. A direct authenticated probe
+confirms the real DB has ZERO pull keys and ONE real company (`Sorento SRT S40`, not "Pull demo
+(mock)"): `GET /autocount/pull/keys` -> `[]` (HTTP 200), `GET /autocount/companies` -> 1 row.
+
+The Revoke action itself is wired correctly to the CORE deferred-action engine exactly as AC-10-38
+specifies (`use-pull-list-config.tsx`: `deferred: { actionKey: 'autocount_pull_api_key.revoke',
+entityType: 'autocount_pull_api_key' }`, `getEntityId: (row) => row.id` - explicitly commented
+"the deferred-actions engine parks against the BACKEND row id, never the shell's own prefixed
+`getRowId`"). That engine commits straight to the REAL backend's
+`POST /autocount/pull/keys/{id}/revoke` using whatever id the row carries. Since the row's id is
+the MOCK's fixture string `pull-key-active` and no such row exists in the real `ac_pull_api_key`
+table, the real backend correctly 404s with exactly the message observed
+(`autocount_pull_api_key 'pull-key-active' not found.` matches this codebase's standard
+"`<table> '<id>' not found.`" 404 phrasing). **This is not a backend bug** - Group C/D's backend
+(AC-10-18..38) is fully built and behaving correctly against real data; the gap is purely that the
+Pull page's LIST READS were never swapped from `withPhase1PullMock` to `realAutocountService`
+(the Phase 2 swap `autocount-service.ts` already documents as pending: "Phase 2 swap = `export
+const autocountService = realAutocountService`"), so every read/write pairing on this page is now
+internally inconsistent - reads show mock fixture rows, but the ONE mutation this AC requires
+(Revoke, via the core deferred-action engine) always targets the real backend by design and can
+never find a mock row's id there. The same mismatch would affect **Issue key** and **Build
+snapshot** the moment their mutations also target real ids that a mock-sourced picker could offer
+(see Run 2's Issue-key finding below, which is a different symptom of the same underlying gap).
+
+## AC verdict (Run 3, Revoke re-run only)
+
+- **AC-10-38 [FE] Revoke:** STILL FAIL, but the FAILURE MODE HAS CHANGED and NARROWED since Run 2:
+  Revoke is now reachable via a real `ActionMenu` (Run 2's gap is fixed), the deferred-action
+  commit correctly targets the real backend per the AC's own wording ("the server-side target of
+  the deferred-action commit"), and the real backend correctly rejects an unknown id - but the
+  action can never succeed in this build because the row ids it operates on come from mock fixture
+  data that was never persisted server-side. The remaining fix is the Phase 2 swap of the Pull
+  page's list source (`autocountService` binding) from `withPhase1PullMock` to
+  `realAutocountService`, not a further Revoke-specific change.
+
+---
+
 # Run 2 (HEAD 7618bb33, 2026-09-20 UTC) - re-verify AC-10-38, AC-10-48, AC-10-49
 
 Lane: backend :8009, frontend :3009, DB `foundryx_service_s40`. Tenant/user: `default`,
