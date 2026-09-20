@@ -18,21 +18,11 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.config import settings
-from app.services.url_guard import UrlGuardError, validate_public_url
+from app.services.url_guard import UrlGuardError, assert_deliverable
 
 # 10s per AC-08-02 - a probe, not an extraction; a slow/hung wrapper must
 # fail fast rather than hold up the Test button or the create form.
 OPEN_PROBE_TIMEOUT_SECONDS = 10.0
-
-# sprint-5/10 confirm-3 B1 - the egress guard's scheme allow-list for THIS
-# provider (unlike the house guard's every other caller, which stays
-# https-only): a real AutoCount open-REST wrapper is routinely deployed
-# behind plain http:// on an operator's own network, and AC-08-03/provider.py
-# have always told the operator "http:// or https://" - the guard used to
-# quietly refuse the http half of that promise. The TARGET restriction
-# (private/loopback/link-local/reserved/multicast/unspecified, by literal or
-# by DNS resolution) is unchanged for either scheme.
-ALLOWED_BASE_URL_SCHEMES = ("http", "https")
 
 
 class OpenProbeError(Exception):
@@ -79,7 +69,7 @@ def _is_dev_local_host(host: str) -> bool:
 def assert_autocount_base_url_deliverable(base_url: str) -> None:
     """AC-10-58 M2 - the outbound-egress guard: every AutoCount open-REST
     ``baseUrl`` is re-checked against the house SSRF guard
-    (``app.services.url_guard.validate_public_url``) immediately before it is
+    (``app.services.url_guard.assert_deliverable``) immediately before it is
     used, never only once at connection save - DNS can be re-pointed
     afterwards (the guard's own rebinding rationale). Callers:
     ``AutoCountProvider.validate_config`` (save time), this module's own
@@ -88,21 +78,12 @@ def assert_autocount_base_url_deliverable(base_url: str) -> None:
     walk, every lookup, and the preview sample all share that one
     request path). Raises ``OpenProbeError``, operator-safe, naming
     ``baseUrl``.
-
-    Sprint-5/10 confirm-3 B1 (ruling): the scheme is UNRESTRICTED
-    (``ALLOWED_BASE_URL_SCHEMES`` - both ``http`` and ``https``), the TARGET
-    is restricted - unlike every other caller of the house guard, which
-    stays https-only. A plain-http wrapper on a genuinely PUBLIC, resolvable
-    host is allowed exactly like an https one; a private/loopback/
-    link-local/reserved/metadata target is refused on EITHER scheme.
     """
     host = urlsplit(base_url or "").hostname or ""
     if settings.environment == "development" and _is_dev_local_host(host):
         return
     try:
-        validate_public_url(
-            base_url, allowed_schemes=ALLOWED_BASE_URL_SCHEMES, subject="baseUrl"
-        )
+        assert_deliverable(base_url, subject="baseUrl")
     except UrlGuardError as exc:
         raise OpenProbeError(str(exc)) from exc
 

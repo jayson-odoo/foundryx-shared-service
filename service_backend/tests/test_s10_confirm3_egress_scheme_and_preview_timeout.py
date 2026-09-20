@@ -3,17 +3,21 @@ review of range ``7660251a..17dc2c61`` closed:
 
 B1  The AutoCount open-REST egress guard
     (``modules.autocount.http_client.assert_autocount_base_url_deliverable``)
-    used to delegate to the house guard's https-only ``assert_deliverable``,
-    even though ``provider.py``'s own save-time message and Test-time
-    message both say "must start with http:// or https://" - a real
-    plain-http AutoCount wrapper (common on an operator's own network) was
-    silently refused at both save and every request, contradicting the
-    provider's own copy. RULING: the SCHEME is unrestricted (``http`` or
-    ``https``), the TARGET (private/loopback/link-local/reserved/multicast/
-    unspecified, by IP literal or by DNS resolution) stays exactly as
-    restricted as before, on either scheme. The one development carve-out
-    (a bare loopback host, ``settings.environment == "development"``) is
-    unchanged and untouched by this ruling.
+    delegates to the house guard's https-only ``assert_deliverable``, even
+    though ``provider.py``'s own save-time message and Test-time message
+    used to say "must start with http:// or https://" - a genuinely public
+    plain-http AutoCount wrapper 422s at both save and every request, which
+    the provider's own copy contradicted. OWNER RULING (2026-09-20,
+    overriding this round's own initial http-allowed draft): stay
+    https-ONLY outside the one development loopback carve-out - a bare
+    ``localhost``/``127.0.0.0/8`` host is allowed http in
+    ``ENVIRONMENT=development`` only; a metadata address
+    (``169.254.169.254``) is refused everywhere regardless of scheme or
+    environment. The fix instead corrects the CONTRADICTION the other way:
+    ``provider.py``'s two operator-facing messages now say "must start with
+    https://" - the wizard never advertises a scheme that 422s. See
+    BL-SS-241 (new, High) for the ops consequence: an existing ``http://``
+    AutoCount connection outside the dev carve-out now fails every walk.
 S1  ``http_source/preview.py``'s ``run_http_preview`` built its
     ``HttpApiClient`` with NO ``timeout_seconds`` at all, silently falling
     back to the bare module default (``DEFAULT_TIMEOUT_SECONDS``) - a
@@ -117,13 +121,49 @@ def _save_connection(client, base_url: str):
     return client.post("/integrations/connections", json=payload, headers=headers)
 
 
-# ── B1: scheme unrestricted, target restricted ──────────────────────────────
+# ── B1: https-only outside the development loopback carve-out ──────────────
 
 
-def test_a_public_http_base_url_is_accepted_at_save(client, monkeypatch):
+def test_a_public_http_base_url_is_refused_at_save(client, monkeypatch):
+    """Owner ruling: a genuinely PUBLIC host (``getaddrinfo`` stubbed to a
+    public IP by the ``N1`` fixture) on plain ``http://`` is refused at
+    save, 422 naming ``baseUrl``, the message pointing at ``https://``."""
     _production(monkeypatch)
     res = _save_connection(client, PUBLIC_HTTP_URL)
-    assert res.status_code in (200, 201), res.text
+    assert res.status_code == 422, res.text
+    detail = res.json()["detail"]
+    assert "baseurl" in detail.lower()
+    assert "https" in detail.lower()
+
+
+def test_provider_validate_config_message_no_longer_advertises_http():
+    """Pins the EXACT wording change (owner ruling): the old text ("must
+    start with http:// or https://") technically contained the substring
+    "https" too, so the save-route test above cannot by itself prove the
+    message changed - this checks the provider's own hook directly against
+    an obviously-bad scheme, where old vs new text differs."""
+    from modules.autocount.provider import AutoCountProvider
+
+    message = AutoCountProvider().validate_config(
+        {"auth": "none", "baseUrl": "ftp://autocount.acme.com/api"}
+    )
+    assert message == "The base URL must start with https://.", (
+        f"expected the https-only message, got: {message!r}"
+    )
+    assert "or http" not in (message or "").lower()
+
+
+def test_provider_test_message_no_longer_advertises_http():
+    from modules.autocount.provider import AutoCountProvider
+
+    result = AutoCountProvider().test(
+        {"auth": "none", "baseUrl": "ftp://autocount.acme.com/api"}, {}
+    )
+    assert result.ok is False
+    assert result.message == "The base URL must start with https://.", (
+        f"expected the https-only message, got: {result.message!r}"
+    )
+    assert "or http" not in result.message.lower()
 
 
 def test_a_public_https_base_url_still_saves_control(client, monkeypatch):
@@ -222,11 +262,20 @@ def _walk_connection(db, base_url: str, *, calls: List[httpx.Request]) -> None:
         source_module.HttpApiClient = original
 
 
-def test_a_public_http_base_url_reaches_the_transport_on_a_walk(db, monkeypatch):
+def test_a_public_http_base_url_is_refused_before_any_request_on_a_walk(db, monkeypatch):
+    """Owner ruling - a walk against a PUBLIC http:// baseUrl is refused
+    with a named failure, and the transport is never touched at all (the
+    SAME shape as the existing private-target walk refusal in
+    test_s10_s6_security_fixes.py)."""
+    from modules.autocount.http_source.errors import HttpSourceError
+
     _production(monkeypatch)
     calls: List[httpx.Request] = []
-    _walk_connection(db, PUBLIC_HTTP_URL, calls=calls)
-    assert calls, "a public http:// base URL never reached the transport"
+    with pytest.raises(HttpSourceError) as excinfo:
+        _walk_connection(db, PUBLIC_HTTP_URL, calls=calls)
+    assert calls == [], "a refused http:// base URL still reached the transport"
+    assert "baseurl" in str(excinfo.value).lower()
+    assert "https" in str(excinfo.value).lower()
 
 
 def test_a_public_https_base_url_still_walks_control(db, monkeypatch):

@@ -219,8 +219,18 @@ class AutoCountProvider:
         (re-run again immediately before every actual request - see
         `http_source.client.HttpApiClient.get`)."""
         base_url = str((config or {}).get("baseUrl") or "").strip()
+        # This is only a cheap pre-filter for an obviously-wrong scheme
+        # (``javascript:``, ``ftp://``, no scheme at all) - it still accepts
+        # an ``http://`` prefix through to the authoritative check below
+        # (the egress guard), which is the ONE place that also knows about
+        # the development loopback carve-out (``http://localhost:PORT``
+        # stays allowed there). sprint-5/10 confirm-3 (owner ruling,
+        # overriding the round's own B1 draft) - the MESSAGE here no longer
+        # says "http:// or https://": outside the dev carve-out an
+        # ``http://`` baseUrl is refused anyway (by the guard, a few lines
+        # down), so the wizard must never advertise a scheme that 422s.
         if base_url and not base_url.lower().startswith(("http://", "https://")):
-            return "The base URL must start with http:// or https://."
+            return "The base URL must start with https://."
 
         page_size_raw = str((config or {}).get("pageSize") or "").strip()
         if page_size_raw:
@@ -279,10 +289,15 @@ class AutoCountProvider:
         base_url = str(config.get("baseUrl", "")).strip()
         if not base_url:
             return TestResult(ok=False, message="Enter the AutoCount API base URL.")
+        # Same cheap pre-filter as ``validate_config`` above - the message no
+        # longer advertises ``http://`` (sprint-5/10 confirm-3 owner
+        # ruling): outside the development loopback carve-out, an
+        # ``http://`` baseUrl still reaches ``probe_open_connection`` below,
+        # which 422s it via the same https-only egress guard.
         if not base_url.lower().startswith(("http://", "https://")):
             return TestResult(
                 ok=False,
-                message="The base URL must start with http:// or https://.",
+                message="The base URL must start with https://.",
             )
 
         if auth_mode(config) == AUTH_NONE:

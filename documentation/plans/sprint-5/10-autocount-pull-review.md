@@ -480,27 +480,26 @@ S6 security round (AC-10-58), the five rulings that needed one:
   keep the verbatim text.
 - **Outbound egress guard on `baseUrl`.** An `autocount` connection's base URL is a stored,
   operator-supplied outbound target, so it runs through the house SSRF guard
-  (`app/services/url_guard.validate_public_url`, blocks private/loopback/link-local/reserved/
-  multicast targets given as a literal OR resolved from a hostname) at SAVE
+  (`app/services/url_guard.assert_deliverable`, https-only, blocks private/loopback/link-local/
+  reserved/multicast targets given as a literal OR resolved from a hostname) at SAVE
   (`AutoCountProvider.validate_config`, a 422 naming `baseUrl`) and again immediately before
   every request, at the two outbound chokepoints: `http_source.client.HttpApiClient.get` (the
   paged walk, every lookup and the preview sample all route through it) and
   `http_client.probe_open_connection` (the Test button and open-company onboarding). Re-checking
   at request time is the point - DNS can be re-pointed after a URL is accepted. ONE carve-out,
   the BL-SS-166 precedent shape (a `settings.environment == "development"` flag, never a
-  request-controlled input): a LOOPBACK host (`localhost`, `127.0.0.0/8`) is allowed in
+  request-controlled input): a LOOPBACK host (`localhost`, `127.0.0.0/8`) is allowed `http://` in
   development so a local wrapper still works for live-verify. The carve-out does not extend to
   any other private range, and a metadata address (`169.254.169.254`) stays refused even in
-  development. **Review round confirm-3 ruling (2026-09-20):** the SCHEME is unrestricted - a
-  plain `http://` wrapper on a genuinely public, resolvable host is allowed exactly like an
-  `https://` one, matching `provider.py`'s own "must start with http:// or https://" copy, which
-  the guard used to silently contradict by refusing http outright. The TARGET restriction above is
-  completely unchanged on either scheme; `app.services.url_guard.validate_public_https_url` (every
-  OTHER caller - webhooks, the core `http.request` action) stays https-only, unaffected. Ops note:
-  `ENVIRONMENT` defaults to `development`, so the loopback carve-out above is LIVE by default
-  unless a deployment's `.env` sets `ENVIRONMENT=production` (same posture as BL-SS-166) - an
-  existing connection is re-validated at request time, so an operator whose wrapper resolves to a
-  private range outside development now fails with a named error on the next request (BL-SS-240).
+  development. **Review round confirm-3 (2026-09-20) - owner ruling:** stays HTTPS-ONLY outside
+  that one carve-out (an earlier draft of this round briefly allowed `http://` on a genuinely
+  public host, then reverted - see the decision log). `provider.py`'s two operator-facing
+  messages ("The base URL must start with...") now say `https://` only, never advertising
+  `http://` as an accepted scheme the wizard would then 422 anyway. Ops note: `ENVIRONMENT`
+  defaults to `development`, so the loopback carve-out above is LIVE by default unless a
+  deployment's `.env` sets `ENVIRONMENT=production` (same posture as BL-SS-166). See BL-SS-241
+  (High): an existing `http://` AutoCount connection outside the dev carve-out fails EVERY walk
+  after this change with a named error - count them in prod before deploying this branch.
 - **In-tenant `COMPANY_NOT_ALLOWED` vs `UNKNOWN_COMPANY` is by design.** A key presented for a
   code that exists in its own tenant but is outside the key's company set answers 403
   `COMPANY_NOT_ALLOWED`, while a code that exists in no company of that tenant answers 404
@@ -708,14 +707,25 @@ ahead of both because PRINCIPLES mandates it.
 
 ## 6. Backlog
 
+- **BL-SS-241 (High)** - **An existing `http://` AutoCount connection fails EVERY walk after
+  this change, outside the development loopback carve-out.** Review round confirm-3's owner
+  ruling (section 2.10, D34) keeps the egress guard https-only; `provider.py`'s messages now say
+  so plainly, but a connection SAVED before this branch with a plain `http://` `baseUrl` (the
+  save-time scheme check predates the guard's own https requirement and never fully enforced it)
+  will 422 with a named `baseUrl` error on its next preview/walk. Count existing `autocount`
+  connections with an `http://` `baseUrl` in production before deploying this branch; migrate
+  each to `https://` (a reverse proxy / tunnel in front of the AutoCount wrapper) or accept the
+  entity goes dark until migrated.
 - **BL-SS-240** - **An existing `autocount` connection is re-validated by the egress guard at
-  REQUEST time, not only at save.** `ENVIRONMENT` defaults to `development` (the loopback
+  REQUEST time, not only at save** (pre-existing behaviour, unchanged by this round -
+  `assert_autocount_base_url_deliverable` re-runs the SAME https-only + target check before
+  every request, not only at save). `ENVIRONMENT` defaults to `development` (the loopback
   carve-out is live unless a deployment's `.env` explicitly sets `ENVIRONMENT=production`, same
-  posture as BL-SS-166), so an operator whose wrapper's `baseUrl` resolves to a private range
-  outside development now fails with a NAMED error (`baseUrl: ...`) on the next request, not a
-  silent skip - an ops note, not a defect, but worth surfacing so a deploy that forgets to set
-  `ENVIRONMENT=production` does not mistake a passing loopback connection for a validated one.
-  Review round confirm-3 (2026-09-20), closes alongside the B1 scheme ruling in section 2.10.
+  posture as BL-SS-166), so an operator whose wrapper's `baseUrl` resolves to a private range (or,
+  per BL-SS-241 above, is plain `http://`) outside development fails with a NAMED error
+  (`baseUrl: ...`) on the next request, not a silent skip - an ops note, not a defect, but worth
+  surfacing so a deploy that forgets to set `ENVIRONMENT=production` does not mistake a passing
+  loopback connection for a validated one. Review round confirm-3 (2026-09-20).
 - **BL-SS-222** - **Preview matched/missed counts are a 50-row SAMPLE.**
   `POST /autocount/http/preview`'s per-lookup `{alias, matched, missed}` (AC-10-05) is computed
   over `PREVIEW_PAGE_SIZE` (50) rows of the main endpoint and the SAME cap on the lookup endpoint
@@ -875,6 +885,7 @@ Appendix A6 verification, minted BL-SS-223..239 so this register and `backlog.md
 | D31 (`tests/test_s10_s5b_live_numbers.py:16-81`) | Live-probe captures for the S5b test suite are stored OUTSIDE git, resolved via `AUTOCOUNT_PROBE_DIR` with a stable fallback copy, never committed raw vendor data | The captures carry real db1/db2 field values; keeping them out of the repo (env override for a fresh capture, a checked-in "stable" summary only) avoids committing a customer's live ERP data under a test fixture |
 | D32 (verified `combine-editor.tsx:115-155`) | Each combine formula stage gets its OWN variable scope from the `AutocountFormulaBuilder`, never one flat list for every stage: `computed[i]` sees raw/lookup columns + EARLIER computed aliases only (a forward reference is the save-time 422); `require[i]` sees raw/lookup + ALL computed aliases (require runs after every computed step); `drop[i]` runs AFTER grouping and sees ONLY `groupBy` + `carry` + `measures[].alias` | S5b-FE defect 1: a formula that could reference a not-yet-computed alias, or a pre-group raw column after grouping, would parse in the editor and then 422 (or silently read `null`) at save/run time - scoping the picker per stage closes both classes at author time |
 | D33 (verified `canonical/masters.py:339-354`) | `CanonicalStockBalance` extends `CanonicalRecord` directly, deliberately NOT `CanonicalMaster` | It carries none of `CanonicalMaster`'s push-oriented shape (`code`/`name`/`is_active`/`last_modified`/`extras`) and is pull-only (AC-10-15, no `sinks_sorento._ENTITY_PATH` entry); subclassing `CanonicalMaster` would also silently enrol it in the contract-2.1 master-parity suite, which is keyed off `CanonicalMaster` subclasses |
+| D34 (owner ruling, review round confirm-3, 2026-09-20, OVERRIDES this round's own first draft) | The AutoCount `baseUrl` egress guard stays HTTPS-ONLY outside the one development loopback carve-out - a draft of this same round briefly widened `assert_autocount_base_url_deliverable` to accept `http://` on any resolvable public host (matching `provider.py`'s pre-existing, contradictory "http:// or https://" copy) and was reverted before merge. `provider.py`'s two operator-facing messages were corrected the OTHER way instead - both now say "must start with https://" | Owner: keep the tighter posture; an operator's genuinely plain-http wrapper is a migrate-to-https-or-tunnel problem, not a guard-widening one. BL-SS-241 (High) tracks the ops consequence for any existing `http://` connection |
 
 ## Appendix A - the cross-repo contract (for the Sorento `autocount` peer session)
 
