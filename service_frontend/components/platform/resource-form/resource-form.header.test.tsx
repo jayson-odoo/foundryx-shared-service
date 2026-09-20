@@ -170,7 +170,7 @@ describe('AC-DLA-28 ResourceForm header restructure', () => {
     expect(rt.backHref).toBe(backLinkHref);
   });
 
-  it('Back opens the discard-changes guard on a plain click while dirty, but a modifier/middle click bypasses it (open-in-new-tab, review nit)', async () => {
+  it('Back opens the discard-changes guard on a plain click while dirty, but a modifier click bypasses it (open-in-new-tab, review nit)', async () => {
     render(<ResourceForm config={baseConfig({ isDirty: true })} />);
     const { default: userEvent } = await import('@testing-library/user-event');
     await userEvent.click(screen.getByRole('button', { name: /edit/i }));

@@ -141,17 +141,12 @@ export function PageHeader({
                           href={crumb.href}
                           onClick={(e) => {
                             if (!guardNav) return;
-                            // Modifier/middle clicks (open in new tab/window)
-                            // bypass the dirty-guard - the browser's own
-                            // default handles them, never our SPA push.
-                            if (
-                              e.metaKey ||
-                              e.ctrlKey ||
-                              e.shiftKey ||
-                              e.altKey ||
-                              e.button === 1
-                            )
-                              return;
+                            // Modifier clicks (open in new tab/window) bypass
+                            // the dirty-guard - the browser's own default
+                            // handles them, never our SPA push. A middle
+                            // click never reaches `onClick` at all (that is
+                            // `auxclick`), so `e.button === 1` here was dead.
+                            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
                             e.preventDefault();
                             const target = crumb.href as string;
                             guardNav(() => router.push(target));

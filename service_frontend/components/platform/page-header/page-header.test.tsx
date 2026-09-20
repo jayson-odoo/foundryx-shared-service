@@ -98,7 +98,7 @@ describe('PageHeader (AC-DLA-27)', () => {
     expect(guardNav).not.toHaveBeenCalled();
   });
 
-  it('a modifier or middle click on a guarded crumb link bypasses `guardNav` (open-in-new-tab stays default)', () => {
+  it('a modifier click on a guarded crumb link bypasses `guardNav` (open-in-new-tab stays default)', () => {
     const guardNav = vi.fn();
     const crumbs = [{ label: 'Somewhere', href: '/somewhere' }, { label: 'Custom' }];
     render(<PageHeader title="Custom" crumbs={crumbs} guardNav={guardNav} />);
@@ -108,7 +108,6 @@ describe('PageHeader (AC-DLA-27)', () => {
     fireEvent.click(link, { ctrlKey: true });
     fireEvent.click(link, { shiftKey: true });
     fireEvent.click(link, { altKey: true });
-    fireEvent.click(link, { button: 1 });
 
     expect(guardNav).not.toHaveBeenCalled();
   });
