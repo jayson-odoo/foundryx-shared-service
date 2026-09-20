@@ -35,6 +35,10 @@ vi.mock('@/components/common/container', () => ({
 }));
 vi.mock('next/navigation', () => ({
   usePathname: () => '/autocount/review/job-1',
+  // `PageHeader` guards a dirty-editor breadcrumb click through `router.push`
+  // (browser round 1, AC-10-16) - unused on this read-only view, but the
+  // hook must resolve.
+  useRouter: () => ({ push: vi.fn(), prefetch: vi.fn() }),
 }));
 vi.mock('@/services/terminology-service', () => ({
   terminologyService: { getTerminology: () => Promise.resolve({}) },
