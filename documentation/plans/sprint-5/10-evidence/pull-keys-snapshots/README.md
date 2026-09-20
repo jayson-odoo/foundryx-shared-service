@@ -1,3 +1,121 @@
+# Run 2 (HEAD 7618bb33, 2026-09-20 UTC) - re-verify AC-10-38, AC-10-48, AC-10-49
+
+Lane: backend :8009, frontend :3009, DB `foundryx_service_s40`. Tenant/user: `default`,
+`demo@example.com` (Admin). Sidebar AutoCount -> Pull (synthetic dispatch; real click was a
+no-op, same CDP flake as the other two READMEs).
+
+## Fixture fix confirmed (AC-10-48)
+
+Keys segment on load: "Sorento production" (Active) + "Old staging key" (Revoked), both scoped
+to a fixture company "Pull demo (mock)" - matches the coder's fix commit `6ec3f258`. Screenshot
+`run2-01-pull-keys-1280.png`. Snapshots segment: 5 rows - Product Building, Stock balance Ready
+(12,133), Product Ready (11,830), Product Failed, Product Ready (11,812) - every AC-10-48 state
+(building/ready/failed, product + stock) now reachable. Screenshot
+`run2-08-snapshots-segment-1280.png`. The Companies list (`/autocount/companies`) also now shows
+"Pull demo (mock)" as a real row, since the fixture is appended to `listCompanies`.
+
+## Defect 3 investigation: Issue-key dialog "resets to blank" (AC-10-38)
+
+**Root cause found - this was a TEST-SCRIPT bug in BOTH run 1 and this run's first three
+attempts, not an application defect.** The Pull page renders TWO buttons with the identical
+accessible name "Issue key": the `ResourceList` header's own CREATE button (opens a fresh,
+blank dialog) and the dialog's SUBMIT button (`closest('[role=dialog]')` true). A selector that
+matches "the first button whose text is 'Issue key'" - which is what both a plain `find text
+"Issue key" click` and an un-scoped synthetic-dispatch helper do - hits the OUTER button every
+time, even while the dialog is already open. Re-clicking the outer button does not resubmit the
+form; it fires `setIssueOpen(true)` again on an already-open dialog, and (most likely via Radix's
+outside-pointerdown detection treating the outer button as "outside" the dialog content) the
+dialog visibly flashes closed-then-reopened, which is exactly the "resets to blank, no reveal, no
+new row, no network call" behaviour BOTH this run's first three attempts and run 1's evidence
+recorded. Confirmed by instrumenting `document.querySelectorAll('button')` and checking
+`.closest('[role=dialog]')`: index 0 = the outer button (`closestDialog: false`), index 1 = the
+real submit (`closestDialog: true`).
+
+**Re-tested correctly (scoped to `document.querySelector('[role=dialog]')` for every element):**
+filled Name + selected company "Pull demo (mock)" (MultiSelect, searchable) -> clicked the
+DIALOG's own "Issue key" button (synthetic dispatch, scoped) -> the dialog switched to "Key
+issued" with the plaintext key shown ONCE (`fxa_live_8na8gsrwsgx`) + a Copy button + the warning
+"Copy this key now - it will not be shown again.", AND a new row "Diag key take3 035723" appeared
+in the Keys table immediately, behind the dialog. Screenshot
+`run2-04-key-issued-plaintext-1280.png`. Clicked "Done" -> dialog closed, plaintext no longer
+anywhere in `document.body.innerText` (confirmed via `eval`), the new key row persists in the
+table (now Active, "Never" last-used). Screenshot `run2-05-key-row-persisted-1280.png`.
+
+**DEFECT NOT FIXED / STILL BROKEN: no way to reach it.** Confirmed both **not fixed AND
+newly-precisely-located**: the run-1 "resets to blank" symptom was a TEST bug (ambiguous button
+match), but investigating it surfaced a REAL, separate, previously-undetected defect: **the
+Revoke action for pull API keys is completely unreachable in the browser.**
+`use-pull-list-config.tsx`'s `actions` array declares `{ id: 'revoke', surfaces: { row: true },
+deferred: {...} }`, but neither `keyColumns` nor `snapshotColumns` defines an `id: 'actions'`
+column rendering `<ActionMenu surface="row" .../>` (contrast
+`use-entities-list-config.tsx`, which does exactly this at its own `id: 'actions'` column). The
+shell's card view WOULD render `ActionMenu` automatically, but this page renders as a `DataGrid`
+table, not cards. There is also no per-row selection checkbox column anywhere in this codebase
+(`grep -rl getToggleSelectedHandler` = zero hits) and Key rows use `rowHref: '#'` (the shell's
+documented navigation opt-out), so a row click is intentionally inert. Net result: the table has
+NO "..." menu, NO checkbox, and NO clickable row for a Key - there is no click path anywhere in
+the UI that can invoke Revoke. Confirmed via `document.querySelector('table').querySelectorAll
+('th')` -> exactly `Name, Companies, Created, Last used, Status`, no Actions column; confirmed
+via a DOM scan of every `<tr>` for `<button>` descendants -> zero. Screenshot
+`run2-07-DEFECT-no-revoke-action-1280.png` (full Keys table, 3 rows, no action affordance
+anywhere). Repro: Pull page -> Keys segment -> any row -> there is nothing to click. Reported to
+the coder; not fixed here (tester does not edit application code).
+
+## Snapshot detail re-verify (AC-10-49)
+
+- Stock snapshot (`snap-stock-ready`, ready, 12,133 records): header facts (entity, status,
+  company code "PULLFX", records, complete "Yes", built, expires, content hash) + stock-specific
+  metadata (56,422 zero pairs, 42 negative pairs, 0 fractional, 0 excluded-nonzero) + the negative
+  pair pill list (`SRT-01 . MBS . -3`, `AC-EXP-006 . HQ . -2437`) + excluded rows (5,
+  `uom_rate_unresolved` reason shown) + the first page of the preview grid
+  (`source_ref/item_code/item_description/location_code/uom_code/qty` columns). **PASS.**
+  Screenshot `run2-09-stock-snapshot-detail-1280.png`.
+- Product snapshot (`snap-product-ready`, ready, 11,830 records): header facts identical shape +
+  product-specific metadata (5,129 zero list price, 121 negative list price CLAMPED, 1 enrich
+  miss) + excluded rows (10, `mapping_failed` reason with the `name: this field is required`
+  message) + preview grid (`source_ref/code/name/description/category_code/brand_code`).
+  **PASS.** Screenshot `run2-10-product-snapshot-detail-1280.png`.
+- Build -> PUSH_ACTIVE 409: Build snapshot dialog -> Company "Pull demo (mock)" -> Entity
+  "Product" (push + active per the fixture) -> Build -> inline error "This book is now
+  automatic." rendered in the dialog, exactly the R6/A6 contract text. **PASS.** Screenshot
+  `run2-11-build-push-active-1280.png`.
+- Build -> building -> ready walkthrough: same dialog -> Entity "Stock balance" (pull-capable) ->
+  Build -> dialog closed, navigated straight to the new snapshot's detail page showing "Building"
+  -> re-checked ~2s later -> "Ready" with header facts populated. **PASS.** Screenshot
+  `run2-12-build-to-ready-1280.png`.
+- Segment switch clears selection/search: Keys -> Snapshots via the `SearchSelect` - confirmed
+  shape-wise again this run (columns swap fully, no residual Keys-segment state).
+
+## Responsive (375px)
+
+Pull page, Keys segment: no page-level horizontal scroll
+(`document.documentElement.scrollWidth == clientWidth == 375`), grid scrolls internally, "Issue
+key" button and toolbar wrap sensibly. **PASS.** Screenshot `run2-13-pull-page-375.png`.
+
+## House rules (Run 2)
+
+Console: only the pre-existing benign `DialogContent` a11y warning across every journey in this
+run (Issue key dialog x2, Build snapshot dialog x2); no page errors. **PASS.**
+
+## AC verdicts (Run 2)
+
+- **AC-10-38 [FE]:** PASS on Issue-key (the run-1 "resets to blank" report is retracted - it was
+  a test-script defect, not an app defect; the real submit -> plaintext-reveal -> Done -> gone ->
+  new row persisted flow all work correctly, confirmed with a properly-scoped click). **NEW FAIL**
+  on Revoke: the deferred-action grace-window action is registered but has no reachable trigger
+  anywhere in the table UI (missing `ActionMenu` column in `use-pull-list-config.tsx`) - this is
+  a genuine, newly-found frontend defect, reported above.
+- **AC-10-48 [FE]:** PASS. Every fixture state named in the AC (no-keys-state now superseded by
+  the seeded active+revoked pair, building/ready/failed/stock snapshots, 409 PUSH_ACTIVE) is
+  observed live in the browser this run.
+- **AC-10-49 [FE]:** PASS at 1280px for both product and stock snapshot detail surfaces (header
+  facts, mode-specific metadata blocks, excluded-row list with reasons, negative-pair list,
+  preview grid reuse). 375px not separately re-verified for the detail surface this run (time
+  budget went to the Keys/Issue-key root-cause investigation above); the Keys/Snapshots LIST view
+  was confirmed clean at 375px.
+
+---
+
 # Evidence: Pull page - Keys and Snapshots (AC-10-38, AC-10-48, AC-10-49)
 
 Run date: 2026-09-20 (UTC). Lane: backend :8009, frontend :3009, DB `foundryx_service_s40`.

@@ -1,3 +1,69 @@
+# Run 2 (HEAD 7618bb33, 2026-09-20 UTC) - re-verify AC-10-09 self-collision fix
+
+Lane: backend :8009, frontend :3009, DB `foundryx_service_s40` (fresh `bootstrap_db`; both
+`autocount.pull.*` permission keys confirmed present and granted to `default` tenant's Admin
+role before this run - see the S2 test report for the exact query). Tenant/user: `default`,
+`demo@example.com` (Admin). Real clicks from the sidebar: AutoCount -> Companies -> `Sorento SRT
+S40` -> Entities tab -> Product row -> Actions -> Configure source, reusing the SAME `db1`
+Product task run 1 left saved (pre-filled lookup `#1` alias `BaseUOMPrice`, added lookup `#2`
+alias `BaseUOMRate` - identical to run 1's end state).
+
+**Real-click vs synthetic, every step:** the CDP `click`/`find ... click` flake documented in run
+1 reproduced identically this run on every interactive control tried first as a real click
+(sidebar accordion, breadcrumb links, tab strips, Edit, Test, Actions menu, menu items) - each
+was tried as a real click FIRST, confirmed not to change page state, then re-tried with the
+documented synthetic `pointerdown -> mousedown -> pointerup -> mouseup -> click` sequence, which
+worked 100% of the time this run. Logged per step below as (real click: no-op) / (synthetic:
+worked). One case, the "Configure source" menu item, DID register on the real click for
+navigation to start but the URL had not actually changed after 1s - the synthetic dispatch was
+still required to complete it.
+
+## Steps and checks (self-collision defect re-test)
+
+1. Sidebar AutoCount -> Companies (synthetic) -> `Sorento SRT S40` row (synthetic) -> Entities
+   tab (synthetic) -> Product row Actions -> "Configure source" (synthetic on the menuitem).
+   Reached `/autocount/companies/{id}/entities/product`, Source tab selected, both lookups from
+   run 1 visible read-only. **PASS.**
+2. Edit (synthetic) -> main path Test (synthetic, scoped to the `/itembypage` input's sibling
+   button - `POST /autocount/http/preview` 200 confirmed via `network requests`) -> lookup `#1`
+   Test (synthetic, scoped to the FIRST `/itemuombypage` input - `preview-columns` 200) -> lookup
+   `#2` Test (synthetic, scoped to the SECOND `/itemuombypage` input - `preview-columns` 200) ->
+   combined Test re-run on the main path (synthetic) -> both lookups show `4 columns` /
+   `Sample: 50 matched - 0 missed`. **PASS.**
+3. **DEFECT VERIFIED FIXED.** Lookup `#1`'s own pre-filled field alias `BaseUOMPrice` shows NO
+   inline error after the combined Test - confirmed three ways: (a) visually in
+   `run2-05-no-self-collision-1280.png` / `run2-06-lookup1-fixed-1280.png` (clean input, matched
+   badge, no destructive-colored text anywhere near it), (b)
+   `document.body.innerText.includes('already a source column')` evaluated `false`, (c) a DOM
+   query for any leaf element containing that string returned zero matches. Matches the coder's
+   fix commit `81eee16e` (derive the collision-check column set from
+   `preview.task.sourceConfig.lookups`, the backend-echoed aliases, instead of the live
+   `config.lookups`).
+4. Save task (synthetic) -> returned to read-only view, no error toast, both lookups persisted
+   unchanged (no PUT fired this time - nothing was actually edited beyond re-running Tests, so
+   the task was already byte-identical to the saved state; confirmed via `network requests`
+   showing no `PUT .../etl-task` this round, consistent with "no dirty state to save").
+   **PASS.** Screenshot `run2-07-saved-readonly-1280.png`.
+
+## Responsive (375px)
+
+- Source tab at 375px, same saved (non-colliding) state: no page-level horizontal scroll
+  (`document.documentElement.scrollWidth == clientWidth == 360`). **PASS.** Screenshot
+  `run2-08-source-tab-375.png`.
+
+## House rules (Run 2)
+
+- Console: only the pre-existing benign `DialogContent` a11y warning throughout; no page errors.
+  **PASS.**
+
+## AC verdicts (Run 2)
+
+- **AC-10-09 [FE]:** PASS at 1280px and 375px. The run-1 self-collision false-positive defect
+  (step 10 of the original run) is CONFIRMED FIXED - reproduced the exact repro steps against the
+  SAME saved task and the spurious error no longer renders.
+
+---
+
 # Evidence: Lookups (AC-10-09, AC-10-09b)
 
 Run date: 2026-09-20 (UTC). Lane: backend :8009, frontend :3009, DB `foundryx_service_s40`.
