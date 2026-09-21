@@ -2573,7 +2573,9 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
         _finish_run_failed(message)
         service.finish(job, status=JOB_FAILED, error=message)
 
-    def _beat_and_check() -> None:
+    def _beat_and_check(
+        stage: str = "source", done: Optional[int] = None, total: Optional[int] = None
+    ) -> None:
         """Liveness stamp (MUST-FIX 1, AC-10-26) fired per source page (main
         path AND every lookup, via ``HttpApiSource``'s own ``heartbeat``
         callback) and every ``ROW_INSERT_HEARTBEAT_INTERVAL`` delivered
@@ -2584,8 +2586,25 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
         DIFFERENT session/process) and raises ``_BuildAbandoned`` the
         INSTANT it is no longer ``building`` - stopping the walk/insert loop
         immediately, before another page is requested or another row
-        inserted."""
-        _heartbeat(service, job.id)
+        inserted.
+
+        sprint-5/11 S5 (AC-11-40) - the SAME checkpoint now ALSO stamps
+        progress through ``JobService.beat_progress`` - ONE UPDATE, never a
+        separate heartbeat write. ``stage`` is ``"source"``/``"lookup:
+        <alias>"`` from ``HttpApiSource``'s own per-page callback (this
+        function's default), or ``"storing"`` from the row-insert loop
+        below; ``done``/``total`` are the page number/echoed total pages
+        for a source beat, or the row index/total row count for a storing
+        beat - a ``None`` total (a bare-array endpoint, or a beat with no
+        count of its own) leaves whatever total a previous beat already
+        established untouched."""
+        try:
+            service.beat_progress(job.id, done=done or 0, total=total, stage=stage)
+        except Exception:  # noqa: BLE001 - advisory, must never fail the run
+            logger.warning(
+                "autocount pull snapshot: beat_progress for job %s failed",
+                job.id, exc_info=True,
+            )
         current = snap_repo.get(tenant_id, snapshot_id)
         if current is None or current.status != PULL_SNAPSHOT_STATUS_BUILDING:
             raise _BuildAbandoned(
@@ -2735,8 +2754,10 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
             # MUST-FIX 1 - a beat (+ abandonment check) every N rows, so the
             # INSERT phase (thousands of rows, zero network calls) still
             # beats regularly even after the walk itself is long done.
+            # sprint-5/11 S5 - the "storing" stage, with the row-insert
+            # loop's own progress (index/total rows) instead of a page.
             if index and index % ROW_INSERT_HEARTBEAT_INTERVAL == 0:
-                _beat_and_check()
+                _beat_and_check("storing", index, len(delivered))
             snapshot_service.insert_row(
                 tenant_id, snapshot, index,
                 company_id=company_id, source_ref=source_ref, payload=row_payload,

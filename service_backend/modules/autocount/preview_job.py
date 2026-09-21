@@ -310,8 +310,21 @@ def _run_full(
     entity_type: str,
 ) -> None:
     etl = EtlService(db)
+    service = JobService(db)
 
-    def _on_page() -> None:
+    def _on_page(stage: str, done: int, total: Optional[int]) -> None:
+        """AC-11-24's cooperative-cancel checkpoint, widened (S5, AC-11-40)
+        to ALSO stamp progress through ``JobService.beat_progress`` - fired
+        after every source/lookup page AND at the "mapping"/"dry_run" stage
+        transitions (``EtlService.preview_task``'s own explicit calls,
+        ``page``/``total`` unknown there - ``0``/``None``)."""
+        try:
+            service.beat_progress(job_id, done=done, total=total, stage=stage)
+        except Exception:  # noqa: BLE001 - advisory, must never fail the run
+            logger.warning(
+                "autocount_source_preview: beat_progress for job %s failed",
+                job_id, exc_info=True,
+            )
         if _aborted(db, job_id):
             raise _PreviewCancelled()
 

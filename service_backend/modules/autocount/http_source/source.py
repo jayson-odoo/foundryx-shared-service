@@ -119,7 +119,16 @@ class HttpApiSource:
         # path AND every lookup, since both route through ``_walk_path``).
         # ``None`` (every push-path construction) is a no-op - the push
         # path's own heartbeat discipline (``sync._heartbeat``) is untouched.
-        heartbeat: Optional[Callable[[], None]] = None,
+        #
+        # sprint-5/11 S5 (AC-11-40) - widened from a bare no-arg callback to
+        # ``(stage, page, totalPages)`` so a caller (``sync.py``'s
+        # ``_beat_and_check``, ``preview_job.py``'s own checkpoint) can stamp
+        # ``JobService.beat_progress`` with real numbers instead of a bare
+        # liveness ping - ``stage`` is ``"source"`` for the main walk,
+        # ``"lookup:<alias>"`` for a lookup's own walk (set on ``self`` right
+        # before each ``_walk_endpoint`` call, read back here); ``totalPages``
+        # is ``None`` for a bare-array endpoint (never guessed).
+        heartbeat: Optional[Callable[[str, int, Optional[int]], None]] = None,
         **_extra: Any,
     ) -> None:
         self.entity_type = entity_type
@@ -127,6 +136,11 @@ class HttpApiSource:
         self.persist_hashes = persist_hashes
         self.row_limit = row_limit
         self._on_page = heartbeat
+        # sprint-5/11 S5 - which endpoint ``_walk_path`` is CURRENTLY
+        # walking, set by ``_walk``/``_apply_lookups`` immediately before
+        # each ``_walk_endpoint`` call, read back by ``_walk_path`` itself
+        # when it fires ``self._on_page``.
+        self._current_stage = "source"
         self._ctx = ctx
         # sprint-5/10 review round 1 follow-up - per-lookup completeness,
         # populated by ``_apply_lookups`` and read back by ``fetch_changes``
@@ -386,9 +400,12 @@ class HttpApiSource:
             # (never before it is parsed), so a heartbeat always corresponds
             # to real, already-accounted progress. A raise here (the build
             # was abandoned) stops the walk on THIS page - no further
-            # request is made.
+            # request is made. sprint-5/11 S5 - carries THIS page's own
+            # number and the echoed total (``None`` for a bare-array
+            # endpoint, which never echoes one) so the caller can stamp real
+            # progress, not just a liveness ping.
             if self._on_page is not None:
-                self._on_page()
+                self._on_page(self._current_stage, page, parsed.total_pages)
 
             if len(scanned) > self.row_limit:
                 raise HttpSourceError(
@@ -484,6 +501,10 @@ class HttpApiSource:
                 )
 
     def _walk(self) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
+        # sprint-5/11 S5 - the main path's own stage name; already the
+        # constructor default, set explicitly here for symmetry with
+        # ``_apply_lookups``' own per-lookup assignment below.
+        self._current_stage = "source"
         result = self._walk_endpoint(self.path)
         # review round 2 (item 2, AC-10-32/A7) - captured HERE, immediately
         # after the MAIN walk and before any lookup's own ``_walk_endpoint``
@@ -528,6 +549,10 @@ class HttpApiSource:
                 # rule the main walk uses. The push path never reads
                 # ``FetchResult.lookup_verification``, so this is purely
                 # additional bookkeeping - the merge below is unchanged.
+                #
+                # sprint-5/11 S5 - THIS lookup's own stage name, read back by
+                # ``_walk_path``'s heartbeat call for the duration of its walk.
+                self._current_stage = f"lookup:{alias_name}"
                 lookup_rows, lookup_total, lookup_kind = self._walk_endpoint(path)
             except HttpSourceError as exc:
                 raise HttpSourceError(

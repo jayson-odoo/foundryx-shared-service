@@ -1040,6 +1040,12 @@ class PullSnapshotOut(ApiModel):
     fractionalPairs: Optional[int] = None
     excludedNonzeroCount: Optional[int] = None
     negativePairList: Optional[List[Dict[str, Any]]] = None
+    # sprint-5/11 S5 (AC-11-42, closes BL-SS-236) - present ONLY while
+    # `status == 'building'` AND a beat has landed with a known `pagesTotal`
+    # (`services.pull_service.PullService.snapshot_progress`); every route
+    # returning this model sets `response_model_exclude_none=True` so an
+    # unknown progress is OMITTED from the wire, never a bare `null`.
+    progress: Optional[PreviewJobProgressOut] = None
 
 
 class PullSnapshotListResponse(ApiModel):

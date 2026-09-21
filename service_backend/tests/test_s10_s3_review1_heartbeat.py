@@ -155,25 +155,32 @@ def _build(db, company, *, entity_type=ENTITY_PRODUCT, now=NOW):
 
 
 def _spy_heartbeat(monkeypatch, *, on_call=None):
-    """Wraps the REAL ``JobService.heartbeat`` (never a no-op stub, so a
+    """Wraps the REAL per-page liveness write (never a no-op stub, so a
     heartbeat that silently stopped doing anything real would still show up
     as a recorded call but the job's own liveness columns would tell a
     different story) and records every call. ``on_call`` (if given) runs
     AFTER the real beat, keyed by the 1-based call number - used to inject
-    the "a concurrent orphan sweep just failed this snapshot" side effect."""
+    the "a concurrent orphan sweep just failed this snapshot" side effect.
+
+    sprint-5/11 S5 (AC-11-40) - ``_beat_and_check`` now stamps liveness
+    through ``JobService.beat_progress`` (heartbeat_at + progress in ONE
+    UPDATE, never a second write) instead of the bare ``JobService.
+    heartbeat`` this spy used to wrap - re-pointed at the SAME per-page
+    checkpoint's new mechanism; every assertion in this file (beat COUNT,
+    and the abandon-after-first-beat side effect) is unchanged."""
     from app.jobs.service import JobService
 
     calls: List[str] = []
-    real_heartbeat = JobService.heartbeat
+    real_beat_progress = JobService.beat_progress
 
-    def spy(self, job_id):
-        result = real_heartbeat(self, job_id)
+    def spy(self, job_id, *, done=None, total=None, stage=None):
+        result = real_beat_progress(self, job_id, done=done, total=total, stage=stage)
         calls.append(job_id)
         if on_call is not None:
             on_call(len(calls))
         return result
 
-    monkeypatch.setattr(JobService, "heartbeat", spy)
+    monkeypatch.setattr(JobService, "beat_progress", spy)
     return calls
 
 

@@ -2357,7 +2357,7 @@ class EtlService:
         company_id: str,
         entity_type: str,
         *,
-        on_page: Optional[Callable[[], None]] = None,
+        on_page: Optional[Callable[[str, int, Optional[int]], None]] = None,
     ) -> Tuple[EtlTaskView, Dict[str, Any]]:
         """The initial-load dry run against the consumer - writes NOTHING.
 
@@ -2379,10 +2379,11 @@ class EtlService:
         ``/contract`` version is HIGHER than this connection's configured
         one - advisory only, never auto-applied).
 
-        ``on_page`` (sprint-5/11, AC-11-24) - threaded to ``HttpApiSource``'s
+        ``on_page`` (sprint-5/11, AC-11-24/40) - threaded to ``HttpApiSource``'s
         own ``heartbeat`` callback (unchanged mechanism, MUST-FIX 1) for an
         ``autocount_http`` task ONLY: the preview-job handler's cooperative
-        cancel checkpoint, fired after every page of the walk. ``None``
+        cancel checkpoint AND (S5) progress-stamping checkpoint, fired after
+        every page of the walk with ``(stage, page, totalPages)``. ``None``
         (every caller before this AC) leaves the walk exactly as it was.
         """
         from ..sinks_sorento import SinkAnchorError, SorentoSinkError
@@ -2438,6 +2439,12 @@ class EtlService:
                 payload["warnings"] = warnings
             return self._task_view(company_id, entity_type, config, tenant_id=tenant_id), payload
 
+        # sprint-5/11 S5 (AC-11-40) - the "dry_run" stage transition, fired
+        # once right before the consumer call (not page-driven - `page`/
+        # `total` are unknown, `0`/`None`). `None` (every caller but the
+        # preview job) leaves this exactly as it was.
+        if on_page is not None:
+            on_page("dry_run", 0, None)
         try:
             result = sink.dry_run([r for r in records if r is not None])
         except SinkAnchorError as exc:
@@ -2561,7 +2568,7 @@ class EtlService:
         config,
         entity_type: str,
         *,
-        on_page: Optional[Callable[[], None]] = None,
+        on_page: Optional[Callable[[str, int, Optional[int]], None]] = None,
     ):
         """Run the saved query and map every row - NO staging, NO hash writes.
 
@@ -2573,10 +2580,11 @@ class EtlService:
         ``page_complete`` is ``None`` for a non-watermarked (unpaged) task,
         and a bool for a watermarked one (see below).
 
-        ``on_page`` (sprint-5/11, AC-11-24) - threaded to ``HttpApiSource``'s
+        ``on_page`` (sprint-5/11, AC-11-24/40) - threaded to ``HttpApiSource``'s
         own ``heartbeat`` callback for an ``autocount_http`` task ONLY (the
         SQL branch has no per-page checkpoint to hook into for a preview
-        today - out of this slice's scope, unchanged).
+        today - out of this slice's scope, unchanged), fired with
+        ``(stage, page, totalPages)``.
 
         !!  A WATERMARKED TASK'S PREVIEW READS AT MOST ONE PAGE (F1, review
             round 2 BLOCKER).  !!
@@ -2717,6 +2725,13 @@ class EtlService:
             profile=profile,
             database_name=company.database_name,
         )
+        # sprint-5/11 S5 (AC-11-40) - the SAME callback names the "mapping"
+        # stage transition too (not page-driven, so `page`/`total` are
+        # unknown - `0`/`None`), fired once, right before the per-record
+        # mapping loop below starts. `None` (every caller but the preview
+        # job) leaves this exactly as it was.
+        if on_page is not None:
+            on_page("mapping", 0, None)
         mapped = [engine.map_document(record.raw) for record in raw_records]
         # ``current_refs`` (sprint-5/02, AC-02-12) is returned alongside the
         # mapped records so ``preview_task`` can cross-check this run's own

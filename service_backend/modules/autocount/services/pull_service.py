@@ -459,6 +459,21 @@ class PullService:
             raise PullSnapshotNotFound("That snapshot was not found.")
         return snapshot
 
+    def snapshot_progress(
+        self, tenant_id: str, snapshot: AcPullSnapshot
+    ) -> Optional[Dict[str, Any]]:
+        """sprint-5/11 S5 (AC-11-42) - ``PullSnapshotOut.progress``, gated on
+        THIS snapshot's own status (only ``building`` ever carries one -
+        ``ready``/``failed`` never do, regardless of what its ``job_id`` row
+        still holds) before delegating to the shared projection living next
+        to the preview job's own rule (``preview_job_service.
+        snapshot_job_progress``) - local import avoids a module-load cycle."""
+        if snapshot.status != PULL_SNAPSHOT_STATUS_BUILDING:
+            return None
+        from .preview_job_service import snapshot_job_progress
+
+        return snapshot_job_progress(self.db, tenant_id, snapshot.job_id)
+
     def list_snapshots(
         self,
         tenant_id: str,
