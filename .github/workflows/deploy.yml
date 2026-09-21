@@ -121,7 +121,10 @@ jobs:
   test-backend:
     name: Test backend (pytest)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Interim: the full suite takes ~1h on a loaded local machine and the
+    # 4-core hosted runner is slower; the suite-speed work (PR #77) brings
+    # this down to minutes, after which this can shrink again.
+    timeout-minutes: 90
     env:
       # Conftest builds its own in-memory SQLite DB per test and disables the
       # email dispatcher / startup orphan sweep, so nothing here ever opens a
@@ -175,9 +178,16 @@ jobs:
       - name: Lint
         working-directory: service_frontend
         run: npm run lint
+      # CI-only knobs (vitest.config.mts stays untouched so local runs keep
+      # their defaults): the hosted runner has 4 cores and vitest's default
+      # worker count starves the RTL `waitFor` polls (a different
+      # timing-sensitive test flaked on every run - not a per-test bug), so
+      # cap the worker threads and give every test a CI-scale timeout. Both
+      # bounds are pinned: vitest derives its default `minThreads` from the
+      # core count and refuses a `maxWorkers` below it.
       - name: Vitest
         working-directory: service_frontend
-        run: npm test -- --run
+        run: npm test -- --run --minWorkers=2 --maxWorkers=2 --testTimeout=20000
 
   build-and-deploy:
     name: Build, push, deploy (blue/green)

@@ -186,22 +186,12 @@ describe('EmailEditor document surface', () => {
     expect(screen.getByTestId('pdf-preview-frame')).toHaveAttribute('sandbox', '');
   });
 
-  // Explicit 20000ms test timeout: this assertion's own `waitFor` needs
-  // headroom above vitest's 5000ms default `testTimeout` - a bare `{
-  // timeout: 5000 }` on the waitFor races the SAME 5000ms wall clock as the
-  // surrounding test, so under CI's CPU-starved parallel workers (388 files
-  // in worker threads) the outer test timeout wins first and reports a
-  // generic "Test timed out in 5000ms" instead of the real assertion.
-  it(
-    'Refresh preview re-runs the HTML render on demand',
-    async () => {
-      const renderDocHtml = vi.fn().mockResolvedValue('<!DOCTYPE html><html><body>p</body></html>');
-      renderDoc({ renderDocHtml });
-      fireEvent.click(screen.getByTestId('editor-mode-preview'));
-      await waitFor(() => expect(renderDocHtml).toHaveBeenCalledTimes(1));
-      fireEvent.click(screen.getByText('Refresh preview'));
-      await waitFor(() => expect(renderDocHtml).toHaveBeenCalledTimes(2), { timeout: 15000 });
-    },
-    20000,
-  );
+  it('Refresh preview re-runs the HTML render on demand', async () => {
+    const renderDocHtml = vi.fn().mockResolvedValue('<!DOCTYPE html><html><body>p</body></html>');
+    renderDoc({ renderDocHtml });
+    fireEvent.click(screen.getByTestId('editor-mode-preview'));
+    await waitFor(() => expect(renderDocHtml).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByText('Refresh preview'));
+    await waitFor(() => expect(renderDocHtml).toHaveBeenCalledTimes(2));
+  });
 });
