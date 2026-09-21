@@ -105,6 +105,30 @@ must therefore trust the ECHOED values on every page, never the value it request
 never assume the population fits in one page just because the requested `pageSize` implied it
 would.
 
+### Gotcha: a registration inside a module install hook is API-process-only
+
+`register_http_source()` (`http_source/source.py`) was called only from `bootstrap.py`'s
+`install()`, which runs in the API process (`load_modules`) at boot and never on the Celery
+worker - every `autocount_http` task and every pull-gateway snapshot build failed for real on
+the worker with `No AutoCount source implementation registered for 'autocount_http'`
+(2026-09-21 prod incident), invisible to eager dev/test which always runs inline in the API
+process. `sql_db` never had this problem because `sync.py` calls `register_sql_db_source()` at
+its OWN module level, and the worker's task file (`app/workflow_engine/worker.py`) explicitly
+imports `modules.autocount.sync` - fixed by making `http_source/source.py` register itself the
+same way, at import time, not only inside the callable the install hook invokes. General rule:
+anything the Celery worker needs to run a task (a job handler, a source-impl factory, a
+provider) must register on the worker's OWN import chain - `app/workflow_engine/worker.py`'s
+bottom-of-file imports, or a function called from one of them - never only from a module's
+`install()`/`register_engine_entities()` hook, which a worker process only reaches via
+`_ensure_module_nodes()`/`boot_module_hooks()`, itself called only by the workflow-run tasks
+(`run_workflow_task`, `wake_serialized_task`, the omnichannel wait/broadcast sweeps) - NOT by
+`app/jobs/worker.py`'s `jobs.run` task, which dispatches straight off `app.jobs.registry`
+with no module-boot call of its own. Pin the invariant with a subprocess test
+(`tests/test_worker_module_boot.py`) that imports only `app.workflow_engine.worker` in a fresh
+`sqlite://` process and asserts the registry is fully populated - an in-process test can pass
+for the wrong reason once an earlier fixture/test in the same process has already registered
+things the real path never would.
+
 ### AutoCount human-invoked pull (plan 10, sprint-5/10) - what each stage owns
 
 The pull path is a SNAPSHOT builder, not the push path's staged-diff machinery - no
