@@ -110,6 +110,22 @@ function normalizeEtlTask(task: AutocountEtlTask): AutocountEtlTask {
   return { ...task, sourceConfig: { ...SQL_SHAPE_DEFAULTS, ...task.sourceConfig } };
 }
 
+// sprint-5/11 S7-lite P0 (real-worker smoke, evidence
+// `documentation/plans/sprint-5/11-evidence/s7-lite/README.md`) - the SAME
+// AC-08-30 gap as `normalizeEtlTask` above, one hop further: a `full`-scope
+// preview job's `done` result echoes the task via the backend's OWN
+// `_task_echo`/`_task_response` builder (`modules/autocount/preview_job.py`),
+// which deliberately carries the SAME raw, un-normalized `sourceConfig`.
+// `getPreviewJob`/`cancelPreviewJob` (both wire-typed `AutocountPreviewJob`,
+// so a `result.task` CAN be present) need the identical fix; `startPreviewJob`
+// does NOT - its 202 body is `PreviewJobStartOut` (`modules/autocount/
+// schemas.py`), `{jobId, status}` only, never a `result` at all, so there is
+// nothing to normalize there.
+function normalizePreviewJob(job: AutocountPreviewJob): AutocountPreviewJob {
+  if (job.result?.scope !== 'full') return job;
+  return { ...job, result: { ...job.result, task: normalizeEtlTask(job.result.task) } };
+}
+
 export const realAutocountService: AutocountService = {
   // Companies: `sourceKind` (list + detail) and `documentPrerequisites`
   // (detail; the list sends `[]`) ride the backend JSON through untouched
@@ -447,6 +463,8 @@ export const realAutocountService: AutocountService = {
   // Activate's Run preview) poll through this surface, no phase-1 overlay.
 
   startPreviewJob(input: AutocountPreviewJobStartInput) {
+    // No `normalizePreviewJob` here (S7-lite fix) - the 202 body is
+    // `PreviewJobStartOut` (`{jobId, status}`), never a `result`/`task`.
     const path = input.scope === 'sample' ? '/autocount/http/preview' : `${etlTaskPath(input.companyId, input.entityType)}/preview`;
     return apiFetch<AutocountPreviewJobStart>(path, {
       method: 'POST',
@@ -455,13 +473,13 @@ export const realAutocountService: AutocountService = {
   },
 
   getPreviewJob(jobId) {
-    return apiFetch<AutocountPreviewJob>(`/autocount/previews/${jobId}`);
+    return apiFetch<AutocountPreviewJob>(`/autocount/previews/${jobId}`).then(normalizePreviewJob);
   },
 
   cancelPreviewJob(jobId) {
     return apiFetch<AutocountPreviewJob>(`/autocount/previews/${jobId}/cancel`, {
       method: 'POST',
-    });
+    }).then(normalizePreviewJob);
   },
 };
 

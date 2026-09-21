@@ -266,7 +266,10 @@ export function SourceTab({
   }, [columnOptions, config.keyColumns, config.watermarkColumn, isDocument]);
   const pickersEnabled = editing && columnOptions.length > 0;
 
-  const canTest = Boolean(config.connectionId) && config.query.trim().length > 0 &&
+  // Belt-and-braces (S7-lite P0) - `?? ''` guards a future un-normalized
+  // task echo; the real fix is the service-boundary normalizer
+  // (`normalizeEtlTask`/`normalizePreviewJob`, `autocount-service.real.ts`).
+  const canTest = Boolean(config.connectionId) && (config.query ?? '').trim().length > 0 &&
     preview.state.status !== 'loading';
   const canTestLine = Boolean(config.connectionId) && Boolean(config.lineQuery?.trim()) &&
     linePreview.state.status !== 'loading';

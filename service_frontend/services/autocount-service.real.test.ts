@@ -155,6 +155,104 @@ describe('realAutocountService - HTTP task sourceConfig normalization', () => {
   // sprint-5/11 review round 2 (item 6) - `previewEtlTask` removed from
   // `realAutocountService` (dead since S4's job-based preview surface
   // replaced the synchronous `.../preview` route this test exercised).
+
+  /**
+   * S7-lite P0 (real-worker smoke, evidence `documentation/plans/
+   * sprint-5/11-evidence/s7-lite/README.md`) - `getPreviewJob`/
+   * `cancelPreviewJob` echo a `full`-scope job's DONE task through the
+   * backend's own `_task_echo`/`_task_response` builder
+   * (`modules/autocount/preview_job.py`), the SAME un-normalized shape as
+   * `getEtlTask` (AC-08-30). Neither ran the echo through `normalizeEtlTask`
+   * - `hooks/use-autocount-etl.ts:245`'s `onTask(job.result.task)` then
+   * landed the raw shape straight into the shared `task` state, and
+   * `task-editor-view.tsx`'s `task.sourceConfig.query.trim()` (no `?.`)
+   * crashed the whole Review & Activate page to the error boundary the
+   * first time a preview job completed for a real `autocount_http` task.
+   */
+  it('getPreviewJob normalizes a done full-scope job\'s echoed task the same way as getEtlTask', async () => {
+    apiFetchMock.mockResolvedValue({
+      id: 'preview-job-1',
+      scope: 'full',
+      status: 'done',
+      progress: null,
+      result: { scope: 'full', task: realHttpTaskWire(), preview: { columns: [], rows: [], truncated: false } },
+      error: null,
+      taskError: null,
+      createdAt: '2026-09-21T00:00:00Z',
+    });
+    const job = await realAutocountService.getPreviewJob('preview-job-1');
+    if (job.result?.scope !== 'full') throw new Error('expected a full-scope result');
+    expect(job.result.task.sourceConfig.query).toBe('');
+    expect(job.result.task.sourceConfig.lineQuery).toBeNull();
+    expect(job.result.task.sourceConfig.keyColumns).toEqual([]);
+    expect(job.result.task.sourceConfig.watermarkColumn).toBeNull();
+    expect(job.result.task.sourceConfig.comparedColumns).toEqual([]);
+    expect(job.result.task.sourceConfig.fromDate).toBeNull();
+    expect(job.result.task.sourceConfig.docDateColumn).toBeNull();
+    expect(job.result.task.sourceConfig.filterFormula).toBeNull();
+    // The HTTP fields the server DID send stay exactly as received.
+    expect(job.result.task.sourceConfig.path).toBe('/itembypage');
+    expect(job.result.task.sourceConfig.keyFields).toEqual(['ItemCode']);
+  });
+
+  it('cancelPreviewJob normalizes a done full-scope job\'s echoed task the same way as getEtlTask', async () => {
+    apiFetchMock.mockResolvedValue({
+      id: 'preview-job-1',
+      scope: 'full',
+      status: 'done',
+      progress: null,
+      result: { scope: 'full', task: realHttpTaskWire(), preview: { columns: [], rows: [], truncated: false } },
+      error: null,
+      taskError: null,
+      createdAt: '2026-09-21T00:00:00Z',
+    });
+    const job = await realAutocountService.cancelPreviewJob('preview-job-1');
+    if (job.result?.scope !== 'full') throw new Error('expected a full-scope result');
+    expect(job.result.task.sourceConfig.query).toBe('');
+    expect(job.result.task.sourceConfig.keyColumns).toEqual([]);
+  });
+
+  it('getPreviewJob leaves a sample-scope job (no task to normalize) untouched', async () => {
+    const payload = {
+      id: 'preview-job-2',
+      scope: 'sample',
+      status: 'done',
+      progress: null,
+      result: { scope: 'sample', preview: { columns: [], rows: [], truncated: false } },
+      error: null,
+      taskError: null,
+      createdAt: '2026-09-21T00:00:00Z',
+    };
+    apiFetchMock.mockResolvedValue(payload);
+    const job = await realAutocountService.getPreviewJob('preview-job-2');
+    expect(job).toEqual(payload);
+  });
+
+  it('getPreviewJob leaves a still-running job (no result yet) untouched', async () => {
+    const payload = {
+      id: 'preview-job-3',
+      scope: 'full',
+      status: 'running',
+      progress: { stage: 'source', pagesDone: 1, pagesTotal: 4 },
+      result: null,
+      error: null,
+      taskError: null,
+      createdAt: '2026-09-21T00:00:00Z',
+    };
+    apiFetchMock.mockResolvedValue(payload);
+    const job = await realAutocountService.getPreviewJob('preview-job-3');
+    expect(job).toEqual(payload);
+  });
+
+  it('startPreviewJob passes the 202 body through untouched (no result/task to normalize)', async () => {
+    apiFetchMock.mockResolvedValue({ jobId: 'preview-job-4', status: 'queued' });
+    const started = await realAutocountService.startPreviewJob({
+      scope: 'full',
+      companyId: 'company-1',
+      entityType: 'product',
+    });
+    expect(started).toEqual({ jobId: 'preview-job-4', status: 'queued' });
+  });
 });
 
 // sprint-5/10 review round 1, item 5 - the `lookups` save round trip
