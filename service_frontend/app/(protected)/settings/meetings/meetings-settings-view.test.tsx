@@ -141,6 +141,10 @@ describe('Settings → Meetings', () => {
     render(<MeetingsSettingsView />);
 
     const botName = await screen.findByLabelText('Notetaker display name');
+    // The input exists (and is findable) while the settings are still loading,
+    // but it is disabled until they arrive - `user.clear` on a disabled element
+    // throws, so wait for the control to be enabled before interacting.
+    await waitFor(() => expect(botName).toBeEnabled());
     await user.clear(botName);
     await user.type(botName, 'Minutes bot');
     await user.click(screen.getByRole('button', { name: 'Save meeting settings' }));

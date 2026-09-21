@@ -1,3 +1,4 @@
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { formatTime } from '@/lib/datetime';
 import { cn } from '@/lib/utils';
 import type { VisitorMessage } from '@/types/omnichannel';
@@ -55,7 +56,10 @@ export function MessageBubble({ message, onQuickReply }: MessageBubbleProps) {
               key={reply.id}
               type="button"
               onClick={() => onQuickReply(reply.title)}
-              className="rounded-full border border-primary px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary-soft"
+              className={cn(
+                PRESSED_CLASS,
+                'rounded-full border border-primary px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary-soft',
+              )}
             >
               {reply.title}
             </button>

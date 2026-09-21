@@ -314,6 +314,10 @@ describe('direct-DB ETL lifecycle (plan 22 S2 contract)', () => {
   });
 
   it('POSTs preview / activate / pause / resume / run under the task resource', async () => {
+    // previewEtlTask/runEtlTaskNow normalize `result.task` (the SQL-shape
+    // defaults backfill) - the default beforeEach fixture carries no `task`,
+    // so give this test its own resolved value with the field present.
+    apiFetch.mockResolvedValue({ task: {} });
     await realAutocountService.previewEtlTask('c1', 'sales_order');
     await realAutocountService.activateEtlTask('c1', 'sales_order');
     await realAutocountService.pauseEtlTask('c1', 'sales_order');
