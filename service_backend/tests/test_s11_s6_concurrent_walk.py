@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import inspect
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -615,6 +616,235 @@ def test_4xx_on_page_5_of_12_at_n4_fails_http_status_writes_nothing(db):
         f"no page beyond the in-flight set may be requested after the "
         f"failure is observed (the second batch, pages 6..9, must never "
         f"start); got {calls}"
+    )
+
+
+def test_shape_change_inside_a_concurrent_batch_fails_writes_nothing_no_second_batch(db):
+    """sprint-5/11 S6 review round 1 (BLOCKER B1) - the concurrent assembly
+    loop must raise the SAME ``shape_change`` error the serial walker
+    raises (AC-08-23) when a page inside the batch answers a DIFFERENT
+    envelope kind than page 1 established - a bare array mid-walk was
+    previously silently ingested."""
+    from modules.autocount.models import AcRowHash
+    from modules.autocount.repositories import RowHashRepository
+
+    conn = _open_connection(db, max_concurrent_pages="4")
+    company = _company(db, conn.id)
+    config = _config(db, company, connection_id=conn.id)
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, {f"{DB_NAME}:SEED": "x" * 64}, seen_at=None
+    )
+    before_hashes = RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    before_count = db.query(AcRowHash).count()
+
+    N = 4
+    TOTAL_PAGES = 9  # strictly more than 1 + N, so a SECOND batch would be
+    # required if the walk were allowed to continue past the failure.
+    calls: List[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        calls.append(page)
+        if page == 1:
+            return httpx.Response(
+                200, json=_envelope([_item("P1")], page=1, total_pages=TOTAL_PAGES)
+            )
+        if page == 3:
+            # A bare array mid-walk - server-side drift, never data.
+            return httpx.Response(200, json=[{"ItemCode": "X"}])
+        return httpx.Response(
+            200, json=_envelope([_item(f"P{page}")], page=page, total_pages=TOTAL_PAGES)
+        )
+
+    source = HttpApiSource(
+        _ctx(db, company, config), entity_type=ENTITY_PRODUCT, transport=_transport(handler),
+    )
+    with pytest.raises(HttpSourceError) as exc:
+        source.fetch_changes(Watermark())
+    assert exc.value.code == "shape_change", (
+        f"expected code='shape_change' for a page answering a different "
+        f"envelope kind mid-batch, got {exc.value.code!r}"
+    )
+    assert exc.value.page == 3
+    assert len(calls) <= 1 + N, (
+        f"no page beyond the in-flight batch may ever be requested once the "
+        f"shape change is observed; got {calls}"
+    )
+    assert db.query(AcRowHash).count() == before_count
+    assert RowHashRepository(db).all_hashes(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT
+    ) == before_hashes
+
+
+def test_empty_page_inside_declared_range_fails_shape_writes_nothing(db):
+    """sprint-5/11 S6 review round 1 (SF-4) - a page INSIDE the server's own
+    declared 2..TotalPages range that comes back with ZERO rows is a HOLE in
+    the page set, never a legitimate end-of-data signal (unlike the serial
+    walker's own iteratively-discovered end, which only applies because the
+    serial walk discovers TotalPages as it goes - here the server already
+    told us how many pages exist, so a short one is corruption)."""
+    from modules.autocount.models import AcRowHash
+    from modules.autocount.repositories import RowHashRepository
+
+    conn = _open_connection(db, max_concurrent_pages="4")
+    company = _company(db, conn.id)
+    config = _config(db, company, connection_id=conn.id)
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, {f"{DB_NAME}:SEED": "x" * 64}, seen_at=None
+    )
+    before_hashes = RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    before_count = db.query(AcRowHash).count()
+
+    N = 4
+    TOTAL_PAGES = 9  # strictly more than 1 + N, so a SECOND batch would be
+    # required if the walk were allowed to continue past the failure.
+    calls: List[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        calls.append(page)
+        if page == 1:
+            return httpx.Response(
+                200, json=_envelope([_item("P1")], page=1, total_pages=TOTAL_PAGES)
+            )
+        if page == 3:
+            return httpx.Response(200, json=_envelope([], page=3, total_pages=TOTAL_PAGES))
+        return httpx.Response(
+            200, json=_envelope([_item(f"P{page}")], page=page, total_pages=TOTAL_PAGES)
+        )
+
+    source = HttpApiSource(
+        _ctx(db, company, config), entity_type=ENTITY_PRODUCT, transport=_transport(handler),
+    )
+    with pytest.raises(HttpSourceError) as exc:
+        source.fetch_changes(Watermark())
+    assert exc.value.code == "shape", (
+        f"expected code='shape' for a page inside the declared range coming "
+        f"back empty, got {exc.value.code!r}"
+    )
+    assert exc.value.page == 3
+    assert len(calls) <= 1 + N, (
+        f"no page beyond the in-flight batch may ever be requested once the "
+        f"empty page is observed; got {calls}"
+    )
+    assert db.query(AcRowHash).count() == before_count
+    assert RowHashRepository(db).all_hashes(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT
+    ) == before_hashes
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# sprint-5/11 S6 review round 1 (SF-2) - two DIFFERENT faults in the SAME
+# batch must always resolve to the LOWER requested page's fault, regardless
+# of which one's worker thread actually finished first.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_lower_page_fault_always_wins_over_a_later_page_fault_in_the_same_batch(db):
+    """Page 3 answers an immediate 4xx; page 5 (in the SAME N=4 batch) times
+    out twice (the AC-10-75 halving signal, itself a slower path - two
+    requests plus a sleep between them). The immediate 4xx on page 3 would
+    reliably "win" under naive completion-order racing too, so this test is
+    run 3x during verification to confirm it is TRUE determinism (page
+    number order), never a lucky timing accident."""
+    conn = _open_connection(db, max_concurrent_pages="4")
+    company = _company(db, conn.id)
+    config = _config(db, company, connection_id=conn.id)
+    N = 4
+    TOTAL_PAGES = 5  # a single full N=4 batch (pages 2..5).
+    page5_attempts = {"n": 0}
+    calls: List[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        calls.append(page)
+        if page == 1:
+            return httpx.Response(
+                200, json=_envelope([_item("P1")], page=1, total_pages=TOTAL_PAGES)
+            )
+        if page == 3:
+            return httpx.Response(400, text="bad request")
+        if page == 5:
+            page5_attempts["n"] += 1
+            return httpx.Response(524, json={})  # Cloudflare-timeout, twice -> halving signal
+        return httpx.Response(
+            200, json=_envelope([_item(f"P{page}")], page=page, total_pages=TOTAL_PAGES)
+        )
+
+    source = HttpApiSource(
+        _ctx(db, company, config), entity_type=ENTITY_PRODUCT, transport=_transport(handler),
+    )
+    with pytest.raises(HttpSourceError) as exc:
+        source.fetch_changes(Watermark())
+    assert exc.value.code == "http_status", (
+        f"expected the LOWER page's fault (page 3, an ordinary 4xx) to win "
+        f"over page 5's halving signal, got code={exc.value.code!r}"
+    )
+    assert exc.value.page == 3
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# sprint-5/11 S6 review round 1 (SF-3) - the walk must not block on OTHER
+# in-flight pages once an earlier page's own fault is observed.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_first_fault_returns_without_waiting_for_other_in_flight_pages(db):
+    """N=4, page 2 (the batch's own LOWEST page) fails immediately; pages
+    3-5 sit blocked on a ``threading.Event`` the test sets ONLY AFTER the
+    walk has already raised - proves ``_run_concurrent_batch`` never waits
+    on a later page once an earlier one's own fault is known. Bounded to
+    2s (generous; a wait-for-all bug here would hang until the 5s inner
+    ``Event.wait`` timeout below, which this test would then also fail on
+    the elapsed-time assertion)."""
+    conn = _open_connection(db, max_concurrent_pages="4")
+    company = _company(db, conn.id)
+    config = _config(db, company, connection_id=conn.id)
+    N = 4
+    TOTAL_PAGES = 5  # a single full N=4 batch (pages 2..5) - no second batch possible.
+    release = threading.Event()
+    calls: List[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        calls.append(page)
+        if page == 1:
+            return httpx.Response(
+                200, json=_envelope([_item("P1")], page=1, total_pages=TOTAL_PAGES)
+            )
+        if page == 2:
+            return httpx.Response(400, text="bad request")
+        # Pages 3, 4, 5 block until the test itself releases them - well
+        # after the walk has already raised.
+        released = release.wait(timeout=5.0)
+        assert released, f"page {page} was never released by the test"
+        return httpx.Response(
+            200, json=_envelope([_item(f"P{page}")], page=page, total_pages=TOTAL_PAGES)
+        )
+
+    source = HttpApiSource(
+        _ctx(db, company, config), entity_type=ENTITY_PRODUCT, transport=_transport(handler),
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(HttpSourceError) as exc:
+            source.fetch_changes(Watermark())
+        elapsed = time.monotonic() - started
+    finally:
+        # Let pages 3-5's already-running workers finish and unwind cleanly
+        # regardless of the outcome above - never leave a background thread
+        # blocked past this test's own lifetime.
+        release.set()
+
+    assert exc.value.code == "http_status"
+    assert exc.value.page == 2
+    assert elapsed < 2.0, (
+        f"expected the walk to raise on page 2's own fault without waiting "
+        f"for pages 3-5 (deliberately blocked until just now), took "
+        f"{elapsed:.2f}s"
+    )
+    assert max(calls) <= 1 + N, (
+        f"no page beyond the in-flight batch may ever be requested; got {calls}"
     )
 
 

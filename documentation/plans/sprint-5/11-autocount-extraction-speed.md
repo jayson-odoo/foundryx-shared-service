@@ -117,7 +117,12 @@ parameter fails on the first mismatch instead of after two requests). Shape chan
 4xx and the row cap keep their codes and their fail-before-state position - the walk still
 completes or fails entirely before a single hash, watermark or snapshot row is touched. The row
 cap gains a cheap pre-flight projection (`TotalPages x echoed PageSize`) so a 200k-row endpoint
-is refused before we fire N requests at it. AC-10-75's ladder is per page and unchanged; a
+is refused before we fire N requests at it. Sprint-5/11 S6 review round 1 nit (AC-11-07) - this
+projection is a worst-case ESTIMATE, not the walk's actual row count: a wrapper that under-fills
+some pages (fewer rows than its own echoed `PageSize` on every page) can refuse a walk here that
+the SAME data would have completed cleanly under the serial walker's own exact post-assembly
+check, which counts real rows, not a projection - a deliberately conservative trade-off, not a
+bug. AC-10-75's ladder is per page and unchanged; a
 halving aborts the in-flight set, discards every partial result (AC-10-24) and restarts from a
 serial page 1.
 

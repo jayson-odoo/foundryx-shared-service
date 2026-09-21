@@ -187,6 +187,15 @@ class HttpApiClient:
 
     @property
     def _client(self) -> httpx.Client:
+        # sprint-5/11 S6 review round 1 (nit) - this lazy init is NOT
+        # thread-safe on its own (a bare check-then-set race), but every
+        # caller (``HttpApiSource``) always fetches page 1 SERIALLY, in the
+        # calling thread, before any ``ThreadPoolExecutor`` worker is ever
+        # started (``_walk_path``), so ``self._transport`` is already set by
+        # the time concurrent workers first read this property - a genuine
+        # race is unreachable. A caller that skipped the serial page-1 fetch
+        # (or passed ``transport=`` explicitly, the test house convention)
+        # would need an eager ``httpx.Client`` init here instead.
         if self._transport is None:
             # S5 (sprint-5/08 review round 1) - never silently follow a
             # redirect off the configured base URL (SSRF-adjacent).

@@ -252,6 +252,18 @@ class JobService:
         beat of a given stage needs to touch ``cursor_json`` at all).
         Returns True when a RUNNING row was stamped, the SAME best-effort
         contract ``heartbeat()`` offers.
+
+        sprint-5/11 S6 review round 1 (nit) - the ``cursor_json`` SELECT
+        above reads the COMMITTED value on this UPDATE's own bind-level
+        connection (``bind.begin()``), never ``self.db`` - so it can only
+        ever see a stage a PRIOR beat already committed, not an uncommitted
+        ``cursor_json`` write the calling run's own session may be holding
+        open right now. No handler mixes an explicit ``set_cursor`` call
+        with ``beat_progress`` on the same run for exactly this reason: the
+        two would race on which write actually lands in ``cursor_json``,
+        and this method's own merge (read-then-write on ONLY the ``stage``
+        key) would silently clobber whatever else ``set_cursor`` had just
+        written but not yet committed.
         """
         table = BackgroundJob.__table__
         bind = self.db.get_bind()

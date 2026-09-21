@@ -107,6 +107,13 @@ def test_429_at_n4_aborts_batch_records_one_note_sleeps_retry_after_and_restarts
 
     assert len(result.records) == TOTAL_PAGES, "the SERIAL restart must still complete the walk"
     assert 2 in sleeps, f"expected a sleep(2) for the clamped Retry-After, got {sleeps}"
+    # sprint-5/11 S6 review round 1 (SF-1) - the walk actually finished
+    # SERIALLY from the 429 onward; `source_concurrency` must read 1, never
+    # the configured N=4 this run never got to use for a single full batch.
+    assert source.source_concurrency == 1, (
+        f"expected source_concurrency == 1 after a page-3 429 forced a serial "
+        f"restart, got {source.source_concurrency!r}"
+    )
 
     activity = source.drain_activity()
     notes = [r for r in activity if r.method == "NOTE"]

@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -119,11 +119,17 @@ class _ConcurrentBackoff(Exception):
 
 
 def _clamp_retry_after_seconds(raw: Optional[str]) -> float:
+    """Clamps a ``Retry-After`` header value to
+    ``[BACKOFF_RETRY_AFTER_MIN_SECONDS, BACKOFF_RETRY_AFTER_MAX_SECONDS]``.
+    ``Retry-After`` is legally EITHER a delay-seconds integer OR an HTTP-date
+    (RFC 9110 10.2.3) - only the numeric form is honoured; a header absent,
+    non-numeric, or an HTTP-date string (``float(raw)`` raises ``ValueError``
+    the same way) all fall to ``BACKOFF_RETRY_AFTER_DEFAULT_SECONDS``."""
     if raw is not None:
         try:
             value = float(raw)
         except (TypeError, ValueError):
-            value = None
+            pass
         else:
             return max(
                 BACKOFF_RETRY_AFTER_MIN_SECONDS,
@@ -596,32 +602,56 @@ class HttpApiSource:
         self, path: str, page_size: int, batch_pages: List[int]
     ) -> List[EnvelopePage]:
         """Submits every page in ``batch_pages`` to a ``ThreadPoolExecutor``
-        AT ONCE (AC-11-03: at most N in flight, N == this batch's size) and
-        drains results in REQUESTED-PAGE order (never completion order,
-        AC-11-04) - returns them ascending by page. A halving signal
-        (``_PageTimedOutTwice``) or any ``HttpSourceError``/
-        ``_ConcurrentBackoff`` cancels the WHOLE in-flight set
-        (``executor.shutdown(cancel_futures=True)``) and re-raises the
-        FIRST fault observed (AC-11-07/08/10) - never assembled, never a
-        second batch submitted."""
+        AT ONCE (AC-11-03: at most N in flight, N == this batch's size - one
+        worker per page, all started concurrently) and returns them ascending
+        by REQUESTED page (never completion order, AC-11-04).
+
+        sprint-5/11 S6 review round 1 (SF-2/SF-3) - the drain itself checks
+        each page's OWN future in ASCENDING page order (``future.result()``,
+        never ``as_completed``): a fault on a LOWER page always outranks one
+        on a higher page (nothing a later page could report would ever
+        change which fault matters), so checking low-to-high and raising the
+        FIRST one found is deterministic regardless of which worker actually
+        finished first - unlike ``as_completed``'s own arrival order, which a
+        genuine two-fault batch (e.g. a fast 4xx on one page racing a slow
+        AC-10-75 timeout-twice halving signal on another) made non-
+        deterministic. It is also BOUNDED time for free: the moment an
+        earlier page's own result raises, this returns without ever calling
+        ``.result()`` on a later page's future - a later page still mid-
+        flight (or deliberately stuck) is never waited on.
+
+        A fault (any ``HttpSourceError``, ``_ConcurrentBackoff``, or a
+        halving signal ``_PageTimedOutTwice``) cancels the batch
+        (``executor.shutdown(cancel_futures=True)``, non-blocking - see
+        below) and re-raises verbatim (AC-11-07/08/10) - never assembled,
+        never a second batch submitted.
+
+        ``shutdown(wait=False, ...)`` - deliberately NON-blocking: a
+        ``wait=True`` shutdown would block THIS call on every OTHER already-
+        running worker in the batch finishing too, even ones whose own
+        result was never needed (the exact page we just avoided waiting on,
+        above) - reintroducing the unbounded wait this method exists to
+        avoid. ``cancel_futures=True`` still cancels whichever of those
+        workers had not yet started; any already running keep running to
+        completion in the background (their result, if any, is simply
+        discarded - the SAME "partials are discarded" contract a halving
+        restart already relies on) and the pool itself is garbage collected
+        once they finish."""
         results: Dict[int, EnvelopePage] = {}
         executor = ThreadPoolExecutor(max_workers=len(batch_pages))
         try:
             futures = {
-                executor.submit(self._fetch_page_concurrent, path, p, page_size): p
+                p: executor.submit(self._fetch_page_concurrent, path, p, page_size)
                 for p in batch_pages
             }
-            first_error: Optional[BaseException] = None
-            for future in as_completed(futures):
-                try:
-                    results[futures[future]] = future.result()
-                except BaseException as exc:  # noqa: BLE001 - re-raised verbatim below
-                    if first_error is None:
-                        first_error = exc
+            # A fault on ``futures[p]`` (any exception ``_fetch_page_
+            # concurrent`` raises) propagates straight out of ``.result()``
+            # here, verbatim - no catch/re-raise needed; it still triggers
+            # the ``finally`` below before leaving this method.
+            for p in batch_pages:
+                results[p] = futures[p].result()
         finally:
-            executor.shutdown(wait=True, cancel_futures=True)
-        if first_error is not None:
-            raise first_error
+            executor.shutdown(wait=False, cancel_futures=True)
         return [results[p] for p in batch_pages]
 
     def _walk_path_concurrent(
@@ -684,9 +714,45 @@ class HttpApiSource:
                     ok=False,
                 )
                 time.sleep(_clamp_retry_after_seconds(backoff.retry_after))
+                # sprint-5/11 S6 review round 1 (SF-1) - the walk ACTUALLY
+                # finishes serially from here (`_walk_path_serial`, never
+                # concurrent again for the rest of this `_walk_path` call),
+                # so `source_concurrency` must read 1, not the configured N
+                # this attempt never got to use.
+                self._last_walk_concurrency = 1
                 return self._walk_path_serial(path, page_size)
 
             for p, parsed in zip(batch_pages, parsed_pages):
+                # sprint-5/11 S6 review round 1 (BLOCKER B1) - the SAME
+                # shape_change guard the serial walker raises (AC-08-23): a
+                # page inside a declared concurrent batch answering a
+                # DIFFERENT envelope kind than page 1 established is server-
+                # side drift, not data, and must fail the whole walk before
+                # anything from it is ingested - never silently accepted.
+                if parsed.kind != established_kind:
+                    raise HttpSourceError(
+                        f"Page {p} answered a '{parsed.kind}' shape but page 1 "
+                        f"was '{established_kind}'.",
+                        code="shape_change",
+                        page=p,
+                    )
+                # sprint-5/11 S6 review round 1 (SF-4) - a page INSIDE the
+                # server's own declared range (2..TotalPages) that comes back
+                # empty is a HOLE, not a legitimate end-of-data signal (unlike
+                # the serial walker's own "empty page ends the walk cleanly" -
+                # that rule only applies because the serial walk discovers the
+                # end iteratively; here the server already told us how many
+                # pages exist, so a short one is exactly the corruption this
+                # whole slice exists to refuse - AC-11-05's own "never
+                # silently changes a data set").
+                if not parsed.rows:
+                    raise HttpSourceError(
+                        f"AutoCount declared {total_pages} pages for '{path}' "
+                        f"but page {p} returned no rows - the page set is "
+                        f"incomplete.",
+                        code="shape",
+                        page=p,
+                    )
                 scanned.extend(parsed.rows)
                 if parsed.total_count is not None:
                     reported_total = parsed.total_count
