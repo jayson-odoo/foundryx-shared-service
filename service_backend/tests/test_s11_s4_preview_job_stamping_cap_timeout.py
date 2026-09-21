@@ -287,7 +287,12 @@ def test_a_failed_sample_job_stamps_nothing_and_reports_a_field_error(client, db
 
     config = _entity_config(db, company.id)
     assert config.last_preview_at is None
-    assert config.result_columns == []
+    # sprint-5/11 review round 1 (S7) - AC-11-25 says "stamp NOTHING" on a
+    # failure path; the coder's earlier normalizer (NULL -> []) violated
+    # that (a write on the failure path). Every READER already normalizes
+    # (`effective_result_columns`, `EtlTaskResponse.resultColumns`'s own
+    # `[]` default) - the STORED row stays untouched (SQL NULL) instead.
+    assert config.result_columns is None
 
     poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=_auth(client))
     body = poll.json()

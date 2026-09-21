@@ -146,6 +146,12 @@ Pending forever, the nastiest footgun in this codebase), with two scopes:
 | `sample` | `EtlService.preview_http` (page 1 x 50 rows, plus one page per lookup, plus combine) | `result_columns`, `last_preview_at` (AC-08-20) |
 | `full` | `EtlService.preview_task` (full walk, mapping, Sorento `dry_run`) | `last_preview_at`, `last_preview_failed_count` |
 
+**Ops note (review round 1):** `autocount_source_preview` is routed through the SAME generic
+`jobs.run` task as `autocount_sync`/`autocount_pull_snapshot` and therefore shares the `jobs`
+queue (`worker_jobs`, `-Q jobs -c 2`, §2.6) with sync runs and snapshot builds - there is no
+dedicated preview queue in this plan, so an operator's Test/Run preview can wait behind a long
+sync or snapshot build already in flight.
+
 The two POST routes keep their paths and become 202 `{jobId, status}`; two new routes,
 `GET /autocount/previews/{jobId}` and `POST /autocount/previews/{jobId}/cancel`, complete the
 surface. These are session-authed internal routes with exactly one consumer (this frontend), so

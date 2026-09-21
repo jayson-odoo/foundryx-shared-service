@@ -709,16 +709,12 @@ def test_preview_http_with_another_tenants_company_id_404s_never_leaks(client, h
         )
     finally:
         app.dependency_overrides.pop(get_http_transport, None)
-    # sprint-5/11 (AC-11-21/22) - the tenant-scope guard still fires (the
-    # SAME `CompanyNotFound`, generic message, no leak), but INSIDE the job
-    # now rather than synchronously - the route itself always 202s; the
-    # cross-tenant `companyId` surfaces as a FAILED job, never a leak.
-    assert response.status_code == 202, response.text
-    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=headers)
-    assert poll.status_code == 200, poll.text
-    body = poll.json()
-    assert body["status"] == "failed", body
-    assert "not found" in (body["error"] or "").lower(), body
+    # sprint-5/11 review round 1 (S5) - reverted back to its ORIGINAL,
+    # synchronous expectation: the tenant-scope guard fires in
+    # `PreviewJobService.start_sample`'s own PRE-FLIGHT, before any job row
+    # exists, so a cross-tenant `companyId` still 404s directly - never a
+    # 202-then-poll-to-discover-it-failed round trip.
+    assert response.status_code == 404, response.text
 
 
 # ── S7 (sprint-5/08 review round 1, AC-08-16 second clause) ─────────────────

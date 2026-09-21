@@ -40,7 +40,6 @@ from app.jobs.service import JobService
 from app.models.background_job import JOB_ABORTED, JOB_DONE, JOB_FAILED, BackgroundJob
 
 from .models import AcEntityConfig
-from .repositories import EntityConfigRepository
 from .schemas import (
     BrandContractGate,
     ContractGate,
@@ -120,7 +119,15 @@ def _task_echo_model(view: EtlTaskView) -> EtlTaskResponse:
     router (services never depend on routers). Returned as the PYDANTIC
     model (not a dump) so a caller that nests it in a SIBLING response
     model (``HttpPreviewResponse.task``) gets ONE encoder pass, never two -
-    see ``_run_sample``'s own ``Decimal``-safety note."""
+    see ``_run_sample``'s own ``Decimal``-safety note.
+
+    sprint-5/11 S4 review round 1 (S4) - ``previewJobId`` is ALWAYS forced to
+    ``None`` here, never ``view.preview_job_id``: both call sites build this
+    echo for a TERMINAL (``done``) result, read BEFORE ``_finish`` releases
+    the claim - so ``view.preview_job_id`` still names THIS job. A stale
+    non-null id shipped on the wire is exactly the bug: the FE `apply()`s it
+    as if a preview were still in flight, and the OTHER tab's hook then
+    attaches to a job that is already done."""
     return EtlTaskResponse(
         companyId=view.company_id,
         entityType=view.entity_type,
@@ -144,7 +151,7 @@ def _task_echo_model(view: EtlTaskView) -> EtlTaskResponse:
         contractGate=(ContractGate(**view.contract_gate) if view.contract_gate else None),
         deliveryMode=view.delivery_mode,
         combineOutputColumns=view.combine_output_columns,
-        previewJobId=view.preview_job_id,
+        previewJobId=None,
     )
 
 
@@ -211,23 +218,6 @@ def run_autocount_source_preview(
         _finish(status=JOB_ABORTED)
 
 
-def _normalize_never_stamped_result_columns(
-    db: Session, tenant_id: str, company_id: str, entity_type: str,
-) -> None:
-    """AC-11-25 - a failed sample preview stamps nothing NEW, but a task
-    that has never once landed a successful preview reads its (never
-    written) ``result_columns`` as SQL NULL - normalized to the SAME `[]`
-    the wire schema (``EtlTaskResponse.resultColumns``) already defaults to,
-    so a task's stored shape and its own read shape never disagree over
-    "no columns yet" vs "unset". A task that DID previously stamp real
-    columns is left untouched - this only ever moves NULL -> ``[]``."""
-    if not company_id or not entity_type:
-        return
-    config = EntityConfigRepository(db).get(tenant_id, company_id, entity_type)
-    if config is not None and config.result_columns is None:
-        config.result_columns = []
-
-
 def _run_sample(
     db: Session,
     finish,
@@ -253,17 +243,14 @@ def _run_sample(
             transport=transport,
         )
     except EtlValidationError as exc:
-        _normalize_never_stamped_result_columns(db, tenant_id, company_id, entity_type)
         finish(status=JOB_FAILED, error=exc.message, result={"fieldErrors": exc.field_errors})
         return
     except (AutocountServiceError, HttpSourceError) as exc:
         logger.warning("autocount_source_preview (sample) failed: %s", exc.message)
-        _normalize_never_stamped_result_columns(db, tenant_id, company_id, entity_type)
         finish(status=JOB_FAILED, error=exc.message)
         return
     except Exception as exc:  # noqa: BLE001 - operator-safe, never silently swallowed
         logger.exception("autocount_source_preview (sample) crashed")
-        _normalize_never_stamped_result_columns(db, tenant_id, company_id, entity_type)
         finish(status=JOB_FAILED, error=f"The preview could not be run: {exc}")
         return
 

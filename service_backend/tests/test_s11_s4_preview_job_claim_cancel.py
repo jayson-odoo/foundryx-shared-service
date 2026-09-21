@@ -27,6 +27,7 @@ from app.models.background_job import (
     JOB_ABORTED,
     JOB_DONE,
     JOB_FAILED,
+    JOB_PENDING,
     JOB_RUNNING,
     BackgroundJob,
 )
@@ -396,6 +397,120 @@ def test_cancel_on_a_terminal_job_is_a_no_op_200_carrying_the_terminal_status(cl
     response = client.post(f"/autocount/previews/{job.id}/cancel", headers=_auth(client))
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "done", response.json()
+
+
+# ── sprint-5/11 S4 review round 1 (BLOCKER B1) - the claim survives a ───────
+# cancel from ``pending`` (the worker's own ``run_job`` skips a job that is
+# no longer PENDING/RUNNING once it flips ``aborted``, so nothing else would
+# ever release it), and ``_start`` refuses to re-attach to a TERMINAL claim.
+
+
+def test_cancel_from_pending_releases_the_claim_and_the_next_post_mints_a_new_job(client, db):
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    _http_task(db, company, conn.id)
+
+    pending = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID, type=JOB_TYPE, status=JOB_PENDING,
+        payload_json={
+            "scope": "sample", "companyId": company.id, "entityType": ENTITY_PRODUCT,
+            "request": {"connectionId": conn.id, "path": "/itembypage"},
+        },
+    )
+    db.add(pending)
+    db.flush()
+    config = _entity_config(db, company.id)
+    config.preview_job_id = pending.id
+    db.commit()
+
+    response = client.post(f"/autocount/previews/{pending.id}/cancel", headers=_auth(client))
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "cancelled", response.json()
+
+    db.refresh(config)
+    assert config.preview_job_id is None, (
+        "cancelling a PENDING job must release the claim in the SAME "
+        "transaction that stamps 'aborted' - the worker's own run_job "
+        "returns early for a non-PENDING/RUNNING job, so nothing else "
+        "would ever release it"
+    )
+
+    from app.main import app
+    from modules.autocount.http_client import get_http_transport
+
+    app.dependency_overrides[get_http_transport] = lambda: _single_page_transport(
+        [{"ItemCode": "A2"}]
+    )
+    try:
+        second = client.post(
+            "/autocount/http/preview",
+            json={
+                "scope": "sample", "companyId": company.id, "entityType": ENTITY_PRODUCT,
+                "connectionId": conn.id, "path": "/itembypage",
+            },
+            headers=_auth(client),
+        )
+    finally:
+        app.dependency_overrides.pop(get_http_transport, None)
+
+    assert second.status_code == 202, second.text
+    assert second.json()["jobId"] != pending.id, (
+        "a NEW job must be minted - the cancelled job's claim was already released"
+    )
+
+
+def test_start_against_a_stale_terminal_claim_releases_it_and_mints_a_new_job(client, db):
+    """A claim that names an ALREADY-terminal job (a residual claim its own
+    terminal path never released, for whatever reason) must never block the
+    next Test forever - ``_start`` treats a terminal claimed job as
+    not-in-flight: release, then start fresh."""
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    _http_task(db, company, conn.id)
+
+    stale_done = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID, type=JOB_TYPE, status=JOB_DONE,
+        payload_json={"scope": "sample", "companyId": company.id, "entityType": ENTITY_PRODUCT},
+        result_json={
+            "scope": "sample",
+            "preview": {"envelope": "list", "columns": [], "rows": [], "durationMs": 1},
+        },
+    )
+    db.add(stale_done)
+    db.flush()
+    config = _entity_config(db, company.id)
+    config.preview_job_id = stale_done.id
+    db.commit()
+
+    from app.main import app
+    from modules.autocount.http_client import get_http_transport
+
+    app.dependency_overrides[get_http_transport] = lambda: _single_page_transport(
+        [{"ItemCode": "A3"}]
+    )
+    try:
+        response = client.post(
+            "/autocount/http/preview",
+            json={
+                "scope": "sample", "companyId": company.id, "entityType": ENTITY_PRODUCT,
+                "connectionId": conn.id, "path": "/itembypage",
+            },
+            headers=_auth(client),
+        )
+    finally:
+        app.dependency_overrides.pop(get_http_transport, None)
+
+    assert response.status_code == 202, response.text
+    assert response.json()["jobId"] != stale_done.id, (
+        "a TERMINAL claimed job must never be re-attached to - _start must "
+        "release it and mint a fresh job"
+    )
+    # Under this suite's eager execution the fresh job ALSO completes within
+    # the request and releases ITS OWN claim on its own terminal path (mirrors
+    # `test_claim_is_released_when_a_sample_job_completes`) - the assertion
+    # that matters here is the one above: a DIFFERENT job id was minted.
+    db.refresh(config)
+    assert config.preview_job_id is None
 
 
 def test_cancel_stops_a_multi_page_full_scope_walk_before_it_completes(

@@ -418,7 +418,7 @@ def ideation_session_factory(_ideation_session_factory_template):
     engine.dispose()
 
 
-_HTTP_RETRY_TEST_FILE_RE = re.compile(r"^test_(autocount_http_|s10_)")
+_HTTP_RETRY_TEST_FILE_RE = re.compile(r"^test_(autocount_http_|s10_|s11_)")
 
 
 @pytest.fixture(autouse=True)
@@ -469,7 +469,7 @@ def _stub_dns_in_autocount_http_tests(request, monkeypatch):
         monkeypatch.setattr("socket.getaddrinfo", _stub_getaddrinfo)
 
 
-_LIVE_NETWORK_BLOCK_FILE_RE = re.compile(r"^test_(autocount|s10_)")
+_LIVE_NETWORK_BLOCK_FILE_RE = re.compile(r"^test_(autocount|s10_|s11_)")
 
 
 class LiveNetworkAttempted(RuntimeError):

@@ -449,13 +449,10 @@ export const realAutocountService: AutocountService = {
   },
 
   // ── preview job (sprint-5/11, Group B) - contract documented on
-  // `AutocountService`. NOT YET LIVE (S4 backend) - `autocountService` binds
-  // straight to this object today (no phase-1 overlay - the Source tab's
-  // Test and Review & Activate's Run preview stay on their existing
-  // synchronous `previewHttp`/`previewEtlTask` calls until S4 flips
-  // `useHttpPreview`/`useEtlTaskPreview` over to this surface). Written now
-  // so the type contract compiles once the backend ships it; a call before
-  // then is a 404, never reached from the app.
+  // `AutocountService`. LIVE since S4: the real `autocount_source_preview`
+  // job + `/autocount/previews/*` routes back every call below;
+  // `useHttpPreview`/`useEtlTaskPreview` (the Source tab's Test and Review &
+  // Activate's Run preview) poll through this surface, no phase-1 overlay.
 
   startPreviewJob(input: AutocountPreviewJobStartInput) {
     const path = input.scope === 'sample' ? '/autocount/http/preview' : `${etlTaskPath(input.companyId, input.entityType)}/preview`;

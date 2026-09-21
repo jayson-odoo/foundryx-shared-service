@@ -876,7 +876,7 @@ class HttpPreviewResponse(ApiModel):
     """``POST /autocount/http/preview`` - one page-1 sample (AC-08-14).
 
     ``task`` (sprint-5/08 review round 7) echoes the SAME task shape
-    ``EtlPreviewResponse.task``/every lifecycle route already returns -
+    ``EtlTaskResponse``/every lifecycle route already returns -
     non-null only when the request named both ``companyId``/``entityType``
     AND the preview succeeded (the service's own stamping gate). The Source
     tab's Test button reads it to `apply()` the freshly-stamped
@@ -925,15 +925,6 @@ class HttpPreviewResponse(ApiModel):
     # and it is the SAME set the backend itself stores as `result_columns`
     # and re-validates saves against.
     rawColumns: List[str] = []
-
-
-class EtlPreviewResponse(ApiModel):
-    """``POST .../etl-task/preview`` - the initial-load dry run. ``preview`` is
-    the SAME shape the batch review renders; ``task`` is the task after it (its
-    ``lastPreviewAt`` stamped when the dry run completed)."""
-
-    task: EtlTaskResponse
-    preview: Dict[str, Any]
 
 
 class PreviewJobStartOut(ApiModel):

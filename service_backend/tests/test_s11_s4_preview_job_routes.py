@@ -291,6 +291,65 @@ def test_sample_scope_never_calls_preview_http_directly_from_the_router(monkeypa
     assert response.status_code != 500, response.text
 
 
+def test_sample_scope_post_is_non_blocking_under_a_real_worker_and_never_touches_the_source(
+    client, db, monkeypatch,
+):
+    """sprint-5/11 review round 1 (S9) - AC-11-22's non-blocking pin under a
+    REAL (non-eager) worker deployment: with
+    ``settings.celery_task_always_eager=False`` and job dispatch stubbed
+    (mirrors ``test_autocount_http_lifecycle.py``'s own sweep-dispatch seam),
+    the POST must land well under a second and the source must NEVER be
+    requested from inside the request/response cycle - only a worker
+    (stubbed away here) would ever run the job."""
+    import time
+
+    from app.config import settings
+    from app.jobs import worker as worker_module
+
+    monkeypatch.setattr(settings, "celery_task_always_eager", False)
+    dispatched: List[Any] = []
+    monkeypatch.setattr(
+        worker_module.run_job_task, "delay", lambda job_id: dispatched.append(job_id)
+    )
+    monkeypatch.setattr(
+        worker_module.run_job_task, "apply_async",
+        lambda args=None, queue=None, **kw: dispatched.append((args, queue)),
+    )
+
+    conn = _open_connection(db)
+    calls: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(
+            200,
+            json={"TotalCount": 1, "Page": 1, "PageSize": 50, "TotalPages": 1, "Data": [{"ItemCode": "A1"}]},
+        )
+
+    from app.main import app
+    from modules.autocount.http_client import get_http_transport
+
+    app.dependency_overrides[get_http_transport] = lambda: httpx.Client(
+        transport=httpx.MockTransport(handler)
+    )
+    try:
+        started = time.monotonic()
+        response = client.post(
+            "/autocount/http/preview",
+            json={"scope": "sample", "connectionId": conn.id, "path": "/itembypage"},
+            headers=_auth(client),
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        app.dependency_overrides.pop(get_http_transport, None)
+
+    assert response.status_code == 202, response.text
+    assert elapsed < 1.0, f"the POST took {elapsed:.3f}s - it must never block on the walk"
+    assert len(calls) == 0, "no source page must be requested inside the request/response cycle"
+    assert len(dispatched) == 1, "the job must be handed to the worker, never run inline"
+    assert response.json()["status"] == "queued", response.json()
+
+
 # ── AC-11-21/22 - the full-scope POST becomes an async job start too ────────
 
 
@@ -332,6 +391,37 @@ def test_full_scope_preflight_state_error_422_or_409s_before_any_job_is_created(
 
     assert response.status_code in (404, 409, 422), response.text
     assert _job_count(db) == before
+
+
+def test_full_scope_never_calls_preview_task_directly_from_the_router(monkeypatch, client, db):
+    """sprint-5/11 review round 1 (S9) - the full-scope twin of
+    ``test_sample_scope_never_calls_preview_http_directly_from_the_router``:
+    the route handler must not call ``EtlService.preview_task`` itself -
+    only the job HANDLER may, so the request truly returns before any walk
+    happens."""
+    import modules.autocount.services.etl_service as etl_service_module
+
+    def _boom(*args, **kwargs):
+        raise AssertionError(
+            "POST .../etl-task/preview must not call EtlService.preview_task "
+            "directly from the request - only the background job handler may."
+        )
+
+    monkeypatch.setattr(etl_service_module.EtlService, "preview_task", _boom)
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    _http_task(db, company, conn.id)
+
+    response = client.post(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_PRODUCT}/etl-task/preview",
+        json={"scope": "full", "companyId": company.id, "entityType": ENTITY_PRODUCT},
+        headers=_auth(client),
+    )
+    # A 500 here would mean the assertion above fired from INSIDE the request
+    # (the forbidden direct call happened); any other outcome (202, or a
+    # clean 4xx before the job even reaches the handler) is fine.
+    assert response.status_code != 500, response.text
 
 
 # ── AC-11-70/71 - permission + tenant scoping ────────────────────────────────
@@ -400,6 +490,117 @@ def test_cancel_preview_job_requires_companies_manage_and_404s_cross_tenant(clie
     db.commit()
     response = client.post(f"/autocount/previews/{theirs.id}/cancel", headers=_auth(client))
     assert response.status_code == 404, response.text
+
+
+# ── sprint-5/11 review round 1 (S1) - the poll route stays on companies.read
+# for status/progress, but withholds `result` (the walked rows / dry-run
+# predictions) unless the caller ALSO holds the scope's own start key -
+# companies.manage for sample, autocount.sync.run for full. Resolved in the
+# SERVICE (`PreviewJobService._can_see_result`), never the router.
+
+
+def test_get_preview_job_omits_result_for_a_sample_job_without_companies_manage(client, db):
+    job = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID, type=JOB_TYPE, status=JOB_DONE,
+        payload_json={"scope": "sample", "companyId": "x", "entityType": "product"},
+        result_json={
+            "scope": "sample",
+            "preview": {"envelope": "list", "columns": [], "rows": [{"ItemCode": "A1"}], "durationMs": 1},
+        },
+    )
+    db.add(job)
+    db.commit()
+
+    _limited_user(db, ["autocount.companies.read"], "readonly-sample@example.com")
+    limited = _auth(client, "readonly-sample@example.com", "limited1234")
+
+    response = client.get(f"/autocount/previews/{job.id}", headers=limited)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "done", body
+    assert body["result"] is None, body
+
+
+def test_get_preview_job_includes_result_for_a_sample_job_with_companies_manage(client, db):
+    job = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID, type=JOB_TYPE, status=JOB_DONE,
+        payload_json={"scope": "sample", "companyId": "x", "entityType": "product"},
+        result_json={
+            "scope": "sample",
+            "preview": {"envelope": "list", "columns": [], "rows": [{"ItemCode": "A1"}], "durationMs": 1},
+        },
+    )
+    db.add(job)
+    db.commit()
+
+    _limited_user(
+        db, ["autocount.companies.read", "autocount.companies.manage"], "manager-sample@example.com"
+    )
+    manager = _auth(client, "manager-sample@example.com", "limited1234")
+
+    response = client.get(f"/autocount/previews/{job.id}", headers=manager)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["result"] is not None, body
+    assert body["result"]["scope"] == "sample"
+
+
+def test_get_preview_job_omits_result_for_a_full_job_without_sync_run(client, db):
+    job = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID, type=JOB_TYPE, status=JOB_DONE,
+        payload_json={"scope": "full", "companyId": "x", "entityType": "product"},
+        result_json={
+            "scope": "full", "task": {},
+            "preview": {
+                "previewable": True, "sink": "sorento",
+                "summary": {"total": 0, "created": 0, "updated": 0, "failed": 0, "retryable": 0},
+                "predictions": [],
+            },
+        },
+    )
+    db.add(job)
+    db.commit()
+
+    # companies.manage alone (no sync.run) is the SAMPLE scope's own start
+    # key, deliberately insufficient here - proves the gate is per-SCOPE,
+    # not just "any start key".
+    _limited_user(
+        db, ["autocount.companies.read", "autocount.companies.manage"], "readonly-full@example.com"
+    )
+    limited = _auth(client, "readonly-full@example.com", "limited1234")
+
+    response = client.get(f"/autocount/previews/{job.id}", headers=limited)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["result"] is None, body
+
+
+def test_get_preview_job_includes_result_for_a_full_job_with_sync_run(client, db):
+    job = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID, type=JOB_TYPE, status=JOB_DONE,
+        payload_json={"scope": "full", "companyId": "x", "entityType": "product"},
+        result_json={
+            "scope": "full", "task": {},
+            "preview": {
+                "previewable": True, "sink": "sorento",
+                "summary": {"total": 0, "created": 0, "updated": 0, "failed": 0, "retryable": 0},
+                "predictions": [],
+            },
+        },
+    )
+    db.add(job)
+    db.commit()
+
+    _limited_user(
+        db, ["autocount.companies.read", "autocount.sync.run"], "sync-full@example.com"
+    )
+    manager = _auth(client, "sync-full@example.com", "limited1234")
+
+    response = client.get(f"/autocount/previews/{job.id}", headers=manager)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["result"] is not None, body
+    assert body["result"]["scope"] == "full"
 
 
 # ── the wire status vocabulary translation (AC-11-22/27) ───────────────────

@@ -6,16 +6,73 @@ import { autocountService } from '@/services/autocount-service';
 import type { AutocountPreviewJob, AutocountPreviewJobStartInput } from '@/types/autocount';
 
 /**
- * The preview-job polling engine (sprint-5/11, Group B) - the ONE hook both
- * the Source tab's Test and Review & Activate's Run preview drive (D5: one
- * job kind, one progress UI, one cancel path). `UI -> hook -> service ->
- * api-client`; this hook never calls `fetch`/`axios` directly.
- *
- * Poll cadence is short and deterministic (no fake timers needed) so a
- * mock-driven UI settles in well under a second - the mock's own job ticks
- * land roughly every 60ms.
+ * The preview-job polling ENGINE (sprint-5/11, Group B; consolidated review
+ * round 1, S2/S3/S6) - `pollPreviewJob` below is the ONE polling loop every
+ * preview-job caller drives: this file's own `useAutocountPreviewJob`, AND
+ * `use-autocount-etl.ts`'s `useEtlTaskPreview`/`useHttpPreview` (the Source
+ * tab's Test and Review & Activate's Run preview). A fix to cleanup/backoff/
+ * error-handling here fixes every caller at once - no more hand-rolled
+ * `for(;;)` loops per hook.
  */
-const DEFAULT_POLL_MS = 200;
+
+/**
+ * The STANDING poll cadence (S2/S3/S6): 250ms for the first second, then
+ * 1500ms - a 9-minute full-scope walk now costs roughly 360 GETs instead of
+ * the ~2,700 a flat 200ms poll cost. A parameter (never a module constant
+ * alone) so a Vitest suite can shrink it to a few ms without fake timers.
+ */
+export type PreviewJobPollDelay = (elapsedMs: number) => number;
+
+export function defaultPreviewJobPollDelay(elapsedMs: number): number {
+  return elapsedMs < 1000 ? 250 : 1500;
+}
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export interface PollPreviewJobOptions {
+  /** Checked before every poll AND before acting on its result - a stale
+   * (superseded by a fresh start/attach/reset, or unmounted) run's poll
+   * response is dropped silently rather than landing in state. */
+  isStale: () => boolean;
+  /** One settled poll's result. Return `true` to keep polling, `false` to
+   * stop (a terminal status, or the caller's own decision - e.g. AC-11-23's
+   * "this job belongs to the OTHER scope, leave it idle"). */
+  onJob: (job: AutocountPreviewJob) => boolean;
+  /** A poll itself failed (a 404 for a pruned job id, a network error) -
+   * the loop always stops after this fires. The caller decides how to
+   * surface it; this is what used to be an UNCAUGHT rejection in the old
+   * hand-rolled `for(;;)` loops (S2/S3/S6's own bug: a pruned re-attach id
+   * left the hook stuck in `loading` forever, permanently disabling the
+   * Test button). */
+  onError: (error: unknown) => void;
+  delay?: PreviewJobPollDelay;
+}
+
+/**
+ * A plain async function, never a hook itself - every caller drives it from
+ * inside a `useCallback`/effect, not a component body, so this cannot use
+ * `useState`/`useEffect` of its own.
+ */
+export async function pollPreviewJob(jobId: string, options: PollPreviewJobOptions): Promise<void> {
+  const delayFor = options.delay ?? defaultPreviewJobPollDelay;
+  const startedAt = Date.now();
+  for (;;) {
+    if (options.isStale()) return;
+    let job: AutocountPreviewJob;
+    try {
+      job = await autocountService.getPreviewJob(jobId);
+    } catch (e) {
+      if (options.isStale()) return;
+      options.onError(e);
+      return;
+    }
+    if (options.isStale()) return;
+    if (!options.onJob(job)) return;
+    await pause(delayFor(Date.now() - startedAt));
+  }
+}
 
 /**
  * `cancelling` is a CLIENT-side phase (AC-11-27's "cancel control"): the
@@ -57,22 +114,19 @@ export interface UseAutocountPreviewJobResult {
 }
 
 export function useAutocountPreviewJob(
-  pollMs: number = DEFAULT_POLL_MS,
+  pollMs: number = 200,
 ): UseAutocountPreviewJobResult {
   const [state, setState] = useState<UseAutocountPreviewJobState>({ phase: 'idle', job: null });
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tokenRef = useRef(0);
   const cancellingRef = useRef(false);
   const activeJobIdRef = useRef<string | null>(null);
 
-  const clearTimer = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
+  // Cleanup on unmount - stops the loop's next `isStale()` check from acting
+  // (any in-flight `getPreviewJob` await still resolves, but its result is
+  // dropped rather than landing a `setState` on an unmounted component).
+  useEffect(() => () => {
+    tokenRef.current += 1;
   }, []);
-
-  useEffect(() => clearTimer, [clearTimer]);
 
   const phaseForStatus = useCallback((job: AutocountPreviewJob): PreviewJobPhase => {
     if (job.status === 'cancelled') return 'cancelled';
@@ -84,17 +138,14 @@ export function useAutocountPreviewJob(
 
   const poll = useCallback(
     (jobId: string, token: number) => {
-      autocountService
-        .getPreviewJob(jobId)
-        .then((job) => {
-          if (token !== tokenRef.current) return;
+      void pollPreviewJob(jobId, {
+        isStale: () => token !== tokenRef.current,
+        delay: () => pollMs,
+        onJob: (job) => {
           setState({ phase: phaseForStatus(job), job });
-          if (job.status === 'queued' || job.status === 'running') {
-            timerRef.current = setTimeout(() => poll(jobId, token), pollMs);
-          }
-        })
-        .catch((e: unknown) => {
-          if (token !== tokenRef.current) return;
+          return job.status === 'queued' || job.status === 'running';
+        },
+        onError: (e) => {
           setState((prev) => ({
             phase: 'failed',
             job: prev.job
@@ -105,26 +156,25 @@ export function useAutocountPreviewJob(
                 }
               : null,
           }));
-        });
+        },
+      });
     },
     [phaseForStatus, pollMs],
   );
 
   const attach = useCallback(
     (jobId: string) => {
-      clearTimer();
       const token = (tokenRef.current += 1);
       cancellingRef.current = false;
       activeJobIdRef.current = jobId;
       setState({ phase: 'queued', job: null });
       poll(jobId, token);
     },
-    [clearTimer, poll],
+    [poll],
   );
 
   const start = useCallback(
     async (input: AutocountPreviewJobStartInput) => {
-      clearTimer();
       const token = (tokenRef.current += 1);
       cancellingRef.current = false;
       activeJobIdRef.current = null;
@@ -151,7 +201,7 @@ export function useAutocountPreviewJob(
         });
       }
     },
-    [clearTimer, poll],
+    [poll],
   );
 
   const cancel = useCallback(async () => {
@@ -169,12 +219,11 @@ export function useAutocountPreviewJob(
   }, [state.phase]);
 
   const reset = useCallback(() => {
-    clearTimer();
     tokenRef.current += 1;
     cancellingRef.current = false;
     activeJobIdRef.current = null;
     setState({ phase: 'idle', job: null });
-  }, [clearTimer]);
+  }, []);
 
   const busy = state.phase === 'queued' || state.phase === 'running' || state.phase === 'cancelling';
 

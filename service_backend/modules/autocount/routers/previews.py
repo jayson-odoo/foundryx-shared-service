@@ -27,8 +27,11 @@ def get_preview_job(
     db: Session = Depends(get_db),
 ) -> PreviewJobOut:
     """AC-11-22/27 - polled while ``queued``/``running``; tenant-scoped, a
-    cross-tenant or unknown job id is a uniform 404 (no leak)."""
-    view = PreviewJobService(db).get(current_user.tenant_id, job_id)
+    cross-tenant or unknown job id is a uniform 404 (no leak). ``result`` is
+    withheld (review round 1, S1) unless the caller also holds the scope's
+    own start key - resolved in the SERVICE (``effective_permission_keys``),
+    never here."""
+    view = PreviewJobService(db).get(current_user.tenant_id, job_id, current_user=current_user)
     if view is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preview job not found.")
     return view

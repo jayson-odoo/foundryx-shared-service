@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/lib/api-client';
 import { readFieldErrors, readTaskError } from '@/lib/autocount-etl';
+import {
+  defaultPreviewJobPollDelay,
+  pollPreviewJob,
+  type PreviewJobPollDelay,
+} from '@/hooks/use-autocount-preview-job';
 import { autocountService } from '@/services/autocount-service';
 import type {
   AutocountApiConnection,
@@ -19,15 +24,12 @@ import type {
 } from '@/types/autocount';
 
 /**
- * sprint-5/11 (AC-11-20..27) - the Cloudflare-safe non-blocking preview: a
- * job round-trip replaces the old single blocking request. Poll cadence is
- * short and deterministic against the mock (no fake timers needed).
+ * sprint-5/11 (AC-11-20..27; consolidated review round 1, S2/S3/S6) - the
+ * Cloudflare-safe non-blocking preview: a job round-trip replaces the old
+ * single blocking request, polled through the ONE shared engine
+ * (`use-autocount-preview-job.ts`'s `pollPreviewJob`) both tab hooks below
+ * drive - never a hand-rolled `for(;;)` loop per hook.
  */
-const PREVIEW_JOB_POLL_MS = 200;
-
-function pause(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Direct-DB ETL hooks (plan 22 S1) - the hook boundary the task editor talks
@@ -168,18 +170,22 @@ export interface UseEtlTaskPreviewResult {
 }
 
 /**
- * sprint-5/11 (AC-11-20..27) - "Run preview" starts the `full`-scope
- * `autocount_source_preview` job instead of awaiting `preview_task`
- * directly, and polls `GET /autocount/previews/{jobId}` (AC-11-22) against
- * the real backend (S4). `initialJobId` (AC-11-23/27) re-attaches to an
- * already-in-flight job after a remount/reload (`task.previewJobId`) -
- * polled without a fresh `startPreviewJob` call.
+ * sprint-5/11 (AC-11-20..27; consolidated review round 1, S2/S3/S6) - "Run
+ * preview" starts the `full`-scope `autocount_source_preview` job instead of
+ * awaiting `preview_task` directly, and polls `GET /autocount/previews/
+ * {jobId}` (AC-11-22) through the ONE shared engine (`use-autocount-preview-
+ * job.ts`'s `pollPreviewJob`) against the real backend (S4). `initialJobId`
+ * (AC-11-23/27) re-attaches to an already-in-flight job after a remount/
+ * reload (`task.previewJobId`) - polled without a fresh `startPreviewJob`
+ * call. `pollDelayMs` (S2/S3/S6) overrides the standing backoff - a test
+ * seam, never used by a real call site.
  */
 export function useEtlTaskPreview(
   companyId: string,
   entityType: string,
   onTask: (task: AutocountEtlTask) => void,
   initialJobId?: string | null,
+  pollDelayMs: PreviewJobPollDelay = defaultPreviewJobPollDelay,
 ): UseEtlTaskPreviewResult {
   const [state, setState] = useState<EtlPreviewState>({ status: 'idle' });
   const runId = useRef(0);
@@ -187,54 +193,73 @@ export function useEtlTaskPreview(
   const cancelRequested = useRef(false);
   const attachedJobIdRef = useRef<string | null>(null);
 
+  // Cleanup on unmount - the next `isStale()` check inside `pollPreviewJob`
+  // drops the in-flight poll's result rather than landing a `setState` on
+  // an unmounted component (S2/S3/S6: the hand-rolled loops had none).
+  useEffect(() => () => {
+    runId.current += 1;
+  }, []);
+
   const pollUntilTerminal = useCallback(
-    async (jobId: string, id: number) => {
-      for (;;) {
-        const job = await autocountService.getPreviewJob(jobId);
-        if (id !== runId.current) return;
-        // AC-11-23 - the claim is ONE per task regardless of scope (a
-        // `full` Run-preview job re-attach lands here too, via the SAME
-        // `task.previewJobId`): a job that turns out to belong to the
-        // OTHER scope was never THIS hook's own run - leave it idle,
-        // never a fabricated error/success.
-        if (job.scope !== 'full') {
-          setState({ status: 'idle' });
-          return;
-        }
-        if (job.status === 'queued' || job.status === 'running') {
-          setState({
-            status: 'loading',
-            stage: job.progress?.stage ?? null,
-            pagesDone: job.progress?.pagesDone ?? null,
-            pagesTotal: job.progress?.pagesTotal ?? null,
-            cancelling: cancelRequested.current,
-          });
-          await pause(PREVIEW_JOB_POLL_MS);
-          continue;
-        }
-        if (job.status === 'cancelled') {
-          setState({ status: 'idle' });
-          return;
-        }
-        if (job.status === 'failed') {
-          if (job.taskError) {
-            setState({ status: 'taskError', error: job.taskError });
-            return;
+    (jobId: string, id: number) =>
+      pollPreviewJob(jobId, {
+        isStale: () => id !== runId.current,
+        delay: pollDelayMs,
+        onJob: (job) => {
+          // AC-11-23 - the claim is ONE per task regardless of scope (a
+          // `full` Run-preview job re-attach lands here too, via the SAME
+          // `task.previewJobId`): a job that turns out to belong to the
+          // OTHER scope was never THIS hook's own run - leave it idle,
+          // never a fabricated error/success.
+          if (job.scope !== 'full') {
+            setState({ status: 'idle' });
+            return false;
           }
-          setState({ status: 'error', message: job.error ?? 'The dry run could not be completed.' });
-          return;
-        }
-        // done
-        if (job.result?.scope === 'full') {
-          onTask(job.result.task);
-          setState({ status: 'success', preview: job.result.preview });
-          return;
-        }
-        setState({ status: 'error', message: 'The dry run could not be completed.' });
-        return;
-      }
-    },
-    [onTask],
+          if (job.status === 'queued' || job.status === 'running') {
+            setState({
+              status: 'loading',
+              stage: job.progress?.stage ?? null,
+              pagesDone: job.progress?.pagesDone ?? null,
+              pagesTotal: job.progress?.pagesTotal ?? null,
+              cancelling: cancelRequested.current,
+            });
+            return true;
+          }
+          if (job.status === 'cancelled') {
+            setState({ status: 'idle' });
+            return false;
+          }
+          if (job.status === 'failed') {
+            if (job.taskError) {
+              setState({ status: 'taskError', error: job.taskError });
+            } else {
+              setState({
+                status: 'error',
+                message: job.error ?? 'The dry run could not be completed.',
+              });
+            }
+            return false;
+          }
+          // done
+          if (job.result?.scope === 'full') {
+            onTask(job.result.task);
+            setState({ status: 'success', preview: job.result.preview });
+          } else {
+            setState({ status: 'error', message: 'The dry run could not be completed.' });
+          }
+          return false;
+        },
+        onError: (e) => {
+          // S2/S3/S6 - a poll failure (e.g. a 404 for a pruned re-attach id)
+          // must never leave the hook stuck in `loading` forever - that
+          // permanently disables the Run-preview button.
+          setState({
+            status: 'error',
+            message: e instanceof ApiError ? e.message : 'The dry run could not be resumed.',
+          });
+        },
+      }),
+    [onTask, pollDelayMs],
   );
 
   const run = useCallback(async () => {
@@ -638,14 +663,20 @@ export interface UseHttpPreviewResult {
 }
 
 /**
- * sprint-5/11 (AC-11-20..27) - Test starts the `sample`-scope
- * `autocount_source_preview` job instead of awaiting `preview_http`
- * directly, and polls `GET /autocount/previews/{jobId}` (AC-11-22) against
- * the real backend (S4). `initialJobId` (AC-11-23/27) re-attaches to an
- * already-in-flight job after a remount/reload (`task.previewJobId`) -
- * polled without a fresh `startPreviewJob` call.
+ * sprint-5/11 (AC-11-20..27; consolidated review round 1, S2/S3/S6) - Test
+ * starts the `sample`-scope `autocount_source_preview` job instead of
+ * awaiting `preview_http` directly, and polls `GET /autocount/previews/
+ * {jobId}` (AC-11-22) through the ONE shared engine (`use-autocount-preview-
+ * job.ts`'s `pollPreviewJob`) against the real backend (S4). `initialJobId`
+ * (AC-11-23/27) re-attaches to an already-in-flight job after a remount/
+ * reload (`task.previewJobId`) - polled without a fresh `startPreviewJob`
+ * call. `pollDelayMs` (S2/S3/S6) overrides the standing backoff - a test
+ * seam, never used by a real call site.
  */
-export function useHttpPreview(initialJobId?: string | null): UseHttpPreviewResult {
+export function useHttpPreview(
+  initialJobId?: string | null,
+  pollDelayMs: PreviewJobPollDelay = defaultPreviewJobPollDelay,
+): UseHttpPreviewResult {
   const [state, setState] = useState<HttpPreviewState>({ status: 'idle' });
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const runId = useRef(0);
@@ -653,50 +684,71 @@ export function useHttpPreview(initialJobId?: string | null): UseHttpPreviewResu
   const cancelRequested = useRef(false);
   const attachedJobIdRef = useRef<string | null>(null);
 
+  // Cleanup on unmount - the next `isStale()` check inside `pollPreviewJob`
+  // drops the in-flight poll's result rather than landing a `setState` on
+  // an unmounted component (S2/S3/S6: the hand-rolled loops had none).
+  useEffect(() => () => {
+    runId.current += 1;
+  }, []);
+
   const pollUntilTerminal = useCallback(
     async (jobId: string, id: number): Promise<HttpPreview | false> => {
-      for (;;) {
-        const job = await autocountService.getPreviewJob(jobId);
-        if (id !== runId.current) return false;
-        // AC-11-23 - the claim is ONE per task regardless of scope (a
-        // `sample` Test job re-attach lands here too, via the SAME
-        // `task.previewJobId`): a job that turns out to belong to the
-        // OTHER scope was never THIS hook's own run - leave it idle,
-        // never a fabricated error/success.
-        if (job.scope !== 'sample') {
-          setState({ status: 'idle' });
+      let outcome: HttpPreview | false = false;
+      await pollPreviewJob(jobId, {
+        isStale: () => id !== runId.current,
+        delay: pollDelayMs,
+        onJob: (job) => {
+          // AC-11-23 - the claim is ONE per task regardless of scope (a
+          // `sample` Test job re-attach lands here too, via the SAME
+          // `task.previewJobId`): a job that turns out to belong to the
+          // OTHER scope was never THIS hook's own run - leave it idle,
+          // never a fabricated error/success.
+          if (job.scope !== 'sample') {
+            setState({ status: 'idle' });
+            return false;
+          }
+          if (job.status === 'queued' || job.status === 'running') {
+            setState({
+              status: 'loading',
+              stage: job.progress?.stage ?? null,
+              pagesDone: job.progress?.pagesDone ?? null,
+              pagesTotal: job.progress?.pagesTotal ?? null,
+              cancelling: cancelRequested.current,
+            });
+            return true;
+          }
+          if (job.status === 'cancelled') {
+            setState({ status: 'idle' });
+            return false;
+          }
+          if (job.status === 'failed') {
+            setFieldErrors(job.fieldErrors ?? {});
+            setState({ status: 'error', message: job.error ?? 'The preview could not be run.' });
+            return false;
+          }
+          // done
+          if (job.result?.scope === 'sample') {
+            setState({ status: 'success', preview: job.result.preview });
+            outcome = job.result.preview;
+          } else {
+            setState({ status: 'error', message: 'The preview could not be run.' });
+          }
           return false;
-        }
-        if (job.status === 'queued' || job.status === 'running') {
+        },
+        onError: (e) => {
+          // S2/S3/S6 - a poll failure (e.g. a 404 for a pruned re-attach id)
+          // must never leave the hook stuck in `loading` forever - that
+          // permanently disables the Test button.
+          setFieldErrors({});
           setState({
-            status: 'loading',
-            stage: job.progress?.stage ?? null,
-            pagesDone: job.progress?.pagesDone ?? null,
-            pagesTotal: job.progress?.pagesTotal ?? null,
-            cancelling: cancelRequested.current,
+            status: 'error',
+            message: e instanceof ApiError ? e.message : 'The preview could not be resumed.',
           });
-          await pause(PREVIEW_JOB_POLL_MS);
-          continue;
-        }
-        if (job.status === 'cancelled') {
-          setState({ status: 'idle' });
-          return false;
-        }
-        if (job.status === 'failed') {
-          setFieldErrors(job.fieldErrors ?? {});
-          setState({ status: 'error', message: job.error ?? 'The preview could not be run.' });
-          return false;
-        }
-        // done
-        if (job.result?.scope === 'sample') {
-          setState({ status: 'success', preview: job.result.preview });
-          return job.result.preview;
-        }
-        setState({ status: 'error', message: 'The preview could not be run.' });
-        return false;
-      }
+        },
+      });
+      return outcome;
     },
-    [],
+    [pollDelayMs],
   );
 
   const run = useCallback(

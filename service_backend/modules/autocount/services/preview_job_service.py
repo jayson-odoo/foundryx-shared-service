@@ -31,14 +31,23 @@ from app.models.background_job import (
 )
 
 from ..models import AcEntityConfig
-from ..preview_job import PREVIEW_JOB_TYPE, run_autocount_source_preview
-from ..repositories import EntityConfigRepository
+from ..preview_job import PREVIEW_JOB_TYPE, _release_claim, run_autocount_source_preview
+from ..repositories import CompanyRepository, EntityConfigRepository
 from ..schemas import PreviewJobOut, PreviewJobProgressOut, PreviewJobTaskErrorOut
+from .company_service import CompanyNotFound
 
 logger = logging.getLogger("foundryx.autocount")
 
 PREVIEW_SCOPE_SAMPLE = "sample"
 PREVIEW_SCOPE_FULL = "full"
+
+# sprint-5/11 review round 1 (S1) - the SAME two keys each scope's own start
+# route already requires (``routers/http.py``'s ``companies.manage``,
+# ``routers/companies.py``'s ``sync.run`` for the full-scope preview route) -
+# the poll route's own withheld-``result`` gate reuses them rather than
+# inventing a third key.
+SAMPLE_START_PERMISSION = "autocount.companies.manage"
+FULL_START_PERMISSION = "autocount.sync.run"
 
 # AC-11-22/27 - the wire status vocabulary translation. The backend's own
 # statuses (``app/models/background_job.py``) are ``pending/running/
@@ -63,6 +72,7 @@ class PreviewJobService:
         self.db = db
         self.jobs = JobService(db)
         self.configs = EntityConfigRepository(db)
+        self.companies = CompanyRepository(db)
 
     # ── start (sample / full) ────────────────────────────────────────────────
 
@@ -80,9 +90,19 @@ class PreviewJobService:
         transport: Any = None,
     ) -> Tuple[str, str]:
         """AC-11-21/22 - the Source tab's Test. Validates BEFORE any job row
-        exists (never queued-then-failed); returns ``(jobId, wireStatus)``."""
+        exists (never queued-then-failed); returns ``(jobId, wireStatus)``.
+
+        sprint-5/11 review round 1 (S5) - a ``companyId`` is OPTIONAL here
+        (a bare connection/path probe with no task context passes none), but
+        when one IS given it must be tenant-scoped BEFORE a job is minted -
+        otherwise a foreign ``companyId`` sails straight through into the
+        payload and only fails later, INSIDE the job (a 202 the caller has
+        to poll to discover was never going to work), instead of the SAME
+        uniform 404 every other autocount route gives a cross-tenant id."""
         from .etl_service import EtlService
 
+        if company_id and self.companies.get(tenant_id, company_id) is None:
+            raise CompanyNotFound("Company not found.")
         EtlService(self.db).validate_http_preview_request(
             tenant_id, connection_id, path, lookups=lookups,
         )
@@ -136,16 +156,19 @@ class PreviewJobService:
             config = self.configs.get(tenant_id, company_id, entity_type)
             if config is not None and config.preview_job_id:
                 job = self._get_job(tenant_id, config.preview_job_id)
-                if job is not None:
+                if job is not None and job.status not in JOB_TERMINAL_STATUSES:
                     # AC-11-23 - re-attach: a second click while a preview is
                     # already claimed shares the winner's job id, never a
                     # second walk.
                     return job.id, wire_status(job.status)
-                # A dangling claim (the job row is gone/cross-tenant, which
-                # should never happen under the invariant every terminal
-                # path releases it) - release it defensively rather than
-                # block the next Test forever, and fall through to start a
-                # fresh one.
+                # sprint-5/11 S4 review round 1 (B1) - a dangling claim: EITHER
+                # the job row is gone entirely (should never happen under the
+                # invariant every terminal path releases it), OR the job is
+                # ALREADY terminal (done/failed/cancelled) but its own
+                # release never landed on this claim - a stale ``cancel()``
+                # commit ordering, a crash, or any other gap. Either way the
+                # claim must never block the next Test forever: release it
+                # defensively and fall through to start a fresh job.
                 config.preview_job_id = None
                 self.db.commit()
 
@@ -260,28 +283,63 @@ class PreviewJobService:
             .first()
         )
 
-    def get(self, tenant_id: str, job_id: str) -> Optional[PreviewJobOut]:
+    def get(self, tenant_id: str, job_id: str, *, current_user: Any = None) -> Optional[PreviewJobOut]:
+        """AC-11-22/27. ``current_user`` (sprint-5/11 review round 1, S1) -
+        ``result`` (the walked rows / dry-run predictions) is withheld unless
+        the caller holds the SCOPE's own start key (``companies.manage`` for
+        ``sample``, ``autocount.sync.run`` for ``full``) - status/progress/
+        error stay visible to any ``companies.read`` caller regardless, so
+        the poll route stays on its existing permission."""
         job = self._get_job(tenant_id, job_id)
         if job is None:
             return None
-        return _to_wire(job)
+        return _to_wire(job, include_result=self._can_see_result(job, current_user))
+
+    def _can_see_result(self, job: BackgroundJob, current_user: Any) -> bool:
+        if current_user is None:
+            return False
+        from app.dependencies import effective_permission_keys
+
+        payload = job.payload_json or {}
+        scope = str(payload.get("scope") or "")
+        required = (
+            SAMPLE_START_PERMISSION if scope == PREVIEW_SCOPE_SAMPLE else FULL_START_PERMISSION
+        )
+        return required in effective_permission_keys(current_user)
 
     def cancel(self, tenant_id: str, job_id: str) -> Optional[PreviewJobOut]:
         """AC-11-24 - a no-op 200 carrying the terminal status against an
         already-terminal job; a live job flips to ``aborted`` and the
         handler's own cooperative checkpoint (or the final pre-finish
-        recheck) stops the walk and releases the claim."""
+        recheck) stops the walk and releases the claim.
+
+        sprint-5/11 S4 review round 1 (BLOCKER B1) - a PENDING job has no
+        handler running to release the claim on its own cooperative
+        checkpoint (``app/jobs/service.py``'s ``run_job`` returns early for a
+        non-PENDING/RUNNING job once it flips ``aborted``, so the worker will
+        now SKIP it entirely) - the claim is released HERE, in the SAME
+        transaction that stamps ``aborted``, so the next Test never finds a
+        dead claim."""
         job = self._get_job(tenant_id, job_id)
         if job is None:
             return None
         if job.status in (JOB_PENDING, JOB_RUNNING):
             job.status = JOB_ABORTED
+            payload = job.payload_json or {}
+            _release_claim(
+                self.db, tenant_id,
+                str(payload.get("companyId") or ""), str(payload.get("entityType") or ""),
+                job.id,
+            )
             self.db.commit()
             self.db.refresh(job)
         return _to_wire(job)
 
 
-def _to_wire(job: BackgroundJob) -> PreviewJobOut:
+def _to_wire(job: BackgroundJob, *, include_result: bool = True) -> PreviewJobOut:
+    """``include_result`` (S1) - the ONLY thing a missing scope-start key
+    withholds; every other key (status/progress/error/taskError/
+    fieldErrors) stays exactly as it always did."""
     payload = job.payload_json or {}
     result_json = job.result_json or {}
     progress: Optional[PreviewJobProgressOut] = None
@@ -297,7 +355,7 @@ def _to_wire(job: BackgroundJob) -> PreviewJobOut:
     task_error = None
     field_errors = None
     result: Optional[Dict[str, Any]] = None
-    if job.status == JOB_DONE:
+    if job.status == JOB_DONE and include_result:
         result = result_json or None
     elif job.status == JOB_FAILED:
         raw_task_error = result_json.get("taskError")
@@ -319,3 +377,45 @@ def _to_wire(job: BackgroundJob) -> PreviewJobOut:
         fieldErrors=field_errors,
         createdAt=job.created_at,
     )
+
+
+def snapshot_job_progress(
+    db: Session, tenant_id: str, job_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """sprint-5/11 S5 (AC-11-41/42) - the pull-snapshot build's OWN progress
+    projection, living right next to ``_to_wire``'s preview-job rule above
+    ON PURPOSE so the two sit side by side: this rule is STRICTER - present
+    ONLY once ``pagesTotal`` is known (a bare ``stage``/``done`` with no
+    total, e.g. a bare-array endpoint's very first beat, is not enough).
+    ``_to_wire`` can lean on the wire STATUS (``queued``/``running``) to
+    signal "something is happening"; a snapshot header has no such phase of
+    its own (`building` covers the whole build) - so ``pagesTotal`` alone is
+    what tells an unattended caller (the public gateway, a third party) "a
+    real number is coming", never a guess, never a bare 0/0.
+
+    Tenant-scoped: a job belonging to a DIFFERENT tenant than the resolved
+    snapshot never leaks its numbers (AC-11-71) - the caller passes the
+    ALREADY-resolved tenant (the snapshot's own, or the API key row's), never
+    client input.
+
+    Shared by BOTH surfaces (the public gateway's ``gateway_snapshot_header``
+    and the operator's ``pull_service.snapshot_header``) - one mechanism, two
+    callers, each gating it on their own snapshot's ``status == building``
+    first (this helper does not re-check status; a caller for a
+    ready/failed snapshot must simply not call it).
+    """
+    if not job_id:
+        return None
+    job = (
+        db.query(BackgroundJob)
+        .filter(BackgroundJob.id == job_id, BackgroundJob.tenant_id == tenant_id)
+        .first()
+    )
+    if job is None or not job.progress_total:
+        return None
+    cursor = job.cursor_json if isinstance(job.cursor_json, dict) else {}
+    return {
+        "pagesDone": job.progress_done or 0,
+        "pagesTotal": job.progress_total,
+        "stage": cursor.get("stage"),
+    }

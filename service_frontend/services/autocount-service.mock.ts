@@ -1856,14 +1856,14 @@ function pullKeyOf(id: string): AutocountPullApiKey {
 
 let pullKeySeq = 0;
 
-// ── preview job (sprint-5/11, Group B) - PHASE 1 MOCK is the backend spec ────
+// ── preview job (sprint-5/11, Group B) - the Vitest fixture engine ──────────
 //
-// One shared engine, two resolvers: `mockAutocountService`'s own methods
-// resolve against THIS file's fixtures (deterministic, session-local);
-// `withPhase1PreviewJobMock` (below) resolves against the REAL, already-live
-// synchronous `previewHttp`/`previewEtlTask` routes, wrapped in the SAME
-// queued -> running (staged progress) -> done/failed/cancelled shape - one
-// job kind, one progress/claim/cancel mechanism (D5), two data sources.
+// `mockAutocountService`'s own methods resolve against THIS file's fixtures
+// (deterministic, session-local), wrapped in the queued -> running (staged
+// progress) -> done/failed/cancelled shape - one job kind, one progress/
+// claim/cancel mechanism (D5). The real backend (S4) is what
+// `autocountService` actually binds to; this engine only serves the Vitest
+// suite's own mock-mode tests.
 
 interface PreviewJobOutcome {
   result?: AutocountPreviewJobResult;
@@ -2097,78 +2097,6 @@ const mockPreviewJobStore = newPreviewJobStore();
 function mockPreviewJobClaimChange(input: AutocountPreviewJobStartInput) {
   return (jobId: string | null) => {
     overlayFor(input.companyId, input.entityType).previewJobId = jobId;
-  };
-}
-
-async function realPreviewJobResolve(
-  real: AutocountService,
-  input: AutocountPreviewJobStartInput,
-): Promise<PreviewJobOutcome> {
-  if (input.scope === 'sample') {
-    try {
-      const preview = await real.previewHttp({
-        connectionId: input.connectionId,
-        path: input.path,
-        distinctOf: input.distinctOf,
-        companyId: input.companyId,
-        entityType: input.entityType,
-        lookups: input.lookups,
-        combine: input.combine,
-      });
-      return { result: { scope: 'sample', preview } };
-    } catch (e) {
-      return {
-        error: e instanceof ApiError ? e.message : 'The preview could not be run.',
-        fieldErrors: e instanceof ApiError ? readFieldErrors(e.detail) : undefined,
-      };
-    }
-  }
-  try {
-    const result = await real.previewEtlTask(input.companyId, input.entityType);
-    return { result: { scope: 'full', task: result.task, preview: result.preview } };
-  } catch (e) {
-    if (e instanceof ApiError) {
-      const taskError = readTaskError(e.detail);
-      if (taskError) return { taskError };
-      return { error: e.message };
-    }
-    return { error: 'The dry run could not be completed.' };
-  }
-}
-
-/**
- * PHASE 1 MOCK OVERLAY (sprint-5/11) - `autocount-service.ts` binds this
- * over `realAutocountService`. The preview-job SURFACE (`startPreviewJob`/
- * `getPreviewJob`/`cancelPreviewJob`) has no backend yet (S4 lands the real
- * `autocount_source_preview` job + `/autocount/previews/*` routes); until
- * then this overlay reproduces the queued -> running -> done/failed/
- * cancelled shape client-side, delegating the ACTUAL computation to the
- * already-live synchronous `previewHttp`/`previewEtlTask` routes - real
- * data, simulated progress. Every other call passes straight through to
- * `real`, exactly the `withPhase1PullMock` pattern plan sprint-5/10 S2 used.
- */
-export function withPhase1PreviewJobMock(real: AutocountService): AutocountService {
-  const store = newPreviewJobStore();
-  const previewJobIdByTask = new Map<string, string | null>();
-
-  return {
-    ...real,
-    async getEtlTask(companyId, entityType) {
-      const task = await real.getEtlTask(companyId, entityType);
-      const key = `${companyId}:${entityType}`;
-      return { ...task, previewJobId: previewJobIdByTask.get(key) ?? task.previewJobId ?? null };
-    },
-    startPreviewJob(input) {
-      return startPreviewJobIn(store, input, (i) => realPreviewJobResolve(real, i), (jobId) => {
-        previewJobIdByTask.set(previewJobTaskKey(input), jobId);
-      });
-    },
-    getPreviewJob(jobId) {
-      return getPreviewJobIn(store, jobId);
-    },
-    cancelPreviewJob(jobId) {
-      return cancelPreviewJobIn(store, jobId);
-    },
   };
 }
 
