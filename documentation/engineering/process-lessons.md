@@ -177,6 +177,35 @@ sessions get settings-driven timeouts via `app/database.py::worker_connect_args(
 into the worker compose services, never the API; and `ops.ping` stamps a per-queue Redis
 liveness key every 60s, read by the operator route `GET /platform/ops/queues` - a wedged
 worker is now visible within minutes, not discovered by hand hours later.
+
+**The other half of the same incident class (2026-09-21), and the rule S2 teaches: a RUNNING
+sweep does not cover a message that never arrives at all.** A `sales_order` `autocount_sync`
+job was created `pending` right as a deploy restarted the `worker_jobs` process - the Celery
+message itself was lost, so the job could never become `running` and therefore never trip
+`fail_orphaned_running_jobs` (RUNNING-only by design). Every scheduler tick afterwards wrote a
+`skipped` run ("A run for this task was still in progress") because the AutoCount overlap
+guard's own liveness check only judged a RUNNING in-flight job; a PENDING one of any age read
+as "a backlogged queue", exactly the assumption this incident breaks. The job sat for 8+ hours
+until the owner reset it by hand in SQL (job -> `failed`, `ac_sync_run` -> FAILED/Interrupted).
+Owner ruling R6 (D12/D13): undispatched pending jobs are FAILED, never re-dispatched - a
+re-enqueue could race the original lost message if it is somehow delivered late, and two
+workers executing the same job would double-push; failing costs one minute; the next tick
+finds nothing in flight and enqueues a fresh job. `JobService.fail_undispatched_pending_jobs`
+(sprint-5/11 S2, `app/jobs/service.py`) fails every job with `status == pending` AND
+`started_at IS NULL` AND `created_at` older than
+`background_job_undispatched_after_minutes` (default 60, floor 15 - higher than the
+RUNNING-orphan floor of 5, because a busy queue can legitimately sit PENDING far longer than a
+heartbeat gap) with its own `UNDISPATCHED_ERROR` sentence (never the RUNNING sweep's
+`ORPHANED_ERROR` - a lost message and a dead worker are different incidents), and - UNLIKE the
+RUNNING sweep - is NOT restricted to `heartbeats=True` types, because a job that never started
+never had a chance to declare liveness at all. It closes module bookkeeping through the same
+`close_module_bookkeeping` helper S1 extracted, so an open `ac_sync_run` row closes identically
+regardless of which sweep caught the job. `jobs.sweep_orphaned` (the S1 beat tick, still on
+`workflow`, still every 5 minutes) now runs BOTH sweeps in one invocation, so every job type
+recovers without a scheduler in front of it; the AutoCount scheduler's own overlap guard gets a
+sibling branch next to its RUNNING-orphan branch, sweeping exactly the stale PENDING in-flight
+job by `job_id` and proceeding with the tick, one-for-one with the RUNNING case. A fresh
+PENDING job (genuinely queued, not lost) is left untouched either way.
 - **Snapshot store + gateway** - a pull run writes ONE immutable snapshot row + its pages, kept
   for the newest 3 per (company, entity) with a 24 h TTL (module constants today, BL-SS-231). The
   public gateway (`/api/v1/autocount`, D8/D9, `X-API-Key`) and the session-authed operator routes

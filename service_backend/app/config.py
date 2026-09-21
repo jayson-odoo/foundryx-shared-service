@@ -216,6 +216,16 @@ class Settings(BaseSettings):
     # Run the orphan sweep in the API process lifespan. Off for a process
     # that must never touch job state at boot (a one-off script, a rig).
     background_job_orphan_sweep_on_startup: bool = True
+    # A PENDING job (``started_at`` NULL) older than this is a LOST message,
+    # never a backlogged queue - the Celery message itself never reached a
+    # worker (sprint-5/11 S2, incident 2026-09-21: a deploy restarted the
+    # worker mid-``pending``, the message was lost, and the job sat for 8+
+    # hours until an operator reset it by hand in SQL). Failed, never
+    # re-dispatched (R6/D12/D13) - the next tick enqueues a FRESH job. Well
+    # above any legitimate queueing wait; the floor is 15 (higher than the
+    # RUNNING-orphan floor of 5: a busy queue can legitimately sit PENDING
+    # far longer than a heartbeat gap).
+    background_job_undispatched_after_minutes: int = 60
     # ── Worker starvation fix (sprint-5/11 S1, incident 2026-09-20/21) ──────
     # `jobs.run`'s own declared soft/hard Celery time limit (AC-11-82, R10):
     # generous, sized above the longest legitimate build measured in this
@@ -478,6 +488,15 @@ class Settings(BaseSettings):
         if v < 5:
             raise ValueError(
                 "background_job_orphan_after_minutes must be at least 5 minutes."
+            )
+        return v
+
+    @field_validator("background_job_undispatched_after_minutes")
+    @classmethod
+    def _background_job_undispatched_after_floor(cls, v: int) -> int:
+        if v < 15:
+            raise ValueError(
+                "background_job_undispatched_after_minutes must be at least 15 minutes."
             )
         return v
 

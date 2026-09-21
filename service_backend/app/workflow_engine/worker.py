@@ -122,9 +122,9 @@ celery_app.conf.beat_schedule = {
     # queue the incident starved, so recovery was queued behind the thing it
     # recovers. This tick runs on `workflow` (the app default; deliberately
     # NEVER `jobs` - D16: the sweep must never share a queue with the jobs
-    # it sweeps) every 5 minutes and wraps the ALREADY-EXISTING
-    # `sweep_orphaned_jobs(db)` (RUNNING-only; the S2 undispatched-pending
-    # half is a separate slice).
+    # it sweeps) every 5 minutes and wraps BOTH `sweep_orphaned_jobs(db)`
+    # (RUNNING-only) and (sprint-5/11 S2) `sweep_undispatched_pending_jobs(db)`
+    # (PENDING-only, incident 2026-09-21).
     "jobs-sweep-orphaned": {"task": "jobs.sweep_orphaned", "schedule": 300.0},
     # A frozen worker is visible within minutes (AC-11-86, D20): beat itself
     # stayed healthy for the whole 8-hour incident, so the signal has to be
@@ -385,22 +385,35 @@ def sweep_orphaned_jobs_task() -> dict:
     """The orphan sweep's own 5-minute beat tick (sprint-5/11 S1, AC-11-56,
     D16) - decoupled from the AutoCount scheduler tick that was the only
     caller of this sweep outside app startup (and itself lived on the
-    starved `workflow` queue during the 2026-09-20/21 incident). Wraps the
-    ALREADY-EXISTING `sweep_orphaned_jobs(db)` (RUNNING-only, every
-    `heartbeats=True` job type); the S2 undispatched-pending half is a
-    separate sweep. Failure-isolated like every other tick on this beat."""
+    starved `workflow` queue during the 2026-09-20/21 incident). Runs BOTH
+    sweeps in one invocation: the ALREADY-EXISTING `sweep_orphaned_jobs(db)`
+    (RUNNING-only, every `heartbeats=True` job type) and (sprint-5/11 S2,
+    AC-11-56, incident 2026-09-21) `sweep_undispatched_pending_jobs(db)`
+    (PENDING-only, every job type - a lost message never gets a chance to
+    heartbeat, so the type-declared restriction the running sweep uses does
+    not apply here). One beat entry recovers every job type, whether or not
+    a scheduler like AutoCount's own overlap guard sits in front of it. Each
+    half is independently failure-isolated so a bug in one never blocks the
+    other."""
     from app.database import SessionLocal
-    from app.jobs.service import sweep_orphaned_jobs
+    from app.jobs.service import sweep_orphaned_jobs, sweep_undispatched_pending_jobs
 
     db = SessionLocal()
+    running = 0
     try:
-        return {"swept": sweep_orphaned_jobs(db)}
+        running = sweep_orphaned_jobs(db)
     except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
-        logger.exception("jobs.sweep_orphaned tick failed")
+        logger.exception("jobs.sweep_orphaned tick failed (running sweep)")
         db.rollback()
-        return {"swept": 0}
+    undispatched = 0
+    try:
+        undispatched = sweep_undispatched_pending_jobs(db)
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("jobs.sweep_orphaned tick failed (undispatched sweep)")
+        db.rollback()
     finally:
         db.close()
+    return {"running": running, "undispatched": undispatched}
 
 
 @celery_app.task(name="ops.ping")

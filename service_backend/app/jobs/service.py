@@ -179,6 +179,17 @@ class JobService:
         "re-offers its staged rows"
     )
 
+    # sprint-5/11 S2 (AC-11-50, incident 2026-09-21) - a PENDING job whose
+    # Celery message was lost never reaches a worker at all, so it has no
+    # heartbeat/started_at to judge liveness by; this is a DIFFERENT
+    # incident from ORPHANED_ERROR (a worker that started the job then
+    # died) and must not share its sentence. Not "Job crashed: ..." either -
+    # this is a clean, expected recovery at a configured bound.
+    UNDISPATCHED_ERROR = (
+        "Interrupted: the worker never picked this job up (the queued "
+        "message was lost)."
+    )
+
     def heartbeat(self, job_id: str, *, now: Optional[datetime] = None) -> bool:
         """Stamp ``heartbeat_at`` on a RUNNING job in its OWN short transaction.
 
@@ -292,6 +303,68 @@ class JobService:
             close_module_bookkeeping(self.db, job, now=current)
         self.db.commit()
         return len(orphans)
+
+    def fail_undispatched_pending_jobs(
+        self,
+        *,
+        older_than: Optional[timedelta] = None,
+        now: Optional[datetime] = None,
+        job_id: Optional[str] = None,
+    ) -> int:
+        """Fail every PENDING job whose Celery message was never delivered.
+        Returns how many.
+
+        "Never delivered" = ``status == pending`` AND ``started_at IS NULL``
+        AND ``created_at`` older than ``older_than`` (default
+        ``settings.background_job_undispatched_after_minutes``). UNLIKE
+        ``fail_orphaned_running_jobs`` this is NOT restricted to
+        ``heartbeats=True`` types - a lost message is type-agnostic
+        (AC-11-50): the job never started, so it never had a chance to
+        declare liveness at all.
+
+        Each undispatched job is marked ``failed`` with
+        ``UNDISPATCHED_ERROR`` and a ``finished_at``, then fanned out
+        through the SAME ``close_module_bookkeeping`` helper the running
+        sweep and the soft-time-limit path already share (S1), so a module's
+        open bookkeeping (e.g. an ``ac_sync_run`` row) closes the same way
+        regardless of which sweep caught the job.
+
+        Never re-enqueues anything (D12/D13, R6): re-dispatch collides with
+        ``run_job``'s RUNNING crash-resume branch if the original lost
+        message is somehow delivered late after a re-enqueue - two workers
+        could execute the same job and double-push. Failing costs one
+        minute; the next tick enqueues a FRESH job. Idempotent: a job
+        already failed is not matched again. ``job_id`` narrows the sweep to
+        one job (the scheduler sweeps exactly the stale in-flight job it
+        would otherwise skip for).
+        """
+        current = now or datetime.now(timezone.utc)
+        threshold = older_than or timedelta(
+            minutes=settings.background_job_undispatched_after_minutes
+        )
+        cutoff = current - threshold
+        query = self.db.query(BackgroundJob).filter(
+            BackgroundJob.status == JOB_PENDING,
+            BackgroundJob.started_at.is_(None),
+            BackgroundJob.created_at < cutoff,
+        )
+        if job_id is not None:
+            query = query.filter(BackgroundJob.id == job_id)
+        undispatched = query.all()
+        if not undispatched:
+            return 0
+        for job in undispatched:
+            job.status = JOB_FAILED
+            job.error = self.UNDISPATCHED_ERROR
+            job.finished_at = current
+            logger.error(
+                "background job %s (%s, tenant %s) undispatched: queued since %s "
+                "with no worker pickup; failed",
+                job.id, job.type, job.tenant_id, job.created_at,
+            )
+            close_module_bookkeeping(self.db, job, now=current)
+        self.db.commit()
+        return len(undispatched)
 
     # ── retention ─────────────────────────────────────────────────────────────
 
@@ -425,4 +498,13 @@ def sweep_orphaned_jobs(db: Session) -> int:
     passed explicitly. Returns the count."""
     return JobService(db).fail_orphaned_running_jobs(
         older_than=timedelta(minutes=settings.background_job_orphan_after_minutes)
+    )
+
+
+def sweep_undispatched_pending_jobs(db: Session) -> int:
+    """Entry point: fail every stale PENDING job whose message was never
+    delivered (see ``JobService.fail_undispatched_pending_jobs``) with the
+    configured threshold passed explicitly. Returns the count."""
+    return JobService(db).fail_undispatched_pending_jobs(
+        older_than=timedelta(minutes=settings.background_job_undispatched_after_minutes)
     )

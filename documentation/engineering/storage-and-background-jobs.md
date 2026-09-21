@@ -69,6 +69,28 @@ Closes BL-077. Plan `documentation/plans/sprint-4/10-storage-migration.md` (+ `-
   `tenants.read` platform permission - no new CSV row) reports `{queue, lastSeen, stale}` per
   queue, so a wedged worker is visible within minutes instead of discovered by hand hours
   later.
+- **Undispatched-pending recovery, the RUNNING sweep's blind spot (sprint-5/11 S2, incident
+  2026-09-21).** The S1 orphan sweep above is RUNNING-only by design: a PENDING job of any age
+  read as "a backlogged queue", not a failure. That assumption breaks when the Celery MESSAGE
+  itself is lost (a deploy restarted `worker_jobs` mid-`pending`) - the job can never become
+  RUNNING, so `fail_orphaned_running_jobs` never matches it, and every scheduler tick wrote a
+  `skipped` run ("A run for this task was still in progress") until an operator reset the row
+  by hand in SQL 8+ hours later. Owner ruling R6 (D12/D13): FAIL, never re-dispatch - a
+  re-enqueue could race the original message if it is delivered late, and two workers
+  executing the same job would double-push; failing costs one minute and the next tick enqueues
+  a fresh job. `JobService.fail_undispatched_pending_jobs(older_than=settings.
+  background_job_undispatched_after_minutes, default 60, floor 15)` fails every job with
+  `status == pending` AND `started_at IS NULL` AND `created_at` older than that, with the
+  dedicated `UNDISPATCHED_ERROR` sentence ("Interrupted: the worker never picked this job up
+  (the queued message was lost).", deliberately NOT `ORPHANED_ERROR` - a lost message and a
+  dead worker are different incidents), and closes module bookkeeping through the SAME
+  `close_module_bookkeeping` helper S1 extracted. UNLIKE the RUNNING sweep it is NOT restricted
+  to `heartbeats=True` types (a job that never started never had a chance to declare liveness).
+  `jobs.sweep_orphaned` (the S1 beat tick, still on `workflow`, still every 5 minutes) now runs
+  BOTH sweeps in one invocation, so a job type with no scheduler in front of it still recovers.
+  The AutoCount scheduler's own overlap guard gets a sibling branch to its existing RUNNING one:
+  a stale PENDING in-flight job is swept by exact `job_id` and the tick proceeds - one-for-one
+  with the RUNNING case; a fresh PENDING job (genuinely queued) still skips the tick unchanged.
 - **Build lessons (learned the hard way this slice - apply to any engine like it):**
   - **A data-backfill migration must NOT commit Alembic's own connection.** `Session(bind=op.get_bind())` + a per-batch `db.commit()` fires a real `COMMIT` on Alembic's migration connection mid-run and corrupts the `alembic_version` stamp on live Postgres (invisible to pytest - conftest is `create_all`, module Alembic is a Postgres-only no-op). Run a batched backfill on a **separate** `create_engine(settings.database_url)` connection (dispose it in `finally`); the revision must alter no schema so the side connection reads already-committed data. Every OTHER migration in the repo uses `op.get_bind().execute(...)` and lets Alembic's transaction commit at the end - match that.
   - **A long worker job that supports abort needs COOPERATIVE cancellation.** Eager-mode (dev/test) runs the handler inline with no interleave, so an abort-doesn't-stop-the-worker bug is INVISIBLE to the suite. The copy/work loop must re-read its own `status` fresh from the DB at each checkpoint (a concurrent abort committed `JOB_ABORTED` on another session) and bail BEFORE the terminal step - else the worker finishes and overwrites the abort. `db.query(BackgroundJob.status).filter(id==).scalar()` after each commit.

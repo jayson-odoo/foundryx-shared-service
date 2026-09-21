@@ -33,7 +33,7 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.jobs.service import JobService
-from app.models.background_job import JOB_RUNNING
+from app.models.background_job import JOB_PENDING, JOB_RUNNING
 from app.models.module import MODULE_STATUS_ACTIVE, Module, TenantModule
 from app.models.status import Status
 from app.models.tenant import Tenant
@@ -64,6 +64,15 @@ def _orphan_after() -> timedelta:
     from app.config import settings
 
     return timedelta(minutes=settings.background_job_orphan_after_minutes)
+
+
+# sprint-5/11 S2 (incident 2026-09-21) - sibling threshold to ``_orphan_after``
+# for a PENDING job whose Celery message was itself lost (never became
+# RUNNING, so it has no heartbeat/started_at to judge liveness by).
+def _undispatched_after() -> timedelta:
+    from app.config import settings
+
+    return timedelta(minutes=settings.background_job_undispatched_after_minutes)
 
 
 def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str, int]:
@@ -247,12 +256,11 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         # flight, instead of the old 60-minute JOB_STUCK pause that only a
         # human with SQL could lift. A FRESH in-flight job still skips the
         # tick below (overlap guard, AC-22-14).
-        # Only a RUNNING job can be an orphan - a PENDING one of any age is a
-        # backlogged queue, and running the tick over it would duplicate the
-        # work when it finally starts. And the tick proceeds ONLY when the
-        # sweep actually failed that job (== 1): a job that beat again in
-        # between, or that another process already swept, is not ours to
-        # run over.
+        # Only a RUNNING job is judged here - a PENDING one is the sibling
+        # branch below's business (a job cannot be both "never dispatched"
+        # and "started"). And the tick proceeds ONLY when the sweep actually
+        # failed that job (== 1): a job that beat again in between, or that
+        # another process already swept, is not ours to run over.
         last_alive = in_flight.heartbeat_at or in_flight.started_at or in_flight.created_at
         stale = last_alive is not None and (now - last_alive) > _orphan_after()
         if (
@@ -264,6 +272,38 @@ def _sweep_one(db: Session, config: AcEntityConfig, *, now: datetime) -> str:
         ):
             logger.warning(
                 "autocount scheduler swept orphaned job %s for %s/%s; proceeding with the tick",
+                in_flight.id, company_id, entity_type,
+            )
+            in_flight = None
+    if in_flight is not None:
+        # sprint-5/11 S2 (incident 2026-09-21) - a sibling branch to the
+        # RUNNING one above: a PENDING job (``started_at`` NULL) whose
+        # Celery message was itself lost never becomes RUNNING at all, so it
+        # never trips the orphan branch above and would otherwise sit
+        # skipped forever (a deploy restarted the worker mid-``pending``,
+        # the message never arrived, and every tick afterwards wrote a
+        # skip row - "A run for this task was still in progress" - until the
+        # owner reset the row by hand in SQL, 8+ hours later). Sweep exactly
+        # THAT job once it is stale past
+        # ``background_job_undispatched_after_minutes`` and carry on with
+        # this tick as if nothing were in flight, one-for-one with the
+        # RUNNING branch. A job that is merely PENDING and fresh - queued,
+        # not lost - is left untouched; the tick below still skips for it
+        # exactly as it does today (AC-11-54).
+        undispatched_stale = (
+            in_flight.created_at is not None
+            and (now - in_flight.created_at) > _undispatched_after()
+        )
+        if (
+            in_flight.status == JOB_PENDING
+            and in_flight.started_at is None
+            and undispatched_stale
+            and JobService(db).fail_undispatched_pending_jobs(
+                older_than=_undispatched_after(), now=now, job_id=in_flight.id
+            ) == 1
+        ):
+            logger.warning(
+                "autocount scheduler swept undispatched job %s for %s/%s; proceeding with the tick",
                 in_flight.id, company_id, entity_type,
             )
             in_flight = None

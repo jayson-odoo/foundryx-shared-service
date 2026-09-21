@@ -100,6 +100,14 @@ at deploy time still executes there):
   `tenants.read`) reports `{queue, lastSeen, stale}` per queue - a wedged
   worker is now visible within minutes, not discovered by hand hours later.
 
+**`BACKGROUND_JOB_UNDISPATCHED_AFTER_MINUTES` (sprint-5/11 S2, AC-11-50..57,
+optional, default 60, floor 15)** - the same `jobs.sweep_orphaned` beat tick
+above also fails a PENDING job (`started_at` NULL) whose Celery message was
+itself lost and never delivered to a worker (incident 2026-09-21: a deploy
+restarted `worker_jobs` mid-`pending`); FAILED, never re-dispatched (R6/D12/
+D13) - the next tick enqueues a fresh job. No new compose service or queue;
+just this one env alongside the S1 vars above.
+
 **Deploy-time step:** a new compose service is picked up by `docker compose
 up -d` (which this deploy's CI already runs, force-recreating changed
 services) - no manual step beyond a normal push-triggered deploy. A plain
