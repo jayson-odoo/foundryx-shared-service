@@ -326,8 +326,9 @@ export function ActivateTab({
             <TriangleAlert />
           </AlertIcon>
           <AlertTitle>
-            {task.lastPreviewFailedCount} rows would fail at the consumer. They are listed on
-            the consumer&apos;s review page on every pull; the rest sync.
+            {task.lastPreviewFailedCount} row{task.lastPreviewFailedCount === 1 ? '' : 's'} would
+            fail at the consumer. They are listed on the consumer&apos;s review page on every
+            pull; the rest are included in the snapshot.
           </AlertTitle>
         </Alert>
       )}

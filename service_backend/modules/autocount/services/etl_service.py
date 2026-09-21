@@ -2669,7 +2669,10 @@ class EtlService:
         # itself - the consumer (Sorento) pulls the snapshot and lists its
         # OWN dry-run failures on its review page (plan sprint-5/10 R6,
         # "products never block Confirm"), so only PUSH blocks activation.
-        if config.delivery_mode == DELIVERY_MODE_PUSH and config.last_preview_failed_count:
+        # Fail-closed on the mode check (review follow-up): any FUTURE
+        # delivery mode besides ``pull`` still gets the gate by default,
+        # rather than a new mode silently inheriting pull's leniency.
+        if config.delivery_mode != DELIVERY_MODE_PULL and config.last_preview_failed_count:
             raise EtlStateError(
                 f"The last preview reported {config.last_preview_failed_count} "
                 f"failed row(s) - re-run preview after fixing the mapping "

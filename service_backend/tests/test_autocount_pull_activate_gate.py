@@ -2,7 +2,7 @@
 from Activate by a consumer-side dry-run failure count.
 
 Defect: ``EtlService.activate_task``
-(``modules/autocount/services/etl_service.py`` ~2668-2673) raises
+(``modules/autocount/services/etl_service.py`` ~2672) raises
 ``EtlStateError`` whenever ``config.last_preview_failed_count`` is truthy,
 regardless of ``delivery_mode``. For a PULL task the rows are never pushed by
 Foundryx - the consumer (Sorento) pulls the snapshot, its OWN review page

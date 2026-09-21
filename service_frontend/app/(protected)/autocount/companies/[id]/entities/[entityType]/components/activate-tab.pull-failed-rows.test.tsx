@@ -154,7 +154,24 @@ describe('ActivateTab - pull-mode consumer-side failed rows (prod hotfix 2026-09
     expect(screen.queryByTestId('etl-preview-failed')).not.toBeInTheDocument();
     const banner = screen.getByTestId('etl-preview-failed-pull-warning');
     expect(banner).toHaveTextContent(
-      "4 rows would fail at the consumer. They are listed on the consumer's review page on every pull; the rest sync.",
+      "4 rows would fail at the consumer. They are listed on the consumer's review page on every pull; the rest are included in the snapshot.",
+    );
+  });
+
+  it('singularises the warning banner for exactly 1 failed row', () => {
+    render(
+      <ActivateTab
+        company={company()}
+        task={task({ deliveryMode: 'pull', lastPreviewFailedCount: 1 })}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+      />,
+    );
+    const banner = screen.getByTestId('etl-preview-failed-pull-warning');
+    expect(banner).toHaveTextContent(
+      "1 row would fail at the consumer. They are listed on the consumer's review page on every pull; the rest are included in the snapshot.",
     );
   });
 
