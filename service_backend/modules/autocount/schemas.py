@@ -635,6 +635,11 @@ class HttpConnectionItem(ApiModel):
 class HttpPreviewRequest(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
+    # sprint-5/11 (AC-11-21) - the FE's preview-job start always sends this
+    # (`scope: 'sample'`); accepted and ignored server-side (the ROUTE
+    # itself already fixes the scope) so the wire contract's redundant echo
+    # never 422s on an unrecognised field.
+    scope: Optional[str] = None
     connectionId: str
     path: str = ""
     distinctOf: Optional[List[str]] = None
@@ -861,6 +866,10 @@ class EtlTaskResponse(ApiModel):
     # alongside `resultColumns` above (the pre-combine raw/lookup set,
     # unchanged) - never a replacement for it.
     combineOutputColumns: List[str] = []
+    # sprint-5/11 (AC-11-23/27) - the id of this task's IN-FLIGHT preview
+    # job, if any (`ac_entity_config.preview_job_id`). `None`/absent = no
+    # preview in flight; lets a remounted editor re-attach.
+    previewJobId: Optional[str] = None
 
 
 class HttpPreviewResponse(ApiModel):
@@ -925,6 +934,48 @@ class EtlPreviewResponse(ApiModel):
 
     task: EtlTaskResponse
     preview: Dict[str, Any]
+
+
+class PreviewJobStartOut(ApiModel):
+    """202 body of either preview-job start route (AC-11-22) -
+    ``types/autocount.ts``'s ``AutocountPreviewJobStart``."""
+
+    jobId: str
+    status: str
+
+
+class PreviewJobProgressOut(ApiModel):
+    """``AutocountPreviewJobProgress`` (AC-11-27/40) - every field ``None``
+    whenever it is not known yet, never guessed."""
+
+    stage: Optional[str] = None
+    pagesDone: Optional[int] = None
+    pagesTotal: Optional[int] = None
+
+
+class PreviewJobTaskErrorOut(ApiModel):
+    """``AutocountEtlTaskError`` (Appendix A6) - a ``full``-scope Sorento
+    anchor failure, rendered as its own banner rather than a generic one."""
+
+    code: str
+    message: str
+
+
+class PreviewJobOut(ApiModel):
+    """``GET /autocount/previews/{jobId}`` / the cancel route's own body
+    (AC-11-22/24/27) - ``types/autocount.ts``'s ``AutocountPreviewJob``.
+    ``result`` is the landed ``{scope, preview}``/``{scope, task, preview}``
+    shape (``AutocountPreviewJobResult``) ONLY once ``status == 'done'``."""
+
+    id: str
+    scope: str
+    status: str
+    progress: Optional[PreviewJobProgressOut] = None
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    taskError: Optional[PreviewJobTaskErrorOut] = None
+    fieldErrors: Optional[Dict[str, str]] = None
+    createdAt: Optional[datetime] = None
 
 
 class EtlRunStartResponse(ApiModel):

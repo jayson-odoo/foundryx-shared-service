@@ -155,8 +155,16 @@ def test_preview_rejects_an_alias_equal_to_a_raw_main_column(client, headers, db
         )
     finally:
         app.dependency_overrides.pop(get_http_transport, None)
-    assert response.status_code == 422, response.text
-    field_errors = response.json()["detail"]["fieldErrors"]
+    # sprint-5/11 (AC-11-21/22/25) - the collision is only knowable once the
+    # RAW columns are fetched (`source_columns=None` at pre-flight), so it
+    # is discovered inside the job now - never a synchronous 422 (the walk
+    # itself moved off-request), carrying the SAME fieldErrors.
+    assert response.status_code == 202, response.text
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=headers)
+    assert poll.status_code == 200, poll.text
+    body = poll.json()
+    assert body["status"] == "failed", body
+    field_errors = body["fieldErrors"]
     assert "lookups[0].fields[0].as" in field_errors, field_errors
 
 

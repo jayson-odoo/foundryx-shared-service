@@ -286,8 +286,15 @@ def test_preview_http_paged(client, headers, db):
         )
     finally:
         app.dependency_overrides.pop(get_http_transport, None)
-    assert response.status_code == 200, response.text
-    body = response.json()
+    # sprint-5/11 (AC-11-21/22) - the route is now a 202 job start; poll
+    # for the landed `sample` result (the SAME `HttpPreview` shape this
+    # route used to return synchronously).
+    assert response.status_code == 202, response.text
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=headers)
+    assert poll.status_code == 200, poll.text
+    poll_body = poll.json()
+    assert poll_body["status"] == "done", poll_body
+    body = poll_body["result"]["preview"]
     assert body["envelope"] == "paged"
     # No companyId/entityType on this request -> nothing to stamp, no echo.
     assert body.get("task") is None
@@ -322,8 +329,12 @@ def test_preview_http_echoes_stamped_task_when_company_and_entity_given(client, 
         )
     finally:
         app.dependency_overrides.pop(get_http_transport, None)
-    assert response.status_code == 200, response.text
-    task = response.json()["task"]
+    assert response.status_code == 202, response.text
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=headers)
+    assert poll.status_code == 200, poll.text
+    poll_body = poll.json()
+    assert poll_body["status"] == "done", poll_body
+    task = poll_body["result"]["preview"]["task"]
     assert task is not None
     assert task["lastPreviewAt"] is not None
     assert "ItemCode" in task["resultColumns"]
@@ -698,7 +709,16 @@ def test_preview_http_with_another_tenants_company_id_404s_never_leaks(client, h
         )
     finally:
         app.dependency_overrides.pop(get_http_transport, None)
-    assert response.status_code == 404, response.text
+    # sprint-5/11 (AC-11-21/22) - the tenant-scope guard still fires (the
+    # SAME `CompanyNotFound`, generic message, no leak), but INSIDE the job
+    # now rather than synchronously - the route itself always 202s; the
+    # cross-tenant `companyId` surfaces as a FAILED job, never a leak.
+    assert response.status_code == 202, response.text
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=headers)
+    assert poll.status_code == 200, poll.text
+    body = poll.json()
+    assert body["status"] == "failed", body
+    assert "not found" in (body["error"] or "").lower(), body
 
 
 # ── S7 (sprint-5/08 review round 1, AC-08-16 second clause) ─────────────────

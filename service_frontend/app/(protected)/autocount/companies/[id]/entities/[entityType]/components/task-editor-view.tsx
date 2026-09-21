@@ -97,12 +97,14 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     useAutocountEtlTask(companyId, entityType);
   const sqlConnections = useAutocountSqlConnections();
   const apiConnections = useAutocountApiConnections();
-  const httpPreview = useHttpPreview();
+  // AC-11-23/27 - re-attach to an already-in-flight preview job after a
+  // remount/reload (`task.previewJobId`), never a fresh start.
+  const httpPreview = useHttpPreview(task?.previewJobId);
   const mapping = useAutocountMapping(companyId, entityType);
   const draft = useMappingDraft(mapping.view);
   const { presets } = useAutocountMappingPresets(companyId, entityType);
   const { fetchLines } = useLineFetcher();
-  const etlPreview = useEtlTaskPreview(companyId, entityType, apply);
+  const etlPreview = useEtlTaskPreview(companyId, entityType, apply, task?.previewJobId);
   const lifecycle = useEtlTaskLifecycle(companyId, entityType, apply);
   const runsConfig = useAutocountRunsListConfig(companyId, { variant: 'task', entityType });
   const [runsKey, setRunsKey] = useState(0);

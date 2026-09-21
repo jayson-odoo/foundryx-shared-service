@@ -445,6 +445,9 @@ def test_get_etl_task_returns_draft_defaults_for_a_configured_entity(client, ses
         # sprint-5/10 review round 4 (SF-4) - the combine step's own
         # post-group schema; empty for a never-configured/no-combine task.
         "combineOutputColumns": [],
+        # sprint-5/11 (AC-11-23/27) - the in-flight preview job claim; None
+        # for a task with no preview running.
+        "previewJobId": None,
     }
 
 

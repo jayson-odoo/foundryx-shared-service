@@ -292,9 +292,13 @@ the RUNNING case: production 2026-09-07, PO sync killed by a deploy drain, alrea
 
 ## Group E - cross-cutting
 
-- **AC-11-70 [BE]** **No new permission.** Every new or changed route reuses
-  `autocount.companies.read` / `autocount.companies.manage`, so no CSV row, no grant sweep and
-  no existing-tenant 403 risk. Pinned by the permissions parity test.
+- **AC-11-70 [BE]** **No new permission.** Every new or changed route reuses an EXISTING key -
+  `autocount.companies.read` (poll), `autocount.companies.manage` (the `sample`-scope POST,
+  cancel) or `autocount.sync.run` (the `full`-scope POST, UNCHANGED since sprint-5/08 - amended
+  S4: the full-scope route already required `sync.run`, pinned by the already-green
+  `test_preview_requires_sync_run_and_404s_cross_tenant`; moving it to `companies.manage` would
+  have been a silent behaviour change this plan never asked for) - so no CSV row, no grant sweep
+  and no existing-tenant 403 risk. Pinned by the permissions parity test.
 - **AC-11-71 [BE]** **Tenant scoping.** Every new read or write (preview job create, poll,
   cancel; the progress read behind the gateway header; the claim column) resolves ids WITH the
   tenant from the JWT or, for the gateway, from the API key row - never from client input. A

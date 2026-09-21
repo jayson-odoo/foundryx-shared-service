@@ -288,18 +288,40 @@ def on_job_orphaned(
     would end the sweep's outer transaction early. Same convention the
     ``ac_sync_run`` writes above already use in this function.
 
+    sprint-5/11 (AC-11-23/52) - an ``autocount_source_preview`` job releases
+    ``ac_entity_config.preview_job_id`` (a DIRECT column write, same
+    reasoning as the snapshot branch above) - the ONLY module bookkeeping
+    this job type carries; it stages nothing and owns no ``ac_sync_run``
+    row, so a hook-closed preview leaves the claim NULL and the next Test is
+    never blocked forever.
+
     No commit here - the sweep owns the transaction.
     """
     from .models import (
         PULL_SNAPSHOT_STATUS_BUILDING,
         PULL_SNAPSHOT_STATUS_FAILED,
         RUN_FAILED,
+        AcEntityConfig,
         AcPullSnapshot,
         AcSyncRun,
     )
+    from .preview_job import PREVIEW_JOB_TYPE
     from .sync import AUTOCOUNT_PULL_SNAPSHOT, AUTOCOUNT_SYNC, ERROR_CODE_BUILD_ABANDONED
 
     job_type = getattr(job, "type", None)
+    if job_type == PREVIEW_JOB_TYPE:
+        payload = job.payload_json or {}
+        company_id = str(payload.get("companyId") or "")
+        entity_type = str(payload.get("entityType") or "")
+        if company_id and entity_type:
+            db.query(AcEntityConfig).filter(
+                AcEntityConfig.tenant_id == job.tenant_id,
+                AcEntityConfig.company_id == company_id,
+                AcEntityConfig.entity_type == entity_type,
+                AcEntityConfig.preview_job_id == job.id,
+            ).update({AcEntityConfig.preview_job_id: None})
+        db.flush()
+        return
     if job_type not in (AUTOCOUNT_SYNC, AUTOCOUNT_PULL_SNAPSHOT):
         return
     # The sweep's own clock, so the run's ``finished_at`` equals the job's.

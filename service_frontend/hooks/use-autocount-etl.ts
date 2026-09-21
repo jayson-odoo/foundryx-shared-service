@@ -170,33 +170,37 @@ export interface UseEtlTaskPreviewResult {
 /**
  * sprint-5/11 (AC-11-20..27) - "Run preview" starts the `full`-scope
  * `autocount_source_preview` job instead of awaiting `preview_task`
- * directly, and polls `GET /autocount/previews/{jobId}` (AC-11-22). The
- * synchronous `previewEtlTask`/`previewHttp` service calls stay exactly as
- * they are - PHASE 1 MOCK (`withPhase1PreviewJobMock`) delegates to them
- * under the hood until S4 lands the real job.
+ * directly, and polls `GET /autocount/previews/{jobId}` (AC-11-22) against
+ * the real backend (S4). `initialJobId` (AC-11-23/27) re-attaches to an
+ * already-in-flight job after a remount/reload (`task.previewJobId`) -
+ * polled without a fresh `startPreviewJob` call.
  */
 export function useEtlTaskPreview(
   companyId: string,
   entityType: string,
   onTask: (task: AutocountEtlTask) => void,
+  initialJobId?: string | null,
 ): UseEtlTaskPreviewResult {
   const [state, setState] = useState<EtlPreviewState>({ status: 'idle' });
   const runId = useRef(0);
   const activeJobId = useRef<string | null>(null);
   const cancelRequested = useRef(false);
+  const attachedJobIdRef = useRef<string | null>(null);
 
-  const run = useCallback(async () => {
-    const id = ++runId.current;
-    cancelRequested.current = false;
-    activeJobId.current = null;
-    setState({ status: 'loading' });
-    try {
-      const started = await autocountService.startPreviewJob({ scope: 'full', companyId, entityType });
-      if (id !== runId.current) return;
-      activeJobId.current = started.jobId;
+  const pollUntilTerminal = useCallback(
+    async (jobId: string, id: number) => {
       for (;;) {
-        const job = await autocountService.getPreviewJob(started.jobId);
+        const job = await autocountService.getPreviewJob(jobId);
         if (id !== runId.current) return;
+        // AC-11-23 - the claim is ONE per task regardless of scope (a
+        // `full` Run-preview job re-attach lands here too, via the SAME
+        // `task.previewJobId`): a job that turns out to belong to the
+        // OTHER scope was never THIS hook's own run - leave it idle,
+        // never a fabricated error/success.
+        if (job.scope !== 'full') {
+          setState({ status: 'idle' });
+          return;
+        }
         if (job.status === 'queued' || job.status === 'running') {
           setState({
             status: 'loading',
@@ -229,6 +233,21 @@ export function useEtlTaskPreview(
         setState({ status: 'error', message: 'The dry run could not be completed.' });
         return;
       }
+    },
+    [onTask],
+  );
+
+  const run = useCallback(async () => {
+    const id = ++runId.current;
+    cancelRequested.current = false;
+    activeJobId.current = null;
+    setState({ status: 'loading' });
+    try {
+      const started = await autocountService.startPreviewJob({ scope: 'full', companyId, entityType });
+      if (id !== runId.current) return;
+      activeJobId.current = started.jobId;
+      attachedJobIdRef.current = started.jobId;
+      await pollUntilTerminal(started.jobId, id);
     } catch (e) {
       if (id !== runId.current) return;
       const taskError = e instanceof ApiError && e.status === 422 ? readTaskError(e.detail) : null;
@@ -241,7 +260,22 @@ export function useEtlTaskPreview(
         message: e instanceof ApiError ? e.message : 'The dry run could not be completed.',
       });
     }
-  }, [companyId, entityType, onTask]);
+  }, [companyId, entityType, pollUntilTerminal]);
+
+  // AC-11-23/27 - re-attach to an already-in-flight job after a remount/
+  // reload (`task.previewJobId`): a poll, never a fresh `startPreviewJob`
+  // (which would start a SECOND walk the claim would just reject anyway).
+  // Attaches once per job id - a re-render carrying the SAME id (the task
+  // re-fetched while this hook is already polling it) is a no-op.
+  useEffect(() => {
+    if (!initialJobId || attachedJobIdRef.current === initialJobId) return;
+    attachedJobIdRef.current = initialJobId;
+    const id = ++runId.current;
+    cancelRequested.current = false;
+    activeJobId.current = initialJobId;
+    setState({ status: 'loading' });
+    void pollUntilTerminal(initialJobId, id);
+  }, [initialJobId, pollUntilTerminal]);
 
   const cancel = useCallback(() => {
     if (!activeJobId.current) return;
@@ -606,17 +640,64 @@ export interface UseHttpPreviewResult {
 /**
  * sprint-5/11 (AC-11-20..27) - Test starts the `sample`-scope
  * `autocount_source_preview` job instead of awaiting `preview_http`
- * directly, and polls `GET /autocount/previews/{jobId}` (AC-11-22). The
- * synchronous `previewHttp` service call stays exactly as it is - PHASE 1
- * MOCK (`withPhase1PreviewJobMock`) delegates to it under the hood until S4
- * lands the real job.
+ * directly, and polls `GET /autocount/previews/{jobId}` (AC-11-22) against
+ * the real backend (S4). `initialJobId` (AC-11-23/27) re-attaches to an
+ * already-in-flight job after a remount/reload (`task.previewJobId`) -
+ * polled without a fresh `startPreviewJob` call.
  */
-export function useHttpPreview(): UseHttpPreviewResult {
+export function useHttpPreview(initialJobId?: string | null): UseHttpPreviewResult {
   const [state, setState] = useState<HttpPreviewState>({ status: 'idle' });
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const runId = useRef(0);
   const activeJobId = useRef<string | null>(null);
   const cancelRequested = useRef(false);
+  const attachedJobIdRef = useRef<string | null>(null);
+
+  const pollUntilTerminal = useCallback(
+    async (jobId: string, id: number): Promise<HttpPreview | false> => {
+      for (;;) {
+        const job = await autocountService.getPreviewJob(jobId);
+        if (id !== runId.current) return false;
+        // AC-11-23 - the claim is ONE per task regardless of scope (a
+        // `sample` Test job re-attach lands here too, via the SAME
+        // `task.previewJobId`): a job that turns out to belong to the
+        // OTHER scope was never THIS hook's own run - leave it idle,
+        // never a fabricated error/success.
+        if (job.scope !== 'sample') {
+          setState({ status: 'idle' });
+          return false;
+        }
+        if (job.status === 'queued' || job.status === 'running') {
+          setState({
+            status: 'loading',
+            stage: job.progress?.stage ?? null,
+            pagesDone: job.progress?.pagesDone ?? null,
+            pagesTotal: job.progress?.pagesTotal ?? null,
+            cancelling: cancelRequested.current,
+          });
+          await pause(PREVIEW_JOB_POLL_MS);
+          continue;
+        }
+        if (job.status === 'cancelled') {
+          setState({ status: 'idle' });
+          return false;
+        }
+        if (job.status === 'failed') {
+          setFieldErrors(job.fieldErrors ?? {});
+          setState({ status: 'error', message: job.error ?? 'The preview could not be run.' });
+          return false;
+        }
+        // done
+        if (job.result?.scope === 'sample') {
+          setState({ status: 'success', preview: job.result.preview });
+          return job.result.preview;
+        }
+        setState({ status: 'error', message: 'The preview could not be run.' });
+        return false;
+      }
+    },
+    [],
+  );
 
   const run = useCallback(
     async (
@@ -643,37 +724,8 @@ export function useHttpPreview(): UseHttpPreviewResult {
         });
         if (id !== runId.current) return false;
         activeJobId.current = started.jobId;
-        for (;;) {
-          const job = await autocountService.getPreviewJob(started.jobId);
-          if (id !== runId.current) return false;
-          if (job.status === 'queued' || job.status === 'running') {
-            setState({
-              status: 'loading',
-              stage: job.progress?.stage ?? null,
-              pagesDone: job.progress?.pagesDone ?? null,
-              pagesTotal: job.progress?.pagesTotal ?? null,
-              cancelling: cancelRequested.current,
-            });
-            await pause(PREVIEW_JOB_POLL_MS);
-            continue;
-          }
-          if (job.status === 'cancelled') {
-            setState({ status: 'idle' });
-            return false;
-          }
-          if (job.status === 'failed') {
-            setFieldErrors(job.fieldErrors ?? {});
-            setState({ status: 'error', message: job.error ?? 'The preview could not be run.' });
-            return false;
-          }
-          // done
-          if (job.result?.scope === 'sample') {
-            setState({ status: 'success', preview: job.result.preview });
-            return job.result.preview;
-          }
-          setState({ status: 'error', message: 'The preview could not be run.' });
-          return false;
-        }
+        attachedJobIdRef.current = started.jobId;
+        return await pollUntilTerminal(started.jobId, id);
       } catch (e) {
         if (id !== runId.current) return false;
         const errors = e instanceof ApiError ? readFieldErrors(e.detail) : {};
@@ -685,8 +737,24 @@ export function useHttpPreview(): UseHttpPreviewResult {
         return false;
       }
     },
-    [],
+    [pollUntilTerminal],
   );
+
+  // AC-11-23/27 - re-attach to an already-in-flight job after a remount/
+  // reload (`task.previewJobId`): a poll, never a fresh `startPreviewJob`
+  // (which would start a SECOND walk the claim would just reject anyway).
+  // Attaches once per job id - a re-render carrying the SAME id (the task
+  // re-fetched while this hook is already polling it) is a no-op.
+  useEffect(() => {
+    if (!initialJobId || attachedJobIdRef.current === initialJobId) return;
+    attachedJobIdRef.current = initialJobId;
+    const id = ++runId.current;
+    cancelRequested.current = false;
+    activeJobId.current = initialJobId;
+    setState({ status: 'loading' });
+    setFieldErrors({});
+    void pollUntilTerminal(initialJobId, id);
+  }, [initialJobId, pollUntilTerminal]);
 
   const cancel = useCallback(() => {
     if (!activeJobId.current) return;

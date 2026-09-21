@@ -364,3 +364,36 @@ PENDING job (genuinely queued, not lost) is left untouched either way.
   0`, template-DB win alone, no parallelism, 703s / 11m43s wall - vs the ~1h this PR was briefed
   against, the template-DB half of the fix already accounts for most of the win; xdist's `-n auto`
   then divides that further by the core count).
+
+### Preview-as-a-job lessons (sprint-5/11 S4, `preview_job.py`/`preview_job_service.py`)
+
+- **A FastAPI `Depends(get_http_transport)` override is invisible to a plain function call.**
+  Eager mode (`CELERY_TASK_ALWAYS_EAGER=true`) runs the job handler INLINE in the same request
+  the router resolved a test-stub transport for via `Depends()` - but the generic
+  `JobService.enqueue()` -> `run_job(db, job_id)` dispatch calls the registered handler with
+  exactly `(db, job)`, no room for a transport kwarg. `PreviewJobService._run()` only takes the
+  bespoke "claim + call the handler directly with `transport=`" path when a transport is
+  ACTUALLY present (i.e., under a test override); every real call (transport always `None`)
+  still goes through the ordinary `enqueue()`/`run_job()` contract, so production behaviour and
+  its exception isolation are untouched.
+- **A grouped `Decimal` measure crashes a raw JSON column, not a Pydantic response.** The OLD
+  synchronous `preview_http` route returned a Pydantic `HttpPreviewResponse` whose own JSON
+  encoder wire-serialises a `Decimal` as a string; storing the SAME rows straight into
+  `background_jobs.result_json` (a plain `json.dumps` under the hood) raises
+  `TypeError: Object of type Decimal is not JSON serializable` the first time a combine-carrying
+  preview grouped a numeric measure. Fix: build the actual `HttpPreviewResponse`/`EtlTaskResponse`
+  models inside the handler and store `.model_dump(mode="json")`, never a hand-rolled dict of the
+  same fields.
+- **A module-column claim (`AcEntityConfig.preview_job_id`) is ONE per TASK, not one per scope.**
+  A `sample` Test and a `full` Run-preview share the SAME claim column, so re-attaching on
+  `task.previewJobId` can hand either FE hook a job that belongs to the OTHER scope. Each hook
+  must check the polled job's own top-level `scope` field before treating a terminal state as
+  its own success/failure - otherwise a Test button silently shows a fabricated error for a
+  Run-preview job it never started (and vice versa).
+- **Eager mode makes a preview job's `queued`/`running` states genuinely unobservable in local
+  dev** - the POST does not return until the handler has already finished, so a live-verify pass
+  against `CELERY_TASK_ALWAYS_EAGER=true` can only ever screenshot the terminal (`done`/`failed`)
+  state, never the progress strip or a cancel-mid-walk. The `[E2E]` progress/cancel screenshots
+  need a real Celery worker (`CELERY_TASK_ALWAYS_EAGER=false`), deferred to this plan's own S7
+  live-replay slice - the RED tests cover the mechanics directly (setting the job row's status
+  mid-test) instead.

@@ -57,7 +57,6 @@ import type {
   HttpPreviewInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
-import { withPhase1PreviewJobMock } from './autocount-service.mock';
 import { realAutocountService } from './autocount-service.real';
 
 export interface AutocountListQuery {
@@ -586,17 +585,12 @@ export interface AutocountService {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PHASE 1 MOCK (sprint-5/11 S3) - every surface above is backed by FastAPI
-// end to end EXCEPT the preview-job surface (`startPreviewJob`/
-// `getPreviewJob`/`cancelPreviewJob`), which has no backend yet (S4 lands
-// the real `autocount_source_preview` job + `/autocount/previews/*`
-// routes). `withPhase1PreviewJobMock` overlays ONLY that surface, delegating
-// the actual preview computation to the already-live synchronous
-// `previewHttp`/`previewEtlTask` routes while simulating the job's
-// queued -> running -> done/failed/cancelled shape client-side - real data,
-// simulated progress, exactly the `withPhase1PullMock` pattern plan
-// sprint-5/10 S2 used. Phase 2 swap (S4) = `export const autocountService =
-// realAutocountService`. `mockAutocountService` stays importable by the
-// Vitest suite directly (the house service-trio pattern).
+// sprint-5/11 S4 - every surface, INCLUDING the preview-job surface
+// (`startPreviewJob`/`getPreviewJob`/`cancelPreviewJob`), is backed by
+// FastAPI end to end now (the real `autocount_source_preview` job +
+// `/autocount/previews/*` routes). The PHASE 1 MOCK overlay
+// (`withPhase1PreviewJobMock`, `autocount-service.mock.ts`) is retired from
+// this binding - `mockAutocountService` stays importable by the Vitest
+// suite directly (the house service-trio pattern).
 // ═══════════════════════════════════════════════════════════════════════════
-export const autocountService: AutocountService = withPhase1PreviewJobMock(realAutocountService);
+export const autocountService: AutocountService = realAutocountService;

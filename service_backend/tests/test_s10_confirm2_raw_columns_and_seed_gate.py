@@ -136,6 +136,12 @@ def _paged(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _preview(client, headers, db, **body: Any):
+    """sprint-5/11 (AC-11-21/22) - ``POST /autocount/http/preview`` is now a
+    202 job start; this starts it and (for a 202) immediately polls the job
+    - under this suite's eager execution the job is ALREADY terminal by the
+    time the POST returns, so ONE poll is enough. Returns a response-like
+    object whose ``.json()`` is the landed ``preview`` shape directly (the
+    OLD synchronous body), preserving every call site below unchanged."""
     from app.main import app
     from modules.autocount.http_client import get_http_transport
 
@@ -152,9 +158,32 @@ def _preview(client, headers, db, **body: Any):
     })
     payload = {"connectionId": conn.id, "path": "/itembatchbalqtybypage", **body}
     try:
-        return client.post("/autocount/http/preview", json=payload, headers=headers)
+        response = client.post("/autocount/http/preview", json=payload, headers=headers)
     finally:
         app.dependency_overrides.pop(get_http_transport, None)
+    if response.status_code != 202:
+        return response
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=headers)
+    poll_body = poll.json()
+    assert poll_body["status"] == "done", poll_body
+    return _PolledPreview(poll.status_code, poll_body["result"]["preview"])
+
+
+class _PolledPreview:
+    """Adapts a landed preview-job result to the ``httpx.Response``-shaped
+    call sites below (``.status_code``/``.json()``/``.text``) - the OLD
+    synchronous route's own body, unchanged."""
+
+    def __init__(self, status_code: int, preview: Dict[str, Any]):
+        self.status_code = status_code
+        self._preview = preview
+
+    def json(self) -> Dict[str, Any]:
+        return self._preview
+
+    @property
+    def text(self) -> str:
+        return str(self._preview)
 
 
 # ── B1 (AC-10-01/AC-10-09): rawColumns on the preview wire ──────────────────

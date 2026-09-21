@@ -378,6 +378,168 @@ def test_a_failed_full_job_stamps_nothing(client, db, monkeypatch):
     assert body["error"], body
 
 
+# ── AC-11-25 - the fault classes the S4 red batch left uncovered ────────────
+#
+# Driven at the SAME seam ``test_s10_s3_pull_build_error_codes.py`` already
+# uses for the pull-snapshot job's own error ladder: a fake ``HttpApiSource``
+# that raises the EXACT ``HttpSourceError`` shape the real walker would
+# raise, isolating the preview job's own fault-class handling from the
+# walker's internals (already covered elsewhere - ``test_s10_http_retry.py``
+# for the row cap, ``http_source/source.py``'s own ``phase="enrich"`` tag for
+# a lookup-endpoint failure). ``_extract_and_map`` imports ``HttpApiSource``
+# LOCALLY (``from ..http_source.source import HttpApiSource`` inside the
+# function body), so patching the NAME on its home module is what a local
+# import actually resolves against.
+
+
+def _fake_http_source_raising(exc: HttpSourceError):
+    class _FakeSource:
+        def fetch_changes(self, since):
+            raise exc
+
+        def close(self):
+            pass
+
+    def factory(ctx, **kwargs):
+        return _FakeSource()
+
+    return factory
+
+
+def test_a_lookup_endpoint_failure_fails_the_job_and_stamps_nothing(client, db, monkeypatch):
+    import modules.autocount.http_source.source as http_source_module
+    from modules.autocount.http_source.errors import HttpSourceError
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    _http_task(db, company, conn.id)
+    _point_at_sorento(db, company)
+
+    exc = HttpSourceError(
+        "The 'uom' lookup endpoint '/itemuombypage' failed: AutoCount answered "
+        "HTTP 500 on page 1.",
+        code="http_status", page=1, status=500, phase="enrich",
+    )
+    monkeypatch.setattr(http_source_module, "HttpApiSource", _fake_http_source_raising(exc))
+
+    response = client.post(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_PRODUCT}/etl-task/preview",
+        json={"scope": "full", "companyId": company.id, "entityType": ENTITY_PRODUCT},
+        headers=_auth(client),
+    )
+    assert response.status_code == 202, response.text
+
+    config = _entity_config(db, company.id)
+    assert config.last_preview_at is None
+    assert config.last_preview_failed_count is None
+
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=_auth(client))
+    body = poll.json()
+    assert body["status"] == "failed", body
+    assert "lookup" in body["error"].lower(), body
+
+
+def test_a_shape_change_mid_walk_fails_the_job_and_stamps_nothing(client, db, monkeypatch):
+    import modules.autocount.http_source.source as http_source_module
+    from modules.autocount.http_source.errors import HttpSourceError
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    _http_task(db, company, conn.id)
+    _point_at_sorento(db, company)
+
+    exc = HttpSourceError(
+        "Page 2 answered a 'list' shape but page 1 was 'paged'.",
+        code="shape_change", page=2, status=200,
+    )
+    monkeypatch.setattr(http_source_module, "HttpApiSource", _fake_http_source_raising(exc))
+
+    response = client.post(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_PRODUCT}/etl-task/preview",
+        json={"scope": "full", "companyId": company.id, "entityType": ENTITY_PRODUCT},
+        headers=_auth(client),
+    )
+    assert response.status_code == 202, response.text
+
+    config = _entity_config(db, company.id)
+    assert config.last_preview_at is None
+    assert config.last_preview_failed_count is None
+
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=_auth(client))
+    body = poll.json()
+    assert body["status"] == "failed", body
+    assert "shape" in body["error"].lower(), body
+
+
+def test_a_row_cap_breach_fails_the_job_and_stamps_nothing(client, db, monkeypatch):
+    import modules.autocount.http_source.source as http_source_module
+    from modules.autocount.http_source.errors import HttpSourceError
+
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    _http_task(db, company, conn.id)
+    _point_at_sorento(db, company)
+
+    exc = HttpSourceError(
+        "This task's extract exceeded the 200000 row cap.", code="row_limit", page=7,
+    )
+    monkeypatch.setattr(http_source_module, "HttpApiSource", _fake_http_source_raising(exc))
+
+    response = client.post(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_PRODUCT}/etl-task/preview",
+        json={"scope": "full", "companyId": company.id, "entityType": ENTITY_PRODUCT},
+        headers=_auth(client),
+    )
+    assert response.status_code == 202, response.text
+
+    config = _entity_config(db, company.id)
+    assert config.last_preview_at is None
+    assert config.last_preview_failed_count is None
+
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=_auth(client))
+    body = poll.json()
+    assert body["status"] == "failed", body
+    assert "row cap" in body["error"].lower(), body
+
+
+def test_an_unreachable_sink_fails_the_full_job_and_stamps_nothing(client, db, monkeypatch):
+    """AC-11-25's own named class: an unreachable Sorento sink during the
+    dry run (``PreviewUnavailable``) - the SOURCE walk succeeds, the
+    consumer call fails at the transport level."""
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    _http_task(db, company, conn.id)
+    _point_at_sorento(db, company)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/itembypage"):
+            return httpx.Response(200, json={
+                "TotalCount": 1, "Page": 1, "PageSize": 1000, "TotalPages": 1,
+                "Data": [{"ItemCode": "A1", "Description": "Widget"}],
+            })
+        raise httpx.ConnectError("connection refused", request=request)
+
+    mock_transport = httpx.MockTransport(handler)
+    _patch_http_transport(monkeypatch, httpx.Client(transport=mock_transport))
+    _patch_sorento_sink(monkeypatch, mock_transport)
+
+    response = client.post(
+        f"/autocount/companies/{company.id}/entities/{ENTITY_PRODUCT}/etl-task/preview",
+        json={"scope": "full", "companyId": company.id, "entityType": ENTITY_PRODUCT},
+        headers=_auth(client),
+    )
+    assert response.status_code == 202, response.text
+
+    config = _entity_config(db, company.id)
+    assert config.last_preview_at is None
+    assert config.last_preview_failed_count is None
+
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=_auth(client))
+    body = poll.json()
+    assert body["status"] == "failed", body
+    assert body["error"], body
+
+
 # ── AC-11-30 - the stored result caps predictions at 500 ────────────────────
 
 

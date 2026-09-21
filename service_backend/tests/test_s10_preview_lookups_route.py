@@ -162,8 +162,14 @@ def test_preview_with_lookups_returns_alias_columns_and_per_lookup_counts(client
         )
     finally:
         app.dependency_overrides.pop(get_http_transport, None)
-    assert response.status_code == 200, response.text
-    body = response.json()
+    # sprint-5/11 (AC-11-21/22) - the route is now a 202 job start; poll
+    # for the landed `sample` result.
+    assert response.status_code == 202, response.text
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=headers)
+    assert poll.status_code == 200, poll.text
+    poll_body = poll.json()
+    assert poll_body["status"] == "done", poll_body
+    body = poll_body["result"]["preview"]
     column_names = {c["name"] for c in body["columns"]}
     assert "BaseUOMPrice" in column_names, column_names
     row_values = [r.get("BaseUOMPrice") for r in body["rows"]]
@@ -196,8 +202,16 @@ def test_preview_lookup_endpoint_failure_is_a_422_naming_the_lookup_path(client,
         )
     finally:
         app.dependency_overrides.pop(get_http_transport, None)
-    assert response.status_code == 422, response.text
-    field_errors = response.json()["detail"]["fieldErrors"]
+    # sprint-5/11 (AC-11-21/22/25) - a lookup-endpoint failure is discovered
+    # only AFTER the network fetch, so it is now a FAILED job (never a
+    # synchronous 422 - the walk itself moved off-request), carrying the
+    # SAME per-field message on `fieldErrors`.
+    assert response.status_code == 202, response.text
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=headers)
+    assert poll.status_code == 200, poll.text
+    body = poll.json()
+    assert body["status"] == "failed", body
+    field_errors = body["fieldErrors"]
     assert "lookups[0].path" in field_errors, field_errors
     assert "/itemuombypage" in field_errors["lookups[0].path"]
 

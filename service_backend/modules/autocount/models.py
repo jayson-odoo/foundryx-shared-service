@@ -286,6 +286,16 @@ class AcEntityConfig(AutocountBase):
     last_preview_failed_count = Column(Integer, nullable=True)
     # When the last run finished, whatever its outcome (AC-22-17).
     last_run_at = Column(UTCDateTime(), nullable=True)
+    # sprint-5/11 (AC-11-23, D10) - the in-flight ``autocount_source_preview``
+    # job claimed by THIS task, one preview per task. Set atomically
+    # (``UPDATE ... WHERE preview_job_id IS NULL``) by
+    # ``PreviewJobService.start`` and released on every terminal path -
+    # done, failed, cancelled, and the orphan sweep's ``on_job_orphaned``
+    # hook (mirrors ``AcPullSnapshot``'s own ``job_id`` claim pattern). A
+    # module column, never a core ``background_jobs`` index (a module may
+    # not add one) - NULL = no preview in flight, lets a remounted editor
+    # re-attach instead of starting a second walk.
+    preview_job_id = Column(String, nullable=True)
 
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())

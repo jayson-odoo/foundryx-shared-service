@@ -2888,3 +2888,16 @@ def register_autocount_sync_handler() -> None:
 
 
 register_autocount_sync_handler()
+
+
+# ── preview job (sprint-5/11 S4, AC-11-21) ───────────────────────────────────
+# Registered from HERE, not imported at module level (``preview_job.py``
+# would otherwise need to import this module back for its constants, which
+# it does not - a plain deferred import keeps the two decoupled) so the
+# EXISTING worker import of ``modules.autocount.sync`` already covers this
+# handler too - the SAME footgun ``register_autocount_sync_handler``'s own
+# docstring names: forgetting the import leaves every preview job Pending
+# forever with no error.
+from .preview_job import register_preview_job_handler  # noqa: E402
+
+register_preview_job_handler()

@@ -18,17 +18,16 @@ from app.models.user import User
 
 from ..schemas import (
     HttpConnectionItem,
-    HttpPreviewColumnOut,
     HttpPreviewColumnsRequest,
     HttpPreviewRequest,
-    HttpPreviewResponse,
-    LookupPreviewCountOut,
     PreviewColumnsResponse,
+    PreviewJobStartOut,
 )
 from ..services import AutocountServiceError, EtlService, EtlValidationError
+from ..services.preview_job_service import PreviewJobService
 from ..provider import auth_mode
 from ..http_client import get_http_transport
-from .companies import _field_errors, _raise, _task_response
+from .companies import _field_errors, _raise
 
 router = APIRouter()
 
@@ -74,22 +73,21 @@ def preview_http_columns(
     return PreviewColumnsResponse(columns=columns)
 
 
-@router.post("/preview", response_model=HttpPreviewResponse)
+@router.post("/preview", response_model=PreviewJobStartOut, status_code=status.HTTP_202_ACCEPTED)
 def preview_http(
     body: HttpPreviewRequest,
     current_user: User = Depends(require_permission("autocount.companies.manage")),
     db: Session = Depends(get_db),
     transport: Optional[Any] = Depends(get_http_transport),
 ):
-    """Page-1 sample against an open (no-auth) connection (AC-08-14). A bad
-    connection or a bad path is a 422 naming the field.
-
-    ``task`` (sprint-5/08 review round 7) echoes the task AFTER stamping when
-    the request named both ``companyId``/``entityType`` - the SAME shape
-    every lifecycle route returns, built through the ONE ``_task_response``
-    converter - so the Source tab's Test button can adopt the freshly-stamped
-    ``lastPreviewAt``/``resultColumns`` directly, with no second GET to race
-    a concurrent Save.
+    """sprint-5/11 (AC-11-21/22) - starts the ``sample``-scope
+    ``autocount_source_preview`` job and returns 202 ``{jobId, status}``; no
+    extraction happens in THIS request. A bad connection or a bad path is
+    still a 422 naming the field, BEFORE any job row is ever created
+    (``PreviewJobService.start_sample``'s own pre-flight). Poll
+    ``GET /autocount/previews/{jobId}`` for the landed result - the SAME
+    ``HttpPreviewResponse`` shape this route used to return synchronously,
+    now the job's ``result.preview``.
 
     A ``companyId`` naming another tenant's company (or a company that does
     not exist) raises ``CompanyNotFound`` from the service's tenant-scope
@@ -98,54 +96,19 @@ def preview_http(
     round 8).
     """
     try:
-        result, task_view = EtlService(db).preview_http(
+        job_id, wire_status = PreviewJobService(db).start_sample(
             current_user.tenant_id,
-            body.connectionId,
-            body.path,
+            company_id=body.companyId or "",
+            entity_type=body.entityType or "",
+            connection_id=body.connectionId,
+            path=body.path,
             distinct_of=body.distinctOf,
             lookups=body.lookups,
             combine=body.combine,
-            company_id=body.companyId,
-            entity_type=body.entityType,
             transport=transport,
         )
     except EtlValidationError as exc:
         return _field_errors(exc.field_errors, exc.message)
     except AutocountServiceError as exc:
         _raise(exc)
-    funnel = result.combine_funnel or {}
-    return HttpPreviewResponse(
-        envelope=result.envelope,
-        totalCount=result.total_count,
-        columns=[
-            HttpPreviewColumnOut(
-                name=name,
-                sample=(str(result.rows[0][name]) if result.rows and name in result.rows[0] else None),
-            )
-            for name in result.columns
-        ],
-        rows=result.rows,
-        durationMs=result.duration_ms,
-        task=_task_response(task_view) if task_view is not None else None,
-        lookups=[
-            LookupPreviewCountOut(alias=entry.alias, matched=entry.matched, missed=entry.missed)
-            for entry in result.lookups
-        ],
-        # sprint-5/10 S5a follow-up (AC-10-82) - present ONLY when the
-        # request carried a `combine` block (`EtlService.preview_http`
-        # leaves `combine_funnel` `None` otherwise).
-        rowsIn=funnel.get("rowsIn"),
-        excludedCount=funnel.get("excludedCount"),
-        groups=funnel.get("groups"),
-        droppedByRule=funnel.get("droppedByRule"),
-        rowsOut=funnel.get("rowsOut"),
-        roundedCount=funnel.get("roundedCount"),
-        # review round 5 (R5-A) - `None` unless the request carried a
-        # `combine` block (`EtlService.preview_http` leaves
-        # `pre_combine_columns` `None` otherwise, same gate as the funnel).
-        preCombineColumns=result.pre_combine_columns,
-        # confirm round 2 (B1) - unconditional: `run_http_preview` captures
-        # the pre-lookup set on every path (including the `distinctOf`
-        # projection, whose raw set is the single `value` column).
-        rawColumns=list(result.raw_columns),
-    )
+    return PreviewJobStartOut(jobId=job_id, status=wire_status)

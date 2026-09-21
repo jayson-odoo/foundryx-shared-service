@@ -50,6 +50,16 @@ DEFAULT_PAGE_SIZE = 1000
 # field's own save-time range (`provider.py`'s `PAGE_SIZE_FIELD_MIN`).
 MIN_PAGE_SIZE = 50
 
+# sprint-5/11 (AC-11-29) - the Cloudflare-safe ceiling on the ONE preview
+# route that stays SYNCHRONOUS (``POST /autocount/http/preview-columns`` -
+# the Lookups editor's inline probe, one request, needs an immediate
+# answer). A connection's own ``requestTimeoutSeconds`` can be raised as
+# high as 100s (AC-10-85), which is exactly the shape of request Cloudflare
+# itself cuts before the connection's own timeout ever fires; every other
+# preview surface (the Source tab Test, Review & Activate's Run preview) is
+# a background job instead (AC-11-21/22) and is unaffected by this ceiling.
+PREVIEW_REQUEST_TIMEOUT_CEILING_SECONDS = 45.0
+
 
 def connection_sizing(config: Optional[Dict[str, Any]]) -> Tuple[int, float]:
     """AC-10-85 / sprint-5/10 confirm-3 S1 - the ONE reader of an
