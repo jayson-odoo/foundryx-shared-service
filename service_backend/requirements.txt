@@ -41,7 +41,7 @@ nh3>=0.2
 # WeasyPrint needs native libs: Pango / cairo / gdk-pixbuf / libffi
 # (brew install pango on macOS; the deploy image must carry them). No Node,
 # no Chromium. segno = server-side QR generation (slice 2 badge surface).
-weasyprint>=69.0
+weasyprint>=69.0,<70  # 70.0 (2026-09-08) drops default_url_fetcher + requires URLFetcher/URLFetcherResponse; migrate per backlog BL-SS-254 before lifting
 segno>=1.6
 openpyxl==3.1.5
 xlrd==2.0.2
