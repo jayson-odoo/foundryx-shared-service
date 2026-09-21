@@ -129,6 +129,29 @@ with no module-boot call of its own. Pin the invariant with a subprocess test
 for the wrong reason once an earlier fixture/test in the same process has already registered
 things the real path never would.
 
+**Follow-up, same PR (#80 part 2, 2026-09-21):** `app/jobs/worker.py`'s `jobs.run` task
+(`run_job_task`) is exactly the case named above - it never called
+`_ensure_module_nodes()`/`boot_module_hooks()` at all, relying entirely on
+`app/workflow_engine/worker.py`'s bottom-of-file explicit imports. `storage_migration`/
+`sql_db`/`autocount_http`/the meetings handlers dodge this because each registers at its OWN
+module's import time and that module is explicitly imported there - but omnichannel's four job
+handlers (contacts export, broadcast send, report export, respond.io migration) register only
+inside `register_engine_entities()`, reachable exclusively through `boot_module_hooks()`.
+Before sprint-5/11 S1 (PR #76) this was still a RACE, because `jobs.run` shared the same
+`workflow` Celery process as `workflows.run_workflow`/`wake_serialized_task` - either task
+running first warmed `_ensure_module_nodes()` as a side effect. Once PR #76 routed `jobs.run`
+onto its OWN dedicated `worker_jobs` process (consumes ONLY the `jobs` queue), the race became
+a certainty: no workflow-run task ever executes there, so those four job types were
+PERMANENTLY unknown - `UnknownJobType` on every single dispatch. Fixed structurally, not with a
+fifth hand-listed import: `run_job_task` now calls `_ensure_module_nodes()` itself
+(failure-isolated, log-and-continue - `boot_module_hooks()` already isolates per module) before
+touching `app.jobs.registry`, so a sixth module's job handler registers automatically too. The
+drift test asserts against an INDEPENDENTLY DERIVED expected set (a static grep of
+`register_job_handler(` call sites across the source tree, not a hardcoded list) and calls
+`run_job_task` directly (not a hand-call to the boot helper) - a first draft of this test called
+the helper itself and passed regardless of whether the fix was in `run_job_task`, the exact
+"test passes for the wrong reason" trap this same file already warns about for `http_source`.
+
 ### AutoCount human-invoked pull (plan 10, sprint-5/10) - what each stage owns
 
 The pull path is a SNAPSHOT builder, not the push path's staged-diff machinery - no

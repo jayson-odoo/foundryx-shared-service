@@ -166,3 +166,142 @@ def test_http_source_module_registers_at_import_time_not_only_via_the_install_ho
         # `modules.autocount.bootstrap`) holds a reference to, so later
         # tests in this process see the same registered state they expect.
         importlib.reload(http_source_module)
+
+
+# ── background-job handler registry on the `worker_jobs` process (part 2) ───
+#
+# Same bug class as the ``autocount_http`` source-impl gap above, on a
+# DIFFERENT dispatch path: ``app/jobs/worker.py``'s ``jobs.run`` task never
+# called ``_ensure_module_nodes()``/``boot_module_hooks()`` at all - it
+# relied entirely on ``app/workflow_engine/worker.py``'s bottom-of-file
+# explicit imports (``app.storage_migration.service``, ``modules.autocount.
+# sync``, ``modules.meetings.jobs``), each of which registers its job
+# handler(s) at its OWN module level (mirrors ``sql_db``'s pattern). But
+# omnichannel's four job handlers (contacts export, broadcast send, report
+# export, respond.io migration) register ONLY inside its
+# ``register_engine_entities()``, reachable exclusively through
+# ``boot_module_hooks()`` - no bare import of any omnichannel module
+# registers them.
+#
+# Before sprint-5/11 S1 (PR #76) this was still a RACE: ``jobs.run`` shared
+# the same ``workflow`` worker process as ``workflows.run_workflow``/
+# ``wake_serialized_task``, and EITHER of those tasks running first would
+# warm ``_ensure_module_nodes()`` as an accidental side effect. Since PR #76
+# routes ``jobs.run`` onto the DEDICATED ``worker_jobs`` process (consumes
+# ONLY the ``jobs`` queue), no workflow-run task EVER executes there - the
+# four omnichannel job types are now PERMANENTLY unknown on that process,
+# not a race: every dispatch of one raises ``UnknownJobType``.
+
+
+def test_run_job_task_boots_module_hooks_before_dispatching():
+    """Source-order regression (mirrors the workflow-task tests above):
+    `run_job_task` must call `_ensure_module_nodes()` before it does any real
+    work, so every module's job handler is registered before dispatch."""
+    import inspect
+
+    from app.jobs import worker as jobs_worker
+
+    task = jobs_worker.run_job_task
+    body = inspect.getsource(task.run if hasattr(task, "run") else task)
+    assert "_ensure_module_nodes()" in body
+    assert body.index("_ensure_module_nodes()") < body.index("run_job(db, job_id)")
+
+
+def test_worker_jobs_process_resolves_every_registered_job_type_before_running_one():
+    """Subprocess proof of the `worker_jobs` gap. Two independent measures,
+    derived at test time (never a hand-maintained list, so a fifth module's
+    job handler cannot drift silently past this test):
+
+    1. A STATIC grep of the source tree (excluding `.venv`/`tests`) for
+       `register_job_handler(` CALL sites (excluding the `def` line itself) -
+       the ground-truth count of distinct job types the codebase declares,
+       independent of any boot path.
+    2. A SUBPROCESS that simulates the real `worker_jobs` process: a bare
+       `import app.jobs.worker` (what `celery -A app.workflow_engine.worker
+       worker -Q jobs` boots - no `workflows.run_workflow` ever runs there
+       to warm anything as a side effect), captures the registry BEFORE
+       dispatch, then calls `run_job_task` ITSELF directly (the plain
+       function, not `.delay()`/Celery - calling a `@celery_app.task`
+       synchronously runs its real body) for a job id that does not exist,
+       and captures the registry AFTER. Calling the task function directly
+       - not manually calling `_ensure_module_nodes()` - is deliberate: a
+       test that calls the boot helper itself would pass whether or not
+       `run_job_task` actually calls it, which is exactly the assertion
+       under test (confirmed: with the fix reverted this variant passed for
+       the wrong reason while the source-order test above correctly failed).
+       `run_job_task` is expected to raise once it reaches the DB lookup (no
+       schema on this bare `sqlite://`) - that happens AFTER the boot call,
+       so the exception is swallowed and the registry state is read anyway.
+
+    Asserts the AFTER count matches the static grep count (every declared
+    job type resolves via `handler_for` on this process), and that the
+    BEFORE set was a strict subset (proving there was a real gap this fix
+    closes, not a vacuously-true check)."""
+    import json
+    import re
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    call_site_re = re.compile(r"(?<!def )register_job_handler\(")
+    static_count = 0
+    for py_file in root.rglob("*.py"):
+        parts = py_file.relative_to(root).parts
+        if parts[0] in (".venv", "tests", "alembic"):
+            continue
+        text = py_file.read_text(encoding="utf-8", errors="ignore")
+        static_count += len(call_site_re.findall(text))
+    assert static_count > 0, "the grep pattern itself found nothing - it is broken, not the codebase"
+
+    script = (
+        "import json\n"
+        "import app.jobs.worker as jobs_worker\n"
+        "from app.jobs.registry import list_job_handlers, handler_for\n"
+        "before = sorted(d.type for d in list_job_handlers())\n"
+        "try:\n"
+        "    jobs_worker.run_job_task('drift-test-nonexistent-job-id')\n"
+        "except Exception:\n"
+        "    pass\n"  # expected: no schema on this bare sqlite:// - the boot call already ran by then
+        "after = sorted(d.type for d in list_job_handlers())\n"
+        "for job_type in after:\n"
+        "    handler_for(job_type)\n"  # raises UnknownJobType if it does not actually resolve
+        "print(json.dumps({'before': before, 'after': after}))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(root),
+        env={
+            **os.environ,
+            "DATABASE_URL": "sqlite://",
+            "CELERY_TASK_ALWAYS_EAGER": "true",
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    before, after = payload["before"], payload["after"]
+
+    assert len(after) == static_count, (
+        f"expected {static_count} job types (from {call_site_re.pattern!r} call "
+        f"sites in the source tree) but the worker_jobs process resolved "
+        f"{len(after)}: {after}. A module's job handler is registered "
+        f"somewhere `_ensure_module_nodes()` never reaches."
+    )
+    assert set(before) < set(after), (
+        "the BEFORE set (a bare `import app.jobs.worker`, no boot helper "
+        "called yet) was not a strict subset of AFTER - either the fix is "
+        "gone (before == after == the small set) or boot_module_hooks() "
+        f"regressed. before={before!r} after={after!r}"
+    )
+    for expected_type in (
+        "omnichannel.contacts_export",
+        "omnichannel.broadcast_send",
+        "omnichannel.report_export",
+        "omnichannel.respondio_migration",
+    ):
+        assert expected_type in after, (
+            f"'{expected_type}' still unresolved on the worker_jobs process - "
+            "this is the exact prod gap (UnknownJobType on every dispatch)."
+        )
