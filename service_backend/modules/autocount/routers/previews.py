@@ -44,8 +44,10 @@ def cancel_preview_job(
     db: Session = Depends(get_db),
 ) -> PreviewJobOut:
     """AC-11-24 - a no-op 200 carrying the terminal status against an
-    already-terminal job, never a 409 the UI has to explain."""
-    view = PreviewJobService(db).cancel(current_user.tenant_id, job_id)
+    already-terminal job, never a 409 the UI has to explain. ``result`` is
+    withheld the SAME way the poll route withholds it (review round 2,
+    item 1) - resolved in the SERVICE, never here."""
+    view = PreviewJobService(db).cancel(current_user.tenant_id, job_id, current_user=current_user)
     if view is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preview job not found.")
     return view

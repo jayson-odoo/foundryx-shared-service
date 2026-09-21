@@ -230,6 +230,21 @@ def _run_sample(
     transport: Any,
 ) -> None:
     etl = EtlService(db)
+    service = JobService(db)
+
+    def _on_page(stage: str, done: int, total: Optional[int]) -> None:
+        """sprint-5/11 review round 2 (item 5, AC-11-40) - progress only
+        (no cooperative-cancel check here, unlike ``_run_full``'s own
+        callback): the sample scope's single request already has its own
+        cancel recheck right before the terminal write, below."""
+        try:
+            service.beat_progress(job_id, done=done, total=total, stage=stage)
+        except Exception:  # noqa: BLE001 - advisory, must never fail the run
+            logger.warning(
+                "autocount_source_preview: beat_progress for job %s failed",
+                job_id, exc_info=True,
+            )
+
     try:
         result, task_view = etl.preview_http(
             tenant_id,
@@ -241,6 +256,7 @@ def _run_sample(
             company_id=company_id or None,
             entity_type=entity_type or None,
             transport=transport,
+            on_page=_on_page,
         )
     except EtlValidationError as exc:
         finish(status=JOB_FAILED, error=exc.message, result={"fieldErrors": exc.field_errors})

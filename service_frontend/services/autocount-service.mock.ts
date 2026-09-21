@@ -2144,7 +2144,21 @@ export function resetEtlMockState(): void {
   previewJobForcedFailure.clear();
 }
 
-export const mockAutocountService: AutocountService = {
+/**
+ * sprint-5/11 review round 2 (item 6) - `previewEtlTask`/`previewHttp` were
+ * removed from `AutocountService`/`realAutocountService` (dead on the real
+ * backend contract since S4's job-based preview surface), but the mock
+ * KEEPS its own internals: `mockPreviewJobResolve` (the Vitest fixture
+ * engine behind `startPreviewJob`/`getPreviewJob`) still resolves against
+ * them, and several mock-focused test files still call them directly. A
+ * mock-only type extension, never leaked onto the shared interface.
+ */
+interface MockOnlyPreviewMethods {
+  previewEtlTask(companyId: string, entityType: string): Promise<AutocountEtlPreviewResult>;
+  previewHttp(input: HttpPreviewInput): Promise<HttpPreview>;
+}
+
+export const mockAutocountService: AutocountService & MockOnlyPreviewMethods = {
   listCompanies(query: AutocountListQuery = {}): Promise<ListResult<AutocountCompany>> {
     const all = allCompanies();
     return Promise.resolve({ data: all, total: all.length, page: query.page ?? 0 });

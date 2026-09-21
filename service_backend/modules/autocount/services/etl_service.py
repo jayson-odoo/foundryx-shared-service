@@ -965,6 +965,11 @@ class EtlService:
         company_id: Optional[str] = None,
         entity_type: Optional[str] = None,
         transport: Any = None,
+        # sprint-5/11 review round 2 (item 5, AC-11-40) - threaded straight
+        # to ``run_http_preview`` (source/lookup) and fired here for
+        # ``combine`` - ``None`` (every caller before this) leaves the
+        # sample exactly as it was.
+        on_page: Optional[Callable[[str, int, Optional[int]], None]] = None,
     ) -> Tuple[HttpPreviewResult, Optional["EtlTaskView"]]:
         """One page-1 sample against an OPEN connection (AC-08-14).
 
@@ -1021,6 +1026,7 @@ class EtlService:
                 lookups=clean_lookups,
                 transport=transport,
                 timeout_seconds=timeout_seconds,
+                on_page=on_page,
             )
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc
@@ -1057,6 +1063,8 @@ class EtlService:
             # ``combine.measures[i].source`` exactly like a drop-rule
             # failure keys to ``combine.drop[i].formula`` - never a bare
             # 500 for a preview.
+            if on_page is not None:
+                on_page("combine", 1, None)
             try:
                 combine_result = apply_combine(result.rows, combine)
             except CombineDropError as exc:

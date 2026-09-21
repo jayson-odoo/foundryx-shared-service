@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
@@ -108,6 +108,11 @@ def run_http_preview(
     lookups: Optional[List[Dict[str, Any]]] = None,
     transport: Optional[httpx.Client] = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    # sprint-5/11 review round 2 (item 5, AC-11-40) - the SAME progress
+    # checkpoint shape ``HttpApiSource``'s own ``heartbeat`` uses, stamped
+    # before the page-1 request and before each lookup's own request.
+    # ``None`` (every caller before this) leaves the walk exactly as it was.
+    on_page: Optional[Callable[[str, int, Optional[int]], None]] = None,
 ) -> HttpPreviewResult:
     # Local import (AC-10-05) - ``http_source.lookups`` imports
     # ``validate_http_path`` FROM this module at ITS OWN top level, so a
@@ -125,6 +130,8 @@ def run_http_preview(
     client = HttpApiClient(base_url, transport=transport, timeout_seconds=timeout_seconds)
     started = time.monotonic()
     try:
+        if on_page is not None:
+            on_page("source", 1, None)
         try:
             response = client.get(path, {"page": 1, "pageSize": PREVIEW_PAGE_SIZE})
         except HttpTransportError as exc:
@@ -209,6 +216,8 @@ def run_http_preview(
         for i, spec in enumerate(lookups or []):
             lookup_path = str(spec.get("path") or "")
             alias_name = str(spec.get("as") or "")
+            if on_page is not None:
+                on_page(f"lookup:{alias_name}", 1, None)
             try:
                 lookup_response = client.get(
                     lookup_path, {"page": 1, "pageSize": PREVIEW_PAGE_SIZE}

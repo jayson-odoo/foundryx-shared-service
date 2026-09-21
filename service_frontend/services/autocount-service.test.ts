@@ -313,18 +313,30 @@ describe('direct-DB ETL lifecycle (plan 22 S2 contract)', () => {
     });
   });
 
-  it('POSTs preview / activate / pause / resume / run under the task resource', async () => {
-    // previewEtlTask/runEtlTaskNow normalize `result.task` (the SQL-shape
-    // defaults backfill) - the default beforeEach fixture carries no `task`,
-    // so give this test its own resolved value with the field present.
-    apiFetch.mockResolvedValue({ task: {} });
-    await realAutocountService.previewEtlTask('c1', 'sales_order');
+  // sprint-5/11 review round 2 (item 6) - the `preview` leg dropped:
+  // `previewEtlTask` was removed from `AutocountService`/`realAutocountService`
+  // (dead since S4 replaced the synchronous `.../preview` route with the
+  // `autocount_source_preview` job's own `startPreviewJob`/`getPreviewJob`
+  // surface - this test's own bare-POST-no-body pin had not matched the
+  // real route's contract since then either).
+  it('POSTs activate / pause / resume / run under the task resource', async () => {
+    // Pre-existing gap surfaced while removing `previewEtlTask` above:
+    // `runEtlTaskNow` reads a NESTED `started.task` (unlike activate/pause/
+    // resume, which normalize the top-level response) - the file's own
+    // blanket `beforeEach` default (`{data:[],total:0,page:0}`, shaped for
+    // the OTHER tests in this file) has no `task` key, so `normalizeEtlTask
+    // (started.task)` crashed on `undefined`. A real task-shaped response
+    // only for the `/run` call, never touching the shared blanket default.
+    apiFetch.mockImplementation((path: string) =>
+      path.endsWith('/run')
+        ? Promise.resolve({ runId: 'run-1', jobId: 'job-1', status: 'done', task: {} })
+        : Promise.resolve({ data: [], total: 0, page: 0 }),
+    );
     await realAutocountService.activateEtlTask('c1', 'sales_order');
     await realAutocountService.pauseEtlTask('c1', 'sales_order');
     await realAutocountService.resumeEtlTask('c1', 'sales_order');
     await realAutocountService.runEtlTaskNow('c1', 'sales_order');
     expect(apiFetch.mock.calls.map((c) => c[0])).toEqual([
-      `${root}/preview`,
       `${root}/activate`,
       `${root}/pause`,
       `${root}/resume`,

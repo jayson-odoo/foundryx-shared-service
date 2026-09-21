@@ -13,7 +13,6 @@ import type {
   AutocountDeliveryMode,
   AutocountEntityConfig,
   AutocountEtlSourceConfig,
-  AutocountEtlPreviewResult,
   AutocountEtlRepushResult,
   AutocountEtlRunStart,
   AutocountEtlTask,
@@ -41,8 +40,6 @@ import type {
   AutocountSyncJob,
   AutocountSyncJobBatch,
   AutocountSyncRun,
-  HttpPreview,
-  HttpPreviewInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
 import type { AutocountStagedQuery } from '@/types/autocount';
@@ -325,12 +322,11 @@ export const realAutocountService: AutocountService = {
 
   // ── direct-DB ETL (plan 22 S2) - endpoints per the contract documented on
   // `AutocountService`.
-
-  previewEtlTask(companyId, entityType) {
-    return apiFetch<AutocountEtlPreviewResult>(`${etlTaskPath(companyId, entityType)}/preview`, {
-      method: 'POST',
-    }).then((result) => ({ ...result, task: normalizeEtlTask(result.task) }));
-  },
+  //
+  // `previewEtlTask` removed (sprint-5/11 review round 2, item 6) - dead
+  // since S4 replaced the synchronous `.../preview` route with the
+  // `autocount_source_preview` job's own `startPreviewJob`/`getPreviewJob`
+  // surface below.
 
   activateEtlTask(companyId, entityType) {
     return apiFetch<AutocountEtlTask>(`${etlTaskPath(companyId, entityType)}/activate`, {
@@ -374,14 +370,10 @@ export const realAutocountService: AutocountService = {
     return apiFetch<AutocountApiConnection[]>('/autocount/http/connections');
   },
 
-  previewHttp(input: HttpPreviewInput) {
-    return apiFetch<HttpPreview>('/autocount/http/preview', {
-      method: 'POST',
-      body: JSON.stringify(input),
-    }).then((result) =>
-      result.task ? { ...result, task: normalizeEtlTask(result.task) } : result,
-    );
-  },
+  // `previewHttp` removed (sprint-5/11 review round 2, item 6) - dead since
+  // S4 replaced the synchronous `/autocount/http/preview` route with the
+  // `autocount_source_preview` job's own `startPreviewJob`/`getPreviewJob`
+  // surface below.
 
   previewColumns(connectionId, path) {
     return apiFetch<{ columns: string[] }>('/autocount/http/preview-columns', {

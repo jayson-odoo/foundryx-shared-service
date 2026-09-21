@@ -306,6 +306,57 @@ def test_full_preview_job_stage_sequence_includes_the_lookup_alias(
     _assert_subsequence(["source", "lookup:uom", "mapping", "dry_run"], stage_spy)
 
 
+# ── the preview job's `sample` scope (source -> lookup) - review round 2 ────
+# item 5: EtlService.preview_http/run_http_preview also stamp the SAME
+# per-page checkpoint. A single page-1 request (never a multi-page walk), so
+# `source` and each `lookup:<alias>` fire exactly once.
+
+
+def test_sample_preview_job_stage_sequence_includes_source_and_lookup(
+    client, db, stage_spy,
+):
+    conn = _open_connection(db)
+    company = _company(db, conn.id, database_name="S11S5STAGESAMPLE")
+    lookup = {
+        "path": "/itemuombypage", "as": "uom",
+        "on": [{"local": "ItemCode", "remote": "ItemCode"}],
+        "fields": [{"remote": "Price", "as": "BaseUOMPrice"}],
+    }
+    _http_task(db, company, conn.id, lookups=[lookup])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/itembypage"):
+            return httpx.Response(200, json={
+                "TotalCount": 1, "Page": 1, "PageSize": 50, "TotalPages": 1,
+                "Data": [{"ItemCode": "A1", "Description": "Widget"}],
+            })
+        return httpx.Response(200, json={
+            "TotalCount": 1, "Page": 1, "PageSize": 50, "TotalPages": 1,
+            "Data": [{"ItemCode": "A1", "Price": 9.5}],
+        })
+
+    from app.main import app
+    from modules.autocount.http_client import get_http_transport
+
+    app.dependency_overrides[get_http_transport] = lambda: httpx.Client(
+        transport=httpx.MockTransport(handler)
+    )
+    try:
+        response = client.post(
+            "/autocount/http/preview",
+            json={
+                "scope": "sample", "companyId": company.id, "entityType": ENTITY_PRODUCT,
+                "connectionId": conn.id, "path": "/itembypage", "lookups": [lookup],
+            },
+            headers=_auth(client),
+        )
+    finally:
+        app.dependency_overrides.pop(get_http_transport, None)
+
+    assert response.status_code == 202, response.text
+    _assert_subsequence(["source", "lookup:uom"], stage_spy)
+
+
 # ── the pull-snapshot build (source -> storing) ─────────────────────────────
 
 
@@ -358,3 +409,64 @@ def test_pull_snapshot_stage_sequence_is_source_then_storing(db, monkeypatch, st
     assert snapshot.record_count == row_count
 
     _assert_subsequence(["source", "storing"], stage_spy)
+
+
+# ── the "combine" stage (sprint-5/11 review round 2, item 3) ────────────────
+
+
+def test_pull_snapshot_stage_sequence_includes_combine_when_the_task_has_one(
+    db, monkeypatch, stage_spy,
+):
+    """``HttpApiSource.fetch_changes`` is the ONE call site both handlers'
+    walk goes through (``sync.py``'s pull-snapshot build here; ``EtlService.
+    preview_task``'s full-scope walk the same way) - stamping ``combine``
+    there covers both with no extra plumbing. Only two rows (well under
+    ``ROW_INSERT_HEARTBEAT_INTERVAL``), so ``storing`` never beats here -
+    the sibling test above already proves that stage; this one is scoped to
+    ``combine`` alone."""
+    conn = _open_connection(db)
+    company = _company(db, conn.id, database_name="S11S5STAGECOMBINE")
+
+    config = AcEntityConfig(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_PRODUCT,
+        source_impl=SOURCE_IMPL_AUTOCOUNT_HTTP, etl_status=ETL_STATUS_ACTIVE,
+        delivery_mode="pull",
+        source_config={
+            "connectionId": conn.id, "path": "/rows",
+            "keyFields": ["g"], "watermarkField": None, "comparedFields": [],
+            "distinctOf": None, "incrementalMinutes": 15, "reconcileMode": "dailyAt",
+            "reconcileAt": "02:00", "lookups": [],
+            "combine": {
+                "computed": [], "require": [], "measure": "v", "groupBy": ["g"],
+                "measures": [{"source": "v", "op": "sum", "alias": "total"}],
+                "carry": [], "round": [], "drop": [],
+            },
+        },
+    )
+    db.add(config)
+    db.add(AcFieldMapping(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_PRODUCT,
+        scope="header", sort_order=0, source_path="g", canonical_field="code",
+        transform="string", is_required=True, formula=None,
+    ))
+    db.commit()
+
+    rows = [{"g": "A", "v": 1}, {"g": "A", "v": 2}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "TotalCount": len(rows), "Page": 1, "PageSize": len(rows), "TotalPages": 1,
+            "Data": rows,
+        })
+
+    _patch_http_transport(monkeypatch, httpx.Client(transport=httpx.MockTransport(handler)))
+
+    from modules.autocount.services.pull_service import PullService
+
+    snapshot = PullService(db).request_build(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, requested_via="operator",
+    )
+    db.refresh(snapshot)
+    assert snapshot.status == "ready", getattr(snapshot, "error", None)
+
+    _assert_subsequence(["source", "combine"], stage_spy)

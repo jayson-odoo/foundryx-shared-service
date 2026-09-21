@@ -700,6 +700,16 @@ class HttpApiSource:
         else:
             reduced_rows = scanned_rows
             if self.combine:
+                # sprint-5/11 review round 2 (item 3, AC-11-40) - the
+                # "combine" stage, fired once before the reduction step, not
+                # page-driven (`page`/`total` unknown - `0`/`None`). This ONE
+                # call site covers both consumers of ``fetch_changes``
+                # (``sync.py``'s pull-snapshot build AND ``EtlService.
+                # preview_task``'s full-scope walk) with no extra plumbing -
+                # ``None`` (every task with no combine step) leaves this
+                # exactly as it was.
+                if self._on_page is not None:
+                    self._on_page("combine", 0, None)
                 combine_result = apply_combine(scanned_rows, self.combine)
                 reduced_rows = combine_result.rows
                 combine_metadata = combine_result.metadata

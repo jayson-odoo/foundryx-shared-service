@@ -23,7 +23,6 @@ import type {
   AutocountDeliveryMode,
   AutocountEntityConfig,
   AutocountEntityConfigUpdate,
-  AutocountEtlPreviewResult,
   AutocountEtlRepushResult,
   AutocountEtlRunStart,
   AutocountEtlTask,
@@ -53,8 +52,6 @@ import type {
   AutocountSyncJob,
   AutocountSyncJobBatch,
   AutocountSyncRun,
-  HttpPreview,
-  HttpPreviewInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
 import { realAutocountService } from './autocount-service.real';
@@ -310,17 +307,10 @@ export interface AutocountService {
   //
   // New routes (all under /autocount/companies/{id}/entities/{entityType}/etl-task):
   //
-  //   POST .../preview
-  //        → AutocountEtlPreviewResult  (initial-load dry run: extract the
-  //          saved query, map, `SorentoSink` `?dry_run=true`; writes NOTHING;
-  //          `preview` = the SAME shape as `POST /autocount/jobs/{id}/preview`;
-  //          `task.lastPreviewAt` stamped when the dry run completed).
-  //          Logging sink → `previewable: false`. Unreachable consumer → 502.
-  //          Sorento anchor 422 (COMPANY_ANCHOR_REQUIRED / UNKNOWN_COMPANY /
-  //          COMPANY_ANCHOR_AMBIGUOUS) → 422 `{detail: {code, message}, message}`
-  //          - a TASK-level error, never a per-record `failed` (Appendix A6).
-  //          No query / no key columns → 409.
-  //        Gated `autocount.sync.run`.
+  //   POST .../preview  - sprint-5/11 S4 replaced this synchronous shape
+  //        with the `autocount_source_preview` job's own `startPreviewJob`/
+  //        `getPreviewJob` surface below (`scope: 'full'`); no method here
+  //        calls it directly anymore (review round 2, item 6).
   //
   //   POST .../activate
   //        → AutocountEtlTask  (`draft|paused` → `active`, `activatedAt`
@@ -347,8 +337,6 @@ export interface AutocountService {
   //          first, page_size ≤ 200; skipped ticks included with `skipReason`).
   //        Gated `autocount.sync.read`.
 
-  /** Initial-load dry run against Sorento (writes nothing). */
-  previewEtlTask(companyId: string, entityType: string): Promise<AutocountEtlPreviewResult>;
   /** The activate-once gate: draft/paused → active (409 without a preview). */
   activateEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask>;
   /** active → paused (in-flight runs finish). */
@@ -465,16 +453,11 @@ export interface AutocountService {
   //          vendor/SQL connection. `AutocountCompany.sourceKind` gains
   //          `'http'` for an open company.
   //
-  //   POST /autocount/http/preview  {connectionId, path, distinctOf?}
-  //        → HttpPreview {envelope: 'paged'|'list', totalCount?, columns:
-  //          [{name, sample}], rows (<=50), durationMs}  (AC-08-14). `paged`
-  //          = a `{TotalCount,Page,PageSize,TotalPages,Data[]}` envelope
-  //          (page 1, pageSize 50); `list` = a bare JSON array capped to 50.
-  //          `distinctOf` set → rows are the distinct `{value}` projection,
-  //          `columns == [{name:'value', sample:<first value>}]`. Errors map
-  //          to 422 naming the step (`connectionId` for a non-open/foreign
-  //          connection, `path` for a 404/non-JSON/timeout/`..`/query-string).
-  //        Gated `autocount.manage` (same bucket as `/autocount/sql/preview`).
+  //   POST /autocount/http/preview  - sprint-5/11 S4 replaced this
+  //        synchronous shape with the `autocount_source_preview` job's own
+  //        `startPreviewJob`/`getPreviewJob` surface below (`scope:
+  //        'sample'`); no method here calls it directly anymore (review
+  //        round 2, item 6).
   //
   //   `AutocountEtlTask` (existing `/etl-task` routes) gains `sourceImpl`
   //        ('sql_db'|'autocount_http') and, when 'autocount_http', the task's
@@ -493,8 +476,6 @@ export interface AutocountService {
 
   /** Every `autocount` connection of the tenant, badged by auth. */
   listApiConnections(): Promise<AutocountApiConnection[]>;
-  /** Page-1 sample of an open-API endpoint path (<=50 rows), writes nothing. */
-  previewHttp(input: HttpPreviewInput): Promise<HttpPreview>;
   /**
    * `POST /autocount/http/preview-columns {connectionId, path}` (AC-10-05) -
    * the lookup editor's own probe: page-1 column NAMES only, against ANY

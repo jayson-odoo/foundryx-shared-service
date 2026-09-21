@@ -331,3 +331,39 @@ def test_operator_pull_snapshot_list_and_detail_omit_progress_when_unknown(clien
     rows = listed.json()["data"]
     assert rows and rows[0]["id"] == target_snap.id
     assert "progress" not in rows[0], rows[0]
+
+
+def test_operator_pull_snapshot_building_still_carries_null_ready_only_keys(client, db):
+    """sprint-5/11 review round 2 (item 2) - ``response_model_exclude_none``
+    silently dropped ``extractedAt``/``expiresAt``/``contentHash``/
+    ``sourcePageSize`` for a building/failed snapshot, keys ``types/
+    autocount.ts``'s ``AutocountPullSnapshot`` declares REQUIRED
+    (``string | null``) - switched to ``exclude_unset`` (only genuinely
+    UNSET keys like ``progress`` are ever omitted). Pinned on BOTH list and
+    detail so a future regression trips whichever route a caller happens to
+    exercise."""
+    company = _company(db, database_name="S11S5OPNULLKEYS")
+    snap = _building_snapshot(db, company)
+    job = _job(db, done=0, total=0, stage=None)
+    snap.job_id = job.id
+    db.commit()
+
+    detail = client.get(f"/autocount/pull/snapshots/{snap.id}", headers=_auth(client))
+    assert detail.status_code == 200, detail.text
+    detail_body = detail.json()
+    assert detail_body["status"] == "building"
+    for key in ("extractedAt", "expiresAt", "contentHash", "sourcePageSize"):
+        assert key in detail_body and detail_body[key] is None, detail_body
+    assert "progress" not in detail_body, detail_body
+
+    listed = client.get(
+        "/autocount/pull/snapshots",
+        params={"companyId": company.id, "entityType": ENTITY_PRODUCT},
+        headers=_auth(client),
+    )
+    assert listed.status_code == 200, listed.text
+    rows = listed.json()["data"]
+    row = next(r for r in rows if r["id"] == snap.id)
+    for key in ("extractedAt", "expiresAt", "contentHash", "sourcePageSize"):
+        assert key in row and row[key] is None, row
+    assert "progress" not in row, row

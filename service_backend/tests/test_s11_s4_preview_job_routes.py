@@ -603,6 +603,40 @@ def test_get_preview_job_includes_result_for_a_full_job_with_sync_run(client, db
     assert body["result"]["scope"] == "full"
 
 
+def test_cancel_preview_job_omits_result_for_a_done_full_job_without_sync_run(client, db):
+    """sprint-5/11 review round 2 (item 1) - the cancel route's no-op-on-
+    terminal response applies the SAME S1 result gate: the route's own
+    ``companies.manage`` permission alone must not also unlock a FULL
+    scope's whole dry-run result (mirrors ``test_get_preview_job_omits_
+    result_for_a_full_job_without_sync_run``, through the cancel route)."""
+    job = BackgroundJob(
+        tenant_id=DEFAULT_TENANT_ID, type=JOB_TYPE, status=JOB_DONE,
+        payload_json={"scope": "full", "companyId": "x", "entityType": "product"},
+        result_json={
+            "scope": "full", "task": {},
+            "preview": {
+                "previewable": True, "sink": "sorento",
+                "summary": {"total": 0, "created": 0, "updated": 0, "failed": 0, "retryable": 0},
+                "predictions": [],
+            },
+        },
+    )
+    db.add(job)
+    db.commit()
+
+    _limited_user(
+        db, ["autocount.companies.read", "autocount.companies.manage"],
+        "cancel-readonly-full@example.com",
+    )
+    limited = _auth(client, "cancel-readonly-full@example.com", "limited1234")
+
+    response = client.post(f"/autocount/previews/{job.id}/cancel", headers=limited)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "done", body
+    assert body["result"] is None, body
+
+
 # ── the wire status vocabulary translation (AC-11-22/27) ───────────────────
 
 

@@ -221,6 +221,14 @@ class PreviewJobService:
 
         # Lost the race (another request claimed between our earlier read
         # and this UPDATE) - re-read the WINNING job id fresh.
+        #
+        # sprint-5/11 review round 2 (item 6, nit) - the winner may ALREADY
+        # be terminal by the time this loser's own request reaches here
+        # (eager mode, or a genuinely fast real worker): this is fine by
+        # design, never a race to "fix" - the loser's own 202 response still
+        # carries the SAME job id, and the FE simply renders whatever
+        # terminal result the poll route returns (S1's own result gate still
+        # applies to THIS caller's permissions, same as any other poller).
         self.db.commit()
         self.db.refresh(config)
         winner = self._get_job(tenant_id, config.preview_job_id) if config.preview_job_id else None
@@ -307,7 +315,9 @@ class PreviewJobService:
         )
         return required in effective_permission_keys(current_user)
 
-    def cancel(self, tenant_id: str, job_id: str) -> Optional[PreviewJobOut]:
+    def cancel(
+        self, tenant_id: str, job_id: str, *, current_user: Any = None
+    ) -> Optional[PreviewJobOut]:
         """AC-11-24 - a no-op 200 carrying the terminal status against an
         already-terminal job; a live job flips to ``aborted`` and the
         handler's own cooperative checkpoint (or the final pre-finish
@@ -319,7 +329,14 @@ class PreviewJobService:
         non-PENDING/RUNNING job once it flips ``aborted``, so the worker will
         now SKIP it entirely) - the claim is released HERE, in the SAME
         transaction that stamps ``aborted``, so the next Test never finds a
-        dead claim."""
+        dead claim.
+
+        sprint-5/11 review round 2 (item 1) - ``current_user`` (the SAME
+        S1 gate ``get()`` applies): cancelling an ALREADY-DONE job is a
+        no-op 200 that still carries ``result`` unless withheld - a
+        ``companies.manage``-only caller cancelling a FULL scope job must
+        not read the whole dry-run result through the cancel route when the
+        poll route itself would have withheld it."""
         job = self._get_job(tenant_id, job_id)
         if job is None:
             return None
@@ -333,7 +350,7 @@ class PreviewJobService:
             )
             self.db.commit()
             self.db.refresh(job)
-        return _to_wire(job)
+        return _to_wire(job, include_result=self._can_see_result(job, current_user))
 
 
 def _to_wire(job: BackgroundJob, *, include_result: bool = True) -> PreviewJobOut:

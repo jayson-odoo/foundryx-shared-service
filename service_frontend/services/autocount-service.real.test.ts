@@ -152,15 +152,9 @@ describe('realAutocountService - HTTP task sourceConfig normalization', () => {
     expect(started.task.sourceConfig.fromDate).toBeNull();
   });
 
-  it('previewEtlTask normalizes the embedded task the same way as getEtlTask', async () => {
-    apiFetchMock.mockResolvedValue({
-      task: realHttpTaskWire(),
-      preview: { columns: [], rows: [], truncated: false },
-    });
-    const result = await realAutocountService.previewEtlTask('company-1', 'product');
-    expect(result.task.sourceConfig.query).toBe('');
-    expect(result.task.sourceConfig.docDateColumn).toBeNull();
-  });
+  // sprint-5/11 review round 2 (item 6) - `previewEtlTask` removed from
+  // `realAutocountService` (dead since S4's job-based preview surface
+  // replaced the synchronous `.../preview` route this test exercised).
 });
 
 // sprint-5/10 review round 1, item 5 - the `lookups` save round trip

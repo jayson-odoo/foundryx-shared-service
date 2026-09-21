@@ -1043,8 +1043,14 @@ class PullSnapshotOut(ApiModel):
     # sprint-5/11 S5 (AC-11-42, closes BL-SS-236) - present ONLY while
     # `status == 'building'` AND a beat has landed with a known `pagesTotal`
     # (`services.pull_service.PullService.snapshot_progress`); every route
-    # returning this model sets `response_model_exclude_none=True` so an
-    # unknown progress is OMITTED from the wire, never a bare `null`.
+    # returning this model sets `response_model_exclude_unset=True` (review
+    # round 2, item 2 - NOT `exclude_none`, which would also drop the
+    # always-present `extractedAt`/`expiresAt`/`contentHash`/`sourcePageSize`
+    # nulls `types/autocount.ts` declares required) so an unknown progress
+    # is OMITTED from the wire, never a bare `null`. `pagesDone`/
+    # `pagesTotal` are STAGE-RELATIVE, never monotonic across the whole
+    # build - pages during `source`/`lookup:<alias>`, rows during `storing`
+    # (mirrors Appendix A's own note, sprint-5/10-autocount-pull-review.md).
     progress: Optional[PreviewJobProgressOut] = None
 
 

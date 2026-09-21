@@ -53,9 +53,19 @@ def _snapshot_out(service: PullService, tenant_id: str, snapshot) -> PullSnapsho
     """sprint-5/11 S5 (AC-11-42) - ``snapshot_header``'s own dict PLUS
     ``progress`` when the SERVICE's own status-gated projection has one;
     every route below builds its ``PullSnapshotOut`` through this ONE
-    helper so the two can never drift. ``response_model_exclude_none=True``
-    on every route decorator is what actually OMITS the key on the wire
-    when it is ``None`` (never a bare ``null``)."""
+    helper so the two can never drift.
+
+    sprint-5/11 review round 2 (item 2) - every route decorator sets
+    ``response_model_exclude_unset=True``, NOT ``exclude_none``:
+    ``snapshot_header`` always passes ``extractedAt``/``expiresAt``/
+    ``contentHash``/``sourcePageSize`` explicitly (``None`` for a building/
+    failed snapshot), and ``types/autocount.ts``'s ``AutocountPullSnapshot``
+    declares those as REQUIRED, always-present (``string | null``) keys -
+    ``exclude_none`` silently dropped them from the wire entirely, which the
+    FE never expected. ``progress`` (and the per-entity counters, and
+    ``error``) are genuinely UNSET when this helper never adds them to
+    ``header`` at all - ``exclude_unset`` is what actually omits THOSE,
+    leaving every explicitly-passed ``None`` alone."""
     header = snapshot_header(snapshot)
     progress = service.snapshot_progress(tenant_id, snapshot)
     if progress is not None:
@@ -139,7 +149,7 @@ def revoke_pull_key(
 
 
 @router.get(
-    "/snapshots", response_model=PullSnapshotListResponse, response_model_exclude_none=True
+    "/snapshots", response_model=PullSnapshotListResponse, response_model_exclude_unset=True
 )
 def list_pull_snapshots(
     current_user: User = Depends(require_permission("autocount.pull.read")),
@@ -165,7 +175,7 @@ def list_pull_snapshots(
 
 
 @router.get(
-    "/snapshots/{snapshot_id}", response_model=PullSnapshotOut, response_model_exclude_none=True
+    "/snapshots/{snapshot_id}", response_model=PullSnapshotOut, response_model_exclude_unset=True
 )
 def get_pull_snapshot(
     snapshot_id: str,
@@ -212,7 +222,7 @@ def get_pull_snapshot_rows(
     "/snapshots",
     response_model=PullSnapshotOut,
     status_code=status.HTTP_202_ACCEPTED,
-    response_model_exclude_none=True,
+    response_model_exclude_unset=True,
 )
 def build_pull_snapshot(
     body: PullSnapshotBuildRequest,

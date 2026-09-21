@@ -228,49 +228,53 @@ class JobService:
         """sprint-5/11 S5 (AC-11-40) - the ONE progress-write helper both the
         pull-snapshot build (``sync.py``'s ``_beat_and_check``) and the
         preview job's own per-page checkpoint share: ``heartbeat_at``,
-        ``progress_done`` and ``cursor_json['stage']`` land in a SINGLE
-        UPDATE against ``background_jobs`` - mirrors ``heartbeat()``'s own
-        shape (RUNNING-scoped, Postgres SKIP LOCKED, a connection off the
-        session's own bind rather than the run's session) so a per-page beat
-        costs exactly what a bare ``heartbeat()`` costs today, never a
-        second write. ``progress_total`` lands in the SAME statement only
-        when ``total`` is given - ``None`` leaves whatever total a previous
-        beat already established untouched (a bare-array endpoint's page
-        count, or a later stage with no page count of its own, must never
-        zero it out).
+        ``progress_done`` and (when the stage actually CHANGED)
+        ``cursor_json['stage']`` are written in exactly ONE UPDATE against
+        ``background_jobs`` - mirrors ``heartbeat()``'s own shape (RUNNING-
+        scoped, Postgres SKIP LOCKED, a connection off the session's own
+        bind rather than the run's session). A read (the ``cursor_json``
+        SELECT just below, needed to preserve any OTHER key a caller already
+        stored there) is a SEPARATE statement on the SAME connection/
+        transaction, not a SECOND UPDATE - that is the actual contract this
+        helper holds (never "zero extra statements"; the plan's own "one
+        UPDATE" pin is about the WRITE, not every read a caller might need
+        first). ``progress_total`` lands in the SAME statement only when
+        ``total`` is given - ``None`` leaves whatever total a previous beat
+        already established untouched (a bare-array endpoint's page count,
+        or a later stage with no page count of its own, must never zero it
+        out).
 
-        ``cursor_json`` is read FIRST - a SELECT on this run's own session
-        (sees the run's own uncommitted writes; never a SECOND UPDATE, which
-        is the one thing the statement-count contract forbids) - so any
-        OTHER key a caller already stored there (a resume token, a watermark
-        position) survives untouched. JSON columns miss in-place mutation,
-        so a FRESH dict is what actually lands. Returns True when a RUNNING
-        row was stamped, the SAME best-effort contract ``heartbeat()``
-        offers.
+        sprint-5/11 review round 2 (item 6) - the ``cursor_json`` SELECT now
+        runs on the SAME connection/transaction as the UPDATE (``with bind.
+        begin() as conn``), not a second one off ``self.db``; and the
+        rewrite itself is SKIPPED when the stage has not actually changed
+        (a multi-page walk beats several times per stage - only the FIRST
+        beat of a given stage needs to touch ``cursor_json`` at all).
+        Returns True when a RUNNING row was stamped, the SAME best-effort
+        contract ``heartbeat()`` offers.
         """
         table = BackgroundJob.__table__
         bind = self.db.get_bind()
-        current_cursor = (
-            self.db.query(BackgroundJob.cursor_json)
-            .filter(BackgroundJob.id == job_id)
-            .scalar()
-        )
-        cursor = dict(current_cursor) if isinstance(current_cursor, dict) else {}
-        cursor["stage"] = stage
-        values: dict = {
-            "heartbeat_at": now or datetime.now(timezone.utc),
-            "progress_done": done,
-            "cursor_json": cursor,
-        }
-        if total is not None:
-            values["progress_total"] = total
         target = select(table.c.id).where(
             table.c.id == job_id, table.c.status == JOB_RUNNING
         )
         if bind.dialect.name == "postgresql":
             target = target.with_for_update(skip_locked=True)
-        stmt = update(table).where(table.c.id == target.scalar_subquery()).values(**values)
         with bind.begin() as conn:
+            current_cursor = conn.execute(
+                select(table.c.cursor_json).where(table.c.id == job_id)
+            ).scalar()
+            cursor = dict(current_cursor) if isinstance(current_cursor, dict) else {}
+            values: dict = {
+                "heartbeat_at": now or datetime.now(timezone.utc),
+                "progress_done": done,
+            }
+            if total is not None:
+                values["progress_total"] = total
+            if cursor.get("stage") != stage:
+                cursor["stage"] = stage
+                values["cursor_json"] = cursor
+            stmt = update(table).where(table.c.id == target.scalar_subquery()).values(**values)
             return conn.execute(stmt).rowcount > 0
 
     def fresh_status(self, job_id: str) -> Optional[str]:
