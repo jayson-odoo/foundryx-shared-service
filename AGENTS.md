@@ -19,7 +19,7 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r requirement
 python -m scripts.bootstrap_db                 # role+db -> alembic upgrade head -> seed (canonical; use for ANY schema change)
 python -m scripts.init_db                      # quick create_all + seed (NEVER adds a column to an existing table)
 uvicorn app.main:app --reload --port 8001      # docs at :8001/docs
-python -m pytest -q                            # pytest + httpx; conftest = in-memory sqlite create_all (migrations INVISIBLE to it)
+python -m pytest -q                            # pytest + httpx; conftest = in-memory sqlite, seeded ONCE per session then byte-copied per test (template-DB pattern); migrations INVISIBLE to it. Parallel via pytest-xdist by default (`-n auto --dist loadfile`); `-n 0` runs serially for debugging.
 ```
 - **DB = Postgres everywhere** (native, no Docker): `DATABASE_URL=postgresql://foundryx:foundryx@localhost:5432/foundryx_service`. Module schemas (`app_<name>`) need Postgres. Core migrations = `alembic/` (`alembic revision --autogenerate -m ...` then `upgrade head`); module migrations = `modules/<name>/alembic/` (Postgres-only orchestrator `run_module_migrations`).
 - Port 8001 is deliberate (8000 = sorento_crm). Redis native (`REDIS_URL`), Celery with `CELERY_TASK_ALWAYS_EAGER=true` in local `.env` (tasks inline, no worker). Local `.env` MUST carry `FERNET_KEY` (unset = ephemeral key = stored credentials undecryptable after restart).

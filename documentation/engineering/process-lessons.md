@@ -168,3 +168,54 @@ The pull path is a SNAPSHOT builder, not the push path's staged-diff machinery -
   files proves edits exist, not that they are correct, tested, or even related to the task at
   hand; always re-run the specific test/build that proves the claim, never cite tree dirtiness as
   a substitute.
+
+### Backend test-suite speed: template-DB + pytest-xdist (sprint-5, test/suite-speed-xdist-template-db)
+
+- **Why the suite was slow.** `tests/conftest.py`'s `session_factory` (mirrored by
+  `ideation_session_factory` and `meetings_session_factory`) was FUNCTION-scoped: every single test
+  built a brand-new in-memory SQLite engine, ATTACHed the module schema dbs (`omni`, `ideation`,
+  `meetings`), ran `create_all` across four metadata bases, and executed seven seeders (statuses,
+  tenant transitions, default tenant, platform tenant, permissions, platform admin, platform
+  templates) plus a real `bootstrap_modules` + `AppStoreService(...).install(...)` module-wiring
+  pass. Measured at ~0.6-0.7s of pure fixture SETUP per test (test body itself: 0.01-0.06s) -
+  across ~5,300 tests that is the whole ~1 hour.
+- **The template-DB pattern.** Split each `*_session_factory` fixture in two: a SESSION-scoped
+  `_..._template` fixture builds the seeded database exactly ONCE (identical code path, same
+  seeders, same module install), then captures it as raw bytes via `sqlite3.Connection.serialize()`
+  - one blob per database (`main` plus every ATTACHed schema db). The public, function-scoped
+  fixture (same name/signature every test already used - no test file changed) creates a fresh
+  engine, ATTACHes the same schema names, then instant-copies the template in with
+  `sqlite3.Connection.deserialize()`. Measured: the same 50-test subset
+  (`test_autocount_pipeline.py`, serial) went from 19.43s to 1.38s wall (`--durations=0` showed
+  per-test setup drop from ~0.64s to effectively 0 after the one-time template build).
+- **`Connection.backup()` cannot do this** - the stdlib's Python binding always writes into the
+  TARGET connection's `"main"` database; there is no destination-name parameter, so it can copy a
+  template's `main` into a fresh `main` but can never fill a fresh connection's ATTACHed `omni`/
+  `meetings` database from a template's `omni`/`meetings`. `serialize()`/`deserialize()` both accept
+  an explicit `name=` on EITHER side (Python 3.11+), which is the only way to reproduce a
+  multi-ATTACHed-db SQLite connection by copy instead of by re-running DDL + seed SQL.
+  Process-global side effects that live OUTSIDE the DB (the webchat preflight session-factory
+  pointer + its origin cache, `modules.omnichannel.services.webchat_visitor_service`) stayed
+  per-test, unchanged, on the function-scoped fixture - only the DB-building work moved to the
+  session-scoped template.
+- **pytest-xdist caveat: `--dist loadfile`, not `--dist load`.** Several conftest fixtures rely on
+  PROCESS-global mutable state shared across a test FILE's own fixtures (module registries like
+  `ERRORED_MODULES`, the webchat preflight pointer, autouse `httpx.Client.send` monkeypatches
+  scoped by filename regex) - `loadfile` keeps every test in one file on the same worker process,
+  so a file's tests interact with shared state exactly like they did pre-xdist. Each xdist worker IS
+  a separate OS process, so cross-FILE global-state leakage that would matter under `load` (which
+  can split one file's tests across workers) is a non-issue either way once state is scoped
+  per-process; `loadfile` is the conservative choice made without auditing every file for
+  cross-file assumptions.
+- **`-p no:xdist` also strips xdist's OWN CLI options** (`-n`, `--dist`) - since `pytest.ini`'s
+  `addopts` bakes those in, `pytest -p no:xdist` errors with "unrecognized arguments: -n --dist".
+  Use `-n 0` instead (xdist plugin stays registered, just spawns zero worker processes = runs
+  serially in the main process) to prove a change is green without parallelism.
+- **The one pre-existing `test_omnichannel_channels_webchat.py` failure this PR was briefed to
+  expect** (`test_loader_route_serves_js_with_headers_and_substitutions`, sensitive to
+  `FRONTEND_URL`) did not reproduce here - the lane's symlinked `.env` already carried
+  `FRONTEND_URL=http://localhost:3001`. Full suite (5,233 tests total): 5232 passed, 1 skipped, 0
+  failed under xdist (`-n auto --dist loadfile`, 10 workers, 158s / 2m38s wall) AND serially (`-n
+  0`, template-DB win alone, no parallelism, 703s / 11m43s wall - vs the ~1h this PR was briefed
+  against, the template-DB half of the fix already accounts for most of the win; xdist's `-n auto`
+  then divides that further by the core count).
