@@ -26,14 +26,22 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Review round 2 (S6) - the control-plane broker round-trip must fail FAST
-# against a dead/unreachable broker (never the multi-minute OS-level TCP
-# hang a bare socket connect can suffer against a black-holed address).
-# ``kombu.Connection``'s own ``connect_timeout`` bounds the connect attempt;
+# Review round 2 (S6), hardened round 3 - the control-plane broker
+# round-trip must fail FAST against a dead/unreachable broker (never the
+# multi-minute OS-level TCP hang a bare socket connect can suffer against a
+# black-holed address). ``kombu.Connection``'s own ``connect_timeout`` bounds
+# the INITIAL connect attempt, but for the redis transport specifically the
+# actual socket connect/read timeouts come from ``transport_options``
+# (``socket_connect_timeout``/``socket_timeout``), not ``connect_timeout`` -
+# without them a black-holed redis host can still block on the socket layer.
 # ``max_retries: 0`` stops kombu retrying a failed connect before it gives up
 # and lets the caller's own ``except Exception`` degrade gracefully.
 _CONTROL_CONNECT_TIMEOUT_SECONDS = 1.0
-_CONTROL_TRANSPORT_OPTIONS = {"max_retries": 0}
+_CONTROL_TRANSPORT_OPTIONS = {
+    "max_retries": 0,
+    "socket_connect_timeout": _CONTROL_CONNECT_TIMEOUT_SECONDS,
+    "socket_timeout": _CONTROL_CONNECT_TIMEOUT_SECONDS,
+}
 
 # The two queues this platform routes tasks onto today (sprint-5/11 S1):
 # the shared `workflow` queue (every beat tick, `workflows.run_workflow`, ...)
