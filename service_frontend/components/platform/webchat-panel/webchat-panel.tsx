@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { MessageCircle } from 'lucide-react';
+import { PRESSED_CLASS } from '@/components/ui/primitive-classes';
 import { overrideVars } from '@/lib/branding-tokens';
 import { cn } from '@/lib/utils';
 import { isEmbedded, postToLoader, readLoaderFrame } from '@/lib/webchat-panel-bridge';
@@ -100,7 +101,10 @@ export function WebchatPanel({ widgetKey }: WebchatPanelProps) {
           type="button"
           onClick={open}
           aria-label="Open chat"
-          className="flex size-16 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105"
+          className={cn(
+            PRESSED_CLASS,
+            'flex size-16 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105',
+          )}
           data-testid="webchat-launcher"
         >
           <MessageCircle className="size-7" />

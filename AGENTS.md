@@ -38,6 +38,8 @@ npm run format             # prettier --write .
 - `.env.local`: `NEXT_PUBLIC_BACKEND_API_URL=http://localhost:8001`, `BACKEND_API_URL=http://localhost:8001`, `NEXTAUTH_URL=http://localhost:3001` (defaults point at 8000 = wrong backend). `NEXT_PUBLIC_*` are baked at BUILD time.
 - Real auth only (no mock mode). Vitest config `vitest.config.mts`.
 
+CI runs pytest + vitest on every PR and gates the deploy on them (`.github/workflows/deploy.yml`, see `DEPLOY.md` "CI"); coders still run targeted globs locally during a lane.
+
 ## Architecture in one screen (details: `documentation/engineering/`)
 
 - **Multi-tenant SaaS, shared DB + `tenant_id` row scoping.** Tenant = subdomain slug (`acme.localhost:3001`; bare host = `default`). **Every repository query is tenant-scoped; the tenant comes from the JWT, never from client input. Every stored user/role/record/connection id is resolved WITH `tenant_id` at use time** (the polymorphic-target_id rule - a real cross-tenant leak taught it, twice). Platform tenant (`slug platform`, `is_platform`) hosts operators; `require_platform_permission` = permission AND platform membership. -> `auth-tenancy-rbac.md`

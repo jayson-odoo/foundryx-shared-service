@@ -3,9 +3,29 @@
 > Shared-service fork (see `PRINCIPLES.md` → "What this is"). Forked from Foundryx EMS; the EMS domain is stripped, each module is a **Service** (first = `omnichannel`). Image/service/host names below may still read "foundryx" - they are the deployment identifiers carried over from the fork; rename per environment as the platform is renamed.
 
 
-Every push to `main` triggers `.github/workflows/deploy.yml`: validate → build &
-push images to Docker Hub → SSH into the server → `scripts/blue_green_deploy.sh`
-→ verify. PRs run validate only (no deploy).
+Every push to `main` triggers `.github/workflows/deploy.yml`: validate → test →
+build & push images to Docker Hub → SSH into the server →
+`scripts/blue_green_deploy.sh` → verify. PRs run validate + test only (no
+deploy) - `build-and-deploy` `needs` every validate AND test job, so a failing
+suite blocks the deploy the same way a failing build does.
+
+## CI
+
+Every PR against `main` (and every push to it) runs six gate jobs in parallel:
+`lint-conventions` (no em/en dash, brand spelling, no stray Playwright
+mentions), `validate-backend` / `validate-frontend` (Docker build + import
+smoke + `next build`), and `test-backend` / `test-frontend` (the real
+suites: `pytest -q` from `service_backend` against the conftest's in-memory
+SQLite, and `npm run lint && npm test -- --run` from `service_frontend`).
+Only a push to `main` (or `workflow_dispatch`) runs `build-and-deploy`, which
+`needs` all six - a red test job blocks the deploy exactly like a red build.
+`test-backend` sets throwaway env (`DATABASE_URL`/`JWT_SECRET`/`FERNET_KEY`/
+`OMNICHANNEL_FERNET_KEY`/`REDIS_URL`) so `app.config.Settings` and
+`app.main` import cleanly; the suite itself never opens a real DB or Redis
+connection (conftest builds its own SQLite engine per test, `fakeredis`
+stands in for Redis, and the email dispatcher / startup orphan sweep are
+disabled). Coders still run targeted globs locally during a lane - CI is the
+full-suite backstop, not the first place a coder discovers a red test.
 
 ## Topology
 
