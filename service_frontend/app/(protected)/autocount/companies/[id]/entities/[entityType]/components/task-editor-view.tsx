@@ -59,6 +59,7 @@ import {
   AC_SYNC_RUN,
   acCompanyHref,
   entityLabel,
+  isHttpOnlyEntity,
   type AcTaskTab,
 } from '../../../../../components/autocount-meta';
 import { useAutocountRunsListConfig } from '../../../../components/use-runs-list-config';
@@ -152,8 +153,13 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   }, [apiConnections.connections, company]);
 
   // The Source toggle's default per company kind (AC-08-18): `db` -> Database,
-  // `http`/`api` -> API.
-  const defaultSourceKind: SourceKind = company?.sourceKind === 'db' ? 'db' : 'api';
+  // `http`/`api` -> API. fix/autocount-add-http-only-entity-on-db-company -
+  // an HTTP-only entity (today: `stock_balance`, no `sql_db` variant exists
+  // or is planned, D4) on a DB company defaults to API too - Database is
+  // never a working choice for it (`SourceTab` hides the toggle segment
+  // entirely below, mirroring the no-auth-company carve-out).
+  const defaultSourceKind: SourceKind =
+    company?.sourceKind === 'db' && !isHttpOnlyEntity(entityType) ? 'db' : 'api';
 
   // The saved config is the dirty BASELINE. A never-configured entity's draft
   // carries `connectionId: null`, so the locked connection (whichever branch
@@ -175,10 +181,20 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   const baseline = useMemo<AutocountEtlSourceConfig | null>(() => {
     const saved = task?.sourceConfig ?? null;
     if (!saved) return saved;
-    const lockId = lockedConnection?.id ?? lockedApiConnection?.id;
+    // fix/autocount-add-http-only-entity-on-db-company - the lock must match
+    // the BASELINE branch, not "whichever lock happens to be set": a `db`
+    // company always carries `lockedConnection` (its own SQL connection),
+    // but an HTTP-only entity's baseline is 'api' with NO locked API
+    // connection (AC-08-13 keeps the free cross-tenant picker for a DB
+    // company's HTTP task) - seeding the SQL connection id into a config
+    // that is about to render the API branch silently broke `derivedImpl`
+    // (it stopped matching any open connection, so a never-configured
+    // stock_balance task read as `autocount_read` instead of
+    // `autocount_http`).
+    const lockId = baselineSourceKind === 'db' ? lockedConnection?.id : lockedApiConnection?.id;
     if (!lockId) return saved;
     return { ...saved, connectionId: saved.connectionId ?? lockId };
-  }, [lockedApiConnection, lockedConnection, task?.sourceConfig]);
+  }, [baselineSourceKind, lockedApiConnection, lockedConnection, task?.sourceConfig]);
 
   // Seed the working config + Source toggle from the baseline. Keyed on the
   // config signature so a background reload with identical values never
@@ -297,8 +313,21 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
         apiConnections.connections.find((c) => c.id === config?.connectionId)?.auth ??
         null)
       : null;
+  // fix/autocount-add-http-only-entity-on-db-company - an HTTP-only entity
+  // (no `sql_db` variant, D4) is NEVER `autocount_read` either: it has no
+  // vendor-login route at all (absent from `AC_API_CAPABLE_ENTITY_TYPES`),
+  // so its free connection picker already offers ONLY no-auth connections
+  // (`apiConnectionOptions` in `source-tab.tsx`). A DB company carries no
+  // `lockedApiConnection` (AC-08-13 keeps the picker free), so before the
+  // operator has picked one yet `derivedApiAuth` reads `null` - without this
+  // the badge/save gate would misread "Database"/`autocount_read` for the
+  // brief window before a connection is chosen.
   const derivedImpl: 'sql_db' | 'autocount_http' | 'autocount_read' =
-    sourceKind === 'db' ? 'sql_db' : derivedApiAuth === 'none' ? 'autocount_http' : 'autocount_read';
+    sourceKind === 'db'
+      ? 'sql_db'
+      : isHttpOnlyEntity(entityType) || derivedApiAuth === 'none'
+        ? 'autocount_http'
+        : 'autocount_read';
 
   // AC-08-20 - Save on the API branch is withheld until a Test succeeded for
   // the config's CURRENT connectionId/path pair (mirrors the SQL branch's

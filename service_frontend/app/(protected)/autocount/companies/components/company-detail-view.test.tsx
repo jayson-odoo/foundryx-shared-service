@@ -143,15 +143,17 @@ describe('AutocountCompanyDetailView - kind (AC-01-16, AC-08-10)', () => {
 });
 
 describe('AutocountCompanyDetailView - Add entity per kind (AC-01-17, AC-08-18)', () => {
-  it('a DB company offers Customer and Supplier, never GRN', () => {
+  it('a DB company offers Customer and Supplier, never GRN, plus Stock balance (HTTP-only, fix/autocount-add-http-only-entity-on-db-company)', () => {
     // sprint-5/08 S4 (AC-08-31) added `brand` to the DB-capable entity set -
-    // was ten before that commit.
+    // was ten before that commit. `stock_balance` joined in
+    // fix/autocount-add-http-only-entity-on-db-company (it works server-side
+    // via an `autocount_http` task on any company kind, AC-08-13) - eleven.
     detailBox.current = detail({ sourceKind: 'db' });
     render(<AutocountCompanyDetailView companyId="c1" />);
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(11);
-    expect(names).toEqual(expect.arrayContaining(['Customer', 'Supplier', 'Brand']));
+    expect(names).toHaveLength(12);
+    expect(names).toEqual(expect.arrayContaining(['Customer', 'Supplier', 'Brand', 'Stock balance']));
     expect(names).not.toContain('Goods received note');
   });
 

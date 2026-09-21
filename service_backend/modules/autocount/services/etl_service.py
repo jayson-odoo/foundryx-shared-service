@@ -1903,6 +1903,20 @@ class EtlService:
                 raise AutocountServiceError(
                     f"'{entity_type}' is not available on a database company."
                 )
+            # fix/autocount-add-http-only-entity-on-db-company - `stock_balance`
+            # is HTTP-only (AC-10-39/D4, no `sql_db` variant exists or is
+            # planned); without this guard an omitted/blank `sourceImpl` fell
+            # through to the SQL branch below and saved a blank, un-queryable
+            # `sql_db` draft row with NO validation error at all (a DB
+            # company's Add-entity picker now offers it, routed through
+            # `sourceImpl: "autocount_http"` -> `_update_http_task` instead -
+            # this mirrors the GRN guard for the one path that still isn't
+            # valid for it).
+            if entity_type == ENTITY_STOCK_BALANCE:
+                raise AutocountServiceError(
+                    f"'{entity_type}' has no SQL variant - save it with "
+                    f"sourceImpl 'autocount_http' (the Open API source)."
+                )
             if connection_id is None:
                 connection_id = company.connection_id
                 raw = {**raw, "connectionId": connection_id}
