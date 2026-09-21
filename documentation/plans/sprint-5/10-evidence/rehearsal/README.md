@@ -178,25 +178,29 @@ runs' windows.
 
 **F1 - the lane's synchronous build masks the real prod behaviour, and the
 retry pattern is visible in our own audit log, not just the peer's
-report.** `service_backend/app/jobs/service.py`'s `enqueue()` runs the job
-**inline, on the request's own session**, whenever
-`CELERY_TASK_ALWAYS_EAGER=true` - so on this lane, `POST /snapshots` does
-not return `202` until the ENTIRE extraction has finished (5-8 minutes
-across these four runs), not immediately-with-a-background-job the way prod
-answers. Every one of the four runs shows the same 2-call `build`/202
-signature in `ac_pull_audit`: an early call, 1m19s-2m16s after the
-snapshot row's `created_at`, that returns fast because it lands mid-build
-and re-attaches to the in-flight snapshot (`PullService.request_build`'s
-re-attach branch - confirmed by there being exactly one snapshot id per
-triple, never two); then a second call whose audit write lands within
-tens of milliseconds of the row's own `extracted_at` - the request that
-actually rode out the full synchronous build to completion. The peer
-explicitly reported a 502 + retry for Run 2 only, and reported no user-
-visible toast on it (their defect to fix); the same signature is present
-in our audit for all four runs, so the same silent-502-then-retry likely
-happened on every run, not only the one the peer happened to notice.
-Plan 11 R8 makes the E2E lane run a real Celery worker instead of eager
-inline execution, which removes this artifact entirely.
+report. Scope: lane only.** `service_backend/app/jobs/service.py`'s
+`enqueue()` runs the job **inline, on the request's own session**,
+whenever `CELERY_TASK_ALWAYS_EAGER=true` - so on THIS lane, `POST
+/snapshots` does not return `202` until the ENTIRE extraction has
+finished (5-8 minutes across these four runs), not
+immediately-with-a-background-job the way prod already answers (prod
+dispatches to a real Celery worker and returns `202` right away - this is
+not a prod defect, it is an artifact of how this particular rehearsal
+lane was configured). Every one of the four runs shows the same 2-call
+`build`/202 signature in `ac_pull_audit`: an early call, 1m19s-2m16s
+after the snapshot row's `created_at`, that returns fast because it lands
+mid-build and re-attaches to the in-flight snapshot
+(`PullService.request_build`'s re-attach branch - confirmed by there
+being exactly one snapshot id per triple, never two); then a second call
+whose audit write lands within tens of milliseconds of the row's own
+`extracted_at` - the request that actually rode out the full synchronous
+build to completion. The peer explicitly reported a 502 + retry for Run 2
+only, and reported no user-visible toast on it (their defect to fix); the
+same signature is present in our audit for all four runs, so the same
+silent-502-then-retry likely happened on every run, not only the one the
+peer happened to notice. Plan 11 R8 makes the E2E lane run a real Celery
+worker instead of eager inline execution, which removes this artifact
+from future E2E lanes - it is a lane-fidelity fix, not a prod gate.
 
 **F2 - two product_code conflicts, and a related hazard for a future
 run.** Run 1's apply had 2 unique-constraint failures (product_code `6356`
@@ -234,11 +238,24 @@ build/preview/apply cycles completed, record counts matched between our
 snapshot headers and the peer's reported `recordCount`/`received` figures
 exactly (11,842 / 12,117 / 3,445 / 3,166), and the two product-side unique
 conflicts plus one stock negative-pairs shape are explained (F2) rather
-than being unexplained data loss. Prod cut-over is still gated: F1 means
-this lane's timing does not represent prod's actual response latency
-(prod answers `202` immediately, a real worker runs the build), and Plan
-11 R8 (real Celery worker on the E2E lane) is the action item that closes
-that gap before the next joint run.
+than being unexplained data loss. Prod cut-over is gated on:
+
+1. **The owner's go on the Sorento ingest fixes** (F2) - code wins over a
+   ref hit and Sorento refuses a `product_code` change driven purely by a
+   ref match, a blank `name` is allowed rather than rejected, an
+   unchanged row is a no-op, and a failed/timed-out build POST surfaces a
+   toast instead of failing silently.
+2. **The Foundryx prod pre-flight** - category/UOM/product/stock_balance
+   pull tasks active per book, a real (non-rehearsal) prod pull key
+   issued, and Sorento prod's base URL set to
+   `https://chat.foundryx.my/be`.
+
+F1 is NOT part of that gate - it is a lane-fidelity artifact of this
+rehearsal's `CELERY_TASK_ALWAYS_EAGER=true` setting, not a prod behaviour
+gap; prod already dispatches to a real worker and answers `202`
+immediately. Plan 11 R8 (real Celery worker on the E2E lane) removes the
+artifact from future E2E lanes, independent of the prod cut-over gate
+above.
 
 ## Housekeeping performed as part of this task
 
