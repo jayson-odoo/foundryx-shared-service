@@ -20,6 +20,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_PATH = REPO_ROOT / "docker-compose.yml"
 DEPLOY_PATH = REPO_ROOT / "DEPLOY.md"
+DEPLOY_SCRIPT_PATH = REPO_ROOT / "scripts" / "blue_green_deploy.sh"
 
 WORKER_DB_TIMEOUT_ENVS = (
     "WORKER_DB_STATEMENT_TIMEOUT_SECONDS",
@@ -111,3 +112,78 @@ def test_deploy_md_documents_the_new_worker_jobs_service():
         "split and the deploy-time steps in the SAME PR as the compose "
         "change - a config/docs pair the plan explicitly calls for"
     )
+
+
+def _worker_service_names(compose: dict) -> list[str]:
+    """Every top-level compose service that is a Celery worker or beat -
+    literally 'beat' or a 'worker_*' name. yaml.safe_load never sees a
+    commented-out service (worker_bots is commented out in compose today),
+    so this only ever returns services compose would actually create."""
+    return [
+        name
+        for name in compose["services"]
+        if name == "beat" or name.startswith("worker_")
+    ]
+
+
+def test_deploy_script_recreates_every_compose_worker_service(compose):
+    """Drift guard for the 2026-09-21 worker_jobs incident: PR #76 added the
+    worker_jobs compose service (consuming the new 'jobs' queue) but
+    blue_green_deploy.sh's image-pull line and --force-recreate line still
+    named only worker_workflow worker_omni beat - production never started
+    a jobs consumer and every autocount_sync job stayed pending. Every
+    top-level worker_*/beat compose service must be named on BOTH lines of
+    the deploy script, so a future new worker service fails this test
+    instead of silently deploying with no consumer.
+    """
+    lines = DEPLOY_SCRIPT_PATH.read_text().splitlines()
+
+    pull_line = next(
+        (line for line in lines if line.strip().startswith("docker compose pull worker_")),
+        None,
+    )
+    assert pull_line is not None, (
+        "blue_green_deploy.sh must have a 'docker compose pull worker_...' "
+        "line that pulls the Celery worker images before the swap"
+    )
+
+    recreate_line = next(
+        (line for line in lines if "--force-recreate" in line and "worker_" in line),
+        None,
+    )
+    assert recreate_line is not None, (
+        "blue_green_deploy.sh must have a 'docker compose up -d "
+        "--force-recreate --no-deps worker_...' line that recreates the "
+        "Celery workers on the new image after the swap"
+    )
+
+    verify_line = next(
+        (line for line in lines if line.strip().startswith("for svc in worker_")),
+        None,
+    )
+    assert verify_line is not None, (
+        "blue_green_deploy.sh must have a 'for svc in worker_...' health "
+        "loop that verifies every recreated Celery worker settled"
+    )
+
+    pull_tokens = [t.strip(";") for t in pull_line.split()]
+    recreate_tokens = [t.strip(";") for t in recreate_line.split()]
+    verify_tokens = [t.strip(";") for t in verify_line.split()]
+
+    for name in _worker_service_names(compose):
+        assert name in pull_tokens, (
+            f"{name} is a top-level worker/beat compose service missing "
+            f"from the deploy script's image-pull line - it will keep "
+            f"running stale code after a deploy: {pull_line!r}"
+        )
+        assert name in recreate_tokens, (
+            f"{name} is a top-level worker/beat compose service missing "
+            f"from the deploy script's --force-recreate line - production "
+            f"never (re)creates it, so its queue may have NO consumer at "
+            f"all: {recreate_line!r}"
+        )
+        assert name in verify_tokens, (
+            f"{name} is a top-level worker/beat compose service missing "
+            f"from the deploy script's post-recreate health-check loop: "
+            f"{verify_line!r}"
+        )

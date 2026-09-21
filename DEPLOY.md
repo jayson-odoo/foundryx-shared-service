@@ -150,9 +150,20 @@ Secrets without raising `BACKGROUND_JOB_UNDISPATCHED_AFTER_MINUTES` to match
 concurrency above the R9 default; `-c 1` is the fallback if the host is
 memory-tight rather than CPU-bound.
 
-**Deploy-time step:** a new compose service is picked up by `docker compose
-up -d` (which this deploy's CI already runs, force-recreating changed
-services) - no manual step beyond a normal push-triggered deploy. A plain
+**Deploy-time step:** `blue_green_deploy.sh` never runs a bare `docker compose
+up -d` over every service - it pulls and force-recreates the Celery workers
+from an explicit, named list (`worker_workflow worker_jobs worker_omni beat`,
+twice in the script: the pull step and the force-recreate step). A new worker
+service (like `worker_jobs` itself, sprint-5/11 S1) is **not** picked up
+automatically - it must be added to both lists in `scripts/blue_green_deploy.sh`
+by hand, or its queue simply has no consumer in production (the 2026-09-21
+`worker_jobs` incident: PR #76 added the compose service and routed `jobs.run`
+to it, but the deploy script's worker list was never updated, so every
+`autocount_sync` job stayed `pending`). `tests/test_s11_compose_worker_jobs.py`
+now pins this: it fails if any top-level `worker_*`/`beat` compose service is
+missing from either list. The one-time step after adding a new worker service
+to the script is `docker compose up -d <new_service>` on the host (or wait for
+the next deploy, since `blue_green_deploy.sh` now force-recreates it). A plain
 `docker compose restart worker_workflow` (or any existing service) does
 **NOT** pick up a new/changed `environment:` block - see "Notes / gotchas"
 below (settings is an import-time singleton; a changed env needs the

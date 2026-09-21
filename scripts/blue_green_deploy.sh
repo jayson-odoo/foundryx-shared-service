@@ -53,7 +53,7 @@ echo "==> Active=${ACTIVE} New=${NEW} IMAGE_TAG=${IMAGE_TAG}"
 # 1. Pull new images for the incoming color + the shared backend image (workers).
 echo "==> Pulling images"
 docker compose --profile "${NEW}" pull "backend_${NEW}" "frontend_${NEW}"
-docker compose pull worker_workflow worker_omni beat
+docker compose pull worker_workflow worker_jobs worker_omni beat
 
 # 1b. Ensure shared infra is up (db/redis/pgbackups are profile-less, NOT
 #     blue/green). The color is started with --no-deps below, so its depends_on
@@ -162,12 +162,12 @@ sleep "$DRAIN_SECONDS"
 #    blip; safe - tasks pull atomically off Redis). Migrations already ran via
 #    the API container, so these skip bootstrap (command override in start.sh).
 echo "==> Recreating Celery workers + beat on new image"
-docker compose up -d --force-recreate --no-deps worker_workflow worker_omni beat
+docker compose up -d --force-recreate --no-deps worker_workflow worker_jobs worker_omni beat
 
 # 6b. Verify the celery containers settle (running, no crash-loop). They have no
 #     HTTP healthcheck - liveness is the process + restart policy.
 echo "==> Verifying Celery containers"
-for svc in worker_workflow worker_omni beat; do
+for svc in worker_workflow worker_jobs worker_omni beat; do
   cid=$(docker compose ps -q "$svc")
   if [ -z "$cid" ]; then echo "ERROR: $svc not found after recreate"; exit 1; fi
   i=0; ok=""
