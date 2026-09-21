@@ -26,8 +26,11 @@ gateway, AC-10-75/85/86/87). Branch `sprint-5/11-autocount-extraction-speed`.
    **reject** (see D8). Backlogged as BL-SS-247 with the only honest shape it could take.
 6. **R6 - pending-job recovery: fail, or re-dispatch?** Recommended: **fail** (option a), plus
    the new 5-minute core beat tick and a dedicated `background_job_undispatched_after_minutes`
-   setting (default 60, floor 15). Re-dispatch is rejected in D12 with its double-execution
-   argument.
+   setting (default **150**, floor 15 - amended from 60 by owner ruling 2026-09-21, review round
+   1: the window must exceed `background_job_soft_time_limit_seconds` so a queued-but-not-lost
+   message on a busy `-c 2` worker is never mistaken for lost and failed out from under it; a
+   `model_validator` now enforces the relationship). Re-dispatch is rejected in D12 with its
+   double-execution argument.
 7. **R7 - an operator Cancel for a BUILDING pull snapshot?** Recommended: not in this plan
    (backlog BL-SS-248). The preview job gets Cancel; a build already has the orphan path.
 8. **R8 - the evidence rig runs a real Celery worker** (`CELERY_TASK_ALWAYS_EAGER=false`) for
@@ -37,9 +40,18 @@ gateway, AC-10-75/85/86/87). Branch `sprint-5/11-autocount-extraction-speed`.
    the single core well; the cost is one extra forked image in memory. `-c 1` is the
    conservative fallback if the host is memory-tight.
 10. **R10 - the bounds.** Recommended: `jobs.run` soft time limit 2 h (hard 2 h 5 min), beat
-   ticks soft 300 s; worker Postgres sessions `statement_timeout=120s`, `lock_timeout=30s`,
-   `idle_in_transaction_session_timeout=300s`, all confirmed against the measured slowest
-   statement of a full `SRT` build before they are enabled.
+   ticks soft 300 s; `workflows.run_workflow` / `workflows.wake_serialized` soft time limit 30
+   min (hard 35 min, review round 1 addition - B2: both previously inherited the 300s/330s
+   tick-family app default, which a legitimate multi-node run or serialized drain could exceed);
+   worker Postgres sessions `statement_timeout` / `lock_timeout` /
+   `idle_in_transaction_session_timeout`. **Shipped INERT (0 = no timeout) in `docker-compose.yml`
+   as of review round 1** - R10's numbers (120s/30s/300s) are NOT yet confirmed against the
+   measured slowest statement of a full `SRT` build (S0 could not complete that measurement on
+   the shared dev Postgres); enable only once that measurement lands. When enabled,
+   `idle_in_transaction_session_timeout` must stay at least 3x
+   `AUTOCOUNT_SINK_TIMEOUT_SECONDS` (default 300s), because `sync_service.auto_push` holds an
+   open transaction across the sink POST; recommended hot values once enabling: statement >=
+   600s, idle >= 900s.
 11. **R11 - where the worker-liveness read lives.** Recommended: one platform-operator route
    reusing an EXISTING platform permission key (named during S1 after grepping core) - never a
    new permission key for an ops read; if no key fits, backlog it rather than mint one.
@@ -194,9 +206,13 @@ hook fan-out inside a module would fork core machinery.
 
 Unlike the running sweep it is NOT limited to `heartbeats=True` types (a lost message is
 type-agnostic) and it needs its own clock: `created_at`, with a dedicated
-`background_job_undispatched_after_minutes` (default 60, floor 15) rather than a multiplier of
-the 15-minute heartbeat window, because the two measure different things and a multiplier is
-un-reasonable-about.
+`background_job_undispatched_after_minutes` (default **150**, floor 15 - amended from 60,
+owner-approved 2026-09-21 review round 1) rather than a multiplier of the 15-minute heartbeat
+window, because the two measure different things and a multiplier is un-reasonable-about. The
+default is inert until it exceeds `background_job_soft_time_limit_seconds` (a `model_validator`
+enforces this): the window must outlive the longest a `jobs.run` is allowed to legitimately run,
+so a message that is merely queued behind that legitimate build on a busy `-c 2` `worker_jobs`
+is never mistaken for a lost message.
 
 Consumers: the AutoCount scheduler's overlap guard sweeps exactly the stale in-flight job and
 proceeds with the tick (one-for-one with its existing RUNNING branch), and a new 5-minute beat
@@ -301,11 +317,20 @@ AutoCount scheduler tick - a beat task on the starved queue.
   in `run_job`: the job is failed with a sentence naming the limit and the SAME module close
   hooks run, so `ac_sync_run` closes and the next tick proceeds. That hook fan-out moves out of
   `fail_orphaned_running_jobs` into one helper shared by all three closers (orphan sweep,
-  undispatched sweep, time limit).
+  undispatched sweep, time limit) - a plain (non-time-limit) handler crash reuses the same
+  helper too (review round 1, S3), so no crash path leaves module bookkeeping open. Review round
+  1 (B2) extends the same treatment to `workflows.run_workflow` / `workflows.wake_serialized`
+  (soft 30 min / hard 35 min from settings): both previously inherited the 300 s/330 s
+  tick-family default with no override of their own, which a legitimate multi-node run or a
+  serialized drain processing several queued runs could exceed.
 - **Bound the database sessions** (AC-11-85): settings-driven `statement_timeout` /
   `lock_timeout` / `idle_in_transaction_session_timeout` via engine `connect_args`, set on the
-  worker services in compose, unset (unchanged) for the API. Sized from a measured slowest
-  statement, and labelled honestly as defence in depth.
+  worker services in compose, unset (unchanged) for the API. **Shipped with inert (0) defaults in
+  `docker-compose.yml` as of review round 1** - not yet sized from a measured slowest statement
+  (S0 could not complete that measurement on the shared dev Postgres); enabling them is a
+  follow-up once the measurement lands, and `idle_in_transaction_session_timeout` must then stay
+  at least 3x `AUTOCOUNT_SINK_TIMEOUT_SECONDS` because `sync_service.auto_push` holds an open
+  transaction across the sink POST. Labelled honestly as defence in depth throughout.
 - **Make a freeze visible** (AC-11-86): beat publishes `ops.ping` to each queue every 60 s, the
   consuming worker stamps a per-queue Redis key with a 300 s TTL, and one platform-operator
   route reports `lastSeen` / `stale` per queue.

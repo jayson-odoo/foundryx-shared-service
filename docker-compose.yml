@@ -159,14 +159,19 @@ services:
       # sprint-5/11 S1 (AC-11-85) - worker-only Postgres session bounds via
       # app/database.py's `worker_connect_args()`; NEVER added to the shared
       # `x-backend-env` anchor (backend_blue/backend_green must stay
-      # unbounded, today's API behaviour, per AC-11-85). R10's recommended
-      # starting point (120s/30s/300s) - NOT yet confirmed against a
-      # measured slowest statement (S0 could not complete that measurement
-      # on the shared dev Postgres; see 11-evidence/s0-baseline/README.md
-      # (c)) - override via these vars once a real measurement lands.
-      WORKER_DB_STATEMENT_TIMEOUT_SECONDS: ${WORKER_DB_STATEMENT_TIMEOUT_SECONDS:-120}
-      WORKER_DB_LOCK_TIMEOUT_SECONDS: ${WORKER_DB_LOCK_TIMEOUT_SECONDS:-30}
-      WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS: ${WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS:-300}
+      # unbounded, today's API behaviour, per AC-11-85). SHIP INERT (0 = no
+      # timeout, review round 1): S0 could not complete the slowest-statement
+      # measurement of a full SRT build on the shared dev Postgres (see
+      # 11-evidence/s0-baseline/README.md (c)), so R10's numbers are NOT yet
+      # confirmed - guessing a live ceiling here risks killing a legitimate
+      # long-running statement. Enable only after that measurement lands, and
+      # then keep idle-in-transaction >= 3x AUTOCOUNT_SINK_TIMEOUT_SECONDS
+      # (default 300s): sync_service.auto_push holds an open transaction
+      # across the sink POST, so idle-in-transaction must outlive it.
+      # Recommended hot values once enabling: statement >= 600, idle >= 900.
+      WORKER_DB_STATEMENT_TIMEOUT_SECONDS: ${WORKER_DB_STATEMENT_TIMEOUT_SECONDS:-0}
+      WORKER_DB_LOCK_TIMEOUT_SECONDS: ${WORKER_DB_LOCK_TIMEOUT_SECONDS:-0}
+      WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS: ${WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS:-0}
     command: ["celery", "-A", "app.workflow_engine.worker", "worker", "-Q", "workflow", "--loglevel", "info"]
     healthcheck:
       disable: true
@@ -188,9 +193,12 @@ services:
     container_name: foundryx_ss_worker_jobs
     environment:
       <<: *backend-env
-      WORKER_DB_STATEMENT_TIMEOUT_SECONDS: ${WORKER_DB_STATEMENT_TIMEOUT_SECONDS:-120}
-      WORKER_DB_LOCK_TIMEOUT_SECONDS: ${WORKER_DB_LOCK_TIMEOUT_SECONDS:-30}
-      WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS: ${WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS:-300}
+      # Inert defaults (0 = no timeout) - see worker_workflow's comment above;
+      # measured before enabling (AC-11-85), and idle-in-transaction must stay
+      # >= 3x AUTOCOUNT_SINK_TIMEOUT_SECONDS once it is turned on.
+      WORKER_DB_STATEMENT_TIMEOUT_SECONDS: ${WORKER_DB_STATEMENT_TIMEOUT_SECONDS:-0}
+      WORKER_DB_LOCK_TIMEOUT_SECONDS: ${WORKER_DB_LOCK_TIMEOUT_SECONDS:-0}
+      WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS: ${WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS:-0}
     command: ["celery", "-A", "app.workflow_engine.worker", "worker", "-Q", "jobs", "-c", "2", "--loglevel", "info"]
     healthcheck:
       disable: true

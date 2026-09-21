@@ -85,6 +85,25 @@ def test_worker_db_timeout_envs_reach_the_worker_services_only(compose):
         )
 
 
+def test_worker_services_carry_the_shared_backend_env_anchor(compose):
+    """Review round 1 (S4) - proves the per-service `environment:` override
+    (added for the worker-only DB timeouts above) used `<<: *backend-env`
+    rather than replacing the whole mapping outright, which would silently
+    strip every OTHER required env (DATABASE_URL, FERNET_KEY, ...) from the
+    worker services. DATABASE_URL and FERNET_KEY are two required
+    (`:?set in .env`) keys from the `x-backend-env` anchor - their presence
+    proves the merge survived."""
+    services = compose["services"]
+    for name in ("worker_workflow", "worker_jobs"):
+        env = services[name].get("environment") or {}
+        missing = [k for k in ("DATABASE_URL", "FERNET_KEY") if k not in env]
+        assert not missing, (
+            f"{name}'s environment override must merge the shared "
+            f"x-backend-env anchor (`<<: *backend-env`), not replace it - "
+            f"missing: {missing}"
+        )
+
+
 def test_deploy_md_documents_the_new_worker_jobs_service():
     text = DEPLOY_PATH.read_text()
     assert "worker_jobs" in text, (

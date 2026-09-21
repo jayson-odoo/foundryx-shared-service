@@ -70,6 +70,51 @@ def fake_redis():
     ops_liveness.set_client(None)
 
 
+class _FakeInspect:
+    """Stand-in for ``celery_app.control.inspect(timeout=...)`` - the two
+    methods ``queue_status``'s ``alive`` computation calls (review round 1,
+    S2). ``raises`` simulates an unreachable broker (a real ``inspect()``
+    call against a dead Redis raises inside ``ping()``/``active_queues()``,
+    never before)."""
+
+    def __init__(self, pinged=None, active_queues=None, raises: Exception = None):
+        self._pinged = pinged or {}
+        self._active = active_queues or {}
+        self._raises = raises
+
+    def ping(self):
+        if self._raises is not None:
+            raise self._raises
+        return self._pinged
+
+    def active_queues(self):
+        if self._raises is not None:
+            raise self._raises
+        return self._active
+
+
+@pytest.fixture(autouse=True)
+def _no_real_broker_inspect(monkeypatch):
+    """Every test in this file stubs the Celery control-plane inspect so
+    `queue_status`'s `alive` computation never waits on a REAL ~1s broker
+    round-trip against a local Redis with no actual worker process consuming
+    it - the default stub answers "no worker reachable" (`alive: False`)
+    instantly. Tests that care about `alive`'s value override this with
+    their own `monkeypatch.setattr` after requesting this fixture implicitly
+    (autouse)."""
+    from app.workflow_engine.worker import celery_app
+
+    monkeypatch.setattr(celery_app.control, "inspect", lambda timeout=None: _FakeInspect())
+
+
+def _stub_inspect(monkeypatch, **kwargs) -> None:
+    from app.workflow_engine.worker import celery_app
+
+    monkeypatch.setattr(
+        celery_app.control, "inspect", lambda timeout=None: _FakeInspect(**kwargs)
+    )
+
+
 # ── the liveness primitives ──────────────────────────────────────────────
 
 
@@ -77,7 +122,52 @@ def test_queue_status_is_stale_with_no_ping_ever_seen(fake_redis):
     from app.ops_liveness import queue_status
 
     status = queue_status("jobs")
-    assert status == {"queue": "jobs", "lastSeen": None, "stale": True}
+    assert status == {"queue": "jobs", "lastSeen": None, "stale": True, "alive": False}
+
+
+# ── review round 1 (S2): the `alive` control-plane signal ────────────────
+
+
+def test_queue_status_alive_true_when_a_worker_pings_and_consumes_the_queue(
+    fake_redis, monkeypatch
+):
+    from app.ops_liveness import queue_status
+
+    _stub_inspect(
+        monkeypatch,
+        pinged={"worker_jobs@host": {"ok": "pong"}},
+        active_queues={"worker_jobs@host": [{"name": "jobs"}]},
+    )
+    assert queue_status("jobs")["alive"] is True
+
+
+def test_queue_status_alive_false_when_the_reachable_worker_does_not_consume_this_queue(
+    fake_redis, monkeypatch
+):
+    """A reachable worker that answers the ping but declares a DIFFERENT
+    queue must not make THIS queue read alive - the wedged-worker_jobs case
+    AC-11-86 exists for: worker_workflow stays reachable, worker_jobs is
+    dead, and 'jobs' must read alive: False even though SOME worker pinged."""
+    from app.ops_liveness import queue_status
+
+    _stub_inspect(
+        monkeypatch,
+        pinged={"worker_workflow@host": {"ok": "pong"}},
+        active_queues={"worker_workflow@host": [{"name": "workflow"}]},
+    )
+    assert queue_status("jobs")["alive"] is False
+
+
+def test_queue_status_alive_false_when_the_broker_is_unreachable(fake_redis, monkeypatch):
+    """A dead/unreachable broker must never raise - degrade to alive: False,
+    exactly like the Redis-stamp path degrades to stale: True."""
+    from app.ops_liveness import queue_status
+
+    _stub_inspect(monkeypatch, raises=ConnectionError("broker unreachable"))
+    status = queue_status("jobs")
+    assert status["alive"] is False
+    # And the Redis-stamp half of the read is untouched by the broker outage.
+    assert status["stale"] is True
 
 
 def test_stamp_liveness_marks_the_queue_fresh(fake_redis):

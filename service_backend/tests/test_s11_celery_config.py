@@ -118,3 +118,44 @@ def test_jobs_run_declares_its_own_generous_bound_from_settings():
         "hard limit = soft + 300s (R10/AC-11-82's own arithmetic: 7200 -> "
         "7500), not a second independent setting"
     )
+
+
+# ── Review round 1 (B2): workflows.run_workflow / workflows.wake_serialized
+# no longer silently inherit the 300s/330s tick-family app default - each
+# declares its own generous, settings-driven bound, mirroring jobs.run.
+
+
+def test_run_workflow_declares_its_own_bound_from_settings():
+    from app.config import settings
+
+    soft = settings.workflow_run_soft_time_limit_seconds
+    assert soft == 1800, (
+        "app/config.py must declare workflow_run_soft_time_limit_seconds "
+        "(default 1800s / 30 min, review round 1 B2)"
+    )
+    task = celery_app.tasks["workflows.run_workflow"]
+    assert task.soft_time_limit == soft, (
+        "workflows.run_workflow must NOT silently inherit the 300s "
+        "tick-family app default - a legitimate multi-node run must survive it"
+    )
+    assert task.time_limit == soft + 300
+
+
+def test_wake_serialized_declares_its_own_bound_from_settings():
+    from app.config import settings
+
+    soft = settings.workflow_run_soft_time_limit_seconds
+    task = celery_app.tasks["workflows.wake_serialized"]
+    assert task.soft_time_limit == soft, (
+        "workflows.wake_serialized must NOT silently inherit the 300s "
+        "tick-family app default - a legitimate multi-run drain must survive it"
+    )
+    assert task.time_limit == soft + 300
+
+
+def test_the_tick_family_app_default_is_unchanged_by_the_new_settings():
+    """Control: adding per-task bounds to workflows.run_workflow and
+    workflows.wake_serialized must not move the app-level default every
+    OTHER tick (a tick, jobs.sweep_orphaned, ops.ping, ...) still inherits."""
+    assert celery_app.conf.task_soft_time_limit == 300
+    assert celery_app.conf.task_time_limit == 330

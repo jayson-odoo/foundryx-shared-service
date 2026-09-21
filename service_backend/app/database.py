@@ -18,7 +18,14 @@ def worker_connect_args() -> Dict[str, str]:
     at all, today's behaviour exactly); otherwise a single Postgres
     ``options`` GUC string carrying only the non-zero timeouts, converted
     from settings-seconds to Postgres-milliseconds.
+
+    Postgres-only (review round 1, S5): the ``options`` GUC string is a
+    libpq/Postgres connect arg. A non-Postgres ``DATABASE_URL`` (the pytest
+    suite's in-memory sqlite) must never receive it - sqlite's DBAPI raises
+    on an unrecognised ``connect_args`` key.
     """
+    if not settings.database_url.startswith("postgresql"):
+        return {}
     parts = []
     if settings.worker_db_statement_timeout_seconds:
         parts.append(

@@ -91,22 +91,58 @@ at deploy time still executes there):
   `backend_green`) get three Postgres session-bound envs
   (`WORKER_DB_STATEMENT_TIMEOUT_SECONDS` / `WORKER_DB_LOCK_TIMEOUT_SECONDS` /
   `WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS`, all seconds,
-  defence-in-depth against a stuck Postgres statement/lock - defaults in
-  `docker-compose.yml` carry R10's recommended starting point, not yet a
-  measured value).
+  defence-in-depth against a stuck Postgres statement/lock. **Shipped INERT
+  (default `0` = no timeout, review round 1 2026-09-21)**: S0 could not
+  complete the slowest-statement measurement of a full `SRT` build on the
+  shared dev Postgres (see `11-evidence/s0-baseline/README.md` (c)), so
+  R10's numbers (120s/30s/300s) are not yet confirmed - enable these ONLY
+  after that measurement lands. When enabling, `idle_in_transaction_session_
+  timeout` MUST stay **>= 3x `AUTOCOUNT_SINK_TIMEOUT_SECONDS`** (default
+  300s): `sync_service.auto_push` holds an open transaction across the sink
+  POST, so a too-tight idle timeout would kill that transaction mid-push.
+  Recommended hot values once enabling: statement >= 600s, idle >= 900s.
+- `workflows.run_workflow` and `workflows.wake_serialized` (review round 1,
+  B2) each declare their OWN soft/hard Celery time limit from
+  `WORKFLOW_RUN_SOFT_TIME_LIMIT_SECONDS` (default 1800s / 30 min, hard =
+  soft + 300s) instead of silently inheriting the app-level tick-family
+  bound (300s/330s) - a legitimate multi-node run or a serialized drain
+  processing several queued runs in one wakeup must survive it. On
+  `SoftTimeLimitExceeded` the run is failed cleanly (`workflow_runs.status`
+  never left `running`) with a dedicated "exceeded its soft time limit"
+  sentence, mirroring `jobs.run`'s own cooperative handling.
 - Beat publishes a tiny `ops.ping` to EACH queue (`workflow`, `jobs`) every
   60s; the consuming worker stamps a Redis key with a 300s TTL
   (`app/ops_liveness.py`). `GET /platform/ops/queues` (operator-only,
-  `tenants.read`) reports `{queue, lastSeen, stale}` per queue - a wedged
-  worker is now visible within minutes, not discovered by hand hours later.
+  `tenants.read`) reports `{queue, lastSeen, stale, alive}` per queue - a
+  wedged worker is now visible within minutes, not discovered by hand hours
+  later. `stale` means "no free slot OR dead" (a worker consuming this queue
+  has not drained a recent `ops.ping` broker message - it may simply be busy
+  on a long job); `alive` (review round 1, S2) is the Celery control plane's
+  OWN synchronous answer - a live `ping()` from a worker whose
+  `active_queues()` names this queue, from `celery_app.control.inspect
+  (timeout=1.0)`, independent of the broker-routed stamp. A dead/unreachable
+  broker reads `alive: false` for every queue and never raises. This route
+  covers ONLY the workflow Celery app's queues (`workflow`, `jobs`); the
+  omnichannel app's `omni` queue, and any future `stt`/`bots` app, are
+  separate Celery apps with no liveness signal wired here yet.
 
 **`BACKGROUND_JOB_UNDISPATCHED_AFTER_MINUTES` (sprint-5/11 S2, AC-11-50..57,
-optional, default 60, floor 15)** - the same `jobs.sweep_orphaned` beat tick
-above also fails a PENDING job (`started_at` NULL) whose Celery message was
-itself lost and never delivered to a worker (incident 2026-09-21: a deploy
-restarted `worker_jobs` mid-`pending`); FAILED, never re-dispatched (R6/D12/
-D13) - the next tick enqueues a fresh job. No new compose service or queue;
-just this one env alongside the S1 vars above.
+optional, default **150** (amended from 60, review round 1 2026-09-21),
+floor 15)** - the same `jobs.sweep_orphaned` beat tick above also fails a
+PENDING job (`started_at` NULL) whose Celery message was itself lost and
+never delivered to a worker (incident 2026-09-21: a deploy restarted
+`worker_jobs` mid-`pending`); FAILED, never re-dispatched (R6/D12/D13) - the
+next tick enqueues a fresh job. No new compose service or queue; just this
+one env alongside the S1 vars above. A `model_validator` now rejects a
+window that does not exceed `BACKGROUND_JOB_SOFT_TIME_LIMIT_SECONDS` (7200s
+default): the window must outlive `jobs.run`'s own soft time limit, or a
+message that is merely queued behind a legitimately long build on a busy
+`-c 2` `worker_jobs` could be mistaken for a lost message and failed out
+from under it.
+
+**Run `free -m` before `docker compose up -d`** when raising `worker_jobs`'
+concurrency above the R9 default; `-c 1` is the fallback if the host is
+memory-tight rather than CPU-bound.
 
 **Deploy-time step:** a new compose service is picked up by `docker compose
 up -d` (which this deploy's CI already runs, force-recreating changed

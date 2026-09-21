@@ -264,9 +264,14 @@ the RUNNING case: production 2026-09-07, PO sync killed by a deploy drain, alrea
   new undispatched sweep, so every job type - not just the ones with a scheduler in front of
   them - recovers without a restart. App startup keeps calling both as it does today.
 - **AC-11-57 [BE]** **One explicit setting, not a multiplier.**
-  `background_job_undispatched_after_minutes` (default 60, validator floor 15) in
-  `app/config.py`, documented beside `background_job_orphan_after_minutes`. A validator test
-  pins the floor.
+  `background_job_undispatched_after_minutes` (default **150** - amended from 60, owner-approved
+  2026-09-21 review round 1; inert defaults, measured before enabling per the cross-field rule
+  below; validator floor 15) in `app/config.py`, documented beside
+  `background_job_orphan_after_minutes`. A validator test pins the floor. A
+  `model_validator(mode="after")` additionally rejects a value whose window (in seconds) does not
+  EXCEED `background_job_soft_time_limit_seconds` - a message that is merely queued behind a
+  legitimately long `jobs.run` build on a busy `-c 2` `worker_jobs` must never be mistaken for a
+  lost message and failed out from under it. A test pins this cross-field rejection too.
 - **AC-11-58 [FE]** **A finished skip row never reads as "Running".** In
   `app/(protected)/autocount/companies/components/use-runs-list-config.tsx`, a run with
   `finishedAt` set and `outcome` null renders the neutral `StatusBadge status="SKIPPED"` via
@@ -349,6 +354,13 @@ outside app startup) was itself queued behind the hung job.
   a generous bound from settings (`background_job_soft_time_limit_seconds`, default 7200; hard
   limit soft + 300), sized above the longest legitimate build measured in this plan (a 25-plus
   minute Mocha snapshot). Tests pin both the app defaults and the task's own declared limits.
+  **Review round 1 (B2):** `workflows.run_workflow` and `workflows.wake_serialized` previously
+  had NO declared limit of their own and silently inherited the 300s/330s tick-family default -
+  wrong for a run that legitimately executes many nodes, or a serialized drain that legitimately
+  processes several queued runs in one wakeup. Both now declare their own bound from
+  `workflow_run_soft_time_limit_seconds` (default 1800s / 30 min; hard = soft + 300s), mirroring
+  `jobs.run`'s own settings-driven pattern. Tests pin both tasks' declared limits AND that the
+  app-level tick-family default is unmoved.
 - **AC-11-83 [BE]** **A job that blocks forever is failed at the limit, cleanly.** On
   `SoftTimeLimitExceeded` the job is stamped `failed` with a dedicated sentence naming the
   limit, and the SAME module close hooks the orphan sweep uses are fanned out (the
@@ -356,31 +368,62 @@ outside app startup) was itself queued behind the hung job.
   `BUILD_ABANDONED`, a preview claim releases). The next scheduler tick then finds nothing in
   flight and proceeds. Unit test with a handler that raises `SoftTimeLimitExceeded`; the hook
   fan-out is factored out of `fail_orphaned_running_jobs` into one reusable helper so the three
-  call sites (orphan, undispatched, time limit) can never drift.
+  call sites (orphan, undispatched, time limit) can never drift. **Review round 1 (S3):** the
+  SAME helper is now also called from `run_job`'s generic (non-time-limit) crash branch, so a
+  plain handler exception closes an open `ac_sync_run` row too, not just a timeout. **Review
+  round 1 (B2):** `workflows.run_workflow` and `workflows.wake_serialized` catch
+  `SoftTimeLimitExceeded` BEFORE their own generic `except Exception`, stamping the run `failed`
+  with a dedicated "exceeded its soft time limit" sentence (`workflow_runs.status` never left
+  `running`); `wake_serialized_task` additionally fails any RUNNING run row it still owns for its
+  exact tenant/workflow/digest scope, as a safety net for the timeout landing outside
+  `drain_serialized_runs`'s own per-run try/except (which already isolates the common case).
 - **AC-11-84 [T]/[BE]** **A beat tick is never delayed more than one interval by a running
   job.** Regression test for the incident: with a deliberately blocked `jobs.run` occupying the
   `jobs` worker for 10 minutes, `autocount.etl_sweep` and `workflows.run_due` still execute
   every 60 s on the lane (timestamped evidence in the test report), and the new
   `jobs.sweep_orphaned` tick (AC-11-56) runs on the `workflow` queue - never on the queue whose
   jobs it recovers.
-- **AC-11-85 [BE]** **Worker database sessions are bounded.** `statement_timeout`,
-  `lock_timeout` and `idle_in_transaction_session_timeout` are settings-driven and applied via
-  the engine's `connect_args` options string; unset (the API default) leaves today's behaviour
-  exactly as is, and the compose worker services set them. Sizing is MEASURED, not guessed: the
-  slowest single statement of a full `SRT` product build (the row-hash upsert and the
-  `all_hashes` read are the candidates; a paged extraction is many short statements, verified
-  in S1) is recorded first, and the timeout is set well above it. Stated honestly in the plan:
-  this is defence in depth - it cannot rescue a hang in a non-Postgres socket, which is why the
-  queue split and the time limits are the primary fixes.
+- **AC-11-85 [BE]** **Worker database sessions are bounded - inert defaults, measured before
+  enabling.** `statement_timeout`, `lock_timeout` and `idle_in_transaction_session_timeout` are
+  settings-driven and applied via the engine's `connect_args` options string; unset (the API
+  default) leaves today's behaviour exactly as is, and `worker_connect_args()` additionally
+  returns `{}` for a non-Postgres `DATABASE_URL` (review round 1, S5 - the `options` GUC string
+  is Postgres-only; the pytest suite's in-memory sqlite must never receive it). The compose
+  worker services (`worker_workflow`, `worker_jobs`) carry the three envs with **INERT defaults
+  (`0` = no timeout)** as of review round 1 2026-09-21 - R10's recommended values (120s/30s/300s)
+  are NOT yet confirmed against the measured slowest statement of a full `SRT` build (S0 could
+  not complete that measurement on the shared dev Postgres; see `11-evidence/s0-baseline/
+  README.md` (c)). Sizing remains MEASURED, not guessed: the slowest single statement of a full
+  `SRT` product build (the row-hash upsert and the `all_hashes` read are the candidates; a paged
+  extraction is many short statements, verified in S1) is recorded first, and only then is a
+  timeout set - well above it. When enabled, `idle_in_transaction_session_timeout` must stay AT
+  LEAST 3x `AUTOCOUNT_SINK_TIMEOUT_SECONDS` (default 300s), because `sync_service.auto_push`
+  holds an open transaction across the sink POST; recommended hot values once enabling: statement
+  >= 600s, idle >= 900s. Stated honestly in the plan: this is defence in depth - it cannot rescue
+  a hang in a non-Postgres socket, which is why the queue split and the time limits are the
+  primary fixes.
 - **AC-11-86 [BE]** **A frozen worker is visible within minutes.** Beat publishes a tiny
   `ops.ping` to EACH queue on a 60 s tick; the consuming worker stamps a Redis key per queue
-  with a 300 s TTL; a platform-permission route reports per queue `{queue, lastSeen, stale}`.
-  A worker that is wedged stops answering within one TTL instead of being discovered 8 hours
-  later. Test: the route reports `stale: true` for a queue with no ping.
+  with a 300 s TTL; a platform-permission route reports per queue `{queue, lastSeen, stale,
+  alive}`. A worker that is wedged stops answering within one TTL instead of being discovered 8
+  hours later. Test: the route reports `stale: true` for a queue with no ping. **Review round 1
+  (S2):** `alive` is added - a live Celery control-plane answer
+  (`celery_app.control.inspect(timeout=1.0).ping()`, filtered to workers whose `active_queues()`
+  name the queue), independent of the Redis-stamp `stale` signal above. `stale` means "no free
+  slot OR dead" (a busy-but-alive worker still answers `ops.ping`); `alive` is the control
+  plane's own synchronous answer. A dead/unreachable broker reads `alive: false` and never
+  raises. Tests stub `control.inspect` for alive-true, alive-false (a reachable worker that does
+  not consume this queue) and broker-unreachable.
 - **AC-11-87 [BE]/[T]** **Compose and deploy documentation ship in the same PR.**
   `docker-compose.yml` gains `worker_jobs` and the worker timeout env; `DEPLOY.md` documents
   the new service, the queue split and the deploy-time steps (a new service is picked up by
   `docker compose up -d`; CI deploy already force-recreates; no manual step beyond that).
+  **Review round 1 (S4):** a test also asserts `worker_workflow` and `worker_jobs` both carry
+  `DATABASE_URL` and `FERNET_KEY` from the shared `x-backend-env` anchor - proving the
+  per-service `environment:` override used `<<: *backend-env` (a merge) rather than replacing
+  the mapping outright, which would silently strip every other required env. DEPLOY.md also
+  notes to run `free -m` before `docker compose up -d` when raising `worker_jobs`' concurrency;
+  `-c 1` is the memory-tight fallback.
 - **AC-11-88 [T]** **The incident is written down where the next engineer will look:**
   `docs/reference/process-lessons.md` (AutoCount section) and the background-jobs part of
   `documentation/engineering/storage-and-background-jobs.md` /

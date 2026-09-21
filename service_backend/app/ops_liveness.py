@@ -41,6 +41,7 @@ class QueueStatus(TypedDict):
     queue: str
     lastSeen: Optional[str]
     stale: bool
+    alive: bool
 
 
 def _key(queue: str) -> str:
@@ -70,23 +71,64 @@ def stamp_liveness(queue: str, *, now: Optional[datetime] = None) -> None:
         logger.warning("ops_liveness stamp failed for queue %s: %s", queue, exc)
 
 
+def _workers_consuming(queue: str) -> set:
+    """Celery worker names that BOTH answered a live control-plane ping AND
+    declare `queue` among their `active_queues()` right now (review round 1,
+    S2). This is a SEPARATE signal from the Redis stamp above: the stamp
+    answers "did a worker consume an `ops.ping` off this queue in the last
+    300s" (routing-through-the-broker evidence); this answers "does a
+    reachable worker process claim this queue at all" (the control plane's
+    own, synchronous answer). Lazy import: `app.workflow_engine.worker`
+    imports `KNOWN_QUEUES` from THIS module at module load time, so a
+    top-level import here would be circular. Broker unreachable, no worker
+    replying, or any control-plane error -> empty set (never raise - see
+    module docstring)."""
+    from app.workflow_engine.worker import celery_app
+
+    try:
+        inspector = celery_app.control.inspect(timeout=1.0)
+        pinged = inspector.ping() or {}
+        active = inspector.active_queues() or {}
+    except Exception as exc:  # noqa: BLE001 - degrade gracefully, never raise
+        logger.warning("ops_liveness control-plane inspect failed for queue %s: %s", queue, exc)
+        return set()
+    consuming = set()
+    for worker_name in pinged:
+        for entry in active.get(worker_name) or []:
+            if entry.get("name") == queue:
+                consuming.add(worker_name)
+                break
+    return consuming
+
+
 def queue_status(queue: str, *, now: Optional[datetime] = None) -> QueueStatus:
-    """`{"queue", "lastSeen", "stale"}` for one queue. `stale` is computed
-    against `now` (not just Redis' own TTL) so a caller can assert staleness
-    deterministically without waiting on real wall-clock time. A dead Redis
-    (or no stamp ever seen) reads as stale with no `lastSeen` - degrade
-    gracefully, never raise."""
+    """`{"queue", "lastSeen", "stale", "alive"}` for one queue.
+
+    `stale` (the Redis-stamp path, unchanged) means "no free slot OR dead" -
+    it is computed against `now` (not just Redis' own TTL) so a caller can
+    assert staleness deterministically without waiting on real wall-clock
+    time, and it can read fresh even when no worker is currently free to pick
+    up NEW work (a busy-but-alive worker still answers `ops.ping`).
+
+    `alive` (new, review round 1) is the CONTROL PLANE's own, synchronous
+    answer - a live Celery `ping()` from a worker that declares this queue
+    among its `active_queues()` - independent of whether that worker has
+    happened to drain a recent `ops.ping` broker message. A dead Redis (or
+    no stamp ever seen) reads `stale: True` with no `lastSeen`, and a dead/
+    unreachable broker reads `alive: False`; neither ever raises - degrade
+    gracefully, see module docstring."""
     current = now or datetime.now(timezone.utc)
+    alive = bool(_workers_consuming(queue))
     try:
         raw = _get_client().get(_key(queue))
     except Exception as exc:  # noqa: BLE001 - see module docstring
         logger.warning("ops_liveness read failed for queue %s: %s", queue, exc)
         raw = None
     if not raw:
-        return {"queue": queue, "lastSeen": None, "stale": True}
+        return {"queue": queue, "lastSeen": None, "stale": True, "alive": alive}
     try:
         stamped = datetime.fromisoformat(raw)
     except ValueError:
-        return {"queue": queue, "lastSeen": None, "stale": True}
+        return {"queue": queue, "lastSeen": None, "stale": True, "alive": alive}
     stale = (current - stamped) > timedelta(seconds=_TTL_SECONDS)
-    return {"queue": queue, "lastSeen": raw, "stale": stale}
+    return {"queue": queue, "lastSeen": raw, "stale": stale, "alive": alive}

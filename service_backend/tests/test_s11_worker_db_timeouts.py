@@ -100,6 +100,28 @@ def test_worker_connect_args_omits_a_timeout_that_stays_unset(monkeypatch):
     assert "idle_in_transaction_session_timeout" not in options
 
 
+def test_worker_connect_args_is_empty_for_a_non_postgres_database_url(monkeypatch):
+    """Review round 1 (S5) - the `options` GUC string is a libpq/Postgres
+    connect arg; a non-Postgres DATABASE_URL (the pytest suite's own
+    in-memory sqlite) must never receive it - sqlite's DBAPI raises on an
+    unrecognised connect_args key."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "database_url", "sqlite:///:memory:", raising=False)
+    monkeypatch.setattr(settings, "worker_db_statement_timeout_seconds", 120, raising=False)
+    monkeypatch.setattr(settings, "worker_db_lock_timeout_seconds", 30, raising=False)
+    monkeypatch.setattr(
+        settings, "worker_db_idle_in_transaction_session_timeout_seconds", 300, raising=False
+    )
+
+    from app.database import worker_connect_args
+
+    assert worker_connect_args() == {}, (
+        "a non-postgresql DATABASE_URL must return {} regardless of the "
+        "worker timeout settings - those settings are Postgres-only options"
+    )
+
+
 def test_database_module_wires_create_engine_through_worker_connect_args():
     """Source-string pin, deliberately NOT an ``importlib.reload`` of
     ``app.database`` - that module's ``Base``/``engine`` singletons are

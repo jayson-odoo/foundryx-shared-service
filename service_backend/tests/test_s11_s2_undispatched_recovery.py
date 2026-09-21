@@ -127,16 +127,26 @@ UNDISPATCHED_TEXT_HINT = "never picked this job up"
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def test_background_job_undispatched_after_minutes_default_is_60():
+def test_background_job_undispatched_after_minutes_default_is_150():
+    """Review round 1 (owner-approved amendment 2026-09-21): 60 -> 150 so the
+    window exceeds the default `background_job_soft_time_limit_seconds`
+    (7200s = 120 min) - see the cross-field validator below - and a queued
+    (not lost) message sitting behind a legitimately long `jobs.run` build on
+    a busy `-c 2` worker is never mistaken for undispatched."""
     from app.config import Settings
 
-    assert Settings().background_job_undispatched_after_minutes == 60
+    assert Settings().background_job_undispatched_after_minutes == 150
 
 
 def test_background_job_undispatched_after_minutes_floor_is_15(monkeypatch):
     from pydantic import ValidationError
 
     from app.config import Settings
+
+    # Isolate the per-field floor from the cross-field soft-time-limit check
+    # (below) by giving the soft limit a small value too - the floor test is
+    # about the 15-minute minimum by itself, not the cross-field relationship.
+    monkeypatch.setenv("BACKGROUND_JOB_SOFT_TIME_LIMIT_SECONDS", "60")
 
     monkeypatch.setenv("BACKGROUND_JOB_UNDISPATCHED_AFTER_MINUTES", "14")
     with pytest.raises(ValidationError):
@@ -147,6 +157,32 @@ def test_background_job_undispatched_after_minutes_floor_is_15(monkeypatch):
     at_floor = Settings()
     assert at_floor.background_job_undispatched_after_minutes == 15
     monkeypatch.delenv("BACKGROUND_JOB_UNDISPATCHED_AFTER_MINUTES", raising=False)
+    monkeypatch.delenv("BACKGROUND_JOB_SOFT_TIME_LIMIT_SECONDS", raising=False)
+
+
+def test_background_job_undispatched_after_minutes_must_exceed_soft_time_limit(
+    monkeypatch,
+):
+    """Review round 1 - the new cross-field validator (`model_validator(mode=
+    "after")`): a window that does not outlive `jobs.run`'s own soft time
+    limit would let the undispatched sweep fail a message that is merely
+    queued behind a legitimate long build, not lost."""
+    from pydantic import ValidationError
+
+    from app.config import Settings
+
+    monkeypatch.setenv("BACKGROUND_JOB_SOFT_TIME_LIMIT_SECONDS", "7200")
+    monkeypatch.setenv("BACKGROUND_JOB_UNDISPATCHED_AFTER_MINUTES", "120")
+    with pytest.raises(ValidationError, match="background_job_undispatched_after_minutes"):
+        Settings()
+    monkeypatch.delenv("BACKGROUND_JOB_UNDISPATCHED_AFTER_MINUTES", raising=False)
+
+    # Just over the boundary succeeds (120 min * 60 = 7200s is NOT > 7200s).
+    monkeypatch.setenv("BACKGROUND_JOB_UNDISPATCHED_AFTER_MINUTES", "121")
+    ok = Settings()
+    assert ok.background_job_undispatched_after_minutes == 121
+    monkeypatch.delenv("BACKGROUND_JOB_UNDISPATCHED_AFTER_MINUTES", raising=False)
+    monkeypatch.delenv("BACKGROUND_JOB_SOFT_TIME_LIMIT_SECONDS", raising=False)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -339,8 +375,11 @@ def test_the_jobs_sweep_orphaned_tick_also_fails_a_stale_undispatched_pending_jo
 
     db = session_factory()
     company = _sched_company(db)
+    # Older than the settings default (150 min, review round 1 amendment -
+    # was 60/90 before the default moved so the window outlives
+    # `background_job_soft_time_limit_seconds`).
     stale_pending = _pending_job(
-        db, created_at=datetime.now(timezone.utc) - timedelta(minutes=90),
+        db, created_at=datetime.now(timezone.utc) - timedelta(minutes=200),
         company_id=company.id,
     )
     fresh_pending = _pending_job(
@@ -378,8 +417,9 @@ def test_scheduler_sweeps_a_stale_undispatched_job_and_the_tick_proceeds(session
     db = session_factory()
     company = _sched_company(db)
     _task(db, company, next_incremental_at=NOW - timedelta(minutes=1))
+    # Older than the settings default (150 min, review round 1 amendment).
     stale = _pending_job(
-        db, created_at=NOW - timedelta(minutes=90), company_id=company.id,
+        db, created_at=NOW - timedelta(minutes=200), company_id=company.id,
     )
     company_id, stale_id = company.id, stale.id
 

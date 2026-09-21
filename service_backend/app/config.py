@@ -1,7 +1,7 @@
 """Configuration settings for the FastAPI application."""
 from typing import List, Union
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -225,7 +225,14 @@ class Settings(BaseSettings):
     # above any legitimate queueing wait; the floor is 15 (higher than the
     # RUNNING-orphan floor of 5: a busy queue can legitimately sit PENDING
     # far longer than a heartbeat gap).
-    background_job_undispatched_after_minutes: int = 60
+    #
+    # 150, not 60 (owner-approved amendment 2026-09-21, review round 1): the
+    # window must exceed `background_job_soft_time_limit_seconds` (default
+    # 7200s = 120 minutes) - see the cross-field validator below - so a
+    # message that IS queued (not lost) but sitting behind a legitimately
+    # long-running build on a busy `-c 2` worker_jobs is never mistaken for
+    # undispatched and failed out from under it.
+    background_job_undispatched_after_minutes: int = 150
     # ── Worker starvation fix (sprint-5/11 S1, incident 2026-09-20/21) ──────
     # `jobs.run`'s own declared soft/hard Celery time limit (AC-11-82, R10):
     # generous, sized above the longest legitimate build measured in this
@@ -234,6 +241,15 @@ class Settings(BaseSettings):
     # `jobs` worker's slot forever. The hard limit is soft + 300s, derived in
     # code (app/jobs/worker.py), never a second independent setting.
     background_job_soft_time_limit_seconds: int = 7200
+    # Review round 1 - the workflow app's own two "unbounded" tasks
+    # (`workflows.run_workflow`, `workflows.wake_serialized`) had NO declared
+    # limit of their own, so they silently inherited the app-level tick-family
+    # bound (`task_soft_time_limit=300`) - wrong for a run that legitimately
+    # executes many nodes, and wrong for a serialized drain that legitimately
+    # processes several queued runs in one wakeup. 30 minutes, well above any
+    # normal run/drain; the hard limit is soft + 300s, derived in code
+    # (`app/workflow_engine/worker.py`), mirroring `jobs.run`'s own pattern.
+    workflow_run_soft_time_limit_seconds: int = 1800
     # Worker-process-only Postgres session bounds, settings-driven (AC-11-85).
     # 0 = unset on every axis (the default, and the API's PERMANENT profile -
     # never wired through the API's own engine construction). Wired through
@@ -499,6 +515,26 @@ class Settings(BaseSettings):
                 "background_job_undispatched_after_minutes must be at least 15 minutes."
             )
         return v
+
+    @model_validator(mode="after")
+    def _background_job_undispatched_after_exceeds_soft_time_limit(self) -> "Settings":
+        # Review round 1 (S1): a queued-but-not-lost message sitting behind a
+        # legitimate long `jobs.run` build (bounded by
+        # `background_job_soft_time_limit_seconds`) on a busy worker must
+        # never be failed out by the undispatched sweep as if its message
+        # were lost. The window has to outlive the longest a job is allowed
+        # to legitimately run before its OWN slot frees up.
+        window_seconds = self.background_job_undispatched_after_minutes * 60
+        if window_seconds <= self.background_job_soft_time_limit_seconds:
+            raise ValueError(
+                "background_job_undispatched_after_minutes "
+                f"({self.background_job_undispatched_after_minutes} min = "
+                f"{window_seconds}s) must exceed background_job_soft_time_limit_seconds "
+                f"({self.background_job_soft_time_limit_seconds}s) - otherwise a queued "
+                "message sitting behind a legitimately long jobs.run build can be "
+                "mistaken for a lost message and failed out from under it."
+            )
+        return self
 
     @field_validator("autocount_page_size")
     @classmethod

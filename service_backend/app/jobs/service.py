@@ -291,6 +291,7 @@ class JobService:
         orphans = query.all()
         if not orphans:
             return 0
+        hooks = list(_orphan_hooks())
         for job in orphans:
             job.status = JOB_FAILED
             job.error = self.ORPHANED_ERROR
@@ -300,7 +301,7 @@ class JobService:
                 job.id, job.type, job.tenant_id,
                 (job.heartbeat_at or job.started_at or job.created_at),
             )
-            close_module_bookkeeping(self.db, job, now=current)
+            close_module_bookkeeping(self.db, job, now=current, hooks=hooks)
         self.db.commit()
         return len(orphans)
 
@@ -353,6 +354,7 @@ class JobService:
         undispatched = query.all()
         if not undispatched:
             return 0
+        hooks = list(_orphan_hooks())
         for job in undispatched:
             job.status = JOB_FAILED
             job.error = self.UNDISPATCHED_ERROR
@@ -362,7 +364,7 @@ class JobService:
                 "with no worker pickup; failed",
                 job.id, job.type, job.tenant_id, job.created_at,
             )
-            close_module_bookkeeping(self.db, job, now=current)
+            close_module_bookkeeping(self.db, job, now=current, hooks=hooks)
         self.db.commit()
         return len(undispatched)
 
@@ -377,7 +379,11 @@ class JobService:
 
 
 def close_module_bookkeeping(
-    db: Session, job: BackgroundJob, *, now: Optional[datetime] = None
+    db: Session,
+    job: BackgroundJob,
+    *,
+    now: Optional[datetime] = None,
+    hooks: Optional[Iterable[tuple]] = None,
 ) -> None:
     """Fan out every installed module's ``on_job_orphaned(db, job[, now=])``
     hook for ONE already-terminal job (sprint-5/11 S1, plan sec 2.6). The
@@ -391,9 +397,16 @@ def close_module_bookkeeping(
     bookkeeping for the job (autocount closes an open ``ac_sync_run`` row;
     staged rows are left alone so the next run re-offers them). A hook
     failure is logged and never blocks its siblings or the caller's commit.
+
+    ``hooks`` (review round 1 nit): ``_orphan_hooks()`` walks every on-disk
+    manifest via ``discover_manifests()`` - cheap for the single-job callers
+    (this path, the time-limit branches) but wasteful when a caller loops
+    over many jobs in one sweep. A looping caller computes the list ONCE and
+    passes it here; the default (``None``) still resolves it fresh, so a
+    single-job call site needs no change.
     """
     current = now or datetime.now(timezone.utc)
-    for module_name, hook in _orphan_hooks():
+    for module_name, hook in (hooks if hooks is not None else _orphan_hooks()):
         # A SAVEPOINT per hook: a failing hook rolls back only its own
         # writes, so on Postgres it cannot leave the session in the aborted
         # state that would poison the caller's own commit.
@@ -460,14 +473,21 @@ def run_job(db: Session, job_id: str) -> Optional[BackgroundJob]:
             service.finish(
                 job, status=JOB_FAILED, error=JobService.SOFT_TIME_LIMIT_ERROR
             )
-            close_module_bookkeeping(db, job)
+            close_module_bookkeeping(db, job, now=job.finished_at)
             db.commit()
     except Exception as exc:  # noqa: BLE001 - full isolation, never propagate
         logger.exception("background job %s (type=%s) crashed", job_id, job.type)
         db.rollback()
         job = repo.get_unscoped(job_id)
         if job is not None and job.status not in JOB_TERMINAL_STATUSES:
+            # sprint-5/11 review round 1 (S3) - a plain handler crash left the
+            # SAME open module bookkeeping (e.g. `ac_sync_run`) the orphan
+            # sweep and the soft-time-limit path both close; mirror that
+            # shape here so a generic crash never leaves a run "in progress"
+            # forever.
             service.finish(job, status=JOB_FAILED, error=f"Job crashed: {exc}")
+            close_module_bookkeeping(db, job, now=job.finished_at)
+            db.commit()
     return repo.get_unscoped(job_id)
 
 

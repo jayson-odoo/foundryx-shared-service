@@ -159,6 +159,40 @@ def test_close_module_bookkeeping_is_a_shared_helper_reused_by_the_orphan_sweep(
     assert closed.finished_at is not None
 
 
+def _plain_raising_handler(db, job):
+    """A handler that crashes with an ordinary exception - the S3 review-round-1
+    gap: the generic `except Exception` branch in `run_job` failed the job but
+    never closed module bookkeeping, leaving an open `ac_sync_run` row exactly
+    like the soft-time-limit and orphan-sweep cases this plan already fixes."""
+    raise RuntimeError("boom")
+
+
+class _PlainRaisingDef:
+    handler = staticmethod(_plain_raising_handler)
+
+
+def test_run_job_closes_the_open_ac_sync_run_on_a_plain_handler_crash(db, monkeypatch):
+    """S3 (review round 1) - a plain (non-SoftTimeLimitExceeded) crash must
+    close the same module bookkeeping the soft-limit branch already does."""
+    import app.jobs.service as job_service_module
+
+    monkeypatch.setattr(job_service_module, "handler_for", lambda t: _PlainRaisingDef())
+    job = _running_job(db)
+    run = _open_run(db, job)
+
+    run_job(db, job.id)
+
+    db.expire_all()
+    fresh = db.get(BackgroundJob, job.id)
+    assert fresh.status == JOB_FAILED
+    assert fresh.error == "Job crashed: boom"
+
+    closed = db.get(AcSyncRun, run.id)
+    assert closed.outcome == RUN_FAILED, "the ac_sync_run row was never closed"
+    assert closed.finished_at is not None
+    assert closed.duration_ms is not None and closed.duration_ms >= 0
+
+
 class _StubDef:
     """Minimal stand-in for a ``JobHandlerDef`` - ``run_job`` only reads
     ``.handler`` off whatever ``handler_for`` returns."""

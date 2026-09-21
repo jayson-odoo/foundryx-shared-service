@@ -5,14 +5,27 @@ set ``CELERY_TASK_ALWAYS_EAGER=true`` → inline, zero extra process.
     celery -A app.workflow_engine.worker worker --loglevel info
 """
 import logging
+from datetime import datetime, timezone
 
 from celery import Celery
+from celery.exceptions import SoftTimeLimitExceeded
 
 from app.config import settings
 from app.lazy_registry import lazy_once
 from app.ops_liveness import KNOWN_QUEUES
 
 logger = logging.getLogger("foundryx.workflows")
+
+# Review round 1 (B2) - the stable sentence stamped on a run this app's
+# `workflows.run_workflow` / `workflows.wake_serialized` tasks stop
+# cooperatively at their own soft time limit (`settings.
+# workflow_run_soft_time_limit_seconds`), mirroring `JobService.
+# SOFT_TIME_LIMIT_ERROR`'s pattern: a clean, expected stop at a configured
+# bound, not a crash, so it is worded distinctly from "Run crashed
+# unexpectedly."
+WORKFLOW_RUN_TIME_LIMIT_ERROR = (
+    "Stopped: this run exceeded its soft time limit."
+)
 
 
 def _boot_module_nodes() -> None:
@@ -450,7 +463,11 @@ def reevaluate_time_based_task() -> dict:
         db.close()
 
 
-@celery_app.task(name="workflows.run_workflow")
+@celery_app.task(
+    name="workflows.run_workflow",
+    soft_time_limit=settings.workflow_run_soft_time_limit_seconds,
+    time_limit=settings.workflow_run_soft_time_limit_seconds + 300,
+)
 def run_workflow_task(run_id: str) -> dict:
     from app.database import SessionLocal
     from app.models.workflow import RUN_FAILED, WorkflowRun
@@ -469,6 +486,21 @@ def run_workflow_task(run_id: str) -> dict:
     try:
         run = run_workflow(db, run_id)
         return {"runId": run.id, "status": run.status}
+    except SoftTimeLimitExceeded:
+        # Review round 1 (B2) - caught BEFORE the generic `except Exception`
+        # below (it IS an Exception subclass; the generic branch would
+        # otherwise stamp it with the wrong "Run crashed unexpectedly." text).
+        # Never re-raised: letting it propagate would crash the worker
+        # process instead of failing this run cleanly.
+        logger.error("workflow run %s hit its soft time limit", run_id)
+        db.rollback()
+        run = db.query(WorkflowRun).filter(WorkflowRun.id == run_id).first()
+        if run is not None:
+            run.status = RUN_FAILED
+            run.error = WORKFLOW_RUN_TIME_LIMIT_ERROR
+            run.finished_at = datetime.now(timezone.utc)
+            db.commit()
+        return {"runId": run_id, "status": RUN_FAILED}
     except Exception:  # noqa: BLE001 - never let a run crash the worker silently
         logger.exception("workflow run %s crashed", run_id)
         db.rollback()
@@ -482,10 +514,15 @@ def run_workflow_task(run_id: str) -> dict:
         db.close()
 
 
-@celery_app.task(name="workflows.wake_serialized")
+@celery_app.task(
+    name="workflows.wake_serialized",
+    soft_time_limit=settings.workflow_run_soft_time_limit_seconds,
+    time_limit=settings.workflow_run_soft_time_limit_seconds + 300,
+)
 def wake_serialized_task(tenant_id: str, workflow_id: str, digest: str) -> dict:
     """Idempotent wakeup for one durable Postgres FIFO scope."""
     from app.database import SessionLocal
+    from app.models.workflow import RUN_FAILED, RUN_RUNNING, WorkflowRun
     from app.workflow_engine.serialization import (
         SerializedCoordinationUnavailable,
         drain_serialized_runs,
@@ -501,6 +538,38 @@ def wake_serialized_task(tenant_id: str, workflow_id: str, digest: str) -> dict:
         logger.error("serialized workflow coordination unavailable: %s", exc)
         db.rollback()
         return {"admitted": False, "drained": 0, "error": str(exc)}
+    except SoftTimeLimitExceeded:
+        # Review round 1 (B2) - caught BEFORE the generic `except Exception`
+        # below. `drain_serialized_runs` already isolates a crash DURING one
+        # run's `execute_run(db, run_id)` call (its own inner `except
+        # Exception`), so the common case (the limit fires mid-run) is
+        # already closed there. This is the safety net for the timeout
+        # firing OUTSIDE that inner try (lease/heartbeat bookkeeping between
+        # runs): this scope's own RUNNING row, if any, is failed here too, so
+        # the run never owns a "running" row nobody will ever close (the
+        # reaper would eventually catch it via a stale heartbeat, but that is
+        # minutes away, not immediate).
+        logger.error(
+            "serialized workflow drain for workflow %s (tenant %s) hit its "
+            "soft time limit", workflow_id, tenant_id,
+        )
+        db.rollback()
+        run = (
+            db.query(WorkflowRun)
+            .filter(
+                WorkflowRun.tenant_id == tenant_id,
+                WorkflowRun.workflow_id == workflow_id,
+                WorkflowRun.correlation_key_digest == digest,
+                WorkflowRun.status == RUN_RUNNING,
+            )
+            .first()
+        )
+        if run is not None:
+            run.status = RUN_FAILED
+            run.error = WORKFLOW_RUN_TIME_LIMIT_ERROR
+            run.finished_at = datetime.now(timezone.utc)
+            db.commit()
+        return {"admitted": True, "drained": 0, "error": WORKFLOW_RUN_TIME_LIMIT_ERROR}
     except Exception:  # noqa: BLE001
         # A crash rolls the active transaction back to Pending. Recovery beat or
         # a duplicate wakeup will retry it after the lease is available.
