@@ -19,6 +19,17 @@ import type {
 } from '@/types/autocount';
 
 /**
+ * sprint-5/11 (AC-11-20..27) - the Cloudflare-safe non-blocking preview: a
+ * job round-trip replaces the old single blocking request. Poll cadence is
+ * short and deterministic against the mock (no fake timers needed).
+ */
+const PREVIEW_JOB_POLL_MS = 200;
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
  * Direct-DB ETL hooks (plan 22 S1) - the hook boundary the task editor talks
  * to (`UI → hook → service → api-client`). Components never call the service.
  */
@@ -126,22 +137,44 @@ export function useAutocountEtlTask(
  * The dry-run states the Review & Activate tab designs: `error` is the dry
  * run itself failing (502 - Activate stays withheld), `taskError` is a Sorento
  * anchor 422 - a TASK-level configuration error (fix the company code), never
- * a per-record failure.
+ * a per-record failure. `loading` rides the preview-job progress (sprint-5/11,
+ * AC-11-27) - `stage`/`pagesDone`/`pagesTotal` are absent until known, never
+ * guessed; `cancelling` is set once `cancel()` has been called but the job has
+ * not yet reported the terminal state.
  */
 export type EtlPreviewState =
   | { status: 'idle' }
-  | { status: 'loading' }
+  | {
+      status: 'loading';
+      stage?: string | null;
+      pagesDone?: number | null;
+      pagesTotal?: number | null;
+      cancelling?: boolean;
+    }
   | { status: 'error'; message: string }
   | { status: 'taskError'; error: AutocountEtlTaskError }
   | { status: 'success'; preview: AutocountPreview };
 
 export interface UseEtlTaskPreviewResult {
   state: EtlPreviewState;
-  /** Run the initial-load dry run. Never throws - every outcome lands in state. */
+  /** Run the initial-load dry run as a job (AC-11-22) - never awaits the
+   * walk; resolves once the job reaches a terminal state. Never throws -
+   * every outcome lands in state. */
   run: () => Promise<void>;
+  /** Cooperative cancel of an in-flight job (AC-11-24) - a no-op while idle
+   * or already terminal. */
+  cancel: () => void;
   reset: () => void;
 }
 
+/**
+ * sprint-5/11 (AC-11-20..27) - "Run preview" starts the `full`-scope
+ * `autocount_source_preview` job instead of awaiting `preview_task`
+ * directly, and polls `GET /autocount/previews/{jobId}` (AC-11-22). The
+ * synchronous `previewEtlTask`/`previewHttp` service calls stay exactly as
+ * they are - PHASE 1 MOCK (`withPhase1PreviewJobMock`) delegates to them
+ * under the hood until S4 lands the real job.
+ */
 export function useEtlTaskPreview(
   companyId: string,
   entityType: string,
@@ -149,15 +182,53 @@ export function useEtlTaskPreview(
 ): UseEtlTaskPreviewResult {
   const [state, setState] = useState<EtlPreviewState>({ status: 'idle' });
   const runId = useRef(0);
+  const activeJobId = useRef<string | null>(null);
+  const cancelRequested = useRef(false);
 
   const run = useCallback(async () => {
     const id = ++runId.current;
+    cancelRequested.current = false;
+    activeJobId.current = null;
     setState({ status: 'loading' });
     try {
-      const result = await autocountService.previewEtlTask(companyId, entityType);
+      const started = await autocountService.startPreviewJob({ scope: 'full', companyId, entityType });
       if (id !== runId.current) return;
-      onTask(result.task);
-      setState({ status: 'success', preview: result.preview });
+      activeJobId.current = started.jobId;
+      for (;;) {
+        const job = await autocountService.getPreviewJob(started.jobId);
+        if (id !== runId.current) return;
+        if (job.status === 'queued' || job.status === 'running') {
+          setState({
+            status: 'loading',
+            stage: job.progress?.stage ?? null,
+            pagesDone: job.progress?.pagesDone ?? null,
+            pagesTotal: job.progress?.pagesTotal ?? null,
+            cancelling: cancelRequested.current,
+          });
+          await pause(PREVIEW_JOB_POLL_MS);
+          continue;
+        }
+        if (job.status === 'cancelled') {
+          setState({ status: 'idle' });
+          return;
+        }
+        if (job.status === 'failed') {
+          if (job.taskError) {
+            setState({ status: 'taskError', error: job.taskError });
+            return;
+          }
+          setState({ status: 'error', message: job.error ?? 'The dry run could not be completed.' });
+          return;
+        }
+        // done
+        if (job.result?.scope === 'full') {
+          onTask(job.result.task);
+          setState({ status: 'success', preview: job.result.preview });
+          return;
+        }
+        setState({ status: 'error', message: 'The dry run could not be completed.' });
+        return;
+      }
     } catch (e) {
       if (id !== runId.current) return;
       const taskError = e instanceof ApiError && e.status === 422 ? readTaskError(e.detail) : null;
@@ -172,12 +243,20 @@ export function useEtlTaskPreview(
     }
   }, [companyId, entityType, onTask]);
 
+  const cancel = useCallback(() => {
+    if (!activeJobId.current) return;
+    cancelRequested.current = true;
+    void autocountService.cancelPreviewJob(activeJobId.current);
+  }, []);
+
   const reset = useCallback(() => {
     runId.current += 1;
+    cancelRequested.current = false;
+    activeJobId.current = null;
     setState({ status: 'idle' });
   }, []);
 
-  return { state, run, reset };
+  return { state, run, cancel, reset };
 }
 
 // ── lifecycle: activate / pause / resume / run now (AC-22-18/19) ──────────────
@@ -463,10 +542,19 @@ export function useAutocountApiConnections(): UseAutocountApiConnectionsResult {
 }
 
 /** The four designed preview states, mirroring `SqlPreviewState` for the
- * open REST API (AC-08-14/20). */
+ * open REST API (AC-08-14/20). `loading` rides the preview-job progress
+ * (sprint-5/11, AC-11-27) - `stage`/`pagesDone`/`pagesTotal` are absent
+ * until known, never guessed; `cancelling` is set once `cancel()` has been
+ * called but the job has not yet reported the terminal state. */
 export type HttpPreviewState =
   | { status: 'idle' }
-  | { status: 'loading' }
+  | {
+      status: 'loading';
+      stage?: string | null;
+      pagesDone?: number | null;
+      pagesTotal?: number | null;
+      cancelling?: boolean;
+    }
   | { status: 'error'; message: string }
   | { status: 'success'; preview: HttpPreview };
 
@@ -510,12 +598,25 @@ export interface UseHttpPreviewResult {
    * a specific field rather than a generic error. */
   fieldErrors: Record<string, string>;
   reset: () => void;
+  /** Cooperative cancel of an in-flight job (AC-11-24) - a no-op while idle
+   * or already terminal. */
+  cancel: () => void;
 }
 
+/**
+ * sprint-5/11 (AC-11-20..27) - Test starts the `sample`-scope
+ * `autocount_source_preview` job instead of awaiting `preview_http`
+ * directly, and polls `GET /autocount/previews/{jobId}` (AC-11-22). The
+ * synchronous `previewHttp` service call stays exactly as it is - PHASE 1
+ * MOCK (`withPhase1PreviewJobMock`) delegates to it under the hood until S4
+ * lands the real job.
+ */
 export function useHttpPreview(): UseHttpPreviewResult {
   const [state, setState] = useState<HttpPreviewState>({ status: 'idle' });
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const runId = useRef(0);
+  const activeJobId = useRef<string | null>(null);
+  const cancelRequested = useRef(false);
 
   const run = useCallback(
     async (
@@ -525,21 +626,54 @@ export function useHttpPreview(): UseHttpPreviewResult {
       options?: HttpPreviewRunOptions,
     ): Promise<HttpPreview | false> => {
       const id = ++runId.current;
+      cancelRequested.current = false;
+      activeJobId.current = null;
       setState({ status: 'loading' });
       setFieldErrors({});
       try {
-        const preview = await autocountService.previewHttp({
+        const started = await autocountService.startPreviewJob({
+          scope: 'sample',
+          companyId: options?.companyId ?? '',
+          entityType: options?.entityType ?? '',
           connectionId,
           path,
           distinctOf,
-          companyId: options?.companyId,
-          entityType: options?.entityType,
           lookups: options?.lookups,
           combine: options?.combine,
         });
         if (id !== runId.current) return false;
-        setState({ status: 'success', preview });
-        return preview;
+        activeJobId.current = started.jobId;
+        for (;;) {
+          const job = await autocountService.getPreviewJob(started.jobId);
+          if (id !== runId.current) return false;
+          if (job.status === 'queued' || job.status === 'running') {
+            setState({
+              status: 'loading',
+              stage: job.progress?.stage ?? null,
+              pagesDone: job.progress?.pagesDone ?? null,
+              pagesTotal: job.progress?.pagesTotal ?? null,
+              cancelling: cancelRequested.current,
+            });
+            await pause(PREVIEW_JOB_POLL_MS);
+            continue;
+          }
+          if (job.status === 'cancelled') {
+            setState({ status: 'idle' });
+            return false;
+          }
+          if (job.status === 'failed') {
+            setFieldErrors(job.fieldErrors ?? {});
+            setState({ status: 'error', message: job.error ?? 'The preview could not be run.' });
+            return false;
+          }
+          // done
+          if (job.result?.scope === 'sample') {
+            setState({ status: 'success', preview: job.result.preview });
+            return job.result.preview;
+          }
+          setState({ status: 'error', message: 'The preview could not be run.' });
+          return false;
+        }
       } catch (e) {
         if (id !== runId.current) return false;
         const errors = e instanceof ApiError ? readFieldErrors(e.detail) : {};
@@ -554,11 +688,19 @@ export function useHttpPreview(): UseHttpPreviewResult {
     [],
   );
 
+  const cancel = useCallback(() => {
+    if (!activeJobId.current) return;
+    cancelRequested.current = true;
+    void autocountService.cancelPreviewJob(activeJobId.current);
+  }, []);
+
   const reset = useCallback(() => {
     runId.current += 1;
+    cancelRequested.current = false;
+    activeJobId.current = null;
     setState({ status: 'idle' });
     setFieldErrors({});
   }, []);
 
-  return { state, run, fieldErrors, reset };
+  return { state, run, fieldErrors, reset, cancel };
 }

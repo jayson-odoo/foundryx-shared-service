@@ -125,4 +125,37 @@ describe('runs list config - task variant (plan 22 S2, AC-22-17)', () => {
     render(<>{node}</>);
     expect(screen.getByText('Partial, continues')).toBeInTheDocument();
   });
+
+  // sprint-5/11 (AC-11-58) - the undispatched-job-recovery incident left
+  // finished `skipped` ticks with `outcome: null`; every one of the three
+  // row shapes the fix distinguishes is pinned here.
+  describe('the outcome badge across all three row shapes (AC-11-58)', () => {
+    function renderOutcomeCell(row: AutocountSyncRun) {
+      const c = cfg();
+      const outcomeColumn = c.columns.find((col) => col.id === 'outcome');
+      const cellFn = outcomeColumn!.cell as ColumnDef<AutocountSyncRun>['cell'];
+      const node = (cellFn as (ctx: { row: { original: AutocountSyncRun } }) => ReactNode)({
+        row: { original: row },
+      });
+      render(<>{node}</>);
+    }
+
+    it('outcome set -> the outcome registry badge, never "Running"', () => {
+      renderOutcomeCell(run({ outcome: 'SUCCESS', finishedAt: '2026-09-21T00:00:01Z' }));
+      expect(screen.getByText('Success')).toBeInTheDocument();
+      expect(screen.queryByText('Running')).not.toBeInTheDocument();
+    });
+
+    it('outcome null WITH finishedAt -> Skipped, never "Running" (the incident case)', () => {
+      renderOutcomeCell(run({ outcome: null, finishedAt: '2026-09-21T00:00:01Z', skipReason: 'A run for this task was still in progress.' }));
+      expect(screen.getByText('Skipped')).toBeInTheDocument();
+      expect(screen.queryByText('Running')).not.toBeInTheDocument();
+    });
+
+    it('outcome null WITHOUT finishedAt -> Running', () => {
+      renderOutcomeCell(run({ outcome: null, finishedAt: null }));
+      expect(screen.getByText('Running')).toBeInTheDocument();
+      expect(screen.queryByText('Skipped')).not.toBeInTheDocument();
+    });
+  });
 });

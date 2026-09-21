@@ -76,6 +76,13 @@ export function useAutocountRunsListConfig(
               registry={AC_RUN_OUTCOME_REGISTRY}
               size="sm"
             />
+          ) : r.finishedAt ? (
+            // sprint-5/11 (AC-11-58) - a FINISHED row with no `outcome` is a
+            // skip (the incident: undispatched-job recovery leaves the
+            // overlap-guard's `skipped` ticks with `outcome: null`), never
+            // "Running" - render the SAME registry badge `outcome: 'SKIPPED'`
+            // would.
+            <StatusBadge status="SKIPPED" registry={AC_RUN_OUTCOME_REGISTRY} size="sm" />
           ) : (
             <Badge variant="info" appearance="light" size="sm">
               Running

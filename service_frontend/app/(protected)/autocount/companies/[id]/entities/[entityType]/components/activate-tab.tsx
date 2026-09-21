@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardHeading, CardTitle } from '@/components/ui/card';
 import { DeferredCountdown } from '@/components/platform/resource-actions/deferred-action-button';
+import { JobProgress } from '@/components/platform/autocount/job-progress';
 import { PreviewPanel } from '@/components/platform/autocount/preview-panel';
 import { useDeferredAction } from '@/hooks/use-deferred-action';
 import type {
@@ -504,9 +505,21 @@ export function ActivateTab({
             </CardHeading>
           </CardHeader>
           <CardContent>
+            {isLoading && previewState.status === 'loading' && (
+              // sprint-5/11 (AC-11-27) - the ONE running-state component,
+              // reused by the Source tab and the snapshot detail.
+              <JobProgress
+                status={previewState.cancelling ? 'cancelling' : 'running'}
+                stage={previewState.stage ?? null}
+                pagesDone={previewState.pagesDone ?? null}
+                pagesTotal={previewState.pagesTotal ?? null}
+                onCancel={preview.cancel}
+                cancelLabel="Cancel preview"
+              />
+            )}
             <PreviewPanel
               preview={previewBlock}
-              isLoading={isLoading}
+              isLoading={false}
               error={dryRunError}
               hasRun={hasRun}
               variant="task"

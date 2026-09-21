@@ -24,6 +24,9 @@ import type {
   AutocountMappingUpdate,
   AutocountMappingView,
   AutocountMappingWriteRow,
+  AutocountPreviewJob,
+  AutocountPreviewJobStart,
+  AutocountPreviewJobStartInput,
   AutocountPreviewResult,
   AutocountPullApiKey,
   AutocountPullApiKeyCreateInput,
@@ -442,6 +445,33 @@ export const realAutocountService: AutocountService = {
     return apiFetch<AutocountPullSnapshot>('/autocount/pull/snapshots', {
       method: 'POST',
       body: JSON.stringify({ companyId, entityType }),
+    });
+  },
+
+  // ── preview job (sprint-5/11, Group B) - contract documented on
+  // `AutocountService`. NOT YET LIVE (S4 backend) - `autocountService` binds
+  // straight to this object today (no phase-1 overlay - the Source tab's
+  // Test and Review & Activate's Run preview stay on their existing
+  // synchronous `previewHttp`/`previewEtlTask` calls until S4 flips
+  // `useHttpPreview`/`useEtlTaskPreview` over to this surface). Written now
+  // so the type contract compiles once the backend ships it; a call before
+  // then is a 404, never reached from the app.
+
+  startPreviewJob(input: AutocountPreviewJobStartInput) {
+    const path = input.scope === 'sample' ? '/autocount/http/preview' : `${etlTaskPath(input.companyId, input.entityType)}/preview`;
+    return apiFetch<AutocountPreviewJobStart>(path, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  getPreviewJob(jobId) {
+    return apiFetch<AutocountPreviewJob>(`/autocount/previews/${jobId}`);
+  },
+
+  cancelPreviewJob(jobId) {
+    return apiFetch<AutocountPreviewJob>(`/autocount/previews/${jobId}/cancel`, {
+      method: 'POST',
     });
   },
 };

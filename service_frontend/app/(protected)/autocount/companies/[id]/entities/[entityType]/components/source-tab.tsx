@@ -13,6 +13,7 @@ import { SearchSelect } from '@/components/platform/search-select';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { AutocountFormulaBuilder } from '@/components/platform/autocount/formula-builder';
 import { ColumnChips, ColumnPickers } from '@/components/platform/autocount/column-pickers';
+import { JobProgress } from '@/components/platform/autocount/job-progress';
 import { SqlEditor } from '@/components/platform/autocount/sql-editor';
 import { SqlPreviewGrid } from '@/components/platform/autocount/sql-preview-grid';
 import { SqlSchemaTree } from '@/components/platform/autocount/sql-schema-tree';
@@ -916,6 +917,19 @@ export function SourceTab({
                   </Badge>
                 )}
               </div>
+
+              {httpPreview.state.status === 'loading' && (
+                // sprint-5/11 (AC-11-27) - the ONE running-state component,
+                // reused by Review & Activate and the snapshot detail.
+                <JobProgress
+                  status={httpPreview.state.cancelling ? 'cancelling' : 'running'}
+                  stage={httpPreview.state.stage ?? null}
+                  pagesDone={httpPreview.state.pagesDone ?? null}
+                  pagesTotal={httpPreview.state.pagesTotal ?? null}
+                  onCancel={httpPreview.cancel}
+                  cancelLabel="Cancel test"
+                />
+              )}
 
               {config.distinctOf && config.distinctOf.length > 0 && (
                 <div className="flex min-w-0 flex-col gap-1.5">

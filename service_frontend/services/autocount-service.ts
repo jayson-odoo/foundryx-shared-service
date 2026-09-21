@@ -34,6 +34,9 @@ import type {
   AutocountMappingUpdate,
   AutocountMappingView,
   AutocountMappingWriteRow,
+  AutocountPreviewJob,
+  AutocountPreviewJobStart,
+  AutocountPreviewJobStartInput,
   AutocountPreviewResult,
   AutocountPullApiKey,
   AutocountPullApiKeyCreateInput,
@@ -54,6 +57,7 @@ import type {
   HttpPreviewInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
+import { withPhase1PreviewJobMock } from './autocount-service.mock';
 import { realAutocountService } from './autocount-service.real';
 
 export interface AutocountListQuery {
@@ -557,14 +561,42 @@ export interface AutocountService {
   ): Promise<AutocountPullSnapshotRowsPage>;
   /** Build a snapshot as the operator (`requestedVia: 'operator'`, AC-10-37). */
   buildPullSnapshot(companyId: string, entityType: string): Promise<AutocountPullSnapshot>;
+
+  // ── preview job (sprint-5/11, Group B) - AC-11-20..31 ───────────────────────
+  //
+  // BACKEND CONTRACT (S4 must match this EXACTLY - `autocount-service.mock.ts`
+  // is the spec until then, house PHASE 1 MOCK pattern):
+  //
+  //   POST /autocount/http/preview  (sample) / POST .../etl-task/preview (full)
+  //        -> AutocountPreviewJobStart {jobId, status} - 202, no extraction
+  //           happens in the request (AC-11-22).
+  //   GET  /autocount/previews/{jobId} -> AutocountPreviewJob - polled while
+  //        `queued`/`running`; progress rides the SAME `{stage, pagesDone,
+  //        pagesTotal}` shape as a pull-snapshot build.
+  //   POST /autocount/previews/{jobId}/cancel -> AutocountPreviewJob - a
+  //        no-op 200 against an already-terminal job (AC-11-24).
+  //   Gated `autocount.sync.run`; tenant-scoped, cross-tenant = 404.
+
+  /** Start a preview job. Never awaits the walk (AC-11-22). */
+  startPreviewJob(input: AutocountPreviewJobStartInput): Promise<AutocountPreviewJobStart>;
+  /** Poll one job (AC-11-22/27). */
+  getPreviewJob(jobId: string): Promise<AutocountPreviewJob>;
+  /** Cooperative cancel - a no-op 200 against a terminal job (AC-11-24). */
+  cancelPreviewJob(jobId: string): Promise<AutocountPreviewJob>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// The shipped binding is the BARE `.real` service - every surface above,
-// including the human-invoked pull surface (delivery mode, pull API keys,
-// snapshots - sprint-5/10 S6 phase 2 swap), is backed by FastAPI end to end.
-// `mockAutocountService` (`autocount-service.mock.ts`) stays importable by
-// the Vitest suite directly (the house service-trio pattern) - there is no
-// runtime mock overlay to bind here anymore.
+// PHASE 1 MOCK (sprint-5/11 S3) - every surface above is backed by FastAPI
+// end to end EXCEPT the preview-job surface (`startPreviewJob`/
+// `getPreviewJob`/`cancelPreviewJob`), which has no backend yet (S4 lands
+// the real `autocount_source_preview` job + `/autocount/previews/*`
+// routes). `withPhase1PreviewJobMock` overlays ONLY that surface, delegating
+// the actual preview computation to the already-live synchronous
+// `previewHttp`/`previewEtlTask` routes while simulating the job's
+// queued -> running -> done/failed/cancelled shape client-side - real data,
+// simulated progress, exactly the `withPhase1PullMock` pattern plan
+// sprint-5/10 S2 used. Phase 2 swap (S4) = `export const autocountService =
+// realAutocountService`. `mockAutocountService` stays importable by the
+// Vitest suite directly (the house service-trio pattern).
 // ═══════════════════════════════════════════════════════════════════════════
-export const autocountService: AutocountService = realAutocountService;
+export const autocountService: AutocountService = withPhase1PreviewJobMock(realAutocountService);

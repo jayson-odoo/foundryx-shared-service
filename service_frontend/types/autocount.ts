@@ -1165,6 +1165,14 @@ export interface AutocountEtlTask {
    * `resultColumns` once it is non-empty (`task-editor-view.tsx`).
    */
   combineOutputColumns?: string[];
+  /**
+   * sprint-5/11 (AC-11-23/27) - the id of this task's IN-FLIGHT preview job,
+   * if any (`ac_entity_config.preview_job_id`). Lets a remounted editor
+   * re-attach to a running Test/Run-preview job instead of starting a
+   * second one. `null`/absent (every fixture built before this field
+   * existed) = no preview in flight.
+   */
+  previewJobId?: string | null;
 }
 
 /** `AutocountEtlTask.brandContractGate` (AC-08-33/AC-08-20 S5). `version` is
@@ -1227,6 +1235,104 @@ export interface AutocountEtlTaskError {
 export interface AutocountEtlPreviewResult {
   task: AutocountEtlTask;
   preview: AutocountPreview;
+}
+
+// ── preview job (sprint-5/11, Group B - AC-11-20..31) ─────────────────────────
+//
+// The Cloudflare-safe non-blocking preview: the Source tab's Test and Review &
+// Activate's Run preview each start ONE job kind (`autocount_source_preview`,
+// owner ruling R3) with a `scope` - `sample` runs today's `preview_http`
+// unchanged, `full` runs today's `preview_task` unchanged. The frontend polls
+// `GET /autocount/previews/{jobId}` instead of awaiting the walk. PHASE 1 MOCK
+// (S3) - `autocount-service.mock.ts` is the backend spec until S4 lands the
+// real `autocount_source_preview` job + routes.
+
+/** `sample` = the Source tab's Test (page 1 + lookups, `preview_http`);
+ * `full` = Review & Activate's Run preview (the whole walk + mapping +
+ * Sorento dry run, `preview_task`). ONE job kind, two scopes (D5) - one
+ * progress UI, one cancel path. */
+export type AutocountPreviewJobScope = 'sample' | 'full';
+
+/** Wire status of a preview job (AC-11-22). `done`/`failed`/`cancelled` are
+ * terminal. */
+export type AutocountPreviewJobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+
+/** Rides the SAME progress mechanism as a pull-snapshot build
+ * (`AutocountPullSnapshotProgress`, AC-11-40) - every field absent whenever
+ * it is not known yet, never guessed. */
+export interface AutocountPreviewJobProgress {
+  stage: string | null;
+  pagesDone: number | null;
+  pagesTotal: number | null;
+}
+
+/** The `sample` scope's landed result - the SAME `HttpPreview` shape the
+ * synchronous route used to return, echoing the stamped task when the save
+ * gate applies (AC-11-26). */
+export interface AutocountPreviewJobSampleResult {
+  scope: 'sample';
+  preview: HttpPreview;
+}
+
+/** The `full` scope's landed result - the SAME shape
+ * `POST .../etl-task/preview` used to return. */
+export interface AutocountPreviewJobFullResult {
+  scope: 'full';
+  task: AutocountEtlTask;
+  preview: AutocountPreview;
+}
+
+export type AutocountPreviewJobResult = AutocountPreviewJobSampleResult | AutocountPreviewJobFullResult;
+
+/**
+ * `GET /autocount/previews/{jobId}` (AC-11-22/27). `error` is an
+ * operator-safe failure sentence (AC-11-25); `taskError` is a `full`-scope
+ * Sorento anchor error (Appendix A6) - a TASK-level configuration problem,
+ * rendered as its own banner rather than a generic failure, exactly as the
+ * synchronous route's 422 used to be read.
+ */
+export interface AutocountPreviewJob {
+  id: string;
+  scope: AutocountPreviewJobScope;
+  status: AutocountPreviewJobStatus;
+  progress: AutocountPreviewJobProgress | null;
+  result: AutocountPreviewJobResult | null;
+  error: string | null;
+  taskError: AutocountEtlTaskError | null;
+  /** A `sample`-scope 422 named a field (`connectionId`/`path`) - carried so
+   * the Source tab can still show it inline, exactly as the synchronous
+   * route's 422 used to. Empty/absent for every other failure. */
+  fieldErrors?: Record<string, string>;
+  createdAt: string | null; // ISO Z
+}
+
+/** `POST /autocount/http/preview` once it becomes a job start (AC-11-21/22) -
+ * the Source tab's `sample` scope. */
+export interface AutocountPreviewJobSampleInput {
+  scope: 'sample';
+  companyId: string;
+  entityType: string;
+  connectionId: string;
+  path: string;
+  distinctOf?: string[];
+  lookups?: AutocountLookupSpec[];
+  combine?: AutocountCombineConfig | null;
+}
+
+/** `POST .../etl-task/preview` once it becomes a job start (AC-11-21/22) -
+ * Review & Activate's `full` scope. */
+export interface AutocountPreviewJobFullInput {
+  scope: 'full';
+  companyId: string;
+  entityType: string;
+}
+
+export type AutocountPreviewJobStartInput = AutocountPreviewJobSampleInput | AutocountPreviewJobFullInput;
+
+/** 202 response of either POST (AC-11-22). */
+export interface AutocountPreviewJobStart {
+  jobId: string;
+  status: AutocountPreviewJobStatus;
 }
 
 /** `POST .../etl-task/run` - the manual run just enqueued (eager inline in dev). */

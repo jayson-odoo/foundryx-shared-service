@@ -1,20 +1,24 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/lib/api-client';
-import type { AutocountEtlTask } from '@/types/autocount';
+import type { AutocountEtlTask, AutocountPreviewJob } from '@/types/autocount';
 
-const previewEtlTask = vi.fn();
 const activateEtlTask = vi.fn();
 const pauseEtlTask = vi.fn();
 const resumeEtlTask = vi.fn();
 const runEtlTaskNow = vi.fn();
+const startPreviewJob = vi.fn();
+const getPreviewJob = vi.fn();
+const cancelPreviewJob = vi.fn();
 vi.mock('@/services/autocount-service', () => ({
   autocountService: {
-    previewEtlTask: (...a: unknown[]) => previewEtlTask(...a),
     activateEtlTask: (...a: unknown[]) => activateEtlTask(...a),
     pauseEtlTask: (...a: unknown[]) => pauseEtlTask(...a),
     resumeEtlTask: (...a: unknown[]) => resumeEtlTask(...a),
     runEtlTaskNow: (...a: unknown[]) => runEtlTaskNow(...a),
+    startPreviewJob: (...a: unknown[]) => startPreviewJob(...a),
+    getPreviewJob: (...a: unknown[]) => getPreviewJob(...a),
+    cancelPreviewJob: (...a: unknown[]) => cancelPreviewJob(...a),
   },
 }));
 
@@ -54,29 +58,95 @@ function task(over: Partial<AutocountEtlTask> = {}): AutocountEtlTask {
 }
 
 beforeEach(() => {
-  for (const fn of [previewEtlTask, activateEtlTask, pauseEtlTask, resumeEtlTask, runEtlTaskNow]) {
+  for (const fn of [
+    activateEtlTask,
+    pauseEtlTask,
+    resumeEtlTask,
+    runEtlTaskNow,
+    startPreviewJob,
+    getPreviewJob,
+    cancelPreviewJob,
+  ]) {
     fn.mockReset();
   }
 });
 
-describe('useEtlTaskPreview (AC-22-18)', () => {
+function previewJob(over: Partial<AutocountPreviewJob> = {}): AutocountPreviewJob {
+  return {
+    id: 'preview-job-1',
+    scope: 'full',
+    status: 'running',
+    progress: null,
+    result: null,
+    error: null,
+    taskError: null,
+    createdAt: null,
+    ...over,
+  };
+}
+
+// sprint-5/11 (AC-11-20..27) - "Run preview" now starts an
+// `autocount_source_preview` job (`full` scope) and polls it, instead of
+// awaiting `preview_task` directly (the Cloudflare-safe rule).
+// `startPreviewJob`/`getPreviewJob` replace `previewEtlTask` as this hook's
+// OWN calls; the synchronous route itself is untouched (proven by
+// `autocount-service.mock.ts`'s job engine).
+describe('useEtlTaskPreview (AC-22-18, AC-11-20..27)', () => {
   it('lands a completed dry run in success and hands the stamped task up', async () => {
     const stamped = task({ lastPreviewAt: '2026-08-30T06:21:00Z' });
-    previewEtlTask.mockResolvedValue({
-      task: stamped,
-      preview: { previewable: true, sink: 'sorento', summary: { total: 1, created: 1, updated: 0, failed: 0, retryable: 0 }, predictions: [] },
-    });
+    startPreviewJob.mockResolvedValue({ jobId: 'preview-job-1', status: 'queued' });
+    getPreviewJob.mockResolvedValue(
+      previewJob({
+        status: 'done',
+        result: {
+          scope: 'full',
+          task: stamped,
+          preview: {
+            previewable: true,
+            sink: 'sorento',
+            summary: { total: 1, created: 1, updated: 0, failed: 0, retryable: 0 },
+            predictions: [],
+          },
+        },
+      }),
+    );
     const onTask = vi.fn();
     const { result } = renderHook(() => useEtlTaskPreview('c1', 'customer', onTask));
     expect(result.current.state.status).toBe('idle');
     await act(() => result.current.run());
+    expect(startPreviewJob).toHaveBeenCalledWith({ scope: 'full', companyId: 'c1', entityType: 'customer' });
     expect(result.current.state.status).toBe('success');
     expect(onTask).toHaveBeenCalledWith(stamped);
   });
 
+  it('exposes the stage and page count while running', async () => {
+    startPreviewJob.mockResolvedValue({ jobId: 'preview-job-2', status: 'queued' });
+    getPreviewJob.mockResolvedValue(
+      previewJob({ id: 'preview-job-2', status: 'running', progress: { stage: 'mapping', pagesDone: 5, pagesTotal: 12 } }),
+    );
+    const { result } = renderHook(() => useEtlTaskPreview('c1', 'customer', vi.fn()));
+    act(() => {
+      void result.current.run();
+    });
+    await waitFor(() =>
+      expect(result.current.state).toMatchObject({
+        status: 'loading',
+        stage: 'mapping',
+        pagesDone: 5,
+        pagesTotal: 12,
+      }),
+    );
+  });
+
   it('renders a Sorento anchor 422 as a TASK error with its code, not a dry-run failure', async () => {
-    previewEtlTask.mockRejectedValue(
-      new ApiError('No company.', 422, null, { code: 'UNKNOWN_COMPANY', message: 'No company "ZZ".' }),
+    startPreviewJob.mockResolvedValue({ jobId: 'preview-job-3', status: 'queued' });
+    getPreviewJob.mockResolvedValue(
+      previewJob({
+        id: 'preview-job-3',
+        status: 'failed',
+        taskError: { code: 'UNKNOWN_COMPANY', message: 'No company "ZZ".' },
+        error: 'No company "ZZ".',
+      }),
     );
     const { result } = renderHook(() => useEtlTaskPreview('c1', 'customer', vi.fn()));
     await act(() => result.current.run());
@@ -86,13 +156,50 @@ describe('useEtlTaskPreview (AC-22-18)', () => {
     });
   });
 
-  it('keeps a 502 as the dry-run error state', async () => {
-    previewEtlTask.mockRejectedValue(new ApiError('Consumer unreachable.', 502));
+  it('keeps a consumer failure as the dry-run error state', async () => {
+    startPreviewJob.mockResolvedValue({ jobId: 'preview-job-4', status: 'queued' });
+    getPreviewJob.mockResolvedValue(
+      previewJob({ id: 'preview-job-4', status: 'failed', error: 'Consumer unreachable.' }),
+    );
     const { result } = renderHook(() => useEtlTaskPreview('c1', 'customer', vi.fn()));
     await act(() => result.current.run());
     expect(result.current.state).toEqual({ status: 'error', message: 'Consumer unreachable.' });
     act(() => result.current.reset());
     expect(result.current.state.status).toBe('idle');
+  });
+
+  it('a rejected start (409 - unconfigured) lands the generic error state', async () => {
+    startPreviewJob.mockRejectedValue(new ApiError('Save a query with key columns before previewing.', 409));
+    const { result } = renderHook(() => useEtlTaskPreview('c1', 'customer', vi.fn()));
+    await act(() => result.current.run());
+    expect(result.current.state).toEqual({
+      status: 'error',
+      message: 'Save a query with key columns before previewing.',
+    });
+  });
+
+  it('cooperative cancel: a cancelled job reverts to idle, never a stale success', async () => {
+    startPreviewJob.mockResolvedValue({ jobId: 'preview-job-5', status: 'queued' });
+    let resolveRunning!: (v: AutocountPreviewJob) => void;
+    getPreviewJob.mockReturnValueOnce(new Promise((r) => (resolveRunning = r)));
+    cancelPreviewJob.mockResolvedValue(previewJob({ id: 'preview-job-5', status: 'running' }));
+    const { result } = renderHook(() => useEtlTaskPreview('c1', 'customer', vi.fn()));
+
+    let runPromise!: Promise<void>;
+    act(() => {
+      runPromise = result.current.run();
+    });
+    await waitFor(() => expect(startPreviewJob).toHaveBeenCalled());
+
+    act(() => result.current.cancel());
+    expect(cancelPreviewJob).toHaveBeenCalledWith('preview-job-5');
+
+    getPreviewJob.mockResolvedValue(previewJob({ id: 'preview-job-5', status: 'cancelled' }));
+    await act(async () => {
+      resolveRunning(previewJob({ id: 'preview-job-5', status: 'running' }));
+      await runPromise;
+    });
+    expect(result.current.state).toEqual({ status: 'idle' });
   });
 });
 
