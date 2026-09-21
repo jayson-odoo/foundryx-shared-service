@@ -157,10 +157,18 @@ export function activatePrerequisites(input: {
  * editing the mapping - blocking that button would trap the operator with
  * no way out. `retryable` rows never trip this (a dependency-order
  * carry-over, AC-22-23, resolves itself on a later run).
+ *
+ * Prod hotfix 2026-09-21: a PULL task never delivers these rows itself - the
+ * consumer pulls the snapshot and lists its own dry-run failures on its own
+ * review page (plan sprint-5/10 R6), so only PUSH mode blocks Activate here
+ * (undefined reads as push, matching the server default).
  */
 export function previewFailedBlocksActivation(
-  task: Pick<AutocountEtlTask, 'lastPreviewFailedCount'>,
+  task: Pick<AutocountEtlTask, 'lastPreviewFailedCount' | 'deliveryMode'>,
 ): boolean {
+  if (task.deliveryMode === 'pull') {
+    return false;
+  }
   return Boolean(task.lastPreviewFailedCount);
 }
 

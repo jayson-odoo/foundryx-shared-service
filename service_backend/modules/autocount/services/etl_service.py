@@ -2665,7 +2665,14 @@ class EtlService:
         # Sorento rejects outright). ``retryable`` stays allowed on purpose:
         # a dependency-order carry-over (AC-22-23) resolves itself on a later
         # run and must not block activation.
-        if config.last_preview_failed_count:
+        # Prod hotfix 2026-09-21: a PULL task never delivers these rows
+        # itself - the consumer (Sorento) pulls the snapshot and lists its
+        # OWN dry-run failures on its review page (plan sprint-5/10 R6,
+        # "products never block Confirm"), so only PUSH blocks activation.
+        # Fail-closed on the mode check (review follow-up): any FUTURE
+        # delivery mode besides ``pull`` still gets the gate by default,
+        # rather than a new mode silently inheriting pull's leniency.
+        if config.delivery_mode != DELIVERY_MODE_PULL and config.last_preview_failed_count:
             raise EtlStateError(
                 f"The last preview reported {config.last_preview_failed_count} "
                 f"failed row(s) - re-run preview after fixing the mapping "

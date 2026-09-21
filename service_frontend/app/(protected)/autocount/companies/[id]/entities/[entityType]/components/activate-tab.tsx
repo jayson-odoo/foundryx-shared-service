@@ -313,6 +313,26 @@ export function ActivateTab({
         </Alert>
       )}
 
+      {/* Prod hotfix 2026-09-21 (plan sprint-5/10 R6): a PULL task's dry-run
+          failures are the CONSUMER's per-record failures, never a Foundryx
+          delivery failure - this warns without blocking Activate. */}
+      {isPull && Boolean(task.lastPreviewFailedCount) && (
+        <Alert
+          variant="warning"
+          appearance="light"
+          data-testid="etl-preview-failed-pull-warning"
+        >
+          <AlertIcon>
+            <TriangleAlert />
+          </AlertIcon>
+          <AlertTitle>
+            {task.lastPreviewFailedCount} row{task.lastPreviewFailedCount === 1 ? '' : 's'} would
+            fail at the consumer. They are listed on the consumer&apos;s review page on every
+            pull; the rest are included in the snapshot.
+          </AlertTitle>
+        </Alert>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         <Button
           type="button"
