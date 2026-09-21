@@ -166,8 +166,16 @@ def test_preview_http_422s_a_runtime_blank_measure_source_instead_of_500ing(
     finally:
         app.dependency_overrides.pop(get_http_transport, None)
 
-    assert response.status_code == 422, response.text
-    field_errors = response.json()["detail"]["fieldErrors"]
+    # sprint-5/11 (AC-11-21/22/25) - a runtime measure error is discovered
+    # only AFTER the network fetch (over the sampled rows), so it is now a
+    # FAILED job (never a synchronous 422 - the walk itself moved
+    # off-request), carrying the SAME per-field message on `fieldErrors`.
+    assert response.status_code == 202, response.text
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=client_headers)
+    assert poll.status_code == 200, poll.text
+    body = poll.json()
+    assert body["status"] == "failed", body
+    field_errors = body["fieldErrors"]
     assert "combine.measures[0].source" in field_errors, field_errors
 
 

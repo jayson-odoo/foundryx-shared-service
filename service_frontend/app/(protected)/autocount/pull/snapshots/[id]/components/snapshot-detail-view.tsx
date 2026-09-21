@@ -12,6 +12,7 @@ import { PageHeader } from '@/components/platform/page-header';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { OverflowPills } from '@/components/platform/overflow-pills';
 import { StatusBadge } from '@/components/platform/status-badge';
+import { JobProgress } from '@/components/platform/autocount/job-progress';
 import { SqlPreviewGrid } from '@/components/platform/autocount/sql-preview-grid';
 import { usePullSnapshotDetail, usePullSnapshotRows } from '@/hooks/use-autocount-pull';
 import { useDatetime } from '@/hooks/use-datetime';
@@ -101,14 +102,22 @@ export function SnapshotDetailView({ id }: SnapshotDetailViewProps) {
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
               {snapshot.status === 'building' && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground" data-testid="snapshot-building">
-                  <LoaderCircleIcon className="size-4 animate-spin" />
-                  Building…
-                  {snapshot.progress && (
-                    <span>
-                      {snapshot.progress.stage} · page {snapshot.progress.pagesDone} of{' '}
-                      {snapshot.progress.pagesTotal}
-                    </span>
+                <div data-testid="snapshot-building">
+                  {snapshot.progress ? (
+                    // AC-11-43 - the SAME running-state component the preview
+                    // job uses (`JobProgress`, extended with no `onCancel` -
+                    // a build's own Cancel is BL-SS-248, not this plan).
+                    <JobProgress
+                      status="running"
+                      stage={snapshot.progress.stage}
+                      pagesDone={snapshot.progress.pagesDone}
+                      pagesTotal={snapshot.progress.pagesTotal}
+                    />
+                  ) : (
+                    <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
+                      <LoaderCircleIcon className="size-4 animate-spin" />
+                      Building…
+                    </div>
                   )}
                 </div>
               )}

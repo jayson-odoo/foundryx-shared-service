@@ -635,6 +635,11 @@ class HttpConnectionItem(ApiModel):
 class HttpPreviewRequest(ApiModel):
     model_config = ConfigDict(populate_by_name=True)
 
+    # sprint-5/11 (AC-11-21) - the FE's preview-job start always sends this
+    # (`scope: 'sample'`); accepted and ignored server-side (the ROUTE
+    # itself already fixes the scope) so the wire contract's redundant echo
+    # never 422s on an unrecognised field.
+    scope: Optional[str] = None
     connectionId: str
     path: str = ""
     distinctOf: Optional[List[str]] = None
@@ -861,13 +866,17 @@ class EtlTaskResponse(ApiModel):
     # alongside `resultColumns` above (the pre-combine raw/lookup set,
     # unchanged) - never a replacement for it.
     combineOutputColumns: List[str] = []
+    # sprint-5/11 (AC-11-23/27) - the id of this task's IN-FLIGHT preview
+    # job, if any (`ac_entity_config.preview_job_id`). `None`/absent = no
+    # preview in flight; lets a remounted editor re-attach.
+    previewJobId: Optional[str] = None
 
 
 class HttpPreviewResponse(ApiModel):
     """``POST /autocount/http/preview`` - one page-1 sample (AC-08-14).
 
     ``task`` (sprint-5/08 review round 7) echoes the SAME task shape
-    ``EtlPreviewResponse.task``/every lifecycle route already returns -
+    ``EtlTaskResponse``/every lifecycle route already returns -
     non-null only when the request named both ``companyId``/``entityType``
     AND the preview succeeded (the service's own stamping gate). The Source
     tab's Test button reads it to `apply()` the freshly-stamped
@@ -918,13 +927,46 @@ class HttpPreviewResponse(ApiModel):
     rawColumns: List[str] = []
 
 
-class EtlPreviewResponse(ApiModel):
-    """``POST .../etl-task/preview`` - the initial-load dry run. ``preview`` is
-    the SAME shape the batch review renders; ``task`` is the task after it (its
-    ``lastPreviewAt`` stamped when the dry run completed)."""
+class PreviewJobStartOut(ApiModel):
+    """202 body of either preview-job start route (AC-11-22) -
+    ``types/autocount.ts``'s ``AutocountPreviewJobStart``."""
 
-    task: EtlTaskResponse
-    preview: Dict[str, Any]
+    jobId: str
+    status: str
+
+
+class PreviewJobProgressOut(ApiModel):
+    """``AutocountPreviewJobProgress`` (AC-11-27/40) - every field ``None``
+    whenever it is not known yet, never guessed."""
+
+    stage: Optional[str] = None
+    pagesDone: Optional[int] = None
+    pagesTotal: Optional[int] = None
+
+
+class PreviewJobTaskErrorOut(ApiModel):
+    """``AutocountEtlTaskError`` (Appendix A6) - a ``full``-scope Sorento
+    anchor failure, rendered as its own banner rather than a generic one."""
+
+    code: str
+    message: str
+
+
+class PreviewJobOut(ApiModel):
+    """``GET /autocount/previews/{jobId}`` / the cancel route's own body
+    (AC-11-22/24/27) - ``types/autocount.ts``'s ``AutocountPreviewJob``.
+    ``result`` is the landed ``{scope, preview}``/``{scope, task, preview}``
+    shape (``AutocountPreviewJobResult``) ONLY once ``status == 'done'``."""
+
+    id: str
+    scope: str
+    status: str
+    progress: Optional[PreviewJobProgressOut] = None
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    taskError: Optional[PreviewJobTaskErrorOut] = None
+    fieldErrors: Optional[Dict[str, str]] = None
+    createdAt: Optional[datetime] = None
 
 
 class EtlRunStartResponse(ApiModel):
@@ -998,6 +1040,18 @@ class PullSnapshotOut(ApiModel):
     fractionalPairs: Optional[int] = None
     excludedNonzeroCount: Optional[int] = None
     negativePairList: Optional[List[Dict[str, Any]]] = None
+    # sprint-5/11 S5 (AC-11-42, closes BL-SS-236) - present ONLY while
+    # `status == 'building'` AND a beat has landed with a known `pagesTotal`
+    # (`services.pull_service.PullService.snapshot_progress`); every route
+    # returning this model sets `response_model_exclude_unset=True` (review
+    # round 2, item 2 - NOT `exclude_none`, which would also drop the
+    # always-present `extractedAt`/`expiresAt`/`contentHash`/`sourcePageSize`
+    # nulls `types/autocount.ts` declares required) so an unknown progress
+    # is OMITTED from the wire, never a bare `null`. `pagesDone`/
+    # `pagesTotal` are STAGE-RELATIVE, never monotonic across the whole
+    # build - pages during `source`/`lookup:<alias>`, rows during `storing`
+    # (mirrors Appendix A's own note, sprint-5/10-autocount-pull-review.md).
+    progress: Optional[PreviewJobProgressOut] = None
 
 
 class PullSnapshotListResponse(ApiModel):

@@ -216,6 +216,79 @@ class JobService:
         with bind.begin() as conn:
             return conn.execute(stmt).rowcount > 0
 
+    def beat_progress(
+        self,
+        job_id: str,
+        *,
+        done: int,
+        total: Optional[int],
+        stage: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """sprint-5/11 S5 (AC-11-40) - the ONE progress-write helper both the
+        pull-snapshot build (``sync.py``'s ``_beat_and_check``) and the
+        preview job's own per-page checkpoint share: ``heartbeat_at``,
+        ``progress_done`` and (when the stage actually CHANGED)
+        ``cursor_json['stage']`` are written in exactly ONE UPDATE against
+        ``background_jobs`` - mirrors ``heartbeat()``'s own shape (RUNNING-
+        scoped, Postgres SKIP LOCKED, a connection off the session's own
+        bind rather than the run's session). A read (the ``cursor_json``
+        SELECT just below, needed to preserve any OTHER key a caller already
+        stored there) is a SEPARATE statement on the SAME connection/
+        transaction, not a SECOND UPDATE - that is the actual contract this
+        helper holds (never "zero extra statements"; the plan's own "one
+        UPDATE" pin is about the WRITE, not every read a caller might need
+        first). ``progress_total`` lands in the SAME statement only when
+        ``total`` is given - ``None`` leaves whatever total a previous beat
+        already established untouched (a bare-array endpoint's page count,
+        or a later stage with no page count of its own, must never zero it
+        out).
+
+        sprint-5/11 review round 2 (item 6) - the ``cursor_json`` SELECT now
+        runs on the SAME connection/transaction as the UPDATE (``with bind.
+        begin() as conn``), not a second one off ``self.db``; and the
+        rewrite itself is SKIPPED when the stage has not actually changed
+        (a multi-page walk beats several times per stage - only the FIRST
+        beat of a given stage needs to touch ``cursor_json`` at all).
+        Returns True when a RUNNING row was stamped, the SAME best-effort
+        contract ``heartbeat()`` offers.
+
+        sprint-5/11 S6 review round 1 (nit) - the ``cursor_json`` SELECT
+        above reads the COMMITTED value on this UPDATE's own bind-level
+        connection (``bind.begin()``), never ``self.db`` - so it can only
+        ever see a stage a PRIOR beat already committed, not an uncommitted
+        ``cursor_json`` write the calling run's own session may be holding
+        open right now. No handler mixes an explicit ``set_cursor`` call
+        with ``beat_progress`` on the same run for exactly this reason: the
+        two would race on which write actually lands in ``cursor_json``,
+        and this method's own merge (read-then-write on ONLY the ``stage``
+        key) would silently clobber whatever else ``set_cursor`` had just
+        written but not yet committed.
+        """
+        table = BackgroundJob.__table__
+        bind = self.db.get_bind()
+        target = select(table.c.id).where(
+            table.c.id == job_id, table.c.status == JOB_RUNNING
+        )
+        if bind.dialect.name == "postgresql":
+            target = target.with_for_update(skip_locked=True)
+        with bind.begin() as conn:
+            current_cursor = conn.execute(
+                select(table.c.cursor_json).where(table.c.id == job_id)
+            ).scalar()
+            cursor = dict(current_cursor) if isinstance(current_cursor, dict) else {}
+            values: dict = {
+                "heartbeat_at": now or datetime.now(timezone.utc),
+                "progress_done": done,
+            }
+            if total is not None:
+                values["progress_total"] = total
+            if cursor.get("stage") != stage:
+                cursor["stage"] = stage
+                values["cursor_json"] = cursor
+            stmt = update(table).where(table.c.id == target.scalar_subquery()).values(**values)
+            return conn.execute(stmt).rowcount > 0
+
     def fresh_status(self, job_id: str) -> Optional[str]:
         """The job's status re-read FRESH from the DB (a scalar query, so a
         stale in-memory ``job`` object is bypassed) - for the heartbeat

@@ -295,8 +295,14 @@ def test_preview_counts_a_row_that_misses_the_lookup(client, headers, db):
         )
     finally:
         app.dependency_overrides.pop(get_http_transport, None)
-    assert response.status_code == 200, response.text
-    body = response.json()
+    # sprint-5/11 (AC-11-21/22) - the route is now a 202 job start; poll
+    # for the landed `sample` result.
+    assert response.status_code == 202, response.text
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=headers)
+    assert poll.status_code == 200, poll.text
+    poll_body = poll.json()
+    assert poll_body["status"] == "done", poll_body
+    body = poll_body["result"]["preview"]
     lookup_counts = body["lookups"][0]
     assert lookup_counts["matched"] == 1, lookup_counts
     assert lookup_counts["missed"] == 1, lookup_counts

@@ -131,11 +131,16 @@ def test_provider_fields_have_no_appsecret_and_no_company(client):
     knobs close the list (``pageSize``/``requestTimeoutSeconds``, both
     ``showWhen`` auth = none) - pinned in full by
     ``tests/test_s10_s6_connection_sizing.py``.
+
+    sprint-5/11 S6 (AC-11-01): ``maxConcurrentPages`` (the connection's own
+    opt-in bounded-concurrency ceiling, also ``showWhen`` auth = none) closes
+    the list one field further - pinned in full by
+    ``tests/test_s11_s6_concurrency_config.py``.
     """
     keys = [f["key"] for f in AutoCountProvider().fields()]
     assert keys == [
         "auth", "baseUrl", "appId", "userId", "password",
-        "pageSize", "requestTimeoutSeconds",
+        "pageSize", "requestTimeoutSeconds", "maxConcurrentPages",
     ]
 
     fields = {f["key"]: f for f in AutoCountProvider().fields()}

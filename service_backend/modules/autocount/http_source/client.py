@@ -15,7 +15,8 @@ from __future__ import annotations
 import logging
 import time
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Deque, Dict, List, Optional
 
 import httpx
 
@@ -50,26 +51,57 @@ DEFAULT_PAGE_SIZE = 1000
 # field's own save-time range (`provider.py`'s `PAGE_SIZE_FIELD_MIN`).
 MIN_PAGE_SIZE = 50
 
+# sprint-5/11 (AC-11-29) - the Cloudflare-safe ceiling on the ONE preview
+# route that stays SYNCHRONOUS (``POST /autocount/http/preview-columns`` -
+# the Lookups editor's inline probe, one request, needs an immediate
+# answer). A connection's own ``requestTimeoutSeconds`` can be raised as
+# high as 100s (AC-10-85), which is exactly the shape of request Cloudflare
+# itself cuts before the connection's own timeout ever fires; every other
+# preview surface (the Source tab Test, Review & Activate's Run preview) is
+# a background job instead (AC-11-21/22) and is unaffected by this ceiling.
+PREVIEW_REQUEST_TIMEOUT_CEILING_SECONDS = 45.0
 
-def connection_sizing(config: Optional[Dict[str, Any]]) -> Tuple[int, float]:
-    """AC-10-85 / sprint-5/10 confirm-3 S1 - the ONE reader of an
-    ``autocount`` open-REST connection's own ``pageSize``/
-    ``requestTimeoutSeconds`` (wire-shaped strings, e.g. ``"250"``),
-    returning ``(page_size, timeout_seconds)``. Shared by every caller that
-    used to read these independently (``http_source.source.HttpApiSource.
-    __init__`` for a real run; ``http_source.preview.run_http_preview`` via
-    ``services.etl_service.EtlService.preview_http``/``preview_http_columns``
-    for a Test-button sample) so a preview and a real run against the SAME
-    connection always agree on both knobs - previously the preview silently
-    ignored the connection's ``requestTimeoutSeconds`` entirely and always
-    built its client at the bare module default.
+# sprint-5/11 S6 (AC-11-01) - the connection's own opt-in bounded-concurrency
+# ceiling; 1 (serial, today's ONLY behaviour) is the default AND the floor a
+# legacy/hand-edited row falls back to - never trusted past 8.
+MAX_CONCURRENT_PAGES_FIELD_DEFAULT = 1
+MAX_CONCURRENT_PAGES_FIELD_MIN = 1
+MAX_CONCURRENT_PAGES_FIELD_MAX = 8
+
+
+@dataclass(frozen=True)
+class ConnectionSizing:
+    """AC-11-01 - ``connection_sizing``'s own return shape (an object, never
+    a bare tuple, so a new field never silently shifts every existing
+    positional-unpack call site)."""
+
+    page_size: int
+    request_timeout_seconds: float
+    max_concurrent_pages: int
+
+
+def connection_sizing(config: Optional[Dict[str, Any]]) -> ConnectionSizing:
+    """AC-10-85 / sprint-5/10 confirm-3 S1 / sprint-5/11 S6 (AC-11-01) - the
+    ONE reader of an ``autocount`` open-REST connection's own ``pageSize``/
+    ``requestTimeoutSeconds``/``maxConcurrentPages`` (wire-shaped strings,
+    e.g. ``"250"``). Shared by every caller that used to read these
+    independently (``http_source.source.HttpApiSource.__init__`` for a real
+    run; ``http_source.preview.run_http_preview`` via ``services.etl_service.
+    EtlService.preview_http``/``preview_http_columns`` for a Test-button
+    sample) so a preview and a real run against the SAME connection always
+    agree on every knob - previously the preview silently ignored the
+    connection's ``requestTimeoutSeconds`` entirely and always built its
+    client at the bare module default.
 
     ``page_size`` is CLAMPED to ``MIN_PAGE_SIZE..DEFAULT_PAGE_SIZE``;
-    ``timeout_seconds`` falls back to ``DEFAULT_TIMEOUT_SECONDS`` for a
-    blank/missing/unparsable/non-positive value - a stored row is never
-    trusted outright (a legacy row written before either field existed, or
-    a 0/negative value hand-edited into the table, must not ask the
-    wrapper for nothing or fail every request instantly)."""
+    ``request_timeout_seconds`` falls back to ``DEFAULT_TIMEOUT_SECONDS`` for
+    a blank/missing/unparsable/non-positive value; ``max_concurrent_pages``
+    falls back to ``MAX_CONCURRENT_PAGES_FIELD_DEFAULT`` (1) for a blank/
+    missing/unparsable/out-of-range value - a stored row is never trusted
+    outright (a legacy row written before any of these fields existed, or a
+    hand-edited value in the table, must not ask the wrapper for nothing,
+    fail every request instantly, or run more concurrency than the save-time
+    gate would ever have allowed)."""
     cfg = config or {}
 
     page_raw = str(cfg.get("pageSize") or "").strip()
@@ -91,7 +123,22 @@ def connection_sizing(config: Optional[Dict[str, Any]]) -> Tuple[int, float]:
         if timeout_value > 0:
             timeout_seconds = timeout_value
 
-    return page_size, timeout_seconds
+    concurrency_raw = str(cfg.get("maxConcurrentPages") or "").strip()
+    max_concurrent_pages = MAX_CONCURRENT_PAGES_FIELD_DEFAULT
+    if concurrency_raw:
+        try:
+            concurrency_value = int(concurrency_raw)
+        except (TypeError, ValueError):
+            concurrency_value = MAX_CONCURRENT_PAGES_FIELD_DEFAULT
+        if MAX_CONCURRENT_PAGES_FIELD_MIN <= concurrency_value <= MAX_CONCURRENT_PAGES_FIELD_MAX:
+            max_concurrent_pages = concurrency_value
+
+    return ConnectionSizing(
+        page_size=page_size,
+        request_timeout_seconds=timeout_seconds,
+        max_concurrent_pages=max_concurrent_pages,
+    )
+
 
 # AC-10-08 - an explicit, honest User-Agent on every open-REST request.
 # Cloudflare 403s the default python-urllib UA, and the default httpx UA
@@ -137,9 +184,37 @@ class HttpApiClient:
         self._transport = transport
         self._owns_transport = transport is None
         self._calls: Deque[CallRecord] = deque(maxlen=MAX_BUFFERED_CALLS)
+        # sprint-5/11 S6 follow-ups - see ``close()``/``_client`` below.
+        self._closed = False
 
     @property
     def _client(self) -> httpx.Client:
+        # sprint-5/11 S6 review round 1 (nit) - this lazy init is NOT
+        # thread-safe on its own (a bare check-then-set race), but every
+        # caller (``HttpApiSource``) always fetches page 1 SERIALLY, in the
+        # calling thread, before any ``ThreadPoolExecutor`` worker is ever
+        # started (``_walk_path``), so ``self._transport`` is already set by
+        # the time concurrent workers first read this property while the
+        # run is still in progress - a genuine check-then-set race on the
+        # CREATE path is unreachable. A caller that skipped the serial
+        # page-1 fetch (or passed ``transport=`` explicitly, the test house
+        # convention) would need an eager ``httpx.Client`` init here
+        # instead.
+        #
+        # sprint-5/11 S6 follow-ups - the race this comment used to claim
+        # unreachable is real on the CLOSE path instead: ``_run_concurrent_
+        # batch``'s own ``shutdown(wait=False, cancel_futures=True)`` (SF-3)
+        # can leave an abandoned worker thread still mid-``get()`` after
+        # ``HttpApiSource.close()`` has already run (``sync.py`` closes the
+        # source the moment the run's own outcome - success OR failure - is
+        # decided, without waiting for those stragglers). Without this
+        # guard, that worker's still-pending ``self._client`` read would
+        # silently build a BRAND NEW ``httpx.Client`` (the run's own is
+        # already closed) and fire a real outbound request against a
+        # connection whose run is over. ``_closed`` makes that fail loudly
+        # instead of leaking a live transport.
+        if self._closed:
+            raise HttpTransportError("This HTTP client has been closed.")
         if self._transport is None:
             # S5 (sprint-5/08 review round 1) - never silently follow a
             # redirect off the configured base URL (SSRF-adjacent).
@@ -149,6 +224,11 @@ class HttpApiClient:
         return self._transport
 
     def close(self) -> None:
+        # sprint-5/11 S6 follow-ups - set FIRST, unconditionally: a second
+        # ``close()`` call (or one racing an abandoned worker's own
+        # ``_client`` read) must never resurrect a transport this method
+        # already decided was done.
+        self._closed = True
         if self._transport is not None:
             self._transport.close()
             self._transport = None

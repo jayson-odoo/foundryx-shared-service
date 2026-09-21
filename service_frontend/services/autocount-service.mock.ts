@@ -30,6 +30,8 @@ import {
   RECONCILE_TIME_RE,
   incrementalFloorMinutes,
   isDocumentEntity,
+  readFieldErrors,
+  readTaskError,
 } from '@/lib/autocount-etl';
 import type {
   AutocountApiConnection,
@@ -46,6 +48,7 @@ import type {
   AutocountEtlRunStart,
   AutocountEtlSourceConfig,
   AutocountEtlTask,
+  AutocountEtlTaskError,
   AutocountEtlTaskUpdate,
   AutocountPreview,
   AutocountFormulaTestResult,
@@ -54,6 +57,11 @@ import type {
   AutocountMappingUpdate,
   AutocountMappingView,
   AutocountMappingWriteRow,
+  AutocountPreviewJob,
+  AutocountPreviewJobResult,
+  AutocountPreviewJobScope,
+  AutocountPreviewJobStart,
+  AutocountPreviewJobStartInput,
   AutocountPreviewResult,
   AutocountPullApiKey,
   AutocountPullApiKeyCreateInput,
@@ -578,6 +586,9 @@ interface EtlTaskOverlay {
   lastRunAt: string | null;
   lastRunError: string | null;
   lastRunErrorCode: string | null;
+  /** sprint-5/11 (AC-11-23/27) - the id of this task's in-flight preview
+   * job, if any. Mirrors `ac_entity_config.preview_job_id`. */
+  previewJobId: string | null;
 }
 
 const etlOverlays = new Map<string, EtlTaskOverlay>();
@@ -642,6 +653,7 @@ function overlayFor(companyId: string, entityType: string): EtlTaskOverlay {
     lastRunAt: null,
     lastRunError: null,
     lastRunErrorCode: null,
+    previewJobId: null,
   };
   etlOverlays.set(key, fresh);
   return fresh;
@@ -1844,6 +1856,250 @@ function pullKeyOf(id: string): AutocountPullApiKey {
 
 let pullKeySeq = 0;
 
+// ── preview job (sprint-5/11, Group B) - the Vitest fixture engine ──────────
+//
+// `mockAutocountService`'s own methods resolve against THIS file's fixtures
+// (deterministic, session-local), wrapped in the queued -> running (staged
+// progress) -> done/failed/cancelled shape - one job kind, one progress/
+// claim/cancel mechanism (D5). The real backend (S4) is what
+// `autocountService` actually binds to; this engine only serves the Vitest
+// suite's own mock-mode tests.
+
+interface PreviewJobOutcome {
+  result?: AutocountPreviewJobResult;
+  error?: string;
+  taskError?: AutocountEtlTaskError | null;
+  fieldErrors?: Record<string, string>;
+}
+
+interface PreviewJobStore {
+  jobs: Map<string, AutocountPreviewJob>;
+  cancelled: Set<string>;
+  /** One in-flight job id per `${companyId}:${entityType}` (AC-11-23). */
+  claims: Map<string, string>;
+  seq: number;
+}
+
+function newPreviewJobStore(): PreviewJobStore {
+  return { jobs: new Map(), cancelled: new Set(), claims: new Map(), seq: 0 };
+}
+
+function previewJobTaskKey(input: AutocountPreviewJobStartInput): string {
+  return `${input.companyId}:${input.entityType}`;
+}
+
+/** The ordered stage plan (AC-11-27's stage vocabulary). A `sample` job
+ * mirrors its own lookups/combine; a `full` job walks the fixed dry-run
+ * pipeline. */
+function previewJobStages(input: AutocountPreviewJobStartInput): string[] {
+  if (input.scope === 'full') return ['source', 'mapping', 'dry_run', 'storing'];
+  const stages = ['source'];
+  for (const l of input.scope === 'sample' ? (input.lookups ?? []) : []) {
+    stages.push(`lookup:${l.as || l.path}`);
+  }
+  if (input.scope === 'sample' && input.combine) stages.push('combine');
+  return stages;
+}
+
+/** A page count an operator can read as real (never guessed past what the
+ * scope's own walk would report) - `sample` is one page, `full` mirrors the
+ * plan's own SRT baseline (12 pages). */
+function previewJobPagesTotal(input: AutocountPreviewJobStartInput): number {
+  return input.scope === 'full' ? 12 : 1;
+}
+
+/** One tick's latency - short and deterministic (no fake timers needed) so a
+ * Vitest suite settles in well under a second, matching this file's other
+ * `pause()` conventions. */
+function previewJobTick(): Promise<void> {
+  return pause(60);
+}
+
+async function runPreviewJob(
+  store: PreviewJobStore,
+  jobId: string,
+  input: AutocountPreviewJobStartInput,
+  resolve: (input: AutocountPreviewJobStartInput) => Promise<PreviewJobOutcome>,
+  onClaimChange?: (jobId: string | null) => void,
+): Promise<void> {
+  const isCancelled = () => store.cancelled.has(jobId);
+  const setJob = (patch: Partial<AutocountPreviewJob>) => {
+    const current = store.jobs.get(jobId);
+    if (!current) return;
+    store.jobs.set(jobId, { ...current, ...patch });
+  };
+  const release = () => {
+    const tKey = previewJobTaskKey(input);
+    if (store.claims.get(tKey) === jobId) {
+      store.claims.delete(tKey);
+      onClaimChange?.(null);
+    }
+  };
+  const stages = previewJobStages(input);
+  const pagesTotal = previewJobPagesTotal(input);
+
+  await previewJobTick();
+  if (isCancelled()) {
+    setJob({ status: 'cancelled' });
+    release();
+    return;
+  }
+  setJob({ status: 'running', progress: { stage: stages[0], pagesDone: 0, pagesTotal } });
+
+  for (let i = 1; i < stages.length; i += 1) {
+    await previewJobTick();
+    if (isCancelled()) {
+      setJob({ status: 'cancelled' });
+      release();
+      return;
+    }
+    setJob({ progress: { stage: stages[i], pagesDone: i, pagesTotal } });
+  }
+
+  const outcome = await resolve(input);
+  if (isCancelled()) {
+    setJob({ status: 'cancelled' });
+    release();
+    return;
+  }
+  if (outcome.result) {
+    setJob({
+      status: 'done',
+      result: outcome.result,
+      progress: { stage: 'storing', pagesDone: pagesTotal, pagesTotal },
+    });
+  } else if (outcome.taskError) {
+    setJob({ status: 'failed', taskError: outcome.taskError, error: outcome.taskError.message });
+  } else {
+    setJob({
+      status: 'failed',
+      error: outcome.error ?? 'The preview could not be completed.',
+      fieldErrors: outcome.fieldErrors,
+    });
+  }
+  release();
+}
+
+function startPreviewJobIn(
+  store: PreviewJobStore,
+  input: AutocountPreviewJobStartInput,
+  resolve: (input: AutocountPreviewJobStartInput) => Promise<PreviewJobOutcome>,
+  onClaimChange?: (jobId: string | null) => void,
+): Promise<AutocountPreviewJobStart> {
+  const tKey = previewJobTaskKey(input);
+  const existingId = store.claims.get(tKey);
+  if (existingId) {
+    const existing = store.jobs.get(existingId);
+    // AC-11-23 - re-attach: two concurrent starts for the SAME task share the
+    // winner's job id rather than racing two walks.
+    if (existing && (existing.status === 'queued' || existing.status === 'running')) {
+      return Promise.resolve({ jobId: existing.id, status: existing.status });
+    }
+    store.claims.delete(tKey);
+  }
+  store.seq += 1;
+  const jobId = `preview-job-${store.seq}`;
+  const job: AutocountPreviewJob = {
+    id: jobId,
+    scope: input.scope,
+    status: 'queued',
+    progress: null,
+    result: null,
+    error: null,
+    taskError: null,
+    createdAt: new Date().toISOString(),
+  };
+  store.jobs.set(jobId, job);
+  store.claims.set(tKey, jobId);
+  onClaimChange?.(jobId);
+  void runPreviewJob(store, jobId, input, resolve, onClaimChange);
+  return Promise.resolve({ jobId, status: 'queued' });
+}
+
+function getPreviewJobIn(store: PreviewJobStore, jobId: string): Promise<AutocountPreviewJob> {
+  const job = store.jobs.get(jobId);
+  if (!job) return Promise.reject(new ApiError('Preview job not found.', 404));
+  return Promise.resolve({ ...job });
+}
+
+function cancelPreviewJobIn(store: PreviewJobStore, jobId: string): Promise<AutocountPreviewJob> {
+  const job = store.jobs.get(jobId);
+  if (!job) return Promise.reject(new ApiError('Preview job not found.', 404));
+  // AC-11-24 - a cancel against an already-terminal job is a no-op 200
+  // carrying the terminal status, never a 409 the UI has to explain.
+  if (job.status === 'queued' || job.status === 'running') {
+    store.cancelled.add(jobId);
+  }
+  return Promise.resolve({ ...job });
+}
+
+/** Test seam (mirrors `setMockRepushInFlight`) - force the NEXT job STARTED
+ * for this scope to fail, reaching AC-11-25's failure state with no
+ * backend. One-shot: cleared the moment it fires, and by
+ * `resetEtlMockState`. */
+const previewJobForcedFailure = new Set<AutocountPreviewJobScope>();
+export function setMockPreviewJobOutcome(
+  scope: AutocountPreviewJobScope,
+  outcome: 'failed' | null,
+): void {
+  if (outcome === 'failed') previewJobForcedFailure.add(scope);
+  else previewJobForcedFailure.delete(scope);
+}
+
+async function mockPreviewJobResolve(input: AutocountPreviewJobStartInput): Promise<PreviewJobOutcome> {
+  if (previewJobForcedFailure.has(input.scope)) {
+    previewJobForcedFailure.delete(input.scope);
+    return {
+      error:
+        input.scope === 'sample'
+          ? 'Source page 2 of 4 failed after retries (timeout).'
+          : 'The dry run against the consumer failed. Nothing was written - resolve the consumer error first.',
+    };
+  }
+  if (input.scope === 'sample') {
+    try {
+      const preview = await mockAutocountService.previewHttp({
+        connectionId: input.connectionId,
+        path: input.path,
+        distinctOf: input.distinctOf,
+        companyId: input.companyId,
+        entityType: input.entityType,
+        lookups: input.lookups,
+        combine: input.combine,
+      });
+      return { result: { scope: 'sample', preview } };
+    } catch (e) {
+      return {
+        error: e instanceof ApiError ? e.message : 'The preview could not be run.',
+        fieldErrors: e instanceof ApiError ? readFieldErrors(e.detail) : undefined,
+      };
+    }
+  }
+  try {
+    const [detail, task] = await Promise.all([
+      mockAutocountService.getCompany(input.companyId),
+      mockAutocountService.getEtlTask(input.companyId, input.entityType),
+    ]);
+    const preview = await mockPreviewEtlTask(detail.company, task);
+    return { result: { scope: 'full', task: preview.task, preview: preview.preview } };
+  } catch (e) {
+    if (e instanceof ApiError) {
+      const taskError = readTaskError(e.detail);
+      if (taskError) return { taskError };
+      return { error: e.message };
+    }
+    return { error: 'The dry run could not be completed.' };
+  }
+}
+
+const mockPreviewJobStore = newPreviewJobStore();
+
+function mockPreviewJobClaimChange(input: AutocountPreviewJobStartInput) {
+  return (jobId: string | null) => {
+    overlayFor(input.companyId, input.entityType).previewJobId = jobId;
+  };
+}
+
 /** Test seam: forget every S2 session state (the Vitest suite isolates cases). */
 export function resetEtlMockState(): void {
   etlOverlays.clear();
@@ -1881,9 +2137,28 @@ export function resetEtlMockState(): void {
   ];
   pullSnapshots = seedPullSnapshots();
   pullKeySeq = 0;
+  mockPreviewJobStore.jobs.clear();
+  mockPreviewJobStore.cancelled.clear();
+  mockPreviewJobStore.claims.clear();
+  mockPreviewJobStore.seq = 0;
+  previewJobForcedFailure.clear();
 }
 
-export const mockAutocountService: AutocountService = {
+/**
+ * sprint-5/11 review round 2 (item 6) - `previewEtlTask`/`previewHttp` were
+ * removed from `AutocountService`/`realAutocountService` (dead on the real
+ * backend contract since S4's job-based preview surface), but the mock
+ * KEEPS its own internals: `mockPreviewJobResolve` (the Vitest fixture
+ * engine behind `startPreviewJob`/`getPreviewJob`) still resolves against
+ * them, and several mock-focused test files still call them directly. A
+ * mock-only type extension, never leaked onto the shared interface.
+ */
+interface MockOnlyPreviewMethods {
+  previewEtlTask(companyId: string, entityType: string): Promise<AutocountEtlPreviewResult>;
+  previewHttp(input: HttpPreviewInput): Promise<HttpPreview>;
+}
+
+export const mockAutocountService: AutocountService & MockOnlyPreviewMethods = {
   listCompanies(query: AutocountListQuery = {}): Promise<ListResult<AutocountCompany>> {
     const all = allCompanies();
     return Promise.resolve({ data: all, total: all.length, page: query.page ?? 0 });
@@ -2769,6 +3044,25 @@ export const mockAutocountService: AutocountService = {
     };
     pullSnapshots = [building, ...pullSnapshots];
     return { ...building };
+  },
+
+  // ── preview job (sprint-5/11, Group B) - PHASE 1 MOCK is the backend spec ──
+
+  startPreviewJob(input: AutocountPreviewJobStartInput): Promise<AutocountPreviewJobStart> {
+    return startPreviewJobIn(
+      mockPreviewJobStore,
+      input,
+      mockPreviewJobResolve,
+      mockPreviewJobClaimChange(input),
+    );
+  },
+
+  getPreviewJob(jobId: string): Promise<AutocountPreviewJob> {
+    return getPreviewJobIn(mockPreviewJobStore, jobId);
+  },
+
+  cancelPreviewJob(jobId: string): Promise<AutocountPreviewJob> {
+    return cancelPreviewJobIn(mockPreviewJobStore, jobId);
   },
 };
 

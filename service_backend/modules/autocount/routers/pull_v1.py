@@ -338,13 +338,21 @@ def get_snapshot_header_route(
         key_row = resolve_pull_key(request, db)
         ctx.key_row = key_row
 
-        snapshot = PullGatewayService(db).get_snapshot_for_key(key_row, snapshot_id)
+        service = PullGatewayService(db)
+        snapshot = service.get_snapshot_for_key(key_row, snapshot_id)
         ctx.company_id = snapshot.company_id
         ctx.entity_type = snapshot.entity_type
         ctx.snapshot_id = snapshot.id
         ctx.record_count = snapshot.record_count
 
         body = gateway_snapshot_header(snapshot)
+        # sprint-5/11 S5 (AC-11-41) - merged in AFTER the header (never a
+        # key of its own inside `gateway_snapshot_header`, which stays a
+        # pure projection of the snapshot's own columns) and OMITTED
+        # entirely (never a bare `null`) when nothing useful is known.
+        progress = service.snapshot_progress(key_row, snapshot)
+        if progress is not None:
+            body["progress"] = progress
         _finalize(db, ctx, "get_header", 200)
         return _json_response(200, body)
     except PullGatewayError as exc:

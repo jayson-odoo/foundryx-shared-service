@@ -37,6 +37,11 @@ from .http_client import (
     assert_autocount_base_url_deliverable,
     probe_open_connection,
 )
+from .http_source.client import (
+    MAX_CONCURRENT_PAGES_FIELD_DEFAULT,
+    MAX_CONCURRENT_PAGES_FIELD_MAX,
+    MAX_CONCURRENT_PAGES_FIELD_MIN,
+)
 
 PROVIDER_KEY = "autocount"
 CONNECTION_TYPE = "erp"
@@ -202,6 +207,20 @@ class AutoCountProvider:
                 "max": REQUEST_TIMEOUT_FIELD_MAX,
                 "showWhen": {"field": "auth", "values": [AUTH_NONE]},
             },
+            # sprint-5/11 S6 (AC-11-01) - the bounded-concurrency page walk's
+            # own opt-in ceiling; default 1 (serial, byte-identical to today)
+            # so nothing changes until an operator explicitly raises it.
+            {
+                "key": "maxConcurrentPages",
+                "label": "Max concurrent pages",
+                "type": "number",
+                "required": False,
+                "default": MAX_CONCURRENT_PAGES_FIELD_DEFAULT,
+                "defaultValue": str(MAX_CONCURRENT_PAGES_FIELD_DEFAULT),
+                "min": MAX_CONCURRENT_PAGES_FIELD_MIN,
+                "max": MAX_CONCURRENT_PAGES_FIELD_MAX,
+                "showWhen": {"field": "auth", "values": [AUTH_NONE]},
+            },
         ]
 
     def validate_config(self, config: Dict[str, Any]) -> Optional[str]:
@@ -254,6 +273,23 @@ class AutoCountProvider:
                 return (
                     f"requestTimeoutSeconds must be at most "
                     f"{REQUEST_TIMEOUT_FIELD_MAX} seconds."
+                )
+
+        concurrency_raw = str((config or {}).get("maxConcurrentPages") or "").strip()
+        if concurrency_raw:
+            try:
+                concurrency_value = int(concurrency_raw)
+            except ValueError:
+                return "maxConcurrentPages must be a whole number."
+            if not (
+                MAX_CONCURRENT_PAGES_FIELD_MIN
+                <= concurrency_value
+                <= MAX_CONCURRENT_PAGES_FIELD_MAX
+            ):
+                return (
+                    f"maxConcurrentPages must be between "
+                    f"{MAX_CONCURRENT_PAGES_FIELD_MIN} and "
+                    f"{MAX_CONCURRENT_PAGES_FIELD_MAX}."
                 )
 
         # LAST, because it is the only check here that can touch the network

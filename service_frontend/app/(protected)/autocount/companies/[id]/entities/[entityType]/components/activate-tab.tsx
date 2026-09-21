@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardHeading, CardTitle } from '@/components/ui/card';
 import { DeferredCountdown } from '@/components/platform/resource-actions/deferred-action-button';
+import { JobProgress } from '@/components/platform/autocount/job-progress';
 import { PreviewPanel } from '@/components/platform/autocount/preview-panel';
 import { useDeferredAction } from '@/hooks/use-deferred-action';
 import type {
@@ -39,6 +40,7 @@ import {
   AC_SYNC_RUN,
   acCompanyHref,
   acTaskHref,
+  isPullOnly,
 } from '../../../../../components/autocount-meta';
 
 /** "Re-push all"'s deferred-action key (sprint-5/07 review round - D2/D13:
@@ -121,6 +123,7 @@ export function ActivateTab({
   const activateBanner = isPull
     ? 'Activating lets the consumer request this extract.'
     : 'Activating starts delivering this entity on its schedule.';
+  const pullOnlyEntity = isPullOnly(task.entityType);
 
   // "Re-push all" (plan sprint-5/07, AC-07-20..24) - foolproof-UI: only a
   // database task that is actually running (active/paused) can be re-pushed,
@@ -196,6 +199,14 @@ export function ActivateTab({
   // gates Run preview, and fixing this means re-running preview after
   // editing the mapping, so Run preview must stay available.
   const previewFailed = previewFailedBlocksActivation(task);
+  // sprint-5/11 S6 follow-ups (owner-reported live) - Activate is withheld
+  // for several REASONS (prerequisites, busy, a failed preview); this
+  // caption is offered ONLY when a missing preview is the SOLE one, so it
+  // never duplicates or contradicts the prerequisite alerts or the failed-
+  // preview alert already stated above (mirrors `review-view.tsx`'s own
+  // `approve-blocked` inline-reason pattern beside its Approve button).
+  const activateBlockedByMissingPreview =
+    status === 'draft' && !blocked && !busy && !previewFailed && !previewOk;
 
   const previewState = preview.state;
   const hasRun = previewState.status !== 'idle';
@@ -203,6 +214,17 @@ export function ActivateTab({
   const dryRunError = previewState.status === 'error' ? previewState.message : null;
   const previewBlock = previewState.status === 'success' ? previewState.preview : null;
   const taskError = previewState.status === 'taskError' ? previewState.error : null;
+  // sprint-5/11 S6 follow-ups - a pull-only entity (`stock_balance`, never
+  // delivered via a Sorento push target at all) is routed to the logging
+  // sink by `sink_for_company` exactly like an unconfigured company, so the
+  // backend's own dry-run "unavailable" reason ("No consumer is configured
+  // ... Point the company at Sorento first") is misleading here - Sorento
+  // will NEVER be the target for this entity, configured or not. Swapped
+  // for a neutral empty state naming the surface that DOES prove this
+  // entity's source (the Source tab's own Test button), never the
+  // misleading Sorento instruction.
+  const pullOnlyPreviewUnavailable =
+    pullOnlyEntity && previewBlock !== null && previewBlock.previewable === false;
 
   async function runNow() {
     const runId = await lifecycle.runNow();
@@ -352,6 +374,11 @@ export function ActivateTab({
 
         {status === 'draft' && (
           <>
+            {activateBlockedByMissingPreview && (
+              <span className="text-xs text-muted-foreground" data-testid="activate-blocked">
+                Test the source first.
+              </span>
+            )}
             <Button
               type="button"
               size="sm"
@@ -504,13 +531,37 @@ export function ActivateTab({
             </CardHeading>
           </CardHeader>
           <CardContent>
-            <PreviewPanel
-              preview={previewBlock}
-              isLoading={isLoading}
-              error={dryRunError}
-              hasRun={hasRun}
-              variant="task"
-            />
+            {isLoading && previewState.status === 'loading' && (
+              // sprint-5/11 (AC-11-27) - the ONE running-state component,
+              // reused by the Source tab and the snapshot detail.
+              <JobProgress
+                status={previewState.cancelling ? 'cancelling' : 'running'}
+                stage={previewState.stage ?? null}
+                pagesDone={previewState.pagesDone ?? null}
+                pagesTotal={previewState.pagesTotal ?? null}
+                onCancel={preview.cancel}
+                cancelLabel="Cancel preview"
+              />
+            )}
+            {pullOnlyPreviewUnavailable ? (
+              <Alert variant="secondary" appearance="light" data-testid="preview-pull-only-empty-state">
+                <AlertIcon>
+                  <Info />
+                </AlertIcon>
+                <AlertTitle>Pull-only extract</AlertTitle>
+                <AlertDescription>
+                  Nothing to dry-run. Test the source on the Source tab, then Activate.
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <PreviewPanel
+                preview={previewBlock}
+                isLoading={false}
+                error={dryRunError}
+                hasRun={hasRun}
+                variant="task"
+              />
+            )}
           </CardContent>
         </Card>
       )}

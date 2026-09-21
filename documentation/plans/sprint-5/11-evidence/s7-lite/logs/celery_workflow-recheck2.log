@@ -1,0 +1,39 @@
+ 
+ -------------- wf_s41@Tehs-Mac-mini.local v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- macOS-26.5.1-arm64-arm-64bit-Mach-O 2026-09-21 23:55:58
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         workflows:0x10ee002f0
+- ** ---------- .> transport:   redis://localhost:6379/11
+- ** ---------- .> results:     redis://localhost:6379/11
+- *** --- * --- .> concurrency: 1 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> workflow         exchange=workflow(direct) key=workflow
+                
+
+[tasks]
+  . autocount.etl_sweep
+  . autocount.prune_pull_snapshots
+  . jobs.run
+  . jobs.sweep_orphaned
+  . meetings.bot_dispatch_due
+  . meetings.calendar_sync_due
+  . omnichannel.broadcasts_due
+  . omnichannel.wait_sweep
+  . ops.ping
+  . pending_actions.commit_due
+  . status.reevaluate_time_based
+  . webhooks.retry_due
+  . workflows.run_due
+  . workflows.run_workflow
+  . workflows.wake_serialized
+
+[2026-09-21 23:55:58,199: INFO/MainProcess] Connected to redis://localhost:6379/11
+[2026-09-21 23:55:58,229: INFO/MainProcess] mingle: searching for neighbors
+[2026-09-21 23:55:59,237: INFO/MainProcess] mingle: all alone
+[2026-09-21 23:55:59,247: INFO/MainProcess] wf_s41@Tehs-Mac-mini.local ready.
+
+worker: Warm shutdown (MainProcess)

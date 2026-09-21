@@ -1,4 +1,4 @@
-import { act, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SettingsProvider } from '@/providers/settings-provider';
@@ -45,14 +45,60 @@ vi.mock('next-auth/react', () => ({
 
 const getEtlTask = vi.fn();
 const updateEtlTask = vi.fn();
-const previewHttp = vi.fn();
+const startPreviewJob = vi.fn();
+const getPreviewJob = vi.fn();
 vi.mock('@/services/autocount-service', () => ({
   autocountService: {
     getEtlTask: (...args: unknown[]) => getEtlTask(...args),
     updateEtlTask: (...args: unknown[]) => updateEtlTask(...args),
-    previewHttp: (...args: unknown[]) => previewHttp(...args),
+    startPreviewJob: (...args: unknown[]) => startPreviewJob(...args),
+    getPreviewJob: (...args: unknown[]) => getPreviewJob(...args),
   },
 }));
+
+/**
+ * sprint-5/11 (AC-11-20..27) - Test now starts an `autocount_source_preview`
+ * job (`sample` scope) and polls it (the Cloudflare-safe rule) instead of
+ * awaiting `preview_http` directly; `startPreviewJob`/`getPreviewJob` are
+ * this suite's OWN service-level seam now, standing in for `previewHttp`.
+ * `mockHttpPreviewDone`/`mockHttpPreviewFailed` land the job DONE/FAILED on
+ * its very first poll, so a single `waitFor` on the observable UI settles
+ * the same way the old one-request mock did.
+ */
+function mockHttpPreviewDone(preview: {
+  envelope: 'paged' | 'list';
+  totalCount?: number;
+  columns: Array<{ name: string; sample: unknown }>;
+  rows: Array<Record<string, unknown>>;
+  durationMs: number;
+  task?: AutocountEtlTask;
+}) {
+  startPreviewJob.mockResolvedValue({ jobId: 'preview-job-1', status: 'queued' });
+  getPreviewJob.mockResolvedValue({
+    id: 'preview-job-1',
+    scope: 'sample',
+    status: 'done',
+    progress: null,
+    result: { scope: 'sample', preview },
+    error: null,
+    taskError: null,
+    createdAt: null,
+  });
+}
+
+function mockHttpPreviewFailed(message: string) {
+  startPreviewJob.mockResolvedValue({ jobId: 'preview-job-1', status: 'queued' });
+  getPreviewJob.mockResolvedValue({
+    id: 'preview-job-1',
+    scope: 'sample',
+    status: 'failed',
+    progress: null,
+    result: null,
+    error: message,
+    taskError: null,
+    createdAt: null,
+  });
+}
 
 vi.mock('@/hooks/use-autocount-etl', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/hooks/use-autocount-etl')>();
@@ -212,14 +258,15 @@ function activateButton() {
 beforeEach(() => {
   getEtlTask.mockReset();
   updateEtlTask.mockReset();
-  previewHttp.mockReset();
+  startPreviewJob.mockReset();
+  getPreviewJob.mockReset();
   detailBox.current = httpCompanyDetail();
   getEtlTask.mockResolvedValue(savedHttpTask());
 });
 
 describe('TaskEditorView - Source tab Test echoes the stamped task (sprint-5/08 review round 7)', () => {
   it('a successful Test at the SAVED path enables Activate without a remount (AC-08-14/AC-22-18)', async () => {
-    previewHttp.mockResolvedValue({
+    mockHttpPreviewDone({
       envelope: 'paged', totalCount: 1, columns: [{ name: 'ItemCode', sample: 'A1' }],
       rows: [{ ItemCode: 'A1' }], durationMs: 20,
       task: stampedTaskEcho(),
@@ -234,14 +281,12 @@ describe('TaskEditorView - Source tab Test echoes the stamped task (sprint-5/08 
     expect(activateButton()).toBeDisabled();
 
     await user.click(screen.getByRole('tab', { name: /Source/i }));
-    await act(async () => {
-      fireEvent.click(testButton());
-      await Promise.resolve();
-    });
+    fireEvent.click(testButton());
+    await waitFor(() => expect(startPreviewJob).toHaveBeenCalled());
 
     // Same component instance, only a tab switch - never a remount.
     await user.click(activateTab());
-    expect(activateButton()).toBeEnabled();
+    await waitFor(() => expect(activateButton()).toBeEnabled());
   });
 
   it('Save stays ENABLED after a Test at an edited path that differs from the saved one (B1)', async () => {
@@ -255,24 +300,23 @@ describe('TaskEditorView - Source tab Test echoes the stamped task (sprint-5/08 
     // The backend's echo carries the SAVED path ('/itembypage') - it never
     // persists the tested one - which is exactly what used to re-clobber
     // `httpPreviewedFor` back to the saved pair (B1).
-    previewHttp.mockResolvedValue({
+    mockHttpPreviewDone({
       envelope: 'paged', totalCount: 1, columns: [{ name: 'ItemCode', sample: 'A1' }],
       rows: [{ ItemCode: 'A1' }], durationMs: 20,
       task: stampedTaskEcho(),
     });
-    await act(async () => {
-      fireEvent.click(testButton());
-      await Promise.resolve();
-    });
+    fireEvent.click(testButton());
 
-    expect(previewHttp).toHaveBeenCalledWith(
-      expect.objectContaining({ connectionId: 'conn-api-mocha', path: '/itembypage2' }),
+    await waitFor(() =>
+      expect(startPreviewJob).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: 'conn-api-mocha', path: '/itembypage2' }),
+      ),
     );
-    expect(saveButton()).toBeEnabled();
+    await waitFor(() => expect(saveButton()).toBeEnabled());
   });
 
   it('an unsaved path edit survives the Test (the working draft is never reseeded by the echoed task)', async () => {
-    previewHttp.mockResolvedValue({
+    mockHttpPreviewDone({
       envelope: 'paged', totalCount: 1, columns: [{ name: 'ItemCode', sample: 'A1' }],
       rows: [{ ItemCode: 'A1' }], durationMs: 20,
       task: stampedTaskEcho(),
@@ -282,24 +326,20 @@ describe('TaskEditorView - Source tab Test echoes the stamped task (sprint-5/08 
     fireEvent.click(editButton());
 
     fireEvent.change(pathInput(), { target: { value: '/itembypage2' } });
-    await act(async () => {
-      fireEvent.click(testButton());
-      await Promise.resolve();
-    });
+    fireEvent.click(testButton());
+    await waitFor(() => expect(startPreviewJob).toHaveBeenCalled());
 
     expect(pathInput()).toHaveValue('/itembypage2');
   });
 
   it('a FAILED Test never adopts a task and Save stays disabled', async () => {
-    previewHttp.mockRejectedValue(new Error('boom'));
+    mockHttpPreviewFailed('boom');
     render(<TaskEditorView companyId="company-http" entityType="product" />);
     await screen.findByRole('tab', { name: /Source/i });
     fireEvent.click(editButton());
 
-    await act(async () => {
-      fireEvent.click(testButton());
-      await Promise.resolve();
-    });
+    fireEvent.click(testButton());
+    await waitFor(() => expect(startPreviewJob).toHaveBeenCalled());
 
     expect(saveButton()).toBeDisabled();
   });
@@ -321,7 +361,7 @@ describe('TaskEditorView - Source tab Test echoes the stamped task (sprint-5/08 
     fireEvent.click(editButton());
 
     expect(saveButton()).toBeEnabled();
-    expect(previewHttp).not.toHaveBeenCalled();
+    expect(startPreviewJob).not.toHaveBeenCalled();
   });
 
   /**
@@ -336,7 +376,7 @@ describe('TaskEditorView - Source tab Test echoes the stamped task (sprint-5/08 
     getEtlTask.mockResolvedValue(
       savedHttpTask({ resultColumns: ['ItemCode'], lastPreviewAt: '2026-09-11T00:00:00Z' }),
     );
-    previewHttp.mockResolvedValue({
+    mockHttpPreviewDone({
       envelope: 'paged', totalCount: 1, columns: [{ name: 'ItemCode', sample: 'A1' }],
       rows: [{ ItemCode: 'A1' }], durationMs: 20,
       // The echo carries the SAVED sourceConfig (still `/itembypage`) - the
@@ -349,11 +389,8 @@ describe('TaskEditorView - Source tab Test echoes the stamped task (sprint-5/08 
     await user.click(editButton());
 
     fireEvent.change(pathInput(), { target: { value: '/itembypage2' } });
-    await act(async () => {
-      fireEvent.click(testButton());
-      await Promise.resolve();
-    });
-    expect(saveButton()).toBeEnabled();
+    fireEvent.click(testButton());
+    await waitFor(() => expect(saveButton()).toBeEnabled());
 
     await user.click(screen.getByRole('button', { name: /^Cancel$/ }));
     await waitFor(() => expect(screen.getByText('Discard changes?')).toBeInTheDocument());
@@ -362,6 +399,6 @@ describe('TaskEditorView - Source tab Test echoes the stamped task (sprint-5/08 
     await waitFor(() => expect(editButton()).toBeInTheDocument());
     await user.click(editButton());
     expect(saveButton()).toBeEnabled();
-    expect(previewHttp).toHaveBeenCalledTimes(1);
+    expect(startPreviewJob).toHaveBeenCalledTimes(1);
   });
 });

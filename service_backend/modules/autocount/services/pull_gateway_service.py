@@ -16,6 +16,7 @@ from ..canonical.masters import ENTITY_PRODUCT
 from ..models import (
     DELIVERY_MODE_PUSH,
     ETL_STATUS_ACTIVE,
+    PULL_SNAPSHOT_STATUS_BUILDING,
     PULL_SNAPSHOT_STATUS_FAILED,
     PULL_SNAPSHOT_STATUS_READY,
     AcCompany,
@@ -298,6 +299,22 @@ class PullGatewayService:
             raise PullGatewayError(404, "UNKNOWN_SNAPSHOT", "Unknown snapshot, or not yours.")
         self._ensure_not_expired(snapshot)
         return snapshot
+
+    def snapshot_progress(
+        self, key_row: AcPullApiKey, snapshot: AcPullSnapshot
+    ) -> Optional[Dict[str, Any]]:
+        """sprint-5/11 S5 (AC-11-41) - the public gateway `building` header's
+        `progress`, gated on THIS snapshot's own status before delegating to
+        the shared projection living next to the preview job's own rule
+        (``preview_job_service.snapshot_job_progress``). Resolved WITH
+        ``key_row.tenant_id`` (never the snapshot's own, though they always
+        agree once ``get_snapshot_for_key`` has already scoped it) - the
+        SAME tenant every other gateway read is scoped by."""
+        if snapshot.status != PULL_SNAPSHOT_STATUS_BUILDING:
+            return None
+        from .preview_job_service import snapshot_job_progress
+
+        return snapshot_job_progress(self.db, key_row.tenant_id, snapshot.job_id)
 
     def _ensure_not_expired(self, snapshot: AcPullSnapshot) -> None:
         if snapshot.expires_at is not None and snapshot.expires_at <= datetime.now(timezone.utc):

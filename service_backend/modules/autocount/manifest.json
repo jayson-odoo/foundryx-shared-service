@@ -33,6 +33,10 @@
       "prefix": "/autocount/pull"
     },
     {
+      "name": "previews",
+      "prefix": "/autocount/previews"
+    },
+    {
       "name": "pull_v1",
       "prefix": "/api/v1/autocount",
       "public": true

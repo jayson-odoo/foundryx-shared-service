@@ -143,6 +143,12 @@ def db(session_factory):
 
 
 def _preview(client, headers, db, **body_overrides: Any):
+    """sprint-5/11 (AC-11-21/22) - ``POST /autocount/http/preview`` is now a
+    202 job start; this starts it and (for a 202) immediately polls the job
+    - under this suite's eager execution the job is ALREADY terminal by the
+    time the POST returns, so ONE poll is enough. Returns the POLL response
+    for a 202, or the POST response UNCHANGED for anything the pre-flight
+    gate itself still rejects synchronously."""
     from app.main import app
     from modules.autocount.http_client import get_http_transport
 
@@ -158,18 +164,23 @@ def _preview(client, headers, db, **body_overrides: Any):
     })
     body = {"connectionId": conn.id, "path": "/itembypage", **body_overrides}
     try:
-        return client.post("/autocount/http/preview", json=body, headers=headers)
+        response = client.post("/autocount/http/preview", json=body, headers=headers)
     finally:
         app.dependency_overrides.pop(get_http_transport, None)
+    if response.status_code != 202:
+        return response
+    return client.get(f"/autocount/previews/{response.json()['jobId']}", headers=headers)
 
 
 # ── no combine block: the response is unaffected ────────────────────────────
 
 
 def test_no_combine_leaves_the_response_unaffected(client, headers, db):
-    response = _preview(client, headers, db, rows=_funnel_rows())
-    assert response.status_code == 200, response.text
-    body = response.json()
+    poll = _preview(client, headers, db, rows=_funnel_rows())
+    assert poll.status_code == 200, poll.text
+    poll_body = poll.json()
+    assert poll_body["status"] == "done", poll_body
+    body = poll_body["result"]["preview"]
     for key in (
         "rowsIn", "excludedCount", "groups", "droppedByRule", "rowsOut", "roundedCount",
         "preCombineColumns",
@@ -184,9 +195,11 @@ def test_no_combine_leaves_the_response_unaffected(client, headers, db):
 
 
 def test_combine_returns_the_funnel_and_the_combined_rows(client, headers, db):
-    response = _preview(client, headers, db, combine=STOCK_COMBINE)
-    assert response.status_code == 200, response.text
-    body = response.json()
+    poll = _preview(client, headers, db, combine=STOCK_COMBINE)
+    assert poll.status_code == 200, poll.text
+    poll_body = poll.json()
+    assert poll_body["status"] == "done", poll_body
+    body = poll_body["result"]["preview"]
 
     assert body["rowsIn"] == 9, body
     assert body["excludedCount"] == 2, body
@@ -224,9 +237,11 @@ def test_the_pre_combine_columns_carry_raw_and_computed_aliases_never_the_groupe
     created AFTER grouping) must NOT appear, while the combine's OWN
     `computed` aliases (`item_code`/`location_code`/`base_qty`, available to
     every LATER stage) must."""
-    response = _preview(client, headers, db, combine=STOCK_COMBINE)
-    assert response.status_code == 200, response.text
-    body = response.json()
+    poll = _preview(client, headers, db, combine=STOCK_COMBINE)
+    assert poll.status_code == 200, poll.text
+    poll_body = poll.json()
+    assert poll_body["status"] == "done", poll_body
+    body = poll_body["result"]["preview"]
     pre_combine = set(body["preCombineColumns"])
     assert pre_combine == {
         "ItemCode", "UOM", "ItemBaseUOM", "Location", "BatchNo", "BalQty",
@@ -273,9 +288,11 @@ def test_a_computed_stage_runtime_error_surfaces_as_excludedCount(client, header
         "round": [],
         "drop": [],
     }
-    response = _preview(client, headers, db, rows=rows, combine=combine)
-    assert response.status_code == 200, response.text
-    body = response.json()
+    poll = _preview(client, headers, db, rows=rows, combine=combine)
+    assert poll.status_code == 200, poll.text
+    poll_body = poll.json()
+    assert poll_body["status"] == "done", poll_body
+    body = poll_body["result"]["preview"]
     assert body["rowsIn"] == 2, body
     assert body["excludedCount"] == 1, body
     assert body["groups"] == 1, body
@@ -287,10 +304,16 @@ def test_a_computed_stage_runtime_error_surfaces_as_excludedCount(client, header
 
 
 def test_an_invalid_combine_422s_before_it_is_applied(client, headers, db):
+    """sprint-5/11 (AC-11-21/22/25) - combine validation needs the sampled
+    rows (``validate_combine(..., sample=result.rows)``), so it runs AFTER
+    the network fetch - inside the job now, never a synchronous 422 (the
+    same fieldErrors land on the FAILED job instead)."""
     bad_combine = {**STOCK_COMBINE, "groupBy": []}
-    response = _preview(client, headers, db, combine=bad_combine)
-    assert response.status_code == 422, response.text
-    assert "combine.groupBy" in response.json()["detail"]["fieldErrors"]
+    poll = _preview(client, headers, db, combine=bad_combine)
+    assert poll.status_code == 200, poll.text
+    body = poll.json()
+    assert body["status"] == "failed", body
+    assert "combine.groupBy" in body["fieldErrors"]
 
 
 # KILL TEST (for the reviewer): make ``EtlService.preview_http`` ignore its

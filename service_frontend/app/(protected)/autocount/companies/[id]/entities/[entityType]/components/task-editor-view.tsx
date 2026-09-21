@@ -97,12 +97,14 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     useAutocountEtlTask(companyId, entityType);
   const sqlConnections = useAutocountSqlConnections();
   const apiConnections = useAutocountApiConnections();
-  const httpPreview = useHttpPreview();
+  // AC-11-23/27 - re-attach to an already-in-flight preview job after a
+  // remount/reload (`task.previewJobId`), never a fresh start.
+  const httpPreview = useHttpPreview(task?.previewJobId);
   const mapping = useAutocountMapping(companyId, entityType);
   const draft = useMappingDraft(mapping.view);
   const { presets } = useAutocountMappingPresets(companyId, entityType);
   const { fetchLines } = useLineFetcher();
-  const etlPreview = useEtlTaskPreview(companyId, entityType, apply);
+  const etlPreview = useEtlTaskPreview(companyId, entityType, apply, task?.previewJobId);
   const lifecycle = useEtlTaskLifecycle(companyId, entityType, apply);
   const runsConfig = useAutocountRunsListConfig(companyId, { variant: 'task', entityType });
   const [runsKey, setRunsKey] = useState(0);
@@ -174,7 +176,11 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     if (!task) return defaultSourceKind;
     const impl = task.sourceImpl ?? 'sql_db';
     if (impl === 'autocount_http') return 'api';
-    if (task.sourceConfig.query.trim()) return 'db';
+    // Belt-and-braces (S7-lite P0) - the real fix is normalising every
+    // task echo at the service boundary (`normalizeEtlTask`/
+    // `normalizePreviewJob`, `autocount-service.real.ts`); `?? ''` here
+    // only guards a FUTURE un-normalized echo from crashing the whole page.
+    if ((task.sourceConfig.query ?? '').trim()) return 'db';
     return defaultSourceKind;
   }, [defaultSourceKind, task]);
 
@@ -212,7 +218,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   );
   useEffect(() => {
     let seeded = baseline ? { ...baseline } : null;
-    if (seeded && baselineSourceKind === 'api' && !seeded.path?.trim() && !seeded.query.trim()) {
+    if (seeded && baselineSourceKind === 'api' && !seeded.path?.trim() && !(seeded.query ?? '').trim()) {
       const preset = HTTP_PRESETS[entityType];
       if (preset) {
         seeded = {
@@ -402,7 +408,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       return true;
     }
     if (configDirty || sourceKindDirty) {
-      const ok = await save({ ...config, query: config.query.trim() }, derivedImpl);
+      const ok = await save({ ...config, query: (config.query ?? '').trim() }, derivedImpl);
       if (!ok) return false;
       // A document entity's FIRST clean config save seeds its field mapping
       // server-side (`seed_document_mapping`) - the Mapping tab's own hook
@@ -592,10 +598,13 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     const keysMissing =
       !combineKeyed &&
       (sourceKind === 'db'
-        ? config.query.trim().length > 0 && config.keyColumns.length === 0
+        ? (config.query ?? '').trim().length > 0 && config.keyColumns.length === 0
         : Boolean(config.path?.trim()) && (config.keyFields?.length ?? 0) === 0);
+    // Belt-and-braces (S7-lite P0, same rationale as `baselineSourceKind`
+    // above) - `?? ''` guards a future un-normalized task echo; the real
+    // fix is the service-boundary normalizer.
     const querySaved =
-      task.sourceConfig.query.trim().length > 0 || Boolean(task.sourceConfig.path?.trim());
+      (task.sourceConfig.query ?? '').trim().length > 0 || Boolean(task.sourceConfig.path?.trim());
     const status = task.etlStatus as AutocountEtlStatus;
     // AC-08-28 - a task demoted back to draft by a source change (impl,
     // connection, or path) keeps its `activatedAt` stamp, so a draft task

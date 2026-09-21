@@ -23,7 +23,6 @@ import type {
   AutocountDeliveryMode,
   AutocountEntityConfig,
   AutocountEntityConfigUpdate,
-  AutocountEtlPreviewResult,
   AutocountEtlRepushResult,
   AutocountEtlRunStart,
   AutocountEtlTask,
@@ -34,6 +33,9 @@ import type {
   AutocountMappingUpdate,
   AutocountMappingView,
   AutocountMappingWriteRow,
+  AutocountPreviewJob,
+  AutocountPreviewJobStart,
+  AutocountPreviewJobStartInput,
   AutocountPreviewResult,
   AutocountPullApiKey,
   AutocountPullApiKeyCreateInput,
@@ -50,8 +52,6 @@ import type {
   AutocountSyncJob,
   AutocountSyncJobBatch,
   AutocountSyncRun,
-  HttpPreview,
-  HttpPreviewInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
 import { realAutocountService } from './autocount-service.real';
@@ -307,17 +307,10 @@ export interface AutocountService {
   //
   // New routes (all under /autocount/companies/{id}/entities/{entityType}/etl-task):
   //
-  //   POST .../preview
-  //        → AutocountEtlPreviewResult  (initial-load dry run: extract the
-  //          saved query, map, `SorentoSink` `?dry_run=true`; writes NOTHING;
-  //          `preview` = the SAME shape as `POST /autocount/jobs/{id}/preview`;
-  //          `task.lastPreviewAt` stamped when the dry run completed).
-  //          Logging sink → `previewable: false`. Unreachable consumer → 502.
-  //          Sorento anchor 422 (COMPANY_ANCHOR_REQUIRED / UNKNOWN_COMPANY /
-  //          COMPANY_ANCHOR_AMBIGUOUS) → 422 `{detail: {code, message}, message}`
-  //          - a TASK-level error, never a per-record `failed` (Appendix A6).
-  //          No query / no key columns → 409.
-  //        Gated `autocount.sync.run`.
+  //   POST .../preview  - sprint-5/11 S4 replaced this synchronous shape
+  //        with the `autocount_source_preview` job's own `startPreviewJob`/
+  //        `getPreviewJob` surface below (`scope: 'full'`); no method here
+  //        calls it directly anymore (review round 2, item 6).
   //
   //   POST .../activate
   //        → AutocountEtlTask  (`draft|paused` → `active`, `activatedAt`
@@ -344,8 +337,6 @@ export interface AutocountService {
   //          first, page_size ≤ 200; skipped ticks included with `skipReason`).
   //        Gated `autocount.sync.read`.
 
-  /** Initial-load dry run against Sorento (writes nothing). */
-  previewEtlTask(companyId: string, entityType: string): Promise<AutocountEtlPreviewResult>;
   /** The activate-once gate: draft/paused → active (409 without a preview). */
   activateEtlTask(companyId: string, entityType: string): Promise<AutocountEtlTask>;
   /** active → paused (in-flight runs finish). */
@@ -462,16 +453,11 @@ export interface AutocountService {
   //          vendor/SQL connection. `AutocountCompany.sourceKind` gains
   //          `'http'` for an open company.
   //
-  //   POST /autocount/http/preview  {connectionId, path, distinctOf?}
-  //        → HttpPreview {envelope: 'paged'|'list', totalCount?, columns:
-  //          [{name, sample}], rows (<=50), durationMs}  (AC-08-14). `paged`
-  //          = a `{TotalCount,Page,PageSize,TotalPages,Data[]}` envelope
-  //          (page 1, pageSize 50); `list` = a bare JSON array capped to 50.
-  //          `distinctOf` set → rows are the distinct `{value}` projection,
-  //          `columns == [{name:'value', sample:<first value>}]`. Errors map
-  //          to 422 naming the step (`connectionId` for a non-open/foreign
-  //          connection, `path` for a 404/non-JSON/timeout/`..`/query-string).
-  //        Gated `autocount.manage` (same bucket as `/autocount/sql/preview`).
+  //   POST /autocount/http/preview  - sprint-5/11 S4 replaced this
+  //        synchronous shape with the `autocount_source_preview` job's own
+  //        `startPreviewJob`/`getPreviewJob` surface below (`scope:
+  //        'sample'`); no method here calls it directly anymore (review
+  //        round 2, item 6).
   //
   //   `AutocountEtlTask` (existing `/etl-task` routes) gains `sourceImpl`
   //        ('sql_db'|'autocount_http') and, when 'autocount_http', the task's
@@ -490,8 +476,6 @@ export interface AutocountService {
 
   /** Every `autocount` connection of the tenant, badged by auth. */
   listApiConnections(): Promise<AutocountApiConnection[]>;
-  /** Page-1 sample of an open-API endpoint path (<=50 rows), writes nothing. */
-  previewHttp(input: HttpPreviewInput): Promise<HttpPreview>;
   /**
    * `POST /autocount/http/preview-columns {connectionId, path}` (AC-10-05) -
    * the lookup editor's own probe: page-1 column NAMES only, against ANY
@@ -557,14 +541,37 @@ export interface AutocountService {
   ): Promise<AutocountPullSnapshotRowsPage>;
   /** Build a snapshot as the operator (`requestedVia: 'operator'`, AC-10-37). */
   buildPullSnapshot(companyId: string, entityType: string): Promise<AutocountPullSnapshot>;
+
+  // ── preview job (sprint-5/11, Group B) - AC-11-20..31 ───────────────────────
+  //
+  // BACKEND CONTRACT (S4 must match this EXACTLY - `autocount-service.mock.ts`
+  // is the spec until then, house PHASE 1 MOCK pattern):
+  //
+  //   POST /autocount/http/preview  (sample) / POST .../etl-task/preview (full)
+  //        -> AutocountPreviewJobStart {jobId, status} - 202, no extraction
+  //           happens in the request (AC-11-22).
+  //   GET  /autocount/previews/{jobId} -> AutocountPreviewJob - polled while
+  //        `queued`/`running`; progress rides the SAME `{stage, pagesDone,
+  //        pagesTotal}` shape as a pull-snapshot build.
+  //   POST /autocount/previews/{jobId}/cancel -> AutocountPreviewJob - a
+  //        no-op 200 against an already-terminal job (AC-11-24).
+  //   Gated `autocount.sync.run`; tenant-scoped, cross-tenant = 404.
+
+  /** Start a preview job. Never awaits the walk (AC-11-22). */
+  startPreviewJob(input: AutocountPreviewJobStartInput): Promise<AutocountPreviewJobStart>;
+  /** Poll one job (AC-11-22/27). */
+  getPreviewJob(jobId: string): Promise<AutocountPreviewJob>;
+  /** Cooperative cancel - a no-op 200 against a terminal job (AC-11-24). */
+  cancelPreviewJob(jobId: string): Promise<AutocountPreviewJob>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// The shipped binding is the BARE `.real` service - every surface above,
-// including the human-invoked pull surface (delivery mode, pull API keys,
-// snapshots - sprint-5/10 S6 phase 2 swap), is backed by FastAPI end to end.
-// `mockAutocountService` (`autocount-service.mock.ts`) stays importable by
-// the Vitest suite directly (the house service-trio pattern) - there is no
-// runtime mock overlay to bind here anymore.
+// sprint-5/11 S4 - every surface, INCLUDING the preview-job surface
+// (`startPreviewJob`/`getPreviewJob`/`cancelPreviewJob`), is backed by
+// FastAPI end to end now (the real `autocount_source_preview` job +
+// `/autocount/previews/*` routes). The PHASE 1 MOCK overlay
+// (`withPhase1PreviewJobMock`, `autocount-service.mock.ts`) is retired from
+// this binding - `mockAutocountService` stays importable by the Vitest
+// suite directly (the house service-trio pattern).
 // ═══════════════════════════════════════════════════════════════════════════
 export const autocountService: AutocountService = realAutocountService;

@@ -586,14 +586,20 @@ def test_preview_route_maps_http_source_failure_to_422_never_a_bare_500(client, 
     login = client.post("/auth/login", json={"email": "demo@example.com", "password": "demo1234"})
     assert login.status_code == 200, login.text
     token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
     response = client.post(
         f"/autocount/companies/{company.id}/entities/{ENTITY_PRODUCT}/etl-task/preview",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=headers,
     )
-    assert response.status_code == 422, response.text
-    body = response.json()
-    assert "page 1" in body["message"]
-    assert "500" in body["message"]
+    # sprint-5/11 (AC-11-21/22) - the route is now a 202 job start; the
+    # SAME "never a bare 500" guarantee moves onto the polled job's own
+    # `error` message.
+    assert response.status_code == 202, response.text
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=headers)
+    body = poll.json()
+    assert body["status"] == "failed", body
+    assert "page 1" in body["error"]
+    assert "500" in body["error"]
 
 
 # ── SF-2 (sprint-5/08 review round 2) - a real RUN's HTTP source failures must

@@ -111,13 +111,22 @@ def test_the_consumer_body_is_capped_at_300_characters(session_factory, rig, con
 
 
 def test_the_preview_route_502_detail_carries_the_consumer_line(client, rig, consumer):
+    """sprint-5/11 (AC-11-21/22/25) - the preview is a job now: a consumer
+    fault (``PreviewUnavailable``) is discovered only DURING the dry run, so
+    it lands as a FAILED job carrying the SAME consumer-said line on
+    ``error``, never a synchronous 502 (there is no HTTP status to carry
+    that distinction on once the walk moved off-request)."""
     consumer.responder = lambda _body: httpx.Response(504, text=HTML_504)
     company_id, _sql_id = rig
+    headers = _auth(client)
 
-    response = client.post(_url(company_id, "/preview"), headers=_auth(client))
-
-    assert response.status_code == 502, response.text
-    detail = response.json()["detail"]
+    response = client.post(_url(company_id, "/preview"), headers=headers)
+    assert response.status_code == 202, response.text
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=headers)
+    assert poll.status_code == 200, poll.text
+    body = poll.json()
+    assert body["status"] == "failed", body
+    detail = body["error"]
     assert GENERIC in detail
     assert "HTTP 504" in detail
     assert "Gateway Time-out" in detail
@@ -253,9 +262,17 @@ def test_a_url_in_the_consumer_body_is_scrubbed_from_message_and_route_detail(
     assert "://" not in exc.message
     assert "sorento.example" not in exc.message
 
-    response = client.post(_url(company_id, "/preview"), headers=_auth(client))
-    assert response.status_code == 502, response.text
-    detail = response.json()["detail"]
+    # sprint-5/11 (AC-11-21/22/25) - the preview is a job now; the SAME
+    # scrubbed line lands on the FAILED job's `error`, never a synchronous
+    # 502 detail.
+    headers = _auth(client)
+    response = client.post(_url(company_id, "/preview"), headers=headers)
+    assert response.status_code == 202, response.text
+    poll = client.get(f"/autocount/previews/{response.json()['jobId']}", headers=headers)
+    assert poll.status_code == 200, poll.text
+    poll_body = poll.json()
+    assert poll_body["status"] == "failed", poll_body
+    detail = poll_body["error"]
     assert "[url]" in detail
     assert "://" not in detail
 

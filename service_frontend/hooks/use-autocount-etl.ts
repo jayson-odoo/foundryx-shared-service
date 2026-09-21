@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/lib/api-client';
 import { readFieldErrors, readTaskError } from '@/lib/autocount-etl';
+import {
+  defaultPreviewJobPollDelay,
+  pollPreviewJob,
+  type PreviewJobPollDelay,
+} from '@/hooks/use-autocount-preview-job';
 import { autocountService } from '@/services/autocount-service';
 import type {
   AutocountApiConnection,
@@ -17,6 +22,14 @@ import type {
   AutocountSqlSchema,
   HttpPreview,
 } from '@/types/autocount';
+
+/**
+ * sprint-5/11 (AC-11-20..27; consolidated review round 1, S2/S3/S6) - the
+ * Cloudflare-safe non-blocking preview: a job round-trip replaces the old
+ * single blocking request, polled through the ONE shared engine
+ * (`use-autocount-preview-job.ts`'s `pollPreviewJob`) both tab hooks below
+ * drive - never a hand-rolled `for(;;)` loop per hook.
+ */
 
 /**
  * Direct-DB ETL hooks (plan 22 S1) - the hook boundary the task editor talks
@@ -126,38 +139,140 @@ export function useAutocountEtlTask(
  * The dry-run states the Review & Activate tab designs: `error` is the dry
  * run itself failing (502 - Activate stays withheld), `taskError` is a Sorento
  * anchor 422 - a TASK-level configuration error (fix the company code), never
- * a per-record failure.
+ * a per-record failure. `loading` rides the preview-job progress (sprint-5/11,
+ * AC-11-27) - `stage`/`pagesDone`/`pagesTotal` are absent until known, never
+ * guessed; `cancelling` is set once `cancel()` has been called but the job has
+ * not yet reported the terminal state.
  */
 export type EtlPreviewState =
   | { status: 'idle' }
-  | { status: 'loading' }
+  | {
+      status: 'loading';
+      stage?: string | null;
+      pagesDone?: number | null;
+      pagesTotal?: number | null;
+      cancelling?: boolean;
+    }
   | { status: 'error'; message: string }
   | { status: 'taskError'; error: AutocountEtlTaskError }
   | { status: 'success'; preview: AutocountPreview };
 
 export interface UseEtlTaskPreviewResult {
   state: EtlPreviewState;
-  /** Run the initial-load dry run. Never throws - every outcome lands in state. */
+  /** Run the initial-load dry run as a job (AC-11-22) - never awaits the
+   * walk; resolves once the job reaches a terminal state. Never throws -
+   * every outcome lands in state. */
   run: () => Promise<void>;
+  /** Cooperative cancel of an in-flight job (AC-11-24) - a no-op while idle
+   * or already terminal. */
+  cancel: () => void;
   reset: () => void;
 }
 
+/**
+ * sprint-5/11 (AC-11-20..27; consolidated review round 1, S2/S3/S6) - "Run
+ * preview" starts the `full`-scope `autocount_source_preview` job instead of
+ * awaiting `preview_task` directly, and polls `GET /autocount/previews/
+ * {jobId}` (AC-11-22) through the ONE shared engine (`use-autocount-preview-
+ * job.ts`'s `pollPreviewJob`) against the real backend (S4). `initialJobId`
+ * (AC-11-23/27) re-attaches to an already-in-flight job after a remount/
+ * reload (`task.previewJobId`) - polled without a fresh `startPreviewJob`
+ * call. `pollDelayMs` (S2/S3/S6) overrides the standing backoff - a test
+ * seam, never used by a real call site.
+ */
 export function useEtlTaskPreview(
   companyId: string,
   entityType: string,
   onTask: (task: AutocountEtlTask) => void,
+  initialJobId?: string | null,
+  pollDelayMs: PreviewJobPollDelay = defaultPreviewJobPollDelay,
 ): UseEtlTaskPreviewResult {
   const [state, setState] = useState<EtlPreviewState>({ status: 'idle' });
   const runId = useRef(0);
+  const activeJobId = useRef<string | null>(null);
+  const cancelRequested = useRef(false);
+  const attachedJobIdRef = useRef<string | null>(null);
+
+  // Cleanup on unmount - the next `isStale()` check inside `pollPreviewJob`
+  // drops the in-flight poll's result rather than landing a `setState` on
+  // an unmounted component (S2/S3/S6: the hand-rolled loops had none).
+  useEffect(() => () => {
+    runId.current += 1;
+  }, []);
+
+  const pollUntilTerminal = useCallback(
+    (jobId: string, id: number) =>
+      pollPreviewJob(jobId, {
+        isStale: () => id !== runId.current,
+        delay: pollDelayMs,
+        onJob: (job) => {
+          // AC-11-23 - the claim is ONE per task regardless of scope (a
+          // `full` Run-preview job re-attach lands here too, via the SAME
+          // `task.previewJobId`): a job that turns out to belong to the
+          // OTHER scope was never THIS hook's own run - leave it idle,
+          // never a fabricated error/success.
+          if (job.scope !== 'full') {
+            setState({ status: 'idle' });
+            return false;
+          }
+          if (job.status === 'queued' || job.status === 'running') {
+            setState({
+              status: 'loading',
+              stage: job.progress?.stage ?? null,
+              pagesDone: job.progress?.pagesDone ?? null,
+              pagesTotal: job.progress?.pagesTotal ?? null,
+              cancelling: cancelRequested.current,
+            });
+            return true;
+          }
+          if (job.status === 'cancelled') {
+            setState({ status: 'idle' });
+            return false;
+          }
+          if (job.status === 'failed') {
+            if (job.taskError) {
+              setState({ status: 'taskError', error: job.taskError });
+            } else {
+              setState({
+                status: 'error',
+                message: job.error ?? 'The dry run could not be completed.',
+              });
+            }
+            return false;
+          }
+          // done
+          if (job.result?.scope === 'full') {
+            onTask(job.result.task);
+            setState({ status: 'success', preview: job.result.preview });
+          } else {
+            setState({ status: 'error', message: 'The dry run could not be completed.' });
+          }
+          return false;
+        },
+        onError: (e) => {
+          // S2/S3/S6 - a poll failure (e.g. a 404 for a pruned re-attach id)
+          // must never leave the hook stuck in `loading` forever - that
+          // permanently disables the Run-preview button.
+          setState({
+            status: 'error',
+            message: e instanceof ApiError ? e.message : 'The dry run could not be resumed.',
+          });
+        },
+      }),
+    [onTask, pollDelayMs],
+  );
 
   const run = useCallback(async () => {
     const id = ++runId.current;
+    cancelRequested.current = false;
+    activeJobId.current = null;
     setState({ status: 'loading' });
     try {
-      const result = await autocountService.previewEtlTask(companyId, entityType);
+      const started = await autocountService.startPreviewJob({ scope: 'full', companyId, entityType });
       if (id !== runId.current) return;
-      onTask(result.task);
-      setState({ status: 'success', preview: result.preview });
+      activeJobId.current = started.jobId;
+      attachedJobIdRef.current = started.jobId;
+      await pollUntilTerminal(started.jobId, id);
     } catch (e) {
       if (id !== runId.current) return;
       const taskError = e instanceof ApiError && e.status === 422 ? readTaskError(e.detail) : null;
@@ -170,14 +285,37 @@ export function useEtlTaskPreview(
         message: e instanceof ApiError ? e.message : 'The dry run could not be completed.',
       });
     }
-  }, [companyId, entityType, onTask]);
+  }, [companyId, entityType, pollUntilTerminal]);
+
+  // AC-11-23/27 - re-attach to an already-in-flight job after a remount/
+  // reload (`task.previewJobId`): a poll, never a fresh `startPreviewJob`
+  // (which would start a SECOND walk the claim would just reject anyway).
+  // Attaches once per job id - a re-render carrying the SAME id (the task
+  // re-fetched while this hook is already polling it) is a no-op.
+  useEffect(() => {
+    if (!initialJobId || attachedJobIdRef.current === initialJobId) return;
+    attachedJobIdRef.current = initialJobId;
+    const id = ++runId.current;
+    cancelRequested.current = false;
+    activeJobId.current = initialJobId;
+    setState({ status: 'loading' });
+    void pollUntilTerminal(initialJobId, id);
+  }, [initialJobId, pollUntilTerminal]);
+
+  const cancel = useCallback(() => {
+    if (!activeJobId.current) return;
+    cancelRequested.current = true;
+    void autocountService.cancelPreviewJob(activeJobId.current);
+  }, []);
 
   const reset = useCallback(() => {
     runId.current += 1;
+    cancelRequested.current = false;
+    activeJobId.current = null;
     setState({ status: 'idle' });
   }, []);
 
-  return { state, run, reset };
+  return { state, run, cancel, reset };
 }
 
 // ── lifecycle: activate / pause / resume / run now (AC-22-18/19) ──────────────
@@ -463,10 +601,19 @@ export function useAutocountApiConnections(): UseAutocountApiConnectionsResult {
 }
 
 /** The four designed preview states, mirroring `SqlPreviewState` for the
- * open REST API (AC-08-14/20). */
+ * open REST API (AC-08-14/20). `loading` rides the preview-job progress
+ * (sprint-5/11, AC-11-27) - `stage`/`pagesDone`/`pagesTotal` are absent
+ * until known, never guessed; `cancelling` is set once `cancel()` has been
+ * called but the job has not yet reported the terminal state. */
 export type HttpPreviewState =
   | { status: 'idle' }
-  | { status: 'loading' }
+  | {
+      status: 'loading';
+      stage?: string | null;
+      pagesDone?: number | null;
+      pagesTotal?: number | null;
+      cancelling?: boolean;
+    }
   | { status: 'error'; message: string }
   | { status: 'success'; preview: HttpPreview };
 
@@ -510,12 +657,99 @@ export interface UseHttpPreviewResult {
    * a specific field rather than a generic error. */
   fieldErrors: Record<string, string>;
   reset: () => void;
+  /** Cooperative cancel of an in-flight job (AC-11-24) - a no-op while idle
+   * or already terminal. */
+  cancel: () => void;
 }
 
-export function useHttpPreview(): UseHttpPreviewResult {
+/**
+ * sprint-5/11 (AC-11-20..27; consolidated review round 1, S2/S3/S6) - Test
+ * starts the `sample`-scope `autocount_source_preview` job instead of
+ * awaiting `preview_http` directly, and polls `GET /autocount/previews/
+ * {jobId}` (AC-11-22) through the ONE shared engine (`use-autocount-preview-
+ * job.ts`'s `pollPreviewJob`) against the real backend (S4). `initialJobId`
+ * (AC-11-23/27) re-attaches to an already-in-flight job after a remount/
+ * reload (`task.previewJobId`) - polled without a fresh `startPreviewJob`
+ * call. `pollDelayMs` (S2/S3/S6) overrides the standing backoff - a test
+ * seam, never used by a real call site.
+ */
+export function useHttpPreview(
+  initialJobId?: string | null,
+  pollDelayMs: PreviewJobPollDelay = defaultPreviewJobPollDelay,
+): UseHttpPreviewResult {
   const [state, setState] = useState<HttpPreviewState>({ status: 'idle' });
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const runId = useRef(0);
+  const activeJobId = useRef<string | null>(null);
+  const cancelRequested = useRef(false);
+  const attachedJobIdRef = useRef<string | null>(null);
+
+  // Cleanup on unmount - the next `isStale()` check inside `pollPreviewJob`
+  // drops the in-flight poll's result rather than landing a `setState` on
+  // an unmounted component (S2/S3/S6: the hand-rolled loops had none).
+  useEffect(() => () => {
+    runId.current += 1;
+  }, []);
+
+  const pollUntilTerminal = useCallback(
+    async (jobId: string, id: number): Promise<HttpPreview | false> => {
+      let outcome: HttpPreview | false = false;
+      await pollPreviewJob(jobId, {
+        isStale: () => id !== runId.current,
+        delay: pollDelayMs,
+        onJob: (job) => {
+          // AC-11-23 - the claim is ONE per task regardless of scope (a
+          // `sample` Test job re-attach lands here too, via the SAME
+          // `task.previewJobId`): a job that turns out to belong to the
+          // OTHER scope was never THIS hook's own run - leave it idle,
+          // never a fabricated error/success.
+          if (job.scope !== 'sample') {
+            setState({ status: 'idle' });
+            return false;
+          }
+          if (job.status === 'queued' || job.status === 'running') {
+            setState({
+              status: 'loading',
+              stage: job.progress?.stage ?? null,
+              pagesDone: job.progress?.pagesDone ?? null,
+              pagesTotal: job.progress?.pagesTotal ?? null,
+              cancelling: cancelRequested.current,
+            });
+            return true;
+          }
+          if (job.status === 'cancelled') {
+            setState({ status: 'idle' });
+            return false;
+          }
+          if (job.status === 'failed') {
+            setFieldErrors(job.fieldErrors ?? {});
+            setState({ status: 'error', message: job.error ?? 'The preview could not be run.' });
+            return false;
+          }
+          // done
+          if (job.result?.scope === 'sample') {
+            setState({ status: 'success', preview: job.result.preview });
+            outcome = job.result.preview;
+          } else {
+            setState({ status: 'error', message: 'The preview could not be run.' });
+          }
+          return false;
+        },
+        onError: (e) => {
+          // S2/S3/S6 - a poll failure (e.g. a 404 for a pruned re-attach id)
+          // must never leave the hook stuck in `loading` forever - that
+          // permanently disables the Test button.
+          setFieldErrors({});
+          setState({
+            status: 'error',
+            message: e instanceof ApiError ? e.message : 'The preview could not be resumed.',
+          });
+        },
+      });
+      return outcome;
+    },
+    [pollDelayMs],
+  );
 
   const run = useCallback(
     async (
@@ -525,21 +759,25 @@ export function useHttpPreview(): UseHttpPreviewResult {
       options?: HttpPreviewRunOptions,
     ): Promise<HttpPreview | false> => {
       const id = ++runId.current;
+      cancelRequested.current = false;
+      activeJobId.current = null;
       setState({ status: 'loading' });
       setFieldErrors({});
       try {
-        const preview = await autocountService.previewHttp({
+        const started = await autocountService.startPreviewJob({
+          scope: 'sample',
+          companyId: options?.companyId ?? '',
+          entityType: options?.entityType ?? '',
           connectionId,
           path,
           distinctOf,
-          companyId: options?.companyId,
-          entityType: options?.entityType,
           lookups: options?.lookups,
           combine: options?.combine,
         });
         if (id !== runId.current) return false;
-        setState({ status: 'success', preview });
-        return preview;
+        activeJobId.current = started.jobId;
+        attachedJobIdRef.current = started.jobId;
+        return await pollUntilTerminal(started.jobId, id);
       } catch (e) {
         if (id !== runId.current) return false;
         const errors = e instanceof ApiError ? readFieldErrors(e.detail) : {};
@@ -551,14 +789,38 @@ export function useHttpPreview(): UseHttpPreviewResult {
         return false;
       }
     },
-    [],
+    [pollUntilTerminal],
   );
+
+  // AC-11-23/27 - re-attach to an already-in-flight job after a remount/
+  // reload (`task.previewJobId`): a poll, never a fresh `startPreviewJob`
+  // (which would start a SECOND walk the claim would just reject anyway).
+  // Attaches once per job id - a re-render carrying the SAME id (the task
+  // re-fetched while this hook is already polling it) is a no-op.
+  useEffect(() => {
+    if (!initialJobId || attachedJobIdRef.current === initialJobId) return;
+    attachedJobIdRef.current = initialJobId;
+    const id = ++runId.current;
+    cancelRequested.current = false;
+    activeJobId.current = initialJobId;
+    setState({ status: 'loading' });
+    setFieldErrors({});
+    void pollUntilTerminal(initialJobId, id);
+  }, [initialJobId, pollUntilTerminal]);
+
+  const cancel = useCallback(() => {
+    if (!activeJobId.current) return;
+    cancelRequested.current = true;
+    void autocountService.cancelPreviewJob(activeJobId.current);
+  }, []);
 
   const reset = useCallback(() => {
     runId.current += 1;
+    cancelRequested.current = false;
+    activeJobId.current = null;
     setState({ status: 'idle' });
     setFieldErrors({});
   }, []);
 
-  return { state, run, fieldErrors, reset };
+  return { state, run, fieldErrors, reset, cancel };
 }

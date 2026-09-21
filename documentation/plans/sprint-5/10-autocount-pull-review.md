@@ -974,9 +974,15 @@ While building: `{"snapshotId": "...", "entity": "...", "companyCode": "...",
 ```
 `progress` is ABSENT whenever it is not known (before page 1 answers, on a bare-array endpoint,
 during a stage with no page count). `stage` is one of `source`, `lookup:<alias>`, `combine`,
-`mapping`. Treat an absent hint as "still building" - it is a courtesy for your progress bar, not
-a contract you can depend on. On failure: `{"...", "status": "failed",
-"error": {"code": "SOURCE_PAGE_FAILED", "message": "..."}}`.
+`mapping`, `dry_run`, `storing` (sprint-5/11 S5's own AC-11-40 vocabulary, shared with the
+preview job so both engines never drift onto two lists; a snapshot build's own header only ever
+reaches `source`/`lookup:<alias>`/`combine`/`storing` - `mapping`/`dry_run` are the full-scope
+preview job's stages, never shown here). `pagesDone`/`pagesTotal` are STAGE-RELATIVE, never
+monotonic across the whole build: they count PAGES during `source`/`lookup:<alias>`, ROWS during
+`storing` (the row-insert loop's own progress) - a caller comparing counts across two different
+`stage` values is comparing two different units. Treat an absent hint as "still building" - it is
+a courtesy for your progress bar, not a contract you can depend on. On failure: `{"...", "status":
+"failed", "error": {"code": "SOURCE_PAGE_FAILED", "message": "..."}}`.
 
 A STOCK header carries instead:
 ```json

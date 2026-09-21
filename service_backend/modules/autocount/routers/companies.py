@@ -28,7 +28,6 @@ from ..schemas import (
     EntityConfigItem,
     EntityConfigUpdate,
     EntityDeliveryModeUpdate,
-    EtlPreviewResponse,
     EtlRepushResponse,
     EtlRunStartResponse,
     BrandContractGate,
@@ -40,6 +39,7 @@ from ..schemas import (
     MappingUpdateRequest,
     MappingUpdateRow,
     MappingViewResponse,
+    PreviewJobStartOut,
     SimulateRequest,
     SimulateResponse,
     SorentoFieldOut,
@@ -66,6 +66,7 @@ from ..services import (
     SinkTargetValidationError,
     document_prerequisites,
 )
+from ..services.preview_job_service import PreviewJobService
 from ..http_source.errors import HttpSourceError
 from ..sql_source.errors import SqlSourceError
 from .sql import raise_sql_error
@@ -526,6 +527,7 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         ),
         deliveryMode=view.delivery_mode,
         combineOutputColumns=view.combine_output_columns,
+        previewJobId=view.preview_job_id,
     )
 
 
@@ -664,7 +666,8 @@ def update_etl_task(
 
 @router.post(
     "/{company_id}/entities/{entity_type}/etl-task/preview",
-    response_model=EtlPreviewResponse,
+    response_model=PreviewJobStartOut,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 def preview_etl_task(
     company_id: str,
@@ -672,19 +675,25 @@ def preview_etl_task(
     current_user: User = Depends(require_permission("autocount.sync.run")),
     db: Session = Depends(get_db),
 ):
-    """Dry-run the INITIAL LOAD against the consumer - writes NOTHING.
+    """sprint-5/11 (AC-11-21/22) - starts the ``full``-scope
+    ``autocount_source_preview`` job (Review & Activate's Run preview) and
+    returns 202 ``{jobId, status}``; no extraction happens in THIS request.
+    A never-configured task still refuses SYNCHRONOUSLY (today's
+    ``EtlStateError`` -> 409, unchanged) - no job is ever created for a task
+    that cannot run. Poll ``GET /autocount/previews/{jobId}`` for the landed
+    result - the SAME ``{task, preview}`` shape this route used to return.
 
     Gated on ``sync.run`` rather than ``companies.manage``: it reaches the
     source database and the consumer, which is the "make data move" authority
     even though nothing is written.
     """
     try:
-        view, preview = EtlService(db).preview_task(
-            current_user.tenant_id, company_id, entity_type
+        job_id, wire_status = PreviewJobService(db).start_full(
+            current_user.tenant_id, company_id=company_id, entity_type=entity_type,
         )
     except (AutocountServiceError, SqlSourceError, HttpSourceError) as exc:
         return _raise_task(exc)
-    return EtlPreviewResponse(task=_task_response(view), preview=preview)
+    return PreviewJobStartOut(jobId=job_id, status=wire_status)
 
 
 @router.post(

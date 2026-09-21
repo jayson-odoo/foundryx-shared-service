@@ -144,10 +144,11 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
       <ActivateTab company={company()} task={task()} configDirty={false} preview={preview()} lifecycle={lifecycle()} onRan={vi.fn()} />,
     );
     expect(screen.getByTestId('etl-run-preview')).toBeEnabled();
-    // Foolproof-UI (S2 review NIT): the disabled state itself carries the
-    // "not yet" signal - no procedural "Preview before activating" caption.
     expect(screen.getByTestId('etl-activate')).toBeDisabled();
-    expect(screen.queryByTestId('activate-blocked')).not.toBeInTheDocument();
+    // sprint-5/11 S6 follow-ups (owner-reported live, reverses the earlier
+    // S2 review NIT) - a missing preview IS now stated beside the button,
+    // one sentence, since it is the SOLE reason Activate is disabled here.
+    expect(screen.getByTestId('activate-blocked')).toHaveTextContent('Test the source first.');
 
     rerender(
       <ActivateTab
@@ -161,6 +162,7 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
     );
     expect(screen.getByTestId('etl-activate')).toBeEnabled();
     expect(screen.getByTestId('etl-preview-passed')).toBeInTheDocument();
+    expect(screen.queryByTestId('activate-blocked')).not.toBeInTheDocument();
   });
 
   it('blocks Activate but keeps Run preview enabled when the last preview reported failed rows (S5 review SHOULD-FIX 4b)', () => {
@@ -179,6 +181,9 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
     expect(screen.getByTestId('etl-run-preview')).toBeEnabled();
     expect(screen.getByTestId('etl-activate')).toBeDisabled();
     expect(screen.getByTestId('etl-preview-failed')).toHaveTextContent('2 failed row');
+    // A preview DID run (and its own failed-rows alert already explains the
+    // block) - the missing-preview caption must never ALSO appear.
+    expect(screen.queryByTestId('activate-blocked')).not.toBeInTheDocument();
   });
 
   it('re-enables Activate once a re-run preview reports zero failed rows', () => {
@@ -212,12 +217,33 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
     expect(screen.getByTestId('etl-activate')).toBeDisabled();
   });
 
+  it('never states the missing-preview reason when a PREREQUISITE (not a missing preview) is the actual block', () => {
+    // No preview yet EITHER, but the stated prerequisite alert above already
+    // explains the block - the "Test the source first." caption must not
+    // also appear (it is reserved for when a missing preview is the SOLE
+    // reason Activate is disabled).
+    render(
+      <ActivateTab
+        company={company({ sorentoCompanyCode: null })}
+        task={task()}
+        configDirty={false}
+        preview={preview()}
+        lifecycle={lifecycle()}
+        onRan={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('activate-prerequisite-companyCode')).toBeInTheDocument();
+    expect(screen.getByTestId('etl-activate')).toBeDisabled();
+    expect(screen.queryByTestId('activate-blocked')).not.toBeInTheDocument();
+  });
+
   it('withholds on unsaved edits (a preview of an unsaved query proves nothing)', () => {
     render(
       <ActivateTab company={company()} task={task()} configDirty preview={preview()} lifecycle={lifecycle()} onRan={vi.fn()} />,
     );
     expect(screen.getByTestId('activate-prerequisite-unsaved')).toBeInTheDocument();
     expect(screen.getByTestId('etl-run-preview')).toBeDisabled();
+    expect(screen.queryByTestId('activate-blocked')).not.toBeInTheDocument();
   });
 
   it('renders a Sorento anchor 422 as a task-level error with its title, not a dry-run failure', () => {
@@ -238,6 +264,57 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
     expect(alert).toHaveTextContent('Sorento company code is ambiguous');
     expect(alert).toHaveTextContent('Two companies match.');
     expect(screen.queryByTestId('preview-error')).not.toBeInTheDocument();
+  });
+
+  describe('pull-only entity dry-run copy (sprint-5/11 S6 follow-ups, owner-reported live)', () => {
+    function notPreviewableState(): UseEtlTaskPreviewResult {
+      return preview({
+        status: 'success',
+        preview: {
+          previewable: false,
+          sink: 'logging',
+          reason:
+            'No consumer is configured for this company, so there is nothing to dry-run. Point the company at Sorento first.',
+        },
+      });
+    }
+
+    it('replaces the misleading "Point the company at Sorento first" copy with a neutral empty state for a pull-only entity', () => {
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ entityType: 'stock_balance' })}
+          configDirty={false}
+          preview={notPreviewableState()}
+          lifecycle={lifecycle()}
+          onRan={vi.fn()}
+        />,
+      );
+      const emptyState = screen.getByTestId('preview-pull-only-empty-state');
+      expect(emptyState).toHaveTextContent('Pull-only extract');
+      expect(emptyState).toHaveTextContent(
+        'Nothing to dry-run. Test the source on the Source tab, then Activate.',
+      );
+      expect(screen.queryByText(/Point the company at Sorento first/)).not.toBeInTheDocument();
+      expect(screen.queryByTestId('preview-unavailable')).not.toBeInTheDocument();
+    });
+
+    it('still shows the backend reason verbatim for a NON-pull-only entity in the same not-previewable state (control)', () => {
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ entityType: 'customer' })}
+          configDirty={false}
+          preview={notPreviewableState()}
+          lifecycle={lifecycle()}
+          onRan={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId('preview-unavailable')).toHaveTextContent(
+        /Point the company at Sorento first/,
+      );
+      expect(screen.queryByTestId('preview-pull-only-empty-state')).not.toBeInTheDocument();
+    });
   });
 
   it('shows Pause + Run now while active, Resume while paused, and the last run error on the task', async () => {

@@ -348,6 +348,23 @@ def _url(company_id: str, suffix: str = "") -> str:
     return f"/autocount/companies/{company_id}/entities/customer/etl-task{suffix}"
 
 
+def _preview(client, company_id: str, headers: Dict[str, str] = None):
+    """sprint-5/11 (AC-11-21/22) - ``POST .../etl-task/preview`` is now a
+    202 job start; this starts it and (for a 202) immediately polls the
+    job - under this suite's eager execution the job is ALREADY terminal by
+    the time the POST returns, so ONE poll is enough. Returns the POLL
+    response for a 202 (``{status, result: {task, preview}, error,
+    taskError}``), or the POST response UNCHANGED for anything the
+    pre-flight gate itself still rejects synchronously (409/404 - a task
+    that cannot run at all, never a job row)."""
+    headers = headers or _auth(client)
+    response = client.post(_url(company_id, "/preview"), headers=headers)
+    if response.status_code != 202:
+        return response
+    job_id = response.json()["jobId"]
+    return client.get(f"/autocount/previews/{job_id}", headers=headers)
+
+
 # ── PATCH .../entities/{entityType} - the sourceImpl switch (AC-22-08) ───────
 
 
@@ -465,9 +482,11 @@ def test_switching_to_logging_keeps_the_company_code(client, session_factory, ri
 
 def test_preview_dry_runs_the_initial_load_and_stamps_the_gate(client, rig, consumer):
     company_id, _sql_id = rig
-    response = client.post(_url(company_id, "/preview"), headers=_auth(client))
+    response = _preview(client, company_id)
     assert response.status_code == 200, response.text
-    body = response.json()
+    poll = response.json()
+    assert poll["status"] == "done", poll
+    body = poll["result"]
     assert body["preview"]["previewable"] is True
     assert body["preview"]["summary"]["created"] == 2
     assert [p["sourceRef"] for p in body["preview"]["predictions"]] == [
@@ -512,8 +531,9 @@ def test_preview_stamps_the_failed_count_on_the_wire(client, rig, consumer):
         )
 
     consumer.responder = failing
-    body = client.post(_url(company_id, "/preview"), headers=_auth(client)).json()
-    assert body["task"]["lastPreviewFailedCount"] == 2  # both ROWS failed
+    poll = _preview(client, company_id).json()
+    assert poll["status"] == "done", poll
+    assert poll["result"]["task"]["lastPreviewFailedCount"] == 2  # both ROWS failed
 
 
 def test_preview_on_a_logging_sink_company_is_not_previewable(client, rig, consumer):
@@ -523,7 +543,9 @@ def test_preview_on_a_logging_sink_company_is_not_previewable(client, rig, consu
         json={"sinkImpl": "logging"},
         headers=_auth(client),
     )
-    body = client.post(_url(company_id, "/preview"), headers=_auth(client)).json()
+    poll = _preview(client, company_id).json()
+    assert poll["status"] == "done", poll
+    body = poll["result"]
     assert body["preview"]["previewable"] is False
     # NOT stamped: a DB task auto-pushes, so activating one with nowhere to
     # push would run forever and deliver nothing.
@@ -554,29 +576,38 @@ def test_an_anchor_422_is_a_TASK_level_error_carrying_its_code(client, rig, cons
         },
     )
     company_id, _sql_id = rig
-    response = client.post(_url(company_id, "/preview"), headers=_auth(client))
-    assert response.status_code == 422, response.text
-    body = response.json()
-    assert body["detail"]["code"] == "UNKNOWN_COMPANY"
-    assert body["detail"]["message"] == "Company 'SRT' was not found."
-    assert body["message"] == "Company 'SRT' was not found."
+    poll = _preview(client, company_id)
+    assert poll.status_code == 200, poll.text
+    body = poll.json()
+    assert body["status"] == "failed", body
+    assert body["taskError"]["code"] == "UNKNOWN_COMPANY", body
+    assert body["taskError"]["message"] == "Company 'SRT' was not found.", body
+    assert body["error"] == "Company 'SRT' was not found.", body
 
 
 def test_an_unreachable_consumer_is_a_502(client, rig, consumer):
+    """sprint-5/11 (AC-11-21/22) - the preview is a job now, so what used
+    to be an immediate 502 is a FAILED job with an operator-safe message -
+    there is no synchronous HTTP status to carry the distinction on once
+    the walk moved off-request."""
     consumer.responder = lambda _body: httpx.Response(500, json={"detail": "boom"})
     company_id, _sql_id = rig
-    assert client.post(
-        _url(company_id, "/preview"), headers=_auth(client)
-    ).status_code == 502
+    poll = _preview(client, company_id)
+    assert poll.status_code == 200, poll.text
+    body = poll.json()
+    assert body["status"] == "failed", body
+    assert body["error"], body
 
 
-def test_a_source_connect_failure_at_preview_is_a_502_not_a_500(client, session_factory, rig):
+def test_a_source_connect_failure_at_preview_fails_the_job_cleanly(client, session_factory, rig):
     """S2 review SHOULD-FIX 4: ``EtlService.preview_task`` only caught
     ``AutocountServiceError``, so ``SqlConnectError``/``SqlQueryError``/
     ``SqlTaskNotConfigured`` (raised while extracting from the SOURCE, not
-    the consumer) escaped as an unhandled 500. Same translation as the raw
-    ``/sql/preview`` route (``routers/sql.py``'s ``raise_sql_error``): a
-    connect failure is a 502, never a stack trace."""
+    the consumer) escaped as an unhandled crash. sprint-5/11 - the preview
+    is a job now: a connect failure fails the job with an operator-safe
+    message (never a stack trace, never a credential), rather than the old
+    synchronous 502 (there is no HTTP status to carry that distinction on
+    once the walk moved off-request)."""
     company_id, sql_id = rig
     db = session_factory()
     conn = db.get(Connection, sql_id)
@@ -587,16 +618,20 @@ def test_a_source_connect_failure_at_preview_is_a_502_not_a_500(client, session_
     db.close()
     RUNTIME.evict(sql_id)  # drop the injected SQLite engine - force a REAL one
 
-    response = client.post(_url(company_id, "/preview"), headers=_auth(client))
-    assert response.status_code == 502, response.text
-    assert PASSWORD not in response.text
-    assert "://" not in response.json()["detail"]
+    poll = _preview(client, company_id)
+    assert poll.status_code == 200, poll.text
+    body = poll.json()
+    assert body["status"] == "failed", body
+    assert PASSWORD not in poll.text
+    assert "://" not in (body["error"] or "")
 
 
-def test_a_query_the_source_rejects_at_preview_is_a_400_not_a_500(client, session_factory, rig):
+def test_a_query_the_source_rejects_at_preview_fails_the_job_cleanly(client, session_factory, rig):
     """The SAVED query is re-run at preview time - a table dropped AFTER save
-    must surface as the source's own 400, not an unhandled 500 (mirrors the
-    ``/sql/preview`` route's ``SqlQueryError`` mapping)."""
+    must surface as the source's own clean failure, not an unhandled crash
+    (mirrors the ``/sql/preview`` route's ``SqlQueryError`` mapping; the
+    preview is a job now, so this lands as a FAILED job, not a synchronous
+    400)."""
     company_id, _sql_id = rig
     db = session_factory()
     config = _config_row(db, db.get(AcCompany, company_id))
@@ -610,15 +645,19 @@ def test_a_query_the_source_rejects_at_preview_is_a_400_not_a_500(client, sessio
     db.commit()
     db.close()
 
-    response = client.post(_url(company_id, "/preview"), headers=_auth(client))
-    assert response.status_code == 400, response.text
+    poll = _preview(client, company_id)
+    assert poll.status_code == 200, poll.text
+    body = poll.json()
+    assert body["status"] == "failed", body
+    assert body["error"], body
 
 
-def test_a_cleared_connection_at_preview_is_a_422_not_a_500(client, session_factory, rig):
+def test_a_cleared_connection_at_preview_fails_the_job_cleanly(client, session_factory, rig):
     """``SqlTaskNotConfigured`` (a stored ``connectionId`` no longer set) is
-    a configuration problem, same class as the static guard - 422, never an
-    unhandled 500. ``_require_runnable`` only checks query/keyColumns, so a
-    cleared connection reaches ``SqlDbSource`` itself."""
+    a configuration problem, same class as the static guard - never an
+    unhandled crash. ``_require_runnable`` only checks query/keyColumns, so
+    a cleared connection reaches ``SqlDbSource`` itself; the preview is a
+    job now, so this lands as a FAILED job, not a synchronous 422."""
     company_id, _sql_id = rig
     db = session_factory()
     config = _config_row(db, db.get(AcCompany, company_id))
@@ -626,8 +665,11 @@ def test_a_cleared_connection_at_preview_is_a_422_not_a_500(client, session_fact
     db.commit()
     db.close()
 
-    response = client.post(_url(company_id, "/preview"), headers=_auth(client))
-    assert response.status_code == 422, response.text
+    poll = _preview(client, company_id)
+    assert poll.status_code == 200, poll.text
+    body = poll.json()
+    assert body["status"] == "failed", body
+    assert body["error"], body
 
 
 def test_sales_order_is_no_longer_the_not_yet_extractable_entity(client, session_factory, rig):
@@ -752,8 +794,9 @@ def test_activate_is_refused_when_the_preview_reported_failed_rows(
         )
 
     consumer.responder = failing
-    preview = client.post(_url(company_id, "/preview"), headers=_auth(client))
+    preview = _preview(client, company_id)
     assert preview.status_code == 200, preview.text
+    assert preview.json()["status"] == "done", preview.text
     response = _activate(client, company_id)
     assert response.status_code == 409, response.text
     assert "failed" in response.json()["detail"].lower()

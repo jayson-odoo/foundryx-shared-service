@@ -20,7 +20,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 import sqlalchemy as sa
@@ -121,7 +121,10 @@ from ..http_source.combine import (
     combine_output_columns,
     validate_combine,
 )
-from ..http_source.client import connection_sizing
+from ..http_source.client import (
+    PREVIEW_REQUEST_TIMEOUT_CEILING_SECONDS,
+    connection_sizing,
+)
 from ..http_source.lookups import effective_result_columns, stored_raw_columns, validate_lookups
 from ..http_source.preview import (
     HttpPreviewError,
@@ -324,6 +327,11 @@ class EtlTaskView:
     # (AC-10-80). Wiring the Mapping tab's picker onto this field is a
     # separate FE slice; this field only makes the schema available.
     combine_output_columns: List[str] = field(default_factory=list)
+    # sprint-5/11 (AC-11-23/27) - the id of this task's IN-FLIGHT preview
+    # job, if any (``AcEntityConfig.preview_job_id``). Lets a remounted
+    # editor re-attach to a running Test/Run-preview job. ``None`` = no
+    # preview in flight.
+    preview_job_id: Optional[str] = None
 
 
 @dataclass
@@ -896,7 +904,15 @@ class EtlService:
         # would use (``http_source.client.connection_sizing``), so this
         # probe respects the connection's own ``requestTimeoutSeconds``
         # instead of always building its client at the bare module default.
-        _page_size, timeout_seconds = connection_sizing(conn.config_json or {})
+        # sprint-5/11 (AC-11-29) - clamped to the Cloudflare-safe ceiling:
+        # this is the ONE preview surface that stays synchronous (the
+        # Lookups editor's inline probe), so a connection configured at the
+        # full 100s ``requestTimeoutSeconds`` must never hold this single
+        # request open past what Cloudflare itself would cut.
+        timeout_seconds = min(
+            connection_sizing(conn.config_json or {}).request_timeout_seconds,
+            PREVIEW_REQUEST_TIMEOUT_CEILING_SECONDS,
+        )
         try:
             result = run_http_preview(
                 base_url, path, transport=transport, timeout_seconds=timeout_seconds
@@ -904,6 +920,40 @@ class EtlService:
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc
         return result.columns
+
+    def validate_http_preview_request(
+        self,
+        tenant_id: str,
+        connection_id: str,
+        path: str,
+        *,
+        lookups: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """sprint-5/11 (AC-11-22) - the structural checks ``preview_http``
+        already ran BEFORE touching the network (connection/auth mode, path
+        shape, every lookup's own structural rule), split out so the
+        preview-job start can 422 BEFORE a ``BackgroundJob`` row ever
+        exists, never queued-then-failed. No network call, ever - reused
+        (never duplicated) by ``preview_http`` itself below."""
+        conn = self.connections.get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
+        if conn is None or auth_mode(conn.config_json or {}) != AUTH_NONE:
+            raise EtlValidationError(
+                {"connectionId": "Choose an open (no-auth) AutoCount API connection."}
+            )
+        path_error = validate_http_path(path)
+        if path_error:
+            raise EtlValidationError({"path": path_error})
+        # review round 1 blocker 1(b) - every STRUCTURAL lookup rule (path,
+        # alias regex, the 5-cap, empty on/fields, a duplicate alias, a
+        # forward reference) runs BEFORE a single outbound request, even on
+        # a never-previewed task (`source_columns=None`) - the reviewer
+        # proved live that a `/../db2/itembypage` lookup path was fetched
+        # with no check at all.
+        clean_lookups = [dict(item) for item in (lookups or []) if isinstance(item, dict)]
+        if clean_lookups:
+            lookup_errors = validate_lookups(clean_lookups, None)
+            if lookup_errors:
+                raise EtlValidationError(lookup_errors)
 
     def preview_http(
         self,
@@ -917,6 +967,11 @@ class EtlService:
         company_id: Optional[str] = None,
         entity_type: Optional[str] = None,
         transport: Any = None,
+        # sprint-5/11 review round 2 (item 5, AC-11-40) - threaded straight
+        # to ``run_http_preview`` (source/lookup) and fired here for
+        # ``combine`` - ``None`` (every caller before this) leaves the
+        # sample exactly as it was.
+        on_page: Optional[Callable[[str, int, Optional[int]], None]] = None,
     ) -> Tuple[HttpPreviewResult, Optional["EtlTaskView"]]:
         """One page-1 sample against an OPEN connection (AC-08-14).
 
@@ -951,31 +1006,20 @@ class EtlService:
         exactly as a plain lookup preview would - no combine block, no
         funnel, the response unchanged.
         """
+        # sprint-5/11 (AC-11-22) - the SAME structural gate the preview-job
+        # start uses as its own pre-flight (never a second copy of these
+        # rules). ``conn`` is re-fetched right after (one extra tenant-scoped
+        # read, cheap) rather than threaded back out of the validator, which
+        # would otherwise couple its signature to this method's own needs.
+        self.validate_http_preview_request(tenant_id, connection_id, path, lookups=lookups)
         conn = self.connections.get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
-        if conn is None or auth_mode(conn.config_json or {}) != AUTH_NONE:
-            raise EtlValidationError(
-                {"connectionId": "Choose an open (no-auth) AutoCount API connection."}
-            )
         base_url = str((conn.config_json or {}).get("baseUrl") or "").strip()
-        path_error = validate_http_path(path)
-        if path_error:
-            raise EtlValidationError({"path": path_error})
-        # review round 1 blocker 1(b) - every STRUCTURAL lookup rule (path,
-        # alias regex, the 5-cap, empty on/fields, a duplicate alias, a
-        # forward reference) runs BEFORE a single outbound request, even on
-        # a never-previewed task (`source_columns=None`) - the reviewer
-        # proved live that a `/../db2/itembypage` lookup path was fetched
-        # with no check at all.
         clean_lookups = [dict(item) for item in (lookups or []) if isinstance(item, dict)]
-        if clean_lookups:
-            lookup_errors = validate_lookups(clean_lookups, None)
-            if lookup_errors:
-                raise EtlValidationError(lookup_errors)
         # sprint-5/10 confirm-3 S1 - the SAME connection sizing a real run
         # would use (``http_source.client.connection_sizing``); a preview
         # against a connection with a raised ``requestTimeoutSeconds`` used
         # to always time out at the bare module default instead.
-        _page_size, timeout_seconds = connection_sizing(conn.config_json or {})
+        timeout_seconds = connection_sizing(conn.config_json or {}).request_timeout_seconds
         try:
             result = run_http_preview(
                 base_url,
@@ -984,6 +1028,7 @@ class EtlService:
                 lookups=clean_lookups,
                 transport=transport,
                 timeout_seconds=timeout_seconds,
+                on_page=on_page,
             )
         except HttpPreviewError as exc:
             raise EtlValidationError({exc.field: exc.message}) from exc
@@ -1020,6 +1065,8 @@ class EtlService:
             # ``combine.measures[i].source`` exactly like a drop-rule
             # failure keys to ``combine.drop[i].formula`` - never a bare
             # 500 for a preview.
+            if on_page is not None:
+                on_page("combine", 1, None)
             try:
                 combine_result = apply_combine(result.rows, combine)
             except CombineDropError as exc:
@@ -1180,6 +1227,7 @@ class EtlService:
             # and the preview route already derive it from - never a second
             # computation that could drift.
             combine_output_columns=combine_output_columns(merged.get("combine")),
+            preview_job_id=config.preview_job_id if config is not None else None,
         )
 
     def _brand_contract_gate(
@@ -2302,8 +2350,24 @@ class EtlService:
             target += timedelta(days=1)
         return incremental, target
 
-    def preview_task(
+    def validate_task_previewable(
         self, tenant_id: str, company_id: str, entity_type: str
+    ) -> None:
+        """sprint-5/11 (AC-11-22) - ``preview_task``'s own pre-flight, no
+        network: the entity/company exist (``CompanyNotFound`` -> 404) and
+        the task has a saved, runnable config (``EtlStateError`` -> 409).
+        Reused as the preview-job start's gate so a never-configured task
+        refuses SYNCHRONOUSLY, before a ``BackgroundJob`` row ever exists."""
+        _company, config = self._task_config(tenant_id, company_id, entity_type)
+        self._require_runnable(config)
+
+    def preview_task(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        *,
+        on_page: Optional[Callable[[str, int, Optional[int]], None]] = None,
     ) -> Tuple[EtlTaskView, Dict[str, Any]]:
         """The initial-load dry run against the consumer - writes NOTHING.
 
@@ -2324,6 +2388,13 @@ class EtlService:
         wrong) and ``contractVersionMismatch`` (Sorento's own advertised
         ``/contract`` version is HIGHER than this connection's configured
         one - advisory only, never auto-applied).
+
+        ``on_page`` (sprint-5/11, AC-11-24/40) - threaded to ``HttpApiSource``'s
+        own ``heartbeat`` callback (unchanged mechanism, MUST-FIX 1) for an
+        ``autocount_http`` task ONLY: the preview-job handler's cooperative
+        cancel checkpoint AND (S5) progress-stamping checkpoint, fired after
+        every page of the walk with ``(stage, page, totalPages)``. ``None``
+        (every caller before this AC) leaves the walk exactly as it was.
         """
         from ..sinks_sorento import SinkAnchorError, SorentoSinkError
 
@@ -2342,7 +2413,7 @@ class EtlService:
         # Sorento), so this extraction is NOT gated on ``previewable``.
         if previewable or is_document_entity(entity_type):
             records, current_refs, page_complete = self._extract_and_map(
-                tenant_id, company, config, entity_type
+                tenant_id, company, config, entity_type, on_page=on_page
             )
 
         if not previewable:
@@ -2378,6 +2449,12 @@ class EtlService:
                 payload["warnings"] = warnings
             return self._task_view(company_id, entity_type, config, tenant_id=tenant_id), payload
 
+        # sprint-5/11 S5 (AC-11-40) - the "dry_run" stage transition, fired
+        # once right before the consumer call (not page-driven - `page`/
+        # `total` are unknown, `0`/`None`). `None` (every caller but the
+        # preview job) leaves this exactly as it was.
+        if on_page is not None:
+            on_page("dry_run", 0, None)
         try:
             result = sink.dry_run([r for r in records if r is not None])
         except SinkAnchorError as exc:
@@ -2494,7 +2571,15 @@ class EtlService:
                 overlaps.append({"entityType": other, "sourceRefs": shared})
         return overlaps
 
-    def _extract_and_map(self, tenant_id: str, company, config, entity_type: str):
+    def _extract_and_map(
+        self,
+        tenant_id: str,
+        company,
+        config,
+        entity_type: str,
+        *,
+        on_page: Optional[Callable[[str, int, Optional[int]], None]] = None,
+    ):
         """Run the saved query and map every row - NO staging, NO hash writes.
 
         Deferred import: the DB source imports the mapping + repository layers,
@@ -2504,6 +2589,12 @@ class EtlService:
         Returns ``(mapped_records, current_refs, page_complete)`` -
         ``page_complete`` is ``None`` for a non-watermarked (unpaged) task,
         and a bool for a watermarked one (see below).
+
+        ``on_page`` (sprint-5/11, AC-11-24/40) - threaded to ``HttpApiSource``'s
+        own ``heartbeat`` callback for an ``autocount_http`` task ONLY (the
+        SQL branch has no per-page checkpoint to hook into for a preview
+        today - out of this slice's scope, unchanged), fired with
+        ``(stage, page, totalPages)``.
 
         !!  A WATERMARKED TASK'S PREVIEW READS AT MOST ONE PAGE (F1, review
             round 2 BLOCKER).  !!
@@ -2554,6 +2645,12 @@ class EtlService:
                 # as adds, which it cannot do if the preview already
                 # recorded their hashes.
                 persist_hashes=False,
+                # sprint-5/11 (AC-11-24) - the SAME per-page liveness
+                # callback a real sync's ``sync._heartbeat`` uses (MUST-FIX
+                # 1), repurposed as this preview's cooperative-cancel
+                # checkpoint. ``None`` outside a preview-job call leaves the
+                # walk exactly as it was.
+                heartbeat=on_page,
             )
         else:
             source = SqlDbSource(
@@ -2638,6 +2735,13 @@ class EtlService:
             profile=profile,
             database_name=company.database_name,
         )
+        # sprint-5/11 S5 (AC-11-40) - the SAME callback names the "mapping"
+        # stage transition too (not page-driven, so `page`/`total` are
+        # unknown - `0`/`None`), fired once, right before the per-record
+        # mapping loop below starts. `None` (every caller but the preview
+        # job) leaves this exactly as it was.
+        if on_page is not None:
+            on_page("mapping", 0, None)
         mapped = [engine.map_document(record.raw) for record in raw_records]
         # ``current_refs`` (sprint-5/02, AC-02-12) is returned alongside the
         # mapped records so ``preview_task`` can cross-check this run's own

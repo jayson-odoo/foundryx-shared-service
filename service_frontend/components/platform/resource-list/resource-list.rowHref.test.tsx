@@ -102,11 +102,23 @@ describe('AC-DLA-29 ResourceList rowHref wiring', () => {
   it('a rowHref of "#" opt-out row carries no cursor-pointer (no onRowClick fallback, fix round 1)', async () => {
     render(<ResourceList config={baseConfig({ rowHref: () => '#' })} />);
     const table = await screen.findByRole('table');
-    const bodyRows = await waitFor(() => {
-      const found = within(table).getAllByRole('row').slice(1); // drop the header row
-      expect(found.length).toBeGreaterThan(0);
-      return found;
-    });
+    // Wait for a REAL row's own content, not merely "row count > 0" - the
+    // loading skeleton (`data-grid-table.tsx`'s `unknownHref` heuristic)
+    // intentionally still carries `cursor-pointer` while `rowHref` is
+    // configured at the list level (a skeleton row has no `row.original`
+    // yet to resolve the opt-out against), and it satisfies a bare
+    // `getAllByRole('row').length > 0` check just as well as a real row
+    // does. A `waitFor` polling that check alone can resolve during the
+    // skeleton's own render pass before the async `fetcher` promise settles
+    // and the skeleton unmounts - fast locally, but exposed under CI's
+    // `--minWorkers=2 --maxWorkers=2` contention (a slower event loop turn
+    // lets the assertion run before that swap happens), so the flake was in
+    // the test's own timing, not the component. `findByText` only resolves
+    // once the fetched row's own name is on the page, i.e. after the
+    // skeleton has already been replaced.
+    await screen.findByText(rows[0].name);
+    const bodyRows = within(table).getAllByRole('row').slice(1); // drop the header row
+    expect(bodyRows.length).toBeGreaterThan(0);
     for (const row of bodyRows) {
       expect(row.className).not.toContain('cursor-pointer');
     }
