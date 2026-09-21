@@ -365,6 +365,27 @@ def test_mutation_control_hash_changes_at_both_n(db, monkeypatch):
     db.refresh(original_n4)
     assert original_n1.status == "ready" and original_n4.status == "ready"
 
+    # sprint-5/11 S6 CI fix - `sync._run_pull_snapshot` stamps
+    # `extracted_at` from the REAL wall clock (`datetime.now(timezone.utc)`),
+    # never from the `now=` this test passes into `request_build` (that
+    # `now` only feeds the cooldown ARITHMETIC below, not the snapshot row).
+    # `PullService.request_build`'s cooldown keys `elapsed = now - (existing.
+    # extracted_at or existing.created_at)` - with a real `extracted_at` and
+    # a fixed fictional `NOW`/`later` (today's actual calendar date), `elapsed`
+    # depends on what real wall-clock time the suite happens to run at, so it
+    # passed locally (run before `later`) and failed on CI running `-n auto`
+    # later in the day (`elapsed` went negative, under the 60s cooldown).
+    # Force `extracted_at` to the test's own fictional `NOW` - same fix
+    # `test_s10_s3_snapshot_build_job.py::
+    # test_a_build_60s_after_the_previous_one_is_allowed_control` uses
+    # (directly controlling `extracted_at` rather than trusting real time) -
+    # so the cooldown check is deterministic regardless of when CI runs.
+    original_n1.extracted_at = NOW
+    original_n4.extracted_at = NOW
+    db.add(original_n1)
+    db.add(original_n4)
+    db.commit()
+
     later = NOW + timedelta(minutes=5)
     _patch_transport(
         monkeypatch, _transport(_fixture_handler(description_suffix="-MUTATED"))
