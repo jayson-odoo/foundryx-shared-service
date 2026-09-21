@@ -10,6 +10,7 @@ from celery import Celery
 
 from app.config import settings
 from app.lazy_registry import lazy_once
+from app.ops_liveness import KNOWN_QUEUES
 
 logger = logging.getLogger("foundryx.workflows")
 
@@ -35,6 +36,33 @@ celery_app.conf.update(
     # why). run_workflow / run_due / status.reevaluate / webhooks.retry_due all
     # publish here; worker runs with `-Q workflow`, beat inherits this default.
     task_default_queue="workflow",
+    # ── Worker starvation fix (sprint-5/11 S1, incident 2026-09-20/21) ──────
+    # `jobs.run` (background_jobs, potentially a 20+ minute AutoCount build)
+    # routes onto its OWN `jobs` queue - the dedicated `worker_jobs` compose
+    # service - so it can never again starve every beat tick sharing this
+    # app's single `workflow` queue. Every OTHER task (a tick,
+    # `workflows.run_workflow`, `jobs.sweep_orphaned`, `ops.ping`, ...) keeps
+    # the `task_default_queue` above. `jobs.run` stays REGISTERED on this
+    # same app (`app.jobs.worker` is imported below) - a message already
+    # queued on `workflow` at deploy time still executes; the isolation is
+    # queue ROUTING, not a second Celery app (D15/AC-11-80). An explicit
+    # `apply_async(queue=...)` override (a `JobHandlerDef.queue` type like
+    # `stt`/`bots`) still wins over this routing table.
+    task_routes={"jobs.run": {"queue": "jobs"}},
+    # Never hold a second message hostage (AC-11-81): the default prefetch
+    # of 4 is exactly what let one blocked child hold several beat messages
+    # in its buffer during the incident ("received by MainProcess, never
+    # executed"). `acks_late` stays the Celery default (False) for every
+    # task on this app - see `app/jobs/worker.py`'s own note (D17) for why
+    # `jobs.run` in particular must never ack late.
+    worker_prefetch_multiplier=1,
+    # App-level bound for the tick family (AC-11-82): any task with no OWN
+    # declared limit (every beat tick, `jobs.sweep_orphaned`, `ops.ping`)
+    # inherits this. `jobs.run` overrides it with its own generous,
+    # settings-driven bound (`app/jobs/worker.py`) - a legitimate 25+ minute
+    # build must survive where a wedged 5-minute tick must not.
+    task_soft_time_limit=300,
+    task_time_limit=330,
 )
 
 # Single minute-tick draining due scheduled workflows (plan sprint-2/09 D9).
@@ -87,6 +115,32 @@ celery_app.conf.beat_schedule = {
     # the frontend's lapse-time `GET current` performs the lazy commit
     # instead; this sweep is the safety net for whoever isn't watching.
     "pending-actions-commit-due": {"task": "pending_actions.commit_due", "schedule": 60.0},
+    # ── Worker starvation fix (sprint-5/11 S1, AC-11-56/AC-11-86, D16/D20) ──
+    # The orphan sweep's OWN beat tick, decoupled from the AutoCount
+    # scheduler: outside app startup, the scheduler tick was the ONLY caller
+    # of `fail_orphaned_running_jobs` - itself a tick on the very `workflow`
+    # queue the incident starved, so recovery was queued behind the thing it
+    # recovers. This tick runs on `workflow` (the app default; deliberately
+    # NEVER `jobs` - D16: the sweep must never share a queue with the jobs
+    # it sweeps) every 5 minutes and wraps the ALREADY-EXISTING
+    # `sweep_orphaned_jobs(db)` (RUNNING-only; the S2 undispatched-pending
+    # half is a separate slice).
+    "jobs-sweep-orphaned": {"task": "jobs.sweep_orphaned", "schedule": 300.0},
+    # A frozen worker is visible within minutes (AC-11-86, D20): beat itself
+    # stayed healthy for the whole 8-hour incident, so the signal has to be
+    # stamped by the CONSUMING worker, per queue - one beat entry PER known
+    # queue, each pinned onto that queue via `options.queue` so the ping
+    # actually reaches the worker consuming it (a ping that always landed on
+    # `workflow` would never catch a wedged `worker_jobs`).
+    **{
+        f"ops-ping-{queue}": {
+            "task": "ops.ping",
+            "schedule": 60.0,
+            "kwargs": {"queue": queue},
+            "options": {"queue": queue},
+        }
+        for queue in KNOWN_QUEUES
+    },
 }
 
 
@@ -324,6 +378,42 @@ def pending_actions_commit_due_task() -> dict:
         return {"committed": 0}
     finally:
         db.close()
+
+
+@celery_app.task(name="jobs.sweep_orphaned")
+def sweep_orphaned_jobs_task() -> dict:
+    """The orphan sweep's own 5-minute beat tick (sprint-5/11 S1, AC-11-56,
+    D16) - decoupled from the AutoCount scheduler tick that was the only
+    caller of this sweep outside app startup (and itself lived on the
+    starved `workflow` queue during the 2026-09-20/21 incident). Wraps the
+    ALREADY-EXISTING `sweep_orphaned_jobs(db)` (RUNNING-only, every
+    `heartbeats=True` job type); the S2 undispatched-pending half is a
+    separate sweep. Failure-isolated like every other tick on this beat."""
+    from app.database import SessionLocal
+    from app.jobs.service import sweep_orphaned_jobs
+
+    db = SessionLocal()
+    try:
+        return {"swept": sweep_orphaned_jobs(db)}
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("jobs.sweep_orphaned tick failed")
+        db.rollback()
+        return {"swept": 0}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="ops.ping")
+def ops_ping_task(queue: str) -> dict:
+    """Stamps this queue's liveness key (sprint-5/11 S1, AC-11-86, D20).
+    Published by beat onto EACH `KNOWN_QUEUES` entry every 60s, pinned via
+    `options.queue` so the ping actually lands on (and is answered by) the
+    worker consuming that specific queue - a ping that always landed on
+    `workflow` would never catch a wedged `worker_jobs`."""
+    from app.ops_liveness import stamp_liveness
+
+    stamp_liveness(queue)
+    return {"queue": queue}
 
 
 @celery_app.task(name="status.reevaluate_time_based")

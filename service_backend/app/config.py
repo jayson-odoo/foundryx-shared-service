@@ -216,6 +216,28 @@ class Settings(BaseSettings):
     # Run the orphan sweep in the API process lifespan. Off for a process
     # that must never touch job state at boot (a one-off script, a rig).
     background_job_orphan_sweep_on_startup: bool = True
+    # ── Worker starvation fix (sprint-5/11 S1, incident 2026-09-20/21) ──────
+    # `jobs.run`'s own declared soft/hard Celery time limit (AC-11-82, R10):
+    # generous, sized above the longest legitimate build measured in this
+    # plan (a 25+ minute Mocha snapshot) so it can never fire on a real run -
+    # it exists only to fail a WEDGED job cleanly instead of holding the
+    # `jobs` worker's slot forever. The hard limit is soft + 300s, derived in
+    # code (app/jobs/worker.py), never a second independent setting.
+    background_job_soft_time_limit_seconds: int = 7200
+    # Worker-process-only Postgres session bounds, settings-driven (AC-11-85).
+    # 0 = unset on every axis (the default, and the API's PERMANENT profile -
+    # never wired through the API's own engine construction). Wired through
+    # `app/database.py::worker_connect_args()` into the compose `worker_
+    # workflow` / `worker_jobs` services' `connect_args` ONLY. Seconds here;
+    # Postgres' GUCs want milliseconds (converted in `worker_connect_args`).
+    # R10 recommends 120s / 30s / 300s once confirmed against the measured
+    # slowest statement of a full SRT build - S0 could not complete that
+    # measurement on the shared dev Postgres (see 11-evidence/s0-baseline/
+    # README.md (c)); the compose defaults below carry R10's recommended
+    # values as a starting point, not a confirmed measurement.
+    worker_db_statement_timeout_seconds: int = 0
+    worker_db_lock_timeout_seconds: int = 0
+    worker_db_idle_in_transaction_session_timeout_seconds: int = 0
 
     # ── Platform LLM default (Phase B-i slice 1) ───────────────────────────
     # Env-seeds the PLATFORM tenant's LLM connection, exactly like

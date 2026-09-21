@@ -132,6 +132,51 @@ The pull path is a SNAPSHOT builder, not the push path's staged-diff machinery -
   KEEPS it; a cleared combine is never auto-reseeded from the preset (D29). The ONLY place a
   require/drop formula's return-type is checked against REAL sample data is `preview_http`
   (BL-SS-226) - a real task Save has no stored sample to check against.
+
+### The 2026-09-20/21 worker-starvation incident, and the rule it teaches (plan 11 S1)
+
+`foundryx_ss_worker_workflow` ran `celery -A app.workflow_engine.worker worker -Q workflow`
+with no `-c` on a 1-vCPU host, so there was exactly ONE `ForkPoolWorker` on the whole
+`workflow` queue - and `jobs.run` (the generic `background_jobs` dispatch task; in this case
+an AutoCount supplier sync) shared that ONE process with every 60s beat tick in the platform
+(`workflows.run_due`, `autocount.etl_sweep`, `status.reevaluate_time_based`, ...). A `jobs.run`
+for that sync started 2026-09-20T17:15:33Z and never returned. Every beat tick after it was
+published, received by the worker's `MainProcess`, and never executed for 8+ hours - **the
+diagnose signature is "received by MainProcess, never executed"**, not a missing/failed
+publish; check `celery events`/logs for a task that shows as received with no matching
+"succeeded"/"failed" line, not a broker-connectivity symptom. Beat itself was healthy the
+whole time (it kept publishing on schedule) - a beat-side heartbeat would have reported
+everything fine, which is why the liveness signal has to be stamped by the CONSUMING worker,
+per queue, not by beat.
+
+Three compounding gaps, all present at once: (1) no `task_time_limit`/`task_soft_time_limit`
+anywhere on the app, so a hung task holds its slot forever; (2) no
+`worker_prefetch_multiplier` set (Celery default 4), so the blocked child could hold several
+beat messages in its prefetch buffer at once; (3) `create_engine` passed no `connect_args`, so
+worker Postgres sessions had no `statement_timeout`/`lock_timeout`/
+`idle_in_transaction_session_timeout` - the vendor HTTP client and the Sorento sink both carry
+their own timeouts, so whatever hung was something with none (a Postgres lock wait or a raw
+driver socket). And the reason the symptom lasted 8 hours instead of 15 minutes: the ONLY
+caller of the orphan sweep outside app startup was the AutoCount scheduler's own beat tick -
+itself queued behind the very job it exists to recover from.
+
+**The rule this incident teaches (D16): a sweep - or any recovery/liveness mechanism - must
+never share a queue with the jobs it recovers from.** Concretely (sprint-5/11 S1,
+`app/workflow_engine/worker.py`): `jobs.run` now routes onto a dedicated `jobs` queue with its
+own compose worker (`worker_jobs`, lossless rollout - `worker_workflow` keeps the task
+registered so an already-queued message still runs); `worker_prefetch_multiplier=1` on the
+shared app; every task is time-limited (tick family: soft 300s/hard 330s app defaults;
+`jobs.run`: its own generous settings-driven bound, `background_job_soft_time_limit_seconds`,
+default 7200s, sized above the longest legitimate build); a wedged `jobs.run` fails
+cooperatively on `celery.exceptions.SoftTimeLimitExceeded` (`app/jobs/service.py::run_job`,
+caught BEFORE the generic `except Exception` so it gets its own sentence and closes module
+bookkeeping via the shared `close_module_bookkeeping` helper, never the generic "Job crashed"
+text); the orphan sweep gets its OWN 5-minute beat tick (`jobs.sweep_orphaned`) explicitly
+routed onto `workflow`, decoupled from the AutoCount scheduler entirely; worker Postgres
+sessions get settings-driven timeouts via `app/database.py::worker_connect_args()`, wired ONLY
+into the worker compose services, never the API; and `ops.ping` stamps a per-queue Redis
+liveness key every 60s, read by the operator route `GET /platform/ops/queues` - a wedged
+worker is now visible within minutes, not discovered by hand hours later.
 - **Snapshot store + gateway** - a pull run writes ONE immutable snapshot row + its pages, kept
   for the newest 3 per (company, entity) with a 24 h TTL (module constants today, BL-SS-231). The
   public gateway (`/api/v1/autocount`, D8/D9, `X-API-Key`) and the session-authed operator routes

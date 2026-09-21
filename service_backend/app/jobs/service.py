@@ -13,6 +13,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Optional
 
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
@@ -170,6 +171,14 @@ class JobService:
         "finished; the next run re-offers its staged rows"
     )
 
+    # sprint-5/11 S1 (AC-11-83) - the cooperative SoftTimeLimitExceeded
+    # sentence. Deliberately NOT the generic "Job crashed: ..." phrasing:
+    # this path is a clean, expected stop at a configured bound, not a crash.
+    SOFT_TIME_LIMIT_ERROR = (
+        "Stopped: this run exceeded its soft time limit; the next run "
+        "re-offers its staged rows"
+    )
+
     def heartbeat(self, job_id: str, *, now: Optional[datetime] = None) -> bool:
         """Stamp ``heartbeat_at`` on a RUNNING job in its OWN short transaction.
 
@@ -271,7 +280,6 @@ class JobService:
         orphans = query.all()
         if not orphans:
             return 0
-        hooks = list(_orphan_hooks())
         for job in orphans:
             job.status = JOB_FAILED
             job.error = self.ORPHANED_ERROR
@@ -281,23 +289,7 @@ class JobService:
                 job.id, job.type, job.tenant_id,
                 (job.heartbeat_at or job.started_at or job.created_at),
             )
-            for module_name, hook in hooks:
-                # A SAVEPOINT per hook: a failing hook rolls back only its
-                # own writes, so on Postgres it cannot leave the session in
-                # the aborted state that would poison the sweep's commit.
-                try:
-                    with self.db.begin_nested():
-                        # ``now=`` only when the hook takes it (the sweep's
-                        # clock, so run and job timestamps agree); the
-                        # minimal contract stays ``hook(db, job)``.
-                        if "now" in inspect.signature(hook).parameters:
-                            hook(self.db, job, now=current)
-                        else:
-                            hook(self.db, job)
-                except Exception:  # noqa: BLE001 - one module must not block the sweep
-                    logger.exception(
-                        "module '%s' on_job_orphaned failed for job %s", module_name, job.id
-                    )
+            close_module_bookkeeping(self.db, job, now=current)
         self.db.commit()
         return len(orphans)
 
@@ -309,6 +301,42 @@ class JobService:
         deleted = self.repo.prune_terminal(older_than=cutoff)
         self.db.commit()
         return deleted
+
+
+def close_module_bookkeeping(
+    db: Session, job: BackgroundJob, *, now: Optional[datetime] = None
+) -> None:
+    """Fan out every installed module's ``on_job_orphaned(db, job[, now=])``
+    hook for ONE already-terminal job (sprint-5/11 S1, plan sec 2.6). The
+    SAME per-hook-SAVEPOINT shape ``fail_orphaned_running_jobs`` used inline
+    before this extraction, now shared by three closers - the orphan sweep,
+    the (S2) undispatched-pending sweep, and the ``SoftTimeLimitExceeded``
+    path in ``run_job`` (AC-11-83) - so they can never drift apart.
+
+    The CALLER must already have set ``job.status``/``.error``/
+    ``.finished_at`` before this runs - it only closes each module's OWN
+    bookkeeping for the job (autocount closes an open ``ac_sync_run`` row;
+    staged rows are left alone so the next run re-offers them). A hook
+    failure is logged and never blocks its siblings or the caller's commit.
+    """
+    current = now or datetime.now(timezone.utc)
+    for module_name, hook in _orphan_hooks():
+        # A SAVEPOINT per hook: a failing hook rolls back only its own
+        # writes, so on Postgres it cannot leave the session in the aborted
+        # state that would poison the caller's own commit.
+        try:
+            with db.begin_nested():
+                # ``now=`` only when the hook takes it (the caller's clock,
+                # so run and job timestamps agree); the minimal contract
+                # stays ``hook(db, job)``.
+                if "now" in inspect.signature(hook).parameters:
+                    hook(db, job, now=current)
+                else:
+                    hook(db, job)
+        except Exception:  # noqa: BLE001 - one module must not block the caller
+            logger.exception(
+                "module '%s' on_job_orphaned failed for job %s", module_name, job.id
+            )
 
 
 def run_job(db: Session, job_id: str) -> Optional[BackgroundJob]:
@@ -342,6 +370,25 @@ def run_job(db: Session, job_id: str) -> Optional[BackgroundJob]:
 
     try:
         handler_def.handler(db, job)
+    except SoftTimeLimitExceeded:
+        # sprint-5/11 S1 (AC-11-83) - a wedged handler is cut off by Celery's
+        # cooperative soft-limit signal. This is caught BEFORE the generic
+        # `except Exception` below (SoftTimeLimitExceeded IS an Exception
+        # subclass, so the generic branch would otherwise swallow it with
+        # the wrong "Job crashed: " phrasing and, critically, WITHOUT closing
+        # any module bookkeeping - exactly the open-`ac_sync_run` symptom
+        # this whole plan exists to fix). Never re-raised: a worker that let
+        # this propagate would crash the ForkPoolWorker instead of failing
+        # the job cleanly.
+        logger.error("background job %s (type=%s) hit its soft time limit", job_id, job.type)
+        db.rollback()
+        job = repo.get_unscoped(job_id)
+        if job is not None and job.status not in JOB_TERMINAL_STATUSES:
+            service.finish(
+                job, status=JOB_FAILED, error=JobService.SOFT_TIME_LIMIT_ERROR
+            )
+            close_module_bookkeeping(db, job)
+            db.commit()
     except Exception as exc:  # noqa: BLE001 - full isolation, never propagate
         logger.exception("background job %s (type=%s) crashed", job_id, job.type)
         db.rollback()

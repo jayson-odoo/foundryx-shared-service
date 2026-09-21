@@ -23,6 +23,7 @@ from app.api.v1 import (
     jobs,
     me,
     permissions,
+    platform_ops,
     platform_tenant_branding,
     platform_tenant_modules,
     platform_tenants,
@@ -235,6 +236,9 @@ app.include_router(
 app.include_router(
     platform_tenant_branding.router, prefix="/platform/tenants", tags=["platform"]
 )
+# Worker liveness (sprint-5/11 S1, AC-11-86) - per-queue Celery freeze
+# visibility; reuses the existing tenants.read platform permission (R11).
+app.include_router(platform_ops.router, prefix="/platform/ops", tags=["platform"])
 app.include_router(health.router, tags=["health"])
 # Deferred actions - the grace-window engine (sprint-4/23, T5).
 app.include_router(

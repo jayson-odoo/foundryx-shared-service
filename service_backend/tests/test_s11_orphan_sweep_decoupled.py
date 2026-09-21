@@ -89,6 +89,12 @@ def test_jobs_sweep_orphaned_task_fails_a_stale_running_job_and_leaves_needs_rev
         db, status=JOB_NEEDS_REVIEW, started_ago=timedelta(days=2), heartbeat_ago=None,
         now=NOW, company_id=company.id,
     )
+    # Captured BEFORE db.close(): expire_on_commit=True (session_factory's
+    # default) expires every attribute on the commits above, so reading
+    # `.id` off these instances after the session that owns them is closed
+    # raises DetachedInstanceError - a test-bug fix, not a contract change
+    # (sprint-5/11 S1 coder round; see the handoff report).
+    stuck_id, parked_id, open_run_id = stuck.id, parked.id, open_run.id
     db.close()
 
     task = celery_app.tasks["jobs.sweep_orphaned"]
@@ -96,12 +102,12 @@ def test_jobs_sweep_orphaned_task_fails_a_stale_running_job_and_leaves_needs_rev
 
     fresh = session_factory()
     try:
-        assert fresh.get(BackgroundJob, stuck.id).status == JOB_FAILED
-        assert fresh.get(BackgroundJob, parked.id).status == JOB_NEEDS_REVIEW, (
+        assert fresh.get(BackgroundJob, stuck_id).status == JOB_FAILED
+        assert fresh.get(BackgroundJob, parked_id).status == JOB_NEEDS_REVIEW, (
             "a needs_review job must never be swept by the periodic tick "
             "either - the existing exclusion in fail_orphaned_running_jobs"
         )
-        closed = fresh.get(AcSyncRun, open_run.id)
+        closed = fresh.get(AcSyncRun, open_run_id)
         assert closed.outcome == RUN_FAILED and closed.finished_at is not None
     finally:
         fresh.close()
@@ -127,6 +133,9 @@ def test_the_autocount_tick_proceeds_cleanly_once_the_periodic_sweep_already_cle
         now=NOW, company_id=company.id,
     )
     _open_run(db, stuck, started_at=NOW - timedelta(minutes=20), company_id=company.id)
+    # Captured BEFORE db.close() - see the sibling test's comment above for
+    # why (DetachedInstanceError on a closed session's expired instances).
+    company_id, stuck_id = company.id, stuck.id
     db.close()
 
     task = celery_app.tasks["jobs.sweep_orphaned"]
@@ -137,13 +146,13 @@ def test_the_autocount_tick_proceeds_cleanly_once_the_periodic_sweep_already_cle
     db.expire_all()
 
     assert result == {"fired": 1, "skipped": 0, "failed": 0}
-    jobs = _jobs_for(db, company.id, ENTITY_CUSTOMER)
-    assert len(jobs) == 2 and any(j.id != stuck.id for j in jobs), (
+    jobs = _jobs_for(db, company_id, ENTITY_CUSTOMER)
+    assert len(jobs) == 2 and any(j.id != stuck_id for j in jobs), (
         "a NEW job must have been enqueued for this tick"
     )
     skip_rows = (
         db.query(AcSyncRun)
-        .filter(AcSyncRun.company_id == company.id, AcSyncRun.mode == RUN_MODE_SKIPPED)
+        .filter(AcSyncRun.company_id == company_id, AcSyncRun.mode == RUN_MODE_SKIPPED)
         .count()
     )
     assert skip_rows == 0, "no skip row for this tick - the sweep already cleared the way"

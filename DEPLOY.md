@@ -36,7 +36,7 @@ loopback port range below (dreamz owns 8000/8010/3001/3011).
 | backend (API) | `:8200` | `:8210` | gunicorn/UvicornWorker, `/health` |
 | frontend (Next standalone) | `:3200` | `:3210` | `node server.js` |
 | db / redis / pgbackups | - | - | infra, not blue/green; db host port `5433` |
-| worker_workflow / worker_omni / beat | - | - | Celery; recreated in place each deploy |
+| worker_workflow / worker_jobs / worker_omni / beat | - | - | Celery; recreated in place each deploy |
 | code_runner | - | - | sandboxed workflow Code action; own stdlib-only image, internal-only network, recreated each deploy |
 
 **Code runner** (`service_backend/code_runner/`, image tag `code-runner-<tag>`): the
@@ -54,6 +54,59 @@ Two Celery apps share the backend image: `app.workflow_engine.worker` (tasks +
 **beat** schedule) and `modules.omnichannel.worker` (inbound WhatsApp). Exactly
 one `beat` runs. DB migrations + seed run **only** on the API container start
 (`start.sh` → `python -m scripts.bootstrap_db`); workers skip it (command override).
+
+**`worker_jobs` (sprint-5/11 S1, AC-11-80..88) - the worker-starvation fix.**
+2026-09-20/21 incident: `worker_workflow` ran `-Q workflow` with no `-c`
+(one `ForkPoolWorker` on the 1-vCPU host), and `jobs.run` (any
+`background_jobs`-dispatched task - an AutoCount build, a storage migration,
+...) shared that ONE process with every 60s beat tick. A hung `jobs.run`
+starved the entire platform's scheduled work for 8+ hours; beat itself
+stayed healthy throughout, so nothing alerted until an operator noticed by
+hand. The fix, all in `app.workflow_engine.worker`'s single Celery app
+(`task_routes`, not a second app - a message already queued on `workflow`
+at deploy time still executes there):
+
+- `jobs.run` routes onto a **new `jobs` queue**, consumed by the new
+  `worker_jobs` compose service (`-Q jobs -c 2`) - `worker_workflow` keeps
+  `-Q workflow` only and never sees a `jobs.run` message again post-deploy.
+- `worker_prefetch_multiplier = 1` on the whole app - the default of 4 is
+  what let a blocked child hold several beat messages in its prefetch
+  buffer ("received by MainProcess, never executed").
+- Every task is time-limited: the tick family gets an app-level
+  `task_soft_time_limit=300` / `task_time_limit=330`; `jobs.run` overrides
+  that with its own generous, settings-driven bound
+  (`BACKGROUND_JOB_SOFT_TIME_LIMIT_SECONDS`, default 7200s / 2h - sized
+  above the longest legitimate build measured in the sprint-5/11 plan, a
+  25+ minute Mocha snapshot). A wedged `jobs.run` fails cleanly on
+  `SoftTimeLimitExceeded` (job -> failed, module bookkeeping closed -
+  `app/jobs/service.py`) instead of holding its worker's slot forever.
+- The orphan sweep gets its OWN 5-minute beat tick (`jobs.sweep_orphaned`),
+  explicitly routed onto `workflow` - **never `jobs`, the very queue it
+  exists to recover from** (the rule the incident teaches: a sweep must
+  never share a queue with the jobs it sweeps). Previously the ONLY caller
+  of the sweep outside app startup was the AutoCount scheduler tick -
+  itself queued behind the hung job, which is why the symptom lasted 8
+  hours instead of 15 minutes.
+- `worker_workflow` and `worker_jobs` (only - never `backend_blue`/
+  `backend_green`) get three Postgres session-bound envs
+  (`WORKER_DB_STATEMENT_TIMEOUT_SECONDS` / `WORKER_DB_LOCK_TIMEOUT_SECONDS` /
+  `WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS`, all seconds,
+  defence-in-depth against a stuck Postgres statement/lock - defaults in
+  `docker-compose.yml` carry R10's recommended starting point, not yet a
+  measured value).
+- Beat publishes a tiny `ops.ping` to EACH queue (`workflow`, `jobs`) every
+  60s; the consuming worker stamps a Redis key with a 300s TTL
+  (`app/ops_liveness.py`). `GET /platform/ops/queues` (operator-only,
+  `tenants.read`) reports `{queue, lastSeen, stale}` per queue - a wedged
+  worker is now visible within minutes, not discovered by hand hours later.
+
+**Deploy-time step:** a new compose service is picked up by `docker compose
+up -d` (which this deploy's CI already runs, force-recreating changed
+services) - no manual step beyond a normal push-triggered deploy. A plain
+`docker compose restart worker_workflow` (or any existing service) does
+**NOT** pick up a new/changed `environment:` block - see "Notes / gotchas"
+below (settings is an import-time singleton; a changed env needs the
+container **recreated**, `up -d`, not merely restarted).
 
 ## Config = GitHub, not the server (no SSH to edit config)
 

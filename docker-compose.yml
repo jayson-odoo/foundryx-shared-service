@@ -154,8 +154,44 @@ services:
   worker_workflow:
     <<: *backend-base
     container_name: foundryx_ss_worker_workflow
-    environment: *backend-env
+    environment:
+      <<: *backend-env
+      # sprint-5/11 S1 (AC-11-85) - worker-only Postgres session bounds via
+      # app/database.py's `worker_connect_args()`; NEVER added to the shared
+      # `x-backend-env` anchor (backend_blue/backend_green must stay
+      # unbounded, today's API behaviour, per AC-11-85). R10's recommended
+      # starting point (120s/30s/300s) - NOT yet confirmed against a
+      # measured slowest statement (S0 could not complete that measurement
+      # on the shared dev Postgres; see 11-evidence/s0-baseline/README.md
+      # (c)) - override via these vars once a real measurement lands.
+      WORKER_DB_STATEMENT_TIMEOUT_SECONDS: ${WORKER_DB_STATEMENT_TIMEOUT_SECONDS:-120}
+      WORKER_DB_LOCK_TIMEOUT_SECONDS: ${WORKER_DB_LOCK_TIMEOUT_SECONDS:-30}
+      WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS: ${WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS:-300}
     command: ["celery", "-A", "app.workflow_engine.worker", "worker", "-Q", "workflow", "--loglevel", "info"]
+    healthcheck:
+      disable: true
+    networks:
+      - foundryx_ss_network
+
+  # AutoCount ETL / meetings-transcode-class long jobs (sprint-5/11 S1,
+  # AC-11-80) - `jobs.run` routes here exclusively (task_routes in
+  # app/workflow_engine/worker.py), never onto `worker_workflow`'s shared
+  # `workflow` queue, so a single hung build can no longer starve every beat
+  # tick on the platform (the 2026-09-20/21 incident). `-c 2` (R9): this
+  # work is I/O-bound (vendor HTTP, Sorento HTTP, Postgres), so two prefork
+  # children use a single vCPU well; drop to `-c 1` if the host is
+  # memory-tight rather than CPU-bound. `worker_workflow` keeps the task
+  # registered too (lossless rollout - a message already queued on
+  # `workflow` at deploy time still executes there).
+  worker_jobs:
+    <<: *backend-base
+    container_name: foundryx_ss_worker_jobs
+    environment:
+      <<: *backend-env
+      WORKER_DB_STATEMENT_TIMEOUT_SECONDS: ${WORKER_DB_STATEMENT_TIMEOUT_SECONDS:-120}
+      WORKER_DB_LOCK_TIMEOUT_SECONDS: ${WORKER_DB_LOCK_TIMEOUT_SECONDS:-30}
+      WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS: ${WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS:-300}
+    command: ["celery", "-A", "app.workflow_engine.worker", "worker", "-Q", "jobs", "-c", "2", "--loglevel", "info"]
     healthcheck:
       disable: true
     networks:
