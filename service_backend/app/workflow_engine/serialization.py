@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional, Protocol
 
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
@@ -244,14 +245,18 @@ def _oldest_pending_run_id(
     return row[0] if row is not None else None
 
 
-def _mark_crashed(db: Session, run_id: str) -> None:
+def _mark_crashed(
+    db: Session, run_id: str, *, error: str = "Run crashed unexpectedly."
+) -> None:
     # RUNNING included: an action that committed mid-run leaves the row
     # RUNNING after the rollback, and this process KNOWS the run is dead.
+    # ``error`` (review round 2, B3) lets the soft-time-limit branch below
+    # stamp its OWN dedicated sentence instead of the generic crash text.
     run = db.query(WorkflowRun).filter(WorkflowRun.id == run_id).first()
     if run is None or run.status not in (RUN_PENDING, RUN_RUNNING):
         return
     run.status = RUN_FAILED
-    run.error = "Run crashed unexpectedly."
+    run.error = error
     run.finished_at = datetime.now(timezone.utc)
     db.commit()
 
@@ -319,6 +324,25 @@ def drain_serialized_runs(
             heartbeat.current_run_id = run_id
             try:
                 execute_run(db, run_id)
+            except SoftTimeLimitExceeded:
+                # sprint-5/11 review round 2 (B3) - SoftTimeLimitExceeded IS
+                # an Exception subclass; the generic `except Exception` below
+                # would otherwise swallow it silently as a plain crash
+                # ("Run crashed unexpectedly.") and let the `while` loop
+                # keep draining the NEXT pending run past this worker's own
+                # soft limit, all the way to the hard kill. Caught HERE,
+                # before the generic branch: ONLY this exact run_id (never a
+                # sibling's, never a guess at "whatever is RUNNING for this
+                # scope") is failed with the dedicated time-limit sentence,
+                # then RE-RAISED so the loop stops immediately - the
+                # task-level caller (`wake_serialized_task`) only logs and
+                # returns; this run row is already closed.
+                from app.workflow_engine.worker import WORKFLOW_RUN_TIME_LIMIT_ERROR
+
+                logger.error("serialized workflow run %s hit its soft time limit", run_id)
+                db.rollback()
+                _mark_crashed(db, run_id, error=WORKFLOW_RUN_TIME_LIMIT_ERROR)
+                raise
             except Exception:  # noqa: BLE001
                 # Mirror the parallel task: an in-process crash marks THIS run
                 # failed (Pending OR a mid-run-committed Running) so a poison

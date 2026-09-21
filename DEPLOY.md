@@ -36,7 +36,7 @@ loopback port range below (dreamz owns 8000/8010/3001/3011).
 | backend (API) | `:8200` | `:8210` | gunicorn/UvicornWorker, `/health` |
 | frontend (Next standalone) | `:3200` | `:3210` | `node server.js` |
 | db / redis / pgbackups | - | - | infra, not blue/green; db host port `5433` |
-| worker_workflow / worker_omni / beat | - | - | Celery; recreated in place each deploy |
+| worker_workflow / worker_jobs / worker_omni / beat | - | - | Celery; recreated in place each deploy |
 | code_runner | - | - | sandboxed workflow Code action; own stdlib-only image, internal-only network, recreated each deploy |
 
 **Code runner** (`service_backend/code_runner/`, image tag `code-runner-<tag>`): the
@@ -54,6 +54,109 @@ Two Celery apps share the backend image: `app.workflow_engine.worker` (tasks +
 **beat** schedule) and `modules.omnichannel.worker` (inbound WhatsApp). Exactly
 one `beat` runs. DB migrations + seed run **only** on the API container start
 (`start.sh` → `python -m scripts.bootstrap_db`); workers skip it (command override).
+
+**`worker_jobs` (sprint-5/11 S1, AC-11-80..88) - the worker-starvation fix.**
+2026-09-20/21 incident: `worker_workflow` ran `-Q workflow` with no `-c`
+(one `ForkPoolWorker` on the 1-vCPU host), and `jobs.run` (any
+`background_jobs`-dispatched task - an AutoCount build, a storage migration,
+...) shared that ONE process with every 60s beat tick. A hung `jobs.run`
+starved the entire platform's scheduled work for 8+ hours; beat itself
+stayed healthy throughout, so nothing alerted until an operator noticed by
+hand. The fix, all in `app.workflow_engine.worker`'s single Celery app
+(`task_routes`, not a second app - a message already queued on `workflow`
+at deploy time still executes there):
+
+- `jobs.run` routes onto a **new `jobs` queue**, consumed by the new
+  `worker_jobs` compose service (`-Q jobs -c 2`) - `worker_workflow` keeps
+  `-Q workflow` only and never sees a `jobs.run` message again post-deploy.
+- `worker_prefetch_multiplier = 1` on the whole app - the default of 4 is
+  what let a blocked child hold several beat messages in its prefetch
+  buffer ("received by MainProcess, never executed").
+- Every task is time-limited: the tick family gets an app-level
+  `task_soft_time_limit=300` / `task_time_limit=330`; `jobs.run` overrides
+  that with its own generous, settings-driven bound
+  (`BACKGROUND_JOB_SOFT_TIME_LIMIT_SECONDS`, default 7200s / 2h - sized
+  above the longest legitimate build measured in the sprint-5/11 plan, a
+  25+ minute Mocha snapshot). A wedged `jobs.run` fails cleanly on
+  `SoftTimeLimitExceeded` (job -> failed, module bookkeeping closed -
+  `app/jobs/service.py`) instead of holding its worker's slot forever.
+- The orphan sweep gets its OWN 5-minute beat tick (`jobs.sweep_orphaned`),
+  explicitly routed onto `workflow` - **never `jobs`, the very queue it
+  exists to recover from** (the rule the incident teaches: a sweep must
+  never share a queue with the jobs it sweeps). Previously the ONLY caller
+  of the sweep outside app startup was the AutoCount scheduler tick -
+  itself queued behind the hung job, which is why the symptom lasted 8
+  hours instead of 15 minutes.
+- `worker_workflow` and `worker_jobs` (only - never `backend_blue`/
+  `backend_green`) get three Postgres session-bound envs
+  (`WORKER_DB_STATEMENT_TIMEOUT_SECONDS` / `WORKER_DB_LOCK_TIMEOUT_SECONDS` /
+  `WORKER_DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_SECONDS`, all seconds,
+  defence-in-depth against a stuck Postgres statement/lock. **Shipped INERT
+  (default `0` = no timeout, review round 1 2026-09-21)**: S0 could not
+  complete the slowest-statement measurement of a full `SRT` build on the
+  shared dev Postgres (see `11-evidence/s0-baseline/README.md` (c)), so
+  R10's numbers (120s/30s/300s) are not yet confirmed - enable these ONLY
+  after that measurement lands. When enabling, `idle_in_transaction_session_
+  timeout` MUST stay **>= 3x `AUTOCOUNT_SINK_TIMEOUT_SECONDS`** (default
+  300s): `sync_service.auto_push` holds an open transaction across the sink
+  POST, so a too-tight idle timeout would kill that transaction mid-push.
+  Recommended hot values once enabling: statement >= 600s, idle >= 900s.
+- `workflows.run_workflow` and `workflows.wake_serialized` (review round 1,
+  B2) each declare their OWN soft/hard Celery time limit from
+  `WORKFLOW_RUN_SOFT_TIME_LIMIT_SECONDS` (default 1800s / 30 min, hard =
+  soft + 300s) instead of silently inheriting the app-level tick-family
+  bound (300s/330s) - a legitimate multi-node run or a serialized drain
+  processing several queued runs in one wakeup must survive it. On
+  `SoftTimeLimitExceeded` the run is failed cleanly (`workflow_runs.status`
+  never left `running`) with a dedicated "exceeded its soft time limit"
+  sentence, mirroring `jobs.run`'s own cooperative handling.
+- Beat publishes a tiny `ops.ping` to EACH queue (`workflow`, `jobs`) every
+  60s; the consuming worker stamps a Redis key with a 300s TTL
+  (`app/ops_liveness.py`). `GET /platform/ops/queues` (operator-only,
+  `tenants.read`) reports `{queue, lastSeen, stale, alive}` per queue - a
+  wedged worker is now visible within minutes, not discovered by hand hours
+  later. `stale` means "no free slot OR dead" (a worker consuming this queue
+  has not drained a recent `ops.ping` broker message - it may simply be busy
+  on a long job); `alive` (review round 1, S2) is the Celery control plane's
+  OWN synchronous answer - a live `ping()` from a worker whose
+  `active_queues()` names this queue, from `celery_app.control.inspect
+  (timeout=1.0)`, independent of the broker-routed stamp. A dead/unreachable
+  broker reads `alive: false` for every queue and never raises. This route
+  covers ONLY the workflow Celery app's queues (`workflow`, `jobs`); the
+  omnichannel app's `omni` queue, and any future `stt`/`bots` app, are
+  separate Celery apps with no liveness signal wired here yet.
+
+**`BACKGROUND_JOB_UNDISPATCHED_AFTER_MINUTES` (sprint-5/11 S2, AC-11-50..57,
+optional, default **150** (amended from 60, review round 1 2026-09-21),
+floor 15)** - the same `jobs.sweep_orphaned` beat tick above also fails a
+PENDING job (`started_at` NULL) whose Celery message was itself lost and
+never delivered to a worker (incident 2026-09-21: a deploy restarted
+`worker_jobs` mid-`pending`); FAILED, never re-dispatched (R6/D12/D13) - the
+next tick enqueues a fresh job. No new compose service or queue; just this
+one env alongside the S1 vars above. A `model_validator` now rejects a
+window that does not exceed `BACKGROUND_JOB_SOFT_TIME_LIMIT_SECONDS` (7200s
+default): the window must outlive `jobs.run`'s own soft time limit, or a
+message that is merely queued behind a legitimately long build on a busy
+`-c 2` `worker_jobs` could be mistaken for a lost message and failed out
+from under it. **This validator runs at settings-load time, so it gates
+EVERY process that imports `app.config`** - the API, `worker_workflow`,
+`worker_jobs`, `beat`, and `python -m scripts.bootstrap_db` all REFUSE TO
+START (a `pydantic.ValidationError` at import) if
+`BACKGROUND_JOB_SOFT_TIME_LIMIT_SECONDS` is ever raised in `.env`/GitHub
+Secrets without raising `BACKGROUND_JOB_UNDISPATCHED_AFTER_MINUTES` to match
+- change the two together.
+
+**Run `free -m` before `docker compose up -d`** when raising `worker_jobs`'
+concurrency above the R9 default; `-c 1` is the fallback if the host is
+memory-tight rather than CPU-bound.
+
+**Deploy-time step:** a new compose service is picked up by `docker compose
+up -d` (which this deploy's CI already runs, force-recreating changed
+services) - no manual step beyond a normal push-triggered deploy. A plain
+`docker compose restart worker_workflow` (or any existing service) does
+**NOT** pick up a new/changed `environment:` block - see "Notes / gotchas"
+below (settings is an import-time singleton; a changed env needs the
+container **recreated**, `up -d`, not merely restarted).
 
 ## Config = GitHub, not the server (no SSH to edit config)
 

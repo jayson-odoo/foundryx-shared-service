@@ -5,13 +5,27 @@ set ``CELERY_TASK_ALWAYS_EAGER=true`` → inline, zero extra process.
     celery -A app.workflow_engine.worker worker --loglevel info
 """
 import logging
+from datetime import datetime, timezone
 
 from celery import Celery
+from celery.exceptions import SoftTimeLimitExceeded
 
 from app.config import settings
 from app.lazy_registry import lazy_once
+from app.ops_liveness import KNOWN_QUEUES
 
 logger = logging.getLogger("foundryx.workflows")
+
+# Review round 1 (B2) - the stable sentence stamped on a run this app's
+# `workflows.run_workflow` / `workflows.wake_serialized` tasks stop
+# cooperatively at their own soft time limit (`settings.
+# workflow_run_soft_time_limit_seconds`), mirroring `JobService.
+# SOFT_TIME_LIMIT_ERROR`'s pattern: a clean, expected stop at a configured
+# bound, not a crash, so it is worded distinctly from "Run crashed
+# unexpectedly."
+WORKFLOW_RUN_TIME_LIMIT_ERROR = (
+    "Stopped: this run exceeded its soft time limit."
+)
 
 
 def _boot_module_nodes() -> None:
@@ -35,6 +49,33 @@ celery_app.conf.update(
     # why). run_workflow / run_due / status.reevaluate / webhooks.retry_due all
     # publish here; worker runs with `-Q workflow`, beat inherits this default.
     task_default_queue="workflow",
+    # ── Worker starvation fix (sprint-5/11 S1, incident 2026-09-20/21) ──────
+    # `jobs.run` (background_jobs, potentially a 20+ minute AutoCount build)
+    # routes onto its OWN `jobs` queue - the dedicated `worker_jobs` compose
+    # service - so it can never again starve every beat tick sharing this
+    # app's single `workflow` queue. Every OTHER task (a tick,
+    # `workflows.run_workflow`, `jobs.sweep_orphaned`, `ops.ping`, ...) keeps
+    # the `task_default_queue` above. `jobs.run` stays REGISTERED on this
+    # same app (`app.jobs.worker` is imported below) - a message already
+    # queued on `workflow` at deploy time still executes; the isolation is
+    # queue ROUTING, not a second Celery app (D15/AC-11-80). An explicit
+    # `apply_async(queue=...)` override (a `JobHandlerDef.queue` type like
+    # `stt`/`bots`) still wins over this routing table.
+    task_routes={"jobs.run": {"queue": "jobs"}},
+    # Never hold a second message hostage (AC-11-81): the default prefetch
+    # of 4 is exactly what let one blocked child hold several beat messages
+    # in its buffer during the incident ("received by MainProcess, never
+    # executed"). `acks_late` stays the Celery default (False) for every
+    # task on this app - see `app/jobs/worker.py`'s own note (D17) for why
+    # `jobs.run` in particular must never ack late.
+    worker_prefetch_multiplier=1,
+    # App-level bound for the tick family (AC-11-82): any task with no OWN
+    # declared limit (every beat tick, `jobs.sweep_orphaned`, `ops.ping`)
+    # inherits this. `jobs.run` overrides it with its own generous,
+    # settings-driven bound (`app/jobs/worker.py`) - a legitimate 25+ minute
+    # build must survive where a wedged 5-minute tick must not.
+    task_soft_time_limit=300,
+    task_time_limit=330,
 )
 
 # Single minute-tick draining due scheduled workflows (plan sprint-2/09 D9).
@@ -87,6 +128,32 @@ celery_app.conf.beat_schedule = {
     # the frontend's lapse-time `GET current` performs the lazy commit
     # instead; this sweep is the safety net for whoever isn't watching.
     "pending-actions-commit-due": {"task": "pending_actions.commit_due", "schedule": 60.0},
+    # ── Worker starvation fix (sprint-5/11 S1, AC-11-56/AC-11-86, D16/D20) ──
+    # The orphan sweep's OWN beat tick, decoupled from the AutoCount
+    # scheduler: outside app startup, the scheduler tick was the ONLY caller
+    # of `fail_orphaned_running_jobs` - itself a tick on the very `workflow`
+    # queue the incident starved, so recovery was queued behind the thing it
+    # recovers. This tick runs on `workflow` (the app default; deliberately
+    # NEVER `jobs` - D16: the sweep must never share a queue with the jobs
+    # it sweeps) every 5 minutes and wraps BOTH `sweep_orphaned_jobs(db)`
+    # (RUNNING-only) and (sprint-5/11 S2) `sweep_undispatched_pending_jobs(db)`
+    # (PENDING-only, incident 2026-09-21).
+    "jobs-sweep-orphaned": {"task": "jobs.sweep_orphaned", "schedule": 300.0},
+    # A frozen worker is visible within minutes (AC-11-86, D20): beat itself
+    # stayed healthy for the whole 8-hour incident, so the signal has to be
+    # stamped by the CONSUMING worker, per queue - one beat entry PER known
+    # queue, each pinned onto that queue via `options.queue` so the ping
+    # actually reaches the worker consuming it (a ping that always landed on
+    # `workflow` would never catch a wedged `worker_jobs`).
+    **{
+        f"ops-ping-{queue}": {
+            "task": "ops.ping",
+            "schedule": 60.0,
+            "kwargs": {"queue": queue},
+            "options": {"queue": queue},
+        }
+        for queue in KNOWN_QUEUES
+    },
 }
 
 
@@ -326,6 +393,55 @@ def pending_actions_commit_due_task() -> dict:
         db.close()
 
 
+@celery_app.task(name="jobs.sweep_orphaned")
+def sweep_orphaned_jobs_task() -> dict:
+    """The orphan sweep's own 5-minute beat tick (sprint-5/11 S1, AC-11-56,
+    D16) - decoupled from the AutoCount scheduler tick that was the only
+    caller of this sweep outside app startup (and itself lived on the
+    starved `workflow` queue during the 2026-09-20/21 incident). Runs BOTH
+    sweeps in one invocation: the ALREADY-EXISTING `sweep_orphaned_jobs(db)`
+    (RUNNING-only, every `heartbeats=True` job type) and (sprint-5/11 S2,
+    AC-11-56, incident 2026-09-21) `sweep_undispatched_pending_jobs(db)`
+    (PENDING-only, every job type - a lost message never gets a chance to
+    heartbeat, so the type-declared restriction the running sweep uses does
+    not apply here). One beat entry recovers every job type, whether or not
+    a scheduler like AutoCount's own overlap guard sits in front of it. Each
+    half is independently failure-isolated so a bug in one never blocks the
+    other."""
+    from app.database import SessionLocal
+    from app.jobs.service import sweep_orphaned_jobs, sweep_undispatched_pending_jobs
+
+    db = SessionLocal()
+    running = 0
+    try:
+        running = sweep_orphaned_jobs(db)
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("jobs.sweep_orphaned tick failed (running sweep)")
+        db.rollback()
+    undispatched = 0
+    try:
+        undispatched = sweep_undispatched_pending_jobs(db)
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("jobs.sweep_orphaned tick failed (undispatched sweep)")
+        db.rollback()
+    finally:
+        db.close()
+    return {"running": running, "undispatched": undispatched}
+
+
+@celery_app.task(name="ops.ping")
+def ops_ping_task(queue: str) -> dict:
+    """Stamps this queue's liveness key (sprint-5/11 S1, AC-11-86, D20).
+    Published by beat onto EACH `KNOWN_QUEUES` entry every 60s, pinned via
+    `options.queue` so the ping actually lands on (and is answered by) the
+    worker consuming that specific queue - a ping that always landed on
+    `workflow` would never catch a wedged `worker_jobs`."""
+    from app.ops_liveness import stamp_liveness
+
+    stamp_liveness(queue)
+    return {"queue": queue}
+
+
 @celery_app.task(name="status.reevaluate_time_based")
 def reevaluate_time_based_task() -> dict:
     from app.database import SessionLocal
@@ -347,7 +463,11 @@ def reevaluate_time_based_task() -> dict:
         db.close()
 
 
-@celery_app.task(name="workflows.run_workflow")
+@celery_app.task(
+    name="workflows.run_workflow",
+    soft_time_limit=settings.workflow_run_soft_time_limit_seconds,
+    time_limit=settings.workflow_run_soft_time_limit_seconds + 300,
+)
 def run_workflow_task(run_id: str) -> dict:
     from app.database import SessionLocal
     from app.models.workflow import RUN_FAILED, WorkflowRun
@@ -366,6 +486,21 @@ def run_workflow_task(run_id: str) -> dict:
     try:
         run = run_workflow(db, run_id)
         return {"runId": run.id, "status": run.status}
+    except SoftTimeLimitExceeded:
+        # Review round 1 (B2) - caught BEFORE the generic `except Exception`
+        # below (it IS an Exception subclass; the generic branch would
+        # otherwise stamp it with the wrong "Run crashed unexpectedly." text).
+        # Never re-raised: letting it propagate would crash the worker
+        # process instead of failing this run cleanly.
+        logger.error("workflow run %s hit its soft time limit", run_id)
+        db.rollback()
+        run = db.query(WorkflowRun).filter(WorkflowRun.id == run_id).first()
+        if run is not None:
+            run.status = RUN_FAILED
+            run.error = WORKFLOW_RUN_TIME_LIMIT_ERROR
+            run.finished_at = datetime.now(timezone.utc)
+            db.commit()
+        return {"runId": run_id, "status": RUN_FAILED}
     except Exception:  # noqa: BLE001 - never let a run crash the worker silently
         logger.exception("workflow run %s crashed", run_id)
         db.rollback()
@@ -379,7 +514,11 @@ def run_workflow_task(run_id: str) -> dict:
         db.close()
 
 
-@celery_app.task(name="workflows.wake_serialized")
+@celery_app.task(
+    name="workflows.wake_serialized",
+    soft_time_limit=settings.workflow_run_soft_time_limit_seconds,
+    time_limit=settings.workflow_run_soft_time_limit_seconds + 300,
+)
 def wake_serialized_task(tenant_id: str, workflow_id: str, digest: str) -> dict:
     """Idempotent wakeup for one durable Postgres FIFO scope."""
     from app.database import SessionLocal
@@ -398,6 +537,22 @@ def wake_serialized_task(tenant_id: str, workflow_id: str, digest: str) -> dict:
         logger.error("serialized workflow coordination unavailable: %s", exc)
         db.rollback()
         return {"admitted": False, "drained": 0, "error": str(exc)}
+    except SoftTimeLimitExceeded:
+        # Review round 2 (B3) - `drain_serialized_runs` ITSELF now catches
+        # `SoftTimeLimitExceeded` before its own inner generic except, fails
+        # the EXACT run_id in flight (never a sibling's, never a guess at
+        # "whatever is RUNNING for this scope" - the round-1 shape here used
+        # to do exactly that, an ownership bug), and re-raises so the drain
+        # loop stops immediately instead of continuing to the next pending
+        # run past this worker's own soft limit. By the time it reaches
+        # here the run row is already closed; this branch only logs and
+        # returns.
+        logger.error(
+            "serialized workflow drain for workflow %s (tenant %s) hit its "
+            "soft time limit", workflow_id, tenant_id,
+        )
+        db.rollback()
+        return {"admitted": True, "drained": 0, "error": WORKFLOW_RUN_TIME_LIMIT_ERROR}
     except Exception:  # noqa: BLE001
         # A crash rolls the active transaction back to Pending. Recovery beat or
         # a duplicate wakeup will retry it after the lease is available.

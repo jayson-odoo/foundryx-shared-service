@@ -1,7 +1,7 @@
 """Configuration settings for the FastAPI application."""
 from typing import List, Union
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -216,6 +216,61 @@ class Settings(BaseSettings):
     # Run the orphan sweep in the API process lifespan. Off for a process
     # that must never touch job state at boot (a one-off script, a rig).
     background_job_orphan_sweep_on_startup: bool = True
+    # A PENDING job (``started_at`` NULL) older than this is a LOST message,
+    # never a backlogged queue - the Celery message itself never reached a
+    # worker (sprint-5/11 S2, incident 2026-09-21: a deploy restarted the
+    # worker mid-``pending``, the message was lost, and the job sat for 8+
+    # hours until an operator reset it by hand in SQL). Failed, never
+    # re-dispatched (R6/D12/D13) - the next tick enqueues a FRESH job. Well
+    # above any legitimate queueing wait. The field's OWN validator floor is
+    # 15 (higher than the RUNNING-orphan floor of 5: a busy queue can
+    # legitimately sit PENDING far longer than a heartbeat gap) - but the
+    # cross-field validator below raises the EFFECTIVE minimum further: it
+    # must exceed ``background_job_soft_time_limit_seconds / 60`` (121 at
+    # the 7200s/150min defaults), and 15 only survives at all if
+    # ``background_job_soft_time_limit_seconds`` is lowered to well under an
+    # hour. 15 stays as the field's absolute floor (a config with a tiny
+    # soft time limit is a legitimate thing to want); it is not, by itself,
+    # a value this setting can land on at the shipped defaults.
+    #
+    # 150, not 60 (owner-approved amendment 2026-09-21, review round 1): the
+    # window must exceed `background_job_soft_time_limit_seconds` (default
+    # 7200s = 120 minutes) - see the cross-field validator below - so a
+    # message that IS queued (not lost) but sitting behind a legitimately
+    # long-running build on a busy `-c 2` worker_jobs is never mistaken for
+    # undispatched and failed out from under it.
+    background_job_undispatched_after_minutes: int = 150
+    # ── Worker starvation fix (sprint-5/11 S1, incident 2026-09-20/21) ──────
+    # `jobs.run`'s own declared soft/hard Celery time limit (AC-11-82, R10):
+    # generous, sized above the longest legitimate build measured in this
+    # plan (a 25+ minute Mocha snapshot) so it can never fire on a real run -
+    # it exists only to fail a WEDGED job cleanly instead of holding the
+    # `jobs` worker's slot forever. The hard limit is soft + 300s, derived in
+    # code (app/jobs/worker.py), never a second independent setting.
+    background_job_soft_time_limit_seconds: int = 7200
+    # Review round 1 - the workflow app's own two "unbounded" tasks
+    # (`workflows.run_workflow`, `workflows.wake_serialized`) had NO declared
+    # limit of their own, so they silently inherited the app-level tick-family
+    # bound (`task_soft_time_limit=300`) - wrong for a run that legitimately
+    # executes many nodes, and wrong for a serialized drain that legitimately
+    # processes several queued runs in one wakeup. 30 minutes, well above any
+    # normal run/drain; the hard limit is soft + 300s, derived in code
+    # (`app/workflow_engine/worker.py`), mirroring `jobs.run`'s own pattern.
+    workflow_run_soft_time_limit_seconds: int = 1800
+    # Worker-process-only Postgres session bounds, settings-driven (AC-11-85).
+    # 0 = unset on every axis (the default, and the API's PERMANENT profile -
+    # never wired through the API's own engine construction). Wired through
+    # `app/database.py::worker_connect_args()` into the compose `worker_
+    # workflow` / `worker_jobs` services' `connect_args` ONLY. Seconds here;
+    # Postgres' GUCs want milliseconds (converted in `worker_connect_args`).
+    # R10 recommends 120s / 30s / 300s once confirmed against the measured
+    # slowest statement of a full SRT build - S0 could not complete that
+    # measurement on the shared dev Postgres (see 11-evidence/s0-baseline/
+    # README.md (c)); the compose defaults below carry R10's recommended
+    # values as a starting point, not a confirmed measurement.
+    worker_db_statement_timeout_seconds: int = 0
+    worker_db_lock_timeout_seconds: int = 0
+    worker_db_idle_in_transaction_session_timeout_seconds: int = 0
 
     # ── Platform LLM default (Phase B-i slice 1) ───────────────────────────
     # Env-seeds the PLATFORM tenant's LLM connection, exactly like
@@ -458,6 +513,35 @@ class Settings(BaseSettings):
                 "background_job_orphan_after_minutes must be at least 5 minutes."
             )
         return v
+
+    @field_validator("background_job_undispatched_after_minutes")
+    @classmethod
+    def _background_job_undispatched_after_floor(cls, v: int) -> int:
+        if v < 15:
+            raise ValueError(
+                "background_job_undispatched_after_minutes must be at least 15 minutes."
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _background_job_undispatched_after_exceeds_soft_time_limit(self) -> "Settings":
+        # Review round 1 (S1): a queued-but-not-lost message sitting behind a
+        # legitimate long `jobs.run` build (bounded by
+        # `background_job_soft_time_limit_seconds`) on a busy worker must
+        # never be failed out by the undispatched sweep as if its message
+        # were lost. The window has to outlive the longest a job is allowed
+        # to legitimately run before its OWN slot frees up.
+        window_seconds = self.background_job_undispatched_after_minutes * 60
+        if window_seconds <= self.background_job_soft_time_limit_seconds:
+            raise ValueError(
+                "background_job_undispatched_after_minutes "
+                f"({self.background_job_undispatched_after_minutes} min = "
+                f"{window_seconds}s) must exceed background_job_soft_time_limit_seconds "
+                f"({self.background_job_soft_time_limit_seconds}s) - otherwise a queued "
+                "message sitting behind a legitimately long jobs.run build can be "
+                "mistaken for a lost message and failed out from under it."
+            )
+        return self
 
     @field_validator("autocount_page_size")
     @classmethod
