@@ -111,6 +111,28 @@ def _restore_sqlite_databases(engine, blobs):
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _require_sqlite_serialize_support():
+    """Fail fast, with a readable message, if this interpreter's ``sqlite3``
+    binding lacks ``Connection.serialize``/``deserialize`` (Python 3.11+
+    only) - the template-DB pattern above (``_capture_sqlite_databases`` /
+    ``_restore_sqlite_databases``) depends on both. Without this guard, a
+    missing binding first surfaces as an opaque ``AttributeError`` deep
+    inside the first ``*_session_factory`` fixture build."""
+    import sqlite3
+
+    if not (
+        hasattr(sqlite3.Connection, "serialize")
+        and hasattr(sqlite3.Connection, "deserialize")
+    ):
+        pytest.fail(
+            "backend tests need Python 3.11+ with sqlite deserialize support "
+            "(sqlite3.Connection.serialize/deserialize) - the template-DB "
+            "session_factory fixtures in tests/conftest.py depend on it.",
+            pytrace=False,
+        )
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _register_storage_locations():
     """Populate the global storage-key location registry once, before any test
     snapshots/clears it. Mirrors app boot (``ensure_core_locations`` +
@@ -281,6 +303,7 @@ def session_factory(_session_factory_template):
 
     _webchat_visitor.set_preflight_session_factory(None)
     _webchat_visitor.reset_origins_cache()
+    engine.dispose()
 
 
 @pytest.fixture(scope="session")
@@ -391,6 +414,8 @@ def ideation_session_factory(_ideation_session_factory_template):
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
     yield TestingSessionLocal
+
+    engine.dispose()
 
 
 _HTTP_RETRY_TEST_FILE_RE = re.compile(r"^test_(autocount_http_|s10_)")
@@ -616,3 +641,5 @@ def meetings_session_factory(_meetings_session_factory_template):
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
     yield TestingSessionLocal
+
+    engine.dispose()
