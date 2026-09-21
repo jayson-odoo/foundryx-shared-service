@@ -636,7 +636,33 @@ class HttpApiSource:
         completion in the background (their result, if any, is simply
         discarded - the SAME "partials are discarded" contract a halving
         restart already relies on) and the pool itself is garbage collected
-        once they finish."""
+        once they finish.
+
+        sprint-5/11 S6 follow-ups (disclosed, NOT fixed) - ``max_workers ==
+        len(batch_pages)`` (this method's own line 1 promise, AC-11-03)
+        means EVERY worker in the batch is started the instant it is
+        submitted; there is never a queued-but-not-yet-started worker for
+        ``cancel_futures=True`` to actually catch. In practice this method's
+        own cancellation therefore buys nothing - every abandoned straggler
+        finishes its own in-flight request regardless (bounded by roughly
+        TWICE the connection's own ``requestTimeoutSeconds``: ``_fetch_page``'s
+        retry ladder can still take one more timeout-then-retry round trip
+        after the fault that ended the batch was already raised and
+        returned to the caller). Two visible side effects, both accepted
+        rather than engineered around: (1) a straggler's own ``CallRecord``
+        can land in ``self._client._calls`` AFTER this run's own
+        ``drain_activity()`` already read it clean - a late, orphaned
+        buffered call, never surfaced to any caller; (2) on a 429-triggered
+        abort specifically, up to N-1 stragglers can each still fire their
+        OWN request against a server that just told the whole batch to back
+        off - at most N-1 EXTRA requests total, never unbounded, and never
+        beyond a single straggler's own retry ladder. ``HttpApiClient.close()``
+        (sprint-5/11 S6 follow-ups) closes the run's transport the moment
+        the run itself is done with it, so any straggler whose request is
+        STILL in flight at that point either completes against a since-
+        closed connection pool or raises - either way its result, like
+        every other straggler's, is simply discarded; never awaited,
+        never retried by this method."""
         results: Dict[int, EnvelopePage] = {}
         executor = ThreadPoolExecutor(max_workers=len(batch_pages))
         try:

@@ -184,6 +184,8 @@ class HttpApiClient:
         self._transport = transport
         self._owns_transport = transport is None
         self._calls: Deque[CallRecord] = deque(maxlen=MAX_BUFFERED_CALLS)
+        # sprint-5/11 S6 follow-ups - see ``close()``/``_client`` below.
+        self._closed = False
 
     @property
     def _client(self) -> httpx.Client:
@@ -192,10 +194,27 @@ class HttpApiClient:
         # caller (``HttpApiSource``) always fetches page 1 SERIALLY, in the
         # calling thread, before any ``ThreadPoolExecutor`` worker is ever
         # started (``_walk_path``), so ``self._transport`` is already set by
-        # the time concurrent workers first read this property - a genuine
-        # race is unreachable. A caller that skipped the serial page-1 fetch
-        # (or passed ``transport=`` explicitly, the test house convention)
-        # would need an eager ``httpx.Client`` init here instead.
+        # the time concurrent workers first read this property while the
+        # run is still in progress - a genuine check-then-set race on the
+        # CREATE path is unreachable. A caller that skipped the serial
+        # page-1 fetch (or passed ``transport=`` explicitly, the test house
+        # convention) would need an eager ``httpx.Client`` init here
+        # instead.
+        #
+        # sprint-5/11 S6 follow-ups - the race this comment used to claim
+        # unreachable is real on the CLOSE path instead: ``_run_concurrent_
+        # batch``'s own ``shutdown(wait=False, cancel_futures=True)`` (SF-3)
+        # can leave an abandoned worker thread still mid-``get()`` after
+        # ``HttpApiSource.close()`` has already run (``sync.py`` closes the
+        # source the moment the run's own outcome - success OR failure - is
+        # decided, without waiting for those stragglers). Without this
+        # guard, that worker's still-pending ``self._client`` read would
+        # silently build a BRAND NEW ``httpx.Client`` (the run's own is
+        # already closed) and fire a real outbound request against a
+        # connection whose run is over. ``_closed`` makes that fail loudly
+        # instead of leaking a live transport.
+        if self._closed:
+            raise HttpTransportError("This HTTP client has been closed.")
         if self._transport is None:
             # S5 (sprint-5/08 review round 1) - never silently follow a
             # redirect off the configured base URL (SSRF-adjacent).
@@ -205,6 +224,11 @@ class HttpApiClient:
         return self._transport
 
     def close(self) -> None:
+        # sprint-5/11 S6 follow-ups - set FIRST, unconditionally: a second
+        # ``close()`` call (or one racing an abandoned worker's own
+        # ``_client`` read) must never resurrect a transport this method
+        # already decided was done.
+        self._closed = True
         if self._transport is not None:
             self._transport.close()
             self._transport = None
