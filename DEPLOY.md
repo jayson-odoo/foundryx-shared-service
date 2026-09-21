@@ -12,9 +12,9 @@ suite blocks the deploy the same way a failing build does.
 ## CI
 
 Every PR against `main` (and every push to it) runs six gate jobs in parallel:
-`lint-conventions` (no em/en dash, brand spelling, no stray Playwright
-mentions), `validate-backend` / `validate-frontend` (Docker build + import
-smoke + `next build`), and `test-backend` / `test-frontend` (the real
+`lint-conventions` (no em/en dash, brand spelling, no stray mentions of the
+retired E2E tool - see AGENTS.md), `validate-backend` / `validate-frontend`
+(Docker build + import smoke + `next build`), and `test-backend` / `test-frontend` (the real
 suites: `pytest -q` from `service_backend` against the conftest's in-memory
 SQLite, and `npm run lint && npm test -- --run` from `service_frontend`).
 Only a push to `main` (or `workflow_dispatch`) runs `build-and-deploy`, which
