@@ -24,7 +24,7 @@ from fastapi import APIRouter, Depends
 
 from app.dependencies import require_platform_permission
 from app.models.user import User
-from app.ops_liveness import KNOWN_QUEUES, queue_status
+from app.ops_liveness import KNOWN_QUEUES, consuming_workers_by_queue, queue_status
 from app.schemas.ops import QueueLivenessResponse
 
 router = APIRouter()
@@ -38,6 +38,10 @@ def list_queue_liveness(
     # grant sweep.
     current_user: User = Depends(require_platform_permission("tenants.read")),
 ) -> QueueLivenessResponse:
+    # Review round 2 (S6) - ONE control-plane round-trip for every known
+    # queue, not one per queue: `consuming_workers_by_queue()` is computed
+    # once here and handed to every `queue_status(...)` call below.
+    consuming = consuming_workers_by_queue()
     return QueueLivenessResponse(
-        queues=[queue_status(queue) for queue in KNOWN_QUEUES]
+        queues=[queue_status(queue, consuming=consuming) for queue in KNOWN_QUEUES]
     )

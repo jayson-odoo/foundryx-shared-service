@@ -222,9 +222,16 @@ class Settings(BaseSettings):
     # worker mid-``pending``, the message was lost, and the job sat for 8+
     # hours until an operator reset it by hand in SQL). Failed, never
     # re-dispatched (R6/D12/D13) - the next tick enqueues a FRESH job. Well
-    # above any legitimate queueing wait; the floor is 15 (higher than the
-    # RUNNING-orphan floor of 5: a busy queue can legitimately sit PENDING
-    # far longer than a heartbeat gap).
+    # above any legitimate queueing wait. The field's OWN validator floor is
+    # 15 (higher than the RUNNING-orphan floor of 5: a busy queue can
+    # legitimately sit PENDING far longer than a heartbeat gap) - but the
+    # cross-field validator below raises the EFFECTIVE minimum further: it
+    # must exceed ``background_job_soft_time_limit_seconds / 60`` (121 at
+    # the 7200s/150min defaults), and 15 only survives at all if
+    # ``background_job_soft_time_limit_seconds`` is lowered to well under an
+    # hour. 15 stays as the field's absolute floor (a config with a tiny
+    # soft time limit is a legitimate thing to want); it is not, by itself,
+    # a value this setting can land on at the shipped defaults.
     #
     # 150, not 60 (owner-approved amendment 2026-09-21, review round 1): the
     # window must exceed `background_job_soft_time_limit_seconds` (default

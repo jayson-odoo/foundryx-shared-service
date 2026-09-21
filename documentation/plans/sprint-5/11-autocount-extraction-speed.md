@@ -322,7 +322,15 @@ AutoCount scheduler tick - a beat task on the starved queue.
   1 (B2) extends the same treatment to `workflows.run_workflow` / `workflows.wake_serialized`
   (soft 30 min / hard 35 min from settings): both previously inherited the 300 s/330 s
   tick-family default with no override of their own, which a legitimate multi-node run or a
-  serialized drain processing several queued runs could exceed.
+  serialized drain processing several queued runs could exceed. Review round 2 (B3) moved the
+  drain's own cooperative handling FROM the task level INTO `drain_serialized_runs` itself: the
+  round-1 shape's task-level catch never actually stopped the drain loop (the function's own
+  bare `except Exception` around `execute_run` already swallowed the exception as a plain crash
+  and kept draining the next pending run past the soft limit), and when the task-level net did
+  fire it queried "whatever RUNNING row matches this scope" with no ownership check - able to
+  fail a row this invocation never touched. `drain_serialized_runs` now catches the exception
+  itself, before its own generic except, fails ONLY the exact run_id it was executing, and
+  re-raises so the loop stops immediately; the task only logs and returns.
 - **Bound the database sessions** (AC-11-85): settings-driven `statement_timeout` /
   `lock_timeout` / `idle_in_transaction_session_timeout` via engine `connect_args`, set on the
   worker services in compose, unset (unchanged) for the API. **Shipped with inert (0) defaults in
@@ -333,7 +341,12 @@ AutoCount scheduler tick - a beat task on the starved queue.
   transaction across the sink POST. Labelled honestly as defence in depth throughout.
 - **Make a freeze visible** (AC-11-86): beat publishes `ops.ping` to each queue every 60 s, the
   consuming worker stamps a per-queue Redis key with a 300 s TTL, and one platform-operator
-  route reports `lastSeen` / `stale` per queue.
+  route reports `lastSeen` / `stale` per queue. Review round 1 (S2) adds `alive`, a live Celery
+  control-plane `ping()`/`active_queues()` answer independent of the Redis stamp. Review round 2
+  (S6): that control-plane round-trip is now made ONCE per request
+  (`consuming_workers_by_queue()`), not once per queue, and the connection is bounded
+  (`connection_for_read(connect_timeout=1, transport_options={"max_retries": 0})`) so a dead
+  broker fails fast rather than risking an OS-level TCP hang.
 
 ### 2.7 Decision log, continued
 

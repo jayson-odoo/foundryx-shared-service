@@ -18,13 +18,22 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional, TypedDict
+from typing import Dict, Optional, Set, TypedDict
 
 import redis
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Review round 2 (S6) - the control-plane broker round-trip must fail FAST
+# against a dead/unreachable broker (never the multi-minute OS-level TCP
+# hang a bare socket connect can suffer against a black-holed address).
+# ``kombu.Connection``'s own ``connect_timeout`` bounds the connect attempt;
+# ``max_retries: 0`` stops kombu retrying a failed connect before it gives up
+# and lets the caller's own ``except Exception`` degrade gracefully.
+_CONTROL_CONNECT_TIMEOUT_SECONDS = 1.0
+_CONTROL_TRANSPORT_OPTIONS = {"max_retries": 0}
 
 # The two queues this platform routes tasks onto today (sprint-5/11 S1):
 # the shared `workflow` queue (every beat tick, `workflows.run_workflow`, ...)
@@ -71,37 +80,52 @@ def stamp_liveness(queue: str, *, now: Optional[datetime] = None) -> None:
         logger.warning("ops_liveness stamp failed for queue %s: %s", queue, exc)
 
 
-def _workers_consuming(queue: str) -> set:
-    """Celery worker names that BOTH answered a live control-plane ping AND
-    declare `queue` among their `active_queues()` right now (review round 1,
-    S2). This is a SEPARATE signal from the Redis stamp above: the stamp
-    answers "did a worker consume an `ops.ping` off this queue in the last
-    300s" (routing-through-the-broker evidence); this answers "does a
-    reachable worker process claim this queue at all" (the control plane's
-    own, synchronous answer). Lazy import: `app.workflow_engine.worker`
-    imports `KNOWN_QUEUES` from THIS module at module load time, so a
-    top-level import here would be circular. Broker unreachable, no worker
-    replying, or any control-plane error -> empty set (never raise - see
-    module docstring)."""
+def consuming_workers_by_queue() -> Dict[str, Set[str]]:
+    """`{queue_name: {worker_name, ...}}` for EVERY queue any reachable
+    worker currently declares - ONE control-plane round-trip (one `ping()`,
+    one `active_queues()`), not one per queue (review round 2, S6: the
+    round-1 shape called this once per `KNOWN_QUEUES` entry from the route,
+    doubling the broker round-trips for no reason - a caller inspecting N
+    queues now costs the SAME one round-trip as inspecting one).
+
+    Bounded so a dead/unreachable broker fails FAST rather than hanging on
+    a black-holed TCP connect (`_CONTROL_CONNECT_TIMEOUT_SECONDS` via
+    `connection_for_read`, plus the inspect's own request timeout) - see the
+    module-level constants. Any error (broker down, no reply, ...) degrades
+    to `{}` (every queue reads `alive: False`), never raises - see module
+    docstring. Lazy import: `app.workflow_engine.worker` imports
+    `KNOWN_QUEUES` from THIS module at module load time, so a top-level
+    import here would be circular."""
     from app.workflow_engine.worker import celery_app
 
     try:
-        inspector = celery_app.control.inspect(timeout=1.0)
-        pinged = inspector.ping() or {}
-        active = inspector.active_queues() or {}
+        with celery_app.connection_for_read(
+            connect_timeout=_CONTROL_CONNECT_TIMEOUT_SECONDS,
+            transport_options=_CONTROL_TRANSPORT_OPTIONS,
+        ) as conn:
+            inspector = celery_app.control.inspect(
+                timeout=_CONTROL_CONNECT_TIMEOUT_SECONDS, connection=conn
+            )
+            pinged = inspector.ping() or {}
+            active = inspector.active_queues() or {}
     except Exception as exc:  # noqa: BLE001 - degrade gracefully, never raise
-        logger.warning("ops_liveness control-plane inspect failed for queue %s: %s", queue, exc)
-        return set()
-    consuming = set()
+        logger.warning("ops_liveness control-plane inspect failed: %s", exc)
+        return {}
+    by_queue: Dict[str, Set[str]] = {}
     for worker_name in pinged:
         for entry in active.get(worker_name) or []:
-            if entry.get("name") == queue:
-                consuming.add(worker_name)
-                break
-    return consuming
+            qname = entry.get("name")
+            if qname:
+                by_queue.setdefault(qname, set()).add(worker_name)
+    return by_queue
 
 
-def queue_status(queue: str, *, now: Optional[datetime] = None) -> QueueStatus:
+def queue_status(
+    queue: str,
+    *,
+    now: Optional[datetime] = None,
+    consuming: Optional[Dict[str, Set[str]]] = None,
+) -> QueueStatus:
     """`{"queue", "lastSeen", "stale", "alive"}` for one queue.
 
     `stale` (the Redis-stamp path, unchanged) means "no free slot OR dead" -
@@ -110,15 +134,22 @@ def queue_status(queue: str, *, now: Optional[datetime] = None) -> QueueStatus:
     time, and it can read fresh even when no worker is currently free to pick
     up NEW work (a busy-but-alive worker still answers `ops.ping`).
 
-    `alive` (new, review round 1) is the CONTROL PLANE's own, synchronous
-    answer - a live Celery `ping()` from a worker that declares this queue
-    among its `active_queues()` - independent of whether that worker has
-    happened to drain a recent `ops.ping` broker message. A dead Redis (or
-    no stamp ever seen) reads `stale: True` with no `lastSeen`, and a dead/
-    unreachable broker reads `alive: False`; neither ever raises - degrade
-    gracefully, see module docstring."""
+    `alive` (review round 1) is the CONTROL PLANE's own, synchronous answer -
+    a live Celery `ping()` from a worker that declares this queue among its
+    `active_queues()` - independent of whether that worker has happened to
+    drain a recent `ops.ping` broker message. A dead Redis (or no stamp ever
+    seen) reads `stale: True` with no `lastSeen`, and a dead/unreachable
+    broker reads `alive: False`; neither ever raises - degrade gracefully,
+    see module docstring.
+
+    `consuming` (review round 2, S6): a caller inspecting MULTIPLE queues in
+    one request computes `consuming_workers_by_queue()` ONCE and passes it
+    here for every queue, so the control-plane round-trip happens once per
+    REQUEST, not once per queue. Omitted (the default), this function
+    computes it itself - the single-queue call site keeps working unchanged."""
     current = now or datetime.now(timezone.utc)
-    alive = bool(_workers_consuming(queue))
+    by_queue = consuming if consuming is not None else consuming_workers_by_queue()
+    alive = bool(by_queue.get(queue))
     try:
         raw = _get_client().get(_key(queue))
     except Exception as exc:  # noqa: BLE001 - see module docstring

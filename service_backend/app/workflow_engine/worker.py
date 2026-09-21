@@ -522,7 +522,6 @@ def run_workflow_task(run_id: str) -> dict:
 def wake_serialized_task(tenant_id: str, workflow_id: str, digest: str) -> dict:
     """Idempotent wakeup for one durable Postgres FIFO scope."""
     from app.database import SessionLocal
-    from app.models.workflow import RUN_FAILED, RUN_RUNNING, WorkflowRun
     from app.workflow_engine.serialization import (
         SerializedCoordinationUnavailable,
         drain_serialized_runs,
@@ -539,36 +538,20 @@ def wake_serialized_task(tenant_id: str, workflow_id: str, digest: str) -> dict:
         db.rollback()
         return {"admitted": False, "drained": 0, "error": str(exc)}
     except SoftTimeLimitExceeded:
-        # Review round 1 (B2) - caught BEFORE the generic `except Exception`
-        # below. `drain_serialized_runs` already isolates a crash DURING one
-        # run's `execute_run(db, run_id)` call (its own inner `except
-        # Exception`), so the common case (the limit fires mid-run) is
-        # already closed there. This is the safety net for the timeout
-        # firing OUTSIDE that inner try (lease/heartbeat bookkeeping between
-        # runs): this scope's own RUNNING row, if any, is failed here too, so
-        # the run never owns a "running" row nobody will ever close (the
-        # reaper would eventually catch it via a stale heartbeat, but that is
-        # minutes away, not immediate).
+        # Review round 2 (B3) - `drain_serialized_runs` ITSELF now catches
+        # `SoftTimeLimitExceeded` before its own inner generic except, fails
+        # the EXACT run_id in flight (never a sibling's, never a guess at
+        # "whatever is RUNNING for this scope" - the round-1 shape here used
+        # to do exactly that, an ownership bug), and re-raises so the drain
+        # loop stops immediately instead of continuing to the next pending
+        # run past this worker's own soft limit. By the time it reaches
+        # here the run row is already closed; this branch only logs and
+        # returns.
         logger.error(
             "serialized workflow drain for workflow %s (tenant %s) hit its "
             "soft time limit", workflow_id, tenant_id,
         )
         db.rollback()
-        run = (
-            db.query(WorkflowRun)
-            .filter(
-                WorkflowRun.tenant_id == tenant_id,
-                WorkflowRun.workflow_id == workflow_id,
-                WorkflowRun.correlation_key_digest == digest,
-                WorkflowRun.status == RUN_RUNNING,
-            )
-            .first()
-        )
-        if run is not None:
-            run.status = RUN_FAILED
-            run.error = WORKFLOW_RUN_TIME_LIMIT_ERROR
-            run.finished_at = datetime.now(timezone.utc)
-            db.commit()
         return {"admitted": True, "drained": 0, "error": WORKFLOW_RUN_TIME_LIMIT_ERROR}
     except Exception:  # noqa: BLE001
         # A crash rolls the active transaction back to Pending. Recovery beat or

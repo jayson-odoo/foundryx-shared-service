@@ -374,9 +374,18 @@ outside app startup) was itself queued behind the hung job.
   round 1 (B2):** `workflows.run_workflow` and `workflows.wake_serialized` catch
   `SoftTimeLimitExceeded` BEFORE their own generic `except Exception`, stamping the run `failed`
   with a dedicated "exceeded its soft time limit" sentence (`workflow_runs.status` never left
-  `running`); `wake_serialized_task` additionally fails any RUNNING run row it still owns for its
-  exact tenant/workflow/digest scope, as a safety net for the timeout landing outside
-  `drain_serialized_runs`'s own per-run try/except (which already isolates the common case).
+  `running`). **Review round 2 (B3), superseding the round-1 wake_serialized shape:** the
+  round-1 task-level catch in `wake_serialized_task` had two bugs - `drain_serialized_runs`'s OWN
+  inner `except Exception` (around `execute_run`) is a bare catch that already swallowed
+  `SoftTimeLimitExceeded` as a plain crash and kept draining the NEXT pending run past the
+  worker's own soft limit; and when the task-level net DID fire (the limit landing between runs)
+  it queried "whatever RUNNING row matches this tenant/workflow/digest" with no ownership check,
+  which could fail a row this invocation never touched. Fixed by moving the catch INTO
+  `drain_serialized_runs` itself, before its own generic except: it fails ONLY the exact `run_id`
+  it was executing, then RE-RAISES so the loop stops immediately; `wake_serialized_task` now only
+  logs and returns, querying nothing. Test: a real `drain_serialized_runs` call, `execute` raising
+  `SoftTimeLimitExceeded` on the first of two pending runs in the same scope - the first carries
+  the sentence, the second is never processed, and the exception propagates to the caller.
 - **AC-11-84 [T]/[BE]** **A beat tick is never delayed more than one interval by a running
   job.** Regression test for the incident: with a deliberately blocked `jobs.run` occupying the
   `jobs` worker for 10 minutes, `autocount.etl_sweep` and `workflows.run_due` still execute
@@ -413,7 +422,16 @@ outside app startup) was itself queued behind the hung job.
   slot OR dead" (a busy-but-alive worker still answers `ops.ping`); `alive` is the control
   plane's own synchronous answer. A dead/unreachable broker reads `alive: false` and never
   raises. Tests stub `control.inspect` for alive-true, alive-false (a reachable worker that does
-  not consume this queue) and broker-unreachable.
+  not consume this queue) and broker-unreachable. **Review round 2 (S6):** the round-1 shape
+  called `control.inspect(...)` once PER queue from the route (two round-trips for two known
+  queues); `consuming_workers_by_queue()` now makes ONE `ping()` + ONE `active_queues()` call for
+  every queue in a single request, returning `{queue: {worker names}}`, and `queue_status(queue,
+  *, consuming=...)` takes that precomputed map so a caller inspecting N queues costs the same
+  one round-trip as inspecting one. The connection is also bounded so a dead broker fails FAST
+  (`connection_for_read(connect_timeout=1, transport_options={"max_retries": 0})`) rather than
+  risking an OS-level TCP hang against a black-holed address. Test: two `queue_status(...,
+  consuming=...)` calls off one precomputed map cost exactly one `ping()`/`active_queues()` pair;
+  a broker pointed at a closed localhost port returns in under 3 seconds.
 - **AC-11-87 [BE]/[T]** **Compose and deploy documentation ship in the same PR.**
   `docker-compose.yml` gains `worker_jobs` and the worker timeout env; `DEPLOY.md` documents
   the new service, the queue split and the deploy-time steps (a new service is picked up by

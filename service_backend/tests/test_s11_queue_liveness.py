@@ -96,22 +96,26 @@ class _FakeInspect:
 @pytest.fixture(autouse=True)
 def _no_real_broker_inspect(monkeypatch):
     """Every test in this file stubs the Celery control-plane inspect so
-    `queue_status`'s `alive` computation never waits on a REAL ~1s broker
-    round-trip against a local Redis with no actual worker process consuming
-    it - the default stub answers "no worker reachable" (`alive: False`)
-    instantly. Tests that care about `alive`'s value override this with
-    their own `monkeypatch.setattr` after requesting this fixture implicitly
-    (autouse)."""
+    `consuming_workers_by_queue()`'s `alive` computation never waits on a
+    REAL ~1s-per-call broker round-trip against a local Redis with no actual
+    worker process consuming it - the default stub answers "no worker
+    reachable" (`alive: False`) instantly. Tests that care about `alive`'s
+    value override this with their own `monkeypatch.setattr` after
+    requesting this fixture implicitly (autouse). `**_` swallows the
+    `connection=` kwarg `consuming_workers_by_queue()` now passes (review
+    round 2, S6's bounded-connection fix) - the fake never touches it."""
     from app.workflow_engine.worker import celery_app
 
-    monkeypatch.setattr(celery_app.control, "inspect", lambda timeout=None: _FakeInspect())
+    monkeypatch.setattr(
+        celery_app.control, "inspect", lambda timeout=None, **_: _FakeInspect()
+    )
 
 
 def _stub_inspect(monkeypatch, **kwargs) -> None:
     from app.workflow_engine.worker import celery_app
 
     monkeypatch.setattr(
-        celery_app.control, "inspect", lambda timeout=None: _FakeInspect(**kwargs)
+        celery_app.control, "inspect", lambda timeout=None, **_: _FakeInspect(**kwargs)
     )
 
 
@@ -168,6 +172,76 @@ def test_queue_status_alive_false_when_the_broker_is_unreachable(fake_redis, mon
     assert status["alive"] is False
     # And the Redis-stamp half of the read is untouched by the broker outage.
     assert status["stale"] is True
+
+
+# ── review round 2 (S6): one inspect per request, fast-fail on a dead broker
+
+
+def test_consuming_workers_by_queue_makes_exactly_one_ping_and_one_active_queues_call(
+    fake_redis, monkeypatch
+):
+    """The route inspects BOTH known queues from ONE
+    `consuming_workers_by_queue()` call - proven here directly: two calls to
+    `queue_status(..., consuming=...)` sharing the SAME precomputed map must
+    not trigger a second control-plane round-trip."""
+    from app.ops_liveness import consuming_workers_by_queue, queue_status
+
+    calls = {"ping": 0, "active_queues": 0}
+
+    class _CountingInspect(_FakeInspect):
+        def ping(self):
+            calls["ping"] += 1
+            return super().ping()
+
+        def active_queues(self):
+            calls["active_queues"] += 1
+            return super().active_queues()
+
+    from app.workflow_engine.worker import celery_app
+
+    monkeypatch.setattr(
+        celery_app.control,
+        "inspect",
+        lambda timeout=None, **_: _CountingInspect(
+            pinged={"worker_jobs@host": {"ok": "pong"}},
+            active_queues={"worker_jobs@host": [{"name": "jobs"}, {"name": "workflow"}]},
+        ),
+    )
+
+    consuming = consuming_workers_by_queue()
+    assert queue_status("jobs", consuming=consuming)["alive"] is True
+    assert queue_status("workflow", consuming=consuming)["alive"] is True
+    assert calls == {"ping": 1, "active_queues": 1}, (
+        "inspecting two queues off ONE precomputed map must cost exactly "
+        "one ping() and one active_queues() call, not one pair per queue"
+    )
+
+
+def test_consuming_workers_by_queue_fails_fast_against_a_closed_broker_port(monkeypatch):
+    """S6: a dead/unreachable broker must return within a few seconds, not
+    hang until an OS-level TCP timeout (which can be minutes against a
+    black-holed address). A closed localhost port produces an immediate
+    connection-refused, which also proves no retry loop is silently
+    multiplying that latency (`max_retries: 0`). Bypasses the file's own
+    autouse stub by swapping the module-level `celery_app` binding for a
+    throwaway app pointed at the dead port, so this exercises the REAL
+    `connection_for_read(...)` + `control.inspect(...)` path end to end."""
+    import time
+
+    from celery import Celery
+
+    import app.workflow_engine.worker as worker_module
+    from app.ops_liveness import consuming_workers_by_queue
+
+    dead_app = Celery("s11-dead-broker-probe", broker="redis://127.0.0.1:1/0")
+    monkeypatch.setattr(worker_module, "celery_app", dead_app)
+
+    start = time.monotonic()
+    result = consuming_workers_by_queue()
+    elapsed = time.monotonic() - start
+
+    assert result == {}
+    assert elapsed < 3.0, f"took {elapsed:.2f}s against a closed broker port - not bounded"
 
 
 def test_stamp_liveness_marks_the_queue_fresh(fake_redis):

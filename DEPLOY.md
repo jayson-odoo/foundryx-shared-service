@@ -138,7 +138,13 @@ window that does not exceed `BACKGROUND_JOB_SOFT_TIME_LIMIT_SECONDS` (7200s
 default): the window must outlive `jobs.run`'s own soft time limit, or a
 message that is merely queued behind a legitimately long build on a busy
 `-c 2` `worker_jobs` could be mistaken for a lost message and failed out
-from under it.
+from under it. **This validator runs at settings-load time, so it gates
+EVERY process that imports `app.config`** - the API, `worker_workflow`,
+`worker_jobs`, `beat`, and `python -m scripts.bootstrap_db` all REFUSE TO
+START (a `pydantic.ValidationError` at import) if
+`BACKGROUND_JOB_SOFT_TIME_LIMIT_SECONDS` is ever raised in `.env`/GitHub
+Secrets without raising `BACKGROUND_JOB_UNDISPATCHED_AFTER_MINUTES` to match
+- change the two together.
 
 **Run `free -m` before `docker compose up -d`** when raising `worker_jobs`'
 concurrency above the R9 default; `-c 1` is the fallback if the host is
