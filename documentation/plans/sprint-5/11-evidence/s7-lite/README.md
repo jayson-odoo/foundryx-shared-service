@@ -259,3 +259,135 @@ progress reporting, re-attach, queue isolation) - is solid and matches the AC-11
 contract exactly. The defect is narrowly scoped (one un-normalized field on three service-layer
 functions) and should be a fast fix, but it sits directly on the feature's own primary success
 path and must not ship un-fixed.
+
+## Recheck (commit `84e6c4ae`, same day) - Defect 1 fix verification
+
+Rig brought back up identically (lane `s41`, same ports `:8010`/`:3010`, Redis db 11, two real
+Celery workers, `rm -rf .next && npm run build` + `npx next start -p 3010`; `next dev` never run
+against this `.next`). `git log -1` confirmed HEAD `84e6c4ae` ("normalise the preview-job task
+echo like every other task endpoint") before starting any process; all rig pids started after
+that confirmation. Evidence in `recheck/`.
+
+### B-recheck: Run preview (full scope) -> done render - PASS, Defect 1 confirmed fixed
+
+Same task (`AUTOCOUNT` / `product`), sink switched back to `logging` (the exact `previewable:
+false` scenario that crashed before) so "Run preview" completes in ~1s and lands `done`.
+`recheck/01-idle-logging-sink-1280.png` (idle before) -> `recheck/02-run-preview-done-1280.png`
+(done result rendered: "Nothing to preview - No consumer is configured..." card, "Preview passed
+21 Sept 2026, 22:42" badge, `Activate` button enabled, **no error boundary**) ->
+`recheck/03-run-preview-done-375.png` (same, 375px, no clipping). `agent-browser console` showed
+**zero errors** across this whole flow (checked with an explicit `console --clear` immediately
+before the click). Activate state is correct: enabled because the Source tab's own earlier Test
+had already stamped `lastPreviewAt` independently (by design, per `preview_task`'s docstring - an
+`autocount_http` task earns activation through Source-tab Test regardless of consumer
+reachability). **Confirms `normalizePreviewJob`'s handling of the FULL-scope `job.result.task`
+closes Defect 1 exactly as intended.**
+
+### B-recheck: Source tab Test (sample scope) -> done grid - FAIL, Defect 2 (NEW, same class, not yet fixed)
+
+Reproduced twice independently, including on a **fresh page reload** (ruling out any stale state
+from the Run-preview cycle above): clicking `Test` on the Source tab crashes to the SAME generic
+error boundary, `recheck/04-test-done-1280.png` and `recheck/05-test-crash-1280.png`
+("Something went wrong"). Console error this time: `TypeError: Cannot read properties of
+undefined (reading 'filter')`, `"The above error occurred in the <TaskEditorView> component."`
+
+**Root cause, proven directly against the raw wire payload** (patched `window.fetch` in the live
+page to capture the exact `GET /autocount/previews/{jobId}` response body before the crash -
+never `next dev`, no sourcemaps needed): the DONE job's body is
+`{scope:"sample", status:"done", result:{scope:"sample", preview:{..., "task":{...}}}}` and the
+captured `result.preview.task.sourceConfig` is the RAW, un-normalized dict - `{connectionId,
+path, keyFields, watermarkField, comparedFields, distinctOf, ..., combine}` - with **no `query`,
+`keyColumns`, `comparedColumns`, `watermarkColumn`, `lineQuery`, `fromDate`, `docDateColumn` or
+`filterFormula` keys at all**, exactly the same un-normalized shape Defect 1 had.
+
+**Why the fix commit (`84e6c4ae`) doesn't cover this:** `normalizePreviewJob`
+(`services/autocount-service.real.ts`) is:
+```ts
+function normalizePreviewJob(job: AutocountPreviewJob): AutocountPreviewJob {
+  if (job.result?.scope !== 'full') return job;
+  return { ...job, result: { ...job.result, task: normalizeEtlTask(job.result.task) } };
+}
+```
+This only normalizes a **top-level** `job.result.task`, present only on the `full` scope. The
+`sample` scope's task echo is nested one level deeper, at `job.result.preview.task` (confirmed by
+`types/autocount.ts:993-999`'s `HttpPreview.task?: AutocountEtlTask` - a flat, optional field ON
+the preview object itself, matching the backend's `preview_job.py` `_run_sample`/`HttpPreview`
+response shape). The `scope !== 'full'` guard returns the WHOLE job untouched for `sample`, so
+`preview.task` never gets normalized.
+
+**Where it then crashes:** `SourceTab`'s own `onHttpPreviewSuccess` callback
+(`source-tab.tsx:505`, `if (result) onHttpPreviewSuccess?.(target, typeof result === 'object' ?
+result.task : undefined)`) forwards this un-normalized nested task up to
+`TaskEditorView.onHttpPreviewSuccess` (`task-editor-view.tsx:372-384`), which calls `apply
+(previewedTask)` unconditionally whenever a task is present (`if (previewedTask)
+apply(previewedTask)`) - landing the raw shape straight into the shared `task` state. The crash
+site itself is one of `source-tab.tsx`'s SQL/DB-branch pickers (`filterKnownColumns` at line 205
+being the most likely single call: `pickerColumnOptions(previewColumns, config.keyColumns)`,
+alongside `savedPicks` at 220-226 and the `comparedOptions`/`keyColumnOptions`/`watermarkOptions`
+chain at 234/250/258) - these read `config.keyColumns`/`config.comparedColumns`/
+`config.watermarkColumn` **directly, with no `?? []`/`?? null` guard**, unlike the HTTP-branch's
+own `httpKeyFields`/`httpComparedFields` (lines 415-416) which the original fix commit's
+belt-and-braces pass DID guard. `pickerColumnOptions`'s own body
+(`lib/autocount-etl.ts:50-56`, `saved.filter((c) => !seen.has(c))`) throws exactly "Cannot read
+properties of undefined (reading 'filter')" when its second argument is `undefined` - matching
+the observed error character-for-character, confirmed by reading the corresponding minified
+function body directly out of the shipped chunk (`function o(e,t){let n=new Set(e);return
+[...e,...t.filter(e=>!n.has(e))]}` - byte-identical to `pickerColumnOptions`'s source).
+
+**Blast radius:** every `autocount_http` task's Source-tab "Test" click that lands a `task` echo
+(which per the docstring at `preview_job.py`/`use-autocount-etl.ts` happens on essentially every
+successful sample preview once the backend has a saved config to echo) will crash the whole page
+the moment `onHttpPreviewSuccess` fires with a real task. This is the SAME severity as Defect 1 -
+a crash on a primary, everyday success path (Source tab Test), not an edge case - and was NOT
+caught by the original P0 fix or its own regression test
+(`autocount-service.real.test.ts`, which per the diff only exercises `getPreviewJob`/
+`cancelPreviewJob`'s TOP-LEVEL `result.task`, never the SAMPLE scope's nested `preview.task`).
+
+**Recommendation:** extend `normalizePreviewJob` to also normalize `job.result.preview.task` when
+present (regardless of scope - a `preview.task` field can appear on a `sample`-scope done result),
+and/or add the same `?? []`/`?? null` guards already applied to the HTTP-branch pickers onto the
+five un-guarded SQL/DB-branch call sites in `source-tab.tsx` (lines 205, 220-226, 234, 250, 258) as
+defense-in-depth, matching the pattern the original fix already established for `.query`. This
+should also block merge until fixed and re-verified, same as Defect 1 was.
+
+### Screenshots (`recheck/`)
+
+| File | What it shows |
+|---|---|
+| `00-review-activate-idle-1280.png` | Review & Activate, idle, before the recheck (Sorento sink still configured from the original run) |
+| `01-idle-logging-sink-1280.png` | Idle after switching the company back to `logging` sink (real click, Overview tab -> Edit -> Push delivery target -> No delivery) |
+| `02-run-preview-done-1280.png` | **Defect 1 fixed** - Run preview done, clean render, 1280px |
+| `03-run-preview-done-375.png` | Same, 375px |
+| `04-test-done-1280.png` | **Defect 2 (new)** - Source tab Test crash, first reproduction |
+| `05-test-crash-1280.png` | Defect 2, second reproduction (fresh page reload, rules out stale-state explanation) |
+
+### D-full (N=1 vs N=4 page-walk measurement): NOT RUN - descoped mid-task
+
+The coordinator cut scope mid-recheck ("SKIP D-full entirely - it moves to post-merge S7") after
+setup had begun (the `product` entity's `deliveryMode` was switched to `pull` to unlock a
+"Build snapshot" dialog, in preparation for a pull-based N=1/N=4 measurement that avoids the
+Test-flow crash entirely). That setup was **reverted** before teardown - `deliveryMode` switched
+back to `push` via a real click (Schedule tab -> Edit -> Push -> Save task, confirmed "Task
+saved." toast) - no pull API key or snapshot was ever created, so there is no residue beyond the
+already-existing Sorento fixture connection/sink from the original run (left in place, isolated to
+this lane DB, not reverted per the original brief's own instruction).
+
+### Recheck teardown
+
+Killed only this recheck's own pids (uvicorn `75725`, `wf_s41` `75858`, `jobs_s41` `75859`, `next
+start` `76828`/`76855`) - each cwd-verified against the worktree before killing. All confirmed
+gone. Ports `8010`/`3010` confirmed free after. `agent-browser --session s41 close` (never
+`close --all`).
+
+### Recheck summary
+
+| Item | Result |
+|---|---|
+| B-recheck: Run preview (full) -> done render | **PASS** - Defect 1 confirmed fixed |
+| B-recheck: Source tab Test (sample) -> done render | **FAIL** - Defect 2, same crash class, `normalizePreviewJob` doesn't cover the sample scope's nested `preview.task` |
+| D-full (N=1 vs N=4) | Not run - descoped to post-merge S7 by the coordinator mid-task |
+
+**Merge call (unchanged in spirit, updated defect): still do not merge PR #73 as-is.** Defect 1 is
+verified fixed. Defect 2 is a new, same-class regression discovered by this recheck, on an
+equally primary success path (Source tab Test, likely exercised MORE often in practice than a
+full Run preview) - it must be fixed and re-verified before merge, exactly as Defect 1 was.

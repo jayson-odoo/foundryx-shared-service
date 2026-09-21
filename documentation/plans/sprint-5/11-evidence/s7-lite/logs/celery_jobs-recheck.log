@@ -1,0 +1,199 @@
+ 
+ -------------- jobs_s41@Tehs-Mac-mini.local v5.6.3 (recovery)
+--- ***** ----- 
+-- ******* ---- macOS-26.5.1-arm64-arm-64bit-Mach-O 2026-09-21 23:04:37
+- *** --- * --- 
+- ** ---------- [config]
+- ** ---------- .> app:         workflows:0x10ed442f0
+- ** ---------- .> transport:   redis://localhost:6379/11
+- ** ---------- .> results:     redis://localhost:6379/11
+- *** --- * --- .> concurrency: 2 (prefork)
+-- ******* ---- .> task events: OFF (enable -E to monitor tasks in this worker)
+--- ***** ----- 
+ -------------- [queues]
+                .> jobs             exchange=jobs(direct) key=jobs
+                
+
+[tasks]
+  . autocount.etl_sweep
+  . autocount.prune_pull_snapshots
+  . jobs.run
+  . jobs.sweep_orphaned
+  . meetings.bot_dispatch_due
+  . meetings.calendar_sync_due
+  . omnichannel.broadcasts_due
+  . omnichannel.wait_sweep
+  . ops.ping
+  . pending_actions.commit_due
+  . status.reevaluate_time_based
+  . webhooks.retry_due
+  . workflows.run_due
+  . workflows.run_workflow
+  . workflows.wake_serialized
+
+[2026-09-21 23:04:37,700: INFO/MainProcess] Connected to redis://localhost:6379/11
+[2026-09-21 23:04:37,704: INFO/MainProcess] mingle: searching for neighbors
+[2026-09-21 23:04:38,733: INFO/MainProcess] mingle: all alone
+[2026-09-21 23:04:38,804: INFO/MainProcess] jobs_s41@Tehs-Mac-mini.local ready.
+[2026-09-21 23:08:54,259: INFO/MainProcess] Task jobs.run[f20c2c84-9dc4-41fc-abfa-35bc75df2eaf] received
+2026-09-21 23:08:54,701 INFO sqlalchemy.engine.Engine select pg_catalog.version()
+[2026-09-21 23:08:54,701: INFO/ForkPoolWorker-2] select pg_catalog.version()
+2026-09-21 23:08:54,701 INFO sqlalchemy.engine.Engine [raw sql] {}
+[2026-09-21 23:08:54,701: INFO/ForkPoolWorker-2] [raw sql] {}
+2026-09-21 23:08:54,703 INFO sqlalchemy.engine.Engine select current_schema()
+[2026-09-21 23:08:54,703: INFO/ForkPoolWorker-2] select current_schema()
+2026-09-21 23:08:54,703 INFO sqlalchemy.engine.Engine [raw sql] {}
+[2026-09-21 23:08:54,703: INFO/ForkPoolWorker-2] [raw sql] {}
+2026-09-21 23:08:54,704 INFO sqlalchemy.engine.Engine show standard_conforming_strings
+[2026-09-21 23:08:54,704: INFO/ForkPoolWorker-2] show standard_conforming_strings
+2026-09-21 23:08:54,704 INFO sqlalchemy.engine.Engine [raw sql] {}
+[2026-09-21 23:08:54,704: INFO/ForkPoolWorker-2] [raw sql] {}
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+[2026-09-21 23:08:54,751: INFO/ForkPoolWorker-2] Task jobs.run[f20c2c84-9dc4-41fc-abfa-35bc75df2eaf] succeeded in 0.4858852499992281s: None
+[2026-09-21 23:09:32,938: INFO/MainProcess] Task jobs.run[3a8310db-8364-4b61-9bd5-ca3a86758999] received
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+[2026-09-21 23:09:34,772: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:09:34,908: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+[2026-09-21 23:09:34,941: INFO/ForkPoolWorker-2] Task jobs.run[3a8310db-8364-4b61-9bd5-ca3a86758999] succeeded in 2.00097949999963s: None
+[2026-09-21 23:11:22,168: INFO/MainProcess] Task jobs.run[b7740fe6-c2f9-4151-a9ca-688de0746f6b] received
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+[2026-09-21 23:11:22,645: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:11:22,757: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+[2026-09-21 23:11:22,783: INFO/ForkPoolWorker-2] Task jobs.run[b7740fe6-c2f9-4151-a9ca-688de0746f6b] succeeded in 0.61180237499957s: None
+[2026-09-21 23:12:55,341: INFO/MainProcess] Task jobs.run[009f268b-2f09-467a-a453-0455466e0923] received
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+[2026-09-21 23:12:55,807: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:12:55,914: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+[2026-09-21 23:12:55,945: INFO/ForkPoolWorker-2] Task jobs.run[009f268b-2f09-467a-a453-0455466e0923] succeeded in 0.601391500000318s: None
+[2026-09-21 23:13:20,293: INFO/MainProcess] Task jobs.run[d1a810fc-1ad7-4b68-a865-cec4cc7b87df] received
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+[2026-09-21 23:13:20,732: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:13:20,970: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+[2026-09-21 23:13:20,987: INFO/ForkPoolWorker-2] Task jobs.run[d1a810fc-1ad7-4b68-a865-cec4cc7b87df] succeeded in 0.6918762920004156s: None
+[2026-09-21 23:16:23,011: INFO/MainProcess] Task jobs.run[da622210-c913-462a-bdee-255d53fb8407] received
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+[2026-09-21 23:16:24,171: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:16:24,303: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+[2026-09-21 23:16:24,329: INFO/ForkPoolWorker-2] Task jobs.run[da622210-c913-462a-bdee-255d53fb8407] succeeded in 1.3140678340005252s: None
+[2026-09-21 23:17:04,137: INFO/MainProcess] Task jobs.run[94040972-ec0a-42cb-a168-92ea49e1b232] received
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+[2026-09-21 23:17:04,766: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itembypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+[2026-09-21 23:17:04,902: INFO/ForkPoolWorker-2] HTTP Request: GET https://hapi.sorento.cc.cd/api/db1/itemuombypage?page=1&pageSize=50 "HTTP/1.1 200 OK"
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+ LIMIT %(param_1)s
+[2026-09-21 23:17:04,938: INFO/ForkPoolWorker-2] Task jobs.run[94040972-ec0a-42cb-a168-92ea49e1b232] succeeded in 0.7962885000006281s: None
+
+worker: Warm shutdown (MainProcess)
