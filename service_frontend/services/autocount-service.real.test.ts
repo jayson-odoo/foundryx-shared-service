@@ -228,6 +228,71 @@ describe('realAutocountService - HTTP task sourceConfig normalization', () => {
     expect(job).toEqual(payload);
   });
 
+  /**
+   * S7-lite P0, round 2 (real-worker smoke recheck, evidence
+   * `11-evidence/s7-lite/recheck/05-test-crash-1280.png`) - the round-1 fix
+   * only normalized `result.task` (`full` scope) and returned early on any
+   * OTHER scope, so a `sample`-scope done job's echoed task
+   * (`result.preview.task`, `HttpPreview.task?`, AC-11-26 - the save-gate
+   * stamp on the Source tab's Test) reached `SourceTab.onHttpPreviewSuccess`
+   * -> `TaskEditorView.apply()` un-normalized. The DB/SQL-branch column
+   * pickers (`keyColumnOptions`/`watermarkOptions`/`comparedOptions`, all
+   * unguarded reads of `config.keyColumns`/`comparedColumns`) then crashed
+   * on the very next render.
+   */
+  it('getPreviewJob normalizes a done sample-scope job\'s echoed preview.task the same way as getEtlTask', async () => {
+    apiFetchMock.mockResolvedValue({
+      id: 'preview-job-5',
+      scope: 'sample',
+      status: 'done',
+      progress: null,
+      result: {
+        scope: 'sample',
+        preview: { columns: [], rows: [], durationMs: 12, envelope: 'list', task: realHttpTaskWire() },
+      },
+      error: null,
+      taskError: null,
+      createdAt: '2026-09-21T00:00:00Z',
+    });
+    const job = await realAutocountService.getPreviewJob('preview-job-5');
+    if (job.result?.scope !== 'sample') throw new Error('expected a sample-scope result');
+    const task = job.result.preview.task;
+    if (!task) throw new Error('expected an echoed task');
+    expect(task.sourceConfig.query).toBe('');
+    expect(task.sourceConfig.lineQuery).toBeNull();
+    expect(task.sourceConfig.keyColumns).toEqual([]);
+    expect(task.sourceConfig.watermarkColumn).toBeNull();
+    expect(task.sourceConfig.comparedColumns).toEqual([]);
+    expect(task.sourceConfig.fromDate).toBeNull();
+    expect(task.sourceConfig.docDateColumn).toBeNull();
+    expect(task.sourceConfig.filterFormula).toBeNull();
+    // The HTTP fields the server DID send stay exactly as received.
+    expect(task.sourceConfig.path).toBe('/itembypage');
+    expect(task.sourceConfig.keyFields).toEqual(['ItemCode']);
+  });
+
+  it('cancelPreviewJob normalizes a done sample-scope job\'s echoed preview.task the same way', async () => {
+    apiFetchMock.mockResolvedValue({
+      id: 'preview-job-5',
+      scope: 'sample',
+      status: 'done',
+      progress: null,
+      result: {
+        scope: 'sample',
+        preview: { columns: [], rows: [], durationMs: 12, envelope: 'list', task: realHttpTaskWire() },
+      },
+      error: null,
+      taskError: null,
+      createdAt: '2026-09-21T00:00:00Z',
+    });
+    const job = await realAutocountService.cancelPreviewJob('preview-job-5');
+    if (job.result?.scope !== 'sample') throw new Error('expected a sample-scope result');
+    const task = job.result.preview.task;
+    if (!task) throw new Error('expected an echoed task');
+    expect(task.sourceConfig.query).toBe('');
+    expect(task.sourceConfig.keyColumns).toEqual([]);
+  });
+
   it('getPreviewJob leaves a still-running job (no result yet) untouched', async () => {
     const payload = {
       id: 'preview-job-3',

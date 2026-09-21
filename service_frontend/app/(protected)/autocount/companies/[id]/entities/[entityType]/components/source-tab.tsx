@@ -201,8 +201,12 @@ export function SourceTab({
   // The Filter builder's Variables panel (AC-02-11/20) - the header columns
   // known so far, plus whatever the saved formula already references (a
   // stale-but-visible variable, same discoverability as `pickerColumnOptions`).
+  // Belt-and-braces (S7-lite P0, round 2 - the sample-scope echo) - `?? []`/
+  // `?? ''` guard a future un-normalized task echo on the SQL/DB-branch
+  // column pickers below; the real fix is the service-boundary normalizer
+  // (`normalizeEtlTask`/`normalizePreviewJob`, `autocount-service.real.ts`).
   const filterKnownColumns = useMemo(
-    () => pickerColumnOptions(previewColumns, config.keyColumns),
+    () => pickerColumnOptions(previewColumns, config.keyColumns ?? []),
     [config.keyColumns, previewColumns],
   );
   const filterVariables = useMemo(
@@ -219,9 +223,9 @@ export function SourceTab({
 
   const savedPicks = useMemo(
     () => [
-      ...config.keyColumns,
+      ...(config.keyColumns ?? []),
       ...(config.watermarkColumn ? [config.watermarkColumn] : []),
-      ...config.comparedColumns,
+      ...(config.comparedColumns ?? []),
     ],
     [config.comparedColumns, config.keyColumns, config.watermarkColumn],
   );
@@ -231,7 +235,7 @@ export function SourceTab({
   );
   // Compared columns never include a key column (keys are identity, not change).
   const comparedOptions = useMemo(
-    () => columnOptions.filter((o) => !config.keyColumns.includes(o.value)),
+    () => columnOptions.filter((o) => !(config.keyColumns ?? []).includes(o.value)),
     [columnOptions, config.keyColumns],
   );
   // BL-SS-087 (foolproof-UI half) - the watermark column is GUARANTEED to
@@ -247,7 +251,7 @@ export function SourceTab({
   const keyColumnOptions = useMemo(
     () =>
       columnOptions.filter(
-        (o) => o.value !== config.watermarkColumn || config.keyColumns.includes(o.value),
+        (o) => o.value !== config.watermarkColumn || (config.keyColumns ?? []).includes(o.value),
       ),
     [columnOptions, config.keyColumns, config.watermarkColumn],
   );
@@ -256,7 +260,7 @@ export function SourceTab({
     // the same rule (and the same legacy-value exception) from the other
     // picker's side.
     const base = columnOptions.filter(
-      (o) => !config.keyColumns.includes(o.value) || o.value === config.watermarkColumn,
+      (o) => !(config.keyColumns ?? []).includes(o.value) || o.value === config.watermarkColumn,
     );
     // A document task REQUIRES a watermark column (AutoCount stamps a
     // header's LastModified on any line edit - the S5 line-change-detection

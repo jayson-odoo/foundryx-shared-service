@@ -112,18 +112,39 @@ function normalizeEtlTask(task: AutocountEtlTask): AutocountEtlTask {
 
 // sprint-5/11 S7-lite P0 (real-worker smoke, evidence
 // `documentation/plans/sprint-5/11-evidence/s7-lite/README.md`) - the SAME
-// AC-08-30 gap as `normalizeEtlTask` above, one hop further: a `full`-scope
-// preview job's `done` result echoes the task via the backend's OWN
-// `_task_echo`/`_task_response` builder (`modules/autocount/preview_job.py`),
-// which deliberately carries the SAME raw, un-normalized `sourceConfig`.
-// `getPreviewJob`/`cancelPreviewJob` (both wire-typed `AutocountPreviewJob`,
-// so a `result.task` CAN be present) need the identical fix; `startPreviewJob`
-// does NOT - its 202 body is `PreviewJobStartOut` (`modules/autocount/
-// schemas.py`), `{jobId, status}` only, never a `result` at all, so there is
-// nothing to normalize there.
+// AC-08-30 gap as `normalizeEtlTask` above, one hop further: a preview job's
+// `done` result echoes the task via the backend's OWN `_task_echo`/
+// `_task_response` builder (`modules/autocount/preview_job.py`), which
+// deliberately carries the SAME raw, un-normalized `sourceConfig` - and it
+// does so at TWO different nests depending on scope:
+// - `full` scope: `result.task` directly (`AutocountPreviewJobFullResult`).
+// - `sample` scope: `result.preview.task` (`HttpPreview.task?`, AC-11-26) -
+//   the ORIGINAL fix (round 1) only handled the `full` branch and returned
+//   early on any other scope, so a `sample`-scope done job's echoed task
+//   reached `SourceTab.onHttpPreviewSuccess` -> `TaskEditorView.apply()`
+//   un-normalized, crashing the DB-branch column pickers
+//   (`keyColumnOptions`/`watermarkOptions`/`comparedOptions` etc., all
+//   unguarded reads of `config.keyColumns`/`comparedColumns`/
+//   `watermarkColumn`) - `11-evidence/s7-lite/recheck/05-test-crash-1280.png`.
+// `getPreviewJob`/`cancelPreviewJob` (both wire-typed `AutocountPreviewJob`)
+// need this; `startPreviewJob` does NOT - its 202 body is
+// `PreviewJobStartOut` (`modules/autocount/schemas.py`), `{jobId, status}`
+// only, never a `result` at all, so there is nothing to normalize there.
 function normalizePreviewJob(job: AutocountPreviewJob): AutocountPreviewJob {
-  if (job.result?.scope !== 'full') return job;
-  return { ...job, result: { ...job.result, task: normalizeEtlTask(job.result.task) } };
+  if (!job.result) return job;
+  if (job.result.scope === 'full') {
+    return { ...job, result: { ...job.result, task: normalizeEtlTask(job.result.task) } };
+  }
+  // `sample` scope - `preview.task` is optional (only present when the
+  // save-gate stamped it, AC-11-26); leave a task-less preview untouched.
+  if (!job.result.preview.task) return job;
+  return {
+    ...job,
+    result: {
+      ...job.result,
+      preview: { ...job.result.preview, task: normalizeEtlTask(job.result.preview.task) },
+    },
+  };
 }
 
 export const realAutocountService: AutocountService = {
