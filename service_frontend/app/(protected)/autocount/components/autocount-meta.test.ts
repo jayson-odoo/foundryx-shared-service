@@ -43,9 +43,11 @@ describe('presetOptionsForField', () => {
 // Plan sprint-5/08 (AC-08-10/18) - the open (http) company kind + entity set.
 import {
   AC_HTTP_ENTITY_TYPES,
+  AC_HTTP_ONLY_ENTITY_TYPES,
   AC_NEW_MASTER_ENTITY_TYPES,
   AC_SQL_DB_ENTITY_TYPES,
   entitiesForSourceKind,
+  isHttpOnlyEntity,
   sourceKindLabel,
 } from './autocount-meta';
 
@@ -75,9 +77,33 @@ describe('AC_SQL_DB_ENTITY_TYPES (AC-01-17)', () => {
   });
 
   it('entitiesForSourceKind picks the list by company kind', () => {
-    expect(entitiesForSourceKind('db')).toBe(AC_SQL_DB_ENTITY_TYPES);
+    // fix/autocount-add-http-only-entity-on-db-company - a `db` company's
+    // list is the sql_db set PLUS the HTTP-only entities (stock_balance) -
+    // this already works server-side (`_update_http_task` runs before the
+    // "DB company reads only its own connection" rule), so foolproof-UI now
+    // offers it. `api`/`http` are untouched.
+    expect(entitiesForSourceKind('db')).toEqual([...AC_SQL_DB_ENTITY_TYPES, 'stock_balance']);
     expect(entitiesForSourceKind('api')).toBe(AC_NEW_MASTER_ENTITY_TYPES);
     expect(entitiesForSourceKind('http')).toBe(AC_HTTP_ENTITY_TYPES);
+  });
+});
+
+describe('AC_HTTP_ONLY_ENTITY_TYPES (fix/autocount-add-http-only-entity-on-db-company)', () => {
+  it('is exactly the HTTP entities with no sql_db variant - today just stock_balance', () => {
+    expect(AC_HTTP_ONLY_ENTITY_TYPES).toEqual(['stock_balance']);
+  });
+
+  it('every other HTTP entity is also SQL-extractable', () => {
+    for (const t of AC_HTTP_ENTITY_TYPES) {
+      if (t === 'stock_balance') continue;
+      expect(AC_SQL_DB_ENTITY_TYPES).toContain(t);
+    }
+  });
+
+  it('isHttpOnlyEntity', () => {
+    expect(isHttpOnlyEntity('stock_balance')).toBe(true);
+    expect(isHttpOnlyEntity('product')).toBe(false);
+    expect(isHttpOnlyEntity('goods_received_note')).toBe(false);
   });
 });
 

@@ -25,6 +25,7 @@ import type { UsePreviewColumnsMapResult } from '@/hooks/use-autocount-pull';
 import {
   AC_API_CAPABLE_ENTITY_TYPES,
   entityLabel,
+  isHttpOnlyEntity,
 } from '../../../../../components/autocount-meta';
 import {
   httpPreviewAsSqlPreview,
@@ -533,9 +534,13 @@ export function SourceTab({
   // "Database" as a toggle segment would be a guaranteed dead end
   // (foolproof-UI: only valid options). A vendor/basic-auth `api` company
   // keeps both (it may still carry `sql_db` tasks, AC-08-13); a `db`
-  // company (`lockedApiConnection` unset here) keeps both too.
+  // company (`lockedApiConnection` unset here) keeps both too - UNLESS the
+  // entity itself is HTTP-only (fix/autocount-add-http-only-entity-on-db-
+  // company: today `stock_balance`, no `sql_db` variant exists or is
+  // planned, D4) - Database is never a working choice for it regardless of
+  // company kind, so the toggle drops that segment the same way.
   const sourceKindOptions =
-    lockedApiConnection?.auth === 'none'
+    lockedApiConnection?.auth === 'none' || isHttpOnlyEntity(entityType)
       ? SOURCE_KIND_OPTIONS.filter((option) => option.value !== 'db')
       : SOURCE_KIND_OPTIONS;
 

@@ -89,7 +89,6 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     render(<AddEntityControl entities={[]} sourceKind="db" onAdd={vi.fn()} />);
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(11);
     expect(names).toEqual(
       expect.arrayContaining([
         'Customer', 'Supplier', 'Product category', 'Unit of measure', 'Warehouse',
@@ -97,6 +96,19 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
       ]),
     );
     expect(names).not.toContain('Goods received note');
+  });
+
+  // fix/autocount-add-http-only-entity-on-db-company - Stock balance has no
+  // `sql_db` variant (D4), but the backend already accepts an
+  // `autocount_http` task on ANY company kind (AC-08-13) - a DB company's
+  // picker now offers it too (foolproof-UI: offer what already works),
+  // alongside the eleven sql_db entities (twelve total).
+  it('a DB company also offers Stock balance (HTTP-only, no sql_db variant)', () => {
+    render(<AddEntityControl entities={[]} sourceKind="db" onAdd={vi.fn()} />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
+    const names = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(names).toHaveLength(12);
+    expect(names).toContain('Stock balance');
   });
 
   it('a DB company\'s list drops the entities already configured', () => {
@@ -109,11 +121,26 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     );
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(9);
+    expect(names).toHaveLength(10);
     expect(names).not.toContain('Customer');
     expect(names).not.toContain('Sales order');
     expect(names).toContain('Supplier');
     expect(names).toContain('Brand');
+    expect(names).toContain('Stock balance');
+  });
+
+  it('after Stock balance is configured on a DB company, it drops out of the picker', () => {
+    render(
+      <AddEntityControl
+        entities={[entity({ entityType: 'stock_balance', sourceImpl: 'autocount_http' })]}
+        sourceKind="db"
+        onAdd={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
+    const names = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(names).toHaveLength(11);
+    expect(names).not.toContain('Stock balance');
   });
 });
 

@@ -182,15 +182,39 @@ export const AC_SQL_DB_ENTITY_TYPES: string[] = [
 ];
 
 /**
+ * The open REST API entities with NO `sql_db` variant (today: just
+ * `stock_balance` - sprint-5/10 S5b, AC-10-39/D4) - derived from the two
+ * catalogues above, never hand-listed twice (`test_autocount_entity_parity.py`
+ * already pins `AC_SQL_DB_ENTITY_TYPES` as `ETL_ENTITY_TYPES` minus GRN minus
+ * `stock_balance`, so this difference IS that literal).
+ *
+ * Backend note (fix/autocount-add-http-only-entity-on-db-company): the DB
+ * task route (`EtlService.update_task`) already accepts an
+ * `sourceImpl: "autocount_http"` task on ANY company kind - `_update_http_task`
+ * runs BEFORE the "DB company reads only its own connection" rule
+ * (`etl_service.py`, AC-08-13). A DB company's Add-entity picker used to omit
+ * every one of these regardless, a foolproof-UI gap: they already work, they
+ * were just never offered.
+ */
+export const AC_HTTP_ONLY_ENTITY_TYPES: string[] = AC_HTTP_ENTITY_TYPES.filter(
+  (entityType) => !AC_SQL_DB_ENTITY_TYPES.includes(entityType),
+);
+
+export function isHttpOnlyEntity(entityType: string): boolean {
+  return AC_HTTP_ONLY_ENTITY_TYPES.includes(entityType);
+}
+
+/**
  * The Add-entity picker's candidate list for a company of the given kind
- * (sprint-5/08 AC-08-18): a `db` company offers every `sql_db` entity, an
- * `http` (open) company offers exactly the confirmed HTTP masters, an `api`
- * (vendor/basic-auth) company keeps the plan 22 S4 masters fan-out (its
- * three vendor-seeded entities - GRN/supplier/customer - already exist with
- * no "Add" step).
+ * (sprint-5/08 AC-08-18): a `db` company offers every `sql_db` entity PLUS
+ * the HTTP-only entities (AC-08-18 extension above - legal server-side, so
+ * foolproof-UI offers it), an `http` (open) company offers exactly the
+ * confirmed HTTP masters, an `api` (vendor/basic-auth) company keeps the
+ * plan 22 S4 masters fan-out (its three vendor-seeded entities -
+ * GRN/supplier/customer - already exist with no "Add" step).
  */
 export function entitiesForSourceKind(kind: AutocountSourceKind): string[] {
-  if (kind === 'db') return AC_SQL_DB_ENTITY_TYPES;
+  if (kind === 'db') return [...AC_SQL_DB_ENTITY_TYPES, ...AC_HTTP_ONLY_ENTITY_TYPES];
   if (kind === 'http') return AC_HTTP_ENTITY_TYPES;
   return AC_NEW_MASTER_ENTITY_TYPES;
 }

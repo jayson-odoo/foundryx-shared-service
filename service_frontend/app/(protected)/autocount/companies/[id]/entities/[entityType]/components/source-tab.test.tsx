@@ -457,6 +457,16 @@ describe('SourceTab - Source toggle (sprint-5/08 D13, AC-08-19)', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'Database' }));
     expect(onSourceKindChange).toHaveBeenCalledWith('db');
   });
+
+  // fix/autocount-add-http-only-entity-on-db-company - `stock_balance` has no
+  // `sql_db` variant (AC-10-39/D4): Database is never a working choice for
+  // it, on ANY company kind, so the toggle drops that segment entirely
+  // (foolproof-UI), the same carve-out the no-auth-company case already has.
+  it('an HTTP-only entity (stock_balance) hides the Database segment entirely, even on a db company', () => {
+    renderApiBranch({ entityType: 'stock_balance' });
+    expect(screen.getByRole('radio', { name: 'API' })).toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: 'Database' })).not.toBeInTheDocument();
+  });
 });
 
 describe('SourceTab - API branch, free picker (AC-08-19)', () => {
