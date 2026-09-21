@@ -51,8 +51,10 @@ different fixes:
 
 1. **The walk is serial.** `http_source/source.py::_walk_path` requests page N+1 only after
    page N returns. db1 answers a 1000-row page in about 21 s, so a 12-page product extraction
-   spends about 4 minutes purely waiting, and the measured full build is 9m00s (db2: 8m01s for
-   3,445 rows). The wrapper's own per-page latency is not ours to fix; the serialisation is.
+   spends about 4 minutes purely waiting, and the measured full build is 9m00s (db2: 20m18s for
+   3,445 rows, Run 2, live-replay README; the earlier-cited "8m01s" was db1's stock_balance
+   build, 12,133 rows - corrected per the S0 baseline finding). The wrapper's own per-page
+   latency is not ours to fix; the serialisation is.
 2. **The two operator previews are synchronous HTTP requests that perform that walk.** Review
    and Activate's "Run preview" runs the FULL walk plus mapping plus a Sorento dry run inside
    one request (`EtlService.preview_task` -> `_extract_and_map` -> `fetch_changes`), and the
