@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -58,7 +59,7 @@ from .client import (
     connection_sizing,
 )
 from .combine import apply_combine, combine_output_columns
-from .envelope import ENVELOPE_LIST, parse_page
+from .envelope import ENVELOPE_LIST, ENVELOPE_PAGED, EnvelopePage, parse_page
 from .errors import HttpSourceError
 from .lookups import AliasCollisionError, build_index, effective_result_columns, merge_onto_rows
 from .preview import validate_http_path
@@ -89,12 +90,46 @@ CLOUDFLARE_TIMEOUT_STATUS = 524
 DELETE_GUARD_RATIO = 0.2
 DELETE_GUARD_MIN_ABSOLUTE = 50
 
+# sprint-5/11 S6 (AC-11-10, owner ruling R2) - a 429 at concurrency > 1 backs
+# off ONCE: sleep the echoed ``Retry-After``, clamped to this range (default
+# when absent/unparsable), then restart the REST of the walk serially - a
+# SECOND 429 (on the serial restart) fails like any other 4xx, never a
+# second back-off.
+BACKOFF_RETRY_AFTER_DEFAULT_SECONDS = 5.0
+BACKOFF_RETRY_AFTER_MIN_SECONDS = 1.0
+BACKOFF_RETRY_AFTER_MAX_SECONDS = 30.0
+
 
 class _PageTimedOutTwice(Exception):
     """Internal signal only (AC-10-75): ONE page has now timed out on BOTH
     its attempts at the CURRENT page size. Caught by ``_walk_endpoint``,
     which owns the halving budget - ``_fetch_page``/``_walk_path`` know
     nothing about it."""
+
+
+class _ConcurrentBackoff(Exception):
+    """Internal signal only (AC-11-10): a worker in a concurrent batch saw a
+    429. Caught by the DRAINING thread (never a worker) - it records ONE
+    activity note, sleeps the clamped ``Retry-After``, then restarts the
+    rest of the walk serially."""
+
+    def __init__(self, retry_after: Optional[str]) -> None:
+        super().__init__("429 Too Many Requests")
+        self.retry_after = retry_after
+
+
+def _clamp_retry_after_seconds(raw: Optional[str]) -> float:
+    if raw is not None:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = None
+        else:
+            return max(
+                BACKOFF_RETRY_AFTER_MIN_SECONDS,
+                min(value, BACKOFF_RETRY_AFTER_MAX_SECONDS),
+            )
+    return BACKOFF_RETRY_AFTER_DEFAULT_SECONDS
 
 
 class HttpApiTaskNotConfigured(HttpSourceError):
@@ -158,6 +193,14 @@ class HttpApiSource:
         # ``_walk`` alone promotes it onto the public attribute above,
         # immediately after the MAIN walk and before any lookup ever runs.
         self._last_walked_page_size: Optional[int] = None
+        # sprint-5/11 S6 (AC-11-11) - mirrors ``source_page_size``/
+        # ``_last_walked_page_size`` exactly: the EFFECTIVE concurrency the
+        # MAIN walk actually used (the configured N when it legitimately
+        # went concurrent, or 1 for every AC-11-02 fallback/downgrade) -
+        # ``None`` until the first successful walk; read back by
+        # ``sync._run_pull_snapshot`` onto ``metadata_json.sourceConcurrency``.
+        self.source_concurrency: Optional[int] = None
+        self._last_walk_concurrency: int = 1
 
         config = getattr(ctx.entity_config, "source_config", None) or {}
         if not isinstance(config, dict):
@@ -257,9 +300,14 @@ class HttpApiSource:
         # path (``http_source.preview.run_http_preview`` via
         # ``services.etl_service.EtlService.preview_http``), so the two
         # never disagree on either knob.
-        self._page_size, timeout_seconds = connection_sizing(conn_config)
+        sizing = connection_sizing(conn_config)
+        self._page_size = sizing.page_size
+        # sprint-5/11 S6 (AC-11-01) - the connection's own opt-in concurrency
+        # ceiling (1..8, default 1 = byte-identical to today); read ONCE here
+        # exactly like ``self._page_size``, never re-read mid-walk.
+        self._page_concurrency = sizing.max_concurrent_pages
         self._client = HttpApiClient(
-            base_url, transport=transport, timeout_seconds=timeout_seconds
+            base_url, transport=transport, timeout_seconds=sizing.request_timeout_seconds
         )
 
     # ── identity ───────────────────────────────────────────────────────────
@@ -329,8 +377,79 @@ class HttpApiSource:
                 continue
             return response
 
+    def _parse_envelope(self, response: httpx.Response, *, page: int) -> EnvelopePage:
+        """Status + JSON + shape parsing for ONE already-fetched page
+        response - the SAME three checks (``http_status``/``not_json``/
+        ``shape``) every walker (serial, or a concurrent worker) raises for
+        the identical fault. No DB access, no session - safe to call from a
+        worker thread (AC-11-09)."""
+        if not (200 <= response.status_code < 300):
+            raise HttpSourceError(
+                f"AutoCount answered HTTP {response.status_code} on page {page}.",
+                code="http_status",
+                page=page,
+                status=response.status_code,
+            )
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise HttpSourceError(
+                f"The response on page {page} was not JSON.",
+                code="not_json",
+                page=page,
+                status=response.status_code,
+            ) from exc
+        try:
+            return parse_page(body)
+        except ValueError as exc:
+            raise HttpSourceError(
+                str(exc), code="shape", page=page, status=response.status_code
+            ) from exc
+
     def _walk_path(
         self, path: str, page_size: int
+    ) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
+        """AC-11-02/03 - the dispatcher: page 1 is ALWAYS fetched alone,
+        serially (unchanged retry/halving budget). At ``max_concurrent_pages
+        <= 1`` (the connection's own configured N, the default) this hands
+        straight to ``_walk_path_serial`` - byte-identical to today, ZERO
+        risk to every existing (N never configured) task. Otherwise page 1's
+        own echo decides AC-11-02's five fallback conditions (bare-array
+        envelope, no ``TotalPages``, no echoed ``Page``, ``TotalPages < 2``,
+        or ``max_concurrent_pages == 1`` itself - the last one is already
+        handled by the branch above) BEFORE any page 2 request - ineligible
+        falls back to the SAME serial walker (fed page 1's already-fetched
+        response, so it is never re-requested); eligible goes concurrent."""
+        if self._page_concurrency <= 1:
+            self._last_walk_concurrency = 1
+            return self._walk_path_serial(path, page_size)
+
+        response1 = self._fetch_page(path, 1, page_size)
+        parsed1 = self._parse_envelope(response1, page=1)
+        eligible = (
+            parsed1.kind == ENVELOPE_PAGED
+            and parsed1.total_pages is not None
+            and parsed1.total_pages >= 2
+            and parsed1.page == 1
+        )
+        if not eligible:
+            self._last_walk_concurrency = 1
+            self._client.record_note(
+                f"'{path}' configured for concurrency {self._page_concurrency} but "
+                f"walked serially (1) - the server's own response did not meet "
+                f"AC-11-02's conditions (a paged envelope, TotalPages >= 2, and "
+                f"an echoed Page == 1 on the first page).",
+                ok=True,
+            )
+            return self._walk_path_serial(path, page_size, prefetched=(response1, parsed1))
+        return self._walk_path_concurrent(path, page_size, response1, parsed1)
+
+    def _walk_path_serial(
+        self,
+        path: str,
+        page_size: int,
+        *,
+        prefetched: Optional[Tuple[httpx.Response, EnvelopePage]] = None,
     ) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
         """GET every page of ONE endpoint at a FIXED page size, returning
         ``(rows, reported_total, envelope_kind)``. Raises ``HttpSourceError``
@@ -345,7 +464,16 @@ class HttpApiSource:
         constructor's ``heartbeat`` callback after EVERY successfully parsed
         page, main path AND lookup endpoints alike (both route through this
         one walker). A build abandoned mid-walk (the callback raises) stops
-        the walk immediately - no further pages are requested."""
+        the walk immediately - no further pages are requested.
+
+        sprint-5/11 S6 - THE unchanged serial algorithm (AC-11-02's own
+        fallback target, and a 429 back-off's serial restart target).
+        ``prefetched`` (``_walk_path``'s own AC-11-02 eligibility check,
+        or ``None`` for every other caller) supplies page 1's ALREADY-
+        fetched response so it is never requested twice - every downstream
+        check for it (scanned/reported_total/heartbeat/row-cap/kind) still
+        runs HERE, in the SAME order, so behaviour is byte-identical
+        regardless of which caller reached this method."""
         scanned: List[Dict[str, Any]] = []
         established_kind: Optional[str] = None
         reported_total: Optional[int] = None
@@ -356,30 +484,11 @@ class HttpApiSource:
         previous_reported_page: Optional[int] = None
         page = 1
         while True:
-            response = self._fetch_page(path, page, page_size)
-
-            if not (200 <= response.status_code < 300):
-                raise HttpSourceError(
-                    f"AutoCount answered HTTP {response.status_code} on page {page}.",
-                    code="http_status",
-                    page=page,
-                    status=response.status_code,
-                )
-            try:
-                body = response.json()
-            except ValueError as exc:
-                raise HttpSourceError(
-                    f"The response on page {page} was not JSON.",
-                    code="not_json",
-                    page=page,
-                    status=response.status_code,
-                ) from exc
-            try:
-                parsed = parse_page(body)
-            except ValueError as exc:
-                raise HttpSourceError(
-                    str(exc), code="shape", page=page, status=response.status_code
-                ) from exc
+            if page == 1 and prefetched is not None:
+                response, parsed = prefetched
+            else:
+                response = self._fetch_page(path, page, page_size)
+                parsed = self._parse_envelope(response, page=page)
 
             if established_kind is None:
                 established_kind = parsed.kind
@@ -452,6 +561,153 @@ class HttpApiSource:
 
         return scanned, reported_total, established_kind
 
+    # ── bounded-concurrency walk (sprint-5/11 S6, AC-11-02..11) ─────────────
+
+    def _fetch_page_concurrent(self, path: str, page: int, page_size: int) -> EnvelopePage:
+        """The per-page WORKER body a ``ThreadPoolExecutor`` submits for the
+        concurrent path (AC-11-09) - HTTP GET + JSON parse ONLY: this body
+        touches no database handle of any kind, and fires no liveness
+        callback (that happens from the DRAINING thread instead, once per
+        completed page, in requested-page order - see
+        ``test_concurrent_worker_never_touches_the_database``'s own static
+        check on this exact method). Reuses ``_fetch_page``'s own retry
+        ladder unchanged (AC-10-75 preserved exactly) and ``_parse_envelope``
+        for the SAME status/JSON/shape codes the serial walk raises for the
+        identical fault. Raises ``_ConcurrentBackoff`` on a 429 (AC-11-10,
+        handled by the draining thread's own back-off) and a ``shape``
+        ``HttpSourceError`` naming the REQUESTED page when the echoed
+        ``Page`` is present and wrong (AC-11-06 - replaces the serial SF-5
+        non-advancing guard, which has no meaning once pages are requested
+        out of order)."""
+        response = self._fetch_page(path, page, page_size)
+        if response.status_code == 429:
+            raise _ConcurrentBackoff(response.headers.get("Retry-After"))
+        parsed = self._parse_envelope(response, page=page)
+        if parsed.page is not None and parsed.page != page:
+            raise HttpSourceError(
+                f"Page {page} echoed Page={parsed.page}, requested {page}.",
+                code="shape",
+                page=page,
+                status=response.status_code,
+            )
+        return parsed
+
+    def _run_concurrent_batch(
+        self, path: str, page_size: int, batch_pages: List[int]
+    ) -> List[EnvelopePage]:
+        """Submits every page in ``batch_pages`` to a ``ThreadPoolExecutor``
+        AT ONCE (AC-11-03: at most N in flight, N == this batch's size) and
+        drains results in REQUESTED-PAGE order (never completion order,
+        AC-11-04) - returns them ascending by page. A halving signal
+        (``_PageTimedOutTwice``) or any ``HttpSourceError``/
+        ``_ConcurrentBackoff`` cancels the WHOLE in-flight set
+        (``executor.shutdown(cancel_futures=True)``) and re-raises the
+        FIRST fault observed (AC-11-07/08/10) - never assembled, never a
+        second batch submitted."""
+        results: Dict[int, EnvelopePage] = {}
+        executor = ThreadPoolExecutor(max_workers=len(batch_pages))
+        try:
+            futures = {
+                executor.submit(self._fetch_page_concurrent, path, p, page_size): p
+                for p in batch_pages
+            }
+            first_error: Optional[BaseException] = None
+            for future in as_completed(futures):
+                try:
+                    results[futures[future]] = future.result()
+                except BaseException as exc:  # noqa: BLE001 - re-raised verbatim below
+                    if first_error is None:
+                        first_error = exc
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+        if first_error is not None:
+            raise first_error
+        return [results[p] for p in batch_pages]
+
+    def _walk_path_concurrent(
+        self,
+        path: str,
+        page_size: int,
+        response1: httpx.Response,
+        parsed1: EnvelopePage,
+    ) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
+        """AC-11-02/03/04/06/07/10/11 - page 1 (already fetched/parsed by
+        ``_walk_path``) seeds ``scanned``; pages 2..``TotalPages`` walk in
+        batches of ``self._page_concurrency`` via ``_run_concurrent_batch``,
+        assembled strictly ascending by REQUESTED page (never completion
+        order). A 429 aborts the batch and restarts the REST of the walk
+        serially (AC-11-10) - a full, fresh ``_walk_path_serial`` call, so
+        page 1 (and everything else) is re-walked exactly once more; every
+        other fault (row cap, an echoed-page mismatch, a halving signal)
+        propagates straight to the caller, which is `_walk_endpoint`'s own
+        halving catch for `_PageTimedOutTwice`."""
+        started = time.monotonic()
+        established_kind = parsed1.kind
+        scanned: List[Dict[str, Any]] = list(parsed1.rows)
+        reported_total = parsed1.total_count
+        total_pages = parsed1.total_pages
+        n = self._page_concurrency
+        self._last_walk_concurrency = n
+
+        if self._on_page is not None:
+            self._on_page(self._current_stage, 1, total_pages)
+        if len(scanned) > self.row_limit:
+            raise HttpSourceError(
+                f"This task's extract exceeded the {self.row_limit} row cap.",
+                code="row_limit",
+                page=1,
+            )
+
+        # AC-11-07 - the row-cap PRE-FLIGHT: a wildly large walk must never
+        # even submit its first concurrent batch. Projected from page 1's
+        # OWN echoed PageSize (never the requested one, AC-08-22's "trust
+        # the echo" rule) - falls back to the requested size only when the
+        # server never echoes one at all.
+        echoed_page_size = parsed1.page_size or page_size
+        if total_pages and echoed_page_size and total_pages * echoed_page_size > self.row_limit:
+            raise HttpSourceError(
+                f"This task's extract would exceed the {self.row_limit} row cap "
+                f"({total_pages} pages x {echoed_page_size} rows/page projected).",
+                code="row_limit",
+                page=1,
+            )
+
+        next_page = 2
+        while next_page <= total_pages:
+            batch_pages = list(range(next_page, min(next_page + n, total_pages + 1)))
+            try:
+                parsed_pages = self._run_concurrent_batch(path, page_size, batch_pages)
+            except _ConcurrentBackoff as backoff:
+                self._client.record_note(
+                    f"AutoCount answered HTTP 429 while walking '{path}' at "
+                    f"concurrency {n} - backing off and restarting serially.",
+                    ok=False,
+                )
+                time.sleep(_clamp_retry_after_seconds(backoff.retry_after))
+                return self._walk_path_serial(path, page_size)
+
+            for p, parsed in zip(batch_pages, parsed_pages):
+                scanned.extend(parsed.rows)
+                if parsed.total_count is not None:
+                    reported_total = parsed.total_count
+                if self._on_page is not None:
+                    self._on_page(self._current_stage, p, parsed.total_pages)
+                if len(scanned) > self.row_limit:
+                    raise HttpSourceError(
+                        f"This task's extract exceeded the {self.row_limit} row cap.",
+                        code="row_limit",
+                        page=p,
+                    )
+            next_page += n
+
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        self._client.record_note(
+            f"Walked '{path}' with concurrency {n} across {total_pages} pages "
+            f"in {elapsed_ms}ms.",
+            ok=True,
+        )
+        return scanned, reported_total, established_kind
+
     def _walk_endpoint(
         self, path: str
     ) -> Tuple[List[Dict[str, Any]], Optional[int], Optional[str]]:
@@ -512,6 +768,9 @@ class HttpApiSource:
         # ``fetch_changes``), so this is always the main path's OWN value,
         # never a lookup's.
         self.source_page_size = self._last_walked_page_size
+        # sprint-5/11 S6 (AC-11-11) - the SAME promotion, for the effective
+        # concurrency the main walk actually used.
+        self.source_concurrency = self._last_walk_concurrency
         return result
 
     # ── lookups (AC-10-01/02/03, R9) ──────────────────────────────────────

@@ -27,19 +27,20 @@ from typing import Any, Dict, List
 import httpx
 
 from app.models import DEFAULT_TENANT_ID
+from app.models.connection import Connection
+from app.models.tenant import Tenant
 from modules.autocount.canonical.masters import ENTITY_PRODUCT
-from modules.autocount.models import ETL_STATUS_ACTIVE, AcEntityConfig, AcFieldMapping
-from modules.autocount.sources import Watermark
+from modules.autocount.models import ETL_STATUS_ACTIVE, AcCompany, AcEntityConfig, AcFieldMapping
+from modules.autocount.sources import SourceContext, Watermark
 
 from modules.autocount.http_source.source import HttpApiSource
 
 # House-style cross-file fixture reuse (see e.g. ``test_s10_s6_lookup_sizing.py``
 # importing from ``test_s10_s6_connection_sizing.py``).
 from tests.test_s11_s6_concurrent_walk import (  # noqa: F401 - _require_concurrency_wiring is autouse, collected by import
+    BASE_URL,
     DB_NAME,
     _company,
-    _config,
-    _ctx,
     _envelope,
     _open_connection,
     _require_concurrency_wiring,
@@ -52,6 +53,90 @@ NOW = datetime(2026, 9, 21, 12, 0, 0, tzinfo=timezone.utc)
 
 MAIN_PATH = "/itembypage"
 LOOKUP_PATH = "/itemuombypage"
+
+# sprint-5/11 S6 coder note (read before touching this file) - ``AcCompany``
+# carries ``UniqueConstraint("tenant_id", "database_name")``
+# (``uq_ac_company_tenant_db``, ``modules/autocount/models.py``), which the
+# tester's own two-companies-sharing-ONE-``database_name`` design (this
+# file's whole parity story - see the module docstring) collides with: two
+# ``AcCompany`` rows can never share a ``database_name`` under the SAME
+# tenant. Fixed by giving the N-leg its OWN tenant instead of the shared
+# ``DEFAULT_TENANT_ID`` - ``source_ref``/``row_hash`` never embed
+# ``tenant_id`` (only ``database_name``/key fields/``entity_type``), so
+# this changes NOTHING about what any assertion in this file compares, only
+# WHICH tenant's own connection/company/task/context the N-leg is built
+# against. Entirely local to this file - the SHARED helpers imported above
+# (``_company``/``_open_connection``/``_config``/``_ctx``,
+# ``test_s11_s6_concurrent_walk.py``) stay untouched, since every OTHER
+# test importing them needs ``DEFAULT_TENANT_ID`` unchanged.
+OTHER_TENANT_ID = "tenant-s11-s6-parity-n"
+OTHER_TENANT_SLUG = "other-s11-s6-parity-n"
+
+
+def _ensure_other_tenant(db) -> None:
+    if db.get(Tenant, OTHER_TENANT_ID) is None:
+        default_tenant = db.get(Tenant, DEFAULT_TENANT_ID)
+        db.add(
+            Tenant(
+                id=OTHER_TENANT_ID, slug=OTHER_TENANT_SLUG, name="Other Co",
+                status_id=default_tenant.status_id,
+            )
+        )
+        db.commit()
+
+
+def _open_connection_tenant(db, tenant_id: str, *, max_concurrent_pages: str, name: str) -> Connection:
+    conn = Connection(
+        tenant_id=tenant_id, provider="autocount", type="erp", name=name,
+        config_json={"baseUrl": BASE_URL, "auth": "none", "maxConcurrentPages": max_concurrent_pages},
+        credentials_json=None, is_active=True,
+    )
+    db.add(conn)
+    db.commit()
+    db.refresh(conn)
+    return conn
+
+
+def _company_tenant(db, tenant_id: str, connection_id: str, *, database_name: str) -> AcCompany:
+    company = AcCompany(
+        tenant_id=tenant_id, connection_id=connection_id, database_name=database_name,
+        company_name="Mocha", name="Mocha", is_active=True,
+    )
+    db.add(company)
+    db.commit()
+    db.refresh(company)
+    return company
+
+
+def _config_tenant(
+    db, tenant_id: str, company, *, connection_id: str, path: str,
+    key_fields=("ItemCode",), watermark_field="LastModified",
+    lookups=None, combine=None,
+) -> AcEntityConfig:
+    config = AcEntityConfig(
+        tenant_id=tenant_id, company_id=company.id, entity_type=ENTITY_PRODUCT,
+        source_impl="autocount_http",
+        source_config={
+            "connectionId": connection_id, "path": path, "keyFields": list(key_fields),
+            "watermarkField": watermark_field, "comparedFields": [], "distinctOf": None,
+            "incrementalMinutes": 15, "reconcileMode": "dailyAt", "reconcileAt": "02:00",
+            "lookups": lookups or [], "combine": combine,
+        },
+    )
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+def _ctx_tenant(db, tenant_id: str, company, config) -> SourceContext:
+    from modules.autocount.services.company_service import CompanyService
+
+    return SourceContext(
+        db=db, tenant_id=tenant_id, company=company, entity_config=config,
+        company_service=CompanyService(db),
+    )
+
 
 # page -> [(ItemCode, LastModified)]
 PAGE_ROWS: Dict[int, List[Dict[str, Any]]] = {
@@ -103,23 +188,26 @@ def _fixture_handler(*, description_suffix: str = ""):
 def _pair(db, *, max_concurrent_pages_n: str = "4"):
     """Two companies sharing ONE ``database_name`` (byte-identical
     ``source_ref``/row-hash keys), one on an N=1 connection, one on an
-    N={max_concurrent_pages_n} connection."""
+    N={max_concurrent_pages_n} connection - the N leg lives under
+    ``OTHER_TENANT_ID`` (see the module-level coder note) so the two
+    ``AcCompany`` rows never collide on ``uq_ac_company_tenant_db``."""
+    _ensure_other_tenant(db)
     conn_n1 = _open_connection(db, max_concurrent_pages="1", name="s11-s6 parity N1")
-    conn_n4 = _open_connection(
-        db, max_concurrent_pages=max_concurrent_pages_n, name="s11-s6 parity N4"
+    conn_n4 = _open_connection_tenant(
+        db, OTHER_TENANT_ID, max_concurrent_pages=max_concurrent_pages_n, name="s11-s6 parity N4"
     )
     company_n1 = _company(db, conn_n1.id, database_name=DB_NAME)
-    company_n4 = _company(db, conn_n4.id, database_name=DB_NAME)
+    company_n4 = _company_tenant(db, OTHER_TENANT_ID, conn_n4.id, database_name=DB_NAME)
     return conn_n1, conn_n4, company_n1, company_n4
 
 
-def _make_source(db, company, conn, *, transport, combine=None) -> HttpApiSource:
-    config = _config(
-        db, company, connection_id=conn.id, path=MAIN_PATH,
+def _make_source(db, tenant_id: str, company, conn, *, transport, combine=None) -> HttpApiSource:
+    config = _config_tenant(
+        db, tenant_id, company, connection_id=conn.id, path=MAIN_PATH,
         lookups=[LOOKUP] if combine is None else None, combine=combine,
     )
     return HttpApiSource(
-        _ctx(db, company, config), entity_type=ENTITY_PRODUCT, transport=transport,
+        _ctx_tenant(db, tenant_id, company, config), entity_type=ENTITY_PRODUCT, transport=transport,
     )
 
 
@@ -131,10 +219,14 @@ def _make_source(db, company, conn, *, transport, combine=None) -> HttpApiSource
 def test_fetch_changes_byte_identical_at_n1_and_n4(db):
     conn_n1, conn_n4, company_n1, company_n4 = _pair(db)
 
-    source_n1 = _make_source(db, company_n1, conn_n1, transport=_transport(_fixture_handler()))
+    source_n1 = _make_source(
+        db, DEFAULT_TENANT_ID, company_n1, conn_n1, transport=_transport(_fixture_handler())
+    )
     result_n1 = source_n1.fetch_changes(Watermark())
 
-    source_n4 = _make_source(db, company_n4, conn_n4, transport=_transport(_fixture_handler()))
+    source_n4 = _make_source(
+        db, OTHER_TENANT_ID, company_n4, conn_n4, transport=_transport(_fixture_handler())
+    )
     result_n4 = source_n4.fetch_changes(Watermark())
 
     raws_n1 = [r.raw for r in result_n1.records]
@@ -156,7 +248,7 @@ def test_fetch_changes_byte_identical_at_n1_and_n4(db):
     from modules.autocount.repositories import RowHashRepository
 
     hashes_n1 = RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company_n1.id, ENTITY_PRODUCT)
-    hashes_n4 = RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company_n4.id, ENTITY_PRODUCT)
+    hashes_n4 = RowHashRepository(db).all_hashes(OTHER_TENANT_ID, company_n4.id, ENTITY_PRODUCT)
     assert hashes_n1 == hashes_n4, "the persisted ac_row_hash map differs between N=1 and N=4"
     assert f"{DB_NAME}:DUP" in hashes_n1
 
@@ -174,9 +266,9 @@ def test_fetch_changes_byte_identical_at_n1_and_n4(db):
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def _product_pull_task(db, company, connection_id, *, combine=None) -> AcEntityConfig:
+def _product_pull_task(db, tenant_id: str, company, connection_id, *, combine=None) -> AcEntityConfig:
     config = AcEntityConfig(
-        tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_PRODUCT,
+        tenant_id=tenant_id, company_id=company.id, entity_type=ENTITY_PRODUCT,
         source_impl="autocount_http", etl_status=ETL_STATUS_ACTIVE, delivery_mode="pull",
         source_config={
             "connectionId": connection_id, "path": MAIN_PATH,
@@ -191,14 +283,14 @@ def _product_pull_task(db, company, connection_id, *, combine=None) -> AcEntityC
     db.commit()
     db.add(
         AcFieldMapping(
-            tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_PRODUCT,
+            tenant_id=tenant_id, company_id=company.id, entity_type=ENTITY_PRODUCT,
             scope="header", sort_order=0, source_path="ItemCode", canonical_field="code",
             transform="string", is_required=True, formula=None,
         )
     )
     db.add(
         AcFieldMapping(
-            tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_PRODUCT,
+            tenant_id=tenant_id, company_id=company.id, entity_type=ENTITY_PRODUCT,
             scope="header", sort_order=1, source_path="Description", canonical_field="name",
             transform="string", is_required=False, formula=None,
         )
@@ -218,26 +310,26 @@ def _patch_transport(monkeypatch, transport: httpx.Client) -> None:
     )
 
 
-def _build(db, company, *, now=NOW):
+def _build(db, tenant_id: str, company, *, now=NOW):
     from modules.autocount.services.pull_service import PullService
 
     return PullService(db).request_build(
-        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, requested_via="operator", now=now,
+        tenant_id, company.id, ENTITY_PRODUCT, requested_via="operator", now=now,
     )
 
 
 def test_pull_snapshot_content_hash_and_record_count_identical_at_n1_and_n4(db, monkeypatch):
     conn_n1, conn_n4, company_n1, company_n4 = _pair(db)
-    _product_pull_task(db, company_n1, conn_n1.id)
-    _product_pull_task(db, company_n4, conn_n4.id)
+    _product_pull_task(db, DEFAULT_TENANT_ID, company_n1, conn_n1.id)
+    _product_pull_task(db, OTHER_TENANT_ID, company_n4, conn_n4.id)
 
     _patch_transport(monkeypatch, _transport(_fixture_handler()))
-    snapshot_n1 = _build(db, company_n1)
+    snapshot_n1 = _build(db, DEFAULT_TENANT_ID, company_n1)
     db.refresh(snapshot_n1)
     assert snapshot_n1.status == "ready", getattr(snapshot_n1, "error", None)
 
     _patch_transport(monkeypatch, _transport(_fixture_handler()))
-    snapshot_n4 = _build(db, company_n4)
+    snapshot_n4 = _build(db, OTHER_TENANT_ID, company_n4)
     db.refresh(snapshot_n4)
     assert snapshot_n4.status == "ready", getattr(snapshot_n4, "error", None)
 
@@ -254,23 +346,35 @@ def test_mutation_control_hash_changes_at_both_n(db, monkeypatch):
     fixture (page 4's Description) must move ``content_hash`` relative to
     the ORIGINAL fixture, at BOTH N=1 and N=4."""
     conn_n1, conn_n4, company_n1, company_n4 = _pair(db)
-    _product_pull_task(db, company_n1, conn_n1.id)
-    _product_pull_task(db, company_n4, conn_n4.id)
+    _product_pull_task(db, DEFAULT_TENANT_ID, company_n1, conn_n1.id)
+    _product_pull_task(db, OTHER_TENANT_ID, company_n4, conn_n4.id)
 
+    # sprint-5/11 S6 coder note - a FRESH transport (and a FRESH
+    # `_patch_transport` call) per build: `HttpApiClient.close()` closes the
+    # underlying `httpx.Client` once `_run_pull_snapshot` is done with it, so
+    # sharing ONE transport across two builds (the ORIGINAL text here did)
+    # made the SECOND build fail with "client has been closed" - unrelated
+    # to concurrency/tenancy, a pre-existing fixture bug this file's OWN
+    # sibling test (`test_pull_snapshot_content_hash_and_record_count_
+    # identical_at_n1_and_n4`) already avoided by patching fresh per build.
     _patch_transport(monkeypatch, _transport(_fixture_handler()))
-    original_n1 = _build(db, company_n1, now=NOW)
+    original_n1 = _build(db, DEFAULT_TENANT_ID, company_n1, now=NOW)
     db.refresh(original_n1)
-    original_n4 = _build(db, company_n4, now=NOW)
+    _patch_transport(monkeypatch, _transport(_fixture_handler()))
+    original_n4 = _build(db, OTHER_TENANT_ID, company_n4, now=NOW)
     db.refresh(original_n4)
     assert original_n1.status == "ready" and original_n4.status == "ready"
 
+    later = NOW + timedelta(minutes=5)
     _patch_transport(
         monkeypatch, _transport(_fixture_handler(description_suffix="-MUTATED"))
     )
-    later = NOW + timedelta(minutes=5)
-    mutated_n1 = _build(db, company_n1, now=later)
+    mutated_n1 = _build(db, DEFAULT_TENANT_ID, company_n1, now=later)
     db.refresh(mutated_n1)
-    mutated_n4 = _build(db, company_n4, now=later)
+    _patch_transport(
+        monkeypatch, _transport(_fixture_handler(description_suffix="-MUTATED"))
+    )
+    mutated_n4 = _build(db, OTHER_TENANT_ID, company_n4, now=later)
     db.refresh(mutated_n4)
     assert mutated_n1.status == "ready" and mutated_n4.status == "ready"
 
@@ -301,10 +405,13 @@ def test_combine_carrying_task_parity_at_n1_and_n4(db):
     (``groupBy: ["g"]``, ``sum(v) -> total``) - the combine step runs
     AFTER lookups and BEFORE de-dup/hashing (AC-10-80), so its own output
     must be exactly as order-independent of N as the plain walk."""
+    _ensure_other_tenant(db)
     conn_n1 = _open_connection(db, max_concurrent_pages="1", name="s11-s6 combine N1")
-    conn_n4 = _open_connection(db, max_concurrent_pages="4", name="s11-s6 combine N4")
+    conn_n4 = _open_connection_tenant(
+        db, OTHER_TENANT_ID, max_concurrent_pages="4", name="s11-s6 combine N4"
+    )
     company_n1 = _company(db, conn_n1.id, database_name=DB_NAME)
-    company_n4 = _company(db, conn_n4.id, database_name=DB_NAME)
+    company_n4 = _company_tenant(db, OTHER_TENANT_ID, conn_n4.id, database_name=DB_NAME)
 
     total_pages = 4
     rows_by_page = {
@@ -320,17 +427,18 @@ def test_combine_carrying_task_parity_at_n1_and_n4(db):
             200, json=_combine_page_body(page, rows_by_page[page], total_pages=total_pages)
         )
 
-    def make(company, conn):
-        config = _config(
-            db, company, connection_id=conn.id, path="/rows", key_fields=("g",),
+    def make(tenant_id, company, conn):
+        config = _config_tenant(
+            db, tenant_id, company, connection_id=conn.id, path="/rows", key_fields=("g",),
             watermark_field=None, combine=SIMPLE_COMBINE,
         )
         return HttpApiSource(
-            _ctx(db, company, config), entity_type=ENTITY_PRODUCT, transport=_transport(handler),
+            _ctx_tenant(db, tenant_id, company, config), entity_type=ENTITY_PRODUCT,
+            transport=_transport(handler),
         )
 
-    result_n1 = make(company_n1, conn_n1).fetch_changes(Watermark())
-    result_n4 = make(company_n4, conn_n4).fetch_changes(Watermark())
+    result_n1 = make(DEFAULT_TENANT_ID, company_n1, conn_n1).fetch_changes(Watermark())
+    result_n4 = make(OTHER_TENANT_ID, company_n4, conn_n4).fetch_changes(Watermark())
 
     raws_n1 = [r.raw for r in result_n1.records]
     raws_n4 = [r.raw for r in result_n4.records]

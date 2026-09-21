@@ -23,6 +23,12 @@ class EnvelopePage:
     page: Optional[int] = None
     total_pages: Optional[int] = None
     total_count: Optional[int] = None
+    # sprint-5/11 S6 (AC-11-07) - the echoed ``PageSize``, read ONLY for the
+    # bounded-concurrency walk's own row-cap pre-flight projection
+    # (``TotalPages x echoed PageSize``, before page 2 is ever submitted) -
+    # every other caller keeps trusting the REQUESTED page size instead
+    # (AC-08-22's own rule), unchanged.
+    page_size: Optional[int] = None
 
 
 def _as_int(value: Any) -> Optional[int]:
@@ -50,6 +56,7 @@ def parse_page(body: Any) -> EnvelopePage:
             page=_as_int(body.get("Page")),
             total_pages=_as_int(body.get("TotalPages")),
             total_count=_as_int(body.get("TotalCount")),
+            page_size=_as_int(body.get("PageSize")),
         )
     if isinstance(body, list):
         return EnvelopePage(

@@ -909,8 +909,10 @@ class EtlService:
         # Lookups editor's inline probe), so a connection configured at the
         # full 100s ``requestTimeoutSeconds`` must never hold this single
         # request open past what Cloudflare itself would cut.
-        _page_size, timeout_seconds = connection_sizing(conn.config_json or {})
-        timeout_seconds = min(timeout_seconds, PREVIEW_REQUEST_TIMEOUT_CEILING_SECONDS)
+        timeout_seconds = min(
+            connection_sizing(conn.config_json or {}).request_timeout_seconds,
+            PREVIEW_REQUEST_TIMEOUT_CEILING_SECONDS,
+        )
         try:
             result = run_http_preview(
                 base_url, path, transport=transport, timeout_seconds=timeout_seconds
@@ -1017,7 +1019,7 @@ class EtlService:
         # would use (``http_source.client.connection_sizing``); a preview
         # against a connection with a raised ``requestTimeoutSeconds`` used
         # to always time out at the bare module default instead.
-        _page_size, timeout_seconds = connection_sizing(conn.config_json or {})
+        timeout_seconds = connection_sizing(conn.config_json or {}).request_timeout_seconds
         try:
             result = run_http_preview(
                 base_url,

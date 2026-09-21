@@ -2798,6 +2798,10 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
             # the MAIN walk settled on (post any AC-10-75 halving), so both
             # headers can finally serve the key they already read.
             "sourcePageSize": getattr(source, "source_page_size", None),
+            # sprint-5/11 S6 (AC-11-11) - the effective concurrency the MAIN
+            # walk actually used (the configured N when it legitimately went
+            # concurrent, or 1 for every AC-11-02 fallback/downgrade).
+            "sourceConcurrency": getattr(source, "source_concurrency", None),
         }
         if entity_type == ENTITY_PRODUCT:
             metadata.update(_product_price_counters(result.records, mapping_rows))
