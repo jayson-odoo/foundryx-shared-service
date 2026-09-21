@@ -391,3 +391,51 @@ gone. Ports `8010`/`3010` confirmed free after. `agent-browser --session s41 clo
 verified fixed. Defect 2 is a new, same-class regression discovered by this recheck, on an
 equally primary success path (Source tab Test, likely exercised MORE often in practice than a
 full Run preview) - it must be fixed and re-verified before merge, exactly as Defect 1 was.
+
+## Recheck 2 (commit `7675ebc0`, same day) - Defect 2 fix verification
+
+`git pull` confirmed already at `7675ebc0` ("normalise the sample-scope preview task echo too")
+before starting any process. Diff read first: `normalizePreviewJob` now branches on
+`job.result.scope` - `full` normalizes the top-level `result.task` (unchanged from round 1),
+`sample` now ALSO normalizes the nested `result.preview.task` (the exact gap Defect 2 named),
+skipping only when `preview.task` is genuinely absent. `source-tab.tsx`'s five previously-unguarded
+SQL/DB-branch reads (`filterKnownColumns`, `savedPicks`, `comparedOptions`, `keyColumnOptions`,
+`watermarkOptions` - lines 205/220-226/234/250/258) now all carry `?? []` as belt-and-braces,
+matching exactly what the recheck-1 report recommended. Rig brought up fresh with the same
+recipe (`:8010`/`:3010`, Redis db 11, two real Celery workers, `rm -rf .next && npm run build`,
+`npx next start -p 3010`), scope narrowed per the coordinator's cut to ONLY the two flows that had
+crashed.
+
+### Source tab -> Test -> done grid - PASS
+
+`recheck2/01-test-done-1280.png`: clean render, no error boundary - "Paged - 11,845 total - 12
+pages of 1000" result line and the lookup's own "Sample: 50 matched - 0 missed" badge both render.
+`recheck2/02-test-done-375.png`: same, 375px, no clipping. `agent-browser console` (cleared
+immediately before the click) showed **zero errors** across the whole flow.
+
+### Review & Activate -> Run preview -> done - PASS
+
+`recheck2/03-run-preview-done-1280.png`: clean render, no error boundary - "Preview passed 21
+Sept 2026, 23:58" badge, `Activate` enabled. `recheck2/04-run-preview-done-375.png`: same, 375px.
+Zero console errors.
+
+### Recheck 2 teardown
+
+Killed only this recheck's own pids (uvicorn `10992`, `wf_s41` `11074`, `jobs_s41` `11075`, `next
+start` `11916`) - each cwd-verified before killing. All confirmed gone; ports `8010`/`3010` free
+after. `agent-browser --session s41 close` (never `close --all`).
+
+### Recheck 2 summary
+
+| Item | Result |
+|---|---|
+| Source tab Test -> done render | **PASS** - Defect 2 confirmed fixed |
+| Review & Activate Run preview -> done render | **PASS** - Defect 1 fix re-confirmed still holds |
+
+**Final merge call: PR #73 is now clear to merge on the preview-job UI surface.** Both defects
+found by this S7-lite smoke (the full-scope and sample-scope un-normalized task echoes) are fixed
+and independently re-verified with real clicks at 1280 and 375, zero console errors on either
+flow. The underlying job/queue architecture (worker registration, non-blocking dispatch,
+cooperative cancel, progress reporting, re-attach, queue isolation) was already solid per the
+original run. D-full (N=1 vs N=4 wall-time/hash comparison) remains explicitly descoped to
+post-merge S7 per the coordinator's own instruction, not a merge blocker.
