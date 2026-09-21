@@ -146,6 +146,19 @@ from .sql_source.source import (
 
 register_sql_db_source()
 
+#     !!  IMPORTING THIS MODULE IS WHAT MAKES ``autocount_http`` RUNNABLE.  !!
+# Same reasoning as the ``sql_source.source`` import above: this module
+# already imports ``http_source.combine``/``envelope``/``errors`` (helpers),
+# never ``http_source.source`` itself, so the ``autocount_http`` factory was
+# registered ONLY by the API install hook (``bootstrap.py`` ->
+# ``register_http_source()``) - a path the Celery worker never runs. Every
+# Open API task and every pull-gateway snapshot build failed on the real
+# worker with "No AutoCount source implementation registered for
+# 'autocount_http'" until this import landed (prod incident, worker path
+# only - eager dev/test never see it). ``http_source.source`` registers at
+# its own import time now, so this bare import is sufficient.
+import modules.autocount.http_source.source  # noqa: F401 - registers autocount_http on the worker path
+
 logger = logging.getLogger("foundryx.autocount")
 
 # The registered ``background_jobs.type``.

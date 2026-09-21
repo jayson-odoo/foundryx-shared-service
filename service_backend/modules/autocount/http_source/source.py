@@ -837,4 +837,18 @@ def _http_api_factory(ctx: SourceContext, *, entity_type: str, **kwargs: Any) ->
 
 
 def register_http_source() -> None:
+    """Idempotent (the registry is a keyed dict) - kept as a callable for the
+    module install hook (``bootstrap.py``), which imports and calls it
+    explicitly. The registration itself now ALSO happens at import time below
+    (mirrors ``sql_source.source``'s pattern via ``sync.py``'s module-level
+    ``register_sql_db_source()`` call): the Celery worker boots no FastAPI
+    lifespan and never runs the install hook, so anything it needs to run a
+    task must register on the worker's own import chain, not only on boot."""
     register_source(SOURCE_IMPL_AUTOCOUNT_HTTP, _http_api_factory)
+
+
+# Register at import time - see the docstring above. Any process that imports
+# this module (API install hook via ``register_http_source()``, OR the worker
+# via ``sync.py``'s explicit import below) ends up with ``autocount_http``
+# resolvable through ``source_factory``.
+register_source(SOURCE_IMPL_AUTOCOUNT_HTTP, _http_api_factory)

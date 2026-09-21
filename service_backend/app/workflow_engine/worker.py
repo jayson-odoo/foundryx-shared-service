@@ -569,5 +569,5 @@ def wake_serialized_task(tenant_id: str, workflow_id: str, digest: str) -> dict:
 # (silent stall - the storage-migration job hangs Pending forever).
 import app.jobs.worker  # noqa: E402,F401 - registers the `jobs.run` Celery task
 import app.storage_migration.service  # noqa: E402,F401 - module-level register_storage_migration_handler()
-import modules.autocount.sync  # noqa: E402,F401 - registers the `autocount_sync` AND `autocount_pull_snapshot` job handlers
+import modules.autocount.sync  # noqa: E402,F401 - registers the `autocount_sync` AND `autocount_pull_snapshot` job handlers, AND (via its own import chain) the `sql_db` and `autocount_http` EntitySource factories - anything the module install hook registers API-process-only must also land here for the worker to run the task
 import modules.meetings.jobs  # noqa: E402,F401 - registers the `meetings.calendar_sync` handler
