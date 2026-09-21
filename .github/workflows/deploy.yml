@@ -121,10 +121,10 @@ jobs:
   test-backend:
     name: Test backend (pytest)
     runs-on: ubuntu-latest
-    # Interim: the full suite takes ~1h on a loaded local machine and the
-    # 4-core hosted runner is slower; the suite-speed work (PR #77) brings
-    # this down to minutes, after which this can shrink again.
-    timeout-minutes: 90
+    # The suite runs under pytest-xdist here (PR #77): measured 3m26s at
+    # `-n 4` locally, and the hosted runner has 4 cores - 30 min is a wide
+    # margin, not a target.
+    timeout-minutes: 30
     env:
       # Conftest builds its own in-memory SQLite DB per test and disables the
       # email dispatcher / startup orphan sweep, so nothing here ever opens a
@@ -159,7 +159,11 @@ jobs:
         run: pip install -r requirements.txt
       - name: Run pytest
         working-directory: service_backend
-        run: python -m pytest -q -p no:cacheprovider --durations=15
+        # Parallelism is opt-in on the command line by design (pytest.ini
+        # keeps a bare run serial for cheap single-file runs on the shared
+        # dev machine); `--dist loadfile` pins every test in a file to one
+        # worker so conftest's module-global registries stay coherent.
+        run: python -m pytest -q -n auto --dist loadfile -p no:cacheprovider --durations=15
 
   test-frontend:
     name: Test frontend (lint + vitest)
