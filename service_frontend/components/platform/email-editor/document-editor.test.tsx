@@ -192,6 +192,11 @@ describe('EmailEditor document surface', () => {
     fireEvent.click(screen.getByTestId('editor-mode-preview'));
     await waitFor(() => expect(renderDocHtml).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByText('Refresh preview'));
-    await waitFor(() => expect(renderDocHtml).toHaveBeenCalledTimes(2));
+    // Wider timeout (default RTL 1000ms flaked once under a CPU-starved CI
+    // runner running the full 388-file suite in parallel workers) - the
+    // second call is genuinely async (state settles via .then/.finally on an
+    // already-resolved mock promise, so it's a couple of microtask ticks,
+    // never unbounded).
+    await waitFor(() => expect(renderDocHtml).toHaveBeenCalledTimes(2), { timeout: 5000 });
   });
 });
