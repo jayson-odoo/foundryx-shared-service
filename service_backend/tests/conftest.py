@@ -1,4 +1,27 @@
-"""Test fixtures: isolated in-memory SQLite + seeded default tenant/users."""
+"""Test fixtures: isolated in-memory SQLite + seeded default tenant/users.
+
+Template-DB pattern (suite-speed PR, 2026-09): building the seeded schema
+(``create_all`` x4 metadata bases + 7 seeders + module install) from scratch
+for every single test dominated the suite's wall time (~3s/test). Instead,
+each ``*_session_factory`` fixture is split in two:
+
+- a SESSION-scoped ``_..._template`` fixture builds the seeded database
+  exactly ONCE (same code path as before) and captures it as raw bytes via
+  ``sqlite3.Connection.serialize()`` - one blob for the ``main`` database and
+  one per ATTACHed schema database (``omni``, ``meetings``, ...);
+- the function-scoped, publicly-named fixture (``session_factory`` etc, same
+  name/signature every test already uses) creates a FRESH in-memory engine,
+  ATTACHes the same schema names, then instant-copies the template in with
+  ``sqlite3.Connection.deserialize()`` - a byte copy, not a re-run of DDL +
+  seed queries.
+
+``Connection.backup()`` only ever targets the destination's "main" database,
+so it cannot fill a non-main ATTACHed schema from a live connection; the
+serialize/deserialize pair supports an explicit ``name=`` on BOTH sides,
+which is why it (not ``backup()``) drives this pattern. Isolation is
+unchanged: every test still gets a private, pristine, fully-seeded SQLite
+database - just built by copying bytes instead of executing SQL.
+"""
 import re
 
 import pytest
@@ -59,6 +82,56 @@ PLATFORM_EMAIL = PLATFORM_ADMIN_EMAIL
 PLATFORM_PASSWORD = PLATFORM_ADMIN_PASSWORD
 
 
+def _capture_sqlite_databases(engine, names):
+    """Serialize each named SQLite database (``"main"`` plus every ATTACHed
+    schema name) off ``engine``'s single ``StaticPool`` connection into raw
+    bytes - the "build once" half of the template-DB pattern (module
+    docstring above). Returns ``{name: bytes}``."""
+    raw = engine.raw_connection()
+    try:
+        conn = raw.dbapi_connection
+        return {name: conn.serialize(name=name) for name in names}
+    finally:
+        raw.close()
+
+
+def _restore_sqlite_databases(engine, blobs):
+    """Instant-copy a captured template (``_capture_sqlite_databases``) onto
+    a FRESH engine whose databases (``main`` + the same ATTACHed schema
+    names) already exist (empty) - replaces ``create_all`` + seeding with a
+    byte copy via ``sqlite3.Connection.deserialize``. ``engine`` must use the
+    same ATTACHed names the blobs were captured under."""
+    raw = engine.raw_connection()
+    try:
+        conn = raw.dbapi_connection
+        for name, data in blobs.items():
+            conn.deserialize(data, name=name)
+    finally:
+        raw.close()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _require_sqlite_serialize_support():
+    """Fail fast, with a readable message, if this interpreter's ``sqlite3``
+    binding lacks ``Connection.serialize``/``deserialize`` (Python 3.11+
+    only) - the template-DB pattern above (``_capture_sqlite_databases`` /
+    ``_restore_sqlite_databases``) depends on both. Without this guard, a
+    missing binding first surfaces as an opaque ``AttributeError`` deep
+    inside the first ``*_session_factory`` fixture build."""
+    import sqlite3
+
+    if not (
+        hasattr(sqlite3.Connection, "serialize")
+        and hasattr(sqlite3.Connection, "deserialize")
+    ):
+        pytest.fail(
+            "backend tests need Python 3.11+ with sqlite deserialize support "
+            "(sqlite3.Connection.serialize/deserialize) - the template-DB "
+            "session_factory fixtures in tests/conftest.py depend on it.",
+            pytrace=False,
+        )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _register_storage_locations():
     """Populate the global storage-key location registry once, before any test
@@ -84,8 +157,11 @@ def _register_deferred_actions():
     yield
 
 
-@pytest.fixture
-def session_factory():
+@pytest.fixture(scope="session")
+def _session_factory_template():
+    """Build the ``session_factory`` seeded database exactly ONCE per pytest
+    session and capture it as bytes (see module docstring). Same seed path,
+    same schema wiring as before - only WHEN it runs changed."""
     # The omnichannel module uses the `app_omnichannel` schema. SQLite has no
     # native schemas, so ATTACH an in-memory database as `omni` and translate
     # the module schema onto it - keeps module tables isolated from core (the
@@ -94,11 +170,7 @@ def session_factory():
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
 
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    ).execution_options(
+    schema_translate_map = {
         # The module schema maps onto one attached in-memory db (distinct table
         # names; no collisions) - module tables stay isolated from core's.
         # autocount (sprint-4/13) maps onto the same attached db: its tables are
@@ -110,13 +182,16 @@ def session_factory():
         # is globally installed by ``bootstrap_modules`` below, so a module whose
         # schema maps nowhere would fail its create_all and land in
         # ERRORED_MODULES for the whole suite.
-        schema_translate_map={
-            OMNI_SCHEMA: "omni",
-            AUTOCOUNT_SCHEMA: "omni",
-            "app_ideation": "omni",
-            MEETINGS_SCHEMA: "meetings",
-        }
-    )
+        OMNI_SCHEMA: "omni",
+        AUTOCOUNT_SCHEMA: "omni",
+        "app_ideation": "omni",
+        MEETINGS_SCHEMA: "meetings",
+    }
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    ).execution_options(schema_translate_map=schema_translate_map)
     with engine.connect() as conn:
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")
         conn.exec_driver_sql("ATTACH ':memory:' AS meetings")
@@ -190,12 +265,35 @@ def session_factory():
     AppStoreService(db).install(DEFAULT_TENANT_ID, "autocount")
     db.close()
 
+    blobs = _capture_sqlite_databases(engine, ("main", "omni", "meetings"))
+    engine.dispose()
+    return blobs, schema_translate_map
+
+
+@pytest.fixture
+def session_factory(_session_factory_template):
+    blobs, schema_translate_map = _session_factory_template
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    ).execution_options(schema_translate_map=schema_translate_map)
+    with engine.connect() as conn:
+        conn.exec_driver_sql("ATTACH ':memory:' AS omni")
+        conn.exec_driver_sql("ATTACH ':memory:' AS meetings")
+        conn.commit()
+    _restore_sqlite_databases(engine, blobs)
+    TestingSessionLocal = sessionmaker(
+        bind=engine, autoflush=False, autocommit=False
+    )
+
     # Plan 34 (A7b) review round 1, S9 - the public web chat CORS preflight is
     # answered by an ASGI middleware, OUTSIDE FastAPI's dependency system, so
     # `get_db` cannot reach it (it would open the real DATABASE_URL). Same
     # seam and same reason as `routers/ws.py`'s handshake factory. The 60s
     # origin cache is cleared with it so one test's channel never answers for
-    # the next test's.
+    # the next test's. Process-global side effect - kept PER TEST, same as
+    # before the template-DB split (module docstring).
     from modules.omnichannel.services import webchat_visitor_service as _webchat_visitor
 
     _webchat_visitor.set_preflight_session_factory(TestingSessionLocal)
@@ -205,39 +303,39 @@ def session_factory():
 
     _webchat_visitor.set_preflight_session_factory(None)
     _webchat_visitor.reset_origins_cache()
+    engine.dispose()
 
 
-@pytest.fixture
-def ideation_session_factory():
-    """SQLite session factory with BOTH omnichannel and ideation modules mounted.
-
-    Mirrors ``session_factory`` but also schema-translates the ideation module's
-    ``app_ideation`` schema onto its own attached in-memory db and installs
-    ideation (which ``requires:["omnichannel"]``) for the default tenant via the
-    App Store. Ideation tests get a session where the module is bootstrapped +
-    installed exactly like production.
+@pytest.fixture(scope="session")
+def _ideation_session_factory_template():
+    """Build the ``ideation_session_factory`` seeded database exactly ONCE per
+    pytest session and capture it as bytes (module docstring). Mirrors
+    ``_session_factory_template`` but also schema-translates the ideation
+    module's ``app_ideation`` schema onto its own attached in-memory db and
+    installs ideation (which ``requires:["omnichannel"]``) for the default
+    tenant via the App Store. Ideation tests get a session where the module
+    is bootstrapped + installed exactly like production.
     """
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
 
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    ).execution_options(
+    schema_translate_map = {
         # Each module schema maps onto its own attached in-memory db (distinct
         # table names; no collisions) - module tables stay isolated from core's.
         # autocount (sprint-4/13, merged from main) maps onto the `omni` db like
         # the core session_factory does so bootstrap_modules can install it here.
-        schema_translate_map={
-            OMNI_SCHEMA: "omni",
-            AUTOCOUNT_SCHEMA: "omni",
-            IDEATION_SCHEMA: "ideation",
-            MEETINGS_SCHEMA: "meetings",
-        }
-    )
+        OMNI_SCHEMA: "omni",
+        AUTOCOUNT_SCHEMA: "omni",
+        IDEATION_SCHEMA: "ideation",
+        MEETINGS_SCHEMA: "meetings",
+    }
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    ).execution_options(schema_translate_map=schema_translate_map)
     with engine.connect() as conn:
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")
         conn.exec_driver_sql("ATTACH ':memory:' AS ideation")
@@ -294,7 +392,30 @@ def ideation_session_factory():
     store.install(DEFAULT_TENANT_ID, "ideation")
     db.close()
 
+    blobs = _capture_sqlite_databases(engine, ("main", "omni", "ideation", "meetings"))
+    engine.dispose()
+    return blobs, schema_translate_map
+
+
+@pytest.fixture
+def ideation_session_factory(_ideation_session_factory_template):
+    blobs, schema_translate_map = _ideation_session_factory_template
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    ).execution_options(schema_translate_map=schema_translate_map)
+    with engine.connect() as conn:
+        conn.exec_driver_sql("ATTACH ':memory:' AS omni")
+        conn.exec_driver_sql("ATTACH ':memory:' AS ideation")
+        conn.exec_driver_sql("ATTACH ':memory:' AS meetings")
+        conn.commit()
+    _restore_sqlite_databases(engine, blobs)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
     yield TestingSessionLocal
+
+    engine.dispose()
 
 
 _HTTP_RETRY_TEST_FILE_RE = re.compile(r"^test_(autocount_http_|s10_)")
@@ -417,36 +538,35 @@ def client(session_factory):
     app.dependency_overrides.clear()
 
 
-@pytest.fixture
-def meetings_session_factory():
-    """SQLite session factory with the meetings module mounted + installed.
-
-    Mirrors ``ideation_session_factory``: every module schema maps onto its own
-    attached in-memory db, ``bootstrap_modules`` runs the real global install for
-    all of them, and the App Store then installs ``meetings`` for the default
-    tenant - so a meetings test gets the same wiring production has (permission
-    grants included).
+@pytest.fixture(scope="session")
+def _meetings_session_factory_template():
+    """Build the ``meetings_session_factory`` seeded database exactly ONCE per
+    pytest session and capture it as bytes (module docstring). Mirrors
+    ``_ideation_session_factory_template``: every module schema maps onto its
+    own attached in-memory db, ``bootstrap_modules`` runs the real global
+    install for all of them, and the App Store then installs ``meetings`` for
+    the default tenant - so a meetings test gets the same wiring production
+    has (permission grants included).
     """
     from modules.autocount.db import AUTOCOUNT_SCHEMA, AutocountBase
     from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
     from modules.meetings.db import MEETINGS_SCHEMA, MeetingsBase
     from modules.omnichannel.db import OMNI_SCHEMA, OmniBase
 
+    schema_translate_map = {
+        # Every module on disk is globally installed by ``bootstrap_modules``
+        # below, so every module schema needs somewhere to live here - one whose
+        # schema maps nowhere lands in ERRORED_MODULES and pollutes the run.
+        OMNI_SCHEMA: "omni",
+        AUTOCOUNT_SCHEMA: "omni",
+        IDEATION_SCHEMA: "ideation",
+        MEETINGS_SCHEMA: "meetings",
+    }
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
-    ).execution_options(
-        # Every module on disk is globally installed by ``bootstrap_modules``
-        # below, so every module schema needs somewhere to live here - one whose
-        # schema maps nowhere lands in ERRORED_MODULES and pollutes the run.
-        schema_translate_map={
-            OMNI_SCHEMA: "omni",
-            AUTOCOUNT_SCHEMA: "omni",
-            IDEATION_SCHEMA: "ideation",
-            MEETINGS_SCHEMA: "meetings",
-        }
-    )
+    ).execution_options(schema_translate_map=schema_translate_map)
     with engine.connect() as conn:
         conn.exec_driver_sql("ATTACH ':memory:' AS omni")
         conn.exec_driver_sql("ATTACH ':memory:' AS ideation")
@@ -499,4 +619,27 @@ def meetings_session_factory():
     AppStoreService(db).install(DEFAULT_TENANT_ID, "meetings")
     db.close()
 
+    blobs = _capture_sqlite_databases(engine, ("main", "omni", "ideation", "meetings"))
+    engine.dispose()
+    return blobs, schema_translate_map
+
+
+@pytest.fixture
+def meetings_session_factory(_meetings_session_factory_template):
+    blobs, schema_translate_map = _meetings_session_factory_template
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    ).execution_options(schema_translate_map=schema_translate_map)
+    with engine.connect() as conn:
+        conn.exec_driver_sql("ATTACH ':memory:' AS omni")
+        conn.exec_driver_sql("ATTACH ':memory:' AS ideation")
+        conn.exec_driver_sql("ATTACH ':memory:' AS meetings")
+        conn.commit()
+    _restore_sqlite_databases(engine, blobs)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
     yield TestingSessionLocal
+
+    engine.dispose()

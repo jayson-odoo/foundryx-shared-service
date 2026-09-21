@@ -293,25 +293,23 @@ def test_webhook_signature_and_handshake_apply_to_messenger_object(client, monke
     monkeypatch.setattr(worker.process_inbound_webhook, "delay", lambda *a, **k: None)
 
     monkeypatch_secret = "topsecret-messenger"
-    settings.meta_app_secret = monkeypatch_secret
-    try:
-        body = json.dumps(_messenger_payload()).encode()
-        good = hmac.new(monkeypatch_secret.encode(), body, hashlib.sha256).hexdigest()
-        ok = client.post(
-            "/omnichannel/webhooks/meta",
-            content=body,
-            headers={"X-Hub-Signature-256": f"sha256={good}", "Content-Type": "application/json"},
-        )
-        assert ok.status_code == 200
+    monkeypatch.setattr(settings, "meta_app_secret", monkeypatch_secret)
 
-        forged = client.post(
-            "/omnichannel/webhooks/meta",
-            content=body,
-            headers={"X-Hub-Signature-256": "sha256=deadbeef", "Content-Type": "application/json"},
-        )
-        assert forged.status_code == 403
-    finally:
-        settings.meta_app_secret = None
+    body = json.dumps(_messenger_payload()).encode()
+    good = hmac.new(monkeypatch_secret.encode(), body, hashlib.sha256).hexdigest()
+    ok = client.post(
+        "/omnichannel/webhooks/meta",
+        content=body,
+        headers={"X-Hub-Signature-256": f"sha256={good}", "Content-Type": "application/json"},
+    )
+    assert ok.status_code == 200
+
+    forged = client.post(
+        "/omnichannel/webhooks/meta",
+        content=body,
+        headers={"X-Hub-Signature-256": "sha256=deadbeef", "Content-Type": "application/json"},
+    )
+    assert forged.status_code == 403
 
 
 def test_webhook_handshake_works_on_the_meta_url_id(client):
