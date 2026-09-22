@@ -4,9 +4,11 @@ import { ArrowRight, FunctionSquare, Plus, Trash2 } from 'lucide-react';
 import { type ColumnDef, getCoreRowModel, useReactTable } from '@tanstack/react-table';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import { DataGrid } from '@/components/ui/data-grid';
 import { DataGridTable } from '@/components/ui/data-grid-table';
 import { SearchSelect } from '@/components/platform/search-select';
+import { StatusBadge, type StatusRegistry } from '@/components/platform/status-badge';
 import { ClampedText } from '@/components/platform/clamped-text';
 import { humanizeFieldKey } from '@/lib/autocount-diff';
 import { pickerColumnOptions, statusFormulaSeed } from '@/lib/autocount-etl';
@@ -37,9 +39,21 @@ export interface MappingEditableRow {
    * visibly greyed); this must round-trip through an ordinary save
    * unchanged, or the editor silently RE-ENABLES it and the S1
    * preview-column gate 422s the whole draft again.
+   *
+   * sprint-5/12 (AC-12-25) - and it is now OPERATOR-EDITABLE: the row's own
+   * "Enabled" switch is the single writer, so the two disabled CAUSES (the
+   * column is missing, or a preset withholds the row - `uom_code` per
+   * AC-10-74) are both visible and both reversible on purpose.
    */
   isEnabled: boolean;
 }
+
+/** AC-12-25 - a row that will not be delivered says so, whatever the cause.
+ *  One value: the badge answers "is this row off?", the separate "Column not
+ *  in query" badge answers "why might it be off?" and both can show. */
+const ENABLED_REGISTRY: StatusRegistry<'disabled'> = {
+  disabled: { label: 'Disabled', tone: 'secondary' },
+};
 
 /** The preset label a row currently reflects (read-mode display). */
 function presetLabel(row: MappingEditableRow): string {
@@ -158,6 +172,15 @@ export function MappingTable({
     return columnMode && row.sourcePath !== '' && !acFieldsSet.has(row.sourcePath);
   }
 
+  /** AC-12-25 - the row reads "not delivered" when it is stale OR simply
+   *  switched off. Before this, dimming keyed on staleness alone, so a row a
+   *  preset deliberately withholds (`uom_code`, AC-10-74 - its column IS
+   *  previewed) rendered as an ordinary, fully-lit row and nothing on this
+   *  surface said it would not be sent. */
+  function isRowDimmed(row: MappingEditableRow): boolean {
+    return isRowStale(row) || !row.isEnabled;
+  }
+
   // AC-DLA-56 (T7): migrated off the raw <table> onto DataGrid + DataGridTable
   // (sticky header + resizable/movable columns free from DataGrid's own
   // defaults, AC-DLA-13). Columns rebuilt fresh each render (a small,
@@ -175,7 +198,7 @@ export function MappingTable({
         const index = row.index;
         const stale = isRowStale(row.original);
         return (
-          <div className={cn('flex flex-col gap-1', stale && 'opacity-60')}>
+          <div className={cn('flex flex-col gap-1', isRowDimmed(row.original) && 'opacity-60')}>
             {editing ? (
               <SearchSelect
                 options={sourceOptions}
@@ -196,11 +219,19 @@ export function MappingTable({
             ) : (
               <code className="text-xs">{row.original.sourcePath}</code>
             )}
-            {stale && (
-              <Badge variant="warning" appearance="light" size="sm" className="w-fit">
-                Column not in query
-              </Badge>
-            )}
+            {/* AC-12-25 - both may show: "Disabled" is the OUTCOME (this row
+                will not be sent), "Column not in query" is one possible
+                CAUSE. A preset-withheld row shows only the first. */}
+            <div className="flex flex-wrap items-center gap-1">
+              {!row.original.isEnabled && (
+                <StatusBadge status="disabled" registry={ENABLED_REGISTRY} size="sm" />
+              )}
+              {stale && (
+                <Badge variant="warning" appearance="light" size="sm" className="w-fit">
+                  Column not in query
+                </Badge>
+              )}
+            </div>
           </div>
         );
       },
@@ -210,9 +241,9 @@ export function MappingTable({
       header: 'Transform',
       cell: ({ row }) => {
         const index = row.index;
-        const stale = isRowStale(row.original);
+        const dimmed = isRowDimmed(row.original);
         return editing ? (
-          <div className={cn('flex items-center gap-1', stale && 'opacity-60')}>
+          <div className={cn('flex items-center gap-1', dimmed && 'opacity-60')}>
             <div className="min-w-28 flex-1">
               <SearchSelect
                 options={presetOptionsForField(row.original.sorentoField)}
@@ -241,7 +272,7 @@ export function MappingTable({
             )}
           </div>
         ) : (
-          <div className={cn('flex flex-col gap-0.5', stale && 'opacity-60')}>
+          <div className={cn('flex flex-col gap-0.5', dimmed && 'opacity-60')}>
             <span className="text-muted-foreground">{presetLabel(row.original)}</span>
             {row.original.formula && (
               <ClampedText
@@ -259,7 +290,7 @@ export function MappingTable({
       header: () => null,
       cell: ({ row }) => (
         <ArrowRight
-          className={cn('size-4 text-muted-foreground', isRowStale(row.original) && 'opacity-60')}
+          className={cn('size-4 text-muted-foreground', isRowDimmed(row.original) && 'opacity-60')}
         />
       ),
       size: 32,
@@ -272,7 +303,7 @@ export function MappingTable({
       header: 'Sorento field',
       cell: ({ row }) => {
         const index = row.index;
-        const stale = isRowStale(row.original);
+        const dimmed = isRowDimmed(row.original);
         // Foolproof: offer this row's own target + any not used elsewhere,
         // so a duplicate target can never be selected.
         const targetOptions = sorentoFields
@@ -282,7 +313,7 @@ export function MappingTable({
             value: f.field,
           }));
         return (
-          <div className={cn(stale && 'opacity-60')}>
+          <div className={cn(dimmed && 'opacity-60')}>
             {editing ? (
               <SearchSelect
                 options={targetOptions}
@@ -299,8 +330,31 @@ export function MappingTable({
         );
       },
     },
+    //     !!  AC-12-25 - THE ONLY WRITER OF `isEnabled`.  !!
+    // A MODE on this table, not a new primitive: the column exists only
+    // under Edit (read mode says the same thing with the "Disabled" badge,
+    // and a switch nobody may flip is noise). The switch patches ONLY this
+    // row's `isEnabled` - no status seed, no revive, no side effect - so a
+    // row a preset withholds (`uom_code`, AC-10-74) is turned back on
+    // deliberately, by hand, when the push-flip checklist says so.
     ...(editing
       ? [
+          {
+            id: 'enabled',
+            header: 'Enabled',
+            cell: ({ row }: { row: { index: number; original: MappingEditableRow } }) => (
+              <Switch
+                size="sm"
+                checked={row.original.isEnabled}
+                onCheckedChange={(checked) => onChangeRow(row.index, { isEnabled: checked })}
+                aria-label={`Send ${sorentoFieldLabel(row.original.sorentoField)} to Sorento`}
+              />
+            ),
+            size: 84,
+            enableResizing: false,
+            enableHiding: false,
+            meta: { utility: true },
+          } satisfies ColumnDef<MappingEditableRow>,
           {
             id: 'remove',
             header: () => null,
@@ -312,7 +366,7 @@ export function MappingTable({
                 mode="icon"
                 onClick={() => onRemoveRow(row.index)}
                 aria-label={`Remove row ${row.index + 1}`}
-                className={cn(isRowStale(row.original) && 'opacity-60')}
+                className={cn(isRowDimmed(row.original) && 'opacity-60')}
               >
                 <Trash2 className="size-4" />
               </Button>

@@ -47,6 +47,11 @@ prefix of the description TEXT (plan 10 D22) and the field is absent from
 | `08-1280-after-save-only-uom-differs.png` | **The `is_required` ruling proven end to end:** reset -> ordinary "Save mapping" -> re-open. `Name` and `Is active` now read **Unchanged** (they used to read `changed` forever because a Save rewrote their required flag). The ONE remaining `changed` row is `uom_code` - a genuine pre-existing editor defect, see Findings. | owner ruling 2026-09-22 |
 | `10-1280-builder-source-columns.png`, `11-375-builder-source-columns.png` | The master formula builder's ONE `Source columns` group (ItemCode, Description, `Desc2`, ... + the `uom` lookup alias `BaseUOMPrice`), the Desc2 join reading "Valid formula", no `Testing` tab | AC-12-01, AC-12-05 |
 | `12-1280-simulate-desc2-join.png`, `13-375-simulate-desc2-join.png` | Simulate on the post-reset mapping: `Description` = the joined `ECO SERIES HIGH  LEVEL` | AC-12-04 |
+| `14-1280-read-mode-uom-disabled-badge.png` | READ mode: the `uom_code` row is dimmed with a `StatusBadge` "Disabled" - and NO "Column not in query" badge, because `BaseUOM` IS previewed. Before AC-12-25 this row rendered as an ordinary, fully-lit, apparently-delivered row. | AC-12-25 |
+| `15-1280-edit-enabled-switch-column.png`, `16-375-edit-enabled-switch-column.png` | EDIT mode: the "Enabled" column, one `Switch` per row, each labelled `Send <Sorento field> to Sorento`. `uom_code`'s is the only one off. | AC-12-25, AC-12-33 |
+| `17-1280-after-save-still-matches-uom-disabled.png` | **AC-12-26 proven:** reset -> ordinary "Save mapping" -> re-open. "This mapping already matches the preset.", primary DISABLED, and `uom_code` is STILL `is_enabled=false` in the DB. Before this, Save silently re-enabled it. | AC-12-26 |
+| `18-1280-uom-switched-on-before-save.png` | The operator flips `uom_code`'s switch on (the AC-10-74 push-flip checklist step, now possible at all) | AC-12-25 |
+| `19-1280-uom-enabled-diff-changed.png`, `20-375-uom-enabled-diff-changed.png` | After saving that: the DB row is `is_enabled=true` and the dry run reports exactly ONE `Changed` row - `Uom code`, "Disabled - withheld by the preset" (a reset would put it back). Deliberate operator state, correctly reported. | AC-12-25, AC-12-26 |
 
 DB after the apply (the reset's own write, not a PUT) - **8 rows**:
 
@@ -80,21 +85,26 @@ Console during the run: ZERO errors (only the codebase-wide Radix `aria-describe
   returns `"ECO SERIES HIGH  LEVEL"`, pinned by `test_s12_master_formula_facts.py`); HTML
   collapses it for display, which is a browser rendering rule, not a mapping-engine one.
 
+## Responsive note (AC-12-33)
+
+At 375 the mapping table scrolls HORIZONTALLY inside its own container
+(`overflow-x: auto`, scroll width 610 vs client width 343) while the PAGE does not overflow
+(`document.documentElement.scrollWidth === 375 === innerWidth`). The new "Enabled" column is
+reached by that existing scroll, so it needed no relocation into the row's action area. Measured,
+not eyeballed - shot 16 is taken with the container scrolled right.
+
 ## Findings
 
 **BL-SS-260 is CLOSED** by the owner ruling: the preset row is gone, so the reset can no longer
 create a row the save gate refuses. Proven live - reset, then an ordinary "Save mapping", answers
 200 and every preset row round-trips.
 
-**One genuine pre-existing defect remains, and the dialog is correctly reporting it.** After a
-reset + an ordinary Save, `uom_code` comes back ENABLED, so the next dry run reads `changed`.
-Cause: `use-mapping-draft.ts` `toWrite` sends `isEnabled: r.isEnabled || acFields.includes
-(sourcePath)` - a deliberate sprint-5/02 B1 "revive a column-not-found row once its column returns
-to the preview" rule. It cannot tell the two disabled CAUSES apart, so it also revives a row the
-preset withholds ON PURPOSE (`uom_code`, AC-10-74) whenever `BaseUOM` is in the previewed columns,
-which it always is. The distinction now exists at the preset level
-(`presets.DISABLED_REASON_WITHHELD` vs `DISABLED_REASON_MISSING_COLUMN`); wiring it into that
-revive rule needs an owner ruling on whether a preset-withheld row should ever auto-revive, so it
-is raised here rather than changed unilaterally. Impact today: an operator who resets and then
-saves silently re-enables `uom_code` and starts sending it, which is exactly what AC-10-74 exists
-to prevent.
+**The save-time auto-revive is GONE (AC-12-26) and the disabled state is now visible and operator-
+editable (AC-12-25).** Previously `use-mapping-draft.ts` `toWrite` sent
+`isEnabled: r.isEnabled || acFields.includes(sourcePath)` - the sprint-5/02 B1 "revive a
+column-not-found row once its column returns to the preview" rule - which could not tell the two
+disabled CAUSES apart and therefore re-enabled a row the preset withholds ON PURPOSE (`uom_code`,
+AC-10-74) on every single save, silently starting to send it. `toWrite` now sends the stored flag
+verbatim; the row carries its own `Switch`, and the B1 case is served by the operator flipping
+that switch or re-picking the source column (`onChangeRow`, unchanged - an explicit action on that
+row). Both directions verified live, shots 17-20.
