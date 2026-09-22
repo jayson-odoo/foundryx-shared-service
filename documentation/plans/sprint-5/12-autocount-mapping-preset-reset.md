@@ -16,6 +16,18 @@ documents), `sprint-5/08` (HTTP presets, `seed_http_preset_mapping`) and `sprint
 3. **R3 - variables for ALL master entities**, not HTTP-source only: the backend already passes
    `dict(raw)` facts for every non-document entity, and one code path is simpler than a gate on
    `sourceType`.
+4. **R4 - drop `is_discontinued` from the product preset** (S2, delegated by BL-SS-260, decided
+   on plan-10 D22: the field is never sent, Sorento derives it). AC-12-06.
+5. **R5 - `is_required` from the mapping catalog on seed** (S2, review-flagged drift: Save wrote
+   the catalog flag, seed wrote the preset flag, so the diff reported phantom `changed` rows).
+   AC-12-07. No already-saved mapping changes behaviour.
+6. **R6 - a per-row Enabled switch, and Save never auto-enables** (S2: the table never rendered
+   `isEnabled`, and the sprint-5/02 save-time revive silently re-enabled the withheld `uom_code`,
+   defeating AC-10-74). AC-12-25/26.
+7. **R7 - document entities are resettable, header scope only** (plan §5 left it to the parity
+   test; `resolve_preset_rows` resolves `DOCUMENT_PRESETS`). AC-12-27 carries the UI evidence.
+   `autocount_read` companies' GRN/supplier/customer `DEFAULT_MAPPINGS` seed is NOT a preset:
+   `hasPreset=false`, no action offered - the safe direction, stated in the resolver docstring.
 
 ## 1. Why
 
@@ -171,7 +183,9 @@ the highest existing id first)
 | BL-SS-257 | Preset versioning: stamp seeded rows with a preset version and surface "preset updated" on the Mapping tab | Low |
 | BL-SS-258 | Reset the Source tab's lookups from the preset (today: mapping rows only, D3) | Medium |
 | BL-SS-259 | Formula engine: `default(X, "")` on a fact key ABSENT from the raw row returns None instead of the default (found by the S2 tester 2026-09-22; a real `/itembypage` row always carries `Desc2`, so the preset is unaffected today) | Low |
-| BL-SS-260 | `is_discontinued` is captured by the preset but not Sorento-delivered (absent from `CanonicalProduct.SINK_FIELDS`); verify a post-reset mapping PUT round-trips 200 (S2 coder checks; if the save gate 422s the seeded row, rule on keep-vs-drop) | Medium |
+| BL-SS-260 | `is_discontinued` is captured by the preset but not Sorento-delivered (absent from `CanonicalProduct.SINK_FIELDS`); verify a post-reset mapping PUT round-trips 200 - CLOSED 2026-09-22 by R4 (row dropped from the preset) | Medium |
+| BL-SS-261 | A reset can leave a REQUIRED row disabled (e.g. `code` when `ItemCode` is not in `result_columns`), so the next Save 422s "required field not mapped"; recoverable via the preview line + the Enabled switch. Consider a preview-level warning for a disabled required row (review round 1, S2) | Low |
+| BL-SS-262 | Reset apply as a `DeferredActionButton` (diff preview -> apply -> Undo window) so `removed` rows are recoverable without retyping; and the T5 inventory test cannot see a bespoke commit dialog - guard the pattern if it recurs (review round 1, D6 caveats) | Low |
 
 ## 7. Production adoption runbook (`SRT` product task; AC-12-35)
 
@@ -180,8 +194,9 @@ the highest existing id first)
    19 keys). The preset row sources `BaseUOMPrice`, so rename the lookup field alias to
    `BaseUOMPrice` (Source tab -> lookup -> field -> Test) BEFORE the reset; otherwise the reset's
    `list_price` row lands disabled (named in the preview) and must be re-pointed after.
-2. Mapping tab: Reset to preset -> read the diff (expect `name`, `description`, `uom_code`,
-   `list_price` changed, `is_discontinued` added) -> Reset mapping.
+2. Mapping tab: Reset to preset -> read the diff (expect `name`, `description`, `uom_code`
+   (-> disabled, "withheld by the preset"), `list_price` changed; nothing added) -> Reset
+   mapping. Do NOT flip the `uom_code` Enabled switch during the check period (AC-10-74).
 3. Simulate one item with a `Desc2` (e.g. `TPE-1032`): `description` = Description + " " + Desc2,
    inner double space preserved.
 4. Review and Activate -> Run preview -> Activate (pull mode).

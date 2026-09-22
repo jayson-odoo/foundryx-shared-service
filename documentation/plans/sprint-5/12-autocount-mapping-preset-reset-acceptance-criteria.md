@@ -6,8 +6,10 @@ Companion to `12-autocount-mapping-preset-reset.md`. Ids are `AC-12-nn`, tagged 
 
 Scope reminder (non-goals, pinned so a reviewer can reject drift): no change to the formula
 language, to any transform, to the mapping engine's evaluation order, to `source_config` (lookups
-stay on the Source tab), to the Sorento wire shape, or to what first-save seeding creates. No new
-permission, no migration.
+stay on the Source tab), or to the Sorento wire shape. No new permission, no migration. First-save
+seeding DOES change in exactly two ways, both rulings taken during S2 (2026-09-22, review round 1
+B1) and pinned as AC-12-06/07 below: the product preset no longer seeds `is_discontinued`, and a
+seeded row's `is_required` comes from the mapping catalog. Nothing else about seeding moves.
 
 ## 0. Baseline this plan is measured against (recorded 2026-09-22)
 
@@ -67,6 +69,25 @@ permission, no migration.
   present** (existing rule: a single-`value` sample cannot evaluate a multi-column formula); the
   server-side "Test" (`onServerTest`) is the one offered. Vitest pins that for a master entity
   with `acFields` the sample Test control is absent and for one without it is present.
+
+- **AC-12-06 [BE]** **The product preset no longer seeds `is_discontinued`** (owner-delegated
+  ruling R4, closes BL-SS-260). Plan 10 D22 and the Sorento addendum state the field is NOT sent
+  (Sorento derives it from a `****` description prefix); the row was captured-but-never-delivered
+  and every ordinary Save swept it. `PRODUCT_HTTP_PRESET` seeds 8 rows; `CanonicalProduct` /
+  `SINK_FIELDS` untouched. Tests: first-save seed count 9 -> 8; `("Discontinued",
+  "is_discontinued")` absent; a post-reset PUT of the same rows answers 200.
+- **AC-12-07 [BE]** **A seeded row's `is_required` comes from the mapping catalog** (ruling R5).
+  `plan_rows` derives `is_required = canonical_field in required_field_names(entity)`
+  (`line_required_field_names` for line scope), falling back to `PresetField.required` only when
+  the catalog has no entry for that (entity, scope). This is what `replace_mapping` already wrote
+  on every Save, so seed == save == reset. Measured deltas on a FRESH seed: product / customer /
+  warehouse required rows `{code}` -> `{code, name, is_active}`; brand / unit_of_measure `{code}`
+  -> `{code, name}`; document presets unchanged. Runtime effect: a freshly seeded master task
+  rejects a source row with a blank `Description` / `IsActive` at mapping (named, excluded)
+  instead of sending it to fail at Sorento - identical to what happened after the operator's
+  first Save before this plan, so no already-saved mapping (prod `SRT` included) changes
+  behaviour. Tests: seed -> Save (PUT same rows) -> dry run reports no change; the
+  `test_autocount_http_lifecycle` stub row carries `IsActive` (every live `/itembypage` row does).
 
 ## Group B - Reset to preset (`[BE]` / `[FE]` / `[E2E]`)
 
@@ -142,13 +163,23 @@ permission, no migration.
   reversible through the still-editable mapping - stated in the plan (D6) so the T5 carve-out
   inventory is not touched.
 - **AC-12-24 [E2E]** Recorded `agent-browser` run at 375 AND 1280, evidence under
-  `documentation/plans/sprint-5/12-evidence/reset-preset/`: AutoCount -> Companies -> a company
-  -> the product HTTP entity (seeded with a deliberately OLD-style mapping: `ItemCode -> name`,
-  plain `Description -> description`, no `is_discontinued`) -> Mapping tab -> Reset to preset ->
-  the dialog lists `name` changed, `description` changed, `is_discontinued` added, `uom_code`
-  changed (enabled -> disabled), `list_price` changed -> Reset mapping -> toast -> rows match the
-  preset -> open the Description row's formula builder -> "Source columns" lists `Desc2` -> Cancel
-  -> Simulate -> the simulated `description` is the joined text. README run log, both widths.
+  `documentation/plans/sprint-5/12-evidence/s1-mock/` (mock phase) and `12-evidence/s2-real/`
+  (real backend; path amended 2026-09-22): AutoCount -> Companies -> a company -> the product
+  HTTP entity (bent to the deliberately OLD-style prod-baseline mapping: `ItemCode -> name`,
+  plain `Description -> description`, `ListPrice -> list_price`, `uom_code` enabled) -> Mapping
+  tab -> Reset to preset -> the dialog lists `name` changed, `description` changed, `uom_code`
+  changed (enabled -> disabled, "withheld by the preset"), `list_price` changed -> Reset mapping
+  -> toast -> rows match the preset -> open the Description row's formula builder -> "Source
+  columns" lists `Desc2` -> Cancel -> Simulate -> the simulated `description` is the joined text
+  -> Save -> Reset to preset again -> "This mapping already matches the preset." README run log,
+  both widths.
+- **AC-12-27 [E2E]** **Document entities are in scope, header rows only** (ruling R7, resolving
+  plan §5's open question by the parity test: `resolve_preset_rows` falls through to
+  `DOCUMENT_PRESETS`). Recorded `agent-browser` run on a document entity's mapping editor
+  (`sales_order` on a DB-source company): "Reset to preset" is offered, the dialog lists the
+  header rows only, apply leaves every line-scope row untouched (before/after row list in the
+  README). Both widths. The Vitest document fixture (`documentMappingView`) carries
+  `hasPreset: true` so the document UI path is exercised.
 
 - **AC-12-25 [FE]** **A disabled row is visible as disabled, and the operator enables it
   deliberately** (added 2026-09-22 after S2 found the mapping table never renders
