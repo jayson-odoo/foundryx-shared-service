@@ -73,6 +73,7 @@ CI runs pytest + vitest on every PR and gates the deploy on them (`.github/workf
 | Module platform / App Store | `module-platform-and-app-store.md` | Manifest, loader, lifecycle, capabilities, soft refs, per-module Alembic |
 | Omnichannel Service | `omnichannel-service.md` | WhatsApp BSP, WABA tabs, public gateway (guide IS the contract), signed media URLs, AI workflow nodes |
 | AutoCount Service | `documentation/plans/sprint-4/22-autocount-db-etl.md`, `sprint-5/01-*`, `sprint-5/02-*` | ERP -> Sorento ESB: `ac_company` (API or `sql_database` source), entity tasks, mapping engine + formula builder, `SorentoSink` (`X-API-Key`, `companyCode`), Sorento addendum = the cross-repo contract |
+| AutoCount mapping | `autocount-mapping.md` | ONE preset resolver for seed AND "Reset to preset" (header scope only, never touches `source_config`, two honest disabled reasons); master formula variables = `effective_result_columns`; Save never auto-enables a row |
 | EMS (historical) | `ems-module-historical.md` | Reference only |
 | Process lessons | `process-lessons.md` | E2E rig/isolation/residue, wrong-build, port ownership, worktrees, alembic gotchas, agent-team lessons |
 
