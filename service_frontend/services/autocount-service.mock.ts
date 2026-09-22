@@ -3381,10 +3381,15 @@ function documentMappingView(entityType: string): AutocountMappingView {
     lineSorentoFields:
       spec.lineTargets ?? spec.line.map((f) => ({ field: f.sorentoField, required: Boolean(f.required) })),
     lineAcFields: spec.line.map((f) => f.sourcePath),
-    // sprint-5/12 (D5, risk section) - "Reset to preset" (Group B) is scoped
-    // to master entities in THIS plan; a document entity keeps its existing
-    // Source-tab "Use preset" instead. S2's real resolver decides for good.
-    hasPreset: false,
+    // sprint-5/12 ruling R7 (AC-12-27) - a DOCUMENT entity has a preset too:
+    // S2's real resolver (`presets.resolve_preset_rows`) falls through to
+    // `DOCUMENT_PRESETS[entityType].header`, so the fixture says `true` and
+    // the document UI path (the "Reset to preset" action item) is exercised
+    // by Vitest. This file's Vitest double for the reset itself
+    // (`MAPPING_RESET_PRESETS`) still mirrors the HTTP presets ONLY - a
+    // document reset is covered against the real backend (the S2 suite +
+    // the AC-12-27 evidence run), never a second copy of the SQL pack here.
+    hasPreset: true,
   };
 }
 

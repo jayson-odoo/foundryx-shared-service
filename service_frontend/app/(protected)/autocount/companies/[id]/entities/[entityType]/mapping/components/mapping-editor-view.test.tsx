@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
+import { mockAutocountService } from '@/services/autocount-service.mock';
 import type { AutocountMappingRow, AutocountMappingView } from '@/types/autocount';
 
 /**
@@ -64,6 +65,7 @@ vi.mock('@/hooks/use-autocount-mapping', () => ({
     save: vi.fn(),
     testFormula: vi.fn(),
     simulate: vi.fn(),
+    applyView: vi.fn(),
     reload: vi.fn(),
   }),
 }));
@@ -114,5 +116,27 @@ describe('MappingEditorView - Reset to preset gating (sprint-5/12, AC-12-21)', (
     render(<MappingEditorView companyId="c1" entityType="product" />);
     fireEvent.click(screen.getByText('Reset to preset'));
     expect(screen.getByTestId('reset-dialog-open')).toBeInTheDocument();
+  });
+
+  //     !!  DOCUMENT ENTITIES ARE IN SCOPE (ruling R7, AC-12-27).  !!
+  // Driven off the REAL fixtures (`mockAutocountService.getMapping`), not a
+  // hand-built literal, so the mock's own `hasPreset` can never drift from
+  // what the document UI path is claimed to exercise.
+  it('a document view (sales_order) offers the action - a document HAS a preset', async () => {
+    const documentView = await mockAutocountService.getMapping('company-db', 'sales_order');
+    expect(documentView.hasPreset).toBe(true);
+    viewBox.current = documentView;
+    canManage = true;
+    render(<MappingEditorView companyId="company-db" entityType="sales_order" />);
+    expect(screen.getByText('Reset to preset')).toBeInTheDocument();
+  });
+
+  it('an autocount_read supplier view does not - no preset is registered for it', async () => {
+    const supplierView = await mockAutocountService.getMapping('company-1', 'supplier');
+    expect(supplierView.hasPreset).toBe(false);
+    viewBox.current = supplierView;
+    canManage = true;
+    render(<MappingEditorView companyId="company-1" entityType="supplier" />);
+    expect(screen.queryByText('Reset to preset')).not.toBeInTheDocument();
   });
 });

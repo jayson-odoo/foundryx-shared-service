@@ -571,7 +571,12 @@ def planned_is_required(
 
 def plan_rows(
     fields: Sequence[PresetField],
-    available_columns: Optional[Dict[str, str]],
+    # A plain sequence of COLUMN NAMES (review round 1 nit - the annotation
+    # said ``Dict[str, str]`` while every live caller passes a list:
+    # ``_preset_available_columns``'s ``effective_result_columns(...)``,
+    # ``EtlService.update_task``'s stored ``result_columns``). ``None`` =
+    # never previewed.
+    available_columns: Optional[Sequence[str]],
     *,
     entity_type: Optional[str] = None,
     scope: str = SCOPE_HEADER,
@@ -594,7 +599,7 @@ def plan_rows(
     ``is_required`` comes from the mapping catalog (``planned_is_required``)
     so a seeded row matches what a Save would write for the same field.
     """
-    known = set(available_columns or {})
+    known = set(available_columns or ())
     planned: List[PlannedRow] = []
     for order, spec in enumerate(fields, start=sort_start):
         column_known = available_columns is None or spec.source_path in known
@@ -622,7 +627,7 @@ def _seed_rows(
     entity_type: str,
     scope: str,
     fields: Sequence[PresetField],
-    available_columns: Optional[Dict[str, str]],
+    available_columns: Optional[Sequence[str]],
     *,
     sort_start: int = 0,
 ) -> int:
@@ -659,8 +664,8 @@ def seed_document_mapping(
     company_id: str,
     entity_type: str,
     *,
-    header_columns: Optional[Dict[str, str]],
-    line_columns: Optional[Dict[str, str]],
+    header_columns: Optional[Sequence[str]],
+    line_columns: Optional[Sequence[str]],
     seed_header: bool = True,
     seed_line: bool = True,
 ) -> int:
@@ -1023,7 +1028,7 @@ def seed_http_preset_mapping(
     company_id: str,
     entity_type: str,
     *,
-    columns: Optional[Dict[str, str]],
+    columns: Optional[Sequence[str]],
 ) -> int:
     """Seed an HTTP task's preset mapping rows on its first clean save
     (AC-08-16) - the SAME seed-if-absent contract as ``seed_document_mapping``
@@ -1049,12 +1054,26 @@ def resolve_preset_rows(
     the SAME two registries: an ``autocount_http`` task gets
     ``HTTP_PRESETS[entity_type].rows`` (what ``seed_http_preset_mapping``
     seeds), anything else gets ``DOCUMENT_PRESETS[entity_type].header``
-    (what ``seed_document_mapping`` seeds into ``SCOPE_HEADER``). A
-    ``supplier``, or a master on a ``sql_database`` source, is registered in
-    neither and answers ``None`` - the route turns that into a 422 and
+    (what ``seed_document_mapping`` seeds into ``SCOPE_HEADER``). So the
+    covered set is exactly TWO families, both honestly reset-able: the HTTP
+    presets (product/customer/warehouse/product_category/brand/
+    unit_of_measure/stock_balance) and the DOCUMENT presets (sales_order/
+    purchase_order/shipping_order, HEADER scope only - a reset never touches
+    a line row, AC-12-13/27).
+
+    Everything else answers ``None`` - the route turns that into a 422 and
     ``MappingViewResponse.hasPreset`` into ``False``, so the UI never has to
     guess "does this entity have a preset" from its entity type (D5: an HTTP
     task and a DB task of the SAME entity can legitimately differ).
+
+    NOT a preset, deliberately: ``company_service._seed_mapping_rows``'s own
+    ``DEFAULT_MAPPINGS`` starter rows for ``goods_received_note``/
+    ``supplier``/``customer`` on a legacy ``autocount_read`` company. Those
+    are a one-off convenience seed with no registry entry here, so such a
+    task answers ``hasPreset=False``, the menu item never appears and a
+    hand-posted reset 422s. That is the SAFE direction: resetting to a table
+    this resolver does not own would silently overwrite an operator's rows
+    with a shape nothing else in this module treats as authoritative.
 
     Row CONTENT lives in one place per source type (the registries above) and
     the enable rule in one place for everyone (``plan_rows``) - the two

@@ -564,6 +564,42 @@ def test_ac_12_15_unpreviewed_column_lands_disabled_never_dropped(db):
     assert list_price_rows[0].is_enabled is False
 
 
+def test_ac_12_15_withholding_wins_the_reason_when_the_column_is_ALSO_missing():
+    """BOTH causes on ONE row: `uom_code` is preset-withheld (AC-10-74) AND
+    its `BaseUOM` column is absent from what the source proved it returns.
+
+    The withholding must win the reason - configuring the missing column
+    would NOT enable the row, so naming it sends the operator down a dead
+    end (UAC amendment 2026-09-22, AC-12-12/15). Pure: no DB, no session.
+
+    Kill test: swap `plan_rows`'s two branches (test the column first) and
+    this goes red on the reason string while every other row stays green.
+    """
+    columns = ["ItemCode", "Description", "ItemGroup", "ItemBrand", "IsActive"]
+    assert "BaseUOM" not in columns, "the fixture must WITHHOLD the column too"
+
+    planned = {
+        row.spec.canonical_field: row
+        for row in presets_module.plan_rows(
+            PRODUCT_HTTP_PRESET.rows,
+            columns,
+            entity_type=ENTITY_PRODUCT,
+            scope=SCOPE_HEADER,
+        )
+    }
+
+    uom = planned["uom_code"]
+    assert uom.is_enabled is False
+    assert uom.disabled_reason == presets_module.DISABLED_REASON_WITHHELD
+    # The control: a row disabled ONLY because its column is missing still
+    # names the column - the two reasons never collapse into one string.
+    assert (
+        planned["list_price"].disabled_reason
+        == presets_module.DISABLED_REASON_MISSING_COLUMN
+    )
+    assert planned["code"].is_enabled is True and planned["code"].disabled_reason is None
+
+
 def test_ac_12_15_never_previewed_result_columns_null_every_row_enabled_except_the_preset_withhold(db):
     conn = _connection(db)
     company = _company(db, conn.id, database_name="MOCHA-15B")

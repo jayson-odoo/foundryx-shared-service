@@ -39,7 +39,7 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
   const { can } = useCan();
   const form = useForm({ mode: 'onTouched' });
   const { detail } = useAutocountCompany(companyId);
-  const { view, isLoading, notFound, saveError, save, testFormula, simulate, reload } =
+  const { view, isLoading, notFound, saveError, save, testFormula, simulate, applyView } =
     useAutocountMapping(companyId, entityType);
   const draft = useMappingDraft(view);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
@@ -152,12 +152,17 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
       <Form {...form}>
         <ResourceForm config={config} />
       </Form>
+      {/* AC-12-23 - the table re-renders from the view the APPLY returned
+          (`applyView`), never a second GET: the reset response already IS the
+          fresh mapping, and a refetch would leave the pre-reset rows on screen
+          for a round trip. `useMappingDraft` re-syncs off the new view object
+          exactly as it does after a save. */}
       <MappingResetDialog
         open={resetDialogOpen}
         onOpenChange={setResetDialogOpen}
         companyId={companyId}
         entityType={entityType}
-        onApplied={() => reload()}
+        onApplied={applyView}
       />
     </Container>
   );
