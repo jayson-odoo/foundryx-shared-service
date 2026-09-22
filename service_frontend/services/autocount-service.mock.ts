@@ -2598,7 +2598,19 @@ export const mockAutocountService: AutocountService & MockOnlyPreviewMethods = {
       return computeMappingResetDiff(preset, view.rows, view.acFields);
     }
     const rows = mappingResetWriteRows(preset, view.acFields);
-    return this.updateMapping(companyId, entityType, { rows });
+    // AC-12-13 / ruling R7 - a reset replaces HEADER rows only; a document's
+    // line rows are carried through untouched (the backend never reads them).
+    const lineRows = view.rows
+      .filter((r) => r.scope === 'line' && r.sorentoField)
+      .map((r) => ({
+        sourcePath: r.sourcePath,
+        transform: r.transform,
+        sorentoField: r.sorentoField as string,
+        formula: r.formula,
+        scope: 'line' as const,
+        isEnabled: r.isEnabled,
+      }));
+    return this.updateMapping(companyId, entityType, { rows, lineRows });
   },
 
   // ── direct-DB ETL (plan 22 S1) ─────────────────────────────────────────────
@@ -3383,13 +3395,12 @@ function documentMappingView(entityType: string): AutocountMappingView {
     lineAcFields: spec.line.map((f) => f.sourcePath),
     // sprint-5/12 ruling R7 (AC-12-27) - a DOCUMENT entity has a preset too:
     // S2's real resolver (`presets.resolve_preset_rows`) falls through to
-    // `DOCUMENT_PRESETS[entityType].header`, so the fixture says `true` and
-    // the document UI path (the "Reset to preset" action item) is exercised
-    // by Vitest. This file's Vitest double for the reset itself
-    // (`MAPPING_RESET_PRESETS`) still mirrors the HTTP presets ONLY - a
-    // document reset is covered against the real backend (the S2 suite +
-    // the AC-12-27 evidence run), never a second copy of the SQL pack here.
-    hasPreset: true,
+    // `DOCUMENT_PRESETS[entityType].header`. Review round 2 (should-fix 3):
+    // derived from the SAME table the mock's own `resetMappingToPreset`
+    // reads, so the view and the reset double can never disagree - the
+    // earlier hardcoded `true` opened the dialog straight into a 422 the
+    // real backend never produces.
+    hasPreset: mappingResetHasPreset(entityType),
   };
 }
 
@@ -3502,6 +3513,15 @@ function mockMappingPresets(databaseName: string, entityType: string): Autocount
 // (`mockAutocountService.resetMappingToPreset`) - the live UI reads the real
 // `presets.resolve_preset_rows`, so nothing a user sees can drift with it.
 //
+// Document entities (sprint-5/12 review round 2, should-fix 3): the backend
+// resolver falls through to `DOCUMENT_PRESETS[entity].header` for a non-HTTP
+// task, so this table carries the SAME fall-through - the document entries
+// below are DERIVED from this file's own `DOCUMENT_PRESETS` header packs
+// (header scope only, never a line row), one source of truth, and
+// `documentMappingView.hasPreset` reads this table back. Before this, the
+// view said `hasPreset: true` while the reset 422'd "No preset is
+// registered" - a state the real backend never produces.
+//
 // Two owner rulings, 2026-09-22, mirrored here:
 //   - BL-SS-260: NO `Discontinued -> is_discontinued` row. Sorento derives
 //     "discontinued" from the `****` prefix of the description TEXT (plan 10
@@ -3527,7 +3547,30 @@ interface MappingResetPreset {
   rows: MappingResetPresetRow[];
 }
 
+/** A document preset's HEADER pack as the reset double reads it - mirrors
+ *  `resolve_preset_rows` returning `(preset.label, preset.header)`; line
+ *  rows are never part of a reset (ruling R7, AC-12-27). */
+function documentResetPreset(spec: DocumentPresetSpec): MappingResetPreset {
+  return {
+    label: spec.label,
+    rows: spec.header.map((f) => ({
+      sourcePath: f.sourcePath,
+      canonicalField: f.sorentoField,
+      transform: f.transform,
+      formula: f.formula ?? null,
+      required: Boolean(f.required),
+      enabled: true,
+    })),
+  };
+}
+
 const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
+  ...Object.fromEntries(
+    Object.entries(DOCUMENT_PRESETS).map(([entityType, spec]) => [
+      entityType,
+      documentResetPreset(spec),
+    ]),
+  ),
   product: {
     label: 'Item (open REST API)',
     rows: [

@@ -162,4 +162,33 @@ describe('mockAutocountService.resetMappingToPreset (Vitest double)', () => {
       expect.arrayContaining(['code', 'name', 'description', 'list_price']),
     );
   });
+
+  // sprint-5/12 review round 2 (should-fix 3) - the view's `hasPreset` and
+  // the reset double must AGREE: a document view that says `true` must not
+  // open the dialog into a 422 the real backend never produces.
+  it('a document view that says hasPreset resolves a HEADER-only dry run (sales_order)', async () => {
+    const view = await service.getMapping('company-1', 'sales_order');
+    expect(view.hasPreset).toBe(true);
+    const result = await service.resetMappingToPreset('company-1', 'sales_order', { dryRun: true });
+    expect(isMappingResetPreview(result)).toBe(true);
+    const preview = result as Exclude<typeof result, AutocountMappingView>;
+    expect(preview.label).toBe('AutoCount SO');
+    const headerFields = view.rows.filter((r) => r.scope === 'header').map((r) => r.canonicalField);
+    const lineFields = new Set(view.rows.filter((r) => r.scope === 'line').map((r) => r.canonicalField));
+    expect(preview.rows.map((r) => r.canonicalField)).toEqual(headerFields);
+    expect(preview.rows.some((r) => lineFields.has(r.canonicalField))).toBe(false);
+    expect(preview.removed).toEqual([]);
+  });
+
+  it('a document apply leaves every line row untouched (AC-12-13)', async () => {
+    const before = await service.getMapping('company-1', 'sales_order');
+    const linesBefore = before.rows.filter((r) => r.scope === 'line');
+    expect(linesBefore.length).toBeGreaterThan(0);
+    const result = await service.resetMappingToPreset('company-1', 'sales_order', { dryRun: false });
+    const after = result as AutocountMappingView;
+    expect(after.rows.filter((r) => r.scope === 'line')).toEqual(linesBefore);
+    expect(after.rows.filter((r) => r.scope === 'header').map((r) => r.canonicalField)).toEqual(
+      before.rows.filter((r) => r.scope === 'header').map((r) => r.canonicalField),
+    );
+  });
 });

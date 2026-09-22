@@ -86,7 +86,8 @@ every DOCUMENT entity, since `HTTP_PRESETS` carries no document). Both mount the
 `useMappingResetAction` (`mapping/components/mapping-reset-action.tsx`), which owns the action
 descriptor AND the dialog - add a third surface by calling that hook, never by copying the
 JSX. Adding a NEW mapping surface without it reintroduces the sprint-5/12 S3 gap (the action
-existed but no document entity could click it).
+existed but no document entity could click it). On the task editor the menu is the FORM-level
+`ActionMenu`, so the item shows on every tab, not only Mapping (BL-SS-263).
 
 ## 3. Formula variables on a master entity
 

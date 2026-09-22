@@ -1,13 +1,14 @@
 # 12 - AutoCount mapping: master formula variables + Reset to preset - Test Execution Report
 
 Keyed to `12-autocount-mapping-preset-reset-acceptance-criteria.md` (AC-12-01..07, 10..15,
-20..27, 30..35 - **28 ids**). Plan: `12-autocount-mapping-preset-reset.md`. Format:
+20..27, 30..35 - **27 ids**). Plan: `12-autocount-mapping-preset-reset.md`. Format:
 `documentation/development_process/AI_Agent_Orchestration_Guide.md` section 6.
 
 ## Environment
 
 - Worktree `.claude/worktrees/s50`, branch `sprint-5/12-mapping-master-formula-variables`,
-  HEAD **`e1857aac`** at the time every verdict below was taken.
+  HEAD **`e1857aac`** when the verdicts below were taken, except AC-12-27 and AC-12-34, which
+  were re-taken at **`c7da368c`** (the AC-12-27 fix commit) - see "Review round 2".
 - Lane: backend `:8012` (uvicorn `app.main:app`, **no** `--reload`, ad hoc lane env, port
   ownership confirmed by `lsof` = this worktree), frontend `:3012` (fresh
   `rm -rf .next && npm run build`, `npx next start -p 3012`, `lsof` cwd = this worktree),
@@ -24,10 +25,10 @@ Keyed to `12-autocount-mapping-preset-reset-acceptance-criteria.md` (AC-12-01..0
 
 ## Summary
 
-Of 28 AC ids: **26 PASS**, **0 FAIL**, **2 DEFERRED** (AC-12-33 is PASS; the genuine deferrals
-are AC-12-35 and the `[E2E]` half of AC-12-27's line-scope UI proof, which is instead evidenced
-through the API - see the rows). No id is recorded green on "the test suite covers it" alone
-where the AC says `[E2E]`.
+Of 27 AC ids: **26 PASS**, **0 FAIL**, **1 DEFERRED** (AC-12-35, the production runbook, is the
+owner's to execute). No id is recorded green on "the test suite covers it" alone where the AC
+says `[E2E]`; AC-12-27's line-scope half is proven by an API row diff rather than a screenshot,
+stated inside that row.
 
 **AC-12-27 (was the one FAIL) is now PASS.** The original defect: "Reset to preset" was not
 reachable by clicking on ANY document entity, because `company-detail-view.tsx` routes a
@@ -39,10 +40,15 @@ clicks on the tester's own document entity: `12-evidence/s3-documents/fix/`.
 
 ## Suites
 
-Run by this pass, at HEAD `e1857aac`, on the lane's own interpreters.
+Run by this pass, at HEAD `e1857aac`, on the lane's own interpreters; the rows marked
+`c7da368c` are the review round 2 re-run at the AC-12-27 fix commit.
 
 | Suite | Command | Result |
 |---|---|---|
+| Frontend, autocount + reset hooks (`c7da368c`) | `npx vitest run "app/(protected)/autocount" "hooks/use-mapping-reset" "hooks/use-autocount-mapping"` | **411 passed** in 45 files, 0 failed |
+| Lint (`c7da368c`) | `npx eslint` on the 8 changed frontend files | 0 problems |
+| Backend, this plan (`c7da368c`) | `.venv/bin/python -m pytest -q tests/test_s12_*.py` | **23 passed**, 0 failed |
+| Dash scan (`c7da368c`) | em/en dash grep over the 23 changed non-PNG files | 0 hits |
 | Backend, this plan | `.venv/bin/python -m pytest -q tests/test_s12_*.py` | **23 passed**, 0 failed (3 deprecation warnings, all pre-existing Starlette/httpx notices) |
 | Backend, targeted sweep | `.venv/bin/python -m pytest -q -k "autocount or mapping or preset or s08 or s10 or s11 or s12"` | **2203 passed**, 0 failed, 3265 deselected, 128 s |
 | Frontend, autocount | `npx vitest run autocount` | **907 passed** in 73 files, 0 failed |
@@ -68,6 +74,28 @@ Not re-run by this pass: the FULL backend suite and the FULL `npx vitest run` (C
 
 Earlier UAC amendment from the S2 tester (a single disabled-reason string) is folded into
 AC-12-12/15 and shipped.
+
+## Review round 2 (the AC-12-27 fix, `c7da368c`)
+
+**Verdict: APPROVE** (Opus, 0 blockers). Kill test run by the reviewer: bending the gating in
+`useMappingResetAction` to `hasPreset: true` reddened 2 of 7 cases in
+`task-editor-view.mapping-reset.test.tsx` while `mapping-editor-view.test.tsx` stayed green
+(the two surfaces are pinned independently); replacing the `applyView` hydration with
+`reload()` reddened 1 of 7. Three should-fixes, all resolved in the follow-up commit named in
+this section's git log entry ("docs(autocount): sprint-5/12 review round 2 - report
+reconciliation, mock document preset pack, BL-SS-263"):
+
+| Finding | Resolution |
+|---|---|
+| S1 - report counts did not reconcile (header said 28 ids, summary said 2 DEFERRED; the UAC has 27 ids and the table has exactly one DEFERRED row) | Header and Summary now read 27 ids / 26 PASS / 0 FAIL / 1 DEFERRED; the AC-12-27 "line scope proven by API row diff" caveat stays as prose inside that row |
+| S2 - "HEAD `e1857aac` at the time every verdict was taken" contradicted by the AC-12-27 row and `fix/README.md` (`c7da368c`) | Environment line reworded; the `c7da368c` re-run rows added to the Suites table |
+| S3 - `services/autocount-service.mock.ts`: `documentMappingView` said `hasPreset: true` but `resetMappingToPreset` 422'd for anything absent from `MAPPING_RESET_PRESETS` (HTTP pack only), so under the mock a document opened the dialog straight into an error the real backend never produces | `MAPPING_RESET_PRESETS` now carries the document HEADER packs derived from the mock's own `DOCUMENT_PRESETS` (mirrors the backend resolver's fall-through), `documentMappingView.hasPreset` reads that table back, and the mock apply carries the line rows through untouched; contract comment updated; 2 new cases in `autocount-service.mock.mapping-reset.test.ts` (header-only dry run for `sales_order`; apply leaves line rows identical) |
+
+Nits recorded, not changed: the reset item joins the task editor's FORM-level `ActionMenu`,
+which renders on every tab (Source / Mapping / Schedule / Review & Activate / Runs) while
+`isVisible` checks only `hasPreset` - mild foolproof-UI drift against AC-12-21's "on the Mapping
+tab" wording; tab-gating needs the shell's tab state lifted (`initialTabId` is fire-and-forget).
+Filed as **BL-SS-263** (Low).
 
 ## Definition of Done gate
 
@@ -141,7 +169,8 @@ AC-12-12/15 and shipped.
 `documentation/backlogs/backlog.md`, appended this pass after confirming the highest existing id
 was **BL-SS-255** (no higher id exists on `main`, whose register stops at BL-SS-044, so no
 renumbering was needed): **BL-SS-256..262**, in the register's `ID | Title | Source plan |
-Priority | Status` format. **BL-SS-260 is filed as Closed** per ruling R4.
+Priority | Status` format. **BL-SS-260 is filed as Closed** per ruling R4. Review round 2 added
+**BL-SS-263** (the form-level `ActionMenu` shows the reset item on every tab, Low).
 
 ## Residue left in the lane DB (deliberate, timestamped)
 
