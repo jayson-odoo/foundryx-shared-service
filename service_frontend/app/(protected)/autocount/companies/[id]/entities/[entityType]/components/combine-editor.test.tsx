@@ -281,6 +281,102 @@ describe('CombineEditor (AC-10-82)', () => {
     });
   });
 
+  // AC-10-82 fix (review round 2) - the backend validator (combine.py ~line
+  // 501) requires the designated `measure` to be a PRE-GROUP column, never a
+  // `measures[].alias`; but the RUNTIME contract narrows it further -
+  // `excluded_row_for_mapping_failure` only resolves a grouped exclusion
+  // value for a `measure` that some `measures[].source` actually declares
+  // (`combine.py:966-978`), so the picker only offers DECLARED measure
+  // sources once at least one exists, falling back to the full pre-group set
+  // only when no measure has a source yet.
+  describe('Designated measure picker (AC-10-82)', () => {
+    it('once a measure declares a source, offers ONLY that source - never another pre-group column, never a measure alias', () => {
+      render(
+        <CombineEditor
+          editing
+          combine={{
+            ...emptyCombine(),
+            computed: [{ alias: 'base_qty', formula: 'BalQty * 1' }],
+            measures: [{ source: 'base_qty', op: 'sum', alias: 'qty' }],
+          }}
+          onChange={vi.fn()}
+          columnOptions={['ItemCode', 'BalQty']}
+          funnel={null}
+          onServerTest={serverTest}
+        />,
+      );
+      fireEvent.click(screen.getByLabelText('Designated measure'));
+      expect(screen.getAllByText('base_qty').length).toBeGreaterThan(0);
+      // BalQty is a valid pre-group column but no measure reads FROM it -
+      // picking it would resolve to `measure: null` at runtime, so it must
+      // not be offered even though the old (round-1) fix would have shown it.
+      expect(screen.queryAllByText('BalQty').length).toBe(0);
+      expect(screen.queryAllByText('qty').length).toBe(0);
+    });
+
+    it('falls back to the full pre-group set when no measure has declared a source yet', () => {
+      render(
+        <CombineEditor
+          editing
+          combine={{
+            ...emptyCombine(),
+            computed: [{ alias: 'base_qty', formula: 'BalQty * 1' }],
+            measures: [{ source: '', op: 'sum', alias: 'qty' }],
+          }}
+          onChange={vi.fn()}
+          columnOptions={['ItemCode', 'BalQty']}
+          funnel={null}
+          onServerTest={serverTest}
+        />,
+      );
+      fireEvent.click(screen.getByLabelText('Designated measure'));
+      expect(screen.getAllByText('ItemCode').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('BalQty').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('base_qty').length).toBeGreaterThan(0);
+      expect(screen.queryAllByText('qty').length).toBe(0);
+    });
+
+    it('a legacy config.measure of "qty" (a measure alias) still displays rather than blanking', () => {
+      render(
+        <CombineEditor
+          editing
+          combine={{
+            ...emptyCombine(),
+            measure: 'qty',
+            measures: [{ source: 'BalQty', op: 'sum', alias: 'qty' }],
+          }}
+          onChange={vi.fn()}
+          columnOptions={['ItemCode', 'BalQty']}
+          funnel={null}
+          onServerTest={serverTest}
+        />,
+      );
+      expect(screen.getByLabelText('Designated measure')).toHaveTextContent('qty');
+    });
+
+    it('saving picks a pre-group column (base_qty), matching the server contract', () => {
+      const onChange = vi.fn();
+      render(
+        <CombineEditor
+          editing
+          combine={{
+            ...emptyCombine(),
+            computed: [{ alias: 'base_qty', formula: 'BalQty * 1' }],
+          }}
+          onChange={onChange}
+          columnOptions={['ItemCode', 'BalQty']}
+          funnel={null}
+          onServerTest={serverTest}
+        />,
+      );
+      fireEvent.click(screen.getByLabelText('Designated measure'));
+      fireEvent.click(screen.getByText('base_qty'));
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({ measure: 'base_qty' }),
+      );
+    });
+  });
+
   it('read-only when not editing - no Enable/Add controls', () => {
     render(
       <CombineEditor
