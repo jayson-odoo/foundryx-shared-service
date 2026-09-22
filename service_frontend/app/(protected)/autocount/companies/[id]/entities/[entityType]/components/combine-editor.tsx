@@ -90,7 +90,10 @@ export function CombineEditor({
     () => Array.from(new Set([...columnOptions, ...computedAliases])),
     [columnOptions, computedAliases],
   );
-  const groupOptions = allColumnOptions.map((c) => ({ label: c, value: c }));
+  const groupOptions = useMemo(
+    () => allColumnOptions.map((c) => ({ label: c, value: c })),
+    [allColumnOptions],
+  );
   const measureSourceOptions = allColumnOptions.map((c) => ({
     label: c,
     value: c,
@@ -99,18 +102,36 @@ export function CombineEditor({
     label: c,
     value: c,
   }));
-  // AC-10-82 fix - the designated measure (`combine.measure`) is a PRE-GROUP
-  // column (R11 ruling 2): a source column or a computed-column alias, never
-  // a `measures[].alias`. The backend validator rejects a measure alias here
-  // (`combine.py` ~line 501); offering `measureAliasOptions` let a hand-built
-  // combine save a value the server always 422s. Legacy configs may still
-  // carry a value outside this set - keep it visible rather than blanking.
+  // AC-10-82 fix (review round 2) - the designated measure (`combine.measure`)
+  // is a PRE-GROUP column (validator: `combine.py` ~line 501, R11 ruling 2),
+  // so `measureAliasOptions` (post-group aliases) was always the wrong set -
+  // that part saves clean but 422s. Narrower than "any pre-group column",
+  // though: the RUNTIME contract (`excluded_row_for_mapping_failure`,
+  // `combine.py:966-978`) resolves the designated measure's grouped value by
+  // finding the `measures[]` entry whose `source` IS `combine.measure` and
+  // reading that entry's alias off the post-group row - a pick that is not a
+  // declared `measures[].source` saves clean but reads back `measure: null`
+  // in every exclusion entry (and the mapping's own dropped-row funnel), and
+  // a non-numeric pick silently inflates `excludedNonzeroCount`
+  // (`combine.py:944`, "not exactly 0" fails closed). So: once at least one
+  // measure declares a non-empty `source`, only offer THOSE sources (in
+  // pre-group column order) - never a pre-group column no measure reads from.
+  // Only fall back to the full pre-group set when no measure has a source
+  // yet (nothing to narrow to). Legacy configs may still carry a value
+  // outside the offered set - keep it visible rather than blanking.
   const designatedMeasureOptions = useMemo(() => {
-    if (config.measure && !allColumnOptions.includes(config.measure)) {
-      return [...groupOptions, { label: config.measure, value: config.measure }];
+    const declaredSources = new Set(
+      config.measures.map((m) => m.source).filter((s): s is string => Boolean(s)),
+    );
+    const base =
+      declaredSources.size > 0
+        ? groupOptions.filter((o) => declaredSources.has(o.value))
+        : groupOptions;
+    if (config.measure && !base.some((o) => o.value === config.measure)) {
+      return [...base, { label: config.measure, value: config.measure }];
     }
-    return groupOptions;
-  }, [groupOptions, allColumnOptions, config.measure]);
+    return base;
+  }, [groupOptions, config.measures, config.measure]);
 
   const update = (patch: Partial<AutocountCombineConfig>) =>
     onChange({ ...config, ...patch });
