@@ -20,6 +20,7 @@ import type {
   AutocountFormulaTestResult,
   AutocountJobListQuery,
   AutocountMappingPreset,
+  AutocountMappingResetPreview,
   AutocountMappingUpdate,
   AutocountMappingView,
   AutocountMappingWriteRow,
@@ -275,6 +276,17 @@ export const realAutocountService: AutocountService = {
           ...(input.lineRows ? { lineRows: input.lineRows.map(writeRow) } : {}),
         }),
       },
+    );
+  },
+
+  // sprint-5/12 S1 - wired against the route S2 lands (see the contract
+  // block atop `autocount-service.ts`); not reached by the live UI yet, the
+  // S1 overlay (`withPhase1MappingResetMock`) intercepts this surface until
+  // the real route exists.
+  resetMappingToPreset(companyId, entityType, input: { dryRun: boolean }) {
+    return apiFetch<AutocountMappingResetPreview | AutocountMappingView>(
+      `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/mapping/reset-preset`,
+      { method: 'POST', body: JSON.stringify({ dryRun: input.dryRun }) },
     );
   },
 

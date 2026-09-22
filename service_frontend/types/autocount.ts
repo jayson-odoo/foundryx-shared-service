@@ -449,6 +449,16 @@ export interface AutocountMappingView {
   /** Document entities only - the task's persisted `line_result_columns`
    * (empty until the line query has been saved with a successful preview). */
   lineAcFields: string[];
+  /**
+   * sprint-5/12 (AC-12-21, D5) - whether this entity has a preset a "Reset
+   * to preset" action could apply. Server-derived by the SAME rule the
+   * reset itself uses (AC-12-11) - the UI never infers it from the entity
+   * type, so an HTTP task and a DB task of the same entity can differ.
+   * Optional/absent reads as `false` (back-compat with every fixture built
+   * before this field existed - the same convention as `deliveryMode`
+   * elsewhere in this file).
+   */
+  hasPreset?: boolean;
 }
 
 /** One deliverable row on write. `sorentoField` must be an accepted target. */
@@ -491,6 +501,66 @@ export interface AutocountMappingUpdate {
    * vs "lineRows: []" once both arrive as an empty slice.
    */
   lineRows?: AutocountMappingWriteRow[];
+}
+
+// ── mapping preset reset (sprint-5/12, Group B - AC-12-10..24) ───────────────
+
+/**
+ * One preset row's dry-run diff against the entity's CURRENT header mapping
+ * (`POST .../mapping/reset-preset {dryRun: true}`, AC-12-12). `change` is
+ * `'added'` (no current row for this canonical field), `'changed'` (a
+ * current row exists and its source/transform/formula/enabled differs) or
+ * `'unchanged'`. `disabledReason` is present ONLY when `enabled` is false -
+ * a fixed, uniform string (the row's source column is not returned by the
+ * task's current preview/lookups - the SAME AC-02-16 rule a first-save seed
+ * already follows, reused here).
+ */
+export interface AutocountMappingResetRow {
+  canonicalField: string;
+  sourcePath: string;
+  transform: string;
+  formula: string | null;
+  enabled: boolean;
+  isRequired: boolean;
+  change: 'added' | 'changed' | 'unchanged';
+  disabledReason?: string;
+}
+
+/** One CURRENT header row the preset would drop (AC-12-12) - shown under
+ *  the dialog's "Removed" section, never silently discarded (R2's accepted
+ *  trade: a whole-mapping replace, previewed first). */
+export interface AutocountMappingResetRemovedRow {
+  canonicalField: string;
+  sourcePath: string;
+  transform: string;
+  formula: string | null;
+}
+
+/**
+ * `POST .../mapping/reset-preset {dryRun: true}` result (AC-12-12) - the
+ * exact diff a reset would apply, header scope only (D3: `source_config`/
+ * lookups are untouched - a reset never re-arms the Test/Activate gate).
+ * Writes nothing.
+ */
+export interface AutocountMappingResetPreview {
+  label: string;
+  rows: AutocountMappingResetRow[];
+  removed: AutocountMappingResetRemovedRow[];
+}
+
+/** Narrows the `resetMappingToPreset` union - the dry-run shape carries
+ *  `rows`/`removed`, the apply shape (`AutocountMappingView`) does not. */
+export function isMappingResetPreview(
+  result: AutocountMappingResetPreview | AutocountMappingView,
+): result is AutocountMappingResetPreview {
+  // `removed` is unique to the preview shape - both types carry `rows`.
+  return 'removed' in result;
+}
+
+/** True when every row is unchanged and nothing would be removed - the
+ *  dialog's "already matches the preset" gate (AC-12-22). */
+export function isMappingResetPreviewEmpty(preview: AutocountMappingResetPreview): boolean {
+  return preview.removed.length === 0 && preview.rows.every((r) => r.change === 'unchanged');
 }
 
 // ── mapping/query presets (sprint-5/02, AC-02-16/17) ─────────────────────────

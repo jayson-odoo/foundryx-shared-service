@@ -54,6 +54,8 @@ import type {
   AutocountFormulaTestResult,
   AutocountJobListQuery,
   AutocountMappingPreset,
+  AutocountMappingResetPreview,
+  AutocountMappingRow,
   AutocountMappingUpdate,
   AutocountMappingView,
   AutocountMappingWriteRow,
@@ -2580,6 +2582,25 @@ export const mockAutocountService: AutocountService & MockOnlyPreviewMethods = {
     return Promise.resolve(mockMappingPresets(company.databaseName, entityType));
   },
 
+  // sprint-5/12 (Group B, AC-12-10..24) - the Vitest double: fixture-backed,
+  // deterministic (no dependency on the overlay/real backend). Diffs/writes
+  // against THIS mock's own `mockMappingView`/`updateMapping`, exactly like
+  // every other mock method.
+  async resetMappingToPreset(
+    companyId: string,
+    entityType: string,
+    input: { dryRun: boolean },
+  ): Promise<AutocountMappingResetPreview | AutocountMappingView> {
+    const preset = MAPPING_RESET_PRESETS[entityType];
+    if (!preset) throw new ApiError('No preset is registered for this entity.', 422);
+    const view = mockMappingView(entityType, sourceImpls.get(taskKey(companyId, entityType)));
+    if (input.dryRun) {
+      return computeMappingResetDiff(preset, view.rows, view.acFields);
+    }
+    const rows = mappingResetWriteRows(preset, view.acFields);
+    return this.updateMapping(companyId, entityType, { rows });
+  },
+
   // ── direct-DB ETL (plan 22 S1) ─────────────────────────────────────────────
 
   async listSqlConnections(): Promise<AutocountSqlConnection[]> {
@@ -3143,6 +3164,9 @@ function masterMappingView(entityType: string): AutocountMappingView {
     ],
     lineSorentoFields: [],
     lineAcFields: [],
+    // The legacy vendor-login path (autocount_read) has no registered
+    // preset (sprint-5/12) - only the open-API masters do.
+    hasPreset: false,
   };
 }
 
@@ -3357,6 +3381,10 @@ function documentMappingView(entityType: string): AutocountMappingView {
     lineSorentoFields:
       spec.lineTargets ?? spec.line.map((f) => ({ field: f.sorentoField, required: Boolean(f.required) })),
     lineAcFields: spec.line.map((f) => f.sourcePath),
+    // sprint-5/12 (D5, risk section) - "Reset to preset" (Group B) is scoped
+    // to master entities in THIS plan; a document entity keeps its existing
+    // Source-tab "Use preset" instead. S2's real resolver decides for good.
+    hasPreset: false,
   };
 }
 
@@ -3379,13 +3407,29 @@ function httpMasterMappingView(entityType: string): AutocountMappingView {
     isRequired: Boolean(m.required),
     isEnabled: true,
   }));
+  // sprint-5/12 - `sorentoFields` (the accepted-target catalog) is UNIONED
+  // with the mapping-reset preset's own fields when one is registered: this
+  // file's `HTTP_PRESETS` (`lib/autocount-etl.ts`) is flagged there as a
+  // stale drift-risk mirror (still the pre-AC-10-73/74 `product` shape,
+  // missing `list_price`) - the picker/save-gate catalog must still offer
+  // every field a reset could write, or the mock's OWN `updateMapping`
+  // would reject its own reset apply.
+  const resetFields = (MAPPING_RESET_PRESETS[entityType]?.rows ?? []).map((r) => ({
+    field: r.canonicalField,
+    required: r.required,
+  }));
+  const sorentoFields = [...rows.map((r) => ({ field: r.canonicalField, required: r.isRequired }))];
+  for (const f of resetFields) {
+    if (!sorentoFields.some((s) => s.field === f.field)) sorentoFields.push(f);
+  }
   return {
     entityType,
     rows,
-    sorentoFields: rows.map((r) => ({ field: r.canonicalField, required: r.isRequired })),
+    sorentoFields,
     acFields: Array.from(new Set(preset.mapping.map((m) => m.sourcePath))),
     lineSorentoFields: [],
     lineAcFields: [],
+    hasPreset: mappingResetHasPreset(entityType),
   };
 }
 
@@ -3431,9 +3475,244 @@ function mockMappingPresets(databaseName: string, entityType: string): Autocount
 // `lines=` overload and `listMappingPresets` (`GET /autocount/presets/
 // {entityType}`) are both real server-side now (`modules/autocount/
 // routers/sync.py`, `presets.py`), same as `getMapping`/`updateMapping`
-// since S2. `autocount-service.ts` exports `realAutocountService` bare -
-// there is no more mock overlay to bind. `mockMappingPresets`/
-// `documentMappingView`/`mockMappingView` above remain as the Vitest
-// fixture data (`mockAutocountService`) the builder's frontend-first tests
-// exercise directly.
+// since S2. `mockMappingPresets`/`documentMappingView`/`mockMappingView`
+// above remain as the Vitest fixture data (`mockAutocountService`) the
+// builder's frontend-first tests exercise directly. sprint-5/12 S1 (below)
+// reopens ONE scoped overlay (`withPhase1MappingResetMock`, bound by
+// `autocount-service.ts`) for the mapping preset reset surface only.
+
+// ── mapping preset reset (sprint-5/12, Group B - AC-12-10..24) ───────────────
+//
+// `MAPPING_RESET_PRESETS` is a FRESH, ACCURATE mirror of the backend's real
+// `modules/autocount/presets.py::HTTP_PRESETS` (the AC-10-73/74 `description`
+// join formula, the withheld-but-visible `uom_code`, the `BaseUOMPrice ->
+// list_price` row) - deliberately NOT the same table as this file's own
+// `HTTP_PRESETS` import (`lib/autocount-etl.ts`), which is flagged there as
+// PHASE 1 MOCK ONLY drift risk and still carries the OLD `Desc2 ->
+// description` row sprint-5/10 replaced server-side. Reusing that stale
+// table here would re-encode, in the very feature meant to fix it, the exact
+// production drift this plan exists to correct (see the plan's "Why", §1).
+// Retired the moment S2 lands the real `resolve_preset_rows` - this table's
+// job is matching that function's OUTPUT byte for byte until then, never a
+// second registry to maintain long-term.
+
+interface MappingResetPresetRow {
+  sourcePath: string;
+  canonicalField: string;
+  transform: string;
+  formula: string | null;
+  required: boolean;
+  /** The preset's OWN enabled flag (AC-10-74's withheld `uom_code`) - ANDed
+   *  with column presence exactly like the backend's `_seed_rows`. */
+  enabled: boolean;
+}
+
+interface MappingResetPreset {
+  label: string;
+  rows: MappingResetPresetRow[];
+}
+
+const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
+  product: {
+    label: 'Item (open REST API)',
+    rows: [
+      { sourcePath: 'ItemCode', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'Description', canonicalField: 'name', transform: 'string', formula: null, required: false, enabled: true },
+      // AC-10-73 - the RAW join (`.strip()` on the ends only; an inner
+      // double space is never collapsed).
+      {
+        sourcePath: 'Description',
+        canonicalField: 'description',
+        transform: 'string',
+        formula: 'trim(if(default(Desc2, "") != "", concat(Description, " ", Desc2), Description))',
+        required: false,
+        enabled: true,
+      },
+      { sourcePath: 'ItemGroup', canonicalField: 'category_code', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'ItemBrand', canonicalField: 'brand_code', transform: 'string', formula: null, required: false, enabled: true },
+      // AC-10-74 - withheld during the check period: seeded PRESENT but
+      // disabled so the operator can see and re-enable it deliberately.
+      { sourcePath: 'BaseUOM', canonicalField: 'uom_code', transform: 'string', formula: null, required: false, enabled: false },
+      { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: false, enabled: true },
+      { sourcePath: 'Discontinued', canonicalField: 'is_discontinued', transform: 't_f_bool', formula: null, required: false, enabled: true },
+      // The pre-filled `uom` lookup's own alias, clamped to 0 on a negative
+      // vendor sentinel price.
+      {
+        sourcePath: 'BaseUOMPrice',
+        canonicalField: 'list_price',
+        transform: 'string',
+        formula: 'if(number(value) <= 0, 0, number(value))',
+        required: false,
+        enabled: true,
+      },
+    ],
+  },
+  customer: {
+    label: 'Debtor (open REST API)',
+    rows: [
+      { sourcePath: 'AccNo', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'CompanyName', canonicalField: 'name', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'Phone1', canonicalField: 'phone_number', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: false, enabled: true },
+    ],
+  },
+  warehouse: {
+    label: 'Location (open REST API)',
+    rows: [
+      { sourcePath: 'Location', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'Description', canonicalField: 'name', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'Address1', canonicalField: 'location', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: false, enabled: true },
+    ],
+  },
+  product_category: {
+    label: 'Item group (open REST API)',
+    rows: [
+      { sourcePath: 'ItemGroup', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'Description', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'Desc2', canonicalField: 'description', transform: 'string', formula: null, required: false, enabled: true },
+    ],
+  },
+  brand: {
+    label: 'Item brand (open REST API)',
+    rows: [
+      { sourcePath: 'ItemBrand', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'ItemBrand', canonicalField: 'name', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'Description', canonicalField: 'description', transform: 'string', formula: null, required: false, enabled: true },
+    ],
+  },
+  unit_of_measure: {
+    label: 'Item UOM (open REST API, distinct)',
+    rows: [
+      { sourcePath: 'value', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'value', canonicalField: 'name', transform: 'string', formula: null, required: false, enabled: true },
+    ],
+  },
+  stock_balance: {
+    label: 'Stock balance (open REST API)',
+    rows: [
+      { sourcePath: 'item_code', canonicalField: 'item_code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'location_code', canonicalField: 'location_code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'ItemDescription', canonicalField: 'item_description', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'ItemBaseUOM', canonicalField: 'uom_code', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'qty', canonicalField: 'qty', transform: 'int', formula: null, required: true, enabled: true },
+    ],
+  },
+};
+
+const MAPPING_RESET_DISABLED_REASON = 'column not returned by the source';
+
+function mappingResetHasPreset(entityType: string): boolean {
+  return entityType in MAPPING_RESET_PRESETS;
+}
+
+/**
+ * Pure diff (AC-12-12): the preset's rows against the entity's CURRENT
+ * header rows, by `canonicalField`. Exported so every AC-12-20 state
+ * (added/changed/unchanged/removed/disabled/empty) is directly unit-tested
+ * with hand-built inputs, no service round trip needed.
+ */
+export function computeMappingResetDiff(
+  preset: MappingResetPreset,
+  currentRows: AutocountMappingRow[],
+  availableColumns: string[],
+): AutocountMappingResetPreview {
+  const columnsKnown = availableColumns.length > 0;
+  const columnSet = new Set(availableColumns);
+  const currentByField = new Map(
+    currentRows.filter((r) => r.scope === 'header' && r.sorentoField).map((r) => [r.canonicalField, r]),
+  );
+  const presetFields = new Set(preset.rows.map((r) => r.canonicalField));
+
+  const rows = preset.rows.map((p) => {
+    const enabled = p.enabled && (!columnsKnown || columnSet.has(p.sourcePath));
+    const current = currentByField.get(p.canonicalField);
+    const change: 'added' | 'changed' | 'unchanged' = !current
+      ? 'added'
+      : current.sourcePath === p.sourcePath &&
+          current.transform === p.transform &&
+          (current.formula ?? null) === p.formula &&
+          current.isEnabled === enabled
+        ? 'unchanged'
+        : 'changed';
+    return {
+      canonicalField: p.canonicalField,
+      sourcePath: p.sourcePath,
+      transform: p.transform,
+      formula: p.formula,
+      enabled,
+      isRequired: p.required,
+      change,
+      ...(enabled ? {} : { disabledReason: MAPPING_RESET_DISABLED_REASON }),
+    };
+  });
+
+  const removed = currentRows
+    .filter((r) => r.scope === 'header' && r.sorentoField && !presetFields.has(r.canonicalField))
+    .map((r) => ({
+      canonicalField: r.canonicalField,
+      sourcePath: r.sourcePath,
+      transform: r.transform,
+      formula: r.formula,
+    }));
+
+  return { label: preset.label, rows, removed };
+}
+
+/** The write rows a reset APPLY would submit (AC-12-13) - `enabled` folded
+ *  the same way the dry run computed it, so apply and preview can never
+ *  disagree. */
+function mappingResetWriteRows(
+  preset: MappingResetPreset,
+  availableColumns: string[],
+): AutocountMappingWriteRow[] {
+  const columnsKnown = availableColumns.length > 0;
+  const columnSet = new Set(availableColumns);
+  return preset.rows.map((p) => ({
+    sourcePath: p.sourcePath,
+    transform: p.transform,
+    sorentoField: p.canonicalField,
+    formula: p.formula,
+    scope: 'header' as const,
+    isEnabled: p.enabled && (!columnsKnown || columnSet.has(p.sourcePath)),
+  }));
+}
+
+/**
+ * PHASE 1 MOCK OVERLAY (sprint-5/12 S1) - what `autocount-service.ts` binds.
+ * Every OTHER surface (including `getMapping`/`updateMapping`, both real
+ * since earlier plans) is delegated straight through to `real` - this
+ * overlay adds exactly two things:
+ *   - `hasPreset` on `getMapping`'s result (AC-12-21) - a CLIENT-SIDE
+ *     heuristic (entity type registered in `MAPPING_RESET_PRESETS`) until S2
+ *     lands the server-derived field (D5): a `sql_db` task of the same
+ *     entity name is indistinguishable here (no `sourceImpl` on the wire
+ *     view) - the real backend resolves it correctly by source type.
+ *   - `resetMappingToPreset` itself (no backend route yet) - computes the
+ *     dry-run diff / apply against the entity's REAL, currently-saved
+ *     mapping (one live `getMapping` read, and a real `updateMapping` PUT
+ *     on apply), so an agent-browser run against a genuinely seeded task
+ *     sees a genuine diff and a genuine persisted result - never a canned
+ *     fixture, exactly the `withPhase1PullMock` pattern (sprint-5/10 S2).
+ */
+export function withPhase1MappingResetMock(real: AutocountService): AutocountService {
+  return {
+    ...real,
+    async getMapping(companyId, entityType) {
+      const view = await real.getMapping(companyId, entityType);
+      return { ...view, hasPreset: view.hasPreset ?? mappingResetHasPreset(entityType) };
+    },
+    async resetMappingToPreset(companyId, entityType, input) {
+      const preset = MAPPING_RESET_PRESETS[entityType];
+      if (!preset) throw new ApiError('No preset is registered for this entity.', 422);
+      const view = await real.getMapping(companyId, entityType);
+      if (input.dryRun) {
+        return computeMappingResetDiff(preset, view.rows, view.acFields);
+      }
+      const rows = mappingResetWriteRows(preset, view.acFields);
+      const next = await real.updateMapping(companyId, entityType, { rows });
+      return { ...next, hasPreset: true };
+    },
+  };
+}
 
