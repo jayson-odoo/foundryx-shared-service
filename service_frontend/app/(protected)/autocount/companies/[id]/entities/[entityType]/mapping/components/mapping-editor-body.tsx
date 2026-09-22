@@ -91,13 +91,23 @@ export function MappingEditorBody({
     : null;
   const builderPreset = builderRow ? presetForRow(builderRow.transform, builderRow.formula) : 'custom';
 
-  // The formula builder's Variables panel (sprint-5/02, AC-02-20): a
-  // document row's header/line columns, `lines.*` aggregates (header rows
-  // only), and the status vocabulary as literal chips when the row's target
-  // IS `status`. Empty for a master/GRN entity - the builder falls back to
-  // its single-`value` model, unchanged.
+  // The formula builder's Variables panel (sprint-5/02, AC-02-20; sprint-5/12
+  // Group A, AC-12-01/02): a document row's header/line columns, `lines.*`
+  // aggregates (header rows only), and the status vocabulary as literal
+  // chips when the row's target IS `status`. A MASTER entity's own row gets
+  // ONE group - its previewed source columns (`acFields` =
+  // `effective_result_columns`, the SAME set the save gate accepts, D2) - so
+  // a multi-column formula like the Desc2 join validates client-side.
+  // Empty `acFields` (never previewed) falls back to the builder's existing
+  // single-`value` model, byte-identically to before this plan.
   const builderVariables: FormulaVariableGroup[] = (() => {
-    if (!isDocument || !target || !builderRow) return [];
+    if (!target || !builderRow) return [];
+    if (!isDocument) {
+      const columns = sourceOptions ?? draft.header.acFields;
+      return columns.length > 0
+        ? [{ label: 'Source columns', items: columns.map((c) => ({ label: c, token: c })) }]
+        : [];
+    }
     const groups: FormulaVariableGroup[] = [];
     const columns = target.scope === 'header' ? (sourceOptions ?? draft.header.acFields) : (lineSourceOptions ?? draft.line?.acFields ?? []);
     if (columns.length > 0) {

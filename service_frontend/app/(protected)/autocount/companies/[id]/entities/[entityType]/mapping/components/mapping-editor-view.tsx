@@ -20,6 +20,7 @@ import {
   entityLabel,
 } from '../../../../../../components/autocount-meta';
 import { MappingEditorBody } from './mapping-editor-body';
+import { useMappingResetAction } from './mapping-reset-action';
 import { useMappingDraft } from './use-mapping-draft';
 
 export interface MappingEditorViewProps {
@@ -38,9 +39,17 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
   const { can } = useCan();
   const form = useForm({ mode: 'onTouched' });
   const { detail } = useAutocountCompany(companyId);
-  const { view, isLoading, notFound, saveError, save, testFormula, simulate } =
+  const { view, isLoading, notFound, saveError, save, testFormula, simulate, applyView } =
     useAutocountMapping(companyId, entityType);
   const draft = useMappingDraft(view);
+  // The SAME action + dialog the DB task editor's Mapping tab mounts
+  // (AC-12-27) - one definition, two surfaces.
+  const mappingReset = useMappingResetAction<AutocountMappingRow>({
+    companyId,
+    entityType,
+    hasPreset: Boolean(view?.hasPreset),
+    onApplied: applyView,
+  });
 
   const onSave = useCallback(async (): Promise<boolean> => {
     const problem = draft.validate();
@@ -94,7 +103,14 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
         },
       ],
       initialTabId: 'mapping',
-      actions: [],
+      // sprint-5/12 (Group B, AC-12-21) - "Reset to preset" on the SAME
+      // ActionMenu surface every other record action lives on. `hasPreset`
+      // is server-derived (D5) - never guessed from the entity type, so an
+      // entity with no registered preset never sees this item at all
+      // (foolproof-UI). The shell's own dirty-guard already keeps this menu
+      // from rendering while the operator is mid-edit (`!editing` gate,
+      // `resource-form.tsx`).
+      actions: [mappingReset.action],
       actionRows: [],
       editable: true,
       editPermission: AC_COMPANIES_MANAGE,
@@ -102,7 +118,19 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
       onSave,
       onCancel: draft.reset,
     };
-  }, [can, companyId, detail, draft, entityType, onSave, saveError, simulate, testFormula, view]);
+  }, [
+    can,
+    companyId,
+    detail,
+    draft,
+    entityType,
+    mappingReset.action,
+    onSave,
+    saveError,
+    simulate,
+    testFormula,
+    view,
+  ]);
 
   if (isLoading && !view) {
     return (
@@ -132,6 +160,12 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
       <Form {...form}>
         <ResourceForm config={config} />
       </Form>
+      {/* AC-12-23 - the table re-renders from the view the APPLY returned
+          (`applyView`), never a second GET: the reset response already IS the
+          fresh mapping, and a refetch would leave the pre-reset rows on screen
+          for a round trip. `useMappingDraft` re-syncs off the new view object
+          exactly as it does after a save. */}
+      {mappingReset.dialog}
     </Container>
   );
 }

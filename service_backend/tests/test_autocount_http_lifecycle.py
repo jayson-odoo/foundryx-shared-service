@@ -474,8 +474,16 @@ def test_extract_and_map_dispatches_http_api_source_never_sql_engine(db, monkeyp
         # sprint-5/10 - the live wrapper carries a `Desc2` key on every item
         # row (null when empty, keys uniform across rows); this stub now
         # matches that shape rather than omitting the key entirely.
+        # sprint-5/12 (owner ruling 2026-09-22) - `IsActive` added: a seeded
+        # mapping now takes `is_required` from `mapping_catalog` (the SAME
+        # source `replace_mapping` has always used), so `is_active` is a
+        # REQUIRED row from the first save rather than only after the
+        # operator's first Save, and a record missing it is rejected by the
+        # engine. Every live `/itembypage` row carries `IsActive`; this stub
+        # omitted it.
         return httpx.Response(
-            200, json=[{"ItemCode": "A1", "Description": "Item A1", "Desc2": None}]
+            200,
+            json=[{"ItemCode": "A1", "Description": "Item A1", "Desc2": None, "IsActive": "T"}],
         )
 
     stub_transport = httpx.Client(transport=httpx.MockTransport(handler))

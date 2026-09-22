@@ -44,6 +44,14 @@ export interface UseAutocountMappingResult {
     record: Record<string, unknown>,
     rows?: AutocountMappingWriteRow[],
   ) => Promise<AutocountSimulateResult>;
+  /**
+   * Adopt a view the SERVER just returned, with no refetch (sprint-5/12,
+   * AC-12-23): "Reset to preset" answers the fresh mapping in its apply
+   * response, so re-requesting the same rows would only add a round trip and
+   * a window where the table still shows the pre-reset shape. Same setter
+   * `save` already uses for its own response - not a second state path.
+   */
+  applyView: (view: AutocountMappingView) => void;
   reload: () => void;
 }
 
@@ -63,6 +71,11 @@ export function useAutocountMapping(
   const [reloadKey, setReloadKey] = useState(0);
 
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
+
+  const applyView = useCallback((next: AutocountMappingView) => {
+    setView(next);
+    setNotFound(false);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -128,6 +141,7 @@ export function useAutocountMapping(
     save,
     testFormula,
     simulate,
+    applyView,
     reload,
   };
 }

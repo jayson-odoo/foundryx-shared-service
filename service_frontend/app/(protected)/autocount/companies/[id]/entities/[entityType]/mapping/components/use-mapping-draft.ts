@@ -222,7 +222,9 @@ export function useMappingDraft(view: AutocountMappingView | null): UseMappingDr
 
   const toWrite = useCallback(
     (rows: MappingEditableRow[], scope: 'header' | 'line'): AutocountMappingWriteRow[] => {
-      const acFields = scope === 'header' ? headerAcFields : lineAcFields;
+      // No `acFields` read here any more (AC-12-26) - the write is a pure
+      // projection of the draft rows, which is the whole point: nothing
+      // about the CURRENT preview may change what a save sends.
       return rows.map((r) => {
         const sourcePath = r.sourcePath.trim();
         return {
@@ -231,19 +233,24 @@ export function useMappingDraft(view: AutocountMappingView | null): UseMappingDr
           formula: r.formula,
           sorentoField: r.sorentoField,
           scope,
-          // B1 (final review round) - must round-trip or a backfill-disabled
-          // off-preview row gets silently re-enabled on save (re-triggers the
-          // S1 preview-column gate). Final reviewer pass: OR in a fresh
-          // resolution check too - a row disabled via onChangeRow's revive
-          // path already flips isEnabled locally, but a row that's STILL
-          // disabled in the draft (e.g. the query itself was repaired
-          // between loads, never touched via onChangeRow) revives here at
-          // save time the instant its column returns to the preview.
-          isEnabled: r.isEnabled || acFields.includes(sourcePath),
+          //     !!  SAVE NEVER AUTO-ENABLES A ROW (AC-12-26).  !!
+          // The stored value, verbatim. sprint-5/02 B1 used to OR in
+          // `acFields.includes(sourcePath)` so a row disabled because its
+          // column had vanished revived the instant the column came back.
+          // That is an ambiguous auto-derived action (PRINCIPLES
+          // foolproof-UI) now that a row can be disabled for a SECOND
+          // reason: a preset withholding it. It silently re-enabled
+          // `uom_code` on every save and started sending it - exactly what
+          // AC-10-74 withholds it to prevent - and no surface said so.
+          // The B1 case is served explicitly instead: the row's own
+          // "Enabled" switch (AC-12-25), or re-picking its source column
+          // (`onChangeRow`, below), both of which are the operator acting
+          // on THAT row.
+          isEnabled: r.isEnabled,
         };
       });
     },
-    [headerAcFields, lineAcFields],
+    [],
   );
 
   const writeRows = useCallback((): AutocountMappingWriteRow[] => [

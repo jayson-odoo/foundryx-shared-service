@@ -35,8 +35,8 @@ const PROVENANCE: AutocountMappingRow[] = [
 
 function rows(): MappingEditableRow[] {
   return [
-    { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code' },
-    { sourcePath: 'CompanyName', transform: 'string', formula: null, sorentoField: 'name' },
+    { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code', isEnabled: true },
+    { sourcePath: 'CompanyName', transform: 'string', formula: null, sorentoField: 'name', isEnabled: true },
   ];
 }
 
@@ -66,7 +66,7 @@ describe('unmappedRequiredFields', () => {
   it('is empty when every required field is mapped', () => {
     const full = [
       ...rows(),
-      { sourcePath: 'IsActive', transform: 't_f_bool', formula: null, sorentoField: 'is_active' },
+      { sourcePath: 'IsActive', transform: 't_f_bool', formula: null, sorentoField: 'is_active', isEnabled: true },
     ];
     expect(unmappedRequiredFields(full, SORENTO)).toEqual([]);
   });
@@ -118,11 +118,11 @@ describe('MappingTable edit mode', () => {
 
   it('disables Add field once every accepted target is used', () => {
     const full = [
-      { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code' },
-      { sourcePath: 'CompanyName', transform: 'string', formula: null, sorentoField: 'name' },
-      { sourcePath: 'IsActive', transform: 't_f_bool', formula: null, sorentoField: 'is_active' },
-      { sourcePath: 'EmailAddress', transform: 'string', formula: null, sorentoField: 'email' },
-      { sourcePath: 'Mobile', transform: 'string', formula: null, sorentoField: 'phone_number' },
+      { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code', isEnabled: true },
+      { sourcePath: 'CompanyName', transform: 'string', formula: null, sorentoField: 'name', isEnabled: true },
+      { sourcePath: 'IsActive', transform: 't_f_bool', formula: null, sorentoField: 'is_active', isEnabled: true },
+      { sourcePath: 'EmailAddress', transform: 'string', formula: null, sorentoField: 'email', isEnabled: true },
+      { sourcePath: 'Mobile', transform: 'string', formula: null, sorentoField: 'phone_number', isEnabled: true },
     ];
     renderTable(true, { rows: full });
     expect(screen.getByRole('button', { name: /add field/i })).toBeDisabled();
@@ -148,6 +148,7 @@ describe('MappingTable edit mode', () => {
   it('never offers formula mode for a list-transform row (sprint-5/06 review nit, foolproof-UI)', () => {
     const listRow: MappingEditableRow = {
       sourcePath: 'FromSODocList', transform: 'string_list', formula: null, sorentoField: 'from_so_numbers',
+      isEnabled: true,
     };
     renderTable(true, { rows: [...rows(), listRow] });
     // 3 rows total; only the 2 non-list rows offer a "Build formula" button.
@@ -159,7 +160,7 @@ describe('MappingTable edit mode', () => {
 describe('MappingTable transform picker - ref-preset filtering (S5 review BLOCKER 2)', () => {
   it('offers ONLY the matching ref preset for a *_ref field row', () => {
     renderTable(true, {
-      rows: [{ sourcePath: 'CustomerCode', transform: 'ref_customer', formula: null, sorentoField: 'customer_ref' }],
+      rows: [{ sourcePath: 'CustomerCode', transform: 'ref_customer', formula: null, sorentoField: 'customer_ref', isEnabled: true }],
       sorentoFields: [{ field: 'customer_ref', required: false }],
     });
     fireEvent.click(screen.getByRole('combobox', { name: 'Transform for row 1' }));
@@ -185,7 +186,7 @@ describe('MappingTable status seed formula (S5 review SHOULD-FIX 4c - a VALUE, n
   it('pre-fills the boolean seed when the target is status on a document entity and the source column is boolean', () => {
     const onChangeRow = vi.fn();
     renderTable(true, {
-      rows: [{ sourcePath: 'IsCancelled', transform: 'string', formula: null, sorentoField: '' }],
+      rows: [{ sourcePath: 'IsCancelled', transform: 'string', formula: null, sorentoField: '', isEnabled: true }],
       sorentoFields: DOC_SORENTO,
       entityType: 'sales_order',
       columnTypes: { IsCancelled: 'boolean' },
@@ -206,7 +207,7 @@ describe('MappingTable status seed formula (S5 review SHOULD-FIX 4c - a VALUE, n
   it('never overwrites a formula the operator already set', () => {
     const onChangeRow = vi.fn();
     renderTable(true, {
-      rows: [{ sourcePath: 'IsCancelled', transform: 'string', formula: 'value', sorentoField: '' }],
+      rows: [{ sourcePath: 'IsCancelled', transform: 'string', formula: 'value', sorentoField: '', isEnabled: true }],
       sorentoFields: DOC_SORENTO,
       entityType: 'sales_order',
       columnTypes: { IsCancelled: 'boolean' },
@@ -220,7 +221,7 @@ describe('MappingTable status seed formula (S5 review SHOULD-FIX 4c - a VALUE, n
   it('leaves the formula empty when the source column is not boolean-typed', () => {
     const onChangeRow = vi.fn();
     renderTable(true, {
-      rows: [{ sourcePath: 'StatusText', transform: 'string', formula: null, sorentoField: '' }],
+      rows: [{ sourcePath: 'StatusText', transform: 'string', formula: null, sorentoField: '', isEnabled: true }],
       sorentoFields: DOC_SORENTO,
       entityType: 'sales_order',
       columnTypes: { StatusText: 'string' },
@@ -241,6 +242,7 @@ describe('MappingTable formula display (AC-16-10)', () => {
           transform: 't_f_bool',
           formula: 'if(value == "T", true, false)',
           sorentoField: 'is_active',
+          isEnabled: true,
         },
       ],
     });
@@ -250,7 +252,7 @@ describe('MappingTable formula display (AC-16-10)', () => {
 
   it('keeps a passthrough row simple - preset label, no formula clutter', () => {
     renderTable(false, {
-      rows: [{ sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code' }],
+      rows: [{ sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code', isEnabled: true }],
     });
     expect(screen.getByText('Text')).toBeInTheDocument();
   });
@@ -284,8 +286,8 @@ describe('column source mode (plan 22 S2, AC-22-09)', () => {
 describe('column mode - disabled/seeded rows (sprint-5/02, AC-02-21)', () => {
   function rowsWithStaleSource(): import('./mapping-table').MappingEditableRow[] {
     return [
-      { sourcePath: 'GoneColumn', transform: 'string', formula: null, sorentoField: 'code' },
-      { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'name' },
+      { sourcePath: 'GoneColumn', transform: 'string', formula: null, sorentoField: 'code', isEnabled: true },
+      { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'name', isEnabled: true },
     ];
   }
 
@@ -315,7 +317,7 @@ describe('column mode - disabled/seeded rows (sprint-5/02, AC-02-21)', () => {
     render(
       <MappingTable
         editing
-        rows={[{ sourcePath: '', transform: 'string', formula: null, sorentoField: 'code' }]}
+        rows={[{ sourcePath: '', transform: 'string', formula: null, sorentoField: 'code', isEnabled: true }]}
         provenanceRows={[]}
         sorentoFields={SORENTO}
         acFields={['AccNo']}
@@ -354,7 +356,7 @@ describe('column mode - disabled/seeded rows (sprint-5/02, AC-02-21)', () => {
     render(
       <MappingTable
         editing={false}
-        rows={[{ sourcePath: 'CompanyName', transform: 'string', formula: null, sorentoField: 'code' }]}
+        rows={[{ sourcePath: 'CompanyName', transform: 'string', formula: null, sorentoField: 'code', isEnabled: true }]}
         provenanceRows={[]}
         sorentoFields={SORENTO}
         acFields={['AccNo', 'CompanyName']}
@@ -383,5 +385,72 @@ describe('AC-DLA-56 (T7): migrated off the raw <table> onto DataGrid', () => {
   it('shows the "no rows" message via the DataGrid empty state', () => {
     renderTable(true, { rows: [] });
     expect(screen.getByText('No deliverable fields mapped yet.')).toBeInTheDocument();
+  });
+});
+
+// sprint-5/12 (AC-12-25) - the per-row Enabled switch + a visible disabled
+// state. Before this the table never rendered `isEnabled` at all, so a row a
+// preset withholds (`uom_code`, AC-10-74 - its column IS previewed) looked
+// like an ordinary delivered row.
+describe('Enabled column (sprint-5/12, AC-12-25)', () => {
+  function withEnabled(isEnabled: boolean): MappingEditableRow[] {
+    return [
+      { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'code', isEnabled },
+    ];
+  }
+
+  it('a disabled row whose column IS present still reads Disabled', () => {
+    // The `uom_code` shape exactly: `AccNo` is in `acFields`, so the stale
+    // badge must NOT show - only the Disabled one.
+    renderTable(false, { rows: withEnabled(false) });
+    expect(screen.getByText('Disabled')).toBeInTheDocument();
+    expect(screen.queryByText('Column not in query')).not.toBeInTheDocument();
+  });
+
+  it('an enabled row carries no Disabled badge', () => {
+    renderTable(false, { rows: withEnabled(true) });
+    expect(screen.queryByText('Disabled')).not.toBeInTheDocument();
+  });
+
+  it('the switch is hidden outside edit mode and labelled by its Sorento field inside it', () => {
+    const { unmount } = renderTable(false, { rows: withEnabled(true) });
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+    unmount();
+
+    renderTable(true, { rows: withEnabled(true) });
+    expect(screen.getByRole('switch', { name: 'Send Code to Sorento' })).toBeInTheDocument();
+  });
+
+  it('toggling the switch patches ONLY isEnabled on that row', () => {
+    const onChangeRow = vi.fn();
+    renderTable(true, { rows: withEnabled(false), onChangeRow });
+    fireEvent.click(screen.getByRole('switch', { name: 'Send Code to Sorento' }));
+    expect(onChangeRow).toHaveBeenCalledWith(0, { isEnabled: true });
+  });
+
+  it('switching a row off patches isEnabled false (the AC-10-74 re-withhold path)', () => {
+    const onChangeRow = vi.fn();
+    renderTable(true, { rows: withEnabled(true), onChangeRow });
+    fireEvent.click(screen.getByRole('switch', { name: 'Send Code to Sorento' }));
+    expect(onChangeRow).toHaveBeenCalledWith(0, { isEnabled: false });
+  });
+
+  it('a row that is BOTH stale and disabled shows both badges', () => {
+    render(
+      <MappingTable
+        editing
+        rows={[{ sourcePath: 'GoneColumn', transform: 'string', formula: null, sorentoField: 'code', isEnabled: false }]}
+        provenanceRows={[]}
+        sorentoFields={SORENTO}
+        acFields={['AccNo']}
+        sourceMode="column"
+        onChangeRow={vi.fn()}
+        onAddRow={vi.fn()}
+        onRemoveRow={vi.fn()}
+        onBuildRow={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Disabled')).toBeInTheDocument();
+    expect(screen.getByText('Column not in query')).toBeInTheDocument();
   });
 });

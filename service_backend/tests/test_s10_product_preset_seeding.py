@@ -94,7 +94,7 @@ def db(session_factory):
         session.close()
 
 
-def test_first_clean_save_seeds_nine_mapping_rows_for_product(db):
+def test_first_clean_save_seeds_eight_mapping_rows_for_product(db):
     company, conn = _open_company(db)
     EtlService(db).update_task(
         DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, _http_raw(connectionId=conn.id)
@@ -105,10 +105,17 @@ def test_first_clean_save_seeds_nine_mapping_rows_for_product(db):
         .all()
     )
     pairs = {(r.source_path, r.canonical_field) for r in rows}
-    assert len(rows) == 9, sorted(pairs)
+    # sprint-5/12 (BL-SS-260, owner ruling 2026-09-22): 8, not 9 - the
+    # `Discontinued -> is_discontinued` row is GONE. Sorento derives
+    # "discontinued" from the `****` prefix of the description TEXT (plan 10
+    # D22), the field is absent from `CanonicalProduct.SINK_FIELDS` and is
+    # never sent, so seeding a row for it only produced one the save gate
+    # refuses on a PUT and every ordinary Save swept away.
+    assert len(rows) == 8, sorted(pairs)
     assert ("BaseUOMPrice", "list_price") in pairs
     assert ("Description", "description") in pairs
     assert ("Desc2", "description") not in pairs
+    assert ("Discontinued", "is_discontinued") not in pairs
 
 
 def test_first_clean_save_seeds_uom_code_row_disabled_despite_no_preview(db):

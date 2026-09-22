@@ -183,19 +183,58 @@ describe('onChangeRow revives a disabled row once its source column resolves (B1
     expect(revived?.isEnabled).toBe(true);
   });
 
-  it('writeRowsForSave() also revives a row STILL disabled in the draft once its sourcePath already resolves - the query was repaired without touching onChangeRow', () => {
+  it('writeRowsForSave() does NOT revive a row STILL disabled in the draft, even when its sourcePath resolves (AC-12-26)', () => {
+    // sprint-5/12 (AC-12-26) - THE ASSERTION IS INVERTED, deliberately.
+    // This case used to pin the sprint-5/02 B1 save-time revive: a row
+    // whose column had returned to the preview was re-enabled by the act of
+    // saving. That is an ambiguous auto-derived action once a row can be
+    // disabled for a SECOND reason - a preset withholding it - and it
+    // silently re-enabled `uom_code` on every save, which AC-10-74
+    // withholds precisely to prevent. A save now sends the stored flag
+    // verbatim; the operator turns the row on with its own Enabled switch
+    // (AC-12-25) or by re-picking the source column (the B1-b test above,
+    // still green).
     const { result } = renderHook(() => useMappingDraft(documentView([
-      // 'discount' IS in documentView's lineAcFields - the column returned
-      // to the preview (e.g. the saved query itself was fixed) - but this
-      // row was loaded straight from the view, never revived via
-      // onChangeRow, so isEnabled is still false in the draft.
       lineRow({
         sourcePath: 'discount', sorentoField: 'discount', canonicalField: 'discount',
         isEnabled: false,
       }),
     ])));
     const body = result.current.writeRowsForSave();
-    const revived = body.lineRows?.find((r) => r.sorentoField === 'discount');
-    expect(revived?.isEnabled).toBe(true);
+    const written = body.lineRows?.find((r) => r.sorentoField === 'discount');
+    expect(written?.isEnabled).toBe(false);
+  });
+
+  it('writeRowsForSave() sends an operator-enabled row as enabled (AC-12-25/26)', () => {
+    const { result } = renderHook(() => useMappingDraft(documentView([
+      lineRow({
+        sourcePath: 'discount', sorentoField: 'discount', canonicalField: 'discount',
+        isEnabled: false,
+      }),
+    ])));
+    const idx = result.current.line?.rows.findIndex((r) => r.sorentoField === 'discount') ?? -1;
+    act(() => {
+      // Exactly what the row's Enabled switch dispatches - nothing else.
+      result.current.line?.onChangeRow(idx, { isEnabled: true });
+    });
+    const body = result.current.writeRowsForSave();
+    expect(body.lineRows?.find((r) => r.sorentoField === 'discount')?.isEnabled).toBe(true);
+  });
+
+  it('toggling Enabled OFF round-trips as false even when the column is previewed (AC-12-26)', () => {
+    // The `uom_code` shape: the column IS in the preview, the operator
+    // switches the row off, and the save must respect that.
+    const { result } = renderHook(() => useMappingDraft(documentView([
+      lineRow({
+        sourcePath: 'discount', sorentoField: 'discount', canonicalField: 'discount',
+        isEnabled: true,
+      }),
+    ])));
+    const idx = result.current.line?.rows.findIndex((r) => r.sorentoField === 'discount') ?? -1;
+    act(() => {
+      result.current.line?.onChangeRow(idx, { isEnabled: false });
+    });
+    const body = result.current.writeRowsForSave();
+    expect(body.lineRows?.find((r) => r.sorentoField === 'discount')?.isEnabled).toBe(false);
   });
 });

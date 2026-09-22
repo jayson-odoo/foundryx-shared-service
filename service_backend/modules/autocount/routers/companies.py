@@ -4,7 +4,7 @@ No DB query and no raw SQL lives here (code-review hard-fail). Every handler
 takes the tenant from the authenticated user - NEVER from client input - and
 hands off to a service.
 """
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
@@ -35,6 +35,10 @@ from ..schemas import (
     EtlTaskUpdate,
     FormulaTestRequest,
     FormulaTestResponse,
+    MappingResetPreview,
+    MappingResetRemovedRow,
+    MappingResetRequest,
+    MappingResetRow,
     MappingRowOut,
     MappingUpdateRequest,
     MappingUpdateRow,
@@ -60,6 +64,7 @@ from ..services import (
     EtlStateError,
     EtlTaskView,
     EtlValidationError,
+    MappingResetPreviewView,
     MappingView,
     MappingWriteRow,
     PreviewUnavailable,
@@ -313,6 +318,7 @@ def _mapping_response(view: MappingView) -> MappingViewResponse:
         acFields=list(view.ac_fields),
         lineSorentoFields=[SorentoFieldOut.model_validate(f) for f in view.line_sorento_fields],
         lineAcFields=list(view.line_ac_fields),
+        hasPreset=view.has_preset,
     )
 
 
@@ -408,6 +414,50 @@ def replace_entity_mapping(
     except AutocountServiceError as exc:
         _raise(exc)
     return _mapping_response(view)
+
+
+@router.post(
+    "/{company_id}/entities/{entity_type}/mapping/reset-preset",
+    # Two shapes, one route, discriminated by the REQUEST (plan §2.2): a
+    # dry run answers the diff, an apply answers the fresh mapping view. A
+    # `Union` response_model would make FastAPI re-validate one against the
+    # other; the handler returns an already-built model instead.
+    response_model=None,
+)
+def reset_entity_mapping_to_preset(
+    company_id: str,
+    entity_type: str,
+    body: MappingResetRequest,
+    current_user: User = Depends(require_permission("autocount.companies.manage")),
+    db: Session = Depends(get_db),
+) -> Union[MappingResetPreview, MappingViewResponse]:
+    """Preview or apply a whole replacement of the entity's HEADER mapping
+    with its registered preset (sprint-5/12, AC-12-10..15).
+
+    ``dryRun: true`` (the default) computes the diff and writes NOTHING;
+    ``dryRun: false`` replaces the header rows in ONE transaction and returns
+    the fresh mapping view. Line-scope rows, provenance rows and every
+    ``ac_entity_config`` column are untouched. Reuses
+    ``autocount.companies.manage`` - the same "configure the company"
+    authority the rest of this editor rides, so no new permission needs a
+    grant sweep. An entity with no registered preset for its source type is a
+    422 naming that; another tenant's company is a uniform 404.
+    """
+    try:
+        result = CompanyService(db).reset_mapping_to_preset(
+            current_user.tenant_id, company_id, entity_type, dry_run=body.dryRun
+        )
+    except AutocountServiceError as exc:
+        _raise(exc)
+    if isinstance(result, MappingResetPreviewView):
+        return MappingResetPreview(
+            label=result.label,
+            rows=[MappingResetRow.model_validate(row) for row in result.rows],
+            removed=[
+                MappingResetRemovedRow.model_validate(row) for row in result.removed
+            ],
+        )
+    return _mapping_response(result)
 
 
 @router.get(

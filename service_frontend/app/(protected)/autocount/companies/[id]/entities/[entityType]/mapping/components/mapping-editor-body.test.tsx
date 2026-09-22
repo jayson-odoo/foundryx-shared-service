@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import { describe, expect, it } from 'vitest';
+import { validateFormula } from '@/lib/autocount-formula';
 import type { AutocountSorentoField } from '@/types/autocount';
 import { MappingEditorBody } from './mapping-editor-body';
 import type { MappingEditableRow } from './mapping-table';
@@ -59,12 +60,23 @@ function scope(rows: MappingEditableRow[], sorentoFields: AutocountSorentoField[
 
 /** The harness: a real `useState` for the builder target/simulator so the
  * "f" button's click genuinely flips the formula builder open, everything
- * else a static mock of `UseMappingDraftResult`. */
-function Harness({ isDocument, editing = true }: { isDocument: boolean; editing?: boolean }) {
+ * else a static mock of `UseMappingDraftResult`.
+ * `masterAcFields` (sprint-5/12, AC-12-01/02) overrides the header scope's
+ * `acFields` for a master (`isDocument={false}`) harness only - the
+ * document branch is untouched (still fixed at `['DocNo']`). */
+function Harness({
+  isDocument,
+  editing = true,
+  masterAcFields,
+}: {
+  isDocument: boolean;
+  editing?: boolean;
+  masterAcFields?: string[];
+}) {
   const [builderTarget, setBuilderTarget] = useState<MappingBuilderTarget | null>(null);
   const [simulatorOpen, setSimulatorOpen] = useState(false);
 
-  const header = scope(headerRows(), HEADER_SORENTO, ['DocNo']);
+  const header = scope(headerRows(), HEADER_SORENTO, isDocument ? ['DocNo'] : (masterAcFields ?? ['DocNo']));
   const line = isDocument ? scope(lineRows(), LINE_SORENTO, ['DtlKey']) : null;
 
   const draft: UseMappingDraftResult = {
@@ -145,5 +157,57 @@ describe('MappingEditorBody (sprint-5/02, AC-02-18/20/21)', () => {
     // only the transform preset picker + the "f" build button.
     expect(screen.queryByLabelText('Formula expression')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Build formula for row 1')).toBeInTheDocument();
+  });
+});
+
+describe('MappingEditorBody - master entity Source columns (sprint-5/12, AC-12-01/02/05)', () => {
+  it('AC-12-01: a master row with a non-empty acFields gets ONE "Source columns" group', () => {
+    render(<Harness isDocument={false} masterAcFields={['ItemCode', 'Description', 'Desc2']} />);
+    fireEvent.click(screen.getByLabelText('Build formula for row 1'));
+    expect(screen.getByText('Source columns')).toBeInTheDocument();
+    // Every acFields entry is offered as a pickable token (label === token,
+    // so it renders twice: the item's label span AND its token `<code>`).
+    expect(screen.getAllByText('Desc2').length).toBeGreaterThan(0);
+  });
+
+  it('AC-12-02: a master row with an EMPTY acFields falls back to the single-value model, no group, no hint copy', () => {
+    render(<Harness isDocument={false} masterAcFields={[]} />);
+    fireEvent.click(screen.getByLabelText('Build formula for row 1'));
+    expect(screen.queryByText('Source columns')).not.toBeInTheDocument();
+    // No instructional copy explaining the absence (foolproof-UI, AC-12-02).
+    expect(screen.queryByText(/never previewed/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/preview the/i)).not.toBeInTheDocument();
+  });
+
+  it('AC-12-05: the sample Test tab is hidden once Source columns are offered, shown otherwise', () => {
+    const { unmount } = render(<Harness isDocument={false} masterAcFields={['ItemCode']} />);
+    fireEvent.click(screen.getByLabelText('Build formula for row 1'));
+    expect(screen.queryByText('Testing')).not.toBeInTheDocument();
+    unmount();
+
+    render(<Harness isDocument={false} masterAcFields={[]} />);
+    fireEvent.click(screen.getByLabelText('Build formula for row 1'));
+    expect(screen.getByText('Testing')).toBeInTheDocument();
+  });
+
+  it('AC-12-01: the client validator accepts the Desc2 join once the Source columns are the known tokens, and rejects it without them', () => {
+    const join = 'trim(if(default(Desc2, "") != "", concat(Description, " ", Desc2), Description))';
+    // The tokens the "Source columns" group publishes ARE `acFields` - the
+    // same set the server's save gate builds `known_vars` from (D2), so the
+    // client can never accept a name the server rejects, or the reverse.
+    expect(validateFormula(join, ['ItemCode', 'Description', 'Desc2'])).toBeNull();
+    // The pre-plan behaviour a master row had: no groups, so `Desc2` reads
+    // as an unknown name (AC-12-02's unchanged fallback).
+    expect(validateFormula(join, [])).not.toBeNull();
+    // A column the task has NOT previewed stays rejected even with a group.
+    expect(validateFormula(join.replaceAll('Desc2', 'Desc3'), ['Description', 'Desc2'])).not.toBeNull();
+  });
+
+  it('a document row keeps its Header columns / Line aggregates groups byte-identically (unaffected)', () => {
+    render(<Harness isDocument />);
+    fireEvent.click(screen.getAllByLabelText('Build formula for row 1')[0]);
+    expect(screen.getByText('Header columns')).toBeInTheDocument();
+    expect(screen.getByText('Line aggregates')).toBeInTheDocument();
+    expect(screen.queryByText('Source columns')).not.toBeInTheDocument();
   });
 });

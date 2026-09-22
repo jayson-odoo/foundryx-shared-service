@@ -329,6 +329,10 @@ class MappingViewResponse(ApiModel):
     # non-document entity (master/GRN have no line scope).
     lineSorentoFields: List[SorentoFieldOut] = []
     lineAcFields: List[str] = []
+    # sprint-5/12 (AC-12-21, D5) - does a "Reset to preset" action have
+    # anything to apply? Derived server-side by the SAME resolver the reset
+    # uses (AC-12-11), never inferred from the entity type.
+    hasPreset: bool = False
 
 
 class MappingUpdateRow(ApiModel):
@@ -381,6 +385,60 @@ class MappingUpdateRequest(ApiModel):
 
     rows: List[MappingUpdateRow]
     lineRows: Optional[List[MappingUpdateRow]] = None
+
+
+# ── reset to preset (sprint-5/12 §2.2, AC-12-10..15) ─────────────────────────
+
+
+class MappingResetRequest(ApiModel):
+    """``POST .../mapping/reset-preset`` body.
+
+    ``dryRun`` defaults to True so a malformed/empty body previews rather
+    than writes - the foolproof default for a whole-mapping replace.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    dryRun: bool = True
+
+
+class MappingResetRow(ApiModel):
+    """One preset row the reset WOULD write, with its diff classification."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    canonicalField: str = Field(validation_alias="canonical_field")
+    sourcePath: str = Field(validation_alias="source_path")
+    transform: str
+    formula: Optional[str] = None
+    enabled: bool
+    isRequired: bool = Field(validation_alias="is_required")
+    #: ``added`` | ``changed`` | ``unchanged`` (AC-12-12).
+    change: str
+    # Set ONLY when ``enabled`` is False, and names the ACTUAL cause (UAC
+    # amendment 2026-09-22): "column not returned by the source" or
+    # "withheld by the preset".
+    disabledReason: Optional[str] = Field(default=None, validation_alias="disabled_reason")
+
+
+class MappingResetRemovedRow(ApiModel):
+    """One CURRENT header row the preset does not carry - dropped by the
+    reset, shown under the dialog's "Removed" section first."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    canonicalField: str = Field(validation_alias="canonical_field")
+    sourcePath: str = Field(validation_alias="source_path")
+    transform: str
+    formula: Optional[str] = None
+
+
+class MappingResetPreview(ApiModel):
+    """``dryRun=true``'s answer (AC-12-12) - the exact diff, nothing written."""
+
+    label: str
+    rows: List[MappingResetRow]
+    removed: List[MappingResetRemovedRow]
 
 
 # ── formula catalog + simulators (plan 16 §3, AC-16-13/21/30) ─────────────────

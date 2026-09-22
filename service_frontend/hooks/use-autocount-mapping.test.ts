@@ -74,6 +74,19 @@ describe('useAutocountMapping', () => {
     expect(result.current.view?.acFields).toContain('CompanyName');
   });
 
+  it('applyView adopts a server-returned view without a refetch (AC-12-23)', async () => {
+    const { result } = renderHook(() => useAutocountMapping('c1', 'supplier'));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(getMapping).toHaveBeenCalledTimes(1);
+
+    const fresh = { ...VIEW, acFields: ['AccNo', 'Desc2'] };
+    act(() => result.current.applyView(fresh));
+
+    expect(result.current.view).toEqual(fresh);
+    // The whole point: the reset response IS the fresh mapping - no second GET.
+    expect(getMapping).toHaveBeenCalledTimes(1);
+  });
+
   it('surfaces a 422 guard rejection inline and returns false (AC-15-44)', async () => {
     updateMapping.mockRejectedValue(
       new ApiError("'bogus' is not a Sorento field accepted for supplier.", 422),

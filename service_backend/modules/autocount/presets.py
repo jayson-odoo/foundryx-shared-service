@@ -41,7 +41,13 @@ from .canonical.masters import (
     ENTITY_WAREHOUSE,
 )
 from .mapping import DEFAULT_STATUS_FORMULA, SCOPE_HEADER, SCOPE_LINE
-from .models import AcFieldMapping
+from .mapping_catalog import (
+    accepted_fields,
+    line_accepted_fields,
+    line_required_field_names,
+    required_field_names,
+)
+from .models import SOURCE_IMPL_AUTOCOUNT_HTTP, AcEntityConfig, AcFieldMapping
 
 
 @dataclass(frozen=True)
@@ -499,6 +505,121 @@ DOCUMENT_PRESETS: Dict[str, DocumentPreset] = {
 }
 
 
+# sprint-5/12 (AC-12-12/15, UAC amendment 2026-09-22) - the TWO distinct
+# causes a preset row lands disabled. Never one string for both: the reset
+# dialog must not tell an operator a column is missing when the preset is
+# simply withholding the row, because adding the lookup would change nothing.
+# Mirrored on the frontend by `services/autocount-service.mock.ts`.
+DISABLED_REASON_MISSING_COLUMN = "column not returned by the source"
+DISABLED_REASON_WITHHELD = "withheld by the preset"
+
+
+@dataclass(frozen=True)
+class PlannedRow:
+    """One preset row as ``_seed_rows`` WOULD create it (sprint-5/12, D1).
+
+    Pure: no DB, no session. ``reset_mapping_to_preset``'s dry run and the
+    seed itself both read this, so "would this row land enabled, and why
+    not" can never drift between the preview an operator approves and the
+    rows the apply writes.
+    """
+
+    spec: PresetField
+    is_enabled: bool
+    sort_order: int
+    #: ``None`` when the row lands ENABLED.
+    disabled_reason: Optional[str] = None
+    #: What ``ac_field_mapping.is_required`` gets - the CATALOG's answer, not
+    #: the preset's, whenever the catalog knows this entity (see
+    #: ``planned_is_required``).
+    is_required: bool = False
+
+
+def planned_is_required(
+    spec: PresetField, entity_type: Optional[str], scope: str
+) -> bool:
+    """Whether a seeded row is REQUIRED (sprint-5/12, owner ruling
+    2026-09-22).
+
+    ``mapping_catalog`` is the single source of truth: ``replace_mapping``
+    already writes ``is_required = target in required_field_names(entity)``
+    (``line_required_field_names`` for line scope), so deriving it the same
+    way here makes first-save seeding, a reset and an ordinary Save agree.
+    Before this, a seeded ``name``/``is_active`` row carried
+    ``is_required=False`` (the preset's own flag) while a Save rewrote it to
+    True, and the reset's dry run then reported those rows as ``changed``
+    forever with no visible difference in the dialog.
+
+    Falls back to ``PresetField.required`` only when the catalog has NO
+    entry for that (entity, scope) - e.g. GRN's deliberately empty accepted
+    set, where treating "no entry" as "nothing is required" would silently
+    drop a preset's own intent. ``entity_type=None`` (a caller with no
+    entity in hand) takes the same fallback.
+    """
+    if entity_type is None:
+        return spec.required
+    if scope == SCOPE_LINE:
+        catalog = line_accepted_fields(entity_type)
+        required = line_required_field_names(entity_type)
+    else:
+        catalog = accepted_fields(entity_type)
+        required = required_field_names(entity_type)
+    if not catalog:
+        return spec.required
+    return spec.canonical_field in required
+
+
+def plan_rows(
+    fields: Sequence[PresetField],
+    # A plain sequence of COLUMN NAMES (review round 1 nit - the annotation
+    # said ``Dict[str, str]`` while every live caller passes a list:
+    # ``_preset_available_columns``'s ``effective_result_columns(...)``,
+    # ``EtlService.update_task``'s stored ``result_columns``). ``None`` =
+    # never previewed.
+    available_columns: Optional[Sequence[str]],
+    *,
+    entity_type: Optional[str] = None,
+    scope: str = SCOPE_HEADER,
+    sort_start: int = 0,
+) -> List[PlannedRow]:
+    """The enable + required rules, split out of ``_seed_rows`` (sprint-5/12,
+    D1).
+
+    A column the task's ACTUAL query does not return lands disabled - still
+    an ordinary editable row, never omitted (AC-02-16). ``available_columns
+    =None`` (query never previewed) enables every row, matching "nothing
+    proven wrong yet", EXCEPT a row the preset itself withholds
+    (``PresetField.enabled=False``, AC-10-74's ``uom_code``), which is a
+    policy orthogonal to column availability.
+
+    The preset's own withholding wins the ``disabled_reason`` when BOTH
+    causes apply - configuring the missing column would not enable the row,
+    so naming it would send the operator down a dead end.
+
+    ``is_required`` comes from the mapping catalog (``planned_is_required``)
+    so a seeded row matches what a Save would write for the same field.
+    """
+    known = set(available_columns or ())
+    planned: List[PlannedRow] = []
+    for order, spec in enumerate(fields, start=sort_start):
+        column_known = available_columns is None or spec.source_path in known
+        reason: Optional[str] = None
+        if not spec.enabled:
+            reason = DISABLED_REASON_WITHHELD
+        elif not column_known:
+            reason = DISABLED_REASON_MISSING_COLUMN
+        planned.append(
+            PlannedRow(
+                spec=spec,
+                is_enabled=spec.enabled and column_known,
+                sort_order=order,
+                disabled_reason=reason,
+                is_required=planned_is_required(spec, entity_type, scope),
+            )
+        )
+    return planned
+
+
 def _seed_rows(
     db: Session,
     tenant_id: str,
@@ -506,13 +627,19 @@ def _seed_rows(
     entity_type: str,
     scope: str,
     fields: Sequence[PresetField],
-    available_columns: Optional[Dict[str, str]],
+    available_columns: Optional[Sequence[str]],
     *,
     sort_start: int = 0,
 ) -> int:
-    known = set(available_columns or {})
-    created = 0
-    for order, spec in enumerate(fields, start=sort_start):
+    planned = plan_rows(
+        fields,
+        available_columns,
+        entity_type=entity_type,
+        scope=scope,
+        sort_start=sort_start,
+    )
+    for row in planned:
+        spec = row.spec
         db.add(
             AcFieldMapping(
                 tenant_id=tenant_id,
@@ -523,21 +650,12 @@ def _seed_rows(
                 canonical_field=spec.canonical_field,
                 transform=spec.transform,
                 formula=spec.formula,
-                is_required=spec.required,
-                # A column the task's ACTUAL query does not return lands
-                # disabled - still an ordinary editable row, never omitted
-                # (AC-02-16) - `available_columns=None` (query never
-                # previewed) seeds every row enabled, matching "nothing
-                # proven wrong yet".
-                is_enabled=(
-                    spec.enabled
-                    and (available_columns is None or spec.source_path in known)
-                ),
-                sort_order=order,
+                is_required=row.is_required,
+                is_enabled=row.is_enabled,
+                sort_order=row.sort_order,
             )
         )
-        created += 1
-    return created
+    return len(planned)
 
 
 def seed_document_mapping(
@@ -546,8 +664,8 @@ def seed_document_mapping(
     company_id: str,
     entity_type: str,
     *,
-    header_columns: Optional[Dict[str, str]],
-    line_columns: Optional[Dict[str, str]],
+    header_columns: Optional[Sequence[str]],
+    line_columns: Optional[Sequence[str]],
     seed_header: bool = True,
     seed_line: bool = True,
 ) -> int:
@@ -698,6 +816,21 @@ PRODUCT_HTTP_PRESET = HttpPreset(
         # space, is NEVER collapsed) when `Desc2` is non-empty, else plain
         # `Description`. Sorento derives `is_discontinued`/L-W-H from this
         # TEXT, so parity is won here, not by a second code path.
+        #
+        #     !!  THIS ROW IS WHY THERE IS NO `Discontinued ->
+        #         is_discontinued` ROW (BL-SS-260, owner ruling
+        #         2026-09-22).  !!
+        # Sorento reads "discontinued" off the `****` prefix of the
+        # description TEXT this formula produces (plan 10 D22 + the Sorento
+        # addendum; 2,882 live `SRT` descriptions carry it, pinned by
+        # `test_s10_product_preset.py::test_description_starting_with_stars
+        # _passes_through_unchanged`). `is_discontinued` is therefore absent
+        # from `CanonicalProduct.SINK_FIELDS` and NEVER sent. Seeding a row
+        # for it produced a mapping row the save gate refuses on a PUT and
+        # every ordinary "Save mapping" silently swept away - a lie the
+        # operator had to discover. `CanonicalProduct` still DECLARES the
+        # field (staging/visibility, unchanged); only the preset row is
+        # gone.
         PresetField(
             "Description",
             "description",
@@ -716,7 +849,6 @@ PRODUCT_HTTP_PRESET = HttpPreset(
         # deliberately - one item on the push-flip checklist.
         PresetField("BaseUOM", "uom_code", "string", enabled=False),
         PresetField("IsActive", "is_active", "t_f_bool"),
-        PresetField("Discontinued", "is_discontinued", "t_f_bool"),
         # AC-10-59 (R5) - the pre-filled ItemUOM lookup's own alias, clamped
         # to 0 on a negative source price (a vendor sentinel, `-1.0`, not a
         # genuine price) as a VISIBLE, editable formula - never a coercion
@@ -896,7 +1028,7 @@ def seed_http_preset_mapping(
     company_id: str,
     entity_type: str,
     *,
-    columns: Optional[Dict[str, str]],
+    columns: Optional[Sequence[str]],
 ) -> int:
     """Seed an HTTP task's preset mapping rows on its first clean save
     (AC-08-16) - the SAME seed-if-absent contract as ``seed_document_mapping``
@@ -910,3 +1042,45 @@ def seed_http_preset_mapping(
     )
     db.flush()
     return created
+
+
+def resolve_preset_rows(
+    config: AcEntityConfig,
+) -> Optional[Tuple[str, Tuple[PresetField, ...]]]:
+    """The HEADER-scope preset for one task, or ``None`` when none is
+    registered (sprint-5/12, AC-12-11, D1/D5).
+
+    The rule is EXACTLY the one first-save seeding already follows, read off
+    the SAME two registries: an ``autocount_http`` task gets
+    ``HTTP_PRESETS[entity_type].rows`` (what ``seed_http_preset_mapping``
+    seeds), anything else gets ``DOCUMENT_PRESETS[entity_type].header``
+    (what ``seed_document_mapping`` seeds into ``SCOPE_HEADER``). So the
+    covered set is exactly TWO families, both honestly reset-able: the HTTP
+    presets (product/customer/warehouse/product_category/brand/
+    unit_of_measure/stock_balance) and the DOCUMENT presets (sales_order/
+    purchase_order/shipping_order, HEADER scope only - a reset never touches
+    a line row, AC-12-13/27).
+
+    Everything else answers ``None`` - the route turns that into a 422 and
+    ``MappingViewResponse.hasPreset`` into ``False``, so the UI never has to
+    guess "does this entity have a preset" from its entity type (D5: an HTTP
+    task and a DB task of the SAME entity can legitimately differ).
+
+    NOT a preset, deliberately: ``company_service._seed_mapping_rows``'s own
+    ``DEFAULT_MAPPINGS`` starter rows for ``goods_received_note``/
+    ``supplier``/``customer`` on a legacy ``autocount_read`` company. Those
+    are a one-off convenience seed with no registry entry here, so such a
+    task answers ``hasPreset=False``, the menu item never appears and a
+    hand-posted reset 422s. That is the SAFE direction: resetting to a table
+    this resolver does not own would silently overwrite an operator's rows
+    with a shape nothing else in this module treats as authoritative.
+
+    Row CONTENT lives in one place per source type (the registries above) and
+    the enable rule in one place for everyone (``plan_rows``) - the two
+    things D1 exists to keep from drifting.
+    """
+    if config.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP:
+        http_preset = HTTP_PRESETS.get(config.entity_type)
+        return (http_preset.label, http_preset.rows) if http_preset else None
+    document_preset = DOCUMENT_PRESETS.get(config.entity_type)
+    return (document_preset.label, document_preset.header) if document_preset else None

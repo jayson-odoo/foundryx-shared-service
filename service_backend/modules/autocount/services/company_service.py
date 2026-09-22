@@ -19,7 +19,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from cryptography.fernet import InvalidToken
 from sqlalchemy.exc import IntegrityError
@@ -94,6 +94,7 @@ from ..models import (
 # strategy and look like it worked.
 SOURCE_IMPLS = (SOURCE_IMPL_AUTOCOUNT_READ, SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP)
 from ..http_client import OpenProbeError, probe_open_connection
+from .. import presets
 from ..presets import HTTP_ENTITY_TYPES as _PRESET_HTTP_ENTITY_TYPES
 from ..provider import PROVIDER_KEY, auth_mode, client_from_connection, is_open_connection
 from ..repositories import (
@@ -475,6 +476,65 @@ class MappingView:
     # Empty for a non-document entity (master/GRN have no line scope).
     line_sorento_fields: List[SorentoFieldDef] = field(default_factory=list)
     line_ac_fields: List[str] = field(default_factory=list)
+    # sprint-5/12 (AC-12-21, D5) - whether a "Reset to preset" action has a
+    # preset to apply, answered by ``presets.resolve_preset_rows`` (the SAME
+    # resolver the reset itself uses, AC-12-11). Server-derived so the UI
+    # never infers it from the entity type.
+    has_preset: bool = False
+
+
+# ── mapping reset preview (sprint-5/12, AC-12-12) ────────────────────────────
+
+
+@dataclass
+class MappingResetRowView:
+    """One preset row's diff against the entity's CURRENT header mapping.
+
+    ``change`` is ``added`` (no current row for this canonical field),
+    ``changed`` (a current row exists and any of source / transform /
+    formula / enabled / required differs) or ``unchanged``.
+    ``disabled_reason`` is set ONLY when ``enabled`` is False and names the
+    ACTUAL cause (``presets.DISABLED_REASON_*``)."""
+
+    canonical_field: str
+    source_path: str
+    transform: str
+    formula: Optional[str]
+    enabled: bool
+    is_required: bool
+    change: str
+    disabled_reason: Optional[str] = None
+
+
+@dataclass
+class MappingResetRemovedRowView:
+    """One CURRENT header row the preset does not carry - dropped by the
+    reset, named in the preview first (R2's accepted trade)."""
+
+    canonical_field: str
+    source_path: str
+    transform: str
+    formula: Optional[str]
+
+
+@dataclass
+class MappingResetPreviewView:
+    """``dry_run=True``'s answer: the exact diff, having written nothing."""
+
+    label: str
+    rows: List[MappingResetRowView]
+    removed: List[MappingResetRemovedRowView]
+
+
+MAPPING_RESET_CHANGE_ADDED = "added"
+MAPPING_RESET_CHANGE_CHANGED = "changed"
+MAPPING_RESET_CHANGE_UNCHANGED = "unchanged"
+
+
+class MappingPresetNotRegistered(AutocountServiceError):
+    """No preset is registered for this (entity, source type) - a 422, never
+    a silent no-op (AC-12-10). Unreachable through the UI (the ActionMenu
+    item is gated on ``hasPreset``), reachable as a stale-view race."""
 
 
 #     !!  SF-1 (sprint-5/08 review round 2).  !!
@@ -1732,6 +1792,9 @@ class CompanyService:
             ac_fields=header_ac_fields,
             line_sorento_fields=line_sorento_fields,
             line_ac_fields=line_ac_fields,
+            has_preset=(
+                config is not None and presets.resolve_preset_rows(config) is not None
+            ),
         )
 
     def mapping_view(
@@ -1740,6 +1803,163 @@ class CompanyService:
         """The current mapping rows projected AutoCount→Sorento, plus the source
         and target catalogs the editor's pickers need (AC-15-40)."""
         self._require_entity(tenant_id, company_id, entity_type)
+        return self._mapping_view(tenant_id, company_id, entity_type)
+
+    # ── reset to preset (sprint-5/12 §2.2, AC-12-10..15) ──────────────────────
+
+    @staticmethod
+    def _preset_available_columns(config: AcEntityConfig) -> Optional[List[str]]:
+        """What the task's source is PROVEN to return (AC-12-11, D2).
+
+        ``effective_result_columns(result_columns, lookups)`` - byte-identical
+        to what the save gate builds ``known_vars`` from and what the Mapping
+        tab's source picker offers, so a row the reset enables is exactly a
+        row a formula could legally name. ``None`` when the task has never
+        previewed clean (``result_columns`` NULL), which ``plan_rows`` reads
+        as "nothing proven wrong yet" and enables.
+        """
+        if config.result_columns is None:
+            return None
+        lookups = (
+            config.source_config.get("lookups")
+            if isinstance(config.source_config, dict)
+            else None
+        )
+        return effective_result_columns(config.result_columns, lookups)
+
+    def _mapping_reset_preview(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        label: str,
+        planned: List["presets.PlannedRow"],
+    ) -> MappingResetPreviewView:
+        """The dry-run diff (AC-12-12). Reads only - no INSERT/UPDATE/DELETE
+        against ``ac_field_mapping`` (statement-count pinned).
+
+        Diffs on ``canonical_field`` over EVERY header row, not just the
+        Sorento-deliverable ones: ``is_discontinued`` is captured but not
+        delivered (absent from ``CanonicalProduct.SINK_FIELDS``), and a
+        preview that could not see it would report an existing row as
+        ``added`` every single time. Provenance rows
+        (``PRESERVED_CANONICAL_FIELDS``) are excluded from BOTH sides - the
+        apply never deletes them, so they are neither replaced nor removed.
+        """
+        current: Dict[str, AcFieldMapping] = {}
+        for row in self.mappings.list(tenant_id, company_id, entity_type):
+            if row.scope != SCOPE_HEADER:
+                continue
+            if row.canonical_field in PRESERVED_CANONICAL_FIELDS:
+                continue
+            current[row.canonical_field] = row
+
+        rows: List[MappingResetRowView] = []
+        for plan in planned:
+            spec = plan.spec
+            existing = current.get(spec.canonical_field)
+            if existing is None:
+                change = MAPPING_RESET_CHANGE_ADDED
+            elif (
+                existing.source_path == spec.source_path
+                and existing.transform == spec.transform
+                and (existing.formula or None) == (spec.formula or None)
+                and bool(existing.is_enabled) == plan.is_enabled
+                and bool(existing.is_required) == plan.is_required
+            ):
+                change = MAPPING_RESET_CHANGE_UNCHANGED
+            else:
+                change = MAPPING_RESET_CHANGE_CHANGED
+            rows.append(
+                MappingResetRowView(
+                    canonical_field=spec.canonical_field,
+                    source_path=spec.source_path,
+                    transform=spec.transform,
+                    formula=spec.formula,
+                    enabled=plan.is_enabled,
+                    is_required=plan.is_required,
+                    change=change,
+                    disabled_reason=plan.disabled_reason,
+                )
+            )
+
+        preset_fields = {plan.spec.canonical_field for plan in planned}
+        removed = [
+            MappingResetRemovedRowView(
+                canonical_field=row.canonical_field,
+                source_path=row.source_path,
+                transform=row.transform,
+                formula=row.formula,
+            )
+            for canonical_field, row in current.items()
+            if canonical_field not in preset_fields
+        ]
+        return MappingResetPreviewView(label=label, rows=rows, removed=removed)
+
+    def reset_mapping_to_preset(
+        self,
+        tenant_id: str,
+        company_id: str,
+        entity_type: str,
+        *,
+        dry_run: bool,
+    ) -> Union[MappingResetPreviewView, MappingView]:
+        """Preview (``dry_run=True``) or apply (``dry_run=False``) a WHOLE
+        replacement of the entity's HEADER mapping with its registered preset
+        (R2/D4 - a replace, never a merge: a merge that keeps customised rows
+        cannot fix the rows that are wrong).
+
+        The apply is the seed path, not the save path: it deletes the header
+        rows and calls ``presets._seed_rows`` with the SAME
+        ``available_columns`` a first save would pass, in ONE transaction (a
+        failure mid-way leaves the previous rows intact - nothing is
+        committed until the re-seed has succeeded, AC-12-13). Line-scope rows
+        and every provenance row survive; nothing on ``ac_entity_config`` is
+        written at all (AC-12-14) - lookups live on the Source tab and a
+        reset that silently edited them would hide a prerequisite (D3).
+        """
+        config = self._require_entity(tenant_id, company_id, entity_type)
+        resolved = presets.resolve_preset_rows(config)
+        if resolved is None:
+            raise MappingPresetNotRegistered(
+                "No preset is registered for this entity."
+            )
+        label, fields = resolved
+        available_columns = self._preset_available_columns(config)
+        planned = presets.plan_rows(
+            fields, available_columns, entity_type=entity_type, scope=SCOPE_HEADER
+        )
+
+        if dry_run:
+            return self._mapping_reset_preview(
+                tenant_id, company_id, entity_type, label, planned
+            )
+
+        # Everything except the provenance keepers - NOT "the accepted
+        # targets" (`replace_mapping`'s own rule): a preset may legitimately
+        # carry a captured-but-not-delivered row (`is_discontinued`), and
+        # leaving the old one behind would duplicate the canonical field.
+        self.mappings.delete_unknown(
+            tenant_id,
+            company_id,
+            entity_type,
+            PRESERVED_CANONICAL_FIELDS,
+            scope=SCOPE_HEADER,
+        )
+        # Qualified on purpose: ONE seeder for the first save and the reset
+        # (D1), and the module attribute stays patchable by the AC-12-13
+        # forced-failure test.
+        presets._seed_rows(
+            self.db,
+            tenant_id,
+            company_id,
+            entity_type,
+            SCOPE_HEADER,
+            fields,
+            available_columns,
+        )
+        self.db.flush()
+        self.db.commit()
         return self._mapping_view(tenant_id, company_id, entity_type)
 
     def replace_mapping(
