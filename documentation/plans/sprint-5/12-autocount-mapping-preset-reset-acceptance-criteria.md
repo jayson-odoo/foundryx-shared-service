@@ -87,9 +87,14 @@ permission, no migration.
   removed: [{canonicalField, sourcePath, transform, formula}]}` where `change` is `added` (no
   current row for that canonical field), `changed` (a current row exists and any of source /
   transform / formula / enabled / required differs) or `unchanged`; `removed` lists current header
-  rows whose canonical field the preset does not carry. `enabled=false` rows carry
-  `disabledReason: "column not returned by the source"`. Statement count pinned: no INSERT /
-  UPDATE / DELETE on `ac_field_mapping`. Test with a mapping that has one of each kind.
+  rows whose canonical field the preset does not carry. Every `enabled=false` row carries a
+  `disabledReason` that names the ACTUAL cause: `"column not returned by the source"` when the
+  preset row's source column is absent from `available_columns`, or `"withheld by the preset"`
+  when the preset itself seeds the row disabled (`PresetField.enabled=False`, e.g. `uom_code`
+  per AC-10-74). Never one string for both - the dialog must not claim a column is missing when
+  it is not (amended 2026-09-22 after the S2 tester flagged the single-string wording).
+  Statement count pinned: no INSERT / UPDATE / DELETE on `ac_field_mapping`. Test with a
+  mapping that has one of each kind, including one row per disabled reason.
 - **AC-12-13 [BE]** **Apply replaces the header rows in one transaction.** `dryRun=false` deletes
   the entity's header-scope rows and re-seeds the preset rows via `_seed_rows` with the SAME
   `available_columns`, in ONE transaction (a failure mid-way leaves the previous rows intact -
@@ -105,8 +110,9 @@ permission, no migration.
 - **AC-12-15 [BE]** **Un-previewed columns land disabled, never dropped (AC-02-16 preserved).**
   On a task whose `result_columns` lacks `BaseUOMPrice` (no `uom` lookup configured), the reset
   creates the `list_price` row with `is_enabled=false`, and the dry run reports it under
-  `enabled=false` with `disabledReason`. On a task never previewed (`result_columns` NULL) every
-  row is enabled. Test both.
+  `enabled=false` with `disabledReason: "column not returned by the source"`. On a task never
+  previewed (`result_columns` NULL) every row is enabled EXCEPT rows the preset itself withholds
+  (`uom_code`, `disabledReason: "withheld by the preset"`). Test both.
 - **AC-12-20 [FE]** **Mock first.** The dialog's every state - loading the dry run, a diff with
   added / changed / unchanged / removed rows and disabled rows, an empty diff (mapping already
   equals the preset), the "no preset" 422, apply in flight, apply success, apply failure - is

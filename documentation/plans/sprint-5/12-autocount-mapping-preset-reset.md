@@ -170,6 +170,8 @@ the highest existing id first)
 | BL-SS-256 | Per-row "Restore preset" on the mapping table (keep customised rows, fix one) | Low |
 | BL-SS-257 | Preset versioning: stamp seeded rows with a preset version and surface "preset updated" on the Mapping tab | Low |
 | BL-SS-258 | Reset the Source tab's lookups from the preset (today: mapping rows only, D3) | Medium |
+| BL-SS-259 | Formula engine: `default(X, "")` on a fact key ABSENT from the raw row returns None instead of the default (found by the S2 tester 2026-09-22; a real `/itembypage` row always carries `Desc2`, so the preset is unaffected today) | Low |
+| BL-SS-260 | `is_discontinued` is captured by the preset but not Sorento-delivered (absent from `CanonicalProduct.SINK_FIELDS`); verify a post-reset mapping PUT round-trips 200 (S2 coder checks; if the save gate 422s the seeded row, rule on keep-vs-drop) | Medium |
 
 ## 7. Production adoption runbook (`SRT` product task; AC-12-35)
 
