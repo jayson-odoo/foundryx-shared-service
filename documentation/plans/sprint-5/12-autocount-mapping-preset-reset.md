@@ -173,14 +173,11 @@ the highest existing id first)
 
 ## 7. Production adoption runbook (`SRT` product task; AC-12-35)
 
-1. Source tab: prod prices DO arrive today (Sorento compare: `ACC-SRT4022` -> 160.0) although
-   `/itembypage` returns no `ListPrice` key (probed 2026-09-22: 19 keys, none a price), so the
-   existing lookup most likely exposes `Price as ListPrice`. The preset row sources
-   `BaseUOMPrice`, so either rename that alias to `BaseUOMPrice` (Source tab -> lookup field ->
-   Test) BEFORE the reset, or accept the row landing disabled and re-point its source after.
-   If the `uom` lookup is absent altogether, add `/itemuombypage`, `as uom`, on `ItemCode =
-   ItemCode` and `BaseUOM ~ UOM` (casefold_trim), field `Price as BaseUOMPrice`. Test. Confirm
-   the result columns list `BaseUOMPrice`. Owner to confirm the current lookup config first.
+1. Source tab: the prod task's `itemuombypage` lookup exposes `Price` under the alias
+   `ListPrice` (owner confirmed 2026-09-22; `/itembypage` itself returns no price key - probed,
+   19 keys). The preset row sources `BaseUOMPrice`, so rename the lookup field alias to
+   `BaseUOMPrice` (Source tab -> lookup -> field -> Test) BEFORE the reset; otherwise the reset's
+   `list_price` row lands disabled (named in the preview) and must be re-pointed after.
 2. Mapping tab: Reset to preset -> read the diff (expect `name`, `description`, `uom_code`,
    `list_price` changed, `is_discontinued` added) -> Reset mapping.
 3. Simulate one item with a `Desc2` (e.g. `TPE-1032`): `description` = Description + " " + Desc2,
