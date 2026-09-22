@@ -150,6 +150,23 @@ permission, no migration.
   preset -> open the Description row's formula builder -> "Source columns" lists `Desc2` -> Cancel
   -> Simulate -> the simulated `description` is the joined text. README run log, both widths.
 
+- **AC-12-25 [FE]** **A disabled row is visible as disabled, and the operator enables it
+  deliberately** (added 2026-09-22 after S2 found the mapping table never renders
+  `isEnabled`). The mapping table gains an "Enabled" column with a `Switch` per row, editable
+  only in edit mode; a row with `isEnabled=false` renders dimmed with a `StatusBadge` "Disabled"
+  whether its column is previewed or not (the existing "Column not in query" badge stays for a
+  stale column - both may show). Toggling the switch changes ONLY that row's `isEnabled`; Save
+  sends the stored value. No instructional copy. Vitest: disabled + column present renders the
+  badge; switch on -> `isEnabled: true` in the write rows; switch hidden when not editing.
+- **AC-12-26 [FE]** **Save never auto-enables a row.** `use-mapping-draft.ts` `toWrite` sends
+  `isEnabled` exactly as stored - the sprint-5/02 B1 save-time revive
+  (`|| acFields.includes(sourcePath)`) is removed, because with two disabled causes (column
+  missing vs withheld by the preset) it is an ambiguous auto-derived action and it silently
+  re-enabled `uom_code`, which AC-10-74 withholds. Re-picking a source column on a row
+  (`onChangeRow`) may still enable that row - an explicit operator action on that row. Vitest:
+  reset -> Save -> dry run reports "already matches" (`uom_code` stays disabled); the
+  sprint-5/02 test that pinned the revive is updated with the reason.
+
 ## Group C - cross-cutting
 
 - **AC-12-30 [BE]** **No new permission.** The route reuses `autocount.companies.manage`; the
