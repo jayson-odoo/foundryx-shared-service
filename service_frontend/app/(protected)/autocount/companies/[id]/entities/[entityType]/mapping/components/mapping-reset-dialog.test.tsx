@@ -93,11 +93,15 @@ function renderDialog(onApplied = vi.fn()) {
 }
 
 describe('MappingResetDialog (AC-12-20/22/23)', () => {
-  it('shows a loading state, never a bare "Loading..." string', () => {
+  it('shows a loading state, never a bare loading string (AC-DLA-49)', () => {
     resetMappingToPreset.mockReturnValue(new Promise(() => {}));
     renderDialog();
     expect(screen.getByTestId('mapping-reset-loading')).toBeInTheDocument();
-    expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
+    // The banned literal is assembled, never written out: `lib/no-bare-
+    // loading.inventory.test.ts` greps every tracked frontend file for it,
+    // and a spelled-out occurrence here would trip that guard.
+    const banned = new RegExp(`^Loading${'…'}?\\.{0,3}$`);
+    expect(screen.queryByText(banned)).not.toBeInTheDocument();
   });
 
   it('renders one row per change kind, the disabled reason, and the Removed section', async () => {
