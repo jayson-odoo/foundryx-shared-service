@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import Link from 'next/link';
-import { Info, LoaderCircleIcon, RotateCcw } from 'lucide-react';
+import { Info, LoaderCircleIcon } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { toast } from '@/lib/toast';
 import { Container } from '@/components/common/container';
@@ -20,7 +20,7 @@ import {
   entityLabel,
 } from '../../../../../../components/autocount-meta';
 import { MappingEditorBody } from './mapping-editor-body';
-import { MappingResetDialog } from './mapping-reset-dialog';
+import { useMappingResetAction } from './mapping-reset-action';
 import { useMappingDraft } from './use-mapping-draft';
 
 export interface MappingEditorViewProps {
@@ -42,7 +42,14 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
   const { view, isLoading, notFound, saveError, save, testFormula, simulate, applyView } =
     useAutocountMapping(companyId, entityType);
   const draft = useMappingDraft(view);
-  const [resetDialogOpen, setResetDialogOpen] = useState(false);
+  // The SAME action + dialog the DB task editor's Mapping tab mounts
+  // (AC-12-27) - one definition, two surfaces.
+  const mappingReset = useMappingResetAction<AutocountMappingRow>({
+    companyId,
+    entityType,
+    hasPreset: Boolean(view?.hasPreset),
+    onApplied: applyView,
+  });
 
   const onSave = useCallback(async (): Promise<boolean> => {
     const problem = draft.validate();
@@ -100,21 +107,10 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
       // ActionMenu surface every other record action lives on. `hasPreset`
       // is server-derived (D5) - never guessed from the entity type, so an
       // entity with no registered preset never sees this item at all
-      // (foolproof-UI). D6: a plain `run` (no `confirm`, no `deferred`) -
-      // the dialog itself IS the preview; the shell's own dirty-guard
-      // already keeps this menu from rendering at all while the operator
-      // is mid-edit (`!editing` gate, `resource-form.tsx`).
-      actions: [
-        {
-          id: 'reset-to-preset',
-          label: 'Reset to preset',
-          icon: RotateCcw,
-          surfaces: { form: true },
-          permission: AC_COMPANIES_MANAGE,
-          isVisible: () => Boolean(view.hasPreset),
-          run: () => setResetDialogOpen(true),
-        },
-      ],
+      // (foolproof-UI). The shell's own dirty-guard already keeps this menu
+      // from rendering while the operator is mid-edit (`!editing` gate,
+      // `resource-form.tsx`).
+      actions: [mappingReset.action],
       actionRows: [],
       editable: true,
       editPermission: AC_COMPANIES_MANAGE,
@@ -122,7 +118,19 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
       onSave,
       onCancel: draft.reset,
     };
-  }, [can, companyId, detail, draft, entityType, onSave, saveError, simulate, testFormula, view]);
+  }, [
+    can,
+    companyId,
+    detail,
+    draft,
+    entityType,
+    mappingReset.action,
+    onSave,
+    saveError,
+    simulate,
+    testFormula,
+    view,
+  ]);
 
   if (isLoading && !view) {
     return (
@@ -157,13 +165,7 @@ export function MappingEditorView({ companyId, entityType }: MappingEditorViewPr
           fresh mapping, and a refetch would leave the pre-reset rows on screen
           for a round trip. `useMappingDraft` re-syncs off the new view object
           exactly as it does after a save. */}
-      <MappingResetDialog
-        open={resetDialogOpen}
-        onOpenChange={setResetDialogOpen}
-        companyId={companyId}
-        entityType={entityType}
-        onApplied={applyView}
-      />
+      {mappingReset.dialog}
     </Container>
   );
 }

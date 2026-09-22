@@ -64,6 +64,7 @@ import {
 } from '../../../../../components/autocount-meta';
 import { useAutocountRunsListConfig } from '../../../../components/use-runs-list-config';
 import { MappingEditorBody } from '../mapping/components/mapping-editor-body';
+import { useMappingResetAction } from '../mapping/components/mapping-reset-action';
 import { useMappingDraft } from '../mapping/components/use-mapping-draft';
 import { ActivateTab } from './activate-tab';
 import {
@@ -102,6 +103,17 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
   const httpPreview = useHttpPreview(task?.previewJobId);
   const mapping = useAutocountMapping(companyId, entityType);
   const draft = useMappingDraft(mapping.view);
+  // AC-12-27 - a `sql_db` entity's mapping opens HERE (the Mapping tab), never
+  // the standalone `/mapping` page, so "Reset to preset" is mounted on this
+  // surface too. The SAME hook + dialog the standalone editor uses, so gating,
+  // dirty-guard behaviour (the shell drops every form action while editing)
+  // and post-apply hydration cannot drift between the two.
+  const mappingReset = useMappingResetAction<AutocountEtlTask>({
+    companyId,
+    entityType,
+    hasPreset: Boolean(mapping.view?.hasPreset),
+    onApplied: mapping.applyView,
+  });
   const { presets } = useAutocountMappingPresets(companyId, entityType);
   const { fetchLines } = useLineFetcher();
   const etlPreview = useEtlTaskPreview(companyId, entityType, apply, task?.previewJobId);
@@ -664,6 +676,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
           if (await lifecycle.resume()) toast.success('Task resumed.');
         },
       },
+      mappingReset.action,
     ];
 
     return {
@@ -897,6 +910,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     lockedApiConnection,
     lockedConnection,
     mapping,
+    mappingReset.action,
     onCancel,
     onChange,
     onFetchLines,
@@ -947,6 +961,9 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       <Form {...form}>
         <ResourceForm config={resourceConfig} />
       </Form>
+      {/* AC-12-23 - the Mapping tab re-renders from the view the APPLY
+          returned (`applyView`), never a second GET. */}
+      {mappingReset.dialog}
     </Container>
   );
 }

@@ -78,12 +78,15 @@ apply the table re-renders from the `MappingViewResponse` the POST returned - th
 second `GET .../mapping`, because a refetch would leave the pre-reset rows on screen for a
 round trip.
 
-**Known gap (sprint-5/12 S3):** "Reset to preset" renders only on the standalone mapping page
-(`/entities/{entityType}/mapping`). `company-detail-view.tsx` routes a `sql_db` task's
-"Configure mapping" to the task editor's Mapping tab instead, which embeds `MappingEditorBody`
-without the action - so every DOCUMENT entity (always `sql_db`, since `HTTP_PRESETS` carries no
-document) is unreachable by clicks despite `hasPreset=true`. Evidence:
-`documentation/plans/sprint-5/12-evidence/s3-documents/`.
+**Two surfaces carry the action, one definition (sprint-5/12, AC-12-27):** the standalone
+mapping page (`mapping/components/mapping-editor-view.tsx`, where `company-detail-view.tsx`
+sends a non-`sql_db` entity) AND the task editor's Mapping tab
+(`entities/[entityType]/components/task-editor-view.tsx`, where it sends a `sql_db` task - i.e.
+every DOCUMENT entity, since `HTTP_PRESETS` carries no document). Both mount the same
+`useMappingResetAction` (`mapping/components/mapping-reset-action.tsx`), which owns the action
+descriptor AND the dialog - add a third surface by calling that hook, never by copying the
+JSX. Adding a NEW mapping surface without it reintroduces the sprint-5/12 S3 gap (the action
+existed but no document entity could click it).
 
 ## 3. Formula variables on a master entity
 
