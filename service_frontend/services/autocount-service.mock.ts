@@ -3600,7 +3600,25 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
   },
 };
 
-const MAPPING_RESET_DISABLED_REASON = 'column not returned by the source';
+// The two DISTINCT causes a preset row lands disabled (UAC amendment
+// 2026-09-22, AC-12-12/15) - never one string for both: the dialog must not
+// claim a column is missing when the preset is simply withholding the row.
+// Mirrors the backend's own `presets.DISABLED_REASON_*` constants.
+const MAPPING_RESET_REASON_MISSING_COLUMN = 'column not returned by the source';
+const MAPPING_RESET_REASON_WITHHELD = 'withheld by the preset';
+
+/** The reason a preset row lands disabled, or `undefined` when it does not.
+ *  The preset's OWN withholding wins when BOTH causes apply: adding the
+ *  missing lookup would not enable the row, so naming the column would send
+ *  the operator down a dead end. */
+function mappingResetDisabledReason(
+  presetEnabled: boolean,
+  columnPresent: boolean,
+): string | undefined {
+  if (!presetEnabled) return MAPPING_RESET_REASON_WITHHELD;
+  if (!columnPresent) return MAPPING_RESET_REASON_MISSING_COLUMN;
+  return undefined;
+}
 
 function mappingResetHasPreset(entityType: string): boolean {
   return entityType in MAPPING_RESET_PRESETS;
@@ -3625,14 +3643,17 @@ export function computeMappingResetDiff(
   const presetFields = new Set(preset.rows.map((r) => r.canonicalField));
 
   const rows = preset.rows.map((p) => {
-    const enabled = p.enabled && (!columnsKnown || columnSet.has(p.sourcePath));
+    const columnPresent = !columnsKnown || columnSet.has(p.sourcePath);
+    const enabled = p.enabled && columnPresent;
+    const reason = mappingResetDisabledReason(p.enabled, columnPresent);
     const current = currentByField.get(p.canonicalField);
     const change: 'added' | 'changed' | 'unchanged' = !current
       ? 'added'
       : current.sourcePath === p.sourcePath &&
           current.transform === p.transform &&
           (current.formula ?? null) === p.formula &&
-          current.isEnabled === enabled
+          current.isEnabled === enabled &&
+          current.isRequired === p.required
         ? 'unchanged'
         : 'changed';
     return {
@@ -3643,7 +3664,7 @@ export function computeMappingResetDiff(
       enabled,
       isRequired: p.required,
       change,
-      ...(enabled ? {} : { disabledReason: MAPPING_RESET_DISABLED_REASON }),
+      ...(reason ? { disabledReason: reason } : {}),
     };
   });
 
@@ -3709,7 +3730,21 @@ export function withPhase1MappingResetMock(real: AutocountService): AutocountSer
       if (input.dryRun) {
         return computeMappingResetDiff(preset, view.rows, view.acFields);
       }
-      const rows = mappingResetWriteRows(preset, view.acFields);
+      //     !!  PHASE 1 ONLY - THE MOCK APPLIES THROUGH THE SAVE GATE.  !!
+      // A reset is a SEED (S2 calls `presets._seed_rows` directly, exactly
+      // like a first-save seed), so it can legitimately create a row the
+      // `PUT .../mapping` guard refuses - `is_discontinued` is captured by
+      // the product preset but absent from `CanonicalProduct.SINK_FIELDS`,
+      // so the save gate 422s it (BL-SS-260). With no reset route yet, this
+      // overlay has only the PUT, so it submits the accepted subset
+      // (`view.sorentoFields`, the server's own catalog) rather than
+      // failing the whole apply on one non-deliverable row. The dry-run
+      // preview above is NOT filtered - it shows the true preset, which is
+      // what S2 will actually write. Dies with this overlay.
+      const accepted = new Set(view.sorentoFields.map((f) => f.field));
+      const rows = mappingResetWriteRows(preset, view.acFields).filter((r) =>
+        accepted.has(r.sorentoField),
+      );
       const next = await real.updateMapping(companyId, entityType, { rows });
       return { ...next, hasPreset: true };
     },

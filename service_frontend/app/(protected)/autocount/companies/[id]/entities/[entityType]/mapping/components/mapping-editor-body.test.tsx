@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import { describe, expect, it } from 'vitest';
+import { validateFormula } from '@/lib/autocount-formula';
 import type { AutocountSorentoField } from '@/types/autocount';
 import { MappingEditorBody } from './mapping-editor-body';
 import type { MappingEditableRow } from './mapping-table';
@@ -187,6 +188,19 @@ describe('MappingEditorBody - master entity Source columns (sprint-5/12, AC-12-0
     render(<Harness isDocument={false} masterAcFields={[]} />);
     fireEvent.click(screen.getByLabelText('Build formula for row 1'));
     expect(screen.getByText('Testing')).toBeInTheDocument();
+  });
+
+  it('AC-12-01: the client validator accepts the Desc2 join once the Source columns are the known tokens, and rejects it without them', () => {
+    const join = 'trim(if(default(Desc2, "") != "", concat(Description, " ", Desc2), Description))';
+    // The tokens the "Source columns" group publishes ARE `acFields` - the
+    // same set the server's save gate builds `known_vars` from (D2), so the
+    // client can never accept a name the server rejects, or the reverse.
+    expect(validateFormula(join, ['ItemCode', 'Description', 'Desc2'])).toBeNull();
+    // The pre-plan behaviour a master row had: no groups, so `Desc2` reads
+    // as an unknown name (AC-12-02's unchanged fallback).
+    expect(validateFormula(join, [])).not.toBeNull();
+    // A column the task has NOT previewed stays rejected even with a group.
+    expect(validateFormula(join.replaceAll('Desc2', 'Desc3'), ['Description', 'Desc2'])).not.toBeNull();
   });
 
   it('a document row keeps its Header columns / Line aggregates groups byte-identically (unaffected)', () => {

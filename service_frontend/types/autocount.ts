@@ -510,10 +510,15 @@ export interface AutocountMappingUpdate {
  * (`POST .../mapping/reset-preset {dryRun: true}`, AC-12-12). `change` is
  * `'added'` (no current row for this canonical field), `'changed'` (a
  * current row exists and its source/transform/formula/enabled differs) or
- * `'unchanged'`. `disabledReason` is present ONLY when `enabled` is false -
- * a fixed, uniform string (the row's source column is not returned by the
- * task's current preview/lookups - the SAME AC-02-16 rule a first-save seed
- * already follows, reused here).
+ * `'unchanged'`. `disabledReason` is present ONLY when `enabled` is false and
+ * names the ACTUAL cause (UAC amendment 2026-09-22), never one string for
+ * both: `'column not returned by the source'` (the preset row's source column
+ * is absent from the task's previewed columns + lookup aliases - the AC-02-16
+ * first-save rule) or `'withheld by the preset'` (the preset itself seeds the
+ * row disabled, e.g. `uom_code` per AC-10-74). A preset-withheld row reports
+ * the withholding even when its column is ALSO missing: adding the lookup
+ * would not enable it, so naming the column would send the operator down a
+ * dead end.
  */
 export interface AutocountMappingResetRow {
   canonicalField: string;

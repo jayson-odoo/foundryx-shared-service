@@ -46,6 +46,16 @@ const PREVIEW_MIXED: AutocountMappingResetPreview = {
       enabled: false,
       isRequired: false,
       change: 'changed',
+      disabledReason: 'withheld by the preset',
+    },
+    {
+      canonicalField: 'list_price',
+      sourcePath: 'BaseUOMPrice',
+      transform: 'string',
+      formula: 'if(number(value) <= 0, 0, number(value))',
+      enabled: false,
+      isRequired: false,
+      change: 'added',
       disabledReason: 'column not returned by the source',
     },
   ],
@@ -98,7 +108,12 @@ describe('MappingResetDialog (AC-12-20/22/23)', () => {
     expect(screen.getByText('Unchanged')).toBeInTheDocument();
     // Two rows carry `change: 'changed'` (name, uom_code).
     expect(screen.getAllByText('Changed').length).toBe(2);
-    expect(screen.getByText('Added')).toBeInTheDocument();
+    // Two rows carry `change: 'added'` (description, list_price).
+    expect(screen.getAllByText('Added').length).toBe(2);
+    // Each disabled row names its OWN cause (UAC amendment 2026-09-22) - a
+    // single shared string would misreport `uom_code`, whose column IS
+    // returned by the source.
+    expect(screen.getByText(/Disabled - withheld by the preset/)).toBeInTheDocument();
     expect(screen.getByText(/Disabled - column not returned by the source/)).toBeInTheDocument();
     expect(screen.getByTestId('mapping-reset-removed')).toBeInTheDocument();
     // The section heading AND the removed row's own badge both read "Removed".
