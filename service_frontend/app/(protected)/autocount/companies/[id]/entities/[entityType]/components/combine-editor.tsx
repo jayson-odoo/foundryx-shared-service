@@ -99,6 +99,18 @@ export function CombineEditor({
     label: c,
     value: c,
   }));
+  // AC-10-82 fix - the designated measure (`combine.measure`) is a PRE-GROUP
+  // column (R11 ruling 2): a source column or a computed-column alias, never
+  // a `measures[].alias`. The backend validator rejects a measure alias here
+  // (`combine.py` ~line 501); offering `measureAliasOptions` let a hand-built
+  // combine save a value the server always 422s. Legacy configs may still
+  // carry a value outside this set - keep it visible rather than blanking.
+  const designatedMeasureOptions = useMemo(() => {
+    if (config.measure && !allColumnOptions.includes(config.measure)) {
+      return [...groupOptions, { label: config.measure, value: config.measure }];
+    }
+    return groupOptions;
+  }, [groupOptions, allColumnOptions, config.measure]);
 
   const update = (patch: Partial<AutocountCombineConfig>) =>
     onChange({ ...config, ...patch });
@@ -382,11 +394,11 @@ export function CombineEditor({
                 Designated measure
               </Label>
               <SearchSelect
-                options={measureAliasOptions}
+                options={designatedMeasureOptions}
                 value={config.measure}
                 onChange={(measure) => update({ measure })}
                 placeholder="Pick a measure"
-                disabled={!editing || measureAliasOptions.length === 0}
+                disabled={!editing || designatedMeasureOptions.length === 0}
                 ariaLabel="Designated measure"
               />
             </div>

@@ -281,6 +281,73 @@ describe('CombineEditor (AC-10-82)', () => {
     });
   });
 
+  // AC-10-82 fix - the backend validator (combine.py ~line 501) requires the
+  // designated `measure` to be a PRE-GROUP column (a source column or a
+  // computed alias), never a `measures[].alias`; the picker must only offer
+  // what the server will accept.
+  describe('Designated measure picker (AC-10-82)', () => {
+    it('offers source + computed columns, never measure aliases', () => {
+      render(
+        <CombineEditor
+          editing
+          combine={{
+            ...emptyCombine(),
+            computed: [{ alias: 'base_qty', formula: 'BalQty * 1' }],
+            measures: [{ source: 'base_qty', op: 'sum', alias: 'qty' }],
+          }}
+          onChange={vi.fn()}
+          columnOptions={['ItemCode', 'BalQty']}
+          funnel={null}
+          onServerTest={serverTest}
+        />,
+      );
+      fireEvent.click(screen.getByLabelText('Designated measure'));
+      expect(screen.getAllByText('BalQty').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('base_qty').length).toBeGreaterThan(0);
+      expect(screen.queryAllByText('qty').length).toBe(0);
+    });
+
+    it('a legacy config.measure of "qty" (a measure alias) still displays rather than blanking', () => {
+      render(
+        <CombineEditor
+          editing
+          combine={{
+            ...emptyCombine(),
+            measure: 'qty',
+            measures: [{ source: 'BalQty', op: 'sum', alias: 'qty' }],
+          }}
+          onChange={vi.fn()}
+          columnOptions={['ItemCode', 'BalQty']}
+          funnel={null}
+          onServerTest={serverTest}
+        />,
+      );
+      expect(screen.getByLabelText('Designated measure')).toHaveTextContent('qty');
+    });
+
+    it('saving picks a pre-group column (base_qty), matching the server contract', () => {
+      const onChange = vi.fn();
+      render(
+        <CombineEditor
+          editing
+          combine={{
+            ...emptyCombine(),
+            computed: [{ alias: 'base_qty', formula: 'BalQty * 1' }],
+          }}
+          onChange={onChange}
+          columnOptions={['ItemCode', 'BalQty']}
+          funnel={null}
+          onServerTest={serverTest}
+        />,
+      );
+      fireEvent.click(screen.getByLabelText('Designated measure'));
+      fireEvent.click(screen.getByText('base_qty'));
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({ measure: 'base_qty' }),
+      );
+    });
+  });
+
   it('read-only when not editing - no Enable/Add controls', () => {
     render(
       <CombineEditor
