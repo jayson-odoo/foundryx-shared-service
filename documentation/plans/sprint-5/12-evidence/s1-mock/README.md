@@ -61,18 +61,17 @@ emits (`MappingSimulator` included) - not introduced here.
 
 ## Findings carried into S2 / the report
 
-1. **BL-SS-260 confirmed.** `is_discontinued` is captured by `PRODUCT_HTTP_PRESET` but absent from
-   `CanonicalProduct.SINK_FIELDS`, so `PUT .../mapping` 422s it. A reset is a SEED, not a PUT, so
-   S2's real route writes the row exactly like first-save seeding already does; the S1 overlay has
-   only the PUT, so it submits the accepted subset and the applied mapping in shot 07 is missing
-   that one row. The dry-run preview is NOT filtered - it shows the true preset. This dies with
-   the overlay.
-2. **`is_required` drifts between a PUT and a seed.** `replace_mapping` writes
-   `is_required = target in required_field_names(entity)` (catalog: code/name/is_active), while
-   `_seed_rows` writes `is_required = PresetField.required` (product: `code` only). AC-12-12 lists
-   `required` in the `changed` comparison, so after any ordinary mapping SAVE the dialog reports
-   `name` and `is_active` as `changed` with no visible difference in the row. Implemented as the
-   UAC specifies; raised for the planner/reviewer rather than silently dropped from the diff.
+1. **BL-SS-260 confirmed here, CLOSED at S2.** `is_discontinued` was captured by
+   `PRODUCT_HTTP_PRESET` but absent from `CanonicalProduct.SINK_FIELDS`, so `PUT .../mapping`
+   422'd it and the S1 overlay (which has only the PUT) had to submit the accepted subset - which
+   is why the applied mapping in shot 07 is missing that one row while the dry-run preview above
+   still shows it. The owner's ruling of the same day DROPPED the preset row outright (Sorento
+   derives "discontinued" from the `****` description prefix, plan 10 D22), so the S2 shots are
+   the current truth and these S1 shots are a historical record of the mock phase.
+2. **`is_required` drifted between a PUT and a seed** - raised from this run and RULED ON the
+   same day: `plan_rows` now derives `is_required` from `mapping_catalog` (the single source of
+   truth `replace_mapping` already used), so a seed, a Save and a reset agree and those rows no
+   longer read `changed`. See `../s2-real/README.md` shot 08.
 3. The mock's `computeMappingResetDiff` ignores a current row whose `sorentoField` is null (a
    non-deliverable/provenance row), so it reads `is_discontinued` as `added` even when the row
    exists. The S2 backend diffs on `canonical_field` over ALL header rows, so it does not have

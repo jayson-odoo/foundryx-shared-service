@@ -3496,6 +3496,15 @@ function mockMappingPresets(databaseName: string, entityType: string): Autocount
 // Since S2 this table drives the VITEST DOUBLE only
 // (`mockAutocountService.resetMappingToPreset`) - the live UI reads the real
 // `presets.resolve_preset_rows`, so nothing a user sees can drift with it.
+//
+// Two owner rulings, 2026-09-22, mirrored here:
+//   - BL-SS-260: NO `Discontinued -> is_discontinued` row. Sorento derives
+//     "discontinued" from the `****` prefix of the description TEXT (plan 10
+//     D22); the field is absent from `CanonicalProduct.SINK_FIELDS` and is
+//     never sent.
+//   - `required` is now the MAPPING CATALOG's answer (code/name/is_active for
+//     a master, item_code/location_code/qty for stock balance), matching
+//     `presets.planned_is_required` - not the preset row's own flag.
 
 interface MappingResetPresetRow {
   sourcePath: string;
@@ -3518,7 +3527,7 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
     label: 'Item (open REST API)',
     rows: [
       { sourcePath: 'ItemCode', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
-      { sourcePath: 'Description', canonicalField: 'name', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'Description', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
       // AC-10-73 - the RAW join (`.strip()` on the ends only; an inner
       // double space is never collapsed).
       {
@@ -3534,8 +3543,7 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
       // AC-10-74 - withheld during the check period: seeded PRESENT but
       // disabled so the operator can see and re-enable it deliberately.
       { sourcePath: 'BaseUOM', canonicalField: 'uom_code', transform: 'string', formula: null, required: false, enabled: false },
-      { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: false, enabled: true },
-      { sourcePath: 'Discontinued', canonicalField: 'is_discontinued', transform: 't_f_bool', formula: null, required: false, enabled: true },
+      { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: true, enabled: true },
       // The pre-filled `uom` lookup's own alias, clamped to 0 on a negative
       // vendor sentinel price.
       {
@@ -3552,18 +3560,18 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
     label: 'Debtor (open REST API)',
     rows: [
       { sourcePath: 'AccNo', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
-      { sourcePath: 'CompanyName', canonicalField: 'name', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'CompanyName', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
       { sourcePath: 'Phone1', canonicalField: 'phone_number', transform: 'string', formula: null, required: false, enabled: true },
-      { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: false, enabled: true },
+      { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: true, enabled: true },
     ],
   },
   warehouse: {
     label: 'Location (open REST API)',
     rows: [
       { sourcePath: 'Location', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
-      { sourcePath: 'Description', canonicalField: 'name', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'Description', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
       { sourcePath: 'Address1', canonicalField: 'location', transform: 'string', formula: null, required: false, enabled: true },
-      { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: false, enabled: true },
+      { sourcePath: 'IsActive', canonicalField: 'is_active', transform: 't_f_bool', formula: null, required: true, enabled: true },
     ],
   },
   product_category: {
@@ -3578,7 +3586,7 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
     label: 'Item brand (open REST API)',
     rows: [
       { sourcePath: 'ItemBrand', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
-      { sourcePath: 'ItemBrand', canonicalField: 'name', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'ItemBrand', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
       { sourcePath: 'Description', canonicalField: 'description', transform: 'string', formula: null, required: false, enabled: true },
     ],
   },
@@ -3586,7 +3594,7 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
     label: 'Item UOM (open REST API, distinct)',
     rows: [
       { sourcePath: 'value', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
-      { sourcePath: 'value', canonicalField: 'name', transform: 'string', formula: null, required: false, enabled: true },
+      { sourcePath: 'value', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
     ],
   },
   stock_balance: {

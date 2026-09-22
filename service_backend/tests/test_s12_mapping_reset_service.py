@@ -298,7 +298,16 @@ def test_ac_12_12_dry_run_returns_the_exact_diff_classification(client, db):
     assert rows_by_field["description"]["change"] == "changed", rows_by_field["description"]
     assert rows_by_field["category_code"]["change"] == "unchanged"
     assert rows_by_field["brand_code"]["change"] == "unchanged"
-    assert rows_by_field["is_active"]["change"] == "unchanged"
+    # `name`/`is_active` are REQUIRED per `mapping_catalog` (owner ruling
+    # 2026-09-22), and the fixture rows above were built with the default
+    # `is_required=False`, so the plan differs on that flag alone -
+    # `is_active` is `changed` for exactly that reason while `name` is
+    # `changed` for its source path too.
+    assert rows_by_field["is_active"]["change"] == "changed"
+    assert rows_by_field["is_active"]["isRequired"] is True
+    assert rows_by_field["name"]["isRequired"] is True
+    assert rows_by_field["code"]["isRequired"] is True
+    assert rows_by_field["description"]["isRequired"] is False
 
     assert rows_by_field["uom_code"]["change"] == "changed"
     assert rows_by_field["uom_code"]["enabled"] is False
@@ -312,8 +321,14 @@ def test_ac_12_12_dry_run_returns_the_exact_diff_classification(client, db):
     assert rows_by_field["list_price"]["enabled"] is False
     assert rows_by_field["list_price"]["disabledReason"] == "column not returned by the source"
 
-    assert rows_by_field["is_discontinued"]["change"] == "added"
-    assert rows_by_field["is_discontinued"]["enabled"] is True
+    # BL-SS-260 (owner ruling 2026-09-22, plan-10 D22): the preset carries NO
+    # `Discontinued -> is_discontinued` row at all any more - Sorento derives
+    # "discontinued" from the `****` prefix of the description TEXT, the
+    # field is absent from `CanonicalProduct.SINK_FIELDS` and is never sent,
+    # so seeding a row for it only produced one the save gate refuses and
+    # every ordinary Save swept away.
+    assert "is_discontinued" not in rows_by_field, rows_by_field
+    assert "is_discontinued" not in {f.canonical_field for f in PRODUCT_HTTP_PRESET.rows}
 
     removed_by_field = {r["canonicalField"]: r for r in body["removed"]}
     assert "custom_note" in removed_by_field
@@ -514,14 +529,13 @@ def test_ac_12_14_reset_and_put_produce_identical_ac_entity_config_deltas(db):
         db, put_company, conn.id, result_columns=previewed, lookups=lookups,
     )
     before_put = _snapshot(put_config)
-    # `is_discontinued` is captured but NOT a Sorento-accepted target
-    # (absent from `CanonicalProduct.SINK_FIELDS`) - the save gate would
-    # 422 it, so the PUT-equivalent excludes it; the reset seeds it anyway
-    # (it bypasses the accepted-field guard the same way first-save seeding
-    # always has) - a mapping-ROW difference, not an ac_entity_config one.
+    # Every preset row is a Sorento-accepted target since BL-SS-260 dropped
+    # the `Discontinued -> is_discontinued` row (owner ruling 2026-09-22),
+    # so the PUT control submits the preset VERBATIM - no filter, nothing
+    # the two sides write differently.
     put_rows = [
         MappingWriteRow(f.source_path, f.transform, f.canonical_field, formula=f.formula, is_enabled=f.enabled)
-        for f in PRODUCT_HTTP_PRESET.rows if f.canonical_field != "is_discontinued"
+        for f in PRODUCT_HTTP_PRESET.rows
     ]
     CompanyService(db).replace_mapping(DEFAULT_TENANT_ID, put_company.id, ENTITY_PRODUCT, put_rows)
     db.refresh(put_config)
@@ -562,3 +576,58 @@ def test_ac_12_15_never_previewed_result_columns_null_every_row_enabled_except_t
     # `uom_code` stays disabled regardless of "never previewed" - AC-10-74's
     # deliberate withholding is a policy orthogonal to column availability.
     assert disabled == {"uom_code": False}, disabled
+
+
+# ── owner ruling 2026-09-22: a seed, a Save and a reset agree on is_required ─
+
+
+def test_seed_then_save_then_dry_run_reports_no_change(client, db):
+    """SEED -> SAVE THE SAME ROWS -> dry run must read "already matches".
+
+    `replace_mapping` writes `is_required = target in required_field_names
+    (entity)`; `_seed_rows` used to write `PresetField.required`, so a
+    freshly-seeded `name`/`is_active` flipped to required the moment the
+    operator pressed Save and the reset dialog then reported those rows as
+    `changed` forever, with NO visible difference in the row. `plan_rows`
+    now derives `is_required` from the SAME catalog, so the three paths
+    agree.
+
+    Kill test: revert `planned_is_required` to `spec.required` and this goes
+    red on `name` + `is_active`.
+    """
+    conn = _connection(db)
+    company = _company(db, conn.id, database_name="MOCHA-REQ-PARITY")
+    _product_config(
+        db, company, conn.id,
+        result_columns=["ItemCode", "Description", "Desc2", "ItemGroup", "ItemBrand", "BaseUOM", "IsActive"],
+        lookups=[dict(PRODUCT_HTTP_PRESET.lookups[0])],
+    )
+    # 1. the first-save seed, byte for byte what `EtlService.update_task` runs
+    presets_module.seed_http_preset_mapping(
+        db, DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, columns=None,
+    )
+    db.commit()
+    seeded = {r.canonical_field: r.is_required for r in _header_rows(db, company.id, ENTITY_PRODUCT)}
+    assert seeded["name"] is True and seeded["is_active"] is True, seeded
+    assert seeded["description"] is False, seeded
+
+    # 2. an ordinary "Save mapping" of exactly those rows
+    service = CompanyService(db)
+    view = service.mapping_view(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    service.replace_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT,
+        [
+            MappingWriteRow(
+                r.source_path, r.transform, r.canonical_field, formula=r.formula, is_enabled=r.is_enabled,
+            )
+            for r in view.rows
+        ],
+    )
+
+    # 3. the dry run sees NOTHING to change
+    preview = service.reset_mapping_to_preset(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, dry_run=True,
+    )
+    changed = [r.canonical_field for r in preview.rows if r.change != "unchanged"]
+    assert changed == [], changed
+    assert preview.removed == [], preview.removed

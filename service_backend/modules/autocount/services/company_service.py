@@ -1865,7 +1865,7 @@ class CompanyService:
                 and existing.transform == spec.transform
                 and (existing.formula or None) == (spec.formula or None)
                 and bool(existing.is_enabled) == plan.is_enabled
-                and bool(existing.is_required) == spec.required
+                and bool(existing.is_required) == plan.is_required
             ):
                 change = MAPPING_RESET_CHANGE_UNCHANGED
             else:
@@ -1877,7 +1877,7 @@ class CompanyService:
                     transform=spec.transform,
                     formula=spec.formula,
                     enabled=plan.is_enabled,
-                    is_required=spec.required,
+                    is_required=plan.is_required,
                     change=change,
                     disabled_reason=plan.disabled_reason,
                 )
@@ -1926,7 +1926,9 @@ class CompanyService:
             )
         label, fields = resolved
         available_columns = self._preset_available_columns(config)
-        planned = presets.plan_rows(fields, available_columns)
+        planned = presets.plan_rows(
+            fields, available_columns, entity_type=entity_type, scope=SCOPE_HEADER
+        )
 
         if dry_run:
             return self._mapping_reset_preview(

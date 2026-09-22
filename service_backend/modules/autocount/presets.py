@@ -41,6 +41,12 @@ from .canonical.masters import (
     ENTITY_WAREHOUSE,
 )
 from .mapping import DEFAULT_STATUS_FORMULA, SCOPE_HEADER, SCOPE_LINE
+from .mapping_catalog import (
+    accepted_fields,
+    line_accepted_fields,
+    line_required_field_names,
+    required_field_names,
+)
 from .models import SOURCE_IMPL_AUTOCOUNT_HTTP, AcEntityConfig, AcFieldMapping
 
 
@@ -523,15 +529,56 @@ class PlannedRow:
     sort_order: int
     #: ``None`` when the row lands ENABLED.
     disabled_reason: Optional[str] = None
+    #: What ``ac_field_mapping.is_required`` gets - the CATALOG's answer, not
+    #: the preset's, whenever the catalog knows this entity (see
+    #: ``planned_is_required``).
+    is_required: bool = False
+
+
+def planned_is_required(
+    spec: PresetField, entity_type: Optional[str], scope: str
+) -> bool:
+    """Whether a seeded row is REQUIRED (sprint-5/12, owner ruling
+    2026-09-22).
+
+    ``mapping_catalog`` is the single source of truth: ``replace_mapping``
+    already writes ``is_required = target in required_field_names(entity)``
+    (``line_required_field_names`` for line scope), so deriving it the same
+    way here makes first-save seeding, a reset and an ordinary Save agree.
+    Before this, a seeded ``name``/``is_active`` row carried
+    ``is_required=False`` (the preset's own flag) while a Save rewrote it to
+    True, and the reset's dry run then reported those rows as ``changed``
+    forever with no visible difference in the dialog.
+
+    Falls back to ``PresetField.required`` only when the catalog has NO
+    entry for that (entity, scope) - e.g. GRN's deliberately empty accepted
+    set, where treating "no entry" as "nothing is required" would silently
+    drop a preset's own intent. ``entity_type=None`` (a caller with no
+    entity in hand) takes the same fallback.
+    """
+    if entity_type is None:
+        return spec.required
+    if scope == SCOPE_LINE:
+        catalog = line_accepted_fields(entity_type)
+        required = line_required_field_names(entity_type)
+    else:
+        catalog = accepted_fields(entity_type)
+        required = required_field_names(entity_type)
+    if not catalog:
+        return spec.required
+    return spec.canonical_field in required
 
 
 def plan_rows(
     fields: Sequence[PresetField],
     available_columns: Optional[Dict[str, str]],
     *,
+    entity_type: Optional[str] = None,
+    scope: str = SCOPE_HEADER,
     sort_start: int = 0,
 ) -> List[PlannedRow]:
-    """The enable rule, split out of ``_seed_rows`` (sprint-5/12, D1).
+    """The enable + required rules, split out of ``_seed_rows`` (sprint-5/12,
+    D1).
 
     A column the task's ACTUAL query does not return lands disabled - still
     an ordinary editable row, never omitted (AC-02-16). ``available_columns
@@ -543,6 +590,9 @@ def plan_rows(
     The preset's own withholding wins the ``disabled_reason`` when BOTH
     causes apply - configuring the missing column would not enable the row,
     so naming it would send the operator down a dead end.
+
+    ``is_required`` comes from the mapping catalog (``planned_is_required``)
+    so a seeded row matches what a Save would write for the same field.
     """
     known = set(available_columns or {})
     planned: List[PlannedRow] = []
@@ -559,6 +609,7 @@ def plan_rows(
                 is_enabled=spec.enabled and column_known,
                 sort_order=order,
                 disabled_reason=reason,
+                is_required=planned_is_required(spec, entity_type, scope),
             )
         )
     return planned
@@ -575,7 +626,13 @@ def _seed_rows(
     *,
     sort_start: int = 0,
 ) -> int:
-    planned = plan_rows(fields, available_columns, sort_start=sort_start)
+    planned = plan_rows(
+        fields,
+        available_columns,
+        entity_type=entity_type,
+        scope=scope,
+        sort_start=sort_start,
+    )
     for row in planned:
         spec = row.spec
         db.add(
@@ -588,7 +645,7 @@ def _seed_rows(
                 canonical_field=spec.canonical_field,
                 transform=spec.transform,
                 formula=spec.formula,
-                is_required=spec.required,
+                is_required=row.is_required,
                 is_enabled=row.is_enabled,
                 sort_order=row.sort_order,
             )
@@ -754,6 +811,21 @@ PRODUCT_HTTP_PRESET = HttpPreset(
         # space, is NEVER collapsed) when `Desc2` is non-empty, else plain
         # `Description`. Sorento derives `is_discontinued`/L-W-H from this
         # TEXT, so parity is won here, not by a second code path.
+        #
+        #     !!  THIS ROW IS WHY THERE IS NO `Discontinued ->
+        #         is_discontinued` ROW (BL-SS-260, owner ruling
+        #         2026-09-22).  !!
+        # Sorento reads "discontinued" off the `****` prefix of the
+        # description TEXT this formula produces (plan 10 D22 + the Sorento
+        # addendum; 2,882 live `SRT` descriptions carry it, pinned by
+        # `test_s10_product_preset.py::test_description_starting_with_stars
+        # _passes_through_unchanged`). `is_discontinued` is therefore absent
+        # from `CanonicalProduct.SINK_FIELDS` and NEVER sent. Seeding a row
+        # for it produced a mapping row the save gate refuses on a PUT and
+        # every ordinary "Save mapping" silently swept away - a lie the
+        # operator had to discover. `CanonicalProduct` still DECLARES the
+        # field (staging/visibility, unchanged); only the preset row is
+        # gone.
         PresetField(
             "Description",
             "description",
@@ -772,7 +844,6 @@ PRODUCT_HTTP_PRESET = HttpPreset(
         # deliberately - one item on the push-flip checklist.
         PresetField("BaseUOM", "uom_code", "string", enabled=False),
         PresetField("IsActive", "is_active", "t_f_bool"),
-        PresetField("Discontinued", "is_discontinued", "t_f_bool"),
         # AC-10-59 (R5) - the pre-filled ItemUOM lookup's own alias, clamped
         # to 0 on a negative source price (a vendor sentinel, `-1.0`, not a
         # genuine price) as a VISIBLE, editable formula - never a coercion

@@ -443,11 +443,17 @@ def test_first_clean_save_seeds_http_preset_product(db):
     )
     # sprint-5/10 (AC-10-04) - the shipped preset gains the
     # `BaseUOMPrice -> list_price` row (R5's clamp formula), so a first
-    # clean save now seeds 9 rows, not 8.
-    assert len(rows) == 9, [r.canonical_field for r in rows]
+    # clean save seeds 9 rows, not 8.
+    # sprint-5/12 (BL-SS-260, owner ruling 2026-09-22) - and back to 8: the
+    # `Discontinued -> is_discontinued` row is GONE, because Sorento derives
+    # "discontinued" from the `****` prefix of the description TEXT (plan 10
+    # D22) and the field is absent from `CanonicalProduct.SINK_FIELDS`, so a
+    # seeded row for it was one the save gate refuses and every ordinary
+    # Save swept away.
+    assert len(rows) == 8, [r.canonical_field for r in rows]
     by_source = {r.source_path: r for r in rows}
     assert by_source["IsActive"].transform == "t_f_bool"
-    assert by_source["Discontinued"].transform == "t_f_bool"
+    assert "Discontinued" not in by_source
 
 
 def test_second_save_does_not_reseed(db):
