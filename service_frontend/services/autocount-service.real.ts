@@ -279,10 +279,10 @@ export const realAutocountService: AutocountService = {
     );
   },
 
-  // sprint-5/12 S1 - wired against the route S2 lands (see the contract
-  // block atop `autocount-service.ts`); not reached by the live UI yet, the
-  // S1 overlay (`withPhase1MappingResetMock`) intercepts this surface until
-  // the real route exists.
+  // sprint-5/12 - the live reset route (see the contract block atop
+  // `autocount-service.ts`). `dryRun: true` answers `AutocountMappingReset
+  // Preview`, `dryRun: false` the fresh `AutocountMappingView` - narrow with
+  // `isMappingResetPreview`.
   resetMappingToPreset(companyId, entityType, input: { dryRun: boolean }) {
     return apiFetch<AutocountMappingResetPreview | AutocountMappingView>(
       `/autocount/companies/${companyId}/entities/${encodeURIComponent(entityType)}/mapping/reset-preset`,

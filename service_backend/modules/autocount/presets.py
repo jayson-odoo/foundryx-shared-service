@@ -41,7 +41,7 @@ from .canonical.masters import (
     ENTITY_WAREHOUSE,
 )
 from .mapping import DEFAULT_STATUS_FORMULA, SCOPE_HEADER, SCOPE_LINE
-from .models import AcFieldMapping
+from .models import SOURCE_IMPL_AUTOCOUNT_HTTP, AcEntityConfig, AcFieldMapping
 
 
 @dataclass(frozen=True)
@@ -499,6 +499,71 @@ DOCUMENT_PRESETS: Dict[str, DocumentPreset] = {
 }
 
 
+# sprint-5/12 (AC-12-12/15, UAC amendment 2026-09-22) - the TWO distinct
+# causes a preset row lands disabled. Never one string for both: the reset
+# dialog must not tell an operator a column is missing when the preset is
+# simply withholding the row, because adding the lookup would change nothing.
+# Mirrored on the frontend by `services/autocount-service.mock.ts`.
+DISABLED_REASON_MISSING_COLUMN = "column not returned by the source"
+DISABLED_REASON_WITHHELD = "withheld by the preset"
+
+
+@dataclass(frozen=True)
+class PlannedRow:
+    """One preset row as ``_seed_rows`` WOULD create it (sprint-5/12, D1).
+
+    Pure: no DB, no session. ``reset_mapping_to_preset``'s dry run and the
+    seed itself both read this, so "would this row land enabled, and why
+    not" can never drift between the preview an operator approves and the
+    rows the apply writes.
+    """
+
+    spec: PresetField
+    is_enabled: bool
+    sort_order: int
+    #: ``None`` when the row lands ENABLED.
+    disabled_reason: Optional[str] = None
+
+
+def plan_rows(
+    fields: Sequence[PresetField],
+    available_columns: Optional[Dict[str, str]],
+    *,
+    sort_start: int = 0,
+) -> List[PlannedRow]:
+    """The enable rule, split out of ``_seed_rows`` (sprint-5/12, D1).
+
+    A column the task's ACTUAL query does not return lands disabled - still
+    an ordinary editable row, never omitted (AC-02-16). ``available_columns
+    =None`` (query never previewed) enables every row, matching "nothing
+    proven wrong yet", EXCEPT a row the preset itself withholds
+    (``PresetField.enabled=False``, AC-10-74's ``uom_code``), which is a
+    policy orthogonal to column availability.
+
+    The preset's own withholding wins the ``disabled_reason`` when BOTH
+    causes apply - configuring the missing column would not enable the row,
+    so naming it would send the operator down a dead end.
+    """
+    known = set(available_columns or {})
+    planned: List[PlannedRow] = []
+    for order, spec in enumerate(fields, start=sort_start):
+        column_known = available_columns is None or spec.source_path in known
+        reason: Optional[str] = None
+        if not spec.enabled:
+            reason = DISABLED_REASON_WITHHELD
+        elif not column_known:
+            reason = DISABLED_REASON_MISSING_COLUMN
+        planned.append(
+            PlannedRow(
+                spec=spec,
+                is_enabled=spec.enabled and column_known,
+                sort_order=order,
+                disabled_reason=reason,
+            )
+        )
+    return planned
+
+
 def _seed_rows(
     db: Session,
     tenant_id: str,
@@ -510,9 +575,9 @@ def _seed_rows(
     *,
     sort_start: int = 0,
 ) -> int:
-    known = set(available_columns or {})
-    created = 0
-    for order, spec in enumerate(fields, start=sort_start):
+    planned = plan_rows(fields, available_columns, sort_start=sort_start)
+    for row in planned:
+        spec = row.spec
         db.add(
             AcFieldMapping(
                 tenant_id=tenant_id,
@@ -524,20 +589,11 @@ def _seed_rows(
                 transform=spec.transform,
                 formula=spec.formula,
                 is_required=spec.required,
-                # A column the task's ACTUAL query does not return lands
-                # disabled - still an ordinary editable row, never omitted
-                # (AC-02-16) - `available_columns=None` (query never
-                # previewed) seeds every row enabled, matching "nothing
-                # proven wrong yet".
-                is_enabled=(
-                    spec.enabled
-                    and (available_columns is None or spec.source_path in known)
-                ),
-                sort_order=order,
+                is_enabled=row.is_enabled,
+                sort_order=row.sort_order,
             )
         )
-        created += 1
-    return created
+    return len(planned)
 
 
 def seed_document_mapping(
@@ -910,3 +966,31 @@ def seed_http_preset_mapping(
     )
     db.flush()
     return created
+
+
+def resolve_preset_rows(
+    config: AcEntityConfig,
+) -> Optional[Tuple[str, Tuple[PresetField, ...]]]:
+    """The HEADER-scope preset for one task, or ``None`` when none is
+    registered (sprint-5/12, AC-12-11, D1/D5).
+
+    The rule is EXACTLY the one first-save seeding already follows, read off
+    the SAME two registries: an ``autocount_http`` task gets
+    ``HTTP_PRESETS[entity_type].rows`` (what ``seed_http_preset_mapping``
+    seeds), anything else gets ``DOCUMENT_PRESETS[entity_type].header``
+    (what ``seed_document_mapping`` seeds into ``SCOPE_HEADER``). A
+    ``supplier``, or a master on a ``sql_database`` source, is registered in
+    neither and answers ``None`` - the route turns that into a 422 and
+    ``MappingViewResponse.hasPreset`` into ``False``, so the UI never has to
+    guess "does this entity have a preset" from its entity type (D5: an HTTP
+    task and a DB task of the SAME entity can legitimately differ).
+
+    Row CONTENT lives in one place per source type (the registries above) and
+    the enable rule in one place for everyone (``plan_rows``) - the two
+    things D1 exists to keep from drifting.
+    """
+    if config.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP:
+        http_preset = HTTP_PRESETS.get(config.entity_type)
+        return (http_preset.label, http_preset.rows) if http_preset else None
+    document_preset = DOCUMENT_PRESETS.get(config.entity_type)
+    return (document_preset.label, document_preset.header) if document_preset else None

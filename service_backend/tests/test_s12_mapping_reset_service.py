@@ -302,7 +302,11 @@ def test_ac_12_12_dry_run_returns_the_exact_diff_classification(client, db):
 
     assert rows_by_field["uom_code"]["change"] == "changed"
     assert rows_by_field["uom_code"]["enabled"] is False
-    assert rows_by_field["uom_code"]["disabledReason"] == "column not returned by the source"
+    # Amended 2026-09-22 (UAC AC-12-12, split by cause): `BaseUOM` IS in the
+    # previewed `result_columns` above - this row is disabled because the
+    # PRESET withholds it (AC-10-74), not because the column is missing. The
+    # original assertion carried the pre-amendment single string.
+    assert rows_by_field["uom_code"]["disabledReason"] == "withheld by the preset"
 
     assert rows_by_field["list_price"]["change"] == "added"
     assert rows_by_field["list_price"]["enabled"] is False
@@ -485,16 +489,30 @@ def test_ac_12_14_reset_and_put_produce_identical_ac_entity_config_deltas(db):
     DELTA of a PUT carrying the (accepted subset of the) preset rows against
     the reset's own delta."""
     conn = _connection(db)
+    # Both sides run on a PREVIEWED task (fixture fix, S2 coder 2026-09-22):
+    # the control PUT carries the preset's `description` join formula, which
+    # names `Desc2`, and `_replace_header_mapping`'s save gate resolves names
+    # against `effective_result_columns` - on a never-previewed task
+    # (`result_columns=None`) that set is EMPTY, so the control 422'd before
+    # it could produce a delta to compare. The `uom` lookup supplies
+    # `BaseUOMPrice` for the `list_price` row's own formula. Nothing about
+    # what this test PINS (the `ac_entity_config` deltas) changes.
+    previewed = ["ItemCode", "Description", "Desc2", "ItemGroup", "ItemBrand", "BaseUOM", "IsActive", "Discontinued"]
+    lookups = [dict(PRODUCT_HTTP_PRESET.lookups[0])]
 
     reset_company = _company(db, conn.id, database_name="MOCHA-CFG-RESET")
-    reset_config = _product_config(db, reset_company, conn.id, result_columns=None)
+    reset_config = _product_config(
+        db, reset_company, conn.id, result_columns=previewed, lookups=lookups,
+    )
     before_reset = _snapshot(reset_config)
     CompanyService(db).reset_mapping_to_preset(DEFAULT_TENANT_ID, reset_company.id, ENTITY_PRODUCT, dry_run=False)
     db.refresh(reset_config)
     delta_reset = {k: v for k, v in _snapshot(reset_config).items() if v != before_reset[k]}
 
     put_company = _company(db, conn.id, database_name="MOCHA-CFG-PUT")
-    put_config = _product_config(db, put_company, conn.id, result_columns=None)
+    put_config = _product_config(
+        db, put_company, conn.id, result_columns=previewed, lookups=lookups,
+    )
     before_put = _snapshot(put_config)
     # `is_discontinued` is captured but NOT a Sorento-accepted target
     # (absent from `CanonicalProduct.SINK_FIELDS`) - the save gate would

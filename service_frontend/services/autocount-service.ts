@@ -55,7 +55,6 @@ import type {
   AutocountSyncRun,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
-import { withPhase1MappingResetMock } from './autocount-service.mock';
 import { realAutocountService } from './autocount-service.real';
 
 export interface AutocountListQuery {
@@ -433,8 +432,9 @@ export interface AutocountService {
 
   // ── mapping preset reset (sprint-5/12, Group B) - AC-12-10..24 ──────────────
   //
-  // BACKEND CONTRACT (S2 must match this EXACTLY - `autocount-service.mock.ts`
-  // is the spec until then, house PHASE 1 MOCK pattern):
+  // BACKEND CONTRACT - LIVE since S2 (`modules/autocount/routers/companies.py`
+  // `reset_entity_mapping_to_preset`, `services/company_service.py`
+  // `reset_mapping_to_preset`, `presets.resolve_preset_rows`/`plan_rows`):
   //
   //   POST /autocount/companies/{companyId}/entities/{entityType}/mapping/reset-preset
   //        {dryRun: boolean} -> AutocountMappingResetPreview (dryRun=true) |
@@ -449,16 +449,14 @@ export interface AutocountService {
   //        the ActionMenu (gated on `hasPreset`), reachable only as a
   //        defensive race the hook still surfaces inline.
   //
-  //   GET .../mapping -> AutocountMappingView gains `hasPreset` (AC-12-21),
+  //   GET .../mapping -> AutocountMappingView carries `hasPreset` (AC-12-21),
   //        resolved server-side by the SAME rule as the reset (AC-12-11,
   //        D5) - the UI never infers it from the entity type.
   //
-  // PHASE 1 MOCK (S1, this slice) - `withPhase1MappingResetMock` overlays
-  // ONLY this surface: `getMapping` gains a CLIENT-SIDE `hasPreset` heuristic
-  // and `resetMappingToPreset` computes the diff/apply against the entity's
-  // REAL, currently-saved mapping (`getMapping`/`updateMapping` are already
-  // live) - a genuine diff and a genuine persisted apply, never a canned
-  // fixture. Retired the moment S2 lands the real route.
+  // The S1 PHASE 1 MOCK overlay (`withPhase1MappingResetMock`) is RETIRED -
+  // `autocount-service.ts` binds `realAutocountService` bare. The mock's own
+  // `resetMappingToPreset` survives inside `mockAutocountService` as the
+  // Vitest double only.
 
   /**
    * Preview or apply a whole-mapping reset to the entity's registered
@@ -610,16 +608,12 @@ export interface AutocountService {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// sprint-5/11 S4 closed the LAST general-purpose PHASE 1 MOCK overlay: every
-// surface through that plan, including the preview-job surface, is backed by
-// FastAPI end to end. sprint-5/12 S1 (this slice) opens ONE NEW overlay,
-// `withPhase1MappingResetMock` (`autocount-service.mock.ts`) - scoped to the
-// mapping preset reset surface only (`hasPreset` + `resetMappingToPreset`,
-// AC-12-10..24), which has no backend route yet (S2). Every other method is
-// delegated straight through to `realAutocountService` unchanged. Retire
-// this overlay the moment S2 lands the real route (bind
-// `realAutocountService` bare again, exactly like sprint-5/11 S4 did).
-// `mockAutocountService` stays importable by the Vitest suite directly (the
-// house service-trio pattern).
+// EVERY surface is backed by FastAPI end to end. sprint-5/12 S1 opened one
+// scoped PHASE 1 MOCK overlay for the mapping preset reset
+// (`withPhase1MappingResetMock`); S2 landed the real route (`POST .../mapping
+// /reset-preset` + server-derived `hasPreset`) and RETIRED it - this binding
+// is `realAutocountService` bare again, exactly as it was after sprint-5/11
+// S4. `mockAutocountService` stays importable by the Vitest suite directly
+// (the house service-trio pattern).
 // ═══════════════════════════════════════════════════════════════════════════
-export const autocountService: AutocountService = withPhase1MappingResetMock(realAutocountService);
+export const autocountService: AutocountService = realAutocountService;

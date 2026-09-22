@@ -1,23 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { ApiError } from '@/lib/api-client';
-import type {
-  AutocountMappingResetPreview,
-  AutocountMappingRow,
-  AutocountMappingUpdate,
-  AutocountMappingView,
-} from '@/types/autocount';
+import type { AutocountMappingRow, AutocountMappingView } from '@/types/autocount';
 import { isMappingResetPreview, isMappingResetPreviewEmpty } from '@/types/autocount';
-import {
-  computeMappingResetDiff,
-  mockAutocountService as service,
-  withPhase1MappingResetMock,
-} from './autocount-service.mock';
+import { computeMappingResetDiff, mockAutocountService as service } from './autocount-service.mock';
 
 /**
  * Mapping preset reset (sprint-5/12, Group B - AC-12-10..24). `computeMapping
  * ResetDiff` is tested directly with hand-built inputs (every AC-12-20 state,
- * no service round trip); `mockAutocountService`/`withPhase1MappingResetMock`
- * are tested through the service boundary the UI actually calls.
+ * no service round trip); `mockAutocountService` is tested through the
+ * service boundary. The S1 PHASE 1 MOCK overlay and its own suite are GONE -
+ * S2 landed the real route and `autocount-service.ts` binds
+ * `realAutocountService` bare.
  */
 
 function row(overrides: Partial<AutocountMappingRow> = {}): AutocountMappingRow {
@@ -169,100 +161,5 @@ describe('mockAutocountService.resetMappingToPreset (Vitest double)', () => {
     expect(view.rows.map((r) => r.canonicalField)).toEqual(
       expect.arrayContaining(['code', 'name', 'description', 'list_price']),
     );
-  });
-});
-
-describe('withPhase1MappingResetMock (S1 overlay bound by autocount-service.ts)', () => {
-  function fakeReal(view: AutocountMappingView) {
-    const calls: string[] = [];
-    const written: string[][] = [];
-    return {
-      calls,
-      written,
-      service: {
-        async getMapping() {
-          calls.push('getMapping');
-          return view;
-        },
-        async updateMapping(_companyId: string, _entityType: string, input: AutocountMappingUpdate) {
-          calls.push('updateMapping');
-          written.push(input.rows.map((r) => r.sorentoField));
-          return { ...view, rows: [] };
-        },
-        // Every other method throws if called - the overlay must delegate,
-        // never reimplement, anything but hasPreset + resetMappingToPreset.
-      } as unknown as Parameters<typeof withPhase1MappingResetMock>[0],
-    };
-  }
-
-  const BASE_VIEW: AutocountMappingView = {
-    entityType: 'product',
-    rows: [],
-    // The server's OWN accepted catalog - deliberately WITHOUT
-    // `is_discontinued` (captured by the preset, absent from
-    // `CanonicalProduct.SINK_FIELDS`, BL-SS-260), which is exactly the row
-    // the overlay's PUT has to leave out.
-    sorentoFields: [
-      { field: 'code', required: true },
-      { field: 'name', required: true },
-      { field: 'description', required: false },
-      { field: 'uom_code', required: false },
-      { field: 'list_price', required: false },
-      { field: 'category_code', required: false },
-      { field: 'brand_code', required: false },
-      { field: 'is_active', required: true },
-    ],
-    acFields: ['ItemCode'],
-    lineSorentoFields: [],
-    lineAcFields: [],
-  };
-
-  it('getMapping gains a client-side hasPreset for a registered entity', async () => {
-    const { service: real } = fakeReal(BASE_VIEW);
-    const overlaid = withPhase1MappingResetMock(real);
-    const view = await overlaid.getMapping('c1', 'product');
-    expect(view.hasPreset).toBe(true);
-  });
-
-  it('getMapping never overrides a server-supplied hasPreset', async () => {
-    const { service: real } = fakeReal({ ...BASE_VIEW, hasPreset: false });
-    const overlaid = withPhase1MappingResetMock(real);
-    const view = await overlaid.getMapping('c1', 'product');
-    expect(view.hasPreset).toBe(false);
-  });
-
-  it('resetMappingToPreset 422s for an unregistered entity without ever calling real', async () => {
-    const { calls, service: real } = fakeReal(BASE_VIEW);
-    const overlaid = withPhase1MappingResetMock(real);
-    await expect(
-      overlaid.resetMappingToPreset('c1', 'goods_received_note', { dryRun: true }),
-    ).rejects.toBeInstanceOf(ApiError);
-    expect(calls).toEqual([]);
-  });
-
-  it('dryRun=true reads the REAL current mapping and returns a diff, calling no write', async () => {
-    const { calls, service: real } = fakeReal(BASE_VIEW);
-    const overlaid = withPhase1MappingResetMock(real);
-    const result = await overlaid.resetMappingToPreset('c1', 'product', { dryRun: true });
-    expect(isMappingResetPreview(result)).toBe(true);
-    expect(calls).toEqual(['getMapping']);
-  });
-
-  it('dryRun=false applies through the REAL updateMapping and returns hasPreset: true', async () => {
-    const { calls, written, service: real } = fakeReal(BASE_VIEW);
-    const overlaid = withPhase1MappingResetMock(real);
-    const result = await overlaid.resetMappingToPreset('c1', 'product', { dryRun: false });
-    expect(isMappingResetPreview(result)).toBe(false);
-    expect((result as AutocountMappingView).hasPreset).toBe(true);
-    expect(calls).toEqual(['getMapping', 'updateMapping']);
-    // PHASE 1 ONLY (BL-SS-260): the PUT carries the accepted subset - the
-    // preset's `is_discontinued` row is not a Sorento-accepted target, so the
-    // save gate would 422 the whole apply. The DRY RUN still shows it.
-    expect(written[0]).not.toContain('is_discontinued');
-    expect(written[0]).toContain('list_price');
-    const preview = (await overlaid.resetMappingToPreset('c1', 'product', {
-      dryRun: true,
-    })) as AutocountMappingResetPreview;
-    expect(preview.rows.map((r) => r.canonicalField)).toContain('is_discontinued');
   });
 });

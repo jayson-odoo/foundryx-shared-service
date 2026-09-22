@@ -3477,9 +3477,10 @@ function mockMappingPresets(databaseName: string, entityType: string): Autocount
 // routers/sync.py`, `presets.py`), same as `getMapping`/`updateMapping`
 // since S2. `mockMappingPresets`/`documentMappingView`/`mockMappingView`
 // above remain as the Vitest fixture data (`mockAutocountService`) the
-// builder's frontend-first tests exercise directly. sprint-5/12 S1 (below)
-// reopens ONE scoped overlay (`withPhase1MappingResetMock`, bound by
-// `autocount-service.ts`) for the mapping preset reset surface only.
+// builder's frontend-first tests exercise directly. sprint-5/12 S1's scoped
+// overlay (`withPhase1MappingResetMock`) is GONE - S2 landed the real
+// `POST .../mapping/reset-preset` route and `autocount-service.ts` binds
+// `realAutocountService` bare.
 
 // ── mapping preset reset (sprint-5/12, Group B - AC-12-10..24) ───────────────
 //
@@ -3492,9 +3493,9 @@ function mockMappingPresets(databaseName: string, entityType: string): Autocount
 // description` row sprint-5/10 replaced server-side. Reusing that stale
 // table here would re-encode, in the very feature meant to fix it, the exact
 // production drift this plan exists to correct (see the plan's "Why", §1).
-// Retired the moment S2 lands the real `resolve_preset_rows` - this table's
-// job is matching that function's OUTPUT byte for byte until then, never a
-// second registry to maintain long-term.
+// Since S2 this table drives the VITEST DOUBLE only
+// (`mockAutocountService.resetMappingToPreset`) - the live UI reads the real
+// `presets.resolve_preset_rows`, so nothing a user sees can drift with it.
 
 interface MappingResetPresetRow {
   sourcePath: string;
@@ -3699,55 +3700,4 @@ function mappingResetWriteRows(
   }));
 }
 
-/**
- * PHASE 1 MOCK OVERLAY (sprint-5/12 S1) - what `autocount-service.ts` binds.
- * Every OTHER surface (including `getMapping`/`updateMapping`, both real
- * since earlier plans) is delegated straight through to `real` - this
- * overlay adds exactly two things:
- *   - `hasPreset` on `getMapping`'s result (AC-12-21) - a CLIENT-SIDE
- *     heuristic (entity type registered in `MAPPING_RESET_PRESETS`) until S2
- *     lands the server-derived field (D5): a `sql_db` task of the same
- *     entity name is indistinguishable here (no `sourceImpl` on the wire
- *     view) - the real backend resolves it correctly by source type.
- *   - `resetMappingToPreset` itself (no backend route yet) - computes the
- *     dry-run diff / apply against the entity's REAL, currently-saved
- *     mapping (one live `getMapping` read, and a real `updateMapping` PUT
- *     on apply), so an agent-browser run against a genuinely seeded task
- *     sees a genuine diff and a genuine persisted result - never a canned
- *     fixture, exactly the `withPhase1PullMock` pattern (sprint-5/10 S2).
- */
-export function withPhase1MappingResetMock(real: AutocountService): AutocountService {
-  return {
-    ...real,
-    async getMapping(companyId, entityType) {
-      const view = await real.getMapping(companyId, entityType);
-      return { ...view, hasPreset: view.hasPreset ?? mappingResetHasPreset(entityType) };
-    },
-    async resetMappingToPreset(companyId, entityType, input) {
-      const preset = MAPPING_RESET_PRESETS[entityType];
-      if (!preset) throw new ApiError('No preset is registered for this entity.', 422);
-      const view = await real.getMapping(companyId, entityType);
-      if (input.dryRun) {
-        return computeMappingResetDiff(preset, view.rows, view.acFields);
-      }
-      //     !!  PHASE 1 ONLY - THE MOCK APPLIES THROUGH THE SAVE GATE.  !!
-      // A reset is a SEED (S2 calls `presets._seed_rows` directly, exactly
-      // like a first-save seed), so it can legitimately create a row the
-      // `PUT .../mapping` guard refuses - `is_discontinued` is captured by
-      // the product preset but absent from `CanonicalProduct.SINK_FIELDS`,
-      // so the save gate 422s it (BL-SS-260). With no reset route yet, this
-      // overlay has only the PUT, so it submits the accepted subset
-      // (`view.sorentoFields`, the server's own catalog) rather than
-      // failing the whole apply on one non-deliverable row. The dry-run
-      // preview above is NOT filtered - it shows the true preset, which is
-      // what S2 will actually write. Dies with this overlay.
-      const accepted = new Set(view.sorentoFields.map((f) => f.field));
-      const rows = mappingResetWriteRows(preset, view.acFields).filter((r) =>
-        accepted.has(r.sorentoField),
-      );
-      const next = await real.updateMapping(companyId, entityType, { rows });
-      return { ...next, hasPreset: true };
-    },
-  };
-}
 
