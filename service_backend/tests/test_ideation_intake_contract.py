@@ -16,6 +16,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.database import get_db
 from app.main import app
 from app.models import DEFAULT_TENANT_ID
@@ -944,11 +945,13 @@ def test_cancel_with_no_rejected_status_on_forked_tenant_is_409_not_500(setup):
 # ── AC-1114 / AC-1118 - complete link is the S5 public status URL ────────────
 
 
-def test_ac_1114_1118_complete_link_and_reply_text(setup):
+def test_ac_1114_1118_complete_link_and_reply_text(setup, monkeypatch):
     """AC-1114/1118: a complete response for a WhatsApp-source idea carries
-    link = {product_domain_base}/public/ideas/{status_token} (not the old SSO
-    idea-detail URL), and reply_text names the idea number + link + WhatsApp
-    update line."""
+    link = {settings.frontend_url}/public/ideas/{status_token} (the SHARED-
+    SERVICE frontend, not the product's own delivery domain, not the old SSO
+    idea-detail URL - review round 2), and reply_text names the idea number +
+    link + WhatsApp update line."""
+    monkeypatch.setattr(settings, "frontend_url", "https://fe.example.test")
     s = setup
     final = _complete_flow(
         s, "show promo price in red on price tags", title="Show promo price in red"
@@ -956,7 +959,7 @@ def test_ac_1114_1118_complete_link_and_reply_text(setup):
     row = _idea_row(s["factory"], final["draft_id"])
     token = getattr(row, "status_token", None)
     assert token is not None, "status_token not minted"
-    assert final["link"] == f"https://fe-sorento.foundryx.my/public/ideas/{token}"
+    assert final["link"] == f"https://fe.example.test/public/ideas/{token}"
     assert "/ideation/ideas/" not in (final["link"] or "")
 
     lines = final["reply_text"].split("\n")

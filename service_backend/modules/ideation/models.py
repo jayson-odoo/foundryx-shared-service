@@ -71,10 +71,12 @@ def _uuid() -> str:
 class ProductDelivery(IdeationBase):
     """Software-product delivery config (AC-A-06). 1:1 with a ``public.products``
     row (``product_id`` UNIQUE). ``product_domain_base`` is a validated absolute
-    origin (e.g. ``https://fe-sorento.foundryx.my``) stored verbatim and used to
-    mint product-domain idea links (``{product_domain_base}/ideas/{idea_id}``,
-    AC-A-38). Only software products get a row; a product without one has no
-    delivery origin yet."""
+    origin (e.g. ``https://fe-sorento.foundryx.my``) stored verbatim - the
+    embed adapter's allowed-origins/iframe-host setting. It no longer mints
+    the public idea-status link (S5 review round 2): that link lives on the
+    shared-service frontend (``settings.frontend_url``), not the product's
+    own domain - see ``services/sinks.py::mint_idea_link``. Only software
+    products get a row; a product without one has no delivery origin yet."""
 
     __tablename__ = "product_delivery"
 

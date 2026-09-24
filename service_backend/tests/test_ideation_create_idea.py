@@ -22,6 +22,7 @@ Test-first (PRINCIPLES.md): written before the implementation exists.
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.database import get_db
 from app.main import app
 from app.models import DEFAULT_TENANT_ID
@@ -366,10 +367,13 @@ def test_revision_loop_over_three_turns(setup):
 # ── AC-A-20 - completion on explicit confirm ──────────────────────────────────
 
 
-def test_confirm_completes_with_link(setup):
+def test_confirm_completes_with_link(setup, monkeypatch):
     """AC-A-20 (updated S5) - confirm=true -> complete; draft moves to
-    captured; link is the S5 public idea-status page URL (status_token, not
-    the idea's own id)."""
+    captured; link is the S5 public idea-status page URL on the SHARED-
+    SERVICE frontend (``settings.frontend_url``, review round 2 - not the
+    product's own delivery domain), keyed by status_token, not the idea's
+    own id."""
+    monkeypatch.setattr(settings, "frontend_url", "https://fe.example.test")
     s = setup
     r1 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"], fields=_FULL_FIELDS
@@ -388,7 +392,7 @@ def test_confirm_completes_with_link(setup):
     assert body["status"] == "complete"
     token = _idea_field(s["factory"], draft_id, "status_token")
     assert token is not None
-    assert body["link"] == f"https://fe-sorento.foundryx.my/public/ideas/{token}"
+    assert body["link"] == f"https://fe.example.test/public/ideas/{token}"
     assert _idea_status_key(s["factory"], draft_id) == "captured"
 
     # On completion the captured answers are promoted to first-class Idea columns.
@@ -405,9 +409,10 @@ def test_confirm_completes_with_link(setup):
         db.close()
 
 
-def test_confirm_on_captured_is_idempotent(setup):
+def test_confirm_on_captured_is_idempotent(setup, monkeypatch):
     """AC-A-16/20 - re-confirming a captured draft is a no-op returning complete +
     the same link; no second Idea, no double-advance."""
+    monkeypatch.setattr(settings, "frontend_url", "https://fe.example.test")
     s = setup
     r1 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"], fields=_FULL_FIELDS
@@ -425,7 +430,7 @@ def test_confirm_on_captured_is_idempotent(setup):
     body = r3.json()
     assert body["status"] == "complete"
     token = _idea_field(s["factory"], draft_id, "status_token")
-    assert body["link"] == f"https://fe-sorento.foundryx.my/public/ideas/{token}"
+    assert body["link"] == f"https://fe.example.test/public/ideas/{token}"
     assert _idea_count(s["factory"]) == 1
     assert _idea_status_key(s["factory"], draft_id) == "captured"
 
@@ -515,10 +520,11 @@ def test_auth_required(setup):
 # ── reply_text determinism ────────────────────────────────────────────────────
 
 
-def test_reply_text_deterministic(setup):
+def test_reply_text_deterministic(setup, monkeypatch):
     """AC-A-18 (updated S1 point-form templates, R10/R16) - reply_text is a
     deterministic template: collecting echoes the recap + asks the next
     question; review asks to submit; complete carries the link."""
+    monkeypatch.setattr(settings, "frontend_url", "https://fe.example.test")
     s = setup
     r1 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"],
@@ -541,7 +547,7 @@ def test_reply_text_deterministic(setup):
         draft_id=draft_id, confirm=True,
     )
     token = _idea_field(s["factory"], draft_id, "status_token")
-    assert f"https://fe-sorento.foundryx.my/public/ideas/{token}" in r3.json()["reply_text"]
+    assert f"https://fe.example.test/public/ideas/{token}" in r3.json()["reply_text"]
 
 
 # ── WS-A / AC-CAP-1..3 - submitter_name stored verbatim ───────────────────────
@@ -734,11 +740,12 @@ def test_discard_draft_id_rejects_old_draft(setup):
 # ── issue #1179 - is_test flows through the real intake, stamped on create ────
 
 
-def test_is_test_persists_on_create_and_survives_turns(setup):
+def test_is_test_persists_on_create_and_survives_turns(setup, monkeypatch):
     """issue #1179 - ``is_test: true`` on turn 1 persists on the draft, and a
     continuation turn (which never re-sends it) keeps the original value all
     the way through confirm/complete - the real intake path runs (real reply
     text, real link), only the row is flagged."""
+    monkeypatch.setattr(settings, "frontend_url", "https://fe.example.test")
     s = setup
     r1 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"],
@@ -762,7 +769,7 @@ def test_is_test_persists_on_create_and_survives_turns(setup):
     )
     assert r3.json()["status"] == "complete"
     token = _idea_field(s["factory"], draft_id, "status_token")
-    assert r3.json()["link"] == f"https://fe-sorento.foundryx.my/public/ideas/{token}"
+    assert r3.json()["link"] == f"https://fe.example.test/public/ideas/{token}"
     assert _idea_status_key(s["factory"], draft_id) == "captured"
     assert _idea_field(s["factory"], draft_id, "is_test") is True
 

@@ -12,9 +12,10 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.services import status_machine
 
-from ..models import Idea, ProductDelivery
+from ..models import Idea
 from .numbering import mint_idea_identity
 from .statuses import IDEA_ENTITY, idea_status_id
 
@@ -41,30 +42,21 @@ def sync_idea_columns_from_captured(idea: Idea) -> None:
 
 
 def mint_idea_link(db: Session, idea: Idea) -> Optional[str]:
-    """The public idea-status-page link ``{product_domain_base}/public/ideas/
+    """The public idea-status-page link ``{settings.frontend_url}/public/ideas/
     {status_token}`` (S5, AC-1114/1118 - retires the old SSO
-    ``/ideas/{idea_id}`` shape). ``None`` when the product has no delivery
-    origin configured, OR the idea has no ``status_token`` yet (review round
-    1, should-fix #6: this is a pure READ - it never mints; a caller that
-    needs one minted calls ``numbering.mint_idea_identity`` first, same as
-    the sink does. A pre-lane captured row with no token is backfilled once
-    by migration 0010, not re-minted on every read - minting inside a getter
-    that runs AFTER a caller's own ``db.commit()`` silently drops the mutation,
-    exactly the bug this fix removes)."""
+    ``/ideas/{idea_id}`` shape). The page lives on the SHARED-SERVICE
+    frontend, not the product's own delivery origin (``ProductDelivery.
+    product_domain_base`` is the PRODUCT's domain - e.g. sorento - which does
+    not serve this route; ``settings.frontend_url`` is the same origin the
+    email ceremony links already use, ``app/config.py``). ``None`` only when
+    the idea has no ``status_token`` yet (review round 1, should-fix #6: this
+    is a pure READ - it never mints; a caller that needs one minted calls
+    ``numbering.mint_idea_identity`` first, same as the sink does. A pre-lane
+    captured row with no token is backfilled once by migration 0010, not
+    re-minted on every read)."""
     if not idea.status_token:
         return None
-    row = (
-        db.query(ProductDelivery)
-        .filter(
-            ProductDelivery.tenant_id == idea.tenant_id,
-            ProductDelivery.product_id == idea.product_id,
-        )
-        .first()
-    )
-    base = (row.product_domain_base or "").rstrip("/") if row else ""
-    if not base:
-        return None
-    return f"{base}/public/ideas/{idea.status_token}"
+    return f"{settings.frontend_url.rstrip('/')}/public/ideas/{idea.status_token}"
 
 
 def ideation_on_complete_sink(

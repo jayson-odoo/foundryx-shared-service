@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.database import get_db
 from app.main import app
 from app.models import DEFAULT_TENANT_ID
@@ -306,12 +307,16 @@ def test_ac_1603_token_is_never_the_sequential_idea_number(setup):
 # ── mint_idea_link never mints, only reads (review round 2, N1c) ─────────────
 
 
-def test_mint_idea_link_none_when_status_token_missing_even_with_delivery_base(setup):
+def test_mint_idea_link_none_when_status_token_missing(setup, monkeypatch):
     """``mint_idea_link`` is a pure READ (review round 1, should-fix #6): a
-    captured row with NO ``status_token`` yet returns None even though the
-    product HAS a delivery base configured (``setup`` already sets one) -
-    minting happens only in ``numbering.mint_idea_identity`` (the sink), never
-    as a side effect of reading the link."""
+    captured row with NO ``status_token`` yet returns None even though
+    ``settings.frontend_url`` (the ONLY input the link now needs, review
+    round 2) is configured - minting happens only in
+    ``numbering.mint_idea_identity`` (the sink), never as a side effect of
+    reading the link. The product's OWN delivery base plays no part any more
+    (the page lives on the shared-service frontend, not the product's
+    domain)."""
+    monkeypatch.setattr(settings, "frontend_url", "https://fe.example.test")
     from modules.ideation.services.sinks import mint_idea_link
 
     s = setup
@@ -330,9 +335,12 @@ def test_mint_idea_link_none_when_status_token_missing_even_with_delivery_base(s
 # ── AC-1604 - is_test idea still gets a token + link ──────────────────────────
 
 
-def test_ac_1604_is_test_idea_still_gets_token_and_link(setup):
+def test_ac_1604_is_test_idea_still_gets_token_and_link(setup, monkeypatch):
     """AC-1604: a completed is_test idea still gets a status_token and a link,
-    the same as any other idea."""
+    the same as any other idea. The link is on the shared-service frontend
+    (``settings.frontend_url``, review round 2), not the product's own
+    delivery domain."""
+    monkeypatch.setattr(settings, "frontend_url", "https://fe.example.test")
     from modules.ideation.models import Idea
     from modules.ideation.services.sinks import ideation_on_complete_sink, mint_idea_link
     from modules.ideation.services.statuses import initial_idea_status_id
@@ -356,7 +364,7 @@ def test_ac_1604_is_test_idea_still_gets_token_and_link(setup):
         assert token is not None
         link = mint_idea_link(db, idea)
         assert link is not None
-        assert link == f"https://fe-sorento.foundryx.my/public/ideas/{token}"
+        assert link == f"https://fe.example.test/public/ideas/{token}"
     finally:
         db.close()
 

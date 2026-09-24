@@ -247,6 +247,27 @@ def test_pg_trgm_provisioning_noop_on_sqlite(ideation_client):
         db.close()
 
 
+def test_bootstrap_creates_pg_trgm_extension_before_create_all():
+    """Review round 2 (N2): on a FRESH Postgres database,
+    ``bootstrap.install()`` runs ``create_schema_and_tables`` (create_all)
+    BEFORE the per-module Alembic step, which then stamps head with no DDL
+    once the tables exist (``app/module_platform/migrations.py``'s
+    legacy-adopt path) - so migration 0002's own ``CREATE EXTENSION pg_trgm``
+    never fires and every dedup ``similarity()`` call 500s. Structural check:
+    ``create_schema_and_tables``'s own source creates the extension, and
+    does so textually BEFORE the ``create_all`` call (so it fires even on the
+    very first boot, before any table exists)."""
+    import inspect
+
+    from modules.ideation.bootstrap import create_schema_and_tables
+
+    source = inspect.getsource(create_schema_and_tables)
+    assert "CREATE EXTENSION IF NOT EXISTS pg_trgm" in source
+    extension_pos = source.index("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+    create_all_pos = source.index("create_all(")
+    assert extension_pos < create_all_pos
+
+
 def test_dedup_service_uses_python_fallback_on_sqlite(ideation_client):
     """AC-A-32 - on SQLite the DedupService computes similarity in Python (difflib)
     and still returns a match id for near-duplicate text."""

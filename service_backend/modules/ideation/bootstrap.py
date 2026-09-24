@@ -116,11 +116,30 @@ def register_engine_entities() -> None:
 
 
 def create_schema_and_tables(engine: Engine) -> None:
-    """Create the module schema (Postgres) + all module tables. Idempotent."""
+    """Create the module schema (Postgres) + the ``pg_trgm`` extension + all
+    module tables. Idempotent.
+
+    Order matters on a FRESH Postgres database (review round 2, N2): this
+    runs on EVERY boot before the per-module Alembic step
+    (``run_module_migrations``), which then just STAMPS head with no DDL once
+    the module's tables already exist (the legacy-create_all-adopt path in
+    ``app/module_platform/migrations.py``) - so migration 0002's own
+    ``CREATE EXTENSION pg_trgm`` never fires on a brand-new install and every
+    dedup ``similarity()`` query 500s (the function does not exist). The
+    extension is created right after the schema, BEFORE ``create_all`` (same
+    spirit as the ``ideas_idea_number_seq`` fix in ``models.py``); the
+    trigram INDEX itself needs the ``ideas`` table to exist first, so it is
+    added via ``ensure_pg_trgm_index`` right after ``create_all``, same call."""
     if engine.dialect.name == "postgresql":
         with engine.begin() as conn:
             conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{IDEATION_SCHEMA}"'))
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
     IdeationBase.metadata.create_all(bind=engine)
+    if engine.dialect.name == "postgresql":
+        from .services.dedup import ensure_pg_trgm_index
+
+        with engine.begin() as conn:
+            ensure_pg_trgm_index(conn)
 
 
 def install(engine: Engine, db: Session) -> None:
