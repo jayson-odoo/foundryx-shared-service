@@ -24,10 +24,22 @@ Two behaviours, both for registered prefixes only:
    surfaces carry no cookie by design (plan 34 D-A7B-4) and must never
    advertise credentialed CORS.
 
+3. **It dedupes `Vary`.** These routes set their own `Vary: Origin` (the
+   allowlist is per-CHANNEL tenant data - see `cors_headers_for`), and
+   `CORSMiddleware` ALSO appends `Origin` to `Vary` on every response whose
+   request carries an `Origin` header. Starlette < 1.7's `CORSMiddleware`
+   used `MutableHeaders.add_vary_header`, which is idempotent, so the two
+   collapsed into one `Origin` for free. Starlette 1.7 replaced that with a
+   blind `", ".join([*headers.getlist("Vary"), "Origin"])` with no
+   dedup, so the same combination now emits `Vary: Origin, Origin` - a
+   starlette-version-dependent duplicate, not a bug in either header being
+   set. Collapsing repeated tokens here keeps the response correct on any
+   starlette version without either side needing to know about the other.
+
 Ordering: `add_middleware` inserts at index 0 (LIFO), so this must be
 registered AFTER `CORSMiddleware` in `app/main.py` to sit OUTSIDE it - which
-is what lets it short-circuit the preflight and edit the credentials header
-`CORSMiddleware` already added.
+is what lets it short-circuit the preflight and edit the credentials/vary
+headers `CORSMiddleware` already added.
 """
 import logging
 from typing import Any, Dict, List, Tuple
@@ -51,6 +63,24 @@ def _header(scope: Dict[str, Any], name: bytes) -> str:
         if key == name:
             return value.decode("latin-1")
     return ""
+
+
+def _dedupe_vary(value: bytes) -> bytes:
+    """Collapse repeated, comma-separated tokens in a `Vary` header value,
+    case-insensitively, keeping the first-seen casing and order. `Origin,
+    Origin` -> `Origin`; already-clean input is returned unchanged."""
+    seen: List[str] = []
+    seen_lower = set()
+    for token in value.decode("latin-1").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        lowered = token.lower()
+        if lowered in seen_lower:
+            continue
+        seen_lower.add(lowered)
+        seen.append(token)
+    return ", ".join(seen).encode("latin-1")
 
 
 class PublicCorsMiddleware:
@@ -80,11 +110,22 @@ class PublicCorsMiddleware:
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
                 message = dict(message)
-                message["headers"] = [
-                    (key, value)
-                    for key, value in message.get("headers") or ()
-                    if key.lower() != b"access-control-allow-credentials"
-                ]
+                kept: List[Tuple[bytes, bytes]] = []
+                vary_values: List[bytes] = []
+                vary_index = None
+                for key, value in message.get("headers") or ():
+                    if key.lower() == b"access-control-allow-credentials":
+                        continue
+                    if key.lower() == b"vary":
+                        vary_values.append(value)
+                        if vary_index is None:
+                            vary_index = len(kept)
+                        continue
+                    kept.append((key, value))
+                if vary_values:
+                    merged = _dedupe_vary(b", ".join(vary_values))
+                    kept.insert(vary_index, (b"vary", merged))
+                message["headers"] = kept
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
