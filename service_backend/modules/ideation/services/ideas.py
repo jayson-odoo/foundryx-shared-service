@@ -67,6 +67,7 @@ class IdeaReadService:
             productId=idea.product_id,
             productName=product.name if product else "Unknown product",
             status=status.key if status else "draft",
+            title=idea.title,
             problem=idea.problem,
             proposedSolution=idea.proposed_solution,
             impact=idea.impact,
@@ -74,12 +75,14 @@ class IdeaReadService:
             rawText=idea.raw_text or "",
             source=idea.source,
             submitterName=submitter,
+            submitterTier=idea.submitter_tier,
             upvotes=idea.upvotes or 0,
             downvotes=idea.downvotes or 0,
             myVote=my_vote if my_vote in ("up", "down") else None,
             priority=idea.priority or 0,
             attachments=idea_attachments,
             createdAt=idea.created_at,
+            ideaNumber=idea.idea_number,
             isTest=bool(idea.is_test),
         )
 

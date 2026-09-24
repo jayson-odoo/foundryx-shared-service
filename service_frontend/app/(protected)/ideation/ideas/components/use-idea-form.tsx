@@ -217,26 +217,30 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       else form.reset(toFormValues(idea));
     };
 
+    // The visible label is the idea's title when set, falling back to the
+    // problem text (S1, AC-1106) - a pre-lane idea has no title.
+    const visibleLabel = creating ? 'New idea' : (idea?.title ?? idea?.problem ?? 'Idea');
+
     return {
       breadcrumb:
         mode === 'embed'
           ? [
               { label: 'Ideas', href: paths.listHref },
-              { label: creating ? 'New idea' : (idea?.problem ?? 'Idea') },
+              { label: visibleLabel },
             ]
           : [
               { label: 'Home', href: '/' },
               { label: 'Ideation', href: paths.listHref },
               { label: 'Ideas', href: paths.listHref },
-              { label: creating ? 'New idea' : (idea?.problem ?? 'Idea') },
+              { label: visibleLabel },
             ],
       backHref: paths.listHref,
       backLabel: 'Back to ideas',
-      title: creating ? 'New idea' : (idea?.problem ?? 'Idea'),
+      title: visibleLabel,
       subtitle: creating
         ? 'Capture a new idea'
         : idea
-          ? `${idea.productName} · ${idea.submitterName}`
+          ? `${idea.productName} · ${idea.submitterName}${idea.submitterTier ? ` · ${idea.submitterTier}` : ''}`
           : undefined,
       avatar: (
         <span className="flex size-11 items-center justify-center rounded-full bg-primary/10">

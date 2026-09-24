@@ -73,6 +73,11 @@ IDEA_TRANSITION_SEED: List[Tuple[str, str, str, str, int]] = [
     ("idea-tr-arch-bld", "building", "archived", "Archive", 14),
     ("idea-tr-arch-dlv", "delivered", "archived", "Archive", 15),
     ("idea-tr-restore", "archived", "captured", "Restore", 16),
+    # The duplicate-vote off-ramp (S1, R17): a WhatsApp submitter who chooses
+    # "vote" on a duplicate_candidate closes their own draft straight to
+    # ``duplicate`` (never through ``captured``) - a second edge FROM draft,
+    # alongside the existing ``idea-tr-draft-reject`` (cancel).
+    ("idea-tr-draft-vote", "draft", "duplicate", "Vote with existing", 17),
 ]
 
 

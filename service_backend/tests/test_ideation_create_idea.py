@@ -22,6 +22,7 @@ Test-first (PRINCIPLES.md): written before the implementation exists.
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import settings
 from app.database import get_db
 from app.main import app
 from app.models import DEFAULT_TENANT_ID
@@ -207,7 +208,9 @@ def test_intake_definition_registered_and_valid(ideation_client):
 
 
 def test_completion_rule_computes_captured_missing():
-    """AC-A-15 - captured = answered keys->values; missing = required unanswered."""
+    """AC-A-15 (updated S1, R15) - captured = answered keys->values; missing =
+    required unanswered. Only ``problem`` is required now - proposed_solution/
+    impact/department are optional and never appear in ``missing``."""
     from modules.ideation.services.intake_definitions import get_intake_definition
 
     definition = get_intake_definition("ideation")
@@ -215,36 +218,34 @@ def test_completion_rule_computes_captured_missing():
         {"problem": "x", "proposed_solution": "y"}
     )
     assert captured == {"problem": "x", "proposed_solution": "y"}
-    assert "impact" in missing and "department" in missing
-    assert "problem" not in missing
+    assert missing == []
 
-    captured2, missing2 = definition.completion_rule(
-        {
-            "problem": "x",
-            "proposed_solution": "y",
-            "impact": "faster",
-            "department": "CS",
-        }
-    )
-    assert missing2 == []
+    captured2, missing2 = definition.completion_rule({})
+    assert missing2 == ["problem"]
+    assert captured2 == {}
 
 
 # ── AC-A-17/18 - endpoint input / output contract ─────────────────────────────
 
 
 def test_input_output_shape(setup):
-    """AC-A-17/18 - accepts the §5.1 input; returns exactly
-    {draft_id,status,captured,missing,reply_text} on a collecting turn."""
+    """AC-A-17/18 (updated S1, AC-1116) - accepts the §5.1 input; returns the
+    full ten-key envelope on a collecting turn. Only ``problem`` is required
+    now (R15); ``proposed_solution`` is nominated as ``next_field`` next."""
     s = setup
     res = _create_idea(s["client"], s["key"], s["contact_id"], s["product_id"])
     assert res.status_code == 200, res.text
     body = res.json()
-    assert set(body.keys()) == {"draft_id", "status", "captured", "missing", "reply_text"}
+    assert set(body.keys()) == {
+        "draft_id", "status", "captured", "missing", "reply_text",
+        "next_field", "title", "duplicate_candidate", "idea_number", "link",
+    }
     assert body["status"] == "collecting"
     assert isinstance(body["draft_id"], str) and body["draft_id"]
-    # problem seeded from message_text; the rest still missing.
+    # problem seeded from message_text; only it is required.
     assert body["captured"].get("problem")
-    assert set(body["missing"]) == {"proposed_solution", "impact", "department"}
+    assert body["missing"] == []
+    assert body["next_field"] == "proposed_solution"
 
 
 def test_draft_created_on_turn_1(setup):
@@ -271,7 +272,7 @@ def test_one_shot_complete_returns_review(setup):
     body = res.json()
     assert body["status"] == "review"
     assert body["missing"] == []
-    assert "link" not in body  # not complete yet
+    assert body["link"] is None  # not complete yet (AC-1116: always present, null)
     assert _idea_status_key(s["factory"], body["draft_id"]) == "draft"
 
 
@@ -300,8 +301,10 @@ def test_collecting_to_review_after_missing_filled(setup):
 
 
 def test_revision_loop_over_three_turns(setup):
-    """AC-A-18c - a review draft re-merges fields/remove and re-reviews; removing a
-    required field drops to collecting; identical re-send is idempotent; >=3 turns."""
+    """AC-A-18c (updated S1, R15) - a review draft re-merges fields/remove and
+    re-reviews; identical re-send is idempotent; >=3 turns. Only ``problem``
+    is required now, so removing an OPTIONAL answered field re-nominates it
+    as ``next_field`` (drops to collecting via next_field, not ``missing``)."""
     s = setup
     # Turn 1 -> review (one-shot complete)
     r1 = _create_idea(
@@ -322,17 +325,19 @@ def test_revision_loop_over_three_turns(setup):
     assert r2.json()["status"] == "review"
     assert r2.json()["captured"]["impact"] == "Saves an hour a day"
 
-    # Turn 3 - remove a required field -> back to collecting.
+    # Turn 3 - remove the optional proposed_solution -> re-nominated as
+    # next_field, back to collecting.
     r3 = _create_idea(
         s["client"],
         s["key"],
         s["contact_id"],
         s["product_id"],
         draft_id=draft_id,
-        remove=["department"],
+        remove=["proposed_solution"],
     )
     assert r3.json()["status"] == "collecting"
-    assert "department" in r3.json()["missing"]
+    assert r3.json()["missing"] == []
+    assert r3.json()["next_field"] == "proposed_solution"
 
     # Turn 4 - re-add it -> review again.
     r4 = _create_idea(
@@ -341,7 +346,7 @@ def test_revision_loop_over_three_turns(setup):
         s["contact_id"],
         s["product_id"],
         draft_id=draft_id,
-        fields={"department": "Customer Service"},
+        fields={"proposed_solution": "Add an export button"},
     )
     assert r4.json()["status"] == "review"
 
@@ -352,7 +357,7 @@ def test_revision_loop_over_three_turns(setup):
         s["contact_id"],
         s["product_id"],
         draft_id=draft_id,
-        fields={"department": "Customer Service"},
+        fields={"proposed_solution": "Add an export button"},
     )
     assert r5.json()["status"] == "review"
     assert r5.json()["captured"] == r4.json()["captured"]
@@ -362,9 +367,13 @@ def test_revision_loop_over_three_turns(setup):
 # ── AC-A-20 - completion on explicit confirm ──────────────────────────────────
 
 
-def test_confirm_completes_with_link(setup):
-    """AC-A-20 - confirm=true -> complete; draft moves to captured; link is the
-    product-domain deep link."""
+def test_confirm_completes_with_link(setup, monkeypatch):
+    """AC-A-20 (updated S5) - confirm=true -> complete; draft moves to
+    captured; link is the S5 public idea-status page URL on the SHARED-
+    SERVICE frontend (``settings.frontend_url``, review round 2 - not the
+    product's own delivery domain), keyed by status_token, not the idea's
+    own id."""
+    monkeypatch.setattr(settings, "frontend_url", "https://fe.example.test")
     s = setup
     r1 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"], fields=_FULL_FIELDS
@@ -381,7 +390,9 @@ def test_confirm_completes_with_link(setup):
     )
     body = r2.json()
     assert body["status"] == "complete"
-    assert body["link"] == f"https://fe-sorento.foundryx.my/ideas/{draft_id}"
+    token = _idea_field(s["factory"], draft_id, "status_token")
+    assert token is not None
+    assert body["link"] == f"https://fe.example.test/public/ideas/{token}"
     assert _idea_status_key(s["factory"], draft_id) == "captured"
 
     # On completion the captured answers are promoted to first-class Idea columns.
@@ -398,9 +409,10 @@ def test_confirm_completes_with_link(setup):
         db.close()
 
 
-def test_confirm_on_captured_is_idempotent(setup):
+def test_confirm_on_captured_is_idempotent(setup, monkeypatch):
     """AC-A-16/20 - re-confirming a captured draft is a no-op returning complete +
     the same link; no second Idea, no double-advance."""
+    monkeypatch.setattr(settings, "frontend_url", "https://fe.example.test")
     s = setup
     r1 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"], fields=_FULL_FIELDS
@@ -417,7 +429,8 @@ def test_confirm_on_captured_is_idempotent(setup):
     )
     body = r3.json()
     assert body["status"] == "complete"
-    assert body["link"] == f"https://fe-sorento.foundryx.my/ideas/{draft_id}"
+    token = _idea_field(s["factory"], draft_id, "status_token")
+    assert body["link"] == f"https://fe.example.test/public/ideas/{token}"
     assert _idea_count(s["factory"]) == 1
     assert _idea_status_key(s["factory"], draft_id) == "captured"
 
@@ -507,10 +520,11 @@ def test_auth_required(setup):
 # ── reply_text determinism ────────────────────────────────────────────────────
 
 
-def test_reply_text_deterministic(setup):
-    """AC-A-18 - reply_text is a deterministic template: collecting echoes captured
-    + lists missing; review echoes the full summary + confirm ask; complete carries
-    the link."""
+def test_reply_text_deterministic(setup, monkeypatch):
+    """AC-A-18 (updated S1 point-form templates, R10/R16) - reply_text is a
+    deterministic template: collecting echoes the recap + asks the next
+    question; review asks to submit; complete carries the link."""
+    monkeypatch.setattr(settings, "frontend_url", "https://fe.example.test")
     s = setup
     r1 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"],
@@ -519,21 +533,21 @@ def test_reply_text_deterministic(setup):
     draft_id = r1.json()["draft_id"]
     text1 = r1.json()["reply_text"]
     assert "Add an export button" in text1  # captured echoed
-    # a missing field's label surfaces
-    assert "Impact" in text1 or "Department" in text1
+    assert text1.endswith("What's the impact if we do this?")
 
     r2 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"],
         draft_id=draft_id, fields=_FULL_FIELDS,
     )
     text2 = r2.json()["reply_text"]
-    assert "confirm" in text2.lower()
+    assert text2.endswith("Submit it?")
 
     r3 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"],
         draft_id=draft_id, confirm=True,
     )
-    assert f"https://fe-sorento.foundryx.my/ideas/{draft_id}" in r3.json()["reply_text"]
+    token = _idea_field(s["factory"], draft_id, "status_token")
+    assert f"https://fe.example.test/public/ideas/{token}" in r3.json()["reply_text"]
 
 
 # ── WS-A / AC-CAP-1..3 - submitter_name stored verbatim ───────────────────────
@@ -726,11 +740,12 @@ def test_discard_draft_id_rejects_old_draft(setup):
 # ── issue #1179 - is_test flows through the real intake, stamped on create ────
 
 
-def test_is_test_persists_on_create_and_survives_turns(setup):
+def test_is_test_persists_on_create_and_survives_turns(setup, monkeypatch):
     """issue #1179 - ``is_test: true`` on turn 1 persists on the draft, and a
     continuation turn (which never re-sends it) keeps the original value all
     the way through confirm/complete - the real intake path runs (real reply
     text, real link), only the row is flagged."""
+    monkeypatch.setattr(settings, "frontend_url", "https://fe.example.test")
     s = setup
     r1 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"],
@@ -739,7 +754,7 @@ def test_is_test_persists_on_create_and_survives_turns(setup):
     draft_id = r1.json()["draft_id"]
     assert _idea_field(s["factory"], draft_id, "is_test") is True
     # The real deterministic reply, not a placeholder.
-    assert "Still need" in r1.json()["reply_text"]
+    assert r1.json()["reply_text"].endswith("What's your proposed solution?")
 
     r2 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"],
@@ -753,7 +768,8 @@ def test_is_test_persists_on_create_and_survives_turns(setup):
         draft_id=draft_id, confirm=True,
     )
     assert r3.json()["status"] == "complete"
-    assert r3.json()["link"] == f"https://fe-sorento.foundryx.my/ideas/{draft_id}"
+    token = _idea_field(s["factory"], draft_id, "status_token")
+    assert r3.json()["link"] == f"https://fe.example.test/public/ideas/{token}"
     assert _idea_status_key(s["factory"], draft_id) == "captured"
     assert _idea_field(s["factory"], draft_id, "is_test") is True
 

@@ -25,10 +25,11 @@ def create_idea(
     api_ws: ApiWorkspace = Depends(get_api_workspace),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Deterministic conversational-intake turn (§5.1). Returns exactly
-    ``{draft_id, status, captured, missing, reply_text, link?, duplicate_of?}``
-    (no LLM). ``product_id`` is validated for the key's tenant; ``confirm`` is the
-    only path to ``complete`` (D-CONFIRM)."""
+    """Deterministic conversational-intake turn (§5.1, S1). Returns the full
+    ten-key envelope - ``status, draft_id, reply_text, missing, next_field,
+    title, captured, duplicate_candidate, idea_number, link`` (no LLM).
+    ``product_id`` is validated for the key's tenant; ``confirm`` is the only
+    path to ``complete`` (D-CONFIRM)."""
     return IntakeService(db).create_idea(
         api_ws.tenant_id,
         product_id=body.product_id,
@@ -43,4 +44,9 @@ def create_idea(
         remove=body.remove,
         confirm=body.confirm,
         is_test=body.is_test,
+        title=body.title,
+        skip=body.skip,
+        cancel=body.cancel,
+        duplicate_choice=body.duplicate_choice,
+        submitter_tier=body.submitter_tier,
     )

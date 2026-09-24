@@ -18,6 +18,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Sequence,
     String,
     Text,
     UniqueConstraint,
@@ -30,7 +31,23 @@ from app.models.status import Status
 from app.models.utc_datetime import UTCDateTime
 from modules.omnichannel.models import Contact
 
-from .db import IdeationBase
+from .db import IDEATION_SCHEMA, IdeationBase
+
+# The idea_number sequence (S1, AC-1111/1112) - registered on THIS module's own
+# metadata (not just declared in migration 0010) so `bootstrap.
+# create_schema_and_tables`'s `IdeationBase.metadata.create_all(engine)` - which
+# runs on EVERY boot, including a brand-new Postgres install - actually
+# provisions it. The per-module Alembic step (`run_module_migrations`) stamps
+# head with NO DDL on the legacy/adopt path when the tables already exist
+# (`app/module_platform/migrations.py`), so relying on the migration alone
+# would leave a fresh install's sequence missing forever and every confirm
+# turn 500ing. Migration 0010 keeps its own `CREATE SEQUENCE IF NOT EXISTS`
+# for an already-deployed database that predates this column. A no-op on the
+# SQLite test engine (SQLite does not support sequences; `create_all` skips
+# them for dialects where `supports_sequences` is False).
+IDEA_NUMBER_SEQUENCE = Sequence(
+    "ideas_idea_number_seq", schema=IDEATION_SCHEMA, metadata=IdeationBase.metadata
+)
 
 # Normal cross-schema FK target = core ``public.products.id``. Reference the core
 # COLUMN OBJECT (not a string) so it resolves across the two MetaData objects: a
@@ -54,10 +71,12 @@ def _uuid() -> str:
 class ProductDelivery(IdeationBase):
     """Software-product delivery config (AC-A-06). 1:1 with a ``public.products``
     row (``product_id`` UNIQUE). ``product_domain_base`` is a validated absolute
-    origin (e.g. ``https://fe-sorento.foundryx.my``) stored verbatim and used to
-    mint product-domain idea links (``{product_domain_base}/ideas/{idea_id}``,
-    AC-A-38). Only software products get a row; a product without one has no
-    delivery origin yet."""
+    origin (e.g. ``https://fe-sorento.foundryx.my``) stored verbatim - the
+    embed adapter's allowed-origins/iframe-host setting. It no longer mints
+    the public idea-status link (S5 review round 2): that link lives on the
+    shared-service frontend (``settings.frontend_url``), not the product's
+    own domain - see ``services/sinks.py::mint_idea_link``. Only software
+    products get a row; a product without one has no delivery origin yet."""
 
     __tablename__ = "product_delivery"
 
@@ -121,6 +140,11 @@ class Idea(IdeationBase):
     # Cross-schema FK into core public.statuses (the status engine's row).
     status_id = Column(String, ForeignKey(_STATUS_FK), nullable=False, index=True)
     intake_definition_key = Column(String, nullable=False, default="ideation")
+    # A short (1-8 word) headline the submitter can name the idea (S1,
+    # AC-1105) - distinct from ``problem`` (the full statement). Nullable: a
+    # pre-lane idea and any draft that never sends one have none; the read/
+    # board/detail surfaces fall back to ``problem`` when this is null.
+    title = Column(Text, nullable=True)
     problem = Column(Text, nullable=False)
     # First-class segregated intake fields (mirror the captured_json answer keys -
     # problem / proposed_solution / impact / department). Nullable: they fill in as
@@ -141,7 +165,22 @@ class Idea(IdeationBase):
     # the operator's name is stored directly here. The read serializer prefers
     # this when set, else derives the name from the linked contact (D-A4).
     submitter_name = Column(String, nullable=True)
+    # The submitter's tier (e.g. ``dealer``), stored verbatim, stripped (S1,
+    # AC-1115). Nullable - not every intake caller sends one.
+    submitter_tier = Column(String, nullable=True)
     captured_json = Column(JSON, nullable=True)
+    # The formatted sequential idea number (``IDEA-0001``, S1/S5) - minted
+    # once by the completion sink, never re-minted. NULL until captured.
+    idea_number = Column(String, nullable=True, unique=True)
+    # The public status-page credential (S5) - ``secrets.token_urlsafe(24)``,
+    # minted once alongside ``idea_number``. The token itself IS the
+    # capability; ``GET /public/ideas/{token}`` looks it up with no tenant
+    # scoping (AC-1601/1603). NULL until captured.
+    status_token = Column(String, nullable=True, unique=True)
+    # Turn-algorithm bookkeeping (S1) - ``{skipped: [...], declined_candidates:
+    # [...], pending_candidate: id|None, voted_for: id|None}``. Never holds
+    # answers (those stay in ``captured_json``).
+    intake_state = Column(JSON(none_as_null=True), nullable=True)
     # Denormalized vote tallies, recomputed from ``idea_votes`` on every vote
     # (the source of truth is one row per voter). ``downvotes`` mirrors the FE
     # Idea shape; Phase A still centres on upvotes (D10).
