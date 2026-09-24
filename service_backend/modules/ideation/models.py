@@ -148,6 +148,14 @@ class Idea(IdeationBase):
     upvotes = Column(Integer, nullable=False, default=0)
     downvotes = Column(Integer, nullable=False, default=0)
     priority = Column(Integer, nullable=False, default=0)
+    # A console/``--say`` test turn (owner ruling 24 Sep 2026, issue #1179): the
+    # ideate lane calls the REAL intake tool on a test turn instead of a fixed
+    # placeholder, and marks the row here so it can be verified without ever
+    # reaching a real operator surface. False for every real capture. Dedup
+    # matching, list/board reads and BR promotion all key off this flag (see
+    # ``DedupService.find_duplicate`` / ``IdeaReadService`` / ``_link_ideas``) -
+    # a test idea never contaminates the real pipeline in either direction.
+    is_test = Column(Boolean, nullable=False, default=False)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False

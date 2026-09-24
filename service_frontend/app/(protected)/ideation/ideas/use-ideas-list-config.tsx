@@ -109,9 +109,12 @@ export function useIdeasListConfig(
         surfaces: { row: true, form: true, bulk: true },
         // Only non-archived ideas that all share ONE product (a BR links
         // same-product ideas, AC-BI-17). A mixed-product selection is disabled
-        // (foolproof-UI - never offer a move that will 422).
+        // (foolproof-UI - never offer a move that will 422). A test idea
+        // (issue #1179) is refused server-side too - disabled here so the
+        // failure never round-trips.
         isVisible: (rows) => rows.length > 0 && rows.every((r) => r.status !== 'archived'),
-        isDisabled: (rows) => new Set(rows.map((r) => r.productId)).size > 1,
+        isDisabled: (rows) =>
+          new Set(rows.map((r) => r.productId)).size > 1 || rows.some((r) => r.isTest),
         run: async (rows) => {
           await onPromote(rows);
         },
@@ -196,7 +199,18 @@ export function useIdeasListConfig(
         enableHiding: false,
         enableResizing: false,
       },
-      col('problem', 'Idea', ({ row }) => <ClampedText text={row.original.problem} lines={2} />, 340),
+      col('problem', 'Idea', ({ row }) => (
+        <div className="flex items-start gap-1.5">
+          <div className="min-w-0 flex-1">
+            <ClampedText text={row.original.problem} lines={2} />
+          </div>
+          {row.original.isTest && (
+            <Badge variant="secondary" appearance="light" size="sm" className="shrink-0">
+              TEST
+            </Badge>
+          )}
+        </div>
+      ), 340),
       col('submitter', 'Submitter', ({ row }) => (
         <span className="text-muted-foreground">{row.original.submitterName}</span>
       ), 130),

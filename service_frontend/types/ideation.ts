@@ -93,6 +93,9 @@ export interface Idea {
   priority: number;
   attachments: IdeaAttachment[];
   createdAt: string; // ISO
+  /** A console/`--say` test turn (issue #1179) - false for every real capture.
+   * Excluded from the list/board by default; `includeTest` opts in. */
+  isTest: boolean;
 }
 
 /** One suggested idea cluster (AC-BI-30/31). A cluster is ALWAYS a suggestion -

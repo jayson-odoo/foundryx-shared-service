@@ -70,8 +70,9 @@ export const realIdeationService: IdeaService = {
     }));
   },
 
-  listIdeas(): Promise<Idea[]> {
-    return apiFetch<Idea[]>('/ideation/ideas');
+  listIdeas(opts?: { includeTest?: boolean }): Promise<Idea[]> {
+    const q = opts?.includeTest ? '?includeTest=true' : '';
+    return apiFetch<Idea[]>(`/ideation/ideas${q}`);
   },
 
   getIdea(id: string): Promise<Idea> {

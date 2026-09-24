@@ -49,11 +49,11 @@ def _upvotes(factory, idea_id) -> int:
         db.close()
 
 
-def _capture_idea(s, message_text) -> str:
+def _capture_idea(s, message_text, is_test=False) -> str:
     """Create + confirm an idea to ``captured`` so it is a real dedup candidate."""
     r1 = _create_idea(
         s["client"], s["key"], s["contact_id"], s["product_id"],
-        message_text=message_text, fields=_FULL_FIELDS,
+        message_text=message_text, fields=_FULL_FIELDS, is_test=is_test,
     )
     assert r1.json()["status"] == "review", r1.text
     draft_id = r1.json()["draft_id"]
@@ -162,6 +162,43 @@ def test_distinct_submitters_each_add_a_vote(setup):
         )
         assert res.json()["status"] == "duplicate", res.text
     assert _upvotes(s["factory"], original_id) == 2
+
+
+# ── issue #1179 - dedup never crosses the test/real boundary, either way ──────
+
+
+def test_test_idea_never_matches_a_real_idea(setup):
+    """A test-turn near-duplicate of a REAL captured idea must NOT dedup against
+    it (and so must not upvote it) - the two lanes never cross."""
+    s = setup
+    real_id = _capture_idea(s, _ORIGINAL, is_test=False)
+
+    other = _make_contact(s["factory"], first_name="Aisha", phone="+60111222333")
+    res = _create_idea(
+        s["client"], s["key"], other, s["product_id"],
+        message_text=_NEAR_DUP, is_test=True,
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] != "duplicate"
+    assert "duplicate_of" not in res.json()
+    assert _upvotes(s["factory"], real_id) == 0
+
+
+def test_real_idea_never_matches_a_test_idea(setup):
+    """A real-turn near-duplicate of an existing TEST idea must NOT dedup
+    against it - a test row never upvotes a real submitter's intake either."""
+    s = setup
+    test_id = _capture_idea(s, _ORIGINAL, is_test=True)
+
+    other = _make_contact(s["factory"], first_name="Aisha", phone="+60111222333")
+    res = _create_idea(
+        s["client"], s["key"], other, s["product_id"],
+        message_text=_NEAR_DUP, is_test=False,
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] != "duplicate"
+    assert "duplicate_of" not in res.json()
+    assert _upvotes(s["factory"], test_id) == 0
 
 
 # ── AC-A-30 - pg_trgm provisioning is a no-op on SQLite ───────────────────────

@@ -30,8 +30,9 @@ export interface IdeaCreateInput {
 export interface IdeaService {
   /** All products an idea can target (software + goods). */
   listProducts(): Promise<Product[]>;
-  /** All ideas, newest first. */
-  listIdeas(): Promise<Idea[]>;
+  /** All ideas, newest first. `includeTest` opts into console/`--say` test
+   * ideas (issue #1179) - off by default. */
+  listIdeas(opts?: { includeTest?: boolean }): Promise<Idea[]>;
   /** One idea by id (form view). Rejects if not found. */
   getIdea(id: string): Promise<Idea>;
   /** Update editable idea fields (form view save). */

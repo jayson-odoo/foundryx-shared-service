@@ -723,6 +723,49 @@ def test_discard_draft_id_rejects_old_draft(setup):
     assert _idea_status_key(s["factory"], old) == "rejected"
 
 
+# ── issue #1179 - is_test flows through the real intake, stamped on create ────
+
+
+def test_is_test_persists_on_create_and_survives_turns(setup):
+    """issue #1179 - ``is_test: true`` on turn 1 persists on the draft, and a
+    continuation turn (which never re-sends it) keeps the original value all
+    the way through confirm/complete - the real intake path runs (real reply
+    text, real link), only the row is flagged."""
+    s = setup
+    r1 = _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"],
+        is_test=True,
+    )
+    draft_id = r1.json()["draft_id"]
+    assert _idea_field(s["factory"], draft_id, "is_test") is True
+    # The real deterministic reply, not a placeholder.
+    assert "Still need" in r1.json()["reply_text"]
+
+    r2 = _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"],
+        draft_id=draft_id, fields=_FULL_FIELDS,
+    )
+    assert r2.json()["status"] == "review"
+    assert _idea_field(s["factory"], draft_id, "is_test") is True
+
+    r3 = _create_idea(
+        s["client"], s["key"], s["contact_id"], s["product_id"],
+        draft_id=draft_id, confirm=True,
+    )
+    assert r3.json()["status"] == "complete"
+    assert r3.json()["link"] == f"https://fe-sorento.foundryx.my/ideas/{draft_id}"
+    assert _idea_status_key(s["factory"], draft_id) == "captured"
+    assert _idea_field(s["factory"], draft_id, "is_test") is True
+
+
+def test_is_test_defaults_false(setup):
+    """A normal (non-test) intake turn stays ``is_test=False``."""
+    s = setup
+    res = _create_idea(s["client"], s["key"], s["contact_id"], s["product_id"])
+    draft_id = res.json()["draft_id"]
+    assert _idea_field(s["factory"], draft_id, "is_test") is False
+
+
 def test_discard_unknown_draft_is_noop(setup):
     """A discard_draft_id that doesn't resolve must not 500 - just proceed."""
     s = setup

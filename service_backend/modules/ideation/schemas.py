@@ -46,6 +46,9 @@ class IdeaOut(ApiModel):
     priority: int
     attachments: List[IdeaAttachmentOut] = []
     createdAt: datetime
+    # A console/``--say`` test turn (issue #1179) - false for every real capture.
+    # Excluded from list/board by default (``includeTest`` opts in).
+    isTest: bool = False
 
 
 class BoardColumnOut(ApiModel):
@@ -338,3 +341,10 @@ class CreateIdeaIn(ApiModel):
     fields: Optional[Dict[str, Any]] = None
     remove: Optional[List[str]] = None
     confirm: bool = False
+    # A console/``--say`` test turn (owner ruling 24 Sep 2026, issue #1179): the
+    # ideate lane calls this REAL endpoint on a test turn instead of a fixed
+    # placeholder, and sets this so the row stays off the board/list and out of
+    # dedup/promotion by default while the reply text can still be checked.
+    # Stamped once on the draft's creation turn; later turns keep whatever the
+    # draft was created with regardless of what this carries.
+    is_test: bool = False

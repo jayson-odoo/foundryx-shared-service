@@ -26,6 +26,7 @@ const anIdea = (over: Partial<Idea> = {}): Idea => ({
   priority: 1,
   attachments: [],
   createdAt: '2026-07-18T00:00:00Z',
+  isTest: false,
   ...over,
 });
 
@@ -56,6 +57,18 @@ describe('realIdeationService', () => {
     const rows = [anIdea(), anIdea({ id: 'idea-2' })];
     apiFetch.mockResolvedValue(rows);
     await expect(svc.listIdeas()).resolves.toEqual(rows);
+    expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas');
+  });
+
+  it('listIdeas({ includeTest: true }) appends the includeTest query param (issue #1179)', async () => {
+    apiFetch.mockResolvedValue([]);
+    await svc.listIdeas({ includeTest: true });
+    expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas?includeTest=true');
+  });
+
+  it('listIdeas({ includeTest: false }) omits the query param', async () => {
+    apiFetch.mockResolvedValue([]);
+    await svc.listIdeas({ includeTest: false });
     expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas');
   });
 

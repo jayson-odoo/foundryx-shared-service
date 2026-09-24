@@ -473,7 +473,11 @@ class BusinessRequirementService:
     ) -> None:
         """Link ideas to a BR (AC-BI-17). Each idea must be in the caller's
         tenant AND on the SAME product as the BR (cross-tenant / cross-product =
-        422 - the polymorphic-target rule). Idempotent per pair (unique)."""
+        422 - the polymorphic-target rule). A test idea (issue #1179 - a
+        console/``--say`` capture) is refused: promoting one would put a fake
+        row on a real Business Requirement, in the one place both the create
+        (warm-start promote) and the explicit link endpoint funnel through.
+        Idempotent per pair (unique)."""
         wanted = [i for i in dict.fromkeys(idea_ids) if i]
         if not wanted:
             return
@@ -495,6 +499,11 @@ class BusinessRequirementService:
                 raise HTTPException(
                     422,
                     "One or more ideas do not exist for this workspace.",
+                )
+            if idea.is_test:
+                raise HTTPException(
+                    422,
+                    "A test idea cannot be promoted to a Business Requirement.",
                 )
             if idea.product_id != br.product_id:
                 raise HTTPException(

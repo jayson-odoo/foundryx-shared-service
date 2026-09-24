@@ -83,6 +83,7 @@ const MOCK_IDEAS: Idea[] = [
     priority: 0,
     attachments: [],
     createdAt: '2026-07-19T09:00:00Z',
+    isTest: false,
   },
 ];
 

@@ -31,6 +31,7 @@ const anIdea = (over: Partial<Idea> = {}): Idea => ({
   priority: 1,
   attachments: [],
   createdAt: '2026-07-18T00:00:00Z',
+  isTest: false,
   ...over,
 });
 const aProduct = (): Product => ({ id: 'prod-1', name: 'Sorento CRM', kind: 'software', productDomainBase: null });
@@ -101,5 +102,27 @@ describe('useIdeas', () => {
     expect(svc.reorderPriority).toHaveBeenCalledWith(['idea-1']);
     expect(svc.setStatus).toHaveBeenCalledWith('idea-1', 'triaged');
     expect(svc.remove).toHaveBeenCalledWith('idea-1');
+  });
+
+  // ── issue #1179 - the "show test ideas" toggle ────────────────────────────
+
+  it('defaults includeTest to false and passes it through to listIdeas', async () => {
+    const { result } = renderHook(() => useIdeas());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.includeTest).toBe(false);
+    expect(svc.listIdeas).toHaveBeenCalledWith({ includeTest: false });
+  });
+
+  it('setIncludeTest(true) reloads with includeTest: true', async () => {
+    const { result } = renderHook(() => useIdeas());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    svc.listIdeas.mockClear();
+    act(() => {
+      result.current.setIncludeTest(true);
+    });
+    await waitFor(() => expect(result.current.includeTest).toBe(true));
+    await waitFor(() =>
+      expect(svc.listIdeas).toHaveBeenCalledWith({ includeTest: true }),
+    );
   });
 });
