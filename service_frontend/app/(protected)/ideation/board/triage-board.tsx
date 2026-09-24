@@ -57,8 +57,11 @@ function IdeaCardBody({ idea, ghost }: { idea: Idea; ghost?: boolean }) {
         <Badge variant="secondary" className="truncate">
           {idea.productName}
         </Badge>
+        {/* Unreachable today - useIdeas() here never passes includeTest, so no
+            test idea ever reaches this board (issue #1179); kept for the day a
+            board toggle is wired to GET /ideation/ideas/board?includeTest. */}
         {idea.isTest && (
-          <Badge variant="destructive" appearance="light" size="sm">
+          <Badge variant="secondary" appearance="light" size="sm">
             TEST
           </Badge>
         )}

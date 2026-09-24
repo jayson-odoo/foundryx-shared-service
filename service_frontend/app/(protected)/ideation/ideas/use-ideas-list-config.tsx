@@ -201,9 +201,11 @@ export function useIdeasListConfig(
       },
       col('problem', 'Idea', ({ row }) => (
         <div className="flex items-start gap-1.5">
-          <ClampedText text={row.original.problem} lines={2} />
+          <div className="min-w-0 flex-1">
+            <ClampedText text={row.original.problem} lines={2} />
+          </div>
           {row.original.isTest && (
-            <Badge variant="destructive" appearance="light" size="sm" className="shrink-0">
+            <Badge variant="secondary" appearance="light" size="sm" className="shrink-0">
               TEST
             </Badge>
           )}
