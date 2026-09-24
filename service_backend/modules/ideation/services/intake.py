@@ -58,6 +58,7 @@ class IntakeService:
         fields: Optional[Dict[str, object]] = None,
         remove: Optional[List[str]] = None,
         confirm: bool = False,
+        is_test: bool = False,
     ) -> dict:
         definition = get_intake_definition(IDEATION_INTAKE_KEY)
         if definition is None:  # pragma: no cover - registered at boot
@@ -88,7 +89,7 @@ class IntakeService:
 
         idea = self._load_or_create_draft(
             tenant_id, product_id, submitter_contact_id, message_text, draft_id,
-            raw_transcript=raw_transcript,
+            raw_transcript=raw_transcript, is_test=is_test,
         )
 
         # Persist media pointers idempotently on every turn (DC-9) - before the
@@ -118,6 +119,7 @@ class IntakeService:
             product_id,
             str((idea.captured_json or {}).get("problem") or idea.problem or ""),
             idea.id,
+            is_test=idea.is_test,
         )
         if dup_id is not None:
             # Upvote the existing idea once per submitter (idempotent), then relay.
@@ -328,6 +330,7 @@ class IntakeService:
         message_text: str,
         draft_id: Optional[str],
         raw_transcript: Optional[str] = None,
+        is_test: bool = False,
     ) -> Idea:
         if draft_id:
             idea = (
@@ -337,6 +340,9 @@ class IntakeService:
             )
             if idea is None:
                 raise ApiError(404, "unknown_draft", "draft_id does not resolve to an open draft.")
+            # ``is_test`` is stamped once on creation and kept for the life of the
+            # draft (issue #1179) - a continuation turn never flips it either way,
+            # so a real idea can never quietly become a test one or vice versa.
             return idea
 
         # Turn 1 - a brand-new draft Idea (AC-A-19). Seed ``problem`` from the raw
@@ -355,6 +361,7 @@ class IntakeService:
             source="whatsapp",
             submitter_contact_id=submitter_contact_id,
             captured_json={"problem": raw} if raw else {},
+            is_test=is_test,
         )
         self.db.add(idea)
         self.db.flush()

@@ -37,6 +37,7 @@ const anIdea = (over: Partial<Idea> = {}): Idea => ({
   priority: 1,
   attachments: [],
   createdAt: '2026-07-18T00:00:00Z',
+  isTest: false,
   ...over,
 });
 
@@ -45,6 +46,8 @@ const base: UseIdeas = {
   products: [],
   loading: false,
   error: null,
+  includeTest: false,
+  setIncludeTest: vi.fn(),
   reload: vi.fn(),
   create: vi.fn(),
   setStatus: vi.fn(),

@@ -29,6 +29,7 @@ function idea(id: string, over: Partial<Idea> = {}): Idea {
     myVote: null,
     attachments: [],
     createdAt: '2026-07-20T00:00:00Z',
+    isTest: false,
     ...over,
   } as Idea;
 }
@@ -137,6 +138,8 @@ const baseUseIdeas: UseIdeas = {
   products: [],
   loading: false,
   error: null,
+  includeTest: false,
+  setIncludeTest: vi.fn(),
   reload: vi.fn(),
   create: vi.fn(),
   setStatus: vi.fn(),

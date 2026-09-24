@@ -38,6 +38,7 @@ def list_ideas(
     search: Optional[str] = Query(None),
     filter: str = Query("active", pattern="^(active|archived|all)$"),
     product_id: Optional[str] = Query(None, alias="productId"),
+    include_test: bool = Query(False, alias="includeTest"),
     current_user: User = Depends(require_permission("ideation.ideas.view")),
     db: Session = Depends(get_db),
 ) -> List[IdeaOut]:
@@ -45,13 +46,16 @@ def list_ideas(
     text; ``filter`` selects active (default) / archived / all; optional
     ``productId`` scopes to a single product (the canonical ideation scope -
     omitted = every product in the tenant). ``myVote`` is resolved for the
-    calling user. Always tenant-scoped: the product filter never crosses tenants."""
+    calling user. Always tenant-scoped: the product filter never crosses tenants.
+    ``includeTest`` (issue #1179) opts into console/``--say`` test ideas, off by
+    default."""
     return IdeaReadService(db).list(
         current_user.tenant_id,
         search=search,
         filter=filter,
         product_id=product_id,
         voter_id=current_user.id,
+        include_test=include_test,
     )
 
 
@@ -84,6 +88,7 @@ def create_idea(
 @router.get("/board", response_model=BoardOut)
 def get_board(
     product_id: Optional[str] = Query(None, alias="productId"),
+    include_test: bool = Query(False, alias="includeTest"),
     current_user: User = Depends(require_permission("ideation.triage.manage")),
     db: Session = Depends(get_db),
 ) -> BoardOut:
@@ -92,9 +97,13 @@ def get_board(
     scopes to a single product (omitted = every product in the tenant). Triager
     surface - gated by ``ideation.triage.manage`` (403 without it, AC-A-37).
     Dragging a card across columns / within a column uses POST ``/{id}/status`` +
-    PUT ``/reorder``."""
+    PUT ``/reorder``. ``includeTest`` (issue #1179) opts into console/``--say``
+    test ideas, off the board by default."""
     return IdeaReadService(db).board(
-        current_user.tenant_id, voter_id=current_user.id, product_id=product_id
+        current_user.tenant_id,
+        voter_id=current_user.id,
+        product_id=product_id,
+        include_test=include_test,
     )
 
 

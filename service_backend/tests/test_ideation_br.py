@@ -407,6 +407,73 @@ def test_link_unknown_idea_refused(ideation_client):
     assert res.status_code == 422, res.text
 
 
+# ── issue #1179 - a test idea never promotes to a Business Requirement ────────
+
+
+def _test_idea(factory, product_id, problem="A console test idea") -> str:
+    """A console/``--say`` idea (``is_test=True``), inserted directly - the
+    operator create route never accepts ``is_test`` (only the intake does)."""
+    from modules.ideation.models import Idea
+    from modules.ideation.services.statuses import idea_status_id
+
+    db = factory()
+    try:
+        idea = Idea(
+            tenant_id=DEFAULT_TENANT_ID,
+            product_id=product_id,
+            status_id=idea_status_id(db, "captured", DEFAULT_TENANT_ID),
+            intake_definition_key="ideation",
+            problem=problem,
+            raw_text=problem,
+            source="whatsapp",
+            is_test=True,
+        )
+        db.add(idea)
+        db.commit()
+        return idea.id
+    finally:
+        db.close()
+
+
+def test_promote_refuses_test_idea(ideation_client):
+    """issue #1179 - a promote (create with ideaIds) that carries a test idea is
+    refused 422; no BR is created."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    test_idea = _test_idea(ideation_client._factory, pid)
+    res = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "ideaIds": [test_idea]},
+    )
+    assert res.status_code == 422, res.text
+    rows = ideation_client.get("/ideation/business-requirements", headers=h).json()
+    assert rows == []
+
+
+def test_link_refuses_test_idea(ideation_client):
+    """issue #1179 - linking a test idea onto an existing BR is refused 422."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    test_idea = _test_idea(ideation_client._factory, pid)
+    br = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "answers": _FULL_ANSWERS},
+    ).json()
+    res = ideation_client.post(
+        f"/ideation/business-requirements/{br['id']}/ideas",
+        headers=h,
+        json={"ideaIds": [test_idea]},
+    )
+    assert res.status_code == 422, res.text
+    assert "test idea" in res.json()["detail"].lower()
+    lineage = ideation_client.get(
+        f"/ideation/business-requirements/{br['id']}/ideas", headers=h
+    ).json()
+    assert lineage == []
+
+
 # ── lifecycle via the status engine (AC-BI-15) ────────────────────────────────
 
 

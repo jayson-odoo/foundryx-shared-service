@@ -80,6 +80,7 @@ class IdeaReadService:
             priority=idea.priority or 0,
             attachments=idea_attachments,
             createdAt=idea.created_at,
+            isTest=bool(idea.is_test),
         )
 
     def _my_votes(
@@ -163,6 +164,7 @@ class IdeaReadService:
         filter: str = "active",
         product_id: Optional[str] = None,
         voter_id: Optional[str] = None,
+        include_test: bool = False,
     ) -> List[IdeaOut]:
         """Ideas for a tenant, newest first. ``search`` matches problem/raw_text
         (case-insensitive); ``filter`` = ``active`` (non-archived statuses) |
@@ -170,8 +172,14 @@ class IdeaReadService:
         single product - the canonical ideation scope (an idea belongs to a
         product, which belongs to a tenant). ``None`` = every product in the
         tenant (today's behaviour, unchanged). Always tenant-scoped first: the
-        product filter never widens visibility across tenants."""
+        product filter never widens visibility across tenants.
+
+        ``include_test`` (issue #1179): a console/``--say`` test turn writes a
+        real Idea row flagged ``is_test`` - excluded here by default so it never
+        shows on a real operator's list; pass ``True`` to see it too."""
         q = self.db.query(Idea).filter(Idea.tenant_id == tenant_id)
+        if not include_test:
+            q = q.filter(Idea.is_test.is_(False))
         if product_id:
             q = q.filter(Idea.product_id == product_id)
         if search:
@@ -200,13 +208,16 @@ class IdeaReadService:
         tenant_id: str,
         voter_id: Optional[str] = None,
         product_id: Optional[str] = None,
+        include_test: bool = False,
     ) -> BoardOut:
         """The triage board (AC-A-33): ideas grouped into the board lifecycle
         columns in order, cards within a column ordered by priority ascending.
         Only board-lifecycle statuses appear - archived / terminal ideas are
         off-board. ``product_id`` (optional) additionally scopes to a single
         product (the canonical ideation scope); ``None`` = every product in the
-        tenant (unchanged). Always tenant-scoped first."""
+        tenant (unchanged). Always tenant-scoped first.
+
+        ``include_test`` (issue #1179): off-board by default, same as ``list``."""
         board_keys = [k for k, _ in BOARD_COLUMNS]
         status_ids = {
             s.id: s.key
@@ -218,6 +229,8 @@ class IdeaReadService:
             Idea.tenant_id == tenant_id,
             Idea.status_id.in_(list(status_ids.keys())) if status_ids else False,
         )
+        if not include_test:
+            q = q.filter(Idea.is_test.is_(False))
         if product_id:
             q = q.filter(Idea.product_id == product_id)
         ideas = (

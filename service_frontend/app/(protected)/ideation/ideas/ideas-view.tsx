@@ -4,7 +4,10 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from '@/lib/toast';
 import { ResourceList } from '@/components/platform/resource-list';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import { useIdeas } from '@/hooks/use-ideas';
+import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import type { IdeaCreateInput } from '@/services/ideation-service';
 import { IDEA_NEXT_STATUS, type Idea } from '@/types/ideation';
 import { useIdeasListConfig } from './use-ideas-list-config';
@@ -22,8 +25,20 @@ import { promoteIdeasToBr } from './promote-to-br';
  */
 export function IdeasView() {
   const router = useRouter();
-  const { ideas, products, loading, error, create, vote, setStatus, reorderPriority, remove } =
-    useIdeas();
+  const { mode } = useIdeationRuntime();
+  const {
+    ideas,
+    products,
+    loading,
+    error,
+    includeTest,
+    setIncludeTest,
+    create,
+    vote,
+    setStatus,
+    reorderPriority,
+    remove,
+  } = useIdeas();
   const [dialogOpen, setDialogOpen] = useState(false);
 
   // Remount the ResourceList whenever the ideas change (mutation) so its
@@ -112,6 +127,19 @@ export function IdeasView() {
       <IdeaClusterSuggestions
         onPromote={(cluster, meta) => promoteIdeasToBr(cluster, router, meta)}
       />
+      {mode === 'operator' && (
+        <div className="mb-3 flex items-center justify-end gap-1.5">
+          <Switch
+            id="ideas-include-test"
+            checked={includeTest}
+            onCheckedChange={setIncludeTest}
+            data-testid="ideas-include-test"
+          />
+          <Label htmlFor="ideas-include-test" className="cursor-pointer text-sm">
+            Show test ideas
+          </Label>
+        </div>
+      )}
       <ResourceList key={version} config={config} hideHeader restoreFromCtx />
       {dialogOpen && (
         <IdeaCaptureDialog

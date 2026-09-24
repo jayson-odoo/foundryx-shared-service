@@ -10,6 +10,10 @@ export interface UseIdeas {
   products: Product[];
   loading: boolean;
   error: string | null;
+  /** Whether console/`--say` test ideas (issue #1179) are included - off by
+   * default; the Ideas list exposes a toggle that flips this + reloads. */
+  includeTest: boolean;
+  setIncludeTest: (value: boolean) => void;
   reload: () => Promise<void>;
   create: (input: IdeaCreateInput) => Promise<Idea>;
   setStatus: (id: string, status: IdeaStatus) => Promise<Idea>;
@@ -30,13 +34,14 @@ export function useIdeas(): UseIdeas {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [includeTest, setIncludeTest] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const [nextIdeas, nextProducts] = await Promise.all([
-        ideationService.listIdeas(),
+        ideationService.listIdeas({ includeTest }),
         ideationService.listProducts(),
       ]);
       setIdeas(nextIdeas);
@@ -46,7 +51,7 @@ export function useIdeas(): UseIdeas {
     } finally {
       setLoading(false);
     }
-  }, [ideationService]);
+  }, [ideationService, includeTest]);
 
   useEffect(() => {
     void reload();
@@ -95,5 +100,18 @@ export function useIdeas(): UseIdeas {
     [reload, ideationService],
   );
 
-  return { ideas, products, loading, error, reload, create, setStatus, vote, reorderPriority, remove };
+  return {
+    ideas,
+    products,
+    loading,
+    error,
+    includeTest,
+    setIncludeTest,
+    reload,
+    create,
+    setStatus,
+    vote,
+    reorderPriority,
+    remove,
+  };
 }

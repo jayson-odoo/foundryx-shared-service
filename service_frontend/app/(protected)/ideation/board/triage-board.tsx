@@ -57,6 +57,11 @@ function IdeaCardBody({ idea, ghost }: { idea: Idea; ghost?: boolean }) {
         <Badge variant="secondary" className="truncate">
           {idea.productName}
         </Badge>
+        {idea.isTest && (
+          <Badge variant="destructive" appearance="light" size="sm">
+            TEST
+          </Badge>
+        )}
         <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-0.5">
             <ChevronUp className="size-3.5 text-emerald-600" />
