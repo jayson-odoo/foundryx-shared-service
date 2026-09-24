@@ -535,6 +535,49 @@ def test_ac_1109_vote_candidate_from_another_tenant_never_matches(setup):
     assert _upvote_count(s["factory"], foreign_id) == 0
 
 
+def test_ac_1109_vote_on_archived_candidate_falls_through_no_500(setup):
+    """Review round 2 (N1a): a pending candidate that gets archived (or
+    rejected) between the offer turn and the vote turn must never be voted
+    on - ``duplicate_choice: "vote"`` clears the now-dead ``pending_candidate``
+    and the turn continues as a normal collecting/review turn instead, never
+    a 500 and never an upvote on the dead row."""
+    from app.services import status_machine
+    from modules.ideation.models import Idea
+    from modules.ideation.services.statuses import IDEA_ENTITY, idea_status_id
+
+    s = setup
+    problem = "the price tag should show promo price in red"
+    existing = _complete_flow(s, problem).json()
+    existing_id = existing["draft_id"]
+
+    voter_contact = _make_contact(s["factory"], "Voter3", "Dealer", "+60177889902")
+    cand_body = _create_idea(s, voter_contact, message_text=problem).json()
+    assert cand_body["status"] == "duplicate_candidate"
+    draft_id = cand_body["draft_id"]
+
+    # The candidate gets archived (a normal triage action) before the vote turn.
+    db = s["factory"]()
+    try:
+        candidate = db.query(Idea).filter(Idea.id == existing_id).first()
+        archived_id = idea_status_id(db, "archived", DEFAULT_TENANT_ID)
+        assert archived_id is not None
+        status_machine.transition(
+            db, IDEA_ENTITY, candidate, archived_id,
+            actor=None, tenant_id=DEFAULT_TENANT_ID, commit=False,
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    res = _create_idea(s, voter_contact, draft_id=draft_id, duplicate_choice="vote")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] != "voted"
+    assert body["status"] in {"collecting", "review"}
+    assert _upvote_count(s["factory"], existing_id) == 0
+    assert _idea_status_key(s["factory"], draft_id) == "draft"
+
+
 # ── AC-1110 - separate keeps the draft open, candidate never re-offered ──────
 
 
@@ -564,6 +607,58 @@ def test_ac_1110_duplicate_choice_separate_keeps_draft_open(setup):
     # the declined candidate.
     again = _create_idea(s, other_contact, draft_id=draft_id, fields={}).json()
     assert again["status"] != "duplicate_candidate"
+
+
+def test_continuation_dedup_uses_drafts_own_product_not_request_body(setup):
+    """Review round 2 (N1b), regression for round-1 should-fix #7: a
+    continuation turn's body naming a DIFFERENT (but still tenant-valid)
+    product_id must never re-scope dedup - the draft only ever dedups against
+    ITS OWN product (``idea.product_id``), never the request body's."""
+    s = setup
+    h = s["h"]
+    other_product_id = _create_software_product(s["client"], h, name="Other Product")
+    _set_delivery(s["client"], h, other_product_id)
+
+    problem = "the price tag should show promo price in red"
+
+    # An existing, captured idea lives ONLY under the OTHER product.
+    other_contact = _make_contact(s["factory"], "OtherProd", "Dealer", "+60188990011")
+    turn1 = _create_idea(
+        s, other_contact, product_id=other_product_id, message_text=problem
+    ).json()
+    other_draft_id = turn1["draft_id"]
+    _create_idea(
+        s, other_contact, draft_id=other_draft_id, product_id=other_product_id,
+        fields={"proposed_solution": "sol"},
+    )
+    _create_idea(
+        s, other_contact, draft_id=other_draft_id, product_id=other_product_id,
+        fields={"impact": "impact"},
+    )
+    _create_idea(
+        s, other_contact, draft_id=other_draft_id, product_id=other_product_id,
+        confirm=True,
+    )
+
+    # A draft under THIS setup's OWN product (s["product_id"]), same problem
+    # text - turn 1 never sees the other-product candidate (different product).
+    body = _create_idea(s, message_text=problem).json()
+    draft_id = body["draft_id"]
+    assert body["status"] != "duplicate_candidate"
+    assert body["duplicate_candidate"] is None
+
+    # A continuation turn whose body names the OTHER product must be ignored
+    # for dedup purposes - the draft's own product (product 1) still has no
+    # similar idea, so this must still never surface the other product's
+    # candidate as a duplicate_candidate.
+    res = _create_idea(
+        s, draft_id=draft_id, product_id=other_product_id,
+        fields={"proposed_solution": "A different solution entirely"},
+    )
+    assert res.status_code == 200, res.text
+    body2 = res.json()
+    assert body2["status"] != "duplicate_candidate"
+    assert body2["duplicate_candidate"] is None
 
 
 # ── AC-1111 - confirm captures, idea_number format ────────────────────────────

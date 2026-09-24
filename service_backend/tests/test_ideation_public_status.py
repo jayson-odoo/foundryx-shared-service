@@ -303,6 +303,30 @@ def test_ac_1603_token_is_never_the_sequential_idea_number(setup):
     assert res.json() == UNIFORM_404
 
 
+# ── mint_idea_link never mints, only reads (review round 2, N1c) ─────────────
+
+
+def test_mint_idea_link_none_when_status_token_missing_even_with_delivery_base(setup):
+    """``mint_idea_link`` is a pure READ (review round 1, should-fix #6): a
+    captured row with NO ``status_token`` yet returns None even though the
+    product HAS a delivery base configured (``setup`` already sets one) -
+    minting happens only in ``numbering.mint_idea_identity`` (the sink), never
+    as a side effect of reading the link."""
+    from modules.ideation.services.sinks import mint_idea_link
+
+    s = setup
+    idea_id = _make_captured_idea(
+        s["factory"], s["product_id"], idea_number="IDEA-0055", status_token=None
+    )
+    db = s["factory"]()
+    try:
+        idea = _idea_row(s["factory"], idea_id)
+        assert idea.status_token is None
+        assert mint_idea_link(db, idea) is None
+    finally:
+        db.close()
+
+
 # ── AC-1604 - is_test idea still gets a token + link ──────────────────────────
 
 
