@@ -442,6 +442,99 @@ def test_ac_1109_duplicate_choice_vote_closes_draft_idempotent(setup):
     assert _upvote_count(s["factory"], existing_id) == 1
 
 
+def test_ac_1109_vote_on_deleted_candidate_falls_through_no_500(setup):
+    """Review round 1 (blocking #3): if the pending candidate is deleted
+    between the offer and the vote, ``duplicate_choice: "vote"`` must never
+    500 - it drops the stale ``pending_candidate`` and falls through to a
+    normal turn instead of voting for a dead row."""
+    from modules.ideation.models import Idea
+
+    s = setup
+    problem = "the price tag should show promo price in red"
+    existing = _complete_flow(s, problem).json()
+    existing_id = existing["draft_id"]
+
+    voter_contact = _make_contact(s["factory"], "Voter2", "Dealer", "+60177889901")
+    cand_body = _create_idea(s, voter_contact, message_text=problem).json()
+    assert cand_body["status"] == "duplicate_candidate"
+    draft_id = cand_body["draft_id"]
+
+    # The candidate vanishes (hard-deleted) before the vote turn.
+    db = s["factory"]()
+    try:
+        db.query(Idea).filter(Idea.id == existing_id).delete()
+        db.commit()
+    finally:
+        db.close()
+
+    voted = _create_idea(s, voter_contact, draft_id=draft_id, duplicate_choice="vote")
+    assert voted.status_code == 200, voted.text
+    body = voted.json()
+    assert body["status"] != "voted"
+    assert _idea_status_key(s["factory"], draft_id) == "draft"
+
+
+def test_ac_1109_vote_candidate_from_another_tenant_never_matches(setup):
+    """Review round 1 (blocking #3): a stored ``pending_candidate`` id must
+    resolve tenant+product scoped - even if it happens to reference a REAL
+    idea id belonging to ANOTHER tenant, voting for it must never leak across
+    tenants (no upvote on the foreign idea, falls through to a normal turn)."""
+    from app.models.tenant import Tenant
+    from modules.ideation.models import Idea
+    from modules.ideation.services.statuses import idea_status_id
+
+    s = setup
+    db = s["factory"]()
+    try:
+        default_tenant = db.query(Tenant).filter(Tenant.id == DEFAULT_TENANT_ID).first()
+        other_tenant = Tenant(
+            name="Other Co", slug="other-ideation-vote", status_id=default_tenant.status_id
+        )
+        db.add(other_tenant)
+        db.flush()
+        foreign_status_id = idea_status_id(db, "captured", other_tenant.id)
+        foreign_idea = Idea(
+            tenant_id=other_tenant.id,
+            product_id=s["product_id"],
+            status_id=foreign_status_id,
+            problem="a foreign tenant's idea",
+            idea_number="IDEA-FOREIGN",
+            captured_json={"problem": "a foreign tenant's idea"},
+        )
+        db.add(foreign_idea)
+        db.commit()
+        foreign_id = foreign_idea.id
+    finally:
+        db.close()
+
+    body = _create_idea(
+        s, message_text="an idea about warehouse slotting optimization"
+    ).json()
+    draft_id = body["draft_id"]
+
+    # Simulate a stored pending_candidate that happens to reference the
+    # foreign tenant's idea id (the polymorphic-stored-id leak class,
+    # CLAUDE.md) - never resolved with an unscoped get_by_id.
+    db = s["factory"]()
+    try:
+        draft = db.query(Idea).filter(Idea.id == draft_id).first()
+        draft.intake_state = {
+            "skipped": [],
+            "declined_candidates": [],
+            "pending_candidate": foreign_id,
+            "voted_for": None,
+        }
+        db.commit()
+    finally:
+        db.close()
+
+    voted = _create_idea(s, draft_id=draft_id, duplicate_choice="vote")
+    assert voted.status_code == 200, voted.text
+    assert voted.json()["status"] != "voted"
+    assert _idea_status_key(s["factory"], draft_id) == "draft"
+    assert _upvote_count(s["factory"], foreign_id) == 0
+
+
 # ── AC-1110 - separate keeps the draft open, candidate never re-offered ──────
 
 
@@ -525,6 +618,26 @@ def test_ac_1111_idea_number_sequence_rolls_past_9999(setup):
         db.close()
 
 
+def test_idea_number_sequence_registered_on_ideation_metadata():
+    """Review round 1 (blocking #1): ``ideas_idea_number_seq`` must be
+    registered on ``IdeationBase.metadata`` (not declared ONLY in migration
+    0010) - ``bootstrap.create_schema_and_tables`` runs
+    ``IdeationBase.metadata.create_all(engine)`` on EVERY boot, but the
+    per-module Alembic step (``run_module_migrations``) stamps head with NO
+    DDL on the legacy/adopt path once the module tables already exist
+    (``app/module_platform/migrations.py``) - so a brand-new Postgres install
+    would never get the sequence (every confirm turn 500ing) if only the
+    migration declared it."""
+    from modules.ideation.db import IDEATION_SCHEMA, IdeationBase
+    from modules.ideation.models import IDEA_NUMBER_SEQUENCE
+
+    assert IDEA_NUMBER_SEQUENCE.name == "ideas_idea_number_seq"
+    assert IDEA_NUMBER_SEQUENCE.schema == IDEATION_SCHEMA
+    key = f"{IDEATION_SCHEMA}.ideas_idea_number_seq"
+    assert key in IdeationBase.metadata._sequences
+    assert IdeationBase.metadata._sequences[key] is IDEA_NUMBER_SEQUENCE
+
+
 # ── AC-1112 - two captures get different sequence numbers ────────────────────
 
 
@@ -570,6 +683,167 @@ def test_ac_1113_cancel_closes_draft_idempotent(setup):
 
     again = _create_idea(s, draft_id=draft_id, cancel=True).json()
     assert again["status"] == "cancelled"
+
+
+def test_ac_1113_cancel_with_long_title_never_422s(setup):
+    """Review round 1 (nit 11): ``cancel: true`` must never 422 on an
+    over-length title - abandoning a draft takes priority over validating a
+    title that is about to be thrown away."""
+    s = setup
+    body = _create_idea(s, message_text="stock alerts idea").json()
+    draft_id = body["draft_id"]
+
+    cancelled = _create_idea(
+        s,
+        draft_id=draft_id,
+        cancel=True,
+        title="one two three four five six seven eight nine",
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "cancelled"
+
+
+def _fork_idea_statuses_partial(db, tenant_id: str, keys):
+    """Create ONLY the given status keys as a tenant fork of the Idea entity
+    (missing keys/edges ON PURPOSE) - simulates a tenant that forked its Idea
+    status set BEFORE the S1 vote edge existed (review round 1, should-fix
+    #4). Returns ``{key: status_id}``."""
+    import uuid as _uuid
+
+    from app.models.status import Status
+    from modules.ideation.services.statuses import IDEA_ENTITY, IDEA_STATUS_SEED
+
+    seed_by_key = {k: (label, color, sort, flags) for k, label, color, sort, flags in IDEA_STATUS_SEED}
+    id_map = {}
+    for key in keys:
+        label, color, sort_order, flags = seed_by_key[key]
+        row = Status(
+            id=str(_uuid.uuid4()),
+            entity_type=IDEA_ENTITY,
+            key=key,
+            category=key.upper(),
+            label=label,
+            color=color,
+            sort_order=sort_order,
+            tenant_id=tenant_id,
+            is_system=True,
+            **flags,
+        )
+        db.add(row)
+        id_map[key] = row.id
+    db.flush()
+    return id_map
+
+
+def test_vote_transition_blocked_on_forked_tenant_is_409_not_500(setup):
+    """Review round 1 (should-fix #4b): a tenant that forked the Idea status
+    set BEFORE the ``idea-tr-draft-vote`` edge existed has draft/duplicate
+    statuses but no edge between them - voting must 409
+    (``transition_blocked``), never 500."""
+    from app.api_errors import ApiError
+    from app.models.catalog import Product
+    from app.models.tenant import Tenant
+    from modules.ideation.models import Idea
+    from modules.ideation.services.intake import IntakeService
+
+    s = setup
+    db = s["factory"]()
+    try:
+        default_tenant = db.query(Tenant).filter(Tenant.id == DEFAULT_TENANT_ID).first()
+        tenant = Tenant(
+            name="Forked Vote Co", slug="forked-vote-409", status_id=default_tenant.status_id
+        )
+        db.add(tenant)
+        db.flush()
+        status_ids = _fork_idea_statuses_partial(db, tenant.id, ["draft", "captured", "duplicate"])
+        product = Product(tenant_id=tenant.id, name="Forked Product", kind="software")
+        db.add(product)
+        db.flush()
+        existing = Idea(
+            tenant_id=tenant.id,
+            product_id=product.id,
+            status_id=status_ids["captured"],
+            problem="a forked-tenant idea about dashboards",
+            idea_number="IDEA-F001",
+            captured_json={"problem": "a forked-tenant idea about dashboards"},
+        )
+        db.add(existing)
+        db.commit()
+        tenant_id, product_id = tenant.id, product.id
+    finally:
+        db.close()
+
+    db = s["factory"]()
+    try:
+        turn1 = IntakeService(db).create_idea(
+            tenant_id,
+            product_id=product_id,
+            submitter_contact_id=None,
+            message_text="a forked-tenant idea about dashboards",
+        )
+        assert turn1["status"] == "duplicate_candidate"
+        draft_id = turn1["draft_id"]
+        db.commit()
+    finally:
+        db.close()
+
+    db = s["factory"]()
+    try:
+        with pytest.raises(ApiError) as exc_info:
+            IntakeService(db).create_idea(
+                tenant_id,
+                product_id=product_id,
+                submitter_contact_id=None,
+                message_text="",
+                draft_id=draft_id,
+                duplicate_choice="vote",
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.code == "transition_blocked"
+    finally:
+        db.close()
+
+
+def test_cancel_with_no_rejected_status_on_forked_tenant_is_409_not_500(setup):
+    """Review round 1 (should-fix #4): a tenant fork missing the ``rejected``
+    Idea status entirely must 409 on cancel - never answer ``cancelled`` for
+    a mutation that did not happen."""
+    from app.api_errors import ApiError
+    from app.models.catalog import Product
+    from app.models.tenant import Tenant
+    from modules.ideation.services.intake import IntakeService
+
+    s = setup
+    db = s["factory"]()
+    try:
+        default_tenant = db.query(Tenant).filter(Tenant.id == DEFAULT_TENANT_ID).first()
+        tenant = Tenant(
+            name="Forked Cancel Co", slug="forked-cancel-409", status_id=default_tenant.status_id
+        )
+        db.add(tenant)
+        db.flush()
+        _fork_idea_statuses_partial(db, tenant.id, ["draft", "captured"])  # no "rejected"
+        product = Product(tenant_id=tenant.id, name="Forked Product 2", kind="software")
+        db.add(product)
+        db.commit()
+        tenant_id, product_id = tenant.id, product.id
+    finally:
+        db.close()
+
+    db = s["factory"]()
+    try:
+        with pytest.raises(ApiError) as exc_info:
+            IntakeService(db).create_idea(
+                tenant_id,
+                product_id=product_id,
+                submitter_contact_id=None,
+                message_text="an idea to cancel",
+                cancel=True,
+            )
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.code == "transition_blocked"
+    finally:
+        db.close()
 
 
 # ── AC-1114 / AC-1118 - complete link is the S5 public status URL ────────────

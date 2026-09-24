@@ -41,10 +41,11 @@ from app.api_errors import ApiError
 from app.models.catalog import Product
 from app.models.status import Status
 from app.services import status_machine
+from app.services.status_machine import StatusMachineError
 from modules.omnichannel.models import Contact, Workspace
 
 from ..models import Idea, IdeaAttachment, IdeaVote
-from .dedup import DedupService
+from .dedup import DedupService, dead_candidate_status_ids
 from .intake_definitions import (
     IDEATION_INTAKE_KEY,
     IDEATION_RECAP_LABELS,
@@ -195,10 +196,12 @@ class IntakeService:
 
         # Stamp title/submitter_tier on every turn while draft (S1, AC-1105/1115).
         # A blank/whitespace title is treated as absent; latest non-blank value
-        # across turns wins for both.
+        # across turns wins for both. The 8-word check never fires on a
+        # ``cancel:true`` turn (review round 1, nit 11) - abandoning a draft
+        # must never 422 on a title the submitter is about to throw away.
         if title is not None and title.strip():
             stripped_title = title.strip()
-            if len(stripped_title.split()) > 8:
+            if not cancel and len(stripped_title.split()) > 8:
                 raise ApiError(422, "title_too_long", "Title must be 8 words or fewer.")
             idea.title = stripped_title
         if submitter_tier is not None and submitter_tier.strip():
@@ -225,8 +228,16 @@ class IntakeService:
 
         if duplicate_choice and state.pending_candidate:
             if duplicate_choice == "vote":
-                return self._vote_duplicate(idea, tenant_id, state, submitter_contact_id)
-            if duplicate_choice == "separate":
+                # Resolve tenant+product scoped AND require the candidate is
+                # still LIVE (review round 1, blocking #3) - a polymorphic
+                # stored id (`pending_candidate`) is never trusted unscoped.
+                # Gone/no-longer-live -> drop it and fall through to a normal
+                # turn instead of voting for a dead row.
+                candidate = self._resolve_live_candidate(idea, state.pending_candidate)
+                if candidate is not None:
+                    return self._vote_duplicate(idea, tenant_id, state, candidate, submitter_contact_id)
+                state.pending_candidate = None
+            elif duplicate_choice == "separate":
                 state.declined_candidates.append(state.pending_candidate)
                 state.pending_candidate = None
             # Any other value (schema already restricts to vote|separate) is
@@ -235,10 +246,14 @@ class IntakeService:
         # Dedup on the problem text (AC-1107/1110): a high pg_trgm / difflib match
         # to an existing NON-draft Idea in the same (tenant, product), excluding
         # this draft itself and every candidate already declined this session.
+        # ``idea.product_id`` (the DRAFT's own product), never the request's
+        # ``product_id`` - a continuation turn's body must never re-scope dedup
+        # to a different product than the draft actually belongs to (review
+        # round 1, should-fix #7).
         problem_text = str((idea.captured_json or {}).get("problem") or idea.problem or "")
         dup_id = self._dedup.find_duplicate(
             tenant_id,
-            product_id,
+            idea.product_id,
             problem_text,
             [idea.id, *state.declined_candidates],
             is_test=idea.is_test,
@@ -248,7 +263,7 @@ class IntakeService:
 
         if dup_id is not None:
             self.db.commit()
-            return self._duplicate_candidate_response(idea.id, dup_id, captured, missing, idea.title)
+            return self._duplicate_candidate_response(idea, dup_id, captured, missing, idea.title)
 
         next_key = compute_next_field(captured, state.skipped)
         self.db.flush()
@@ -299,6 +314,39 @@ class IntakeService:
     def _status_key(self, idea: Idea) -> str:
         row = self.db.query(Status).filter(Status.id == idea.status_id).first()
         return row.key if row else ""
+
+    def _resolve_candidate(self, idea: Idea, candidate_id: Optional[str]) -> Optional[Idea]:
+        """Tenant + product scoped lookup of a stored candidate id
+        (``pending_candidate``/``voted_for`` in ``intake_state``) - a
+        polymorphic stored id is NEVER resolved unscoped (CLAUDE.md's
+        recurring cross-tenant leak class; review round 1, blocking #3). No
+        liveness requirement - for DISPLAY of an id already locked in by a
+        past vote (``_terminal_echo``), not for deciding whether to vote."""
+        if not candidate_id:
+            return None
+        return (
+            self.db.query(Idea)
+            .filter(
+                Idea.id == candidate_id,
+                Idea.tenant_id == idea.tenant_id,
+                Idea.product_id == idea.product_id,
+            )
+            .first()
+        )
+
+    def _resolve_live_candidate(self, idea: Idea, candidate_id: Optional[str]) -> Optional[Idea]:
+        """Same tenant+product scoping as ``_resolve_candidate``, but also
+        requires the candidate is still LIVE (not draft/rejected/duplicate/
+        archived - the shared dedup candidacy predicate) - for deciding
+        whether a ``duplicate_choice: "vote"`` may actually fire. A candidate
+        that vanished or got archived between the offer and the vote must
+        never be voted for (review round 1, blocking #3)."""
+        candidate = self._resolve_candidate(idea, candidate_id)
+        if candidate is None:
+            return None
+        if candidate.status_id in dead_candidate_status_ids(self.db, idea.tenant_id):
+            return None
+        return candidate
 
     def _discard_draft(self, tenant_id: str, discard_draft_id: str) -> None:
         """Reject an abandoned draft on an is_new_idea restart (DC-10). Best-effort:
@@ -378,10 +426,14 @@ class IntakeService:
         source of truth). No submitter id ⇒ nothing to attribute a vote to."""
         if not submitter_contact_id:
             return
+        # Tenant-scoped throughout (review round 1, blocking #3) - the vote
+        # insert, the tally query, and the idea row it recomputes onto all
+        # filter on ``tenant_id`` too, never id-alone.
         exists = (
             self.db.query(IdeaVote)
             .filter(
                 IdeaVote.idea_id == idea_id,
+                IdeaVote.tenant_id == tenant_id,
                 IdeaVote.voter_id == submitter_contact_id,
             )
             .first()
@@ -396,8 +448,16 @@ class IntakeService:
                 )
             )
             self.db.flush()
-        rows = self.db.query(IdeaVote).filter(IdeaVote.idea_id == idea_id).all()
-        existing = self.db.query(Idea).filter(Idea.id == idea_id).first()
+        rows = (
+            self.db.query(IdeaVote)
+            .filter(IdeaVote.idea_id == idea_id, IdeaVote.tenant_id == tenant_id)
+            .all()
+        )
+        existing = (
+            self.db.query(Idea)
+            .filter(Idea.id == idea_id, Idea.tenant_id == tenant_id)
+            .first()
+        )
         if existing is not None:
             existing.upvotes = sum(1 for r in rows if r.dir == "up")
             existing.downvotes = sum(1 for r in rows if r.dir == "down")
@@ -536,32 +596,61 @@ class IntakeService:
 
     def _cancel_draft(self, idea: Idea, tenant_id: str) -> dict:
         rejected_id = idea_status_id(self.db, "rejected", tenant_id)
-        if rejected_id is not None:
+        if rejected_id is None:
+            # No ``rejected`` status on this tier - a cancel can never be
+            # applied. Never answer ``cancelled`` for a mutation that did not
+            # happen (review round 1, should-fix #4).
+            self.db.rollback()
+            raise ApiError(409, "transition_blocked", "This idea cannot be cancelled right now.")
+        try:
             status_machine.transition(
                 self.db, IDEA_ENTITY, idea, rejected_id, actor=None, tenant_id=tenant_id, commit=False
             )
+        except StatusMachineError:
+            # A forked tenant status set missing the draft -> rejected edge
+            # (or any other engine refusal) is a 409, never a 500 (review
+            # round 1, should-fix #4).
+            self.db.rollback()
+            raise ApiError(409, "transition_blocked", "This idea cannot be cancelled right now.")
         self.db.commit()
         return _response(
             status="cancelled", draft_id=idea.id, reply_text=_reply_cancelled(), title=idea.title
         )
 
     def _vote_duplicate(
-        self, idea: Idea, tenant_id: str, state: _IntakeState, submitter_contact_id: Optional[str]
+        self,
+        idea: Idea,
+        tenant_id: str,
+        state: _IntakeState,
+        candidate: Idea,
+        submitter_contact_id: Optional[str],
     ) -> dict:
-        candidate_id = state.pending_candidate
-        candidate = self.db.query(Idea).filter(Idea.id == candidate_id).first()
-        self._register_submitter_upvote(tenant_id, candidate_id, submitter_contact_id)
-        state.voted_for = candidate_id
+        """Vote for an ALREADY tenant+product-scoped, live ``candidate``
+        (resolved by the caller via ``_resolve_live_candidate`` - review round
+        1, blocking #3)."""
+        self._register_submitter_upvote(tenant_id, candidate.id, submitter_contact_id)
+        state.voted_for = candidate.id
         state.pending_candidate = None
         state.save(idea)
         duplicate_id = idea_status_id(self.db, "duplicate", tenant_id)
-        if duplicate_id is not None:
+        if duplicate_id is None:
+            self.db.rollback()
+            raise ApiError(409, "transition_blocked", "This idea cannot be voted right now.")
+        try:
             status_machine.transition(
                 self.db, IDEA_ENTITY, idea, duplicate_id, actor=None, tenant_id=tenant_id, commit=False
             )
+        except StatusMachineError:
+            # A forked tenant status set missing the draft -> duplicate edge
+            # is a 409, never a 500 (review round 1, should-fix #4).
+            self.db.rollback()
+            raise ApiError(409, "transition_blocked", "This idea cannot be voted right now.")
+        # Compute the candidate link BEFORE commit (review round 1, should-fix
+        # #6) - a pure read now (mint_idea_link never mutates), but this keeps
+        # the ordering honest regardless.
+        cand_number = candidate.idea_number
+        cand_link = mint_idea_link(self.db, candidate)
         self.db.commit()
-        cand_number = candidate.idea_number if candidate else None
-        cand_link = mint_idea_link(self.db, candidate) if candidate else None
         return _response(
             status="voted",
             draft_id=idea.id,
@@ -573,13 +662,13 @@ class IntakeService:
 
     def _duplicate_candidate_response(
         self,
-        draft_id: str,
+        idea: Idea,
         dup_id: str,
         captured: Dict[str, object],
         missing: List[str],
         title: Optional[str],
     ) -> dict:
-        candidate = self.db.query(Idea).filter(Idea.id == dup_id).first()
+        candidate = self._resolve_candidate(idea, dup_id)
         cand_title = None
         cand_number = None
         if candidate is not None:
@@ -587,7 +676,7 @@ class IntakeService:
             cand_number = candidate.idea_number
         return _response(
             status="duplicate_candidate",
-            draft_id=draft_id,
+            draft_id=idea.id,
             reply_text=_reply_duplicate_candidate(cand_title or ""),
             missing=missing,
             title=title,
@@ -607,11 +696,7 @@ class IntakeService:
             )
         if status_key == "duplicate":
             state = _IntakeState.load(idea)
-            candidate = (
-                self.db.query(Idea).filter(Idea.id == state.voted_for).first()
-                if state.voted_for
-                else None
-            )
+            candidate = self._resolve_candidate(idea, state.voted_for)
             cand_number = candidate.idea_number if candidate else None
             cand_link = mint_idea_link(self.db, candidate) if candidate else None
             self.db.commit()

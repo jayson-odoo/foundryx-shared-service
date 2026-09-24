@@ -67,6 +67,24 @@ def _normalize_exclude_ids(exclude_id: ExcludeIds) -> List[str]:
     return [x for x in exclude_id if x]
 
 
+# Status keys a dedup/vote CANDIDATE must never resolve to - draft (not a real
+# capture yet, D-CONFIRM), rejected/duplicate (dead-end shells, S1), archived
+# (off-board). Shared between DedupService's own candidate query and
+# IntakeService's stored-id (``pending_candidate``/``voted_for``) liveness
+# check at vote time (review round 1, blocking #3) - one predicate, never two
+# drifting copies. ``closed`` is deliberately NOT in this list - a delivered,
+# closed idea is still a real capture worth deduping/voting against.
+_DEAD_CANDIDATE_KEYS = ("rejected", "duplicate", "archived")
+
+
+def dead_candidate_status_ids(db: Session, tenant_id: Optional[str]) -> List[str]:
+    """The Idea ``status_id``s a dedup/vote candidate must never resolve to,
+    for ``tenant_id``'s resolved tier."""
+    ids = [initial_idea_status_id(db, tenant_id)]
+    ids.extend(idea_status_id(db, key, tenant_id) for key in _DEAD_CANDIDATE_KEYS)
+    return [i for i in ids if i is not None]
+
+
 class DedupService:
     """Inline, deterministic per-(tenant, product) dedup (AC-A-32)."""
 
@@ -119,14 +137,7 @@ class DedupService:
         excludes: List[str],
         is_test: bool = False,
     ) -> Optional[str]:
-        dead_ids = [
-            s for s in (
-                initial_idea_status_id(self.db, tenant_id),
-                idea_status_id(self.db, "rejected", tenant_id),
-                idea_status_id(self.db, "duplicate", tenant_id),
-            )
-            if s is not None
-        ]
+        dead_ids = dead_candidate_status_ids(self.db, tenant_id)
         exclude_clause = "AND id NOT IN :excludes " if excludes else ""
         dead_clause = "AND status_id NOT IN :dead_statuses " if dead_ids else ""
         sql = text(
@@ -164,14 +175,7 @@ class DedupService:
         excludes: List[str],
         is_test: bool = False,
     ) -> Optional[str]:
-        dead_ids = [
-            s for s in (
-                initial_idea_status_id(self.db, tenant_id),
-                idea_status_id(self.db, "rejected", tenant_id),
-                idea_status_id(self.db, "duplicate", tenant_id),
-            )
-            if s is not None
-        ]
+        dead_ids = dead_candidate_status_ids(self.db, tenant_id)
         q = (
             self.db.query(Idea.id, Idea.problem)
             .filter(

@@ -340,6 +340,70 @@ def test_ac_1604_is_test_idea_still_gets_token_and_link(setup):
     assert res.status_code == 200, res.text
 
 
+# ── Review round 1, blocking #2 - layering + tenant signin_allowed ───────────
+
+
+def test_router_never_queries_the_db_directly():
+    """Review round 1 (blocking #2): the public_ideas ROUTER is HTTP/Pydantic
+    only - the lookup lives in ``services/public_status.py``. A static check:
+    the route HANDLER's own source (not the module docstring, which is free
+    to describe the rule in prose) never mentions ``db.query``, and the
+    resolve logic is reachable as ``PublicIdeaStatusService.resolve``."""
+    import inspect
+
+    from modules.ideation.routers.public_ideas import get_public_idea_status
+    from modules.ideation.services.public_status import PublicIdeaStatusService
+
+    source = inspect.getsource(get_public_idea_status)
+    assert "db.query" not in source
+    assert "PublicIdeaStatusService" in source
+    assert hasattr(PublicIdeaStatusService, "resolve")
+
+
+def test_suspended_tenant_never_serves_a_public_idea_status(setup):
+    """Review round 1 (blocking #2 / nit 9): a tenant whose sign-in is
+    blocked (status-engine ``blocks_access``, e.g. suspended) must never
+    serve its idea's public status page - ``Tenant.signin_allowed`` is the
+    single chokepoint core checks per request (``FormService._resolve_public``
+    reuses the same predicate for its own public surface); this endpoint
+    reuses it too. Uniform 404, same as an unknown token."""
+    from app.models.status import TENANT_STATUS_IDS, TENANT_STATUS_SUSPENDED
+    from app.models.tenant import Tenant
+    from modules.ideation.models import Idea
+    from modules.ideation.services.statuses import idea_status_id
+
+    s = setup
+    token = "tok_" + "z" * 20
+    db = s["factory"]()
+    try:
+        suspended = Tenant(
+            name="Suspended Co",
+            slug="suspended-ideation",
+            status_id=TENANT_STATUS_IDS[TENANT_STATUS_SUSPENDED],
+        )
+        db.add(suspended)
+        db.flush()
+        assert suspended.signin_allowed is False
+        status_id = idea_status_id(db, "captured", suspended.id)
+        idea = Idea(
+            tenant_id=suspended.id,
+            product_id=s["product_id"],
+            status_id=status_id,
+            problem="an idea under a suspended tenant",
+            idea_number="IDEA-9001",
+            status_token=token,
+            captured_json={"problem": "an idea under a suspended tenant"},
+        )
+        db.add(idea)
+        db.commit()
+    finally:
+        db.close()
+
+    res = s["client"].get(f"/public/ideas/{token}")
+    assert res.status_code == 404
+    assert res.json() == UNIFORM_404
+
+
 # ── Migration existence: 0010 chains onto 0009 ────────────────────────────────
 
 

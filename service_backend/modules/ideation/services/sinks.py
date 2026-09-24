@@ -8,7 +8,6 @@ already-captured draft does not create a second Idea, does not double-advance
 the status, and does not re-mint the number/token; it just re-derives the
 (stable) link.
 """
-import secrets
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -45,12 +44,15 @@ def mint_idea_link(db: Session, idea: Idea) -> Optional[str]:
     """The public idea-status-page link ``{product_domain_base}/public/ideas/
     {status_token}`` (S5, AC-1114/1118 - retires the old SSO
     ``/ideas/{idea_id}`` shape). ``None`` when the product has no delivery
-    origin configured yet (a Maintainer sets ``product_domain_base`` on the
-    software product). When the idea has no ``status_token`` yet (a legacy
-    captured row that predates this lane), mint one here so an old idea can
-    still get a link - this function is only ever called on an idea that has
-    already been captured (the sink mints it up front; the intake service's
-    idempotent terminal echo only reaches an already-non-draft idea)."""
+    origin configured, OR the idea has no ``status_token`` yet (review round
+    1, should-fix #6: this is a pure READ - it never mints; a caller that
+    needs one minted calls ``numbering.mint_idea_identity`` first, same as
+    the sink does. A pre-lane captured row with no token is backfilled once
+    by migration 0010, not re-minted on every read - minting inside a getter
+    that runs AFTER a caller's own ``db.commit()`` silently drops the mutation,
+    exactly the bug this fix removes)."""
+    if not idea.status_token:
+        return None
     row = (
         db.query(ProductDelivery)
         .filter(
@@ -62,9 +64,6 @@ def mint_idea_link(db: Session, idea: Idea) -> Optional[str]:
     base = (row.product_domain_base or "").rstrip("/") if row else ""
     if not base:
         return None
-    if not idea.status_token:
-        idea.status_token = secrets.token_urlsafe(24)
-        db.flush()
     return f"{base}/public/ideas/{idea.status_token}"
 
 

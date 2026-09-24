@@ -18,6 +18,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Sequence,
     String,
     Text,
     UniqueConstraint,
@@ -30,7 +31,23 @@ from app.models.status import Status
 from app.models.utc_datetime import UTCDateTime
 from modules.omnichannel.models import Contact
 
-from .db import IdeationBase
+from .db import IDEATION_SCHEMA, IdeationBase
+
+# The idea_number sequence (S1, AC-1111/1112) - registered on THIS module's own
+# metadata (not just declared in migration 0010) so `bootstrap.
+# create_schema_and_tables`'s `IdeationBase.metadata.create_all(engine)` - which
+# runs on EVERY boot, including a brand-new Postgres install - actually
+# provisions it. The per-module Alembic step (`run_module_migrations`) stamps
+# head with NO DDL on the legacy/adopt path when the tables already exist
+# (`app/module_platform/migrations.py`), so relying on the migration alone
+# would leave a fresh install's sequence missing forever and every confirm
+# turn 500ing. Migration 0010 keeps its own `CREATE SEQUENCE IF NOT EXISTS`
+# for an already-deployed database that predates this column. A no-op on the
+# SQLite test engine (SQLite does not support sequences; `create_all` skips
+# them for dialects where `supports_sequences` is False).
+IDEA_NUMBER_SEQUENCE = Sequence(
+    "ideas_idea_number_seq", schema=IDEATION_SCHEMA, metadata=IdeationBase.metadata
+)
 
 # Normal cross-schema FK target = core ``public.products.id``. Reference the core
 # COLUMN OBJECT (not a string) so it resolves across the two MetaData objects: a

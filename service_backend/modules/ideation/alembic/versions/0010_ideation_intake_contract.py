@@ -22,6 +22,7 @@ Revises: 0009_ideation_is_test
 Create Date: 2026-09-24
 """
 import secrets
+import uuid
 
 from alembic import op
 from sqlalchemy import text
@@ -81,7 +82,13 @@ def upgrade() -> None:
         bind.execute(
             text(
                 f'UPDATE "{schema}".ideas SET idea_number = '
-                f"'IDEA-' || lpad(nextval('\"{schema}\".ideas_idea_number_seq')::text, 4, '0') "
+                # Postgres' lpad() TRUNCATES (on the right) when the input is
+                # already longer than the target length - a plain
+                # lpad(n::text, 4, '0') would corrupt IDEA-10000+ into
+                # "IDEA-1000". Only pad below 10000; format n::text as-is at
+                # or past it (review round 1, should-fix #5).
+                "'IDEA-' || (CASE WHEN n < 10000 THEN lpad(n::text, 4, '0') ELSE n::text END) "
+                f"FROM (SELECT nextval('\"{schema}\".ideas_idea_number_seq') AS n) seq "
                 "WHERE id = :id AND idea_number IS NULL"
             ),
             {"id": idea_id},
@@ -104,6 +111,43 @@ def upgrade() -> None:
                 "WHERE id = :id AND status_token IS NULL"
             ),
             {"id": idea_id, "token": secrets.token_urlsafe(24)},
+        )
+
+    # Seed the new draft -> duplicate edge onto every EXISTING tenant fork of
+    # the Idea status set (review round 1, should-fix #4a). ``seed_idea_statuses``
+    # already adds the platform-tier edge on every boot (idempotent), and a
+    # FUTURE fork copies whatever the platform graph holds AT FORK TIME
+    # (``StatusService._fork`` queries the live platform edges, never a
+    # hardcoded list) - so only a tenant that forked BEFORE this edge existed
+    # is missing it. Idempotent: only inserts where the fork has both a
+    # ``draft`` and a ``duplicate`` Idea status and lacks the edge.
+    fork_rows = bind.execute(
+        text(
+            "SELECT d.tenant_id, d.id, dup.id "
+            "FROM public.statuses d "
+            "JOIN public.statuses dup "
+            "  ON dup.entity_type = 'idea' AND dup.tenant_id = d.tenant_id AND dup.key = 'duplicate' "
+            "WHERE d.entity_type = 'idea' AND d.key = 'draft' AND d.tenant_id IS NOT NULL "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM public.status_transitions t "
+            "  WHERE t.entity_type = 'idea' AND t.tenant_id = d.tenant_id "
+            "  AND t.from_status_id = d.id AND t.to_status_id = dup.id"
+            ")"
+        )
+    ).fetchall()
+    for tenant_id, draft_status_id, duplicate_status_id in fork_rows:
+        bind.execute(
+            text(
+                "INSERT INTO public.status_transitions "
+                "(id, entity_type, tenant_id, from_status_id, to_status_id, label, sort_order) "
+                "VALUES (:id, 'idea', :tenant_id, :from_id, :to_id, 'Vote with existing', 17)"
+            ),
+            {
+                "id": str(uuid.uuid4()),
+                "tenant_id": tenant_id,
+                "from_id": draft_status_id,
+                "to_id": duplicate_status_id,
+            },
         )
 
 
