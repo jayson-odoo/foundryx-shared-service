@@ -24,6 +24,7 @@ from tests.test_ideation_create_idea import (  # noqa: F401 - reused fixtures/he
     _create_idea,
     _create_software_product,
     _idea_count,
+    _idea_field,
     _idea_status_key,
     _make_contact,
     _mint_key,
@@ -75,6 +76,9 @@ _DISSIMILAR = "Add dark mode to the settings page"
 
 
 def test_near_duplicate_flags_and_upvotes(setup):
+    """S1 (updated - AC-1107/1109): a near-duplicate offers
+    ``duplicate_candidate`` with NO auto-upvote; choosing ``duplicate_choice:
+    "vote"`` on a follow-up turn upvotes the original exactly once."""
     s = setup
     original_id = _capture_idea(s, _ORIGINAL)
     assert _upvotes(s["factory"], original_id) == 0
@@ -86,9 +90,19 @@ def test_near_duplicate_flags_and_upvotes(setup):
     )
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["status"] == "duplicate"
-    assert body["duplicate_of"] == original_id
-    assert "upvot" in body["reply_text"].lower()
+    assert body["status"] == "duplicate_candidate"
+    assert body["duplicate_candidate"]["idea_number"] == _idea_field(
+        s["factory"], original_id, "idea_number"
+    )
+    # No auto-upvote yet - the submitter has not chosen "vote".
+    assert _upvotes(s["factory"], original_id) == 0
+
+    voted = _create_idea(
+        s["client"], s["key"], other, s["product_id"],
+        draft_id=body["draft_id"], duplicate_choice="vote",
+    )
+    assert voted.json()["status"] == "voted"
+    assert "vote" in voted.json()["reply_text"].lower()
     # The existing idea gained exactly one upvote; no second captured idea.
     assert _upvotes(s["factory"], original_id) == 1
 
@@ -137,30 +151,46 @@ def test_same_text_under_different_product_is_not_duplicate(setup):
 
 
 def test_upvote_idempotent_on_repeat_same_submitter(setup):
+    """S1 (updated - AC-1109): a submitter chooses "vote" on the SAME draft
+    repeatedly (idempotent terminal echo) - still counts once."""
     s = setup
     original_id = _capture_idea(s, _ORIGINAL)
     voter = _make_contact(s["factory"], first_name="Voter", phone="+60199887766")
 
+    first = _create_idea(
+        s["client"], s["key"], voter, s["product_id"], message_text=_NEAR_DUP
+    ).json()
+    assert first["status"] == "duplicate_candidate"
+    draft_id = first["draft_id"]
+
     for _ in range(3):
         res = _create_idea(
-            s["client"], s["key"], voter, s["product_id"], message_text=_NEAR_DUP
+            s["client"], s["key"], voter, s["product_id"],
+            draft_id=draft_id, duplicate_choice="vote",
         )
-        assert res.json()["status"] == "duplicate", res.text
-    # Same submitter voting 3× still counts once.
+        assert res.json()["status"] == "voted", res.text
+    # Same submitter voting 3x still counts once.
     assert _upvotes(s["factory"], original_id) == 1
 
 
 def test_distinct_submitters_each_add_a_vote(setup):
+    """S1 (updated - AC-1109): distinct submitters each find the candidate,
+    then each chooses "vote" - each adds one upvote."""
     s = setup
     original_id = _capture_idea(s, _ORIGINAL)
 
     v1 = _make_contact(s["factory"], first_name="One", phone="+60100000001")
     v2 = _make_contact(s["factory"], first_name="Two", phone="+60100000002")
     for voter in (v1, v2):
-        res = _create_idea(
+        first = _create_idea(
             s["client"], s["key"], voter, s["product_id"], message_text=_NEAR_DUP
-        )
-        assert res.json()["status"] == "duplicate", res.text
+        ).json()
+        assert first["status"] == "duplicate_candidate", first
+        voted = _create_idea(
+            s["client"], s["key"], voter, s["product_id"],
+            draft_id=first["draft_id"], duplicate_choice="vote",
+        ).json()
+        assert voted["status"] == "voted", voted
     assert _upvotes(s["factory"], original_id) == 2
 
 
@@ -215,6 +245,27 @@ def test_pg_trgm_provisioning_noop_on_sqlite(ideation_client):
         ensure_pg_trgm_index(db.get_bind())
     finally:
         db.close()
+
+
+def test_bootstrap_creates_pg_trgm_extension_before_create_all():
+    """Review round 2 (N2): on a FRESH Postgres database,
+    ``bootstrap.install()`` runs ``create_schema_and_tables`` (create_all)
+    BEFORE the per-module Alembic step, which then stamps head with no DDL
+    once the tables exist (``app/module_platform/migrations.py``'s
+    legacy-adopt path) - so migration 0002's own ``CREATE EXTENSION pg_trgm``
+    never fires and every dedup ``similarity()`` call 500s. Structural check:
+    ``create_schema_and_tables``'s own source creates the extension, and
+    does so textually BEFORE the ``create_all`` call (so it fires even on the
+    very first boot, before any table exists)."""
+    import inspect
+
+    from modules.ideation.bootstrap import create_schema_and_tables
+
+    source = inspect.getsource(create_schema_and_tables)
+    assert "CREATE EXTENSION IF NOT EXISTS pg_trgm" in source
+    extension_pos = source.index("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+    create_all_pos = source.index("create_all(")
+    assert extension_pos < create_all_pos
 
 
 def test_dedup_service_uses_python_fallback_on_sqlite(ideation_client):

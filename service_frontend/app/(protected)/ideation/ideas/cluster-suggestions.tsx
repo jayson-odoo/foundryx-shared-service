@@ -139,7 +139,7 @@ function ClusterCard({
               className="mt-0.5"
             />
             <span className="min-w-0 flex-1">
-              <ClampedText text={idea.problem} lines={2} />
+              <ClampedText text={idea.title ?? idea.problem} lines={2} />
             </span>
           </label>
         ))}

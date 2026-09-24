@@ -1,12 +1,15 @@
 """Ideation API schemas - camelCase out to the frontend (mirrors
 service_frontend/types/ideation.ts + services/ideation-service.ts).
 
-The ``create_idea`` intake contract (§5.1) is the exception: it is a
+The ``create_idea`` intake contract (§5.1, S1) is the exception: it is a
 server-to-server contract with the sorento brain and uses **snake_case**
 field names byte-for-byte (input schema below; the output is a plain dict
-built in ``services/intake.py`` so optional keys are omitted, not null)."""
+built in ``services/intake.py`` - it ALWAYS carries the full ten-key
+envelope, null where not applicable (AC-1116), never an omitted key)."""
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import Field
 
 from app.schemas.base import ApiModel
 
@@ -33,6 +36,9 @@ class IdeaOut(ApiModel):
     productId: str
     productName: str
     status: str
+    # A short (1-8 word) headline (S1, AC-1105/1106) - null for a pre-lane
+    # idea or a draft that never sent one; the FE falls back to ``problem``.
+    title: Optional[str] = None
     problem: str
     proposedSolution: Optional[str] = None
     impact: Optional[str] = None
@@ -40,12 +46,18 @@ class IdeaOut(ApiModel):
     rawText: str
     source: str
     submitterName: str
+    # The submitter's tier (e.g. ``dealer``, S1 AC-1115) - null when not set.
+    submitterTier: Optional[str] = None
     upvotes: int
     downvotes: int = 0
     myVote: Optional[Literal["up", "down"]] = None
     priority: int
     attachments: List[IdeaAttachmentOut] = []
     createdAt: datetime
+    # The formatted sequential idea number (S1/S5) - null until captured.
+    # Never ``statusToken`` (that stays the public-status-page credential,
+    # never surfaced on an authenticated read).
+    ideaNumber: Optional[str] = None
     # A console/``--say`` test turn (issue #1179) - false for every real capture.
     # Excluded from list/board by default (``includeTest`` opts in).
     isTest: bool = False
@@ -348,3 +360,34 @@ class CreateIdeaIn(ApiModel):
     # Stamped once on the draft's creation turn; later turns keep whatever the
     # draft was created with regardless of what this carries.
     is_test: bool = False
+    # ── S1 intake-contract additions (all additive, optional) ────────────────
+    # A short (1-8 word) headline (AC-1105) - 1-8 words checked server-side
+    # (``title_too_long`` 422 otherwise); blank/whitespace is treated as
+    # absent. Latest non-blank value across turns wins.
+    title: Optional[str] = None
+    # Optional schema keys to skip (AC-1103) - only ``proposed_solution`` /
+    # ``impact`` are ever honored (``problem`` and unknown keys are ignored);
+    # answering a key later un-skips it (answer wins).
+    skip: Optional[List[str]] = None
+    # Explicit abandon (AC-1113) - closes the draft (``rejected``), status
+    # ``cancelled``, idempotent on a later call with the same draft_id.
+    cancel: Optional[bool] = None
+    # The submitter's choice on an open ``duplicate_candidate`` (AC-1109/1110);
+    # ignored when there is no pending candidate on this draft.
+    duplicate_choice: Optional[Literal["vote", "separate"]] = None
+    # The submitter's tier (e.g. ``dealer``, AC-1115) - stored verbatim,
+    # stripped; latest non-blank value across turns wins.
+    submitter_tier: Optional[str] = None
+
+
+class PublicIdeaStatusOut(ApiModel):
+    """The S5 public idea-status page contract - GET /public/ideas/{token},
+    no auth. EXACTLY these three keys - never problem/solution/impact/
+    department/submitter/product/any id (AC-1601). ``status`` is the status
+    LABEL (e.g. ``New``), never the lifecycle key."""
+
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+    title: Optional[str] = None
+    status: str
+    ideaNumber: Optional[str] = Field(default=None, validation_alias="idea_number")

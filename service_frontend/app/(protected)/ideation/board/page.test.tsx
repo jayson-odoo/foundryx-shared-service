@@ -86,4 +86,42 @@ describe('IdeationBoardPage', () => {
     expect(screen.getByText('Export orders to Excel')).toBeInTheDocument();
     expect(screen.getByText('Bulk approve')).toBeInTheDocument();
   });
+
+  // AC-1106 (ideation intake redesign, S1) - the card's visible label is the
+  // idea's title when set, falling back to the problem text otherwise.
+  it('shows the idea title as the visible label when set, not the problem text', () => {
+    useIdeas.mockReturnValue({
+      ...base,
+      ideas: [
+        anIdea({
+          title: 'Show promo price in red on price tags',
+          problem: 'the price tag should show promo price in red',
+        }),
+      ],
+    });
+    render(<BoardPage />);
+    expect(screen.getByText('Show promo price in red on price tags')).toBeInTheDocument();
+    expect(
+      screen.queryByText('the price tag should show promo price in red'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('falls back to the problem text when the idea has no title (pre-lane idea)', () => {
+    useIdeas.mockReturnValue({
+      ...base,
+      ideas: [anIdea({ title: null, problem: 'Legacy idea created before this lane' })],
+    });
+    render(<BoardPage />);
+    expect(screen.getByText('Legacy idea created before this lane')).toBeInTheDocument();
+  });
+
+  // AC-1115 - the board card shows the submitter's tier when set.
+  it('renders the submitter tier on the card when set', () => {
+    useIdeas.mockReturnValue({
+      ...base,
+      ideas: [anIdea({ submitterTier: 'dealer' })],
+    });
+    render(<BoardPage />);
+    expect(screen.getByText(/dealer/i)).toBeInTheDocument();
+  });
 });

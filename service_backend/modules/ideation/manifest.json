@@ -44,6 +44,11 @@
       "public": true
     },
     {
+      "name": "public_ideas",
+      "prefix": "/public/ideas",
+      "public": true
+    },
+    {
       "name": "embed_admin",
       "prefix": "/ideation/embed-connections"
     }
