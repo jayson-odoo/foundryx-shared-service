@@ -19,7 +19,7 @@ vi.mock('@/lib/api-client', async () => {
 import { ApiError } from '@/lib/api-client';
 import { publicIdeaStatusService } from './public-idea-status-service';
 
-beforeEach(() => publicFetch.mockReset());
+beforeEach(() => vi.clearAllMocks());
 
 describe('publicIdeaStatusService', () => {
   it('resolves via GET /public/ideas/<token> (no bearer - publicFetch, not apiFetch)', async () => {
@@ -46,15 +46,25 @@ describe('publicIdeaStatusService', () => {
   });
 
   it('returns null on a uniform 404 (unknown/malformed/draft token)', async () => {
-    publicFetch.mockRejectedValue(new ApiError('Not found.', 404, null, undefined));
+    // The rejection is constructed INSIDE the implementation, invoked only
+    // when `resolve` actually awaits `publicFetch` - building it eagerly via
+    // `mockRejectedValue(new ApiError(...))` creates an already-rejected
+    // promise at mock-setup time, which vitest 2.1.9 + tinyspy can flag as
+    // an unhandled rejection before the `await` below ever attaches.
+    publicFetch.mockImplementationOnce(() =>
+      Promise.reject(new ApiError('Not found.', 404, null, undefined)),
+    );
     const result = await publicIdeaStatusService.resolve('missing-token');
     expect(result).toBeNull();
   });
 
   it('rethrows a non-404 error (never silently swallows a real failure)', async () => {
-    const err = new ApiError('Server error', 500, null, undefined);
-    publicFetch.mockRejectedValue(err);
-    await expect(publicIdeaStatusService.resolve('tok_abc123def456')).rejects.toBe(err);
+    let thrown: unknown;
+    publicFetch.mockImplementationOnce(() => {
+      thrown = new ApiError('Server error', 500, null, undefined);
+      return Promise.reject(thrown);
+    });
+    await expect(publicIdeaStatusService.resolve('tok_abc123def456')).rejects.toBe(thrown);
   });
 
   it('a title-null idea still resolves (the page derives "Idea <number>")', async () => {

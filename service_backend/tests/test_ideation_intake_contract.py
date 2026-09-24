@@ -532,13 +532,23 @@ def test_ac_1112_two_captures_get_different_idea_numbers(setup):
     """AC-1112: two ideas captured (even "concurrently") get different idea
     numbers - a real sequence, not max()+1 racing itself."""
     s = setup
-    first = _complete_flow(s, "first idea for numbering", title=None).json()
+    # Deliberately dissimilar problem texts (difflib ratio well under the
+    # 0.55 fallback dedup threshold) so the second capture is never mistaken
+    # for a duplicate_candidate of the first - AC-1112 is about numbering,
+    # not dedup.
+    first = _complete_flow(
+        s, "chatbot should remember what a dealer already asked before", title=None
+    ).json()
     second_contact = _make_contact(s["factory"], "Second", "Dealer", "+60122334455")
     second = _complete_flow(
-        s, "second idea for numbering", contact_id=second_contact
+        s,
+        "add a filter for slow moving stock on the dashboard for the warehouse team",
+        contact_id=second_contact,
     ).json()
     assert first["idea_number"] is not None
     assert second["idea_number"] is not None
+    assert re.fullmatch(r"IDEA-\d{4,}", first["idea_number"])
+    assert re.fullmatch(r"IDEA-\d{4,}", second["idea_number"])
     assert first["idea_number"] != second["idea_number"]
 
 

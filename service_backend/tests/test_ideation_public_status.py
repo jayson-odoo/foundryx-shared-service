@@ -179,11 +179,21 @@ def test_ac_1601_no_auth_header_required(setup):
     "token",
     [
         "unknown-token-that-does-not-exist",
-        "../etc/passwd",
+        "bad token!",
+        "%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20",  # decodes whitespace-only
+        "x" * 15,  # below the 16-char minimum
         "x" * 400,
+        "IDEA-0001",  # an idea number must never resolve as a token
     ],
 )
 def test_ac_1602_unknown_and_malformed_tokens_uniform_404(setup, token):
+    """Tokens here all reach ``/public/ideas/{token}`` as a SINGLE path
+    segment. A literal or percent-encoded ``../`` (e.g. ``%2e%2e%2fetc``)
+    decodes to a value containing ``/`` - starlette/FastAPI then routes it as
+    MULTIPLE segments, missing the ``{token}`` route entirely and hitting the
+    framework's generic ``{"detail": "Not Found"}`` 404 instead of ours; that
+    is a routing-normalization artifact, not this endpoint's behavior, so it
+    is excluded from this parametrization."""
     res = setup["client"].get(f"/public/ideas/{token}")
     assert res.status_code == 404
     assert res.json() == UNIFORM_404
