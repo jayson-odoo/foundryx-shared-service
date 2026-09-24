@@ -121,6 +121,11 @@ class Idea(IdeationBase):
     # Cross-schema FK into core public.statuses (the status engine's row).
     status_id = Column(String, ForeignKey(_STATUS_FK), nullable=False, index=True)
     intake_definition_key = Column(String, nullable=False, default="ideation")
+    # A short (1-8 word) headline the submitter can name the idea (S1,
+    # AC-1105) - distinct from ``problem`` (the full statement). Nullable: a
+    # pre-lane idea and any draft that never sends one have none; the read/
+    # board/detail surfaces fall back to ``problem`` when this is null.
+    title = Column(Text, nullable=True)
     problem = Column(Text, nullable=False)
     # First-class segregated intake fields (mirror the captured_json answer keys -
     # problem / proposed_solution / impact / department). Nullable: they fill in as
@@ -141,7 +146,22 @@ class Idea(IdeationBase):
     # the operator's name is stored directly here. The read serializer prefers
     # this when set, else derives the name from the linked contact (D-A4).
     submitter_name = Column(String, nullable=True)
+    # The submitter's tier (e.g. ``dealer``), stored verbatim, stripped (S1,
+    # AC-1115). Nullable - not every intake caller sends one.
+    submitter_tier = Column(String, nullable=True)
     captured_json = Column(JSON, nullable=True)
+    # The formatted sequential idea number (``IDEA-0001``, S1/S5) - minted
+    # once by the completion sink, never re-minted. NULL until captured.
+    idea_number = Column(String, nullable=True, unique=True)
+    # The public status-page credential (S5) - ``secrets.token_urlsafe(24)``,
+    # minted once alongside ``idea_number``. The token itself IS the
+    # capability; ``GET /public/ideas/{token}`` looks it up with no tenant
+    # scoping (AC-1601/1603). NULL until captured.
+    status_token = Column(String, nullable=True, unique=True)
+    # Turn-algorithm bookkeeping (S1) - ``{skipped: [...], declined_candidates:
+    # [...], pending_candidate: id|None, voted_for: id|None}``. Never holds
+    # answers (those stay in ``captured_json``).
+    intake_state = Column(JSON(none_as_null=True), nullable=True)
     # Denormalized vote tallies, recomputed from ``idea_votes`` on every vote
     # (the source of truth is one row per voter). ``downvotes`` mirrors the FE
     # Idea shape; Phase A still centres on upvotes (D10).

@@ -94,7 +94,6 @@ describe('IdeationBoardPage', () => {
       ...base,
       ideas: [
         anIdea({
-          // @ts-expect-error - title lands on Idea in the S1 slice (not yet typed).
           title: 'Show promo price in red on price tags',
           problem: 'the price tag should show promo price in red',
         }),
@@ -110,7 +109,6 @@ describe('IdeationBoardPage', () => {
   it('falls back to the problem text when the idea has no title (pre-lane idea)', () => {
     useIdeas.mockReturnValue({
       ...base,
-      // @ts-expect-error - title lands on Idea in the S1 slice (not yet typed).
       ideas: [anIdea({ title: null, problem: 'Legacy idea created before this lane' })],
     });
     render(<BoardPage />);
@@ -121,7 +119,6 @@ describe('IdeationBoardPage', () => {
   it('renders the submitter tier on the card when set', () => {
     useIdeas.mockReturnValue({
       ...base,
-      // @ts-expect-error - submitterTier lands on Idea in the S1 slice (not yet typed).
       ideas: [anIdea({ submitterTier: 'dealer' })],
     });
     render(<BoardPage />);

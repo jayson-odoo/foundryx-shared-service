@@ -1,11 +1,14 @@
 """Intake ``on_complete_sink`` implementations (AC-A-16/20).
 
 The sink is the **ONLY** promotion path: on explicit confirm it transitions the
-draft Idea ``draft -> captured`` via the core status engine and mints the
-product-domain deep link. **Idempotent** - re-firing on an already-captured draft
-does not create a second Idea and does not double-advance the status; it just
-re-mints the (stable) link.
+draft Idea ``draft -> captured`` via the core status engine, mints the
+``idea_number`` + ``status_token`` (S1/S5, ``numbering.mint_idea_identity``),
+and returns the public status-page link. **Idempotent** - re-firing on an
+already-captured draft does not create a second Idea, does not double-advance
+the status, and does not re-mint the number/token; it just re-derives the
+(stable) link.
 """
+import secrets
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -13,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.services import status_machine
 
 from ..models import Idea, ProductDelivery
+from .numbering import mint_idea_identity
 from .statuses import IDEA_ENTITY, idea_status_id
 
 # The captured_json answer keys that mirror first-class Idea columns. Kept in sync
@@ -38,9 +42,15 @@ def sync_idea_columns_from_captured(idea: Idea) -> None:
 
 
 def mint_idea_link(db: Session, idea: Idea) -> Optional[str]:
-    """The product-domain deep link ``{product_domain_base}/ideas/{idea_id}``
-    (AC-A-38 / §5.3). ``None`` when the product has no delivery origin configured
-    yet (a Maintainer sets ``product_domain_base`` on the software product)."""
+    """The public idea-status-page link ``{product_domain_base}/public/ideas/
+    {status_token}`` (S5, AC-1114/1118 - retires the old SSO
+    ``/ideas/{idea_id}`` shape). ``None`` when the product has no delivery
+    origin configured yet (a Maintainer sets ``product_domain_base`` on the
+    software product). When the idea has no ``status_token`` yet (a legacy
+    captured row that predates this lane), mint one here so an old idea can
+    still get a link - this function is only ever called on an idea that has
+    already been captured (the sink mints it up front; the intake service's
+    idempotent terminal echo only reaches an already-non-draft idea)."""
     row = (
         db.query(ProductDelivery)
         .filter(
@@ -52,16 +62,21 @@ def mint_idea_link(db: Session, idea: Idea) -> Optional[str]:
     base = (row.product_domain_base or "").rstrip("/") if row else ""
     if not base:
         return None
-    return f"{base}/ideas/{idea.id}"
+    if not idea.status_token:
+        idea.status_token = secrets.token_urlsafe(24)
+        db.flush()
+    return f"{base}/public/ideas/{idea.status_token}"
 
 
 def ideation_on_complete_sink(
     db: Session, idea: Idea, tenant_id: str
 ) -> Optional[str]:
-    """Promote the draft to ``captured`` (once) and return the minted link.
+    """Promote the draft to ``captured`` (once), mint ``idea_number`` +
+    ``status_token`` (idempotent), and return the public status link.
 
     Idempotent: if the Idea is already at ``captured`` (or past it), skip the
-    transition - a re-confirm is a no-op that still returns the link."""
+    transition and the number/token mint - a re-confirm is a no-op that still
+    returns the (stable) link."""
     # Promote the captured answers to first-class columns on completion (idempotent).
     sync_idea_columns_from_captured(idea)
     captured_id = idea_status_id(db, "captured", tenant_id)
@@ -69,4 +84,5 @@ def ideation_on_complete_sink(
         status_machine.transition(
             db, IDEA_ENTITY, idea, captured_id, actor=None, tenant_id=tenant_id, commit=False
         )
+    mint_idea_identity(db, idea)
     return mint_idea_link(db, idea)

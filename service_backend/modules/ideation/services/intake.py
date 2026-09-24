@@ -1,19 +1,37 @@
 """``create_idea`` - the deterministic Conversational-Intake state machine (§5.1,
-AC-A-17..25). NO LLM (D20): merge structured ``fields``/``remove`` into the draft
-against the form_engine schema, run dedup on the problem text, recompute
-captured/missing via the ``completion_rule``, then pick the status and compose a
-templated ``reply_text``.
+S1 intake-contract redesign). NO LLM (D20): merge structured ``fields``/``remove``
+into the draft against the form_engine schema, apply ``skip``/``cancel``/
+``duplicate_choice``, run dedup on the problem text, recompute captured/missing +
+``next_field`` via the ``completion_rule``/``next_field`` helper, then pick the
+status and compose a templated ``reply_text``.
 
-State machine (deterministic):
-- no ``draft_id`` -> create a draft Idea (status ``draft``); seed ``problem`` from
-  ``message_text`` when ``fields`` did not carry it.
-- ``duplicate`` - a high text-similarity match (dedup seam; slice 6 wires pg_trgm).
-- ``collecting`` - ``missing != []``; reply echoes captured + lists missing.
-- ``review`` - ``missing == []`` AND ``confirm != true``; reply echoes the full
-  summary + asks to confirm/revise; the draft STAYS ``draft`` (never auto-completes,
-  AC-A-18b).
-- ``complete`` - ``missing == []`` AND ``confirm == true``; the ``on_complete_sink``
-  moves ``draft -> captured`` (once, idempotent) and mints the link (AC-A-20).
+Response envelope (S1, AC-1116): every turn returns the FULL ten-key envelope -
+``status, draft_id, reply_text, missing, next_field, title, captured,
+duplicate_candidate, idea_number, link`` - null/empty where not applicable, never
+an omitted key.
+
+Turn algorithm (deterministic):
+1. Resolve product/submitter, load-or-create the draft, persist attachments.
+   While the idea is still a draft: validate + stamp ``title`` (1-8 words, 422
+   ``title_too_long`` otherwise) and ``submitter_tier`` (latest non-blank wins).
+2. An already-promoted draft is immutable via intake: idempotent terminal echo -
+   ``rejected`` -> ``cancelled``, ``duplicate`` -> ``voted``, anything else (already
+   captured+) -> ``complete``.
+3. ``cancel: true`` -> ``draft -> rejected``, status ``cancelled`` (no idea_number,
+   no link).
+4. Merge ``fields``/``remove``, apply ``skip`` (recorded in ``intake_state``,
+   answering a key later un-skips it).
+5. ``duplicate_choice`` (only actioned when a candidate is pending): ``vote``
+   upvotes the candidate, closes the draft (``draft -> duplicate``), status
+   ``voted``; ``separate`` moves the candidate into ``declined_candidates`` and
+   continues the turn.
+6. Dedup on the problem text, excluding the draft itself + every declined
+   candidate; a match sets ``pending_candidate`` and returns
+   ``duplicate_candidate`` (no upvote, draft stays open).
+7. ``missing``/``next_field`` (``OPTIONAL_ASK_ORDER``, ``department`` never asked).
+8. ``missing`` non-empty or ``next_field`` set -> ``collecting``; else
+   ``confirm != true`` -> ``review``; else the sink promotes to ``captured`` and
+   mints ``idea_number``/``status_token`` -> ``complete``.
 """
 from typing import Dict, List, Optional
 
@@ -21,18 +39,85 @@ from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
 from app.models.catalog import Product
+from app.models.status import Status
 from app.services import status_machine
 from modules.omnichannel.models import Contact, Workspace
 
 from ..models import Idea, IdeaAttachment, IdeaVote
 from .dedup import DedupService
 from .intake_definitions import (
-    IDEATION_FIELD_LABELS,
     IDEATION_INTAKE_KEY,
+    IDEATION_RECAP_LABELS,
+    OPTIONAL_ASK_ORDER,
     get_intake_definition,
+    next_field as compute_next_field,
 )
 from .sinks import mint_idea_link, sync_idea_columns_from_captured
 from .statuses import IDEA_ENTITY, idea_status_id, initial_idea_status_id
+
+_RECAP_ORDER = ("problem", "proposed_solution", "impact", "department")
+
+
+def _response(
+    *,
+    status: str,
+    draft_id: str,
+    reply_text: str,
+    missing: Optional[List[str]] = None,
+    next_field: Optional[str] = None,
+    title: Optional[str] = None,
+    captured: Optional[Dict[str, object]] = None,
+    duplicate_candidate: Optional[Dict[str, object]] = None,
+    idea_number: Optional[str] = None,
+    link: Optional[str] = None,
+) -> dict:
+    return {
+        "status": status,
+        "draft_id": draft_id,
+        "reply_text": reply_text,
+        "missing": missing or [],
+        "next_field": next_field,
+        "title": title,
+        "captured": captured or {},
+        "duplicate_candidate": duplicate_candidate,
+        "idea_number": idea_number,
+        "link": link,
+    }
+
+
+class _IntakeState:
+    """The turn-algorithm bookkeeping stored in ``Idea.intake_state`` (S1) -
+    never holds answers (those stay in ``captured_json``)."""
+
+    def __init__(
+        self,
+        skipped: Optional[set] = None,
+        declined_candidates: Optional[List[str]] = None,
+        pending_candidate: Optional[str] = None,
+        voted_for: Optional[str] = None,
+    ):
+        self.skipped = set(skipped or [])
+        self.declined_candidates = list(declined_candidates or [])
+        self.pending_candidate = pending_candidate
+        self.voted_for = voted_for
+
+    @classmethod
+    def load(cls, idea: Idea) -> "_IntakeState":
+        state = idea.intake_state or {}
+        return cls(
+            skipped=set(state.get("skipped") or []),
+            declined_candidates=list(state.get("declined_candidates") or []),
+            pending_candidate=state.get("pending_candidate"),
+            voted_for=state.get("voted_for"),
+        )
+
+    def save(self, idea: Idea) -> None:
+        idea.intake_state = {
+            "skipped": sorted(self.skipped),
+            "declined_candidates": list(self.declined_candidates),
+            "pending_candidate": self.pending_candidate,
+            "voted_for": self.voted_for,
+        }
 
 
 class IntakeService:
@@ -59,6 +144,11 @@ class IntakeService:
         remove: Optional[List[str]] = None,
         confirm: bool = False,
         is_test: bool = False,
+        title: Optional[str] = None,
+        skip: Optional[List[str]] = None,
+        cancel: Optional[bool] = None,
+        duplicate_choice: Optional[str] = None,
+        submitter_tier: Optional[str] = None,
     ) -> dict:
         definition = get_intake_definition(IDEATION_INTAKE_KEY)
         if definition is None:  # pragma: no cover - registered at boot
@@ -98,79 +188,117 @@ class IntakeService:
         self._persist_attachments(tenant_id, idea, attachments)
 
         # An already-promoted draft is immutable via intake: any call returns the
-        # idempotent complete result (AC-A-20 / AC-A-16 re-fire no-op).
+        # idempotent terminal echo (AC-1109 vote-idempotent / AC-1113 cancel-
+        # idempotent / AC-A-20 complete re-fire no-op).
         if not self._is_draft(idea):
-            self.db.commit()
-            return self._complete_output(definition, idea)
+            return self._terminal_echo(definition, idea)
+
+        # Stamp title/submitter_tier on every turn while draft (S1, AC-1105/1115).
+        # A blank/whitespace title is treated as absent; latest non-blank value
+        # across turns wins for both.
+        if title is not None and title.strip():
+            stripped_title = title.strip()
+            if len(stripped_title.split()) > 8:
+                raise ApiError(422, "title_too_long", "Title must be 8 words or fewer.")
+            idea.title = stripped_title
+        if submitter_tier is not None and submitter_tier.strip():
+            idea.submitter_tier = submitter_tier.strip()
 
         # Stamp the submitter display name on the draft (WS-A). Latest non-blank
         # wins across turns; a blank/absent name never clobbers a set one.
         if submitter_name and submitter_name.strip():
             idea.submitter_name = submitter_name.strip()
 
+        if cancel:
+            return self._cancel_draft(idea, tenant_id)
+
         self._merge(idea, definition, message_text, fields, remove, raw_transcript=raw_transcript)
 
+        state = _IntakeState.load(idea)
         captured, missing = definition.completion_rule(idea.captured_json or {})
 
-        # Dedup on the problem text (AC-A-21/31): a high pg_trgm / difflib match to
-        # an existing NON-draft Idea in the same (tenant, product) ⇒ duplicate.
+        for key in skip or []:
+            if key in OPTIONAL_ASK_ORDER:
+                state.skipped.add(key)
+        # Answering a key later un-skips it (answer wins).
+        state.skipped -= set(captured.keys())
+
+        if duplicate_choice and state.pending_candidate:
+            if duplicate_choice == "vote":
+                return self._vote_duplicate(idea, tenant_id, state, submitter_contact_id)
+            if duplicate_choice == "separate":
+                state.declined_candidates.append(state.pending_candidate)
+                state.pending_candidate = None
+            # Any other value (schema already restricts to vote|separate) is
+            # ignored - fall through to the normal turn.
+
+        # Dedup on the problem text (AC-1107/1110): a high pg_trgm / difflib match
+        # to an existing NON-draft Idea in the same (tenant, product), excluding
+        # this draft itself and every candidate already declined this session.
+        problem_text = str((idea.captured_json or {}).get("problem") or idea.problem or "")
         dup_id = self._dedup.find_duplicate(
             tenant_id,
             product_id,
-            str((idea.captured_json or {}).get("problem") or idea.problem or ""),
-            idea.id,
+            problem_text,
+            [idea.id, *state.declined_candidates],
             is_test=idea.is_test,
         )
-        if dup_id is not None:
-            # Upvote the existing idea once per submitter (idempotent), then relay.
-            self._register_submitter_upvote(tenant_id, dup_id, submitter_contact_id)
-            self.db.commit()
-            return {
-                "draft_id": idea.id,
-                "status": "duplicate",
-                "captured": captured,
-                "missing": missing,
-                "reply_text": _reply_duplicate(),
-                "duplicate_of": dup_id,
-            }
+        state.pending_candidate = dup_id
+        state.save(idea)
 
-        if missing:
+        if dup_id is not None:
             self.db.commit()
-            return {
-                "draft_id": idea.id,
-                "status": "collecting",
-                "captured": captured,
-                "missing": missing,
-                "reply_text": _reply_collecting(captured, missing),
-            }
+            return self._duplicate_candidate_response(idea.id, dup_id, captured, missing, idea.title)
+
+        next_key = compute_next_field(captured, state.skipped)
+        self.db.flush()
+
+        if missing or next_key is not None:
+            self.db.commit()
+            return _response(
+                status="collecting",
+                draft_id=idea.id,
+                reply_text=_reply_collecting(idea.title, captured, missing, next_key),
+                missing=missing,
+                next_field=next_key,
+                title=idea.title,
+                captured=captured,
+            )
 
         if not confirm:
             # NEVER auto-completes - echo the full summary and ask to confirm/revise
             # (D-CONFIRM, AC-A-18b). The draft stays ``draft``.
             self.db.commit()
-            return {
-                "draft_id": idea.id,
-                "status": "review",
-                "captured": captured,
-                "missing": missing,
-                "reply_text": _reply_review(captured),
-            }
+            return _response(
+                status="review",
+                draft_id=idea.id,
+                reply_text=_reply_review(idea.title, captured),
+                missing=missing,
+                title=idea.title,
+                captured=captured,
+            )
 
         # complete - explicit confirm: the sink is the ONLY promotion path.
         link = definition.on_complete_sink(self.db, idea, tenant_id)
         self.db.commit()
-        return {
-            "draft_id": idea.id,
-            "status": "complete",
-            "captured": captured,
-            "missing": missing,
-            "reply_text": _reply_complete(link),
-            "link": link,
-        }
+        return _response(
+            status="complete",
+            draft_id=idea.id,
+            reply_text=_reply_complete(idea.title, idea.idea_number, link),
+            missing=missing,
+            title=idea.title,
+            captured=captured,
+            idea_number=idea.idea_number,
+            link=link,
+        )
 
     # ── internals ─────────────────────────────────────────────────────────────
     def _is_draft(self, idea: Idea) -> bool:
         return idea.status_id == initial_idea_status_id(self.db, idea.tenant_id)
+
+    def _status_key(self, idea: Idea) -> str:
+        row = self.db.query(Status).filter(Status.id == idea.status_id).first()
+        return row.key if row else ""
 
     def _discard_draft(self, tenant_id: str, discard_draft_id: str) -> None:
         """Reject an abandoned draft on an is_new_idea restart (DC-10). Best-effort:
@@ -406,50 +534,184 @@ class IntakeService:
         # Force SQLAlchemy to detect the JSON mutation (reassigned above - safe).
         self.db.flush()
 
-    def _complete_output(self, definition, idea: Idea) -> dict:
+    def _cancel_draft(self, idea: Idea, tenant_id: str) -> dict:
+        rejected_id = idea_status_id(self.db, "rejected", tenant_id)
+        if rejected_id is not None:
+            status_machine.transition(
+                self.db, IDEA_ENTITY, idea, rejected_id, actor=None, tenant_id=tenant_id, commit=False
+            )
+        self.db.commit()
+        return _response(
+            status="cancelled", draft_id=idea.id, reply_text=_reply_cancelled(), title=idea.title
+        )
+
+    def _vote_duplicate(
+        self, idea: Idea, tenant_id: str, state: _IntakeState, submitter_contact_id: Optional[str]
+    ) -> dict:
+        candidate_id = state.pending_candidate
+        candidate = self.db.query(Idea).filter(Idea.id == candidate_id).first()
+        self._register_submitter_upvote(tenant_id, candidate_id, submitter_contact_id)
+        state.voted_for = candidate_id
+        state.pending_candidate = None
+        state.save(idea)
+        duplicate_id = idea_status_id(self.db, "duplicate", tenant_id)
+        if duplicate_id is not None:
+            status_machine.transition(
+                self.db, IDEA_ENTITY, idea, duplicate_id, actor=None, tenant_id=tenant_id, commit=False
+            )
+        self.db.commit()
+        cand_number = candidate.idea_number if candidate else None
+        cand_link = mint_idea_link(self.db, candidate) if candidate else None
+        return _response(
+            status="voted",
+            draft_id=idea.id,
+            reply_text=_reply_voted(cand_number, cand_link),
+            title=idea.title,
+            idea_number=cand_number,
+            link=cand_link,
+        )
+
+    def _duplicate_candidate_response(
+        self,
+        draft_id: str,
+        dup_id: str,
+        captured: Dict[str, object],
+        missing: List[str],
+        title: Optional[str],
+    ) -> dict:
+        candidate = self.db.query(Idea).filter(Idea.id == dup_id).first()
+        cand_title = None
+        cand_number = None
+        if candidate is not None:
+            cand_title = (candidate.title or "").strip() or candidate.problem
+            cand_number = candidate.idea_number
+        return _response(
+            status="duplicate_candidate",
+            draft_id=draft_id,
+            reply_text=_reply_duplicate_candidate(cand_title or ""),
+            missing=missing,
+            title=title,
+            captured=captured,
+            duplicate_candidate={"idea_number": cand_number, "title": cand_title},
+        )
+
+    def _terminal_echo(self, definition, idea: Idea) -> dict:
+        """Idempotent terminal echo (AC-1109/1113/A-20): the draft has already
+        been closed by a prior turn - re-derive the same response, never a new
+        mutation."""
+        status_key = self._status_key(idea)
+        if status_key == "rejected":
+            self.db.commit()
+            return _response(
+                status="cancelled", draft_id=idea.id, reply_text=_reply_cancelled(), title=idea.title
+            )
+        if status_key == "duplicate":
+            state = _IntakeState.load(idea)
+            candidate = (
+                self.db.query(Idea).filter(Idea.id == state.voted_for).first()
+                if state.voted_for
+                else None
+            )
+            cand_number = candidate.idea_number if candidate else None
+            cand_link = mint_idea_link(self.db, candidate) if candidate else None
+            self.db.commit()
+            return _response(
+                status="voted",
+                draft_id=idea.id,
+                reply_text=_reply_voted(cand_number, cand_link),
+                title=idea.title,
+                idea_number=cand_number,
+                link=cand_link,
+            )
+        # captured (or further along the lifecycle) - the completion echo.
         captured, missing = definition.completion_rule(idea.captured_json or {})
         link = mint_idea_link(self.db, idea)
-        return {
-            "draft_id": idea.id,
-            "status": "complete",
-            "captured": captured,
-            "missing": missing,
-            "reply_text": _reply_complete(link),
-            "link": link,
-        }
+        self.db.commit()
+        return _response(
+            status="complete",
+            draft_id=idea.id,
+            reply_text=_reply_complete(idea.title, idea.idea_number, link),
+            missing=missing,
+            title=idea.title,
+            captured=captured,
+            idea_number=idea.idea_number,
+            link=link,
+        )
 
 
-# ── deterministic reply_text templates (no LLM, D20) ──────────────────────────
+# ── deterministic reply_text templates (no LLM, D20; S1 point-form R10/R16) ────
 
 
-def _label(key: str) -> str:
-    return IDEATION_FIELD_LABELS.get(key, key)
+def _title_line(title: Optional[str]) -> Optional[str]:
+    t = (title or "").strip()
+    return f'"{t}"' if t else None
 
 
-def _captured_lines(captured: Dict[str, object]) -> str:
-    return "\n".join(f"- {_label(k)}: {v}" for k, v in captured.items())
+def _recap_lines(captured: Dict[str, object]) -> List[str]:
+    lines = []
+    for key in _RECAP_ORDER:
+        if key in captured:
+            lines.append(f"{IDEATION_RECAP_LABELS[key]}: {captured[key]}")
+    return lines
 
 
-def _reply_collecting(captured: Dict[str, object], missing: List[str]) -> str:
-    lines = _captured_lines(captured)
-    still = ", ".join(_label(k) for k in missing)
-    prefix = "Here's what I've got so far:\n" + lines + "\n\n" if captured else ""
-    return f"{prefix}Still need: {still}."
+def _compose(title: Optional[str], recap_lines: List[str], last_line: str) -> str:
+    lines: List[str] = []
+    t = _title_line(title)
+    if t:
+        lines.append(t)
+    lines.extend(recap_lines)
+    lines.append(last_line)
+    return "\n".join(lines)
 
 
-def _reply_review(captured: Dict[str, object]) -> str:
-    return (
-        "Here's your idea:\n"
-        + _captured_lines(captured)
-        + "\n\nReply 'confirm' to submit it, or tell me what to change."
+def _reply_collecting(
+    title: Optional[str],
+    captured: Dict[str, object],
+    missing: List[str],
+    next_key: Optional[str],
+) -> str:
+    if missing:
+        last = "What's the idea or problem you'd like to raise?"
+    elif next_key == "proposed_solution":
+        last = "What's your proposed solution?"
+    elif next_key == "impact":
+        last = "What's the impact if we do this?"
+    else:  # pragma: no cover - collecting is only reached via one of the above
+        last = "What's the idea or problem you'd like to raise?"
+    return _compose(title, _recap_lines(captured), last)
+
+
+def _reply_review(title: Optional[str], captured: Dict[str, object]) -> str:
+    return _compose(title, _recap_lines(captured), "Submit it?")
+
+
+def _reply_duplicate_candidate(candidate_title: str) -> str:
+    return "\n".join(
+        [
+            f"Similar idea exists: {candidate_title}",
+            "Vote for that one, or keep yours separate?",
+        ]
     )
 
 
-def _reply_complete(link: Optional[str]) -> str:
+def _reply_complete(title: Optional[str], idea_number: Optional[str], link: Optional[str]) -> str:
+    lines: List[str] = []
+    t = _title_line(title)
+    if t:
+        lines.append(t)
+    lines.append(f"Idea {idea_number} is in. We'll update you on WhatsApp.")
     if link:
-        return f"Your idea has been captured. Track it here: {link}"
-    return "Your idea has been captured."
+        lines.append(f"Track it here: {link}")
+    return "\n".join(lines)
 
 
-def _reply_duplicate() -> str:
-    return "This is similar to an existing idea - I've upvoted it for you."
+def _reply_voted(idea_number: Optional[str], link: Optional[str]) -> str:
+    lines = [f"Thanks, your vote is on {idea_number}."]
+    if link:
+        lines.append(f"Track it here: {link}")
+    return "\n".join(lines)
+
+
+def _reply_cancelled() -> str:
+    return "No worries, I've dropped that idea. Say the word anytime you want to start again."

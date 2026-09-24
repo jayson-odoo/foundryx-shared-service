@@ -71,6 +71,10 @@ export interface Idea {
   /** Denormalized for display - the FE never renders the UUID (cursor rule). */
   productName: string;
   status: IdeaStatus;
+  /** A short (1-8 word) headline (S1) - the visible label when set; falls
+   * back to `problem` when null (a pre-lane idea, or a draft that never sent
+   * one). Optional so existing fixtures/callers need no change. */
+  title?: string | null;
   /** One-line problem/observation (the headline on cards). */
   problem: string;
   /** Proposed solution - a segregated intake field (nullable until captured). */
@@ -85,6 +89,8 @@ export interface Idea {
   source: IdeaSource;
   /** Submitter display name (resolved from the synced contact - never a UUID). */
   submitterName: string;
+  /** The submitter's tier (e.g. `dealer`, S1) - null/absent when not set. */
+  submitterTier?: string | null;
   upvotes: number;
   downvotes: number;
   /** The current user's vote on this idea (one per user, toggleable). */
@@ -93,6 +99,9 @@ export interface Idea {
   priority: number;
   attachments: IdeaAttachment[];
   createdAt: string; // ISO
+  /** The formatted sequential idea number (S1/S5, e.g. `IDEA-0182`) - null
+   * until captured. */
+  ideaNumber?: string | null;
   /** A console/`--say` test turn (issue #1179) - false for every real capture.
    * Excluded from the list/board by default; `includeTest` opts in. */
   isTest: boolean;
@@ -142,3 +151,12 @@ export const IDEA_STATUS_LABEL: Record<IdeaStatus, string> = {
   rejected: 'Rejected',
   archived: 'Archived',
 };
+
+/** The S5 public idea-status page contract (GET /public/ideas/{token}) -
+ * title/status/ideaNumber only, no auth. `status` is the display LABEL
+ * (e.g. `New`), never the lifecycle key. */
+export interface PublicIdeaStatus {
+  title: string | null;
+  status: string;
+  ideaNumber: string | null;
+}

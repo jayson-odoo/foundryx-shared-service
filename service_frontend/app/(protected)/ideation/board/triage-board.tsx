@@ -51,7 +51,7 @@ function IdeaCardBody({ idea, ghost }: { idea: Idea; ghost?: boolean }) {
     >
       <div className="flex items-start gap-1.5">
         <GripVertical className="mt-0.5 size-4 shrink-0 text-muted-foreground/60" />
-        <p className="text-sm font-medium leading-snug">{idea.problem}</p>
+        <p className="text-sm font-medium leading-snug">{idea.title ?? idea.problem}</p>
       </div>
       <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 ps-5">
         <Badge variant="secondary" className="truncate">
@@ -79,6 +79,7 @@ function IdeaCardBody({ idea, ghost }: { idea: Idea; ghost?: boolean }) {
       </div>
       <p className="mt-2 ps-5 text-xs text-muted-foreground">
         {idea.submitterName} · {IDEA_SOURCE_LABEL[idea.source]}
+        {idea.submitterTier && <> · {idea.submitterTier}</>}
       </p>
     </div>
   );
