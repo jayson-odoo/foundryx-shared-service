@@ -115,8 +115,12 @@ class ClusteringService:
     def _candidate_pairs(
         self, tenant_id: str, product_id: str
     ) -> List[Tuple[str, str]]:
-        """High-similarity id pairs of NON-draft ideas in the same
+        """High-similarity id pairs of NON-draft, NON-test ideas in the same
         ``(tenant, product)`` (``a.id < b.id`` - each unordered pair once).
+        ``is_test`` is excluded on BOTH sides (issue #1179) - a console/``--say``
+        walk sends the same scripted text repeatedly, so test ideas would
+        otherwise cluster with each other AND with real ideas, offering a
+        Promote that the 422 in ``_link_ideas`` is guaranteed to refuse.
 
         Clustering must DEGRADE, never block the board (AC-BI-30): if the
         ``pg_trgm`` retrieval fails (extension not installed, etc.), fall back to
@@ -141,6 +145,7 @@ class ClusteringService:
             f'JOIN "{IDEATION_SCHEMA}".ideas b ON a.id < b.id '
             "WHERE a.tenant_id = :tenant AND b.tenant_id = :tenant "
             "AND a.product_id = :product AND b.product_id = :product "
+            "AND a.is_test = false AND b.is_test = false "
             "AND (:draft IS NULL OR a.status_id <> :draft) "
             "AND (:draft IS NULL OR b.status_id <> :draft) "
             "AND similarity(lower(a.problem), lower(b.problem)) >= :threshold "
@@ -162,7 +167,9 @@ class ClusteringService:
     ) -> List[Tuple[str, str]]:
         draft_id = initial_idea_status_id(self.db, tenant_id)
         q = self.db.query(Idea.id, Idea.problem).filter(
-            Idea.tenant_id == tenant_id, Idea.product_id == product_id
+            Idea.tenant_id == tenant_id,
+            Idea.product_id == product_id,
+            Idea.is_test.is_(False),
         )
         if draft_id is not None:
             q = q.filter(Idea.status_id != draft_id)
@@ -279,7 +286,11 @@ class ClusteringService:
     def _products_with_ideas(self, tenant_id: str) -> List[str]:
         rows = (
             self.db.query(Idea.product_id)
-            .filter(Idea.tenant_id == tenant_id, Idea.product_id.isnot(None))
+            .filter(
+                Idea.tenant_id == tenant_id,
+                Idea.product_id.isnot(None),
+                Idea.is_test.is_(False),
+            )
             .distinct()
             .all()
         )
