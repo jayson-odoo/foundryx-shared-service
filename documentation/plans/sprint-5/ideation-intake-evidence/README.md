@@ -120,3 +120,13 @@ psql -d postgres -c "DROP DATABASE foundryx_service_intake;"
 Confirmed dropped; `foundryx_service`, `fx_shared_local`, and every
 `foundryx_service_s*` database were verified present and untouched
 throughout. No throwaway script was committed to the repo tree.
+
+## Browser smoke of the public status page (agent-browser, hand-test stack, 2026-09-25)
+
+Stack: is-test worktree detached at 71dc37dc, `bootstrap_db` applied migration 0010 on `fx_shared_local` (IDEA-0001 backfilled with a token), frontend rebuilt and started on :3001.
+
+- `public-status-1280.png` - `/public/ideas/<token of IDEA-0001>` at 1280: number, label "Idea IDEA-0001" (no title, pre-lane idea), status pill "New", no sidebar, no login prompt.
+- `public-status-375.png` - same page at 375: one column, `innerWidth 375 == scrollWidth 375` (no horizontal scroll).
+- `public-status-notfound-375.png` - `/public/ideas/IDEA-0001` (an idea number, not a token): the plain "This link isn't available." state.
+- Backend direct: `GET :8001/public/ideas/<token>` -> `{"title":null,"status":"New","ideaNumber":"IDEA-0001"}`; `GET :8001/public/ideas/IDEA-0001` -> 404 `{"error":{"code":"not_found","message":"Not found."}}`.
+- Known local cosmetic: the public layout's branding logo image is missing on this local stack (shared pre-auth layout, not this lane).
