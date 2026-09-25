@@ -142,11 +142,15 @@ export function ActivateTab({
   const isDatabaseTask =
     currentEntity?.sourceImpl === 'sql_db' || currentEntity?.sourceImpl === 'autocount_http';
   const repushEntityId = currentEntity?.id ?? null;
+  // sprint-5/13 S4 fix - the backend 409s Re-push on a pull-mode task (there
+  // is nothing pushed to clear change tracking for); foolproof-UI never
+  // offers an action the server will refuse.
   const showRepush =
     (status === 'active' || status === 'paused') &&
     isDatabaseTask &&
     canManage &&
-    repushEntityId !== null;
+    repushEntityId !== null &&
+    !isPull;
 
   const repush = useDeferredAction({
     // Gated on `showRepush`, not just a non-null id (review round): a

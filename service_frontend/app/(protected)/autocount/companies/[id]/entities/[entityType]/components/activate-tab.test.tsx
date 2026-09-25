@@ -677,6 +677,28 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
       expect(screen.getByTestId('etl-repush-all')).toBeInTheDocument();
     });
 
+    it('hides for an active database task in PULL mode (sprint-5/13 S4 - the backend 409s Re-push on a pull task)', () => {
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({
+            entityType: 'stock_balance',
+            etlStatus: 'active',
+            deliveryMode: 'pull',
+            pushGate: null,
+          })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle()}
+          onRan={vi.fn()}
+          entities={[
+            entityConfig({ id: 'stk', entityType: 'stock_balance', sourceImpl: 'autocount_http' }),
+          ]}
+        />,
+      );
+      expect(screen.queryByTestId('etl-repush-all')).not.toBeInTheDocument();
+    });
+
     it('clicking the trigger parks the deferred action with the right key/entity - no dialog', async () => {
       park.mockResolvedValue({
         id: 'pa1', commitAt: new Date(Date.now() + 10_000).toISOString(), windowSeconds: 10,

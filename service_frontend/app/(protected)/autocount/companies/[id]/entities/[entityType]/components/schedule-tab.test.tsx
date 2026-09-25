@@ -391,6 +391,30 @@ describe('ScheduleTab push gate (sprint-5/13, D18, AC-13-40)', () => {
     );
   });
 
+  it('S2: a shut gate never hides rollback - the SAVED delivery mode is push, so the toggle still renders', () => {
+    render(
+      <ScheduleTab
+        editing
+        entityType="stock_balance"
+        config={config()}
+        onChange={vi.fn()}
+        task={task({
+          entityType: 'stock_balance',
+          deliveryMode: 'push',
+          pushGate: { version: 2.4, requiredVersion: 2.5 },
+        })}
+        fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('etl-delivery-push')).toBeInTheDocument();
+    expect(screen.getByTestId('etl-delivery-pull')).toBeInTheDocument();
+    expect(screen.getByTestId('etl-push-gate-warning')).toHaveTextContent(
+      'Consumer contract 2.4 - stock push needs 2.5.',
+    );
+  });
+
   it('no entity-list hardcoding: a non-stock entity with a (hypothetical) shut gate ALSO shows the badge', () => {
     render(
       <ScheduleTab

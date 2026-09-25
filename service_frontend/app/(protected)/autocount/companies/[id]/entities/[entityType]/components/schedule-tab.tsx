@@ -92,6 +92,13 @@ export function ScheduleTab({
   // naming the CURRENT mode instead - the toggle appears on its own the
   // moment the gate opens, with no frontend code change.
   const pushGateShut = task.pushGate != null;
+  // sprint-5/13 S2 fix - rollback to pull must never be hidden. If the SAVED
+  // delivery mode is already push, the toggle always renders even when the
+  // gate reports shut (a contract regression after activation, say):
+  // pull-on-request is always a valid choice. Guarded on both sides - the
+  // backend also returns `pushGate: null` for push-mode tasks.
+  const savedDeliveryModeIsPush = task.deliveryMode === 'push';
+  const showToggle = !pushGateShut || savedDeliveryModeIsPush;
   const isPull = deliveryMode === 'pull';
 
   return (
@@ -99,7 +106,7 @@ export function ScheduleTab({
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-3" data-testid="etl-delivery-mode">
           <Label className="text-sm font-medium">Delivery</Label>
-          {pushGateShut ? (
+          {!showToggle ? (
             <StatusBadge status={deliveryMode} registry={AC_DELIVERY_MODE_REGISTRY} />
           ) : (
             <ToggleGroup

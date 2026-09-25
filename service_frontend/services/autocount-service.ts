@@ -55,7 +55,6 @@ import type {
   AutocountSyncRun,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
-import { withPhase1PushGateMock } from './autocount-service.mock';
 import { realAutocountService } from './autocount-service.real';
 
 export interface AutocountListQuery {
@@ -609,16 +608,14 @@ export interface AutocountService {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// EVERY surface but ONE is backed by FastAPI end to end. sprint-5/13 S1
-// opens ONE scoped PHASE 1 MOCK overlay (`withPhase1PushGateMock`, the SAME
-// pattern `withPhase1MappingResetMock`/`withPhase1PullMock` used) for the
-// stock push gate: `getEtlTask`/`updateEtlTask`/`activateEtlTask`/
-// `pauseEtlTask`/`resumeEtlTask` gain a client-computed `pushGate` on a
-// `stock_balance` task, and `setDeliveryMode` refuses the flip while it is
-// shut - the backend has no `push_gate` field or refusal yet (S3). Retire
-// the overlay the moment S3 lands `EtlService._task_view`'s real
-// `push_gate` (D18's whole point: the frontend needs no further change at
-// all). `mockAutocountService` stays importable by the Vitest suite
-// directly (the house service-trio pattern).
+// EVERY surface is backed by FastAPI end to end. sprint-5/13 S3 retires the
+// scoped PHASE 1 MOCK overlay (`withPhase1PushGateMock`) that stood in for
+// the stock push gate through S1/S2: `getEtlTask`/`updateEtlTask`/
+// `activateEtlTask`/`pauseEtlTask`/`resumeEtlTask` now read `pushGate`
+// straight off the real backend response (`EtlService._task_view`'s
+// `push_gate`, D18's whole point - the frontend needed no further change at
+// all), and `setDeliveryMode` posts to the real endpoint, which itself
+// refuses the flip while the gate is shut. `mockAutocountService` stays
+// importable by the Vitest suite directly (the house service-trio pattern).
 // ═══════════════════════════════════════════════════════════════════════════
-export const autocountService: AutocountService = withPhase1PushGateMock(realAutocountService);
+export const autocountService: AutocountService = realAutocountService;
