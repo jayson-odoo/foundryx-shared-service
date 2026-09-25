@@ -325,6 +325,19 @@ plan 13 deployed after it; `ac_company.sorento_company_code` is `SRT` / `MCH` (p
 7. Any time a Sorento warehouse is activated or created: Re-push the stock task for that book.
 8. After flipping a book to Push, do not use Sorento's stock Pull or manual stock import for that
    book (R10; both stay visible). If either is used by mistake, Re-push that book's stock task.
+9. A sink-target switch (review round 2 S3) - changing a company's push connection or flipping
+   `logging` <-> `sorento` - auto-invalidates every `autocount_http` task's row hashes for that
+   company, so the very next run re-offers everything to the new target. A CONTRACT UPGRADE alone
+   (no sink-target change - e.g. Sorento deploys 2.3 and a brand task held below it by the logging
+   fallback now opens) is NOT auto-detected: Re-push the affected task (brand, or any
+   contract-gated entity) once its consumer starts accepting it, or its accumulated changes never
+   re-offer on their own (BL-SS-272).
+10. Trap (review round 2 S5): the baseline seed (D9) is a snapshot union, which can be LARGER than
+    the current live extract (e.g. items deleted at source since the last Pull). If the seed
+    overcounts by more than the delete guard's threshold (20% of known, floor 50), EVERY run after
+    the flip trips `DELETE_GUARD` and stages nothing. Recovery is the same as any stale-hash
+    problem: Re-push the task (invalidates and lets the next full walk re-derive a correct
+    population).
 
 Rollback: flip the book back to Pull (hashes cleared, D10), Sorento Pull works again at once.
 
@@ -346,6 +359,11 @@ Rollback: flip the book back to Pull (hashes cleared, D10), Sorento Pull works a
   whole-book block is the owner's ruling R5).
 - BL-SS-271 Products flip owner decisions (plan 10 section 2.9 items 4 `uom_code` and 5
   `cost_price`), recorded at the flip; links BL-SS-213 (Medium).
+- BL-SS-272 Review round 2 (S3 fix) - a sink-target switch invalidates `autocount_http` row hashes;
+  a consumer CONTRACT UPGRADE alone is not auto-detected, so the recovery for a newly-opened
+  contract-gated entity (e.g. brand crossing 2.3) is an explicit Re-push (runbook step 9) (Low).
+- BL-SS-273 Review round 2 NIT - a product HTTP task's first clean save seeds the preset's
+  `ItemUOM` lookup even when the caller's own PUT already carries an explicit `lookups: []` (Low).
 
 ## 8. Open questions for the owner
 
