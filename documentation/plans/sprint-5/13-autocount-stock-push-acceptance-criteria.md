@@ -32,13 +32,18 @@ contract 2.5 (their SR5, Appendix A of the plan).
   (Appendix A3 of the plan).
 - **R8 - ~13k wrapper requests per book per day at 5 minutes is accepted.**
 - **R9 - the overlap guard's skipped Runs rows at 5 minutes are accepted for now** (BL-SS-266, Low).
+- **R10 - SR5b skipped.** Sorento keeps the stock Pull button and manual stock Excel import visible
+  for every company; the owner avoids them on pushed books (owner discipline, BL-SS-265, Low).
 
 ## Verified baseline (planner, 2026-09-25, cite when testing)
 
 - `sinks_sorento._ENTITY_PATH` (`sinks_sorento.py:94-113`) has no `stock_balance` entry, so
   `SorentoSink.__init__` raises (`:473-477`) and `sorento_supports_entity` answers `False` at any
   contract (`:202-203`). Three plan-10 tests pin that and are inverted by this plan on purpose:
-  `tests/test_s10_s5b_registration.py:235`, `:240`, `:250`.
+  `tests/test_s10_s5b_registration.py:235`, `:240`, `:250`. A fourth,
+  `test_switching_a_stock_task_to_push_is_allowed_once_the_contract_reports_2_5` (`:319`), keeps its
+  assertion but its rig must add a READY snapshot, because AC-13-31's `no_snapshot` gate now
+  refuses the flip without one.
 - `CanonicalStockBalance.sink_payload()` (`canonical/masters.py:339-389`) already emits exactly
   `source_ref, item_code, item_description, location_code, uom_code, qty` with `qty` a JSON
   integer and `None` omitted; `SorentoSink._to_records` (`sinks_sorento.py:519-546`) calls it with
@@ -212,9 +217,10 @@ contract 2.5 (their SR5, Appendix A of the plan).
 ## Group G - cross-repo and runbook (`[T]`)
 
 - **AC-13-59 [T]** Appendix A3 states explicitly that push writes `quantity_on_hand` only and never
-  touches reserved or damaged (R7); the SR5 pytest pins it on Sorento's side.
+  touches reserved or damaged (R7); the SR5 pytest pins it on Sorento's side. Appendix A3/A4
+  record the Sorento peer's agreed corrections (Sorento `origin/main` 3684a4b35).
 - **AC-13-60 [T]** Appendix A (SR5 brief) is delivered verbatim to the Sorento peer before S2
-  closes; `documentation/plans/sprint-5/13-fixtures/` holds the seven files Appendix A7 lists,
+  closes; `documentation/plans/sprint-5/13-fixtures/` holds the 11 fixture files Appendix A7 lists (plus `README.md`),
   recorded from the existing stock snapshot builder, and the AC-13-03/04/05 parity tests load them.
 - **AC-13-61 [T]** Joint-run exit criteria per book: after the first run that drains (<= 3 runs),
   Sorento `stock.quantity_on_hand` for every (product, ACTIVE warehouse) pair equals the Foundryx
@@ -224,7 +230,8 @@ contract 2.5 (their SR5, Appendix A of the plan).
 - **AC-13-62 [T]** Owner runbook (plan section 6) exists, names the deploy order (Sorento 2.5
   first), the pre-flight checks, the last Pull + Confirm immediately before each stock flip, the
   products / stock dependency as a NOTE with the flip order left to the owner (R6), the watch criteria, the products flip with plan-10 section 2.9 items 4 and 5 as
-  recorded owner decisions, and the warehouse-activation Re-push step. No code for products.
+  recorded owner decisions, and the warehouse-activation Re-push step, and the R10 step "after flipping a book to Push, do not use
+  Sorento's stock Pull or manual stock import for that book". No code for products.
 - **AC-13-63 [T]** STOP gate: nothing is flipped on prod until the owner reviews the S4 joint-run
   report.
 
@@ -234,6 +241,7 @@ contract 2.5 (their SR5, Appendix A of the plan).
   permission row, no new job type, no manifest change. `tests/test_worker_module_boot.py` needs no
   new pin (no new `register_job_handler`); the reviewer confirms that.
 - **AC-13-71 [T]** Full backend suite (`-n auto --dist loadfile`) and vitest green; the three
-  inverted plan-10 tests (baseline list above) are the ONLY deliberate assertion reversals.
+  inverted plan-10 tests (baseline list above) are the ONLY deliberate assertion reversals; the
+  fourth (`:319`) changes its rig only.
 - **AC-13-72 [T]** Test Execution Report `13-autocount-stock-push-test-report.md` keyed to these
   ids (PASS / FAIL / DEFERRED), citing the evidence run per `[E2E]` id; backlog rows written.

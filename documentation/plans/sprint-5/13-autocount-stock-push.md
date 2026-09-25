@@ -27,6 +27,9 @@ Owner answers to the planning questions (2026-09-25), locked:
   5-minute cadence is acceptable.
 - **R9 (Q5) - skip rows accepted for now.** The `RUN_MODE_SKIPPED` rows the overlap guard writes
   at a 5-minute cadence stay as they are; coalescing them is a deferred Low (BL-SS-266).
+- **R10 (2026-09-25) - SR5b skipped.** Sorento keeps the stock Pull button and the manual stock
+  Excel import visible for every company. The owner simply does not use them on a book whose stock
+  is pushed. This is owner discipline, not a system guard (BL-SS-265, Low).
 
 ## 1. Why this is small, and the four things that are not
 
@@ -219,7 +222,8 @@ deletes), `services/company_service.py` (`sink_for_company` reads the gated tabl
 Tests: `tests/test_s13_stock_push_contract_gate.py`, `test_s13_stock_sink_payload_parity.py`,
 `test_s13_stock_reconcile_delete.py`, `test_s13_http_stage_changed_only.py`,
 `test_s13_flip_baseline_seed.py`, `test_s13_schedule_floor_overlap.py`; edit
-`test_s10_s5b_registration.py` (three inversions, `:235/:240/:250`).
+`test_s10_s5b_registration.py` (three inversions, `:235/:240/:250`, plus a rig fix to
+`test_switching_a_stock_task_to_push_is_allowed_once_the_contract_reports_2_5`, `:319`).
 Frontend (`service_frontend/`): `types/autocount.ts`, `services/autocount-service.{mock,real}.ts`,
 `app/(protected)/autocount/components/autocount-meta.ts`, `.../[entityType]/components/
 {schedule-tab,activate-tab}.tsx`, `lib/autocount-etl.ts`, tests beside each.
@@ -230,7 +234,7 @@ Docs: this pair, the test report, `13-fixtures/`, `13-evidence/`, backlog rows,
 
 | Slice | Scope | UAC |
 |---|---|---|
-| S0 | Lane + docs commit. Appendix A sent to the Sorento peer. Fixtures recorded into `13-fixtures/` (A7). Tester writes the red tests for S2/S3 (the six `test_s13_*` files + the three inversions) and the vitest cases | AC-13-60, red tests for 01-34 |
+| S0 | Lane + docs commit. Appendix A sent to the Sorento peer. Fixtures recorded into `13-fixtures/` (A7). Tester writes the red tests for S2/S3 (the six `test_s13_*` files, the three inversions and the fourth plan-10 rig fix) and the vitest cases | AC-13-60, red tests for 01-34 |
 | S1 FE mock | `pushGate` type, mock states, Schedule / Activate tab changes, floor mirror, Re-push for HTTP; agent-browser against the mock | AC-13-40..45, 50 |
 | S2 BE | Sink + verdicts + `pairs`; changed-only staging; `EXCLUDED_NONZERO`; truncation-safe deletes; `CONTRACT_GATE`; floor 5 | AC-13-01..06, 10..16, 20, 21 |
 | S3 BE + FE real | `pushGate` on the view, `no_snapshot`, seed, `push -> pull` clear; swap mock to real, prod build, live evidence of the shut state | AC-13-30..34, 44, 51 |
@@ -260,6 +264,11 @@ design mandates, DoD gate and hard-fail list.
   byte-identical.
 - Overlap guard at 5 minutes (`test_s13_schedule_floor_overlap.py`): floor 4 -> 422 / 5 ok,
   `next_run_times` clamp, skip row + re-arm while in flight, fire after finish.
+- Plan-10 test updates in `tests/test_s10_s5b_registration.py`: invert `:235`, `:240`, `:250`
+  (stock now has a path and is contract-gated), and give
+  `test_switching_a_stock_task_to_push_is_allowed_once_the_contract_reports_2_5` (`:319`) a READY,
+  unexpired stock snapshot in its rig (found by the tester: AC-13-31's `no_snapshot` gate would
+  otherwise refuse the flip it asserts is allowed). Its assertion is unchanged.
 - `tests/test_worker_module_boot.py`: no change (no new job handler) - reviewer confirms.
 - Vitest: `schedule-tab.test.tsx` (toggle vs badge + warning by `pushGate`, floor 5),
   `activate-tab.test.tsx` (Re-push for `autocount_http`, preview-unavailable by `pushGate`),
@@ -270,8 +279,9 @@ design mandates, DoD gate and hard-fail list.
 - **A stock-take legitimately zeroes a whole warehouse** (> 20% of pairs): the existing
   `DELETE_GUARD` stops the run. Intended; the operator sees the named error.
 - **A manual Excel stock import on Sorento after the flip** zeroes absent pairs and Foundryx will
-  not re-send unchanged ones. Ask Sorento to hide the stock import and Pull for a push-fed company
-  (Appendix A6); until then the answer is Re-push.
+  not re-send unchanged ones (a stock Pull + Confirm does the same). Sorento keeps both visible
+  (R10, SR5b declined): the owner does not use them on a pushed book; if one is used by mistake,
+  the recovery is a Re-push of that book's stock task (BL-SS-265).
 - **Warehouse activated in Sorento later**: its pairs were delivered as `warehouse_inactive` and
   are unchanged, so nothing re-sends them. Runbook: Re-push the stock task after activating or
   creating a warehouse. Plan 10's consignment note still applies before `CON` / `HQ` / `DISPLAY`
@@ -289,7 +299,8 @@ shows the dependency error) until that product is pushed; it then drains by itse
 (stock) and step 6 (products) may run in either order.
 
 Pre-flight: Sorento SR5 (contract 2.5, `stock_balances` in `GET /external/contract`) deployed and
-the `foundryx-esb` integration granted `inventory.stock.edit` + `inventory.stock.delete`; Foundryx
+the `foundryx-esb` integration granted `inventory.stock.edit` + `inventory.stock.delete` (SR5a ships
+the grant migration; the role has no `inventory.stock.*` grant today); Foundryx
 plan 13 deployed after it; `ac_company.sorento_company_code` is `SRT` / `MCH` (plan 10 A2).
 
 1. Deploy Sorento 2.5, then Foundryx. Reload the SRT stock task: the Schedule tab now shows the
@@ -312,6 +323,8 @@ plan 13 deployed after it; `ac_company.sorento_company_code` is `SRT` / `MCH` (p
    (non-empty history), enabling `uom_code` still reaches every product through D6's canonical
    check - no Re-push needed.
 7. Any time a Sorento warehouse is activated or created: Re-push the stock task for that book.
+8. After flipping a book to Push, do not use Sorento's stock Pull or manual stock import for that
+   book (R10; both stay visible). If either is used by mistake, Re-push that book's stock task.
 
 Rollback: flip the book back to Pull (hashes cleared, D10), Sorento Pull works again at once.
 
@@ -319,8 +332,9 @@ Rollback: flip the book back to Pull (hashes cleared, D10), Sorento Pull works a
 
 - BL-SS-207 -> In progress (this plan). BL-SS-238 -> closed by D6 at merge. BL-SS-041 / BL-SS-203
   notes updated at merge.
-- BL-SS-265 Sorento: retire the stock Pull + Stock List xlsx and hide the manual stock import for a
-  push-fed company (Medium).
+- BL-SS-265 Owner-discipline risk: Sorento's stock Pull and manual stock import stay visible on a
+  push-fed book; using either zeroes pairs Foundryx will not re-send until they change. SR5b
+  declined by owner (R10); recovery is Re-push (Low).
 - BL-SS-266 Coalesce scheduler skip rows into one per skipped streak (Low; skip rows accepted as-is
   for now, owner ruling R9).
 - BL-SS-267 Retention sweep for `ac_sync_run` and pushed `ac_staged_record` rows (Medium).
@@ -386,28 +400,44 @@ accepted and ignored (declare them, your models are `extra="forbid"`); an absent
 
 Resolution per record, in this order, within the anchored company:
 
-1. `location_code` -> `warehouses.warehouse_code`, trimmed + case-insensitive (the matcher
-   `classify_stock_rows` already uses, `autocount_pull_service.py:585`).
+1. `location_code` -> `warehouses.warehouse_code`: your matcher trims and uppercases both sides
+   (the one `classify_stock_rows` already uses, `autocount_pull_service.py:585`).
    - no such warehouse -> `updated`, `warnings: ["warehouse_unresolved"]`, write nothing;
    - warehouse exists but `is_active = false` -> `updated`, `warnings: ["warehouse_inactive"]`,
      write nothing (owner ruling R4 - never `failed`, which would quarantine it and re-fail it on
      every run).
-2. `item_code` -> product by code, the same resolver your stock import uses. Not found ->
+2. `item_code` -> product by `product_code`, case-insensitive and scoped to the anchored company.
+   Not found ->
    `retryable` (nothing written; Foundryx re-offers it after the product is pushed).
 3. Upsert the `stock` row for (product, warehouse): set `quantity_on_hand = qty` ONLY. **Push
    NEVER touches `quantity_reserved` or the damaged quantity** (owner-confirmed 2026-09-25), nor
    reorder point or zone; `quantity_available` stays DB-generated. This deliberately differs from
    your stock import, which resets reserved / damaged to 0 when those columns are absent (plan 10
    A10). A newly created row takes your column defaults for everything but `quantity_on_hand`.
-   `created` when no row existed, else `updated` (also when the value is unchanged). Run whatever
-   per-write hooks and audit trail your import's stock write runs, attributed to the integration.
+   `created` when no row existed, else `updated` (also when the value is unchanged). Push inherits
+   your generic audit listeners only: no `stock_ledger` row and no extra audit.
 4. Validation failure (missing `item_code` / `location_code`, non-integer or negative `qty`) ->
    `failed` with `errors`.
 
-Idempotent: the same record twice is `updated` with an empty diff. Verdicts use the existing
-envelope `{summary, records: [{source_ref, outcome, entity_id?, diff?, errors?, warnings?}]}`,
-one verdict per input record, every record echoing its `source_ref`. `dry_run=true` returns the
-same verdicts with `diff: {"qty": {"current": 12, "incoming": 37}}` and writes nothing.
+Verdict envelope: `{summary, records: [{source_ref, outcome, entity_id, diff?, errors?,
+warnings?}]}`, one verdict per input record, every record echoing its `source_ref`.
+
+**Agreed with the Sorento peer** (session stock-ingest, Sorento `origin/main` 3684a4b35,
+2026-09-25). These replace the earlier draft wording:
+
+- `entity_id` is ALWAYS present: the `stock` row UUID, `null` on a warning row, `retryable` or
+  `failed`.
+- `diff` appears on `dry_run=true` ONLY. A `created` row has no `diff`; an unchanged `updated` has
+  `diff: {}`; a changed `updated` has `diff: {"qty": {"current": 12, "incoming": 37}}`.
+- Ingest `summary` is exactly `{total, created, updated, failed, retryable}` (warning counts are
+  Foundryx's own run summary, never in this object).
+- A duplicate pair in one batch is processed in order and the last value wins (first `created`,
+  second `updated`, same `entity_id`).
+- Idempotent: the same record in a later batch is `updated` (`diff: {}` on a dry run).
+- The warehouse matcher trims and uppercases; the product resolver matches `product_code`
+  case-insensitively within the anchored company.
+- Push inherits the generic audit listeners, with no `stock_ledger` row and no extra audit.
+- The `foundryx-esb` role has no `inventory.stock.*` grant today; SR5a adds a grant migration.
 
 ### A4. Delete - `POST /api/v1/external/ingest/stock_balances/deletions`
 
@@ -426,10 +456,14 @@ only, same cap as `source_refs` (mirror your 2.4 `codes` handling, `ingest.py:80
   `deleted`;
 - no `pairs` entry, product / warehouse / stock row missing, or warehouse inactive (nothing
   written; add `warnings: ["warehouse_inactive"]` in that case) -> `not_found`;
-- malformed `pairs` entry -> `failed`.
+- a single malformed `pairs` entry (for example missing `location_code`) -> `failed` with
+  `errors` for that ref only; the other refs still resolve.
 
-Never hard-delete a `stock` row and never use `deactivated`. Idempotent: zeroing an already-zero
-row is `deleted` again.
+A malformed `pairs` BODY (not an object, or more than `MAX_BATCH` entries) is a batch-level
+`422 INVALID_BODY` (`{code, message, detail: null}`) and nothing is deleted. Deletions `summary` is
+exactly `{total, deleted, deactivated, not_found, failed}` (agreed with the Sorento peer, same
+session as A3). Never hard-delete a `stock` row and never use `deactivated` (it stays in the
+summary at 0). Idempotent: zeroing an already-zero row is `deleted` again.
 
 ### A5. Read-back
 
@@ -440,11 +474,10 @@ split and return `{records: [{source_ref, qty}], not_found}`.
 ### A6. Your side (SR5 slice list)
 
 - SR5a BE: the entity spec, the two routes above, contract 2.5, warnings, permission rows, the
-  foundryx-esb grant; pytest against the A7 fixtures (every outcome row in the response fixture).
-- SR5b: a company whose stock is fed by push should not also be hand-imported: hide the stock
-  Pull button and the manual stock Excel import for it (Foundryx already answers `PUSH_ACTIVE` to
-  a Pull). A manual import after the flip zeroes absent pairs that Foundryx will not re-send until
-  they change (Foundryx backlog BL-SS-265).
+  grant migration giving the `foundryx-esb` role `inventory.stock.edit` + `inventory.stock.delete`;
+  pytest against the A7 fixtures (every outcome row in the response fixtures).
+- No UI change on your side: the stock Pull button and manual stock Excel import stay visible for
+  every company (owner ruling R10, SR5b declined). The owner does not use them on a pushed book.
 - Joint run on your clone (Foundryx S4): SRT first, then MCH. Exit criterion: after the first
   drained run, `quantity_on_hand` for every (product, ACTIVE warehouse) pair equals the Foundryx
   delivered set, pairs absent from it are 0, inactive / unknown-warehouse pairs are untouched.
@@ -452,16 +485,21 @@ split and return `{records: [{source_ref, qty}], not_found}`.
 
 ### A7. Fixtures (`documentation/plans/sprint-5/13-fixtures/`)
 
-Recorded by a Foundryx coder from the existing stock snapshot builder (the db1 stock preset over
-the plan-10 probe capture, mapped through `CanonicalStockBalance.sink_payload()`), never
-hand-typed:
+Recorded in S0: request rows come from the real `CanonicalStockBalance.sink_payload()` over plan-10
+db1 capture values; response verdicts are built to A3/A4 as corrected by the Sorento peer (no live
+SR5 existed yet). `README.md` holds provenance, per-row cases and the correction log. The 11
+fixture files:
 
 | File | Content |
 |---|---|
-| `README.md` | Provenance: capture date, book, command used, what each file demonstrates |
-| `contract-2.5.json` | `GET /external/contract` answer as Foundryx expects it (`version: "2.5"`, `stock_balances` in `entities`, `warehouse_inactive` in `warnings`) |
-| `stock_balances-ingest-request.json` | 10 records, including: an ACTIVE-warehouse pair, a pair in an inactive warehouse (`CON`), an unknown location (`BRW-VAR`), a trailing-space location already trimmed (`MBS`), an item code with spaces and quotes, an item Sorento lacks |
-| `stock_balances-ingest-response.json` | The expected verdict per request record (`created`, `updated`, `updated` + `warehouse_inactive`, `updated` + `warehouse_unresolved`, `retryable`) and the summary |
-| `stock_balances-ingest-dry-run-response.json` | The same batch under `?dry_run=true` with `qty` diffs |
+| `contract-2.5.json` | `GET /external/contract` as Foundryx expects it (`version: "2.5"`, `stock_balances` in `entities`, `warehouse_inactive` in `warnings`) |
+| `stock_balances-ingest-request.json` | 10 records: active-warehouse pairs, an inactive warehouse (`CON`), an unknown location (`BRW-VAR`), a trimmed location (`MBS`), an item code with spaces and a quote, an item Sorento lacks |
+| `stock_balances-ingest-response.json` | Verdict per record (`created`, `updated`, `updated` + `warehouse_inactive`, `updated` + `warehouse_unresolved`, `retryable`), `entity_id` always present, summary `{total, created, updated, failed, retryable}` |
+| `stock_balances-ingest-dry-run-response.json` | Same batch under `?dry_run=true`: no `diff` on `created`, `{}` on unchanged `updated`, `qty` diff on changed `updated` |
+| `stock_balances-ingest-duplicate-pair-request.json` | The same pair twice in one batch with different `qty` |
+| `stock_balances-ingest-duplicate-pair-response.json` | In order, last wins: `created` then `updated`, same `entity_id` |
 | `stock_balances-deletions-request.json` | 5 refs with `pairs`, one ref deliberately without a `pairs` entry |
-| `stock_balances-deletions-response.json` | `deleted`, `not_found` (missing pair entry, inactive warehouse with warning, unknown product) |
+| `stock_balances-deletions-response.json` | `deleted`, `not_found` (inactive warehouse with warning, unsynced item, missing pair entry), summary `{total, deleted, deactivated, not_found, failed}` |
+| `stock_balances-deletions-malformed-entry-request.json` | One clean ref beside one whose `pairs` entry lacks `location_code` |
+| `stock_balances-deletions-malformed-entry-response.json` | The malformed entry `failed` with `errors`, the clean ref `deleted` |
+| `stock_balances-deletions-error-422-invalid-body.json` | Batch-level `422 INVALID_BODY` for a malformed `pairs` body |
