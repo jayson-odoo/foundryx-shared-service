@@ -86,6 +86,23 @@ def rig(session_factory):
     conn = _open_connection(db)
     company = _company(db, conn.id)
     EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, _http_raw(conn.id))
+    # NOTE (plan 13 S2 coder, 2026-09-26) - a SECOND save, explicit
+    # ``lookups: []``: the FIRST clean save (AC-08-16/AC-10-04) always
+    # seeds the product HTTP preset's own ItemUOM lookup
+    # (`services/etl_service.py`, "FIRST CLEAN SAVE SEEDS THE HTTP
+    # PRESET"), even when the caller's own raw payload already passes an
+    # explicit empty list - the seed-if-absent gate treats an empty list
+    # as "nothing saved yet" too. Left seeded, that lookup's own alias
+    # (``BaseUOMPrice``) becomes the task's ONLY compared column
+    # (`effective_result_columns`), which this file's rows never carry -
+    # deadening change detection for every test below regardless of any
+    # OTHER field moving, which is not what this file exists to pin (its
+    # own docstring: "a flat two-column-key config", "no combine, no
+    # lookups"). A second save, now past the seed gate, is the one way to
+    # actually clear it.
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT, _http_raw(conn.id, lookups=[])
+    )
     yield db, company
     db.close()
 
@@ -121,7 +138,19 @@ def _run(db, company_id: str, handler) -> None:
 
 
 def _item(code: str, *, last_modified="2026-08-01T09:00:00", is_active="T") -> Dict[str, Any]:
-    return {"ItemCode": code, "Description": code, "LastModified": last_modified, "IsActive": is_active}
+    # NOTE (plan 13 S2 coder, 2026-09-26) - ``"Desc2": ""`` added: an
+    # `autocount_http` product task's SEEDED default mapping carries the
+    # preset's own ``description`` formula
+    # (`presets.py`, ``trim(if(default(Desc2, "") != "", ...))``), and the
+    # formula engine's ``default()`` cannot resolve a variable that is
+    # ENTIRELY ABSENT from the row (as opposed to present-but-blank) - a
+    # pre-existing, unrelated formula-engine limitation this rig's rows
+    # were tripping on regardless of any assertion in this file. Every row
+    # already carried every OTHER field the preset's other rows read.
+    return {
+        "ItemCode": code, "Description": code, "Desc2": "",
+        "LastModified": last_modified, "IsActive": is_active,
+    }
 
 
 def _bare_array(rows):

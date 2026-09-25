@@ -24,6 +24,7 @@ from modules.autocount.models import (
     AcCompany,
     AcEntityConfig,
     AcSyncRun,
+    DELIVERY_MODE_PUSH,
     ETL_STATUS_ACTIVE,
     RUN_MODE_INCREMENTAL,
     RUN_MODE_SKIPPED,
@@ -45,20 +46,19 @@ NOW = datetime(2026, 9, 25, 12, 0, 0, tzinfo=timezone.utc)
 # ── AC-13-20: the floor constant itself ─────────────────────────────────────
 
 
-def test_no_watermark_floor_constant_is_still_15_today():
-    assert MIN_INCREMENTAL_MINUTES_NO_WATERMARK == 15, (
-        "if this now reads 5, flip this pin to == 5 and move on - every "
-        "other test below should already be green"
-    )
+def test_no_watermark_floor_constant_is_now_5():
+    # Pin flipped per this test's own original instruction ("if this now
+    # reads 5, flip this pin to == 5 and move on") once the coder lands
+    # AC-13-20 - see the plan 13 S2 coder report for the full note.
+    assert MIN_INCREMENTAL_MINUTES_NO_WATERMARK == 5
 
 
-def test_next_run_times_clamps_to_the_old_floor_not_5_yet():
+def test_next_run_times_clamps_to_the_new_5_minute_floor():
     incremental, _reconcile = EtlService.next_run_times(
         {"incrementalMinutes": 4, "reconcileMode": "dailyAt", "reconcileAt": "02:00"}, now=NOW
     )
-    assert incremental - NOW == timedelta(minutes=15), (
-        "AC-13-20 wants this clamped to 5 for a no-watermark task; today it "
-        "is still 15"
+    assert incremental - NOW == timedelta(minutes=5), (
+        "AC-13-20 wants this clamped to 5 for a no-watermark task"
     )
 
 
@@ -118,6 +118,18 @@ def _active_task(db, company, conn, *, next_incremental_at) -> AcEntityConfig:
         .one()
     )
     config.etl_status = ETL_STATUS_ACTIVE
+    # NOTE (plan 13 S2 coder, 2026-09-26) - a freshly-saved STOCK task
+    # starts in `pull` (AC-10-15/AC-13-32's own "tasks are created in pull
+    # mode" rule, `EtlService.update_task`), never the bare column default
+    # of `push` a non-pull-capable entity gets - `sweep_etl_tasks`'s own
+    # query (`scheduler.py`) filters on `delivery_mode == push`, so a task
+    # left in `pull` is invisible to it regardless of `etl_status`/
+    # schedule fields. This overlap-guard rig is pinning the SWEEP
+    # mechanics (AC-13-21), not the flip gate (AC-13-30/31), so the mode
+    # is stamped directly here rather than routed through
+    # `set_delivery_mode` (which would need a live contract probe AND a
+    # READY snapshot neither test below is about).
+    config.delivery_mode = DELIVERY_MODE_PUSH
     config.next_incremental_at = next_incremental_at
     config.next_reconcile_at = None
     db.commit()

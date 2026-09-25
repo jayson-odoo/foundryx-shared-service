@@ -280,7 +280,30 @@ def test_first_run_after_seed_stages_a_delete_for_a_seeded_ref_absent_now(rig):
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=[{"item_code": "STAYS", "location_code": "MBS", "qty": 5}])
+        # NOTE (plan 13 S2 coder, 2026-09-26) - the `rig` fixture's own
+        # `_http_raw` (imported from `test_s10_s5b_registration`) carries
+        # the REAL stock preset's `combine` + two lookups (item, itemUOM) -
+        # a genuine stock task's shape, not a flat pass-through. The main
+        # endpoint's rows must be RAW AutoCount-shaped (`ItemCode`/
+        # `Location`/`UOM`/`BalQty`, the combine's OWN input), never the
+        # combine's OUTPUT shape (`item_code`/`location_code`/`qty`) the
+        # original single-response handler here sent - which the require
+        # stage's `uom_rate_unresolved` formula could never satisfy (no
+        # `ItemCode`/`UOM`/`ItemBaseUOM` to read), failing every row
+        # `EXCLUDED_NONZERO` before this test's own assertion is ever
+        # reached. `UOM == ItemBaseUOM` on the row itself needs neither
+        # lookup to resolve, so both lookup paths answer an empty page.
+        if request.url.path.endswith("/itembatchbalqtybypage"):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "ItemCode": "STAYS", "Location": "MBS", "UOM": "UNIT",
+                        "ItemBaseUOM": "UNIT", "BalQty": 5, "UomRate": 1,
+                    }
+                ],
+            )
+        return httpx.Response(200, json=[])
 
     stub_transport = httpx.Client(transport=httpx.MockTransport(handler))
     orig = http_source_module.HttpApiClient

@@ -193,9 +193,34 @@ def test_auto_push_refuses_contract_gate_and_leaves_rows_staged(monkeypatch, _st
 
 @pytest.fixture
 def _stock_task_rig(session_factory):
+    # NOTE (plan 13 S2 coder, 2026-09-26) - this fixture originally built its
+    # company with `sink_impl=SINK_IMPL_SORENTO` and NO `sink_connection_id`
+    # at all, which makes `CompanyService.stock_push_gate_error` refuse via
+    # its own "no consumer connection configured" early-out
+    # (`{"version": None, "requiredVersion": ...}`, no probe) REGARDLESS of
+    # any `fetch_contract_detail` monkeypatch a test below applies - so
+    # `test_push_gate_carries_contract_gate_when_shut`'s and
+    # `test_push_gate_names_no_snapshot_once_contract_opens_with_no_snapshot`'s
+    # monkeypatched contract could never be reached, and their own asserted
+    # `{"version": 2.4, ...}` / an OPEN gate could never be produced. Wired a
+    # real Sorento connection the SAME way this file's own `_stock_gate_rig`
+    # (above) already does, so the probe this fixture's tests exist to pin
+    # actually runs. No assertion in any test using this fixture changed.
+    from app.models.connection import Connection
+
     db = session_factory()
     conn = _open_connection(db)
-    company = _company(db, conn.id, sink_impl=SINK_IMPL_SORENTO)
+    sorento_conn = Connection(
+        tenant_id=DEFAULT_TENANT_ID, provider="sorento", type="erp", name="Sorento",
+        config_json={"baseUrl": "https://sorento.example.com"},
+        credentials_json=encrypt_secret({"apiKey": "k"}), is_active=True,
+    )
+    db.add(sorento_conn)
+    db.commit()
+    db.refresh(sorento_conn)
+    company = _company(
+        db, conn.id, sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento_conn.id,
+    )
     from modules.autocount.services.etl_service import EtlService
 
     EtlService(db).update_task(

@@ -351,8 +351,24 @@ def test_switching_a_stock_task_to_push_is_refused_naming_entity_and_version(db)
 
 
 def test_switching_a_stock_task_to_push_is_allowed_once_the_contract_reports_2_5(db, monkeypatch):
+    """Plan 13 S0 (2026-09-25) - the ONE sanctioned edit to this file
+    (coder brief defect 3): once contract 2.5 opens the gate, stock ALSO
+    needs a READY, unexpired snapshot to seed its baseline from (D9,
+    AC-13-31) - this rig now provides one so the assertion under test
+    (contract-gated switch succeeds) is not masked by the newer
+    ``no_snapshot`` refusal plan 13 adds on top of plan 10's own gate."""
+    import uuid
+    from datetime import timedelta
+
     from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
-    from modules.autocount.models import DELIVERY_MODE_PUSH, SINK_IMPL_SORENTO
+    from modules.autocount.models import (
+        DELIVERY_MODE_PUSH,
+        PULL_SNAPSHOT_STATUS_READY,
+        SINK_IMPL_SORENTO,
+        AcPullSnapshot,
+        AcPullSnapshotRow,
+    )
+    from modules.autocount.repositories import PullSnapshotRepository
     from modules.autocount.services.etl_service import EtlService
 
     conn = _open_connection(db)
@@ -366,6 +382,24 @@ def test_switching_a_stock_task_to_push_is_allowed_once_the_contract_reports_2_5
     db.refresh(sorento)
     company = _company(db, conn.id, sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id)
     EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, _http_raw(conn.id))
+
+    now = datetime.now(timezone.utc)
+    snapshot = AcPullSnapshot(
+        id=str(uuid.uuid4()), tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+        entity_type=ENTITY_STOCK_BALANCE, company_code=company.sorento_company_code,
+        status=PULL_SNAPSHOT_STATUS_READY, record_count=1, complete=True,
+        extracted_at=now, expires_at=now + timedelta(hours=24),
+    )
+    snapshot_repo = PullSnapshotRepository(db)
+    snapshot_repo.add(snapshot)
+    snapshot_repo.insert_row(
+        AcPullSnapshotRow(
+            tenant_id=DEFAULT_TENANT_ID, snapshot_id=snapshot.id, row_index=0,
+            company_id=company.id, source_ref="AED_X:A1|MBS",
+            payload_json={"source_ref": "AED_X:A1|MBS", "qty": 1},
+        )
+    )
+    db.commit()
 
     class _Contract:
         version = 2.5
@@ -489,6 +523,39 @@ def _activatable_stock_config(db, company_id, connection_id):
     return config
 
 
+def _seed_ready_stock_snapshot(db, company_id, connection_id):
+    """NOTE (plan 13 S2 coder, 2026-09-26) - a READY, unexpired snapshot is
+    now ALSO a `pull -> push` prerequisite for stock (AC-13-31, D9), on
+    top of this file's own pre-existing contract-version gate - every
+    caller here that goes on to call `set_delivery_mode(push)` needs one,
+    or that call now 422s `no_snapshot` before it ever reaches the
+    contract-regression scenario this test exists to pin."""
+    import uuid
+    from datetime import timedelta
+
+    from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
+    from modules.autocount.models import PULL_SNAPSHOT_STATUS_READY, AcPullSnapshot, AcPullSnapshotRow
+    from modules.autocount.repositories import PullSnapshotRepository
+
+    now = datetime.now(timezone.utc)
+    snapshot = AcPullSnapshot(
+        id=str(uuid.uuid4()), tenant_id=DEFAULT_TENANT_ID, company_id=company_id,
+        entity_type=ENTITY_STOCK_BALANCE, company_code="SRT",
+        status=PULL_SNAPSHOT_STATUS_READY, record_count=1, complete=True,
+        extracted_at=now, expires_at=now + timedelta(hours=24),
+    )
+    repo = PullSnapshotRepository(db)
+    repo.add(snapshot)
+    repo.insert_row(
+        AcPullSnapshotRow(
+            tenant_id=DEFAULT_TENANT_ID, snapshot_id=snapshot.id, row_index=0,
+            company_id=company_id, source_ref="AED_X:A1|MBS",
+            payload_json={"source_ref": "AED_X:A1|MBS", "qty": 1},
+        )
+    )
+    db.commit()
+
+
 def test_activating_a_stock_task_refuses_once_the_push_gate_regresses(db, monkeypatch):
     """N3 - a task SAVED in push mode while the gate was open (the
     consumer served 2.5) must be re-checked again on its way to `active`,
@@ -509,6 +576,7 @@ def test_activating_a_stock_task_refuses_once_the_push_gate_regresses(db, monkey
     db.refresh(sorento)
     company = _company(db, conn.id, sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id)
     _activatable_stock_config(db, company.id, conn.id)
+    _seed_ready_stock_snapshot(db, company.id, conn.id)
 
     class _ContractOk:
         version = 2.5

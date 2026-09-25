@@ -469,7 +469,15 @@ def _stub_dns_in_autocount_http_tests(request, monkeypatch):
         monkeypatch.setattr("socket.getaddrinfo", _stub_getaddrinfo)
 
 
-_LIVE_NETWORK_BLOCK_FILE_RE = re.compile(r"^test_(autocount|s10_|s11_)")
+# plan 13 S2 coder, 2026-09-26 - `s13_` added: `test_s13_schedule_floor_
+# overlap.py`'s overlap-guard "fires" test genuinely flips a stock task to
+# push and lets `sweep_etl_tasks` claim + fire it for real (unlike every
+# OTHER s13 test, which patches `HttpApiClient` directly and never reaches
+# a real transport) - without this file in scope, the guard never engaged
+# and the fired job's real `HttpApiClient` made a real, ~multi-minute call
+# to `hapi.sorento.cc.cd`, hanging the run. Same class of incident this
+# fixture's own docstring already names for `s10_`/`s11_`.
+_LIVE_NETWORK_BLOCK_FILE_RE = re.compile(r"^test_(autocount|s10_|s11_|s13_)")
 
 
 class LiveNetworkAttempted(RuntimeError):
