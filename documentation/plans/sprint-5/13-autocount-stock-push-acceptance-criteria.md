@@ -23,6 +23,15 @@ contract 2.5 (their SR5, Appendix A of the plan).
   full walk and the overlap guard skips a tick while one is in flight.
 - **R4 - pairs in Sorento-INACTIVE warehouses keep shipping** (plan 10 R7). Sorento answers
   `updated` + warning `warehouse_inactive` and writes nothing; never `failed`.
+- **R5 - a nonzero unresolved-UOM exclusion blocks the whole book's stock push** (`EXCLUDED_NONZERO`,
+  AC-13-12). Sorento carries one unit only. Per-pair hold deferred (BL-SS-270, Low).
+- **R6 - the owner flips products and stock himself and chooses the order.** The runbook notes the
+  dependency (stock pairs for items Sorento lacks stay `retryable` until products push) without
+  mandating an order.
+- **R7 - push writes `quantity_on_hand` ONLY**; reserved and damaged are never touched by push
+  (Appendix A3 of the plan).
+- **R8 - ~13k wrapper requests per book per day at 5 minutes is accepted.**
+- **R9 - the overlap guard's skipped Runs rows at 5 minutes are accepted for now** (BL-SS-266, Low).
 
 ## Verified baseline (planner, 2026-09-25, cite when testing)
 
@@ -114,7 +123,8 @@ contract 2.5 (their SR5, Appendix A of the plan).
   `excludedNonzeroCount > 0` (`apply_pull_metadata_map`, `http_source/combine.py:903-946`), the push
   run fails BEFORE staging with `error_code = "EXCLUDED_NONZERO"` naming the count and the first
   reason; nothing is staged, nothing is pushed. Control: exclusions whose `measure` is exactly `0`
-  (the live db1 case, 5 rows) never block.
+  (the live db1 case, 5 rows) never block. The whole-book block is the owner's ruling (R5), not a
+  per-pair hold.
 - **AC-13-13 [BE]** Truncation never deletes: on a full-extract run whose walk is not verified
   complete (main `rows_scanned != reported_total` on a paged endpoint, or any lookup
   `verified == False`) NO delete intent is staged; upserts still stage; `run.truncated = True` and
@@ -141,7 +151,7 @@ contract 2.5 (their SR5, Appendix A of the plan).
   cadence): with a run in flight at the next due tick, the sweep writes one `RUN_MODE_SKIPPED` row
   and advances `next_incremental_at` by 5 minutes; the first due tick after the run finishes fires.
   The effective cadence of a 6-minute walk is therefore 10 minutes, and that is stated in the
-  runbook, not changed.
+  runbook, not changed. The skip rows and the resulting wrapper load are accepted (R8, R9).
 
 ## Group D - the flip and its baseline (`[BE]`)
 
@@ -201,6 +211,8 @@ contract 2.5 (their SR5, Appendix A of the plan).
 
 ## Group G - cross-repo and runbook (`[T]`)
 
+- **AC-13-59 [T]** Appendix A3 states explicitly that push writes `quantity_on_hand` only and never
+  touches reserved or damaged (R7); the SR5 pytest pins it on Sorento's side.
 - **AC-13-60 [T]** Appendix A (SR5 brief) is delivered verbatim to the Sorento peer before S2
   closes; `documentation/plans/sprint-5/13-fixtures/` holds the seven files Appendix A7 lists,
   recorded from the existing stock snapshot builder, and the AC-13-03/04/05 parity tests load them.
@@ -211,7 +223,7 @@ contract 2.5 (their SR5, Appendix A of the plan).
   push only changed pairs (`unchangedSkipped` ~ delivered set).
 - **AC-13-62 [T]** Owner runbook (plan section 6) exists, names the deploy order (Sorento 2.5
   first), the pre-flight checks, the last Pull + Confirm immediately before each stock flip, the
-  per-book order, the watch criteria, the products flip with plan-10 section 2.9 items 4 and 5 as
+  products / stock dependency as a NOTE with the flip order left to the owner (R6), the watch criteria, the products flip with plan-10 section 2.9 items 4 and 5 as
   recorded owner decisions, and the warehouse-activation Re-push step. No code for products.
 - **AC-13-63 [T]** STOP gate: nothing is flipped on prod until the owner reviews the S4 joint-run
   report.

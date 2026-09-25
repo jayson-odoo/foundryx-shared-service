@@ -12,6 +12,22 @@ flippable too). R2 no Stock List xlsx on the push path. R3 cadence on the Schedu
 5 minutes. R4 inactive-warehouse pairs ship, Sorento answers `updated` + `warehouse_inactive` and
 writes nothing. Full text in the UAC.
 
+Owner answers to the planning questions (2026-09-25), locked:
+
+- **R5 (Q1) - `EXCLUDED_NONZERO` blocks the whole book, accepted.** One unresolved UOM rate with a
+  nonzero balance stops that book's stock push until the ERP row is fixed (D7 stands). Reason:
+  Sorento carries one unit only, so a quantity that cannot be converted to base UOM must never
+  land. The per-pair hold stays a deferred Low (BL-SS-270).
+- **R6 (Q2) - the owner decides the flip order.** He flips products and stock himself, per book,
+  in whatever order he chooses. The runbook states the dependency (stock pairs for items Sorento
+  lacks stay `retryable` until products push) as a note, not a mandated order.
+- **R7 (Q3) - push writes `quantity_on_hand` ONLY, confirmed.** Reserved and damaged quantities
+  (and reorder point / zone) are never touched by push (D16, Appendix A3 step 3).
+- **R8 (Q4) - wrapper load accepted.** Roughly 13k wrapper requests per book per day at a
+  5-minute cadence is acceptable.
+- **R9 (Q5) - skip rows accepted for now.** The `RUN_MODE_SKIPPED` rows the overlap guard writes
+  at a 5-minute cadence stay as they are; coalescing them is a deferred Low (BL-SS-266).
+
 ## 1. Why this is small, and the four things that are not
 
 Most of S7 already exists. The canonical row and its `sink_payload()` are the wire shape
@@ -113,7 +129,7 @@ row; the due time advances by 5 minutes regardless. So a 6-minute SRT walk runs 
 and writes a skip row in between; MCH (0.2 s per row on the wrapper, plan 10 BL-SS-219) runs as
 often as its walk allows. That is what "5 minutes" means and the runbook says so. Load: each walk
 is 69 + 12 + 12 wrapper requests (plan 10 A7), roughly 13k requests per book per day at this
-cadence (open question Q4).
+cadence (accepted by the owner, R8). The skip rows are accepted as-is for now (R9, BL-SS-266).
 
 ### 2.4 The flip: gate, prerequisite, baseline (D9, D10, D18)
 
@@ -174,16 +190,16 @@ real service needs no change beyond the type (the field arrives on the task payl
 | D4 | Push-time refusal (`CONTRACT_GATE`) instead of brand's logging fallback, for stock only | A logging "delivery" marks rows PUSHED while nothing lands; with changed-only staging they would never be re-offered |
 | D5 | "Always reconcile" needs no code: watermark-less HTTP runs are full diffs by construction (`source.py:1025`) | R3's question answered by the code; pinned by test |
 | D6 | Stage only records that changed at source OR differ from the last pushed canonical; all `autocount_http` tasks; SQL untouched (closes BL-SS-238) | Without it a 5-minute stock push is a 5,000-row rotation of noise; the canonical OR keeps it safe against hash-before-stage and makes mapping edits propagate |
-| D7 | `excludedNonzeroCount > 0` fails the push run (`EXCLUDED_NONZERO`), before staging | The consumer's pull Confirm guard has no human to enforce it on push; an unresolved rate under-counts real inventory. Per-pair hold backlogged (BL-SS-270) |
+| D7 (owner ruling R5) | `excludedNonzeroCount > 0` fails the push run (`EXCLUDED_NONZERO`), before staging, blocking the whole book | Sorento carries one unit only, so an unconvertible quantity must never land. The consumer's pull Confirm guard has no human to enforce it on push; an unresolved rate under-counts real inventory. Per-pair hold backlogged (BL-SS-270) |
 | D8 | An unverified walk stages no deletes (upserts proceed), `run.truncated = True`; one completeness helper shared with the snapshot | Upserts from a partial walk are still true values; deletes from one zero real stock |
 | D9 | Baseline = runbook (last Pull + Confirm, flip at once) + seed `ac_row_hash` from the union of READY snapshots at flip; stock refuses the flip without one | Closes the Confirm-to-first-walk window with no Sorento sweep; superset is harmless (`not_found`) |
 | D10 | `push -> pull` clears the task's row hashes | Stale hashes would mask pairs the pull period zeroed |
-| D11 | No-watermark floor 15 -> 5 for every task; overlap guard unchanged; effective cadence documented | Owner sets 5 (R3); one constant; the guard already prevents stacking |
+| D11 (owner rulings R8, R9) | No-watermark floor 15 -> 5 for every task; overlap guard unchanged; effective cadence documented; wrapper load and skip rows accepted | Owner sets 5 (R3); one constant; the guard already prevents stacking |
 | D12 | Stock deletions carry `pairs` derived from the ref, guarded like `codes` | Sorento stores no stock refs; no column, no migration |
 | D13 | Inactive or unknown warehouse = `updated` + `warehouse_inactive` / `warehouse_unresolved`, nothing written; recovery after activating a warehouse = Re-push | R4; `failed` would quarantine and `retryable` would keep the task red forever for the 7 missing locations (BL-SS-217) |
-| D14 | Missing product = `retryable`, stays STAGED; stock joins `_DEPENDENT_ENTITIES` | Drains by itself once the product lands (products flip) |
+| D14 (owner ruling R6) | Missing product = `retryable`, stays STAGED; stock joins `_DEPENDENT_ENTITIES`; flip order is the owner's choice | Drains by itself once the product lands (products flip); the runbook notes the dependency without mandating an order |
 | D15 | No Stock List xlsx on push (R2); the row keeps `item_description` and `uom_code` (ignored by Sorento) | One row shape for pull and push; zero Foundryx work |
-| D16 | Push upsert writes `quantity_on_hand` ONLY; reserved / damaged / reorder point / zone untouched | The spec agreed in BL-SS-041; unlike the pull import, which resets them (plan 10 A10) - owner confirms (Q3) |
+| D16 (owner ruling R7) | Push upsert writes `quantity_on_hand` ONLY; reserved / damaged / reorder point / zone never touched | The spec agreed in BL-SS-041, confirmed by the owner; unlike the pull import, which resets them (plan 10 A10) |
 | D17 | Products flip needs no code (prod 2.4, `codes` shipped); section 2.9 items 4 / 5 are runbook owner decisions; the seed applies to products too | Verified `sinks_sorento.py:165`, `sync_service.py:986-998`, `set_delivery_mode` has no product gate |
 | D18 | The frontend decides Push from a backend `pushGate`, never an entity list | The hardcoded list is why AC-10-15's promise was false on the frontend |
 | D19 | Re-push offered for `autocount_http` tasks | Backend already allows it; D13's recovery path needs it |
@@ -261,11 +277,16 @@ design mandates, DoD gate and hard-fail list.
   creating a warehouse. Plan 10's consignment note still applies before `CON` / `HQ` / `DISPLAY`
   are activated.
 - **Items Sorento lacks** stay `retryable` and the task shows the dependency error until products
-  flip (Q2).
-- **Growth**: run rows (plus a skip row per skipped tick) and pushed staged rows accumulate at this
+  flip; the owner chooses the flip order (R6).
+- **Growth**: run rows (plus a skip row per skipped tick, accepted for now, R9) and pushed staged rows accumulate at this
   cadence with no retention sweep (BL-SS-266, BL-SS-267).
 
 ## 6. Owner runbook (prod)
+
+Order: the owner flips products and stock himself, per book, in the order he chooses (R6). Note
+the dependency: a stock pair whose item Sorento does not hold stays `retryable` (the stock task
+shows the dependency error) until that product is pushed; it then drains by itself. Steps 2-5
+(stock) and step 6 (products) may run in either order.
 
 Pre-flight: Sorento SR5 (contract 2.5, `stock_balances` in `GET /external/contract`) deployed and
 the `foundryx-esb` integration granted `inventory.stock.edit` + `inventory.stock.delete`; Foundryx
@@ -278,7 +299,9 @@ plan 13 deployed after it; `ac_company.sorento_company_code` is `SRT` / `MCH` (p
    Save. Expect the first run within a minute.
 4. Watch three runs on the Runs tab: run 1 stages ~12k plus a handful of deletes and needs up to 3
    runs to drain under the 5,000 cap; afterwards `unchangedSkipped` is roughly the whole set,
-   staged is a few dozen, no `failed`. `warehouse_inactive` counts land in the job result. Spot
+   staged is a few dozen, no `failed` (any `retryable` count = pairs whose item Sorento lacks, see
+   the order note). An `EXCLUDED_NONZERO` failure means an ERP UOM rate row needs fixing; that book's
+   stock push stays stopped until it is (R5). `warehouse_inactive` counts land in the job result. Spot
    check five pairs in Sorento stock. A 6-minute walk means one run every 10 minutes with a skip
    row between.
 5. Repeat 2-4 for MCH (slower walk; expect less frequent runs).
@@ -298,28 +321,22 @@ Rollback: flip the book back to Pull (hashes cleared, D10), Sorento Pull works a
   notes updated at merge.
 - BL-SS-265 Sorento: retire the stock Pull + Stock List xlsx and hide the manual stock import for a
   push-fed company (Medium).
-- BL-SS-266 Coalesce scheduler skip rows into one per skipped streak (Low).
+- BL-SS-266 Coalesce scheduler skip rows into one per skipped streak (Low; skip rows accepted as-is
+  for now, owner ruling R9).
 - BL-SS-267 Retention sweep for `ac_sync_run` and pushed `ac_staged_record` rows (Medium).
 - BL-SS-268 `set_delivery_mode(product, push)` lacks the >= 2.4 check `activate_task` has (Low).
 - BL-SS-269 `scheduler._sweep_one` re-arms with the raw `source_config`, so an HTTP task WITH a
   `watermarkField` gets the no-watermark floor (`scheduler.py:205-207`; use
   `EtlService._schedule_source_config`) (Low).
-- BL-SS-270 Per-pair hold instead of a whole-run `EXCLUDED_NONZERO` failure, if the latter proves
-  too blunt in practice (Low).
+- BL-SS-270 Per-pair hold instead of a whole-run `EXCLUDED_NONZERO` failure (Low, deferred; the
+  whole-book block is the owner's ruling R5).
 - BL-SS-271 Products flip owner decisions (plan 10 section 2.9 items 4 `uom_code` and 5
   `cost_price`), recorded at the flip; links BL-SS-213 (Medium).
 
 ## 8. Open questions for the owner
 
-- Q1 A single unresolved UOM rate with a nonzero balance stops the whole book's stock push
-  (`EXCLUDED_NONZERO`) until the ERP row is fixed. Accept, or prefer holding just that pair (BL-SS-270)?
-- Q2 Until products are pushed, stock pairs for items Sorento lacks stay `retryable` and the stock
-  task shows a dependency error. Flip products before stock instead of after?
-- Q3 Push writes `quantity_on_hand` only; the manual / pull import also resets reserved and damaged
-  to 0. Confirm push must NOT touch them.
-- Q4 A 5-minute cadence is roughly 13k wrapper requests per book per day (93 per walk). Acceptable
-  to the wrapper vendor / Cloudflare?
-- Q5 A skip row every other tick (~144 a day per book) on the Runs tab: accept for now (BL-SS-266)?
+None. Q1-Q5 were answered by the owner on 2026-09-25 and are recorded as rulings R5-R9 in
+section 0 (Q1 -> R5, Q2 -> R6, Q3 -> R7, Q4 -> R8, Q5 -> R9).
 
 ## Appendix A - SR5 brief for Sorento (contract 2.5)
 
@@ -377,8 +394,11 @@ Resolution per record, in this order, within the anchored company:
      every run).
 2. `item_code` -> product by code, the same resolver your stock import uses. Not found ->
    `retryable` (nothing written; Foundryx re-offers it after the product is pushed).
-3. Upsert the `stock` row for (product, warehouse): set `quantity_on_hand = qty` ONLY. Do not
-   touch `quantity_reserved`, damaged, reorder point or zone (`quantity_available` is generated).
+3. Upsert the `stock` row for (product, warehouse): set `quantity_on_hand = qty` ONLY. **Push
+   NEVER touches `quantity_reserved` or the damaged quantity** (owner-confirmed 2026-09-25), nor
+   reorder point or zone; `quantity_available` stays DB-generated. This deliberately differs from
+   your stock import, which resets reserved / damaged to 0 when those columns are absent (plan 10
+   A10). A newly created row takes your column defaults for everything but `quantity_on_hand`.
    `created` when no row existed, else `updated` (also when the value is unchanged). Run whatever
    per-write hooks and audit trail your import's stock write runs, attributed to the integration.
 4. Validation failure (missing `item_code` / `location_code`, non-integer or negative `qty`) ->
@@ -402,7 +422,8 @@ or the item/location vanished). `pairs` is keyed by `source_ref`, honoured for `
 only, same cap as `source_refs` (mirror your 2.4 `codes` handling, `ingest.py:807-900`). Per ref:
 
 - pair resolves (same matcher as A3) in an ACTIVE warehouse and a stock row exists -> set
-  `quantity_on_hand = 0`, KEEP the row, outcome `deleted`;
+  `quantity_on_hand = 0` (reserved and damaged untouched, as in A3), KEEP the row, outcome
+  `deleted`;
 - no `pairs` entry, product / warehouse / stock row missing, or warehouse inactive (nothing
   written; add `warnings: ["warehouse_inactive"]` in that case) -> `not_found`;
 - malformed `pairs` entry -> `failed`.
