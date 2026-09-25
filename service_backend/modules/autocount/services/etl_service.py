@@ -65,12 +65,15 @@ from ..models import (
     ETL_STATUS_ACTIVE,
     ETL_STATUS_DRAFT,
     ETL_STATUS_PAUSED,
+    PULL_SNAPSHOT_STATUS_READY,
     RUN_MODE_MANUAL,
     SINK_IMPL_SORENTO,
     SOURCE_IMPL_AUTOCOUNT_HTTP,
     SOURCE_IMPL_SQL_DB,
     SYNC_MODE_SCHEDULED_REVIEW,
     AcEntityConfig,
+    AcPullSnapshot,
+    AcPullSnapshotRow,
 )
 from ..repositories import (
     ConnectionRepository,
@@ -177,7 +180,10 @@ PULL_CAPABLE_ENTITY_TYPES = (ENTITY_PRODUCT, ENTITY_STOCK_BALANCE)
 
 # ── schedule floors (AC-22-12, Q17) ──────────────────────────────────────────
 MIN_INCREMENTAL_MINUTES = 1
-MIN_INCREMENTAL_MINUTES_NO_WATERMARK = 15
+# plan 13 (AC-13-20, D11, owner ruling R3) - 15 -> 5. The overlap guard
+# (`scheduler.py`) already stops a slow walk from stacking, so one lower
+# constant is safe for EVERY no-watermark task, not a stock special case.
+MIN_INCREMENTAL_MINUTES_NO_WATERMARK = 5
 MIN_RECONCILE_HOURS = 1
 RECONCILE_MODE_INTERVAL = "interval"
 RECONCILE_MODE_DAILY_AT = "dailyAt"
@@ -316,6 +322,15 @@ class EtlTaskView:
     # is folded in by VALUE (never removed from the wire - the frontend type
     # still reads it; its rename is a later slice).
     contract_gate: Optional[Dict[str, Any]] = None
+    # plan 13 (AC-13-30) - `stock_balance` ONLY: `null` = Push may be
+    # chosen; the existing `stock_push_gate_error` shape when the consumer
+    # contract is shut (`{"version", "requiredVersion"}`, `"reason":
+    # "config_error"` kept when present); `{"reason": "no_snapshot"}` when
+    # the contract is open but the task (created in `pull`) holds no
+    # READY, unexpired snapshot to seed a first push from. `null` for
+    # every other entity. The Schedule tab reads ONLY this field to decide
+    # whether Push is offered - no hardcoded entity list (D18).
+    push_gate: Optional[Dict[str, Any]] = None
     # sprint-5/10 review round 4 (SF-4) - the COMBINED, POST-GROUP schema a
     # combine-carrying task's own output rows carry (``groupBy + carry +
     # measures[].alias``, ``http_source.combine.combine_output_columns``);
@@ -1222,6 +1237,7 @@ class EtlService:
                 (config.delivery_mode if config is not None else None) or DELIVERY_MODE_PUSH
             ),
             contract_gate=self._contract_gate(tenant_id, company_id, entity_type),
+            push_gate=self._push_gate(tenant_id, company_id, entity_type, config),
             # review round 4 (SF-4) - derived from THIS task's own stored
             # (or draft-default) ``combine``, the SAME helper the save path
             # and the preview route already derive it from - never a second
@@ -1262,6 +1278,90 @@ class EtlService:
         except Exception:  # noqa: BLE001 - advisory only, never blocks the read
             return None
         return self.companies.contract_gate(tenant_id, company, entity_type)
+
+    def _push_gate(
+        self,
+        tenant_id: Optional[str],
+        company_id: str,
+        entity_type: str,
+        config: Optional[AcEntityConfig],
+    ) -> Optional[Dict[str, Any]]:
+        """plan 13 (AC-13-30) - gated to `stock_balance` only, so every
+        other entity's task-view read never touches the network here
+        (same reasoning as `_brand_contract_gate`/`_contract_gate` above).
+        Contract first, then snapshot - the same ordering
+        `set_delivery_mode` enforces (AC-13-31), so the two never disagree
+        about which prerequisite is "the" blocker."""
+        if entity_type != ENTITY_STOCK_BALANCE or tenant_id is None:
+            return None
+        try:
+            company = self.companies.get(tenant_id, company_id)
+        except Exception:  # noqa: BLE001 - advisory only, never blocks the read
+            return None
+        gate = self.companies.stock_push_gate_error(tenant_id, company)
+        if gate is not None:
+            return gate
+        if config is not None and config.delivery_mode == DELIVERY_MODE_PUSH:
+            # Already pushing - Push is trivially "offered" (it is already
+            # chosen); no snapshot check applies once a task has flipped.
+            return None
+        if not self._has_ready_snapshot(tenant_id, company_id, entity_type):
+            return {"reason": "no_snapshot"}
+        return None
+
+    def _has_ready_snapshot(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> bool:
+        """Whether the SAME union `_seed_baseline_if_empty` would seed from
+        is non-empty right now - deliberately the identical query
+        (`_ready_snapshot_source_refs`, READY + unexpired) so the gate and
+        the seed can never disagree about whether "a snapshot to flip
+        from" exists."""
+        refs = self._ready_snapshot_source_refs(
+            tenant_id, company_id, entity_type, datetime.now(timezone.utc)
+        )
+        return bool(refs)
+
+    def _ready_snapshot_source_refs(
+        self, tenant_id: str, company_id: str, entity_type: str, now: datetime
+    ) -> Dict[str, str]:
+        """plan 13 (AC-13-32, D9) - the UNION of every READY, UNEXPIRED
+        snapshot's own distinct ``source_ref``s for one (company, entity)
+        triple, each mapped to a sentinel row-hash naming ITS OWN snapshot
+        id (``f"seed:{snapshot_id}"``) - the baseline seed
+        ``set_delivery_mode`` writes into ``ac_row_hash`` on a flip (D9),
+        and the SAME check ``_has_ready_snapshot`` gates the flip on. A ref
+        present in more than one snapshot keeps whichever snapshot this
+        query visits LAST - an arbitrary but harmless choice, since either
+        sentinel resolves the ref as "known" and neither is ever read back
+        as a real hash."""
+        snapshots = (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.company_id == company_id,
+                AcPullSnapshot.entity_type == entity_type,
+                AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_READY,
+                sa.or_(
+                    AcPullSnapshot.expires_at.is_(None),
+                    AcPullSnapshot.expires_at > now,
+                ),
+            )
+            .all()
+        )
+        out: Dict[str, str] = {}
+        for snapshot in snapshots:
+            refs = (
+                self.db.query(AcPullSnapshotRow.source_ref)
+                .filter(
+                    AcPullSnapshotRow.tenant_id == tenant_id,
+                    AcPullSnapshotRow.snapshot_id == snapshot.id,
+                )
+                .all()
+            )
+            for (ref,) in refs:
+                out[ref] = f"seed:{snapshot.id}"
+        return out
 
     def _initial_load(
         self, company_id: str, entity_type: str, config: Optional[AcEntityConfig]
@@ -2933,6 +3033,24 @@ class EtlService:
                 raise EtlValidationError(
                     {"deliveryMode": _stock_push_gate_message(entity_type, gate, "push")}
                 )
+            # plan 13 (AC-13-31) - checked AFTER the contract (the operator
+            # fixes the more fundamental blocker first): stock also needs a
+            # READY, unexpired snapshot to seed its first push run's
+            # baseline from (D9) - there is no safe "allow and let it fail
+            # at push time" outcome for a task with zero known refs (the
+            # first run would emit no deletes, and a pair positive at the
+            # last Confirm and zero since would stay positive on Sorento
+            # forever).
+            if not self._has_ready_snapshot(tenant_id, company_id, entity_type):
+                raise EtlValidationError(
+                    {
+                        "deliveryMode": (
+                            f"'{entity_type}' needs a stock snapshot from the last "
+                            "24 hours before it can push. Pull and Confirm once "
+                            "more, then flip to push."
+                        )
+                    }
+                )
         if delivery_mode == DELIVERY_MODE_PULL and not (
             company.sorento_company_code or ""
         ).strip():
@@ -2949,12 +3067,20 @@ class EtlService:
             raise EtlStateError(
                 "Save this task's query and key columns before setting its delivery mode."
             )
+        previous_mode = config.delivery_mode
         config.delivery_mode = delivery_mode
         if delivery_mode == DELIVERY_MODE_PULL:
             # A pull task never runs on the sweep - disarm immediately,
             # regardless of the task's current lifecycle status (AC-10-13).
             config.next_incremental_at = None
             config.next_reconcile_at = None
+            if previous_mode == DELIVERY_MODE_PUSH:
+                # plan 13 (AC-13-34, D10) - the SAME clear Re-push uses.
+                # Stale push-period hashes would otherwise mask a pair the
+                # pull period zeroed: a later re-flip must re-seed fresh
+                # from the snapshots current AT THAT TIME, never diff
+                # against hashes this now-ending push period made stale.
+                RowHashRepository(self.db).clear_all(tenant_id, company_id, entity_type)
         elif config.etl_status == ETL_STATUS_ACTIVE:
             # Re-arm from the SAVED source_config through the existing
             # ``next_run_times`` - no re-mapping, no re-Test, no status
@@ -2965,9 +3091,43 @@ class EtlService:
             _, config.next_reconcile_at = self.next_run_times(
                 self._schedule_source_config(config), now=now
             )
+        if delivery_mode == DELIVERY_MODE_PUSH:
+            # plan 13 (AC-13-32, D9) - baseline seed for ANY pull-capable
+            # entity, in the SAME commit as the mode change below.
+            # ``_seed_baseline_if_empty``'s OWN "zero hash rows" guard is
+            # the real gate (AC-13-32's own wording), never `previous_mode`
+            # - a raw-constructed config whose ``delivery_mode`` column
+            # never left its bare ``server_default`` of ``push`` (a task
+            # created outside `update_task`'s own pull-capable-entity rule,
+            # AC-10-15/AC-10-39) must still seed on its first genuine push
+            # flip, exactly like one that started in `pull`.
+            self._seed_baseline_if_empty(tenant_id, company_id, entity_type)
         self.db.commit()
         self.db.refresh(config)
         return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
+
+    def _seed_baseline_if_empty(
+        self, tenant_id: str, company_id: str, entity_type: str
+    ) -> None:
+        """D9 - a `pull -> push` flip's baseline. When this task holds
+        ZERO `ac_row_hash` rows, seed one per distinct `source_ref` found
+        in the union of this (company, entity)'s READY, unexpired
+        snapshots, `row_hash = "seed:<snapshot_id>"`. A task that already
+        holds hash rows (e.g. a prior push period, or a re-flip) is NEVER
+        seeded or overwritten (AC-13-32's own guard). Does not commit -
+        the caller's single commit covers the mode change and this seed
+        together."""
+        hashes_repo = RowHashRepository(self.db)
+        if hashes_repo.count(tenant_id, company_id, entity_type):
+            return
+        seed = self._ready_snapshot_source_refs(
+            tenant_id, company_id, entity_type, datetime.now(timezone.utc)
+        )
+        if not seed:
+            return
+        hashes_repo.upsert_many(
+            tenant_id, company_id, entity_type, seed, seen_at=datetime.now(timezone.utc)
+        )
 
     def pause_task(self, tenant_id: str, company_id: str, entity_type: str) -> EtlTaskView:
         """active → paused. The sweep stops dispatching; an in-flight run

@@ -1118,6 +1118,11 @@ class HttpApiSource:
 
         hashes: Dict[str, str] = {}
         current_refs: set = set()
+        # plan 13 (AC-13-11, D6) - every ref THIS run counted as added or
+        # hash-changed, attached to the returned ``FetchResult`` as a
+        # dynamic attribute below (never a declared dataclass field - every
+        # OTHER source's result simply carries no such attribute at all).
+        changed_refs: set = set()
         added = updated = 0
         # B-A (sprint-5/08 review round 2 blocker) - an empty effective
         # compared set (never previewed: `result_columns` is None/empty AND
@@ -1140,8 +1145,10 @@ class HttpApiSource:
             hashes[ref] = value_hash
             if ref not in known:
                 added += 1
+                changed_refs.add(ref)
             elif known[ref] != value_hash:
                 updated += 1
+                changed_refs.add(ref)
 
         delete_refs: List[str] = []
         if full_extract and known:
@@ -1176,7 +1183,7 @@ class HttpApiSource:
             )
             self._ctx.db.commit()
 
-        return FetchResult(
+        fetch_result = FetchResult(
             records=records,
             max_last_modified=max_seen_dt,
             window_from=None,
@@ -1196,6 +1203,11 @@ class HttpApiSource:
             lookup_verification=dict(self._lookup_verification),
             combine_metadata=combine_metadata,
         )
+        # plan 13 (AC-13-11, D6) - dynamic, not a declared field (see the
+        # comment above ``changed_refs`` above): the ONE place this source
+        # marks its changed set on the result it returns.
+        fetch_result.changed_refs = changed_refs
+        return fetch_result
 
     # ── observability ──────────────────────────────────────────────────────
 

@@ -107,6 +107,7 @@ from ..repositories import (
 from ..sinks import EntitySink, UnknownSinkImpl, sink_for
 from ..sinks_sorento import (
     BRAND_REQUIRED_CONTRACT_VERSION,
+    CONTRACT_GATED_ENTITIES,
     PRODUCT_CODE_WINS_CONTRACT_VERSION,
     STOCK_BALANCES_CONTRACT_VERSION,
     sorento_sink_from_connection,
@@ -848,15 +849,18 @@ class CompanyService:
             # swappable the same way the Sorento sink is chosen - one seam.
             return sink_for(SINK_IMPL_LOGGING)
         if impl == SINK_IMPL_SORENTO:
-            # S2 (sprint-5/08 review round 1, AC-08-33) - ``brand`` is
-            # CONTRACT-GATED: unlike every other entity here, whether
+            # S2 (sprint-5/08 review round 1, AC-08-33; generalised plan 13
+            # AC-13-06) - every entity in ``CONTRACT_GATED_ENTITIES``
+            # (``brand``, ``stock_balance``) is CONTRACT-GATED: whether
             # Sorento accepts it depends on the CONSUMER's own advertised
-            # ``/external/contract`` (version >= 2.3 AND ``"brands"`` in its
-            # ``entities``), so the plain membership check
-            # (``sorento_supports_entity(entity_type)``, no kwargs) can
-            # never open for it - it needs a LIVE contract read. Every other
-            # entity keeps the original zero-network early-out unchanged.
-            if entity_type != ENTITY_BRAND and not sorento_supports_entity(entity_type):
+            # ``/external/contract`` (version >= its own required version
+            # AND its own name in ``entities``), so the plain membership
+            # check (``sorento_supports_entity(entity_type)``, no kwargs)
+            # can never open for it - it needs a LIVE contract read. Every
+            # other entity keeps the original zero-network early-out
+            # unchanged.
+            gated = entity_type in CONTRACT_GATED_ENTITIES
+            if not gated and not sorento_supports_entity(entity_type):
                 # Sorento ingests masters only; a document entity (GRN, PO, …)
                 # has no ingest endpoint yet. Route it to the logging sink so it
                 # stages + logs cleanly instead of raising on a missing ingest
@@ -881,7 +885,7 @@ class CompanyService:
                 # answers the authoritative COMPANY_ANCHOR_REQUIRED.
                 company_code=company.sorento_company_code,
             )
-            if entity_type == ENTITY_BRAND:
+            if gated:
                 contract = sink.fetch_contract_detail()
                 supported = sorento_supports_entity(
                     entity_type,
@@ -889,10 +893,12 @@ class CompanyService:
                     contract_entities=(contract.entities if contract else None),
                 )
                 if not supported:
-                    # AC-08-33 - never a 422 from Sorento; a 2.2 consumer (or
-                    # an unreachable one) falls back to the logging sink,
-                    # exactly the "deliverability" story every other
-                    # not-yet-built entity already gets.
+                    # AC-08-33/AC-13-06 - never a 422 from Sorento; a
+                    # too-old or unreachable consumer falls back to the
+                    # logging sink, exactly the "deliverability" story every
+                    # other not-yet-built entity already gets. (Stock's OWN
+                    # push-time refusal - never delivering through this
+                    # fallback - lives in ``SyncService.auto_push``, D4.)
                     return sink_for(SINK_IMPL_LOGGING)
             return sink
         raise UnknownSinkImpl(

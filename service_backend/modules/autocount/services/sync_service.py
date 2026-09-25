@@ -87,9 +87,11 @@ from ..repositories import (
 )
 from ..sinks import EntitySink, WriteResult
 from ..sinks_sorento import (
+    SINK_SORENTO,
     SinkAnchorError,
     SorentoSinkError,
     codes_from_refs,
+    pairs_from_refs,
     sorento_supported_entities_label,
     sorento_supports_entity,
     describe_consumer_failure,
@@ -603,6 +605,27 @@ class SyncService:
             return summary
         summary["sink"] = sink.name
 
+        # plan 13 (D4, AC-13-06) - stock NEVER delivers through brand's
+        # logging-sink fallback. `sink_for_company` keeps that fallback so a
+        # PULL-mode stock preview stays unchanged (`sink_for_company` is
+        # right for a not-yet-deliverable entity); a PUSH-mode Sorento
+        # company routed to it here would mark rows PUSHED while nothing
+        # landed, and changed-only staging (AC-13-11) would then never
+        # re-offer them - a silent, permanent data loss. Refuse instead:
+        # every row stays STAGED, nothing is marked pushed.
+        if (
+            entity_type == ENTITY_STOCK_BALANCE
+            and company.sink_impl == SINK_IMPL_SORENTO
+            and sink.name != SINK_SORENTO
+        ):
+            summary["error"] = (
+                "This book's Sorento consumer does not yet accept stock "
+                "balances (contract 2.5 with 'stock_balances' required) - "
+                "nothing was pushed."
+            )
+            summary["errorCode"] = "CONTRACT_GATE"
+            return summary
+
         pending = self.staged.list_pending_for_entity(
             tenant_id, company_id, entity_type, job_type=AUTOCOUNT_SYNC
         )
@@ -996,12 +1019,33 @@ class SyncService:
                 company = self.companies.get(tenant_id, company_id)
                 if self.companies.product_delete_codes_gate(tenant_id, company):
                     codes = codes_from_refs(refs, key_fields=key_fields) or None
+        # plan 13 (AC-13-05, D12) - `pairs` for STOCK deletions. Unlike
+        # `codes` above, no contract probe is needed: a stock delete
+        # intent can only exist once the task has already flipped to
+        # push, which itself required the contract gate to be open
+        # (`set_delivery_mode`) - so by the time this call is reached the
+        # gate is already proven. `pairs_from_refs`'s own guard (exactly
+        # `("item_code", "location_code")` key fields) decides which refs,
+        # if any, are eligible; `None`/empty is optional on the wire, so a
+        # non-stock delete's body is byte-identical to before.
+        pairs: Optional[Dict[str, Dict[str, str]]] = None
+        if entity_type == ENTITY_STOCK_BALANCE and refs:
+            config = self.configs.get(tenant_id, company_id, entity_type)
+            key_fields = (
+                (config.source_config or {}).get("keyFields")
+                or (config.source_config or {}).get("keyColumns")
+                or []
+            ) if config is not None else []
+            key_fields = tuple(str(c) for c in key_fields if str(c).strip())
+            pairs = pairs_from_refs(refs, key_fields=key_fields) or None
         try:
             if hasattr(sink, "delete_batch"):
                 params = inspect.signature(sink.delete_batch).parameters
                 extra_kwargs: Dict[str, Any] = {}
                 if codes and "codes" in params:
                     extra_kwargs["codes"] = codes
+                if pairs and "pairs" in params:
+                    extra_kwargs["pairs"] = pairs
                 if "on_chunk" in params:
                     sink.delete_batch(refs, on_chunk=apply_chunk, **extra_kwargs)
                 else:

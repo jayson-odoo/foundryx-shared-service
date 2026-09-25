@@ -60,6 +60,7 @@ from .canonical.masters import (
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
     ENTITY_SALES_AGENT,
+    ENTITY_STOCK_BALANCE,
     ENTITY_SUPPLIER,
     ENTITY_UNIT_OF_MEASURE,
     ENTITY_WAREHOUSE,
@@ -110,6 +111,12 @@ _ENTITY_PATH: Dict[str, str] = {
     # actually gates it behind the consumer's advertised contract, since a
     # 2.2 consumer has no ``/ingest/brands`` route yet.
     ENTITY_BRAND: "brands",
+    # plan 13 (BL-SS-207) - contract 2.5 (Appendix A2). Present here
+    # unconditionally, exactly like ``brand`` above; ``sorento_supports_
+    # entity`` is what actually gates it behind the consumer's advertised
+    # contract, since a pre-2.5 consumer has no ``/ingest/stock_balances``
+    # route yet.
+    ENTITY_STOCK_BALANCE: "stock_balances",
 }
 
 # Outcomes Sorento may report per record. `created`/`updated` = delivered;
@@ -146,6 +153,10 @@ SINK_CONCURRENCY_KEY = "sinkConcurrency"
 # AC-14-24 "must be unreachable" defect signal.
 _DEPENDENT_ENTITIES = {
     ENTITY_PRODUCT, ENTITY_SALES_ORDER, ENTITY_PURCHASE_ORDER, ENTITY_SHIPPING_ORDER,
+    # plan 13 (AC-13-04) - a stock pair whose item Sorento has not synced
+    # yet (as a product) is the SAME expected, self-resolving retryable
+    # every document's master reference already gets.
+    ENTITY_STOCK_BALANCE,
 }
 
 
@@ -166,11 +177,21 @@ PRODUCT_CODE_WINS_CONTRACT_VERSION = 2.4
 
 # sprint-5/10 S5b (AC-10-15) - the consumer contract stock's PUSH switch
 # needs (`CompanyService.stock_push_gate_error`, `services/etl_service.py`'s
-# `set_delivery_mode`). Stock has NO `_ENTITY_PATH` entry at all (S7's own
-# job to add one), so this is never a `sorento_supports_entity` membership
-# check either - a plain version+entities probe named here so the literal
-# is shared between the gate and whatever reports it to the operator.
+# `set_delivery_mode`). Named here so the literal is shared between the
+# gate, the membership table below and whatever reports it to the operator.
 STOCK_BALANCES_CONTRACT_VERSION = 2.5
+
+# plan 13 (AC-13-02) - every entity whose ``_ENTITY_PATH`` membership alone
+# is NOT proof Sorento accepts it yet: it also needs the consumer's LIVE
+# advertised contract to be at least this version AND to list this entity
+# name in ``GET /external/contract``'s ``entities``. ``brand`` (sprint-5/08,
+# AC-08-33) was the first; stock (plan 13, BL-SS-207) generalises the SAME
+# mechanism rather than cloning it - a future gated entity is one more row
+# here, never a second gate function.
+CONTRACT_GATED_ENTITIES: Dict[str, Tuple[float, str]] = {
+    ENTITY_BRAND: (BRAND_REQUIRED_CONTRACT_VERSION, "brands"),
+    ENTITY_STOCK_BALANCE: (STOCK_BALANCES_CONTRACT_VERSION, "stock_balances"),
+}
 
 
 def sorento_supports_entity(
@@ -190,22 +211,26 @@ def sorento_supports_entity(
     erroring on a missing path - *deliverability*, an expected not-yet-built
     state, not a misconfiguration.
 
-    ``brand`` (sprint-5/08, AC-08-33) is CONTRACT-GATED on top of the plain
-    membership check every other entity gets: it needs consumer contract
-    ``>= 2.3`` AND ``"brands"`` advertised in ``GET /external/contract``'s
-    ``entities`` list. ``contract_version``/``contract_entities`` unknown
-    (the plain 1-arg call every OTHER caller still makes) reads as "not yet
-    provable" - the SAME logging-sink fallback a 2.2 consumer gets, never a
-    422. Every other entity's signature/behaviour is BYTE-IDENTICAL to
-    before this kwarg pair existed.
+    Every entity in ``CONTRACT_GATED_ENTITIES`` (``brand`` sprint-5/08
+    AC-08-33, ``stock_balance`` plan 13 AC-13-02) is CONTRACT-GATED on top
+    of the plain membership check every other entity gets: it needs the
+    consumer's LIVE contract version >= its own required version AND its
+    own entity name advertised in ``GET /external/contract``'s ``entities``
+    list. ``contract_version``/``contract_entities`` unknown (the plain
+    1-arg call every OTHER caller still makes) reads as "not yet provable" -
+    the SAME logging-sink fallback a too-old consumer gets, never a 422.
+    Every other entity's signature/behaviour is BYTE-IDENTICAL to before
+    this kwarg pair existed.
     """
     if entity_type not in _ENTITY_PATH:
         return False
-    if entity_type != ENTITY_BRAND:
+    gate = CONTRACT_GATED_ENTITIES.get(entity_type)
+    if gate is None:
         return True
     if contract_version is None or contract_entities is None:
         return False
-    return contract_version >= BRAND_REQUIRED_CONTRACT_VERSION and "brands" in contract_entities
+    required_version, required_entity_name = gate
+    return contract_version >= required_version and required_entity_name in contract_entities
 
 
 def sorento_supported_entities_label() -> str:
@@ -219,17 +244,18 @@ def sorento_supported_entities_label() -> str:
     joined the map (plan 22 S5).
 
     S3 (sprint-5/08 review round 1) - CONTRACT-GATED entities (``brand``,
-    AC-08-33) are EXCLUDED: unqualified membership in ``_ENTITY_PATH`` is
-    not the same claim as "Sorento accepts this today" for an entity whose
-    real answer depends on the consumer's advertised contract version, and
-    this sentence was previously saying "...and brand" on every 2.2
-    consumer while ``sorento_supports_entity("brand")`` (no contract kwargs)
-    answered ``False`` for the exact same request - a direct contradiction
-    an operator would read as a bug report against us."""
+    AC-08-33; ``stock_balance``, plan 13 AC-13-02) are EXCLUDED: unqualified
+    membership in ``_ENTITY_PATH`` is not the same claim as "Sorento accepts
+    this today" for an entity whose real answer depends on the consumer's
+    advertised contract version, and this sentence was previously saying
+    "...and brand" on every 2.2 consumer while
+    ``sorento_supports_entity("brand")`` (no contract kwargs) answered
+    ``False`` for the exact same request - a direct contradiction an
+    operator would read as a bug report against us."""
     names = [
         entity_type.replace("_", " ")
         for entity_type in _ENTITY_PATH
-        if entity_type != ENTITY_BRAND
+        if entity_type not in CONTRACT_GATED_ENTITIES
     ]
     if len(names) <= 1:
         return names[0] if names else ""
@@ -265,6 +291,37 @@ def codes_from_refs(
             continue
         codes[ref] = suffix
     return codes
+
+
+def pairs_from_refs(
+    refs: Sequence[str], *, key_fields: Sequence[str]
+) -> Dict[str, Dict[str, str]]:
+    """``{ref: {"item_code", "location_code"}}`` recovered by splitting each
+    ref once on ``":"`` then its suffix once on ``"|"`` - pure, never
+    raises. Mirrors ``codes_from_refs`` exactly (plan 13, AC-13-05): only
+    when the task's ``key_fields`` is EXACTLY ``("item_code",
+    "location_code")`` (the stock preset's own ``groupBy``); a ref whose
+    suffix does not split into exactly two non-empty parts is simply
+    omitted, never guessed. Either guard failing for the whole call returns
+    ``{}``.
+
+    No column, no migration: Sorento keeps no stock refs at all, so the
+    pair is the only way to find the row to delete - deriving it from the
+    ref needs no new storage (plan 10 D21's same argument).
+    """
+    if tuple(key_fields) != ("item_code", "location_code"):
+        return {}
+    pairs: Dict[str, Dict[str, str]] = {}
+    for ref in refs:
+        prefix_and_suffix = str(ref or "").split(":", 1)
+        if len(prefix_and_suffix) != 2:
+            continue
+        suffix = prefix_and_suffix[1]
+        parts = suffix.split("|")
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            continue
+        pairs[ref] = {"item_code": parts[0], "location_code": parts[1]}
+    return pairs
 
 
 # ── company anchor (plan 22 Appendix A6/A7) ───────────────────────────────────
@@ -713,6 +770,14 @@ class SorentoSink:
         # to THAT chunk's own refs, never the whole map. Omitted entirely
         # when ``None`` or empty - contract 2.4 optional field.
         codes: Optional[Dict[str, str]] = None,
+        # plan 13 (AC-13-05) - ``{ref: {"item_code", "location_code"}}`` for
+        # `stock_balance` ONLY (``pairs_from_refs``'s own guard decides
+        # which refs, if any, are eligible), mirroring ``codes`` exactly:
+        # each chunk's POST body carries ``pairs`` restricted to THAT
+        # chunk's own refs. Omitted entirely when ``None`` or empty -
+        # contract 2.5 optional field, so a caller that never passes it
+        # sends today's exact body shape.
+        pairs: Optional[Dict[str, Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         """``POST /api/v1/external/ingest/{entity}/deletions``.
 
@@ -762,7 +827,9 @@ class SorentoSink:
         if concurrency == 1:
             #     !!  BYTE-IDENTICAL TO BEFORE feat/sink-concurrency-ui.  !!
             for chunk in chunks:
-                partial, chunk_records, error = self._run_delete_chunk(chunk, dry_run, codes)
+                partial, chunk_records, error = self._run_delete_chunk(
+                    chunk, dry_run, codes, pairs
+                )
                 if error is not None:
                     if on_chunk is not None:
                         on_chunk(chunk, None, error)
@@ -774,7 +841,7 @@ class SorentoSink:
         else:
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 futures = [
-                    executor.submit(self._run_delete_chunk, chunk, dry_run, codes)
+                    executor.submit(self._run_delete_chunk, chunk, dry_run, codes, pairs)
                     for chunk in chunks
                 ]
                 try:
@@ -802,6 +869,7 @@ class SorentoSink:
         chunk: List[str],
         dry_run: bool,
         codes: Optional[Dict[str, str]] = None,
+        pairs: Optional[Dict[str, Dict[str, str]]] = None,
     ) -> Tuple[Optional[Dict[str, int]], Optional[List[Dict[str, Any]]], Optional[BaseException]]:
         """One deletion chunk POST, shared by ``delete_batch``'s sequential
         and concurrent paths so a ``SinkUnknownEntity`` (addendum section 5)
@@ -820,6 +888,11 @@ class SorentoSink:
             restricted = {ref: codes[ref] for ref in chunk if ref in codes}
             if restricted:
                 body_out["codes"] = restricted
+        if pairs:
+            # plan 13 (AC-13-05) - same restriction, for `stock_balance`.
+            restricted_pairs = {ref: pairs[ref] for ref in chunk if ref in pairs}
+            if restricted_pairs:
+                body_out["pairs"] = restricted_pairs
         try:
             body, error = self._post_with_retry(
                 f"ingest/{self._path_segment}/deletions",
@@ -1009,11 +1082,22 @@ class SorentoSink:
     def _chunk_results(
         self, chunk: Sequence[CanonicalRecord], body: Dict[str, Any]
     ) -> List[WriteResult]:
-        by_ref = {str(r.get("source_ref") or ""): r for r in body.get("records", [])}
+        # S6 (Sorento's 2026-09-25 review, correction 6) - a bare
+        # ``{ref: record}`` dict keeps only the LAST verdict for a ref that
+        # appears twice in one batch, so BOTH request records would read
+        # that same last verdict. Sorento processes duplicates IN ORDER, so
+        # match by OCCURRENCE instead (bucket + pop), exactly like
+        # ``SyncService._auto_push_upserts``/``_auto_push_deletes`` already
+        # do for the STAGED-row side of this same duplicate-ref problem.
+        by_ref: Dict[str, List[Dict[str, Any]]] = {}
+        for verdict in body.get("records", []):
+            by_ref.setdefault(str(verdict.get("source_ref") or ""), []).append(verdict)
         results: List[WriteResult] = []
         for record in chunk:
             ref = getattr(record, "source_ref", "")
-            results.append(self._result_for(ref, by_ref.get(ref)))
+            bucket = by_ref.get(ref)
+            verdict = bucket.pop(0) if bucket else None
+            results.append(self._result_for(ref, verdict))
         return results
 
     def write_batch(
@@ -1158,11 +1242,12 @@ class SorentoSink:
                 # yet (AC-22-24, Appendix A6 item 3) - stays STAGED and
                 # re-offers on the next run, never quarantined
                 # (``SyncService._auto_push_upserts``).
-                dependency = (
-                    "its category or unit of measure"
-                    if self.entity_type == ENTITY_PRODUCT
-                    else "a referenced master (customer/supplier/product/warehouse/agent)"
-                )
+                if self.entity_type == ENTITY_PRODUCT:
+                    dependency = "its category or unit of measure"
+                elif self.entity_type == ENTITY_STOCK_BALANCE:
+                    dependency = "its product"
+                else:
+                    dependency = "a referenced master (customer/supplier/product/warehouse/agent)"
                 return WriteResult(
                     ok=False, sink=self.name, external_id=None, delivered=False,
                     outcome=outcome,
