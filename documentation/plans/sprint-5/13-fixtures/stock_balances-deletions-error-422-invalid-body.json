@@ -1,0 +1,5 @@
+{
+  "code": "INVALID_BODY",
+  "message": "pairs must be an object of at most 1000 entries.",
+  "detail": null
+}

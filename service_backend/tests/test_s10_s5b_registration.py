@@ -1,6 +1,20 @@
 """Sprint-5/10 S5b - Group E registration: AC-10-39, AC-10-15 (as it applies
 to ``stock_balance``).
 
+Plan 13 S0 (2026-09-25) INVERTS three tests below on purpose
+(``test_no_sorento_entity_path_entry``,
+``test_constructing_a_sorento_sink_for_stock_balance_raises``,
+``test_sorento_does_not_report_supporting_stock_balance_at_all`` -
+originally lines 235/240/250, cited verbatim in
+`documentation/plans/sprint-5/13-autocount-stock-push-acceptance-criteria.md`
+"Verified baseline"). Plan 10's S5b deliberately left stock PULL-ONLY (no
+``_ENTITY_PATH`` entry, ``sorento_supports_entity`` unconditionally ``False``)
+- plan 13 (BL-SS-207) gives it the SAME push path every other pull-capable
+entity has, contract-gated at 2.5 exactly like ``brand`` is at 2.3. These
+three inversions are the ONLY deliberate assertion reversals in this file
+(AC-13-71); every other test above keeps pinning plan 10's own behaviour
+unchanged.
+
 RED before the coder: ``modules.autocount.canonical.masters`` declares no
 ``ENTITY_STOCK_BALANCE``/``CanonicalStockBalance`` at all today (grepped
 2026-09-20 - only ``pull_gateway_service.py``'s wire-name map and
@@ -230,38 +244,58 @@ def test_registered_in_mapping_catalog_sorento_fields():
 # ── no Sorento ingest path (pull-only rule, AC-10-15) ───────────────────────
 
 
-def test_no_sorento_entity_path_entry():
+def test_sorento_entity_path_stock_balance_is_stock_balances():
+    """INVERTED for plan 13 (AC-13-01): stock now has an ingest path, exactly
+    like every other push-capable entity - ``_ENTITY_PATH[ENTITY_STOCK_BALANCE]
+    == "stock_balances"``."""
     from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
     from modules.autocount.sinks_sorento import _ENTITY_PATH
 
-    assert ENTITY_STOCK_BALANCE not in _ENTITY_PATH
+    assert ENTITY_STOCK_BALANCE in _ENTITY_PATH
+    assert _ENTITY_PATH[ENTITY_STOCK_BALANCE] == "stock_balances"
 
 
-def test_constructing_a_sorento_sink_for_stock_balance_raises():
+def test_constructing_a_sorento_sink_for_stock_balance_succeeds():
+    """INVERTED for plan 13 (AC-13-01): a ``SorentoSink`` for stock now
+    constructs cleanly (the ``_ENTITY_PATH`` entry above is what makes
+    construction possible at all - ``SorentoSink.__init__`` raises
+    ``SorentoSinkError`` for any entity absent from the map)."""
     from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
-    from modules.autocount.sinks_sorento import SorentoSink, SorentoSinkError
+    from modules.autocount.sinks_sorento import SorentoSink
 
-    with pytest.raises(SorentoSinkError, match="No Sorento ingest path"):
-        SorentoSink(
-            base_url="https://example.invalid", api_key="k", entity_type=ENTITY_STOCK_BALANCE,
-        )
+    sink = SorentoSink(
+        base_url="https://example.invalid", api_key="k", entity_type=ENTITY_STOCK_BALANCE,
+    )
+    assert sink.entity_type == ENTITY_STOCK_BALANCE
 
 
-def test_sorento_does_not_report_supporting_stock_balance_at_all():
-    """``sorento_supports_entity`` never claims the PUSH ingest route exists
-    for stock, at any contract - it has no ``_ENTITY_PATH`` entry to gate.
-    (The SEPARATE `set_delivery_mode` gate below is what actually governs
-    whether an operator may flip the mode - a different question from "does
-    Sorento have an ingest route".)"""
+def test_sorento_supports_stock_balance_is_contract_gated_like_brand():
+    """INVERTED for plan 13 (AC-13-02): stock is CONTRACT-GATED exactly like
+    ``brand`` (2.3) is - here at ``STOCK_BALANCES_CONTRACT_VERSION = 2.5`` -
+    never an unconditional ``False``. The plain 1-arg call (no contract
+    kwargs, the shape every OTHER non-gated entity uses) still reads as
+    "not yet provable" -> ``False``, same posture as brand below 2.3."""
     from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
     from modules.autocount.sinks_sorento import sorento_supports_entity
 
     assert sorento_supports_entity(ENTITY_STOCK_BALANCE) is False
     assert (
         sorento_supports_entity(
-            ENTITY_STOCK_BALANCE, contract_version=99.0, contract_entities=["stock_balances"]
+            ENTITY_STOCK_BALANCE, contract_version=2.4, contract_entities=["stock_balances"]
         )
         is False
+    )
+    assert (
+        sorento_supports_entity(
+            ENTITY_STOCK_BALANCE, contract_version=2.5, contract_entities=["suppliers"]
+        )
+        is False
+    )
+    assert (
+        sorento_supports_entity(
+            ENTITY_STOCK_BALANCE, contract_version=2.5, contract_entities=["stock_balances"]
+        )
+        is True
     )
 
 

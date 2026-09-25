@@ -1,0 +1,27 @@
+{
+  "version": "2.5",
+  "entities": [
+    "suppliers",
+    "customers",
+    "product_categories",
+    "units_of_measure",
+    "warehouses",
+    "products",
+    "sales_agents",
+    "sales_orders",
+    "purchase_orders",
+    "shipping_orders",
+    "brands",
+    "stock_balances"
+  ],
+  "fields_added": {
+    "2.5": [
+      "stock_balances"
+    ]
+  },
+  "warnings": [
+    "warehouse_unresolved",
+    "warehouse_inactive",
+    "ref_mismatch"
+  ]
+}

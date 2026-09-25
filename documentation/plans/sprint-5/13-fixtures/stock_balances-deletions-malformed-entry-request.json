@@ -1,0 +1,16 @@
+{
+  "companyCode": "SRT",
+  "source_refs": [
+    "AED_SORENTO:1/2\" ULTRA CIRCULAR|BRW-BB",
+    "AED_SORENTO:MALFORMED|X"
+  ],
+  "pairs": {
+    "AED_SORENTO:1/2\" ULTRA CIRCULAR|BRW-BB": {
+      "item_code": "1/2\" ULTRA CIRCULAR",
+      "location_code": "BRW-BB"
+    },
+    "AED_SORENTO:MALFORMED|X": {
+      "item_code": "MALFORMED"
+    }
+  }
+}
