@@ -283,7 +283,10 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
       render(
         <ActivateTab
           company={company()}
-          task={task({ entityType: 'stock_balance' })}
+          task={task({
+            entityType: 'stock_balance',
+            pushGate: { version: 2.4, requiredVersion: 2.5 },
+          })}
           configDirty={false}
           preview={notPreviewableState()}
           lifecycle={lifecycle()}
@@ -304,6 +307,23 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
         <ActivateTab
           company={company()}
           task={task({ entityType: 'customer' })}
+          configDirty={false}
+          preview={notPreviewableState()}
+          lifecycle={lifecycle()}
+          onRan={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId('preview-unavailable')).toHaveTextContent(
+        /Point the company at Sorento first/,
+      );
+      expect(screen.queryByTestId('preview-pull-only-empty-state')).not.toBeInTheDocument();
+    });
+
+    it('a stock_balance task with an OPEN push gate (pushGate null) is NOT treated as pull-only (D18)', () => {
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ entityType: 'stock_balance', pushGate: null })}
           configDirty={false}
           preview={notPreviewableState()}
           lifecycle={lifecycle()}
@@ -638,6 +658,23 @@ describe('ActivateTab (plan 22 S2, AC-22-18/19, Appendix A6)', () => {
         />,
       );
       expect(screen.queryByTestId('etl-repush-all')).not.toBeInTheDocument();
+    });
+
+    it('renders for an active OPEN REST API (autocount_http) task too, e.g. stock balance (sprint-5/13, D19)', () => {
+      render(
+        <ActivateTab
+          company={company()}
+          task={task({ entityType: 'stock_balance', etlStatus: 'active', pushGate: null })}
+          configDirty={false}
+          preview={preview()}
+          lifecycle={lifecycle()}
+          onRan={vi.fn()}
+          entities={[
+            entityConfig({ id: 'stk', entityType: 'stock_balance', sourceImpl: 'autocount_http' }),
+          ]}
+        />,
+      );
+      expect(screen.getByTestId('etl-repush-all')).toBeInTheDocument();
     });
 
     it('clicking the trigger parks the deferred action with the right key/entity - no dialog', async () => {

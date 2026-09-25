@@ -617,17 +617,136 @@ export function setMockRepushInFlight(runId: string | null): void {
 // ── human-invoked pull (sprint-5/10) - mirrors the LIVE backend contract
 // (`modules/autocount/routers/pull.py`), as the Vitest fixture double ───────
 
-/** Mirrors `autocount-meta.ts`'s `AC_PULL_ONLY_ENTITY_TYPES` - kept as a
- * small local literal rather than an app-level import (services stay
+/**
+ * A never-touched `stock_balance` task's DEFAULT delivery mode (sprint-5/13
+ * D18 - the PUSH GATE itself is `pushGateFor` below, driven by the company's
+ * simulated consumer contract, never this literal). This is only the
+ * session's initial value, the same role `EtlTaskOverlay`'s own defaults
+ * play - a small local literal rather than an app-level import (services
+ * stay app-agnostic).
+ */
+const DEFAULT_PULL_ENTITY_TYPES = new Set(['stock_balance']);
+
+/** Mirrors `autocount-meta.ts`'s `AC_PULL_CAPABLE_ENTITY_TYPES` - which
+ * entities may be pulled AT ALL (unrelated to the push gate above; a small
+ * local literal rather than an app-level import, services stay
  * app-agnostic). */
-const PULL_ONLY_ENTITY_TYPES = new Set(['stock_balance']);
+const PULL_CAPABLE_ENTITY_TYPES = new Set(['product', 'stock_balance']);
 
 const deliveryModes = new Map<string, AutocountDeliveryMode>();
 
 function deliveryModeFor(companyId: string, entityType: string): AutocountDeliveryMode {
   const stored = deliveryModes.get(taskKey(companyId, entityType));
   if (stored) return stored;
-  return PULL_ONLY_ENTITY_TYPES.has(entityType) ? 'pull' : 'push';
+  return DEFAULT_PULL_ENTITY_TYPES.has(entityType) ? 'pull' : 'push';
+}
+
+/**
+ * sprint-5/13 (AC-13-30, D18) - `stock_balance`'s push gate, PHASE 1 MOCK
+ * standing in for the backend's `EtlService._task_view` computation. Test
+ * seam `setMockPushGate` below wins when set (deterministic Vitest states,
+ * `AC-13-44` needs all three: open / contract / no_snapshot); with no
+ * override the gate follows the SAME "sentinel company code" convention
+ * `brandContractGateFor` uses for `brand` (`BRANDS23`) - a company on the
+ * Sorento sink whose code is `STOCK25` reads as a consumer that advertises
+ * contract 2.5, everything else reads as the shut, contract-too-low state a
+ * real, never-configured company would show. `null` for every entity but
+ * `stock_balance` (always `null` there, mirroring the backend).
+ */
+const STOCK_PUSH_GATE_REQUIRED_VERSION = 2.5;
+const STOCK_PUSH_GATE_CODE_SENTINEL = 'STOCK25';
+
+type MockPushGateState = 'open' | 'contract' | 'no_snapshot';
+
+const pushGateOverrides = new Map<string, MockPushGateState>();
+
+/** Test seam (mirrors `setMockRepushInFlight`) - force company `companyId`'s
+ * `stock_balance` push gate to one of the three states with no backend, or
+ * clear the override (`null`) to fall back to the sentinel-code default.
+ * Cleared by `resetEtlMockState`. */
+export function setMockPushGate(companyId: string, state: MockPushGateState | null): void {
+  if (state === null) pushGateOverrides.delete(companyId);
+  else pushGateOverrides.set(companyId, state);
+}
+
+/** The sentinel-code state for a (sinkImpl, sorentoCompanyCode) pair -
+ * shared by the pure mock (`pushGateFor`, fixture company) and the S1
+ * overlay (`withPhase1PushGateMock`, the REAL company). */
+function stockPushGateState(
+  company: Pick<AutocountCompany, 'sinkImpl' | 'sorentoCompanyCode'>,
+): MockPushGateState {
+  if (company.sinkImpl !== 'sorento') return 'contract';
+  const code = (company.sorentoCompanyCode ?? '').trim().toUpperCase();
+  return code === STOCK_PUSH_GATE_CODE_SENTINEL ? 'open' : 'contract';
+}
+
+function gateFromState(state: MockPushGateState): AutocountEtlTask['pushGate'] {
+  if (state === 'open') return null;
+  if (state === 'no_snapshot') return { reason: 'no_snapshot' };
+  return { version: 2.4, requiredVersion: STOCK_PUSH_GATE_REQUIRED_VERSION };
+}
+
+function pushGateFor(task: Pick<AutocountEtlTask, 'companyId' | 'entityType'>): AutocountEtlTask['pushGate'] {
+  if (task.entityType !== 'stock_balance') return null;
+  const override = pushGateOverrides.get(task.companyId);
+  const state = override ?? stockPushGateState(applyCompanyOverlay(mockCompanyState(task.companyId)));
+  return gateFromState(state);
+}
+
+/**
+ * sprint-5/13 S1 - the scoped PHASE 1 MOCK overlay (bound by
+ * `autocount-service.ts`, the SAME `withPhase1MappingResetMock`/
+ * `withPhase1PullMock` pattern) for the stock push gate ONLY: every other
+ * surface stays live against the real, already-shipped backend. Retired the
+ * moment S3 lands `EtlService._task_view`'s real `push_gate` (D18's whole
+ * point is that the frontend then needs no further change at all).
+ * `setMockPushGate` still wins here (deterministic browser-evidence states,
+ * AC-13-50); with no override the gate follows the SAME sentinel-code
+ * convention against the REAL company (`STOCK25`, mirroring
+ * `stockPushGateState` above) rather than a fixture.
+ */
+export function withPhase1PushGateMock(real: AutocountService): AutocountService {
+  async function pushGateForRealCompany(companyId: string): Promise<AutocountEtlTask['pushGate']> {
+    const override = pushGateOverrides.get(companyId);
+    if (override) return gateFromState(override);
+    const company = await real.getCompany(companyId).then((detail) => detail.company);
+    return gateFromState(stockPushGateState(company));
+  }
+  async function attachPushGate(task: AutocountEtlTask): Promise<AutocountEtlTask> {
+    if (task.entityType !== 'stock_balance') return task;
+    return { ...task, pushGate: await pushGateForRealCompany(task.companyId) };
+  }
+  return {
+    ...real,
+    async getEtlTask(companyId, entityType) {
+      return attachPushGate(await real.getEtlTask(companyId, entityType));
+    },
+    async updateEtlTask(companyId, entityType, input) {
+      return attachPushGate(await real.updateEtlTask(companyId, entityType, input));
+    },
+    async activateEtlTask(companyId, entityType) {
+      return attachPushGate(await real.activateEtlTask(companyId, entityType));
+    },
+    async pauseEtlTask(companyId, entityType) {
+      return attachPushGate(await real.pauseEtlTask(companyId, entityType));
+    },
+    async resumeEtlTask(companyId, entityType) {
+      return attachPushGate(await real.resumeEtlTask(companyId, entityType));
+    },
+    async setDeliveryMode(companyId, entityType, deliveryMode) {
+      if (deliveryMode === 'push' && entityType === 'stock_balance') {
+        const gate = await pushGateForRealCompany(companyId);
+        if (gate) {
+          const message =
+            gate.reason === 'no_snapshot'
+              ? 'Push needs a stock snapshot from the last 24 hours.'
+              : `Consumer contract ${gate.version ?? 'unknown'} - stock_balance push needs ${gate.requiredVersion ?? STOCK_PUSH_GATE_REQUIRED_VERSION}.`;
+          throw new ApiError(message, 422, null, { fieldErrors: { deliveryMode: message } });
+        }
+      }
+      return real.setDeliveryMode(companyId, entityType, deliveryMode);
+    },
+  };
 }
 
 function taskKey(companyId: string, entityType: string): string {
@@ -747,6 +866,7 @@ function applyTaskOverlay(task: AutocountEtlTask): AutocountEtlTask {
     // impl (there is no task on that path at all).
     sourceImpl: impl === 'autocount_http' ? 'autocount_http' : 'sql_db',
     brandContractGate: brandContractGateFor(task),
+    pushGate: pushGateFor(task),
     deliveryMode: deliveryModeFor(task.companyId, task.entityType),
     combineOutputColumns: combineOutputColumnsFor(task.sourceConfig.combine),
     ...nextRunsFor(o.etlStatus, task.sourceConfig),
@@ -2117,6 +2237,7 @@ export function resetEtlMockState(): void {
   dbSeeded = false;
   mockRepushInFlightRunId = null;
   deliveryModes.clear();
+  pushGateOverrides.clear();
   pullKeys = [
     {
       id: 'pull-key-active',
@@ -2919,15 +3040,23 @@ export const mockAutocountService: AutocountService & MockOnlyPreviewMethods = {
           fieldErrors: { deliveryMode: 'Set a Sorento company code before enabling pull.' },
         });
       }
-      if (!PULL_ONLY_ENTITY_TYPES.has(entityType) && entityType !== 'product') {
+      if (!PULL_CAPABLE_ENTITY_TYPES.has(entityType)) {
         throw new ApiError(`${entityType} cannot be pulled yet.`, 422, null, {
           fieldErrors: { deliveryMode: `${entityType} cannot be pulled yet.` },
         });
       }
-    } else if (PULL_ONLY_ENTITY_TYPES.has(entityType)) {
-      throw new ApiError(`${entityType} has no push path yet.`, 422, null, {
-        fieldErrors: { deliveryMode: `${entityType} has no push path yet.` },
-      });
+    } else {
+      // sprint-5/13 (AC-13-31) - the SAME gate the Schedule tab reads from
+      // `pushGate`, re-checked here at save time (never trust the client
+      // alone); refuses on EITHER shut reason, contract first.
+      const gate = pushGateFor({ companyId, entityType });
+      if (gate) {
+        const message =
+          gate.reason === 'no_snapshot'
+            ? 'Push needs a stock snapshot from the last 24 hours.'
+            : `Consumer contract ${gate.version ?? 'unknown'} - ${entityType} push needs ${gate.requiredVersion ?? STOCK_PUSH_GATE_REQUIRED_VERSION}.`;
+        throw new ApiError(message, 422, null, { fieldErrors: { deliveryMode: message } });
+      }
     }
     deliveryModes.set(taskKey(companyId, entityType), deliveryMode);
     const detail = await this.getCompany(companyId);

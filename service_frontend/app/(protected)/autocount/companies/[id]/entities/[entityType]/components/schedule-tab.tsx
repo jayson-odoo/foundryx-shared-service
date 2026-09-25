@@ -1,6 +1,6 @@
 'use client';
 
-import { CalendarClock, RefreshCcw, ShieldAlert } from 'lucide-react';
+import { CalendarClock, RefreshCcw, ShieldAlert, TriangleAlert } from 'lucide-react';
 import type {
   AutocountDeliveryMode,
   AutocountEtlSourceConfig,
@@ -9,12 +9,14 @@ import type {
 import {
   incrementalFloorMinutes,
   isDocumentEntity,
+  pushGateWarning,
   RECONCILE_MODE_OPTIONS,
   validateIncrementalMinutes,
   validateReconcileAt,
   validateReconcileHours,
 } from '@/lib/autocount-etl';
 import { useDatetime } from '@/hooks/use-datetime';
+import { Alert, AlertIcon, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import {
   Card,
@@ -28,10 +30,7 @@ import { Label } from '@/components/ui/label';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { SearchSelect } from '@/components/platform/search-select';
 import { StatusBadge } from '@/components/platform/status-badge';
-import {
-  AC_DELIVERY_MODE_REGISTRY,
-  AC_PULL_ONLY_ENTITY_TYPES,
-} from '../../../../../components/autocount-meta';
+import { AC_DELIVERY_MODE_REGISTRY } from '../../../../../components/autocount-meta';
 
 export interface ScheduleTabProps {
   editing: boolean;
@@ -87,46 +86,58 @@ export function ScheduleTab({
       : null;
   const isActive = task.etlStatus === 'active';
   const isDocument = isDocumentEntity(entityType);
-  // AC-10-15 - the push gate is shut for an entity with no ingest path yet
-  // (foolproof-UI: only offer valid options). No toggle then, a read-only
-  // badge instead - it appears on its own the moment the gate opens.
-  const pushGateShut = AC_PULL_ONLY_ENTITY_TYPES.includes(entityType);
+  // sprint-5/13 (D18, AC-13-40) - the push gate is decided EXCLUSIVELY by the
+  // backend's `task.pushGate`, never a hardcoded entity list (foolproof-UI:
+  // only offer valid options). No toggle while shut, a read-only badge
+  // naming the CURRENT mode instead - the toggle appears on its own the
+  // moment the gate opens, with no frontend code change.
+  const pushGateShut = task.pushGate != null;
   const isPull = deliveryMode === 'pull';
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-3" data-testid="etl-delivery-mode">
-        <Label className="text-sm font-medium">Delivery</Label>
-        {pushGateShut ? (
-          <StatusBadge status="pull" registry={AC_DELIVERY_MODE_REGISTRY} />
-        ) : (
-          <ToggleGroup
-            type="single"
-            size="sm"
-            variant="outline"
-            value={deliveryMode}
-            onValueChange={(value) => {
-              if (value === 'push' || value === 'pull')
-                onDeliveryModeChange(value);
-            }}
-            disabled={!editing}
-            aria-label="Delivery"
-          >
-            <ToggleGroupItem
-              value="push"
-              className={DELIVERY_SEGMENT_CLASS}
-              data-testid="etl-delivery-push"
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-3" data-testid="etl-delivery-mode">
+          <Label className="text-sm font-medium">Delivery</Label>
+          {pushGateShut ? (
+            <StatusBadge status={deliveryMode} registry={AC_DELIVERY_MODE_REGISTRY} />
+          ) : (
+            <ToggleGroup
+              type="single"
+              size="sm"
+              variant="outline"
+              value={deliveryMode}
+              onValueChange={(value) => {
+                if (value === 'push' || value === 'pull')
+                  onDeliveryModeChange(value);
+              }}
+              disabled={!editing}
+              aria-label="Delivery"
             >
-              Push
-            </ToggleGroupItem>
-            <ToggleGroupItem
-              value="pull"
-              className={DELIVERY_SEGMENT_CLASS}
-              data-testid="etl-delivery-pull"
-            >
-              Pull on request
-            </ToggleGroupItem>
-          </ToggleGroup>
+              <ToggleGroupItem
+                value="push"
+                className={DELIVERY_SEGMENT_CLASS}
+                data-testid="etl-delivery-push"
+              >
+                Push
+              </ToggleGroupItem>
+              <ToggleGroupItem
+                value="pull"
+                className={DELIVERY_SEGMENT_CLASS}
+                data-testid="etl-delivery-pull"
+              >
+                Pull on request
+              </ToggleGroupItem>
+            </ToggleGroup>
+          )}
+        </div>
+        {pushGateShut && task.pushGate && (
+          <Alert variant="warning" appearance="light" data-testid="etl-push-gate-warning">
+            <AlertIcon>
+              <TriangleAlert />
+            </AlertIcon>
+            <AlertTitle>{pushGateWarning(task.pushGate)}</AlertTitle>
+          </Alert>
         )}
       </div>
 

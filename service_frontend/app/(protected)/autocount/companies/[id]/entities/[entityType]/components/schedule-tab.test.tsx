@@ -50,7 +50,7 @@ function task(over: Partial<AutocountEtlTask> = {}): AutocountEtlTask {
   };
 }
 
-describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
+describe('ScheduleTab (plan 22 S3, AC-22-12..17; floor 5 sprint-5/13 D11/AC-13-20)', () => {
   it('carries the watermark-driven incremental floor on the input (foolproof-UI: no hint copy, N6)', () => {
     const { rerender } = render(
       <ScheduleTab
@@ -64,7 +64,7 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         onDeliveryModeChange={vi.fn()}
       />,
     );
-    expect(screen.getByTestId('etl-incremental-minutes')).toHaveAttribute('min', '15');
+    expect(screen.getByTestId('etl-incremental-minutes')).toHaveAttribute('min', '5');
 
     rerender(
       <ScheduleTab
@@ -86,7 +86,7 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
       <ScheduleTab
         editing
         entityType="customer"
-        config={config({ incrementalMinutes: 5, watermarkColumn: null })}
+        config={config({ incrementalMinutes: 4, watermarkColumn: null })}
         onChange={vi.fn()}
         task={task()}
         fieldErrors={{}}
@@ -94,7 +94,23 @@ describe('ScheduleTab (plan 22 S3, AC-22-12..17)', () => {
         onDeliveryModeChange={vi.fn()}
       />,
     );
-    expect(screen.getByTestId('etl-incremental-error')).toHaveTextContent(/at least 15 minutes/i);
+    expect(screen.getByTestId('etl-incremental-error')).toHaveTextContent(/at least 5 minutes/i);
+  });
+
+  it('AC-13-20/41: 5 minutes clears the error, no-watermark entity', () => {
+    render(
+      <ScheduleTab
+        editing
+        entityType="stock_balance"
+        config={config({ incrementalMinutes: 5, watermarkColumn: null })}
+        onChange={vi.fn()}
+        task={task({ entityType: 'stock_balance' })}
+        fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('etl-incremental-error')).not.toBeInTheDocument();
   });
 
   it('prefers a server field error over the live client mirror', () => {
@@ -297,7 +313,10 @@ describe('ScheduleTab delivery toggle (sprint-5/10, AC-10-16)', () => {
         entityType="stock_balance"
         config={config()}
         onChange={vi.fn()}
-        task={task({ entityType: 'stock_balance' })}
+        task={task({
+          entityType: 'stock_balance',
+          pushGate: { version: 2.4, requiredVersion: 2.5 },
+        })}
         fieldErrors={{}}
         deliveryMode="pull"
         onDeliveryModeChange={vi.fn()}
@@ -306,5 +325,86 @@ describe('ScheduleTab delivery toggle (sprint-5/10, AC-10-16)', () => {
     expect(screen.queryByTestId('etl-delivery-push')).not.toBeInTheDocument();
     expect(screen.queryByTestId('etl-delivery-pull')).not.toBeInTheDocument();
     expect(screen.getByText('Pull on request')).toBeInTheDocument();
+  });
+});
+
+describe('ScheduleTab push gate (sprint-5/13, D18, AC-13-40)', () => {
+  it('a non-null pushGate never renders the toggle, whatever the entity type', () => {
+    render(
+      <ScheduleTab
+        editing
+        entityType="stock_balance"
+        config={config()}
+        onChange={vi.fn()}
+        task={task({
+          entityType: 'stock_balance',
+          pushGate: { version: 2.4, requiredVersion: 2.5 },
+        })}
+        fieldErrors={{}}
+        deliveryMode="pull"
+        onDeliveryModeChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('radio', { name: 'Push' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('etl-push-gate-warning')).toHaveTextContent(
+      'Consumer contract 2.4 - stock push needs 2.5.',
+    );
+  });
+
+  it('a null pushGate renders the toggle instead of a badge - AC-13-40 "opens with no code change"', () => {
+    render(
+      <ScheduleTab
+        editing
+        entityType="stock_balance"
+        config={config()}
+        onChange={vi.fn()}
+        task={task({ entityType: 'stock_balance', pushGate: null })}
+        fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('etl-delivery-push')).toBeInTheDocument();
+    expect(screen.getByTestId('etl-delivery-pull')).toBeInTheDocument();
+    expect(screen.queryByTestId('etl-push-gate-warning')).not.toBeInTheDocument();
+  });
+
+  it('the shut badge names the CURRENT delivery mode, not a hardcoded "Pull on request"', () => {
+    render(
+      <ScheduleTab
+        editing
+        entityType="stock_balance"
+        config={config()}
+        onChange={vi.fn()}
+        task={task({
+          entityType: 'stock_balance',
+          pushGate: { reason: 'no_snapshot' },
+        })}
+        fieldErrors={{}}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Push')).toBeInTheDocument();
+    expect(screen.getByTestId('etl-push-gate-warning')).toHaveTextContent(
+      'Push needs a stock snapshot from the last 24 hours.',
+    );
+  });
+
+  it('no entity-list hardcoding: a non-stock entity with a (hypothetical) shut gate ALSO shows the badge', () => {
+    render(
+      <ScheduleTab
+        editing
+        entityType="product"
+        config={config()}
+        onChange={vi.fn()}
+        task={task({ entityType: 'product', pushGate: { version: 2.3, requiredVersion: 2.5 } })}
+        fieldErrors={{}}
+        deliveryMode="pull"
+        onDeliveryModeChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('etl-delivery-push')).not.toBeInTheDocument();
+    expect(screen.getByTestId('etl-push-gate-warning')).toBeInTheDocument();
   });
 });

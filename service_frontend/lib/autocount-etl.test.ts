@@ -19,6 +19,7 @@ import {
   mappingSourceColumnsForTask,
   pickerColumnOptions,
   productDependencyWarning,
+  pushGateWarning,
   readTaskError,
   previewBadgeText,
   previewFailedBlocksActivation,
@@ -391,23 +392,23 @@ describe('statusFormulaSeed', () => {
 
 // ── plan 22 S3 - schedule (AC-22-12..17) ─────────────────────────────────────
 
-describe('incrementalFloorMinutes (AC-22-12)', () => {
-  it('is 1 minute with a watermark column, 15 without', () => {
+describe('incrementalFloorMinutes (AC-22-12, floor 5 sprint-5/13 D11/AC-13-20)', () => {
+  it('is 1 minute with a watermark column, 5 without', () => {
     expect(incrementalFloorMinutes(true)).toBe(1);
-    expect(incrementalFloorMinutes(false)).toBe(15);
+    expect(incrementalFloorMinutes(false)).toBe(5);
   });
 });
 
-describe('validateIncrementalMinutes (AC-22-12)', () => {
+describe('validateIncrementalMinutes (AC-22-12, floor 5 sprint-5/13 D11/AC-13-20)', () => {
   it('accepts at the floor and above', () => {
     expect(validateIncrementalMinutes(1, true)).toBeNull();
-    expect(validateIncrementalMinutes(15, false)).toBeNull();
+    expect(validateIncrementalMinutes(5, false)).toBeNull();
     expect(validateIncrementalMinutes(60, false)).toBeNull();
   });
 
   it('rejects below the watermark-driven floor', () => {
     expect(validateIncrementalMinutes(0, true)).toMatch(/at least 1 minute/i);
-    expect(validateIncrementalMinutes(5, false)).toMatch(/at least 15 minutes/i);
+    expect(validateIncrementalMinutes(4, false)).toMatch(/at least 5 minutes/i);
   });
 
   it('rejects a blank/non-finite value', () => {
@@ -507,6 +508,26 @@ describe('brandContractBanner (sprint-5/08, AC-08-33/AC-08-20 S5)', () => {
 
   it('is null when the field is absent (every non-brand task, back-compat fixtures)', () => {
     expect(brandContractBanner({})).toBeNull();
+  });
+});
+
+describe('pushGateWarning (sprint-5/13, AC-13-40)', () => {
+  it('names the real advertised version and the required one for a contract-shut gate', () => {
+    expect(pushGateWarning({ version: 2.4, requiredVersion: 2.5 })).toBe(
+      'Consumer contract 2.4 - stock push needs 2.5.',
+    );
+  });
+
+  it('reads "unknown" when the consumer could not be probed at all', () => {
+    expect(pushGateWarning({ version: null, requiredVersion: 2.5 })).toBe(
+      'Consumer contract unknown - stock push needs 2.5.',
+    );
+  });
+
+  it('states the snapshot prerequisite for the no_snapshot reason', () => {
+    expect(pushGateWarning({ reason: 'no_snapshot' })).toBe(
+      'Push needs a stock snapshot from the last 24 hours.',
+    );
   });
 });
 

@@ -132,7 +132,9 @@ export function sourceKindLabel(kind: string): string {
  * Every entity the open REST API (sprint-5/08) can extract - the six masters
  * with a confirmed `hapi.sorento.cc.cd` payload (UAC Definitions), plus
  * `stock_balance` (sprint-5/10 S5b, AC-10-40) - a reduced (item, location)
- * balance, pull-only (see `AC_PULL_ONLY_ENTITY_TYPES`). An `http` company's
+ * balance, pull-only by default (its push gate is decided by the backend's
+ * `pushGate` on the task, sprint-5/13 D18 - never a hardcoded entity list
+ * here). An `http` company's
  * "Add entity" picker offers exactly this set; a `db`/`api` company's task
  * Source tab offers it too when toggled to API + a no-auth connection.
  *
@@ -223,26 +225,22 @@ export function entitiesForSourceKind(kind: AutocountSourceKind): string[] {
 
 /**
  * Entities a consumer can pull today (AC-10-15) - the Schedule tab's Delivery
- * toggle renders ONLY for these; every other entity keeps `push` with no
- * Delivery UI at all (foolproof-UI: only offer valid options). `stock_balance`
- * has no push path yet at all (its gate stays shut until the consumer's
- * contract opens it, S7) - see `AC_PULL_ONLY_ENTITY_TYPES`.
+ * toggle renders for these WHEN the task's own `pushGate` is `null` (open);
+ * every other entity keeps `push` with no Delivery UI at all (foolproof-UI:
+ * only offer valid options). `stock_balance`'s Push option additionally
+ * needs the backend's push gate OPEN (sprint-5/13, D18) - whether the toggle
+ * or a read-only badge renders is decided EXCLUSIVELY by `task.pushGate`,
+ * never by an entity list here (`isPullOnly`/`AC_PULL_ONLY_ENTITY_TYPES`
+ * were removed sprint-5/13 - AC-10-15's "opens with no code change" was
+ * false while the frontend still hardcoded this).
  *
  * PARITY-PINNED (S3+): mirrors the backend's `PULL_CAPABLE_ENTITY_TYPES`
  * (`modules/autocount/services/etl_service.py`) once that lands.
  */
 export const AC_PULL_CAPABLE_ENTITY_TYPES: string[] = ['product', 'stock_balance'];
 
-/** Entities whose push gate is shut (AC-10-15) - the Schedule tab shows a
- * read-only "Pull on request" `StatusBadge`, never a toggle. */
-export const AC_PULL_ONLY_ENTITY_TYPES: string[] = ['stock_balance'];
-
 export function isPullCapable(entityType: string): boolean {
   return AC_PULL_CAPABLE_ENTITY_TYPES.includes(entityType);
-}
-
-export function isPullOnly(entityType: string): boolean {
-  return AC_PULL_ONLY_ENTITY_TYPES.includes(entityType);
 }
 
 const DELIVERY_MODE_LABELS: Record<AutocountDeliveryMode, string> = {
