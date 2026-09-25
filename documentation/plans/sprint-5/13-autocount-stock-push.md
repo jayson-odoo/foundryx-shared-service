@@ -459,8 +459,11 @@ only, same cap as `source_refs` (mirror your 2.4 `codes` handling, `ingest.py:80
 - a single malformed `pairs` entry (for example missing `location_code`) -> `failed` with
   `errors` for that ref only; the other refs still resolve.
 
-A malformed `pairs` BODY (not an object, or more than `MAX_BATCH` entries) is a batch-level
-`422 INVALID_BODY` (`{code, message, detail: null}`) and nothing is deleted. Deletions `summary` is
+A `pairs` BODY that is not an object at all is a batch-level `422 INVALID_BODY`
+(`{code, message, detail: null}`) and nothing is deleted. A `pairs` object over `MAX_BATCH` (1000)
+entries is `413 BATCH_TOO_LARGE` - the SAME over-cap response `source_refs`/`codes` already get
+(`ingest.py:807-900`), never a second 422 shape for the identical failure mode. Deletions `summary`
+is
 exactly `{total, deleted, deactivated, not_found, failed}` (agreed with the Sorento peer, same
 session as A3). Never hard-delete a `stock` row and never use `deactivated` (it stays in the
 summary at 0). Idempotent: zeroing an already-zero row is `deleted` again.
@@ -487,7 +490,7 @@ split and return `{records: [{source_ref, qty}], not_found}`.
 
 Recorded in S0: request rows come from the real `CanonicalStockBalance.sink_payload()` over plan-10
 db1 capture values; response verdicts are built to A3/A4 as corrected by the Sorento peer (no live
-SR5 existed yet). `README.md` holds provenance, per-row cases and the correction log. The 11
+SR5 existed yet). `README.md` holds provenance, per-row cases and the correction log. The 12
 fixture files:
 
 | File | Content |
@@ -502,4 +505,5 @@ fixture files:
 | `stock_balances-deletions-response.json` | `deleted`, `not_found` (inactive warehouse with warning, unsynced item, missing pair entry), summary `{total, deleted, deactivated, not_found, failed}` |
 | `stock_balances-deletions-malformed-entry-request.json` | One clean ref beside one whose `pairs` entry lacks `location_code` |
 | `stock_balances-deletions-malformed-entry-response.json` | The malformed entry `failed` with `errors`, the clean ref `deleted` |
-| `stock_balances-deletions-error-422-invalid-body.json` | Batch-level `422 INVALID_BODY` for a malformed `pairs` body |
+| `stock_balances-deletions-error-422-invalid-body.json` | Batch-level `422 INVALID_BODY` when `pairs` is not an object at all |
+| `stock_balances-deletions-error-413-batch-too-large.json` | Batch-level `413 BATCH_TOO_LARGE` when `pairs` is an object over `MAX_BATCH` (1000) entries - same over-cap response `source_refs`/`codes` already get |

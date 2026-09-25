@@ -1,0 +1,5 @@
+{
+  "code": "BATCH_TOO_LARGE",
+  "message": "pairs must not exceed 1000 entries.",
+  "detail": null
+}

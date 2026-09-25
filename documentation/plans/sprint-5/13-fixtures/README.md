@@ -3,7 +3,10 @@
 Recorded for the Sorento peer session's SR5 build and for this lane's own
 `test_s13_stock_sink_payload_parity.py` / `test_s13_stock_push_contract_gate.py`
 parity assertions. Companion to plan `13-autocount-stock-push.md` Appendix A
-(the SR5 brief) - Appendix A7 lists these seven files.
+(the SR5 brief) - Appendix A7 originally listed seven files; SR5a's
+2026-09-26 review split the malformed-`pairs` error fixture into two (422
+`INVALID_BODY` vs 413 `BATCH_TOO_LARGE`, see below), so this directory now
+holds eight.
 
 **No live network was used.** Every request-side row is built by running the
 REAL `modules.autocount.canonical.masters.CanonicalStockBalance.sink_payload()`
@@ -104,10 +107,19 @@ def row(item_code, item_description, location_code, uom_code, qty):
   value Sorento's summary itself carries). Pins AC-13-05.
 
 - **`stock_balances-deletions-error-422-invalid-body.json`** - the
-  BODY-LEVEL failure shape when `pairs` itself is malformed (not an object,
-  or over 1000 entries): `422 {code: "INVALID_BODY", message, detail: null}`
-  for the WHOLE batch - distinct from a single malformed `pairs` ENTRY
-  (below), which fails only that one ref.
+  BODY-LEVEL failure shape when `pairs` is not an object at all: `422
+  {code: "INVALID_BODY", message, detail: null}` for the WHOLE batch -
+  distinct from a single malformed `pairs` ENTRY (below), which fails only
+  that one ref.
+
+- **`stock_balances-deletions-error-413-batch-too-large.json`** - the
+  BODY-LEVEL failure shape when `pairs` IS an object but carries over
+  `MAX_BATCH` (1000) entries: `413 {code: "BATCH_TOO_LARGE", message,
+  detail: null}` for the WHOLE batch - the SAME over-cap response
+  `source_refs`/`codes` already get (`ingest.py:807-900`, Appendix A4),
+  never a second 422 shape for the identical failure mode. (2026-09-26
+  correction, Sorento's SR5a build: the original draft conflated "not an
+  object" and "over cap" into one 422 fixture.)
 
 - **`stock_balances-deletions-malformed-entry-request.json`` /
   `-response.json`** - one clean ref (deletes) beside one ref whose `pairs`

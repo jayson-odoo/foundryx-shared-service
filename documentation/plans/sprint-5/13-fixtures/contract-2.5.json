@@ -15,8 +15,12 @@
     "stock_balances"
   ],
   "fields_added": {
-    "2.5": [
-      "stock_balances"
+    "stock_balances": [
+      "item_code",
+      "item_description",
+      "location_code",
+      "uom_code",
+      "qty"
     ]
   },
   "warnings": [
