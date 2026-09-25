@@ -1,10 +1,11 @@
 """"Re-push all" as a deferred (grace-window) action (sprint-5/07 review
 round - D2/D13: no confirm dialog, a server-parked countdown committed by
 the SAME core engine `omnichannel`/`ideation` extend). Covers registration,
-park->lapse->commit end to end (hashes cleared, reconcile armed, actor
-recorded), the permission/tenant-scoping guards at park time, and the
-in-flight guard surfacing as a FAILED commit (never a silent success) with
-the wipe rolled back.
+park->lapse->commit end to end (hashes INVALIDATED - plan 13 review round 2
+S1 fix, never deleted - reconcile armed, actor recorded), the
+permission/tenant-scoping guards at park time, and the in-flight guard
+surfacing as a FAILED commit (never a silent success) with the
+invalidation rolled back.
 
 Rig/consumer/auth helpers are the ones `test_autocount_etl_task_routes`
 already drives an activated `sql_db` task with (same precedent as
@@ -151,7 +152,23 @@ def test_commit_clears_hashes_arms_the_reconcile_and_records_the_actor(
     result = _park_and_lapse(db, admin, entity_id)
     assert result.status == "committed", result.error_text
 
-    assert _row_hash_count(db, company_id=company_id) == 0
+    # plan 13 review round 2 S1 fix - Re-push (this action's own commit
+    # callback) now INVALIDATES `ac_row_hash` rows (`RowHashRepository.
+    # invalidate_all`), never DELETES them: every ref stays KNOWN, so a
+    # genuine delete is still correctly derived on the next reconcile.
+    # The row COUNT is therefore unchanged; only the stored hash value is
+    # no longer a genuine content hash.
+    assert _row_hash_count(db, company_id=company_id) == 2
+    hashes = {
+        row.source_ref: row.row_hash
+        for row in db.query(AcRowHash).filter(
+            AcRowHash.tenant_id == DEFAULT_TENANT_ID,
+            AcRowHash.company_id == company_id,
+            AcRowHash.entity_type == ENTITY_CUSTOMER,
+        )
+    }
+    assert set(hashes) == {"a1", "a2"}
+    assert all(value != "h" for value in hashes.values())
 
     config = db.get(AcEntityConfig, entity_id)
     assert config.next_reconcile_at is not None, "an active task must arm the next reconcile"

@@ -19,6 +19,7 @@ from typing import Any, Dict, List
 import httpx
 import pytest
 
+from app.models import DEFAULT_TENANT_ID
 from modules.autocount.canonical.masters import CanonicalStockBalance, ENTITY_STOCK_BALANCE
 from modules.autocount.sinks_sorento import SorentoSink, SorentoSinkError
 
@@ -313,3 +314,185 @@ def test_delete_batch_pairs_kwarg_omitted_for_a_non_pair_keyed_task():
     sink.delete_batch(["AED_SORENTO:X|MBS"])
     sent = json.loads(calls[0].content)
     assert "pairs" not in sent
+
+
+# ── review round 2 S7 fix: ``pairs_from_refs`` as its own pure function ─────
+
+
+def test_pairs_from_refs_recovers_a_good_ref():
+    from modules.autocount.sinks_sorento import pairs_from_refs
+
+    pairs = pairs_from_refs(
+        ["AED_SORENTO:BRACD7455C|MBS"], key_fields=("item_code", "location_code")
+    )
+    assert pairs == {
+        "AED_SORENTO:BRACD7455C|MBS": {"item_code": "BRACD7455C", "location_code": "MBS"}
+    }
+
+
+def test_pairs_from_refs_keeps_an_item_code_containing_a_pipe():
+    """review round 2 NIT fix - ``rsplit("|", 1)`` recovers the pair even
+    when the item code itself carries a ``|`` (a 3+-part suffix), keeping
+    the LAST part as the location code."""
+    from modules.autocount.sinks_sorento import pairs_from_refs
+
+    pairs = pairs_from_refs(
+        ["AED_SORENTO:BR|ACD|MBS"], key_fields=("item_code", "location_code")
+    )
+    assert pairs == {"AED_SORENTO:BR|ACD|MBS": {"item_code": "BR|ACD", "location_code": "MBS"}}
+
+
+def test_pairs_from_refs_omits_a_ref_with_an_empty_part():
+    from modules.autocount.sinks_sorento import pairs_from_refs
+
+    pairs = pairs_from_refs(
+        ["AED_SORENTO:ITEM|", "AED_SORENTO:|MBS", "AED_SORENTO:NOPIPE"],
+        key_fields=("item_code", "location_code"),
+    )
+    assert pairs == {}
+
+
+def test_pairs_from_refs_returns_empty_for_the_wrong_key_fields():
+    from modules.autocount.sinks_sorento import pairs_from_refs
+
+    pairs = pairs_from_refs(
+        ["AED_SORENTO:BRACD7455C|MBS"], key_fields=("ItemCode",)
+    )
+    assert pairs == {}
+    pairs2 = pairs_from_refs(
+        ["AED_SORENTO:BRACD7455C|MBS"], key_fields=("item_code",)
+    )
+    assert pairs2 == {}
+
+
+# ── review round 2 S7 fix: an auto-push delete reaches the sink with pairs ──
+
+
+def test_auto_push_delete_intent_reaches_sorento_with_chunk_restricted_pairs(
+    session_factory, monkeypatch
+):
+    """review round 2 S7 fix - end to end through ``SyncService.auto_push``
+    (never a direct ``sink.delete_batch`` call): a stock delete intent's
+    ``pairs`` body arrives at a real ``SorentoSink`` over an httpx
+    ``MockTransport``, chunk-restricted (never the whole map) when the
+    batch spans more than one chunk. Mirrors ``tests/test_s10_s3_product_
+    delete_codes_wiring.py``'s own rig pattern, for stock + ``pairs``."""
+    from app.config import settings
+    from app.models.background_job import JOB_DONE, BackgroundJob
+    from app.models.connection import Connection
+    from app.secrets import encrypt_secret
+    from modules.autocount.models import (
+        ETL_STATUS_ACTIVE,
+        STAGED,
+        STAGED_OP_DELETE,
+        AcCompany,
+        AcEntityConfig,
+        AcStagedRecord,
+    )
+    from modules.autocount.services.sync_service import SyncService
+    from modules.autocount.sync import AUTOCOUNT_SYNC
+
+    # A tiny batch size forces 3 refs into 2 chunks (2 + 1), so the "never
+    # the WHOLE map" half of the claim is actually exercised.
+    monkeypatch.setattr(settings, "autocount_sink_batch_size", 2)
+
+    db = session_factory()
+    api_conn = Connection(
+        tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="api",
+        config_json={"baseUrl": "https://hapi.sorento.cc.cd/api/db1", "auth": "none"},
+        credentials_json=None, is_active=True,
+    )
+    db.add(api_conn)
+    sorento_conn = Connection(
+        tenant_id=DEFAULT_TENANT_ID, provider="sorento", type="consumer", name="Sorento",
+        config_json={"baseUrl": "https://sorento.example.com"},
+        credentials_json=encrypt_secret({"apiKey": "k"}), is_active=True,
+    )
+    db.add(sorento_conn)
+    db.flush()
+    company = AcCompany(
+        tenant_id=DEFAULT_TENANT_ID, connection_id=api_conn.id, database_name="AED_SORENTO",
+        company_name="Sorento", name="Sorento", is_active=True,
+        sink_impl="sorento", sink_connection_id=sorento_conn.id, sorento_company_code="SRT",
+    )
+    db.add(company)
+    db.flush()
+    config = AcEntityConfig(
+        tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_STOCK_BALANCE,
+        source_impl="autocount_http", etl_status=ETL_STATUS_ACTIVE,
+        source_config={"keyFields": ["item_code", "location_code"]},
+    )
+    db.add(config)
+    db.commit()
+
+    job = BackgroundJob(tenant_id=DEFAULT_TENANT_ID, type=AUTOCOUNT_SYNC, status=JOB_DONE)
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    refs = [
+        "AED_SORENTO:A|MBS", "AED_SORENTO:B|MBS", "AED_SORENTO:C|MBS",
+    ]
+    for ref in refs:
+        db.add(
+            AcStagedRecord(
+                tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+                entity_type=ENTITY_STOCK_BALANCE, job_id=job.id,
+                source_ref=ref, doc_no=None, canonical_json=None,
+                status=STAGED, op=STAGED_OP_DELETE,
+            )
+        )
+    db.commit()
+
+    calls: List[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.endswith("/external/contract"):
+            return httpx.Response(
+                200, json={"version": "2.5", "entities": ["stock_balances"]}
+            )
+        body = json.loads(request.content or b"{}")
+        sent_refs = body.get("source_refs") or []
+        return httpx.Response(
+            200,
+            json={
+                "summary": {
+                    "total": len(sent_refs), "deleted": len(sent_refs),
+                    "deactivated": 0, "not_found": 0, "failed": 0,
+                },
+                "records": [
+                    {"source_ref": ref, "outcome": "deleted", "entity_id": "e-1"}
+                    for ref in sent_refs
+                ],
+            },
+        )
+
+    import modules.autocount.services.company_service as company_module
+    from modules.autocount.sinks_sorento import sorento_sink_from_connection as real
+
+    def fake(config_json, credentials, *, entity_type, company_code=None, transport=None, **kw):
+        return real(
+            config_json, credentials, entity_type=entity_type, company_code=company_code,
+            transport=httpx.MockTransport(handle), **kw,
+        )
+
+    monkeypatch.setattr(company_module, "sorento_sink_from_connection", fake)
+
+    SyncService(db).auto_push(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, job_id=job.id)
+
+    delete_calls = [
+        c for c in calls if c.url.path.endswith("/deletions")
+    ]
+    assert delete_calls, "expected at least one deletions POST"
+    assert len(delete_calls) >= 2, "3 refs at batch_size=2 must span 2+ chunks"
+    seen_refs: set = set()
+    for call in delete_calls:
+        body = json.loads(call.content)
+        sent = body.get("source_refs") or []
+        pairs = body.get("pairs") or {}
+        # chunk-restricted: pairs carries ONLY this chunk's own refs.
+        assert set(pairs) <= set(sent)
+        assert set(pairs) == set(sent), "every stock ref recovers a pair"
+        seen_refs.update(sent)
+    assert seen_refs == set(refs)

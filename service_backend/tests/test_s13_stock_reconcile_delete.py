@@ -214,15 +214,13 @@ def test_delete_guard_still_fires_on_mass_disappearance(rig):
 # ── AC-13-12: EXCLUDED_NONZERO fails closed before staging (new, no code) ──
 
 
-def test_excluded_nonzero_constant_not_yet_exposed_by_sync():
-    """The plan names a new ``error_code = "EXCLUDED_NONZERO"`` in
-    ``sync.py`` - nothing there emits or names it yet."""
+def test_excluded_nonzero_is_a_public_constant_on_sync():
+    """Review round 2 B2 fix - the S0 red test above was an absence-pin,
+    now a positive guard: ``sync.EXCLUDED_NONZERO`` is the SAME value the
+    run-level test below asserts against, so the two can never drift."""
     import modules.autocount.sync as sync_module
 
-    assert not hasattr(sync_module, "EXCLUDED_NONZERO"), (
-        "if this now exists, the run-level test below should be checked "
-        "against it directly instead of the literal string"
-    )
+    assert sync_module.EXCLUDED_NONZERO == "EXCLUDED_NONZERO"
 
 
 def test_a_run_with_an_unresolved_nonzero_rate_fails_before_staging(session_factory, monkeypatch):
@@ -354,10 +352,25 @@ def test_a_zero_measure_exclusion_never_blocks_the_run_control(session_factory, 
 # ── AC-13-13: truncation never deletes ──────────────────────────────────────
 
 
-def test_extract_is_complete_helper_not_yet_defined():
-    import modules.autocount.sync as sync_module
+def test_extract_is_complete_is_public_and_shared_with_the_snapshot_build():
+    """Review round 2 B2 fix - the S0 red test above was an absence-pin,
+    now a positive guard: ``sync.extract_is_complete`` is PUBLIC (no
+    leading underscore) and is the SAME rule `_run_pull_snapshot` applies
+    unchanged for its own ``complete`` - a bare-array (``ENVELOPE_LIST``)
+    result is unconditionally complete, a paged one needs a matching
+    ``reported_total``."""
+    from modules.autocount.http_source.envelope import ENVELOPE_LIST
+    from modules.autocount.sources import FetchResult
+    from modules.autocount.sync import extract_is_complete
 
-    assert not hasattr(sync_module, "extract_is_complete")
+    assert extract_is_complete(FetchResult(envelope_kind=ENVELOPE_LIST)) is True
+    assert extract_is_complete(FetchResult(envelope_kind=None, reported_total=None)) is False
+    assert (
+        extract_is_complete(
+            FetchResult(envelope_kind=None, reported_total=2, rows_scanned=2)
+        )
+        is True
+    )
 
 
 def test_an_unverified_paged_walk_stages_no_deletes_but_still_stages_upserts(
@@ -440,3 +453,72 @@ def test_an_unverified_paged_walk_stages_no_deletes_but_still_stages_upserts(
         .all()
     )
     assert len(upserts) == 1, "upserts still stage even when the walk is unverified"
+
+
+def test_an_unverified_walk_with_suppressed_deletes_writes_one_activity_note(
+    session_factory, monkeypatch
+):
+    """plan 13 review round 2 S6 fix - AC-13-13's own "one activity note
+    names the unverified endpoint(s)" restored, ONLY when a delete was
+    actually withheld this run (non-empty ``delete_refs`` AND an
+    unverified walk - the SAME scenario as the test above, which has one
+    genuinely stale ref). The note must never start with "pull snapshot"
+    or contain "could not be verified" (`_run_pull_snapshot`'s own,
+    differently-worded note) - the plan-10 guard
+    (`test_s10_s3_review1_lookup_complete.py`) pins that phrasing to the
+    snapshot build only."""
+    import modules.autocount.http_source.source as http_source_module
+    from app.jobs.service import JobService
+    from app.models.integration_activity import IntegrationActivity
+    from modules.autocount.http_source.client import HttpApiClient
+    from modules.autocount.sync import AUTOCOUNT_SYNC, run_autocount_sync
+
+    db = session_factory()
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    _flat_config(db, company, conn)
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE,
+        {"AED_SORENTO:STALE|MBS": "a" * 64}, seen_at=NOW,
+    )
+    db.commit()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        if page >= 2:
+            return httpx.Response(200, json={"Page": page, "PageSize": 1000, "Data": []})
+        return httpx.Response(
+            200,
+            json={
+                "Page": 1, "PageSize": 1000,
+                "Data": [{"item_code": "FRESH", "location_code": "MBS", "qty": 9}],
+            },
+        )
+
+    stub_transport = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        http_source_module, "HttpApiClient",
+        lambda base_url, **kw: HttpApiClient(base_url, transport=stub_transport),
+    )
+
+    job = JobService(db).create(
+        type=AUTOCOUNT_SYNC, tenant_id=DEFAULT_TENANT_ID,
+        payload={"companyId": company.id, "entityType": ENTITY_STOCK_BALANCE, "mode": "manual"},
+    )
+    run_autocount_sync(db, job)
+
+    notes = (
+        db.query(IntegrationActivity)
+        .filter(
+            IntegrationActivity.tenant_id == DEFAULT_TENANT_ID,
+            IntegrationActivity.external_ref == company.database_name,
+        )
+        .all()
+    )
+    withheld_notes = [n for n in notes if "withheld" in (n.error_message or "")]
+    assert len(withheld_notes) == 1, notes
+    note = withheld_notes[0]
+    assert note.operation == f"sync {ENTITY_STOCK_BALANCE}"
+    assert not note.operation.startswith("pull snapshot")
+    assert "could not be verified" not in (note.error_message or "")
+    assert "the main walk" in note.error_message

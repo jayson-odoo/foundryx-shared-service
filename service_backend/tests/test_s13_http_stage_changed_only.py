@@ -32,7 +32,12 @@ from app.models import DEFAULT_TENANT_ID
 from app.models.connection import Connection
 from modules.autocount.canonical.masters import ENTITY_PRODUCT
 from modules.autocount.http_source.client import HttpApiClient
-from modules.autocount.models import AcCompany, AcStagedRecord
+from modules.autocount.models import (
+    AcCompany,
+    AcStagedRecord,
+    AcSyncRun,
+    STAGED_OP_DELETE,
+)
 from modules.autocount.repositories import EntityConfigRepository
 from modules.autocount.services.etl_service import EtlService
 from modules.autocount.sync import AUTOCOUNT_SYNC, run_autocount_sync
@@ -119,7 +124,12 @@ def _staged_rows(db, company_id: str):
     )
 
 
-def _run(db, company_id: str, handler) -> None:
+def _run(db, company_id: str, handler):
+    """Returns the created job (review round 2 B3 fix) so a caller that
+    needs to identify ITS OWN run - never the whole company's run history,
+    which an auto-pushing task's own logging sink can mutate row STATUS
+    on within this very call - can filter ``AcSyncRun``/``AcStagedRecord``
+    by this job's id."""
     import modules.autocount.http_source.source as http_source_module
 
     stub_transport = httpx.Client(transport=httpx.MockTransport(handler))
@@ -133,6 +143,7 @@ def _run(db, company_id: str, handler) -> None:
             payload={"companyId": company_id, "entityType": ENTITY_PRODUCT, "mode": "manual"},
         )
         run_autocount_sync(db, job)
+        return job
     finally:
         http_source_module.HttpApiClient = orig
 
@@ -160,23 +171,32 @@ def _bare_array(rows):
     return handler
 
 
-# ── surface existence (collection-safe pins) ────────────────────────────────
+# ── surface existence (review round 2 B2 fix: the clean, POST-coder shape) ──
+#
+# The S0 red tests here were absence-pins ("this surface does not exist
+# yet") - once the surface exists they are dead markers, not guards, so
+# they are replaced by their positive twins: ``changed_refs`` is a
+# DECLARED ``FetchResult`` field (never a dynamic ``getattr`` target) and
+# ``_stage_documents`` accepts it directly (never the closure-wrapping
+# ``is_changed`` callable an earlier draft used).
 
 
-def test_fetch_result_has_no_changed_refs_field_yet():
+def test_fetch_result_declares_a_changed_refs_field():
     from modules.autocount.sources import FetchResult
 
     result = FetchResult()
-    assert not hasattr(result, "changed_refs")
+    assert hasattr(result, "changed_refs")
+    assert result.changed_refs is None
 
 
-def test_stage_documents_rejects_changed_refs_kwarg_today():
+def test_stage_documents_accepts_a_changed_refs_set_kwarg():
     import inspect
 
     from modules.autocount.sync import _stage_documents
 
     params = inspect.signature(_stage_documents).parameters
-    assert "changed_refs" not in params
+    assert "changed_refs" in params
+    assert "is_changed" not in params
     # ``ref_fn`` already exists (plan sprint-5/03 S2, AC-03-11/12) - only
     # ``changed_refs`` is new for this plan.
     assert "ref_fn" in params
@@ -248,14 +268,65 @@ def test_c_repush_clears_hashes_and_restages_every_record(rig):
     db.commit()
 
     EtlService(db).repush_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
-    _run(db, company.id, _bare_array([_item("A1"), _item("A2")]))
-    newly_staged = [
-        r for r in _staged_rows(db, company.id) if r.status != STAGED_PUSHED
-    ]
-    assert len(newly_staged) == 2, (
+    # review round 2 B3 fix (sanctioned test edit) - assert on the
+    # Re-push RUN ITSELF, never on ``status != STAGED_PUSHED``: this
+    # task is ACTIVE with a `push` delivery mode, so `run_autocount_sync`
+    # auto-pushes through the company's own (logging) sink WITHIN this
+    # very `_run` call - by the time `_staged_rows` is read back, a
+    # freshly-restaged row has ALREADY been marked `STAGED_PUSHED` again,
+    # same as every prior run's rows, making the two indistinguishable by
+    # status alone. `AcSyncRun.staged_count` for THIS run's own job is the
+    # honest signal Re-push actually re-staged both refs.
+    job = _run(db, company.id, _bare_array([_item("A1"), _item("A2")]))
+    run = db.query(AcSyncRun).filter(AcSyncRun.job_id == job.id).one()
+    assert run.staged_count == 2, (
         "AC-13-11(c): after Re-push every ref reads as changed and must "
         "restage, even with an unchanged canonical value"
     )
+    restaged_rows = [
+        r for r in _staged_rows(db, company.id) if r.job_id == job.id
+    ]
+    assert len(restaged_rows) == 2
+    assert {r.source_ref.split(":")[-1] for r in restaged_rows} == {"A1", "A2"}
+
+
+def test_c2_after_repush_a_pair_already_dropped_still_stages_a_delete(rig):
+    """plan 13 review round 2 S1 fix - Re-push must INVALIDATE hashes
+    (`RowHashRepository.invalidate_all`), never DELETE them
+    (`clear_all`): every ref stays KNOWN through the re-stage, so a pair
+    ALREADY gone by the very first run after Re-push still derives a
+    real delete intent. This is the scenario that tells invalidate and
+    clear-all apart: if `clear_all` had wiped A2's hash outright, this
+    run's `known` population would never have included A2 at all (it
+    was deleted, never re-learned, because A2 never appears in ANY
+    post-Re-push extract to re-persist it) - so no delete could ever be
+    derived for it, a silent, permanent loss."""
+    db, company = rig
+    config = EntityConfigRepository(db).get(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    config.last_preview_at = NOW
+    config.result_columns = ["ItemCode", "Description", "LastModified", "IsActive"]
+    db.commit()
+    EtlService(db).activate_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+
+    _run(db, company.id, _bare_array([_item("A1"), _item("A2")]))
+    from modules.autocount.models import STAGED_PUSHED
+
+    for row in _staged_rows(db, company.id):
+        row.status = STAGED_PUSHED
+    db.commit()
+
+    EtlService(db).repush_task(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    # A2 is ALREADY gone by the very first run after Re-push - the
+    # invalidated (never deleted) hash row for A2 is what lets this run
+    # still recognise it as "previously known, now missing" and derive a
+    # genuine delete intent for it.
+    job = _run(db, company.id, _bare_array([_item("A1")]))
+    deletes = [
+        r for r in _staged_rows(db, company.id)
+        if r.job_id == job.id and r.op == STAGED_OP_DELETE
+    ]
+    assert len(deletes) == 1, deletes
+    assert deletes[0].source_ref.endswith(":A2")
 
 
 # ── (f) control: a sql_db task's staging is untouched ───────────────────────
@@ -379,5 +450,126 @@ def test_f_control_a_sql_db_task_stages_every_record_every_run(session_factory):
         "must stay true, never accidentally narrowed by AC-13-11's HTTP-"
         "only change"
     )
+    db.close()
+    RUNTIME.dispose_all()
+
+
+def test_b1_regression_no_watermark_sql_source_still_stages_a_delete_and_stays_untruncated(
+    session_factory,
+):
+    """plan 13 review round 2 B1 regression test, on the SAME rig as
+    ``test_f`` above - a no-watermark ``sql_db`` task reports NEITHER
+    ``reported_total`` NOR ``envelope_kind`` at all (it has no paging
+    concept whatsoever), so applying ``extract_is_complete``'s own
+    envelope/reported-total rule UNCONDITIONALLY to every source (the
+    regression this test pins) read every such run as UNVERIFIED,
+    suppressing EVERY delete and stamping EVERY run ``truncated = True``
+    regardless of entity or source. A row genuinely removed at source
+    must still stage exactly one delete intent, and the run must NOT be
+    marked truncated."""
+    import sqlalchemy as sa
+    from sqlalchemy.pool import StaticPool
+
+    from app.secrets import encrypt_secret
+    from modules.autocount.canonical.masters import ENTITY_CUSTOMER
+    from modules.autocount.models import AcFieldMapping, AcSyncRun, STAGED_OP_DELETE
+    from modules.autocount.repositories import SyncRunRepository
+    from modules.autocount.services.company_service import CompanyService
+    from modules.autocount.sql_source.runtime import RUNTIME
+
+    db = session_factory()
+    engine = sa.create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    with engine.begin() as conn_:
+        conn_.exec_driver_sql("CREATE TABLE debtor (acc_no TEXT PRIMARY KEY, company_name TEXT)")
+        conn_.exec_driver_sql("INSERT INTO debtor VALUES ('300-A001', 'Acme')")
+        conn_.exec_driver_sql("INSERT INTO debtor VALUES ('300-A002', 'Beta')")
+
+    sql_conn = Connection(
+        tenant_id=DEFAULT_TENANT_ID, provider="sql_database", type="erp", name="db",
+        config_json={"dbType": "postgresql", "host": "x", "port": "5432", "database": "d", "username": "u"},
+        credentials_json=encrypt_secret({"password": "p"}), is_active=True,
+    )
+    db.add(sql_conn)
+    db.flush()
+    RUNTIME.put_engine(sql_conn.id, engine)
+    api_conn = Connection(
+        tenant_id=DEFAULT_TENANT_ID, provider="autocount", type="erp", name="api",
+        config_json={"baseUrl": "https://ac.example.com", "userId": "ADMIN"},
+        credentials_json=encrypt_secret({"appId": "app-1", "password": "secret"}), is_active=True,
+    )
+    db.add(api_conn)
+    db.flush()
+    company = AcCompany(
+        tenant_id=DEFAULT_TENANT_ID, connection_id=api_conn.id, database_name="AED_X",
+        company_name="X", name="X", is_active=True, sorento_company_code="X",
+    )
+    db.add(company)
+    db.flush()
+    CompanyService(db).seed_company_defaults(DEFAULT_TENANT_ID, company.id)
+    db.commit()
+
+    for row in (
+        db.query(AcFieldMapping)
+        .filter(
+            AcFieldMapping.tenant_id == DEFAULT_TENANT_ID,
+            AcFieldMapping.company_id == company.id,
+            AcFieldMapping.entity_type == ENTITY_CUSTOMER,
+        )
+        .all()
+    ):
+        flat = {"code": "acc_no", "name": "company_name"}
+        if row.canonical_field in flat:
+            row.source_path = flat[row.canonical_field]
+        else:
+            row.is_enabled = False
+    db.commit()
+
+    config = EntityConfigRepository(db).get(DEFAULT_TENANT_ID, company.id, ENTITY_CUSTOMER)
+    config.source_impl = "sql_db"
+    config.source_config = {
+        "connectionId": sql_conn.id, "query": "SELECT acc_no, company_name FROM debtor",
+        "keyColumns": ["acc_no"], "watermarkColumn": None, "comparedColumns": [],
+        "incrementalMinutes": 15, "reconcileMode": "dailyAt", "reconcileAt": "02:00",
+    }
+    config.result_columns = ["acc_no", "company_name"]
+    db.commit()
+
+    def _sql_run():
+        job = JobService(db).create(
+            type=AUTOCOUNT_SYNC, tenant_id=DEFAULT_TENANT_ID,
+            payload={"companyId": company.id, "entityType": ENTITY_CUSTOMER, "mode": "manual"},
+        )
+        run_autocount_sync(db, job)
+        return job
+
+    job1 = _sql_run()
+    run1 = SyncRunRepository(db).get_for_job(DEFAULT_TENANT_ID, company.id, job1.id)
+    assert run1.truncated is False
+
+    with engine.begin() as c2:
+        c2.exec_driver_sql("DELETE FROM debtor WHERE acc_no='300-A002'")
+
+    job2 = _sql_run()
+    run2 = SyncRunRepository(db).get_for_job(DEFAULT_TENANT_ID, company.id, job2.id)
+    assert run2.truncated is False, (
+        "a no-watermark SQL run must never be marked truncated - it has no "
+        "paging/total-count concept for `extract_is_complete`'s rule to "
+        "even apply to"
+    )
+    deletes = (
+        db.query(AcStagedRecord)
+        .filter(
+            AcStagedRecord.tenant_id == DEFAULT_TENANT_ID,
+            AcStagedRecord.company_id == company.id,
+            AcStagedRecord.entity_type == ENTITY_CUSTOMER,
+            AcStagedRecord.job_id == job2.id,
+            AcStagedRecord.op == STAGED_OP_DELETE,
+        )
+        .all()
+    )
+    assert len(deletes) == 1, deletes
+    assert deletes[0].source_ref.endswith(":300-A002")
     db.close()
     RUNTIME.dispose_all()

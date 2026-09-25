@@ -804,6 +804,26 @@ def test_a_vendor_error_is_not_flagged_as_a_truncation(db, transports):
     assert run.outcome == RUN_FAILED and run.truncated is False
 
 
+def test_b1_regression_vendor_api_source_run_is_never_marked_truncated(db, transports):
+    """plan 13 review round 2 B1 regression test - the vendor GRN API
+    source (``AutoCountReadSource``) reports ``reported_total`` for an
+    UNRELATED, non-paged reason (a per-row ``RecordCount`` marker, almost
+    always absent) and never sets ``envelope_kind`` at all - so applying
+    ``extract_is_complete``'s own envelope/reported-total rule
+    UNCONDITIONALLY to this source's result (the regression this test
+    pins) read every ordinary, successful sync as UNVERIFIED and stamped
+    ``run.truncated = True`` on every single one of them. A clean run
+    with no truncation signal from the vendor must stay `truncated =
+    False` - `FetchResult.walk_verified` (declared, `None` for this
+    source = "not applicable") is what fixes it."""
+    company = _company(db, transports, reads=[[_grn("1"), _grn("2")]])
+    job = _run_sync(db, company)
+    assert job.status == JOB_NEEDS_REVIEW
+    run = SyncRunRepository(db).get_for_job(DEFAULT_TENANT_ID, company.id, job.id)
+    assert run.outcome != RUN_FAILED
+    assert run.truncated is False
+
+
 def test_the_watermark_holds_when_the_fetch_fails(db, transports):
     company = _company(db, transports)
     transports[company.connection_id].reads.append(

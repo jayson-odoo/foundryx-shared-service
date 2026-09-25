@@ -440,6 +440,9 @@ def test_get_etl_task_returns_draft_defaults_for_a_configured_entity(client, ses
         # contract-gated entity (only `brand`/`product` are), so this is
         # always None for it.
         "contractGate": None,
+        # plan 13 (AC-13-30) review round 2 S8 fix - `pushGate` is `null`
+        # for every entity except `stock_balance` (D18).
+        "pushGate": None,
         # sprint-5/10 (AC-10-10) - every task reads `push` until switched.
         "deliveryMode": "push",
         # sprint-5/10 review round 4 (SF-4) - the combine step's own

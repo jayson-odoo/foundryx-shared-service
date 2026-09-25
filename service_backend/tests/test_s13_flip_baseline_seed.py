@@ -70,12 +70,14 @@ def _company(db, connection_id: str) -> AcCompany:
     return company
 
 
-def _ready_snapshot(db, company, entity_type: str, refs, *, expires_in_hours=24) -> AcPullSnapshot:
+def _ready_snapshot(
+    db, company, entity_type: str, refs, *, expires_in_hours=24, extracted_at=NOW
+) -> AcPullSnapshot:
     snapshot = AcPullSnapshot(
         id=str(uuid.uuid4()), tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
         entity_type=entity_type, company_code=company.sorento_company_code,
         status=PULL_SNAPSHOT_STATUS_READY, record_count=len(refs), complete=True,
-        extracted_at=NOW, expires_at=NOW + timedelta(hours=expires_in_hours),
+        extracted_at=extracted_at, expires_at=extracted_at + timedelta(hours=expires_in_hours),
     )
     repo = PullSnapshotRepository(db)
     repo.add(snapshot)
@@ -109,9 +111,18 @@ def rig(session_factory, monkeypatch):
 # ── ready_source_refs does not exist yet ────────────────────────────────────
 
 
-def test_ready_source_refs_not_yet_implemented(session_factory):
+def test_ready_source_refs_and_has_ready_are_implemented(session_factory):
+    """Review round 2 B2 fix - the S0 red test above was an absence-pin,
+    now a positive guard: both repository methods exist (`ready_source_
+    refs`, the full union; `has_ready`, the EXISTS-only twin `_push_gate`
+    calls on every task-view GET), and agree on an empty union."""
     db = session_factory()
-    assert not hasattr(PullSnapshotRepository(db), "ready_source_refs")
+    repo = PullSnapshotRepository(db)
+    assert hasattr(repo, "ready_source_refs")
+    assert hasattr(repo, "has_ready")
+    now = datetime.now(timezone.utc)
+    assert repo.ready_source_refs(DEFAULT_TENANT_ID, "nonexistent", "product", now) == {}
+    assert repo.has_ready(DEFAULT_TENANT_ID, "nonexistent", "product", now) is False
 
 
 # ── AC-13-32: baseline seed on pull -> push, union of READY snapshots ──────
@@ -138,6 +149,41 @@ def test_seed_row_hash_is_the_sentinel_naming_the_snapshot(rig):
     )
     hashes = RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE)
     assert hashes["AED_SORENTO:A|MBS"] == f"seed:{snapshot.id}"
+
+
+def test_a_ref_in_two_snapshots_deterministically_keeps_the_latest_sentinel(rig):
+    """Review round 2 B2 fix - ``ready_source_refs`` visits snapshots
+    oldest-``extracted_at``-FIRST (never bare DB/dict-iteration order), so
+    a ref present in more than one READY snapshot deterministically keeps
+    the LATEST one's sentinel, reproducible across runs/backends."""
+    db, company = rig
+    older = _ready_snapshot(
+        db, company, ENTITY_STOCK_BALANCE, ["AED_SORENTO:A|MBS"],
+        extracted_at=NOW - timedelta(hours=2),
+    )
+    newer = _ready_snapshot(
+        db, company, ENTITY_STOCK_BALANCE, ["AED_SORENTO:A|MBS"], extracted_at=NOW,
+    )
+    assert older.id != newer.id
+
+    EtlService(db).set_delivery_mode(
+        DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, DELIVERY_MODE_PUSH
+    )
+    hashes = RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE)
+    assert hashes["AED_SORENTO:A|MBS"] == f"seed:{newer.id}"
+
+
+def test_has_ready_agrees_with_ready_source_refs_on_a_non_empty_union(rig):
+    """Review round 2 B2 fix - `has_ready` (the EXISTS-only read `_push_
+    gate` uses on every task-view GET) must never disagree with
+    `ready_source_refs` (the full union `_seed_baseline_if_empty` uses)
+    about whether a snapshot exists to flip from."""
+    db, company = rig
+    now = datetime.now(timezone.utc)
+    repo = PullSnapshotRepository(db)
+    assert repo.has_ready(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, now) is False
+    _ready_snapshot(db, company, ENTITY_STOCK_BALANCE, ["AED_SORENTO:A|MBS"])
+    assert repo.has_ready(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, now) is True
 
 
 def test_flip_never_seeds_a_task_that_already_holds_hash_rows(rig):
@@ -243,6 +289,13 @@ def test_products_flip_seeds_from_a_ready_snapshot_when_one_exists(session_facto
             tenant_id=DEFAULT_TENANT_ID, company_id=company.id, entity_type=ENTITY_PRODUCT,
             source_impl="sql_db",
             source_config={"connectionId": conn.id, "query": "SELECT 1 AS code", "keyColumns": ["code"]},
+            # plan 13 review round 2 S5 fix (rig correction) - EXPLICIT,
+            # never left on the bare column ``server_default`` of
+            # ``push``: ``set_delivery_mode`` now early-returns as a no-op
+            # when the requested mode already matches the current one, so
+            # a config that was never genuinely in `pull` must not
+            # masquerade as a real `pull -> push` flip.
+            delivery_mode=DELIVERY_MODE_PULL,
         )
     )
     db.commit()
