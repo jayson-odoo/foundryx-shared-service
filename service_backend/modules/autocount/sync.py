@@ -30,7 +30,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -70,7 +70,6 @@ from .http_source.combine import (
     CombineDropError,
     apply_pull_metadata_map,
     excluded_row_for_mapping_failure,
-    _json_safe_row,
 )
 from .http_source.envelope import ENVELOPE_LIST
 from .http_source.errors import HttpSourceError
@@ -164,6 +163,12 @@ logger = logging.getLogger("foundryx.autocount")
 
 # The registered ``background_jobs.type``.
 AUTOCOUNT_SYNC = "autocount_sync"
+
+# plan 13 (D7, AC-13-12) review round 2 B2 fix - a PUBLIC, importable
+# constant (the S0 red test's own absence-pin named it), never a bare
+# string literal repeated at the one ``_fail(..., error_code=...)`` call
+# site that raises it.
+EXCLUDED_NONZERO = "EXCLUDED_NONZERO"
 
 # Vendor entity per canonical entity - the URL grammar is uniform
 # (``POST /api/{Entity}/Get{Entity}``), only the name varies.
@@ -759,16 +764,45 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
                 )
                 _fail(
                     db, service, job, run, watermark_row, message, started,
-                    config=config, error_code="EXCLUDED_NONZERO",
+                    config=config, error_code=EXCLUDED_NONZERO,
                 )
                 return
 
     # ── truncation never deletes (D8, AC-13-13) ─────────────────────────────
-    # A full-extract walk that is not VERIFIED complete (the SAME rule
-    # ``_run_pull_snapshot`` applies to its own ``complete``) stages every
-    # upsert it fetched (still true values) but NO delete intent - an
-    # unverified walk cannot prove a ref genuinely missing from it is gone.
-    extract_complete = _extract_is_complete(result)
+    # A full-extract walk that is not VERIFIED complete stages every upsert
+    # it fetched (still true values) but NO delete intent - an unverified
+    # walk cannot prove a ref genuinely missing from it is gone. Review
+    # round 2 B1 fix: ``_push_walk_is_complete`` (source-DECLARED
+    # ``walk_verified``), never ``extract_is_complete``'s own
+    # envelope/reported-total rule applied unconditionally - see that
+    # helper's docstring for the regression this replaces.
+    extract_complete = _push_walk_is_complete(result)
+    # plan 13 (AC-13-13, S6 fix) - ONE activity note, ONLY when this run
+    # actually suppressed a genuine delete intent (a non-empty
+    # ``delete_refs`` AND an unverified walk) - an unverified walk with
+    # nothing to delete this run needs no note (`run.truncated` alone
+    # already flags it). Named distinctly from ``_run_pull_snapshot``'s
+    # OWN note (`operation="pull snapshot {entity}"`,
+    # ``"could not be verified"``) so the plan-10 guard
+    # (`test_s10_s3_review1_lookup_complete.py`) - which asserts the push
+    # path NEVER writes a pull-snapshot-flavoured note - stays green.
+    if not extract_complete and result.delete_refs:
+        names = ", ".join(_unverified_endpoint_names(result)) or "this walk"
+        record_activity(
+            db,
+            tenant_id=tenant_id,
+            operation=f"sync {entity_type}",
+            status=ACTIVITY_ERROR,
+            trace_id=trace_id,
+            external_ref=company.database_name,
+            latency_ms=int((time.monotonic() - started) * 1000),
+            error_message=(
+                f"This run's walk did not verify as fully scanned against "
+                f"{names}, so its {len(result.delete_refs)} delete intent(s) "
+                f"were withheld this run (every upsert still staged). The "
+                f"next fully-scanned walk re-derives any genuine deletion."
+            ),
+        )
 
     # …and the domain-level summary of the run, sharing the trace. The two are
     # complementary, not duplicates: the legs say what went over the wire, this
@@ -862,15 +896,14 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         # is what stops company B's ``AutoKey=1`` overwriting company A's.
         database_name=company.database_name,
     )
-    # plan 13 (AC-13-11, D6) - the changed-set an HTTP source counted this
-    # run (added/hash-changed), attached DYNAMICALLY by ``HttpApiSource.
-    # fetch_changes`` (never a declared ``FetchResult`` field - every other
-    # source's result simply carries no such attribute at all, so
-    # ``getattr`` below reads ``None`` for it, the exact "not applicable"
-    # signal ``_stage_documents`` treats as "stage everything", byte-
-    # identical to before this plan for the SQL path).
-    changed_refs = getattr(result, "changed_refs", None)
-    is_changed = (lambda ref: ref in changed_refs) if changed_refs is not None else None
+    # plan 13 (AC-13-11, D6) review round 2 B2 fix - the changed-set an HTTP
+    # source counted this run (added/hash-changed) is now a DECLARED
+    # ``FetchResult.changed_refs`` field, read straight off ``result``
+    # (never ``getattr`` on a dynamically-bolted-on attribute). ``None`` for
+    # every source that carries no changed-set concept (the SQL path, the
+    # vendor GRN API) - the exact "not applicable" signal ``_stage_
+    # documents`` treats as "stage everything", byte-identical to before
+    # this plan for those sources.
     staged_count, failed_count, _failed_refs, unchanged_skipped = _stage_documents(
         db,
         service,
@@ -880,7 +913,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         tenant_id=tenant_id,
         company_id=company_id,
         entity_type=entity_type,
-        is_changed=is_changed,
+        changed_refs=result.changed_refs,
     )
     # Reconcile's delete intents (plan 22 §2.5, AC-22-16) - absent-but-known
     # refs stage as their OWN op='delete' rows, no canonical payload. Counted
@@ -1079,7 +1112,7 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         "updated": run.updated_count,
         # plan 13 (AC-13-16) - beside the existing ``warningCounts``: how
         # many mapped records the changed-only rule (AC-13-11) skipped
-        # WITHOUT a write this run. 0 for every task ``is_changed`` never
+        # WITHOUT a write this run. 0 for every task ``changed_refs`` never
         # applied to (a ``sql_db`` task, or an HTTP task whose source
         # reported no changed set).
         "unchangedSkipped": unchanged_skipped,
@@ -1119,6 +1152,39 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     db.commit()
 
 
+def json_safe_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Plan 13 S2 fix (NIT) - a PUBLIC, RECURSIVE json-safety cast for a
+    source record's own raw row, replacing the previous import of
+    ``combine.py``'s PRIVATE, single-level ``_json_safe_row`` (a module
+    must not reach for another module's underscore-prefixed name).
+
+    Recurses into nested dicts/lists so a ``Decimal`` buried under a
+    combine-carrying HTTP source's own nested structure (not just a
+    top-level column) is still caught before it reaches a JSON column.
+    Deliberately narrower than ``combine.py``'s own ``_json_safe`` scalar
+    cast: THAT one also rewrites an already-whole-number ``float`` to
+    ``int`` (correct for ITS OWN callers - a rounded combine measure,
+    where AC-10-43 wants ``0`` not ``0.0`` on the wire) - applying that
+    same rewrite HERE, to every source's raw row (most commonly a `sql_db`
+    task's own DB columns), would silently change a genuinely-float SQL
+    column's JSON type on every run. This cast only ever touches a
+    ``Decimal`` (not JSON-serializable at all) - every other value,
+    including a plain ``float``, passes through untouched.
+    """
+    return {key: _json_safe_value(value) for key, value in row.items()}
+
+
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        as_int = int(value)
+        return as_int if Decimal(as_int) == value else float(value)
+    if isinstance(value, dict):
+        return {key: _json_safe_value(v) for key, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(v) for v in value]
+    return value
+
+
 def _stage_documents(
     db: Session,
     service: JobService,
@@ -1134,13 +1200,14 @@ def _stage_documents(
     # plan 13 (AC-13-11, D6, closes BL-SS-238) - ``None`` (every existing
     # caller: a paged ``sql_db`` run, the SQL non-paged path) keeps today's
     # stage-everything behaviour byte-identical. The ONE non-paged HTTP
-    # push call site below passes a callable answering "did the SOURCE
-    # itself count this ref as added/updated THIS run" - a record whose
-    # ref reads ``False`` here AND whose canonical is unchanged from the
-    # last PUSHED one AND which carries no open (non-terminal) staged row
-    # already is skipped entirely: no write, no commit, counted into the
-    # caller's own ``unchangedSkipped``.
-    is_changed: Optional[Callable[[str], bool]] = None,
+    # push call site below passes the SOURCE's own declared
+    # ``FetchResult.changed_refs`` (review round 2 B2 fix - a plain
+    # ``Optional[Set[str]]``, never a closure-wrapping callable) - a
+    # record whose ref is NOT in this set AND whose canonical is unchanged
+    # from the last PUSHED one AND which carries no open (non-terminal)
+    # staged row already is skipped entirely: no write, no commit, counted
+    # into the caller's own ``unchangedSkipped``.
+    changed_refs: Optional[Set[str]] = None,
 ) -> Tuple[int, int, List[str], int]:
     """Map + persist each document independently. Returns
     ``(staged, failed, failed_refs, unchanged_skipped)``.
@@ -1187,7 +1254,7 @@ def _stage_documents(
                     source_ref=ref or f"unmapped:{job.id}:{position}",
                     doc_no=None,
                     source_last_modified=source_record.last_modified,
-                    raw_json=_json_safe_row(source_record.raw),
+                    raw_json=json_safe_row(source_record.raw),
                     canonical_json=None,
                     errors_json=None,
                     status=STAGED_FAILED,
@@ -1205,9 +1272,10 @@ def _stage_documents(
         # retained verbatim (AC-13-07), JSON-sanitized (plan 13 S2) - a
         # combine-carrying HTTP source's post-combine row may carry a
         # genuine ``Decimal`` (``apply_combine``'s own rounded measure),
-        # which a plain JSON column cannot serialize; mirrors the
-        # pull-snapshot build's own ``combine.py._json_safe_row``.
-        raw_json = _json_safe_row(source_record.raw)
+        # which a plain JSON column cannot serialize; this module's own
+        # PUBLIC, recursive ``json_safe_row`` (review round 2 NIT fix -
+        # never combine.py's private, single-level ``_json_safe_row``).
+        raw_json = json_safe_row(source_record.raw)
 
         if not mapped.ok:
             # D13: NO canonical payload is stored for a failed transaction -
@@ -1279,8 +1347,8 @@ def _stage_documents(
         # propagate without a Re-push; the "no open row" guard never skips
         # a record still genuinely awaiting delivery.
         if (
-            is_changed is not None
-            and not is_changed(record.source_ref)
+            changed_refs is not None
+            and record.source_ref not in changed_refs
             and not diff
             and not existing
         ):
@@ -2390,7 +2458,7 @@ def _lease_status(service: JobService, job_id: str) -> Optional[str]:
     return status if status in (JOB_FAILED, JOB_ABORTED) else None
 
 
-def _extract_is_complete(result: FetchResult) -> bool:
+def extract_is_complete(result: FetchResult) -> bool:
     """plan 13 (D8, AC-13-13) - whether a full-extract fetch's walk is
     VERIFIED complete, shared with ``_run_pull_snapshot``'s own
     ``complete`` computation (`sync.py`, MUST-FIX 2/AC-10-24) so the two
@@ -2401,6 +2469,13 @@ def _extract_is_complete(result: FetchResult) -> bool:
     ``reported_total is None``) is UNVERIFIED. A verified main walk is
     not enough on its own - every configured lookup must ALSO have
     verified (a truncated lookup silently turns matches into misses).
+
+    PUBLIC (review round 2 B2 fix - no leading underscore): used ONLY by
+    ``_run_pull_snapshot`` below, on its OWN strict, unconditional rule -
+    a snapshot build always knows exactly which source produced its
+    result. The ONGOING push run (``run_autocount_sync`` above) does NOT
+    call this: see ``_push_walk_is_complete``'s own docstring for why
+    applying this exact rule to every source there was the B1 regression.
     """
     rows_scanned = (
         result.rows_scanned if result.rows_scanned is not None else len(result.records)
@@ -2411,6 +2486,59 @@ def _extract_is_complete(result: FetchResult) -> bool:
     )
     unverified_lookups = [v for v in result.lookup_verification.values() if not v.verified]
     return main_verified and not unverified_lookups
+
+
+def _push_walk_is_complete(result: FetchResult) -> bool:
+    """plan 13 (D8, AC-13-13) review round 2 B1 FIX. Unlike
+    ``extract_is_complete`` above (which ``_run_pull_snapshot`` keeps
+    using UNCHANGED - a snapshot build always knows which one source
+    produced its result), the ONGOING sync push path must not DERIVE
+    completeness for a source that never claims to report it at all:
+    only ``HttpApiSource`` sets the declared ``FetchResult.walk_verified``
+    field (``True``/``False``, the SAME envelope/reported-total/lookup
+    rule, computed locally in `http_source/source.py`); every other
+    source (the SQL path, the vendor GRN API source, which sets
+    ``reported_total`` for an unrelated, non-paged reason) leaves it at
+    its ``None`` default = "this source has no walk-completeness concept
+    at all" = treated as complete, the exact pre-plan-13 behaviour.
+
+    The regression this replaces: applying ``extract_is_complete``'s own
+    envelope/reported-total rule UNCONDITIONALLY to every source's result
+    (rather than gating it on the source having declared one) made every
+    no-watermark ``sql_db`` run - and the vendor GRN API source - read as
+    permanently UNVERIFIED (``reported_total``/``envelope_kind`` genuinely
+    absent for those sources), which suppressed every delete and stamped
+    every run ``truncated = True`` regardless of entity or source.
+    """
+    return result.walk_verified is not False
+
+
+def _unverified_endpoint_names(result: FetchResult) -> List[str]:
+    """plan 13 (AC-13-13, S6 fix) - human names for the ONE push-run
+    activity note written when a genuine delete was withheld: the main
+    walk (by the same envelope/reported-total rule as ``extract_is_
+    complete``, since a push run's own ``FetchResult`` may come from a
+    source - the vendor GRN API - that never set ``walk_verified`` at
+    all) and/or any lookup alias that did not verify. Deliberately never
+    says "could not be verified" or starts with "pull snapshot" (the
+    plan-10 guard, `test_s10_s3_review1_lookup_complete.py`, pins that
+    exact phrasing to the SNAPSHOT build's own note only)."""
+    names: List[str] = []
+    rows_scanned = (
+        result.rows_scanned if result.rows_scanned is not None else len(result.records)
+    )
+    main_verified = (
+        result.envelope_kind == ENVELOPE_LIST
+        or (result.reported_total is not None and rows_scanned == result.reported_total)
+    )
+    if not main_verified:
+        reported = result.reported_total if result.reported_total is not None else "unknown"
+        names.append(f"the main walk (scanned {rows_scanned} of reported {reported})")
+    for alias, v in result.lookup_verification.items():
+        if not v.verified:
+            reported = v.reported_total if v.reported_total is not None else "unknown"
+            names.append(f"'{alias}' (scanned {v.rows_scanned} of reported {reported})")
+    return names
 
 
 def _fail(
@@ -2930,11 +3058,12 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
         unverified_lookups = [
             (alias, v) for alias, v in result.lookup_verification.items() if not v.verified
         ]
-        # plan 13 (D8) - the SAME rule ``_extract_is_complete`` shares with
-        # the push path, so the two can never drift; ``main_verified``
-        # above stays only to keep this section's own prose/pinned
-        # intermediate value readable.
-        complete = _extract_is_complete(result)
+        # plan 13 (D8) - the snapshot build's OWN strict, unconditional
+        # rule (review round 2 B1 fix: the push path no longer shares this
+        # exact call - see ``_push_walk_is_complete``'s docstring);
+        # ``main_verified`` above stays only to keep this section's own
+        # prose/pinned intermediate value readable.
+        complete = extract_is_complete(result)
         content_hash = compute_content_hash([payload for _, payload in delivered])
         metadata: Dict[str, Any] = {
             "excludedRows": excluded_rows,

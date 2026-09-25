@@ -1183,7 +1183,25 @@ class HttpApiSource:
             )
             self._ctx.db.commit()
 
-        fetch_result = FetchResult(
+        # plan 13 (D8, AC-13-13) review-round-2 fix (B1) - THIS source's own
+        # completeness verdict, the SAME rule ``sync.extract_is_complete``
+        # applies for the snapshot build (bare array = verified; a PAGED
+        # endpoint needs ``rows_scanned == reported_total``, and every
+        # configured lookup must ALSO have verified), computed locally
+        # since a source module must not import back into ``sync.py``. Set
+        # ONLY here - every other source leaves ``FetchResult.walk_verified``
+        # at its ``None`` default ("not applicable"), which the push run
+        # treats as complete.
+        main_verified = (
+            envelope_kind == ENVELOPE_LIST
+            or (reported_total is not None and rows_scanned == reported_total)
+        )
+        unverified_lookups = [
+            v for v in self._lookup_verification.values() if not v.verified
+        ]
+        walk_verified = main_verified and not unverified_lookups
+
+        return FetchResult(
             records=records,
             max_last_modified=max_seen_dt,
             window_from=None,
@@ -1202,12 +1220,13 @@ class HttpApiSource:
             envelope_kind=envelope_kind,
             lookup_verification=dict(self._lookup_verification),
             combine_metadata=combine_metadata,
+            # plan 13 (AC-13-11, D6) - the ONE place this source marks its
+            # changed set on the result it returns; now a DECLARED field
+            # (review round 2 B2 fix), never a dynamic post-construction
+            # attribute.
+            changed_refs=changed_refs,
+            walk_verified=walk_verified,
         )
-        # plan 13 (AC-13-11, D6) - dynamic, not a declared field (see the
-        # comment above ``changed_refs`` above): the ONE place this source
-        # marks its changed set on the result it returns.
-        fetch_result.changed_refs = changed_refs
-        return fetch_result
 
     # ── observability ──────────────────────────────────────────────────────
 

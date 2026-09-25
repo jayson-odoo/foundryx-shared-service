@@ -18,7 +18,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from cryptography.fernet import InvalidToken
@@ -102,6 +102,7 @@ from ..repositories import (
     ConnectionRepository,
     EntityConfigRepository,
     FieldMappingRepository,
+    RowHashRepository,
     WatermarkRepository,
 )
 from ..sinks import EntitySink, UnknownSinkImpl, sink_for
@@ -1178,6 +1179,10 @@ class CompanyService:
         only ones a sink switch legitimately owns.
         """
         company = self.get(tenant_id, company_id)  # tenant-scope guard
+        # plan 13 review round 2 (S3 fix) - captured BEFORE mutation: the
+        # sink-switch invalidation below fires only on a GENUINE change.
+        previous_sink_impl = company.sink_impl
+        previous_sink_connection_id = company.sink_connection_id
         if sink_impl == SINK_IMPL_LOGGING:
             company.sink_impl = SINK_IMPL_LOGGING
             company.sink_connection_id = None
@@ -1206,6 +1211,33 @@ class CompanyService:
             raise AutocountServiceError(
                 f"Unknown push target '{sink_impl}'. Choose 'logging' or 'sorento'."
             )
+        #     !!  A SINK SWITCH MUST NEVER SILENTLY STRAND RECORDS.  !!
+        # (plan 13 review round 2, S3 fix.) An `autocount_http` task's own
+        # `ac_row_hash` population is a diff baseline against whatever the
+        # OLD target already received (D6, changed-only staging) - a
+        # record unchanged since then would never restage for the NEW
+        # target, which has no idea it exists. Invalidating (the SAME
+        # mechanism Re-push uses, `RowHashRepository.invalidate_all` -
+        # never a delete: every ref stays KNOWN, so a genuine delete is
+        # still correctly derived) every `autocount_http` task's hashes on
+        # a genuine `sink_impl`/`sink_connection_id` change forces the
+        # next run to re-offer everything to the new target. A brand task
+        # still below contract 2.3 keeps its existing logging fallback
+        # (plan-08 behaviour, out of scope here) - a LATER contract
+        # upgrade is not auto-detected by this method at all (no sink
+        # field changed); the runbook step below covers it.
+        sink_target_changed = (
+            company.sink_impl != previous_sink_impl
+            or company.sink_connection_id != previous_sink_connection_id
+        )
+        if sink_target_changed:
+            stamp = f"repush:{datetime.now(timezone.utc).isoformat()}"
+            hashes_repo = RowHashRepository(self.db)
+            for task in self.configs.list_for_company(tenant_id, company_id):
+                if task.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP:
+                    hashes_repo.invalidate_all(
+                        tenant_id, company_id, task.entity_type, stamp=stamp
+                    )
         self.db.commit()
         self.db.refresh(company)
         return company

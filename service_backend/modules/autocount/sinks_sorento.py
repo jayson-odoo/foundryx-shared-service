@@ -317,7 +317,12 @@ def pairs_from_refs(
         if len(prefix_and_suffix) != 2:
             continue
         suffix = prefix_and_suffix[1]
-        parts = suffix.split("|")
+        # review round 2 NIT fix - split on the LAST ``|`` (``rsplit``,
+        # maxsplit 1), not the first: an item code that itself contains a
+        # ``|`` would otherwise split into more than two parts and this
+        # ref would be silently omitted, even though the location code
+        # (always the final segment) is perfectly recoverable.
+        parts = suffix.rsplit("|", 1)
         if len(parts) != 2 or not parts[0] or not parts[1]:
             continue
         pairs[ref] = {"item_code": parts[0], "location_code": parts[1]}

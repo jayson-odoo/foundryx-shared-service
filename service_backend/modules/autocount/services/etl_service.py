@@ -65,19 +65,17 @@ from ..models import (
     ETL_STATUS_ACTIVE,
     ETL_STATUS_DRAFT,
     ETL_STATUS_PAUSED,
-    PULL_SNAPSHOT_STATUS_READY,
     RUN_MODE_MANUAL,
     SINK_IMPL_SORENTO,
     SOURCE_IMPL_AUTOCOUNT_HTTP,
     SOURCE_IMPL_SQL_DB,
     SYNC_MODE_SCHEDULED_REVIEW,
     AcEntityConfig,
-    AcPullSnapshot,
-    AcPullSnapshotRow,
 )
 from ..repositories import (
     ConnectionRepository,
     EntityConfigRepository,
+    PullSnapshotRepository,
     RowHashRepository,
     SyncJobRepository,
     SyncRunRepository,
@@ -1289,10 +1287,21 @@ class EtlService:
         """plan 13 (AC-13-30) - gated to `stock_balance` only, so every
         other entity's task-view read never touches the network here
         (same reasoning as `_brand_contract_gate`/`_contract_gate` above).
-        Contract first, then snapshot - the same ordering
+
+        Review round 2 S2 fix: "already pushing" is checked FIRST, before
+        the contract probe - a task ALREADY in push mode must keep
+        offering the toggle (Pull is ALWAYS a valid rollback) even if the
+        consumer contract regresses AFTER the flip. That regression still
+        signals through the task's own `contractGate` banner and a
+        `CONTRACT_GATE` run failure (`auto_push`'s own refusal, AC-13-06)
+        - never through `pushGate`, which exists to gate the FLIP itself,
+        not an already-flipped task. Contract, then snapshot, is still the
+        ordering for a task NOT yet pushing - the same one
         `set_delivery_mode` enforces (AC-13-31), so the two never disagree
         about which prerequisite is "the" blocker."""
         if entity_type != ENTITY_STOCK_BALANCE or tenant_id is None:
+            return None
+        if config is not None and config.delivery_mode == DELIVERY_MODE_PUSH:
             return None
         try:
             company = self.companies.get(tenant_id, company_id)
@@ -1301,10 +1310,6 @@ class EtlService:
         gate = self.companies.stock_push_gate_error(tenant_id, company)
         if gate is not None:
             return gate
-        if config is not None and config.delivery_mode == DELIVERY_MODE_PUSH:
-            # Already pushing - Push is trivially "offered" (it is already
-            # chosen); no snapshot check applies once a task has flipped.
-            return None
         if not self._has_ready_snapshot(tenant_id, company_id, entity_type):
             return {"reason": "no_snapshot"}
         return None
@@ -1313,55 +1318,29 @@ class EtlService:
         self, tenant_id: str, company_id: str, entity_type: str
     ) -> bool:
         """Whether the SAME union `_seed_baseline_if_empty` would seed from
-        is non-empty right now - deliberately the identical query
-        (`_ready_snapshot_source_refs`, READY + unexpired) so the gate and
-        the seed can never disagree about whether "a snapshot to flip
-        from" exists."""
-        refs = self._ready_snapshot_source_refs(
+        is non-empty right now - deliberately the SAME repository read
+        `_seed_baseline_if_empty` uses, so the gate and the seed can never
+        disagree about whether "a snapshot to flip from" exists. Review
+        round 2 B2 fix: an EXISTS-only repository call
+        (`PullSnapshotRepository.has_ready`), never the full row union
+        (`ready_source_refs`) - this is called on EVERY stock task view
+        GET, so loading up to ~12k refs per snapshot just to answer a
+        boolean turned every GET into an N+1 scaling with extract size."""
+        return PullSnapshotRepository(self.db).has_ready(
             tenant_id, company_id, entity_type, datetime.now(timezone.utc)
         )
-        return bool(refs)
 
     def _ready_snapshot_source_refs(
         self, tenant_id: str, company_id: str, entity_type: str, now: datetime
     ) -> Dict[str, str]:
-        """plan 13 (AC-13-32, D9) - the UNION of every READY, UNEXPIRED
-        snapshot's own distinct ``source_ref``s for one (company, entity)
-        triple, each mapped to a sentinel row-hash naming ITS OWN snapshot
-        id (``f"seed:{snapshot_id}"``) - the baseline seed
-        ``set_delivery_mode`` writes into ``ac_row_hash`` on a flip (D9),
-        and the SAME check ``_has_ready_snapshot`` gates the flip on. A ref
-        present in more than one snapshot keeps whichever snapshot this
-        query visits LAST - an arbitrary but harmless choice, since either
-        sentinel resolves the ref as "known" and neither is ever read back
-        as a real hash."""
-        snapshots = (
-            self.db.query(AcPullSnapshot)
-            .filter(
-                AcPullSnapshot.tenant_id == tenant_id,
-                AcPullSnapshot.company_id == company_id,
-                AcPullSnapshot.entity_type == entity_type,
-                AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_READY,
-                sa.or_(
-                    AcPullSnapshot.expires_at.is_(None),
-                    AcPullSnapshot.expires_at > now,
-                ),
-            )
-            .all()
+        """plan 13 (AC-13-32, D9) review round 2 B2 fix - delegates to
+        `PullSnapshotRepository.ready_source_refs` (Service -> Repository
+        layering: a service must never hold a raw `self.db.query(...)`).
+        Kept as a thin, tenant-scoped wrapper so `_seed_baseline_if_empty`
+        below needs no import of its own."""
+        return PullSnapshotRepository(self.db).ready_source_refs(
+            tenant_id, company_id, entity_type, now
         )
-        out: Dict[str, str] = {}
-        for snapshot in snapshots:
-            refs = (
-                self.db.query(AcPullSnapshotRow.source_ref)
-                .filter(
-                    AcPullSnapshotRow.tenant_id == tenant_id,
-                    AcPullSnapshotRow.snapshot_id == snapshot.id,
-                )
-                .all()
-            )
-            for (ref,) in refs:
-                out[ref] = f"seed:{snapshot.id}"
-        return out
 
     def _initial_load(
         self, company_id: str, entity_type: str, config: Optional[AcEntityConfig]
@@ -3008,7 +2987,16 @@ class EtlService:
         """``push`` <-> ``pull`` (sprint-5/10, AC-10-11). Touches ONLY the
         mode + the schedule's armed times - never ``source_config``, the
         mapping rows or ``result_columns`` (a round-trip is byte-identical,
-        AC-10-14)."""
+        AC-10-14).
+
+        Review round 2 S5 fix: a request whose ``delivery_mode`` already
+        MATCHES the task's current mode is an idempotent no-op and returns
+        immediately, BEFORE any prerequisite gate runs. Without this, a
+        Schedule-tab Save that changes nothing about delivery mode (the FE
+        posts the CURRENT mode back on every save) could 422 an
+        already-pushing stock task the moment its seed snapshot ages past
+        24h - `no_snapshot` exists to gate the FLIP, never an already-
+        flipped task the owner is not touching."""
         if delivery_mode not in DELIVERY_MODES:
             raise EtlValidationError(
                 {"deliveryMode": f"'{delivery_mode}' is not a known delivery mode."}
@@ -3018,6 +3006,13 @@ class EtlService:
                 {"deliveryMode": f"'{entity_type}' cannot be switched between push and pull."}
             )
         company = self.companies.get(tenant_id, company_id)  # tenant-scope guard
+        config = self.configs.get(tenant_id, company_id, entity_type)
+        if config is None:
+            raise EtlStateError(
+                "Save this task's query and key columns before setting its delivery mode."
+            )
+        if config.delivery_mode == delivery_mode:
+            return self._task_view(company_id, entity_type, config, tenant_id=tenant_id)
         #     !!  STOCK'S OWN PUSH GATE (AC-10-15) - A REFUSAL, NOT A BANNER.  !!
         # The same `fetch_contract_detail` probe pattern AC-10-69 generalises
         # for product, but stock has no safe "allow and let it fail at push
@@ -3062,11 +3057,6 @@ class EtlService:
                     )
                 }
             )
-        config = self.configs.get(tenant_id, company_id, entity_type)
-        if config is None:
-            raise EtlStateError(
-                "Save this task's query and key columns before setting its delivery mode."
-            )
         previous_mode = config.delivery_mode
         config.delivery_mode = delivery_mode
         if delivery_mode == DELIVERY_MODE_PULL:
@@ -3091,16 +3081,21 @@ class EtlService:
             _, config.next_reconcile_at = self.next_run_times(
                 self._schedule_source_config(config), now=now
             )
-        if delivery_mode == DELIVERY_MODE_PUSH:
+        if delivery_mode == DELIVERY_MODE_PUSH and previous_mode == DELIVERY_MODE_PULL:
             # plan 13 (AC-13-32, D9) - baseline seed for ANY pull-capable
-            # entity, in the SAME commit as the mode change below.
-            # ``_seed_baseline_if_empty``'s OWN "zero hash rows" guard is
-            # the real gate (AC-13-32's own wording), never `previous_mode`
-            # - a raw-constructed config whose ``delivery_mode`` column
-            # never left its bare ``server_default`` of ``push`` (a task
-            # created outside `update_task`'s own pull-capable-entity rule,
-            # AC-10-15/AC-10-39) must still seed on its first genuine push
-            # flip, exactly like one that started in `pull`.
+            # entity that just genuinely flipped ``pull -> push``, in the
+            # SAME commit as the mode change below.
+            # ``_seed_baseline_if_empty``'s OWN "zero hash rows" guard
+            # stays the real gate (AC-13-32's own wording: a task that
+            # already holds hash rows, e.g. a prior push period, is never
+            # re-seeded). Review round 2 S5 fix: restored to
+            # `previous_mode == DELIVERY_MODE_PULL` now that the
+            # unconditional-no-op case (a raw-constructed config whose
+            # ``delivery_mode`` never left its bare ``server_default`` of
+            # ``push``) is caught by THIS method's own early return above
+            # (`config.delivery_mode == delivery_mode`) before this line is
+            # ever reached - a config genuinely never explicitly set to
+            # `pull` should never masquerade as a real flip.
             self._seed_baseline_if_empty(tenant_id, company_id, entity_type)
         self.db.commit()
         self.db.refresh(config)
@@ -3256,10 +3251,17 @@ class EtlService:
         *,
         actor_user_id: Optional[str] = None,
     ) -> EtlRepushView:
-        """Clear this task's change-tracking rows so the next reconcile
-        classifies every fetched row as an add and re-pushes it (plan
-        sprint-5/07, AC-07-13..19) - the operator's answer to "the mapping
-        changed, re-send everything" with no SQL by hand.
+        """INVALIDATE this task's change-tracking rows (plan 13 review
+        round 2 S1 fix - never DELETE them, see ``RowHashRepository.
+        invalidate_all``'s own docstring) so the next reconcile classifies
+        every fetched row as an add and re-pushes it (plan sprint-5/07,
+        AC-07-13..19) - the operator's answer to "the mapping changed,
+        re-send everything" with no SQL by hand. Every ref stays KNOWN
+        (its hash merely stamped unrecognisable), so a delete is still
+        correctly derived for any pair genuinely gone - including one a
+        prior truncated walk (D8) had held back - on the very next run,
+        rather than that ref silently falling out of the diff entirely
+        the moment ``clear_all`` used to erase its row outright.
 
         Guards mirror ``run_task_now``'s (a run in flight refuses the SAME
         way, with the same ``running_run_id`` link) plus two of its own: a
@@ -3280,15 +3282,15 @@ class EtlService:
         ``self.db.rollback()`` INSIDE its own swallow-all try/except (never
         re-raises - ``activity.py``'s own module docstring, AC-13-43). Call
         it before this method's own commit and a dropped activity row
-        SILENTLY discards the `clear_all` deletion too (same session, same
-        uncommitted transaction) while this method carries on as if nothing
-        happened - a 200 reporting a `clearedCount` that was never actually
-        persisted. So the ONLY correct order is: mutate -> re-check the
-        in-flight race -> `self.db.commit()` (the ACTUAL atomicity boundary
-        for the deletion + `next_reconcile_at`) -> THEN `record_activity`
-        (same pattern as `preview_task`'s `_record_preview` call, ~:715) -
-        an activity-write failure past this point can never touch the
-        already-committed deletion.
+        SILENTLY discards the `invalidate_all` write too (same session,
+        same uncommitted transaction) while this method carries on as if
+        nothing happened - a 200 reporting a `clearedCount` that was never
+        actually persisted. So the ONLY correct order is: mutate -> re-check
+        the in-flight race -> `self.db.commit()` (the ACTUAL atomicity
+        boundary for the invalidation + `next_reconcile_at`) -> THEN
+        `record_activity` (same pattern as `preview_task`'s
+        `_record_preview` call, ~:715) - an activity-write failure past
+        this point can never touch the already-committed invalidation.
         """
         _company, config = self._task_config(tenant_id, company_id, entity_type)
         if config.source_impl not in (SOURCE_IMPL_SQL_DB, SOURCE_IMPL_AUTOCOUNT_HTTP):
@@ -3309,9 +3311,13 @@ class EtlService:
             )
         self._in_flight_guard(tenant_id, company_id, entity_type)
 
-        # `clear_all` only FLUSHES (never commits - its own docstring).
-        cleared = RowHashRepository(self.db).clear_all(
-            tenant_id, company_id, entity_type
+        # plan 13 review round 2 S1 fix - INVALIDATE, never DELETE
+        # (`invalidate_all` only FLUSHES, same as `clear_all` did - never
+        # commits). ``stamp`` can never collide with a genuine content
+        # hash.
+        stamp = f"repush:{datetime.now(timezone.utc).isoformat()}"
+        cleared = RowHashRepository(self.db).invalidate_all(
+            tenant_id, company_id, entity_type, stamp=stamp
         )
         if config.etl_status == ETL_STATUS_ACTIVE:
             # The very next scheduler sweep claims a `reconcile` (existing
@@ -3320,12 +3326,12 @@ class EtlService:
             # re-arms it as today, same as any other resume.
             config.next_reconcile_at = datetime.now(timezone.utc)
 
-        # Re-check the race `first_unfinished` + `clear_all` leaves open: a
-        # manual/scheduled run can be enqueued between the up-front guard
-        # above and this commit, and would otherwise push a population whose
-        # tracked rows this call just wiped out from under it. Caught here
-        # means the deletion is rolled back with everything else - nothing
-        # commits at all for this request.
+        # Re-check the race `first_unfinished` + `invalidate_all` leaves
+        # open: a manual/scheduled run can be enqueued between the
+        # up-front guard above and this commit, and would otherwise push a
+        # population whose tracked rows this call just invalidated out
+        # from under it. Caught here means the invalidation is rolled back
+        # with everything else - nothing commits at all for this request.
         try:
             self._in_flight_guard(tenant_id, company_id, entity_type)
         except EtlStateError:

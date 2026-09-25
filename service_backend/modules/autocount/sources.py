@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Set, Tuple
 
 from .canonical.grn import VENDOR_ENTITY
 from .client import AutoCountClient, AutoCountError, build_read_filter, parse_last_modified
@@ -198,6 +198,34 @@ class FetchResult:
     # agnostic. ``None`` when the task carries no ``combine`` step - every
     # existing/control call site stays byte-identical.
     combine_metadata: Optional[Dict[str, Any]] = None
+    # plan 13 (AC-13-11, D6, closes BL-SS-238) - review-round-2 fix: a
+    # DECLARED field, never a dynamic attribute bolted onto the instance
+    # after construction (the prior shape needed ``getattr(result,
+    # "changed_refs", None)`` at every read site, which is exactly the
+    # kind of "quietly missing" surface a typo or a new source
+    # implementation could silently no-op through). Every ref THIS run's
+    # source counted as added or hash-changed; ``None`` (the default, and
+    # every non-HTTP source: the SQL path, the vendor GRN API source) means
+    # "this source has no changed-set concept at all" - the exact signal
+    # ``_stage_documents`` treats as "stage everything", byte-identical to
+    # before this plan for every source but ``HttpApiSource``.
+    changed_refs: Optional[Set[str]] = None
+    # plan 13 (D8, AC-13-13) review-round-2 fix (B1) - a DECLARED,
+    # source-owned completeness verdict, never derived downstream from
+    # ``reported_total`` for a source that never claims to report one (the
+    # regression this field replaces: applying the snapshot-build's own
+    # ``envelope_kind``/``reported_total`` rule unconditionally to EVERY
+    # source marked a no-watermark SQL run - and the vendor GRN API source,
+    # which sets ``reported_total`` for an unrelated, non-paged reason -
+    # permanently ``truncated`` with every delete suppressed). ``None``
+    # (the default) = "this source has no walk-completeness concept at
+    # all" = treated as complete, the exact pre-plan-13 behaviour for every
+    # source but ``HttpApiSource``, which is the ONLY implementation that
+    # sets this to ``True``/``False`` (`http_source/source.py`, the SAME
+    # envelope/reported-total/lookup rule ``extract_is_complete`` applies
+    # for the SNAPSHOT build, computed locally since that helper is scoped
+    # to `sync.py` and a source module must not import back into it).
+    walk_verified: Optional[bool] = None
 
 
 class EntitySource(Protocol):
