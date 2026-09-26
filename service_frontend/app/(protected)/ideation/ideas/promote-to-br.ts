@@ -4,6 +4,10 @@ import { useRouter } from 'next/navigation';
 import { toast } from '@/lib/toast';
 import { businessRequirementService } from '@/services/business-requirement-service';
 import { brFormHref } from '@/app/(protected)/ideation/business-requirements/components/paths';
+import {
+  NO_TEMPLATE_MESSAGE,
+  isBrTemplateUnavailable,
+} from '@/app/(protected)/ideation/business-requirements/components/br-template-error';
 import type { Idea } from '@/types/ideation';
 
 type Router = ReturnType<typeof useRouter>;
@@ -44,6 +48,10 @@ export async function promoteIdeasToBr(
     toast.success('Draft requirement created - start grilling.');
     router.push(brFormHref(created.id, { tab: 'grill' }));
   } catch (e) {
+    if (isBrTemplateUnavailable(e)) {
+      toast.error(NO_TEMPLATE_MESSAGE);
+      return;
+    }
     toast.error(
       e instanceof Error ? e.message : 'Could not promote to a business requirement.',
     );

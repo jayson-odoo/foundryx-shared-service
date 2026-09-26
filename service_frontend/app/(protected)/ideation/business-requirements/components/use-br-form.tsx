@@ -1,8 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { FileText, GitBranch, History, Lightbulb, MessageSquare, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { Badge } from '@/components/ui/badge';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ListQuery } from '@/types/resource';
 import type { ResourceAction } from '@/components/platform/resource-list';
@@ -161,18 +163,41 @@ export function useBrForm(
     onFieldErrors: setServerFieldErrors,
   });
 
+  // Review fix S6 (issue #90 W3): the pager must re-run the SAME lane the
+  // user was actually browsing on the list they came from - carried as an
+  // `includeTest` URL param alongside `ctx`/`i`/`from` (`brFormHref`,
+  // `use-br-list-config.tsx`'s `rowHref`), not re-derived from whichever
+  // record happens to be open. Keying off `br?.isTest` alone was wrong: a
+  // REAL BR opened from the "Show test requirements" list would silently
+  // narrow the pager to a real-only lane, different from the mixed lane the
+  // user was actually paging through. Only fall back to the loaded record's
+  // own flag when there is no list context at all (a bookmarked/direct link,
+  // or the promote-to-BR redirect) - AC-90-313's original scenario.
+  const searchParams = useSearchParams();
+  const includeTestParam = searchParams.get('includeTest');
+  const pagerIncludeTest =
+    includeTestParam !== null ? includeTestParam === '1' : (br?.isTest ?? false);
+
   // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
-  const fetchRecordAt = useCallback(async (query: ListQuery, index: number) => {
-    const all = await businessRequirementService.list({
-      filter: query.statusView === 'trashed' ? 'archived' : 'active',
-      search: query.search,
-    });
-    const row = all[index];
-    return { recordId: row?.id ?? null, total: all.length };
-  }, []);
+  const fetchRecordAt = useCallback(
+    async (query: ListQuery, index: number) => {
+      const all = await businessRequirementService.list({
+        filter: query.statusView === 'trashed' ? 'archived' : 'active',
+        search: query.search,
+        includeTest: pagerIncludeTest,
+      });
+      const row = all[index];
+      return { recordId: row?.id ?? null, total: all.length };
+    },
+    [pagerIncludeTest],
+  );
+  // Carries `includeTest` forward too (review round 3 fix) - without it, one
+  // Next/Prev step from a test-inclusive list dropped the param, so the
+  // SECOND step's pager silently narrowed back to the real-only lane.
   const buildRecordHref = useCallback(
-    (recordId: string, ctx: string, index: number) => brFormHref(recordId, { ctx, index }),
-    [],
+    (recordId: string, ctx: string, index: number) =>
+      brFormHref(recordId, { ctx, index, includeTest: pagerIncludeTest }),
+    [pagerIncludeTest],
   );
 
   const config = useMemo<ResourceFormConfig<BusinessRequirementDetail> | null>(() => {
@@ -204,7 +229,16 @@ export function useBrForm(
       ],
       backHref: BR_PATH,
       title: br.title || 'Untitled BR',
-      subtitle: `${br.statusLabel} · ${br.productName}`,
+      subtitle: br.isTest ? (
+        <span className="inline-flex items-center gap-2">
+          <Badge variant="secondary" appearance="light" size="sm">
+            TEST
+          </Badge>
+          {`${br.statusLabel} · ${br.productName}`}
+        </span>
+      ) : (
+        `${br.statusLabel} · ${br.productName}`
+      ),
       tabs: [
         {
           id: 'details',

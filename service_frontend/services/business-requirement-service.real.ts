@@ -11,6 +11,7 @@
  * - unlinkIdea  → DELETE /ideation/business-requirements/{id}/ideas/{ideaId}
  * - listVersions→ GET    /ideation/business-requirements/{id}/versions
  * - remove      → DELETE /ideation/business-requirements/{id}          (204)
+ * - templateStatus → GET /ideation/business-requirements/template-status
  */
 import { apiFetch } from '@/lib/api-client';
 import type { Idea } from '@/types/ideation';
@@ -20,7 +21,11 @@ import type {
   BusinessRequirement,
   BusinessRequirementDetail,
 } from '@/types/business-requirement';
-import type { BrListFilter, BusinessRequirementService } from './business-requirement-service';
+import type {
+  BrListFilter,
+  BrTemplateStatus,
+  BusinessRequirementService,
+} from './business-requirement-service';
 
 const base = '/ideation/business-requirements';
 const one = (id: string) => `${base}/${encodeURIComponent(id)}`;
@@ -30,6 +35,7 @@ function listQuery(params?: BrListFilter): string {
   if (params?.filter) p.set('filter', params.filter);
   if (params?.productId) p.set('productId', params.productId);
   if (params?.search) p.set('search', params.search);
+  if (params?.includeTest) p.set('includeTest', 'true');
   const q = p.toString();
   return q ? `?${q}` : '';
 }
@@ -97,5 +103,9 @@ export const realBusinessRequirementService: BusinessRequirementService = {
 
   remove(id) {
     return apiFetch<void>(one(id), { method: 'DELETE' });
+  },
+
+  templateStatus() {
+    return apiFetch<BrTemplateStatus>(`${base}/template-status`);
   },
 };

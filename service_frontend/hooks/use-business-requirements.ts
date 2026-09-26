@@ -19,11 +19,14 @@ export function useBusinessRequirements() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Whether a test idea's promoted TEST Business Requirement (issue #90 W3)
+  // is included - off by default; the list exposes a toggle that flips this.
+  const [includeTest, setIncludeTest] = useState(false);
 
   const reload = useCallback(async () => {
     try {
       const [rows, prods] = await Promise.all([
-        businessRequirementService.list({ filter: 'all' }),
+        businessRequirementService.list({ filter: 'all', includeTest }),
         ideationService.listProducts(),
       ]);
       setBrs(rows);
@@ -34,7 +37,7 @@ export function useBusinessRequirements() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [includeTest]);
 
   useEffect(() => {
     void reload();
@@ -67,5 +70,16 @@ export function useBusinessRequirements() {
     [reload],
   );
 
-  return { brs, products, loading, error, reload, create, setStatus, remove };
+  return {
+    brs,
+    products,
+    loading,
+    error,
+    includeTest,
+    setIncludeTest,
+    reload,
+    create,
+    setStatus,
+    remove,
+  };
 }

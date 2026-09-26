@@ -30,6 +30,10 @@ export interface BusinessRequirement {
   ideaCount: number;
   createdAt: string;
   updatedAt: string;
+  /** A test idea (owner ruling 26 Sep ~12:50Z, issue #90 W3) may promote to a
+   * TEST Business Requirement - excluded from the real list/counts, labelled
+   * Test on its page. Optional so older fixtures/mocks default falsy. */
+  isTest?: boolean;
 }
 
 /** BR detail - adds the answer map + the STAMPED template block document. */

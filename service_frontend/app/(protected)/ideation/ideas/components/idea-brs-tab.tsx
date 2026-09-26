@@ -33,7 +33,16 @@ export function IdeaBrsTab({ ideaId }: IdeaBrsTabProps) {
         id: 'title',
         header: () => 'Title',
         cell: ({ row }) => (
-          <ClampedText text={row.original.title || 'Untitled BR'} lines={2} />
+          <div className="flex items-start gap-1.5">
+            <div className="min-w-0 flex-1">
+              <ClampedText text={row.original.title || 'Untitled BR'} lines={2} />
+            </div>
+            {row.original.isTest && (
+              <Badge variant="secondary" appearance="light" size="sm" className="shrink-0">
+                TEST
+              </Badge>
+            )}
+          </div>
         ),
         size: 320,
         enableSorting: false,

@@ -47,14 +47,26 @@ describe('useIdeasListConfig - promote-br action', () => {
     expect(promote.isDisabled?.([anIdea({ id: 'a' }), anIdea({ id: 'b' })])).toBe(false);
   });
 
-  it('is disabled when any selected row is a test idea', () => {
+  // AC-90-311 (issue #90 owner ruling 26 Sep ~12:50Z, INVERTS the old
+  // "is disabled when any selected row is a test idea" - REWRITTEN, not
+  // deleted, per the #90 lane brief): a test idea may now be promoted to a
+  // TEST Business Requirement, so an all-test selection is enabled; only a
+  // MIXED test+real selection stays disabled (a promote lane cannot be
+  // mixed, same principle as the mixed-product rule).
+  it('is disabled for a MIXED test+real selection, but not for an all-test selection', () => {
     const cfg = config([anIdea()]);
     const promote = cfg.actions.find((a) => a.id === 'promote-br')!;
     expect(
       promote.isDisabled?.([anIdea({ id: 'a' }), anIdea({ id: 'b', isTest: true })]),
     ).toBe(true);
-    // A lone test idea is disabled too, not just a mixed selection.
-    expect(promote.isDisabled?.([anIdea({ id: 'a', isTest: true })])).toBe(true);
+    // A lone test idea, or an all-test selection, is NOT disabled.
+    expect(promote.isDisabled?.([anIdea({ id: 'a', isTest: true })])).toBe(false);
+    expect(
+      promote.isDisabled?.([
+        anIdea({ id: 'a', isTest: true }),
+        anIdea({ id: 'b', isTest: true }),
+      ]),
+    ).toBe(false);
   });
 });
 

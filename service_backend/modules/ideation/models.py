@@ -420,6 +420,20 @@ class BusinessRequirement(IdeationBase):
     template_version = Column(Integer, nullable=False)
     title = Column(String, nullable=False, default="")
     answers_json = Column(JSON(none_as_null=True), nullable=True)
+    # A test idea (is_test) may promote to a TEST BR (issue #90 W3, owner
+    # ruling 26 Sep 2026): mirrors ``Idea.is_test``. Server-derived only (never
+    # client input) - all-test ideas promote to True, a manual create or an
+    # all-real promote is False, a mixed set is refused 422 before this is
+    # ever set. Excluded from the default list (a real BR list never shows a
+    # test row); NOT excluded from the status-engine integrity hooks
+    # (``br_count_records``/``br_migrate_records``) - a status holding test
+    # BRs must still be blocked from deletion. DISCLOSURE: this flag ONLY
+    # gates list/count visibility and the promote/link lane - a status move
+    # on a test BR still goes through the SAME status_machine.transition as
+    # a real one, so it still fires real same-transaction notifications and
+    # any entity.status_changed workflow trigger (see
+    # BusinessRequirementService.set_status).
+    is_test = Column(Boolean, nullable=False, default=False)
     created_by = Column(String, nullable=True, index=True)
     updated_by = Column(String, nullable=True, index=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)

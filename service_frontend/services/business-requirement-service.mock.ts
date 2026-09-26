@@ -13,7 +13,11 @@ import type {
   BusinessRequirementDetail,
   BusinessRequirementStatus,
 } from '@/types/business-requirement';
-import type { BrListFilter, BusinessRequirementService } from './business-requirement-service';
+import type {
+  BrListFilter,
+  BrTemplateStatus,
+  BusinessRequirementService,
+} from './business-requirement-service';
 
 const MOCK_TEMPLATE_DOC: FormDocument = {
   schemaVersion: 1,
@@ -99,6 +103,7 @@ export const mockBusinessRequirementService: BusinessRequirementService = {
     let rows = Array.from(store.values());
     if (params?.filter === 'archived') rows = rows.filter((r) => r.status === 'archived');
     else if (params?.filter !== 'all') rows = rows.filter((r) => r.status !== 'archived');
+    if (!params?.includeTest) rows = rows.filter((r) => !r.isTest);
     if (params?.search) {
       const q = params.search.toLowerCase();
       rows = rows.filter((r) => r.title.toLowerCase().includes(q));
@@ -165,5 +170,9 @@ export const mockBusinessRequirementService: BusinessRequirementService = {
 
   async remove(id) {
     store.delete(id);
+  },
+
+  async templateStatus(): Promise<BrTemplateStatus> {
+    return { active: true };
   },
 };
