@@ -171,6 +171,14 @@ def main() -> None:
         finally:
             db.close()
 
+    # Never report success over a stale module schema (issue #89): the same
+    # guard the API runs at start, so "bootstrap complete" implies every
+    # installed module is at its code head. No-op on non-Postgres.
+    from app.database import engine as _engine
+    from app.module_platform.drift_guard import check_module_schema_drift
+
+    check_module_schema_drift(_engine)
+
     print("bootstrap complete: migrated + seeded + modules")
 
 

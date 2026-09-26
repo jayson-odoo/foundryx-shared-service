@@ -75,6 +75,13 @@ def test_check_module_schema_drift_raises_named_error_when_db_is_behind(monkeypa
     monkeypatch.setattr(
         "app.module_platform.drift_guard.module_db_version", lambda engine, m: "0007_something"
     )
+    # Coordinator correction: "behind" = the DB version is a KNOWN ancestor
+    # revision of this code. An unknown revision means the DB is AHEAD (a
+    # newer colour migrated first) and is allowed - see the tests below.
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.module_code_revisions",
+        lambda m: {"0007_something", "0010_business_reqs"},
+    )
 
     with pytest.raises(ModuleSchemaDrift) as exc_info:
         check_module_schema_drift(_FakePostgresEngine())
@@ -184,8 +191,119 @@ def test_check_module_schema_drift_raises_on_the_first_behind_module_and_reports
         "app.module_platform.drift_guard.module_db_version",
         lambda engine, m: db_versions[m["module_name"]],
     )
+    known = {"omnichannel": {"0012_x"}, "ideation": {"0007_something", "0010_business_reqs"}}
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.module_code_revisions",
+        lambda m: known[m["module_name"]],
+    )
 
     with pytest.raises(ModuleSchemaDrift) as exc_info:
         check_module_schema_drift(_FakePostgresEngine())
 
     assert exc_info.value.module_name == "ideation"
+
+
+# ── Coordinator correction (W4): DB AHEAD of the code is allowed ──────────
+#
+# During blue/green the NEW colour migrates first; the OLD colour (or its
+# Celery workers) may restart afterwards on the old image. Its code does not
+# know the newer revision - refusing to start there would take the still-
+# serving colour down mid-deploy. So an unknown DB revision warns and starts.
+
+
+def test_check_module_schema_drift_allows_a_db_ahead_of_the_code_with_a_warning(
+    monkeypatch, caplog
+):
+    import logging
+
+    from app.module_platform.drift_guard import check_module_schema_drift
+
+    manifest = {"module_name": "ideation", "_dir": "ideation", "schema": "app_ideation"}
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.discover_manifests", lambda *a, **k: [manifest]
+    )
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.module_code_head", lambda m: "0010_business_reqs"
+    )
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.module_code_revisions",
+        lambda m: {"0009_ideation_is_test", "0010_business_reqs"},
+    )
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.module_db_version",
+        lambda engine, m: "0011_newer_colour",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        check_module_schema_drift(_FakePostgresEngine())  # must not raise
+
+    assert "ideation" in caplog.text
+    assert "0011_newer_colour" in caplog.text
+
+
+def test_check_module_schema_drift_real_script_dir_unknown_revision_is_allowed_with_warning(
+    monkeypatch, caplog
+):
+    """Against the REAL ideation alembic/versions: a DB revision this code has
+    never seen is treated as ahead (warn, start), not as drift."""
+    import logging
+
+    from app.module_platform.drift_guard import check_module_schema_drift, module_code_head
+
+    manifest = {"module_name": "ideation", "_dir": "ideation", "schema": "app_ideation"}
+    assert module_code_head(manifest)  # the real head resolves
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.discover_manifests", lambda *a, **k: [manifest]
+    )
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.module_db_version",
+        lambda engine, m: "9999_not_in_this_code",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        check_module_schema_drift(_FakePostgresEngine())  # must not raise
+
+    assert "9999_not_in_this_code" in caplog.text
+
+
+def test_check_module_schema_drift_real_script_dir_known_ancestor_is_behind(monkeypatch):
+    """Against the REAL ideation alembic/versions: the incident's exact state
+    (DB at 0007, code at a later head) is refused with the named error."""
+    from app.module_platform.drift_guard import (
+        ModuleSchemaDrift,
+        check_module_schema_drift,
+        module_code_head,
+        module_code_revisions,
+    )
+
+    manifest = {"module_name": "ideation", "_dir": "ideation", "schema": "app_ideation"}
+    assert "0007_ideation_idea_attachments" in module_code_revisions(manifest)
+    assert module_code_head(manifest) != "0007_ideation_idea_attachments"
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.discover_manifests", lambda *a, **k: [manifest]
+    )
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.module_db_version",
+        lambda engine, m: "0007_ideation_idea_attachments",
+    )
+
+    with pytest.raises(ModuleSchemaDrift) as exc_info:
+        check_module_schema_drift(_FakePostgresEngine())
+    assert exc_info.value.db_version == "0007_ideation_idea_attachments"
+    assert exc_info.value.code_head == module_code_head(manifest)
+
+
+def test_check_module_schema_drift_real_script_dir_at_head_starts(monkeypatch):
+    from app.module_platform.drift_guard import check_module_schema_drift, module_code_head
+
+    manifest = {"module_name": "omnichannel", "_dir": "omnichannel", "schema": "app_omnichannel"}
+    head = module_code_head(manifest)
+    assert head
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.discover_manifests", lambda *a, **k: [manifest]
+    )
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.module_db_version", lambda engine, m: head
+    )
+
+    check_module_schema_drift(_FakePostgresEngine())  # must not raise

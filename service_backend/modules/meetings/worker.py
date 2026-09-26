@@ -41,6 +41,13 @@ celery_app = Celery(
     broker=settings.redis_url,
     backend=settings.redis_url,
 )
+
+# Module schema drift guard (issue #89): a worker/beat process refuses to start
+# when a module's database schema is BEHIND this code (fires on worker_init /
+# beat_init only - never when the API merely imports this module to enqueue).
+from app.module_platform.drift_guard import install_celery_drift_guard  # noqa: E402
+
+install_celery_drift_guard()
 celery_app.conf.update(
     task_always_eager=settings.celery_task_always_eager,
     # A failed run is recorded on the meeting, not raised at the worker.

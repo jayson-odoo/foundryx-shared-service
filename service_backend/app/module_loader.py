@@ -259,14 +259,24 @@ def bootstrap_modules(engine=None, db: Optional[Session] = None) -> None:
             manifest = manifests.get(name)
             if manifest is None:
                 continue
-            # Per-module isolation (D8): a failing module is marked errored,
-            # skipped (install + migration + capabilities), siblings continue.
+            # A failing module ABORTS bootstrap (issue #89, prod 26 Sep 2026).
+            # D8 isolation used to mark it errored and continue; bootstrap_db
+            # then printed "bootstrap complete", the container went healthy
+            # and prod served module code ahead of its schema. Now the error
+            # is logged (module name + the failing SQL, which str(exc) of a
+            # DBAPIError carries) and re-raised: bootstrap_db exits non-zero,
+            # start.sh retries then aborts, the swap never happens. Runtime
+            # boot isolation (load_modules / boot_module_hooks) is unchanged.
             try:
                 _bootstrap_one_module(engine, db, name)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 db.rollback()
                 ERRORED_MODULES[name] = f"{type(exc).__name__}: {exc}"
-                logger.error("Module '%s' bootstrap failed: %s", name, exc, exc_info=True)
+                logger.error(
+                    "Module '%s' bootstrap failed; aborting bootstrap: %s",
+                    name, exc, exc_info=True,
+                )
+                raise
         _backfill_tenant_modules(db)
         db.commit()
     finally:
@@ -275,15 +285,44 @@ def bootstrap_modules(engine=None, db: Optional[Session] = None) -> None:
 
 
 def _bootstrap_one_module(engine, db: Session, name: str) -> None:
-    """One module's global install + per-module Alembic + capabilities (D3/D5)."""
-    from app.module_platform.migrations import run_module_migrations
+    """One module's global install + per-module Alembic + capabilities (D3/D5).
+
+    Issue #89 (root cause of the 26 Sep 2026 prod incident): the install hook
+    used to run FIRST and its seed writes (ideation's ``seed_br_template``)
+    stayed uncommitted on the shared ``db`` session while Alembic, on its OWN
+    connection, needed a lock that open transaction held - a lock timeout
+    every time, with no other session alive. Two rules now:
+
+    1. Bootstrap never holds a write across a migration: ``db`` is committed
+       before ``run_module_migrations`` runs, always.
+    2. Schema before seed: a module already in this database migrates FIRST,
+       then its install hook seeds against the up-to-date schema. A module
+       brand-new to this database keeps install-then-stamp (``create_all``
+       builds today's shape, the migration step stamps head), because the
+       revision chains were never written to replay from zero on top of
+       their ``create_all`` baselines.
+    """
+    from app.module_platform.migrations import (
+        module_migration_state,
+        run_module_migrations,
+    )
     from app.services.app_store_service import module_hooks
 
     hooks = module_hooks(name)
-    if hooks and hasattr(hooks, "install"):
-        hooks.install(engine, db)
+    install = getattr(hooks, "install", None) if hooks else None
+    fresh = module_migration_state(engine, name) == "fresh"
+
+    # Commit whatever earlier steps left open (catalog sync, a previous
+    # module's seed) so no bootstrap write can block this module's DDL.
+    db.commit()
+    if fresh and install is not None:
+        install(engine, db)
+        db.commit()
     # Per-module Alembic (D3, BL-029): stamp-if-legacy-else-upgrade. No-op on
     # SQLite test engines (module schema-isolation needs Postgres) and on
     # modules without an alembic/ dir (legacy create_all path).
     run_module_migrations(engine, name)
+    if not fresh and install is not None:
+        install(engine, db)
+        db.commit()
     register_module_boot(name)
