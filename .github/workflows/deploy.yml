@@ -7,6 +7,17 @@ on:
   pull_request:
     branches:
       - main
+  # Merge-queue entries: GitHub creates a temporary branch containing the
+  # candidate merge result (this PR merged onto main plus every entry queued
+  # ahead of it) and fires this event. Every validate/test job below runs for
+  # it because none of them filter on event name, so the queue gates on the
+  # exact same checks as a PR - this is what catches two individually-green
+  # branches that only break combined (two module migrations each adding
+  # their own head on top of the same base, a shared count assertion off by
+  # one). Only "Build, push, deploy" and "Notify owner" stay off merge_group
+  # (see their own `if:` below): a queue entry only validates the merge
+  # candidate, the deploy belongs to the `push` that lands on main afterward.
+  merge_group:
   workflow_dispatch:
 
 env:
@@ -19,6 +30,27 @@ env:
   CI_FERNET_KEY: MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=
 
 jobs:
+  # Fast pre-check: fail in under a minute when an alembic migration graph
+  # (core or any module) has more than one head, instead of consuming a full
+  # test-backend cycle to discover the same thing. Two branches each merging
+  # main and adding their own revision on top of the same head give that
+  # graph two heads once both land - green individually, broken combined,
+  # exactly the class of bug PR #91's stale-literal fixtures reproduced
+  # against #92's real 0011 migration. stdlib-only AST parse (no pip
+  # install: alembic's env.py imports the whole app); adapted from
+  # sorento_crm's `.github/workflows/deploy.yml` `check-migration-heads` job,
+  # generalized from one alembic directory to every directory this repo's
+  # per-module alembic convention creates (core `service_backend/alembic/`
+  # plus each `service_backend/modules/<name>/alembic/` - see the script's
+  # own docstring for exactly which directories it checks).
+  check-migration-heads:
+    name: Single alembic head per module (fast gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert exactly one head per alembic graph
+        run: python3 scripts/check_migration_heads.py
+
   lint-conventions:
     name: Lint conventions (no emdash, brand spelling)
     runs-on: ubuntu-latest
@@ -195,7 +227,15 @@ jobs:
 
   build-and-deploy:
     name: Build, push, deploy (blue/green)
-    needs: [lint-conventions, validate-backend, validate-frontend, test-backend, test-frontend]
+    needs:
+      [
+        check-migration-heads,
+        lint-conventions,
+        validate-backend,
+        validate-frontend,
+        test-backend,
+        test-frontend,
+      ]
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
