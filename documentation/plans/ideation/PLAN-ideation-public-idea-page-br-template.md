@@ -61,9 +61,13 @@ Stored in the module, backend-derived: `PUBLIC_NEXT_STEP: Dict[str, str]` in `id
 2. Reject on the WHOLE normalized string carrying 5+ digits anywhere (any Unicode digit) or containing `@` - a phone split across tokens leaves an individual token with too few digits to trip a token-only check.
 3. Only THEN take the first token, and reject it outright if it carries ANY digit or has no alphabetic character at all.
 
+**Disclosed edge cases (known, accepted - not fixed):**
+- A name with NO whitespace to split on (e.g. a CJK name like `"李明"`) is published WHOLE, surname included - the first-whitespace-token rule has nothing to split there.
+- The published value is the NFKC-NORMALIZED form of whatever was stored, not necessarily byte-identical to the original input.
+
 ### 1.5-1.7 Component tree, reuse, responsive, security note
 
-Unchanged from the original design intent: `PublicBrandedShell` generalises its chromeless-path predicate to cover `/public/ideas/`; `BrandMark` is extracted unchanged to `components/platform/branding/brand-mark.tsx` (Q2: white-label rule preserved, both header and footer use it); `StatusBadge` reused for the pill; new components under `app/(public)/public/ideas/[token]/components/`. Responsive at 375px (single column) and 1280px (two-column with a sticky aside). Security: access path unchanged (same token gate, uniform 404, no new params); every new read scoped by the idea row's own `tenant_id`; personal data = first name only (hardened per 1.4); `Cache-Control: no-store` + `referrer: no-referrer` + `robots noindex` (backend headers added per review round 2; the frontend layout already carried the meta-tag equivalents).
+Unchanged from the original design intent: `PublicBrandedShell` generalises its chromeless-path predicate to cover `/public/ideas/`; `BrandMark` is extracted unchanged to `components/platform/branding/brand-mark.tsx` (Q2: white-label rule preserved, both header and footer use it); `StatusBadge` reused for the pill; new components under `app/(public)/public/ideas/[token]/components/`. Responsive at 375px (single column) and 1280px (two-column with a sticky aside). Security: access path unchanged (same token gate, uniform 404, no new params); every new read scoped by the idea row's own `tenant_id`; personal data = first name only (hardened per 1.4, with the two disclosed edge cases above - a no-whitespace CJK-style name publishes whole, and the published value is NFKC-normalized, not verbatim); `Cache-Control: no-store` + `referrer: no-referrer` + `robots noindex` (backend headers added per review round 2; the frontend layout already carried the meta-tag equivalents).
 
 ---
 

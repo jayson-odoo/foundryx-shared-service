@@ -170,7 +170,17 @@ class PublicIdeaStatusService:
         3. Only THEN take the first token, and reject it outright if it
            carries ANY digit or has no alphabetic character at all - never
            publish a bare punctuation/digit fragment as a "name"
-           (``Ali_0123`` -> the token itself carries a digit)."""
+           (``Ali_0123`` -> the token itself carries a digit).
+
+        DISCLOSURE (known, accepted edge cases - not bugs, not fixed here):
+        - A name with NO whitespace to split on (e.g. a CJK name like
+          ``"李明"``) is published WHOLE, surname included - the
+          first-whitespace-token rule has nothing to split there, so it
+          returns the entire string rather than "first name only".
+        - The published value is the NFKC-NORMALIZED form of whatever was
+          stored, not necessarily byte-identical to the original input (a
+          fullwidth character, for instance, normalizes to its ASCII/
+          halfwidth form before being returned)."""
         raw_name = idea.submitter_name
         if not raw_name and idea.submitter_contact_id:
             from modules.omnichannel.models import Contact
