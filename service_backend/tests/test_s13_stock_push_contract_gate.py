@@ -309,3 +309,94 @@ def test_set_delivery_mode_checks_contract_before_snapshot(monkeypatch, _stock_t
     message = " ".join(exc_info.value.field_errors.values())
     assert "2.5" in message, message
     assert "snapshot" not in message.lower(), message
+
+
+# ── owner-reported live repro (2026-09-26) - a Test-completion echo must ────
+# ── ALSO carry pushGate, not just a plain GET .../etl-task ──────────────────
+#
+# ``preview_job.py``'s ``_task_echo_model`` built its ``EtlTaskResponse``
+# from every OTHER ``EtlTaskView`` field EXCEPT ``push_gate`` - so the task
+# TaskEditorView.apply()'d after a completed Test always read `pushGate:
+# null` (gate OPEN) regardless of the real gate, handing the Push toggle
+# back the moment the operator ran Test on a task whose gate was genuinely
+# shut. Route-level (not just the dataclass/service level the other tests
+# above pin) - this drives the ACTUAL job the Source tab's Test button
+# starts end to end (POST -> eager run -> poll), the same path
+# ``TaskEditorView.onHttpPreviewSuccess`` reads its echoed task from.
+
+
+def _auth_headers(client, email="demo@example.com", password="demo1234"):
+    response = client.post("/auth/login", json={"email": email, "password": password})
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+def test_sample_scope_preview_completion_echoes_pushgate_for_a_shut_stock_gate(
+    client, session_factory
+):
+    import httpx
+    from app.main import app
+    from modules.autocount.http_client import get_http_transport
+    from modules.autocount.services.etl_service import EtlService
+
+    # No Sorento connection at all on this company (default logging sink,
+    # `_company`'s own default) - the simplest "definitely shut" fixture:
+    # `stock_push_gate_error` refuses with `config_error` with no network
+    # call or `SorentoSink` monkeypatch needed, unlike `_stock_task_rig`
+    # above (which wires a real Sorento connection to reach the
+    # contract/no_snapshot branches instead).
+    db = session_factory()
+    conn = _open_connection(db)
+    company = _company(db, conn.id)
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, _http_raw(conn.id)
+    )
+    conn_id, company_id = conn.id, company.id
+    db.close()
+
+    def handler(request: "httpx.Request") -> "httpx.Response":
+        return httpx.Response(
+            200,
+            json={
+                "TotalCount": 1, "Page": 1, "PageSize": 50, "TotalPages": 1,
+                "Data": [{"ItemCode": "SRT-01", "BalQty": 5}],
+            },
+        )
+
+    app.dependency_overrides[get_http_transport] = lambda: httpx.Client(
+        transport=httpx.MockTransport(handler)
+    )
+    try:
+        response = client.post(
+            "/autocount/http/preview",
+            json={
+                "scope": "sample",
+                "companyId": company_id,
+                "entityType": ENTITY_STOCK_BALANCE,
+                "connectionId": conn_id,
+                "path": "/itembatchbalqtybypage",
+            },
+            headers=_auth_headers(client),
+        )
+    finally:
+        app.dependency_overrides.pop(get_http_transport, None)
+
+    assert response.status_code == 202, response.text
+    poll = client.get(
+        f"/autocount/previews/{response.json()['jobId']}", headers=_auth_headers(client)
+    )
+    assert poll.status_code == 200, poll.text
+    body = poll.json()
+    assert body["status"] == "done", body
+    task = body["result"]["preview"]["task"]
+    assert task is not None, body["result"]
+    # No Sorento connection at all on this company - `stock_push_gate_error`
+    # refuses with `{"version": None, "requiredVersion": ...}` (the "cannot
+    # even reach a consumer to ask" shape, same as `test_push_gate_carries_
+    # contract_gate_when_shut`'s but with `version` unresolved rather than
+    # merely too low). The regression this test exists to catch is simply
+    # that `pushGate` is PRESENT at all on this echo - before the fix this
+    # key was omitted entirely, defaulting to `None` (gate open) regardless.
+    assert task["pushGate"] == {
+        "version": None, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION,
+    }, task["pushGate"]

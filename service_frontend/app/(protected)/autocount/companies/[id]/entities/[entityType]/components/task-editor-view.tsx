@@ -44,6 +44,7 @@ import {
   isDocumentEntity,
   mappingSourceColumns,
   mappingSourceColumnsForTask,
+  mergeTaskEcho,
 } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
@@ -390,9 +391,18 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       // `apply()` adopts it directly so `task.lastPreviewAt`/`resultColumns`
       // (Activate's own read) are fresh with no second fetch - closing the
       // race a plain `reload()` had against a concurrent Save (round 6).
-      if (previewedTask) apply(previewedTask);
+      //
+      // sprint-5/13 owner repro (2026-09-26) - `mergeTaskEcho` is a second
+      // line of defence: a Test-completion echo that (by a FUTURE bug, or
+      // an already-in-flight response built before a backend fix landed)
+      // omits/nulls `pushGate` must never silently reopen an already-known
+      // shut gate - only a fresh GET (`reload()`) is trusted to report a
+      // genuine reopen. The one KNOWN cause (`preview_job.py`'s echo
+      // dropping the field entirely) is fixed server-side; this stays as
+      // a belt-and-braces guard, never a substitute for that fix.
+      if (previewedTask) apply(mergeTaskEcho(task, previewedTask));
     },
-    [apply],
+    [apply, task],
   );
   const httpPreviewValid = Boolean(
     config &&

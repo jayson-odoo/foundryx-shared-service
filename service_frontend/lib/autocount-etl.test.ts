@@ -17,6 +17,7 @@ import {
   loggingSinkWarning,
   mappingSourceColumns,
   mappingSourceColumnsForTask,
+  mergeTaskEcho,
   pickerColumnOptions,
   productDependencyWarning,
   pushGateWarning,
@@ -528,6 +529,48 @@ describe('pushGateWarning (sprint-5/13, AC-13-40)', () => {
     expect(pushGateWarning({ reason: 'no_snapshot' })).toBe(
       'Push needs a stock snapshot from the last 24 hours.',
     );
+  });
+});
+
+describe('mergeTaskEcho (sprint-5/13 owner repro, 2026-09-26)', () => {
+  it('adopts the incoming pushGate when the echo carries a real (non-null) value', () => {
+    const previous = task({ pushGate: { reason: 'no_snapshot' } });
+    const next = task({ pushGate: { version: 2.4, requiredVersion: 2.5 } });
+    expect(mergeTaskEcho(previous, next).pushGate).toEqual({
+      version: 2.4, requiredVersion: 2.5,
+    });
+  });
+
+  it('adopts a genuine reopen (incoming null) when there was no previously-known gate', () => {
+    const previous = task({ pushGate: null });
+    const next = task({ pushGate: null });
+    expect(mergeTaskEcho(previous, next).pushGate).toBeNull();
+  });
+
+  it('Test completes, echo without pushGate: Push stays hidden - the previously-known shut gate survives', () => {
+    const previous = task({ entityType: 'stock_balance', pushGate: { reason: 'no_snapshot' } });
+    // The exact shape of the owner's live repro: a completed preview job's
+    // task echo carrying no `pushGate` at all (parses as `undefined`).
+    const next = task({ entityType: 'stock_balance', resultColumns: ['ItemCode', 'BalQty'] });
+    delete (next as { pushGate?: unknown }).pushGate;
+    const merged = mergeTaskEcho(previous, next);
+    expect(merged.pushGate).toEqual({ reason: 'no_snapshot' });
+    // Every OTHER field still comes from the fresh echo, never the stale one
+    // (the merge patches ONLY `pushGate`, it never reverts to the whole
+    // previous task).
+    expect(merged.resultColumns).toEqual(['ItemCode', 'BalQty']);
+  });
+
+  it('an explicit null echo also keeps the previously-known shut gate (never reopens on ambiguous data)', () => {
+    const previous = task({ pushGate: { version: 2.4, requiredVersion: 2.5 } });
+    const next = task({ pushGate: null });
+    expect(mergeTaskEcho(previous, next).pushGate).toEqual({ version: 2.4, requiredVersion: 2.5 });
+  });
+
+  it('no previous task at all: an echo with no pushGate passes through unchanged (nothing to fall back on)', () => {
+    const next = task({});
+    delete (next as { pushGate?: unknown }).pushGate;
+    expect(mergeTaskEcho(null, next).pushGate).toBeUndefined();
   });
 });
 

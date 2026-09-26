@@ -238,6 +238,31 @@ export function brandContractBanner(
 }
 
 /**
+ * Owner-reported live repro (sprint-5/13, 2026-09-26) - a task ECHO from
+ * anywhere other than a plain `GET .../etl-task` (a completed preview job,
+ * a lifecycle action's own response) must never silently downgrade an
+ * already-known shut `pushGate` to open just because THAT PARTICULAR echo
+ * happened to omit/null the field - the backend gap this uncovered
+ * (`preview_job.py`'s `_task_echo_model` omitting `pushGate` entirely) is
+ * fixed server-side, but the frontend stays defensive against any FUTURE
+ * echo path making the same mistake: only a fresh GET is trusted to report
+ * a genuine re-open. `previous` is the task state already held (from the
+ * initial GET or an earlier echo); `next` is the incoming echo. D18 still
+ * holds - this never guesses a gate from an entity list, it only refuses
+ * to let an ambiguous null CLOBBER an already-known non-null one.
+ */
+export function mergeTaskEcho(
+  previous: AutocountEtlTask | null,
+  next: AutocountEtlTask,
+): AutocountEtlTask {
+  if (next.pushGate != null) return next;
+  if (previous && previous.pushGate != null) {
+    return { ...next, pushGate: previous.pushGate };
+  }
+  return next;
+}
+
+/**
  * The Schedule tab's prerequisite line for a shut `pushGate` (sprint-5/13,
  * AC-13-40) - `null` never reaches here (the caller only renders this when
  * `task.pushGate` is non-null). Two shut reasons: the consumer's contract
