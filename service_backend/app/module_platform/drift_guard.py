@@ -42,6 +42,19 @@ from app.module_loader import MODULES_DIR, discover_manifests
 logger = logging.getLogger(__name__)
 
 
+# The API lifespan and Celery worker/beat start run the guard only while this
+# is True. Deliberately a module attribute, NOT an env-driven setting: the test
+# suite (conftest) switches it off because its DATABASE_URL is unreachable,
+# and production gets no environment switch that could disable the guard.
+STARTUP_GUARD_ENABLED = True
+
+
+def run_startup_guard(engine) -> None:
+    """The process-start entry point (API lifespan, Celery worker/beat)."""
+    if STARTUP_GUARD_ENABLED:
+        check_module_schema_drift(engine)
+
+
 class ModuleSchemaDrift(RuntimeError):
     """An installed module's database schema is behind its code's alembic
     head. Carries ``module_name``, ``code_head`` and ``db_version``."""
@@ -173,7 +186,7 @@ def install_celery_drift_guard() -> None:
         from app.database import engine
 
         try:
-            check_module_schema_drift(engine)
+            run_startup_guard(engine)
         except ModuleSchemaDrift as exc:
             logger.critical("%s", exc)
             raise SystemExit(1) from exc

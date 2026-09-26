@@ -140,6 +140,7 @@ def test_bootstrap_db_never_prints_complete_over_a_module_schema_drift(monkeypat
 
 
 def test_the_api_refuses_to_start_on_module_schema_drift(monkeypatch):
+    monkeypatch.setattr("app.module_platform.drift_guard.STARTUP_GUARD_ENABLED", True)
     from fastapi.testclient import TestClient
 
     from app.main import app
@@ -156,6 +157,7 @@ def test_the_api_refuses_to_start_on_module_schema_drift(monkeypatch):
 
 
 def test_the_api_lifespan_runs_the_guard_against_the_app_engine(monkeypatch):
+    monkeypatch.setattr("app.module_platform.drift_guard.STARTUP_GUARD_ENABLED", True)
     from fastapi.testclient import TestClient
 
     from app.database import engine as app_engine
@@ -175,6 +177,7 @@ def test_the_api_lifespan_runs_the_guard_against_the_app_engine(monkeypatch):
 def test_a_celery_worker_or_beat_exits_on_module_schema_drift(monkeypatch, signal_name):
     """Celery's Signal.send swallows Exception from a handler, so the guard
     must surface drift as SystemExit (not swallowed) to stop the process."""
+    monkeypatch.setattr("app.module_platform.drift_guard.STARTUP_GUARD_ENABLED", True)
     import celery.signals
 
     import app.workflow_engine.worker  # noqa: F401 - installs the guard
@@ -191,6 +194,7 @@ def test_a_celery_worker_or_beat_exits_on_module_schema_drift(monkeypatch, signa
 
 
 def test_a_celery_worker_starts_when_there_is_no_drift(monkeypatch):
+    monkeypatch.setattr("app.module_platform.drift_guard.STARTUP_GUARD_ENABLED", True)
     import celery.signals
 
     import app.workflow_engine.worker  # noqa: F401 - installs the guard
@@ -250,3 +254,12 @@ def test_the_lock_holder_query_is_filtered_to_the_module_schema_in_sql():
     assert "n.nspname = :schema" in sql
     assert "l.granted" in sql
     assert "pg_backend_pid()" in sql
+
+
+def test_the_startup_guard_is_not_an_environment_setting():
+    """No env var can switch the guard off in production: the only switch is a
+    module attribute the test suite flips."""
+    from app.config import Settings
+
+    fields = " ".join(Settings.model_fields)
+    assert "drift" not in fields.lower()

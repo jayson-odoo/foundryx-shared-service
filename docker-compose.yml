@@ -30,6 +30,15 @@ x-backend-env: &backend-env
   # correct scheme/host for generated links & secure cookies.
   TRUST_PROXY_HEADERS: "true"
   FORWARDED_ALLOW_IPS: "*"
+  # Container-start bootstrap controls (start.sh; issue #89). This anchor is an
+  # allow-list, so without these lines the documented SKIP_MIGRATIONS=1 bypass
+  # and the lock-timeout/retry tuning never reached the container. Defaults =
+  # start.sh / bootstrap_db defaults. SKIP_MIGRATIONS=1 is the ONLY bypass and
+  # never disables the module schema drift guard.
+  SKIP_MIGRATIONS: ${SKIP_MIGRATIONS:-0}
+  BOOTSTRAP_LOCK_TIMEOUT: ${BOOTSTRAP_LOCK_TIMEOUT:-20s}
+  BOOTSTRAP_ATTEMPTS: ${BOOTSTRAP_ATTEMPTS:-5}
+  BOOTSTRAP_RETRY_DELAY: ${BOOTSTRAP_RETRY_DELAY:-8}
   FRONTEND_URL: ${FRONTEND_URL:?set in .env}
   CORS_ORIGINS: ${CORS_ORIGINS:?set in .env}
   # External backend base INCLUDING the /be path prefix - backend self-built

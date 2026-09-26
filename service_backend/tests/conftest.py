@@ -64,6 +64,12 @@ settings.email_dispatcher_enabled = False
 # ``SessionLocal()`` against the real DATABASE_URL; the sweep's own tests force
 # the flag per case and drive ``JobService`` against the test session.
 settings.background_job_orphan_sweep_on_startup = False
+# Nor the module schema drift guard at API / Celery start (issue #89) - it would
+# inspect the real DATABASE_URL (CI: an unreachable postgresql:// URL). Its own
+# tests force the flag per case against fakes.
+from app.module_platform import drift_guard as _drift_guard  # noqa: E402
+
+_drift_guard.STARTUP_GUARD_ENABLED = False
 # Tests must not pick up a platform SMTP connection from the local .env.
 settings.platform_smtp_host = ""
 # Nor a real LLM key: with no platform LLM connection seeded, the deterministic

@@ -57,9 +57,9 @@ async def lifespan(_: FastAPI):
     # new colour already migrated) only warns. No-op on non-Postgres engines.
     # Runs after start.sh's bootstrap and even when SKIP_MIGRATIONS=1 skipped it.
     from app.database import engine as _engine
-    from app.module_platform.drift_guard import check_module_schema_drift
+    from app.module_platform.drift_guard import run_startup_guard
 
-    check_module_schema_drift(_engine)
+    run_startup_guard(_engine)
     # Derived / computed status (sprint-4/03) - register the re-eval subscriber
     # on the domain-event bus (idempotent). Child/owner changes auto-advance
     # records along their AUTO edges.
