@@ -168,12 +168,13 @@ contract 2.5 (their SR5, Appendix A of the plan).
 - **AC-13-31 [BE]** `set_delivery_mode(stock_balance, push)` refuses with 422 `deliveryMode`
   naming the missing prerequisite when `pushGate` is non-null (contract first, then
   `no_snapshot`). Nothing changes on refusal.
-- **AC-13-32 [BE]** Baseline seed: a `pull -> push` flip, for ANY pull-capable entity, whose task
-  holds ZERO `ac_row_hash` rows seeds one row per distinct `source_ref` found in the union of that
-  (company, entity)'s READY, unexpired snapshots, `row_hash = "seed:<snapshot_id>"`, in the same
-  commit as the mode change. A task that already holds hash rows is never seeded or overwritten.
-  Stock requires at least one such snapshot (AC-13-31); products seed when one exists and flip
-  without one otherwise.
+- **AC-13-32 [BE]** Baseline seed (revised in review round 2, coordinator ruling, latest snapshot
+  only): a `pull -> push` flip, for ANY pull-capable entity, whose task holds ZERO `ac_row_hash`
+  rows seeds one row per distinct `source_ref` found in the SINGLE latest-`extracted_at` READY,
+  unexpired snapshot of that (company, entity) triple (never the union of every ready snapshot),
+  `row_hash = "seed:<snapshot_id>"`, in the same commit as the mode change. A task that already
+  holds hash rows is never seeded or overwritten. Stock requires at least one such snapshot
+  (AC-13-31); products seed when one exists and flip without one otherwise.
 - **AC-13-33 [BE]** First run after a seeded flip: every current ref is staged (seeded refs read as
   changed), every seeded ref absent from the extract stages a delete intent, and the delete guard
   still applies. Drains across runs under the existing 5,000-row offer cap.

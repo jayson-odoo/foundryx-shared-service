@@ -262,9 +262,10 @@ design mandates, DoD gate and hard-fail list.
   control; unverified main walk and unverified lookup -> no deletes, upserts staged,
   `truncated=True`; delete guard unchanged.
 - Changed-only staging (`test_s13_http_stage_changed_only.py`): AC-13-11 (a)-(f).
-- Baseline (`test_s13_flip_baseline_seed.py`): union seed, sentinel value, never overwrites,
-  products optional, first-run staging + deletes, `push -> pull` clears, round trip keeps mapping
-  byte-identical.
+- Baseline (`test_s13_flip_baseline_seed.py`): latest-snapshot-only seed (review round 2
+  coordinator ruling, D9 revised; an older snapshot's extra refs are never seeded), sentinel
+  value, never overwrites, products optional, first-run staging + deletes, `push -> pull` clears,
+  round trip keeps mapping byte-identical.
 - Overlap guard at 5 minutes (`test_s13_schedule_floor_overlap.py`): floor 4 -> 422 / 5 ok,
   `next_run_times` clamp, skip row + re-arm while in flight, fire after finish.
 - Plan-10 test updates in `tests/test_s10_s5b_registration.py`: invert `:235`, `:240`, `:250`
@@ -330,13 +331,19 @@ plan 13 deployed after it; `ac_company.sorento_company_code` is `SRT` / `MCH` (p
 7. Any time a Sorento warehouse is activated or created: Re-push the stock task for that book.
 8. After flipping a book to Push, do not use Sorento's stock Pull or manual stock import for that
    book (R10; both stay visible). If either is used by mistake, Re-push that book's stock task.
-9. A sink-target switch (review round 2 S3) - changing a company's push connection or flipping
-   `logging` <-> `sorento` - auto-invalidates every `autocount_http` task's row hashes for that
-   company, so the very next run re-offers everything to the new target. A CONTRACT UPGRADE alone
-   (no sink-target change - e.g. Sorento deploys 2.3 and a brand task held below it by the logging
+9. A sink-target switch (review round 2 S3; F2 round-2 review fixes) - changing a company's push
+   connection, flipping `logging` <-> `sorento`, or changing ONLY its `sorentoCompanyCode` (one
+   Sorento connection can host more than one downstream company) - auto-invalidates every
+   `autocount_http` task's row hashes for that company through `CompanyService.set_sink_target`,
+   so the very next run re-offers everything to the new target. A CONTRACT UPGRADE alone (no
+   sink-target change - e.g. Sorento deploys 2.3 and a brand task held below it by the logging
    fallback now opens) is NOT auto-detected: Re-push the affected task (brand, or any
    contract-gated entity) once its consumer starts accepting it, or its accumulated changes never
-   re-offer on their own (BL-SS-272).
+   re-offer on their own (BL-SS-272). Re-pointing the Sorento CONNECTION's own `baseUrl` at a
+   different environment (editing the `connections` row in place, never through
+   `set_sink_target`) is ALSO not detected - same connection id, same company code, nothing this
+   method watches changes - so treat it the same way: Re-push every affected task once the new
+   environment is confirmed reachable (BL-SS-272).
 10. Trap (review round 2 S5; revised in review round 2, coordinator ruling, latest snapshot only):
     the baseline seed (D9) is the single latest READY snapshot at flip time, which can still be
     LARGER than the current live extract if it goes stale between Confirm and the flip (e.g. items
@@ -368,9 +375,12 @@ Rollback: flip the book back to Pull (hashes cleared, D10), Sorento Pull works a
   whole-book block is the owner's ruling R5).
 - BL-SS-271 Products flip owner decisions (plan 10 section 2.9 items 4 `uom_code` and 5
   `cost_price`), recorded at the flip; links BL-SS-213 (Medium).
-- BL-SS-272 Review round 2 (S3 fix) - a sink-target switch invalidates `autocount_http` row hashes;
-  a consumer CONTRACT UPGRADE alone is not auto-detected, so the recovery for a newly-opened
-  contract-gated entity (e.g. brand crossing 2.3) is an explicit Re-push (runbook step 9) (Low).
+- BL-SS-272 Review round 2 (S3 fix; F2 round-2 review fixes) - a sink-target switch (impl,
+  connection, or `sorentoCompanyCode`) invalidates `autocount_http` row hashes; a consumer CONTRACT
+  UPGRADE alone is not auto-detected, so the recovery for a newly-opened contract-gated entity
+  (e.g. brand crossing 2.3) is an explicit Re-push (runbook step 9). Also not auto-detected:
+  re-pointing the Sorento connection's own `baseUrl` at another environment in place (same
+  connection id, same code) - same Re-push recovery (Low).
 - BL-SS-273 Review round 2 NIT - a product HTTP task's first clean save seeds the preset's
   `ItemUOM` lookup even when the caller's own PUT already carries an explicit `lookups: []` (Low).
 
