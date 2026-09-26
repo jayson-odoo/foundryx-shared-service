@@ -18,7 +18,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from cryptography.fernet import InvalidToken
@@ -102,11 +102,13 @@ from ..repositories import (
     ConnectionRepository,
     EntityConfigRepository,
     FieldMappingRepository,
+    RowHashRepository,
     WatermarkRepository,
 )
 from ..sinks import EntitySink, UnknownSinkImpl, sink_for
 from ..sinks_sorento import (
     BRAND_REQUIRED_CONTRACT_VERSION,
+    CONTRACT_GATED_ENTITIES,
     PRODUCT_CODE_WINS_CONTRACT_VERSION,
     STOCK_BALANCES_CONTRACT_VERSION,
     sorento_sink_from_connection,
@@ -848,15 +850,18 @@ class CompanyService:
             # swappable the same way the Sorento sink is chosen - one seam.
             return sink_for(SINK_IMPL_LOGGING)
         if impl == SINK_IMPL_SORENTO:
-            # S2 (sprint-5/08 review round 1, AC-08-33) - ``brand`` is
-            # CONTRACT-GATED: unlike every other entity here, whether
+            # S2 (sprint-5/08 review round 1, AC-08-33; generalised plan 13
+            # AC-13-06) - every entity in ``CONTRACT_GATED_ENTITIES``
+            # (``brand``, ``stock_balance``) is CONTRACT-GATED: whether
             # Sorento accepts it depends on the CONSUMER's own advertised
-            # ``/external/contract`` (version >= 2.3 AND ``"brands"`` in its
-            # ``entities``), so the plain membership check
-            # (``sorento_supports_entity(entity_type)``, no kwargs) can
-            # never open for it - it needs a LIVE contract read. Every other
-            # entity keeps the original zero-network early-out unchanged.
-            if entity_type != ENTITY_BRAND and not sorento_supports_entity(entity_type):
+            # ``/external/contract`` (version >= its own required version
+            # AND its own name in ``entities``), so the plain membership
+            # check (``sorento_supports_entity(entity_type)``, no kwargs)
+            # can never open for it - it needs a LIVE contract read. Every
+            # other entity keeps the original zero-network early-out
+            # unchanged.
+            gated = entity_type in CONTRACT_GATED_ENTITIES
+            if not gated and not sorento_supports_entity(entity_type):
                 # Sorento ingests masters only; a document entity (GRN, PO, …)
                 # has no ingest endpoint yet. Route it to the logging sink so it
                 # stages + logs cleanly instead of raising on a missing ingest
@@ -881,7 +886,7 @@ class CompanyService:
                 # answers the authoritative COMPANY_ANCHOR_REQUIRED.
                 company_code=company.sorento_company_code,
             )
-            if entity_type == ENTITY_BRAND:
+            if gated:
                 contract = sink.fetch_contract_detail()
                 supported = sorento_supports_entity(
                     entity_type,
@@ -889,10 +894,12 @@ class CompanyService:
                     contract_entities=(contract.entities if contract else None),
                 )
                 if not supported:
-                    # AC-08-33 - never a 422 from Sorento; a 2.2 consumer (or
-                    # an unreachable one) falls back to the logging sink,
-                    # exactly the "deliverability" story every other
-                    # not-yet-built entity already gets.
+                    # AC-08-33/AC-13-06 - never a 422 from Sorento; a
+                    # too-old or unreachable consumer falls back to the
+                    # logging sink, exactly the "deliverability" story every
+                    # other not-yet-built entity already gets. (Stock's OWN
+                    # push-time refusal - never delivering through this
+                    # fallback - lives in ``SyncService.auto_push``, D4.)
                     return sink_for(SINK_IMPL_LOGGING)
             return sink
         raise UnknownSinkImpl(
@@ -1172,6 +1179,17 @@ class CompanyService:
         only ones a sink switch legitimately owns.
         """
         company = self.get(tenant_id, company_id)  # tenant-scope guard
+        # plan 13 review round 2 (S3 fix) - captured BEFORE mutation: the
+        # sink-switch invalidation below fires only on a GENUINE change.
+        previous_sink_impl = company.sink_impl
+        previous_sink_connection_id = company.sink_connection_id
+        # plan 13 round-2 review fixes (F2) - normalized (stripped, upper-
+        # cased) so a save that only touches case/whitespace never reads as
+        # a "changed" code; a genuine code change (same connection, a
+        # different downstream Sorento company) still must invalidate.
+        previous_sorento_company_code = (
+            company.sorento_company_code or ""
+        ).strip().upper()
         if sink_impl == SINK_IMPL_LOGGING:
             company.sink_impl = SINK_IMPL_LOGGING
             company.sink_connection_id = None
@@ -1200,6 +1218,46 @@ class CompanyService:
             raise AutocountServiceError(
                 f"Unknown push target '{sink_impl}'. Choose 'logging' or 'sorento'."
             )
+        #     !!  A SINK SWITCH MUST NEVER SILENTLY STRAND RECORDS.  !!
+        # (plan 13 review round 2, S3 fix.) An `autocount_http` task's own
+        # `ac_row_hash` population is a diff baseline against whatever the
+        # OLD target already received (D6, changed-only staging) - a
+        # record unchanged since then would never restage for the NEW
+        # target, which has no idea it exists. Invalidating (the SAME
+        # mechanism Re-push uses, `RowHashRepository.invalidate_all` -
+        # never a delete: every ref stays KNOWN, so a genuine delete is
+        # still correctly derived) every `autocount_http` task's hashes on
+        # a genuine `sink_impl`/`sink_connection_id` change forces the
+        # next run to re-offer everything to the new target. A brand task
+        # still below contract 2.3 keeps its existing logging fallback
+        # (plan-08 behaviour, out of scope here) - a LATER contract
+        # upgrade is not auto-detected by this method at all (no sink
+        # field changed); the runbook step below covers it.
+        #
+        # plan 13 round-2 review fixes (F2) - a changed `sorento_company_
+        # code` ALSO counts as a sink-target change, not only `sink_impl`/
+        # `sink_connection_id`: the same connection can host more than one
+        # downstream Sorento company, so re-pointing the code alone sends
+        # every subsequent push to a DIFFERENT company with no idea what
+        # the old one already received - the exact stranding this guard
+        # exists to prevent. Compared normalized (stripped, upper-cased)
+        # so it never fires on the trivial case/whitespace variants.
+        current_sorento_company_code = (
+            company.sorento_company_code or ""
+        ).strip().upper()
+        sink_target_changed = (
+            company.sink_impl != previous_sink_impl
+            or company.sink_connection_id != previous_sink_connection_id
+            or current_sorento_company_code != previous_sorento_company_code
+        )
+        if sink_target_changed:
+            stamp = f"repush:{datetime.now(timezone.utc).isoformat()}"
+            hashes_repo = RowHashRepository(self.db)
+            for task in self.configs.list_for_company(tenant_id, company_id):
+                if task.source_impl == SOURCE_IMPL_AUTOCOUNT_HTTP:
+                    hashes_repo.invalidate_all(
+                        tenant_id, company_id, task.entity_type, stamp=stamp
+                    )
         self.db.commit()
         self.db.refresh(company)
         return company

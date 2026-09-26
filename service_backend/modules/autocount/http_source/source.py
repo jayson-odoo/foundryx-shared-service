@@ -49,6 +49,7 @@ from ..sources import (
     SourceRecord,
     Watermark,
     register_source,
+    walk_is_verified,
 )
 from ..sql_source.hashing import compared_columns_for, row_hash
 from ..sql_source.source import CURSOR_COLUMN, CURSOR_MARK, MAX_EXTRACT_ROWS
@@ -1118,6 +1119,11 @@ class HttpApiSource:
 
         hashes: Dict[str, str] = {}
         current_refs: set = set()
+        # plan 13 (AC-13-11, D6) - every ref THIS run counted as added or
+        # hash-changed, attached to the returned ``FetchResult`` as a
+        # dynamic attribute below (never a declared dataclass field - every
+        # OTHER source's result simply carries no such attribute at all).
+        changed_refs: set = set()
         added = updated = 0
         # B-A (sprint-5/08 review round 2 blocker) - an empty effective
         # compared set (never previewed: `result_columns` is None/empty AND
@@ -1140,8 +1146,10 @@ class HttpApiSource:
             hashes[ref] = value_hash
             if ref not in known:
                 added += 1
+                changed_refs.add(ref)
             elif known[ref] != value_hash:
                 updated += 1
+                changed_refs.add(ref)
 
         delete_refs: List[str] = []
         if full_extract and known:
@@ -1176,6 +1184,23 @@ class HttpApiSource:
             )
             self._ctx.db.commit()
 
+        # plan 13 (D8, AC-13-13) review-round-2 fix (B1; F3 round-2 review
+        # fix) - THIS source's own completeness verdict, via the ONE
+        # neutral ``sources.walk_is_verified`` helper ``sync.
+        # extract_is_complete`` and ``sync._unverified_endpoint_names``
+        # both call too (bare array = verified; a PAGED endpoint needs
+        # ``rows_scanned == reported_total``, and every configured lookup
+        # must ALSO have verified) - never a local re-derivation, so the
+        # three can never drift apart. Set ONLY here - every other source
+        # leaves ``FetchResult.walk_verified`` at its ``None`` default
+        # ("not applicable"), which the push run treats as complete.
+        walk_verified = walk_is_verified(
+            envelope_kind=envelope_kind,
+            reported_total=reported_total,
+            rows_scanned=rows_scanned,
+            lookup_verification=self._lookup_verification,
+        )
+
         return FetchResult(
             records=records,
             max_last_modified=max_seen_dt,
@@ -1195,6 +1220,12 @@ class HttpApiSource:
             envelope_kind=envelope_kind,
             lookup_verification=dict(self._lookup_verification),
             combine_metadata=combine_metadata,
+            # plan 13 (AC-13-11, D6) - the ONE place this source marks its
+            # changed set on the result it returns; now a DECLARED field
+            # (review round 2 B2 fix), never a dynamic post-construction
+            # attribute.
+            changed_refs=changed_refs,
+            walk_verified=walk_verified,
         )
 
     # ── observability ──────────────────────────────────────────────────────

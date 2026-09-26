@@ -12,6 +12,7 @@ import type {
   AutocountEtlTaskError,
   AutocountLookupSpec,
   AutocountPullSnapshotRowsPage,
+  AutocountPushGate,
   AutocountSqlPreview,
   AutocountSqlSchema,
   HttpPreview,
@@ -236,6 +237,48 @@ export function brandContractBanner(
   return `Consumer contract ${version} - brands land when ${gate.requiredVersion} is deployed`;
 }
 
+/**
+ * Owner-reported live repro (sprint-5/13, 2026-09-26) - a task ECHO from
+ * anywhere other than a plain `GET .../etl-task` (a completed preview job,
+ * a lifecycle action's own response) must never silently downgrade an
+ * already-known shut `pushGate` to open just because THAT PARTICULAR echo
+ * happened to omit/null the field - the backend gap this uncovered
+ * (`preview_job.py`'s `_task_echo_model` omitting `pushGate` entirely) is
+ * fixed server-side, but the frontend stays defensive against any FUTURE
+ * echo path making the same mistake: only a fresh GET is trusted to report
+ * a genuine re-open. `previous` is the task state already held (from the
+ * initial GET or an earlier echo); `next` is the incoming echo. D18 still
+ * holds - this never guesses a gate from an entity list, it only refuses
+ * to let an ambiguous null CLOBBER an already-known non-null one.
+ */
+export function mergeTaskEcho(
+  previous: AutocountEtlTask | null,
+  next: AutocountEtlTask,
+): AutocountEtlTask {
+  if (next.pushGate != null) return next;
+  if (previous && previous.pushGate != null) {
+    return { ...next, pushGate: previous.pushGate };
+  }
+  return next;
+}
+
+/**
+ * The Schedule tab's prerequisite line for a shut `pushGate` (sprint-5/13,
+ * AC-13-40) - `null` never reaches here (the caller only renders this when
+ * `task.pushGate` is non-null). Two shut reasons: the consumer's contract
+ * (absent/outdated, `version`/`requiredVersion` carried - the SAME shape as
+ * `contractGate`/`brandContractGate`) or no READY, unexpired pull snapshot
+ * yet (`reason: 'no_snapshot'`).
+ */
+export function pushGateWarning(gate: AutocountPushGate): string {
+  if (gate.reason === 'no_snapshot') {
+    return 'Push needs a stock snapshot from the last 24 hours.';
+  }
+  const version = gate.version ?? 'unknown';
+  const required = gate.requiredVersion ?? 2.5;
+  return `Consumer contract ${version} - stock push needs ${required}.`;
+}
+
 const ANCHOR_TITLES: Record<AutocountAnchorErrorCode, string> = {
   COMPANY_ANCHOR_REQUIRED: 'Sorento company code required',
   UNKNOWN_COMPANY: 'Unknown Sorento company',
@@ -304,8 +347,12 @@ export function formatDurationMs(ms: number | null | undefined): string {
 
 /** Incremental floor with a watermark column (AC-22-12). */
 export const MIN_INCREMENTAL_MINUTES = 1;
-/** Incremental floor WITHOUT one - the task runs hash-diff as its incremental. */
-export const MIN_INCREMENTAL_MINUTES_NO_WATERMARK = 15;
+/** Incremental floor WITHOUT one - the task runs hash-diff as its incremental.
+ * sprint-5/13 (D11, AC-13-20): 15 -> 5, every no-watermark task (not a stock
+ * special case) - the overlap guard already stops a slow walk from
+ * stacking, and the backend floor moves together
+ * (`services/etl_service.py:180`). */
+export const MIN_INCREMENTAL_MINUTES_NO_WATERMARK = 5;
 /** Reconcile "every N hours" floor. */
 export const MIN_RECONCILE_HOURS = 1;
 

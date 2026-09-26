@@ -1560,9 +1560,23 @@ def test_repush_happy_path_clears_only_this_companys_entity_hashes(
     assert "status" in body
 
     db2 = session_factory()
+    # plan 13 review round 2 S1 fix - Re-push now INVALIDATES this
+    # (company, entity)'s `ac_row_hash` rows (`RowHashRepository.
+    # invalidate_all`), never DELETES them: the row COUNT is unchanged,
+    # only the stored hash value is stamped unrecognisable.
     assert _row_hash_count(
         db2, company_id=company_id, entity_type=ENTITY_CUSTOMER,
-    ) == 0, "every tracked row for this (company, entity) must be cleared"
+    ) == expected_cleared, "every tracked row for this (company, entity) stays known, just invalidated"
+    remaining = (
+        db2.query(AcRowHash)
+        .filter(
+            AcRowHash.tenant_id == DEFAULT_TENANT_ID,
+            AcRowHash.company_id == company_id,
+            AcRowHash.entity_type == ENTITY_CUSTOMER,
+        )
+        .all()
+    )
+    assert all(row.row_hash.startswith("repush:") for row in remaining)
     assert _row_hash_count(
         db2, company_id=company_id, entity_type=ENTITY_SUPPLIER,
     ) == 2, "a sibling entity's rows must be untouched"
@@ -1790,15 +1804,17 @@ def test_repush_failure_at_commit_rolls_back_the_deletion(
 def test_repush_a_run_enqueued_between_the_guard_and_the_commit_rolls_back(
     client, session_factory, rig, consumer, monkeypatch,
 ):
-    """The race `first_unfinished`/`clear_all` leaves open (review round
-    finding 3): a run can be enqueued AFTER the up-front in-flight guard
-    passes but BEFORE `repush_task` commits. Exercised end to end with the
-    REAL `_in_flight_guard` on both calls (never stubbed): `RowHashRepository.
-    clear_all` is monkeypatched to perform the genuine delete AND THEN insert
-    a real unfinished `BackgroundJob` for the same (tenant, company, entity) -
-    the row a run enqueued mid-window would actually leave behind - so the
-    SECOND real guard read (right before the commit) is what trips, on real
-    data, not a stubbed exception."""
+    """The race `first_unfinished`/`invalidate_all` leaves open (review
+    round finding 3; plan 13 review round 2 S1 fix renamed the mutation
+    from `clear_all` to `invalidate_all` - never a delete): a run can be
+    enqueued AFTER the up-front in-flight guard passes but BEFORE
+    `repush_task` commits. Exercised end to end with the REAL
+    `_in_flight_guard` on both calls (never stubbed): `RowHashRepository.
+    invalidate_all` is monkeypatched to perform the genuine invalidation
+    AND THEN insert a real unfinished `BackgroundJob` for the same
+    (tenant, company, entity) - the row a run enqueued mid-window would
+    actually leave behind - so the SECOND real guard read (right before
+    the commit) is what trips, on real data, not a stubbed exception."""
     import modules.autocount.repositories.autocount_repository as repo_module
     from app.models.background_job import JOB_RUNNING
 
@@ -1809,21 +1825,26 @@ def test_repush_a_run_enqueued_between_the_guard_and_the_commit_rolls_back(
     db.commit()
     db.close()
 
-    real_clear_all = repo_module.RowHashRepository.clear_all
+    real_invalidate_all = repo_module.RowHashRepository.invalidate_all
 
-    def racy_clear_all(self, tenant_id, company_id_, entity_type):
-        cleared = real_clear_all(self, tenant_id, company_id_, entity_type)
-        # The run that "got enqueued in between" - same session `clear_all`
-        # is already using, so the second guard read (same request, same
-        # transaction) sees it with no extra round trip.
+    def racy_invalidate_all(self, tenant_id, company_id_, entity_type, *, stamp):
+        invalidated = real_invalidate_all(
+            self, tenant_id, company_id_, entity_type, stamp=stamp
+        )
+        # The run that "got enqueued in between" - same session
+        # `invalidate_all` is already using, so the second guard read
+        # (same request, same transaction) sees it with no extra round
+        # trip.
         self.db.add(BackgroundJob(
             tenant_id=tenant_id, type="autocount_sync", status=JOB_RUNNING,
             payload_json={"companyId": company_id_, "entityType": entity_type},
         ))
         self.db.flush()
-        return cleared
+        return invalidated
 
-    monkeypatch.setattr(repo_module.RowHashRepository, "clear_all", racy_clear_all)
+    monkeypatch.setattr(
+        repo_module.RowHashRepository, "invalidate_all", racy_invalidate_all
+    )
 
     response = client.post(_repush_url(company_id), headers=_auth(client))
     assert response.status_code == 409, response.text
@@ -1846,8 +1867,10 @@ def test_repush_an_activity_write_failure_never_undoes_the_committed_wipe(
 ):
     """The reviewer's kill test: `record_activity` runs AFTER `repush_task`'s
     own commit now (review round finding 1), so a failure writing the
-    activity row must never touch the already-committed deletion - the
-    response still reports the real `clearedCount` and the wipe is real."""
+    activity row must never touch the already-committed INVALIDATION
+    (plan 13 review round 2 S1 fix - `invalidate_all`, never a delete) -
+    the response still reports the real `clearedCount` and the
+    invalidation is real."""
     import app.activity_log.service as activity_service_module
     from modules.autocount.services.etl_service import EtlService
 
@@ -1874,15 +1897,25 @@ def test_repush_an_activity_write_failure_never_undoes_the_committed_wipe(
     fresh = session_factory()
     assert _row_hash_count(
         fresh, company_id=company_id, entity_type=ENTITY_CUSTOMER,
-    ) == 0, "an activity-write failure must never undo the already-committed wipe"
+    ) == 2, "an activity-write failure must never undo the already-committed invalidation"
+    invalidated = (
+        fresh.query(AcRowHash)
+        .filter(
+            AcRowHash.tenant_id == DEFAULT_TENANT_ID,
+            AcRowHash.company_id == company_id,
+            AcRowHash.entity_type == ENTITY_CUSTOMER,
+        )
+        .all()
+    )
+    assert all(row.row_hash.startswith("repush:") for row in invalidated)
     fresh.close()
 
 
 def test_repush_control_the_same_fixture_sees_a_committed_delete(session_factory, rig, consumer):
     """Companion to the mutation test above (rollback-tests-need-savepoint-
     fixture): the identical setup, WITHOUT the injected failure, must
-    genuinely commit the deletion - otherwise the rollback test above would
-    be proving nothing."""
+    genuinely commit the invalidation (plan 13 review round 2 S1 fix) -
+    otherwise the rollback test above would be proving nothing."""
     from modules.autocount.services.etl_service import EtlService
 
     company_id, _sql_id = rig
@@ -1904,7 +1937,17 @@ def test_repush_control_the_same_fixture_sees_a_committed_delete(session_factory
     fresh = session_factory()
     assert _row_hash_count(
         fresh, company_id=company_id, entity_type=ENTITY_CUSTOMER,
-    ) == 0, "the control run must actually commit the deletion"
+    ) == 1, "the control run must actually commit the invalidation (row count unchanged)"
+    (row,) = (
+        fresh.query(AcRowHash)
+        .filter(
+            AcRowHash.tenant_id == DEFAULT_TENANT_ID,
+            AcRowHash.company_id == company_id,
+            AcRowHash.entity_type == ENTITY_CUSTOMER,
+        )
+        .all()
+    )
+    assert row.row_hash.startswith("repush:")
     fresh.close()
 
 

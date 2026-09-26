@@ -1,6 +1,20 @@
 """Sprint-5/10 S5b - Group E registration: AC-10-39, AC-10-15 (as it applies
 to ``stock_balance``).
 
+Plan 13 S0 (2026-09-25) INVERTS three tests below on purpose
+(``test_no_sorento_entity_path_entry``,
+``test_constructing_a_sorento_sink_for_stock_balance_raises``,
+``test_sorento_does_not_report_supporting_stock_balance_at_all`` -
+originally lines 235/240/250, cited verbatim in
+`documentation/plans/sprint-5/13-autocount-stock-push-acceptance-criteria.md`
+"Verified baseline"). Plan 10's S5b deliberately left stock PULL-ONLY (no
+``_ENTITY_PATH`` entry, ``sorento_supports_entity`` unconditionally ``False``)
+- plan 13 (BL-SS-207) gives it the SAME push path every other pull-capable
+entity has, contract-gated at 2.5 exactly like ``brand`` is at 2.3. These
+three inversions are the ONLY deliberate assertion reversals in this file
+(AC-13-71); every other test above keeps pinning plan 10's own behaviour
+unchanged.
+
 RED before the coder: ``modules.autocount.canonical.masters`` declares no
 ``ENTITY_STOCK_BALANCE``/``CanonicalStockBalance`` at all today (grepped
 2026-09-20 - only ``pull_gateway_service.py``'s wire-name map and
@@ -230,38 +244,58 @@ def test_registered_in_mapping_catalog_sorento_fields():
 # ── no Sorento ingest path (pull-only rule, AC-10-15) ───────────────────────
 
 
-def test_no_sorento_entity_path_entry():
+def test_sorento_entity_path_stock_balance_is_stock_balances():
+    """INVERTED for plan 13 (AC-13-01): stock now has an ingest path, exactly
+    like every other push-capable entity - ``_ENTITY_PATH[ENTITY_STOCK_BALANCE]
+    == "stock_balances"``."""
     from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
     from modules.autocount.sinks_sorento import _ENTITY_PATH
 
-    assert ENTITY_STOCK_BALANCE not in _ENTITY_PATH
+    assert ENTITY_STOCK_BALANCE in _ENTITY_PATH
+    assert _ENTITY_PATH[ENTITY_STOCK_BALANCE] == "stock_balances"
 
 
-def test_constructing_a_sorento_sink_for_stock_balance_raises():
+def test_constructing_a_sorento_sink_for_stock_balance_succeeds():
+    """INVERTED for plan 13 (AC-13-01): a ``SorentoSink`` for stock now
+    constructs cleanly (the ``_ENTITY_PATH`` entry above is what makes
+    construction possible at all - ``SorentoSink.__init__`` raises
+    ``SorentoSinkError`` for any entity absent from the map)."""
     from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
-    from modules.autocount.sinks_sorento import SorentoSink, SorentoSinkError
+    from modules.autocount.sinks_sorento import SorentoSink
 
-    with pytest.raises(SorentoSinkError, match="No Sorento ingest path"):
-        SorentoSink(
-            base_url="https://example.invalid", api_key="k", entity_type=ENTITY_STOCK_BALANCE,
-        )
+    sink = SorentoSink(
+        base_url="https://example.invalid", api_key="k", entity_type=ENTITY_STOCK_BALANCE,
+    )
+    assert sink.entity_type == ENTITY_STOCK_BALANCE
 
 
-def test_sorento_does_not_report_supporting_stock_balance_at_all():
-    """``sorento_supports_entity`` never claims the PUSH ingest route exists
-    for stock, at any contract - it has no ``_ENTITY_PATH`` entry to gate.
-    (The SEPARATE `set_delivery_mode` gate below is what actually governs
-    whether an operator may flip the mode - a different question from "does
-    Sorento have an ingest route".)"""
+def test_sorento_supports_stock_balance_is_contract_gated_like_brand():
+    """INVERTED for plan 13 (AC-13-02): stock is CONTRACT-GATED exactly like
+    ``brand`` (2.3) is - here at ``STOCK_BALANCES_CONTRACT_VERSION = 2.5`` -
+    never an unconditional ``False``. The plain 1-arg call (no contract
+    kwargs, the shape every OTHER non-gated entity uses) still reads as
+    "not yet provable" -> ``False``, same posture as brand below 2.3."""
     from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
     from modules.autocount.sinks_sorento import sorento_supports_entity
 
     assert sorento_supports_entity(ENTITY_STOCK_BALANCE) is False
     assert (
         sorento_supports_entity(
-            ENTITY_STOCK_BALANCE, contract_version=99.0, contract_entities=["stock_balances"]
+            ENTITY_STOCK_BALANCE, contract_version=2.4, contract_entities=["stock_balances"]
         )
         is False
+    )
+    assert (
+        sorento_supports_entity(
+            ENTITY_STOCK_BALANCE, contract_version=2.5, contract_entities=["suppliers"]
+        )
+        is False
+    )
+    assert (
+        sorento_supports_entity(
+            ENTITY_STOCK_BALANCE, contract_version=2.5, contract_entities=["stock_balances"]
+        )
+        is True
     )
 
 
@@ -317,8 +351,24 @@ def test_switching_a_stock_task_to_push_is_refused_naming_entity_and_version(db)
 
 
 def test_switching_a_stock_task_to_push_is_allowed_once_the_contract_reports_2_5(db, monkeypatch):
+    """Plan 13 S0 (2026-09-25) - the ONE sanctioned edit to this file
+    (coder brief defect 3): once contract 2.5 opens the gate, stock ALSO
+    needs a READY, unexpired snapshot to seed its baseline from (D9,
+    AC-13-31) - this rig now provides one so the assertion under test
+    (contract-gated switch succeeds) is not masked by the newer
+    ``no_snapshot`` refusal plan 13 adds on top of plan 10's own gate."""
+    import uuid
+    from datetime import timedelta
+
     from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
-    from modules.autocount.models import DELIVERY_MODE_PUSH, SINK_IMPL_SORENTO
+    from modules.autocount.models import (
+        DELIVERY_MODE_PUSH,
+        PULL_SNAPSHOT_STATUS_READY,
+        SINK_IMPL_SORENTO,
+        AcPullSnapshot,
+        AcPullSnapshotRow,
+    )
+    from modules.autocount.repositories import PullSnapshotRepository
     from modules.autocount.services.etl_service import EtlService
 
     conn = _open_connection(db)
@@ -332,6 +382,24 @@ def test_switching_a_stock_task_to_push_is_allowed_once_the_contract_reports_2_5
     db.refresh(sorento)
     company = _company(db, conn.id, sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id)
     EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, _http_raw(conn.id))
+
+    now = datetime.now(timezone.utc)
+    snapshot = AcPullSnapshot(
+        id=str(uuid.uuid4()), tenant_id=DEFAULT_TENANT_ID, company_id=company.id,
+        entity_type=ENTITY_STOCK_BALANCE, company_code=company.sorento_company_code,
+        status=PULL_SNAPSHOT_STATUS_READY, record_count=1, complete=True,
+        extracted_at=now, expires_at=now + timedelta(hours=24),
+    )
+    snapshot_repo = PullSnapshotRepository(db)
+    snapshot_repo.add(snapshot)
+    snapshot_repo.insert_row(
+        AcPullSnapshotRow(
+            tenant_id=DEFAULT_TENANT_ID, snapshot_id=snapshot.id, row_index=0,
+            company_id=company.id, source_ref="AED_X:A1|MBS",
+            payload_json={"source_ref": "AED_X:A1|MBS", "qty": 1},
+        )
+    )
+    db.commit()
 
     class _Contract:
         version = 2.5
@@ -455,6 +523,39 @@ def _activatable_stock_config(db, company_id, connection_id):
     return config
 
 
+def _seed_ready_stock_snapshot(db, company_id, connection_id):
+    """NOTE (plan 13 S2 coder, 2026-09-26) - a READY, unexpired snapshot is
+    now ALSO a `pull -> push` prerequisite for stock (AC-13-31, D9), on
+    top of this file's own pre-existing contract-version gate - every
+    caller here that goes on to call `set_delivery_mode(push)` needs one,
+    or that call now 422s `no_snapshot` before it ever reaches the
+    contract-regression scenario this test exists to pin."""
+    import uuid
+    from datetime import timedelta
+
+    from modules.autocount.canonical.masters import ENTITY_STOCK_BALANCE
+    from modules.autocount.models import PULL_SNAPSHOT_STATUS_READY, AcPullSnapshot, AcPullSnapshotRow
+    from modules.autocount.repositories import PullSnapshotRepository
+
+    now = datetime.now(timezone.utc)
+    snapshot = AcPullSnapshot(
+        id=str(uuid.uuid4()), tenant_id=DEFAULT_TENANT_ID, company_id=company_id,
+        entity_type=ENTITY_STOCK_BALANCE, company_code="SRT",
+        status=PULL_SNAPSHOT_STATUS_READY, record_count=1, complete=True,
+        extracted_at=now, expires_at=now + timedelta(hours=24),
+    )
+    repo = PullSnapshotRepository(db)
+    repo.add(snapshot)
+    repo.insert_row(
+        AcPullSnapshotRow(
+            tenant_id=DEFAULT_TENANT_ID, snapshot_id=snapshot.id, row_index=0,
+            company_id=company_id, source_ref="AED_X:A1|MBS",
+            payload_json={"source_ref": "AED_X:A1|MBS", "qty": 1},
+        )
+    )
+    db.commit()
+
+
 def test_activating_a_stock_task_refuses_once_the_push_gate_regresses(db, monkeypatch):
     """N3 - a task SAVED in push mode while the gate was open (the
     consumer served 2.5) must be re-checked again on its way to `active`,
@@ -475,6 +576,7 @@ def test_activating_a_stock_task_refuses_once_the_push_gate_regresses(db, monkey
     db.refresh(sorento)
     company = _company(db, conn.id, sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id)
     _activatable_stock_config(db, company.id, conn.id)
+    _seed_ready_stock_snapshot(db, company.id, conn.id)
 
     class _ContractOk:
         version = 2.5

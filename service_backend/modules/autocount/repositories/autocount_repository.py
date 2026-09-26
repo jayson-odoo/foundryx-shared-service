@@ -13,7 +13,7 @@ primary key - scoping by ``(tenant_id, id)`` is the same guarantee.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import Text, cast, func, nulls_first, nulls_last, or_, select, update
 from sqlalchemy.orm import Session
@@ -1083,6 +1083,35 @@ class RowHashRepository:
         self.db.flush()
         return deleted
 
+    def invalidate_all(
+        self, tenant_id: str, company_id: str, entity_type: str, *, stamp: str
+    ) -> int:
+        """Plan 13 review round 2 (S1, S3 fixes) - Re-push and a sink-target
+        switch must INVALIDATE this task's known refs, never DELETE them
+        (``clear_all`` above, kept for the genuine ``push -> pull`` flip,
+        D10, where stale hashes really would mask a pair the pull period
+        zeroed). A plain ``UPDATE ... SET row_hash = stamp WHERE ...``
+        (no read-then-write): every ref then restages on its next fetch
+        (a stamped hash can never match a freshly computed content hash)
+        but stays KNOWN, so a genuine delete is still correctly derived
+        for a ref that has truly vanished - including one a truncated
+        walk (D8) held back - instead of that ref silently falling out of
+        the diff's ``known`` population the moment its row disappears.
+        ``stamp`` is a value the caller mints so it can never collide with
+        a genuine content hash (e.g. ``f"repush:{utcnow.isoformat()}"``).
+        Does not commit; the caller owns the transaction."""
+        updated = (
+            self.db.query(AcRowHash)
+            .filter(
+                AcRowHash.tenant_id == tenant_id,
+                AcRowHash.company_id == company_id,
+                AcRowHash.entity_type == entity_type,
+            )
+            .update({"row_hash": stamp}, synchronize_session=False)
+        )
+        self.db.flush()
+        return updated
+
 
 class DocFingerprintRepository:
     """``ac_doc_fingerprint`` - the line-fingerprint sweep's own state
@@ -1434,6 +1463,92 @@ class PullSnapshotRepository:
             .order_by(AcPullSnapshot.extracted_at.desc())
             .first()
         )
+
+    def latest_ready_source_refs(
+        self, tenant_id: str, company_id: str, entity_type: str, now: datetime
+    ) -> Dict[str, str]:
+        """Plan 13 review round 2 coordinator ruling (D9 revised) - the
+        baseline seed for a ``pull -> push`` flip. Unlike ``ready_source_
+        refs`` above (the union of EVERY READY, unexpired snapshot), this
+        reads ONLY the single latest-``extracted_at`` READY, unexpired
+        snapshot for the (company, entity) triple and returns its distinct
+        ``source_ref``s, each mapped to ``f"seed:{snapshot_id}"``.
+
+        Rationale: the runbook has the owner Pull + Confirm immediately
+        before flipping, so the latest snapshot IS the confirmed baseline
+        - an older snapshot's extra refs (rows the owner already knows are
+        gone, or belong to a prior, superseded extract) must never leak
+        into the seed. Recovery from a stale seed or a DELETE_GUARD trip is
+        never "Re-push" (`invalidate_all` keeps the union semantics for
+        THAT path on purpose - it must not drop deletes); it is flip to
+        Pull, run a fresh Pull + Confirm, then flip back to Push, which
+        re-seeds from that fresh single snapshot.
+
+        No READY, unexpired snapshot for the triple -> empty dict (the
+        flip itself is never refused here; ``_has_ready_snapshot``/
+        ``has_ready`` below is the actual push-gate for stock)."""
+        snapshot = (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.company_id == company_id,
+                AcPullSnapshot.entity_type == entity_type,
+                AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_READY,
+                or_(
+                    AcPullSnapshot.expires_at.is_(None),
+                    AcPullSnapshot.expires_at > now,
+                ),
+            )
+            .order_by(AcPullSnapshot.extracted_at.desc())
+            .first()
+        )
+        if snapshot is None:
+            return {}
+        refs = (
+            self.db.query(AcPullSnapshotRow.source_ref)
+            .filter(
+                AcPullSnapshotRow.tenant_id == tenant_id,
+                AcPullSnapshotRow.snapshot_id == snapshot.id,
+            )
+            .all()
+        )
+        return {ref: f"seed:{snapshot.id}" for (ref,) in refs}
+
+    def has_ready(
+        self, tenant_id: str, company_id: str, entity_type: str, now: datetime
+    ) -> bool:
+        """Plan 13 review round 2 B2 fix - an EXISTS-only read answering
+        whether SOME READY, unexpired snapshot exists for this (company,
+        entity) triple, over every such snapshot (never only the single
+        latest one ``latest_ready_source_refs`` above seeds from): the
+        ``pushGate`` read (``EtlService._push_gate``, called on EVERY
+        stock task view GET) needs a boolean, never a full row population
+        (a company's stock snapshot can carry ~12k rows across up to 3
+        live snapshots - loading them just to answer "is there at least
+        one" turned every task-view GET into an N+1 that scaled with
+        extract size). ``LIMIT 1`` over an indexed join, never a
+        ``COUNT``."""
+        exists = (
+            self.db.query(AcPullSnapshotRow.snapshot_id)
+            .join(
+                AcPullSnapshot,
+                AcPullSnapshot.id == AcPullSnapshotRow.snapshot_id,
+            )
+            .filter(
+                AcPullSnapshotRow.tenant_id == tenant_id,
+                AcPullSnapshotRow.company_id == company_id,
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.entity_type == entity_type,
+                AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_READY,
+                or_(
+                    AcPullSnapshot.expires_at.is_(None),
+                    AcPullSnapshot.expires_at > now,
+                ),
+            )
+            .limit(1)
+            .first()
+        )
+        return exists is not None
 
     def insert_row(self, row: AcPullSnapshotRow) -> None:
         self.db.add(row)

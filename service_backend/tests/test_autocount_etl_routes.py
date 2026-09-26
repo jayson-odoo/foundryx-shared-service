@@ -440,6 +440,9 @@ def test_get_etl_task_returns_draft_defaults_for_a_configured_entity(client, ses
         # contract-gated entity (only `brand`/`product` are), so this is
         # always None for it.
         "contractGate": None,
+        # plan 13 (AC-13-30) review round 2 S8 fix - `pushGate` is `null`
+        # for every entity except `stock_balance` (D18).
+        "pushGate": None,
         # sprint-5/10 (AC-10-10) - every task reads `push` until switched.
         "deliveryMode": "push",
         # sprint-5/10 review round 4 (SF-4) - the combine step's own
@@ -620,8 +623,8 @@ def test_put_etl_task_422_matrix_names_the_field(client, session_factory):
     assert "incrementalMinutes" in errors(
         _config(connectionId=conn.id, query=good, watermarkColumn="last_modified", incrementalMinutes=0)
     )
-    # no watermark → 15 minute floor
-    assert "incrementalMinutes" in errors(_config(incrementalMinutes=5))
+    # no watermark -> 5 minute floor (plan 13, AC-13-20: 15 -> 5)
+    assert "incrementalMinutes" in errors(_config(incrementalMinutes=4))
     assert "reconcileMode" in errors(_config(reconcileMode="weekly"))
     assert "reconcileHours" in errors(_config(reconcileMode="interval", reconcileHours=None))
     assert "reconcileHours" in errors(_config(reconcileMode="interval", reconcileHours=0))

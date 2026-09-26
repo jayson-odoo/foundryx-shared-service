@@ -78,8 +78,9 @@ describe('mockAutocountService - pull snapshot states (AC-10-48)', () => {
 
   it('a push+active pair 409s (review round 1 item 2; operator route, plain-string detail per pull.py, AC-10-31 scopes the structured ladder to the gateway only)', async () => {
     // `company-db`'s seeded `sales_order` task is `active`; its delivery
-    // mode defaults to `push` (only `stock_balance` defaults `pull` -
-    // `PULL_ONLY_ENTITY_TYPES`), and it carries no in-flight snapshot of its
+    // mode defaults to `push` (only `stock_balance` defaults `pull`,
+    // sprint-5/13's `DEFAULT_PULL_ENTITY_TYPES` - unrelated to the push
+    // gate), and it carries no in-flight snapshot of its
     // own, so the PUSH_ACTIVE guard - not the re-attach branch - is what
     // fires.
     await expect(mockAutocountService.buildPullSnapshot('company-db', 'sales_order')).rejects.toMatchObject({

@@ -1248,6 +1248,21 @@ export interface AutocountEtlTask {
    * existed) = no preview in flight.
    */
   previewJobId?: string | null;
+  /**
+   * sprint-5/13 (AC-13-30, D18) - whether Push may be freely chosen for THIS
+   * task, decided by the backend ONLY (never a hardcoded entity list on the
+   * frontend). `null` = Push may be chosen (the Schedule tab renders the
+   * Push | Pull-on-request toggle). Non-null replaces the toggle with a
+   * read-only `StatusBadge` naming the CURRENT delivery mode plus a warning
+   * line stating the missing prerequisite - the same nullable-version shape
+   * as `contractGate`/`brandContractGate` when the reason is an absent or
+   * outdated consumer contract; `{reason: 'no_snapshot'}` (no version
+   * fields) when the contract passes but no READY, unexpired pull snapshot
+   * exists yet. Optional/absent reads as `null` (back-compat with every
+   * fixture/task built before this field existed, and every entity the gate
+   * does not apply to - today, every entity but `stock_balance`).
+   */
+  pushGate?: AutocountPushGate | null;
 }
 
 /** `AutocountEtlTask.brandContractGate` (AC-08-33/AC-08-20 S5). `version` is
@@ -1264,6 +1279,17 @@ export interface AutocountContractGate {
   entity: string;
   version: number | null;
   requiredVersion: number;
+}
+
+/** `AutocountEtlTask.pushGate` (sprint-5/13, AC-13-30). `reason` is present
+ * only for the `no_snapshot` shut state; a contract-shut gate carries
+ * `version`/`requiredVersion` (`reason` may also carry `config_error`,
+ * naming an unreachable/misconfigured consumer rather than an outdated
+ * one - both read the SAME prerequisite copy on the frontend). */
+export interface AutocountPushGate {
+  reason?: 'config_error' | 'no_snapshot';
+  version?: number | null;
+  requiredVersion?: number;
 }
 
 /** `PUT .../etl-task` body - replaces the task's source config (draft save). */

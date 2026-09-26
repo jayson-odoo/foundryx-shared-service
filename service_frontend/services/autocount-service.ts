@@ -608,12 +608,14 @@ export interface AutocountService {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// EVERY surface is backed by FastAPI end to end. sprint-5/12 S1 opened one
-// scoped PHASE 1 MOCK overlay for the mapping preset reset
-// (`withPhase1MappingResetMock`); S2 landed the real route (`POST .../mapping
-// /reset-preset` + server-derived `hasPreset`) and RETIRED it - this binding
-// is `realAutocountService` bare again, exactly as it was after sprint-5/11
-// S4. `mockAutocountService` stays importable by the Vitest suite directly
-// (the house service-trio pattern).
+// EVERY surface is backed by FastAPI end to end. sprint-5/13 S3 retires the
+// scoped PHASE 1 MOCK overlay (`withPhase1PushGateMock`) that stood in for
+// the stock push gate through S1/S2: `getEtlTask`/`updateEtlTask`/
+// `activateEtlTask`/`pauseEtlTask`/`resumeEtlTask` now read `pushGate`
+// straight off the real backend response (`EtlService._task_view`'s
+// `push_gate`, D18's whole point - the frontend needed no further change at
+// all), and `setDeliveryMode` posts to the real endpoint, which itself
+// refuses the flip while the gate is shut. `mockAutocountService` stays
+// importable by the Vitest suite directly (the house service-trio pattern).
 // ═══════════════════════════════════════════════════════════════════════════
 export const autocountService: AutocountService = realAutocountService;

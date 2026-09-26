@@ -32,12 +32,12 @@ describe('computeMockNextRunTimes (plan 22 S3, PHASE 1 MOCK - mock/test only, S7
     expect(nextIncrementalAt).toBe('2026-08-30T06:05:00.000Z');
   });
 
-  it('floors a below-floor minutes value by watermark presence', () => {
+  it('floors a below-floor minutes value by watermark presence (floor 5, sprint-5/13 D11/AC-13-20)', () => {
     const noWatermark = computeMockNextRunTimes(
       sourceConfig({ incrementalMinutes: 2, watermarkColumn: null }),
       now,
     );
-    expect(noWatermark.nextIncrementalAt).toBe('2026-08-30T06:15:00.000Z');
+    expect(noWatermark.nextIncrementalAt).toBe('2026-08-30T06:05:00.000Z');
 
     const withWatermark = computeMockNextRunTimes(
       sourceConfig({ incrementalMinutes: 0, watermarkColumn: 'LastModified' }),

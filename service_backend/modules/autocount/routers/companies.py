@@ -575,6 +575,10 @@ def _task_response(view: EtlTaskView) -> EtlTaskResponse:
         contractGate=(
             ContractGate(**view.contract_gate) if view.contract_gate else None
         ),
+        # plan 13 (AC-13-30) review round 2 S8 fix - passed through
+        # VERBATIM (a loose dict, never a typed sub-model - see
+        # `EtlTaskResponse.pushGate`'s own comment for why).
+        pushGate=view.push_gate,
         deliveryMode=view.delivery_mode,
         combineOutputColumns=view.combine_output_columns,
         previewJobId=view.preview_job_id,

@@ -44,6 +44,7 @@ import {
   isDocumentEntity,
   mappingSourceColumns,
   mappingSourceColumnsForTask,
+  mergeTaskEcho,
 } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type {
@@ -390,9 +391,18 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       // `apply()` adopts it directly so `task.lastPreviewAt`/`resultColumns`
       // (Activate's own read) are fresh with no second fetch - closing the
       // race a plain `reload()` had against a concurrent Save (round 6).
-      if (previewedTask) apply(previewedTask);
+      //
+      // sprint-5/13 owner repro (2026-09-26) - `mergeTaskEcho` is a second
+      // line of defence: a Test-completion echo that (by a FUTURE bug, or
+      // an already-in-flight response built before a backend fix landed)
+      // omits/nulls `pushGate` must never silently reopen an already-known
+      // shut gate - only a fresh GET (`reload()`) is trusted to report a
+      // genuine reopen. The one KNOWN cause (`preview_job.py`'s echo
+      // dropping the field entirely) is fixed server-side; this stays as
+      // a belt-and-braces guard, never a substitute for that fix.
+      if (previewedTask) apply(mergeTaskEcho(task, previewedTask));
     },
-    [apply],
+    [apply, task],
   );
   const httpPreviewValid = Boolean(
     config &&
@@ -448,9 +458,16 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
       if (!ok) return false;
     }
     if (deliveryModeDirty) {
-      const saved = await deliveryModeSetter.save(companyId, entityType, deliveryMode);
-      if (!saved) {
-        toast.error(deliveryModeSetter.error || 'The delivery mode could not be saved.');
+      // Read the outcome off the RESOLVED value, never off
+      // `deliveryModeSetter.error`/`.fieldErrors` - this callback closed
+      // over the hook's return object from its OWN render, so those two
+      // would still read their pre-call (stale) values here even though
+      // `save()` just updated them (sprint-5/13 fix - the generic
+      // fallback text used to reach the toast with the specific
+      // `deliveryMode` 422 message dropped on the floor).
+      const result = await deliveryModeSetter.save(companyId, entityType, deliveryMode);
+      if (!result.ok) {
+        toast.error(result.fieldErrors.deliveryMode || result.message);
         return false;
       }
       reload();
@@ -812,7 +829,14 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
                 config={config}
                 onChange={onChange}
                 task={task}
-                fieldErrors={fieldErrors}
+                // The delivery-mode PUT's own 422 (`deliveryModeSetter`) is a
+                // SEPARATE save from the config PUT's `fieldErrors` - merged
+                // here (never colliding keys) so a rejected `deliveryMode`
+                // switch renders inline the same way any other field does,
+                // read fresh at render time (unlike the toast above, this is
+                // never stale - `deliveryModeSetter` here is the CURRENT
+                // render's hook return).
+                fieldErrors={{ ...fieldErrors, ...deliveryModeSetter.fieldErrors }}
                 deliveryMode={deliveryMode}
                 onDeliveryModeChange={setDeliveryMode}
               />
@@ -892,6 +916,7 @@ export function TaskEditorView({ companyId, entityType, initialTab = 'query' }: 
     companyId,
     config,
     deliveryMode,
+    deliveryModeSetter.fieldErrors,
     derivedImpl,
     detail,
     dirty,

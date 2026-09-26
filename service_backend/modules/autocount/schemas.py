@@ -916,6 +916,17 @@ class EtlTaskResponse(ApiModel):
     # `product`), added alongside `brandContractGate` above, never replacing
     # it in this slice.
     contractGate: Optional[ContractGate] = None
+    # plan 13 (AC-13-30) review round 2 S8 fix - `stock_balance` ONLY:
+    # `null` = Push may be chosen; `{"version", "requiredVersion": 2.5}`
+    # (optionally carrying `"reason": "config_error"`) when the consumer
+    # contract is shut - the existing `stock_push_gate_error` dict, passed
+    # through VERBATIM; `{"reason": "no_snapshot"}` when the contract is
+    # open but the task holds no READY, unexpired snapshot to seed a
+    # first push from. `null` for every other entity. A loose
+    # `Dict[str, Any]` (never a fixed sub-model like `ContractGate` above)
+    # because its shape genuinely varies by reason - the Schedule tab
+    # reads ONLY this field to decide whether Push is offered (D18).
+    pushGate: Optional[Dict[str, Any]] = None
     # sprint-5/10 (AC-10-10) - `push` (default) or `pull`.
     deliveryMode: str = "push"
     # sprint-5/10 review round 4 (SF-4) - the COMBINED, POST-GROUP schema a

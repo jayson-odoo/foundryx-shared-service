@@ -17,8 +17,10 @@ import {
   loggingSinkWarning,
   mappingSourceColumns,
   mappingSourceColumnsForTask,
+  mergeTaskEcho,
   pickerColumnOptions,
   productDependencyWarning,
+  pushGateWarning,
   readTaskError,
   previewBadgeText,
   previewFailedBlocksActivation,
@@ -391,23 +393,23 @@ describe('statusFormulaSeed', () => {
 
 // ── plan 22 S3 - schedule (AC-22-12..17) ─────────────────────────────────────
 
-describe('incrementalFloorMinutes (AC-22-12)', () => {
-  it('is 1 minute with a watermark column, 15 without', () => {
+describe('incrementalFloorMinutes (AC-22-12, floor 5 sprint-5/13 D11/AC-13-20)', () => {
+  it('is 1 minute with a watermark column, 5 without', () => {
     expect(incrementalFloorMinutes(true)).toBe(1);
-    expect(incrementalFloorMinutes(false)).toBe(15);
+    expect(incrementalFloorMinutes(false)).toBe(5);
   });
 });
 
-describe('validateIncrementalMinutes (AC-22-12)', () => {
+describe('validateIncrementalMinutes (AC-22-12, floor 5 sprint-5/13 D11/AC-13-20)', () => {
   it('accepts at the floor and above', () => {
     expect(validateIncrementalMinutes(1, true)).toBeNull();
-    expect(validateIncrementalMinutes(15, false)).toBeNull();
+    expect(validateIncrementalMinutes(5, false)).toBeNull();
     expect(validateIncrementalMinutes(60, false)).toBeNull();
   });
 
   it('rejects below the watermark-driven floor', () => {
     expect(validateIncrementalMinutes(0, true)).toMatch(/at least 1 minute/i);
-    expect(validateIncrementalMinutes(5, false)).toMatch(/at least 15 minutes/i);
+    expect(validateIncrementalMinutes(4, false)).toMatch(/at least 5 minutes/i);
   });
 
   it('rejects a blank/non-finite value', () => {
@@ -507,6 +509,68 @@ describe('brandContractBanner (sprint-5/08, AC-08-33/AC-08-20 S5)', () => {
 
   it('is null when the field is absent (every non-brand task, back-compat fixtures)', () => {
     expect(brandContractBanner({})).toBeNull();
+  });
+});
+
+describe('pushGateWarning (sprint-5/13, AC-13-40)', () => {
+  it('names the real advertised version and the required one for a contract-shut gate', () => {
+    expect(pushGateWarning({ version: 2.4, requiredVersion: 2.5 })).toBe(
+      'Consumer contract 2.4 - stock push needs 2.5.',
+    );
+  });
+
+  it('reads "unknown" when the consumer could not be probed at all', () => {
+    expect(pushGateWarning({ version: null, requiredVersion: 2.5 })).toBe(
+      'Consumer contract unknown - stock push needs 2.5.',
+    );
+  });
+
+  it('states the snapshot prerequisite for the no_snapshot reason', () => {
+    expect(pushGateWarning({ reason: 'no_snapshot' })).toBe(
+      'Push needs a stock snapshot from the last 24 hours.',
+    );
+  });
+});
+
+describe('mergeTaskEcho (sprint-5/13 owner repro, 2026-09-26)', () => {
+  it('adopts the incoming pushGate when the echo carries a real (non-null) value', () => {
+    const previous = task({ pushGate: { reason: 'no_snapshot' } });
+    const next = task({ pushGate: { version: 2.4, requiredVersion: 2.5 } });
+    expect(mergeTaskEcho(previous, next).pushGate).toEqual({
+      version: 2.4, requiredVersion: 2.5,
+    });
+  });
+
+  it('adopts a genuine reopen (incoming null) when there was no previously-known gate', () => {
+    const previous = task({ pushGate: null });
+    const next = task({ pushGate: null });
+    expect(mergeTaskEcho(previous, next).pushGate).toBeNull();
+  });
+
+  it('Test completes, echo without pushGate: Push stays hidden - the previously-known shut gate survives', () => {
+    const previous = task({ entityType: 'stock_balance', pushGate: { reason: 'no_snapshot' } });
+    // The exact shape of the owner's live repro: a completed preview job's
+    // task echo carrying no `pushGate` at all (parses as `undefined`).
+    const next = task({ entityType: 'stock_balance', resultColumns: ['ItemCode', 'BalQty'] });
+    delete (next as { pushGate?: unknown }).pushGate;
+    const merged = mergeTaskEcho(previous, next);
+    expect(merged.pushGate).toEqual({ reason: 'no_snapshot' });
+    // Every OTHER field still comes from the fresh echo, never the stale one
+    // (the merge patches ONLY `pushGate`, it never reverts to the whole
+    // previous task).
+    expect(merged.resultColumns).toEqual(['ItemCode', 'BalQty']);
+  });
+
+  it('an explicit null echo also keeps the previously-known shut gate (never reopens on ambiguous data)', () => {
+    const previous = task({ pushGate: { version: 2.4, requiredVersion: 2.5 } });
+    const next = task({ pushGate: null });
+    expect(mergeTaskEcho(previous, next).pushGate).toEqual({ version: 2.4, requiredVersion: 2.5 });
+  });
+
+  it('no previous task at all: an echo with no pushGate passes through unchanged (nothing to fall back on)', () => {
+    const next = task({});
+    delete (next as { pushGate?: unknown }).pushGate;
+    expect(mergeTaskEcho(null, next).pushGate).toBeUndefined();
   });
 });
 

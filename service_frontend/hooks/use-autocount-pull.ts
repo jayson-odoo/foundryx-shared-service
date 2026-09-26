@@ -25,6 +25,20 @@ import type {
 
 // ── delivery mode (AC-10-11/16) ───────────────────────────────────────────────
 
+/** `save`'s resolved value (sprint-5/13 fix) - the CALLER's own outcome,
+ * never read off this hook's `error`/`fieldErrors` state after the fact.
+ * `TaskEditorView.onSave` is a memoized callback closed over the hook's
+ * return object from ITS OWN render; reading `deliveryModeSetter.error`
+ * after `await deliveryModeSetter.save(...)` resolves is reading a STALE
+ * closure (the state update this same call just made cannot retroactively
+ * change an already-captured object) - it silently fell back to the
+ * hook's generic default, never the specific "needs a stock snapshot"
+ * 422 message. Resolving with the outcome directly sidesteps the whole
+ * class of bug. */
+export type SetDeliveryModeResult =
+  | { ok: true; config: AutocountEntityConfig }
+  | { ok: false; message: string; fieldErrors: Record<string, string> };
+
 export interface UseSetDeliveryModeResult {
   saving: boolean;
   error: string | null;
@@ -33,7 +47,7 @@ export interface UseSetDeliveryModeResult {
     companyId: string,
     entityType: string,
     deliveryMode: AutocountDeliveryMode,
-  ) => Promise<AutocountEntityConfig | null>;
+  ) => Promise<SetDeliveryModeResult>;
   clearError: () => void;
 }
 
@@ -50,20 +64,20 @@ export function useSetDeliveryMode(): UseSetDeliveryModeResult {
       companyId: string,
       entityType: string,
       deliveryMode: AutocountDeliveryMode,
-    ): Promise<AutocountEntityConfig | null> => {
+    ): Promise<SetDeliveryModeResult> => {
       setSaving(true);
       setError(null);
       setFieldErrors({});
       try {
-        return await autocountService.setDeliveryMode(companyId, entityType, deliveryMode);
+        const config = await autocountService.setDeliveryMode(companyId, entityType, deliveryMode);
+        return { ok: true, config };
       } catch (e) {
-        if (e instanceof ApiError) {
-          setError(e.message);
-          setFieldErrors(readFieldErrors(e.detail));
-        } else {
-          setError('The delivery mode could not be saved.');
-        }
-        return null;
+        const message =
+          e instanceof ApiError ? e.message : 'The delivery mode could not be saved.';
+        const errs = e instanceof ApiError ? readFieldErrors(e.detail) : {};
+        setError(message);
+        setFieldErrors(errs);
+        return { ok: false, message, fieldErrors: errs };
       } finally {
         setSaving(false);
       }

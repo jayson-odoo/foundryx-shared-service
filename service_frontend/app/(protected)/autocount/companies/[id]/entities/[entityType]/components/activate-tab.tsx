@@ -40,7 +40,6 @@ import {
   AC_SYNC_RUN,
   acCompanyHref,
   acTaskHref,
-  isPullOnly,
 } from '../../../../../components/autocount-meta';
 
 /** "Re-push all"'s deferred-action key (sprint-5/07 review round - D2/D13:
@@ -123,7 +122,9 @@ export function ActivateTab({
   const activateBanner = isPull
     ? 'Activating lets the consumer request this extract.'
     : 'Activating starts delivering this entity on its schedule.';
-  const pullOnlyEntity = isPullOnly(task.entityType);
+  // sprint-5/13 (D18, AC-13-42) - decided by the backend's `pushGate`, never
+  // a hardcoded entity list (`isPullOnly` was removed).
+  const pullOnlyEntity = task.pushGate != null;
 
   // "Re-push all" (plan sprint-5/07, AC-07-20..24) - foolproof-UI: only a
   // database task that is actually running (active/paused) can be re-pushed,
@@ -134,13 +135,22 @@ export function ActivateTab({
   // `entities` (the company-detail entities list, `EntityConfigItem.id`),
   // so no new endpoint/field is needed to reach it from here.
   const currentEntity = entities.find((e) => e.entityType === task.entityType);
-  const isDatabaseTask = currentEntity?.sourceImpl === 'sql_db';
+  // sprint-5/13 (D19, AC-13-42) - Re-push is offered for the open REST API
+  // tasks too (`autocount_http`, e.g. the stock balance and product HTTP
+  // tasks): the backend already accepts it (`EtlService.repush_task`); only
+  // a basic-auth `autocount_read` task (no task row at all) is excluded.
+  const isDatabaseTask =
+    currentEntity?.sourceImpl === 'sql_db' || currentEntity?.sourceImpl === 'autocount_http';
   const repushEntityId = currentEntity?.id ?? null;
+  // sprint-5/13 S4 fix - the backend 409s Re-push on a pull-mode task (there
+  // is nothing pushed to clear change tracking for); foolproof-UI never
+  // offers an action the server will refuse.
   const showRepush =
     (status === 'active' || status === 'paused') &&
     isDatabaseTask &&
     canManage &&
-    repushEntityId !== null;
+    repushEntityId !== null &&
+    !isPull;
 
   const repush = useDeferredAction({
     // Gated on `showRepush`, not just a non-null id (review round): a

@@ -149,6 +149,17 @@ def _task_echo_model(view: EtlTaskView) -> EtlTaskResponse:
             BrandContractGate(**view.brand_contract_gate) if view.brand_contract_gate else None
         ),
         contractGate=(ContractGate(**view.contract_gate) if view.contract_gate else None),
+        # sprint-5/13 fix (owner repro) - this echo used to omit `pushGate`
+        # entirely, so a Test-completion echo silently defaulted the FIELD
+        # to `EtlTaskResponse`'s own `None` regardless of the task's REAL
+        # gate state. The FE reads an absent/null `pushGate` as "Push may be
+        # freely chosen" (AC-13-30's own contract) - a stock task whose gate
+        # is genuinely shut (no ready snapshot / stale consumer contract)
+        # would offer the Push toggle again the moment its Source tab ran a
+        # Test, exactly the same shut-gate 422 `set_delivery_mode` still
+        # enforces server-side. Passed through VERBATIM like
+        # `_task_response` above - the two echoes must never drift.
+        pushGate=view.push_gate,
         deliveryMode=view.delivery_mode,
         combineOutputColumns=view.combine_output_columns,
         previewJobId=None,

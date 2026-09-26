@@ -1,7 +1,10 @@
 fastapi>=0.104.1
 uvicorn[standard]>=0.24.0
 gunicorn>=21.2.0   # prod process manager (UvicornWorker) - see Dockerfile/start.sh
-sqlalchemy>=2.0.23
+# Pinned below 2.1: SQLAlchemy 2.1 makes psycopg (v3) the default driver for a
+# bare postgresql:// URL and we ship only psycopg2-binary - revisit under
+# BL-SS-276 (move to psycopg v3 / SQLAlchemy 2.1).
+sqlalchemy>=2.0.23,<2.1
 psycopg2-binary>=2.9.9
 # ---- AutoCount direct-DB ETL source dialects (plan sprint-4/22) ----
 # pip-only wheels, deliberately NO pyodbc (would need unixODBC + msodbcsql on

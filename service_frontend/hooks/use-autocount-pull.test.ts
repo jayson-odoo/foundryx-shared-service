@@ -38,13 +38,13 @@ describe('useSetDeliveryMode (AC-10-11/16)', () => {
       saved = await result.current.save('c1', 'product', 'pull');
     });
     expect(setDeliveryMode).toHaveBeenCalledWith('c1', 'product', 'pull');
-    expect(saved).toMatchObject({ deliveryMode: 'pull' });
+    expect(saved).toMatchObject({ ok: true, config: { deliveryMode: 'pull' } });
     expect(result.current.error).toBeNull();
   });
 
-  it('surfaces a 422 field error and returns null', async () => {
+  it('surfaces a 422 field error on the RESOLVED value (never only hook state - sprint-5/13 fix, a caller reading it after an await sees a stale closure)', async () => {
     setDeliveryMode.mockRejectedValueOnce(
-      new ApiError('Set a Sorento company code before enabling pull.', 422, null, {
+      new ApiError('The task could not be saved. Fix the highlighted fields.', 422, null, {
         fieldErrors: { deliveryMode: 'Set a Sorento company code before enabling pull.' },
       }),
     );
@@ -53,8 +53,25 @@ describe('useSetDeliveryMode (AC-10-11/16)', () => {
     await act(async () => {
       saved = await result.current.save('c1', 'product', 'pull');
     });
-    expect(saved).toBeNull();
+    expect(saved).toMatchObject({
+      ok: false,
+      message: 'The task could not be saved. Fix the highlighted fields.',
+      fieldErrors: { deliveryMode: 'Set a Sorento company code before enabling pull.' },
+    });
+    // Hook state is ALSO populated (for a render-time inline consumer) -
+    // just never what a post-await closure should rely on.
     expect(result.current.fieldErrors.deliveryMode).toMatch(/Sorento company code/);
+    expect(result.current.error).toBe('The task could not be saved. Fix the highlighted fields.');
+  });
+
+  it('a non-ApiError rejection falls back to a generic message with no field errors', async () => {
+    setDeliveryMode.mockRejectedValueOnce(new Error('network blip'));
+    const { result } = renderHook(() => useSetDeliveryMode());
+    let saved;
+    await act(async () => {
+      saved = await result.current.save('c1', 'product', 'pull');
+    });
+    expect(saved).toMatchObject({ ok: false, message: 'The delivery mode could not be saved.', fieldErrors: {} });
   });
 });
 
