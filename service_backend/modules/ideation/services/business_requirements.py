@@ -659,7 +659,18 @@ class BusinessRequirementService:
         stays gated by ``.manage`` (the router). The gate resolves the ACTUAL
         edge fired (by id, a code contract) - not the target status key - so a
         tenant renaming a status can't slip the gate, and the sibling
-        ``grilling → ready`` edge is NOT promote-gated."""
+        ``grilling → ready`` edge is NOT promote-gated.
+
+        DISCLOSURE (issue #90 W3): a TEST BR (``is_test``) rides this SAME
+        ``status_machine.transition`` call as a real one - it is not special-
+        cased here. That means a status move on a test BR still fires the
+        engine's same-transaction notifications and any ``entity.status_
+        changed`` workflow trigger, exactly as a real BR's move would. W3
+        only ever excludes a test BR from the default LIST/count surfaces
+        (:meth:`list`) and the promote/link lane check - it was never scoped
+        to also suppress notifications/workflows on a test row. An operator
+        testing the flow end to end should expect real emails/workflow runs
+        to fire off a test BR's transitions."""
         br = self._br_or_404(tenant_id, br_id)
         target_id = br_status_id(self.db, status_key, tenant_id)
         if target_id is None:

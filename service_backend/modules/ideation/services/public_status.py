@@ -28,8 +28,10 @@ There is no status-history table (BL-SS-279), so this is the most truthful
 statement obtainable without fabricating a position the idea never passed.
 """
 import re
+import unicodedata
 from typing import Dict, List, Optional
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models.catalog import Product
@@ -66,9 +68,13 @@ _NEXT_STEP_DEFAULT = "The team will review it and update this page."
 
 
 def _looks_like_a_phone_or_email(candidate: str) -> bool:
-    """A phone-shaped token has 5+ digit characters anywhere in it (works for
-    ``+60123456789``, ``0123456789``, or a formatted variant); an email
-    contains ``@``."""
+    """A phone-shaped string has 5+ digit characters ANYWHERE in it (works
+    for ``+60123456789``, ``0123456789``, a formatted variant with spaces/
+    hyphens, or any Unicode digit); an email contains ``@``. Callers pass
+    the WHOLE NFKC-normalized string (review round 2), never a single
+    whitespace token alone - splitting a phone across tokens
+    (``+60 12-345 6789``) leaves a short, low-digit-count first token that
+    a token-only check would miss."""
     if "@" in candidate:
         return True
     return sum(1 for ch in candidate if ch.isdigit()) >= 5
@@ -93,7 +99,18 @@ class PublicIdeaStatusService:
         if tenant is None or not tenant.signin_allowed:
             return None
 
-        status_row = self.db.query(Status).filter(Status.id == idea.status_id).first()
+        # Scoped by the idea row's OWN tenant_id (review round 2 nit) - a
+        # platform-tier status row carries Status.tenant_id IS NULL, a
+        # forked-tenant row carries the tenant's own id; either is legitimate
+        # for this idea, nothing else is.
+        status_row = (
+            self.db.query(Status)
+            .filter(
+                Status.id == idea.status_id,
+                or_(Status.tenant_id == idea.tenant_id, Status.tenant_id.is_(None)),
+            )
+            .first()
+        )
         # A draft (or a row whose status somehow resolved to nothing) never
         # has a public status - uniform 404, same as "unknown token" (AC-1602).
         # Gate on the trait flag (never ``key == "draft"``), matching the
@@ -134,14 +151,27 @@ class PublicIdeaStatusService:
         """AC-90-105/106 (security-critical): prefer the denormalized
         ``submitter_name`` (operator-authored ideas), else the linked
         Contact's ``first_name`` (tenant-scoped, polymorphic-stored-id rule).
-        Only the FIRST whitespace token is ever returned, and never a value
-        that LOOKS like a phone or email - intake's find-or-create writes
+        Only the FIRST whitespace token is ever returned, and never a
+        fragment of a phone number or email - intake's find-or-create writes
         ``first_name=phone`` for every new WhatsApp contact
         (``services/intake.py``), so without this guard the page would
-        publish the submitter's phone number. Never falls back to a
-        placeholder like "Unknown" - null simply hides the line."""
+        publish the submitter's phone number (or a piece of it). Never falls
+        back to a placeholder like "Unknown" - null simply hides the line.
+
+        Review round 2 (a token-only digit-count check leaked fragments):
+        1. NFKC-normalize the WHOLE raw name FIRST - a fullwidth ``＠``
+           (U+FF20) or fullwidth digit otherwise bypasses an ASCII-only
+           ``@``/``isdigit`` check (``a＠b.co`` -> ``a@b.co``).
+        2. Reject on the WHOLE normalized string having 5+ digits anywhere,
+           or containing ``@`` - a phone split across tokens by spaces or
+           hyphens (``+60 12-345 6789``, ``0123 456 789``) leaves an
+           individual token with too few digits to trip a token-only check,
+           but the full string never does.
+        3. Only THEN take the first token, and reject it outright if it
+           carries ANY digit or has no alphabetic character at all - never
+           publish a bare punctuation/digit fragment as a "name"
+           (``Ali_0123`` -> the token itself carries a digit)."""
         raw_name = idea.submitter_name
-        phone = None
         if not raw_name and idea.submitter_contact_id:
             from modules.omnichannel.models import Contact
 
@@ -155,16 +185,20 @@ class PublicIdeaStatusService:
             )
             if contact is not None:
                 raw_name = contact.first_name
-                phone = contact.phone
 
         if not raw_name:
             return None
-        first_token = raw_name.strip().split()[0] if raw_name.strip() else None
+
+        normalized = unicodedata.normalize("NFKC", raw_name)
+        if _looks_like_a_phone_or_email(normalized):
+            return None
+
+        first_token = normalized.strip().split()[0] if normalized.strip() else None
         if not first_token:
             return None
-        if _looks_like_a_phone_or_email(first_token):
+        if any(ch.isdigit() for ch in first_token):
             return None
-        if phone and first_token == phone:
+        if not any(ch.isalpha() for ch in first_token):
             return None
         return first_token
 

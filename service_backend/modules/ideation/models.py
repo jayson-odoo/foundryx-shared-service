@@ -427,7 +427,12 @@ class BusinessRequirement(IdeationBase):
     # ever set. Excluded from the default list (a real BR list never shows a
     # test row); NOT excluded from the status-engine integrity hooks
     # (``br_count_records``/``br_migrate_records``) - a status holding test
-    # BRs must still be blocked from deletion.
+    # BRs must still be blocked from deletion. DISCLOSURE: this flag ONLY
+    # gates list/count visibility and the promote/link lane - a status move
+    # on a test BR still goes through the SAME status_machine.transition as
+    # a real one, so it still fires real same-transaction notifications and
+    # any entity.status_changed workflow trigger (see
+    # BusinessRequirementService.set_status).
     is_test = Column(Boolean, nullable=False, default=False)
     created_by = Column(String, nullable=True, index=True)
     updated_by = Column(String, nullable=True, index=True)

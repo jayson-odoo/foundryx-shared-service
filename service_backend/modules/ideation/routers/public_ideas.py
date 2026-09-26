@@ -43,4 +43,10 @@ def get_public_idea_status(
     # Issue #90 (AC-90-109): the page now carries idea content (problem/
     # solution/impact/department) - it must never sit in a shared cache.
     response.headers["Cache-Control"] = "no-store"
+    # Optional hardening (review round 2): the token is a bearer credential
+    # forwarded over WhatsApp/links - never let a search engine index it and
+    # never leak it via an outbound Referer header from whatever this JSON
+    # response might be embedded/linked into.
+    response.headers["X-Robots-Tag"] = "noindex"
+    response.headers["Referrer-Policy"] = "no-referrer"
     return view

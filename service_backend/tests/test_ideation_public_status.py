@@ -8,6 +8,7 @@ do not depend on the S1 turn-algorithm redesign (Group A) also being done -
 the public status page is a separate, independently-testable surface per the
 lane brief.
 """
+import hashlib
 import importlib.util
 import re
 from pathlib import Path
@@ -645,44 +646,76 @@ def test_first_name_only(setup):
     assert res.json()["submitterFirstName"] == "Jayson"
 
 
-def test_first_name_never_a_phone(setup):
-    """AC-90-106 (security-critical): intake's find-or-create writes
-    ``first_name=phone`` for every new WhatsApp contact
-    (``services/intake.py``) - an idea whose submitter resolves to such a
-    contact must publish NO name at all, never the phone number."""
-    from modules.omnichannel.models import Contact, Workspace
-
+@pytest.mark.parametrize(
+    "raw_name, via_contact, forbidden_fragment",
+    [
+        # AC-90-106 original case: intake's find-or-create writes
+        # first_name=phone for every new WhatsApp contact
+        # (services/intake.py) - must publish NO name at all.
+        ("+60123456789", True, "+60123456789"),
+        # Review round 2 probes - a token-only digit-count check leaked
+        # FRAGMENTS of these, not the whole string:
+        # a phone split by spaces/hyphens leaves a short first token
+        # ("+60") with too few digits to trip a token-only check.
+        ("+60 12-345 6789", False, "+60"),
+        ("0123 456 789", False, "0123"),
+        # A fullwidth "＠" bypasses an ASCII-only '@' check unless the
+        # whole string is NFKC-normalized first.
+        ("a＠b.co", False, "a@b.co"),
+        # A name-shaped token with a trailing digit run has fewer than 5
+        # digits total, so the old whole-token digit-count threshold missed
+        # it; the first token must be rejected outright for carrying ANY
+        # digit.
+        ("Ali_0123", False, "Ali_0123"),
+    ],
+)
+def test_first_name_never_a_phone(setup, raw_name, via_contact, forbidden_fragment):
+    """AC-90-106 (security-critical, parametrized - review round 2): the
+    guard must catch every fragment leak above, not just a first-token
+    digit-count check. The first (phone-only, via a Contact) case is the
+    original scenario and must keep passing unchanged."""
     s = setup
-    db = s["factory"]()
-    try:
-        ws = (
-            db.query(Workspace)
-            .filter(Workspace.tenant_id == DEFAULT_TENANT_ID, Workspace.is_default.is_(True))
-            .first()
-        )
-        assert ws is not None, "omnichannel default workspace not seeded"
-        contact = Contact(
-            tenant_id=DEFAULT_TENANT_ID,
-            workspace_id=ws.id,
-            first_name="+60123456789",
-            phone="+60123456789",
-        )
-        db.add(contact)
-        db.commit()
-        contact_id = contact.id
-    finally:
-        db.close()
+    digest = hashlib.sha1(raw_name.encode("utf-8")).hexdigest()[:18]
+    token = "tok90p" + digest
+    idea_number = f"IDEA-P{digest[:6]}"
 
-    token = "tok90_" + "g" * 18
-    _make_captured_idea(
-        s["factory"], s["product_id"], idea_number="IDEA-0505", status_token=token,
-        submitter_contact_id=contact_id,
-    )
+    if via_contact:
+        from modules.omnichannel.models import Contact, Workspace
+
+        db = s["factory"]()
+        try:
+            ws = (
+                db.query(Workspace)
+                .filter(Workspace.tenant_id == DEFAULT_TENANT_ID, Workspace.is_default.is_(True))
+                .first()
+            )
+            assert ws is not None, "omnichannel default workspace not seeded"
+            contact = Contact(
+                tenant_id=DEFAULT_TENANT_ID,
+                workspace_id=ws.id,
+                first_name=raw_name,
+                phone=raw_name,
+            )
+            db.add(contact)
+            db.commit()
+            contact_id = contact.id
+        finally:
+            db.close()
+        _make_captured_idea(
+            s["factory"], s["product_id"], idea_number=idea_number, status_token=token,
+            submitter_contact_id=contact_id,
+        )
+    else:
+        _make_captured_idea(
+            s["factory"], s["product_id"], idea_number=idea_number, status_token=token,
+            submitter_name=raw_name,
+        )
+
     res = s["client"].get(f"/public/ideas/{token}")
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["submitterFirstName"] is None
-    assert "+60123456789" not in res.text
+    assert forbidden_fragment not in res.text
 
 
 def test_product_and_contact_lookups_tenant_scoped(setup):
@@ -827,6 +860,69 @@ def test_public_status_no_store_header(setup):
     res = s["client"].get(f"/public/ideas/{token}")
     assert res.status_code == 200, res.text
     assert res.headers.get("cache-control") == "no-store"
+
+
+def test_public_status_hardening_headers(setup):
+    """Optional hardening (review round 2): the token is a bearer credential
+    forwarded over WhatsApp/links - a search engine must never index the
+    page and the browser must never send it onward as a Referer header."""
+    s = setup
+    token = "tok90_" + "n" * 18
+    _make_captured_idea(
+        s["factory"], s["product_id"], idea_number="IDEA-0510", status_token=token
+    )
+    res = s["client"].get(f"/public/ideas/{token}")
+    assert res.status_code == 200, res.text
+    assert res.headers.get("x-robots-tag") == "noindex"
+    assert res.headers.get("referrer-policy") == "no-referrer"
+
+
+def test_status_lookup_is_tenant_scoped(setup):
+    """Review round 2 nit (``public_status.py`` current-Status lookup): the
+    query is scoped to ``Status.tenant_id IN (idea.tenant_id, NULL)`` -
+    an idea's ``status_id`` pointing at a status row owned by ANOTHER
+    tenant's fork (never happens in the real flow; defensive, same
+    polymorphic-stored-id rule already applied to Product/Contact,
+    AC-90-107) must resolve to nothing - uniform 404, never that other
+    tenant's label/color leaking through."""
+    from app.models.tenant import Tenant
+    from modules.ideation.models import Idea
+
+    s = setup
+    db = s["factory"]()
+    try:
+        default_tenant = db.query(Tenant).filter(Tenant.id == DEFAULT_TENANT_ID).first()
+        other = Tenant(
+            name="Status Scope Co", slug="status-scope-90", status_id=default_tenant.status_id
+        )
+        db.add(other)
+        db.commit()
+        other_tenant_id = other.id
+    finally:
+        db.close()
+
+    other_status_ids = _full_fork_idea_statuses(s["factory"], other_tenant_id)
+
+    token = "tok90_" + "m" * 18
+    db = s["factory"]()
+    try:
+        idea = Idea(
+            tenant_id=DEFAULT_TENANT_ID,
+            product_id=s["product_id"],
+            status_id=other_status_ids["triaged"],  # another tenant's status row
+            problem="a corrupted cross-tenant status reference",
+            idea_number="IDEA-0509",
+            status_token=token,
+            captured_json={"problem": "a corrupted cross-tenant status reference"},
+        )
+        db.add(idea)
+        db.commit()
+    finally:
+        db.close()
+
+    res = s["client"].get(f"/public/ideas/{token}")
+    assert res.status_code == 404
+    assert res.json() == UNIFORM_404
 
 
 # ── Review round 1, blocking #2 - layering + tenant signin_allowed ───────────

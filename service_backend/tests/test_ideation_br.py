@@ -520,7 +520,11 @@ def test_test_br_excluded_from_list_unless_include_test(ideation_client):
 
 def test_mixed_test_and_real_promote_refused(ideation_client):
     """AC-90-303: a promote whose ideaIds mix a test and a real idea is
-    refused 422 - never silently picks a lane."""
+    refused 422 by ``_derive_lane`` itself - never silently picks a lane, and
+    never falls through to ``_link_ideas``' own (different) lane-mismatch
+    check. Review round 2: pins the EXACT message (proves which layer
+    caught it) and that no BR - test OR real - was left behind by a
+    partially-applied create."""
     h = _auth(ideation_client)
     pid = _product(ideation_client, h)
     real_idea = _real_idea(ideation_client, h, pid)
@@ -531,6 +535,12 @@ def test_mixed_test_and_real_promote_refused(ideation_client):
         json={"productId": pid, "ideaIds": [real_idea, test_idea]},
     )
     assert res.status_code == 422, res.text
+    assert res.json()["detail"] == "Test and real ideas cannot be promoted together."
+
+    rows = ideation_client.get(
+        "/ideation/business-requirements?includeTest=true", headers=h
+    ).json()
+    assert rows == []
 
 
 def test_real_idea_cannot_link_to_test_br(ideation_client):
