@@ -3058,10 +3058,7 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
         # ``envelope_kind is None`` (a source that never reported one, e.g.
         # a future ``sql_db`` pull) is treated the SAME conservative way as
         # a paged mismatch: unverified, so ``False``.
-        main_verified = (
-            result.envelope_kind == ENVELOPE_LIST
-            or (result.reported_total is not None and rows_scanned == result.reported_total)
-        )
+        #
         # review round 1 follow-up (coordinator ruling 2026-09-20) - AC-10-24
         # applied honestly: the LOOKUPS are part of the extraction too, so a
         # verified main walk is not enough - a truncated lookup silently
@@ -3069,14 +3066,10 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
         # carries this (the consumer already refuses Confirm on
         # ``complete: false``); the unverified alias(es) are named in ONE
         # activity note below, never on the snapshot header/metadata_json.
-        unverified_lookups = [
-            (alias, v) for alias, v in result.lookup_verification.items() if not v.verified
-        ]
+        unverified_lookups = unverified_lookup_items(result.lookup_verification)
         # plan 13 (D8) - the snapshot build's OWN strict, unconditional
         # rule (review round 2 B1 fix: the push path no longer shares this
-        # exact call - see ``_push_walk_is_complete``'s docstring);
-        # ``main_verified`` above stays only to keep this section's own
-        # prose/pinned intermediate value readable.
+        # exact call - see ``_push_walk_is_complete``'s docstring).
         complete = extract_is_complete(result)
         content_hash = compute_content_hash([payload for _, payload in delivered])
         metadata: Dict[str, Any] = {

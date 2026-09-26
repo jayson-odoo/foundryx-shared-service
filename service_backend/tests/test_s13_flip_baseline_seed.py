@@ -108,20 +108,20 @@ def rig(session_factory, monkeypatch):
     db.close()
 
 
-# ── ready_source_refs does not exist yet ────────────────────────────────────
+# ── has_ready is implemented ────────────────────────────────────────────────
 
 
-def test_ready_source_refs_and_has_ready_are_implemented(session_factory):
+def test_has_ready_is_implemented(session_factory):
     """Review round 2 B2 fix - the S0 red test above was an absence-pin,
-    now a positive guard: both repository methods exist (`ready_source_
-    refs`, the full union; `has_ready`, the EXISTS-only twin `_push_gate`
-    calls on every task-view GET), and agree on an empty union."""
+    now a positive guard: `has_ready` (the EXISTS-only read `_push_gate`
+    calls on every task-view GET) exists and answers `False` when nothing
+    is READY for the triple. `ready_source_refs` (the former full-union
+    read) was deleted (round-3 cleanup) once `latest_ready_source_refs`
+    below became its only production caller's source."""
     db = session_factory()
     repo = PullSnapshotRepository(db)
-    assert hasattr(repo, "ready_source_refs")
     assert hasattr(repo, "has_ready")
     now = datetime.now(timezone.utc)
-    assert repo.ready_source_refs(DEFAULT_TENANT_ID, "nonexistent", "product", now) == {}
     assert repo.has_ready(DEFAULT_TENANT_ID, "nonexistent", "product", now) is False
 
 
@@ -208,20 +208,28 @@ def test_a_ref_in_two_snapshots_deterministically_keeps_the_latest_sentinel(rig)
     assert hashes["AED_SORENTO:A|MBS"] == f"seed:{newer.id}"
 
 
-def test_has_ready_agrees_with_ready_source_refs_on_a_non_empty_union(rig):
-    """Review round 2 B2 fix - `has_ready` (the EXISTS-only read `_push_
-    gate` uses on every task-view GET) must never disagree with
-    `ready_source_refs` (the full union) about whether SOME snapshot
-    exists to flip from. `_seed_baseline_if_empty` itself now seeds from
-    `latest_ready_source_refs` (review round 2 coordinator ruling, D9
-    revised) - a narrower read of the same non-empty condition this test
-    still exercises."""
+def test_has_ready_agrees_with_latest_ready_source_refs_on_a_non_empty_snapshot(rig):
+    """Review round 2 B2 fix (round-3 cleanup: reworked off the deleted
+    `ready_source_refs` union read) - `has_ready` (the EXISTS-only read
+    `_push_gate` uses on every task-view GET) must never disagree with
+    `latest_ready_source_refs` (what `_seed_baseline_if_empty` actually
+    seeds from) about whether SOME snapshot exists to flip from: both
+    read `False`/empty with none READY, and both flip non-empty the
+    moment one READY snapshot exists."""
     db, company = rig
     now = datetime.now(timezone.utc)
     repo = PullSnapshotRepository(db)
     assert repo.has_ready(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, now) is False
+    assert repo.latest_ready_source_refs(
+        DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, now
+    ) == {}
     _ready_snapshot(db, company, ENTITY_STOCK_BALANCE, ["AED_SORENTO:A|MBS"])
     assert repo.has_ready(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, now) is True
+    refs = repo.latest_ready_source_refs(
+        DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, now
+    )
+    assert set(refs) == {"AED_SORENTO:A|MBS"}
+    assert refs["AED_SORENTO:A|MBS"].startswith("seed:")
 
 
 def test_flip_never_seeds_a_task_that_already_holds_hash_rows(rig):

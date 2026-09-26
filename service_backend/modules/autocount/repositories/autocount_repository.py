@@ -1464,59 +1464,6 @@ class PullSnapshotRepository:
             .first()
         )
 
-    def ready_source_refs(
-        self, tenant_id: str, company_id: str, entity_type: str, now: datetime
-    ) -> Dict[str, str]:
-        """Plan 13 (AC-13-32, D9) review round 2 B2 fix - moved here from
-        ``EtlService`` (Service -> Repository layering; a service must
-        never hold a raw ``self.db.query(...)``). The UNION of every
-        READY, UNEXPIRED snapshot's own distinct ``source_ref``s for one
-        (company, entity) triple, each mapped to a sentinel row-hash
-        naming ITS OWN snapshot id (``f"seed:{snapshot_id}"``).
-
-        Review round 2 coordinator ruling (D9 revision, latest snapshot
-        only) - this UNION method is kept as a general read (and its own
-        `has_ready` twin below still answers "does at least one exist"
-        over the SAME union), but the baseline seed itself no longer calls
-        this method: see ``latest_ready_source_refs`` below, which is what
-        ``EtlService._seed_baseline_if_empty`` actually seeds from.
-
-        Snapshots are visited OLDEST-``extracted_at``-FIRST (never bare DB
-        / dict-iteration order) so a ref present in more than one
-        snapshot deterministically keeps the LATEST snapshot's sentinel -
-        an arbitrary but now REPRODUCIBLE choice, since either sentinel
-        resolves the ref as "known" and neither is ever read back as a
-        real hash.
-        """
-        snapshots = (
-            self.db.query(AcPullSnapshot)
-            .filter(
-                AcPullSnapshot.tenant_id == tenant_id,
-                AcPullSnapshot.company_id == company_id,
-                AcPullSnapshot.entity_type == entity_type,
-                AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_READY,
-                or_(
-                    AcPullSnapshot.expires_at.is_(None),
-                    AcPullSnapshot.expires_at > now,
-                ),
-            )
-            .order_by(AcPullSnapshot.extracted_at.asc())
-            .all()
-        )
-        out: Dict[str, str] = {}
-        for snapshot in snapshots:
-            refs = (
-                self.db.query(AcPullSnapshotRow.source_ref)
-                .filter(
-                    AcPullSnapshotRow.tenant_id == tenant_id,
-                    AcPullSnapshotRow.snapshot_id == snapshot.id,
-                )
-                .all()
-            )
-            for (ref,) in refs:
-                out[ref] = f"seed:{snapshot.id}"
-        return out
-
     def latest_ready_source_refs(
         self, tenant_id: str, company_id: str, entity_type: str, now: datetime
     ) -> Dict[str, str]:
@@ -1570,14 +1517,17 @@ class PullSnapshotRepository:
     def has_ready(
         self, tenant_id: str, company_id: str, entity_type: str, now: datetime
     ) -> bool:
-        """Plan 13 review round 2 B2 fix - an EXISTS-only twin of
-        ``ready_source_refs`` above: the ``pushGate`` read
-        (``EtlService._push_gate``, called on EVERY stock task view GET)
-        needs a boolean, never the full row population (a company's stock
-        snapshot can carry ~12k rows, up to 3 snapshots in the union -
-        loading all of them just to answer "is there at least one" turned
-        every task-view GET into an N+1 that scaled with extract size).
-        ``LIMIT 1`` over an indexed join, never a ``COUNT``."""
+        """Plan 13 review round 2 B2 fix - an EXISTS-only read answering
+        whether SOME READY, unexpired snapshot exists for this (company,
+        entity) triple, over every such snapshot (never only the single
+        latest one ``latest_ready_source_refs`` above seeds from): the
+        ``pushGate`` read (``EtlService._push_gate``, called on EVERY
+        stock task view GET) needs a boolean, never a full row population
+        (a company's stock snapshot can carry ~12k rows across up to 3
+        live snapshots - loading them just to answer "is there at least
+        one" turned every task-view GET into an N+1 that scaled with
+        extract size). ``LIMIT 1`` over an indexed join, never a
+        ``COUNT``."""
         exists = (
             self.db.query(AcPullSnapshotRow.snapshot_id)
             .join(

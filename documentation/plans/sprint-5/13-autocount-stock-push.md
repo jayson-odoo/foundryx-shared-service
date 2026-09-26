@@ -157,9 +157,10 @@ cadence (accepted by the owner, R8). The skip rows are accepted as-is for now (R
   whose extra refs (rows already known gone, or from a superseded extract) must never leak into the
   seed. (c) a Sorento-side run-scoped sweep marker was rejected: it rebuilds the destructive "zero
   everything absent" import on the consumer, the exact failure mode per-row upsert/delete exists to
-  avoid. `PullSnapshotRepository.ready_source_refs` (the union across every READY snapshot) still
-  exists for other reads (e.g. `has_ready`'s existence check), but the seed itself no longer calls
-  it.
+  avoid. `PullSnapshotRepository.ready_source_refs` (the union across every READY snapshot) was
+  deleted at round-3 review cleanup once it had no production caller left: `has_ready`'s own
+  existence check (`_push_gate`'s prerequisite) is its own `LIMIT 1` read over every READY
+  snapshot, never a full-row union.
 - **`push -> pull` clears the hashes (D10)** with the same `RowHashRepository.clear_all` Re-push
   uses. Otherwise a later re-flip would diff against pre-pull hashes: a pair the pull period zeroed
   and that came back at the same qty would read as unchanged and never be re-sent.
@@ -221,7 +222,7 @@ Backend (`service_backend/modules/autocount/`): `sinks_sorento.py` (path, gated-
 deletes), `services/company_service.py` (`sink_for_company` reads the gated table),
 `services/etl_service.py` (floor 5, `push_gate` on the view, `no_snapshot` refusal, seed on
 `pull -> push`, `clear_all` on `push -> pull`), `schemas.py` (`pushGate`),
-`repositories/autocount_repository.py` (`ready_source_refs`).
+`repositories/autocount_repository.py` (`latest_ready_source_refs`, `has_ready`).
 Tests: `tests/test_s13_stock_push_contract_gate.py`, `test_s13_stock_sink_payload_parity.py`,
 `test_s13_stock_reconcile_delete.py`, `test_s13_http_stage_changed_only.py`,
 `test_s13_flip_baseline_seed.py`, `test_s13_schedule_floor_overlap.py`; edit
