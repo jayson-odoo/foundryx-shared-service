@@ -11,7 +11,7 @@ touches ``db.query`` directly.
 """
 import re
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
@@ -31,11 +31,16 @@ _NOT_FOUND = "Not found."
 
 
 @router.get("/{token}", response_model=PublicIdeaStatusOut)
-def get_public_idea_status(token: str, db: Session = Depends(get_db)) -> PublicIdeaStatusOut:
+def get_public_idea_status(
+    token: str, response: Response, db: Session = Depends(get_db)
+) -> PublicIdeaStatusOut:
     if not _TOKEN_RE.fullmatch(token or ""):
         raise ApiError(404, "not_found", _NOT_FOUND)
 
     view = PublicIdeaStatusService(db).resolve(token)
     if view is None:
         raise ApiError(404, "not_found", _NOT_FOUND)
+    # Issue #90 (AC-90-109): the page now carries idea content (problem/
+    # solution/impact/department) - it must never sit in a shared cache.
+    response.headers["Cache-Control"] = "no-store"
     return view

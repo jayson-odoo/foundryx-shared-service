@@ -168,6 +168,7 @@ class BusinessRequirementService:
             templateVersion=br.template_version,
             title=br.title or "",
             ideaCount=idea_counts.get(br.id, 0),
+            isTest=bool(br.is_test),
             createdAt=br.created_at,
             updatedAt=br.updated_at,
         )
@@ -223,10 +224,16 @@ class BusinessRequirementService:
         search: Optional[str] = None,
         filter: str = "active",
         product_id: Optional[str] = None,
+        include_test: bool = False,
     ) -> List[BusinessRequirementOut]:
+        """``include_test`` (issue #90 W3): a test idea (``is_test``) may
+        promote to a TEST BR - excluded here by default so it never shows on
+        a real BR list, same convention as ``IdeaReadService.list``."""
         q = self.db.query(BusinessRequirement).filter(
             BusinessRequirement.tenant_id == tenant_id
         )
+        if not include_test:
+            q = q.filter(BusinessRequirement.is_test.is_(False))
         if product_id:
             q = q.filter(BusinessRequirement.product_id == product_id)
         if search:
@@ -373,11 +380,21 @@ class BusinessRequirementService:
         version = active_version_number(template, self.db) if template else None
         if template is None or version is None:
             raise HTTPException(
-                422, "No active Business Requirement template is configured."
+                422,
+                detail={
+                    "code": "br_template_unavailable",
+                    "message": "No active Business Requirement template is configured.",
+                },
             )
         initial_id = initial_br_status_id(self.db, tenant_id)
         if initial_id is None:
             raise HTTPException(422, "Business Requirement statuses are not seeded.")
+
+        # Issue #90 W3: the lane (test/real) is ALWAYS server-derived from the
+        # promoted ideas themselves - never client input (a client-sent
+        # ``isTest`` is ignored; ``BusinessRequirementCreateIn`` has no such
+        # field). A manual create (no idea_ids) is always real.
+        is_test = self._derive_lane(tenant_id, idea_ids) if idea_ids else False
 
         # Warm start (AC-BI-32b): a promote (idea_ids present) ABSORBS the idea -
         # derive a real title + pre-fill problem_statement so the BR opens titled
@@ -401,6 +418,7 @@ class BusinessRequirementService:
             template_version=version,
             title=resolved_title,
             answers_json=None,
+            is_test=is_test,
             created_by=actor.id if actor else None,
             updated_by=actor.id if actor else None,
         )
@@ -441,6 +459,27 @@ class BusinessRequirementService:
         self.db.refresh(br)
         return self.get(tenant_id, br.id)
 
+    def _derive_lane(self, tenant_id: str, idea_ids: List[str]) -> bool:
+        """Issue #90 W3: the lane (test/real) of a promote, derived from the
+        ideas themselves - tenant-scoped, never client input. All-test ->
+        True; all-real -> False; a mix is refused before anything is created
+        (never silently picks a lane). Ideas that do not resolve are ignored
+        here - :meth:`_link_ideas` raises its own 422 for those."""
+        ordered = [i for i in dict.fromkeys(idea_ids) if i]
+        if not ordered:
+            return False
+        rows = (
+            self.db.query(Idea.is_test)
+            .filter(Idea.id.in_(ordered), Idea.tenant_id == tenant_id)
+            .all()
+        )
+        flags = {bool(r[0]) for r in rows}
+        if len(flags) > 1:
+            raise HTTPException(
+                422, "Test and real ideas cannot be promoted together."
+            )
+        return flags.pop() if flags else False
+
     def _absorb_ideas(self, tenant_id: str, idea_ids: List[str]) -> Tuple[str, str]:
         """Derive ``(title, problem_statement)`` from the ideas a promote absorbs
         (AC-BI-32b). Tenant-scoped. Title = the representative idea's problem
@@ -473,11 +512,11 @@ class BusinessRequirementService:
     ) -> None:
         """Link ideas to a BR (AC-BI-17). Each idea must be in the caller's
         tenant AND on the SAME product as the BR (cross-tenant / cross-product =
-        422 - the polymorphic-target rule). A test idea (issue #1179 - a
-        console/``--say`` capture) is refused: promoting one would put a fake
-        row on a real Business Requirement, in the one place both the create
-        (warm-start promote) and the explicit link endpoint funnel through.
-        Idempotent per pair (unique)."""
+        422 - the polymorphic-target rule). Issue #90 W3: the lane invariant is
+        bidirectional - a test idea can only ever sit on a TEST BR and a real
+        idea only ever on a REAL BR (``bool(idea.is_test) != bool(br.is_test)``
+        -> 422), in the one place both the create (warm-start promote) and the
+        explicit link endpoint funnel through. Idempotent per pair (unique)."""
         wanted = [i for i in dict.fromkeys(idea_ids) if i]
         if not wanted:
             return
@@ -500,11 +539,13 @@ class BusinessRequirementService:
                     422,
                     "One or more ideas do not exist for this workspace.",
                 )
-            if idea.is_test:
-                raise HTTPException(
-                    422,
-                    "A test idea cannot be promoted to a Business Requirement.",
+            if bool(idea.is_test) != bool(br.is_test):
+                message = (
+                    "A test idea cannot be linked to a real Business Requirement."
+                    if idea.is_test
+                    else "A real idea cannot be linked to a test Business Requirement."
                 )
+                raise HTTPException(422, message)
             if idea.product_id != br.product_id:
                 raise HTTPException(
                     422,

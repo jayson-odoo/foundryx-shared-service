@@ -105,13 +105,27 @@ def br_target_schema() -> FormDocument:
 
 
 def seed_br_template(db: Session) -> None:
-    """Idempotent global seed of the platform-tier BR template + its v1 version.
+    """Idempotent, self-healing "ensure" seed of the platform-tier BR template
+    (issue #90 W2). The residual defect this fixes: the OLD seed keyed its
+    guard on the template ROW only, so any half-seeded state - the row
+    present but its ``active_version_id`` NULL, dangling, or the template
+    carrying zero version rows (e.g. issue #89's install-then-migration-
+    lock-timeout-then-rollback sequence, which left the tables committed but
+    empty) - was permanent: every future bootstrap early-returned and BR
+    create 422'd forever.
 
-    Insert-if-missing (an operator's edits survive a reseed): if the platform
-    template already exists this is a no-op. The doc is validated with
-    ``validate_form_doc`` before persisting (a broken seed doc would be a
-    programming error - fail loudly). Bi-D2: only the platform (NULL) tier."""
-    existing = (
+    Three independent repairs, each idempotent:
+    1. The platform template row: create if missing.
+    2. Its version rows: if none exist, create v1 from ``br_target_schema()``
+       (validated with ``validate_form_doc``, same as before).
+    3. The active pointer: if it is NULL or does not resolve to one of this
+       template's own version rows, point it at the HIGHEST version. A VALID
+       pointer is NEVER moved (an operator's chosen active version, e.g. v2,
+       survives any number of reseeds) and an existing version's ``doc_json``
+       is never rewritten.
+
+    ``db.flush()`` only - the caller (``bootstrap_modules``) commits."""
+    template = (
         db.query(IdeationArtifactTemplate)
         .filter(
             IdeationArtifactTemplate.template_key == BR_TEMPLATE_KEY,
@@ -119,34 +133,53 @@ def seed_br_template(db: Session) -> None:
         )
         .first()
     )
-    if existing is not None:
-        return
+    if template is None:
+        template = IdeationArtifactTemplate(
+            tenant_id=None,
+            template_key=BR_TEMPLATE_KEY,
+            name=BR_TEMPLATE_NAME,
+            description="The default Business Requirement capture template.",
+            is_system=True,
+        )
+        db.add(template)
+        db.flush()
 
-    doc = br_target_schema()
-    problems = validate_form_doc(doc)
-    if problems:
-        raise ValueError(f"Seed BR template doc is invalid: {problems}")
+    versions = (
+        db.query(IdeationArtifactTemplateVersion)
+        .filter(IdeationArtifactTemplateVersion.template_id == template.id)
+        .order_by(IdeationArtifactTemplateVersion.version.asc())
+        .all()
+    )
+    if not versions:
+        doc = br_target_schema()
+        problems = validate_form_doc(doc)
+        if problems:
+            raise ValueError(f"Seed BR template doc is invalid: {problems}")
+        version = IdeationArtifactTemplateVersion(
+            template_id=template.id,
+            tenant_id=None,
+            version=1,
+            doc_json=doc.model_dump(mode="json"),
+            created_by=None,
+        )
+        db.add(version)
+        db.flush()
+        versions = [version]
 
-    template = IdeationArtifactTemplate(
-        tenant_id=None,
-        template_key=BR_TEMPLATE_KEY,
-        name=BR_TEMPLATE_NAME,
-        description="The default Business Requirement capture template.",
-        is_system=True,
-    )
-    db.add(template)
-    db.flush()
-    version = IdeationArtifactTemplateVersion(
-        template_id=template.id,
-        tenant_id=None,
-        version=1,
-        doc_json=doc.model_dump(mode="json"),
-        created_by=None,
-    )
-    db.add(version)
-    db.flush()
-    template.active_version_id = version.id
-    db.flush()
+    version_ids = {v.id for v in versions}
+    if template.active_version_id not in version_ids:
+        highest = max(versions, key=lambda v: v.version)
+        template.active_version_id = highest.id
+        db.flush()
+
+
+def br_template_is_active(db: Session, tenant_id: Optional[str]) -> bool:
+    """True when a BR create would succeed - the same resolution the create
+    path uses (issue #90 W2, backs ``GET .../template-status``)."""
+    template = resolve_active_template(db, tenant_id)
+    if template is None:
+        return False
+    return active_version_number(template, db) is not None
 
 
 def resolve_active_template(

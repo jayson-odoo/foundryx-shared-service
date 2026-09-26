@@ -18,6 +18,7 @@ from app.models.user import User
 from ..schemas import (
     BrLinkIdeasIn,
     BrStatusIn,
+    BrTemplateStatusOut,
     BrTemplateVersionOut,
     BusinessRequirementCreateIn,
     BusinessRequirementDetailOut,
@@ -25,6 +26,7 @@ from ..schemas import (
     BusinessRequirementUpdateIn,
     IdeaOut,
 )
+from ..services.br_templates import br_template_is_active
 from ..services.business_requirements import BusinessRequirementService
 
 router = APIRouter()
@@ -35,6 +37,7 @@ def list_business_requirements(
     search: Optional[str] = Query(None),
     filter: str = Query("active", pattern="^(active|archived|all)$"),
     product_id: Optional[str] = Query(None, alias="productId"),
+    include_test: bool = Query(False, alias="includeTest"),
     current_user: User = Depends(
         require_permission("ideation.business_requirements.read")
     ),
@@ -42,9 +45,15 @@ def list_business_requirements(
 ) -> List[BusinessRequirementOut]:
     """All BRs for the tenant, newest first. ``search`` matches the title;
     ``filter`` selects active / archived / all; optional ``productId`` scopes to
-    a single product. Always tenant-scoped."""
+    a single product. ``includeTest`` (issue #90 W3) opts into TEST Business
+    Requirements, off by default (mirrors ``includeTest`` on ideas). Always
+    tenant-scoped."""
     return BusinessRequirementService(db).list(
-        current_user.tenant_id, search=search, filter=filter, product_id=product_id
+        current_user.tenant_id,
+        search=search,
+        filter=filter,
+        product_id=product_id,
+        include_test=include_test,
     )
 
 
@@ -94,6 +103,19 @@ def br_status_graph(
     return get_status_graph(
         entity_type=BR_ENTITY, current_user=current_user, db=db
     )
+
+
+# Registered BEFORE /{br_id} so the literal path wins the match (same reason
+# as /status-graph above). Issue #90 W2: whether a BR create would succeed
+# right now - backs the "New business requirement" dialog's guard.
+@router.get("/template-status", response_model=BrTemplateStatusOut)
+def get_br_template_status(
+    current_user: User = Depends(
+        require_permission("ideation.business_requirements.read")
+    ),
+    db: Session = Depends(get_db),
+) -> BrTemplateStatusOut:
+    return BrTemplateStatusOut(active=br_template_is_active(db, current_user.tenant_id))
 
 
 @router.get("/{br_id}", response_model=BusinessRequirementDetailOut)

@@ -180,6 +180,7 @@ class BusinessRequirementOut(ApiModel):
     templateVersion: int
     title: str
     ideaCount: int = 0
+    isTest: bool = False
     createdAt: datetime
     updatedAt: datetime
 
@@ -225,6 +226,14 @@ class BrLinkIdeasIn(ApiModel):
     """Link ideas to a BR (tenant-scoped + same-product, AC-BI-17)."""
 
     ideaIds: List[str]
+
+
+class BrTemplateStatusOut(ApiModel):
+    """Issue #90 W2 - whether a BR create would succeed right now (an active
+    template resolves to a version). Backs the "New business requirement"
+    dialog's guard so it can explain the failure instead of only refusing."""
+
+    active: bool
 
 
 class BrStatusIn(ApiModel):
@@ -380,14 +389,39 @@ class CreateIdeaIn(ApiModel):
     submitter_tier: Optional[str] = None
 
 
+class PublicIdeaTimelineStepOut(ApiModel):
+    """One step of the public status timeline (issue #90, AC-90-1xx) -
+    ``state`` is derived server-side from the tenant's status set (trait
+    flags, never ``category``); the frontend only renders it."""
+
+    label: str
+    color: str
+    state: Literal["done", "current", "upcoming"]
+
+
 class PublicIdeaStatusOut(ApiModel):
-    """The S5 public idea-status page contract - GET /public/ideas/{token},
-    no auth. EXACTLY these three keys - never problem/solution/impact/
-    department/submitter/product/any id (AC-1601). ``status`` is the status
-    LABEL (e.g. ``New``), never the lifecycle key."""
+    """The public idea-status page contract - GET /public/ideas/{token}, no
+    auth. Issue #90 widens this from the original 3-key contract
+    (title/status/ideaNumber) to a full page; the EXACT key set is pinned by
+    ``test_public_status_exact_key_set_and_no_pii`` (AC-90-104) so a future
+    field cannot leak silently. ``status`` stays the status LABEL (e.g.
+    ``New``), never the lifecycle key. No id, no tenant id, no last name, no
+    phone/email, no raw transcript - see the router/service docstrings for
+    the full forbidden-field rationale."""
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 
     title: Optional[str] = None
     status: str
     ideaNumber: Optional[str] = Field(default=None, validation_alias="idea_number")
+    statusColor: str
+    productName: Optional[str] = None
+    problem: Optional[str] = None
+    proposedSolution: Optional[str] = None
+    impact: Optional[str] = None
+    department: Optional[str] = None
+    submitterFirstName: Optional[str] = None
+    submittedAt: Optional[datetime] = None
+    upvotes: int = 0
+    nextStep: str
+    timeline: List[PublicIdeaTimelineStepOut] = Field(default_factory=list)
