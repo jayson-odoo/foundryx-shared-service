@@ -262,13 +262,193 @@ baked into the frontend image; the script also writes it as `PUBLIC_BASE_URL`),
 Re-run a previous successful deploy from the Actions tab (it re-pulls that SHA),
 or on the server set `IMAGE_TAG=<old-sha> ./scripts/blue_green_deploy.sh`.
 
+## Deploy-time migrations: abort, lock timeouts, drift guard
+
+Incident 26 Sep 2026 (issue #89): the ideation module's migration 0008 hit
+`canceling statement due to lock timeout`, `bootstrap_modules` logged
+`Module 'ideation' bootstrap failed` and CONTINUED, `start.sh` printed
+`bootstrap complete`, the swap went through, and production served ideation
+code at migration 0010 against a database at 0007 (`column ideas.title does
+not exist` on every idea save). The lock holder was the bootstrap ITSELF: the
+module's install hook seeded `ideation_artifact_templates` through the shared
+session and kept that transaction open while Alembic, on its own connection,
+waited for a lock on the same table.
+
+### What happens now, per deploy
+
+1. The new API colour's `start.sh` runs `python -m scripts.bootstrap_db`:
+   core `alembic upgrade head` → core seed → `bootstrap_modules` → drift
+   check → `bootstrap complete`. Every connection it opens carries
+   `lock_timeout` (`BOOTSTRAP_LOCK_TIMEOUT`, default `20s`, via `PGOPTIONS`),
+   module migrations included.
+2. Per module, the bootstrap commits its session BEFORE the module's
+   migrations (it can never block itself again), and a module already in the
+   database migrates FIRST, then its install/seed hook runs against the
+   up-to-date schema. A module brand-new to the database keeps the old
+   install (`create_all`) → commit → `stamp head` path.
+3. **Any module migration or seed failure is fatal.** The log keeps the
+   per-module line (`Module '<name>' bootstrap failed; aborting bootstrap:`
+   plus the failing SQL); `bootstrap_db` exits non-zero and never prints
+   `bootstrap complete`. `start.sh` retries the whole bootstrap
+   `BOOTSTRAP_ATTEMPTS` times (default 5, `BOOTSTRAP_RETRY_DELAY` 8s apart;
+   everything is idempotent) so a TRANSIENT lock clears, then exits 1.
+4. On a lock timeout the module migration first logs every session holding a
+   lock in that module's schema (`lock holder on schema 'app_<module>':
+   pid=... state=... xact_age=... locks=[...] query=...`), then re-raises.
+5. `scripts/blue_green_deploy.sh` waits up to **4 minutes**
+   (`HEALTH_WAIT_TICKS=120` x 2s, sorento-crm's bound) for the new colour. If
+   the new container exits or restarts, or the budget runs out, it prints
+   `::error::DEPLOY ABORTED (backend_<new> ...). Swap NOT performed - <old>
+   keeps serving.`, dumps the last 200 log lines, STOPS the new colour (so a
+   restart loop cannot keep re-running DDL against the live database) and
+   exits 1. Caddy is never touched.
+6. Only after the new API colour is healthy are the Celery workers + beat
+   recreated on the new image, and each is health-gated: a worker must log
+   Celery's `celery@<host> ready.` line within 90s (`WORKER_WAIT_TICKS=45`);
+   beat must stay running with zero restarts for 5 ticks. A failure here is
+   `DEPLOY FAILED AFTER SWAP`: the new colour serves, the old colour is left
+   running for a rollback.
+
+### Module schema drift guard (last line of defence)
+
+`app/module_platform/drift_guard.py` runs at the end of `bootstrap_db`, in the
+API lifespan (every gunicorn worker) and at every Celery worker/beat start.
+For each module under per-module Alembic it compares the database's
+`alembic_version_<module>` with the code's alembic head:
+
+| database vs code | result |
+|---|---|
+| equal | start |
+| a KNOWN older revision (DB behind) | refuse to start: `ModuleSchemaDrift: module '<m>' database schema is at <db> but this code needs <head>` (gunicorn exits 3, a Celery process exits 1) |
+| a revision this code does not know (DB ahead) | WARNING, start. Normal during blue/green: the new colour migrated first, the old colour or its workers may still restart |
+| no version table (module never installed here) / no `alembic/` dir | ignored |
+
+`SKIP_MIGRATIONS=1` skips the bootstrap, NOT the guard: code ahead of its
+schema never serves traffic. There is no environment switch that disables the
+guard. The workers run it too because they execute the same module code
+against the same tables (a worker on new code and an old schema fails every
+task that touches a new column), and in a deploy they are recreated only after
+the API colour migrated the schema, so a healthy deploy always passes.
+
+### SKIP_MIGRATIONS=1 (the only bypass)
+
+For a hand-run expand-contract rollout: set `SKIP_MIGRATIONS=1` in the shell
+that runs the deploy script (compose passes it into the backend env; the
+script prints a `::warning::`), run the migrations yourself first, then
+deploy. Unset it afterwards. `BOOTSTRAP_LOCK_TIMEOUT`, `BOOTSTRAP_ATTEMPTS`
+and `BOOTSTRAP_RETRY_DELAY` reach the container the same way.
+
+### Module migration lock timeout (operator recovery)
+
+Symptom: the deploy aborted with `DEPLOY ABORTED (backend_<new> ...)` and the
+new colour's log shows `Module '<m>' migration hit a lock timeout` followed by
+`lock holder on schema 'app_<m>': pid=...` lines. Production is fine: the old
+colour kept serving on the old schema.
+
+1. **Find the holder.** The log already names it. To look again, live:
+
+   ```
+   docker exec -it foundryx_ss_db psql -U foundryx -d foundryx_service
+   ```
+   ```sql
+   SELECT a.pid, a.state, now() - a.xact_start AS xact_age,
+          a.application_name, a.client_addr, a.backend_type,
+          string_agg(DISTINCT n.nspname || '.' || c.relname || ' ' || l.mode, ', ') AS locks,
+          a.query
+   FROM pg_locks l
+   JOIN pg_class c ON c.oid = l.relation
+   JOIN pg_namespace n ON n.oid = c.relnamespace
+   JOIN pg_stat_activity a ON a.pid = l.pid
+   WHERE l.granted AND n.nspname = 'app_ideation'   -- the module's schema
+     AND a.pid <> pg_backend_pid()
+   GROUP BY a.pid, a.state, a.xact_start, a.application_name,
+            a.client_addr, a.backend_type, a.query
+   ORDER BY xact_age DESC NULLS LAST;
+   ```
+   While a migration is waiting, `SELECT pid, pg_blocking_pids(pid),
+   wait_event_type, query FROM pg_stat_activity WHERE
+   cardinality(pg_blocking_pids(pid)) > 0;` shows who blocks whom. Map a
+   `client_addr` to its container with `docker network inspect
+   foundryx_ss_network`.
+2. **Decide.**
+   - `idle in transaction` with a large `xact_age`: a leaked transaction
+     (a worker task, a hand-opened psql). Restart the owning container
+     (`docker compose restart worker_jobs`, ...) or end the session.
+   - `active` long query from the live API or a worker: wait for it, or
+     re-run the deploy off-peak.
+   - Your own leftover psql / script session: close it.
+3. **`pg_terminate_backend` with care.** `SELECT pg_cancel_backend(<pid>);`
+   first (cancels the running statement only). `SELECT
+   pg_terminate_backend(<pid>);` ends the session and ROLLS BACK its open
+   transaction: an API request's write is lost, a worker task fails (the job
+   orphan sweep marks it failed). Never terminate replication/autovacuum
+   backends (`backend_type`), never guess a pid that is not in the report.
+4. **Re-run the bootstrap.** Re-run the deploy workflow from the Actions tab
+   (the new colour bootstraps again), or on the host, with the stopped new
+   colour's image:
+
+   ```
+   IMAGE_TAG=<sha> docker compose --profile <new> run --rm --no-deps backend_<new> python -m scripts.bootstrap_db
+   ```
+   (`start.sh` runs an override command directly, one attempt, still under
+   `lock_timeout`.) It must end with `bootstrap complete: migrated + seeded +
+   modules`; then re-run the deploy. The issue-#89 workaround (running
+   `run_module_migrations` by hand) is no longer needed: the bootstrap cannot
+   block its own migrations any more.
+
+### Safeguards vs sorento-crm's deploy (owner ruling: mirror the mature one)
+
+Compared against sorento-crm's `start.sh` + `scripts/blue_green_deploy.sh`.
+
+Adopted:
+
+- **Migrations before the server, any failure exits the container.** Already
+  true for core; extended to module migrations and seeds (issue #89).
+- **4-minute health budget for the new colour with a named error**
+  (`HEALTH_WAIT_TICKS` 150 → 120; `DEPLOY ABORTED ... Swap NOT performed`).
+- **Workers recreated only after the API colour is healthy**, unchanged
+  (step 6 after step 3).
+- **Workers health-gated on a positive startup line** (sorento greps its
+  scheduler/role line; here Celery's `celery@<host> ready.`), 90s window
+  (`WORKER_WAIT_TICKS` 30 → 45, sorento's value). Beat keeps the
+  running-with-zero-restarts gate: its only startup line prints BEFORE the
+  drift guard runs, so it proves nothing.
+- **`SKIP_MIGRATIONS=1` as the only bypass.** It was documented but never
+  reached the container (the compose env block is an allow-list); it is now
+  passed through, with the `BOOTSTRAP_*` tuning knobs, and announced by the
+  script.
+
+Added beyond sorento (reason):
+
+- **Fail fast when the new colour exits or restarts** instead of polling out
+  the whole budget: `start.sh` already retried inside the container, so an
+  exit is final.
+- **Stop the new colour on abort**: with `restart: unless-stopped` a failed
+  container re-runs the bootstrap forever, and a DDL statement waiting on a
+  lock queues every new query on that table behind it for up to
+  `lock_timeout`, on the LIVE database.
+- **Lock-holder report and module schema drift guard** (sections above).
+
+Rejected (reason):
+
+- **`docker image prune -af --filter until=48h`** (sorento's disk-fill fix):
+  this host is shared with the dreamz EMS stack, and `-a` would also delete
+  that stack's unused images (its rollback targets). Keep dangling-only
+  pruning; a repo-scoped prune is a separate change.
+- **gunicorn `preload_app` + `post_fork` engine dispose** (sorento's
+  `gunicorn.conf.py`): a memory/startup tuning, not a deploy safeguard; out of
+  scope for this fix.
+- **nginx upstream swap**: sorento fronts with nginx; the Caddy fragment swap
+  here already validates (`caddy validate`) before `caddy reload`, the same
+  guarantee as `nginx -t`.
+
 ## Notes / gotchas
 
 - `NEXT_PUBLIC_*` are compile-time - changing the public API origin requires a
   **rebuild**, not just an env change.
-- A failed migration exits the new API container → healthcheck never passes →
-  the script aborts and the **old color keeps serving**. Set `SKIP_MIGRATIONS=1`
-  in backend env for manual expand-contract rollouts.
+- A failed migration (core OR module) exits the new API container → the
+  script aborts with a named error and the **old color keeps serving**. See
+  "Deploy-time migrations" below. `SKIP_MIGRATIONS=1` is the only bypass.
 - The email-outbox dispatcher is a lifespan thread inside each gunicorn worker;
   it claims under a DB lease, so multiple workers are safe.
 - Meetings transcription (`meetings.transcribe`, sprint-5 prod-enablement) now
