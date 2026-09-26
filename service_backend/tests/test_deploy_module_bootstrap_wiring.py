@@ -525,14 +525,46 @@ def _versioned_ideation(monkeypatch, db_version):
     return migrations_mod, upgrades
 
 
+def _ideation_head_and_next_number():
+    """(real ideation code head, its numeric prefix) read straight off
+    ``modules/ideation/alembic/versions`` - never a literal. PR #91 pinned a
+    "newer image" fixture to a hardcoded head of 0010; PR #92 then landed the
+    REAL 0011 migration and every one of those fixtures started colliding
+    with the actual head (``foreign`` instead of ``ahead`` - issue with the
+    36247828880 CI run). Deriving n here means the next ideation migration
+    (0012, 0013, ...) can never repeat that break."""
+    from app.module_loader import discover_manifests
+    from app.module_platform.drift_guard import module_code_head, revision_order
+
+    manifest = next(m for m in discover_manifests() if m["module_name"] == "ideation")
+    head = module_code_head(manifest)
+    n = max(revision_order(h)[0] for h in head.split(","))
+    return head, n
+
+
+def _ideation_newer_than_head(suffix: str) -> str:
+    """A revision id strictly newer than every real ideation code head - the
+    "a newer image already migrated it" fixture value, computed from the
+    live head instead of a hardcoded number."""
+    _head, n = _ideation_head_and_next_number()
+    return f"{n + 1:04d}_{suffix}"
+
+
+_IDEATION_HEAD, _IDEATION_HEAD_N = _ideation_head_and_next_number()
+_IDEATION_NEWER_IMAGE_VERSION = _ideation_newer_than_head("from_a_newer_image")
+_IDEATION_CLEAN_ROLLBACK_WITH_HEAD_VERSION = (
+    f"{_IDEATION_HEAD},{_IDEATION_HEAD_N + 1:04d}_new"
+)
+
+
 def test_a_rollback_image_skips_module_migrations_when_the_db_is_ahead(monkeypatch, caplog):
     import logging
 
-    migrations_mod, upgrades = _versioned_ideation(monkeypatch, "0011_from_a_newer_image")
+    migrations_mod, upgrades = _versioned_ideation(monkeypatch, _IDEATION_NEWER_IMAGE_VERSION)
     with caplog.at_level(logging.WARNING):
         migrations_mod.run_module_migrations(_BeginEngine(), "ideation")  # must not raise
     assert upgrades == []
-    assert "0011_from_a_newer_image" in caplog.text
+    assert _IDEATION_NEWER_IMAGE_VERSION in caplog.text
 
 
 def test_a_db_behind_the_code_still_upgrades(monkeypatch):
@@ -562,7 +594,9 @@ def test_every_module_revision_id_carries_the_sortable_numeric_prefix():
 @pytest.mark.parametrize(
     "db_version",
     [
-        "0010_ideation_intake_contract,0011_new",  # would be "ahead" but ...
+        # the real code head, still present, plus an unknown revision after
+        # it - would be "ahead" but ...
+        _IDEATION_CLEAN_ROLLBACK_WITH_HEAD_VERSION,
     ],
 )
 def test_a_clean_rollback_with_the_head_still_present_is_skipped(monkeypatch, db_version, caplog):
@@ -578,11 +612,11 @@ def test_a_clean_rollback_with_the_head_still_present_is_skipped(monkeypatch, db
 def test_a_rollback_skip_is_logged_at_error_not_warning(monkeypatch, caplog):
     import logging
 
-    migrations_mod, upgrades = _versioned_ideation(monkeypatch, "0011_from_a_newer_image")
+    migrations_mod, upgrades = _versioned_ideation(monkeypatch, _IDEATION_NEWER_IMAGE_VERSION)
     with caplog.at_level(logging.WARNING):
         migrations_mod.run_module_migrations(_BeginEngine(), "ideation")
     assert upgrades == []
-    records = [r for r in caplog.records if "0011_from_a_newer_image" in r.getMessage()]
+    records = [r for r in caplog.records if _IDEATION_NEWER_IMAGE_VERSION in r.getMessage()]
     assert records and all(r.levelno == logging.ERROR for r in records)
 
 
