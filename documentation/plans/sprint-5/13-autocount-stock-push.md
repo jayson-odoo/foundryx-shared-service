@@ -144,19 +144,22 @@ cadence (accepted by the owner, R8). The skip rows are accepted as-is for now (R
   no code change" true.
 - **Prerequisite.** `set_delivery_mode(stock, push)` refuses 422 on either shut state (contract
   check is already there, `etl_service.py:2930-2935`; `no_snapshot` is added after it).
-- **Baseline seed (D9).** In `set_delivery_mode`, on `pull -> push` for any pull-capable entity,
-  when `RowHashRepository` holds zero rows for the (tenant, company, entity): collect the distinct
-  `source_ref`s of every READY, unexpired snapshot of that triple (new repo read
-  `PullSnapshotRepository.ready_source_refs(tenant_id, company_id, entity_type, now)`, tenant-scoped,
-  `ac_pull_snapshot_row.source_ref`) and `upsert_many` them with `row_hash = f"seed:{snapshot_id}"`
-  in the same commit as the mode change. The first push run then reads every current ref as
-  changed (staged) and every seeded ref missing from the extract as a delete (qty 0). Taken as
-  (a) + (b): the runbook's "last Pull + Confirm, then flip immediately" keeps the union close to
-  what Sorento holds, and the seed closes the window between that Confirm and the first push walk.
-  The union (at most 3 snapshots, 24 h TTL) is a superset of the confirmed set; a seeded ref
-  Sorento never held answers `not_found`, which is harmless. (c) a Sorento-side run-scoped sweep
-  marker was rejected: it rebuilds the destructive "zero everything absent" import on the consumer,
-  the exact failure mode per-row upsert/delete exists to avoid.
+- **Baseline seed (D9, revised in review round 2, coordinator ruling, latest snapshot only).** In
+  `set_delivery_mode`, on `pull -> push` for any pull-capable entity, when `RowHashRepository` holds
+  zero rows for the (tenant, company, entity): collect the distinct `source_ref`s of the SINGLE
+  latest-`extracted_at` READY, unexpired snapshot of that triple (new repo read
+  `PullSnapshotRepository.latest_ready_source_refs(tenant_id, company_id, entity_type, now)`,
+  tenant-scoped, `ac_pull_snapshot_row.source_ref`) and `upsert_many` them with
+  `row_hash = f"seed:{snapshot_id}"` in the same commit as the mode change. The first push run then
+  reads every current ref as changed (staged) and every seeded ref missing from the extract as a
+  delete (qty 0). The runbook's "last Pull + Confirm, then flip immediately" makes the latest
+  snapshot itself the confirmed baseline - it is read alone, never unioned with an older snapshot
+  whose extra refs (rows already known gone, or from a superseded extract) must never leak into the
+  seed. (c) a Sorento-side run-scoped sweep marker was rejected: it rebuilds the destructive "zero
+  everything absent" import on the consumer, the exact failure mode per-row upsert/delete exists to
+  avoid. `PullSnapshotRepository.ready_source_refs` (the union across every READY snapshot) still
+  exists for other reads (e.g. `has_ready`'s existence check), but the seed itself no longer calls
+  it.
 - **`push -> pull` clears the hashes (D10)** with the same `RowHashRepository.clear_all` Re-push
   uses. Otherwise a later re-flip would diff against pre-pull hashes: a pair the pull period zeroed
   and that came back at the same qty would read as unchanged and never be re-sent.
@@ -195,7 +198,7 @@ real service needs no change beyond the type (the field arrives on the task payl
 | D6 | Stage only records that changed at source OR differ from the last pushed canonical; all `autocount_http` tasks; SQL untouched (closes BL-SS-238) | Without it a 5-minute stock push is a 5,000-row rotation of noise; the canonical OR keeps it safe against hash-before-stage and makes mapping edits propagate |
 | D7 (owner ruling R5) | `excludedNonzeroCount > 0` fails the push run (`EXCLUDED_NONZERO`), before staging, blocking the whole book | Sorento carries one unit only, so an unconvertible quantity must never land. The consumer's pull Confirm guard has no human to enforce it on push; an unresolved rate under-counts real inventory. Per-pair hold backlogged (BL-SS-270) |
 | D8 | An unverified walk stages no deletes (upserts proceed), `run.truncated = True`; one completeness helper shared with the snapshot | Upserts from a partial walk are still true values; deletes from one zero real stock |
-| D9 | Baseline = runbook (last Pull + Confirm, flip at once) + seed `ac_row_hash` from the union of READY snapshots at flip; stock refuses the flip without one | Closes the Confirm-to-first-walk window with no Sorento sweep; superset is harmless (`not_found`) |
+| D9 (revised in review round 2, coordinator ruling, latest snapshot only) | Baseline = runbook (last Pull + Confirm, flip at once) + seed `ac_row_hash` from the SINGLE latest READY, unexpired snapshot at flip (never the union of every ready snapshot); stock refuses the flip without one | The runbook's Pull + Confirm immediately before flipping makes the latest snapshot the confirmed baseline; an older snapshot's extra refs must never leak into the seed. Recovery from a stale seed is flip to Pull, fresh Pull + Confirm, flip back to Push - never Re-push |
 | D10 | `push -> pull` clears the task's row hashes | Stale hashes would mask pairs the pull period zeroed |
 | D11 (owner rulings R8, R9) | No-watermark floor 15 -> 5 for every task; overlap guard unchanged; effective cadence documented; wrapper load and skip rows accepted | Owner sets 5 (R3); one constant; the guard already prevents stacking |
 | D12 | Stock deletions carry `pairs` derived from the ref, guarded like `codes` | Sorento stores no stock refs; no column, no migration |
@@ -277,7 +280,9 @@ design mandates, DoD gate and hard-fail list.
 ## 5. Risks and answers
 
 - **A stock-take legitimately zeroes a whole warehouse** (> 20% of pairs): the existing
-  `DELETE_GUARD` stops the run. Intended; the operator sees the named error.
+  `DELETE_GUARD` stops the run. Intended; the operator sees the named error. Recovery (same as a
+  stale baseline seed, review round 2 coordinator ruling): flip the book back to Pull, run a fresh
+  Pull + Confirm, then flip back to Push, which re-seeds from that fresh snapshot - never Re-push.
 - **A manual Excel stock import on Sorento after the flip** zeroes absent pairs and Foundryx will
   not re-send unchanged ones (a stock Pull + Confirm does the same). Sorento keeps both visible
   (R10, SR5b declined): the owner does not use them on a pushed book; if one is used by mistake,
@@ -332,12 +337,16 @@ plan 13 deployed after it; `ac_company.sorento_company_code` is `SRT` / `MCH` (p
    fallback now opens) is NOT auto-detected: Re-push the affected task (brand, or any
    contract-gated entity) once its consumer starts accepting it, or its accumulated changes never
    re-offer on their own (BL-SS-272).
-10. Trap (review round 2 S5): the baseline seed (D9) is a snapshot union, which can be LARGER than
-    the current live extract (e.g. items deleted at source since the last Pull). If the seed
-    overcounts by more than the delete guard's threshold (20% of known, floor 50), EVERY run after
-    the flip trips `DELETE_GUARD` and stages nothing. Recovery is the same as any stale-hash
-    problem: Re-push the task (invalidates and lets the next full walk re-derive a correct
-    population).
+10. Trap (review round 2 S5; revised in review round 2, coordinator ruling, latest snapshot only):
+    the baseline seed (D9) is the single latest READY snapshot at flip time, which can still be
+    LARGER than the current live extract if it goes stale between Confirm and the flip (e.g. items
+    deleted at source in that window), or a legitimate mass zeroing (e.g. a stock-take) happens
+    after the flip. If the seed (or a later run's own known population) overcounts by more than the
+    delete guard's threshold (20% of known, floor 50), EVERY run after trips `DELETE_GUARD` and
+    stages nothing. Recovery is NEVER Re-push (that only clears/invalidates the existing hashes - it
+    does not refresh the baseline against Sorento's real current state): flip the book back to Pull,
+    run a fresh Pull + Confirm, then flip back to Push, which re-seeds `ac_row_hash` from that fresh
+    snapshot (D9).
 
 Rollback: flip the book back to Pull (hashes cleared, D10), Sorento Pull works again at once.
 

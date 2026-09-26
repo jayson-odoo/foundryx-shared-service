@@ -1472,10 +1472,14 @@ class PullSnapshotRepository:
         never hold a raw ``self.db.query(...)``). The UNION of every
         READY, UNEXPIRED snapshot's own distinct ``source_ref``s for one
         (company, entity) triple, each mapped to a sentinel row-hash
-        naming ITS OWN snapshot id (``f"seed:{snapshot_id}"``) - the
-        baseline seed ``EtlService.set_delivery_mode`` writes into
-        ``ac_row_hash`` on a ``pull -> push`` flip, and the SAME union
-        ``has_ready`` below answers a boolean for.
+        naming ITS OWN snapshot id (``f"seed:{snapshot_id}"``).
+
+        Review round 2 coordinator ruling (D9 revision, latest snapshot
+        only) - this UNION method is kept as a general read (and its own
+        `has_ready` twin below still answers "does at least one exist"
+        over the SAME union), but the baseline seed itself no longer calls
+        this method: see ``latest_ready_source_refs`` below, which is what
+        ``EtlService._seed_baseline_if_empty`` actually seeds from.
 
         Snapshots are visited OLDEST-``extracted_at``-FIRST (never bare DB
         / dict-iteration order) so a ref present in more than one
@@ -1512,6 +1516,56 @@ class PullSnapshotRepository:
             for (ref,) in refs:
                 out[ref] = f"seed:{snapshot.id}"
         return out
+
+    def latest_ready_source_refs(
+        self, tenant_id: str, company_id: str, entity_type: str, now: datetime
+    ) -> Dict[str, str]:
+        """Plan 13 review round 2 coordinator ruling (D9 revised) - the
+        baseline seed for a ``pull -> push`` flip. Unlike ``ready_source_
+        refs`` above (the union of EVERY READY, unexpired snapshot), this
+        reads ONLY the single latest-``extracted_at`` READY, unexpired
+        snapshot for the (company, entity) triple and returns its distinct
+        ``source_ref``s, each mapped to ``f"seed:{snapshot_id}"``.
+
+        Rationale: the runbook has the owner Pull + Confirm immediately
+        before flipping, so the latest snapshot IS the confirmed baseline
+        - an older snapshot's extra refs (rows the owner already knows are
+        gone, or belong to a prior, superseded extract) must never leak
+        into the seed. Recovery from a stale seed or a DELETE_GUARD trip is
+        never "Re-push" (`invalidate_all` keeps the union semantics for
+        THAT path on purpose - it must not drop deletes); it is flip to
+        Pull, run a fresh Pull + Confirm, then flip back to Push, which
+        re-seeds from that fresh single snapshot.
+
+        No READY, unexpired snapshot for the triple -> empty dict (the
+        flip itself is never refused here; ``_has_ready_snapshot``/
+        ``has_ready`` below is the actual push-gate for stock)."""
+        snapshot = (
+            self.db.query(AcPullSnapshot)
+            .filter(
+                AcPullSnapshot.tenant_id == tenant_id,
+                AcPullSnapshot.company_id == company_id,
+                AcPullSnapshot.entity_type == entity_type,
+                AcPullSnapshot.status == PULL_SNAPSHOT_STATUS_READY,
+                or_(
+                    AcPullSnapshot.expires_at.is_(None),
+                    AcPullSnapshot.expires_at > now,
+                ),
+            )
+            .order_by(AcPullSnapshot.extracted_at.desc())
+            .first()
+        )
+        if snapshot is None:
+            return {}
+        refs = (
+            self.db.query(AcPullSnapshotRow.source_ref)
+            .filter(
+                AcPullSnapshotRow.tenant_id == tenant_id,
+                AcPullSnapshotRow.snapshot_id == snapshot.id,
+            )
+            .all()
+        )
+        return {ref: f"seed:{snapshot.id}" for (ref,) in refs}
 
     def has_ready(
         self, tenant_id: str, company_id: str, entity_type: str, now: datetime

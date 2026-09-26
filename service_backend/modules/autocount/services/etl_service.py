@@ -1317,13 +1317,14 @@ class EtlService:
     def _has_ready_snapshot(
         self, tenant_id: str, company_id: str, entity_type: str
     ) -> bool:
-        """Whether the SAME union `_seed_baseline_if_empty` would seed from
-        is non-empty right now - deliberately the SAME repository read
-        `_seed_baseline_if_empty` uses, so the gate and the seed can never
-        disagree about whether "a snapshot to flip from" exists. Review
-        round 2 B2 fix: an EXISTS-only repository call
-        (`PullSnapshotRepository.has_ready`), never the full row union
-        (`ready_source_refs`) - this is called on EVERY stock task view
+        """Whether at least one READY, unexpired snapshot exists for this
+        (company, entity) triple right now - the push gate for stock
+        (AC-13-31), never disagreeing with `_seed_baseline_if_empty` about
+        whether SOME snapshot to flip from exists (the gate answers "does
+        one exist at all"; the seed below picks the latest one - review
+        round 2 coordinator ruling, D9 revised). Review round 2 B2 fix: an
+        EXISTS-only repository call (`PullSnapshotRepository.has_ready`),
+        never a full row union - this is called on EVERY stock task view
         GET, so loading up to ~12k refs per snapshot just to answer a
         boolean turned every GET into an N+1 scaling with extract size."""
         return PullSnapshotRepository(self.db).has_ready(
@@ -1333,12 +1334,17 @@ class EtlService:
     def _ready_snapshot_source_refs(
         self, tenant_id: str, company_id: str, entity_type: str, now: datetime
     ) -> Dict[str, str]:
-        """plan 13 (AC-13-32, D9) review round 2 B2 fix - delegates to
-        `PullSnapshotRepository.ready_source_refs` (Service -> Repository
-        layering: a service must never hold a raw `self.db.query(...)`).
-        Kept as a thin, tenant-scoped wrapper so `_seed_baseline_if_empty`
-        below needs no import of its own."""
-        return PullSnapshotRepository(self.db).ready_source_refs(
+        """plan 13 (AC-13-32, D9) - revised in review round 2, coordinator
+        ruling, latest snapshot only. Delegates to `PullSnapshotRepository.
+        latest_ready_source_refs` (Service -> Repository layering: a
+        service must never hold a raw `self.db.query(...)`) - the SINGLE
+        latest-`extracted_at` READY, unexpired snapshot, never the union of
+        every ready snapshot. The runbook has the owner Pull + Confirm
+        immediately before flipping, so the latest snapshot IS the
+        confirmed baseline; an older snapshot's extra refs must never leak
+        into the seed. Kept as a thin, tenant-scoped wrapper so
+        `_seed_baseline_if_empty` below needs no import of its own."""
+        return PullSnapshotRepository(self.db).latest_ready_source_refs(
             tenant_id, company_id, entity_type, now
         )
 
@@ -3104,10 +3110,14 @@ class EtlService:
     def _seed_baseline_if_empty(
         self, tenant_id: str, company_id: str, entity_type: str
     ) -> None:
-        """D9 - a `pull -> push` flip's baseline. When this task holds
-        ZERO `ac_row_hash` rows, seed one per distinct `source_ref` found
-        in the union of this (company, entity)'s READY, unexpired
-        snapshots, `row_hash = "seed:<snapshot_id>"`. A task that already
+        """D9 (revised in review round 2, coordinator ruling, latest
+        snapshot only) - a `pull -> push` flip's baseline. When this task
+        holds ZERO `ac_row_hash` rows, seed one per distinct `source_ref`
+        found in this (company, entity)'s SINGLE latest-`extracted_at`
+        READY, unexpired snapshot (never the union of every ready
+        snapshot - the runbook has the owner Pull + Confirm immediately
+        before flipping, so the latest snapshot IS the confirmed
+        baseline), `row_hash = "seed:<snapshot_id>"`. A task that already
         holds hash rows (e.g. a prior push period, or a re-flip) is NEVER
         seeded or overwritten (AC-13-32's own guard). Does not commit -
         the caller's single commit covers the mode change and this seed

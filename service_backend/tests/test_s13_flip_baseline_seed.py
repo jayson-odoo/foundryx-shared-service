@@ -125,19 +125,53 @@ def test_ready_source_refs_and_has_ready_are_implemented(session_factory):
     assert repo.has_ready(DEFAULT_TENANT_ID, "nonexistent", "product", now) is False
 
 
-# ── AC-13-32: baseline seed on pull -> push, union of READY snapshots ──────
+# ── AC-13-32: baseline seed on pull -> push, latest READY snapshot only ────
+# (review round 2 coordinator ruling, D9 revised: was the union of every
+# READY snapshot; see ``latest_ready_source_refs``)
 
 
-def test_flip_seeds_the_union_of_ready_snapshot_refs(rig):
+def test_flip_seeds_only_the_latest_ready_snapshots_refs(rig):
+    """Review round 2 coordinator ruling (D9 revised) - the seed is the
+    SINGLE latest-``extracted_at`` READY snapshot, never the union of
+    every ready snapshot. The runbook has the owner Pull + Confirm
+    immediately before flipping, so the latest snapshot IS the confirmed
+    baseline; an older snapshot's extra refs must not leak into it."""
     db, company = rig
-    _ready_snapshot(db, company, ENTITY_STOCK_BALANCE, ["AED_SORENTO:A|MBS", "AED_SORENTO:B|MBS"])
-    _ready_snapshot(db, company, ENTITY_STOCK_BALANCE, ["AED_SORENTO:B|MBS", "AED_SORENTO:C|MBS"])
+    _ready_snapshot(
+        db, company, ENTITY_STOCK_BALANCE, ["AED_SORENTO:A|MBS", "AED_SORENTO:B|MBS"],
+        extracted_at=NOW - timedelta(hours=1),
+    )
+    _ready_snapshot(
+        db, company, ENTITY_STOCK_BALANCE, ["AED_SORENTO:B|MBS", "AED_SORENTO:C|MBS"],
+        extracted_at=NOW,
+    )
 
     EtlService(db).set_delivery_mode(
         DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, DELIVERY_MODE_PUSH
     )
     hashes = RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE)
-    assert set(hashes) == {"AED_SORENTO:A|MBS", "AED_SORENTO:B|MBS", "AED_SORENTO:C|MBS"}
+    assert set(hashes) == {"AED_SORENTO:B|MBS", "AED_SORENTO:C|MBS"}
+
+
+def test_an_older_ready_snapshots_extra_refs_are_never_seeded(rig):
+    """Review round 2 coordinator ruling (D9 revised) - a ref that only
+    ever appeared in an OLDER ready snapshot, and not in the latest one,
+    must not be seeded at all."""
+    db, company = rig
+    _ready_snapshot(
+        db, company, ENTITY_STOCK_BALANCE, ["AED_SORENTO:OLD-ONLY|MBS"],
+        extracted_at=NOW - timedelta(hours=1),
+    )
+    _ready_snapshot(
+        db, company, ENTITY_STOCK_BALANCE, ["AED_SORENTO:NEW|MBS"], extracted_at=NOW,
+    )
+
+    EtlService(db).set_delivery_mode(
+        DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE, DELIVERY_MODE_PUSH
+    )
+    hashes = RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_STOCK_BALANCE)
+    assert "AED_SORENTO:OLD-ONLY|MBS" not in hashes
+    assert set(hashes) == {"AED_SORENTO:NEW|MBS"}
 
 
 def test_seed_row_hash_is_the_sentinel_naming_the_snapshot(rig):
@@ -152,10 +186,11 @@ def test_seed_row_hash_is_the_sentinel_naming_the_snapshot(rig):
 
 
 def test_a_ref_in_two_snapshots_deterministically_keeps_the_latest_sentinel(rig):
-    """Review round 2 B2 fix - ``ready_source_refs`` visits snapshots
-    oldest-``extracted_at``-FIRST (never bare DB/dict-iteration order), so
-    a ref present in more than one READY snapshot deterministically keeps
-    the LATEST one's sentinel, reproducible across runs/backends."""
+    """Review round 2 coordinator ruling (D9 revised) - the seed reads
+    ONLY the latest-``extracted_at`` READY snapshot (never a union with a
+    tie-break), so a ref present in more than one READY snapshot
+    deterministically keeps the LATEST one's sentinel, reproducible
+    across runs/backends."""
     db, company = rig
     older = _ready_snapshot(
         db, company, ENTITY_STOCK_BALANCE, ["AED_SORENTO:A|MBS"],
@@ -176,8 +211,11 @@ def test_a_ref_in_two_snapshots_deterministically_keeps_the_latest_sentinel(rig)
 def test_has_ready_agrees_with_ready_source_refs_on_a_non_empty_union(rig):
     """Review round 2 B2 fix - `has_ready` (the EXISTS-only read `_push_
     gate` uses on every task-view GET) must never disagree with
-    `ready_source_refs` (the full union `_seed_baseline_if_empty` uses)
-    about whether a snapshot exists to flip from."""
+    `ready_source_refs` (the full union) about whether SOME snapshot
+    exists to flip from. `_seed_baseline_if_empty` itself now seeds from
+    `latest_ready_source_refs` (review round 2 coordinator ruling, D9
+    revised) - a narrower read of the same non-empty condition this test
+    still exercises."""
     db, company = rig
     now = datetime.now(timezone.utc)
     repo = PullSnapshotRepository(db)
@@ -206,7 +244,7 @@ def test_flip_never_seeds_a_task_that_already_holds_hash_rows(rig):
     )
 
 
-def test_an_expired_snapshot_is_never_part_of_the_seed_union(rig):
+def test_an_expired_snapshot_is_never_the_seed_source(rig):
     db, company = rig
     _ready_snapshot(
         db, company, ENTITY_STOCK_BALANCE, ["AED_SORENTO:STALE|MBS"], expires_in_hours=-1
