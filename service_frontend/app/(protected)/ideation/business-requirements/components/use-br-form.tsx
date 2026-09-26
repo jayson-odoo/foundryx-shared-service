@@ -191,9 +191,13 @@ export function useBrForm(
     },
     [pagerIncludeTest],
   );
+  // Carries `includeTest` forward too (review round 3 fix) - without it, one
+  // Next/Prev step from a test-inclusive list dropped the param, so the
+  // SECOND step's pager silently narrowed back to the real-only lane.
   const buildRecordHref = useCallback(
-    (recordId: string, ctx: string, index: number) => brFormHref(recordId, { ctx, index }),
-    [],
+    (recordId: string, ctx: string, index: number) =>
+      brFormHref(recordId, { ctx, index, includeTest: pagerIncludeTest }),
+    [pagerIncludeTest],
   );
 
   const config = useMemo<ResourceFormConfig<BusinessRequirementDetail> | null>(() => {

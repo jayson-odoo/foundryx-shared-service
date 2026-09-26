@@ -120,4 +120,16 @@ describe('useBrForm - review fix S6, the record pager carries the LIST context, 
     await result.current.config!.recordNav!.fetchAt(query, 0);
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ includeTest: false }));
   });
+
+  // Review round 3 fix: without this, one Next/Prev step from a
+  // test-inclusive list dropped `includeTest` off the neighbour's href, so
+  // the SECOND step silently narrowed back to the real-only lane.
+  it('carries includeTest onto the NEXT record href too (recordNav.buildHref)', async () => {
+    useSearchParams.mockReturnValue(new URLSearchParams('includeTest=1'));
+    get.mockResolvedValue(brDetail({ isTest: false }));
+    const { result } = renderHook(() => useBrForm('br-1', false));
+    await waitFor(() => expect(result.current.config).not.toBeNull());
+    const href = result.current.config!.recordNav!.buildHref('br-2', 'CTX', 1);
+    expect(new URL(href, 'http://x').searchParams.get('includeTest')).toBe('1');
+  });
 });
