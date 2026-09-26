@@ -295,14 +295,27 @@ def test_the_session_is_committed_before_migrating_even_with_a_previous_modules_
     assert "migrate(pending=0)" in calls
 
 
+# Review round 2: "ahead" (skip in bootstrap) only for a clean rollback;
+# everything else with an unknown revision is "foreign" (fatal in bootstrap).
+A, B, BASE = "0010_a", "0010a_b", "0009_base"
 @pytest.mark.parametrize(
     "code_head, db_version, known, verdict",
     [
-        ("a,b", "a", {"a", "b", "base"}, "behind"),  # a code head the DB lacks
-        ("a,b", "a,b", {"a", "b"}, "current"),
-        ("a,b", "b,a", {"a", "b"}, "current"),
-        ("a,b", "a,c", {"a", "b"}, "ahead"),  # c unknown to this code
-        ("b", "a", {"a", "b"}, "behind"),
+        (f"{A},{B}", A, {A, B, BASE}, "behind"),  # a code head the DB lacks
+        (f"{A},{B}", f"{A},{B}", {A, B}, "current"),
+        (f"{A},{B}", f"{B},{A}", {A, B}, "current"),
+        # case 1 - partly behind: head B never applied, next to an unknown rev
+        (f"{A},{B}", f"{A},0011_c", {A, B, BASE}, "foreign"),
+        (B, A, {A, B}, "behind"),
+        # legitimate rollback: unknown revs strictly after every head
+        (f"{A},{B}", "0011_c", {A, B}, "ahead"),
+        (A, f"{A},0012_d", {A}, "ahead"),
+        # case 2 - sibling-branch / renamed revision at the same number
+        ("0011_y", "0011_x", {"0010_w", "0011_y"}, "foreign"),
+        ("0011_y", "0010_hotfix", {"0010_w", "0011_y"}, "foreign"),
+        # case 3 - corrupted / hand-edited value
+        (A, "garbage", {A}, "foreign"),
+        (A, "11_short", {A}, "foreign"),
     ],
 )
 def test_classify_handles_multiple_heads(code_head, db_version, known, verdict):
@@ -526,3 +539,118 @@ def test_a_db_behind_the_code_still_upgrades(monkeypatch):
     migrations_mod, upgrades = _versioned_ideation(monkeypatch, "0007_ideation_idea_attachments")
     migrations_mod.run_module_migrations(_BeginEngine(), "ideation")
     assert upgrades == ["head"]
+
+
+
+# ── review round 2: bootstrap refuses "foreign", skips only a clean rollback ──
+
+
+def test_every_module_revision_id_carries_the_sortable_numeric_prefix():
+    """The rollback-vs-foreign verdict orders revisions by their 00NN_ /
+    00NNa_ prefix; every module revision on disk must follow it."""
+    from app.module_loader import discover_manifests
+    from app.module_platform.drift_guard import module_code_revisions, revision_order
+
+    checked = 0
+    for manifest in discover_manifests():
+        for rev in module_code_revisions(manifest):
+            assert revision_order(rev) is not None, (manifest["module_name"], rev)
+            checked += 1
+    assert checked > 50
+
+
+@pytest.mark.parametrize(
+    "db_version",
+    [
+        "0010_ideation_intake_contract,0011_new",  # would be "ahead" but ...
+    ],
+)
+def test_a_clean_rollback_with_the_head_still_present_is_skipped(monkeypatch, db_version, caplog):
+    import logging
+
+    migrations_mod, upgrades = _versioned_ideation(monkeypatch, db_version)
+    with caplog.at_level(logging.ERROR):
+        migrations_mod.run_module_migrations(_BeginEngine(), "ideation")
+    assert upgrades == []
+    assert "ROLLBACK" in caplog.text
+
+
+def test_a_rollback_skip_is_logged_at_error_not_warning(monkeypatch, caplog):
+    import logging
+
+    migrations_mod, upgrades = _versioned_ideation(monkeypatch, "0011_from_a_newer_image")
+    with caplog.at_level(logging.WARNING):
+        migrations_mod.run_module_migrations(_BeginEngine(), "ideation")
+    assert upgrades == []
+    records = [r for r in caplog.records if "0011_from_a_newer_image" in r.getMessage()]
+    assert records and all(r.levelno == logging.ERROR for r in records)
+
+
+@pytest.mark.parametrize(
+    "db_version, case",
+    [
+        # 1 - partly behind: a known non-head revision next to an unknown one
+        ("0009_ideation_is_test,0011_other_branch", "partly behind"),
+        # 2 - a sibling-branch hotfix / renamed revision at the head's number
+        ("0010_hotfix_from_prod", "sibling"),
+        ("0008_renamed", "renamed"),
+        # 3 - corrupted / hand-edited
+        ("garbage", "corrupted"),
+        ("10_ideation", "malformed prefix"),
+    ],
+)
+def test_bootstrap_refuses_a_foreign_module_schema(monkeypatch, db_version, case):
+    from app.module_platform.drift_guard import ModuleSchemaForeign
+
+    migrations_mod, upgrades = _versioned_ideation(monkeypatch, db_version)
+    with pytest.raises(ModuleSchemaForeign) as exc_info:
+        migrations_mod.run_module_migrations(_BeginEngine(), "ideation")
+    assert upgrades == []
+    assert exc_info.value.module_name == "ideation"
+    assert "ModuleSchemaForeign" in str(exc_info.value)
+
+
+def test_a_foreign_schema_aborts_bootstrap_modules(monkeypatch, session_factory):
+    """W1 wiring: the named error propagates out of bootstrap_modules."""
+    from app.module_platform.drift_guard import ModuleSchemaForeign
+
+    db = session_factory()
+
+    def _foreign(engine, db_, name):
+        raise ModuleSchemaForeign(name, "0010_x", "0010_y", {"0010_y"})
+
+    monkeypatch.setattr(module_loader, "_bootstrap_one_module", _foreign)
+    monkeypatch.setattr(
+        module_loader, "discover_manifests",
+        lambda *a, **k: [{"module_name": "fakemod-foreign", "version": "1.0.0"}],
+    )
+    monkeypatch.setattr(
+        "app.module_platform.dependencies.resolve_install_order", lambda m: ["fakemod-foreign"]
+    )
+    with pytest.raises(ModuleSchemaForeign):
+        module_loader.bootstrap_modules(engine=db.get_bind(), db=db)
+    db.close()
+
+
+def test_the_startup_guard_only_warns_on_a_foreign_schema(monkeypatch, caplog):
+    """At API / worker start a foreign schema warns (refusing would kill the
+    old colour's respawning workers mid-deploy); bootstrap is where it is
+    fatal."""
+    import logging
+
+    from app.module_platform.drift_guard import check_module_schema_drift
+
+    class _PG:
+        class dialect:
+            name = "postgresql"
+
+    manifest = {"module_name": "ideation", "_dir": "ideation", "schema": "app_ideation"}
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.discover_manifests", lambda *a, **k: [manifest]
+    )
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.module_db_version", lambda e, m: "0010_hotfix_from_prod"
+    )
+    with caplog.at_level(logging.WARNING):
+        check_module_schema_drift(_PG())  # must not raise
+    assert "FOREIGN" in caplog.text

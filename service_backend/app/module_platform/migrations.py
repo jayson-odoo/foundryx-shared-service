@@ -246,12 +246,18 @@ def _is_lock_not_available(exc: BaseException) -> bool:
 
 
 def _db_is_ahead_of_code(engine, name: str, manifest: dict) -> bool:
-    """True when the module's stamped revision is unknown to this code's
-    script directory: a NEWER image migrated it (a rollback to a previous
-    image, or the old colour restarting mid blue/green). ``upgrade head``
-    would raise "Can't locate revision" and, bootstrap failures being fatal
-    (issue #89), block every rollback. Same verdict as the drift guard."""
+    """True (skip the upgrade) ONLY for a clean rollback: every revision the
+    DB carries that this code does not know is numbered strictly after every
+    code head, and no code head is missing (``_classify`` -> ``ahead``). A
+    newer image migrated it; ``upgrade head`` would raise "Can't locate
+    revision" and, bootstrap failures being fatal, block every rollback.
+
+    ``foreign`` (partly behind, a sibling-branch / renamed revision, a
+    corrupted value) RAISES ``ModuleSchemaForeign``: skipping it would
+    silently leave the schema short of this code, which is issue #89 again.
+    """
     from app.module_platform.drift_guard import (
+        ModuleSchemaForeign,
         _classify,
         module_code_head,
         module_code_revisions,
@@ -263,12 +269,19 @@ def _db_is_ahead_of_code(engine, name: str, manifest: dict) -> bool:
     if db_version is None or code_head is None:
         return False
     verdict, unknown = _classify(code_head, db_version, module_code_revisions(manifest))
+    if verdict == "foreign":
+        logger.error(
+            "Module '%s' database is at %s, FOREIGN to this code (head %s; unknown %s)",
+            name, db_version, code_head, ",".join(sorted(unknown)),
+        )
+        raise ModuleSchemaForeign(name, code_head, db_version, unknown)
     if verdict != "ahead":
         return False
-    logger.warning(
-        "Module '%s' database is at %s, which this code does not know (code head %s; "
-        "unknown %s): a newer image already migrated it. Skipping its migrations "
-        "(no downgrade is ever run automatically).",
+    # ERROR, not WARNING: running an older image than the schema is a rollback.
+    logger.error(
+        "ROLLBACK: module '%s' database is at %s, newer than this code (head %s; "
+        "unknown %s). Skipping its migrations (no downgrade is ever run "
+        "automatically); this image runs on the newer schema.",
         name, db_version, code_head, ",".join(sorted(unknown)),
     )
     return True

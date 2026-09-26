@@ -14,12 +14,23 @@ at start, each module under per-module Alembic:
   of this code, but not the head -> the DB is BEHIND: refuse to start with
                                     the named ``ModuleSchemaDrift``.
 - DB version is UNKNOWN to this
-  code's script directory        -> the DB is AHEAD (normal during blue/green:
+  code, numbered strictly after
+  every code head, and no code
+  head is missing               -> the DB is AHEAD (normal during blue/green:
                                     the new colour migrates first while the old
-                                    colour, or its workers, may still restart)
-                                    or carries a foreign revision: log a
-                                    WARNING and start. Refusing here would take
-                                    the still-serving old colour down mid-deploy.
+                                    colour, or its workers, may still restart):
+                                    log a WARNING and start.
+- anything else with an unknown
+  revision ("foreign": partly
+  behind, a sibling-branch or
+  renamed revision, a corrupted
+  or unparseable value)          -> log a WARNING and start HERE. Refusing at
+                                    process start would kill the old colour's
+                                    respawning workers mid-deploy. The place a
+                                    foreign schema is FATAL is bootstrap:
+                                    ``run_module_migrations`` raises
+                                    ``ModuleSchemaForeign``, so a deploy never
+                                    goes healthy on it.
 - no version table               -> the module was never installed in this
                                     database: bootstrap's job, not a drift.
 - no ``alembic/`` dir            -> legacy create_all module: ignored.
@@ -33,6 +44,7 @@ worker that cannot reach its database cannot do useful work anyway, and the
 restart policy retries it.
 """
 import logging
+import re
 from typing import Optional, Set, Tuple
 
 from sqlalchemy import inspect, text
@@ -127,15 +139,53 @@ def module_db_version(engine, manifest: dict) -> Optional[str]:
     return ",".join(versions) if versions else None
 
 
+# Module revision ids carry a sortable numeric prefix: ``00NN_`` or ``00NNa_``
+# (pinned for every module by tests/test_deploy_module_bootstrap_wiring.py).
+_REVISION_PREFIX = re.compile(r"^(\d{4})([a-z]?)_")
+
+
+def revision_order(revision: str) -> Optional[Tuple[int, str]]:
+    """``(number, letter)`` of a module revision id, or ``None`` when the id
+    does not follow the ``00NN_`` / ``00NNa_`` convention."""
+    m = _REVISION_PREFIX.match(revision or "")
+    return (int(m.group(1)), m.group(2)) if m else None
+
+
 def _classify(code_head: str, db_version: str, known: Set[str]) -> Tuple[str, Set[str]]:
-    """``(verdict, unknown)`` where verdict is ``current`` | ``ahead`` | ``behind``."""
+    """``(verdict, unknown)``; verdict is one of:
+
+    - ``current`` - the DB set equals the code heads.
+    - ``behind``  - every DB revision is known to this code, but not all heads
+      are applied: the code is ahead of its schema.
+    - ``ahead``   - a legitimate newer image migrated it (a rollback, or the
+      old colour restarting mid blue/green): every unknown DB revision is
+      numbered STRICTLY after every code head, and no code head is missing.
+      A code head counts as present when it is in the DB set; when the DB
+      set holds only unknown revisions they are assumed to descend from the
+      heads (the only order the numbering allows).
+    - ``foreign`` - anything else with an unknown revision: partly behind
+      (a code head missing while the DB still carries a known revision next
+      to an unknown one), an unknown revision numbered at or before a code
+      head (a sibling-branch hotfix, a renamed revision), or an id that does
+      not parse (a corrupted / hand-edited value). Fatal in bootstrap.
+    """
     heads, db = _split(code_head), _split(db_version)
     if db == heads:
         return "current", set()
     unknown = db - known
-    if unknown:
-        return "ahead", unknown
-    return "behind", set()
+    if not unknown:
+        return "behind", set()
+    head_orders = [revision_order(h) for h in heads]
+    unknown_orders = [revision_order(u) for u in unknown]
+    if None in head_orders or None in unknown_orders:
+        return "foreign", unknown
+    top = max(head_orders)
+    if any(o <= top for o in unknown_orders):
+        return "foreign", unknown
+    known_in_db = db & known
+    if known_in_db and not heads <= known_in_db:
+        return "foreign", unknown  # partly behind next to an unknown revision
+    return "ahead", unknown
 
 
 def check_module_schema_drift(engine) -> None:
@@ -166,6 +216,36 @@ def check_module_schema_drift(engine) -> None:
                 "migrated it (blue/green) and starting anyway.",
                 name, db_version, code_head, ",".join(sorted(unknown)),
             )
+        if verdict == "foreign":
+            # Not refused at process start (it would kill the old colour's
+            # respawning workers mid-deploy); bootstrap refuses it instead.
+            logger.warning(
+                "Module '%s' database is at %s, which is FOREIGN to this code "
+                "(code head %s; unknown %s): partly behind, a sibling-branch or "
+                "renamed revision, or a corrupted value. Starting anyway; the "
+                "next bootstrap will refuse it (ModuleSchemaForeign).",
+                name, db_version, code_head, ",".join(sorted(unknown)),
+            )
+
+
+class ModuleSchemaForeign(RuntimeError):
+    """Bootstrap refuses a module whose DB revision set is neither a clean
+    rollback (every unknown revision numbered after the code heads) nor
+    migratable by this code. Carries ``module_name``, ``code_head``,
+    ``db_version``."""
+
+    def __init__(self, module_name: str, code_head: str, db_version: str, unknown: Set[str]):
+        self.module_name = module_name
+        self.code_head = code_head
+        self.db_version = db_version
+        super().__init__(
+            f"ModuleSchemaForeign: module '{module_name}' database is at {db_version}, "
+            f"which this code (head {code_head}) can neither upgrade nor treat as a "
+            f"newer image: unknown {','.join(sorted(unknown))} is not numbered after "
+            f"every code head, or a code head is missing next to it, or the id is "
+            f"malformed. Refusing to bootstrap - reconcile the module's alembic "
+            f"history by hand (DEPLOY.md, 'Rollback')."
+        )
 
 
 _CELERY_GUARD_INSTALLED = False

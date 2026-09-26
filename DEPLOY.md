@@ -264,10 +264,22 @@ or on the server set `IMAGE_TAG=<old-sha> ./scripts/blue_green_deploy.sh`.
 
 Schema direction on a rollback (no downgrade is ever run automatically):
 
-- A **module** schema ahead of the old image (its alembic revision is unknown
-  to the old code) is skipped with a WARNING by the bootstrap, and the drift
-  guard lets the old image start. Module migrations are additive, so the old
-  code runs on the newer schema.
+- A **module** schema cleanly ahead of the old image is skipped by the
+  bootstrap with an ERROR-level `ROLLBACK: module '<m>' database is at ...`
+  line, and the drift guard lets the old image start. Module migrations are
+  additive, so the old code runs on the newer schema. "Cleanly ahead" means:
+  every revision the database carries that the old code does not know is
+  numbered strictly AFTER every code head (module revision ids are
+  `00NN_...` / `00NNa_...`, pinned by a test for every module), and no code
+  head is missing.
+- Anything else with an unknown revision is **foreign** and the bootstrap
+  REFUSES it (`ModuleSchemaForeign`, the deploy aborts): a code head missing
+  next to an unknown revision (partly behind), an unknown revision numbered
+  at or before a code head (a hotfix image's sibling-branch revision, a
+  renamed revision), or an id that does not parse (a corrupted or hand-edited
+  version row). Skipping those would silently leave the schema short of the
+  code, which is issue #89 again. Reconcile the module's
+  `alembic_version_<module>` row and schema by hand, then re-run the deploy.
 - A rollback across a **core** migration fails: core `alembic upgrade head`
   raises "Can't locate revision" for a database stamped by a newer image, the
   old colour's bootstrap exits non-zero and the deploy aborts (the newer
@@ -305,8 +317,10 @@ waited for a lock on the same table.
    `bootstrap complete`. `start.sh` retries the whole bootstrap
    `BOOTSTRAP_ATTEMPTS` times (default 4, `BOOTSTRAP_RETRY_DELAY` 8s apart;
    everything is idempotent) so a TRANSIENT lock clears, then exits 1.
-   A module whose database is AHEAD of this code (a rollback, see "Rollback")
-   is skipped with a warning instead of failing on "Can't locate revision".
+   A module whose database is cleanly AHEAD of this code (a rollback, see
+   "Rollback") is skipped with an ERROR-level `ROLLBACK:` line instead of
+   failing on "Can't locate revision"; a FOREIGN one aborts the bootstrap
+   (`ModuleSchemaForeign`).
 4. On a lock timeout the module migration first logs every session holding a
    lock in that module's schema (`lock holder on schema 'app_<module>':
    pid=... state=... xact_age=... locks=[...] query=...`), then re-raises.
@@ -351,7 +365,8 @@ For each module under per-module Alembic it compares the database's
 |---|---|
 | equal | start |
 | a KNOWN older revision (DB behind) | refuse to start: `ModuleSchemaDrift: module '<m>' database schema is at <db> but this code needs <head>` (gunicorn exits 3, a Celery process exits 1) |
-| a revision this code does not know (DB ahead) | WARNING, start. Normal during blue/green: the new colour migrated first, the old colour or its workers may still restart |
+| a revision this code does not know, numbered after every code head, no head missing (DB ahead) | WARNING, start. Normal during blue/green: the new colour migrated first, the old colour or its workers may still restart |
+| any other unknown revision (foreign: partly behind, sibling-branch / renamed, corrupted) | WARNING, start. NOT refused at process start: that would kill the old colour's respawning workers mid-deploy. Bootstrap is where it is fatal (`ModuleSchemaForeign`), so no deploy goes healthy on it |
 | no version table (module never installed here) / no `alembic/` dir | ignored |
 
 A known limit of a version-level guard: it compares revision ids, not tables
