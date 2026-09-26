@@ -152,11 +152,33 @@ export const IDEA_STATUS_LABEL: Record<IdeaStatus, string> = {
   archived: 'Archived',
 };
 
-/** The S5 public idea-status page contract (GET /public/ideas/{token}) -
- * title/status/ideaNumber only, no auth. `status` is the display LABEL
- * (e.g. `New`), never the lifecycle key. */
+/** One step of the public idea-status timeline (issue #90 W1, AC-90-102/103) -
+ * the tenant's status set in order, `state` marking where the idea sits. */
+export interface PublicIdeaTimelineStep {
+  label: string;
+  color: string;
+  state: 'done' | 'current' | 'upcoming';
+}
+
+/** The public idea-status page contract (GET /public/ideas/{token}), grown from
+ * the S5 3-key contract into the full page by issue #90 W1 - no auth, the
+ * token itself is the capability. `status` is the display LABEL (e.g. `New`),
+ * never the lifecycle key. Every field beyond `title`/`status`/`ideaNumber` is
+ * nullable so an unset idea field never breaks the page (foolproof render,
+ * never omission - AC-90-104 pins the exact key set / no-PII contract). */
 export interface PublicIdeaStatus {
   title: string | null;
   status: string;
   ideaNumber: string | null;
+  statusColor: string | null;
+  productName: string | null;
+  problem: string | null;
+  proposedSolution: string | null;
+  impact: string | null;
+  department: string | null;
+  submitterFirstName: string | null;
+  submittedAt: string | null;
+  upvotes: number;
+  nextStep: string;
+  timeline: PublicIdeaTimelineStep[];
 }

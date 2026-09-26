@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FileText, GitBranch, History, Lightbulb, MessageSquare, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
+import { Badge } from '@/components/ui/badge';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ListQuery } from '@/types/resource';
 import type { ResourceAction } from '@/components/platform/resource-list';
@@ -30,8 +31,19 @@ function detail422(e: unknown): Detail422 | null {
   return null;
 }
 
+/** The record pager also exposed at the top level (mirrors `recordNav.fetchAt`
+ * exactly - same function reference) so a test BR's OWN pager query can be
+ * exercised directly without threading through `ResourceForm`'s record-nav
+ * wiring (AC-90-313). No shell (`resource-form/types.ts`) change. */
+export type BrFormConfig = ResourceFormConfig<BusinessRequirementDetail> & {
+  fetchRecordAt: (
+    query: ListQuery,
+    index: number,
+  ) => Promise<{ recordId: string | null; total: number }>;
+};
+
 export interface UseBrFormResult {
-  config: ResourceFormConfig<BusinessRequirementDetail> | null;
+  config: BrFormConfig | null;
   isLoading: boolean;
   notFound: boolean;
 }
@@ -162,20 +174,27 @@ export function useBrForm(
   });
 
   // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
-  const fetchRecordAt = useCallback(async (query: ListQuery, index: number) => {
-    const all = await businessRequirementService.list({
-      filter: query.statusView === 'trashed' ? 'archived' : 'active',
-      search: query.search,
-    });
-    const row = all[index];
-    return { recordId: row?.id ?? null, total: all.length };
-  }, []);
+  // `includeTest` mirrors the loaded record: a test BR is excluded from the
+  // default (real) list, so its OWN pager would otherwise never find it
+  // (AC-90-313, issue #90 W3).
+  const fetchRecordAt = useCallback(
+    async (query: ListQuery, index: number) => {
+      const all = await businessRequirementService.list({
+        filter: query.statusView === 'trashed' ? 'archived' : 'active',
+        search: query.search,
+        includeTest: br?.isTest ?? false,
+      });
+      const row = all[index];
+      return { recordId: row?.id ?? null, total: all.length };
+    },
+    [br?.isTest],
+  );
   const buildRecordHref = useCallback(
     (recordId: string, ctx: string, index: number) => brFormHref(recordId, { ctx, index }),
     [],
   );
 
-  const config = useMemo<ResourceFormConfig<BusinessRequirementDetail> | null>(() => {
+  const config = useMemo<BrFormConfig | null>(() => {
     if (!br) return null;
 
     const actions: ResourceAction<BusinessRequirementDetail>[] = [
@@ -204,7 +223,16 @@ export function useBrForm(
       ],
       backHref: BR_PATH,
       title: br.title || 'Untitled BR',
-      subtitle: `${br.statusLabel} · ${br.productName}`,
+      subtitle: br.isTest ? (
+        <span className="inline-flex items-center gap-2">
+          <Badge variant="secondary" appearance="light" size="sm">
+            TEST
+          </Badge>
+          {`${br.statusLabel} · ${br.productName}`}
+        </span>
+      ) : (
+        `${br.statusLabel} · ${br.productName}`
+      ),
       tabs: [
         {
           id: 'details',
@@ -268,6 +296,7 @@ export function useBrForm(
       onSave,
       onCancel,
       recordNav: { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
+      fetchRecordAt,
     };
   }, [
     answers,

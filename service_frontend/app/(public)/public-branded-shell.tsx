@@ -1,11 +1,11 @@
 'use client';
 
-import { ReactNode, useState } from 'react';
-import Image from 'next/image';
+import { ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
 import type { PublicBranding } from '@/types/branding';
 import { useTenantBranding } from '@/hooks/use-branding';
 import { AuthFooter } from '@/components/auth/auth-footer';
+import { BrandMark } from '@/components/platform/branding';
 
 export interface PublicBrandedShellProps {
   children: ReactNode;
@@ -13,13 +13,18 @@ export interface PublicBrandedShellProps {
   initialBranding?: PublicBranding | null;
 }
 
-/** The web chat PANEL is a full-bleed surface with no tenant subdomain
- *  context of its own (D-A7B-25) - it supplies its own chrome and brand
- *  tokens from the SESSION response, never this shell's header/nav-stub
- *  footer (a vendor mark and instructional links no visitor should ever
- *  see inside an embedded iframe, AC-WEB-47). */
-function isChromelessPanelPath(pathname: string | null): boolean {
-  return Boolean(pathname?.startsWith('/public/webchat/'));
+/** A path that supplies its OWN chrome (header/footer), never this shell's
+ *  header bar + nav-stub `AuthFooter` (Terms/Plans/Contact Us, all `href="#"`):
+ *  - the web chat PANEL (D-A7B-25) - a full-bleed surface with no tenant
+ *    subdomain context of its own, brand tokens from the SESSION response;
+ *    stub links have no place inside an embedded iframe (AC-WEB-47).
+ *  - the public idea-status page (issue #90 W1) - a real branded header +
+ *    footer BrandMark of its own; a visitor opening a WhatsApp link should
+ *    never see instructional stub links either. */
+function ownsChromePath(pathname: string | null): boolean {
+  return Boolean(
+    pathname?.startsWith('/public/webchat/') || pathname?.startsWith('/public/ideas/'),
+  );
 }
 
 /**
@@ -34,7 +39,7 @@ export function PublicBrandedShell({ children, initialBranding }: PublicBrandedS
   const branding = isResolved ? live : (initialBranding ?? live);
   const pathname = usePathname();
 
-  if (isChromelessPanelPath(pathname)) {
+  if (ownsChromePath(pathname)) {
     return <div className="flex h-full min-h-full grow flex-col">{children}</div>;
   }
 
@@ -48,44 +53,5 @@ export function PublicBrandedShell({ children, initialBranding }: PublicBrandedS
       <main className="flex grow flex-col px-4 py-6 sm:px-6">{children}</main>
       <AuthFooter className="py-8" />
     </div>
-  );
-}
-
-function BrandMark({ branding }: { branding: PublicBranding }) {
-  // A logo URL can fail (a DB branding row outliving its blob - see the asset
-  // route's 404 guard). White-label rule: a branded tenant NEVER shows a broken
-  // image - fall back to its NAME (or the Foundryx mark only when unbranded).
-  const [logoFailed, setLogoFailed] = useState(false);
-  const nameMark = (
-    <span className="font-heading text-lg font-semibold text-foreground">{branding.tenantName}</span>
-  );
-
-  if (branding.isBranded && branding.logoUrl && !logoFailed) {
-    return (
-      <span className="inline-flex items-center rounded-lg bg-primary px-3 py-2">
-        <Image
-          src={branding.logoUrl}
-          alt={branding.tenantName ?? 'Logo'}
-          width={120}
-          height={32}
-          className="h-7 w-auto object-contain"
-          unoptimized
-          onError={() => setLogoFailed(true)}
-        />
-      </span>
-    );
-  }
-  if (branding.isBranded && branding.tenantName) {
-    return nameMark;
-  }
-  return (
-    <Image
-      src="/media/foundryx/foundryx-logo.png"
-      alt="Foundryx"
-      width={120}
-      height={32}
-      className="h-7 w-auto object-contain"
-      unoptimized
-    />
   );
 }

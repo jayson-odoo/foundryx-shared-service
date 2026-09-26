@@ -109,12 +109,15 @@ export function useIdeasListConfig(
         surfaces: { row: true, form: true, bulk: true },
         // Only non-archived ideas that all share ONE product (a BR links
         // same-product ideas, AC-BI-17). A mixed-product selection is disabled
-        // (foolproof-UI - never offer a move that will 422). A test idea
-        // (issue #1179) is refused server-side too - disabled here so the
-        // failure never round-trips.
+        // (foolproof-UI - never offer a move that will 422). Issue #90 W3
+        // (owner ruling 26 Sep ~12:50Z): a test idea may promote to a TEST BR,
+        // so an all-test selection stays enabled - only a MIXED test+real
+        // selection is disabled (a promote lane cannot be mixed, same
+        // principle as the mixed-product rule).
         isVisible: (rows) => rows.length > 0 && rows.every((r) => r.status !== 'archived'),
         isDisabled: (rows) =>
-          new Set(rows.map((r) => r.productId)).size > 1 || rows.some((r) => r.isTest),
+          new Set(rows.map((r) => r.productId)).size > 1 ||
+          (rows.some((r) => r.isTest) && rows.some((r) => !r.isTest)),
         run: async (rows) => {
           await onPromote(rows);
         },

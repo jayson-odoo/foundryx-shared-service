@@ -23,6 +23,16 @@ export interface BrListFilter {
   search?: string;
   filter?: 'active' | 'archived' | 'all';
   productId?: string;
+  /** Include test Business Requirements (issue #90 W3) - off by default; the
+   * BR list exposes a "Show test requirements" toggle that flips this. */
+  includeTest?: boolean;
+}
+
+/** Whether an active Business Requirement template is configured (issue #90
+ * W2) - the "New business requirement" dialog reads this before offering
+ * Create so a user never round-trips the `br_template_unavailable` 422. */
+export interface BrTemplateStatus {
+  active: boolean;
 }
 
 export interface BusinessRequirementService {
@@ -58,6 +68,10 @@ export interface BusinessRequirementService {
   listVersions(id: string): Promise<BrTemplateVersion[]>;
   /** Delete a BR. */
   remove(id: string): Promise<void>;
+  /** Whether an active BR template is configured (issue #90 W2) - read by the
+   * create dialog before offering Create. Gated
+   * `ideation.business_requirements.read`. */
+  templateStatus(): Promise<BrTemplateStatus>;
 }
 
 export const businessRequirementService: BusinessRequirementService =
