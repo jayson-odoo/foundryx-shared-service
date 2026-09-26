@@ -1,11 +1,13 @@
 /**
  * Issue #90 W1 (AC-90-102/103/111) - the tenant's status set, in order, with
- * the idea's CURRENT step highlighted as a pill (primary ring + font-semibold
- * + a light chip background - this IS "the status pill", never a second,
- * separately-worded pill elsewhere: `view.status` always equals exactly one
- * entry's label). `done` steps carry a check; `upcoming` steps are muted.
- * Stays a VERTICAL list at every width (a tenant's status set can run 5+
- * entries deep - a horizontal rail would crowd).
+ * the idea's CURRENT step highlighted (primary ring + font-semibold + a light
+ * chip background) so it visually echoes `IdeaHero`'s status pill. `done`
+ * steps carry a check; `upcoming` steps are muted. Stays a VERTICAL list at
+ * every width (a tenant's status set can run 5+ entries deep - a horizontal
+ * rail would crowd). `data-testid="idea-status-timeline"` scopes tests to
+ * this region - a step's label can equal `IdeaHero`'s pill text (the current
+ * step always does; an off-ramp's `done` step sometimes coincidentally does
+ * too), so a query for a bare status word must be scoped to ONE region.
  */
 import { Check } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
@@ -19,7 +21,7 @@ export interface IdeaStatusTimelineProps {
 
 export function IdeaStatusTimeline({ timeline }: IdeaStatusTimelineProps) {
   return (
-    <Card>
+    <Card data-testid="idea-status-timeline">
       <CardContent className="py-4">
         <ol className="flex flex-col gap-1">
           {timeline.map((step) => (

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import PublicIdeaStatusPage from './page';
 
@@ -75,12 +75,21 @@ describe('PublicIdeaStatusPage - AC-90-110 the full page contract', () => {
     expect(screen.getByText('Sorento CRM')).toBeInTheDocument();
 
     // Hero.
-    expect(screen.getByText('IDEA-0182')).toBeInTheDocument();
-    expect(screen.getByText('Show promo price in red on price tags')).toBeInTheDocument();
-    expect(screen.getByText('New')).toBeInTheDocument();
-    expect(screen.getByText(/Jayson/)).toBeInTheDocument();
-    expect(screen.getByText(/2026/)).toBeInTheDocument(); // submittedAt rendered
-    expect(screen.getByText(/7/)).toBeInTheDocument(); // upvotes
+    const hero = screen.getByTestId('idea-hero');
+    expect(within(hero).getByText('IDEA-0182')).toBeInTheDocument();
+    expect(
+      within(hero).getByText('Show promo price in red on price tags'),
+    ).toBeInTheDocument();
+    // The status pill (SAME StatusBadge pill the Ideas app uses) shows the
+    // CURRENT status - scoped to the hero because a timeline step can carry
+    // the exact same label (the current one always does; an off-ramp's
+    // `done` step sometimes coincidentally does too, see AC-90-111 below) -
+    // a bare-text query for the status word is ambiguous unless scoped to
+    // ONE region, never a reason to drop the pill itself.
+    expect(within(hero).getByText('New')).toBeInTheDocument();
+    expect(within(hero).getByText(/Jayson/)).toBeInTheDocument();
+    expect(within(hero).getByText(/2026/)).toBeInTheDocument(); // submittedAt rendered
+    expect(within(hero).getByText(/7/)).toBeInTheDocument(); // upvotes
 
     // Detail sections - labelled per idea-form-fields.tsx (Problem statement /
     // Proposed solution / Impact / Department).
@@ -140,8 +149,12 @@ describe('PublicIdeaStatusPage - AC-90-111 the status timeline', () => {
   it('renders one entry per timeline step with its state, done/current/upcoming', () => {
     usePublicIdeaStatus.mockReturnValue({ loading: false, notFound: false, view: richView });
     render(<PublicIdeaStatusPage />);
+    // Scoped to the timeline region - the CURRENT step's label also renders
+    // as the hero's status pill (by design, AC-90-110), so a page-wide query
+    // for that label would be ambiguous.
+    const timeline = screen.getByTestId('idea-status-timeline');
     for (const step of richView.timeline) {
-      const el = screen.getByText(step.label);
+      const el = within(timeline).getByText(step.label);
       const item = el.closest('[data-state]');
       expect(item).not.toBeNull();
       expect(item).toHaveAttribute('data-state', step.state);
@@ -163,10 +176,18 @@ describe('PublicIdeaStatusPage - AC-90-111 the status timeline', () => {
       },
     });
     render(<PublicIdeaStatusPage />);
-    const newItem = screen.getByText('New').closest('[data-state]');
-    const rejectedItem = screen.getByText('Rejected').closest('[data-state]');
+    // Scoped to the timeline - the hero's pill ALSO shows "Rejected" (the
+    // current status), which would otherwise ambiguously match too.
+    const timeline = screen.getByTestId('idea-status-timeline');
+    const newItem = within(timeline).getByText('New').closest('[data-state]');
+    const rejectedItem = within(timeline).getByText('Rejected').closest('[data-state]');
     expect(newItem).toHaveAttribute('data-state', 'done');
     expect(rejectedItem).toHaveAttribute('data-state', 'current');
+    // The status pill shows the CURRENT status too (AC-90-110's pill
+    // assertion, repeated here since this fixture's status differs from the
+    // main-path one above).
+    const hero = screen.getByTestId('idea-hero');
+    expect(within(hero).getByText('Rejected')).toBeInTheDocument();
   });
 });
 

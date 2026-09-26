@@ -82,6 +82,8 @@ export default function PublicIdeaStatusPage() {
             <IdeaHero
               ideaNumber={view.ideaNumber}
               title={view.title}
+              status={view.status}
+              statusColor={view.statusColor}
               submitterFirstName={view.submitterFirstName}
               submittedAt={view.submittedAt}
               upvotes={view.upvotes}
