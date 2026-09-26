@@ -341,6 +341,41 @@ def test_seed_is_idempotent_and_keeps_operator_active_version(ideation_session_f
             .first()
         )
         assert v1_after.doc_json == v1_doc_before
+
+        # Stronger case (coordinator follow-up): the operator activates an
+        # OLDER version (v1) while a NEWER one (v3) exists - a "helpfully
+        # repoint to the highest version" mutant would move this to v3 even
+        # though v1 is perfectly VALID (one of the template's own version
+        # rows). v2 was already active going in, so this also proves the
+        # pointer can move BACKWARDS by operator choice and the seed still
+        # leaves it alone.
+        v3 = IdeationArtifactTemplateVersion(
+            template_id=template.id,
+            tenant_id=None,
+            version=3,
+            doc_json=doc.model_dump(mode="json"),
+            created_by=None,
+        )
+        db.add(v3)
+        db.flush()
+        v1_id = v1_after.id
+        template.active_version_id = v1_id
+        db.commit()
+
+        seed_br_template(db)
+        db.commit()
+        seed_br_template(db)
+        db.commit()
+
+        db.refresh(template)
+        versions_after = (
+            db.query(IdeationArtifactTemplateVersion)
+            .filter(IdeationArtifactTemplateVersion.template_id == template.id)
+            .all()
+        )
+        assert {v.version for v in versions_after} == {1, 2, 3}
+        assert template.active_version_id == v1_id
+        assert active_version_number(template, db) == 1
     finally:
         db.close()
 
