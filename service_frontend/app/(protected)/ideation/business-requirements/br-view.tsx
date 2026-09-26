@@ -53,7 +53,7 @@ export function BrView() {
     [remove],
   );
 
-  const config = useBrListConfig(brs, handlers);
+  const config = useBrListConfig(brs, handlers, includeTest);
 
   if (error && brs.length === 0) {
     return <p className="text-sm text-destructive">{error}</p>;

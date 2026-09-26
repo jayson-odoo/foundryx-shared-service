@@ -24,9 +24,13 @@ export function IdeaStatusTimeline({ timeline }: IdeaStatusTimelineProps) {
     <Card data-testid="idea-status-timeline">
       <CardContent className="py-4">
         <ol className="flex flex-col gap-1">
-          {timeline.map((step) => (
+          {timeline.map((step, index) => (
             <li
-              key={step.label}
+              // Not `step.label` (nit fix) - a tenant's status set can carry
+              // duplicate labels (two statuses renamed to the same word),
+              // which would collide as a React key; timeline order is stable
+              // and server-derived, so the array index is safe here.
+              key={index}
               data-state={step.state}
               className={cn(
                 'flex items-center gap-2 rounded-md px-2 py-1.5',

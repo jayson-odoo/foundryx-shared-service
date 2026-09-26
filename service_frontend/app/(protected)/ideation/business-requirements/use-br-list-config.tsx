@@ -38,6 +38,11 @@ export interface BrListHandlers {
 export function useBrListConfig(
   brs: BusinessRequirement[],
   handlers: BrListHandlers,
+  /** The list's OWN "Show test requirements" toggle state (issue #90 W3,
+   * review fix S6) - stamped onto every row's href so the detail page's
+   * pager knows which lane the user was actually browsing, rather than
+   * re-deriving it from whichever record happens to be open. */
+  includeTest = false,
 ): ResourceListConfig<BusinessRequirement> {
   const { onCreate } = handlers;
 
@@ -176,7 +181,7 @@ export function useBrListConfig(
     return {
       viewKey: 'ideation.business_requirements',
       getRowId: (row) => row.id,
-      rowHref: (row) => brFormHref(row.id),
+      rowHref: (row) => brFormHref(row.id, { includeTest }),
       fetcher,
       exporter,
       searchPlaceholder: 'Search business requirements…',
@@ -195,5 +200,5 @@ export function useBrListConfig(
       ],
       actions,
     };
-  }, [brs, onCreate]);
+  }, [brs, onCreate, includeTest]);
 }

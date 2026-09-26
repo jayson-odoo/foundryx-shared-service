@@ -1,6 +1,6 @@
 'use client';
 
-import { ReactNode } from 'react';
+import { ReactNode, createContext, useContext } from 'react';
 import { usePathname } from 'next/navigation';
 import type { PublicBranding } from '@/types/branding';
 import { useTenantBranding } from '@/hooks/use-branding';
@@ -11,6 +11,24 @@ export interface PublicBrandedShellProps {
   children: ReactNode;
   /** Server-resolved branding (layout) - first paint, no Foundryx flash. */
   initialBranding?: PublicBranding | null;
+}
+
+/**
+ * Review fix S2 (issue #90): the shell already resolves `isResolved ? live :
+ * (initialBranding ?? live)` for its OWN header, so a branded host never
+ * flashes the Foundryx mark THERE. A chromeless child (the public idea page,
+ * the webchat panel) renders its OWN header/footer and previously called
+ * `useTenantBranding()` independently - missing the shell's SSR seed
+ * entirely, so a branded host's footer flashed Foundryx until the client
+ * fetch resolved. This context carries the shell's ALREADY-resolved value
+ * down so a chromeless child never re-derives (and re-flashes) it.
+ */
+const PublicPageBrandingContext = createContext<PublicBranding | null>(null);
+
+/** The shell's SSR-seeded, already-resolved branding - null outside the shell
+ * (a caller falls back to its own `useTenantBranding()` resolution). */
+export function usePublicPageBranding(): PublicBranding | null {
+  return useContext(PublicPageBrandingContext);
 }
 
 /** A path that supplies its OWN chrome (header/footer), never this shell's
@@ -40,18 +58,24 @@ export function PublicBrandedShell({ children, initialBranding }: PublicBrandedS
   const pathname = usePathname();
 
   if (ownsChromePath(pathname)) {
-    return <div className="flex h-full min-h-full grow flex-col">{children}</div>;
+    return (
+      <PublicPageBrandingContext.Provider value={branding}>
+        <div className="flex h-full min-h-full grow flex-col">{children}</div>
+      </PublicPageBrandingContext.Provider>
+    );
   }
 
   return (
-    <div className="flex min-h-full grow flex-col">
-      <header className="border-b border-border">
-        <div className="mx-auto flex w-full max-w-3xl items-center px-4 py-4 sm:px-6">
-          <BrandMark branding={branding} />
-        </div>
-      </header>
-      <main className="flex grow flex-col px-4 py-6 sm:px-6">{children}</main>
-      <AuthFooter className="py-8" />
-    </div>
+    <PublicPageBrandingContext.Provider value={branding}>
+      <div className="flex min-h-full grow flex-col">
+        <header className="border-b border-border">
+          <div className="mx-auto flex w-full max-w-3xl items-center px-4 py-4 sm:px-6">
+            <BrandMark branding={branding} />
+          </div>
+        </header>
+        <main className="flex grow flex-col px-4 py-6 sm:px-6">{children}</main>
+        <AuthFooter className="py-8" />
+      </div>
+    </PublicPageBrandingContext.Provider>
   );
 }

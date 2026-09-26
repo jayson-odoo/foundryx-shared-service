@@ -107,8 +107,9 @@ describe('PublicIdeaStatusPage - AC-90-110 the full page contract', () => {
       screen.getByText('Your idea is in. The team will review it soon.'),
     ).toBeInTheDocument();
 
-    // Footer mark - unbranded host shows the Foundryx wordmark.
-    expect(screen.getByAltText(/foundryx/i)).toBeInTheDocument();
+    // Footer mark - unbranded host shows the Foundryx wordmark (inline SVG,
+    // review fix B1 - never an <img> pointed at a file that isn't committed).
+    expect(screen.getByRole('img', { name: 'Foundryx' })).toBeInTheDocument();
   });
 
   // Supersedes (REWRITTEN, not deleted) the old AC-1601
@@ -140,7 +141,7 @@ describe('PublicIdeaStatusPage - AC-90-110 the full page contract', () => {
     });
     usePublicIdeaStatus.mockReturnValue({ loading: false, notFound: false, view: richView });
     render(<PublicIdeaStatusPage />);
-    expect(screen.queryByAltText(/foundryx/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: 'Foundryx' })).not.toBeInTheDocument();
     expect(screen.getAllByText('Acme Co').length).toBeGreaterThan(0);
   });
 });
@@ -198,13 +199,32 @@ describe('PublicIdeaStatusPage - not-found (regression, unchanged)', () => {
     expect(screen.getByTestId('idea-status-notfound')).toBeInTheDocument();
   });
 
-  it('shows "Idea <number>" as the heading when title is null', () => {
+  // Review fix S5: a null title used to fall back to "Idea <number>", which
+  // repeated the number the muted line above it already shows - REWRITTEN
+  // (not deleted): a null title now falls back to the (truncated) problem
+  // text, never a second echo of the number.
+  it('falls back to the problem text as the heading when title is null but problem is present', () => {
     usePublicIdeaStatus.mockReturnValue({
       loading: false,
       notFound: false,
       view: { ...richView, title: null },
     });
     render(<PublicIdeaStatusPage />);
-    expect(screen.getByText('Idea IDEA-0182')).toBeInTheDocument();
+    const hero = screen.getByTestId('idea-hero');
+    expect(within(hero).getByText(richView.problem)).toBeInTheDocument();
+    expect(screen.queryByText('Idea IDEA-0182')).not.toBeInTheDocument();
+    // The number itself still renders exactly once (the muted line).
+    expect(screen.getAllByText('IDEA-0182').length).toBe(1);
+  });
+
+  it('shows the idea number exactly once when both title and problem are null', () => {
+    usePublicIdeaStatus.mockReturnValue({
+      loading: false,
+      notFound: false,
+      view: { ...richView, title: null, problem: null },
+    });
+    render(<PublicIdeaStatusPage />);
+    expect(screen.getAllByText('IDEA-0182').length).toBe(1);
+    expect(screen.queryByText('Idea IDEA-0182')).not.toBeInTheDocument();
   });
 });

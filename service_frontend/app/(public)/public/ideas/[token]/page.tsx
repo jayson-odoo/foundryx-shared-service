@@ -14,6 +14,7 @@ import { useParams } from 'next/navigation';
 import { AlertCircle, Loader2 } from 'lucide-react';
 import { usePublicIdeaStatus } from '@/hooks/use-public-idea-status';
 import { useTenantBranding } from '@/hooks/use-branding';
+import { usePublicPageBranding } from '@/app/(public)/public-branded-shell';
 import type { PublicBranding } from '@/types/branding';
 import { PublicIdeaHeader } from './components/public-idea-header';
 import { IdeaHero } from './components/idea-hero';
@@ -38,8 +39,14 @@ export default function PublicIdeaStatusPage() {
   const params = useParams();
   const token = String(params.token);
   const { view, loading, notFound } = usePublicIdeaStatus(token);
+  // Review fix S2 (issue #90): prefer the shell's SSR-seeded value (never
+  // flashes Foundryx on a branded host, even before the client fetch
+  // resolves) - `usePublicPageBranding()` is null only when this page is
+  // rendered OUTSIDE `PublicBrandedShell` (unit tests), where the page's own
+  // `useTenantBranding()` resolution is the only source available.
+  const shellBranding = usePublicPageBranding();
   const { branding: liveBranding, isResolved } = useTenantBranding();
-  const branding = isResolved ? liveBranding : UNBRANDED;
+  const branding = shellBranding ?? (isResolved ? liveBranding : UNBRANDED);
 
   if (loading && !view) {
     return (
@@ -82,6 +89,7 @@ export default function PublicIdeaStatusPage() {
             <IdeaHero
               ideaNumber={view.ideaNumber}
               title={view.title}
+              problem={view.problem}
               status={view.status}
               statusColor={view.statusColor}
               submitterFirstName={view.submitterFirstName}

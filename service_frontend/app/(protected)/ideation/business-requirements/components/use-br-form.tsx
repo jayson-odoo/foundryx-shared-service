@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { FileText, GitBranch, History, Lightbulb, MessageSquare, Trash2 } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
@@ -31,19 +32,8 @@ function detail422(e: unknown): Detail422 | null {
   return null;
 }
 
-/** The record pager also exposed at the top level (mirrors `recordNav.fetchAt`
- * exactly - same function reference) so a test BR's OWN pager query can be
- * exercised directly without threading through `ResourceForm`'s record-nav
- * wiring (AC-90-313). No shell (`resource-form/types.ts`) change. */
-export type BrFormConfig = ResourceFormConfig<BusinessRequirementDetail> & {
-  fetchRecordAt: (
-    query: ListQuery,
-    index: number,
-  ) => Promise<{ recordId: string | null; total: number }>;
-};
-
 export interface UseBrFormResult {
-  config: BrFormConfig | null;
+  config: ResourceFormConfig<BusinessRequirementDetail> | null;
   isLoading: boolean;
   notFound: boolean;
 }
@@ -173,28 +163,40 @@ export function useBrForm(
     onFieldErrors: setServerFieldErrors,
   });
 
+  // Review fix S6 (issue #90 W3): the pager must re-run the SAME lane the
+  // user was actually browsing on the list they came from - carried as an
+  // `includeTest` URL param alongside `ctx`/`i`/`from` (`brFormHref`,
+  // `use-br-list-config.tsx`'s `rowHref`), not re-derived from whichever
+  // record happens to be open. Keying off `br?.isTest` alone was wrong: a
+  // REAL BR opened from the "Show test requirements" list would silently
+  // narrow the pager to a real-only lane, different from the mixed lane the
+  // user was actually paging through. Only fall back to the loaded record's
+  // own flag when there is no list context at all (a bookmarked/direct link,
+  // or the promote-to-BR redirect) - AC-90-313's original scenario.
+  const searchParams = useSearchParams();
+  const includeTestParam = searchParams.get('includeTest');
+  const pagerIncludeTest =
+    includeTestParam !== null ? includeTestParam === '1' : (br?.isTest ?? false);
+
   // Stable across renders (fix round 2, AC-DLA-30/31 D7) - see use-user-form.tsx.
-  // `includeTest` mirrors the loaded record: a test BR is excluded from the
-  // default (real) list, so its OWN pager would otherwise never find it
-  // (AC-90-313, issue #90 W3).
   const fetchRecordAt = useCallback(
     async (query: ListQuery, index: number) => {
       const all = await businessRequirementService.list({
         filter: query.statusView === 'trashed' ? 'archived' : 'active',
         search: query.search,
-        includeTest: br?.isTest ?? false,
+        includeTest: pagerIncludeTest,
       });
       const row = all[index];
       return { recordId: row?.id ?? null, total: all.length };
     },
-    [br?.isTest],
+    [pagerIncludeTest],
   );
   const buildRecordHref = useCallback(
     (recordId: string, ctx: string, index: number) => brFormHref(recordId, { ctx, index }),
     [],
   );
 
-  const config = useMemo<BrFormConfig | null>(() => {
+  const config = useMemo<ResourceFormConfig<BusinessRequirementDetail> | null>(() => {
     if (!br) return null;
 
     const actions: ResourceAction<BusinessRequirementDetail>[] = [
@@ -296,7 +298,6 @@ export function useBrForm(
       onSave,
       onCancel,
       recordNav: { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
-      fetchRecordAt,
     };
   }, [
     answers,

@@ -6,6 +6,12 @@
  * pill's text always equals exactly one entry in `IdeaStatusTimeline` (the
  * current one), so a query for the bare status word must be scoped to ONE of
  * the two regions rather than relying on global uniqueness.
+ *
+ * Review fix S5: a null `title` used to fall back to `Idea <number>`, which
+ * repeated the number the muted line above it already showed. A null title
+ * now falls back to a truncated `problem` (the idea still needs SOME
+ * heading) - only when `problem` is ALSO null does the number stand alone,
+ * shown exactly once.
  */
 import { ChevronUp } from 'lucide-react';
 import {
@@ -14,11 +20,13 @@ import {
   colorToHex,
   type StatusRegistry,
 } from '@/components/platform/status-badge';
+import { ClampedText } from '@/components/platform/clamped-text';
 import { formatDate } from '@/lib/datetime';
 
 export interface IdeaHeroProps {
   ideaNumber: string | null;
   title: string | null;
+  problem: string | null;
   status: string;
   statusColor: string;
   submitterFirstName: string | null;
@@ -26,9 +34,12 @@ export interface IdeaHeroProps {
   upvotes: number;
 }
 
+const HEADING_CLASS = 'font-heading text-xl font-semibold sm:text-2xl';
+
 export function IdeaHero({
   ideaNumber,
   title,
+  problem,
   status,
   statusColor,
   submitterFirstName,
@@ -46,9 +57,20 @@ export function IdeaHero({
   return (
     <div className="flex flex-col gap-2" data-testid="idea-hero">
       <p className="text-sm font-medium text-muted-foreground">{ideaNumber}</p>
-      <h1 className="font-heading text-xl font-semibold sm:text-2xl">
-        {title ?? `Idea ${ideaNumber}`}
-      </h1>
+      {title ? (
+        // `role="heading"` (not a literal `<h1>`) so the `problem` fallback
+        // below can reuse the SAME heading slot with `ClampedText`, whose
+        // rendered `<p>` would be invalid flow content nested in an `<h1>`.
+        <div role="heading" aria-level={1} className={HEADING_CLASS}>
+          {title}
+        </div>
+      ) : (
+        problem && (
+          <div role="heading" aria-level={1}>
+            <ClampedText text={problem} lines={2} className={HEADING_CLASS} />
+          </div>
+        )
+      )}
       <div>
         <StatusBadge status={status} registry={registry} />
       </div>

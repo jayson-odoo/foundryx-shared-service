@@ -22,9 +22,9 @@ const br = (over: Partial<BusinessRequirement> = {}): BusinessRequirement => ({
 
 const query: ListQuery = { page: 0, pageSize: 25, search: '', sort: undefined, filter: null };
 
-function config(rows: BusinessRequirement[]) {
+function config(rows: BusinessRequirement[], includeTest = false) {
   const { result } = renderHook(() =>
-    useBrListConfig(rows, { onCreate: vi.fn(), onDelete: vi.fn() }),
+    useBrListConfig(rows, { onCreate: vi.fn(), onDelete: vi.fn() }, includeTest),
   );
   return result.current;
 }
@@ -84,5 +84,21 @@ describe('useBrListConfig - AC-90-310 title column TEST badge', () => {
     const cell = column.cell as (ctx: unknown) => React.ReactNode;
     render(<>{cell({ row: { original: br() } })}</>);
     expect(screen.queryByText('TEST')).not.toBeInTheDocument();
+  });
+});
+
+// ── review fix S6 - rowHref carries the list's OWN includeTest state ──────────
+
+describe('useBrListConfig - review fix S6 rowHref carries includeTest', () => {
+  it('stamps includeTest=1 on every row href when the list is showing test requirements', () => {
+    const cfg = config([br({ id: 'a' })], true);
+    const href = cfg.rowHref(br({ id: 'a' }));
+    expect(new URL(href, 'http://x').searchParams.get('includeTest')).toBe('1');
+  });
+
+  it('omits includeTest from the row href when the list is real-only (default)', () => {
+    const cfg = config([br({ id: 'a' })], false);
+    const href = cfg.rowHref(br({ id: 'a' }));
+    expect(new URL(href, 'http://x').searchParams.has('includeTest')).toBe(false);
   });
 });
