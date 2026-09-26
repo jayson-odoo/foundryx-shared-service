@@ -415,6 +415,72 @@ describe('ScheduleTab push gate (sprint-5/13, D18, AC-13-40)', () => {
     );
   });
 
+  it('sprint-5/13 owner repro: EDIT mode, saved pull + no_snapshot gate never offers Push - badge + warning, no toggle', () => {
+    render(
+      <ScheduleTab
+        editing
+        entityType="stock_balance"
+        config={config()}
+        onChange={vi.fn()}
+        task={task({
+          entityType: 'stock_balance',
+          deliveryMode: 'pull',
+          pushGate: { reason: 'no_snapshot' },
+        })}
+        fieldErrors={{}}
+        deliveryMode="pull"
+        onDeliveryModeChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('etl-delivery-push')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('etl-delivery-pull')).not.toBeInTheDocument();
+    expect(screen.getByText('Pull on request')).toBeInTheDocument();
+    expect(screen.getByTestId('etl-push-gate-warning')).toHaveTextContent(
+      'Push needs a stock snapshot from the last 24 hours.',
+    );
+  });
+
+  it('EDIT mode, saved pull + a contract-shut gate: same badge + warning, no toggle', () => {
+    render(
+      <ScheduleTab
+        editing
+        entityType="stock_balance"
+        config={config()}
+        onChange={vi.fn()}
+        task={task({
+          entityType: 'stock_balance',
+          deliveryMode: 'pull',
+          pushGate: { version: 2.4, requiredVersion: 2.5 },
+        })}
+        fieldErrors={{}}
+        deliveryMode="pull"
+        onDeliveryModeChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('etl-delivery-push')).not.toBeInTheDocument();
+    expect(screen.getByTestId('etl-push-gate-warning')).toHaveTextContent(
+      'Consumer contract 2.4 - stock push needs 2.5.',
+    );
+  });
+
+  it('a 422 deliveryMode field error renders inline near the toggle (sprint-5/13 fix)', () => {
+    render(
+      <ScheduleTab
+        editing
+        entityType="stock_balance"
+        config={config()}
+        onChange={vi.fn()}
+        task={task({ entityType: 'stock_balance', deliveryMode: 'push', pushGate: null })}
+        fieldErrors={{ deliveryMode: "'stock_balance' needs a stock snapshot from the last 24 hours before it can push." }}
+        deliveryMode="push"
+        onDeliveryModeChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('etl-delivery-mode-error')).toHaveTextContent(
+      /needs a stock snapshot/,
+    );
+  });
+
   it('no entity-list hardcoding: a non-stock entity with a (hypothetical) shut gate ALSO shows the badge', () => {
     render(
       <ScheduleTab

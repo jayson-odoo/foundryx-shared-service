@@ -146,6 +146,11 @@ export function ScheduleTab({
             <AlertTitle>{pushGateWarning(task.pushGate)}</AlertTitle>
           </Alert>
         )}
+        {fieldErrors.deliveryMode && (
+          <p className="text-xs text-destructive" data-testid="etl-delivery-mode-error">
+            {fieldErrors.deliveryMode}
+          </p>
+        )}
       </div>
 
       {!isPull && (

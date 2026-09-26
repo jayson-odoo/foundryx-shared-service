@@ -147,7 +147,13 @@ vi.mock('@/hooks/use-autocount-mapping', () => ({
 
 vi.mock('@/hooks/use-autocount-pull', () => ({
   usePreviewColumnsMap: () => ({ probe: vi.fn(), columnsByEntity: {}, isLoading: false }),
-  useSetDeliveryMode: () => ({ save: vi.fn().mockResolvedValue(true), error: null, isSaving: false }),
+  useSetDeliveryMode: () => ({
+    save: vi.fn().mockResolvedValue({ ok: true, config: {} }),
+    error: null,
+    fieldErrors: {},
+    saving: false,
+    clearError: vi.fn(),
+  }),
 }));
 
 vi.mock('../../../../components/use-runs-list-config', () => ({

@@ -7,6 +7,11 @@ import { stubAuthFetch } from './task-editor-view.test-helpers';
 
 stubAuthFetch();
 
+const toastError = vi.fn();
+vi.mock('@/lib/toast', () => ({
+  toast: { success: vi.fn(), error: (...a: unknown[]) => toastError(...a), info: vi.fn(), warning: vi.fn() },
+}));
+
 /**
  * Browser round 1 defect (AC-10-16): toggling the Schedule tab's Delivery
  * segment (Push -> Pull) without saving, then navigating away via the
@@ -185,22 +190,26 @@ function backLink() {
 beforeEach(() => {
   pushSpy.mockClear();
   reloadSpy.mockClear();
+  toastError.mockClear();
   setDeliveryModeSave.mockClear();
   setDeliveryModeSave.mockResolvedValue({
-    id: 'entity-customer',
-    entityType: 'customer',
-    syncMode: 'MANUAL',
-    sourceImpl: 'sql_db',
-    recordCap: 5000,
-    initialLookbackDays: 30,
-    enabled: true,
-    lastSuccessAt: null,
-    lastAttemptAt: null,
-    watermarkAt: null,
-    consecutiveFailures: 0,
-    lastError: null,
-    etlStatus: 'active',
-    deliveryMode: 'pull',
+    ok: true,
+    config: {
+      id: 'entity-customer',
+      entityType: 'customer',
+      syncMode: 'MANUAL',
+      sourceImpl: 'sql_db',
+      recordCap: 5000,
+      initialLookbackDays: 30,
+      enabled: true,
+      lastSuccessAt: null,
+      lastAttemptAt: null,
+      watermarkAt: null,
+      consecutiveFailures: 0,
+      lastError: null,
+      etlStatus: 'active',
+      deliveryMode: 'pull',
+    },
   });
   taskBox.current = configuredTask();
 });
@@ -261,5 +270,60 @@ describe('TaskEditorView Schedule tab - the delivery toggle arms the SHELL dirty
 
     fireEvent.click(backLink());
     expect(screen.queryByText('Discard changes?')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * sprint-5/13 owner repro (real backend): a stock task saved on `pull`
+ * (gate open) - the operator flips to Push, Save runs a race against the
+ * backend's OWN push gate, which 422s `set_delivery_mode` with a
+ * `deliveryMode` field error naming the missing snapshot. The toast used to
+ * always read the hook's generic fallback ("The delivery mode could not be
+ * saved.") or, worse, never distinguish it from "Fix the highlighted
+ * fields." with nothing actually highlighted - fixed by resolving the
+ * outcome off `save()`'s own return value (`use-autocount-pull.ts`), never
+ * off the hook's `error`/`fieldErrors` state read after the fact.
+ */
+describe('TaskEditorView Schedule tab - a rejected delivery-mode save surfaces its OWN message (sprint-5/13 fix)', () => {
+  it('toasts the specific 422 field message, not the generic fallback, and stays in edit mode', async () => {
+    setDeliveryModeSave.mockResolvedValue({
+      ok: false,
+      message: 'The task could not be saved. Fix the highlighted fields.',
+      fieldErrors: {
+        deliveryMode:
+          "'stock_balance' needs a stock snapshot from the last 24 hours before it can push. Pull and Confirm once more, then flip to push.",
+      },
+    });
+    taskBox.current = configuredTask({ deliveryMode: 'pull', pushGate: null });
+
+    render(<TaskEditorView companyId="c1" entityType="customer" initialTab="schedule" />);
+    fireEvent.click(editButton());
+    fireEvent.click(await screen.findByTestId('etl-delivery-push'));
+    fireEvent.click(screen.getByRole('button', { name: /^Save/ }));
+
+    await waitFor(() => expect(setDeliveryModeSave).toHaveBeenCalledWith('c1', 'customer', 'push'));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/needs a stock snapshot/)),
+    );
+    expect(toastError).not.toHaveBeenCalledWith('The task could not be saved. Fix the highlighted fields.');
+    // Save failed - the shell never exits edit mode (no silent success).
+    expect(screen.queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument();
+  });
+
+  it('falls back to the generic message when the 422 carries no deliveryMode field error', async () => {
+    setDeliveryModeSave.mockResolvedValue({
+      ok: false,
+      message: 'The delivery mode could not be saved.',
+      fieldErrors: {},
+    });
+    taskBox.current = configuredTask({ deliveryMode: 'pull', pushGate: null });
+
+    render(<TaskEditorView companyId="c1" entityType="customer" initialTab="schedule" />);
+    fireEvent.click(editButton());
+    fireEvent.click(await screen.findByTestId('etl-delivery-push'));
+    fireEvent.click(screen.getByRole('button', { name: /^Save/ }));
+
+    await waitFor(() => expect(setDeliveryModeSave).toHaveBeenCalledWith('c1', 'customer', 'push'));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith('The delivery mode could not be saved.'));
   });
 });
