@@ -125,7 +125,7 @@ def test_bootstrap_modules_propagates_a_single_module_failure_instead_of_swallow
         lambda manifests: ["fakemod-w1"],
     )
 
-    with pytest.raises(Exception):
+    with pytest.raises(sa.exc.OperationalError):
         module_loader.bootstrap_modules(engine=engine, db=db)
     db.close()
 
@@ -210,7 +210,7 @@ def test_main_aborts_with_no_bootstrap_complete_line_on_a_module_migration_failu
     )
 
     with caplog.at_level(logging.ERROR):
-        with pytest.raises(Exception):
+        with pytest.raises(sa.exc.OperationalError):
             bootstrap_db_module.main()
 
     out = capsys.readouterr().out
@@ -246,7 +246,7 @@ def test_main_aborts_with_no_bootstrap_complete_line_on_a_module_seed_failure(
     )
 
     with caplog.at_level(logging.ERROR):
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError):
             bootstrap_db_module.main()
 
     out = capsys.readouterr().out

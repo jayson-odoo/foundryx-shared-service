@@ -205,7 +205,7 @@ docker compose up -d --force-recreate --no-deps worker_workflow worker_jobs work
 #     serves, ${OLD} is left running (step 7 not reached) for a rollback.
 worker_gate_failed() {
   local svc="$1" cid="$2" reason="$3"
-  echo "::error::DEPLOY FAILED AFTER SWAP (${svc} ${reason}). ${NEW} is serving; ${OLD} left running for rollback: IMAGE_TAG=<previous sha> ./scripts/blue_green_deploy.sh" >&2
+  echo "::error::DEPLOY FAILED AFTER SWAP (${svc} ${reason}). ${NEW} is serving; ${OLD} left running for rollback: IMAGE_TAG=<previous sha> ./scripts/blue_green_deploy.sh (a MODULE schema ahead of the old image is skipped with a warning; a rollback across a CORE migration fails its bootstrap - see DEPLOY.md 'Rollback')" >&2
   docker logs --tail=120 "$cid" || true
   exit 1
 }
@@ -223,8 +223,14 @@ for svc in worker_workflow worker_jobs worker_omni beat; do
     if [ "$svc" = "beat" ]; then
       if [ "$status" = "running" ]; then up_ticks=$((up_ticks + 1)); fi
       if [ "$up_ticks" -ge 5 ]; then ok=1; echo "    $svc running (no restarts for ${up_ticks} ticks)"; break; fi
-    elif docker logs "$cid" 2>&1 | grep -E 'celery@[^ ]+ ready\.' >/dev/null; then
-      ok=1; echo "    $svc ready after $((i * TICK_SECONDS))s"; break
+    else
+      # Capture first, then match: `docker logs | grep` under pipefail can die
+      # of SIGPIPE (141) when grep stops at the first match, reading a
+      # started worker as "never ready" (a false post-swap failure).
+      logs=$(docker logs "$cid" 2>&1 || true)
+      if grep -qE 'celery@[^ ]+ ready\.' <<<"$logs"; then
+        ok=1; echo "    $svc ready after $((i * TICK_SECONDS))s"; break
+      fi
     fi
     sleep $TICK_SECONDS; i=$((i + 1))
   done

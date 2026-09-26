@@ -15,6 +15,7 @@ Per-tenant uninstall NEVER drops the schema/tables (shared across tenants); a
 global schema-drop is operator-only + explicit (never automatic).
 """
 import logging
+import re
 from pathlib import Path
 from typing import List, Optional
 
@@ -119,7 +120,7 @@ SELECT
     a.pid AS pid,
     a.state AS state,
     (now() - a.xact_start)::text AS xact_age,
-    a.query AS query,
+    left(regexp_replace(a.query, '''[^'']*''', '''?''', 'g'), 200) AS query,
     a.application_name AS application_name,
     a.backend_type AS backend_type,
     a.client_addr::text AS client_addr,
@@ -137,6 +138,40 @@ ORDER BY a.pid
 """
 
 
+# Fallback when nothing in the module schema holds a lock: the blocker may sit
+# outside it (a lock on a core table the migration touches, or a session that
+# finished its schema work but keeps a transaction open). Same redaction.
+_IDLE_IN_TRANSACTION_SQL = """
+SELECT
+    a.pid AS pid,
+    a.state AS state,
+    (now() - a.xact_start)::text AS xact_age,
+    left(regexp_replace(a.query, '''[^'']*''', '''?''', 'g'), 200) AS query,
+    a.application_name AS application_name,
+    a.backend_type AS backend_type,
+    a.client_addr::text AS client_addr
+FROM pg_stat_activity a
+WHERE a.state LIKE 'idle in transaction%'
+  AND a.datname = current_database()
+  AND a.xact_start < now() - interval '10 seconds'
+  AND a.pid <> pg_backend_pid()
+ORDER BY a.xact_start
+"""
+
+_QUERY_LOG_CHARS = 200
+_SQL_LITERAL = re.compile(r"'[^']*'")
+
+
+def _redact_query(query) -> str:
+    """Quoted literals -> '?' and at most 200 chars: the query text of a live
+    session carries emails, tokens and password hashes, which must never
+    reach a deploy log. The SQL already does this; this Python pass backs it
+    up (idempotent on already-redacted text)."""
+    if query is None:
+        return ""
+    return _SQL_LITERAL.sub("'?'", str(query))[:_QUERY_LOG_CHARS]
+
+
 def report_lock_holders(engine, schema: Optional[str]) -> List[dict]:
     """Log WHO holds a granted lock on any relation in the module's schema
     (``pg_locks`` joined to ``pg_stat_activity``): pid, state, transaction
@@ -152,12 +187,29 @@ def report_lock_holders(engine, schema: Optional[str]) -> List[dict]:
     with engine.connect() as conn:
         rows = conn.execute(text(_LOCK_HOLDERS_SQL), {"schema": target}).mappings().all()
     holders = [dict(r) for r in rows]
+    for h in holders:
+        h["query"] = _redact_query(h.get("query"))
     if not holders:
         logger.error(
-            "lock holder report for schema '%s': no granted lock held by another "
-            "session right now (the holder finished, or it was this process's "
-            "own connection)", target,
+            "lock holder report for schema '%s': no session holds a lock in this "
+            "schema right now. The holder may be OUTSIDE the schema (a core table "
+            "the migration touches), or it already finished. Database-wide "
+            "'idle in transaction' sessions older than 10s follow.", target,
         )
+        with engine.connect() as conn:
+            idle = conn.execute(text(_IDLE_IN_TRANSACTION_SQL)).mappings().all()
+        if not idle:
+            logger.error("no idle-in-transaction session older than 10s in this database")
+        for r in idle:
+            r = dict(r)
+            logger.error(
+                "possible lock holder (idle in transaction, outside schema '%s'): "
+                "pid=%s state=%s xact_age=%s application_name=%s backend_type=%s "
+                "client_addr=%s query=%s",
+                target, r.get("pid"), r.get("state"), r.get("xact_age"),
+                r.get("application_name"), r.get("backend_type"), r.get("client_addr"),
+                _redact_query(r.get("query")),
+            )
     for h in holders:
         logger.error(
             "lock holder on schema '%s': pid=%s state=%s xact_age=%s "
@@ -191,6 +243,35 @@ def _is_lock_not_available(exc: BaseException) -> bool:
                 return True
         cur = cur.__cause__ or cur.__context__
     return False
+
+
+def _db_is_ahead_of_code(engine, name: str, manifest: dict) -> bool:
+    """True when the module's stamped revision is unknown to this code's
+    script directory: a NEWER image migrated it (a rollback to a previous
+    image, or the old colour restarting mid blue/green). ``upgrade head``
+    would raise "Can't locate revision" and, bootstrap failures being fatal
+    (issue #89), block every rollback. Same verdict as the drift guard."""
+    from app.module_platform.drift_guard import (
+        _classify,
+        module_code_head,
+        module_code_revisions,
+        module_db_version,
+    )
+
+    db_version = module_db_version(engine, manifest)
+    code_head = module_code_head(manifest)
+    if db_version is None or code_head is None:
+        return False
+    verdict, unknown = _classify(code_head, db_version, module_code_revisions(manifest))
+    if verdict != "ahead":
+        return False
+    logger.warning(
+        "Module '%s' database is at %s, which this code does not know (code head %s; "
+        "unknown %s): a newer image already migrated it. Skipping its migrations "
+        "(no downgrade is ever run automatically).",
+        name, db_version, code_head, ",".join(sorted(unknown)),
+    )
+    return True
 
 
 def run_module_migrations(engine: Engine, name: str) -> None:
@@ -232,6 +313,8 @@ def run_module_migrations(engine: Engine, name: str) -> None:
             conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
 
     state = _migration_state(engine, name, schema, version_table)
+    if state == "versioned" and _db_is_ahead_of_code(engine, name, _manifest):
+        return
     try:
         if state == "versioned":
             # Already under Alembic - apply any new revisions.

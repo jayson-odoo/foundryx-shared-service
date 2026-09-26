@@ -40,6 +40,12 @@ case "$args" in
     cid="${args##* }"
     if [ "$cid" != "cid_beat" ] && [ "$FAKE_WORKERS_READY" = "1" ]; then
       echo "[INFO/MainProcess] celery@abc123 ready."
+      # A long log after the ready line: a reader that stops at the first
+      # match closes the pipe and this writer dies of SIGPIPE (141).
+      if [ "$FAKE_LONG_LOGS" = "1" ]; then
+        yes "[INFO/MainProcess] Task done in 0.01s" | head -n 200000
+        exit $?
+      fi
     fi
     exit 0 ;;
 esac
@@ -79,6 +85,7 @@ def _run(tmp_path, **env_over):
         "FAKE_BACKEND_HEALTH": "healthy",
         "FAKE_BACKEND_STATUS": "running",
         "FAKE_WORKERS_READY": "1",
+        "FAKE_LONG_LOGS": "0",
     }
     env.update(env_over)
     result = subprocess.run(
@@ -156,3 +163,20 @@ def test_compose_passes_the_bootstrap_controls_into_the_backend_env():
     env = compose["services"]["backend_green"]["environment"]
     for key in ("SKIP_MIGRATIONS", "BOOTSTRAP_LOCK_TIMEOUT", "BOOTSTRAP_ATTEMPTS", "BOOTSTRAP_RETRY_DELAY"):
         assert key in env, key
+
+
+def test_a_ready_worker_with_a_long_log_is_not_misread_as_never_ready(tmp_path):
+    """Review S3: `docker logs | grep` under `set -o pipefail` can report a
+    started worker as not ready when grep stops at the first match and the
+    writer dies of SIGPIPE. The gate captures the log first."""
+    result, _calls, active = _run(tmp_path, FAKE_LONG_LOGS="1", WORKER_WAIT_TICKS="5")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert active == "green"
+    assert "worker_workflow ready after" in result.stdout
+
+
+def test_bootstrap_attempts_fit_the_health_budget():
+    """Review S4: start.sh's default retries must fit the 240s budget."""
+    start_sh = (REPO / "service_backend" / "start.sh").read_text()
+    assert 'BOOTSTRAP_ATTEMPTS="${BOOTSTRAP_ATTEMPTS:-4}"' in start_sh
+    assert "BOOTSTRAP_ATTEMPTS: ${BOOTSTRAP_ATTEMPTS:-4}" in (REPO / "docker-compose.yml").read_text()

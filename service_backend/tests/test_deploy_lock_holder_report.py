@@ -97,14 +97,20 @@ def test_report_lock_holders_logs_pid_state_xact_age_and_query_for_each_holder(c
     # Scoped to the module's own schema, not every lock in the cluster.
     assert (params and "app_ideation" in str(params)) or "app_ideation" in sql_text
 
-    assert holders == canned_rows
+    # Review S2 (sanctioned edit): query text is redacted (quoted literals ->
+    # '?') and truncated before it is returned or logged - live session SQL
+    # carries emails, tokens and password hashes.
+    from app.module_platform.migrations import _redact_query
+
+    assert holders == [{**r, "query": _redact_query(r["query"])} for r in canned_rows]
 
     log_text = caplog.text
     for row in canned_rows:
         assert str(row["pid"]) in log_text
         assert row["state"] in log_text
         assert row["xact_age"] in log_text
-        assert row["query"] in log_text
+        assert _redact_query(row["query"]) in log_text
+    assert "'t1'" not in log_text
 
 
 def test_report_lock_holders_logs_nothing_alarming_when_no_holder_is_found(caplog):

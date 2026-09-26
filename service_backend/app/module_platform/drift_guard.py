@@ -173,10 +173,18 @@ _CELERY_GUARD_INSTALLED = False
 
 def install_celery_drift_guard() -> None:
     """Run the guard when a Celery worker or beat process starts (not when
-    the API merely imports a worker module to enqueue tasks). Celery's signal
-    dispatch swallows ``Exception`` from a handler, so a drift is turned into
-    ``SystemExit(1)``, which it does not swallow: the container exits and the
-    deploy script's worker gate sees the restart. Idempotent."""
+    the API merely imports a worker module to enqueue tasks). Idempotent.
+
+    - Fail CLOSED: Celery's signal dispatch swallows ``Exception`` from a
+      handler, so ANY failure (a drift, or a guard that could not read the
+      database) becomes a logged ``SystemExit(1)``, which it does not
+      swallow: the container exits and the deploy's worker gate sees it.
+    - No inherited sockets: ``worker_init`` / ``beat_init`` fire in the
+      PARENT, before the prefork pool forks. A pooled connection left behind
+      would be inherited by every child (one psycopg2 socket shared across
+      processes: interleaved protocol, one child reading another's rows), so
+      the app engine's pool is disposed after the check, whatever happened.
+    """
     global _CELERY_GUARD_INSTALLED
     if _CELERY_GUARD_INSTALLED:
         return
@@ -190,6 +198,14 @@ def install_celery_drift_guard() -> None:
         except ModuleSchemaDrift as exc:
             logger.critical("%s", exc)
             raise SystemExit(1) from exc
+        except Exception as exc:  # noqa: BLE001 - fail closed, see docstring
+            logger.critical(
+                "module schema drift guard could not run (%s: %s); refusing to "
+                "start this Celery process (fail closed)", type(exc).__name__, exc,
+            )
+            raise SystemExit(1) from exc
+        finally:
+            engine.dispose()
 
     worker_init.connect(_guard, weak=False)
     beat_init.connect(_guard, weak=False)

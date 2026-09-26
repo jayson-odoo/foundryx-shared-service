@@ -256,10 +256,273 @@ def test_the_lock_holder_query_is_filtered_to_the_module_schema_in_sql():
     assert "pg_backend_pid()" in sql
 
 
-def test_the_startup_guard_is_not_an_environment_setting():
-    """No env var can switch the guard off in production: the only switch is a
-    module attribute the test suite flips."""
-    from app.config import Settings
+def test_the_startup_guard_is_not_switchable_from_the_environment():
+    """Review N4: no env var or setting can switch the guard off in
+    production - the only switch is a module attribute the test suite flips.
+    Pin that drift_guard.py never reads the environment or settings."""
+    import inspect as _inspect
 
-    fields = " ".join(Settings.model_fields)
-    assert "drift" not in fields.lower()
+    from app.module_platform import drift_guard
+
+    src = _inspect.getsource(drift_guard)
+    for needle in ("os.environ", "getenv", "environ[", "settings", "import os"):
+        assert needle not in src, needle
+
+
+
+# ── review round 1 ─────────────────────────────────────────────────────────
+
+
+def test_the_session_is_committed_before_migrating_even_with_a_previous_modules_write(
+    monkeypatch,
+):
+    """Review N5: a pending write left by a PREVIOUS module (or the catalog
+    sync) must be committed before this module's migration on the versioned
+    path too - not only the module's own seed."""
+    calls = []
+    db = _RecordingDB(calls)
+    db.pending = 1  # the previous module's uncommitted seed
+
+    def _migrate(engine, name):
+        calls.append(f"migrate(pending={db.pending})")
+
+    monkeypatch.setattr("app.services.app_store_service.module_hooks", lambda name: None)
+    monkeypatch.setattr("app.module_platform.migrations.run_module_migrations", _migrate)
+    monkeypatch.setattr(
+        "app.module_platform.migrations.module_migration_state", lambda e, n: "versioned"
+    )
+    module_loader._bootstrap_one_module(engine=object(), db=db, name="fakemod-prev")
+    assert "migrate(pending=0)" in calls
+
+
+@pytest.mark.parametrize(
+    "code_head, db_version, known, verdict",
+    [
+        ("a,b", "a", {"a", "b", "base"}, "behind"),  # a code head the DB lacks
+        ("a,b", "a,b", {"a", "b"}, "current"),
+        ("a,b", "b,a", {"a", "b"}, "current"),
+        ("a,b", "a,c", {"a", "b"}, "ahead"),  # c unknown to this code
+        ("b", "a", {"a", "b"}, "behind"),
+    ],
+)
+def test_classify_handles_multiple_heads(code_head, db_version, known, verdict):
+    from app.module_platform.drift_guard import _classify
+
+    assert _classify(code_head, db_version, known)[0] == verdict
+
+
+class _TrackingEngine:
+    def __init__(self):
+        self.disposed = 0
+
+    def dispose(self):
+        self.disposed += 1
+
+
+@pytest.mark.parametrize("outcome", ["ok", "drift", "error"])
+def test_the_celery_guard_disposes_the_engine_pool_before_prefork(monkeypatch, outcome):
+    """Review B1: worker_init/beat_init run in the PARENT before the prefork
+    pool forks; a pooled connection left behind would be shared by every
+    child. The pool is disposed whatever the guard's outcome."""
+    import celery.signals
+
+    import app.workflow_engine.worker  # noqa: F401 - installs the guard
+    from app.module_platform.drift_guard import ModuleSchemaDrift
+
+    engine = _TrackingEngine()
+    monkeypatch.setattr("app.database.engine", engine)
+    monkeypatch.setattr("app.module_platform.drift_guard.STARTUP_GUARD_ENABLED", True)
+
+    def _check(e):
+        if outcome == "drift":
+            raise ModuleSchemaDrift("ideation", "0010_x", "0007_y")
+        if outcome == "error":
+            raise sa.exc.OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+    monkeypatch.setattr("app.module_platform.drift_guard.check_module_schema_drift", _check)
+    if outcome == "ok":
+        celery.signals.worker_init.send(sender=None)
+    else:
+        with pytest.raises(SystemExit):
+            celery.signals.worker_init.send(sender=None)
+    assert engine.disposed == 1
+
+
+def test_the_celery_guard_leaves_no_pooled_connection_on_a_real_engine(monkeypatch, tmp_path):
+    """Review B1, on a real QueuePool: the check opens a pooled connection;
+    after the guard nothing is left checked in for a forked child to inherit."""
+    import celery.signals
+
+    import app.workflow_engine.worker  # noqa: F401 - installs the guard
+
+    engine = sa.create_engine(f"sqlite:///{tmp_path / 'guard.db'}", poolclass=sa.pool.QueuePool)
+    monkeypatch.setattr("app.database.engine", engine)
+    monkeypatch.setattr("app.module_platform.drift_guard.STARTUP_GUARD_ENABLED", True)
+
+    def _check(e):
+        with e.connect() as conn:
+            conn.execute(sa.text("SELECT 1"))
+
+    monkeypatch.setattr("app.module_platform.drift_guard.check_module_schema_drift", _check)
+    celery.signals.worker_init.send(sender=None)
+    assert engine.pool.checkedin() == 0
+
+
+def test_the_celery_guard_fails_closed_on_any_error(monkeypatch, caplog):
+    """Review S5: a guard that cannot run (DB unreachable, bad manifest) stops
+    the Celery process with a logged reason - not only a detected drift."""
+    import logging
+
+    import celery.signals
+
+    import app.workflow_engine.worker  # noqa: F401 - installs the guard
+
+    monkeypatch.setattr("app.database.engine", _TrackingEngine())
+    monkeypatch.setattr("app.module_platform.drift_guard.STARTUP_GUARD_ENABLED", True)
+
+    def _check(e):
+        raise RuntimeError("could not read alembic_version_ideation")
+
+    monkeypatch.setattr("app.module_platform.drift_guard.check_module_schema_drift", _check)
+    with caplog.at_level(logging.CRITICAL):
+        with pytest.raises(SystemExit) as exc_info:
+            celery.signals.beat_init.send(sender=None)
+    assert exc_info.value.code == 1
+    assert "could not read alembic_version_ideation" in caplog.text
+    assert "fail closed" in caplog.text
+
+
+# ── S2 / N1: lock-holder report redaction + outside-schema fallback ───────
+
+
+class _SeqEngine:
+    """Returns the n-th canned row list for the n-th execute; records SQL."""
+
+    def __init__(self, *results):
+        self.results = list(results)
+        self.sql = []
+
+    def connect(self):
+        engine = self
+
+        class _Conn:
+            def execute(self, statement, params=None):
+                engine.sql.append(str(statement))
+                rows = engine.results.pop(0) if engine.results else []
+
+                class _R:
+                    def mappings(self):
+                        return self
+
+                    def all(self):
+                        return rows
+
+                return _R()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        return _Conn()
+
+
+def test_lock_holder_report_redacts_literals_and_truncates_query_text(caplog):
+    import logging
+
+    from app.module_platform.migrations import report_lock_holders
+
+    secret_query = (
+        "UPDATE users SET password_hash = '$2b$12$abcdefSECRETHASH', "
+        "email = 'ceo@example.com' WHERE api_token = 'tok_live_123' " + "x" * 400
+    )
+    engine = _SeqEngine([{"pid": 7, "state": "idle in transaction", "xact_age": "0:01", "query": secret_query}])
+    with caplog.at_level(logging.ERROR):
+        holders = report_lock_holders(engine, "app_ideation")
+
+    for secret in ("SECRETHASH", "ceo@example.com", "tok_live_123"):
+        assert secret not in caplog.text
+        assert secret not in holders[0]["query"]
+    assert "'?'" in holders[0]["query"]
+    assert len(holders[0]["query"]) <= 200
+    # and the SQL itself redacts + truncates before the text leaves Postgres
+    assert "left(regexp_replace(a.query" in engine.sql[0]
+    assert ", 200)" in engine.sql[0]
+
+
+def test_lock_holder_report_lists_idle_in_transaction_sessions_when_the_schema_has_no_holder(
+    caplog,
+):
+    """Review N1: nothing holds a lock inside the module schema -> say the
+    holder may be outside it and list database-wide idle-in-transaction
+    sessions older than 10s (redacted)."""
+    import logging
+
+    from app.module_platform.migrations import report_lock_holders
+
+    engine = _SeqEngine(
+        [],
+        [{"pid": 99, "state": "idle in transaction", "xact_age": "0:04:00",
+          "query": "INSERT INTO public.tenants (slug) VALUES ('acme-secret')",
+          "application_name": "celery", "backend_type": "client backend", "client_addr": "10.0.0.5"}],
+    )
+    with caplog.at_level(logging.ERROR):
+        holders = report_lock_holders(engine, "app_ideation")
+
+    assert holders == []  # the schema-scoped contract is unchanged
+    assert "OUTSIDE the schema" in caplog.text
+    assert "pid=99" in caplog.text
+    assert "acme-secret" not in caplog.text
+    assert "idle in transaction" in engine.sql[1]
+    assert "interval '10 seconds'" in engine.sql[1]
+    assert "regexp_replace" in engine.sql[1]
+
+
+# ── S1: a DB ahead of this code (rollback) never runs `upgrade head` ──────
+
+
+class _BeginEngine:
+    class dialect:
+        name = "postgresql"
+
+    def begin(self):
+        class _C:
+            def execute(self, *a, **k):
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        return _C()
+
+
+def _versioned_ideation(monkeypatch, db_version):
+    from app.module_platform import migrations as migrations_mod
+
+    monkeypatch.setattr(migrations_mod, "_migration_state", lambda *a, **k: "versioned")
+    monkeypatch.setattr(
+        "app.module_platform.drift_guard.module_db_version", lambda engine, m: db_version
+    )
+    upgrades = []
+    monkeypatch.setattr("alembic.command.upgrade", lambda cfg, rev: upgrades.append(rev))
+    return migrations_mod, upgrades
+
+
+def test_a_rollback_image_skips_module_migrations_when_the_db_is_ahead(monkeypatch, caplog):
+    import logging
+
+    migrations_mod, upgrades = _versioned_ideation(monkeypatch, "0011_from_a_newer_image")
+    with caplog.at_level(logging.WARNING):
+        migrations_mod.run_module_migrations(_BeginEngine(), "ideation")  # must not raise
+    assert upgrades == []
+    assert "0011_from_a_newer_image" in caplog.text
+
+
+def test_a_db_behind_the_code_still_upgrades(monkeypatch):
+    migrations_mod, upgrades = _versioned_ideation(monkeypatch, "0007_ideation_idea_attachments")
+    migrations_mod.run_module_migrations(_BeginEngine(), "ideation")
+    assert upgrades == ["head"]

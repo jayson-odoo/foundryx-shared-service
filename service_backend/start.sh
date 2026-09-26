@@ -56,7 +56,9 @@ if [ "${SKIP_MIGRATIONS:-0}" != "1" ]; then
   # between attempts and the deploy still goes green. A PERSISTENT lock exhausts
   # the retries → container start aborts (the old color keeps serving) with a
   # NAMED lock_timeout error in the log - diagnosable, not a silent hang.
-  BOOTSTRAP_ATTEMPTS="${BOOTSTRAP_ATTEMPTS:-5}"
+  # 4 attempts so the worst case fits blue_green_deploy.sh's 240s health
+  # budget: 4 x (<=20s lock wait + bootstrap work) + 3 x 8s delay (DEPLOY.md).
+  BOOTSTRAP_ATTEMPTS="${BOOTSTRAP_ATTEMPTS:-4}"
   BOOTSTRAP_RETRY_DELAY="${BOOTSTRAP_RETRY_DELAY:-8}"
   n=1
   until python -m scripts.bootstrap_db; do
