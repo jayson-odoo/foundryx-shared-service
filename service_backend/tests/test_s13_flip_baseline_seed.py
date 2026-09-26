@@ -34,7 +34,11 @@ from modules.autocount.sinks_sorento import SorentoContractInfo, SorentoSink
 
 from tests.test_s10_s5b_registration import _http_raw
 
-NOW = datetime(2026, 9, 25, 12, 0, 0, tzinfo=timezone.utc)
+# Anchored to the real clock (not a fixed 2026 date) so the 24 h TTL checks
+# in EtlService._has_ready_snapshot / PullSnapshotRepository.has_ready /
+# latest_ready_source_refs - which compare against datetime.now(timezone.utc)
+# - stay valid no matter when this suite runs.
+NOW = datetime.now(timezone.utc).replace(microsecond=0)
 
 
 def _open_connection(db) -> Connection:
