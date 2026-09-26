@@ -280,6 +280,10 @@ Schema direction on a rollback (no downgrade is ever run automatically):
   version row). Skipping those would silently leave the schema short of the
   code, which is issue #89 again. Reconcile the module's
   `alembic_version_<module>` row and schema by hand, then re-run the deploy.
+- Deploying a non-main branch image that carries module migrations to
+  production can make a later main deploy skip main's migrations (logged as
+  ROLLBACK on a forward deploy, which is a red flag); don't, or reconcile the
+  module version row first.
 - A rollback across a **core** migration fails: core `alembic upgrade head`
   raises "Can't locate revision" for a database stamped by a newer image, the
   old colour's bootstrap exits non-zero and the deploy aborts (the newer
