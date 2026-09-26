@@ -19,6 +19,19 @@ migration (`app_ideation.alembic_version_ideation` stayed at
 note); `rm -rf .next && npm run build` then `npx next start -p 3015` for the
 frontend.
 
+**Stale-build check (mid-session commit):** while this re-run was in
+progress, `d80f338a` ("carry `includeTest` onto the record pager's
+NEXT/PREV href") landed on the branch - its own message flags "build
+intentionally skipped this round - a tester is serving the lane from this
+worktree's `.next`". Since this evidence run's first build predated that
+commit, the frontend was killed a second time, rebuilt
+(`rm -rf .next && npm run build`) and restarted before finalizing, and the
+two screenshots whose page imports the changed file (`use-br-form.tsx`) -
+`ev-19`/`ev-20`, the BR detail TEST badge - were re-captured against the
+rebuilt `.next` and diffed byte-identical to the pre-rebuild versions (the
+fix only changes an off-screen pager href, not rendered content), so no
+other screenshot needed a redo.
+
 Logged in as `demo@example.com` / `demo1234` at `localhost:3015` (default
 tenant, Admin) - the same agent-browser session/cookies survived the lane
 restart, no re-login needed.
