@@ -262,6 +262,19 @@ baked into the frontend image; the script also writes it as `PUBLIC_BASE_URL`),
 Re-run a previous successful deploy from the Actions tab (it re-pulls that SHA),
 or on the server set `IMAGE_TAG=<old-sha> ./scripts/blue_green_deploy.sh`.
 
+Schema direction on a rollback (no downgrade is ever run automatically):
+
+- A **module** schema ahead of the old image (its alembic revision is unknown
+  to the old code) is skipped with a WARNING by the bootstrap, and the drift
+  guard lets the old image start. Module migrations are additive, so the old
+  code runs on the newer schema.
+- A rollback across a **core** migration fails: core `alembic upgrade head`
+  raises "Can't locate revision" for a database stamped by a newer image, the
+  old colour's bootstrap exits non-zero and the deploy aborts (the newer
+  colour keeps serving). This was already true before issue #89. Roll back
+  core schema changes deliberately (downgrade by hand, or roll forward with a
+  fix), not by redeploying an older image.
+
 ## Deploy-time migrations: abort, lock timeouts, drift guard
 
 Incident 26 Sep 2026 (issue #89): the ideation module's migration 0008 hit
@@ -290,11 +303,17 @@ waited for a lock on the same table.
    per-module line (`Module '<name>' bootstrap failed; aborting bootstrap:`
    plus the failing SQL); `bootstrap_db` exits non-zero and never prints
    `bootstrap complete`. `start.sh` retries the whole bootstrap
-   `BOOTSTRAP_ATTEMPTS` times (default 5, `BOOTSTRAP_RETRY_DELAY` 8s apart;
+   `BOOTSTRAP_ATTEMPTS` times (default 4, `BOOTSTRAP_RETRY_DELAY` 8s apart;
    everything is idempotent) so a TRANSIENT lock clears, then exits 1.
+   A module whose database is AHEAD of this code (a rollback, see "Rollback")
+   is skipped with a warning instead of failing on "Can't locate revision".
 4. On a lock timeout the module migration first logs every session holding a
    lock in that module's schema (`lock holder on schema 'app_<module>':
    pid=... state=... xact_age=... locks=[...] query=...`), then re-raises.
+   Query text is redacted (every quoted literal becomes `'?'`) and cut to 200
+   characters: live SQL carries emails, tokens and password hashes. When no
+   session holds a lock inside the schema, it says the holder may be outside
+   it and lists the database's `idle in transaction` sessions older than 10s.
 5. `scripts/blue_green_deploy.sh` waits up to **4 minutes**
    (`HEALTH_WAIT_TICKS=120` x 2s, sorento-crm's bound) for the new colour. If
    the new container exits or restarts, or the budget runs out, it prints
@@ -302,6 +321,18 @@ waited for a lock on the same table.
    keeps serving.`, dumps the last 200 log lines, STOPS the new colour (so a
    restart loop cannot keep re-running DDL against the live database) and
    exits 1. Caddy is never touched.
+
+   **Timing (why 4 attempts).** One failed attempt costs at most about
+   20s of lock wait (`BOOTSTRAP_LOCK_TIMEOUT`) plus the bootstrap's own work
+   (core + module migrations, seed; roughly 20-30s on the 1-vCPU host), and
+   attempts are 8s apart: 4 x (20 + 30) + 3 x 8 = 224s, inside the 240s
+   budget. 5 attempts (the old default) is 282s and would be cut off by the
+   deploy script mid-retry. The backend `HEALTHCHECK` polls every 30s, so a
+   bootstrap that succeeds late can still be reported healthy up to 30s after
+   gunicorn is up. **Consequence (owner ruling):** a data migration or seed
+   that needs more than about 4 minutes now aborts the deploy. Run such a
+   migration out of band first (`SKIP_MIGRATIONS=1` below, or a one-off
+   `docker compose run`), then deploy.
 6. Only after the new API colour is healthy are the Celery workers + beat
    recreated on the new image, and each is health-gated: a worker must log
    Celery's `celery@<host> ready.` line within 90s (`WORKER_WAIT_TICKS=45`);
@@ -322,6 +353,12 @@ For each module under per-module Alembic it compares the database's
 | a KNOWN older revision (DB behind) | refuse to start: `ModuleSchemaDrift: module '<m>' database schema is at <db> but this code needs <head>` (gunicorn exits 3, a Celery process exits 1) |
 | a revision this code does not know (DB ahead) | WARNING, start. Normal during blue/green: the new colour migrated first, the old colour or its workers may still restart |
 | no version table (module never installed here) / no `alembic/` dir | ignored |
+
+A known limit of a version-level guard: it compares revision ids, not tables
+and columns. A module adopted through the legacy stamp-without-DDL path
+(tables built by `create_all`, then `stamp head`) reads as "at head" even if
+those tables were built from older models; only the migrations' own
+existence-checked DDL repairs that.
 
 `SKIP_MIGRATIONS=1` skips the bootstrap, NOT the guard: code ahead of its
 schema never serves traffic. There is no environment switch that disables the
@@ -354,7 +391,7 @@ colour kept serving on the old schema.
    SELECT a.pid, a.state, now() - a.xact_start AS xact_age,
           a.application_name, a.client_addr, a.backend_type,
           string_agg(DISTINCT n.nspname || '.' || c.relname || ' ' || l.mode, ', ') AS locks,
-          a.query
+          left(regexp_replace(a.query, '''[^'']*''', '''?''', 'g'), 200) AS query  -- literals redacted
    FROM pg_locks l
    JOIN pg_class c ON c.oid = l.relation
    JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -366,10 +403,11 @@ colour kept serving on the old schema.
    ORDER BY xact_age DESC NULLS LAST;
    ```
    While a migration is waiting, `SELECT pid, pg_blocking_pids(pid),
-   wait_event_type, query FROM pg_stat_activity WHERE
-   cardinality(pg_blocking_pids(pid)) > 0;` shows who blocks whom. Map a
+   wait_event_type, left(regexp_replace(query, '''[^'']*''', '''?''', 'g'), 200)
+   FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0;` shows who blocks whom. Map a
    `client_addr` to its container with `docker network inspect
-   foundryx_ss_network`.
+   foundryx_ss_network`. Keep the `regexp_replace` redaction when you paste
+   results anywhere: raw `query` text carries customer literals.
 2. **Decide.**
    - `idle in transaction` with a large `xact_age`: a leaked transaction
      (a worker task, a hand-opened psql). Restart the owning container
