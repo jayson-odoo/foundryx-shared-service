@@ -2,8 +2,8 @@
 
 **Branch:** `fix/public-idea-page-and-br-template` (worktree `foundryx-shared-service-ideapage`)
 **Contract:** `ideation-public-idea-page-br-template-acceptance-criteria.md`
-**Commits covered:** `ff826692` (RED, tester) -> `ad9ae668` (BE green) -> `6460ade3`/`710e88c8` (coordinator follow-up: strengthened AC-90-204, cherry-picked the `test_s13_flip_baseline_seed.py` TTL fix) -> review-round-2 backend fixes (this report's HEAD)
-**Scope of this report:** backend fully re-run by the backend coder; frontend rows reflect the FE coder's committed test files as of the tester's S4 evidence run (`documentation/plans/ideation/90-evidence/`) - a frontend coder is concurrently working uncommitted in `service_frontend/`, so FE verdicts here are carried forward, not re-executed, by this backend-only round.
+**Commits covered:** `ff826692` (RED, tester) -> `ad9ae668` (BE green) -> `6460ade3`/`710e88c8` (coordinator follow-up: strengthened AC-90-204, cherry-picked the `test_s13_flip_baseline_seed.py` TTL fix) -> review-round-2 backend fixes (`fbb55009`) -> frontend review-round fixes (`b2989bd6`, this report's HEAD)
+**Scope of this report:** backend fully re-run by the backend coder; E2E rows (AC-90-E01/E02/E03) re-run by the tester at head `b2989bd6` against the private lane (`documentation/plans/ideation/90-evidence/`), superseding the earlier PENDING RE-RUN status. Other FE rows reflect the FE coder's committed test files, not independently re-executed by this round.
 
 ---
 
@@ -67,7 +67,7 @@ Not re-run this round (backend-only per the coordinator's brief; a frontend code
 | AC-90-203 | Seed repairs a half-state (3 kinds) | **PASS** | `test_seed_repairs_half_state[null_pointer\|dangling_pointer\|no_versions]`. Kill-tested: removing repair step 3 (the pointer fix) reproduces the exact 4 failures (202 + the 3 parametrized 203 cases) - confirmed, restored. |
 | AC-90-204 | Idempotent, never moves a VALID pointer (incl. older) | **PASS (strengthened this round)** | `test_seed_is_idempotent_and_keeps_operator_active_version`, now covers BOTH "operator activates the highest version" (original) AND "operator reactivates an OLDER v1 while v2/v3 exist" (review round 2 - the original case alone could not distinguish "only repoint an invalid pointer" from a regressed "always repoint to highest" mutant, since both landed on the same id there). Kill-tested TWICE: (1) original mutant - "always repoint to highest" - now correctly fails on the NEW older-pointer assertion (`v3's id != v1's id`), confirmed then restored; (2) same mutant tested BEFORE the strengthening also confirmed to previously slip through, documenting why the strengthening was needed. |
 | AC-90-205 | `template-status` permission-gated | **PASS** | `test_template_status_requires_read_permission` |
-| AC-90-210 | Dialog explains inactive template (FE) | **PASS (carried forward)** | `br-create-dialog.test.tsx`; evidence `ev-11`/`ev-12` |
+| AC-90-210 | Dialog explains inactive template (FE) | **PASS (carried forward)** | `br-create-dialog.test.tsx`; evidence `ev-13`/`ev-14` (inactive), `ev-15`/`ev-16` (recovery after `bootstrap_db`) |
 | AC-90-211 | Promote toast copy (FE) | **PASS (carried forward)** | `promote-to-br.test.ts` |
 
 ### W3 - test idea -> test BR
@@ -81,18 +81,18 @@ Not re-run this round (backend-only per the coordinator's brief; a frontend code
 | AC-90-305 | Client `isTest` ignored on manual create | **PASS** | `test_client_is_test_ignored_on_manual_create` |
 | AC-90-306 | Status-engine hooks still count test BRs | **PASS (no code change needed)** | `test_test_br_counted_by_status_engine` - `br_count_records` was already tenant-scoped only, never filtered `is_test` |
 | AC-90-307 | Migration 0011 chains onto 0010 | **PASS** | `test_migration_0011_chains_onto_0010` |
-| AC-90-310 | TEST badge on list rows (FE) | **PASS (carried forward)** | `use-br-list-config.test.tsx`, `use-ideas-list-config.test.tsx`; evidence `ev-13`/`ev-15` |
-| AC-90-311 | Promote disabled only for mixed selection (FE) | **PASS (carried forward)** | `use-ideas-list-config.test.tsx`; evidence `ev-13`, `ev-14` |
+| AC-90-310 | TEST badge on list rows (FE) | **PASS (carried forward)** | `use-br-list-config.test.tsx`, `use-ideas-list-config.test.tsx`; evidence `ev-17`/`ev-18` (ideas list), `ev-21`/`ev-22` (BR list) |
+| AC-90-311 | Promote disabled only for mixed selection (FE) | **PASS (carried forward)** | `use-ideas-list-config.test.tsx`; evidence `ev-17`/`ev-18` |
 | AC-90-312 | BR list gains `includeTest` (FE) | **PASS (carried forward)** | `use-business-requirements.test.ts` |
-| AC-90-313 | BR detail page labels a test BR (FE) | **PASS (carried forward)** | `use-br-form.test.tsx`; evidence `ev-14` |
+| AC-90-313 | BR detail page labels a test BR (FE) | **PASS (carried forward)** | `use-br-form.test.tsx`; evidence `ev-19`/`ev-20` (BR detail), `ev-23`/`ev-24` (idea's own Business Requirements tab, new this round) |
 
 ### E2E
 
 | AC | Title | Verdict | Evidence |
 |----|-------|---------|----------|
-| AC-90-E01 | W1 public page journey | **PENDING RE-RUN** | `90-evidence/README.md` + `ev-01`..`ev-10`, captured at head `65fbabe3` (BEFORE the review-round-2 backend fixes: the first-name guard hardening, the tenant-scoped Status lookup, the hardening headers). The tester owns re-running this against the current head. |
-| AC-90-E02 | W2 template-inactive journey | **PENDING RE-RUN** | `ev-11`/`ev-12`, same head caveat as above (W2's `seed_br_template` behaviour is unchanged by review round 2, so this evidence is likely still accurate, but not re-confirmed) |
-| AC-90-E03 | W3 test-idea journey | **PENDING RE-RUN** | `ev-13`/`ev-14`/`ev-15`, same head caveat (W3's lane logic gained the AC-90-303 message/no-BR-left assertions this round, behaviour was already correct, evidence likely still accurate but not re-confirmed) |
+| AC-90-E01 | W1 public page journey | **PASS** | Re-run at head `b2989bd6` (backend `fbb55009` + frontend `b2989bd6`), `90-evidence/README.md` + `ev-01`..`ev-10`. Confirms the review-round-2 fixes live: null-title heading now falls back to the `problem` text (`ev-07`/`ev-08`), a SET title renders correctly (`ev-01`..`ev-04`, DB-assisted - no UI path to set title), the footer renders the real `BrandMark` wordmark (not a broken image, all of `ev-01`..`ev-10`), the fragment-proof phone guard suppresses "Submitted by" for `"+60 12-345 6789"` split across tokens (`ev-05`/`ev-06`), and the 200 now carries `X-Robots-Tag: noindex` + `Referrer-Policy: no-referrer` alongside `Cache-Control: no-store` (curl, both origins, README "Response headers"). |
+| AC-90-E02 | W2 template-inactive journey | **PASS** | Re-run, `ev-11`..`ev-16`. `ev-11`/`ev-12` = dialog normal (template active); `ev-13`/`ev-14` = Alert + disabled Create after `active_version_id` nulled via DB. Went further than the original evidence: `ev-15`/`ev-16` prove the ACTUAL repair path - `python -m scripts.bootstrap_db` (no manual DB restore) re-activates the pointer via `seed_br_template`'s idempotent repair (SQL log line captured in the README), the dialog then shows no Alert with Create enabled, and a real BR (`d4dc9ed2-42de-4149-8e64-22a89110b326`) was created end-to-end to confirm. |
+| AC-90-E03 | W3 test-idea journey | **PASS** | Re-run, `ev-17`..`ev-24`. TEST badge confirmed in the ideas list (`ev-17`/`ev-18`), the BR detail page (`ev-19`/`ev-20`), the BR list with "Show test requirements" on (`ev-21`/`ev-22`), and - new this round - the idea's OWN "Business Requirements" tab (`ev-23`/`ev-24`), all at both 375px and 1280px. |
 
 ---
 
