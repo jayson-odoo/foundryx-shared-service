@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Set, Tuple
 from .canonical.grn import VENDOR_ENTITY
 from .client import AutoCountClient, AutoCountError, build_read_filter, parse_last_modified
 from .envelopes import ENVELOPE_STATUS_DICT, envelope_for
+from .http_source.envelope import ENVELOPE_LIST
 from .mapping import read_path
 
 logger = logging.getLogger("foundryx.autocount")
@@ -226,6 +227,51 @@ class FetchResult:
     # for the SNAPSHOT build, computed locally since that helper is scoped
     # to `sync.py` and a source module must not import back into it).
     walk_verified: Optional[bool] = None
+
+
+def main_walk_is_verified(
+    envelope_kind: Optional[str], reported_total: Optional[int], rows_scanned: int
+) -> bool:
+    """plan 13 (D8, AC-13-13) round-2 review fix (F3) - the MAIN walk's own
+    half of the completeness rule. Neutral (this module already sits below
+    both ``sync.py`` and ``http_source/source.py`` in the import graph),
+    so ``sync.extract_is_complete``, ``sync._unverified_endpoint_names`` and
+    ``HttpApiSource.fetch_changes``'s own ``walk_verified`` computation all
+    call it and can never drift apart: a bare-array endpoint
+    (``ENVELOPE_LIST``) has no total to compare against by design -
+    unconditionally verified; a PAGED endpoint (or one that never reported
+    an ``envelope_kind`` at all) whose scanned row count does not match the
+    vendor's own reported total (including a reported total that is
+    entirely absent) is UNVERIFIED."""
+    return (
+        envelope_kind == ENVELOPE_LIST
+        or (reported_total is not None and rows_scanned == reported_total)
+    )
+
+
+def unverified_lookup_items(
+    lookup_verification: Dict[str, LookupVerification],
+) -> List[Tuple[str, LookupVerification]]:
+    """The lookup half of the same rule (review round 1 follow-up, AC-10-24
+    applied honestly to lookups): every configured lookup alias that did
+    NOT verify, in the dict's own (insertion) order."""
+    return [(alias, v) for alias, v in lookup_verification.items() if not v.verified]
+
+
+def walk_is_verified(
+    *,
+    envelope_kind: Optional[str],
+    reported_total: Optional[int],
+    rows_scanned: int,
+    lookup_verification: Dict[str, LookupVerification],
+) -> bool:
+    """plan 13 round-2 review fix (F3) - the FULL completeness verdict: the
+    main walk verified AND every configured lookup also verified (a
+    verified main walk is not enough on its own - a truncated lookup
+    silently turns matches into misses)."""
+    return main_walk_is_verified(
+        envelope_kind, reported_total, rows_scanned
+    ) and not unverified_lookup_items(lookup_verification)
 
 
 class EntitySource(Protocol):

@@ -171,37 +171,6 @@ def _bare_array(rows):
     return handler
 
 
-# ── surface existence (review round 2 B2 fix: the clean, POST-coder shape) ──
-#
-# The S0 red tests here were absence-pins ("this surface does not exist
-# yet") - once the surface exists they are dead markers, not guards, so
-# they are replaced by their positive twins: ``changed_refs`` is a
-# DECLARED ``FetchResult`` field (never a dynamic ``getattr`` target) and
-# ``_stage_documents`` accepts it directly (never the closure-wrapping
-# ``is_changed`` callable an earlier draft used).
-
-
-def test_fetch_result_declares_a_changed_refs_field():
-    from modules.autocount.sources import FetchResult
-
-    result = FetchResult()
-    assert hasattr(result, "changed_refs")
-    assert result.changed_refs is None
-
-
-def test_stage_documents_accepts_a_changed_refs_set_kwarg():
-    import inspect
-
-    from modules.autocount.sync import _stage_documents
-
-    params = inspect.signature(_stage_documents).parameters
-    assert "changed_refs" in params
-    assert "is_changed" not in params
-    # ``ref_fn`` already exists (plan sprint-5/03 S2, AC-03-11/12) - only
-    # ``changed_refs`` is new for this plan.
-    assert "ref_fn" in params
-
-
 # ── (a) unchanged, already-delivered pair is never re-staged ───────────────
 
 

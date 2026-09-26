@@ -118,7 +118,10 @@ from .sources import (
     SourceRecord,
     TruncatedWindowError,
     Watermark,
+    main_walk_is_verified,
     source_factory,
+    unverified_lookup_items,
+    walk_is_verified,
 )
 from .sql_source.errors import (
     SqlDeleteGuardExceeded,
@@ -788,6 +791,11 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
     # path NEVER writes a pull-snapshot-flavoured note - stays green.
     if not extract_complete and result.delete_refs:
         names = ", ".join(_unverified_endpoint_names(result)) or "this walk"
+        # round-2 review nit - this is a suppressed-DELETE note, not a
+        # failed run (every upsert this walk fetched still staged), so a
+        # WARNING tier would read truer than ACTIVITY_ERROR. Left as
+        # ACTIVITY_ERROR: `app/models/integration_activity.py` only
+        # declares SUCCESS/ERROR/PENDING, no warning tier to switch to.
         record_activity(
             db,
             tenant_id=tenant_id,
@@ -2476,16 +2484,21 @@ def extract_is_complete(result: FetchResult) -> bool:
     result. The ONGOING push run (``run_autocount_sync`` above) does NOT
     call this: see ``_push_walk_is_complete``'s own docstring for why
     applying this exact rule to every source there was the B1 regression.
+
+    round-2 review fix (F3) - delegates to ``sources.walk_is_verified``,
+    the ONE neutral rule ``HttpApiSource.fetch_changes``'s own local
+    ``walk_verified`` computation and ``_unverified_endpoint_names`` below
+    both call too, so all three can never drift apart again.
     """
     rows_scanned = (
         result.rows_scanned if result.rows_scanned is not None else len(result.records)
     )
-    main_verified = (
-        result.envelope_kind == ENVELOPE_LIST
-        or (result.reported_total is not None and rows_scanned == result.reported_total)
+    return walk_is_verified(
+        envelope_kind=result.envelope_kind,
+        reported_total=result.reported_total,
+        rows_scanned=rows_scanned,
+        lookup_verification=result.lookup_verification,
     )
-    unverified_lookups = [v for v in result.lookup_verification.values() if not v.verified]
-    return main_verified and not unverified_lookups
 
 
 def _push_walk_is_complete(result: FetchResult) -> bool:
@@ -2522,22 +2535,23 @@ def _unverified_endpoint_names(result: FetchResult) -> List[str]:
     all) and/or any lookup alias that did not verify. Deliberately never
     says "could not be verified" or starts with "pull snapshot" (the
     plan-10 guard, `test_s10_s3_review1_lookup_complete.py`, pins that
-    exact phrasing to the SNAPSHOT build's own note only)."""
+    exact phrasing to the SNAPSHOT build's own note only).
+
+    round-2 review fix (F3) - the main-walk half delegates to
+    ``sources.main_walk_is_verified`` and the lookup half to
+    ``sources.unverified_lookup_items``, the SAME neutral rule
+    ``extract_is_complete`` and ``HttpApiSource.fetch_changes`` both call,
+    so the three can never drift apart."""
     names: List[str] = []
     rows_scanned = (
         result.rows_scanned if result.rows_scanned is not None else len(result.records)
     )
-    main_verified = (
-        result.envelope_kind == ENVELOPE_LIST
-        or (result.reported_total is not None and rows_scanned == result.reported_total)
-    )
-    if not main_verified:
+    if not main_walk_is_verified(result.envelope_kind, result.reported_total, rows_scanned):
         reported = result.reported_total if result.reported_total is not None else "unknown"
         names.append(f"the main walk (scanned {rows_scanned} of reported {reported})")
-    for alias, v in result.lookup_verification.items():
-        if not v.verified:
-            reported = v.reported_total if v.reported_total is not None else "unknown"
-            names.append(f"'{alias}' (scanned {v.rows_scanned} of reported {reported})")
+    for alias, v in unverified_lookup_items(result.lookup_verification):
+        reported = v.reported_total if v.reported_total is not None else "unknown"
+        names.append(f"'{alias}' (scanned {v.rows_scanned} of reported {reported})")
     return names
 
 

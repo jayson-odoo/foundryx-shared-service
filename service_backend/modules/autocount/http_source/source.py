@@ -49,6 +49,7 @@ from ..sources import (
     SourceRecord,
     Watermark,
     register_source,
+    walk_is_verified,
 )
 from ..sql_source.hashing import compared_columns_for, row_hash
 from ..sql_source.source import CURSOR_COLUMN, CURSOR_MARK, MAX_EXTRACT_ROWS
@@ -1183,23 +1184,22 @@ class HttpApiSource:
             )
             self._ctx.db.commit()
 
-        # plan 13 (D8, AC-13-13) review-round-2 fix (B1) - THIS source's own
-        # completeness verdict, the SAME rule ``sync.extract_is_complete``
-        # applies for the snapshot build (bare array = verified; a PAGED
-        # endpoint needs ``rows_scanned == reported_total``, and every
-        # configured lookup must ALSO have verified), computed locally
-        # since a source module must not import back into ``sync.py``. Set
-        # ONLY here - every other source leaves ``FetchResult.walk_verified``
-        # at its ``None`` default ("not applicable"), which the push run
-        # treats as complete.
-        main_verified = (
-            envelope_kind == ENVELOPE_LIST
-            or (reported_total is not None and rows_scanned == reported_total)
+        # plan 13 (D8, AC-13-13) review-round-2 fix (B1; F3 round-2 review
+        # fix) - THIS source's own completeness verdict, via the ONE
+        # neutral ``sources.walk_is_verified`` helper ``sync.
+        # extract_is_complete`` and ``sync._unverified_endpoint_names``
+        # both call too (bare array = verified; a PAGED endpoint needs
+        # ``rows_scanned == reported_total``, and every configured lookup
+        # must ALSO have verified) - never a local re-derivation, so the
+        # three can never drift apart. Set ONLY here - every other source
+        # leaves ``FetchResult.walk_verified`` at its ``None`` default
+        # ("not applicable"), which the push run treats as complete.
+        walk_verified = walk_is_verified(
+            envelope_kind=envelope_kind,
+            reported_total=reported_total,
+            rows_scanned=rows_scanned,
+            lookup_verification=self._lookup_verification,
         )
-        unverified_lookups = [
-            v for v in self._lookup_verification.values() if not v.verified
-        ]
-        walk_verified = main_verified and not unverified_lookups
 
         return FetchResult(
             records=records,

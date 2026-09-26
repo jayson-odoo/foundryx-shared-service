@@ -2997,12 +2997,14 @@ class EtlService:
 
         Review round 2 S5 fix: a request whose ``delivery_mode`` already
         MATCHES the task's current mode is an idempotent no-op and returns
-        immediately, BEFORE any prerequisite gate runs. Without this, a
-        Schedule-tab Save that changes nothing about delivery mode (the FE
-        posts the CURRENT mode back on every save) could 422 an
-        already-pushing stock task the moment its seed snapshot ages past
-        24h - `no_snapshot` exists to gate the FLIP, never an already-
-        flipped task the owner is not touching."""
+        immediately, BEFORE any prerequisite gate runs. This stays true
+        even though the FE only POSTs when the mode actually changed
+        (`task-editor-view.tsx:450`, `deliveryModeDirty`): the endpoint
+        itself must not assume its caller - a re-issued/retried save, or a
+        future caller that always sends the current mode, could otherwise
+        422 an already-pushing stock task the moment its seed snapshot
+        ages past 24h - `no_snapshot` exists to gate the FLIP, never an
+        already-flipped task the owner is not touching."""
         if delivery_mode not in DELIVERY_MODES:
             raise EtlValidationError(
                 {"deliveryMode": f"'{delivery_mode}' is not a known delivery mode."}
