@@ -1183,6 +1183,13 @@ class CompanyService:
         # sink-switch invalidation below fires only on a GENUINE change.
         previous_sink_impl = company.sink_impl
         previous_sink_connection_id = company.sink_connection_id
+        # plan 13 round-2 review fixes (F2) - normalized (stripped, upper-
+        # cased) so a save that only touches case/whitespace never reads as
+        # a "changed" code; a genuine code change (same connection, a
+        # different downstream Sorento company) still must invalidate.
+        previous_sorento_company_code = (
+            company.sorento_company_code or ""
+        ).strip().upper()
         if sink_impl == SINK_IMPL_LOGGING:
             company.sink_impl = SINK_IMPL_LOGGING
             company.sink_connection_id = None
@@ -1226,9 +1233,22 @@ class CompanyService:
         # (plan-08 behaviour, out of scope here) - a LATER contract
         # upgrade is not auto-detected by this method at all (no sink
         # field changed); the runbook step below covers it.
+        #
+        # plan 13 round-2 review fixes (F2) - a changed `sorento_company_
+        # code` ALSO counts as a sink-target change, not only `sink_impl`/
+        # `sink_connection_id`: the same connection can host more than one
+        # downstream Sorento company, so re-pointing the code alone sends
+        # every subsequent push to a DIFFERENT company with no idea what
+        # the old one already received - the exact stranding this guard
+        # exists to prevent. Compared normalized (stripped, upper-cased)
+        # so it never fires on the trivial case/whitespace variants.
+        current_sorento_company_code = (
+            company.sorento_company_code or ""
+        ).strip().upper()
         sink_target_changed = (
             company.sink_impl != previous_sink_impl
             or company.sink_connection_id != previous_sink_connection_id
+            or current_sorento_company_code != previous_sorento_company_code
         )
         if sink_target_changed:
             stamp = f"repush:{datetime.now(timezone.utc).isoformat()}"

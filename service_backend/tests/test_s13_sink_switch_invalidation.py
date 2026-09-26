@@ -120,10 +120,11 @@ def test_a_genuine_sink_switch_invalidates_an_http_tasks_hashes(session_factory)
 def test_switching_between_two_different_sorento_companies_also_invalidates(session_factory):
     """Same impl (`sorento`), DIFFERENT connection id - still a genuine
     switch. `connections` carries a UNIQUE (tenant, provider) constraint
-    (one Sorento connection per tenant), so the second connection lives
-    under a SEPARATE tenant - the point under test is purely the id
-    comparison inside `set_sink_target`, tenant-scoped like every other
-    read there."""
+    (one Sorento connection per tenant), so the second connection is
+    minted under the SAME tenant after the first is deleted (the unique
+    slot cleared first, never a second live row) - the point under test
+    is purely the id comparison inside `set_sink_target`, tenant-scoped
+    like every other read there."""
     db = session_factory()
     api_conn = _api_connection(db)
     company = _company(db, api_conn.id)
@@ -184,6 +185,72 @@ def test_a_no_op_sink_save_never_invalidates_anything(session_factory):
         DEFAULT_TENANT_ID, company.id,
         sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id,
         sorento_company_code="SRT",
+    )
+
+    rows = RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    assert rows["AED_SORENTO:A1"] == "real-hash-a1"
+
+
+def test_changing_only_the_sorento_company_code_also_invalidates(session_factory):
+    """F2 (plan 13 round-2 review fixes) - same `sink_impl`, same
+    connection, but a DIFFERENT `sorento_company_code`: one connection can
+    host more than one downstream Sorento company, so re-pointing the code
+    alone must invalidate exactly like a sink_impl/connection change - the
+    old code's push history has no idea the new company's baseline needs
+    a full re-offer."""
+    db = session_factory()
+    api_conn = _api_connection(db)
+    company = _company(db, api_conn.id)
+    _http_task(db, company.id, ENTITY_PRODUCT)
+    sorento = _sorento_connection(db)
+
+    CompanyService(db).set_sink_target(
+        DEFAULT_TENANT_ID, company.id,
+        sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id,
+        sorento_company_code="SRT",
+    )
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT,
+        {"AED_SORENTO:A1": "real-hash-a1"}, seen_at=NOW,
+    )
+    db.commit()
+
+    # Same impl, same connection, DIFFERENT company code.
+    CompanyService(db).set_sink_target(
+        DEFAULT_TENANT_ID, company.id,
+        sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id,
+        sorento_company_code="MCH",
+    )
+
+    rows = RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
+    assert rows["AED_SORENTO:A1"].startswith("repush:")
+
+
+def test_resaving_the_same_company_code_with_different_case_never_invalidates(session_factory):
+    """Control - the code comparison is normalized (stripped, upper-cased):
+    a save that only touches case/whitespace on the SAME code must not
+    read as a change."""
+    db = session_factory()
+    api_conn = _api_connection(db)
+    company = _company(db, api_conn.id)
+    _http_task(db, company.id, ENTITY_PRODUCT)
+    sorento = _sorento_connection(db)
+
+    CompanyService(db).set_sink_target(
+        DEFAULT_TENANT_ID, company.id,
+        sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id,
+        sorento_company_code="SRT",
+    )
+    RowHashRepository(db).upsert_many(
+        DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT,
+        {"AED_SORENTO:A1": "real-hash-a1"}, seen_at=NOW,
+    )
+    db.commit()
+
+    CompanyService(db).set_sink_target(
+        DEFAULT_TENANT_ID, company.id,
+        sink_impl=SINK_IMPL_SORENTO, sink_connection_id=sorento.id,
+        sorento_company_code="  srt  ",
     )
 
     rows = RowHashRepository(db).all_hashes(DEFAULT_TENANT_ID, company.id, ENTITY_PRODUCT)
