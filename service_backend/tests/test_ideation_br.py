@@ -435,9 +435,11 @@ def _test_idea(factory, product_id, problem="A console test idea") -> str:
         db.close()
 
 
-def test_promote_refuses_test_idea(ideation_client):
-    """issue #1179 - a promote (create with ideaIds) that carries a test idea is
-    refused 422; no BR is created."""
+def test_promote_test_idea_creates_test_br(ideation_client):
+    """AC-90-301 (issue #90 owner ruling 26 Sep ~12:50Z, INVERTS the old
+    ``test_promote_refuses_test_idea`` - REWRITTEN, not deleted, per the #90
+    lane brief): a promote (create with ideaIds) that carries ONLY test ideas
+    now SUCCEEDS and the created BR carries ``isTest: true``."""
     h = _auth(ideation_client)
     pid = _product(ideation_client, h)
     test_idea = _test_idea(ideation_client._factory, pid)
@@ -446,9 +448,8 @@ def test_promote_refuses_test_idea(ideation_client):
         headers=h,
         json={"productId": pid, "ideaIds": [test_idea]},
     )
-    assert res.status_code == 422, res.text
-    rows = ideation_client.get("/ideation/business-requirements", headers=h).json()
-    assert rows == []
+    assert res.status_code == 201, res.text
+    assert res.json()["isTest"] is True
 
 
 def test_link_refuses_test_idea(ideation_client):
@@ -472,6 +473,153 @@ def test_link_refuses_test_idea(ideation_client):
         f"/ideation/business-requirements/{br['id']}/ideas", headers=h
     ).json()
     assert lineage == []
+
+
+# ── issue #90 W3 - a test idea may be promoted to a TEST Business Requirement ─
+# Owner ruling 26 Sep 2026 ~12:50Z: the BR carries ``isTest``, is excluded from
+# the real BR lists/counts by default, and is labelled Test on its page.
+
+
+def _real_idea(client, h, product_id, problem="A real idea") -> str:
+    return _idea(client, h, product_id, problem)
+
+
+def test_test_br_excluded_from_list_unless_include_test(ideation_client):
+    """AC-90-302: the default list excludes a test BR; ``includeTest=true``
+    brings it back."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    real_br = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "answers": _FULL_ANSWERS},
+    ).json()
+    test_idea = _test_idea(ideation_client._factory, pid)
+    test_br = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "ideaIds": [test_idea]},
+    )
+    assert test_br.status_code == 201, test_br.text
+    test_br = test_br.json()
+
+    default_rows = ideation_client.get(
+        "/ideation/business-requirements", headers=h
+    ).json()
+    ids = {r["id"] for r in default_rows}
+    assert real_br["id"] in ids
+    assert test_br["id"] not in ids
+
+    with_test = ideation_client.get(
+        "/ideation/business-requirements?includeTest=true", headers=h
+    ).json()
+    ids_with_test = {r["id"] for r in with_test}
+    assert real_br["id"] in ids_with_test
+    assert test_br["id"] in ids_with_test
+
+
+def test_mixed_test_and_real_promote_refused(ideation_client):
+    """AC-90-303: a promote whose ideaIds mix a test and a real idea is
+    refused 422 - never silently picks a lane."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    real_idea = _real_idea(ideation_client, h, pid)
+    test_idea = _test_idea(ideation_client._factory, pid)
+    res = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "ideaIds": [real_idea, test_idea]},
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_real_idea_cannot_link_to_test_br(ideation_client):
+    """AC-90-304: the lane invariant is bidirectional - a REAL idea cannot be
+    linked onto a TEST BR either (complements the existing
+    ``test_link_refuses_test_idea``, which covers the opposite direction)."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    test_idea = _test_idea(ideation_client._factory, pid)
+    test_br = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "ideaIds": [test_idea]},
+    )
+    assert test_br.status_code == 201, test_br.text
+    test_br = test_br.json()
+
+    real_idea = _real_idea(ideation_client, h, pid)
+    res = ideation_client.post(
+        f"/ideation/business-requirements/{test_br['id']}/ideas",
+        headers=h,
+        json={"ideaIds": [real_idea]},
+    )
+    assert res.status_code == 422, res.text
+    assert "real idea" in res.json()["detail"].lower()
+
+
+def test_client_is_test_ignored_on_manual_create(ideation_client):
+    """AC-90-305: ``BusinessRequirementCreateIn`` gains no ``isTest`` field - a
+    client-sent ``isTest: true`` on a manual (no ideaIds) create is ignored;
+    the lane is always server-derived (False for a manual create)."""
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    res = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "answers": _FULL_ANSWERS, "isTest": True},
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["isTest"] is False
+
+
+def test_test_br_counted_by_status_engine(ideation_client):
+    """AC-90-306: ``br_count_records``/``br_migrate_records`` are status-engine
+    integrity hooks (the delete/migrate guard) and must NOT exclude test BRs -
+    excluding them would let a status holding test BRs be deleted."""
+    from modules.ideation.services.statuses import br_count_records
+
+    h = _auth(ideation_client)
+    pid = _product(ideation_client, h)
+    test_idea = _test_idea(ideation_client._factory, pid)
+    created = ideation_client.post(
+        "/ideation/business-requirements",
+        headers=h,
+        json={"productId": pid, "ideaIds": [test_idea]},
+    )
+    assert created.status_code == 201, created.text
+    br = created.json()
+
+    db = ideation_client._factory()
+    try:
+        from modules.ideation.models import BusinessRequirement
+
+        row = (
+            db.query(BusinessRequirement)
+            .filter(BusinessRequirement.id == br["id"])
+            .first()
+        )
+        assert row is not None
+        count = br_count_records(db, row.status_id, DEFAULT_TENANT_ID)
+        assert count >= 1
+    finally:
+        db.close()
+
+
+def test_migration_0011_chains_onto_0010(ideation_client):
+    """AC-90-307: the 0011 migration exists and revises
+    0010_ideation_intake_contract (current head)."""
+    import importlib.util
+    from pathlib import Path
+
+    module_root = Path(__file__).resolve().parents[1] / "modules" / "ideation"
+    path = module_root / "alembic" / "versions" / "0011_ideation_br_is_test.py"
+    assert path.exists(), f"missing migration file: {path}"
+    spec = importlib.util.spec_from_file_location("_ideation_rev_0011", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.down_revision == "0010_ideation_intake_contract"
+    assert len(module.revision) <= 32
 
 
 # ── lifecycle via the status engine (AC-BI-15) ────────────────────────────────

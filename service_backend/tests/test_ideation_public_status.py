@@ -95,19 +95,29 @@ def _make_captured_idea(
     idea_number="IDEA-0001",
     status_token=None,
     is_test=False,
+    status_key="captured",
+    tenant_id=DEFAULT_TENANT_ID,
+    proposed_solution=None,
+    impact=None,
+    department=None,
+    upvotes=0,
+    submitter_name=None,
+    submitter_contact_id=None,
 ):
     """Directly construct an already-``captured`` Idea row with the S5 columns
     (title/idea_number/status_token) - isolates the public-status tests from
-    the Group A turn-algorithm redesign."""
+    the Group A turn-algorithm redesign. ``status_key``/``tenant_id`` and the
+    detail-field kwargs (AC-90-1xx) widen this helper for the timeline/
+    off-ramp/tenant-scoping/detail-section tests without a bespoke builder."""
     from modules.ideation.models import Idea
     from modules.ideation.services.statuses import idea_status_id
 
     db = factory()
     try:
-        status_id = idea_status_id(db, "captured", DEFAULT_TENANT_ID)
+        status_id = idea_status_id(db, status_key, tenant_id)
         assert status_id is not None
         idea = Idea(
-            tenant_id=DEFAULT_TENANT_ID,
+            tenant_id=tenant_id,
             product_id=product_id,
             status_id=status_id,
             problem=problem,
@@ -115,6 +125,12 @@ def _make_captured_idea(
             idea_number=idea_number,
             status_token=status_token,
             is_test=is_test,
+            proposed_solution=proposed_solution,
+            impact=impact,
+            department=department,
+            upvotes=upvotes,
+            submitter_name=submitter_name,
+            submitter_contact_id=submitter_contact_id,
             captured_json={"problem": problem},
         )
         db.add(idea)
@@ -138,8 +154,12 @@ def _idea_row(factory, idea_id):
 
 
 def test_ac_1601_returns_only_title_status_idea_number(setup):
-    """AC-1601: an unauthenticated GET on a captured idea's status_token
-    returns exactly title, status, ideaNumber - nothing else."""
+    """AC-1601 (superseded by issue #90 - the exact-key-set pin now lives in
+    ``test_public_status_exact_key_set_and_no_pii``, AC-90-104, since the
+    page grew problem/solution/impact/department/product/submitter/timeline
+    fields on the owner's ruling). This one stays as a narrower value check
+    on the three original fields - REWRITTEN, not deleted, per the #90 lane
+    brief."""
     s = setup
     token = "tok_" + "a" * 20
     _make_captured_idea(
@@ -152,14 +172,20 @@ def test_ac_1601_returns_only_title_status_idea_number(setup):
     res = s["client"].get(f"/public/ideas/{token}")
     assert res.status_code == 200, res.text
     body = res.json()
-    assert set(body.keys()) == {"title", "status", "ideaNumber"}
     assert body["title"] == "Show promo price in red on price tags"
     assert body["ideaNumber"] == "IDEA-0182"
     assert body["status"] == "New"
 
 
 def test_ac_1601_no_auth_header_required(setup):
-    """AC-1601: the route needs no Authorization header at all (public)."""
+    """AC-1601: the route needs no Authorization header at all (public).
+
+    Superseded forbidden-key list (issue #90, REWRITTEN not deleted):
+    ``problem``/``impact``/``department`` are now RETURNED fields (the owner's
+    #90 ruling), so they are removed from this list; the exact allow/forbid
+    set lives in ``test_public_status_exact_key_set_and_no_pii`` (AC-90-104).
+    What must never appear survives here unchanged: no full submitter name, no
+    raw ids, no ``product``/``draftId`` literal keys."""
     s = setup
     token = "tok_" + "b" * 20
     _make_captured_idea(s["factory"], s["product_id"], status_token=token, idea_number="IDEA-0002")
@@ -167,8 +193,7 @@ def test_ac_1601_no_auth_header_required(setup):
     assert res.status_code == 200, res.text
     body = res.json()
     for forbidden_key in (
-        "problem", "solution", "impact", "department", "submitter",
-        "submitterName", "product", "productId", "id", "draftId",
+        "solution", "submitter", "submitterName", "product", "productId", "id", "draftId",
     ):
         assert forbidden_key not in body
 
@@ -370,6 +395,438 @@ def test_ac_1604_is_test_idea_still_gets_token_and_link(setup, monkeypatch):
 
     res = s["client"].get(f"/public/ideas/{token}")
     assert res.status_code == 200, res.text
+
+
+# ── issue #90 - the public idea page grows into a real status page ───────────
+# W1: AC-90-101..109. The owner's #90 ruling widens the public contract from
+# {title,status,ideaNumber} to a full page (product name, problem/solution/
+# impact/department, submitter first name, votes, a status timeline, "what
+# happens next" copy) - superseding the AC-1601 3-key pin above (rewritten,
+# not deleted).
+
+
+def _full_fork_idea_statuses(factory, tenant_id: str):
+    """A COMPLETE tenant fork of the Idea status set (every ``IDEA_STATUS_SEED``
+    row, same key/label/color/sort_order/flags) - unlike
+    ``test_ideation_intake_contract._fork_idea_statuses_partial`` (deliberately
+    partial), this fork is used to prove the public timeline follows
+    ``sort_order`` from the DB, never a hardcoded key order (AC-90-102), so it
+    must carry every row. Returns ``{key: status_id}``."""
+    import uuid as _uuid
+
+    from app.models.status import Status
+    from modules.ideation.services.statuses import IDEA_ENTITY, IDEA_STATUS_SEED
+
+    db = factory()
+    try:
+        id_map = {}
+        for key, label, color, sort_order, flags in IDEA_STATUS_SEED:
+            row = Status(
+                id=str(_uuid.uuid4()),
+                entity_type=IDEA_ENTITY,
+                key=key,
+                category=key.upper(),
+                label=label,
+                color=color,
+                sort_order=sort_order,
+                tenant_id=tenant_id,
+                is_system=True,
+                **flags,
+            )
+            db.add(row)
+            id_map[key] = row.id
+        db.commit()
+        return id_map
+    finally:
+        db.close()
+
+
+def _swap_sort_order(factory, status_id_a: str, status_id_b: str) -> None:
+    from app.models.status import Status
+
+    db = factory()
+    try:
+        a = db.query(Status).filter(Status.id == status_id_a).first()
+        b = db.query(Status).filter(Status.id == status_id_b).first()
+        a.sort_order, b.sort_order = b.sort_order, a.sort_order
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_public_status_returns_page_fields(setup):
+    """AC-90-101: every new page field the #90 ruling adds, with real values -
+    productName (the idea's core Product), statusColor, the detail sections,
+    submitterFirstName, submittedAt, upvotes, nextStep, and a non-empty
+    timeline."""
+    s = setup
+    token = "tok90_" + "a" * 18
+    _make_captured_idea(
+        s["factory"],
+        s["product_id"],
+        title="Show promo price in red on price tags",
+        idea_number="IDEA-0500",
+        status_token=token,
+        problem="Promo price is not visible in-store",
+        proposed_solution="Print it in red on the price tag",
+        impact="Fewer missed promotions at checkout",
+        department="Merchandising",
+        upvotes=7,
+        submitter_name="Jayson Teh",
+    )
+    res = s["client"].get(f"/public/ideas/{token}")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["title"] == "Show promo price in red on price tags"
+    assert body["ideaNumber"] == "IDEA-0500"
+    assert body["status"] == "New"
+    assert body["statusColor"] == "blue"  # IDEA_STATUS_SEED "captured" color
+    assert body["productName"] == "Sorento CRM"
+    assert body["problem"] == "Promo price is not visible in-store"
+    assert body["proposedSolution"] == "Print it in red on the price tag"
+    assert body["impact"] == "Fewer missed promotions at checkout"
+    assert body["department"] == "Merchandising"
+    assert body["submitterFirstName"] == "Jayson"
+    assert body["submittedAt"] is not None
+    assert body["upvotes"] == 7
+    assert isinstance(body["nextStep"], str) and body["nextStep"]
+    assert isinstance(body["timeline"], list) and len(body["timeline"]) > 0
+    for step in body["timeline"]:
+        assert set(step.keys()) == {"label", "color", "state"}
+        assert step["state"] in ("done", "current", "upcoming")
+
+
+def test_public_timeline_order_and_states(setup):
+    """AC-90-102: the platform set's 5 main-path steps (captured/triaged/
+    linked/building/delivered), ordered by ``sort_order``; the states around
+    ``triaged`` are done/current/upcoming. Then a tenant fork with two
+    swapped ``sort_order`` values proves the ordering is read from the DB, not
+    a hardcoded key sequence."""
+    s = setup
+    token = "tok90_" + "b" * 18
+    _make_captured_idea(
+        s["factory"], s["product_id"], idea_number="IDEA-0501", status_token=token,
+        status_key="triaged",
+    )
+    res = s["client"].get(f"/public/ideas/{token}")
+    assert res.status_code == 200, res.text
+    timeline = res.json()["timeline"]
+    labels = [step["label"] for step in timeline]
+    assert labels == ["New", "Triaged", "Linked to BR", "Building", "Delivered"]
+    states = {step["label"]: step["state"] for step in timeline}
+    assert states["New"] == "done"
+    assert states["Triaged"] == "current"
+    assert states["Linked to BR"] == "upcoming"
+    assert states["Building"] == "upcoming"
+    assert states["Delivered"] == "upcoming"
+
+    # A tenant fork with "linked" and "building" sort_order swapped: the idea
+    # sits on "building" - the timeline must reorder around the swap, proving
+    # sort_order (not the fixed key sequence) drives the order.
+    from app.models.tenant import Tenant
+
+    db = s["factory"]()
+    try:
+        default_tenant = db.query(Tenant).filter(Tenant.id == DEFAULT_TENANT_ID).first()
+        tenant = Tenant(
+            name="Swapped Order Co", slug="swapped-order-90", status_id=default_tenant.status_id
+        )
+        db.add(tenant)
+        db.commit()
+        tenant_id = tenant.id
+    finally:
+        db.close()
+    status_ids = _full_fork_idea_statuses(s["factory"], tenant_id)
+    _swap_sort_order(s["factory"], status_ids["linked"], status_ids["building"])
+
+    from modules.ideation.models import Idea
+    from app.models.catalog import Product
+
+    db = s["factory"]()
+    try:
+        product = Product(tenant_id=tenant_id, name="Forked Product", kind="software")
+        db.add(product)
+        db.flush()
+        token2 = "tok90_" + "c" * 18
+        idea = Idea(
+            tenant_id=tenant_id,
+            product_id=product.id,
+            status_id=status_ids["building"],
+            problem="a forked-tenant idea",
+            idea_number="IDEA-F500",
+            status_token=token2,
+            captured_json={"problem": "a forked-tenant idea"},
+        )
+        db.add(idea)
+        db.commit()
+    finally:
+        db.close()
+
+    res2 = s["client"].get(f"/public/ideas/{token2}")
+    assert res2.status_code == 200, res2.text
+    timeline2 = res2.json()["timeline"]
+    labels2 = [step["label"] for step in timeline2]
+    # "linked" now sorts AFTER "building" (swapped), so the order is
+    # New, Triaged, Building, Linked to BR, Delivered.
+    assert labels2 == ["New", "Triaged", "Building", "Linked to BR", "Delivered"]
+    states2 = {step["label"]: step["state"] for step in timeline2}
+    assert states2["Building"] == "current"
+    assert states2["Linked to BR"] == "upcoming"
+
+
+def test_public_timeline_off_ramp(setup):
+    """AC-90-103: an off-ramp status (Rejected, ``is_archived``) is not on the
+    main path - the timeline is truthfully short: [first main-path step
+    (New) done, Rejected current] - never a fabricated position among steps
+    the idea never actually passed."""
+    s = setup
+    token = "tok90_" + "d" * 18
+    _make_captured_idea(
+        s["factory"], s["product_id"], idea_number="IDEA-0502", status_token=token,
+        status_key="rejected",
+    )
+    res = s["client"].get(f"/public/ideas/{token}")
+    assert res.status_code == 200, res.text
+    timeline = res.json()["timeline"]
+    assert [(step["label"], step["state"]) for step in timeline] == [
+        ("New", "done"),
+        ("Rejected", "current"),
+    ]
+
+
+def test_public_status_exact_key_set_and_no_pii(setup):
+    """AC-90-104: the widened contract's EXACT key set (rewrite of the old
+    3-key AC-1601 pin) - a future field cannot leak silently - and no PII
+    beyond a first name ever appears in the body (no phone/email substrings)."""
+    s = setup
+    token = "tok90_" + "e" * 18
+    _make_captured_idea(
+        s["factory"],
+        s["product_id"],
+        idea_number="IDEA-0503",
+        status_token=token,
+        submitter_name="Priya Nair",
+        proposed_solution="Do the thing",
+        impact="Saves time",
+        department="Ops",
+    )
+    res = s["client"].get(f"/public/ideas/{token}")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert set(body.keys()) == {
+        "title", "status", "ideaNumber", "statusColor", "productName",
+        "problem", "proposedSolution", "impact", "department",
+        "submitterFirstName", "submittedAt", "upvotes", "nextStep", "timeline",
+    }
+    for forbidden_key in (
+        "id", "productId", "tenantId", "statusId", "key", "submitterContactId",
+        "phone", "email", "lastName", "submitterName", "submitterTier",
+        "rawText", "capturedJson", "intakeState", "attachments", "downvotes",
+        "priority", "isTest", "statusToken", "draftId", "submitter", "product",
+    ):
+        assert forbidden_key not in body
+    raw = res.text
+    assert "@" not in raw
+    assert "Nair" not in raw  # last name never leaks
+    assert "Priya" in raw  # first name is the one allowed PII
+
+
+def test_first_name_only(setup):
+    """AC-90-105: an operator-authored idea's ``submitter_name`` ("Jayson
+    Teh") surfaces only the FIRST token."""
+    s = setup
+    token = "tok90_" + "f" * 18
+    _make_captured_idea(
+        s["factory"], s["product_id"], idea_number="IDEA-0504", status_token=token,
+        submitter_name="Jayson Teh",
+    )
+    res = s["client"].get(f"/public/ideas/{token}")
+    assert res.status_code == 200, res.text
+    assert res.json()["submitterFirstName"] == "Jayson"
+
+
+def test_first_name_never_a_phone(setup):
+    """AC-90-106 (security-critical): intake's find-or-create writes
+    ``first_name=phone`` for every new WhatsApp contact
+    (``services/intake.py``) - an idea whose submitter resolves to such a
+    contact must publish NO name at all, never the phone number."""
+    from modules.omnichannel.models import Contact, Workspace
+
+    s = setup
+    db = s["factory"]()
+    try:
+        ws = (
+            db.query(Workspace)
+            .filter(Workspace.tenant_id == DEFAULT_TENANT_ID, Workspace.is_default.is_(True))
+            .first()
+        )
+        assert ws is not None, "omnichannel default workspace not seeded"
+        contact = Contact(
+            tenant_id=DEFAULT_TENANT_ID,
+            workspace_id=ws.id,
+            first_name="+60123456789",
+            phone="+60123456789",
+        )
+        db.add(contact)
+        db.commit()
+        contact_id = contact.id
+    finally:
+        db.close()
+
+    token = "tok90_" + "g" * 18
+    _make_captured_idea(
+        s["factory"], s["product_id"], idea_number="IDEA-0505", status_token=token,
+        submitter_contact_id=contact_id,
+    )
+    res = s["client"].get(f"/public/ideas/{token}")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["submitterFirstName"] is None
+    assert "+60123456789" not in res.text
+
+
+def test_product_and_contact_lookups_tenant_scoped(setup):
+    """AC-90-107 (polymorphic stored-id rule): an idea whose ``product_id``/
+    ``submitter_contact_id`` point at rows OWNED BY ANOTHER TENANT (never
+    happens in the real flow, but every stored id must resolve tenant-scoped
+    defensively) must resolve neither - null, never the other tenant's data."""
+    from app.models.catalog import Product
+    from app.models.tenant import Tenant
+    from modules.omnichannel.models import Contact, Workspace
+
+    s = setup
+    db = s["factory"]()
+    try:
+        default_tenant = db.query(Tenant).filter(Tenant.id == DEFAULT_TENANT_ID).first()
+        other = Tenant(
+            name="Other Co", slug="other-ideation-90", status_id=default_tenant.status_id
+        )
+        db.add(other)
+        db.flush()
+        other_product = Product(tenant_id=other.id, name="Other Tenant Product", kind="software")
+        db.add(other_product)
+        ws = Workspace(tenant_id=other.id, name="Other WS", is_default=True)
+        db.add(ws)
+        db.flush()
+        other_contact = Contact(
+            tenant_id=other.id, workspace_id=ws.id, first_name="Alice", phone="+60199999999"
+        )
+        db.add(other_contact)
+        db.flush()
+        other_product_id = other_product.id
+        other_contact_id = other_contact.id
+        db.commit()
+    finally:
+        db.close()
+
+    token = "tok90_" + "h" * 18
+    from modules.ideation.models import Idea
+    from modules.ideation.services.statuses import idea_status_id
+
+    db = s["factory"]()
+    try:
+        idea = Idea(
+            tenant_id=DEFAULT_TENANT_ID,
+            product_id=other_product_id,  # cross-tenant polymorphic ref
+            status_id=idea_status_id(db, "captured", DEFAULT_TENANT_ID),
+            problem="cross tenant scoping check",
+            idea_number="IDEA-0506",
+            status_token=token,
+            submitter_contact_id=other_contact_id,  # cross-tenant polymorphic ref
+            captured_json={"problem": "cross tenant scoping check"},
+        )
+        db.add(idea)
+        db.commit()
+    finally:
+        db.close()
+
+    res = s["client"].get(f"/public/ideas/{token}")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["productName"] is None
+    assert body["submitterFirstName"] is None
+    assert "Other Tenant Product" not in res.text
+    assert "Alice" not in res.text
+
+
+def test_next_step_copy_and_fallback(setup):
+    """AC-90-108: a known platform status key gets its authored copy; a
+    tenant-added key unknown to ``PUBLIC_NEXT_STEP`` falls back on trait
+    flags (``is_terminal``/``is_archived`` -> "This idea is closed.")."""
+    s = setup
+    token = "tok90_" + "i" * 18
+    _make_captured_idea(
+        s["factory"], s["product_id"], idea_number="IDEA-0507", status_token=token,
+        status_key="captured",
+    )
+    res = s["client"].get(f"/public/ideas/{token}")
+    assert res.status_code == 200, res.text
+    assert res.json()["nextStep"] == "Your idea is in. The team will review it soon."
+
+    # A tenant-added terminal status with a key PUBLIC_NEXT_STEP has never
+    # heard of.
+    from app.models.catalog import Product
+    from app.models.status import Status
+    from app.models.tenant import Tenant
+    from modules.ideation.models import Idea
+    from modules.ideation.services.statuses import IDEA_ENTITY
+
+    db = s["factory"]()
+    try:
+        default_tenant = db.query(Tenant).filter(Tenant.id == DEFAULT_TENANT_ID).first()
+        tenant = Tenant(
+            name="Custom Status Co", slug="custom-status-90", status_id=default_tenant.status_id
+        )
+        db.add(tenant)
+        db.flush()
+        custom_status = Status(
+            id="idea-status-custom-90",
+            entity_type=IDEA_ENTITY,
+            key="on_hold_custom",
+            category="ON_HOLD_CUSTOM",
+            label="On hold",
+            color="gray",
+            sort_order=1,
+            tenant_id=tenant.id,
+            is_system=False,
+            is_terminal=True,
+            is_archived=True,
+        )
+        db.add(custom_status)
+        product = Product(tenant_id=tenant.id, name="Custom Status Product", kind="software")
+        db.add(product)
+        db.flush()
+        token2 = "tok90_" + "j" * 18
+        idea = Idea(
+            tenant_id=tenant.id,
+            product_id=product.id,
+            status_id=custom_status.id,
+            problem="an idea on a tenant-only status",
+            idea_number="IDEA-F507",
+            status_token=token2,
+            captured_json={"problem": "an idea on a tenant-only status"},
+        )
+        db.add(idea)
+        db.commit()
+    finally:
+        db.close()
+
+    res2 = s["client"].get(f"/public/ideas/{token2}")
+    assert res2.status_code == 200, res2.text
+    assert res2.json()["nextStep"] == "This idea is closed."
+
+
+def test_public_status_no_store_header(setup):
+    """AC-90-109: richer content (problem/solution/impact/department) must
+    never sit in a shared cache - ``Cache-Control: no-store`` on the 200."""
+    s = setup
+    token = "tok90_" + "k" * 18
+    _make_captured_idea(
+        s["factory"], s["product_id"], idea_number="IDEA-0508", status_token=token
+    )
+    res = s["client"].get(f"/public/ideas/{token}")
+    assert res.status_code == 200, res.text
+    assert res.headers.get("cache-control") == "no-store"
 
 
 # ── Review round 1, blocking #2 - layering + tenant signin_allowed ───────────

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { render, renderHook, screen } from '@testing-library/react';
 import type { ListQuery } from '@/types/resource';
 import type { BusinessRequirement } from '@/types/business-requirement';
 import { useBrListConfig } from './use-br-list-config';
@@ -61,5 +61,28 @@ describe('useBrListConfig', () => {
     const del = cfg.actions.find((a) => a.id === 'delete');
     expect(del).toBeTruthy();
     expect(del?.surfaces).toMatchObject({ row: true, form: true, bulk: true });
+  });
+});
+
+// ── issue #90 W3 - TEST badge on a test Business Requirement ──────────────────
+
+describe('useBrListConfig - AC-90-310 title column TEST badge', () => {
+  it('renders the TEST badge for an isTest row', () => {
+    const cfg = config([br({ isTest: true } as Partial<BusinessRequirement>)]);
+    const column = cfg.columns.find((c) => c.id === 'title')!;
+    const cell = column.cell as (ctx: unknown) => React.ReactNode;
+    render(
+      <>{cell({ row: { original: br({ isTest: true } as Partial<BusinessRequirement>) } })}</>,
+    );
+    expect(screen.getByText('TEST')).toBeInTheDocument();
+    expect(screen.getByText('Order export')).toBeInTheDocument();
+  });
+
+  it('does not render the TEST badge for a real row', () => {
+    const cfg = config([br()]);
+    const column = cfg.columns.find((c) => c.id === 'title')!;
+    const cell = column.cell as (ctx: unknown) => React.ReactNode;
+    render(<>{cell({ row: { original: br() } })}</>);
+    expect(screen.queryByText('TEST')).not.toBeInTheDocument();
   });
 });
