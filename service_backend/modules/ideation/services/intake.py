@@ -423,12 +423,34 @@ class IntakeService:
         One vote row per ``(idea, voter)`` (UNIQUE) makes it idempotent - a repeat
         duplicate from the same submitter does not double-count; distinct
         submitters each add a vote. Tallies are recomputed from ``idea_votes`` (the
-        source of truth). No submitter id ⇒ nothing to attribute a vote to."""
+        source of truth, via the shared ``IdeaActionService._recount``). No
+        submitter id ⇒ nothing to attribute a vote to.
+
+        Issue #94 (plan section 3.2 guards): a stored candidate id can have
+        been MERGED since it was offered (``pending_candidate``/
+        ``voted_for``, a polymorphic stored id) - resolve it to its survivor
+        FIRST, tenant-scoped, so the vote lands on the live idea rather than
+        a frozen child (AC-94-11)."""
         if not submitter_contact_id:
             return
+        target = (
+            self.db.query(Idea)
+            .filter(Idea.id == idea_id, Idea.tenant_id == tenant_id)
+            .first()
+        )
+        if target is None:
+            return
+        if target.merged_into_id:
+            idea_id = target.merged_into_id
+            target = (
+                self.db.query(Idea)
+                .filter(Idea.id == idea_id, Idea.tenant_id == tenant_id)
+                .first()
+            )
+            if target is None:
+                return
         # Tenant-scoped throughout (review round 1, blocking #3) - the vote
-        # insert, the tally query, and the idea row it recomputes onto all
-        # filter on ``tenant_id`` too, never id-alone.
+        # insert filters on ``tenant_id`` too, never id-alone.
         exists = (
             self.db.query(IdeaVote)
             .filter(
@@ -448,20 +470,10 @@ class IntakeService:
                 )
             )
             self.db.flush()
-        rows = (
-            self.db.query(IdeaVote)
-            .filter(IdeaVote.idea_id == idea_id, IdeaVote.tenant_id == tenant_id)
-            .all()
-        )
-        existing = (
-            self.db.query(Idea)
-            .filter(Idea.id == idea_id, Idea.tenant_id == tenant_id)
-            .first()
-        )
-        if existing is not None:
-            existing.upvotes = sum(1 for r in rows if r.dir == "up")
-            existing.downvotes = sum(1 for r in rows if r.dir == "down")
-            self.db.flush()
+        from .actions import IdeaActionService
+
+        IdeaActionService(self.db)._recount(target)
+        self.db.flush()
 
     def _resolve_submitter(
         self, tenant_id: str, submitter_contact_id: Optional[str]

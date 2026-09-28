@@ -1,7 +1,8 @@
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Idea } from '@/types/ideation';
+import type { BoardColumn, Idea } from '@/types/ideation';
 import type { UseIdeas } from '@/hooks/use-ideas';
+import { canMoveTo } from './triage-board';
 import BoardPage from './page';
 
 const useIdeas = vi.hoisted(() => vi.fn());
@@ -38,14 +39,37 @@ const anIdea = (over: Partial<Idea> = {}): Idea => ({
   attachments: [],
   createdAt: '2026-07-18T00:00:00Z',
   isTest: false,
+  statusId: 'idea-status-captured',
+  statusLabel: 'New',
+  statusColor: 'blue',
+  statusIsArchived: false,
+  transitions: [
+    { id: 'idea-tr-1', label: 'Triage', toStatusId: 'idea-status-triaged', toStatusLabel: 'Triaged' },
+  ],
+  advanceTransitionId: 'idea-tr-1',
+  rank: 1,
+  mergedIntoId: null,
+  mergedInto: null,
+  mergedCount: 0,
   ...over,
 });
+
+// AC-94-54/58 (issue #94, ideation round 2) - columns come from the API
+// (`GET /board`), never a hardcoded frontend column list.
+const COLUMNS: BoardColumn[] = [
+  { statusId: 'idea-status-captured', key: 'captured', title: 'New', color: 'blue', ideas: [] },
+  { statusId: 'idea-status-triaged', key: 'triaged', title: 'Triaged', color: 'amber', ideas: [] },
+  { statusId: 'idea-status-linked', key: 'linked', title: 'Linked to BR', color: 'violet', ideas: [] },
+  { statusId: 'idea-status-building', key: 'building', title: 'Building', color: 'indigo', ideas: [] },
+  { statusId: 'idea-status-delivered', key: 'delivered', title: 'Delivered', color: 'emerald', ideas: [] },
+];
 
 const base: UseIdeas = {
   ideas: [],
   products: [],
   loading: false,
   error: null,
+  columns: COLUMNS,
   includeTest: false,
   setIncludeTest: vi.fn(),
   reload: vi.fn(),
@@ -81,7 +105,13 @@ describe('IdeationBoardPage', () => {
   });
 
   it('renders an idea card in its lifecycle column (data state)', () => {
-    useIdeas.mockReturnValue({ ...base, ideas: [anIdea(), anIdea({ id: 'idea-2', status: 'triaged', problem: 'Bulk approve' })] });
+    useIdeas.mockReturnValue({
+      ...base,
+      ideas: [
+        anIdea(),
+        anIdea({ id: 'idea-2', status: 'triaged', statusId: 'idea-status-triaged', problem: 'Bulk approve' }),
+      ],
+    });
     render(<BoardPage />);
     expect(screen.getByText('Export orders to Excel')).toBeInTheDocument();
     expect(screen.getByText('Bulk approve')).toBeInTheDocument();
@@ -123,5 +153,31 @@ describe('IdeationBoardPage', () => {
     });
     render(<BoardPage />);
     expect(screen.getByText(/dealer/i)).toBeInTheDocument();
+  });
+
+  // ── AC-94-58 (issue #94, ideation round 2) ──────────────────────────────────
+
+  it('columns from API - a tenant rename shows up with zero code change (never a hardcoded frontend column list)', () => {
+    const renamed: BoardColumn[] = [
+      { statusId: 'idea-status-captured', key: 'captured', title: 'New', color: 'blue', ideas: [] },
+      { statusId: 'idea-status-triaged', key: 'triaged', title: 'Discussed', color: 'amber', ideas: [] },
+    ];
+    useIdeas.mockReturnValue({ ...base, columns: renamed, ideas: [] });
+    render(<BoardPage />);
+    expect(screen.getByText('Discussed')).toBeInTheDocument();
+    expect(screen.queryByText('Triaged')).not.toBeInTheDocument();
+  });
+
+  it('invalid drop refused - a card can only move to a column its OWN transitions reach', () => {
+    const idea = anIdea({
+      transitions: [
+        { id: 'idea-tr-1', label: 'Triage', toStatusId: 'idea-status-triaged', toStatusLabel: 'Triaged' },
+      ],
+    });
+    // The card's transitions reach "triaged" - not "building" (skipping
+    // stages is never offered, foolproof-UI).
+    expect(canMoveTo(idea, 'idea-status-triaged')).toBe(true);
+    expect(canMoveTo(idea, 'idea-status-building')).toBe(false);
+    expect(canMoveTo(undefined, 'idea-status-triaged')).toBe(false);
   });
 });

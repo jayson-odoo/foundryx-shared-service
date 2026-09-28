@@ -21,6 +21,7 @@ from ..schemas import (
     IdeaCreateIn,
     IdeaOut,
     IdeaUpdateIn,
+    MergeIn,
     ReorderIn,
     StatusIn,
     VoteIn,
@@ -29,6 +30,7 @@ from ..services.actions import IdeaActionService
 from ..services.business_requirements import BusinessRequirementService
 from ..services.clustering import ClusteringService
 from ..services.ideas import IdeaReadService
+from ..services.merge import IdeaMergeService
 
 router = APIRouter()
 
@@ -56,6 +58,7 @@ def list_ideas(
         product_id=product_id,
         voter_id=current_user.id,
         include_test=include_test,
+        actor=current_user,
     )
 
 
@@ -104,6 +107,7 @@ def get_board(
         voter_id=current_user.id,
         product_id=product_id,
         include_test=include_test,
+        actor=current_user,
     )
 
 
@@ -115,7 +119,25 @@ def reorder_ideas(
 ) -> List[IdeaOut]:
     """Set manual priority from the given id order (index = priority, top first)."""
     return IdeaActionService(db).reorder(
-        current_user.tenant_id, body.orderedIds, voter_id=current_user.id
+        current_user.tenant_id,
+        body.orderedIds,
+        voter_id=current_user.id,
+        actor=current_user,
+    )
+
+
+@router.post("/merge", response_model=IdeaOut)
+def merge_ideas(
+    body: MergeIn,
+    current_user: User = Depends(require_permission("ideation.triage.manage")),
+    db: Session = Depends(get_db),
+) -> IdeaOut:
+    """Collapse ``ideaIds`` onto ``survivorId`` (issue #94, AC-94-01). All-or-
+    nothing - a rejected selection (mixed product/lane, archived, already
+    merged, fewer than 2, an id outside the tenant) writes nothing (422/404).
+    Reuses ``ideation.triage.manage`` (D7, no new permission)."""
+    return IdeaMergeService(db).merge(
+        current_user.tenant_id, body.survivorId, body.ideaIds, actor=current_user
     )
 
 
@@ -144,7 +166,7 @@ def get_idea(
     """One idea by id - every section present (attachments empty-state), submitter
     human-readable (never a raw UUID). 404 if not found in the tenant."""
     return IdeaReadService(db).get(
-        current_user.tenant_id, idea_id, voter_id=current_user.id
+        current_user.tenant_id, idea_id, voter_id=current_user.id, actor=current_user
     )
 
 
@@ -188,6 +210,30 @@ def update_idea(
     )
 
 
+@router.get("/{idea_id}/merged", response_model=List[IdeaOut])
+def list_merged_ideas(
+    idea_id: str,
+    current_user: User = Depends(require_permission("ideation.ideas.view")),
+    db: Session = Depends(get_db),
+) -> List[IdeaOut]:
+    """The ideas merged into this one (AC-94-03), oldest merge first - the
+    "Merged from" tab's data source."""
+    return IdeaReadService(db).merged_children(
+        current_user.tenant_id, idea_id, voter_id=current_user.id, actor=current_user
+    )
+
+
+@router.post("/{idea_id}/unmerge", response_model=List[IdeaOut])
+def unmerge_idea(
+    idea_id: str,
+    current_user: User = Depends(require_permission("ideation.triage.manage")),
+    db: Session = Depends(get_db),
+) -> List[IdeaOut]:
+    """Restore a merged child (AC-94-07), or dissolve a survivor's whole
+    group (AC-94-08); 422 for an idea that is neither."""
+    return IdeaMergeService(db).unmerge(current_user.tenant_id, idea_id, actor=current_user)
+
+
 @router.post("/{idea_id}/vote", response_model=IdeaOut)
 def vote_idea(
     idea_id: str,
@@ -209,14 +255,16 @@ def set_idea_status(
     current_user: User = Depends(require_permission("ideation.triage.manage")),
     db: Session = Depends(get_db),
 ) -> IdeaOut:
-    """Move the idea to a lifecycle status by key (advance / archive / restore).
-    Server-authoritative - illegal moves are refused (409)."""
+    """Move the idea to a lifecycle status - by KEY (advance / archive / restore,
+    kept for the deferred Archive handler) or by status-engine ``toStatusId``
+    (issue #94). Server-authoritative - illegal moves are refused (409)."""
     return IdeaActionService(db).set_status(
         current_user.tenant_id,
         idea_id,
         body.status,
         actor=current_user,
         voter_id=current_user.id,
+        to_status_id=body.toStatusId,
     )
 
 

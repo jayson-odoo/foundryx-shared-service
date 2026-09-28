@@ -9,7 +9,7 @@ envelope, null where not applicable (AC-1116), never an omitted key)."""
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.schemas.base import ApiModel
 
@@ -26,16 +26,55 @@ class IdeaAttachmentOut(ApiModel):
     durationSec: Optional[int] = None
 
 
+class TransitionOut(ApiModel):
+    """One fireable status-engine edge FROM the record's current status (plan
+    section 6, issue #94) - drives the "Advance" / "Move to X" action buttons.
+    Never branch on ``category`` or a hardcoded key - ``id`` is the edge to
+    fire (``POST /{id}/status {toStatusId}``), ``toStatusLabel`` is the
+    tenant-editable display label of the target status."""
+
+    id: str
+    label: str
+    toStatusId: str
+    toStatusLabel: str
+
+
+class IdeaMergedIntoOut(ApiModel):
+    """The survivor a merged child now points at (issue #94, plan section 3.3) -
+    ``id`` for navigation, ``ideaNumber``/``title`` for display. ``None`` on
+    ``IdeaOut.mergedInto`` for an idea that is not a merged child."""
+
+    id: str
+    ideaNumber: Optional[str] = None
+    title: Optional[str] = None
+
+
 class IdeaOut(ApiModel):
     """One Idea, matching the FE ``Idea`` shape (types/ideation.ts). ``status`` is
     the lifecycle KEY (e.g. ``captured``); ``productName``/``submitterName`` are
     human-readable (never a raw UUID - cursor rule). ``downvotes``/``myVote`` are
-    surfaced for the FE contract but Phase A tracks upvotes only (D10)."""
+    surfaced for the FE contract but Phase A tracks upvotes only (D10).
+
+    ``statusId``/``statusLabel``/``statusColor``/``statusIsArchived`` (issue
+    #94, plan section 6) come from the status-engine row - never hardcoded,
+    so a tenant rename flows straight through. ``transitions`` is the
+    record's own fireable-edge set (per-record - rule-blocked edges hide);
+    ``advanceTransitionId`` is the transition (if any) whose target is the
+    next status by tenant-editable ``sort_order``, for the single "Advance"
+    action. ``rank`` (plan section 5) is the 1-based position among this
+    idea's ACTIVE, non-merged lane-mates in the caller's scope - ``None`` for
+    an archived or merged idea."""
 
     id: str
     productId: str
     productName: str
     status: str
+    statusId: str
+    statusLabel: str
+    statusColor: str
+    statusIsArchived: bool = False
+    transitions: List[TransitionOut] = []
+    advanceTransitionId: Optional[str] = None
     # A short (1-8 word) headline (S1, AC-1105/1106) - null for a pre-lane
     # idea or a draft that never sent one; the FE falls back to ``problem``.
     title: Optional[str] = None
@@ -52,6 +91,9 @@ class IdeaOut(ApiModel):
     downvotes: int = 0
     myVote: Optional[Literal["up", "down"]] = None
     priority: int
+    # 1-based position in the caller's rank lane (issue #94, plan section 5) -
+    # ``None`` for an archived idea or a merged child (not ranked).
+    rank: Optional[int] = None
     attachments: List[IdeaAttachmentOut] = []
     createdAt: datetime
     # The formatted sequential idea number (S1/S5) - null until captured.
@@ -61,14 +103,24 @@ class IdeaOut(ApiModel):
     # A console/``--say`` test turn (issue #1179) - false for every real capture.
     # Excluded from list/board by default (``includeTest`` opts in).
     isTest: bool = False
+    # Merge/unmerge (issue #94, plan section 3.3). ``mergedIntoId``/``mergedInto``
+    # are set ONLY on a merged child (never on a survivor); ``mergedCount`` is
+    # the number of children merged into THIS idea (0 for a plain idea or a
+    # child - a child holds no children of its own, D2 single-level).
+    mergedIntoId: Optional[str] = None
+    mergedInto: Optional[IdeaMergedIntoOut] = None
+    mergedCount: int = 0
 
 
 class BoardColumnOut(ApiModel):
-    """One triage-board column - a lifecycle status + the ideas parked in it.
+    """One triage-board column - a status-engine row (issue #94, plan section
+    6: never the old hardcoded ``BOARD_COLUMNS``) + the ideas parked in it.
     ``ideas`` are ordered by priority ascending (top = highest priority)."""
 
+    statusId: str
     key: str
     title: str
+    color: str
     ideas: List[IdeaOut] = []
 
 
@@ -108,11 +160,31 @@ class ReorderIn(ApiModel):
     orderedIds: List[str]
 
 
-class StatusIn(ApiModel):
-    """Move an idea to a lifecycle status by KEY (e.g. ``triaged``, ``archived``,
-    ``captured``). Server-authoritative - an illegal move is refused."""
+class MergeIn(ApiModel):
+    """Collapse ``ideaIds`` onto ``survivorId`` (issue #94, plan section 3.2/3.3).
+    ``survivorId`` MUST be one of ``ideaIds`` (422 otherwise) - the caller
+    always names the survivor explicitly, never an implicit default (D8)."""
 
-    status: str
+    survivorId: str
+    ideaIds: List[str]
+
+
+class StatusIn(ApiModel):
+    """Move an idea to a lifecycle status - exactly ONE of ``status`` (the
+    lifecycle KEY, e.g. ``triaged``/``archived``/``captured`` - kept for the
+    deferred Archive handler) or ``toStatusId`` (the status-engine row id,
+    issue #94 plan section 6: never a hardcoded key). Server-authoritative -
+    an illegal move is refused (409); a target outside the idea entity/tier
+    is refused (422)."""
+
+    status: Optional[str] = None
+    toStatusId: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> "StatusIn":
+        if (self.status is None) == (self.toStatusId is None):
+            raise ValueError("Provide exactly one of status or toStatusId.")
+        return self
 
 
 class IdeaCreateIn(ApiModel):
@@ -399,6 +471,15 @@ class PublicIdeaTimelineStepOut(ApiModel):
     state: Literal["done", "current", "upcoming"]
 
 
+class PublicMergedIntoOut(ApiModel):
+    """The survivor named on a merged child's public page (AC-94-13/14) - no
+    id (the public page never surfaces a raw id), no submitter (never the
+    survivor's - AC-94-14)."""
+
+    ideaNumber: Optional[str] = None
+    title: Optional[str] = None
+
+
 class PublicIdeaStatusOut(ApiModel):
     """The public idea-status page contract - GET /public/ideas/{token}, no
     auth. Issue #90 widens this from the original 3-key contract
@@ -407,7 +488,12 @@ class PublicIdeaStatusOut(ApiModel):
     field cannot leak silently. ``status`` stays the status LABEL (e.g.
     ``New``), never the lifecycle key. No id, no tenant id, no last name, no
     phone/email, no raw transcript - see the router/service docstrings for
-    the full forbidden-field rationale."""
+    the full forbidden-field rationale.
+
+    ``mergedInto`` (issue #94, AC-94-13/14) - set only when this idea is a
+    merged child; ``status``/``statusColor``/``nextStep``/``timeline``/
+    ``upvotes`` are then the SURVIVOR's, while every content field above
+    stays this idea's own (plan section 3.4)."""
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 
@@ -425,3 +511,4 @@ class PublicIdeaStatusOut(ApiModel):
     upvotes: int = 0
     nextStep: str
     timeline: List[PublicIdeaTimelineStepOut] = Field(default_factory=list)
+    mergedInto: Optional[PublicMergedIntoOut] = None

@@ -144,7 +144,7 @@ class DedupService:
             f'SELECT id, similarity(lower(problem), :needle) AS sim '
             f'FROM "{IDEATION_SCHEMA}".ideas '
             "WHERE tenant_id = :tenant AND product_id = :product "
-            "AND is_test = :is_test "
+            "AND is_test = :is_test AND merged_into_id IS NULL "
             f"{exclude_clause}"
             f"{dead_clause}"
             "AND similarity(lower(problem), :needle) >= :threshold "
@@ -182,6 +182,7 @@ class DedupService:
                 Idea.tenant_id == tenant_id,
                 Idea.product_id == product_id,
                 Idea.is_test.is_(is_test),
+                Idea.merged_into_id.is_(None),
             )
         )
         if excludes:

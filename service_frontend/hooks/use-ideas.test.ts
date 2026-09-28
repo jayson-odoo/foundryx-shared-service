@@ -110,7 +110,7 @@ describe('useIdeas', () => {
     const { result } = renderHook(() => useIdeas());
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.includeTest).toBe(false);
-    expect(svc.listIdeas).toHaveBeenCalledWith({ includeTest: false });
+    expect(svc.listIdeas).toHaveBeenCalledWith({ includeTest: false, filter: 'all' });
   });
 
   it('setIncludeTest(true) reloads with includeTest: true', async () => {
@@ -122,7 +122,7 @@ describe('useIdeas', () => {
     });
     await waitFor(() => expect(result.current.includeTest).toBe(true));
     await waitFor(() =>
-      expect(svc.listIdeas).toHaveBeenCalledWith({ includeTest: true }),
+      expect(svc.listIdeas).toHaveBeenCalledWith({ includeTest: true, filter: 'all' }),
     );
   });
 });

@@ -15,38 +15,6 @@ export interface Product {
   productDomainBase?: string | null;
 }
 
-/**
- * Idea lifecycle (program master §3). `captured` = intake complete; the triage
- * board moves it through `triaged → linked → building → delivered`. `duplicate`
- * / `rejected` are terminal off-ramps; `draft` is the mid-capture state (only
- * seen while the WhatsApp collect-loop is still gathering fields).
- */
-export type IdeaStatus =
-  | 'draft'
-  | 'captured'
-  | 'triaged'
-  | 'linked'
-  | 'building'
-  | 'delivered'
-  | 'closed'
-  | 'duplicate'
-  | 'rejected'
-  | 'archived';
-
-/**
- * Lifecycle transitions (prototype stand-in for the shared **status_engine**).
- * Phase 2 replaces this map with the status_engine's per-tenant transition graph
- * (which can offer multiple valid next-states); the UI reads allowed transitions
- * from the engine instead of this constant.
- */
-export const IDEA_NEXT_STATUS: Partial<Record<IdeaStatus, IdeaStatus>> = {
-  captured: 'triaged',
-  triaged: 'linked',
-  linked: 'building',
-  building: 'delivered',
-  delivered: 'closed',
-};
-
 /** How the idea entered the repository (the "channel"). */
 export type IdeaSource = 'whatsapp' | 'voice' | 'manual';
 
@@ -65,12 +33,60 @@ export interface IdeaAttachment {
   durationSec?: number;
 }
 
+/** One transition the caller may fire from an idea's current status (issue
+ * #94, ideation round 2, AC-94-51) - `status_machine.fireable_edge_ids`,
+ * never a hardcoded key. */
+export interface IdeaTransition {
+  id: string;
+  label: string;
+  toStatusId: string;
+  toStatusLabel: string;
+}
+
+/** A minimal reference to another idea (the merge survivor or the pre-merge
+ * kept idea) - never the full record, just enough to link + label (AC-94-26). */
+export interface IdeaRef {
+  id: string;
+  ideaNumber: string | null;
+  title: string | null;
+}
+
 export interface Idea {
   id: string;
   productId: string;
   /** Denormalized for display - the FE never renders the UUID (cursor rule). */
   productName: string;
-  status: IdeaStatus;
+  /** The lifecycle status KEY - display comes from `statusLabel`/`statusColor`
+   * (issue #94, ideation round 2: the statuses engine, never a hardcoded
+   * union - AC-94-55). */
+  status: string;
+  /** The tenant's resolved status row id for `status` (AC-94-49). */
+  statusId?: string;
+  /** Engine-resolved display label for `status` (e.g. "Discussed"). */
+  statusLabel?: string;
+  /** Engine-resolved display color (name or hex - `colorToHex`/`colorToTone`). */
+  statusColor?: string;
+  /** Trait flag - true when `status` is one of the tier's archived statuses
+   * (AC-94-54/60) - never inferred from the key. */
+  statusIsArchived?: boolean;
+  /** The edges fireable from this idea's current status, for THIS caller
+   * (role/condition filtered, `always=True`, AC-94-51). */
+  transitions?: IdeaTransition[];
+  /** Among `transitions`, the one that advances to the next stage by sort
+   * order (AC-94-52) - `null` at a terminal stage, `undefined` before the
+   * backend serializes it. */
+  advanceTransitionId?: string | null;
+  /** 1-based position among the caller-scope's active survivors
+   * (AC-94-41..45) - `null` for archived/merged ideas, `undefined` before the
+   * backend serializes it. NEVER render the raw `priority` instead. */
+  rank?: number | null;
+  /** Set when this idea was merged into another (AC-94-01..09) - `null`/
+   * `undefined` for a plain idea or a survivor. */
+  mergedIntoId?: string | null;
+  /** The survivor this idea was merged into, resolved (AC-94-03). */
+  mergedInto?: IdeaRef | null;
+  /** Count of ideas merged INTO this one (0 for a plain idea or a child). */
+  mergedCount?: number;
   /** A short (1-8 word) headline (S1) - the visible label when set; falls
    * back to `problem` when null (a pre-lane idea, or a draft that never sent
    * one). Optional so existing fixtures/callers need no change. */
@@ -124,33 +140,30 @@ export interface IdeaClusterSuggestions {
   degraded: boolean;
 }
 
-/** Board columns = the triage-relevant statuses, left→right flow. */
-export const IDEA_BOARD_COLUMNS: { key: IdeaStatus; title: string }[] = [
-  { key: 'captured', title: 'New' },
-  { key: 'triaged', title: 'Triaged' },
-  { key: 'linked', title: 'Linked to BR' },
-  { key: 'building', title: 'Building' },
-  { key: 'delivered', title: 'Delivered' },
-];
-
 export const IDEA_SOURCE_LABEL: Record<IdeaSource, string> = {
   whatsapp: 'WhatsApp',
   voice: 'Voice note',
   manual: 'Manual',
 };
 
-export const IDEA_STATUS_LABEL: Record<IdeaStatus, string> = {
-  draft: 'Draft',
-  captured: 'New',
-  triaged: 'Triaged',
-  linked: 'Linked to BR',
-  building: 'Building',
-  delivered: 'Delivered',
-  closed: 'Closed',
-  duplicate: 'Duplicate',
-  rejected: 'Rejected',
-  archived: 'Archived',
-};
+/** One triage-board column - a tenant status (trait-filtered, never a
+ * hardcoded key) + the ideas parked in it, ordered by rank (issue #94,
+ * ideation round 2, AC-94-54/58). */
+export interface BoardColumn {
+  /** The tenant's resolved status row id - the drop target for a drag. */
+  statusId: string;
+  /** The lifecycle status key (stable across a rename). */
+  key: string;
+  /** Engine-resolved display label (e.g. "Discussed"). */
+  title: string;
+  /** Engine-resolved display color. */
+  color: string;
+  ideas: Idea[];
+}
+
+export interface Board {
+  columns: BoardColumn[];
+}
 
 /** One step of the public idea-status timeline (issue #90 W1, AC-90-102/103) -
  * the tenant's status set in order, `state` marking where the idea sits. */
@@ -158,6 +171,14 @@ export interface PublicIdeaTimelineStep {
   label: string;
   color: string;
   state: 'done' | 'current' | 'upcoming';
+}
+
+/** The survivor named on a merged child's public page (issue #94, AC-94-13/14)
+ * - `id`-free (the public page never surfaces a raw id, and never the
+ * survivor's submitter - AC-94-14). */
+export interface PublicMergedInto {
+  ideaNumber: string | null;
+  title: string | null;
 }
 
 /** The public idea-status page contract (GET /public/ideas/{token}), grown from
@@ -168,7 +189,11 @@ export interface PublicIdeaTimelineStep {
  * every status row carries a color). Every OTHER field beyond
  * `title`/`status`/`ideaNumber`/`statusColor` is nullable so an unset idea
  * field never breaks the page (foolproof render, never omission - AC-90-104
- * pins the exact key set / no-PII contract). */
+ * pins the exact key set / no-PII contract). `mergedInto` (issue #94,
+ * AC-94-13/14) is set only when this idea is a merged child - its content
+ * fields above stay its OWN, while `status`/`statusColor`/`timeline`/
+ * `nextStep`/`upvotes` are then the SURVIVOR's (plan section 3.4). Optional
+ * (not just nullable) so an older fixture/test double needs no change. */
 export interface PublicIdeaStatus {
   title: string | null;
   status: string;
@@ -184,4 +209,5 @@ export interface PublicIdeaStatus {
   upvotes: number;
   nextStep: string;
   timeline: PublicIdeaTimelineStep[];
+  mergedInto?: PublicMergedInto | null;
 }

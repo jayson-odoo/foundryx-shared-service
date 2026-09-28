@@ -114,6 +114,17 @@ def register_engine_entities() -> None:
 
     register_ideation_deferred_actions()
 
+    # Requester status-update event feed (issue #94, plan section 7.1, S4):
+    # ONE subscriber on the CORE CRUD event bus catches every idea
+    # status_changed transition from all 7 call sites (and any future one)
+    # with no per-call-site code. Idempotent (`register_event_subscriber`
+    # dedupes by function identity).
+    from app.workflow_engine.entity_events import register_event_subscriber
+
+    from .services.status_events import bus_subscriber
+
+    register_event_subscriber(bus_subscriber)
+
 
 def create_schema_and_tables(engine: Engine) -> None:
     """Create the module schema (Postgres) + the ``pg_trgm`` extension + all

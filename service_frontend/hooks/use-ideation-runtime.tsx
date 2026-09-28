@@ -21,8 +21,12 @@ import {
 export interface IdeaPaths {
   /** The list URL (embed mode carries the `#token=…` fragment). */
   listHref: string;
-  /** The detail/form URL for an idea (optionally in edit mode). */
-  formHref: (id: string, opts?: { edit?: boolean }) => string;
+  /** The detail/form URL for an idea (optionally record-nav context, edit
+   * mode, and the "Show test ideas" lane - AC-94-36/40). */
+  formHref: (
+    id: string,
+    opts?: { ctx?: string; index?: number; edit?: boolean; includeTest?: boolean },
+  ) => string;
   /** The create URL (operator only; embed creates via the capture dialog). */
   newHref: string;
 }

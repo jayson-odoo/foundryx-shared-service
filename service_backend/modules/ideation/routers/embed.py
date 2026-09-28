@@ -32,10 +32,12 @@ from sqlalchemy.orm import Session
 from app.api_errors import ApiError
 from app.database import get_db
 
+from ..models import Idea
 from ..schemas import (
     BoardOut,
     IdeaOut,
     IdeaUpdateIn,
+    MergeIn,
     ReorderIn,
     StatusIn,
     VoteIn,
@@ -48,6 +50,7 @@ from ..services.embed import (
     verify_and_mint,
 )
 from ..services.ideas import IdeaReadService
+from ..services.merge import IdeaMergeService
 
 router = APIRouter()
 
@@ -165,18 +168,24 @@ def _embed_voter_id(principal: EmbedTokenPrincipal) -> str:
     return f"embed:{principal.connection_id}"
 
 
-def _assert_in_scope(
-    db: Session, principal: EmbedTokenPrincipal, idea_id: str
-) -> IdeaOut:
-    """Resolve an idea scoped to ``principal.tenant_id`` (404 if outside the
-    tenant), then enforce the PRODUCT scope: when the connection is product-scoped
-    (``principal.product_id`` set) an idea in the same tenant but a DIFFERENT
-    product is denied (404) - never mutated, never leaked (AC-CAP-11). When the
-    connection is tenant-only (no product), tenant scope is the whole guard."""
-    idea = IdeaReadService(db).get(principal.tenant_id, idea_id, voter_id=None)
-    if principal.product_id and idea.productId != principal.product_id:
+def _assert_in_scope(db: Session, principal: EmbedTokenPrincipal, idea_id: str) -> None:
+    """Scope guard ONLY - tenant + product (404 for either mismatch), never
+    mutated, never leaked (AC-CAP-11). Review round 1 #7: this is a LIGHT raw
+    ``(id, tenant_id, product_id)`` row load, not a full ``IdeaOut`` serialize
+    (no rank-lane scan, no transitions, no attachments) - merge/reorder call
+    this PER id in a loop, so a full serialize here would be O(N^2) on a bulk
+    request. A handler that actually needs the serialized idea for its
+    response (``embed_get_idea``) does its OWN ``IdeaReadService.get`` call
+    after this passes."""
+    idea = (
+        db.query(Idea.id, Idea.tenant_id, Idea.product_id)
+        .filter(Idea.id == idea_id, Idea.tenant_id == principal.tenant_id)
+        .first()
+    )
+    if idea is None:
         raise ApiError(404, "not_found", "Idea not found.")
-    return idea
+    if principal.product_id and idea.product_id != principal.product_id:
+        raise ApiError(404, "not_found", "Idea not found.")
 
 
 @router.get("/ideas", response_model=List[IdeaOut])
@@ -242,6 +251,20 @@ def embed_reorder_ideas(
     return ordered
 
 
+@router.post("/ideas/merge", response_model=IdeaOut)
+def embed_merge_ideas(
+    body: MergeIn,
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+) -> IdeaOut:
+    """Merge ideas from the iframe (AC-94-16). Every id (survivor + members)
+    must resolve inside the connection's tenant+product - any id outside the
+    scope denies the WHOLE merge (404) and nothing is written."""
+    for idea_id in dict.fromkeys([body.survivorId, *body.ideaIds]):
+        _assert_in_scope(db, principal, idea_id)
+    return IdeaMergeService(db).merge(principal.tenant_id, body.survivorId, body.ideaIds)
+
+
 @router.post("/ideas", response_model=IdeaOut, status_code=status.HTTP_201_CREATED)
 def embed_create_idea(
     body: EmbedIdeaCreateIn,
@@ -279,7 +302,10 @@ def embed_get_idea(
     """Product-scoped idea detail for the embed page. 404 for an idea outside the
     token's tenant OR product (cross-tenant/cross-product read denied,
     AC-CAP-11)."""
-    return _assert_in_scope(db, principal, idea_id)
+    _assert_in_scope(db, principal, idea_id)
+    return IdeaReadService(db).get(
+        principal.tenant_id, idea_id, voter_id=None, product_id=principal.product_id
+    )
 
 
 @router.patch("/ideas/{idea_id}", response_model=IdeaOut)
@@ -306,6 +332,32 @@ def embed_update_idea(
     )
 
 
+@router.get("/ideas/{idea_id}/merged", response_model=List[IdeaOut])
+def embed_list_merged_ideas(
+    idea_id: str,
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+) -> List[IdeaOut]:
+    """The ideas merged into this one, from the iframe (AC-94-16). Scoped to
+    tenant+product (404 otherwise)."""
+    _assert_in_scope(db, principal, idea_id)
+    return IdeaReadService(db).merged_children(
+        principal.tenant_id, idea_id, voter_id=_embed_voter_id(principal)
+    )
+
+
+@router.post("/ideas/{idea_id}/unmerge", response_model=List[IdeaOut])
+def embed_unmerge_idea(
+    idea_id: str,
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+) -> List[IdeaOut]:
+    """Restore a merged child, or dissolve a survivor's whole group, from the
+    iframe (AC-94-16). Scoped to tenant+product (404 otherwise)."""
+    _assert_in_scope(db, principal, idea_id)
+    return IdeaMergeService(db).unmerge(principal.tenant_id, idea_id)
+
+
 @router.post("/ideas/{idea_id}/vote", response_model=IdeaOut)
 def embed_vote_idea(
     idea_id: str,
@@ -328,9 +380,10 @@ def embed_set_idea_status(
     principal: EmbedTokenPrincipal = Depends(require_embed_principal),
     db: Session = Depends(get_db),
 ) -> IdeaOut:
-    """Move the idea to a lifecycle status by key. Server-authoritative (illegal
-    moves refused, 409). Scoped to tenant+product (404 otherwise). ``actor=None``
-    - there is no operator user in the iframe."""
+    """Move the idea to a lifecycle status - by key or by status-engine
+    ``toStatusId`` (issue #94). Server-authoritative (illegal moves refused,
+    409). Scoped to tenant+product (404 otherwise). ``actor=None`` - there is
+    no operator user in the iframe."""
     _assert_in_scope(db, principal, idea_id)
     return IdeaActionService(db).set_status(
         principal.tenant_id,
@@ -338,6 +391,7 @@ def embed_set_idea_status(
         body.status,
         actor=None,
         voter_id=_embed_voter_id(principal),
+        to_status_id=body.toStatusId,
     )
 
 

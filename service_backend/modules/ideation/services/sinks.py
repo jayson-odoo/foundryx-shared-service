@@ -16,6 +16,7 @@ from app.config import settings
 from app.services import status_machine
 
 from ..models import Idea
+from .ideas import next_capture_priority
 from .numbering import mint_idea_identity
 from .statuses import IDEA_ENTITY, idea_status_id
 
@@ -72,6 +73,9 @@ def ideation_on_complete_sink(
     sync_idea_columns_from_captured(idea)
     captured_id = idea_status_id(db, "captured", tenant_id)
     if captured_id is not None and idea.status_id != captured_id:
+        # New capture lands at the bottom of its lane (Q4) - stamped right at
+        # the first move into ``captured`` (plan section 5).
+        idea.priority = next_capture_priority(db, tenant_id, is_test=bool(idea.is_test))
         status_machine.transition(
             db, IDEA_ENTITY, idea, captured_id, actor=None, tenant_id=tenant_id, commit=False
         )

@@ -40,7 +40,7 @@ from app.models.tenant import Tenant
 from app.repositories.status_repository import StatusRepository
 
 from ..models import Idea
-from ..schemas import PublicIdeaStatusOut, PublicIdeaTimelineStepOut
+from ..schemas import PublicIdeaStatusOut, PublicIdeaTimelineStepOut, PublicMergedIntoOut
 from .statuses import IDEA_ENTITY
 
 # 16-64 chars, URL-safe - matches ``secrets.token_urlsafe(24)`` output shape
@@ -99,15 +99,40 @@ class PublicIdeaStatusService:
         if tenant is None or not tenant.signin_allowed:
             return None
 
-        # Scoped by the idea row's OWN tenant_id (review round 2 nit) - a
+        # AC-94-13 (issue #94, plan section 3.4): a merged child's status,
+        # colour, next-step, timeline and upvotes come from the SURVIVOR -
+        # scoped by the CHILD's own tenant_id (polymorphic-stored-id rule),
+        # never a client-supplied one. If the survivor somehow vanished
+        # (cannot happen - delete unmerges first) fall back to the child's
+        # own status, truthfully.
+        display_idea = idea
+        merged_into: Optional[PublicMergedIntoOut] = None
+        if idea.merged_into_id:
+            survivor = (
+                self.db.query(Idea)
+                .filter(Idea.id == idea.merged_into_id, Idea.tenant_id == idea.tenant_id)
+                .first()
+            )
+            if survivor is not None:
+                display_idea = survivor
+                # Review round 1 NIT #13: NEVER the survivor's `problem` (a
+                # full problem statement, not an identity) - fall back to its
+                # idea number, the same identity shown everywhere else on
+                # this public page.
+                merged_into = PublicMergedIntoOut(
+                    ideaNumber=survivor.idea_number,
+                    title=survivor.title or survivor.idea_number,
+                )
+
+        # Scoped by the DISPLAY idea's OWN tenant_id (review round 2 nit) - a
         # platform-tier status row carries Status.tenant_id IS NULL, a
         # forked-tenant row carries the tenant's own id; either is legitimate
         # for this idea, nothing else is.
         status_row = (
             self.db.query(Status)
             .filter(
-                Status.id == idea.status_id,
-                or_(Status.tenant_id == idea.tenant_id, Status.tenant_id.is_(None)),
+                Status.id == display_idea.status_id,
+                or_(Status.tenant_id == display_idea.tenant_id, Status.tenant_id.is_(None)),
             )
             .first()
         )
@@ -130,9 +155,10 @@ class PublicIdeaStatusService:
             department=idea.department,
             submitterFirstName=self._first_name(idea),
             submittedAt=idea.created_at,
-            upvotes=idea.upvotes,
+            upvotes=display_idea.upvotes,
             nextStep=self._next_step(status_row),
-            timeline=self._timeline(idea, status_row),
+            timeline=self._timeline(display_idea, status_row),
+            mergedInto=merged_into,
         )
 
     # ---- detail lookups (each scoped by the idea row's OWN tenant_id) ------
