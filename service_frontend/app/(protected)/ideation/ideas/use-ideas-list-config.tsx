@@ -60,10 +60,6 @@ export function useIdeasListConfig(
     onCreate: () => void;
     onVote: (idea: Idea, dir: 'up' | 'down') => void;
     onAdvance: (idea: Idea) => Promise<void>;
-    /** No longer called by this config (fix round 1, T5, item 15 - Archive is
-     * `deferred`, the registered handler commits it server-side). Kept in
-     * the signature so the caller needs no change. */
-    onArchive: (idea: Idea) => Promise<void>;
     onRestore: (idea: Idea) => Promise<void>;
     /** No longer called by this config (fix round 1, T5, item 15 - Delete is
      * `deferred`). Kept in the signature so the caller needs no change. */

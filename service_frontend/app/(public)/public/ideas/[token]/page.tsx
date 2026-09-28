@@ -95,6 +95,7 @@ export default function PublicIdeaStatusPage() {
               submitterFirstName={view.submitterFirstName}
               submittedAt={view.submittedAt}
               upvotes={view.upvotes}
+              mergedInto={view.mergedInto}
             />
           </div>
           <div className="lg:col-start-2 lg:row-start-1">

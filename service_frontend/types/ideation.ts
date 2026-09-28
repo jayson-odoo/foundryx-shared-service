@@ -173,6 +173,14 @@ export interface PublicIdeaTimelineStep {
   state: 'done' | 'current' | 'upcoming';
 }
 
+/** The survivor named on a merged child's public page (issue #94, AC-94-13/14)
+ * - `id`-free (the public page never surfaces a raw id, and never the
+ * survivor's submitter - AC-94-14). */
+export interface PublicMergedInto {
+  ideaNumber: string | null;
+  title: string | null;
+}
+
 /** The public idea-status page contract (GET /public/ideas/{token}), grown from
  * the S5 3-key contract into the full page by issue #90 W1 - no auth, the
  * token itself is the capability. `status` is the display LABEL (e.g. `New`),
@@ -181,7 +189,11 @@ export interface PublicIdeaTimelineStep {
  * every status row carries a color). Every OTHER field beyond
  * `title`/`status`/`ideaNumber`/`statusColor` is nullable so an unset idea
  * field never breaks the page (foolproof render, never omission - AC-90-104
- * pins the exact key set / no-PII contract). */
+ * pins the exact key set / no-PII contract). `mergedInto` (issue #94,
+ * AC-94-13/14) is set only when this idea is a merged child - its content
+ * fields above stay its OWN, while `status`/`statusColor`/`timeline`/
+ * `nextStep`/`upvotes` are then the SURVIVOR's (plan section 3.4). Optional
+ * (not just nullable) so an older fixture/test double needs no change. */
 export interface PublicIdeaStatus {
   title: string | null;
   status: string;
@@ -197,4 +209,5 @@ export interface PublicIdeaStatus {
   upvotes: number;
   nextStep: string;
   timeline: PublicIdeaTimelineStep[];
+  mergedInto?: PublicMergedInto | null;
 }

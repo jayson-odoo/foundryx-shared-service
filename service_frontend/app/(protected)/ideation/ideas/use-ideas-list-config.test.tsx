@@ -42,7 +42,6 @@ const handlers = () => ({
   onCreate: vi.fn(),
   onVote: vi.fn(),
   onAdvance: vi.fn(),
-  onArchive: vi.fn(),
   onRestore: vi.fn(),
   onDelete: vi.fn(),
   onReorder: vi.fn(),

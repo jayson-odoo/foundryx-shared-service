@@ -217,11 +217,20 @@ function toRef(idea: Idea): IdeaRef {
   return { id: idea.id, ideaNumber: idea.ideaNumber ?? null, title: idea.title ?? idea.problem };
 }
 
-function allPresented(includeTest: boolean): Idea[] {
+/** `filter` mirrors the real backend's `GET /ideation/ideas?filter=` scope
+ * (AC-94-60): `'active'` (the server default) excludes archived statuses,
+ * `'archived'` returns only them, `'all'` returns both - never a hardcoded
+ * status key, always the engine trait `statusIsArchived`. */
+function allPresented(includeTest: boolean, filter: 'active' | 'archived' | 'all' = 'active'): Idea[] {
   const ranks = rankMap({ includeTest });
   return records
     .filter((r) => !r.idea.mergedIntoId)
     .filter((r) => (includeTest ? true : !r.idea.isTest))
+    .filter((r) => {
+      if (filter === 'all') return true;
+      const archived = statusByKey(r.idea.status).isArchived;
+      return filter === 'archived' ? archived : !archived;
+    })
     .map((r) => present(r.idea, ranks));
 }
 
@@ -230,10 +239,8 @@ export const mockIdeationService: IdeaService & IdeaExtendedOps = {
     return PRODUCTS.map((p) => ({ ...p }));
   },
 
-  // `filter=all` semantics (AC-94-60): both active and archived survivors -
-  // the caller (the list config's `selectIdeaRows`) splits by `statusIsArchived`.
-  async listIdeas(opts?: { includeTest?: boolean }): Promise<Idea[]> {
-    return allPresented(Boolean(opts?.includeTest));
+  async listIdeas(opts?: { includeTest?: boolean; filter?: 'active' | 'archived' | 'all' }): Promise<Idea[]> {
+    return allPresented(Boolean(opts?.includeTest), opts?.filter ?? 'active');
   },
 
   async getIdea(id: string): Promise<Idea> {
@@ -346,7 +353,7 @@ export const mockIdeationService: IdeaService & IdeaExtendedOps = {
       .forEach((r, i) => {
         r.idea.priority = slots[i];
       });
-    return allPresented(true).filter((i) => orderedIds.includes(i.id));
+    return allPresented(true, 'all').filter((i) => orderedIds.includes(i.id));
   },
 
   async suggestClusters(): Promise<IdeaClusterSuggestions> {

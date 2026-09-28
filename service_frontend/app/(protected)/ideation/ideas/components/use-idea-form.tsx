@@ -123,7 +123,9 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
 
   const fetchRecordAt = useCallback(
     async (query: ListQuery, index: number) => {
-      const all = await ideationService.listIdeas({ includeTest: pagerIncludeTest });
+      // `filter: 'all'` (AC-94-60) - the same lane `selectIdeaRows` splits by
+      // `statusIsArchived`, so the pager never drifts from the list's order.
+      const all = await ideationService.listIdeas({ includeTest: pagerIncludeTest, filter: 'all' });
       const rows = selectIdeaRows(all, query);
       const row = rows[index];
       return { recordId: row?.id ?? null, total: rows.length };

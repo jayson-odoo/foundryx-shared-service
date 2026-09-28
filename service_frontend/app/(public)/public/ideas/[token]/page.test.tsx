@@ -192,6 +192,25 @@ describe('PublicIdeaStatusPage - AC-90-111 the status timeline', () => {
   });
 });
 
+describe('PublicIdeaStatusPage - merged child (issue #94, AC-94-13/31)', () => {
+  it('shows "Merged into IDEA-xxxx" while the survivor drives status/timeline', () => {
+    usePublicIdeaStatus.mockReturnValue({
+      loading: false,
+      notFound: false,
+      view: { ...richView, mergedInto: { ideaNumber: 'IDEA-0012', title: 'Faster quotation' } },
+    });
+    render(<PublicIdeaStatusPage />);
+    const hero = screen.getByTestId('idea-hero');
+    expect(within(hero).getByText('Merged into IDEA-0012')).toBeInTheDocument();
+  });
+
+  it('renders nothing extra for a plain (never-merged) idea', () => {
+    usePublicIdeaStatus.mockReturnValue({ loading: false, notFound: false, view: richView });
+    render(<PublicIdeaStatusPage />);
+    expect(screen.queryByText(/Merged into/)).not.toBeInTheDocument();
+  });
+});
+
 describe('PublicIdeaStatusPage - not-found (regression, unchanged)', () => {
   it('renders the not-found state when the hook reports not found', () => {
     usePublicIdeaStatus.mockReturnValue({ loading: false, notFound: true, view: null });

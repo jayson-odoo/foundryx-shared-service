@@ -8,7 +8,7 @@
  * Enforced layering: UI → hooks → this service → lib/api-client → FastAPI.
  */
 import type { Board, Idea, IdeaClusterSuggestions, Product } from '@/types/ideation';
-import { mockIdeationService } from './ideation-service.mock';
+import { realIdeationService } from './ideation-service.real';
 
 /** Manual capture payload (the WhatsApp path fills the same fields via the tool). */
 export interface IdeaCreateInput {
@@ -31,8 +31,13 @@ export interface IdeaService {
   /** All products an idea can target (software + goods). */
   listProducts(): Promise<Product[]>;
   /** All ideas, newest first. `includeTest` opts into console/`--say` test
-   * ideas (issue #1179) - off by default. */
-  listIdeas(opts?: { includeTest?: boolean }): Promise<Idea[]>;
+   * ideas (issue #1179) - off by default. `filter` selects the backend's
+   * active (default) / archived / all scope (AC-94-60) - the list and the
+   * record pager always pass `'all'` so the shared `selectIdeaRows` can split
+   * Active vs Archived client side by `statusIsArchived`; a bare call (e.g.
+   * the BR "link ideas" candidate picker) keeps the server default
+   * (active only). */
+  listIdeas(opts?: { includeTest?: boolean; filter?: 'active' | 'archived' | 'all' }): Promise<Idea[]>;
   /** One idea by id (form view). Rejects if not found. */
   getIdea(id: string): Promise<Idea>;
   /** Update editable idea fields (form view save) - fields only, NEVER status
@@ -78,8 +83,7 @@ export interface IdeaExtendedOps {
   getBoard(opts?: { includeTest?: boolean; productId?: string }): Promise<Board>;
 }
 
-// Phase 1 (issue #94 slice S1): bound to the in-memory mock behind this ONE
-// line, per the build order (frontend-mock before backend). Slice S5 swaps
-// this back to `realIdeationService` (`./ideation-service.real`) - no other
-// file changes.
-export const ideationService: IdeaService & IdeaExtendedOps = mockIdeationService;
+// Slice S5 (issue #94): bound to the real backend behind this ONE line - the
+// mock (`./ideation-service.mock`) stays for the mock's own test suite and
+// any test double that still wants it; no other file changes on this swap.
+export const ideationService: IdeaService & IdeaExtendedOps = realIdeationService;

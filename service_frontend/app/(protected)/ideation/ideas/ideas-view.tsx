@@ -76,12 +76,6 @@ export function IdeasView() {
           toast.error(e instanceof Error ? e.message : 'Could not advance the idea.');
         }
       },
-      // Dead by construction (fix round 1, T5, item 15): Archive is a
-      // `deferred` action with no `run` - the shell drives it itself via
-      // the registered `ideation_ideas.archive` handler. Kept only because
-      // the shared `useIdeasListConfig` handlers type still names it; never
-      // called, so it must never itself send a stale wire shape.
-      onArchive: async () => {},
       onRestore: async (idea: Idea) => {
         const target = idea.transitions?.[0];
         if (!target) return;

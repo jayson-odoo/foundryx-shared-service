@@ -4,7 +4,7 @@
  *
  * Endpoint map (backend slices 2-7):
  * - listProducts  → GET  /products               (core catalog; unified Product)
- * - listIdeas     → GET  /ideation/ideas         (bare IdeaOut[], newest-first)
+ * - listIdeas     → GET  /ideation/ideas?filter=&includeTest=  (bare IdeaOut[], server-ranked order)
  * - getIdea       → GET  /ideation/ideas/{id}
  * - setStatus     → POST /ideation/ideas/{id}/status  {toStatusId}
  * - vote          → POST /ideation/ideas/{id}/vote    {dir}
@@ -70,9 +70,12 @@ export const realIdeationService: IdeaService & IdeaExtendedOps = {
     }));
   },
 
-  listIdeas(opts?: { includeTest?: boolean }): Promise<Idea[]> {
-    const q = opts?.includeTest ? '?includeTest=true' : '';
-    return apiFetch<Idea[]>(`/ideation/ideas${q}`);
+  listIdeas(opts?: { includeTest?: boolean; filter?: 'active' | 'archived' | 'all' }): Promise<Idea[]> {
+    const params = new URLSearchParams();
+    if (opts?.includeTest) params.set('includeTest', 'true');
+    if (opts?.filter) params.set('filter', opts.filter);
+    const qs = params.toString();
+    return apiFetch<Idea[]>(`/ideation/ideas${qs ? `?${qs}` : ''}`);
   },
 
   getIdea(id: string): Promise<Idea> {

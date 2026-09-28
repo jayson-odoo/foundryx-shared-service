@@ -32,6 +32,10 @@ export interface IdeaHeroProps {
   submitterFirstName: string | null;
   submittedAt: string | null;
   upvotes: number;
+  /** Set only for a merged child (issue #94, AC-94-13/31, owner D9) - the
+   * survivor named right under the child's own heading; `status`/`statusColor`
+   * above are already the survivor's (the page's data source resolves that). */
+  mergedInto?: { ideaNumber: string | null; title: string | null } | null;
 }
 
 const HEADING_CLASS = 'font-heading text-xl font-semibold sm:text-2xl';
@@ -45,6 +49,7 @@ export function IdeaHero({
   submitterFirstName,
   submittedAt,
   upvotes,
+  mergedInto,
 }: IdeaHeroProps) {
   const registry: StatusRegistry<string> = {
     [status]: {
@@ -70,6 +75,11 @@ export function IdeaHero({
             <ClampedText text={problem} lines={2} className={HEADING_CLASS} />
           </div>
         )
+      )}
+      {mergedInto && (
+        <p className="text-sm text-muted-foreground">
+          Merged into {mergedInto.ideaNumber ?? mergedInto.title}
+        </p>
       )}
       <div>
         <StatusBadge status={status} registry={registry} />

@@ -55,7 +55,10 @@ export function useIdeas(opts?: { withBoard?: boolean }): UseIdeas {
     setError(null);
     try {
       const [nextIdeas, nextProducts, board] = await Promise.all([
-        ideationService.listIdeas({ includeTest }),
+        // `filter: 'all'` (AC-94-60) - both active and archived survivors, so
+        // the Archived view is fed; `selectIdeaRows` splits by the engine
+        // trait `statusIsArchived`, never a hardcoded status key.
+        ideationService.listIdeas({ includeTest, filter: 'all' }),
         ideationService.listProducts(),
         withBoard ? ideationService.getBoard?.({ includeTest }) : undefined,
       ]);

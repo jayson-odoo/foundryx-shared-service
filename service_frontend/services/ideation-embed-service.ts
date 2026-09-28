@@ -87,9 +87,14 @@ export const ideationEmbedService: IdeaService &
     return Array.from(seen.values());
   },
 
-  /** Product-scoped ideas for the token, newest first (backend enforces scope). */
-  listIdeas(): Promise<Idea[]> {
-    return apiFetch<Idea[]>('/embed/ideas');
+  /** Product-scoped ideas for the token (backend enforces scope). `filter`
+   * (AC-94-60) - `/embed/ideas` accepts the same `active|archived|all` scope
+   * as the operator route (no `includeTest` there - the embed session never
+   * carries a test lane); the list and the record pager pass `'all'` so
+   * Archived is fed, split client side by `statusIsArchived`. */
+  listIdeas(opts?: { filter?: 'active' | 'archived' | 'all' }): Promise<Idea[]> {
+    const q = opts?.filter ? `?filter=${encodeURIComponent(opts.filter)}` : '';
+    return apiFetch<Idea[]>(`/embed/ideas${q}`);
   },
 
   /** One idea by id, scoped to the token's tenant + product (404 outside it). */
