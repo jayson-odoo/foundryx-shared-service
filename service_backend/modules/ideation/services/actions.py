@@ -215,7 +215,11 @@ class IdeaActionService:
         return self._reader.serialize_one(idea, voter_id, tenant_id=tenant_id)
 
     def reorder(
-        self, tenant_id: str, ordered_ids: List[str], voter_id: Optional[str] = None
+        self,
+        tenant_id: str,
+        ordered_ids: List[str],
+        voter_id: Optional[str] = None,
+        actor: Optional[User] = None,
     ) -> List[IdeaOut]:
         """Slot-preserving reorder (issue #94, AC-94-45): densify each
         affected lane's priority first (heals any legacy ties into 1..N, no
@@ -225,7 +229,15 @@ class IdeaActionService:
         ids already occupied - the other rows' priority never moves (fixes
         the page-2-drag-corrupts-page-1 bug, plan section 5). Ids outside the
         tenant, or that are merged children, are silently ignored (they hold
-        no rank of their own, AC-94-19)."""
+        no rank of their own, AC-94-19).
+
+        Review round 1 NIT #12: the RESPONSE is scoped to the caller's own
+        lane (survivors, the SAME ``is_test`` lane the reordered ids belong
+        to) instead of the whole tenant across every product/lane - a bulk
+        reorder response has no business returning rows the caller never
+        asked about. ``actor`` is threaded through to serialization so
+        per-record transitions/advance respect the caller's own role
+        (previously always computed with no actor)."""
         ideas_by_id = {
             i.id: i
             for i in self.db.query(Idea)
@@ -237,7 +249,8 @@ class IdeaActionService:
             .all()
         }
         requested = [i for i in ordered_ids if i in ideas_by_id]
-        for is_test in sorted({ideas_by_id[i].is_test for i in requested}):
+        lanes = sorted({ideas_by_id[i].is_test for i in requested})
+        for is_test in lanes:
             lane_requested = [i for i in requested if ideas_by_id[i].is_test == is_test]
             lane_ideas = (
                 self.db.query(Idea)
@@ -257,13 +270,21 @@ class IdeaActionService:
             for slot, idea_id in zip(taken_slots, lane_requested):
                 ideas_by_id[idea_id].priority = slot
         self.db.commit()
+        if not requested:
+            return []
         ordered = (
             self.db.query(Idea)
-            .filter(Idea.tenant_id == tenant_id)
+            .filter(
+                Idea.tenant_id == tenant_id,
+                Idea.merged_into_id.is_(None),
+                Idea.is_test.in_(lanes),
+            )
             .order_by(Idea.priority.asc(), Idea.created_at.desc(), Idea.id.desc())
             .all()
         )
-        return self._reader.serialize_many(ordered, voter_id, tenant_id=tenant_id)
+        return self._reader.serialize_many(
+            ordered, voter_id, tenant_id=tenant_id, actor=actor
+        )
 
     def _validated_target_status_id(self, tenant_id: str, to_status_id: str) -> str:
         """422 unless ``to_status_id`` resolves to an idea-entity status row in
@@ -322,7 +343,14 @@ class IdeaActionService:
     def delete(self, tenant_id: str, idea_id: str) -> None:
         """Hard-delete the idea and its vote rows (no soft delete). AC-94-10:
         deleting a survivor restores its children FIRST (unmerge, votes moved
-        back) so no child is left pointing at a row that no longer exists."""
+        back) so no child is left pointing at a row that no longer exists.
+
+        Review round 1 NIT #11: deleting a merged CHILD outright (still
+        pointing at a survivor) also removes its STAMPED vote rows still
+        resident on the survivor (``origin_idea_id == idea_id``) - they can
+        never be restored to an idea that no longer exists, and the
+        survivor's tally must not silently keep counting a voter whose
+        origin record is gone."""
         idea = self._idea_or_404(tenant_id, idea_id)
         has_children = (
             self.db.query(Idea.id)
@@ -335,6 +363,19 @@ class IdeaActionService:
 
             IdeaMergeService(self.db).unmerge(tenant_id, idea_id)
             idea = self._idea_or_404(tenant_id, idea_id)
+        elif idea.merged_into_id:
+            survivor_id = idea.merged_into_id
+            self.db.query(IdeaVote).filter(
+                IdeaVote.idea_id == survivor_id, IdeaVote.origin_idea_id == idea_id
+            ).delete(synchronize_session=False)
+            self.db.flush()
+            survivor = (
+                self.db.query(Idea)
+                .filter(Idea.id == survivor_id, Idea.tenant_id == tenant_id)
+                .first()
+            )
+            if survivor is not None:
+                self._recount(survivor)
         self.db.query(IdeaVote).filter(IdeaVote.idea_id == idea_id).delete(
             synchronize_session=False
         )

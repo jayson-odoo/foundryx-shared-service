@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 from app.api_errors import ApiError
 from app.database import get_db
 
+from ..models import Idea
 from ..schemas import (
     BoardOut,
     IdeaOut,
@@ -167,20 +168,24 @@ def _embed_voter_id(principal: EmbedTokenPrincipal) -> str:
     return f"embed:{principal.connection_id}"
 
 
-def _assert_in_scope(
-    db: Session, principal: EmbedTokenPrincipal, idea_id: str
-) -> IdeaOut:
-    """Resolve an idea scoped to ``principal.tenant_id`` (404 if outside the
-    tenant), then enforce the PRODUCT scope: when the connection is product-scoped
-    (``principal.product_id`` set) an idea in the same tenant but a DIFFERENT
-    product is denied (404) - never mutated, never leaked (AC-CAP-11). When the
-    connection is tenant-only (no product), tenant scope is the whole guard."""
-    idea = IdeaReadService(db).get(
-        principal.tenant_id, idea_id, voter_id=None, product_id=principal.product_id
+def _assert_in_scope(db: Session, principal: EmbedTokenPrincipal, idea_id: str) -> None:
+    """Scope guard ONLY - tenant + product (404 for either mismatch), never
+    mutated, never leaked (AC-CAP-11). Review round 1 #7: this is a LIGHT raw
+    ``(id, tenant_id, product_id)`` row load, not a full ``IdeaOut`` serialize
+    (no rank-lane scan, no transitions, no attachments) - merge/reorder call
+    this PER id in a loop, so a full serialize here would be O(N^2) on a bulk
+    request. A handler that actually needs the serialized idea for its
+    response (``embed_get_idea``) does its OWN ``IdeaReadService.get`` call
+    after this passes."""
+    idea = (
+        db.query(Idea.id, Idea.tenant_id, Idea.product_id)
+        .filter(Idea.id == idea_id, Idea.tenant_id == principal.tenant_id)
+        .first()
     )
-    if principal.product_id and idea.productId != principal.product_id:
+    if idea is None:
         raise ApiError(404, "not_found", "Idea not found.")
-    return idea
+    if principal.product_id and idea.product_id != principal.product_id:
+        raise ApiError(404, "not_found", "Idea not found.")
 
 
 @router.get("/ideas", response_model=List[IdeaOut])
@@ -297,7 +302,10 @@ def embed_get_idea(
     """Product-scoped idea detail for the embed page. 404 for an idea outside the
     token's tenant OR product (cross-tenant/cross-product read denied,
     AC-CAP-11)."""
-    return _assert_in_scope(db, principal, idea_id)
+    _assert_in_scope(db, principal, idea_id)
+    return IdeaReadService(db).get(
+        principal.tenant_id, idea_id, voter_id=None, product_id=principal.product_id
+    )
 
 
 @router.patch("/ideas/{idea_id}", response_model=IdeaOut)

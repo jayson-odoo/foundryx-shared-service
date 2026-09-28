@@ -350,6 +350,45 @@ def test_unmerge_event_per_child(ideation_client):
     assert ev.payload_json["status_label"] == "New"  # its own restored (captured) status
 
 
+def test_flatten_writes_a_merged_event_for_the_repointed_grandchild(ideation_client):
+    """Review round 1 NIT #10: flattening (C merged into M, then M merged
+    into S) writes a SECOND "merged" event for C, naming the NEW survivor S -
+    C's requester was already told it tracks M, and now needs telling it
+    tracks S instead. No event for M itself (never a requester recipient)."""
+    s = _setup_with_contact(ideation_client, problem="grandchild idea", phone="+60177778888")
+    m = _insert_idea(ideation_client._factory, s["product_id"], problem="intermediate idea")
+    survivor_id = _insert_idea(
+        ideation_client._factory, s["product_id"], problem="new survivor", status_key="triaged"
+    )
+
+    first = ideation_client.post(
+        "/ideation/ideas/merge",
+        headers=s["h"],
+        json={"survivorId": m, "ideaIds": [m, s["idea_id"]]},
+    )
+    assert first.status_code == 200, first.text
+
+    second = ideation_client.post(
+        "/ideation/ideas/merge",
+        headers=s["h"],
+        json={"survivorId": survivor_id, "ideaIds": [survivor_id, m]},
+    )
+    assert second.status_code == 200, second.text
+
+    events = [
+        e for e in _events_for(ideation_client._factory, s["idea_id"]) if e.kind == "merged"
+    ]
+    assert len(events) == 2  # the original merge into M, then the flatten onto S
+    flatten_event = events[-1]
+    assert flatten_event.payload_json["merged_into"]["idea_number"] == (
+        ideation_client.get(f"/ideation/ideas/{survivor_id}", headers=s["h"]).json()["ideaNumber"]
+    )
+    assert flatten_event.payload_json["status_label"] == "Triaged"
+
+    # No event for the intermediate member itself.
+    assert _events_for(ideation_client._factory, m) == []
+
+
 # ── AC-94-65 ───────────────────────────────────────────────────────────────
 
 

@@ -415,6 +415,74 @@ def test_votes_move_and_return(ideation_client):
     assert row_b.upvotes == 2  # voter-1 returned + voter-2 shadow kept (D4 lossless)
 
 
+def test_votes_survive_flatten_and_full_unmerge(ideation_client):
+    """Review round 1 #3 (D4 lossless under flatten): C merged into M stamps
+    V's vote origin=C on M; M then merges into S, which ALREADY has V - the
+    OLD code left V's origin=C row stranded on M (a node nobody inspects
+    again once M itself becomes a frozen child): M would wrongly keep
+    counting it forever, and unmerging C would never find it. The fix
+    relocates it straight back to its TRUE origin (C) when a survivor
+    collision blocks the normal move. Also exercises the ordinary
+    (non-inherited) path: W's own direct vote on M moves normally onto S."""
+    h = _auth(ideation_client)
+    pid = _create_software_product(ideation_client, h)
+    m = _insert_idea(ideation_client._factory, pid, problem="m")
+    c = _insert_idea(ideation_client._factory, pid, problem="c")
+    s = _insert_idea(ideation_client._factory, pid, problem="s")
+
+    _vote(ideation_client._factory, c, "voter-v", "up")
+    assert _merge(ideation_client, h, m, [m, c]).status_code == 200
+
+    _vote(ideation_client._factory, s, "voter-v", "up")  # S already has V
+    _vote(ideation_client._factory, m, "voter-w", "up")  # M's own direct voter
+
+    res = _merge(ideation_client, h, s, [s, m])
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["upvotes"] == 2  # voter-v (direct) + voter-w (moved, origin=m)
+    assert body["mergedCount"] == 2  # m + c (flattened onto s directly)
+
+    row_s = _idea_row(ideation_client._factory, s)
+    row_m = _idea_row(ideation_client._factory, m)
+    row_c = _idea_row(ideation_client._factory, c)
+    assert row_s.upvotes == 2
+    assert row_m.upvotes == 0  # V's inherited vote relocated away, nothing left
+    assert row_c.upvotes == 1  # V's vote correctly resident back on C
+    assert row_c.merged_into_id == s  # flattened straight onto S, not M
+
+    from modules.ideation.models import IdeaVote
+
+    db = ideation_client._factory()
+    try:
+        v_on_c = (
+            db.query(IdeaVote)
+            .filter(IdeaVote.idea_id == c, IdeaVote.voter_id == "voter-v")
+            .first()
+        )
+        assert v_on_c is not None and v_on_c.origin_idea_id is None
+    finally:
+        db.close()
+
+    # Unmerge C: nothing to move (V's vote was never stamped at S), tallies
+    # unaffected.
+    unres_c = _unmerge(ideation_client, h, c)
+    assert unres_c.status_code == 200, unres_c.text
+    row_s = _idea_row(ideation_client._factory, s)
+    row_c = _idea_row(ideation_client._factory, c)
+    assert row_c.upvotes == 1
+    assert row_s.upvotes == 2
+    assert row_c.merged_into_id is None
+
+    # Unmerge M: W's moved vote returns.
+    unres_m = _unmerge(ideation_client, h, m)
+    assert unres_m.status_code == 200, unres_m.text
+    row_s = _idea_row(ideation_client._factory, s)
+    row_m = _idea_row(ideation_client._factory, m)
+    assert row_m.upvotes == 1  # voter-w returned
+    assert row_s.upvotes == 1  # only voter-v's own direct vote left
+    assert row_m.merged_into_id is None
+
+
 # ── AC-94-07 ───────────────────────────────────────────────────────────────
 
 
@@ -531,6 +599,42 @@ def test_delete_survivor_restores_children(ideation_client):
     assert b in ids and c in ids
 
 
+def test_delete_merged_child_removes_its_stamped_votes_from_survivor(ideation_client):
+    """Review round 1 NIT #11: hard-deleting a merged CHILD (not the
+    survivor) also removes its stamped vote rows still resident on the
+    survivor (``origin_idea_id == the deleted child``) and recounts the
+    survivor - a deleted idea can never be un-merged again, so a vote
+    stamped with its id must not silently keep counting forever."""
+    h = _auth(ideation_client)
+    pid = _create_software_product(ideation_client, h)
+    a = _insert_idea(ideation_client._factory, pid, problem="a")
+    b = _insert_idea(ideation_client._factory, pid, problem="b")
+    _vote(ideation_client._factory, a, "voter-1", "up")
+    _vote(ideation_client._factory, b, "voter-2", "up")
+    res = _merge(ideation_client, h, a, [a, b])
+    assert res.status_code == 200, res.text
+    assert res.json()["upvotes"] == 2
+
+    del_res = ideation_client.delete(f"/ideation/ideas/{b}", headers=h)
+    assert del_res.status_code in (200, 204), del_res.text
+
+    row_a = _idea_row(ideation_client._factory, a)
+    assert row_a.upvotes == 1  # voter-2's stamped vote is gone with b
+
+    from modules.ideation.models import IdeaVote
+
+    db = ideation_client._factory()
+    try:
+        stray = (
+            db.query(IdeaVote)
+            .filter(IdeaVote.idea_id == a, IdeaVote.origin_idea_id == b)
+            .first()
+        )
+        assert stray is None
+    finally:
+        db.close()
+
+
 # ── AC-94-11 ───────────────────────────────────────────────────────────────
 
 
@@ -607,6 +711,50 @@ def test_merge_tenant_isolation(ideation_client):
     assert res2.status_code == 404, res2.text
     row_a = _idea_row(ideation_client._factory, a)
     assert row_a.merged_into_id is None
+
+
+def test_merged_into_never_resolves_a_foreign_tenant_row(ideation_client):
+    """Review round 1 BLOCKER #2: ``_merge_maps`` resolved ``merged_into_id``
+    and the grouped ``mergedCount`` with unscoped queries - a stored
+    ``merged_into_id`` is a polymorphic stored id (the notification_recipients
+    lesson) and must be resolved tenant-scoped even when the pointer is
+    forged/corrupted, never trusted unscoped. Forge idea A's pointer to a
+    REAL row that lives in another tenant (never reachable through the real
+    ``merge()`` path - this simulates a corrupted stored id to prove the read
+    side never resolves it unscoped)."""
+    h = _auth(ideation_client)
+    pid = _create_software_product(ideation_client, h)
+    a = _insert_idea(ideation_client._factory, pid, problem="a")
+    foreign = _insert_idea(
+        ideation_client._factory, pid, problem="foreign tenant idea", tenant_id="tenant-x"
+    )
+
+    from modules.ideation.models import Idea
+
+    db = ideation_client._factory()
+    try:
+        row = db.query(Idea).filter(Idea.id == a).first()
+        row.merged_into_id = foreign
+        db.commit()
+    finally:
+        db.close()
+
+    got = ideation_client.get(f"/ideation/ideas/{a}", headers=h)
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert body["mergedIntoId"] == foreign  # the raw stored pointer is not hidden
+    assert body["mergedInto"] is None  # but it never resolves the foreign row
+
+    # The foreign tenant's own read of its row must not show a bogus
+    # mergedCount either (the grouped count is tenant scoped on both sides).
+    db = ideation_client._factory()
+    try:
+        from modules.ideation.services.ideas import IdeaReadService
+
+        foreign_out = IdeaReadService(db).get("tenant-x", foreign)
+        assert foreign_out.mergedCount == 0
+    finally:
+        db.close()
 
 
 # ── AC-94-16: see tests/test_ideation_embed_writes.py ───────────────────────

@@ -11,6 +11,7 @@ schema away cleanly - see ``db.py``).
 Every tenant-scoped table carries ``tenant_id``. Datetimes are tz-aware UTC.
 """
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     Boolean,
@@ -514,7 +515,21 @@ class IdeaStatusEvent(IdeationBase):
     kind = Column(String, nullable=False)  # status_changed | merged | unmerged
     is_test = Column(Boolean, nullable=False, default=False)
     payload_json = Column(JSON(none_as_null=True), nullable=True)
-    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    # Review round 1 #6 - the SETTLE WINDOW cutoff must reflect each row's
+    # real insert time, not the transaction's start time: Postgres `now()`
+    # (used everywhere else in this module) is FIXED for the whole
+    # transaction, so a merge/unmerge writing several rows in one commit
+    # would stamp them all identically. A Python-side `default=` is
+    # evaluated per row, right before that row's own INSERT, and is
+    # identical across dialects (works on the SQLite test engine too) -
+    # `server_default=func.now()` stays as a defense-in-depth fallback for
+    # a hypothetical raw-SQL insert that skips the ORM (never done here).
+    created_at = Column(
+        UTCDateTime(),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        nullable=False,
+    )
 
     __table_args__ = (
         Index("ix_idea_status_events_tenant_seq", "tenant_id", "seq"),

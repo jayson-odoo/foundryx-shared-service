@@ -42,7 +42,15 @@ def next_capture_priority(db: Session, tenant_id: str, is_test: bool = False) ->
     (``tenant_id``, ``is_test`` - plan section 5, D11/Q4): a new capture lands
     at the BOTTOM of its lane (a triager drags it up), never colliding with an
     existing rank. Merged children (``merged_into_id`` set) never count -
-    they hold no rank of their own."""
+    they hold no rank of their own.
+
+    Tie tolerance (review round 1 #12): two concurrent captures can read the
+    SAME ``current_max`` and both land on the same ``priority`` value - this
+    is tolerated, not locked against, because ties are already broken
+    deterministically everywhere this column is ordered
+    (``created_at desc, id desc``); a rare concurrent-capture collision only
+    ever produces a stable order, never a corrupt or crashing one, so no
+    ``with_for_update()`` guard is needed here."""
     current_max = (
         db.query(func.max(Idea.priority))
         .filter(
@@ -167,20 +175,32 @@ class IdeaReadService:
     ) -> "tuple[Dict[str, IdeaMergedIntoOut], Dict[str, int]]":
         """Issue #94, plan section 3.2 - ``mergedInto`` (batched survivor
         lookup) + ``mergedCount`` (ONE grouped count over the page's ids), no
-        N+1 regardless of page size."""
+        N+1 regardless of page size.
+
+        Review round 1 BLOCKER #2 - both queries below are tenant-scoped
+        (``Idea.tenant_id.in_(tenant_ids)``, the caller's OWN tenant ids,
+        never client input): a stored ``merged_into_id`` is a polymorphic
+        stored id (the same rule as ``notification_recipients.target_id``) -
+        resolving it unscoped could pick up a foreign tenant's row that
+        happens to share an id pattern. ``survivor.tenant_id == idea.tenant_id``
+        is asserted again per-idea as a second guard (every call site here
+        is single-tenant in practice, but this never trusts that)."""
         if not ideas:
             return {}, {}
         idea_ids = [i.id for i in ideas]
+        tenant_ids = {i.tenant_id for i in ideas}
         survivor_ids = {i.merged_into_id for i in ideas if i.merged_into_id}
         merged_into_map: Dict[str, IdeaMergedIntoOut] = {}
         if survivor_ids:
             survivors = {
                 s.id: s
-                for s in self.db.query(Idea).filter(Idea.id.in_(survivor_ids)).all()
+                for s in self.db.query(Idea)
+                .filter(Idea.id.in_(survivor_ids), Idea.tenant_id.in_(tenant_ids))
+                .all()
             }
             for idea in ideas:
                 survivor = survivors.get(idea.merged_into_id) if idea.merged_into_id else None
-                if survivor is not None:
+                if survivor is not None and survivor.tenant_id == idea.tenant_id:
                     merged_into_map[idea.id] = IdeaMergedIntoOut(
                         id=survivor.id,
                         ideaNumber=survivor.idea_number,
@@ -188,7 +208,7 @@ class IdeaReadService:
                     )
         rows = (
             self.db.query(Idea.merged_into_id, func.count(Idea.id))
-            .filter(Idea.merged_into_id.in_(idea_ids))
+            .filter(Idea.merged_into_id.in_(idea_ids), Idea.tenant_id.in_(tenant_ids))
             .group_by(Idea.merged_into_id)
             .all()
         )
@@ -255,6 +275,25 @@ class IdeaReadService:
                     result[idea.id] = lane_rank.get(idea.id)
         return result
 
+    def _non_archived_statuses_ordered(self, tenant_id: str) -> List[Status]:
+        """The tier's own non-archived statuses, ``sort_order`` ascending
+        (issue #94 review round 1 #5) - the ordered "main path" ``advance``
+        walks one step along, regardless of which edges happen to exist."""
+        tier = StatusRepository(self.db).resolve_tier(IDEA_ENTITY, tenant_id)
+        tier_filter = (
+            Status.tenant_id.is_(None) if tier is None else Status.tenant_id == tier
+        )
+        return (
+            self.db.query(Status)
+            .filter(
+                Status.entity_type == IDEA_ENTITY,
+                tier_filter,
+                Status.is_archived.is_(False),
+            )
+            .order_by(Status.sort_order.asc())
+            .all()
+        )
+
     def _transitions_and_advance(
         self,
         ideas: List[Idea],
@@ -263,29 +302,46 @@ class IdeaReadService:
         actor: Optional[User],
     ) -> (Dict[str, List[TransitionOut]], Dict[str, Optional[str]]):
         """Per-record fireable transitions + the single "advance" edge (plan
-        section 6). ``always=True`` (the core extension) always computes the
-        per-record map - ideation needs it on every request, not only when
-        some edge happens to be conditioned. Never branches on ``category``
-        or a hardcoded key: "advance" = the fireable edge whose target has
-        the smallest ``sort_order`` strictly greater than the current
-        status's - a pure trait/order rule."""
+        section 6; rule revised issue #94 review round 1 #5, AC-94-52).
+        ``always=True`` (the core extension) always computes the per-record
+        fireable map - ideation needs it on every request, not only when some
+        edge happens to be conditioned.
+
+        ``advanceTransitionId`` is the edge from the current status to the
+        IMMEDIATELY NEXT non-archived status in the tier's ``sort_order``,
+        ONLY when that exact edge is fireable for the caller; otherwise
+        ``null``. It never skips ahead to a later or terminal status (an
+        off-ramp such as Duplicate/Rejected must never be offered as
+        "advance" just because it happens to be the closest FIREABLE edge) -
+        a tenant that swaps two stages' order changes the advance target with
+        no code change, since it is driven purely by ``sort_order``, never a
+        hardcoded key or ``category``."""
         if not ideas or tenant_id is None:
             return {}, {}
+        tier = StatusRepository(self.db).resolve_tier(IDEA_ENTITY, tenant_id)
+        # ONE query for the tier's whole edge set (issue #94 review round 1
+        # #14) - reused both to hydrate fireable ids into full `TransitionOut`
+        # objects AND passed into `fireable_edge_ids` so it skips its own
+        # internal, otherwise-redundant copy of the same query.
+        edges = StatusTransitionRepository(self.db).list_for_entity(IDEA_ENTITY, tier)
+        edges_by_id = {e.id: e for e in edges}
         fireable = (
             status_machine.fireable_edge_ids(
-                self.db, IDEA_ENTITY, ideas, actor, tenant_id=tenant_id, always=True
+                self.db,
+                IDEA_ENTITY,
+                ideas,
+                actor,
+                tenant_id=tenant_id,
+                always=True,
+                preloaded_edges=edges,
             )
             or {}
         )
-        tier = StatusRepository(self.db).resolve_tier(IDEA_ENTITY, tenant_id)
-        edges_by_id = {
-            e.id: e
-            for e in StatusTransitionRepository(self.db).list_for_entity(IDEA_ENTITY, tier)
-        }
+        ordered_statuses = self._non_archived_statuses_ordered(tenant_id)
         transitions_map: Dict[str, List[TransitionOut]] = {}
         advance_map: Dict[str, Optional[str]] = {}
         for idea in ideas:
-            edges = [
+            idea_edges = [
                 edges_by_id[eid] for eid in fireable.get(idea.id, []) if eid in edges_by_id
             ]
             transitions_map[idea.id] = [
@@ -295,15 +351,17 @@ class IdeaReadService:
                     toStatusId=e.to_status_id,
                     toStatusLabel=e.to_status.label if e.to_status else "",
                 )
-                for e in edges
+                for e in idea_edges
             ]
             current = statuses.get(idea.status_id)
             current_sort = current.sort_order if current else -1
-            candidates = sorted(
-                (e for e in edges if e.to_status and e.to_status.sort_order > current_sort),
-                key=lambda e: (e.to_status.sort_order, e.sort_order),
+            next_status_id = next(
+                (s.id for s in ordered_statuses if s.sort_order > current_sort), None
             )
-            advance_map[idea.id] = candidates[0].id if candidates else None
+            advance_map[idea.id] = next(
+                (e.id for e in idea_edges if e.to_status_id == next_status_id),
+                None,
+            ) if next_status_id else None
         return transitions_map, advance_map
 
     def serialize_many(

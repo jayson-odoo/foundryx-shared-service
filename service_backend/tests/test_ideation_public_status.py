@@ -1043,6 +1043,37 @@ def test_public_page_of_merged_child(setup):
     assert body2["mergedInto"] is None
 
 
+def test_public_merged_into_title_falls_back_to_idea_number_never_problem(setup):
+    """Review round 1 NIT #13: ``mergedInto.title`` falls back to the
+    survivor's idea number when it has no ``title`` - NEVER its ``problem``
+    (a full problem statement is not an identity, and may be long/sensitive)."""
+    s = setup
+    child_token = "tok94" + "c" * 19
+    survivor_id = _make_captured_idea(
+        s["factory"],
+        s["product_id"],
+        title=None,
+        idea_number="IDEA-9410",
+        problem="A much longer survivor problem statement nobody should see here",
+        status_key="triaged",
+    )
+    child_id = _make_captured_idea(
+        s["factory"], s["product_id"], title="Child idea", idea_number="IDEA-9411",
+        status_token=child_token, problem="the child's own problem",
+    )
+    h = s["h"]
+    res_merge = s["client"].post(
+        "/ideation/ideas/merge",
+        headers=h,
+        json={"survivorId": survivor_id, "ideaIds": [survivor_id, child_id]},
+    )
+    assert res_merge.status_code == 200, res_merge.text
+
+    res = s["client"].get(f"/public/ideas/{child_token}")
+    assert res.status_code == 200, res.text
+    assert res.json()["mergedInto"] == {"ideaNumber": "IDEA-9410", "title": "IDEA-9410"}
+
+
 # ── Migration existence: 0010 chains onto 0009 ────────────────────────────────
 
 

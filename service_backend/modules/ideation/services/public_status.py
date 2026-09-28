@@ -115,8 +115,13 @@ class PublicIdeaStatusService:
             )
             if survivor is not None:
                 display_idea = survivor
+                # Review round 1 NIT #13: NEVER the survivor's `problem` (a
+                # full problem statement, not an identity) - fall back to its
+                # idea number, the same identity shown everywhere else on
+                # this public page.
                 merged_into = PublicMergedIntoOut(
-                    ideaNumber=survivor.idea_number, title=survivor.title or survivor.problem
+                    ideaNumber=survivor.idea_number,
+                    title=survivor.title or survivor.idea_number,
                 )
 
         # Scoped by the DISPLAY idea's OWN tenant_id (review round 2 nit) - a

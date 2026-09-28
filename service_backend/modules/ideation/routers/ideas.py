@@ -119,7 +119,10 @@ def reorder_ideas(
 ) -> List[IdeaOut]:
     """Set manual priority from the given id order (index = priority, top first)."""
     return IdeaActionService(db).reorder(
-        current_user.tenant_id, body.orderedIds, voter_id=current_user.id
+        current_user.tenant_id,
+        body.orderedIds,
+        voter_id=current_user.id,
+        actor=current_user,
     )
 
 

@@ -72,8 +72,24 @@ def upgrade() -> None:
             "ADD COLUMN IF NOT EXISTS origin_idea_id VARCHAR NULL"
         )
     )
+    # Review round 1 NIT #9 - the model declares `index=True` on this column;
+    # this hand-written migration must provision the same index (autogenerate
+    # is not used here), matching SQLAlchemy's default `ix_<table>_<col>` name.
+    bind.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_idea_votes_origin_idea_id "
+            f'ON "{schema}".idea_votes (origin_idea_id)'
+        )
+    )
 
     # ---- 3. idea_status_events (section 7.1) ----
+    # `created_at` defaults to `clock_timestamp()` (review round 1 #6) - the
+    # real wall clock at INSERT time, unlike `now()` which is fixed for the
+    # whole transaction (a merge/unmerge writing several rows in one commit
+    # would otherwise stamp them all identically, defeating the settle
+    # window's per-row cursor precision). Postgres-only DDL, so this is safe
+    # here (the SQLAlchemy model uses a Python-side default instead, for the
+    # SQLite test engine's `create_all` path - see `modules/ideation/models.py`).
     bind.execute(
         text(
             f'CREATE TABLE IF NOT EXISTS "{schema}".idea_status_events ('
@@ -84,7 +100,7 @@ def upgrade() -> None:
             "  kind VARCHAR NOT NULL,"
             "  is_test BOOLEAN NOT NULL DEFAULT false,"
             "  payload_json JSON NULL,"
-            "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+            "  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),"
             "  CONSTRAINT uq_idea_status_events_id UNIQUE (id)"
             ")"
         )
@@ -93,6 +109,21 @@ def upgrade() -> None:
         text(
             "CREATE INDEX IF NOT EXISTS ix_idea_status_events_tenant_seq "
             f'ON "{schema}".idea_status_events (tenant_id, seq)'
+        )
+    )
+    # Review round 1 NIT #9 - the model also declares `index=True` on
+    # `tenant_id` and `idea_id` individually (in addition to the composite
+    # above); provision those too so a migrated database matches `create_all`.
+    bind.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_idea_status_events_tenant_id "
+            f'ON "{schema}".idea_status_events (tenant_id)'
+        )
+    )
+    bind.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_idea_status_events_idea_id "
+            f'ON "{schema}".idea_status_events (idea_id)'
         )
     )
 
@@ -120,11 +151,18 @@ def downgrade() -> None:
 
     schema = IDEATION_SCHEMA
 
+    # `DROP TABLE`/column drops automatically drop indexes defined solely on
+    # the dropped column/table (Postgres CASCADE-by-dependency) - only the
+    # standalone `ix_ideas_merged_into_id` (on the pre-existing `ideas`
+    # table, which is NOT dropped) needs an explicit drop. Schema-qualified
+    # (review round 1 NIT #9) - an index name is schema-scoped too; a bare
+    # name risks missing it (or hitting a same-named index elsewhere) when
+    # `search_path` doesn't include this module's schema.
     bind.execute(text(f'DROP TABLE IF EXISTS "{schema}".idea_status_events'))
     bind.execute(
         text(f'ALTER TABLE "{schema}".idea_votes DROP COLUMN IF EXISTS origin_idea_id')
     )
-    bind.execute(text("DROP INDEX IF EXISTS ix_ideas_merged_into_id"))
+    bind.execute(text(f'DROP INDEX IF EXISTS "{schema}".ix_ideas_merged_into_id'))
     bind.execute(
         text(f'ALTER TABLE "{schema}".ideas DROP COLUMN IF EXISTS merged_at')
     )

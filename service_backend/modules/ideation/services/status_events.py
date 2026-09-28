@@ -29,9 +29,10 @@ resolves, even on an idea that never went through the conversational sink.
    fan-out (the row's own ``payload_json`` is already the wire shape).
 """
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models.status import Status
@@ -110,7 +111,7 @@ def _write_event(
         is_test=bool(recipient.is_test),
     )
     db.add(row)
-    db.flush()  # assigns row.seq (autoincrement PK) + row.created_at (server_default)
+    db.flush()  # assigns row.seq (autoincrement PK) + row.created_at (Python default)
 
     row.payload_json = {
         "event_id": row.id,
@@ -242,6 +243,37 @@ def record_merge_events(
         )
 
 
+def record_flatten_events(
+    db: Session,
+    *,
+    tenant_id: str,
+    survivor: Idea,
+    children: List[Idea],
+) -> None:
+    """Review round 1 NIT #10 - a grandchild re-pointed straight onto a NEW
+    survivor during flatten (``IdeaMergeService.merge``, D2) gets its OWN
+    ``kind="merged"`` row: its requester was already told (at ITS OWN
+    original merge) that it was combined into the OLD (intermediate)
+    survivor, and now needs telling it tracks the NEW one instead. No row
+    for the intermediate member itself - it is never a requester recipient,
+    only a now-frozen pointer hop."""
+    survivor_status = db.query(Status).filter(Status.id == survivor.status_id).first()
+    status_label = survivor_status.label if survivor_status else ""
+    for child in children:
+        contact = _resolve_requester_contact(db, tenant_id, child)
+        if contact is None or not contact.phone:
+            continue
+        _write_event(
+            db,
+            tenant_id=tenant_id,
+            kind=KIND_MERGED,
+            recipient=child,
+            requester_phone=contact.phone,
+            status_label=status_label,
+            merged_into=_merged_into_dict(survivor),
+        )
+
+
 def record_unmerge_events(
     db: Session,
     *,
@@ -288,6 +320,24 @@ def record_unmerge_events(
 # ── 3. the feed (CRM workspace-key read) ─────────────────────────────────────
 
 
+def _is_postgres(db: Session) -> bool:
+    bind = db.get_bind()
+    return bool(bind is not None and bind.dialect.name == "postgresql")
+
+
+def _settle_window_cutoff_expr(db: Session):
+    """Review round 1 #6 - the settle-window cutoff computed ENTIRELY IN SQL
+    from the DATABASE's own clock, never the app process's (`datetime.now()`
+    in Python is vulnerable to app/DB clock skew, which could silently widen
+    or shrink the window). Postgres: ``clock_timestamp()`` (the real wall
+    clock, unlike ``now()`` which is fixed for the whole transaction) minus
+    the window. SQLite (tests): ``datetime('now', ...)`` is also the
+    engine's own clock, never the app's."""
+    if _is_postgres(db):
+        return text(f"clock_timestamp() - interval '{SETTLE_WINDOW_SECONDS} seconds'")
+    return text(f"datetime('now', '-{SETTLE_WINDOW_SECONDS} seconds')")
+
+
 def list_feed_events(
     db: Session,
     tenant_id: str,
@@ -299,16 +349,16 @@ def list_feed_events(
     """``GET /ideation/intake/status-events`` (AC-94-66): tenant T's rows with
     ``seq > after``, ascending, at most ``limit`` (clamped to
     ``MAX_FEED_LIMIT``). Withholds anything younger than the settle window
-    (AC-94-68) and, by default, ``is_test`` rows (AC-94-67). ONE query - the
-    row's own ``payload_json`` (built at write time) is already the exact
-    wire shape, so there is no per-row fan-out here."""
+    (AC-94-68, computed in SQL from the DB's own clock - review round 1 #6)
+    and, by default, ``is_test`` rows (AC-94-67). ONE query - the row's own
+    ``payload_json`` (built at write time) is already the exact wire shape,
+    so there is no per-row fan-out here."""
     limit = max(1, min(limit, MAX_FEED_LIMIT))
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=SETTLE_WINDOW_SECONDS)
 
     query = db.query(IdeaStatusEvent).filter(
         IdeaStatusEvent.tenant_id == tenant_id,
         IdeaStatusEvent.seq > after,
-        IdeaStatusEvent.created_at <= cutoff,
+        IdeaStatusEvent.created_at <= _settle_window_cutoff_expr(db),
     )
     if not include_test:
         query = query.filter(IdeaStatusEvent.is_test.is_(False))

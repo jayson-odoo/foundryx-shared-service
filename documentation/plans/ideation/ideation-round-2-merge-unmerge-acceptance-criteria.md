@@ -217,8 +217,8 @@ Unless stated otherwise, "the list" means both the operator list (`/ideation/ide
 - Test: `test_transitions_are_fireable_only`.
 
 ### AC-94-52 - advance = the next stage by sort order [BE][T]
-- **Given** an idea, **then** `advanceTransitionId` is the fireable edge whose target has the smallest `sort_order` strictly greater than the current status's; `null` when none. A tenant that swaps two stages' order changes the advance target with no code change.
-- Test: `test_advance_follows_sort_order`.
+- **Given** an idea, **then** `advanceTransitionId` is the edge from the current status to the immediately next non-archived status in the tier's sort order, when that edge is fireable for the caller; otherwise `null` (never an off-ramp such as Duplicate or Rejected). A tenant that swaps two stages' order changes the advance target with no code change.
+- Test: `test_advance_follows_sort_order`, `test_advance_never_skips_to_an_off_ramp_when_next_edge_is_role_blocked` (review round 1 #5).
 
 ### AC-94-53 - moves by target status id [BE][T]
 - **Given** `POST /{id}/status {toStatusId}`, **then** the move runs through `status_machine.transition`; a target outside the idea entity or the tenant tier is 422; a missing edge is 409. The key form `{status}` keeps working for the deferred Archive handler.

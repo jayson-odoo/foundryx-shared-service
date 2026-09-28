@@ -1156,6 +1156,55 @@ def test_fireable_edge_ids_always_true_bypasses_the_conditioned_short_circuit(
     db.close()
 
 
+def test_fireable_edge_ids_preloaded_edges_matches_default(client, session_factory):
+    """Issue #94 review round 1 #14: an optional ``preloaded_edges`` skips the
+    internal tier-edge query and groups the GIVEN rows instead - a caller
+    that already loaded the same tier's edges (e.g. to hydrate ids into full
+    ``TransitionOut`` objects) never pays for a second, redundant query. The
+    result must be IDENTICAL to the default (no-arg) path; every existing
+    caller passes nothing, so this is purely additive."""
+    from app.repositories.status_repository import StatusRepository
+    from app.repositories.status_transition_repository import StatusTransitionRepository
+
+    operator = _operator(client)
+    pending = _create_status(
+        client, operator, "synthetic_ticket", "Pending9414", {"isInitial": True}
+    )
+    approved = _create_status(client, operator, "synthetic_ticket", "Approved9414")
+    assert (
+        _create_edge(
+            client, operator, "synthetic_ticket", pending["id"], approved["id"], "Approve9414"
+        ).status_code
+        == 201
+    )
+
+    db = session_factory()
+    actor = _demo_user(db)
+    ticket = TicketRecord(
+        tenant_id=DEFAULT_TENANT_ID, name="preloaded-edges", status_id=pending["id"]
+    )
+    db.add(ticket)
+    db.commit()
+
+    default_ids = status_machine.fireable_edge_ids(
+        db, "synthetic_ticket", [ticket], actor, always=True
+    )
+
+    # The tier's whole edge set, loaded ONCE by the caller - the same shape
+    # ideation's ``ideas.py`` already loads for its own `TransitionOut`
+    # hydration. Resolved the SAME way `fireable_edge_ids` resolves it
+    # internally (never hardcoded - a tenant edit forks the tier).
+    tier = StatusRepository(db).resolve_tier("synthetic_ticket", actor.tenant_id)
+    preloaded = StatusTransitionRepository(db).list_for_entity("synthetic_ticket", tier)
+    preloaded_ids = status_machine.fireable_edge_ids(
+        db, "synthetic_ticket", [ticket], actor, always=True, preloaded_edges=preloaded
+    )
+
+    assert preloaded_ids == default_ids
+    assert preloaded_ids[ticket.id]
+    db.close()
+
+
 def test_reevaluate_fires_first_passing_auto_edge(client, session_factory):
     """AC-03-05/07 - reevaluate fires the first auto edge whose conditions pass;
     none passing = no move."""

@@ -27,7 +27,7 @@ from ..schemas import IdeaOut
 from .actions import IdeaActionService
 from .ideas import IdeaReadService
 from .numbering import mint_idea_identity
-from .status_events import record_merge_events, record_unmerge_events
+from .status_events import record_flatten_events, record_merge_events, record_unmerge_events
 
 
 class IdeaMergeService:
@@ -54,10 +54,19 @@ class IdeaMergeService:
         if survivor_id not in ids:
             raise HTTPException(422, "survivorId must be one of ideaIds.")
 
+        # Locked, in a STABLE id order (review round 1 #4) - a Postgres row
+        # lock so a concurrent merge/unmerge touching an overlapping id set
+        # blocks rather than racing past this validation; ordering by id
+        # avoids a lock-order deadlock against another transaction locking
+        # the same rows in a different order. SQLite (tests) ignores
+        # `with_for_update()` silently (single-writer engine, ignore is
+        # correct there, not a bug).
         ideas_by_id = {
             i.id: i
             for i in self.db.query(Idea)
             .filter(Idea.id.in_(ids), Idea.tenant_id == tenant_id)
+            .order_by(Idea.id.asc())
+            .with_for_update()
             .all()
         }
         if any(i not in ideas_by_id for i in ids):
@@ -74,23 +83,41 @@ class IdeaMergeService:
         now = datetime.now(timezone.utc)
         member_ids = [m.id for m in members]
 
-        # Flatten (D2, AC-94-05): any EXISTING children of an absorbed
-        # member re-point straight to the new survivor - never a chain.
-        if member_ids:
-            existing_children = (
-                self.db.query(Idea)
-                .filter(Idea.tenant_id == tenant_id, Idea.merged_into_id.in_(member_ids))
-                .all()
-            )
-            for child in existing_children:
-                child.merged_into_id = survivor_id
-
         # Only recount an idea whose vote-row SET actually changed (a row
         # physically moved onto/off it) - a shadowed row never moves, so a
         # member with nothing to move leaves the survivor's existing tally
         # untouched (never zeroes a real count just because THIS member had
         # no votes of its own).
         touched_ids = set()
+        flattened_children: List[Idea] = []
+
+        # Flatten (D2, AC-94-05): any EXISTING children of an absorbed
+        # member re-point straight to the new survivor - never a chain.
+        # Locked + ordered (review round 1 #4), same reasoning as above.
+        if member_ids:
+            existing_children = (
+                self.db.query(Idea)
+                .filter(Idea.tenant_id == tenant_id, Idea.merged_into_id.in_(member_ids))
+                .order_by(Idea.id.asc())
+                .with_for_update()
+                .all()
+            )
+            for child in existing_children:
+                # Review round 1 #3 (D4 lossless under flatten): a grandchild's
+                # votes may currently be resident on the INTERMEDIATE member
+                # (the member that originally absorbed it), stamped
+                # `origin_idea_id == child.id` - not on the child itself.
+                # Flatten repoints `child.merged_into_id` straight to the NEW
+                # survivor (D2, single hop), so any such row must follow it
+                # NOW, or it is permanently stranded on a node nobody will
+                # ever look at again (an intermediate member that is itself
+                # about to become a frozen child) - unmerging the grandchild
+                # would never find it, and the intermediate member would wrongly
+                # keep counting it forever.
+                touched_ids |= self._relocate_inherited_votes(child.id, survivor_id)
+                child.merged_into_id = survivor_id
+                flattened_children.append(child)
+
         for index, member in enumerate(members):
             moved = self._move_votes(member.id, survivor_id)
             member.merged_into_id = survivor_id
@@ -111,6 +138,15 @@ class IdeaMergeService:
         record_merge_events(
             self.db, tenant_id=tenant_id, survivor=survivor, members=members, actor=actor
         )
+        if flattened_children:
+            # Review round 1 NIT #10 - a grandchild re-pointed straight onto
+            # the NEW survivor (flatten) gets its OWN "merged" event too: its
+            # requester was already told it was combined into the OLD
+            # (intermediate) survivor, and now needs to know it tracks the
+            # NEW one instead.
+            record_flatten_events(
+                self.db, tenant_id=tenant_id, survivor=survivor, children=flattened_children
+            )
 
         self.db.commit()
         self.db.refresh(survivor)
@@ -171,6 +207,48 @@ class IdeaMergeService:
         self.db.flush()
         return moved
 
+    def _relocate_inherited_votes(self, child_id: str, new_survivor_id: str) -> set:
+        """Review round 1 #3 (D4 lossless under flatten) - grandchild votes
+        stamped ``origin_idea_id == child_id`` may currently live on an
+        INTERMEDIATE absorbed member (wherever they physically moved to when
+        ``child_id`` was originally merged), not on ``child_id`` itself.
+        Flatten repoints ``child_id.merged_into_id`` straight to
+        ``new_survivor_id`` (D2, single hop) - so each such row must follow:
+
+        - if the new survivor does NOT already have that voter, move the row
+          onto the new survivor, KEEPING its ``origin_idea_id`` stamp (a
+          later ``unmerge(child_id)`` finds it there exactly as it would a
+          normal single-level stamped vote);
+        - if the new survivor ALREADY has that voter (a collision), send the
+          row straight back to its TRUE origin (``child_id``), clearing the
+          stamp - a normal resident/shadowed vote, restorable with no move at
+          all, instead of a row permanently stranded on an intermediate node
+          nobody will ever inspect again.
+
+        Returns the set of idea ids whose vote-row SET changed (for the
+        caller's recount pass) - the row's OLD location, and either
+        ``new_survivor_id`` or ``child_id`` depending on which branch fired."""
+        rows = self.db.query(IdeaVote).filter(IdeaVote.origin_idea_id == child_id).all()
+        touched: set = set()
+        for row in rows:
+            if row.idea_id == new_survivor_id:
+                continue  # already resident on the target, nothing to move
+            shadow = (
+                self.db.query(IdeaVote)
+                .filter(IdeaVote.idea_id == new_survivor_id, IdeaVote.voter_id == row.voter_id)
+                .first()
+            )
+            touched.add(row.idea_id)
+            if shadow is not None:
+                touched.add(child_id)
+                row.idea_id = child_id
+                row.origin_idea_id = None
+            else:
+                touched.add(new_survivor_id)
+                row.idea_id = new_survivor_id
+        self.db.flush()
+        return touched
+
     # ── unmerge ──────────────────────────────────────────────────────────────
 
     def unmerge(
@@ -178,13 +256,25 @@ class IdeaMergeService:
     ) -> List[IdeaOut]:
         """Restore ``idea_id`` (a child - AC-94-07) or dissolve its whole
         group (a survivor - AC-94-08); 422 for a plain idea (neither)."""
-        idea = self._idea_in_tenant(tenant_id, idea_id)
+        # Locked (review round 1 #4) - same reasoning as `merge()`: a stable
+        # row lock (target first, then its group in id order) so a
+        # concurrent merge/unmerge touching an overlapping id set blocks
+        # rather than racing. SQLite (tests) ignores `with_for_update()`
+        # silently.
+        idea = (
+            self.db.query(Idea)
+            .filter(Idea.id == idea_id, Idea.tenant_id == tenant_id)
+            .with_for_update()
+            .first()
+        )
         if idea is None:
             raise HTTPException(404, "Idea not found.")
 
         children = (
             self.db.query(Idea)
             .filter(Idea.tenant_id == tenant_id, Idea.merged_into_id == idea_id)
+            .order_by(Idea.id.asc())
+            .with_for_update()
             .all()
         )
         if idea.merged_into_id:

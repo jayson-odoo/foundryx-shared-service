@@ -174,6 +174,52 @@ def test_advance_follows_sort_order(ideation_client):
     assert res2.json()["advanceTransitionId"] is None  # terminal - nothing to advance to
 
 
+def test_advance_never_skips_to_an_off_ramp_when_next_edge_is_role_blocked(ideation_client):
+    """Review round 1 #5 (AC-94-52 revised): ``advanceTransitionId`` is the
+    edge to the IMMEDIATELY next non-archived status, only when THAT edge is
+    fireable for the caller - never a later reachable status, and never an
+    off-ramp like Duplicate/Rejected. Role-block the true next edge
+    (captured -> triaged) for this actor: the OLD "smallest sort_order among
+    fireable edges" rule would have skipped ahead to "Mark duplicate"
+    (captured -> duplicate, still fireable, the next-smallest target sort
+    order) - the revised rule must return null instead, and must never
+    surface Duplicate as the advance target."""
+    h = _auth(ideation_client)
+    pid = _create_software_product(ideation_client, h)
+    a = _insert_idea(ideation_client._factory, pid, status_key="captured")
+
+    from app.models import Role
+    from app.models.status_transition import StatusTransition
+
+    db = ideation_client._factory()
+    try:
+        edge = (
+            db.query(StatusTransition)
+            .filter(StatusTransition.id == "idea-tr-triage")
+            .first()
+        )
+        blocking_role = Role(
+            tenant_id=DEFAULT_TENANT_ID,
+            name="Nobody-Holds-This-94-52",
+            description="test-only role, held by no user",
+            is_system=False,
+        )
+        db.add(blocking_role)
+        db.flush()
+        edge.roles = [blocking_role]
+        db.commit()
+    finally:
+        db.close()
+
+    res = ideation_client.get(f"/ideation/ideas/{a}", headers=h)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    labels = {t["label"] for t in body["transitions"]}
+    assert "Triage" not in labels  # role-blocked for this actor
+    assert "Mark duplicate" in labels  # still fireable and still reachable
+    assert body["advanceTransitionId"] is None  # never skips to that off-ramp
+
+
 # ── AC-94-53 ───────────────────────────────────────────────────────────────
 
 
