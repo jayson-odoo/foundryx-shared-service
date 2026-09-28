@@ -177,3 +177,33 @@ describe('shared TriageBoard in embed mode', () => {
     expect(link?.getAttribute('href')).toBe('/embed/ideas/i-1#token=t');
   });
 });
+
+// ── AC-94-40 (issue #94) - the pager works in the embed ───────────────────────
+// TEST-FIRST: `buildEmbedRuntime`'s `formHref` only ever handles `opts?.edit` -
+// `ctx`/`index` are silently dropped, so this fails until slice S1 wires the
+// pager query onto the embed runtime too (plan section 4.3).
+
+vi.mock('./embed-session', () => ({
+  useEmbedSession: () => ({ status: 'ready', tenantId: 't' }),
+  EmbedExpired: () => null,
+  EmbedLoading: () => null,
+}));
+
+describe('embed pager - paths.formHref carries ctx/index, never the token (AC-94-40)', () => {
+  function PagerProbe() {
+    const { paths } = useIdeationRuntime();
+    return <span data-testid="href">{paths.formHref('abc', { ctx: 'CTX', index: 2 })}</span>;
+  }
+
+  it('builds a plain query on /embed/ideas/{id} with ctx and i, no token in the query', async () => {
+    const { EmbedIdeationShell } = await import('./embed-app');
+    render(
+      <EmbedIdeationShell>
+        <PagerProbe />
+      </EmbedIdeationShell>,
+    );
+    const href = screen.getByTestId('href').textContent;
+    expect(href).toBe('/embed/ideas/abc?ctx=CTX&i=2');
+    expect(href).not.toContain('token');
+  });
+});

@@ -1104,6 +1104,58 @@ def test_auto_edges_excluded_from_user_surfaces(client, session_factory):
     db.close()
 
 
+def test_fireable_edge_ids_always_true_bypasses_the_conditioned_short_circuit(
+    client, session_factory
+):
+    """Plan-94 (issue #94, ideation round 2) core extension: `fireable_edge_ids`
+    gains a keyword `always: bool = False`. The default behaviour (above) is
+    unchanged - no conditioned edge anywhere in the tier still short-circuits
+    to `None`. With `always=True` the per-record fireable-edge map is ALWAYS
+    computed and returned, even when nothing in the tier is conditioned -
+    ideation's `IdeaOut.transitions` needs the map on every request, not only
+    when a conditioned edge happens to exist somewhere in the graph.
+
+    TEST-FIRST: `fireable_edge_ids` has no `always` keyword yet - this fails
+    with a `TypeError` until the core extension lands (plan section 6,
+    `app/services/status_machine.py:324`)."""
+    from app.models.status_transition import StatusTransition
+
+    operator = _operator(client)
+    pending = _create_status(
+        client, operator, "synthetic_ticket", "Pending94", {"isInitial": True}
+    )
+    approved = _create_status(client, operator, "synthetic_ticket", "Approved94")
+    assert (
+        _create_edge(
+            client, operator, "synthetic_ticket", pending["id"], approved["id"], "Approve94"
+        ).status_code
+        == 201
+    )
+
+    db = session_factory()
+    actor = _demo_user(db)
+    ticket = TicketRecord(tenant_id=DEFAULT_TENANT_ID, name="always-true", status_id=pending["id"])
+    db.add(ticket)
+    db.commit()
+
+    # Default (unchanged): no conditioned edge in the tier -> None.
+    default_ids = status_machine.fireable_edge_ids(db, "synthetic_ticket", [ticket], actor)
+    assert default_ids is None
+
+    # `always=True` bypasses the short-circuit - a real per-record map, even
+    # though nothing here is conditioned.
+    always_ids = status_machine.fireable_edge_ids(
+        db, "synthetic_ticket", [ticket], actor, always=True
+    )
+    assert always_ids is not None
+    assert always_ids[ticket.id]
+    edges = (
+        db.query(StatusTransition).filter(StatusTransition.id.in_(always_ids[ticket.id])).all()
+    )
+    assert "Approve94" in {e.label for e in edges}
+    db.close()
+
+
 def test_reevaluate_fires_first_passing_auto_edge(client, session_factory):
     """AC-03-05/07 - reevaluate fires the first auto edge whose conditions pass;
     none passing = no move."""

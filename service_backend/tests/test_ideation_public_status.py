@@ -618,12 +618,16 @@ def test_public_status_exact_key_set_and_no_pii(setup):
         "title", "status", "ideaNumber", "statusColor", "productName",
         "problem", "proposedSolution", "impact", "department",
         "submitterFirstName", "submittedAt", "upvotes", "nextStep", "timeline",
+        # AC-94-14 (issue #94): the ONLY key this round adds - a merged
+        # child's page names the survivor; `None` for an un-merged idea.
+        "mergedInto",
     }
     for forbidden_key in (
         "id", "productId", "tenantId", "statusId", "key", "submitterContactId",
         "phone", "email", "lastName", "submitterName", "submitterTier",
         "rawText", "capturedJson", "intakeState", "attachments", "downvotes",
         "priority", "isTest", "statusToken", "draftId", "submitter", "product",
+        "mergedIntoId", "mergedCount",
     ):
         assert forbidden_key not in body
     raw = res.text
@@ -987,6 +991,56 @@ def test_suspended_tenant_never_serves_a_public_idea_status(setup):
     res = s["client"].get(f"/public/ideas/{token}")
     assert res.status_code == 404
     assert res.json() == UNIFORM_404
+
+
+# ── AC-94-13 (issue #94) - the public page of a merged child ─────────────────
+
+
+def test_public_page_of_merged_child(setup):
+    """AC-94-13: a merged child's public page keeps its OWN content (title,
+    problem, ...) but takes status/timeline/upvotes/nextStep from the
+    survivor and carries `mergedInto`; after unmerge it reverts to its own
+    status with `mergedInto = null`.
+
+    TEST-FIRST: `POST /ideation/ideas/merge`, `Idea.merged_into_id` and the
+    `mergedInto` key on the public schema don't exist yet (plan section 3.4)."""
+    s = setup
+    child_token = "tok94" + "a" * 19
+    survivor_token = "tok94" + "b" * 19
+    survivor_id = _make_captured_idea(
+        s["factory"], s["product_id"], title="Survivor idea", idea_number="IDEA-9401",
+        status_token=survivor_token, status_key="triaged", upvotes=3,
+    )
+    child_id = _make_captured_idea(
+        s["factory"], s["product_id"], title="Child idea", idea_number="IDEA-9402",
+        status_token=child_token, problem="the child's own problem",
+    )
+
+    h = s["h"]
+    res_merge = s["client"].post(
+        "/ideation/ideas/merge",
+        headers=h,
+        json={"survivorId": survivor_id, "ideaIds": [survivor_id, child_id]},
+    )
+    assert res_merge.status_code == 200, res_merge.text
+
+    res = s["client"].get(f"/public/ideas/{child_token}")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["title"] == "Child idea"
+    assert body["problem"] == "the child's own problem"
+    assert body["status"] == "Triaged"  # the SURVIVOR's status
+    assert body["upvotes"] == 3  # the SURVIVOR's tally
+    assert body["mergedInto"] == {"ideaNumber": "IDEA-9401", "title": "Survivor idea"}
+
+    unres = s["client"].post(f"/ideation/ideas/{child_id}/unmerge", headers=h)
+    assert unres.status_code == 200, unres.text
+
+    res2 = s["client"].get(f"/public/ideas/{child_token}")
+    assert res2.status_code == 200, res2.text
+    body2 = res2.json()
+    assert body2["status"] == "New"  # its own status again
+    assert body2["mergedInto"] is None
 
 
 # ── Migration existence: 0010 chains onto 0009 ────────────────────────────────

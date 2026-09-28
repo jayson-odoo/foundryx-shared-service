@@ -1,0 +1,98 @@
+/**
+ * AC-94-33 (no Status control, in any mode) and AC-94-46 (the form shows the
+ * real `rank`, never the raw stored `priority`) - issue #94, ideation round 2,
+ * plan sections 4.1 and 5.
+ *
+ * TEST-FIRST (PRINCIPLES.md): `DetailsTab` still renders a bare
+ * `@/components/ui/select` Status row in edit mode and an `IDEA_STATUS_LABEL`
+ * badge in read mode, and renders the raw `idea.priority` - every assertion
+ * below is expected to fail until slice S1 lands.
+ */
+import { render, screen, within } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
+import { useForm } from 'react-hook-form';
+import { Form } from '@/components/ui/form';
+import type { Idea, Product } from '@/types/ideation';
+import { DetailsTab } from './idea-form-fields';
+import type { IdeaFormValues } from './idea-schema';
+
+const anIdea = (over: Partial<Idea> = {}): Idea => ({
+  id: 'idea-1',
+  productId: 'prod-1',
+  productName: 'Sorento CRM',
+  status: 'captured',
+  problem: 'Export orders to Excel',
+  rawText: 'raw',
+  source: 'whatsapp',
+  submitterName: 'Jayson',
+  upvotes: 0,
+  downvotes: 0,
+  myVote: null,
+  // Deliberately a DIFFERENT number from `rank` below, so a test asserting
+  // "#1" cannot pass by accident if the component still renders the raw
+  // stored `priority` instead of the engine-computed `rank`.
+  priority: 7,
+  attachments: [],
+  createdAt: '2026-07-18T00:00:00Z',
+  isTest: false,
+  ...over,
+});
+
+const products: Product[] = [{ id: 'prod-1', name: 'Sorento CRM', kind: 'software' }];
+
+function Harness({ idea, editing }: { idea: Idea | null; editing: boolean }) {
+  const form = useForm<IdeaFormValues>({
+    defaultValues: {
+      problem: idea?.problem ?? '',
+      productId: idea?.productId ?? '',
+      status: idea?.status ?? 'captured',
+      proposedSolution: idea?.proposedSolution ?? '',
+      impact: idea?.impact ?? '',
+      department: idea?.department ?? '',
+      rawText: idea?.rawText ?? '',
+    },
+  });
+  return (
+    <Form {...form}>
+      <DetailsTab form={form} editing={editing} creating={false} idea={idea} products={products} />
+    </Form>
+  );
+}
+
+describe('DetailsTab - no Status control in any mode (AC-94-33)', () => {
+  it('renders no Status row in EDIT mode', () => {
+    render(<Harness idea={anIdea()} editing />);
+    expect(screen.queryByText('Status')).not.toBeInTheDocument();
+    expect(document.querySelector('select')).toBeNull();
+  });
+
+  it('renders no Status row in READ mode either (owner Q5)', () => {
+    render(<Harness idea={anIdea()} editing={false} />);
+    expect(screen.queryByText('Status')).not.toBeInTheDocument();
+    // Today's read-mode badge text for a captured idea ("New") must not
+    // appear as a status pill on this tab (status lives on the list/board).
+    expect(screen.queryByText('New')).not.toBeInTheDocument();
+  });
+});
+
+function priorityRowValue(): HTMLElement {
+  const label = screen.getByText('Priority');
+  const row = label.parentElement as HTMLElement;
+  return row;
+}
+
+describe('DetailsTab - Priority shows the real rank, never the raw stored priority (AC-94-46)', () => {
+  it('reads "#{rank}" for a ranked idea', () => {
+    render(<Harness idea={anIdea({ rank: 1 } as Partial<Idea>)} editing={false} />);
+    const row = within(priorityRowValue());
+    expect(row.getByText('#1')).toBeInTheDocument();
+    expect(row.queryByText('#7')).not.toBeInTheDocument(); // the raw `priority`
+  });
+
+  it('reads "-" for an unranked (archived/merged) idea, never "#0"', () => {
+    render(<Harness idea={anIdea({ rank: null } as Partial<Idea>)} editing={false} />);
+    const row = within(priorityRowValue());
+    expect(row.getByText('-')).toBeInTheDocument();
+    expect(row.queryByText(/^#/)).not.toBeInTheDocument();
+  });
+});
