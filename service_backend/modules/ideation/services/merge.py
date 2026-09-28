@@ -196,6 +196,12 @@ class IdeaMergeService:
                 422, "This idea is neither merged nor the survivor of a merge."
             )
 
+        # Captured BEFORE the loop clears the pointer - the requester-event
+        # writer needs each restored child's FORMER survivor (`separated_from`,
+        # AC-94-64), and by the time it runs below `merged_into_id` is already
+        # None on every target.
+        former_survivor_ids = {child.id: child.merged_into_id for child in targets}
+
         touched_ids = set()
         for child in targets:
             survivor_id = child.merged_into_id
@@ -210,7 +216,13 @@ class IdeaMergeService:
             if row is not None:
                 self._actions._recount(row)
 
-        record_unmerge_events(self.db, tenant_id=tenant_id, restored=targets, actor=actor)
+        record_unmerge_events(
+            self.db,
+            tenant_id=tenant_id,
+            restored=targets,
+            former_survivor_ids=former_survivor_ids,
+            actor=actor,
+        )
 
         self.db.commit()
         restored_ids = [t.id for t in targets]
