@@ -39,6 +39,16 @@ class TransitionOut(ApiModel):
     toStatusLabel: str
 
 
+class IdeaMergedIntoOut(ApiModel):
+    """The survivor a merged child now points at (issue #94, plan section 3.3) -
+    ``id`` for navigation, ``ideaNumber``/``title`` for display. ``None`` on
+    ``IdeaOut.mergedInto`` for an idea that is not a merged child."""
+
+    id: str
+    ideaNumber: Optional[str] = None
+    title: Optional[str] = None
+
+
 class IdeaOut(ApiModel):
     """One Idea, matching the FE ``Idea`` shape (types/ideation.ts). ``status`` is
     the lifecycle KEY (e.g. ``captured``); ``productName``/``submitterName`` are
@@ -93,6 +103,13 @@ class IdeaOut(ApiModel):
     # A console/``--say`` test turn (issue #1179) - false for every real capture.
     # Excluded from list/board by default (``includeTest`` opts in).
     isTest: bool = False
+    # Merge/unmerge (issue #94, plan section 3.3). ``mergedIntoId``/``mergedInto``
+    # are set ONLY on a merged child (never on a survivor); ``mergedCount`` is
+    # the number of children merged into THIS idea (0 for a plain idea or a
+    # child - a child holds no children of its own, D2 single-level).
+    mergedIntoId: Optional[str] = None
+    mergedInto: Optional[IdeaMergedIntoOut] = None
+    mergedCount: int = 0
 
 
 class BoardColumnOut(ApiModel):
@@ -141,6 +158,15 @@ class ReorderIn(ApiModel):
     ascending = top)."""
 
     orderedIds: List[str]
+
+
+class MergeIn(ApiModel):
+    """Collapse ``ideaIds`` onto ``survivorId`` (issue #94, plan section 3.2/3.3).
+    ``survivorId`` MUST be one of ``ideaIds`` (422 otherwise) - the caller
+    always names the survivor explicitly, never an implicit default (D8)."""
+
+    survivorId: str
+    ideaIds: List[str]
 
 
 class StatusIn(ApiModel):
@@ -445,6 +471,15 @@ class PublicIdeaTimelineStepOut(ApiModel):
     state: Literal["done", "current", "upcoming"]
 
 
+class PublicMergedIntoOut(ApiModel):
+    """The survivor named on a merged child's public page (AC-94-13/14) - no
+    id (the public page never surfaces a raw id), no submitter (never the
+    survivor's - AC-94-14)."""
+
+    ideaNumber: Optional[str] = None
+    title: Optional[str] = None
+
+
 class PublicIdeaStatusOut(ApiModel):
     """The public idea-status page contract - GET /public/ideas/{token}, no
     auth. Issue #90 widens this from the original 3-key contract
@@ -453,7 +488,12 @@ class PublicIdeaStatusOut(ApiModel):
     field cannot leak silently. ``status`` stays the status LABEL (e.g.
     ``New``), never the lifecycle key. No id, no tenant id, no last name, no
     phone/email, no raw transcript - see the router/service docstrings for
-    the full forbidden-field rationale."""
+    the full forbidden-field rationale.
+
+    ``mergedInto`` (issue #94, AC-94-13/14) - set only when this idea is a
+    merged child; ``status``/``statusColor``/``nextStep``/``timeline``/
+    ``upvotes`` are then the SURVIVOR's, while every content field above
+    stays this idea's own (plan section 3.4)."""
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 
@@ -471,3 +511,4 @@ class PublicIdeaStatusOut(ApiModel):
     upvotes: int = 0
     nextStep: str
     timeline: List[PublicIdeaTimelineStepOut] = Field(default_factory=list)
+    mergedInto: Optional[PublicMergedIntoOut] = None

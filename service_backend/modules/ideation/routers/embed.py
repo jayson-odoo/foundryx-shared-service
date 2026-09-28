@@ -36,6 +36,7 @@ from ..schemas import (
     BoardOut,
     IdeaOut,
     IdeaUpdateIn,
+    MergeIn,
     ReorderIn,
     StatusIn,
     VoteIn,
@@ -48,6 +49,7 @@ from ..services.embed import (
     verify_and_mint,
 )
 from ..services.ideas import IdeaReadService
+from ..services.merge import IdeaMergeService
 
 router = APIRouter()
 
@@ -244,6 +246,20 @@ def embed_reorder_ideas(
     return ordered
 
 
+@router.post("/ideas/merge", response_model=IdeaOut)
+def embed_merge_ideas(
+    body: MergeIn,
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+) -> IdeaOut:
+    """Merge ideas from the iframe (AC-94-16). Every id (survivor + members)
+    must resolve inside the connection's tenant+product - any id outside the
+    scope denies the WHOLE merge (404) and nothing is written."""
+    for idea_id in dict.fromkeys([body.survivorId, *body.ideaIds]):
+        _assert_in_scope(db, principal, idea_id)
+    return IdeaMergeService(db).merge(principal.tenant_id, body.survivorId, body.ideaIds)
+
+
 @router.post("/ideas", response_model=IdeaOut, status_code=status.HTTP_201_CREATED)
 def embed_create_idea(
     body: EmbedIdeaCreateIn,
@@ -306,6 +322,32 @@ def embed_update_idea(
         raw_text=body.rawText,
         voter_id=_embed_voter_id(principal),
     )
+
+
+@router.get("/ideas/{idea_id}/merged", response_model=List[IdeaOut])
+def embed_list_merged_ideas(
+    idea_id: str,
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+) -> List[IdeaOut]:
+    """The ideas merged into this one, from the iframe (AC-94-16). Scoped to
+    tenant+product (404 otherwise)."""
+    _assert_in_scope(db, principal, idea_id)
+    return IdeaReadService(db).merged_children(
+        principal.tenant_id, idea_id, voter_id=_embed_voter_id(principal)
+    )
+
+
+@router.post("/ideas/{idea_id}/unmerge", response_model=List[IdeaOut])
+def embed_unmerge_idea(
+    idea_id: str,
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+) -> List[IdeaOut]:
+    """Restore a merged child, or dissolve a survivor's whole group, from the
+    iframe (AC-94-16). Scoped to tenant+product (404 otherwise)."""
+    _assert_in_scope(db, principal, idea_id)
+    return IdeaMergeService(db).unmerge(principal.tenant_id, idea_id)
 
 
 @router.post("/ideas/{idea_id}/vote", response_model=IdeaOut)

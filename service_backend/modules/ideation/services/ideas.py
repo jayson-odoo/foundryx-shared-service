@@ -26,7 +26,14 @@ from app.services import status_machine
 from modules.omnichannel.models import Contact
 
 from ..models import Idea, IdeaAttachment, IdeaVote
-from ..schemas import BoardColumnOut, BoardOut, IdeaAttachmentOut, IdeaOut, TransitionOut
+from ..schemas import (
+    BoardColumnOut,
+    BoardOut,
+    IdeaAttachmentOut,
+    IdeaMergedIntoOut,
+    IdeaOut,
+    TransitionOut,
+)
 from .statuses import IDEA_ENTITY
 
 
@@ -70,6 +77,8 @@ class IdeaReadService:
         transitions: Optional[List[TransitionOut]] = None,
         advance_transition_id: Optional[str] = None,
         rank: Optional[int] = None,
+        merged_into: Optional[IdeaMergedIntoOut] = None,
+        merged_count: int = 0,
     ) -> IdeaOut:
         product = products.get(idea.product_id)
         status = statuses.get(idea.status_id)
@@ -108,6 +117,9 @@ class IdeaReadService:
             createdAt=idea.created_at,
             ideaNumber=idea.idea_number,
             isTest=bool(idea.is_test),
+            mergedIntoId=idea.merged_into_id,
+            mergedInto=merged_into,
+            mergedCount=merged_count,
         )
 
     def _my_votes(
@@ -149,6 +161,39 @@ class IdeaReadService:
                 )
             )
         return out
+
+    def _merge_maps(
+        self, ideas: List[Idea]
+    ) -> "tuple[Dict[str, IdeaMergedIntoOut], Dict[str, int]]":
+        """Issue #94, plan section 3.2 - ``mergedInto`` (batched survivor
+        lookup) + ``mergedCount`` (ONE grouped count over the page's ids), no
+        N+1 regardless of page size."""
+        if not ideas:
+            return {}, {}
+        idea_ids = [i.id for i in ideas]
+        survivor_ids = {i.merged_into_id for i in ideas if i.merged_into_id}
+        merged_into_map: Dict[str, IdeaMergedIntoOut] = {}
+        if survivor_ids:
+            survivors = {
+                s.id: s
+                for s in self.db.query(Idea).filter(Idea.id.in_(survivor_ids)).all()
+            }
+            for idea in ideas:
+                survivor = survivors.get(idea.merged_into_id) if idea.merged_into_id else None
+                if survivor is not None:
+                    merged_into_map[idea.id] = IdeaMergedIntoOut(
+                        id=survivor.id,
+                        ideaNumber=survivor.idea_number,
+                        title=survivor.title or survivor.problem,
+                    )
+        rows = (
+            self.db.query(Idea.merged_into_id, func.count(Idea.id))
+            .filter(Idea.merged_into_id.in_(idea_ids))
+            .group_by(Idea.merged_into_id)
+            .all()
+        )
+        merged_count_map = {survivor_id: count for survivor_id, count in rows}
+        return merged_into_map, merged_count_map
 
     def _archived_status_ids(self, tenant_id: str) -> List[str]:
         """Idea status ids with ``is_archived`` set, in the tenant's RESOLVED
@@ -277,6 +322,7 @@ class IdeaReadService:
             ideas, statuses, tenant_id, actor
         )
         rank_map = self._rank_map(ideas, tenant_id, product_id)
+        merged_into_map, merged_count_map = self._merge_maps(ideas)
         return [
             self._serialize(
                 i,
@@ -288,6 +334,8 @@ class IdeaReadService:
                 transitions_map.get(i.id, []),
                 advance_map.get(i.id),
                 rank_map.get(i.id),
+                merged_into_map.get(i.id),
+                merged_count_map.get(i.id, 0),
             )
             for i in ideas
         ]
@@ -348,7 +396,9 @@ class IdeaReadService:
         ``include_test`` (issue #1179): a console/``--say`` test turn writes a
         real Idea row flagged ``is_test`` - excluded here by default so it never
         shows on a real operator's list; pass ``True`` to see it too."""
-        q = self.db.query(Idea).filter(Idea.tenant_id == tenant_id)
+        q = self.db.query(Idea).filter(
+            Idea.tenant_id == tenant_id, Idea.merged_into_id.is_(None)
+        )  # AC-94-02: survivors only, every filter mode
         if not include_test:
             q = q.filter(Idea.is_test.is_(False))
         if product_id:
@@ -411,6 +461,7 @@ class IdeaReadService:
         status_ids = {s.id: s.key for s in columns}
         q = self.db.query(Idea).filter(
             Idea.tenant_id == tenant_id,
+            Idea.merged_into_id.is_(None),  # AC-94-02: survivors only
             Idea.status_id.in_(list(status_ids.keys())) if status_ids else False,
         )
         if not include_test:
@@ -459,3 +510,28 @@ class IdeaReadService:
         return self.serialize_one(
             idea, voter_id, tenant_id=tenant_id, product_id=product_id, actor=actor
         )
+
+    def merged_children(
+        self,
+        tenant_id: str,
+        survivor_id: str,
+        voter_id: Optional[str] = None,
+        actor: Optional[User] = None,
+    ) -> List[IdeaOut]:
+        """The ideas merged into ``survivor_id`` (AC-94-03), oldest merge
+        first. 404 if ``survivor_id`` itself is not in the tenant (whether or
+        not it actually has any children - a plain idea just returns [])."""
+        survivor = (
+            self.db.query(Idea)
+            .filter(Idea.id == survivor_id, Idea.tenant_id == tenant_id)
+            .first()
+        )
+        if survivor is None:
+            raise HTTPException(404, "Idea not found.")
+        children = (
+            self.db.query(Idea)
+            .filter(Idea.tenant_id == tenant_id, Idea.merged_into_id == survivor_id)
+            .order_by(Idea.merged_at.asc(), Idea.created_at.asc(), Idea.id.asc())
+            .all()
+        )
+        return self.serialize_many(children, voter_id, tenant_id=tenant_id, actor=actor)

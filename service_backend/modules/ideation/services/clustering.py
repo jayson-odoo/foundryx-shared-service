@@ -146,6 +146,7 @@ class ClusteringService:
             "WHERE a.tenant_id = :tenant AND b.tenant_id = :tenant "
             "AND a.product_id = :product AND b.product_id = :product "
             "AND a.is_test = false AND b.is_test = false "
+            "AND a.merged_into_id IS NULL AND b.merged_into_id IS NULL "
             "AND (:draft IS NULL OR a.status_id <> :draft) "
             "AND (:draft IS NULL OR b.status_id <> :draft) "
             "AND similarity(lower(a.problem), lower(b.problem)) >= :threshold "
@@ -170,6 +171,7 @@ class ClusteringService:
             Idea.tenant_id == tenant_id,
             Idea.product_id == product_id,
             Idea.is_test.is_(False),
+            Idea.merged_into_id.is_(None),
         )
         if draft_id is not None:
             q = q.filter(Idea.status_id != draft_id)

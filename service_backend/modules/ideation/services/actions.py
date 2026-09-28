@@ -42,6 +42,20 @@ class IdeaActionService:
             raise HTTPException(404, "Idea not found.")
         return idea
 
+    def _refuse_if_merged_child(self, idea: Idea) -> None:
+        """D3/AC-94-09 - a merged child is frozen: no vote, no status move.
+        409 naming the survivor's idea number (falling back to its id when it
+        has none yet)."""
+        if not idea.merged_into_id:
+            return
+        survivor = (
+            self.db.query(Idea)
+            .filter(Idea.id == idea.merged_into_id, Idea.tenant_id == idea.tenant_id)
+            .first()
+        )
+        label = (survivor.idea_number if survivor else None) or idea.merged_into_id
+        raise HTTPException(409, f"This idea was merged into {label}.")
+
     def _product_or_422(self, tenant_id: str, product_id: str) -> Product:
         product = (
             self.db.query(Product)
@@ -176,6 +190,7 @@ class IdeaActionService:
         """Toggle the caller's vote (one row per ``(idea, voter)``): same ``dir``
         cancels, the other ``dir`` switches. Idempotent - recomputes tallies."""
         idea = self._idea_or_404(tenant_id, idea_id)
+        self._refuse_if_merged_child(idea)
         existing = (
             self.db.query(IdeaVote)
             .filter(IdeaVote.idea_id == idea_id, IdeaVote.voter_id == voter_id)
@@ -284,6 +299,7 @@ class IdeaActionService:
         (409); a role-blocked edge is 403; an unknown key or an out-of-entity
         target id is 422."""
         idea = self._idea_or_404(tenant_id, idea_id)
+        self._refuse_if_merged_child(idea)
         if to_status_id is not None:
             target_id = self._validated_target_status_id(tenant_id, to_status_id)
         else:
@@ -304,8 +320,21 @@ class IdeaActionService:
         )
 
     def delete(self, tenant_id: str, idea_id: str) -> None:
-        """Hard-delete the idea and its vote rows (no soft delete)."""
+        """Hard-delete the idea and its vote rows (no soft delete). AC-94-10:
+        deleting a survivor restores its children FIRST (unmerge, votes moved
+        back) so no child is left pointing at a row that no longer exists."""
         idea = self._idea_or_404(tenant_id, idea_id)
+        has_children = (
+            self.db.query(Idea.id)
+            .filter(Idea.tenant_id == tenant_id, Idea.merged_into_id == idea_id)
+            .first()
+            is not None
+        )
+        if has_children:
+            from .merge import IdeaMergeService
+
+            IdeaMergeService(self.db).unmerge(tenant_id, idea_id)
+            idea = self._idea_or_404(tenant_id, idea_id)
         self.db.query(IdeaVote).filter(IdeaVote.idea_id == idea_id).delete(
             synchronize_session=False
         )

@@ -539,6 +539,18 @@ class BusinessRequirementService:
                     422,
                     "One or more ideas do not exist for this workspace.",
                 )
+            if idea.merged_into_id:
+                # AC-94-09: a merged child is frozen - it feeds a BR only
+                # through its survivor.
+                survivor = (
+                    self.db.query(Idea)
+                    .filter(Idea.id == idea.merged_into_id, Idea.tenant_id == tenant_id)
+                    .first()
+                )
+                label = (survivor.idea_number if survivor else None) or idea.merged_into_id
+                raise HTTPException(
+                    422, f"This idea was merged into {label} and cannot be linked directly."
+                )
             if bool(idea.is_test) != bool(br.is_test):
                 message = (
                     "A test idea cannot be linked to a real Business Requirement."
