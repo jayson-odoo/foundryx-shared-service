@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { toast } from '@/lib/toast';
 import { ChevronDown, ChevronUp, GripVertical } from 'lucide-react';
@@ -151,17 +151,29 @@ export function TriageBoard() {
     [apiColumns, ideas],
   );
 
-  // Seeded from `source`/`ideas` at mount (never an empty `{}`) - the Kanban
-  // primitive reads every column's key on first render, so a column with no
-  // entry yet would crash before the sync-up effect below ever runs.
-  const [columns, setColumns] = useState<Columns>(() => buildColumns(source, ideas));
+  // Live-render crash fix (AC-94-58, S6 evidence): `computed` is the
+  // source-of-truth layout for the CURRENT `source`/`ideas`. Syncing it into
+  // the Kanban-controlled `columns` state via a `useEffect` left one
+  // render - the one right after loading finishes and `source` jumps from
+  // `[]` (nothing loaded yet) to the real 5+ columns - where `columns` state
+  // still held the STALE (empty) object while `source` already carried the
+  // new keys. `KanbanColumnContent` reads `columns[value].map(...)` with NO
+  // `?? []` guard (a shared primitive, not forked here), so that one render
+  // crashed with exactly the reported `Cannot read properties of undefined
+  // (reading 'map')` - invisible to the jsdom test because the mocked
+  // `useIdeas()` there returns already-resolved data synchronously and never
+  // exercises the loading -> loaded transition. Adjusting state DURING
+  // render (React's documented pattern) keeps `columns` in lockstep with
+  // `source` on the SAME render, never lagging by one commit.
+  const computed = useMemo<Columns>(() => buildColumns(source, ideas), [source, ideas]);
+  const [columns, setColumns] = useState<Columns>(computed);
+  const [syncedFrom, setSyncedFrom] = useState<Columns>(computed);
+  if (syncedFrom !== computed) {
+    setSyncedFrom(computed);
+    setColumns(computed);
+  }
   const latest = useRef<Columns>(columns);
-
-  useEffect(() => {
-    const next = buildColumns(source, ideas);
-    setColumns(next);
-    latest.current = next;
-  }, [source, ideas]);
+  latest.current = columns;
 
   const onChange = (next: Columns) => {
     setColumns(next);
