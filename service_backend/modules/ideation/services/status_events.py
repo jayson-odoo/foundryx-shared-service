@@ -32,7 +32,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.models.status import Status
@@ -99,7 +99,15 @@ def _write_event(
     """Mint the recipient's identity (idempotent), insert the row, then fill
     ``payload_json`` (needs the DB-assigned ``seq``, so a flush comes first).
     ``requester_phone`` is passed in by the caller (already resolved tenant
-    scoped) so this never re-queries the Contact table."""
+    scoped) so this never re-queries the Contact table.
+
+    Review round 2 #B - ONE clock, the database's: ``created_at`` is set to a
+    SQL function (``clock_timestamp()`` on Postgres - the real wall clock at
+    INSERT time, unlike ``now()`` which is fixed for the whole transaction;
+    ``now()`` on SQLite, which has no ``clock_timestamp()``), never a Python
+    ``datetime.now()`` value - the app process's clock never enters the
+    settle-window comparison on either side. ``db.refresh`` pulls the
+    DB-computed value back so ``occurred_at`` reflects it exactly."""
     mint_idea_identity(db, recipient)
     track_url = mint_idea_link(db, recipient)
 
@@ -109,9 +117,11 @@ def _write_event(
         idea_id=recipient.id,
         kind=kind,
         is_test=bool(recipient.is_test),
+        created_at=func.clock_timestamp() if _is_postgres(db) else func.now(),
     )
     db.add(row)
-    db.flush()  # assigns row.seq (autoincrement PK) + row.created_at (Python default)
+    db.flush()  # assigns row.seq (autoincrement PK)
+    db.refresh(row, ["created_at"])  # pulls back the DB-computed value
 
     row.payload_json = {
         "event_id": row.id,

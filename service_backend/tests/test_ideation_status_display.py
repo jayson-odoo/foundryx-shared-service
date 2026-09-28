@@ -174,6 +174,24 @@ def test_advance_follows_sort_order(ideation_client):
     assert res2.json()["advanceTransitionId"] is None  # terminal - nothing to advance to
 
 
+def test_advance_reaches_closed_from_delivered(ideation_client):
+    """Review round 2 #A: Closed is `is_archived` in the seed, so a
+    "non-archived next status only" rule leaves Delivered with NO next step
+    at all - no UI path to close an idea. The immediately-next STATUS is
+    found regardless of its archived flag; only whether the edge to it is
+    fireable decides if "advance" offers it."""
+    h = _auth(ideation_client)
+    pid = _create_software_product(ideation_client, h)
+    delivered_idea = _insert_idea(ideation_client._factory, pid, status_key="delivered")
+
+    res = ideation_client.get(f"/ideation/ideas/{delivered_idea}", headers=h)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["advanceTransitionId"] is not None
+    advance_edge = next(t for t in body["transitions"] if t["id"] == body["advanceTransitionId"])
+    assert advance_edge["toStatusLabel"] == "Closed"
+
+
 def test_advance_never_skips_to_an_off_ramp_when_next_edge_is_role_blocked(ideation_client):
     """Review round 1 #5 (AC-94-52 revised): ``advanceTransitionId`` is the
     edge to the IMMEDIATELY next non-archived status, only when THAT edge is

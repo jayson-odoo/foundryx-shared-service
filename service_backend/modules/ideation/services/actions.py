@@ -366,7 +366,9 @@ class IdeaActionService:
         elif idea.merged_into_id:
             survivor_id = idea.merged_into_id
             self.db.query(IdeaVote).filter(
-                IdeaVote.idea_id == survivor_id, IdeaVote.origin_idea_id == idea_id
+                IdeaVote.tenant_id == tenant_id,
+                IdeaVote.idea_id == survivor_id,
+                IdeaVote.origin_idea_id == idea_id,
             ).delete(synchronize_session=False)
             self.db.flush()
             survivor = (

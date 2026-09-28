@@ -402,6 +402,14 @@ def fireable_edge_ids(
         .all()
     )
     for edge in source_edges:
+        # Defensive (issue #94 review round 2 optional nit): a caller-supplied
+        # ``preloaded_edges`` could carry a row for a DIFFERENT entity_type
+        # (a copy-paste bug in the caller, or a shared cache reused across
+        # entities) - skip it rather than mixing another entity's edges into
+        # this result. Never trips for the internally-queried default path
+        # (already filtered to ``entity_type``).
+        if edge.entity_type != entity_type:
+            continue
         edges_by_from.setdefault(edge.from_status_id, []).append(edge)
 
     result: dict = {}

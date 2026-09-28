@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models.status import Status
@@ -54,21 +55,26 @@ class IdeaMergeService:
         if survivor_id not in ids:
             raise HTTPException(422, "survivorId must be one of ideaIds.")
 
-        # Locked, in a STABLE id order (review round 1 #4) - a Postgres row
-        # lock so a concurrent merge/unmerge touching an overlapping id set
-        # blocks rather than racing past this validation; ordering by id
-        # avoids a lock-order deadlock against another transaction locking
-        # the same rows in a different order. SQLite (tests) ignores
+        # Locked, in a STABLE id order (review round 1 #4, consolidated round
+        # 2 nit 1) - ONE ordered statement locks the WHOLE group (the
+        # requested ideas AND any pre-existing children of any of them) so a
+        # concurrent merge/unmerge touching an overlapping id set blocks
+        # rather than racing past this validation; ordering by id avoids a
+        # lock-order deadlock against another transaction locking the same
+        # rows in a different order. SQLite (tests) ignores
         # `with_for_update()` silently (single-writer engine, ignore is
         # correct there, not a bug).
-        ideas_by_id = {
-            i.id: i
-            for i in self.db.query(Idea)
-            .filter(Idea.id.in_(ids), Idea.tenant_id == tenant_id)
+        locked_rows = (
+            self.db.query(Idea)
+            .filter(
+                Idea.tenant_id == tenant_id,
+                or_(Idea.id.in_(ids), Idea.merged_into_id.in_(ids)),
+            )
             .order_by(Idea.id.asc())
             .with_for_update()
             .all()
-        }
+        )
+        ideas_by_id = {i.id: i for i in locked_rows if i.id in ids}
         if any(i not in ideas_by_id for i in ids):
             raise HTTPException(404, "One or more ideas were not found.")
 
@@ -93,15 +99,11 @@ class IdeaMergeService:
 
         # Flatten (D2, AC-94-05): any EXISTING children of an absorbed
         # member re-point straight to the new survivor - never a chain.
-        # Locked + ordered (review round 1 #4), same reasoning as above.
+        # Already locked above (part of the same single group statement).
         if member_ids:
-            existing_children = (
-                self.db.query(Idea)
-                .filter(Idea.tenant_id == tenant_id, Idea.merged_into_id.in_(member_ids))
-                .order_by(Idea.id.asc())
-                .with_for_update()
-                .all()
-            )
+            existing_children = [
+                r for r in locked_rows if r.merged_into_id in member_ids
+            ]
             for child in existing_children:
                 # Review round 1 #3 (D4 lossless under flatten): a grandchild's
                 # votes may currently be resident on the INTERMEDIATE member
@@ -114,7 +116,9 @@ class IdeaMergeService:
                 # about to become a frozen child) - unmerging the grandchild
                 # would never find it, and the intermediate member would wrongly
                 # keep counting it forever.
-                touched_ids |= self._relocate_inherited_votes(child.id, survivor_id)
+                touched_ids |= self._relocate_inherited_votes(
+                    tenant_id, child.id, survivor_id
+                )
                 child.merged_into_id = survivor_id
                 flattened_children.append(child)
 
@@ -207,7 +211,9 @@ class IdeaMergeService:
         self.db.flush()
         return moved
 
-    def _relocate_inherited_votes(self, child_id: str, new_survivor_id: str) -> set:
+    def _relocate_inherited_votes(
+        self, tenant_id: str, child_id: str, new_survivor_id: str
+    ) -> set:
         """Review round 1 #3 (D4 lossless under flatten) - grandchild votes
         stamped ``origin_idea_id == child_id`` may currently live on an
         INTERMEDIATE absorbed member (wherever they physically moved to when
@@ -228,7 +234,11 @@ class IdeaMergeService:
         Returns the set of idea ids whose vote-row SET changed (for the
         caller's recount pass) - the row's OLD location, and either
         ``new_survivor_id`` or ``child_id`` depending on which branch fired."""
-        rows = self.db.query(IdeaVote).filter(IdeaVote.origin_idea_id == child_id).all()
+        rows = (
+            self.db.query(IdeaVote)
+            .filter(IdeaVote.tenant_id == tenant_id, IdeaVote.origin_idea_id == child_id)
+            .all()
+        )
         touched: set = set()
         for row in rows:
             if row.idea_id == new_survivor_id:
@@ -256,27 +266,41 @@ class IdeaMergeService:
     ) -> List[IdeaOut]:
         """Restore ``idea_id`` (a child - AC-94-07) or dissolve its whole
         group (a survivor - AC-94-08); 422 for a plain idea (neither)."""
-        # Locked (review round 1 #4) - same reasoning as `merge()`: a stable
-        # row lock (target first, then its group in id order) so a
-        # concurrent merge/unmerge touching an overlapping id set blocks
-        # rather than racing. SQLite (tests) ignores `with_for_update()`
-        # silently.
-        idea = (
-            self.db.query(Idea)
+        # Review round 2 nit 1: read the target UNLOCKED first, purely to
+        # determine which group (root id - the survivor if idea_id is a
+        # child, else idea_id itself) needs locking; the row's OWN lock
+        # happens in the SAME single statement as its whole group below,
+        # never a separate earlier lock.
+        initial = (
+            self.db.query(Idea.id, Idea.merged_into_id)
             .filter(Idea.id == idea_id, Idea.tenant_id == tenant_id)
-            .with_for_update()
             .first()
         )
-        if idea is None:
+        if initial is None:
             raise HTTPException(404, "Idea not found.")
+        root = initial.merged_into_id or initial.id
 
-        children = (
+        # Lock the WHOLE group (the root plus every CURRENT child) in ONE
+        # ordered statement (review round 1 #4, consolidated round 2 nit 1) -
+        # same reasoning as `merge()`'s single group lock.
+        locked_rows = (
             self.db.query(Idea)
-            .filter(Idea.tenant_id == tenant_id, Idea.merged_into_id == idea_id)
+            .filter(
+                Idea.tenant_id == tenant_id,
+                or_(Idea.id == root, Idea.merged_into_id == root),
+            )
             .order_by(Idea.id.asc())
             .with_for_update()
             .all()
         )
+        by_id = {r.id: r for r in locked_rows}
+
+        # Re-validate against the NOW-LOCKED state, never the unlocked read
+        # above (which could be stale by the time the lock is granted).
+        idea = by_id.get(idea_id)
+        if idea is None:
+            raise HTTPException(404, "Idea not found.")
+        children = [r for r in locked_rows if r.id != root and r.merged_into_id == root]
         if idea.merged_into_id:
             targets = [idea]
         elif children:
@@ -295,7 +319,7 @@ class IdeaMergeService:
         touched_ids = set()
         for child in targets:
             survivor_id = child.merged_into_id
-            self._restore_votes(survivor_id, child.id)
+            self._restore_votes(tenant_id, survivor_id, child.id)
             child.merged_into_id = None
             child.merged_at = None
             touched_ids.add(child.id)
@@ -327,7 +351,7 @@ class IdeaMergeService:
             ordered, actor.id if actor else None, tenant_id=tenant_id, actor=actor
         )
 
-    def _restore_votes(self, survivor_id: str, child_id: str) -> None:
+    def _restore_votes(self, tenant_id: str, survivor_id: str, child_id: str) -> None:
         """D4 - unmerge is LOSSLESS: a shadowed row never left the child (D4/
         AC-94-06), so it is never touched here - only the ``origin_idea_id ==
         child_id`` STAMPED rows (the ones that actually moved onto the
@@ -340,7 +364,11 @@ class IdeaMergeService:
         raising on the constraint."""
         moved = (
             self.db.query(IdeaVote)
-            .filter(IdeaVote.idea_id == survivor_id, IdeaVote.origin_idea_id == child_id)
+            .filter(
+                IdeaVote.tenant_id == tenant_id,
+                IdeaVote.idea_id == survivor_id,
+                IdeaVote.origin_idea_id == child_id,
+            )
             .all()
         )
         for row in moved:

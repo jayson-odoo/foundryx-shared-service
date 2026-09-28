@@ -275,25 +275,6 @@ class IdeaReadService:
                     result[idea.id] = lane_rank.get(idea.id)
         return result
 
-    def _non_archived_statuses_ordered(self, tenant_id: str) -> List[Status]:
-        """The tier's own non-archived statuses, ``sort_order`` ascending
-        (issue #94 review round 1 #5) - the ordered "main path" ``advance``
-        walks one step along, regardless of which edges happen to exist."""
-        tier = StatusRepository(self.db).resolve_tier(IDEA_ENTITY, tenant_id)
-        tier_filter = (
-            Status.tenant_id.is_(None) if tier is None else Status.tenant_id == tier
-        )
-        return (
-            self.db.query(Status)
-            .filter(
-                Status.entity_type == IDEA_ENTITY,
-                tier_filter,
-                Status.is_archived.is_(False),
-            )
-            .order_by(Status.sort_order.asc())
-            .all()
-        )
-
     def _transitions_and_advance(
         self,
         ideas: List[Idea],
@@ -302,20 +283,22 @@ class IdeaReadService:
         actor: Optional[User],
     ) -> (Dict[str, List[TransitionOut]], Dict[str, Optional[str]]):
         """Per-record fireable transitions + the single "advance" edge (plan
-        section 6; rule revised issue #94 review round 1 #5, AC-94-52).
-        ``always=True`` (the core extension) always computes the per-record
-        fireable map - ideation needs it on every request, not only when some
-        edge happens to be conditioned.
+        section 6; rule revised issue #94 review round 1 #5, round 2 #A,
+        AC-94-52). ``always=True`` (the core extension) always computes the
+        per-record fireable map - ideation needs it on every request, not
+        only when some edge happens to be conditioned.
 
         ``advanceTransitionId`` is the edge from the current status to the
-        IMMEDIATELY NEXT non-archived status in the tier's ``sort_order``,
-        ONLY when that exact edge is fireable for the caller; otherwise
-        ``null``. It never skips ahead to a later or terminal status (an
-        off-ramp such as Duplicate/Rejected must never be offered as
-        "advance" just because it happens to be the closest FIREABLE edge) -
-        a tenant that swaps two stages' order changes the advance target with
-        no code change, since it is driven purely by ``sort_order``, never a
-        hardcoded key or ``category``."""
+        IMMEDIATELY NEXT status in the tier's ``sort_order`` - archived or
+        not, so a terminal step like Delivered still advances to Closed
+        (round 2 #A: filtering out archived statuses left Delivered with no
+        next step at all, no UI path to close) - ONLY when that exact edge is
+        fireable for the caller; otherwise ``null``. It never skips ahead to
+        a LATER status (an off-ramp such as Duplicate/Rejected must never be
+        offered as "advance" just because it happens to be the closest
+        FIREABLE edge) - a tenant that swaps two stages' order changes the
+        advance target with no code change, since it is driven purely by
+        ``sort_order``, never a hardcoded key or ``category``."""
         if not ideas or tenant_id is None:
             return {}, {}
         tier = StatusRepository(self.db).resolve_tier(IDEA_ENTITY, tenant_id)
@@ -337,7 +320,19 @@ class IdeaReadService:
             )
             or {}
         )
-        ordered_statuses = self._non_archived_statuses_ordered(tenant_id)
+        # Every status in the tier, sort_order ascending - archived or not
+        # (round 2 #A): the immediately-next STATUS is found here regardless
+        # of its archived flag; whether it is actually offered as "advance"
+        # is decided below, purely by whether a fireable edge reaches it.
+        tier_filter = (
+            Status.tenant_id.is_(None) if tier is None else Status.tenant_id == tier
+        )
+        ordered_statuses = (
+            self.db.query(Status)
+            .filter(Status.entity_type == IDEA_ENTITY, tier_filter)
+            .order_by(Status.sort_order.asc())
+            .all()
+        )
         transitions_map: Dict[str, List[TransitionOut]] = {}
         advance_map: Dict[str, Optional[str]] = {}
         for idea in ideas:
