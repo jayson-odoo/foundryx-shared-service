@@ -195,6 +195,14 @@ class Idea(IdeationBase):
     # ``DedupService.find_duplicate`` / ``IdeaReadService`` / ``_link_ideas``) -
     # a test idea never contaminates the real pipeline in either direction.
     is_test = Column(Boolean, nullable=False, default=False)
+    # Merge/unmerge (issue #94, plan section 3.1, D1): a plain indexed column,
+    # NO FK - a FK on this hot, pre-existing table would take a lock that hangs
+    # a blue/green deploy behind any live connection touching ``ideas`` (the
+    # same BL-030 lesson as ``idea_business_requirements.idea_id``, 0008). Set
+    # = this idea was merged into the row at that id (never itself a merge
+    # target - service-enforced, AC-94-05); ``merged_at`` stamps when.
+    merged_into_id = Column(String, nullable=True, index=True)
+    merged_at = Column(UTCDateTime(), nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -223,6 +231,9 @@ class IdeaVote(IdeationBase):
     idea_id = Column(String, ForeignKey(_IDEA_FK), nullable=False, index=True)
     voter_id = Column(String, nullable=False, index=True)
     dir = Column(String, nullable=False)  # 'up' | 'down'
+    # Merge/unmerge (D4): NULL = cast on this idea; set = this vote row MOVED
+    # here from the merged member idea at that id (unmerge moves it back).
+    origin_idea_id = Column(String, nullable=True, index=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
     updated_at = Column(
         UTCDateTime(), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -475,4 +486,36 @@ class IdeaBusinessRequirement(IdeationBase):
             "business_requirement_id",
             name="uq_idea_business_requirement",
         ),
+    )
+
+
+# ── Requester status-update event feed (issue #94, plan section 7) ───────────
+
+
+class IdeaStatusEvent(IdeationBase):
+    """One notifiable recipient of an idea status move / merge / unmerge
+    (plan section 7.1, S4). Written by the ideation event-bus subscriber
+    (``services/status_events.py``); read by the CRM's workspace-key feed
+    (``GET /ideation/intake/status-events``) which sends the WhatsApp
+    template. Test ideas write ``is_test=True`` rows (double guard: excluded
+    from the feed by default, and the CRM contract says never send to a
+    requester when ``is_test``).
+
+    ``seq`` is the feed CURSOR - a Postgres ``SERIAL`` primary key, ascending
+    in insert (== commit) order; ``id`` is the payload's stable ``event_id``
+    the CRM dedupes on (at-least-once delivery)."""
+
+    __tablename__ = "idea_status_events"
+
+    seq = Column(Integer, primary_key=True)
+    id = Column(String, nullable=False, unique=True, default=_uuid)
+    tenant_id = Column(String, nullable=False, index=True)
+    idea_id = Column(String, nullable=False, index=True)
+    kind = Column(String, nullable=False)  # status_changed | merged | unmerged
+    is_test = Column(Boolean, nullable=False, default=False)
+    payload_json = Column(JSON(none_as_null=True), nullable=True)
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_idea_status_events_tenant_seq", "tenant_id", "seq"),
     )

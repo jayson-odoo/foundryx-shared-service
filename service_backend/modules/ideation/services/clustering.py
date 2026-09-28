@@ -328,7 +328,12 @@ class ClusteringService:
             i.id: out
             for i, out in zip(
                 ideas.values(),
-                self._reader.serialize_many(list(ideas.values()), voter_id),
+                self._reader.serialize_many(
+                    list(ideas.values()),
+                    voter_id,
+                    tenant_id=tenant_id,
+                    product_id=product_id,
+                ),
             )
         }
         out: List[ClusterSuggestionOut] = []

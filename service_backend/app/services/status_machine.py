@@ -328,6 +328,7 @@ def fireable_edge_ids(
     actor: Optional[User] = None,
     *,
     tenant_id: Optional[str] = None,
+    always: bool = False,
 ) -> Optional[dict]:
     """Per-record fireable edge ids for LIST surfaces (sprint-2/02 D6, made
     generic in code review) - rule-blocked actions hide per record, and
@@ -335,7 +336,14 @@ def fireable_edge_ids(
     shared graph. Returns None while NO edge of the entity's resolved tier
     carries conditions (the common case costs one EXISTS probe). Batched:
     ONE edge query for the whole record set, facts resolved per record
-    limited to the keys the trees actually read."""
+    limited to the keys the trees actually read.
+
+    ``always=True`` (plan-94, issue #94) skips the "no conditioned edge in
+    the tier -> None" short-circuit and always computes + returns the
+    per-record map - a consumer (e.g. ideation's ``IdeaOut.transitions``)
+    that needs the fireable set on every request regardless of whether
+    anything happens to be conditioned. Default False keeps every existing
+    caller's behaviour unchanged."""
     entity = get_status_entity(entity_type)
     if entity is None:
         raise UnknownStatusEntity(f"Unknown status entity '{entity_type}'.")
@@ -367,7 +375,7 @@ def fireable_edge_ids(
         .first()
         is not None
     )
-    if not has_conditioned:
+    if not has_conditioned and not always:
         return None
 
     # ONE query for the tier's whole edge set, grouped by source status.

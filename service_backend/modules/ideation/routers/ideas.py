@@ -56,6 +56,7 @@ def list_ideas(
         product_id=product_id,
         voter_id=current_user.id,
         include_test=include_test,
+        actor=current_user,
     )
 
 
@@ -104,6 +105,7 @@ def get_board(
         voter_id=current_user.id,
         product_id=product_id,
         include_test=include_test,
+        actor=current_user,
     )
 
 
@@ -144,7 +146,7 @@ def get_idea(
     """One idea by id - every section present (attachments empty-state), submitter
     human-readable (never a raw UUID). 404 if not found in the tenant."""
     return IdeaReadService(db).get(
-        current_user.tenant_id, idea_id, voter_id=current_user.id
+        current_user.tenant_id, idea_id, voter_id=current_user.id, actor=current_user
     )
 
 
@@ -209,14 +211,16 @@ def set_idea_status(
     current_user: User = Depends(require_permission("ideation.triage.manage")),
     db: Session = Depends(get_db),
 ) -> IdeaOut:
-    """Move the idea to a lifecycle status by key (advance / archive / restore).
-    Server-authoritative - illegal moves are refused (409)."""
+    """Move the idea to a lifecycle status - by KEY (advance / archive / restore,
+    kept for the deferred Archive handler) or by status-engine ``toStatusId``
+    (issue #94). Server-authoritative - illegal moves are refused (409)."""
     return IdeaActionService(db).set_status(
         current_user.tenant_id,
         idea_id,
         body.status,
         actor=current_user,
         voter_id=current_user.id,
+        to_status_id=body.toStatusId,
     )
 
 

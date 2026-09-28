@@ -11,7 +11,9 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models.catalog import Product
+from app.models.status import Status
 from app.models.user import User
+from app.repositories.status_repository import StatusRepository
 from app.services import status_machine
 from app.services.status_machine import (
     TransitionConditionsNotMet,
@@ -21,7 +23,7 @@ from app.services.status_machine import (
 
 from ..models import Idea, IdeaVote
 from ..schemas import IdeaOut
-from .ideas import IdeaReadService
+from .ideas import IdeaReadService, next_capture_priority
 from .statuses import IDEA_ENTITY, idea_status_id, initial_idea_status_id
 
 
@@ -104,11 +106,19 @@ class IdeaActionService:
         self.db.add(idea)
         self.db.flush()
         captured_id = idea_status_id(self.db, "captured", tenant_id)
+        # New capture lands at the bottom of its lane (Q4) - stamped right at
+        # the first move into ``captured`` (plan section 5).
+        idea.priority = next_capture_priority(self.db, tenant_id, is_test=False)
         status_machine.transition(
             self.db, IDEA_ENTITY, idea, captured_id, actor=actor, tenant_id=tenant_id
         )
         self.db.refresh(idea)
-        return self._reader.serialize_one(idea, actor.id if actor else None)
+        return self._reader.serialize_one(
+            idea,
+            actor.id if actor else None,
+            tenant_id=tenant_id,
+            actor=actor,
+        )
 
     def update_operator(
         self,
@@ -153,7 +163,7 @@ class IdeaActionService:
         idea.captured_json = captured
         self.db.commit()
         self.db.refresh(idea)
-        return self._reader.serialize_one(idea, voter_id)
+        return self._reader.serialize_one(idea, voter_id, tenant_id=tenant_id)
 
     def _recount(self, idea: Idea) -> None:
         """Recompute the idea's denormalized tallies from ``idea_votes`` (the
@@ -187,22 +197,50 @@ class IdeaActionService:
         self.db.flush()
         self._recount(idea)
         self.db.commit()
-        return self._reader.serialize_one(idea, voter_id)
+        return self._reader.serialize_one(idea, voter_id, tenant_id=tenant_id)
 
     def reorder(
         self, tenant_id: str, ordered_ids: List[str], voter_id: Optional[str] = None
     ) -> List[IdeaOut]:
-        """Set manual priority from the given order (index = priority, ascending
-        = top). Only the tenant's own ideas are touched; returns all tenant ideas
-        ordered by priority."""
-        ideas = {
+        """Slot-preserving reorder (issue #94, AC-94-45): densify each
+        affected lane's priority first (heals any legacy ties into 1..N, no
+        gaps), then take the GIVEN ids' current (now-dense) slots, sorted
+        ascending, and reassign them in the given order. A page-subset
+        ``/reorder`` call therefore only ever rewrites the slots the given
+        ids already occupied - the other rows' priority never moves (fixes
+        the page-2-drag-corrupts-page-1 bug, plan section 5). Ids outside the
+        tenant, or that are merged children, are silently ignored (they hold
+        no rank of their own, AC-94-19)."""
+        ideas_by_id = {
             i.id: i
-            for i in self.db.query(Idea).filter(Idea.tenant_id == tenant_id).all()
+            for i in self.db.query(Idea)
+            .filter(
+                Idea.id.in_(ordered_ids),
+                Idea.tenant_id == tenant_id,
+                Idea.merged_into_id.is_(None),
+            )
+            .all()
         }
-        for index, idea_id in enumerate(ordered_ids):
-            idea = ideas.get(idea_id)
-            if idea is not None:
-                idea.priority = index
+        requested = [i for i in ordered_ids if i in ideas_by_id]
+        for is_test in sorted({ideas_by_id[i].is_test for i in requested}):
+            lane_requested = [i for i in requested if ideas_by_id[i].is_test == is_test]
+            lane_ideas = (
+                self.db.query(Idea)
+                .filter(
+                    Idea.tenant_id == tenant_id,
+                    Idea.is_test.is_(is_test),
+                    Idea.merged_into_id.is_(None),
+                )
+                .order_by(Idea.priority.asc(), Idea.created_at.desc(), Idea.id.desc())
+                .all()
+            )
+            for slot, lane_idea in enumerate(lane_ideas, start=1):
+                lane_idea.priority = slot
+            self.db.flush()
+            slot_by_id = {lane_idea.id: lane_idea.priority for lane_idea in lane_ideas}
+            taken_slots = sorted(slot_by_id[i] for i in lane_requested)
+            for slot, idea_id in zip(taken_slots, lane_requested):
+                ideas_by_id[idea_id].priority = slot
         self.db.commit()
         ordered = (
             self.db.query(Idea)
@@ -210,22 +248,48 @@ class IdeaActionService:
             .order_by(Idea.priority.asc(), Idea.created_at.desc(), Idea.id.desc())
             .all()
         )
-        return self._reader.serialize_many(ordered, voter_id)
+        return self._reader.serialize_many(ordered, voter_id, tenant_id=tenant_id)
+
+    def _validated_target_status_id(self, tenant_id: str, to_status_id: str) -> str:
+        """422 unless ``to_status_id`` resolves to an idea-entity status row in
+        the tenant's resolved tier (issue #94 AC-94-53) - a status id from a
+        different entity (e.g. the core tenant lifecycle) is refused before
+        ever reaching the status machine's generic "no edge" 409."""
+        tier = StatusRepository(self.db).resolve_tier(IDEA_ENTITY, tenant_id)
+        tier_filter = (
+            Status.tenant_id.is_(None) if tier is None else Status.tenant_id == tier
+        )
+        row = (
+            self.db.query(Status)
+            .filter(Status.id == to_status_id, Status.entity_type == IDEA_ENTITY, tier_filter)
+            .first()
+        )
+        if row is None:
+            raise HTTPException(422, "toStatusId does not resolve to an idea status.")
+        return row.id
 
     def set_status(
         self,
         tenant_id: str,
         idea_id: str,
-        status_key: str,
-        actor: Optional[User],
+        status_key: Optional[str] = None,
+        actor: Optional[User] = None,
         voter_id: Optional[str] = None,
+        *,
+        to_status_id: Optional[str] = None,
     ) -> IdeaOut:
-        """Move the idea to ``status_key`` via the status engine. Illegal moves
-        are refused (409); a role-blocked edge is 403; an unknown key is 422."""
+        """Move the idea via the status engine - by lifecycle KEY (kept for the
+        deferred Archive handler) or by status-engine ``toStatusId`` (issue #94
+        plan section 6, never a hardcoded key). Illegal moves are refused
+        (409); a role-blocked edge is 403; an unknown key or an out-of-entity
+        target id is 422."""
         idea = self._idea_or_404(tenant_id, idea_id)
-        target_id = idea_status_id(self.db, status_key, tenant_id)
-        if target_id is None:
-            raise HTTPException(422, f"Unknown idea status '{status_key}'.")
+        if to_status_id is not None:
+            target_id = self._validated_target_status_id(tenant_id, to_status_id)
+        else:
+            target_id = idea_status_id(self.db, status_key, tenant_id)
+            if target_id is None:
+                raise HTTPException(422, f"Unknown idea status '{status_key}'.")
         try:
             status_machine.transition(
                 self.db, IDEA_ENTITY, idea, target_id, actor=actor, tenant_id=tenant_id
@@ -235,7 +299,9 @@ class IdeaActionService:
         except (TransitionNotAllowed, TransitionConditionsNotMet) as exc:
             raise HTTPException(409, exc.message) from exc
         self.db.refresh(idea)
-        return self._reader.serialize_one(idea, voter_id)
+        return self._reader.serialize_one(
+            idea, voter_id, tenant_id=tenant_id, actor=actor
+        )
 
     def delete(self, tenant_id: str, idea_id: str) -> None:
         """Hard-delete the idea and its vote rows (no soft delete)."""

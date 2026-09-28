@@ -295,7 +295,7 @@ class BusinessRequirementService:
             .order_by(Idea.created_at.desc(), Idea.id.desc())
             .all()
         )
-        return self._reader.serialize_many(ideas)
+        return self._reader.serialize_many(ideas, tenant_id=tenant_id)
 
     def linked_business_requirements(
         self, tenant_id: str, idea_id: str

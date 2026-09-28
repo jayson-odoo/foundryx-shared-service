@@ -173,7 +173,9 @@ def _assert_in_scope(
     (``principal.product_id`` set) an idea in the same tenant but a DIFFERENT
     product is denied (404) - never mutated, never leaked (AC-CAP-11). When the
     connection is tenant-only (no product), tenant scope is the whole guard."""
-    idea = IdeaReadService(db).get(principal.tenant_id, idea_id, voter_id=None)
+    idea = IdeaReadService(db).get(
+        principal.tenant_id, idea_id, voter_id=None, product_id=principal.product_id
+    )
     if principal.product_id and idea.productId != principal.product_id:
         raise ApiError(404, "not_found", "Idea not found.")
     return idea
@@ -328,9 +330,10 @@ def embed_set_idea_status(
     principal: EmbedTokenPrincipal = Depends(require_embed_principal),
     db: Session = Depends(get_db),
 ) -> IdeaOut:
-    """Move the idea to a lifecycle status by key. Server-authoritative (illegal
-    moves refused, 409). Scoped to tenant+product (404 otherwise). ``actor=None``
-    - there is no operator user in the iframe."""
+    """Move the idea to a lifecycle status - by key or by status-engine
+    ``toStatusId`` (issue #94). Server-authoritative (illegal moves refused,
+    409). Scoped to tenant+product (404 otherwise). ``actor=None`` - there is
+    no operator user in the iframe."""
     _assert_in_scope(db, principal, idea_id)
     return IdeaActionService(db).set_status(
         principal.tenant_id,
@@ -338,6 +341,7 @@ def embed_set_idea_status(
         body.status,
         actor=None,
         voter_id=_embed_voter_id(principal),
+        to_status_id=body.toStatusId,
     )
 
 
