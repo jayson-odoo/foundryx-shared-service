@@ -35,8 +35,13 @@ export interface UseIdeas {
  * triage board read ideas ONLY through this hook - the UI never touches the
  * service/api-client directly. Products load once alongside ideas (needed by the
  * capture modal's product picker).
+ *
+ * `withBoard` (issue #94, ideation round 2, AC-94-58) - opt-in: the list and
+ * the form never need board columns, so they must never pay for the extra
+ * `getBoard` request every reload. Only `TriageBoard` passes `true`.
  */
-export function useIdeas(): UseIdeas {
+export function useIdeas(opts?: { withBoard?: boolean }): UseIdeas {
+  const withBoard = opts?.withBoard ?? false;
   const { service: ideationService } = useIdeationRuntime();
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -52,7 +57,7 @@ export function useIdeas(): UseIdeas {
       const [nextIdeas, nextProducts, board] = await Promise.all([
         ideationService.listIdeas({ includeTest }),
         ideationService.listProducts(),
-        ideationService.getBoard?.({ includeTest }),
+        withBoard ? ideationService.getBoard?.({ includeTest }) : undefined,
       ]);
       setIdeas(nextIdeas);
       setProducts(nextProducts);
@@ -62,7 +67,7 @@ export function useIdeas(): UseIdeas {
     } finally {
       setLoading(false);
     }
-  }, [ideationService, includeTest]);
+  }, [ideationService, includeTest, withBoard]);
 
   useEffect(() => {
     void reload();

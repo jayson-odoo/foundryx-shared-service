@@ -4,9 +4,9 @@
  * plan sections 4.1 and 5.
  *
  * TEST-FIRST (PRINCIPLES.md): `DetailsTab` still renders a bare
- * `@/components/ui/select` Status row in edit mode and an `IDEA_STATUS_LABEL`
- * badge in read mode, and renders the raw `idea.priority` - every assertion
- * below is expected to fail until slice S1 lands.
+ * `@/components/ui/select` Status row in edit mode and an engine-labelled
+ * status badge in read mode, and renders the raw `idea.priority` - every
+ * assertion below is expected to fail until slice S1 lands.
  */
 import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
@@ -45,7 +45,6 @@ function Harness({ idea, editing }: { idea: Idea | null; editing: boolean }) {
     defaultValues: {
       problem: idea?.problem ?? '',
       productId: idea?.productId ?? '',
-      status: idea?.status ?? 'captured',
       proposedSolution: idea?.proposedSolution ?? '',
       impact: idea?.impact ?? '',
       department: idea?.department ?? '',

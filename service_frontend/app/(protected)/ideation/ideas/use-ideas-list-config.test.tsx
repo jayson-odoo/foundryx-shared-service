@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, renderHook, screen } from '@testing-library/react';
+import { cleanup, render, renderHook, screen } from '@testing-library/react';
 import type { Idea } from '@/types/ideation';
 import { IdeationRuntimeProvider } from '@/hooks/use-ideation-runtime';
 import { ideationEmbedService } from '@/services/ideation-embed-service';
@@ -183,6 +183,8 @@ describe('useIdeasListConfig - merged badge (AC-94-23)', () => {
 
     render(<>{cell({ row: { original: anIdea({ mergedCount: 2 }) } })}</>);
     expect(screen.getByText('2 merged')).toBeInTheDocument();
+    cleanup(); // unmount before the next render - else the "2 merged" badge
+    // above is still in the document when the query below runs.
 
     render(<>{cell({ row: { original: anIdea({ mergedCount: 0 }) } })}</>);
     expect(screen.queryByText(/merged/)).not.toBeInTheDocument();
@@ -245,7 +247,7 @@ describe('useIdeasListConfig - status from API (AC-94-56)', () => {
 
   it('the CSV export writes the label, not the raw key', async () => {
     const cfg = config([anIdea({ statusLabel: 'Discussed' })]);
-    const csv = await cfg.exporter({ page: 0, pageSize: 10, search: '', statusView: 'active' } as never);
+    const csv = await cfg.exporter!({ page: 0, pageSize: 10, search: '', statusView: 'active' } as never, []);
     expect(csv).toContain('Discussed');
   });
 });

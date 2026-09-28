@@ -131,7 +131,11 @@ function IdeaCardBody({ idea, ghost }: { idea: Idea; ghost?: boolean }) {
  * come from `useIdeationRuntime()` (operator default or embed).
  */
 export function TriageBoard() {
-  const { ideas, columns: apiColumns, loading, error, setStatus, reorderPriority, reload } = useIdeas();
+  // `withBoard` (AC-94-58) - the board is the ONLY caller that needs the
+  // extra `getBoard` request; the list and the form never pay for it.
+  const { ideas, columns: apiColumns, loading, error, setStatus, reorderPriority, reload } = useIdeas({
+    withBoard: true,
+  });
   const { paths } = useIdeationRuntime();
 
   const source = useMemo<BoardColumn[]>(

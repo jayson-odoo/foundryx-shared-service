@@ -79,12 +79,17 @@ describe('realIdeationService', () => {
     expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/a%2Fb');
   });
 
-  it('setStatus POSTs the lifecycle key', async () => {
+  // AC-94-53 (issue #94, ideation round 2, backend S2 `f87e320d`): `StatusIn`
+  // takes EXACTLY ONE of `status` (the legacy key) or `toStatusId` (the
+  // status-engine target id) - REWRITTEN (not deleted, per the house
+  // convention for a superseded pinned test) from "POSTs the lifecycle key"
+  // now that `setStatus` always carries an engine target id.
+  it('setStatus POSTs the target status id', async () => {
     apiFetch.mockResolvedValue(anIdea({ status: 'triaged' }));
-    const out = await svc.setStatus('idea-1', 'triaged');
+    const out = await svc.setStatus('idea-1', 'idea-status-triaged');
     expect(apiFetch).toHaveBeenCalledWith('/ideation/ideas/idea-1/status', {
       method: 'POST',
-      body: JSON.stringify({ status: 'triaged' }),
+      body: JSON.stringify({ toStatusId: 'idea-status-triaged' }),
     });
     expect(out.status).toBe('triaged');
   });

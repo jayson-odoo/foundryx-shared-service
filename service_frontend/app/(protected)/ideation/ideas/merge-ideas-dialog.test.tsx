@@ -8,7 +8,7 @@
  * TEST-FIRST (PRINCIPLES.md): `./merge-ideas-dialog` doesn't exist yet -
  * fails with a module-not-found error until slice S1 lands.
  */
-import { render, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { Idea } from '@/types/ideation';
@@ -50,11 +50,15 @@ describe('MergeIdeasDialog (AC-94-22)', () => {
     await user.click(combobox);
     expect(await screen.findByText(/IDEA-0012.*Faster quotation/i)).toBeInTheDocument();
     expect(await screen.findByText(/IDEA-0013.*Faster quote generator/i)).toBeInTheDocument();
+    // Unmount before the next render - the Dialog is modal by design (focus
+    // trap, aria-hides background siblings), so a stale open instance would
+    // otherwise hide the fresh one's own trigger from the a11y tree below.
+    cleanup();
 
     // No other select control on the surface (owner rule: system dropdown only).
     const { container } = render(<MergeIdeasDialog ideas={ideas} onClose={vi.fn()} onMerge={vi.fn()} />);
     expect(container.querySelector('select')).toBeNull();
-    expect(screen.getAllByRole('combobox')).toHaveLength(2); // one per render() call above
+    expect(screen.getAllByRole('combobox')).toHaveLength(1);
   });
 
   it('enables Merge once a survivor is picked, and calls onMerge(survivorId)', async () => {

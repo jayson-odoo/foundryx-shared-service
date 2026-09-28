@@ -53,11 +53,7 @@ export function MergeIdeasDialog({ ideas, onClose, onMerge }: MergeIdeasDialogPr
   };
 
   return (
-    // `modal={false}` - this dialog only ever picks a survivor from the
-    // caller's own selection (no other surface interaction matters while it
-    // is open), so it does not need Radix's focus-trap/aria-hide-siblings
-    // behaviour a true modal gets.
-    <Dialog open modal={false} onOpenChange={(o) => !o && onClose()}>
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Merge ideas</DialogTitle>

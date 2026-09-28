@@ -130,10 +130,12 @@ export const ideationEmbedService: IdeaService &
       : apiFetch<Idea>(embedIdea(id));
   },
 
+  // `toStatusId` (AC-94-53) - the backend's `StatusIn` schema accepts EXACTLY
+  // ONE of `status` (legacy key) or `toStatusId` (this call's shape).
   setStatus(id: string, toStatusId: string): Promise<Idea> {
     return apiFetch<Idea>(`${embedIdea(id)}/status`, {
       method: 'POST',
-      body: JSON.stringify({ status: toStatusId }),
+      body: JSON.stringify({ toStatusId }),
     });
   },
 

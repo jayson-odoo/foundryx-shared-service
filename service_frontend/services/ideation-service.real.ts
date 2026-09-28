@@ -6,7 +6,7 @@
  * - listProducts  → GET  /products               (core catalog; unified Product)
  * - listIdeas     → GET  /ideation/ideas         (bare IdeaOut[], newest-first)
  * - getIdea       → GET  /ideation/ideas/{id}
- * - setStatus     → POST /ideation/ideas/{id}/status  {status}
+ * - setStatus     → POST /ideation/ideas/{id}/status  {toStatusId}
  * - vote          → POST /ideation/ideas/{id}/vote    {dir}
  * - reorderPriority → PUT /ideation/ideas/reorder     {orderedIds}
  * - remove        → DELETE /ideation/ideas/{id}       (204)
@@ -114,13 +114,14 @@ export const realIdeationService: IdeaService & IdeaExtendedOps = {
       : apiFetch<Idea>(idea(id));
   },
 
-  // `toStatusId` (AC-94-53) - the backend's `StatusIn` schema accepts either
-  // this engine target id OR the legacy lifecycle KEY (the deferred Archive
-  // handler's shape) under the same `status` wire key.
+  // `toStatusId` (AC-94-53) - the backend's `StatusIn` schema accepts EXACTLY
+  // ONE of `status` (the legacy lifecycle KEY, kept for the deferred Archive
+  // handler) or `toStatusId` (the status-engine target id, this call's
+  // shape) - never both, never the wrong key for the value carried.
   setStatus(id: string, toStatusId: string): Promise<Idea> {
     return apiFetch<Idea>(`${idea(id)}/status`, {
       method: 'POST',
-      body: JSON.stringify({ status: toStatusId }),
+      body: JSON.stringify({ toStatusId }),
     });
   },
 
