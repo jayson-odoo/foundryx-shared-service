@@ -1,10 +1,9 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import type { UseFormReturn } from 'react-hook-form';
 import {
-  ChevronDown,
-  ChevronUp,
   FileText,
   Film,
   ImageIcon,
@@ -18,35 +17,19 @@ import { Card, CardContent } from '@/components/ui/card';
 import { FormControl, FormField, FormItem, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { SearchSelect } from '@/components/platform/search-select';
 import { FormRow } from '@/components/platform/resource-form';
 import { IdeaAttachmentPreviewDialog } from './idea-attachment-preview-dialog';
+import { VoteCell } from './vote-cell';
 import {
   IDEA_SOURCE_LABEL,
-  IDEA_STATUS_LABEL,
   type Idea,
   type IdeaAttachment,
   type IdeaAttachmentKind,
   type Product,
 } from '@/types/ideation';
 import type { IdeaFormValues } from './idea-schema';
-
-const EDITABLE_STATUSES: Idea['status'][] = [
-  'captured',
-  'triaged',
-  'linked',
-  'building',
-  'delivered',
-  'closed',
-  'rejected',
-];
+import { ideaFormHref } from './paths';
 
 export interface DetailsTabProps {
   form: UseFormReturn<IdeaFormValues>;
@@ -54,9 +37,13 @@ export interface DetailsTabProps {
   creating: boolean;
   idea: Idea | null;
   products: Product[];
+  /** Wired by the caller so the form's vote control calls through the SAME
+   * hook/service path as the list (issue #94, ideation round 2, AC-94-35).
+   * Omitted on a harness that never exercises voting. */
+  onVote?: (idea: Idea, dir: 'up' | 'down') => void;
 }
 
-export function DetailsTab({ form, editing, creating, idea, products }: DetailsTabProps) {
+export function DetailsTab({ form, editing, idea, products, onVote }: DetailsTabProps) {
   const productOptions = products.map((p) => ({ label: p.name, value: p.id }));
 
   return (
@@ -168,34 +155,16 @@ export function DetailsTab({ form, editing, creating, idea, products }: DetailsT
           )}
         </FormRow>
 
-        <FormRow label="Status">
-          {editing && !creating ? (
-            <FormField
-              control={form.control}
-              name="status"
-              render={({ field }) => (
-                <FormItem className="max-w-sm">
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <FormControl>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {EDITABLE_STATUSES.map((s) => (
-                        <SelectItem key={s} value={s}>
-                          {IDEA_STATUS_LABEL[s]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </FormItem>
-              )}
-            />
-          ) : (
-            <Badge variant="outline">{idea ? IDEA_STATUS_LABEL[idea.status] : 'New'}</Badge>
-          )}
-        </FormRow>
+        {idea?.mergedInto && (
+          <FormRow label="Merged into">
+            <Link
+              href={ideaFormHref(idea.mergedInto.id)}
+              className="text-sm font-medium text-primary hover:underline"
+            >
+              {idea.mergedInto.ideaNumber ?? idea.mergedInto.title}
+            </Link>
+          </FormRow>
+        )}
 
         <FormRow label="Submitter">{idea?.submitterName ?? '-'}</FormRow>
 
@@ -211,23 +180,18 @@ export function DetailsTab({ form, editing, creating, idea, products }: DetailsT
 
         <FormRow label="Votes">
           {idea ? (
-            <span className="inline-flex items-center gap-3 text-sm">
-              <span className="inline-flex items-center gap-0.5">
-                <ChevronUp className="size-4 text-emerald-600" />
-                {idea.upvotes}
-              </span>
-              <span className="inline-flex items-center gap-0.5">
-                <ChevronDown className="size-4 text-rose-500" />
-                {idea.downvotes}
-              </span>
-            </span>
+            <VoteCell
+              idea={idea}
+              onVote={(i, dir) => onVote?.(i, dir)}
+              disabled={Boolean(idea.mergedIntoId)}
+            />
           ) : (
             '-'
           )}
         </FormRow>
 
         <FormRow label="Priority">
-          {idea ? <span className="tabular-nums">#{idea.priority}</span> : '-'}
+          {idea && idea.rank != null ? <span className="tabular-nums">#{idea.rank}</span> : '-'}
         </FormRow>
 
         <FormRow label="Raw notes">

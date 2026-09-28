@@ -32,12 +32,12 @@
  */
 import { apiFetch } from '@/lib/api-client';
 import type {
+  Board,
   Idea,
   IdeaClusterSuggestions,
-  IdeaStatus,
   Product,
 } from '@/types/ideation';
-import type { IdeaCreateInput, IdeaService } from './ideation-service';
+import type { IdeaCreateInput, IdeaExtendedOps, IdeaService } from './ideation-service';
 
 /** Core catalog list envelope (app/schemas/catalog.py → ListResponse). */
 interface CoreProductRow {
@@ -59,7 +59,7 @@ function toProductKind(kind: string): Product['kind'] {
 
 const idea = (id: string) => `/ideation/ideas/${encodeURIComponent(id)}`;
 
-export const realIdeationService: IdeaService = {
+export const realIdeationService: IdeaService & IdeaExtendedOps = {
   async listProducts(): Promise<Product[]> {
     const res = await apiFetch<CoreProductList>('/products?page_size=200');
     return res.items.map((p) => ({
@@ -94,16 +94,13 @@ export const realIdeationService: IdeaService = {
       }),
     });
   },
-  // Operator-facing edit. The PATCH route is fields-only; a requested `status`
-  // that actually differs from the persisted one is applied afterwards via
-  // setStatus (POST /{id}/status) so the move stays server-authoritative. When
-  // status is unchanged we skip it - the status machine has no self-edge, so a
-  // captured→captured "move" would (correctly) 409.
-  async updateIdea(
-    id: string,
-    input: Partial<IdeaCreateInput> & { status?: IdeaStatus },
-  ): Promise<Idea> {
-    const { status, attachments, ...fields } = input;
+  // Operator-facing edit. The PATCH route is fields-only - a save never moves
+  // status any more (issue #94, ideation round 2, AC-94-34: the form dropped
+  // its Status control entirely, owner Q5). Any extra key on `input` (e.g. a
+  // stale caller still shaped like the old status-carrying payload) is simply
+  // not a recognised field and is ignored.
+  async updateIdea(id: string, input: Partial<IdeaCreateInput>): Promise<Idea> {
+    const { attachments, ...fields } = input;
     void attachments;
     const patch: Record<string, unknown> = {};
     if (fields.productId !== undefined) patch.productId = fields.productId;
@@ -112,20 +109,18 @@ export const realIdeationService: IdeaService = {
     if (fields.impact !== undefined) patch.impact = fields.impact;
     if (fields.department !== undefined) patch.department = fields.department;
     if (fields.rawText !== undefined) patch.rawText = fields.rawText;
-    const updated =
-      Object.keys(patch).length > 0
-        ? await apiFetch<Idea>(idea(id), { method: 'PATCH', body: JSON.stringify(patch) })
-        : await apiFetch<Idea>(idea(id));
-    if (status !== undefined && status !== updated.status) {
-      return realIdeationService.setStatus(id, status);
-    }
-    return updated;
+    return Object.keys(patch).length > 0
+      ? apiFetch<Idea>(idea(id), { method: 'PATCH', body: JSON.stringify(patch) })
+      : apiFetch<Idea>(idea(id));
   },
 
-  setStatus(id: string, status: IdeaStatus): Promise<Idea> {
+  // `toStatusId` (AC-94-53) - the backend's `StatusIn` schema accepts either
+  // this engine target id OR the legacy lifecycle KEY (the deferred Archive
+  // handler's shape) under the same `status` wire key.
+  setStatus(id: string, toStatusId: string): Promise<Idea> {
     return apiFetch<Idea>(`${idea(id)}/status`, {
       method: 'POST',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status: toStatusId }),
     });
   },
 
@@ -150,5 +145,31 @@ export const realIdeationService: IdeaService = {
 
   async remove(id: string): Promise<void> {
     await apiFetch<void>(idea(id), { method: 'DELETE' });
+  },
+
+  // Merge / unmerge (issue #94, ideation round 2, plan section 3.3). Static
+  // paths declared before `/{idea_id}` on the backend (the existing ordering
+  // rule) so `/merge` never collides with a dynamic id segment.
+  merge(survivorId: string, ideaIds: string[]): Promise<Idea> {
+    return apiFetch<Idea>('/ideation/ideas/merge', {
+      method: 'POST',
+      body: JSON.stringify({ survivorId, ideaIds }),
+    });
+  },
+
+  unmerge(id: string): Promise<Idea[]> {
+    return apiFetch<Idea[]>(`${idea(id)}/unmerge`, { method: 'POST' });
+  },
+
+  listMerged(id: string): Promise<Idea[]> {
+    return apiFetch<Idea[]>(`${idea(id)}/merged`);
+  },
+
+  getBoard(opts?: { includeTest?: boolean; productId?: string }): Promise<Board> {
+    const params = new URLSearchParams();
+    if (opts?.includeTest) params.set('includeTest', 'true');
+    if (opts?.productId) params.set('productId', opts.productId);
+    const qs = params.toString();
+    return apiFetch<Board>(`/ideation/ideas/board${qs ? `?${qs}` : ''}`);
   },
 };

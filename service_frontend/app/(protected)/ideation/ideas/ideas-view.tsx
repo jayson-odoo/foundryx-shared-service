@@ -9,10 +9,11 @@ import { Label } from '@/components/ui/label';
 import { useIdeas } from '@/hooks/use-ideas';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import type { IdeaCreateInput } from '@/services/ideation-service';
-import { IDEA_NEXT_STATUS, type Idea } from '@/types/ideation';
+import type { Idea } from '@/types/ideation';
 import { useIdeasListConfig } from './use-ideas-list-config';
 import { IdeaClusterSuggestions } from './cluster-suggestions';
 import { IdeaCaptureDialog } from './idea-capture-dialog';
+import { MergeIdeasDialog } from './merge-ideas-dialog';
 import { promoteIdeasToBr } from './promote-to-br';
 
 /**
@@ -38,8 +39,11 @@ export function IdeasView() {
     setStatus,
     reorderPriority,
     remove,
+    merge,
+    unmerge,
   } = useIdeas();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [mergeRows, setMergeRows] = useState<Idea[] | null>(null);
 
   // Remount the ResourceList whenever the ideas change (mutation) so its
   // client-side fetcher re-pages over fresh data (quick-replies pattern).
@@ -63,11 +67,11 @@ export function IdeasView() {
         }
       },
       onAdvance: async (idea: Idea) => {
-        const next = IDEA_NEXT_STATUS[idea.status];
-        if (!next) return;
+        const target = idea.transitions?.find((t) => t.id === idea.advanceTransitionId);
+        if (!target) return;
         try {
-          await setStatus(idea.id, next);
-          toast.success(`Moved to ${next}.`);
+          await setStatus(idea.id, target.toStatusId);
+          toast.success(`Moved to ${target.toStatusLabel}.`);
         } catch (e) {
           toast.error(e instanceof Error ? e.message : 'Could not advance the idea.');
         }
@@ -81,8 +85,10 @@ export function IdeasView() {
         }
       },
       onRestore: async (idea: Idea) => {
+        const target = idea.transitions?.[0];
+        if (!target) return;
         try {
-          await setStatus(idea.id, 'captured');
+          await setStatus(idea.id, target.toStatusId);
           toast.success('Idea restored.');
         } catch (e) {
           toast.error(e instanceof Error ? e.message : 'Could not restore the idea.');
@@ -104,11 +110,21 @@ export function IdeasView() {
         }
       },
       onPromote: (selected: Idea[]) => promoteIdeasToBr(selected, router),
+      onMerge: (selected: Idea[]) => setMergeRows(selected),
+      onUnmerge: async (id: string) => {
+        if (!unmerge) return;
+        try {
+          await unmerge(id);
+          toast.success('Idea unmerged.');
+        } catch (e) {
+          toast.error(e instanceof Error ? e.message : 'Could not unmerge the idea.');
+        }
+      },
     }),
-    [vote, setStatus, remove, reorderPriority, router],
+    [vote, setStatus, remove, reorderPriority, unmerge, router],
   );
 
-  const config = useIdeasListConfig(ideas, handlers);
+  const config = useIdeasListConfig(ideas, handlers, { includeTest });
 
   const handleCreate = async (input: IdeaCreateInput) => {
     await create(input);
@@ -146,6 +162,20 @@ export function IdeasView() {
           products={products}
           onClose={() => setDialogOpen(false)}
           onCreate={handleCreate}
+        />
+      )}
+      {mergeRows && (
+        <MergeIdeasDialog
+          ideas={mergeRows}
+          onClose={() => setMergeRows(null)}
+          onMerge={async (survivorId) => {
+            if (!merge) return;
+            const survivor = await merge(
+              survivorId,
+              mergeRows.map((r) => r.id),
+            );
+            toast.success(`Merged into ${survivor.ideaNumber ?? survivor.title ?? survivor.problem}.`);
+          }}
         />
       )}
     </Fragment>

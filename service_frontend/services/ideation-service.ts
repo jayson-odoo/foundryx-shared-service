@@ -7,8 +7,8 @@
  *
  * Enforced layering: UI → hooks → this service → lib/api-client → FastAPI.
  */
-import type { Idea, IdeaClusterSuggestions, IdeaStatus, Product } from '@/types/ideation';
-import { realIdeationService } from './ideation-service.real';
+import type { Board, Idea, IdeaClusterSuggestions, Product } from '@/types/ideation';
+import { mockIdeationService } from './ideation-service.mock';
 
 /** Manual capture payload (the WhatsApp path fills the same fields via the tool). */
 export interface IdeaCreateInput {
@@ -35,12 +35,15 @@ export interface IdeaService {
   listIdeas(opts?: { includeTest?: boolean }): Promise<Idea[]>;
   /** One idea by id (form view). Rejects if not found. */
   getIdea(id: string): Promise<Idea>;
-  /** Update editable idea fields (form view save). */
-  updateIdea(id: string, input: Partial<IdeaCreateInput> & { status?: IdeaStatus }): Promise<Idea>;
+  /** Update editable idea fields (form view save) - fields only, NEVER status
+   * (issue #94, ideation round 2, AC-94-34: the form never moves status). */
+  updateIdea(id: string, input: Partial<IdeaCreateInput>): Promise<Idea>;
   /** Manually create a captured idea (deterministic - no LLM at shared-service). */
   createIdea(input: IdeaCreateInput): Promise<Idea>;
-  /** Move an idea to a new lifecycle status (triage board drag / row action). */
-  setStatus(id: string, status: IdeaStatus): Promise<Idea>;
+  /** Move an idea along a status_engine edge - `toStatusId` is the target
+   * status row id (AC-94-53); the legacy lifecycle KEY form still works for
+   * the deferred Archive handler. */
+  setStatus(id: string, toStatusId: string): Promise<Idea>;
   /** Toggle the current user's vote (one per user): click same dir again to clear;
    * click the other dir to switch. Adjusts up/down counts accordingly. */
   vote(id: string, dir: 'up' | 'down'): Promise<Idea>;
@@ -51,7 +54,32 @@ export interface IdeaService {
   suggestClusters(productId?: string): Promise<IdeaClusterSuggestions>;
   /** Hard-delete an idea. */
   remove(id: string): Promise<void>;
+  /** Collapse `ideaIds` onto `survivorId` (issue #94, ideation round 2,
+   * AC-94-01) - optional here so a caller typed only against the base
+   * `IdeaService` (a test double, an older consumer) stays valid; every
+   * concrete implementation (`IdeaExtendedOps`) always defines it. */
+  merge?(survivorId: string, ideaIds: string[]): Promise<Idea>;
+  /** Restore a merged child (or dissolve a survivor's whole group) - AC-94-07/08. */
+  unmerge?(id: string): Promise<Idea[]>;
+  /** The children merged into a survivor, oldest merge first (AC-94-03/25). */
+  listMerged?(id: string): Promise<Idea[]>;
+  /** The triage board - statuses grouped into columns with their cards
+   * (AC-94-54/58), never a hardcoded FE column list. */
+  getBoard?(opts?: { includeTest?: boolean; productId?: string }): Promise<Board>;
 }
 
-// Phase 2: real api-client implementation. (Mock retained in *.mock.ts for tests.)
-export const ideationService: IdeaService = realIdeationService;
+/** The merge/unmerge/board surface every concrete `IdeaService` always
+ * implements (optional on the base interface so a partial test double still
+ * satisfies it - see `use-idea-form.test.tsx`'s `fakeService`). */
+export interface IdeaExtendedOps {
+  merge(survivorId: string, ideaIds: string[]): Promise<Idea>;
+  unmerge(id: string): Promise<Idea[]>;
+  listMerged(id: string): Promise<Idea[]>;
+  getBoard(opts?: { includeTest?: boolean; productId?: string }): Promise<Board>;
+}
+
+// Phase 1 (issue #94 slice S1): bound to the in-memory mock behind this ONE
+// line, per the build order (frontend-mock before backend). Slice S5 swaps
+// this back to `realIdeationService` (`./ideation-service.real`) - no other
+// file changes.
+export const ideationService: IdeaService & IdeaExtendedOps = mockIdeationService;

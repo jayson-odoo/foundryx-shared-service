@@ -3,23 +3,31 @@
 import { useCallback, useEffect, useState } from 'react';
 import { type IdeaCreateInput } from '@/services/ideation-service';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
-import type { Idea, IdeaStatus, Product } from '@/types/ideation';
+import type { BoardColumn, Idea, Product } from '@/types/ideation';
 
 export interface UseIdeas {
   ideas: Idea[];
   products: Product[];
   loading: boolean;
   error: string | null;
+  /** Triage-board columns (issue #94, ideation round 2, AC-94-58) - `undefined`
+   * on a service that doesn't implement `getBoard` (an older test double); the
+   * board falls back to deriving columns from `ideas` itself in that case. */
+  columns?: BoardColumn[];
   /** Whether console/`--say` test ideas (issue #1179) are included - off by
    * default; the Ideas list exposes a toggle that flips this + reloads. */
   includeTest: boolean;
   setIncludeTest: (value: boolean) => void;
   reload: () => Promise<void>;
   create: (input: IdeaCreateInput) => Promise<Idea>;
-  setStatus: (id: string, status: IdeaStatus) => Promise<Idea>;
+  setStatus: (id: string, toStatusId: string) => Promise<Idea>;
   vote: (id: string, dir: 'up' | 'down') => Promise<Idea>;
   reorderPriority: (orderedIds: string[]) => Promise<void>;
   remove: (id: string) => Promise<void>;
+  /** Collapse the given ideas onto `survivorId` (AC-94-21/22), then reload. */
+  merge?: (survivorId: string, ideaIds: string[]) => Promise<Idea>;
+  /** Restore a merged child (or dissolve a survivor's group), then reload. */
+  unmerge?: (id: string) => Promise<Idea[]>;
 }
 
 /**
@@ -35,17 +43,20 @@ export function useIdeas(): UseIdeas {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [includeTest, setIncludeTest] = useState(false);
+  const [columns, setColumns] = useState<BoardColumn[] | undefined>(undefined);
 
   const reload = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [nextIdeas, nextProducts] = await Promise.all([
+      const [nextIdeas, nextProducts, board] = await Promise.all([
         ideationService.listIdeas({ includeTest }),
         ideationService.listProducts(),
+        ideationService.getBoard?.({ includeTest }),
       ]);
       setIdeas(nextIdeas);
       setProducts(nextProducts);
+      setColumns(board?.columns);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load ideas.');
     } finally {
@@ -67,8 +78,8 @@ export function useIdeas(): UseIdeas {
   );
 
   const setStatus = useCallback(
-    async (id: string, status: IdeaStatus) => {
-      const updated = await ideationService.setStatus(id, status);
+    async (id: string, toStatusId: string) => {
+      const updated = await ideationService.setStatus(id, toStatusId);
       await reload();
       return updated;
     },
@@ -100,11 +111,35 @@ export function useIdeas(): UseIdeas {
     [reload, ideationService],
   );
 
+  // Merge / unmerge (issue #94, ideation round 2) - optional on `IdeaService`
+  // (a partial test double may omit them); the embed and operator services
+  // both always implement them.
+  const merge = useCallback(
+    async (survivorId: string, ideaIds: string[]) => {
+      if (!ideationService.merge) throw new Error('Merge is not available.');
+      const survivor = await ideationService.merge(survivorId, ideaIds);
+      await reload();
+      return survivor;
+    },
+    [reload, ideationService],
+  );
+
+  const unmerge = useCallback(
+    async (id: string) => {
+      if (!ideationService.unmerge) throw new Error('Unmerge is not available.');
+      const restored = await ideationService.unmerge(id);
+      await reload();
+      return restored;
+    },
+    [reload, ideationService],
+  );
+
   return {
     ideas,
     products,
     loading,
     error,
+    columns,
     includeTest,
     setIncludeTest,
     reload,
@@ -113,5 +148,7 @@ export function useIdeas(): UseIdeas {
     vote,
     reorderPriority,
     remove,
+    merge,
+    unmerge,
   };
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { toast } from '@/lib/toast';
 import { ChevronDown, ChevronUp, GripVertical } from 'lucide-react';
@@ -17,28 +17,62 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useIdeas } from '@/hooks/use-ideas';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
-import {
-  IDEA_BOARD_COLUMNS,
-  IDEA_SOURCE_LABEL,
-  type Idea,
-  type IdeaStatus,
-} from '@/types/ideation';
+import { IDEA_SOURCE_LABEL, type BoardColumn, type Idea } from '@/types/ideation';
 
 type Columns = Record<string, Idea[]>;
 
-function buildColumns(ideas: Idea[]): Columns {
+/**
+ * Fallback column derivation (issue #94, ideation round 2) for a caller whose
+ * `useIdeas()` doesn't (yet) surface `columns` (e.g. an older test double) -
+ * groups by each idea's OWN engine-resolved status (never a hardcoded FE
+ * union, AC-94-58), so an idea with no `statusId` at all (a bare fixture)
+ * still lands somewhere rather than vanishing from the board.
+ */
+function columnsFromIdeas(ideas: Idea[]): BoardColumn[] {
+  const seen = new Map<string, BoardColumn>();
+  for (const idea of ideas) {
+    if (idea.statusIsArchived || idea.mergedIntoId) continue;
+    const statusId = idea.statusId ?? idea.status;
+    if (!seen.has(statusId)) {
+      seen.set(statusId, {
+        statusId,
+        key: idea.status,
+        title: idea.statusLabel ?? idea.status,
+        color: idea.statusColor ?? 'gray',
+        ideas: [],
+      });
+    }
+  }
+  return Array.from(seen.values());
+}
+
+function buildColumns(source: BoardColumn[], ideas: Idea[]): Columns {
   const cols: Columns = {};
-  for (const { key } of IDEA_BOARD_COLUMNS) cols[key] = [];
-  // Within-column order = priority (ascending), so dragging reorders priority.
-  for (const idea of [...ideas].sort((a, b) => a.priority - b.priority)) {
-    if (cols[idea.status]) cols[idea.status].push(idea);
+  for (const c of source) cols[c.statusId] = [];
+  // Within-column order = rank (ascending, falling back to priority) - so
+  // dragging reorders priority (AC-94-58).
+  const byId = new Map(ideas.map((i) => [i.id, i]));
+  for (const c of source) {
+    const rows = (c.ideas.length > 0 ? c.ideas : ideas.filter((i) => (i.statusId ?? i.status) === c.statusId))
+      .map((i) => byId.get(i.id) ?? i)
+      .sort((a, b) => a.priority - b.priority);
+    cols[c.statusId] = rows;
   }
   return cols;
 }
 
-/** Board reading order (columns L→R, cards top→bottom) = the global priority order. */
-function flatten(cols: Columns): string[] {
-  return IDEA_BOARD_COLUMNS.flatMap(({ key }) => (cols[key] ?? []).map((i) => i.id));
+function flatten(source: BoardColumn[], cols: Columns): string[] {
+  return source.flatMap((c) => (cols[c.statusId] ?? []).map((i) => i.id));
+}
+
+/**
+ * A cross-column drop is valid only when the dragged idea's OWN fireable
+ * transitions (status_engine, `always=True`) reach the target column's status
+ * (AC-94-58) - exported so the rule is unit-testable without simulating a
+ * full drag-and-drop gesture in jsdom.
+ */
+export function canMoveTo(idea: Idea | undefined, targetStatusId: string): boolean {
+  return Boolean(idea?.transitions?.some((t) => t.toStatusId === targetStatusId));
 }
 
 function IdeaCardBody({ idea, ghost }: { idea: Idea; ghost?: boolean }) {
@@ -57,12 +91,14 @@ function IdeaCardBody({ idea, ghost }: { idea: Idea; ghost?: boolean }) {
         <Badge variant="secondary" className="truncate">
           {idea.productName}
         </Badge>
-        {/* Unreachable today - useIdeas() here never passes includeTest, so no
-            test idea ever reaches this board (issue #1179); kept for the day a
-            board toggle is wired to GET /ideation/ideas/board?includeTest. */}
         {idea.isTest && (
           <Badge variant="secondary" appearance="light" size="sm">
             TEST
+          </Badge>
+        )}
+        {(idea.mergedCount ?? 0) > 0 && (
+          <Badge variant="outline" appearance="light" size="sm">
+            {idea.mergedCount} merged
           </Badge>
         )}
         <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
@@ -87,21 +123,33 @@ function IdeaCardBody({ idea, ghost }: { idea: Idea; ghost?: boolean }) {
 
 /**
  * The triage Kanban board - the SINGLE board component used by BOTH the operator
- * page and the chrome-less host iframe (WS-C1 / AC-CAP-9). Drag across columns →
- * status change; drag within a column → reorder priority. The backend + card
- * URLs come from `useIdeationRuntime()` (operator default or embed).
+ * page and the chrome-less host iframe (WS-C1 / AC-CAP-9). Columns come from
+ * the statuses engine (`useIdeas()`'s `columns`, AC-94-58), never a hardcoded
+ * FE list; a drop is only honoured when the card's own `transitions` reach
+ * that column's status (AC-94-58) - an invalid drop is refused and the board
+ * reverts. Drag within a column reorders priority. The backend + card URLs
+ * come from `useIdeationRuntime()` (operator default or embed).
  */
 export function TriageBoard() {
-  const { ideas, loading, error, setStatus, reorderPriority, reload } = useIdeas();
+  const { ideas, columns: apiColumns, loading, error, setStatus, reorderPriority, reload } = useIdeas();
   const { paths } = useIdeationRuntime();
-  const [columns, setColumns] = useState<Columns>(() => buildColumns([]));
+
+  const source = useMemo<BoardColumn[]>(
+    () => (apiColumns && apiColumns.length > 0 ? apiColumns : columnsFromIdeas(ideas)),
+    [apiColumns, ideas],
+  );
+
+  // Seeded from `source`/`ideas` at mount (never an empty `{}`) - the Kanban
+  // primitive reads every column's key on first render, so a column with no
+  // entry yet would crash before the sync-up effect below ever runs.
+  const [columns, setColumns] = useState<Columns>(() => buildColumns(source, ideas));
   const latest = useRef<Columns>(columns);
 
   useEffect(() => {
-    const next = buildColumns(ideas);
+    const next = buildColumns(source, ideas);
     setColumns(next);
     latest.current = next;
-  }, [ideas]);
+  }, [source, ideas]);
 
   const onChange = (next: Columns) => {
     setColumns(next);
@@ -110,10 +158,19 @@ export function TriageBoard() {
 
   const handleMove = async (e: KanbanMoveEvent) => {
     const id = String(e.event.active.id);
-    const order = flatten(latest.current); // reflects the drop position
+    const order = flatten(source, latest.current); // reflects the drop position
     try {
       if (e.activeContainer !== e.overContainer) {
-        await setStatus(id, e.overContainer as IdeaStatus);
+        const idea = ideas.find((i) => i.id === id);
+        // Drop is only valid when this card's own fireable transitions reach
+        // the target column's status (AC-94-58) - foolproof-UI, never a move
+        // the backend would 409 on.
+        if (!canMoveTo(idea, e.overContainer)) {
+          toast.error('That move is not allowed from this stage.');
+          setColumns(buildColumns(source, ideas)); // revert the optimistic drag
+          return;
+        }
+        await setStatus(id, e.overContainer);
       }
       await reorderPriority(order); // board reading order → priority
     } catch (err) {
@@ -131,14 +188,14 @@ export function TriageBoard() {
   return (
     <Kanban value={columns} onValueChange={onChange} getItemValue={(i) => i.id} onMove={handleMove}>
       <KanbanBoard className="!flex !grid-cols-none flex-nowrap gap-4 overflow-x-auto pb-3">
-        {IDEA_BOARD_COLUMNS.map(({ key, title }) => (
-          <KanbanColumn key={key} value={key} className="w-80 shrink-0 rounded-lg bg-muted/40 p-3">
+        {source.map((col) => (
+          <KanbanColumn key={col.statusId} value={col.statusId} className="w-80 shrink-0 rounded-lg bg-muted/40 p-3">
             <div className="flex items-center justify-between px-1 pb-2">
-              <span className="text-sm font-semibold">{title}</span>
-              <Badge variant="outline">{columns[key]?.length ?? 0}</Badge>
+              <span className="text-sm font-semibold">{col.title}</span>
+              <Badge variant="outline">{columns[col.statusId]?.length ?? 0}</Badge>
             </div>
-            <KanbanColumnContent value={key} className="min-h-16">
-              {(columns[key] ?? []).map((idea) => (
+            <KanbanColumnContent value={col.statusId} className="min-h-16">
+              {(columns[col.statusId] ?? []).map((idea) => (
                 <KanbanItem key={idea.id} value={idea.id}>
                   <KanbanItemHandle asChild>
                     <Link href={paths.formHref(idea.id)} draggable={false}>
@@ -147,7 +204,7 @@ export function TriageBoard() {
                   </KanbanItemHandle>
                 </KanbanItem>
               ))}
-              {(columns[key]?.length ?? 0) === 0 && (
+              {(columns[col.statusId]?.length ?? 0) === 0 && (
                 <p className="px-1 py-6 text-center text-xs text-muted-foreground">Drop ideas here</p>
               )}
             </KanbanColumnContent>

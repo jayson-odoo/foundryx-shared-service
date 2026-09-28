@@ -15,12 +15,12 @@
  */
 import { apiFetch } from '@/lib/api-client';
 import type {
+  Board,
   Idea,
   IdeaClusterSuggestions,
-  IdeaStatus,
   Product,
 } from '@/types/ideation';
-import type { IdeaCreateInput, IdeaService } from './ideation-service';
+import type { IdeaCreateInput, IdeaExtendedOps, IdeaService } from './ideation-service';
 
 export interface EmbedTokenScope {
   tenant_id: string;
@@ -38,9 +38,10 @@ let lastScope: EmbedTokenScope | null = null;
 
 const embedIdea = (id: string) => `/embed/ideas/${encodeURIComponent(id)}`;
 
-export const ideationEmbedService: IdeaService & {
-  validateToken(token: string): Promise<EmbedTokenScope>;
-} = {
+export const ideationEmbedService: IdeaService &
+  IdeaExtendedOps & {
+    validateToken(token: string): Promise<EmbedTokenScope>;
+  } = {
   /** Verify the embed token → its tenant + product scope (render-vs-expired gate). */
   async validateToken(token: string): Promise<EmbedTokenScope> {
     const scope = await apiFetch<EmbedTokenScope>('/embed/validate', {
@@ -112,12 +113,10 @@ export const ideationEmbedService: IdeaService & {
   },
 
   /** Edit the mutable fields. Product is NOT reassignable via the embed; a
-   * changed `status` rides the dedicated status route (server-authoritative). */
-  async updateIdea(
-    id: string,
-    input: Partial<IdeaCreateInput> & { status?: IdeaStatus },
-  ): Promise<Idea> {
-    const { status, attachments, productId, ...fields } = input;
+   * save never moves status any more (AC-94-34 - the form dropped its Status
+   * control entirely, owner Q5). */
+  async updateIdea(id: string, input: Partial<IdeaCreateInput>): Promise<Idea> {
+    const { attachments, productId, ...fields } = input;
     void attachments;
     void productId; // embed never reassigns the product (scope integrity)
     const patch: Record<string, unknown> = {};
@@ -126,20 +125,15 @@ export const ideationEmbedService: IdeaService & {
     if (fields.impact !== undefined) patch.impact = fields.impact;
     if (fields.department !== undefined) patch.department = fields.department;
     if (fields.rawText !== undefined) patch.rawText = fields.rawText;
-    const updated =
-      Object.keys(patch).length > 0
-        ? await apiFetch<Idea>(embedIdea(id), { method: 'PATCH', body: JSON.stringify(patch) })
-        : await apiFetch<Idea>(embedIdea(id));
-    if (status !== undefined && status !== updated.status) {
-      return ideationEmbedService.setStatus(id, status);
-    }
-    return updated;
+    return Object.keys(patch).length > 0
+      ? apiFetch<Idea>(embedIdea(id), { method: 'PATCH', body: JSON.stringify(patch) })
+      : apiFetch<Idea>(embedIdea(id));
   },
 
-  setStatus(id: string, status: IdeaStatus): Promise<Idea> {
+  setStatus(id: string, toStatusId: string): Promise<Idea> {
     return apiFetch<Idea>(`${embedIdea(id)}/status`, {
       method: 'POST',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status: toStatusId }),
     });
   },
 
@@ -166,5 +160,27 @@ export const ideationEmbedService: IdeaService & {
 
   async remove(id: string): Promise<void> {
     await apiFetch<void>(embedIdea(id), { method: 'DELETE' });
+  },
+
+  // Merge / unmerge parity (AC-94-16) - every id the backend resolves stays
+  // scoped to the token's tenant AND product, same as every other embed route.
+  merge(survivorId: string, ideaIds: string[]): Promise<Idea> {
+    return apiFetch<Idea>('/embed/ideas/merge', {
+      method: 'POST',
+      body: JSON.stringify({ survivorId, ideaIds }),
+    });
+  },
+
+  unmerge(id: string): Promise<Idea[]> {
+    return apiFetch<Idea[]>(`${embedIdea(id)}/unmerge`, { method: 'POST' });
+  },
+
+  listMerged(id: string): Promise<Idea[]> {
+    return apiFetch<Idea[]>(`${embedIdea(id)}/merged`);
+  },
+
+  getBoard(opts?: { includeTest?: boolean; productId?: string }): Promise<Board> {
+    const q = opts?.includeTest ? '?includeTest=true' : '';
+    return apiFetch<Board>(`/embed/board${q}`);
   },
 };

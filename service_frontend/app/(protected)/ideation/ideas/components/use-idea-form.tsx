@@ -1,19 +1,33 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type UseFormReturn } from 'react-hook-form';
-import { Archive, ArchiveRestore, ArrowRight, ClipboardList, FileText, Lightbulb, Rocket } from 'lucide-react';
+import {
+  Archive,
+  ArchiveRestore,
+  ArrowRight,
+  ClipboardList,
+  FileText,
+  GitMerge,
+  Lightbulb,
+  Rocket,
+  Split,
+} from 'lucide-react';
 import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ResourceAction } from '@/components/platform/resource-list';
 import { useCan } from '@/hooks/use-can';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
-import { IDEA_NEXT_STATUS, IDEA_STATUS_LABEL, type Idea, type Product } from '@/types/ideation';
+import type { Idea, Product } from '@/types/ideation';
+import type { ListQuery } from '@/types/resource';
 import { promoteIdeasToBr } from '../promote-to-br';
+import { selectIdeaRows } from '../select-idea-rows';
 import { DetailsTab, AttachmentsTab } from './idea-form-fields';
 import { IdeaBrsTab } from './idea-brs-tab';
+import { IdeaMergedTab } from './idea-merged-tab';
+import { ideaFormPath, buildIdeaFormQuery } from './paths';
 import { ideaFormSchema, type IdeaFormValues } from './idea-schema';
 
 function toFormValues(idea: Idea | null): IdeaFormValues {
@@ -21,7 +35,6 @@ function toFormValues(idea: Idea | null): IdeaFormValues {
     return {
       problem: '',
       productId: '',
-      status: 'captured',
       proposedSolution: '',
       impact: '',
       department: '',
@@ -30,7 +43,6 @@ function toFormValues(idea: Idea | null): IdeaFormValues {
   return {
     problem: idea.problem,
     productId: idea.productId,
-    status: idea.status,
     proposedSolution: idea.proposedSolution ?? '',
     impact: idea.impact ?? '',
     department: idea.department ?? '',
@@ -60,6 +72,10 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
   const [products, setProducts] = useState<Product[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  // Bumped whenever a child is split out of this survivor's "Merged from" tab
+  // (a `key` on the tab forces `useIdeaMerged` to refetch, mirroring the
+  // quick-replace remount pattern used elsewhere in the shell).
+  const [mergedReloadToken, setMergedReloadToken] = useState(0);
 
   const form = useForm<IdeaFormValues>({
     mode: 'onTouched',
@@ -96,88 +112,153 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ideaId, creating]);
 
+  // Review fix pattern reused from `use-br-form.tsx` (issue #94, AC-94-36): the
+  // pager must re-run the SAME lane the user was actually browsing on the
+  // list they came from - carried as an `includeTest` URL param, not
+  // re-derived from whichever record happens to be open.
+  const searchParams = useSearchParams();
+  const includeTestParam = searchParams.get('includeTest');
+  const pagerIncludeTest =
+    includeTestParam !== null ? includeTestParam === '1' : (idea?.isTest ?? false);
+
+  const fetchRecordAt = useCallback(
+    async (query: ListQuery, index: number) => {
+      const all = await ideationService.listIdeas({ includeTest: pagerIncludeTest });
+      const rows = selectIdeaRows(all, query);
+      const row = rows[index];
+      return { recordId: row?.id ?? null, total: rows.length };
+    },
+    [pagerIncludeTest, ideationService],
+  );
+
+  // Built directly (not through `paths.formHref`) so the pager's query string
+  // is always correct regardless of a runtime's own `formHref` shape; mode
+  // still picks the right base path (AC-94-40 - the embed pager stays inside
+  // the iframe).
+  const buildRecordHref = useCallback(
+    (recordId: string, ctx: string, index: number) => {
+      const query = buildIdeaFormQuery({ ctx, index, includeTest: pagerIncludeTest });
+      return mode === 'embed'
+        ? `/embed/ideas/${encodeURIComponent(recordId)}${query}`
+        : `${ideaFormPath(recordId)}${query}`;
+    },
+    [pagerIncludeTest, mode],
+  );
+
   const config = useMemo<ResourceFormConfig<Idea> | null>(() => {
     if (isLoading || notFound) return null;
 
-    // Advancing/archiving updates status_engine state (prototype: IDEA_NEXT_STATUS),
+    // Advancing/restoring fires a status_engine edge by target id (AC-94-53),
     // then refreshes the loaded idea + resets the form baseline.
-    const applyStatus = async (id: string, status: Idea['status']) => {
-      const updated = await ideationService.setStatus(id, status);
+    const applyStatus = async (id: string, toStatusId: string) => {
+      const updated = await ideationService.setStatus(id, toStatusId);
       setIdea(updated);
       form.reset(toFormValues(updated));
     };
 
-    const actions: ResourceAction<Idea>[] = [
-      {
-        id: 'promote-br',
-        label: 'Promote to BR',
-        icon: Rocket,
-        // The destination is a new draft BR - gated by the BR write perm
-        // (hidden in embed, which has no operator user / BR surface).
-        permission: 'ideation.business_requirements.manage',
-        surfaces: { row: false, form: true, bulk: false },
-        // Foolproof-UI: an archived idea can't be promoted.
-        isVisible: (rows) => rows.every((r) => r.status !== 'archived'),
-        run: async (rows) => {
-          // Single current idea → the backend derives the title + pre-fills
-          // problem_statement (AC-BI-32b); lands on the new BR's Grill tab.
-          await promoteIdeasToBr(rows, router);
-        },
-      },
-      {
-        id: 'advance',
-        // Label auto-derived from the status_engine transition target (prototype:
-        // IDEA_NEXT_STATUS) - e.g. "Move to Triaged".
-        label: (rows) => {
-          const next = rows[0] ? IDEA_NEXT_STATUS[rows[0].status] : undefined;
-          return next ? `Move to ${IDEA_STATUS_LABEL[next]}` : 'Advance to next stage';
-        },
-        icon: ArrowRight,
-        surfaces: { row: false, form: true, bulk: false },
-        isVisible: (rows) => rows.every((r) => r.status !== 'archived'),
-        isDisabled: (rows) => rows.some((r) => !IDEA_NEXT_STATUS[r.status]),
-        run: async (rows) => {
-          const next = IDEA_NEXT_STATUS[rows[0].status];
-          if (!next) return;
-          await applyStatus(rows[0].id, next);
-          toast.success(`Moved to ${next}.`);
-        },
-      },
-      {
-        id: 'archive',
-        label: 'Archive',
-        icon: Archive,
-        surfaces: { row: false, form: true, bulk: false },
-        isVisible: (rows) => rows.every((r) => r.status !== 'archived'),
-        // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
-        // 15) - no confirm, no `run` (the registered `ideation_ideas.archive`
-        // handler commits it server-side; restore stays a plain, un-gated
-        // action, so this is the reversible window).
-        deferred: { actionKey: 'ideation_ideas.archive', entityType: 'ideation_idea' },
-      },
-      {
-        id: 'restore',
-        label: 'Restore',
-        icon: ArchiveRestore,
-        surfaces: { row: false, form: true, bulk: false },
-        isVisible: (rows) => rows.every((r) => r.status === 'archived'),
-        run: async (rows) => {
-          await applyStatus(rows[0].id, 'captured');
-          toast.success('Idea restored.');
-        },
-      },
-      {
-        id: 'delete',
-        label: 'Delete',
-        icon: FileText,
-        tone: 'destructive',
-        surfaces: { row: false, form: true, bulk: false },
-        // Grace-window deferred action - no confirm, no `run`. ResourceForm's
-        // own onCommitted already carries the record's ctx/i/from back to
-        // the list (AC-DLA-30), matching what this `run` used to do by hand.
-        deferred: { actionKey: 'ideation_ideas.delete', entityType: 'ideation_idea' },
-      },
-    ];
+    const isMergedChild = Boolean(idea?.mergedIntoId);
+
+    // A merged child is frozen (AC-94-09/26) - the gear offers only Unmerge
+    // (split it back out) and Delete. Every lifecycle action lives on the
+    // survivor instead.
+    const actions: ResourceAction<Idea>[] = isMergedChild
+      ? [
+          {
+            id: 'unmerge',
+            label: 'Unmerge',
+            icon: Split,
+            surfaces: { row: false, form: true, bulk: false },
+            run: async (rows) => {
+              if (!ideationService.unmerge || !rows[0]) return;
+              const [restored] = await ideationService.unmerge(rows[0].id);
+              setIdea(restored);
+              form.reset(toFormValues(restored));
+              toast.success('Idea unmerged.');
+            },
+          },
+          {
+            id: 'delete',
+            label: 'Delete',
+            icon: FileText,
+            tone: 'destructive',
+            surfaces: { row: false, form: true, bulk: false },
+            deferred: { actionKey: 'ideation_ideas.delete', entityType: 'ideation_idea' },
+          },
+        ]
+      : [
+          {
+            id: 'promote-br',
+            label: 'Promote to BR',
+            icon: Rocket,
+            // The destination is a new draft BR - gated by the BR write perm
+            // (hidden in embed, which has no operator user / BR surface).
+            permission: 'ideation.business_requirements.manage',
+            surfaces: { row: false, form: true, bulk: false },
+            // Foolproof-UI: an archived idea can't be promoted.
+            isVisible: (rows) => rows.every((r) => !r.statusIsArchived),
+            run: async (rows) => {
+              // Single current idea → the backend derives the title + pre-fills
+              // problem_statement (AC-BI-32b); lands on the new BR's Grill tab.
+              await promoteIdeasToBr(rows, router);
+            },
+          },
+          {
+            id: 'advance',
+            // Label auto-derived from the fireable transition target
+            // (status_engine, AC-94-57/52) - e.g. "Move to Triaged".
+            label: (rows) => {
+              const target = rows[0]?.transitions?.find((t) => t.id === rows[0]?.advanceTransitionId);
+              return target ? `Move to ${target.toStatusLabel}` : 'Advance to next stage';
+            },
+            icon: ArrowRight,
+            surfaces: { row: false, form: true, bulk: false },
+            isVisible: (rows) => rows.every((r) => !r.statusIsArchived),
+            isDisabled: (rows) => rows.some((r) => !r.advanceTransitionId),
+            run: async (rows) => {
+              const target = rows[0]?.transitions?.find((t) => t.id === rows[0]?.advanceTransitionId);
+              if (!target) return;
+              await applyStatus(rows[0].id, target.toStatusId);
+              toast.success(`Moved to ${target.toStatusLabel}.`);
+            },
+          },
+          {
+            id: 'archive',
+            label: 'Archive',
+            icon: Archive,
+            surfaces: { row: false, form: true, bulk: false },
+            isVisible: (rows) => rows.every((r) => !r.statusIsArchived),
+            // Grace-window deferred action (sprint-4/23, T5 fix round 1, item
+            // 15) - no confirm, no `run` (the registered `ideation_ideas.archive`
+            // handler commits it server-side; restore stays a plain, un-gated
+            // action, so this is the reversible window).
+            deferred: { actionKey: 'ideation_ideas.archive', entityType: 'ideation_idea' },
+          },
+          {
+            id: 'restore',
+            label: 'Restore',
+            icon: ArchiveRestore,
+            surfaces: { row: false, form: true, bulk: false },
+            isVisible: (rows) => rows.every((r) => r.statusIsArchived),
+            isDisabled: (rows) => rows.some((r) => !r.transitions?.length),
+            run: async (rows) => {
+              const target = rows[0]?.transitions?.[0];
+              if (!target) return;
+              await applyStatus(rows[0].id, target.toStatusId);
+              toast.success('Idea restored.');
+            },
+          },
+          {
+            id: 'delete',
+            label: 'Delete',
+            icon: FileText,
+            tone: 'destructive',
+            surfaces: { row: false, form: true, bulk: false },
+            // Grace-window deferred action - no confirm, no `run`. ResourceForm's
+            // own onCommitted already carries the record's ctx/i/from back to
+            // the list (AC-DLA-30), matching what this `run` used to do by hand.
+            deferred: { actionKey: 'ideation_ideas.delete', entityType: 'ideation_idea' },
+          },
+        ];
 
     const onSave = async (): Promise<boolean> => {
       let ok = false;
@@ -194,6 +275,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           toast.success('Idea captured.');
           router.push(paths.formHref(created.id));
         } else {
+          // Fields only - a save never moves status (AC-94-34, owner Q5).
           const updated = await ideationService.updateIdea(ideaId, {
             problem: values.problem,
             productId: values.productId,
@@ -201,7 +283,6 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             impact: values.impact ?? '',
             department: values.department ?? '',
             rawText: values.rawText ?? '',
-            status: values.status,
           });
           setIdea(updated);
           form.reset(toFormValues(updated));
@@ -217,9 +298,20 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       else form.reset(toFormValues(idea));
     };
 
+    const onVote = async (target: Idea, dir: 'up' | 'down') => {
+      try {
+        const updated = await ideationService.vote(target.id, dir);
+        setIdea(updated);
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : 'Could not vote.');
+      }
+    };
+
     // The visible label is the idea's title when set, falling back to the
     // problem text (S1, AC-1106) - a pre-lane idea has no title.
     const visibleLabel = creating ? 'New idea' : (idea?.title ?? idea?.problem ?? 'Idea');
+
+    const mergedCount = idea?.mergedCount ?? 0;
 
     return {
       breadcrumb:
@@ -253,7 +345,14 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           label: 'Details',
           icon: Lightbulb,
           render: ({ editing }: { editing: boolean }) => (
-            <DetailsTab form={form} editing={editing} creating={creating} idea={idea} products={products} />
+            <DetailsTab
+              form={form}
+              editing={editing}
+              creating={creating}
+              idea={idea}
+              products={products}
+              onVote={onVote}
+            />
           ),
         },
         {
@@ -274,6 +373,31 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
               },
             ]
           : []),
+        // "Merged from" (AC-94-25) - only once this idea is a survivor with at
+        // least one merged child.
+        ...(!creating && idea && mergedCount > 0
+          ? [
+              {
+                id: 'merged',
+                label: 'Merged from',
+                icon: GitMerge,
+                render: () => (
+                  <IdeaMergedTab
+                    key={mergedReloadToken}
+                    ideaId={idea.id}
+                    onUnmerge={async (ids) => {
+                      if (!ideationService.unmerge) return;
+                      for (const id of ids) await ideationService.unmerge(id);
+                      const refreshed = await ideationService.getIdea(idea.id);
+                      setIdea(refreshed);
+                      setMergedReloadToken((t) => t + 1);
+                      toast.success('Idea unmerged.');
+                    }}
+                  />
+                ),
+              },
+            ]
+          : []),
       ],
       actions,
       actionRows: idea ? [idea] : [],
@@ -282,8 +406,26 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       isDirty: form.formState.isDirty,
       onSave,
       onCancel,
+      recordNav: creating ? undefined : { fetchAt: fetchRecordAt, buildHref: buildRecordHref },
     };
-  }, [isLoading, notFound, creating, idea, products, form, initialEditing, ideaId, router, paths, mode, ideationService, showBrsTab]);
+  }, [
+    isLoading,
+    notFound,
+    creating,
+    idea,
+    products,
+    form,
+    initialEditing,
+    ideaId,
+    router,
+    paths,
+    mode,
+    ideationService,
+    showBrsTab,
+    mergedReloadToken,
+    fetchRecordAt,
+    buildRecordHref,
+  ]);
 
   return { config, form, isLoading, notFound };
 }
