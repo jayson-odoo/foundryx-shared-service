@@ -141,7 +141,7 @@ Unless stated otherwise, "the list" means both the operator list (`/ideation/ide
 ## C. Form view fixes (AC-94-33..40)
 
 ### AC-94-33 - no Status dropdown [FE][T]
-- **Given** an idea form in edit mode, **then** no status control is rendered; the form schema has no `status` field; `idea-form-fields.tsx` no longer imports `@/components/ui/select`. In read mode Status is a read-only `StatusBadge` with the engine label and colour.
+- **Given** an idea form in edit mode, **then** no status control is rendered; the form schema has no `status` field; `idea-form-fields.tsx` no longer imports `@/components/ui/select`. **In read mode there is no Status row either** (owner Q5, 28 Sep): the form renders no status in any mode.
 - Test: `idea-form-fields.test.tsx` "no status select".
 
 ### AC-94-34 - save never moves status [FE][T]
@@ -233,7 +233,7 @@ Unless stated otherwise, "the list" means both the operator list (`/ideation/ide
 - Test: `ideation-constants.inventory.test.ts`.
 
 ### AC-94-56 - labels and colours render from the API [FE][T]
-- **Given** an idea with `statusLabel = "Discussed"` and `statusColor = "indigo"`, **then** the list Status column and the form render a `StatusBadge` reading "Discussed" with the `colorToHex` dot; the CSV export writes the label.
+- **Given** an idea with `statusLabel = "Discussed"` and `statusColor = "indigo"`, **then** the list Status column renders a `StatusBadge` reading "Discussed" (the form shows no status, AC-94-33) with the `colorToHex` dot; the CSV export writes the label.
 - Test: `use-ideas-list-config.test.tsx` "status from API".
 
 ### AC-94-57 - Advance to next stage (row, form, bulk) [FE][T]
@@ -245,7 +245,7 @@ Unless stated otherwise, "the list" means both the operator list (`/ideation/ide
 - Test: `board/page.test.tsx` "columns from API", "invalid drop refused".
 
 ### AC-94-59 - E2E: rename in the statuses engine [E2E]
-- **When** the tester opens the statuses engine from the sidebar, renames the Idea status "Triaged" to a timestamped "Discussed-<ts>", then clicks Ideation > Ideas, **then** the Status column, the Advance label on a New idea, the board column and the idea form all read the new name. Run on a dedicated tenant (the rename forks the set). 375 and 1280.
+- **When** the tester opens the statuses engine from the sidebar, renames the Idea status "Triaged" to a timestamped "Discussed-<ts>", then clicks Ideation > Ideas, **then** the Status column, the Advance label on a New idea, the board column and the public track page all read the new name; the idea form shows no status (AC-94-33). Run on a dedicated tenant (the rename forks the set). 375 and 1280.
 
 ### AC-94-60 - Archived view shows archived ideas [FE][BE][T]
 - **Given** an archived idea, **when** the list switches to the Archived view, **then** the idea is listed with Restore available (today the view is always empty: the FE loads `filter=active` then filters `status === 'archived'`).
@@ -262,12 +262,12 @@ Unless stated otherwise, "the list" means both the operator list (`/ideation/ide
 - Test: `test_no_event_from_initial_or_without_requester`.
 
 ### AC-94-63 - payload contract [BE][T]
-- **Given** an event, **then** the feed item carries exactly `event_id, seq, kind, occurred_at, idea_id, idea_number, idea_title, product_id, status_label, from_status_label, track_url, requester_phone, merged_into, is_test` (snake_case, the intake server-to-server convention); `status_label` is the engine label; `track_url` is the recipient idea's own public link.
+- **Given** an event, **then** the feed item carries exactly `event_id, seq, kind, occurred_at, idea_id, idea_number, idea_title, product_id, status_label, from_status_label, track_url, requester_phone, merged_into, separated_from, is_test` (snake_case, the intake server-to-server convention); `status_label` is the engine label; `track_url` is the recipient idea's own public link.
 - Test: `test_event_payload_exact_keys`.
 
-### AC-94-64 - merge notifies each child's requester [BE][T]
-- **Given** B (has requester) merged into A, **then** one event `kind = "merged"` for B with `merged_into = {idea_number, title}` of A and `status_label` = A's current label; unmerge writes no event.
-- Test: `test_merge_event_per_child`.
+### AC-94-64 - merge AND unmerge notify each child's requester [BE][T]
+- **Given** B (has requester) merged into A, **then** one event `kind = "merged"` for B with `merged_into = {idea_number, title}` of A and `status_label` = A's current label. **When** B is unmerged (child unmerge, survivor unmerge or survivor delete), **then** one event `kind = "unmerged"` for B with `separated_from = {idea_number, title}` of A, `merged_into = null` and `status_label` = B's own restored label (owner Q3, 28 Sep); deduped by phone within one unmerge; no event for A.
+- Test: `test_merge_event_per_child`, `test_unmerge_event_per_child`.
 
 ### AC-94-65 - a survivor's stage change reaches its children's requesters [BE][T]
 - **Given** A survives B and C with requesters, **when** A moves stage, **then** one event per distinct requester phone across A, B, C, each with that recipient idea's own `track_url` and `merged_into` set for B and C.
@@ -298,7 +298,7 @@ Unless stated otherwise, "the list" means both the operator list (`/ideation/ide
 - Test: `test_uninstall_clears_events`.
 
 ### AC-94-72 - the CRM contract doc exists [T]
-- **Given** the PR, **then** `documentation/ideation/status-events-contract.md` documents the feed, payload, cursor, settle window, `is_test` rule and the merge semantics, and matches `test_event_payload_exact_keys` field for field.
+- **Given** the PR, **then** `documentation/ideation/status-events-contract.md` documents the feed, payload, cursor, settle window, `is_test` rule and the merge and unmerge semantics (`merged`, `unmerged` kinds), and matches `test_event_payload_exact_keys` field for field.
 - Test: reviewer checklist item.
 
 ## G. Cross-cutting (AC-94-73..78)

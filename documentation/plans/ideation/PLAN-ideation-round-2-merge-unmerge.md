@@ -14,7 +14,8 @@ This document is structured to be rendered as a self-contained alignment page: s
 1. Merge and unmerge: CONFIRMED.
 2. Status labels, colours and transitions read from the statuses engine: CONFIRMED.
 3. Priority fix (1-based rank, real rank on capture): CONFIRMED.
-4. Stage-change notification to the requester: YES, on EVERY stage change, as a new WhatsApp template use case "ideation status update". Open: which side sends it (section 7, question Q1).
+4. Stage-change notification to the requester: YES, on EVERY stage change, as a new WhatsApp template use case "ideation status update".
+5. Open questions answered on the alignment page (28 Sep): Q1 CRM pulls the feed and sends; Q2 yes, merged ideas' requesters get the kept idea's updates; **Q3 every stage change except out of Draft, plus a message on merge AND on unmerge**; Q4 new captures land at the bottom; **Q5 no status on the form at all (neither edit nor read mode)**; Q6 flatten.
 
 Standing owner rules: every select is the system dropdown (`SearchSelect`, `components/platform/search-select/search-select.tsx`, design-language primitives roster `docs/reference/design-language.md:134`); one PR; alignment page; no em or en dashes.
 
@@ -74,13 +75,13 @@ Five things, one PR:
 
 **Flow 3 - Regret it (unmerge).** Either: in the merged idea's form, gear > **Unmerge**; or in the kept idea's Merged from tab, tick rows > **Unmerge**; or in the list, tick the kept idea > Actions > **Unmerge** (splits the whole group). The idea returns to the list at its old position with its old status and its own votes.
 
-**Flow 4 - The form.** Edit mode no longer has a Status dropdown (status changes only through actions). Read mode shows the status as a coloured pill. The Votes row has the same up/down buttons as the list. Top right shows **‹ 3 / 12 ›** when opened from the list; prev/next walks the list in the same order and filter.
+**Flow 4 - The form.** The form has no Status row at all, in edit or read mode (owner Q5); status is visible on the list and board, and changes only through actions. The Votes row has the same up/down buttons as the list. Top right shows **‹ 3 / 12 ›** when opened from the list; prev/next walks the list in the same order and filter.
 
 **Flow 5 - Priority.** Drag an idea to the top of the list, open it: **Priority #1**. Capture a new idea: it shows the last rank (for example **#13**). Dragging on page 2 no longer disturbs page 1.
 
-**Flow 6 - Rename a stage.** In the statuses engine rename the Idea stage "Triaged" to "Discussed". The Ideas list Status column, the "Move to Discussed" action, the board column and the form pill all say "Discussed". Nothing is hard-coded any more.
+**Flow 6 - Rename a stage.** In the statuses engine rename the Idea stage "Triaged" to "Discussed". The Ideas list Status column, the "Move to Discussed" action, the board column and the public track page all say "Discussed". Nothing is hard-coded any more.
 
-**Flow 7 - The requester (after the CRM side ships).** Each time an idea moves stage, the requester gets a WhatsApp template message: "Update on your idea IDEA-0012: it is now Discussed. Track it here: <link>". If their idea was merged, they get "... has been combined with IDEA-0012 ..." once, then the kept idea's stage updates from then on. Their original track link shows "Merged into IDEA-0012" and follows the kept idea's progress. Test ideas never message anyone.
+**Flow 7 - The requester (after the CRM side ships).** Each time an idea moves stage, the requester gets a WhatsApp template message: "Update on your idea IDEA-0012: it is now Discussed. Track it here: <link>". If their idea was merged, they get "... has been combined with IDEA-0012 ..." once, then the kept idea's stage updates from then on; if it is later unmerged, they get "... is being handled separately again, it is now <stage> ..." once, then their own idea's updates. Their original track link shows "Merged into IDEA-0012" and follows the kept idea's progress. Test ideas never message anyone.
 
 ---
 
@@ -103,7 +104,7 @@ Five things, one PR:
 5. Recount the survivor and every member (reuse `IdeaActionService._recount`, `actions.py:158-163`).
 6. Write a `merged` event per member with a requester (section 7). Commit once.
 
-`unmerge(tenant_id, idea_id)`: child -> restore that child; survivor -> restore all its children; else 422. Restore = clear pointer + `merged_at`, move rows `idea_id = survivor AND origin_idea_id = child` back (clear origin), recount both. No event (Q3 default).
+`unmerge(tenant_id, idea_id)`: child -> restore that child; survivor -> restore all its children; else 422. Restore = clear pointer + `merged_at`, move rows `idea_id = survivor AND origin_idea_id = child` back (clear origin), recount both. Write one `kind = "unmerged"` event per restored child with a requester (owner Q3), in the same transaction; deleting a survivor (which unmerges first) writes them too.
 
 Guards added elsewhere (all read `merged_into_id`):
 - `IdeaActionService.set_status` and `vote` -> 409 on a child ("merged into IDEA-xxxx").
@@ -143,7 +144,7 @@ Static paths (`/merge`) are declared before `/{idea_id}` (the existing ordering 
 
 ## 4. Form view fixes
 
-1. **Status dropdown removed** (`idea-form-fields.tsx:171-198`, `EDITABLE_STATUSES :41-49`, bare Select import `:21-27`); `status` leaves `idea-schema.ts` and `toFormValues`/`onSave` (`use-idea-form.tsx:24,33,204`); `updateIdea` drops its status branch (`ideation-service.real.ts:102-123`). Read mode keeps a read-only `StatusBadge` (`components/platform/status-badge/status-badge.tsx`) built from `statusLabel` + `colorToHex(statusColor)` (`color-tone.ts:59`). (Q5 asks whether to drop even the read-only pill.)
+1. **Status dropdown removed** (`idea-form-fields.tsx:171-198`, `EDITABLE_STATUSES :41-49`, bare Select import `:21-27`); `status` leaves `idea-schema.ts` and `toFormValues`/`onSave` (`use-idea-form.tsx:24,33,204`); `updateIdea` drops its status branch (`ideation-service.real.ts:102-123`). Owner Q5: no status row on the form in ANY mode (read mode loses its status row too); status is shown on the list and board only.
 2. **Clickable votes**: move `VoteCell` from `use-ideas-list-config.tsx:31-68` to `app/(protected)/ideation/ideas/components/vote-cell.tsx`, add ONE prop `disabled?: boolean`; the list and the form import it (no parallel component). The form's vote handler calls `ideationService.vote` and `setIdea(updated)`.
 3. **Pager**: `recordNav: { fetchAt, buildHref }` wired exactly like `use-br-form.tsx:182-201,304`. `fetchAt` calls `listIdeas({ includeTest, filter: 'all' })` and runs the SAME pure helper the list fetcher uses (`selectIdeaRows(ideas, query)`, extracted from `use-ideas-list-config.tsx:251-268`), so order and filter can never drift. `IdeaPaths.formHref` (`hooks/use-ideation-runtime.tsx:21-28`) gains `{ctx, index, includeTest}` for both runtimes (operator: extend `ideaFormHref` in `components/paths.ts` like `brFormHref`; embed: plain query on `/embed/ideas/{id}`, token stays out of the URL per `embed-app.tsx` comment).
 
@@ -174,7 +175,7 @@ Static paths (`/merge`) are declared before `/{idea_id}` (the existing ordering 
 
 **Frontend:**
 - Delete `IdeaStatus`, `IDEA_NEXT_STATUS`, `IDEA_BOARD_COLUMNS`, `IDEA_STATUS_LABEL` (`types/ideation.ts:24-48,127-153`); `Idea.status` becomes `string`, plus the new fields. An inventory test pins their absence (AC-94-55).
-- List Status column and form render `StatusBadge` from `statusLabel`/`statusColor`; CSV exports the label.
+- List Status column renders `StatusBadge` from `statusLabel`/`statusColor` (the form shows no status, owner Q5); CSV exports the label.
 - **Advance to next stage** (row, form, bulk): label "Move to {toStatusLabel}" when every row's advance target label matches, else "Advance to next stage"; disabled if any row lacks `advanceTransitionId`; each row fires its own edge via `setStatus(id, toStatusId)` (signature changes from key to target id); toast names the label.
 - Archive stays the deferred action (server key path). Visibility uses `statusIsArchived`. **Restore** is visible when `statusIsArchived` and the row has a transition; it fires that edge (label from the engine).
 - Board: switch `triage-board.tsx` to `GET /board` (operator) / `GET /embed/board` (both already exist, `routers/ideas.py:88`, `embed.py:203`); a drop target is valid only if the card's `transitions` reach that column's `statusId`; fire by id; then `/reorder`.
@@ -197,19 +198,20 @@ Why pull over push: no callback URL or signing secret to store, no SSRF surface,
 - Skip when the FROM status `is_initial` (draft to captured / rejected / duplicate: the live chat already replied, `sinks.py`, `intake.py:598-655`).
 - Recipients = the moved idea plus, if it is a survivor, each merged child; each must have `submitter_contact_id` resolved TENANT SCOPED to a Contact with a phone, and a `status_token`; dedupe by phone (the survivor's own row wins).
 - One row per recipient: `kind = "status_changed"`, `status_label` = the moved idea's new label (`ev.extra.to_status_label`), `from_status_label`, `track_url = mint_idea_link(recipient)` (`sinks.py:44-59`), `merged_into` set for children, `is_test` copied from the recipient.
-- Merge writes `kind = "merged"` rows for members with a requester inside the merge transaction (section 3.2); unmerge writes none.
+- Merge writes `kind = "merged"` rows for members with a requester inside the merge transaction (section 3.2); unmerge writes `kind = "unmerged"` rows for each restored child with a requester (owner Q3), `status_label` = the child's own restored label, `separated_from` = the former kept idea, `merged_into = null`, deduped by phone within the one unmerge.
 
 **Table `idea_status_events`:** `seq` INTEGER autoincrement PK (Postgres SERIAL), `id` uuid unique (the `event_id`), `tenant_id`, `idea_id` (recipient), `kind`, `is_test`, `payload_json`, `created_at`. Generic `uninstall_tenant` clears it (`bootstrap.py:192-202`).
 
 **Payload (snake_case, the server-to-server convention of `schemas.py:1-8`):**
 ```
-{ "event_id": "uuid", "seq": 812, "kind": "status_changed" | "merged",
+{ "event_id": "uuid", "seq": 812, "kind": "status_changed" | "merged" | "unmerged",
   "occurred_at": "2026-09-28T09:10:00Z",
   "idea_id": "...", "idea_number": "IDEA-0031", "idea_title": "Faster quotation",
   "product_id": "...", "status_label": "Discussed", "from_status_label": "New",
   "track_url": "https://<frontend>/public/ideas/<token>",
   "requester_phone": "+60123456789",
   "merged_into": null | { "idea_number": "IDEA-0012", "title": "..." },
+  "separated_from": null | { "idea_number": "IDEA-0012", "title": "..." },
   "is_test": false }
 ```
 Feed response: `{ "events": [...], "next_after": <last seq or the given after> }`.
@@ -241,7 +243,7 @@ UI -> hook -> service -> `lib/api-client`, no component calls `apiFetch`.
 | Merged from tab | clone `IdeaBrsTab` on `ResourceList` | new `idea-merged-tab.tsx` + hook `use-idea-merged.ts` |
 | Votes | `VoteCell` | extracted to `components/vote-cell.tsx`, prop `disabled` |
 | Pager | `RecordNav` via `config.recordNav` | wiring only |
-| Status pill | `StatusBadge` + `colorToHex` | no change to the primitive |
+| Status pill (list only) | `StatusBadge` + `colorToHex` | no change to the primitive |
 | Board | `/board` + `/embed/board` | FE switches source; columns from API |
 | Truncation | `ClampedText` | titles in dialog options and tab rows |
 | Toasts | `lib/toast` | label-based copy |
@@ -322,14 +324,14 @@ AC-94-27 merge · 28 open child · 29 unmerge from child · 30 unmerge from list
 - BL-SS-284 Merge audit (who merged, when) shown on the Merged from tab and an activity trail.
 - BL-SS-285 Verify and fix idea hard-delete with attachments / BR links (FK and orphan rows).
 
-## 15. Open questions for the owner (defaults apply if unanswered)
+## 15. Owner answers (alignment page, 28 Sep 2026; all questions closed)
 
-1. **Q1 (top) - Who sends the "ideation status update" WhatsApp?** Default: **the CRM sends**, through a new template use case, pulling this service's status-event feed (section 7.1); this service holds no WhatsApp credentials, and templates, opt-outs and the integration log stay in the CRM. Alternative: this service calls a CRM notify route (costs in 7.2).
-2. **Q2 - When a kept idea moves stage, do the requesters of the ideas merged into it get the update too?** Default: **yes**, one message per distinct phone, each with their own track link.
-3. **Q3 - Which moves message the requester?** Default: **every stage change except those out of Draft** (capture, cancel and "vote with existing" are already answered in the chat), **plus one "combined with IDEA-xxxx" message on merge, none on unmerge**.
-4. **Q4 - Where does a new capture land in the priority order?** Default: **at the bottom** (last rank); a triager drags it up.
-5. **Q5 - Keep a read-only status pill on the form?** Default: **yes in read mode only** (the dropdown is gone; status changes only through actions).
-6. **Q6 - Merging an idea that already has merged ideas into another one:** Default: **flatten** (all of them move under the new kept idea); the alternative is to refuse and ask for an unmerge first.
+1. **Q1 - Who sends the "ideation status update" WhatsApp?** ANSWERED: **the CRM sends**, through a new template use case, pulling this service's status-event feed (section 7.1); this service holds no WhatsApp credentials, and templates, opt-outs and the integration log stay in the CRM. Alternative: this service calls a CRM notify route (costs in 7.2).
+2. **Q2 - When a kept idea moves stage, do the requesters of the ideas merged into it get the update too?** ANSWERED: **yes**, one message per distinct phone, each with their own track link.
+3. **Q3 - Which moves message the requester?** ANSWERED (changed from the default): **every stage change except those out of Draft** (capture, cancel and "vote with existing" are already answered in the chat), **plus one "combined with IDEA-xxxx" message on merge AND one "handled separately again" message on unmerge**.
+4. **Q4 - Where does a new capture land in the priority order?** ANSWERED: **at the bottom** (last rank); a triager drags it up.
+5. **Q5 - Keep a read-only status pill on the form?** ANSWERED (changed from the default): **no status on the form at all**, in edit or read mode; status lives on the list and board.
+6. **Q6 - Merging an idea that already has merged ideas into another one:** ANSWERED: **flatten** (all of them move under the new kept idea); the alternative is to refuse and ask for an unmerge first.
 
 ---
 
@@ -337,7 +339,7 @@ AC-94-27 merge · 28 open child · 29 unmerge from child · 30 unmerge from list
 
 **Dependency:** needs this repo's PR deployed (feed live) and the CRM workspace key already used for `POST /ideation/intake/create-idea`.
 
-1. **Template use case** `ideation_status_update` on the CRM template screen (same mechanism as `ideation_draft_reminder`, sorento #1201), category Utility, submitted for WhatsApp approval. Suggested body: "Update on your idea {{1}}: it is now {{2}}. Track it here: {{3}}" with {{1}} = `idea_number` (fall back to `idea_title`), {{2}} = `status_label`, or for `kind = "merged"` the text "combined with {merged_into.idea_number}", {{3}} = `track_url` (or a URL button with the token as suffix if the template uses a button). Owner approves the wording.
+1. **Template use case** `ideation_status_update` on the CRM template screen (same mechanism as `ideation_draft_reminder`, sorento #1201), category Utility, submitted for WhatsApp approval. Suggested body: "Update on your idea {{1}}: it is now {{2}}. Track it here: {{3}}" with {{1}} = `idea_number` (fall back to `idea_title`), {{2}} = `status_label`, or for `kind = "merged"` the text "combined with {merged_into.idea_number}", or for `kind = "unmerged"` the text "handled separately again from {separated_from.idea_number}, now {status_label}", {{3}} = `track_url` (or a URL button with the token as suffix if the template uses a button). Owner approves the wording.
 2. **Poller** in the ideation service layer (next to `ideation_turn_service`): every 60 s call `GET /ideation/intake/status-events?after=<cursor>&limit=100`; process ascending; persist the cursor only after each event is handled.
 3. **Idempotency:** unique `event_id` in the CRM integration log; skip seen ids (at-least-once feed).
 4. **Guards before send:** `is_test` true -> never send (log only); requester opted out -> skip + log; resolve the Respond.io contact by `requester_phone`.
