@@ -12,6 +12,8 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { IdeationRuntimeProvider } from '@/hooks/use-ideation-runtime';
+import { ideationEmbedService } from '@/services/ideation-embed-service';
 import type { Idea } from '@/types/ideation';
 import { IdeaMergedTab } from './idea-merged-tab';
 
@@ -102,5 +104,37 @@ describe('IdeaMergedTab (AC-94-25)', () => {
     useIdeaMerged.mockReturnValue({ merged: [] });
     render(<IdeaMergedTab ideaId="survivor-1" onUnmerge={vi.fn()} />);
     expect(await screen.findByText(/no merged ideas|nothing merged/i)).toBeInTheDocument();
+  });
+
+  // ── BLOCKER 1 (issue #94 review round 1) - a row must open through the
+  // runtime's OWN `paths.formHref`, never the bare operator helper (the CRM
+  // embed iframe has no operator session). ─────────────────────────────────
+
+  it('operator mode: a row opens the operator path', async () => {
+    useIdeaMerged.mockReturnValue({ merged: [child()] });
+    render(<IdeaMergedTab ideaId="survivor-1" onUnmerge={vi.fn()} />);
+    const link = (await screen.findByText(/Export orders to Excel/i)).closest('a');
+    expect(link?.getAttribute('href')).toMatch(/^\/ideation\/ideas\/child-1/);
+  });
+
+  it('embed mode: a row opens the embed path, never the operator one', async () => {
+    useIdeaMerged.mockReturnValue({ merged: [child()] });
+    render(
+      <IdeationRuntimeProvider
+        runtime={{
+          mode: 'embed',
+          service: ideationEmbedService,
+          paths: {
+            listHref: '/embed/ideas',
+            formHref: (id) => `/embed/ideas/${id}`,
+            newHref: '/embed/ideas/new',
+          },
+        }}
+      >
+        <IdeaMergedTab ideaId="survivor-1" onUnmerge={vi.fn()} />
+      </IdeationRuntimeProvider>,
+    );
+    const link = (await screen.findByText(/Export orders to Excel/i)).closest('a');
+    expect(link?.getAttribute('href')).toMatch(/^\/embed\/ideas\/child-1/);
   });
 });

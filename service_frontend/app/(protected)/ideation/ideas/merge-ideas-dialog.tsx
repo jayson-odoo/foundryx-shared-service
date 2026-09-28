@@ -57,7 +57,7 @@ export function MergeIdeasDialog({ ideas, onClose, onMerge }: MergeIdeasDialogPr
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>Merge ideas</DialogTitle>
-          <DialogDescription>Choose which idea to keep - the rest fold into it.</DialogDescription>
+          <DialogDescription className="sr-only">Merge ideas</DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">
           <div className="space-y-1.5">

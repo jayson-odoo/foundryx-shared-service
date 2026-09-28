@@ -19,6 +19,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { SearchSelect } from '@/components/platform/search-select';
 import { FormRow } from '@/components/platform/resource-form';
+import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import { IdeaAttachmentPreviewDialog } from './idea-attachment-preview-dialog';
 import { VoteCell } from './vote-cell';
 import {
@@ -29,7 +30,6 @@ import {
   type Product,
 } from '@/types/ideation';
 import type { IdeaFormValues } from './idea-schema';
-import { ideaFormHref } from './paths';
 
 export interface DetailsTabProps {
   form: UseFormReturn<IdeaFormValues>;
@@ -45,6 +45,10 @@ export interface DetailsTabProps {
 
 export function DetailsTab({ form, editing, idea, products, onVote }: DetailsTabProps) {
   const productOptions = products.map((p) => ({ label: p.name, value: p.id }));
+  // Runtime-aware href (BLOCKER 1, issue #94 review round 1) - the CRM embed
+  // iframe has no operator session, so the "Merged into" link must resolve
+  // to `/embed/ideas/<id>`, never the bare operator path.
+  const { paths } = useIdeationRuntime();
 
   return (
     <Card>
@@ -158,7 +162,7 @@ export function DetailsTab({ form, editing, idea, products, onVote }: DetailsTab
         {idea?.mergedInto && (
           <FormRow label="Merged into">
             <Link
-              href={ideaFormHref(idea.mergedInto.id)}
+              href={paths.formHref(idea.mergedInto.id)}
               className="text-sm font-medium text-primary hover:underline"
             >
               {idea.mergedInto.ideaNumber ?? idea.mergedInto.title}

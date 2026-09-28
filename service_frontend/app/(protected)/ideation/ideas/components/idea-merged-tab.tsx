@@ -10,9 +10,9 @@ import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { ResourceList, type ResourceAction, type ResourceListConfig } from '@/components/platform/resource-list';
 import { toCsv } from '@/lib/csv';
 import { useIdeaMerged } from '@/hooks/use-idea-merged';
+import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import type { ListQuery, ListResult } from '@/types/resource';
 import type { Idea } from '@/types/ideation';
-import { ideaFormHref } from './paths';
 
 const stop = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -30,6 +30,11 @@ export interface IdeaMergedTabProps {
  */
 export function IdeaMergedTab({ ideaId, onUnmerge }: IdeaMergedTabProps) {
   const { merged } = useIdeaMerged(ideaId);
+  // Runtime-aware href (BLOCKER 1, issue #94 review round 1) - the CRM embed
+  // iframe has no operator session, so a row opened via the bare operator
+  // path (`/ideation/ideas/<id>`) would break; `paths.formHref` resolves to
+  // `/embed/ideas/<id>` there instead.
+  const { paths } = useIdeationRuntime();
 
   const config = useMemo<ResourceListConfig<Idea>>(() => {
     const rows = merged ?? [];
@@ -99,7 +104,10 @@ export function IdeaMergedTab({ ideaId, onUnmerge }: IdeaMergedTabProps) {
       if (query.search) {
         const s = query.search.toLowerCase();
         data = data.filter(
-          (r) => r.problem.toLowerCase().includes(s) || r.submitterName.toLowerCase().includes(s),
+          (r) =>
+            (r.title ?? r.problem).toLowerCase().includes(s) ||
+            r.problem.toLowerCase().includes(s) ||
+            r.submitterName.toLowerCase().includes(s),
         );
       }
       const total = data.length;
@@ -115,7 +123,7 @@ export function IdeaMergedTab({ ideaId, onUnmerge }: IdeaMergedTabProps) {
     return {
       viewKey: 'ideation.idea.merged',
       getRowId: (row) => row.id,
-      rowHref: (row) => ideaFormHref(row.id),
+      rowHref: (row) => paths.formHref(row.id),
       fetcher,
       exporter,
       searchPlaceholder: 'Search merged ideas…',
@@ -130,7 +138,7 @@ export function IdeaMergedTab({ ideaId, onUnmerge }: IdeaMergedTabProps) {
       ],
       actions,
     };
-  }, [merged, onUnmerge]);
+  }, [merged, onUnmerge, paths]);
 
   if (merged === null) {
     return (

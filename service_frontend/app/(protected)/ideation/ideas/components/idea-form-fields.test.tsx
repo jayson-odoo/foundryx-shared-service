@@ -12,6 +12,8 @@ import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { useForm } from 'react-hook-form';
 import { Form } from '@/components/ui/form';
+import { IdeationRuntimeProvider } from '@/hooks/use-ideation-runtime';
+import { ideationEmbedService } from '@/services/ideation-embed-service';
 import type { Idea, Product } from '@/types/ideation';
 import { DetailsTab } from './idea-form-fields';
 import type { IdeaFormValues } from './idea-schema';
@@ -79,6 +81,41 @@ function priorityRowValue(): HTMLElement {
   const row = label.parentElement as HTMLElement;
   return row;
 }
+
+// ── BLOCKER 1 (issue #94 review round 1) - the "Merged into" link must resolve
+// through the runtime's OWN `paths.formHref`, never the bare operator helper
+// (the CRM embed iframe has no operator session and would 404/redirect to
+// sign-in on `/ideation/ideas/<id>`). ──────────────────────────────────────
+
+describe('DetailsTab - "Merged into" link is runtime-aware (BLOCKER 1)', () => {
+  const mergedInto = { id: 'survivor-1', ideaNumber: 'IDEA-0012', title: 'Survivor idea' };
+
+  it('operator mode: links to the operator path', () => {
+    render(<Harness idea={anIdea({ mergedInto } as Partial<Idea>)} editing={false} />);
+    const link = screen.getByRole('link', { name: 'IDEA-0012' });
+    expect(link).toHaveAttribute('href', '/ideation/ideas/survivor-1');
+  });
+
+  it('embed mode: links to the embed path, never the operator one', () => {
+    render(
+      <IdeationRuntimeProvider
+        runtime={{
+          mode: 'embed',
+          service: ideationEmbedService,
+          paths: {
+            listHref: '/embed/ideas',
+            formHref: (id) => `/embed/ideas/${id}`,
+            newHref: '/embed/ideas/new',
+          },
+        }}
+      >
+        <Harness idea={anIdea({ mergedInto } as Partial<Idea>)} editing={false} />
+      </IdeationRuntimeProvider>,
+    );
+    const link = screen.getByRole('link', { name: 'IDEA-0012' });
+    expect(link).toHaveAttribute('href', '/embed/ideas/survivor-1');
+  });
+});
 
 describe('DetailsTab - Priority shows the real rank, never the raw stored priority (AC-94-46)', () => {
   it('reads "#{rank}" for a ranked idea', () => {

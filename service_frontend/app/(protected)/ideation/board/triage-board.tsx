@@ -46,16 +46,24 @@ function columnsFromIdeas(ideas: Idea[]): BoardColumn[] {
   return Array.from(seen.values());
 }
 
+/** `rank`, nulls last (issue #94 review round 1, item 14b) - matches the
+ * list's own server order; never the raw `priority` (a merged/archived
+ * idea's `rank` is `null` and must sort after every ranked card, not before
+ * everything via `null - number` producing `NaN`). */
+function byRank(a: Idea, b: Idea): number {
+  const ar = a.rank ?? Number.POSITIVE_INFINITY;
+  const br = b.rank ?? Number.POSITIVE_INFINITY;
+  return ar - br;
+}
+
 function buildColumns(source: BoardColumn[], ideas: Idea[]): Columns {
   const cols: Columns = {};
   for (const c of source) cols[c.statusId] = [];
-  // Within-column order = rank (ascending, falling back to priority) - so
-  // dragging reorders priority (AC-94-58).
   const byId = new Map(ideas.map((i) => [i.id, i]));
   for (const c of source) {
     const rows = (c.ideas.length > 0 ? c.ideas : ideas.filter((i) => (i.statusId ?? i.status) === c.statusId))
       .map((i) => byId.get(i.id) ?? i)
-      .sort((a, b) => a.priority - b.priority);
+      .sort(byRank);
     cols[c.statusId] = rows;
   }
   return cols;
