@@ -8,9 +8,10 @@ somewhere (every read is one hop). D3: a merged child's status is FROZEN
 (never touched here - guards live in ``actions.py``/``business_requirements.
 py``). D4: votes MOVE to the survivor, stamped ``origin_idea_id``; a voter who
 already voted on the survivor keeps their child-side row in place (shadowed -
-it never counts twice, but it also never gets a second chance to come back
-once the child is later restored - see :meth:`_restore_votes`). D10: the
-survivor always gets an idea number (``mint_idea_identity``, idempotent).
+it never counts twice on the survivor). Unmerge is LOSSLESS: the shadow row
+never left the child, so restoring only moves back the STAMPED rows - see
+:meth:`_restore_votes`. D10: the survivor always gets an idea number
+(``mint_idea_identity``, idempotent).
 """
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
@@ -225,23 +226,30 @@ class IdeaMergeService:
         )
 
     def _restore_votes(self, survivor_id: str, child_id: str) -> None:
-        """D4 - restore is a full reconstruction of the child's vote set from
-        exactly what moved back (the ``origin_idea_id == child_id`` stamped
-        rows) - any leftover SHADOWED row still resident on the child (a
-        voter who already had a distinct vote on the survivor, never moved,
-        AC-94-06) is superseded, not resurrected as a second independent
-        vote; it is discarded here rather than double-counted once the child
-        is independent again."""
-        self.db.query(IdeaVote).filter(IdeaVote.idea_id == child_id).delete(
-            synchronize_session=False
-        )
-        self.db.flush()
+        """D4 - unmerge is LOSSLESS: a shadowed row never left the child (D4/
+        AC-94-06), so it is never touched here - only the ``origin_idea_id ==
+        child_id`` STAMPED rows (the ones that actually moved onto the
+        survivor) move back, with origin cleared. A shadow row plus a
+        returning stamped row for the SAME voter cannot legitimately coexist
+        (a stamp is only created when the survivor lacked that voter at move
+        time - see ``_move_votes``), but the unique ``(idea_id, voter_id)``
+        constraint is guarded defensively anyway: if the child already has a
+        row for that voter, the returning stamped row is dropped rather than
+        raising on the constraint."""
         moved = (
             self.db.query(IdeaVote)
             .filter(IdeaVote.idea_id == survivor_id, IdeaVote.origin_idea_id == child_id)
             .all()
         )
         for row in moved:
+            shadow = (
+                self.db.query(IdeaVote)
+                .filter(IdeaVote.idea_id == child_id, IdeaVote.voter_id == row.voter_id)
+                .first()
+            )
+            if shadow is not None:
+                self.db.delete(row)
+                continue
             row.idea_id = child_id
             row.origin_idea_id = None
         self.db.flush()

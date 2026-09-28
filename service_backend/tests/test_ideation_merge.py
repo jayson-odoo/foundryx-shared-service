@@ -412,7 +412,7 @@ def test_votes_move_and_return(ideation_client):
     row_a = _idea_row(ideation_client._factory, a)
     row_b = _idea_row(ideation_client._factory, b)
     assert row_a.upvotes == 1
-    assert row_b.upvotes == 1
+    assert row_b.upvotes == 2  # voter-1 returned + voter-2 shadow kept (D4 lossless)
 
 
 # ── AC-94-07 ───────────────────────────────────────────────────────────────
