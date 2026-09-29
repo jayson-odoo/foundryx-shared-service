@@ -40,6 +40,15 @@ from app.repositories.user_repository import UserRepository
 logger = logging.getLogger("foundryx.deferred_actions")
 
 
+def _missing_permission(action_def, actor: User) -> Optional[str]:
+    """The first key the actor lacks (`permission` then `also_requires`), or None."""
+    held = effective_permission_keys(actor)
+    for key in (action_def.permission, *action_def.also_requires):
+        if key not in held:
+            return key
+    return None
+
+
 class DeferredActionServiceError(Exception):
     """Base for deferred-action service errors."""
 
@@ -173,7 +182,7 @@ class PendingActionService:
             action_def = deferred_action_for(action_key)
         except UnknownDeferredAction:
             return False
-        if action_def.permission not in effective_permission_keys(actor):
+        if _missing_permission(action_def, actor) is not None:
             return False
         if action_def.platform and not (actor.tenant and actor.tenant.is_platform):
             return False
@@ -285,8 +294,9 @@ class PendingActionService:
             # committing) a countdown against one of its actions, even
             # holding the stale permission from before deactivation.
             raise PermissionDenied(f"Missing permission: {action_def.permission}")
-        if action_def.permission not in effective_permission_keys(actor):
-            raise PermissionDenied(f"Missing permission: {action_def.permission}")
+        missing = _missing_permission(action_def, actor)
+        if missing is not None:
+            raise PermissionDenied(f"Missing permission: {missing}")
         if action_def.platform and not (actor.tenant and actor.tenant.is_platform):
             # Same double lock as `require_platform_permission` - a plain
             # permission-key check alone isn't enough for a platform action.

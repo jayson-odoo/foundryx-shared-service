@@ -7,7 +7,7 @@ LOUD errors - never a silent no-op (a park against an unregistered key would
 otherwise sit forever with nothing to commit it).
 """
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Literal
+from typing import Callable, Dict, List, Literal, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -60,6 +60,9 @@ class DeferredActionDef:
     #: `_may_act_on()` so a tenant with the module INACTIVE can't park (or
     #: keep observing/committing) a countdown against it.
     module: str = "core"
+    #: Further keys the actor must ALSO hold (the entity's own mutating endpoint
+    #: requires more than one key - e.g. ideation embed-connection patch).
+    also_requires: Tuple[str, ...] = ()
 
 
 _REGISTRY: Dict[str, DeferredActionDef] = {}
