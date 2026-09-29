@@ -157,4 +157,39 @@ describe('DocFeedsTab (AC-14-90)', () => {
     expect(await screen.findByRole('menuitem', { name: /stop backfill/i })).toBeInTheDocument();
     expect(screen.queryByRole('menuitem', { name: /resume backfill/i })).not.toBeInTheDocument();
   });
+
+  it('S-1 (round 2) - an Off feed offers neither Backfill nor Resume backfill', async () => {
+    getDocFeeds.mockResolvedValue({
+      feeds: [feedItem({ feed: 'delivery_orders', mode: 'off' })],
+      eligibleConnections: [],
+    });
+    const { DocFeedsTab } = await import('./doc-feeds-tab');
+    render(<DocFeedsTab companyId="co-1" />);
+    const trigger = await screen.findByRole('button', { name: /actions/i }, { timeout: 5000 });
+    await userEvent.click(trigger);
+    expect(await screen.findByRole('menuitem', { name: /configure/i })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /^backfill$/i })).not.toBeInTheDocument();
+  });
+
+  it('S-1 (round 2) - a stopped backfill on an Off feed does not offer Resume', async () => {
+    getDocFeeds.mockResolvedValue({
+      feeds: [
+        feedItem({
+          feed: 'delivery_orders', mode: 'off',
+          backfill: {
+            id: 'bf-1', status: 'stopped', dryRun: true,
+            fromDay: '2023-01-01', toDay: '2026-09-29', nextDay: '2026-01-01',
+            daysTotal: 100, daysDone: 10, error: null,
+          },
+        }),
+      ],
+      eligibleConnections: [],
+    });
+    const { DocFeedsTab } = await import('./doc-feeds-tab');
+    render(<DocFeedsTab companyId="co-1" />);
+    const trigger = await screen.findByRole('button', { name: /actions/i }, { timeout: 5000 });
+    await userEvent.click(trigger);
+    expect(await screen.findByRole('menuitem', { name: /discard backfill/i })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /resume backfill/i })).not.toBeInTheDocument();
+  });
 });

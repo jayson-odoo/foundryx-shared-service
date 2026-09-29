@@ -87,8 +87,13 @@ export function DocFeedBackfillDialog({
   const dryRun = canGoLive ? dryRunChoice : true;
   const minDate =
     !dryRun && fullBackfillDoneAt ? DOC_FEED_BACKFILL_FROM_AFTER_FULL : DOC_FEED_BACKFILL_FROM;
+  // Clamp `from` up to the floor, and `to` up to `from` (a live range of
+  // exactly the floor day would otherwise end before it starts).
+  const clampedFrom = range.from < minDate ? minDate : range.from;
   const effectiveRange: DateRangeValue =
-    range.from < minDate ? { ...range, from: minDate } : range;
+    clampedFrom === range.from && range.to >= clampedFrom
+      ? range
+      : { ...range, from: clampedFrom, to: range.to < clampedFrom ? clampedFrom : range.to };
 
   const inFlight = backfill && (backfill.status === 'running' || backfill.status === 'stopping');
 

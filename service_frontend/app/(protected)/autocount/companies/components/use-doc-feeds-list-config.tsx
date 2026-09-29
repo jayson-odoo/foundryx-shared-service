@@ -95,7 +95,8 @@ export function useDocFeedsListConfig(options: DocFeedsListOptions): ResourceLis
         label: 'Backfill',
         surfaces: { row: true },
         permission: AC_SYNC_RUN,
-        isVisible: (rows) => rows[0].feed !== 'branches' && !hasOpenBackfill(rows[0]),
+        isVisible: (rows) =>
+          rows[0].feed !== 'branches' && rows[0].mode !== 'off' && !hasOpenBackfill(rows[0]),
         run: (rows) => onBackfill(rows[0].feed),
       },
       {
@@ -112,7 +113,8 @@ export function useDocFeedsListConfig(options: DocFeedsListOptions): ResourceLis
         label: 'Resume backfill',
         surfaces: { row: true },
         permission: AC_SYNC_RUN,
-        isVisible: (rows) => rows[0].backfill?.status === 'stopped',
+        // The backend refuses Resume on an Off feed (422 mode).
+        isVisible: (rows) => rows[0].backfill?.status === 'stopped' && rows[0].mode !== 'off',
         run: (rows) => onResumeBackfill(rows[0].feed),
       },
       {
