@@ -221,6 +221,23 @@ export function productDependencyWarning(
 }
 
 /**
+ * The Review & Activate banner for a `branch` task whose consumer contract
+ * does not yet accept branches (sprint-5/14 section 11, AC-14-44) - read from
+ * the GENERIC `task.contractGate` (never a brand-style dedicated field), and
+ * only ever for the `branch` entity. A WARNING, never a block: the task still
+ * runs, it simply falls back to the logging sink until the consumer deploys
+ * contract 2.7. `null` when the gate is absent or names another entity.
+ */
+export function branchContractBanner(
+  task: Pick<AutocountEtlTask, 'contractGate'>,
+): string | null {
+  const gate = task.contractGate;
+  if (!gate || gate.entity !== 'branch') return null;
+  const version = gate.version ?? 'unknown';
+  return `Consumer contract ${version} - branches land when ${gate.requiredVersion} is deployed`;
+}
+
+/**
  * The Review & Activate banner for a `brand` task whose consumer contract
  * does not yet accept brands (sprint-5/08, AC-08-33) - a WARNING, never a
  * block: the task still activates and runs, it simply falls back to the
@@ -674,6 +691,22 @@ export const HTTP_PRESETS: Record<string, HttpPreset> = {
       { sourcePath: 'ItemBrand', transform: 'string', canonicalField: 'code', required: true },
       { sourcePath: 'ItemBrand', transform: 'string', canonicalField: 'name', required: true },
       { sourcePath: 'Description', transform: 'string', canonicalField: 'description' },
+    ],
+  },
+  // sprint-5/14 section 11 (D23) - mirrors the backend's `BRANCH_HTTP_PRESET`
+  // (`modules/autocount/presets.py`): the paged `branchbypage` address
+  // records, unique on (AccNo, BranchCode). The raw row travels to the CRM;
+  // these three are only what mapping reads.
+  branch: {
+    path: '/branchbypage',
+    keyFields: ['AccNo', 'BranchCode'],
+    watermarkField: null,
+    comparedFields: [],
+    distinctOf: null,
+    mapping: [
+      { sourcePath: 'AccNo', transform: 'string', canonicalField: 'acc_no', required: true },
+      { sourcePath: 'BranchCode', transform: 'string', canonicalField: 'code', required: true },
+      { sourcePath: 'BranchName', transform: 'string', canonicalField: 'name' },
     ],
   },
   unit_of_measure: {

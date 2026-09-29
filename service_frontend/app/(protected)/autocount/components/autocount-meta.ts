@@ -157,6 +157,9 @@ export const AC_HTTP_ENTITY_TYPES: string[] = [
   'brand',
   'unit_of_measure',
   'stock_balance',
+  // sprint-5/14 section 11 (D23) - the paged `branchbypage` address records, a
+  // regular HTTP master with no `sql_db` variant.
+  'branch',
 ];
 
 /**
@@ -191,8 +194,8 @@ export const AC_SQL_DB_ENTITY_TYPES: string[] = [
 ];
 
 /**
- * The open REST API entities with NO `sql_db` variant (today: just
- * `stock_balance` - sprint-5/10 S5b, AC-10-39/D4) - derived from the two
+ * The open REST API entities with NO `sql_db` variant (today:
+ * `stock_balance` - sprint-5/10 S5b, AC-10-39/D4 - and `branch`, sprint-5/14 section 11) - derived from the two
  * catalogues above, never hand-listed twice (`test_autocount_entity_parity.py`
  * already pins `AC_SQL_DB_ENTITY_TYPES` as `ETL_ENTITY_TYPES` minus GRN minus
  * `stock_balance`, so this difference IS that literal).
@@ -491,9 +494,9 @@ export const AC_STAGED_STATUS_REGISTRY: StatusRegistry<AutocountStagedStatus> = 
 
 // ── document feeds (sprint-5/14, D17) - AC-14-90..95 ─────────────────────────
 
-/** The tab's fixed row order (D2 - three feeds, always, a missing row reads
- * `off`). */
-export const AC_DOC_FEED_KEYS: DocFeedKey[] = ['delivery_orders', 'goods_receive_notes', 'branches'];
+/** The tab's fixed row order (D2 - two feeds, always, a missing row reads
+ * `off`; branches became the `branch` entity, plan 14 section 11). */
+export const AC_DOC_FEED_KEYS: DocFeedKey[] = ['delivery_orders', 'goods_receive_notes'];
 
 /** Canonical feed key -> display label - derived the SAME way `entityLabel`
  * humanizes every other code constant (never a tenant-editable lookup). */
@@ -530,7 +533,7 @@ export const AC_DOC_FEED_RUN_OUTCOME_REGISTRY: StatusRegistry<DocFeedRunOutcome 
   RUNNING: { label: 'Running', tone: 'info' },
 };
 
-/** Runs list "Kind" column (poll / sweep / branch / backfill). */
+/** Runs list "Kind" column (poll / sweep / backfill). */
 export function docFeedRunKindLabel(kind: DocFeedRunKind | string): string {
   return humanizeFieldKey(kind);
 }

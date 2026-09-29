@@ -1596,16 +1596,16 @@ export interface AutocountPullApiKeyIssued {
   plaintext: string;
 }
 
-// ── document feeds (sprint-5/14, D17) - DO / GRN / branch HTTP source ────────
+// ── document feeds (sprint-5/14, D17) - DO / GRN HTTP source ────────
 //
 // Mirrors the real backend contract (plan section 3.2,
 // `modules/autocount/routers/doc_feeds.py`).
 
-export type DocFeedKey = 'delivery_orders' | 'goods_receive_notes' | 'branches';
+export type DocFeedKey = 'delivery_orders' | 'goods_receive_notes';
 
 export type DocFeedMode = 'off' | 'dry_run' | 'push';
 
-export type DocFeedRunKind = 'poll' | 'sweep' | 'branch' | 'backfill';
+export type DocFeedRunKind = 'poll' | 'sweep' | 'backfill';
 
 export type DocFeedRunOutcome = 'SUCCESS' | 'FAILED' | 'ABORTED';
 
@@ -1683,7 +1683,7 @@ export interface DocFeedUpdateInput {
 }
 
 /** `POST /autocount/doc-feeds/{companyId}/{feed}/run` body - Run now / Run
- * sweep now (branches never sweeps). */
+ * sweep now. */
 export interface DocFeedRunInput {
   kind: 'poll' | 'sweep';
 }

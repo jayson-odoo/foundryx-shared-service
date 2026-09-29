@@ -1243,6 +1243,7 @@ function mockListEtlRuns(
 //   /location         list, 2 rows - `warehouse` (small on purpose).
 //   /ItemGroup        list, 60 rows - `product_category`.
 //   /ItemBrand        list, 12 rows - `brand`.
+//   /branchbypage     paged, 4 rows (2 fixture pages) - `branch`.
 //   /itembypage + distinctOf ["BaseUOM","SalesUOM","PurchaseUOM"] - `unit_of_measure`.
 //   /bogus            422 on `path` ("Not found").
 //   any connectionId not in HTTP_API_CONNECTIONS, or a basic-auth one → 422 on `connectionId`.
@@ -1322,6 +1323,13 @@ const ITEM_BRAND_ROWS: Array<Record<string, unknown>> = ITEM_BRANDS.map((b) => (
   Description: '',
 }));
 
+const BRANCH_ROWS: Array<Record<string, unknown>> = [
+  { BranchCode: 'HQ', BranchName: 'Head Office', AccNo: '300-R009' },
+  { BranchCode: 'PJ', BranchName: 'Petaling Jaya Branch', AccNo: '300-R014' },
+  { BranchCode: 'HQ', BranchName: 'Head Office (no AccNo)', AccNo: '' },
+  { BranchCode: '', BranchName: 'No branch code', AccNo: '300-R777' },
+];
+
 /** One path's full fixture: envelope shape + the rows behind it. */
 interface HttpPathFixture {
   envelope: 'paged' | 'list';
@@ -1335,6 +1343,10 @@ const HTTP_PATH_FIXTURES: Record<string, HttpPathFixture> = {
   '/location': { envelope: 'list', rows: LOCATION_ROWS },
   '/ItemGroup': { envelope: 'list', rows: ITEM_GROUP_ROWS },
   '/ItemBrand': { envelope: 'list', rows: ITEM_BRAND_ROWS },
+  // sprint-5/14 section 11 - the paged `branchbypage` rows (the committed vendor
+  // fixtures branch-page-1.json + branch-page-2.json, walk order): one row has a
+  // blank AccNo and one a blank BranchCode, as the live endpoint's edge cases.
+  '/branchbypage': { envelope: 'paged', totalCount: 4, rows: BRANCH_ROWS },
 };
 
 /** Distinct, trimmed, non-blank, first-seen-order projection (mirrors the
@@ -2196,7 +2208,7 @@ function mockPreviewJobClaimChange(input: AutocountPreviewJobStartInput) {
 // clears it.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const DOC_FEED_KEYS: DocFeedKey[] = ['delivery_orders', 'goods_receive_notes', 'branches'];
+const DOC_FEED_KEYS: DocFeedKey[] = ['delivery_orders', 'goods_receive_notes'];
 
 /** D4 - the consumer contract version every doc feed gate checks against. */
 const DOC_FEED_GATE_REQUIRED_VERSION = 2.7;
@@ -2239,7 +2251,6 @@ function docFeedsFor(companyId: string): Record<DocFeedKey, MockDocFeedState> {
     existing = {
       delivery_orders: defaultDocFeedState(),
       goods_receive_notes: defaultDocFeedState(),
-      branches: defaultDocFeedState(),
     };
     docFeeds.set(companyId, existing);
   }
@@ -2448,11 +2459,8 @@ async function mockRunDocFeed(
       fieldErrors: { mode: 'Turn this feed on before running it.' },
     });
   }
-  if (input.kind === 'sweep' && feed === 'branches') {
-    throw new ApiError('Branches has no sweep.', 422, null, {});
-  }
   const dryRun = state.mode === 'dry_run';
-  const kind: DocFeedRunKind = feed === 'branches' ? 'branch' : input.kind;
+  const kind: DocFeedRunKind = input.kind;
   const dayTo = todayKey();
   const dayFrom =
     kind === 'sweep' ? addDaysKey(dayTo, -44) : (state.cursorDay ?? addDaysKey(dayTo, -1));
@@ -2460,18 +2468,16 @@ async function mockRunDocFeed(
   const summary: DocFeedRunSummary =
     kind === 'sweep'
       ? { candidates: 0 }
-      : kind === 'branch'
-        ? { created: dryRun ? 0 : 12, unchanged: dryRun ? 12 : 0 }
-        : { created: dryRun ? 0 : 3, updated: dryRun ? 0 : 1, unchanged: 2, retryable: 1, failed: 1 };
+      : { created: dryRun ? 0 : 3, updated: dryRun ? 0 : 1, unchanged: 2, retryable: 1, failed: 1 };
   const run: DocFeedRun = {
     id: `doc-feed-run-${++docFeedRunSeq}`,
     feed,
     kind,
     dryRun,
-    dayFrom: kind === 'branch' ? null : dayFrom,
-    dayTo: kind === 'branch' ? null : dayTo,
+    dayFrom,
+    dayTo,
     requests: kind === 'sweep' ? 45 : 2,
-    fetchedCount: kind === 'branch' ? 12 : 8,
+    fetchedCount: 8,
     summary,
     outcome: 'SUCCESS',
     error: null,
@@ -2506,9 +2512,6 @@ async function mockStartDocFeedBackfill(
   feed: DocFeedKey,
   input: DocFeedBackfillStartInput,
 ): Promise<DocFeedBackfill> {
-  if (feed === 'branches') {
-    throw new ApiError('Branches has no backfill.', 422, null, {});
-  }
   const state = docFeedsFor(companyId)[feed];
   if (state.mode !== 'push') {
     throw new ApiError('Turn Push on before a live backfill.', 422, null, {
@@ -4201,6 +4204,14 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
       { sourcePath: 'ItemBrand', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
       { sourcePath: 'ItemBrand', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
       { sourcePath: 'Description', canonicalField: 'description', transform: 'string', formula: null, required: false, enabled: true },
+    ],
+  },
+  branch: {
+    label: 'Branches (open REST API)',
+    rows: [
+      { sourcePath: 'AccNo', canonicalField: 'acc_no', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'BranchCode', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'BranchName', canonicalField: 'name', transform: 'string', formula: null, required: false, enabled: true },
     ],
   },
   unit_of_measure: {

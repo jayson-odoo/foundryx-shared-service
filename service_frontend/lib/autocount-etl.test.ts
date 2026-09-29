@@ -8,6 +8,7 @@ import {
   activatePrerequisites,
   anchorErrorTitle,
   brandContractBanner,
+  branchContractBanner,
   derivePrefix,
   formatDurationMs,
   httpPreviewAsSqlPreview,
@@ -509,6 +510,22 @@ describe('brandContractBanner (sprint-5/08, AC-08-33/AC-08-20 S5)', () => {
 
   it('is null when the field is absent (every non-brand task, back-compat fixtures)', () => {
     expect(brandContractBanner({})).toBeNull();
+  });
+});
+
+describe('branchContractBanner (sprint-5/14 section 11, AC-14-44)', () => {
+  it('names the real advertised version from the generic contractGate for a branch task', () => {
+    expect(
+      branchContractBanner({ contractGate: { entity: 'branch', version: 2.6, requiredVersion: 2.7 } }),
+    ).toBe('Consumer contract 2.6 - branches land when 2.7 is deployed');
+  });
+
+  it('is null when the gate is absent, cleared, or names another entity', () => {
+    expect(branchContractBanner({})).toBeNull();
+    expect(branchContractBanner({ contractGate: null })).toBeNull();
+    expect(
+      branchContractBanner({ contractGate: { entity: 'product', version: 2.3, requiredVersion: 2.4 } }),
+    ).toBeNull();
   });
 });
 

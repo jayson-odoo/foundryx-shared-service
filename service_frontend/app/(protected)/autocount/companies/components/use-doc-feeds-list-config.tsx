@@ -85,7 +85,7 @@ export function useDocFeedsListConfig(options: DocFeedsListOptions): ResourceLis
         label: 'Run sweep now',
         surfaces: { row: true },
         permission: AC_SYNC_RUN,
-        isVisible: (rows) => rows[0].feed !== 'branches' && rows[0].mode !== 'off',
+        isVisible: (rows) => rows[0].mode !== 'off',
         run: (rows) => onRunSweepNow(rows[0].feed),
       },
       {
@@ -95,8 +95,7 @@ export function useDocFeedsListConfig(options: DocFeedsListOptions): ResourceLis
         label: 'Backfill',
         surfaces: { row: true },
         permission: AC_SYNC_RUN,
-        isVisible: (rows) =>
-          rows[0].feed !== 'branches' && rows[0].mode !== 'off' && !hasOpenBackfill(rows[0]),
+        isVisible: (rows) => rows[0].mode !== 'off' && !hasOpenBackfill(rows[0]),
         run: (rows) => onBackfill(rows[0].feed),
       },
       {
