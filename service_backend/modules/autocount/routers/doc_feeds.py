@@ -6,7 +6,6 @@ hands off to ``DocFeedService``.
 """
 from __future__ import annotations
 
-from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -39,13 +38,17 @@ router = APIRouter()
 
 
 def _field_error(field: str, message: str) -> JSONResponse:
-    """AC-14-01..06's own literal wording (``fieldErrors.connectionId`` /
-    ``fieldErrors.mode``) - a TOP-LEVEL ``fieldErrors`` key, distinct from
-    the sibling ``companies.py`` router's ``detail.fieldErrors`` nesting
-    (that convention predates this AC text and is untouched elsewhere)."""
+    """S3 (review round 1) - the HOUSE per-field 422 shape, byte-identical
+    to ``companies.py``/``http.py``/``pull.py``'s own ``_field_errors``:
+    ``detail`` (not a top-level ``fieldErrors``) carries the map, so
+    ``lib/api-client.ts``'s ``ApiError.detail`` and the shared
+    ``readFieldErrors(err.detail)`` (``lib/autocount-etl.ts``) both resolve
+    it the same way every other AutoCount surface does. A top-level
+    ``fieldErrors`` key was invisible to both - only the toast ``message``
+    ever worked."""
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content={"fieldErrors": {field: message}, "message": message},
+        content={"detail": {"fieldErrors": {field: message}}, "message": message},
     )
 
 
@@ -148,7 +151,10 @@ def get_doc_feed_issues(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
 
 
-@router.post("/{company_id}/{feed}/backfill", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/{company_id}/{feed}/backfill", status_code=status.HTTP_202_ACCEPTED,
+    response_model=DocFeedBackfillOut,
+)
 def post_doc_feed_backfill(
     company_id: str,
     feed: str,
@@ -158,12 +164,13 @@ def post_doc_feed_backfill(
     actor_user_id: Optional[str] = Depends(get_actor_user_id),
     transport=Depends(get_http_transport),
 ):
-    from_day: Optional[date] = date.fromisoformat(body.fromDay) if body.fromDay else None
-    to_day: Optional[date] = date.fromisoformat(body.toDay) if body.toDay else None
     try:
         backfill = DocFeedService(db).start_backfill(
             current_user.tenant_id, company_id, feed, dry_run=body.dryRun,
-            from_day=from_day, to_day=to_day, actor_user_id=actor_user_id,
+            # S4 (review round 1) - `body.fromDay`/`body.toDay` are already
+            # `date` (the schema itself parses/422s ISO strings now); the
+            # router never runs `date.fromisoformat` (HTTP + Pydantic only).
+            from_day=body.fromDay, to_day=body.toDay, actor_user_id=actor_user_id,
             transport=transport,
         )
     except CompanyNotFound:
@@ -172,7 +179,10 @@ def post_doc_feed_backfill(
         return _field_error(exc.field, exc.message)
     except DocFeedConflictError as exc:
         _conflict(exc)
-    return {"backfillId": backfill.id, "jobId": backfill.job_id}
+    # S8 (review round 1) - the full `DocFeedBackfillOut` (matches stop/
+    # resume/discard), never a bespoke `{backfillId, jobId}` shape the FE
+    # service already typed as `Promise<DocFeedBackfill>`.
+    return backfill
 
 
 @router.post("/{company_id}/{feed}/backfill/stop", response_model=DocFeedBackfillOut)
@@ -196,9 +206,12 @@ def post_doc_feed_backfill_resume(
     feed: str,
     current_user: User = Depends(require_permission("autocount.sync.run")),
     db: Session = Depends(get_db),
+    transport=Depends(get_http_transport),
 ):
     try:
-        return DocFeedService(db).resume_backfill(current_user.tenant_id, company_id, feed)
+        return DocFeedService(db).resume_backfill(
+            current_user.tenant_id, company_id, feed, transport=transport,
+        )
     except CompanyNotFound:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
     except DocFeedValidationError as exc:

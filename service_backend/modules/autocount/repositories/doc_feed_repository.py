@@ -9,6 +9,8 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import or_
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.models.background_job import JOB_PENDING, JOB_RUNNING, BackgroundJob
@@ -21,6 +23,20 @@ from ..models import (
     AcDocFeedRun,
     DOC_FEED_BACKFILL_OPEN_STATUSES,
 )
+
+
+def _dialect_insert(db: Session, table):
+    """S2 (review round 1) - the ONE real ``INSERT .. ON CONFLICT DO UPDATE``
+    builder the ledger/issue upserts below share: Postgres in production,
+    SQLite (the same generic construct, just a different dialect module)
+    under pytest's ``create_all``. Poll and backfill legitimately race on
+    the SAME ``(tenant, company, feed, book, doc_key)`` row (a backfill's
+    tail days overlap the hourly poll, plan 3.6 step 5) - a plain
+    get-then-add loses that race with an ``IntegrityError`` that then wedges
+    the session into ``PendingRollbackError`` for the rest of the run."""
+    if db.get_bind().dialect.name == "postgresql":
+        return pg_insert(table)
+    return sqlite_insert(table)
 
 
 class DocFeedRepository:
@@ -99,27 +115,36 @@ class DocFeedLedgerRepository:
             .first()
         )
 
+    _PK = ("tenant_id", "company_id", "feed", "book", "doc_key")
+
     def upsert_delivered(
         self,
         tenant_id: str, company_id: str, feed: str, book: str, doc_key: int,
         *, doc_no: Optional[str], doc_date: Optional[date],
         source_modified_at: Optional[datetime], outcome: str, now: datetime,
     ) -> None:
-        """A ``created``/``updated`` verdict (D11) - always overwrites."""
-        row = self.get(tenant_id, company_id, feed, book, doc_key)
-        if row is None:
-            row = AcDocFeedLedger(
-                tenant_id=tenant_id, company_id=company_id, feed=feed, book=book,
-                doc_key=doc_key,
-            )
-            self.db.add(row)
-        row.doc_no = doc_no
-        row.doc_date = doc_date
-        row.source_modified_at = source_modified_at
-        row.last_outcome = outcome
-        row.pushed_at = now
-        row.vanished_at = None
-        self.db.flush()
+        """A ``created``/``updated`` verdict (D11) - always overwrites.
+        S2 - a real ``INSERT .. ON CONFLICT DO UPDATE`` (never a get-then-
+        add): poll and backfill may race on the SAME new DocKey."""
+        table = AcDocFeedLedger.__table__
+        stmt = _dialect_insert(self.db, table).values(
+            tenant_id=tenant_id, company_id=company_id, feed=feed, book=book,
+            doc_key=doc_key, doc_no=doc_no, doc_date=doc_date,
+            source_modified_at=source_modified_at, last_outcome=outcome,
+            pushed_at=now, vanished_at=None,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=self._PK,
+            set_={
+                "doc_no": stmt.excluded.doc_no,
+                "doc_date": stmt.excluded.doc_date,
+                "source_modified_at": stmt.excluded.source_modified_at,
+                "last_outcome": stmt.excluded.last_outcome,
+                "pushed_at": stmt.excluded.pushed_at,
+                "vanished_at": stmt.excluded.vanished_at,
+            },
+        )
+        self.db.execute(stmt)
 
     def insert_if_absent(
         self,
@@ -130,18 +155,17 @@ class DocFeedLedgerRepository:
         """A ``stale_ignored`` verdict (AC-14-56) - inserts a missing row so
         the sweep still has something to compare against, but NEVER
         overwrites a row already there (the CRM's own stale-guard rejected
-        this copy precisely because it is older)."""
-        row = self.get(tenant_id, company_id, feed, book, doc_key)
-        if row is not None:
-            return
-        row = AcDocFeedLedger(
+        this copy precisely because it is older). S2 - ``DO NOTHING`` on the
+        PK is the race-safe form of "insert only if absent"."""
+        table = AcDocFeedLedger.__table__
+        stmt = _dialect_insert(self.db, table).values(
             tenant_id=tenant_id, company_id=company_id, feed=feed, book=book,
             doc_key=doc_key, doc_no=doc_no, doc_date=doc_date,
             source_modified_at=source_modified_at, last_outcome=outcome,
             pushed_at=now, vanished_at=None,
         )
-        self.db.add(row)
-        self.db.flush()
+        stmt = stmt.on_conflict_do_nothing(index_elements=self._PK)
+        self.db.execute(stmt)
 
     def window_rows(
         self, tenant_id: str, company_id: str, feed: str, book: str,
@@ -201,6 +225,8 @@ class DocFeedIssueRepository:
             .first()
         )
 
+    _PK = ("tenant_id", "company_id", "feed", "book", "doc_key")
+
     def upsert(
         self,
         tenant_id: str, company_id: str, feed: str, book: str, doc_key: int,
@@ -209,24 +235,34 @@ class DocFeedIssueRepository:
         errors_json: Optional[Dict[str, Any]], warnings_json: Optional[List[str]],
         last_run_id: Optional[str], now: datetime,
     ) -> None:
-        row = self.get(tenant_id, company_id, feed, book, doc_key)
-        if row is None:
-            row = AcDocFeedIssue(
-                tenant_id=tenant_id, company_id=company_id, feed=feed, book=book,
-                doc_key=doc_key, attempts=0, first_at=now,
-            )
-            self.db.add(row)
-        row.kind = kind
-        row.doc_no = doc_no
-        row.doc_date = doc_date
-        row.source_modified_at = source_modified_at
-        row.record_json = record_json
-        row.errors_json = errors_json
-        row.warnings_json = warnings_json
-        row.attempts = (row.attempts or 0) + 1
-        row.last_at = now
-        row.last_run_id = last_run_id
-        self.db.flush()
+        """S2 - a real ``INSERT .. ON CONFLICT DO UPDATE`` (poll and
+        backfill may race on the SAME new DocKey). ``attempts`` starts at 1
+        on a fresh row and increments in the SAME statement on a conflict -
+        never a get-then-add-1 that a concurrent insert could race."""
+        table = AcDocFeedIssue.__table__
+        stmt = _dialect_insert(self.db, table).values(
+            tenant_id=tenant_id, company_id=company_id, feed=feed, book=book,
+            doc_key=doc_key, kind=kind, doc_no=doc_no, doc_date=doc_date,
+            source_modified_at=source_modified_at, record_json=record_json,
+            errors_json=errors_json, warnings_json=warnings_json, attempts=1,
+            first_at=now, last_at=now, last_run_id=last_run_id,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=self._PK,
+            set_={
+                "kind": stmt.excluded.kind,
+                "doc_no": stmt.excluded.doc_no,
+                "doc_date": stmt.excluded.doc_date,
+                "source_modified_at": stmt.excluded.source_modified_at,
+                "record_json": stmt.excluded.record_json,
+                "errors_json": stmt.excluded.errors_json,
+                "warnings_json": stmt.excluded.warnings_json,
+                "attempts": table.c.attempts + 1,
+                "last_at": stmt.excluded.last_at,
+                "last_run_id": stmt.excluded.last_run_id,
+            },
+        )
+        self.db.execute(stmt)
 
     def delete(
         self, tenant_id: str, company_id: str, feed: str, book: str, doc_key: int
@@ -364,3 +400,25 @@ class DocFeedBackfillRepository:
         self.db.add(backfill)
         self.db.flush()
         return backfill
+
+    def job_is_live(self, tenant_id: str, job_id: Optional[str]) -> bool:
+        """B2 (review round 1) - whether ``job_id`` still names a pending or
+        running ``background_jobs`` row. ``Resume`` refuses (409) while this
+        is true: the OLD worker may still be physically alive between the
+        moment it commits ``backfill.status = stopped`` and the moment it
+        finishes its own job row, and a Resume landing in that window would
+        enqueue a SECOND job racing the first on the same days (S2's ledger/
+        issue PK race). A falsy ``job_id`` (never dispatched, or a legacy
+        row) is never live."""
+        if not job_id:
+            return False
+        return (
+            self.db.query(BackgroundJob)
+            .filter(
+                BackgroundJob.tenant_id == tenant_id,
+                BackgroundJob.id == job_id,
+                BackgroundJob.status.in_((JOB_PENDING, JOB_RUNNING)),
+            )
+            .first()
+            is not None
+        )

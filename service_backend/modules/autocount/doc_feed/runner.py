@@ -5,6 +5,7 @@ owns the sequencing, retry and verdict-handling rules.
 """
 from __future__ import annotations
 
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -14,12 +15,16 @@ from urllib.parse import urlsplit
 
 from cryptography.fernet import InvalidToken
 
+from app.jobs.service import JobService
+from app.models.background_job import JOB_FAILED
 from app.models.integration_activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS
 
 from ..activity import record_activity, record_client_calls, trace_id_for_job
 from ..http_source.client import HttpApiClient, connection_sizing
+from ..http_source.source import DELETE_GUARD_MIN_ABSOLUTE, DELETE_GUARD_RATIO
 from ..models import (
     DOC_FEED_BACKFILL_DONE,
+    DOC_FEED_BACKFILL_RUNNING,
     DOC_FEED_BACKFILL_STOPPED,
     DOC_FEED_BACKFILL_STOPPING,
     DOC_FEED_BRANCH_STEP_DONE,
@@ -73,6 +78,36 @@ from .vendor import DocFeedVendor, DocFeedVendorError
 MAX_BACKFILL_RATE_LIMIT_WAITS = 10
 
 _DELETE_KEY_TRANSLATE = {"not_found": "notFound"}
+
+logger = logging.getLogger("foundryx.autocount")
+
+
+def _heartbeat(db, job_id: Optional[str]) -> None:
+    """B2 - best-effort liveness stamp, called after every vendor day and
+    every committed chunk (poll, sweep, backfill) so a long feed never
+    passes ``background_job_orphan_after_minutes`` with no heartbeat. A
+    ``None`` ``job_id`` (a direct-call test, or the eager dev seam before a
+    job row exists) is a silent no-op; a failure to stamp is logged and
+    never fails the run (mirrors ``autocount.sync._heartbeat``)."""
+    if not job_id:
+        return
+    try:
+        JobService(db).heartbeat(job_id)
+    except Exception:  # noqa: BLE001 - liveness is advisory, the run is not
+        logger.warning("doc-feed: heartbeat for job %s failed", job_id, exc_info=True)
+
+
+def _job_is_dead(db, job_id: Optional[str]) -> bool:
+    """B2 - ``True`` when ``job_id`` names a ``background_jobs`` row the
+    orphan/undispatched sweep (or some other closer) has already marked
+    ``FAILED`` out from under this run - a fence a long-running loop
+    (today: backfill) checks per day so a zombie worker that is still
+    physically alive stops pushing instead of racing the sweep's own
+    bookkeeping to a finish. A ``None`` ``job_id`` is never dead (a
+    direct-call test)."""
+    if not job_id:
+        return False
+    return JobService(db).fresh_status(job_id) == JOB_FAILED
 
 
 class RunRefusal(Exception):
@@ -147,40 +182,48 @@ def _resolve(
         company_code=company.sorento_company_code, transport=sink_transport, book=book,
     )
 
-    # CONTRACT_GATE - a CONFIRMED low version or missing entity refuses; an
-    # UNREACHABLE probe is advisory only here (never a guess at CONFIG time,
-    # D4 - but at run time the vendor read / push that follows will surface
-    # a real transport problem on its own terms, so a probe that could not
-    # even be attempted must not itself block every run). Probed through a
-    # SEPARATE, un-overridden sink instance (never `sink_transport`) - a
-    # test's own ingest-shaped mock answering EVERY path (including
-    # `/contract`) must never be misread as a genuine low-version contract;
-    # `SorentoSink.fetch_contract_detail` is a bare classmethod-shaped call,
-    # so a test that DOES want to simulate a real contract answer still
-    # reaches it (monkeypatching the class affects every instance).
-    probe_sink = sorento_sink_from_connection(
-        sink_conn.config_json or {}, credentials, entity_type=feed_row.feed,
-        company_code=company.sorento_company_code, transport=None, book=book,
-    )
+    # CONTRACT_GATE - checked again at the START of every run (D4/3.5, S1
+    # review round 1): an unreachable or malformed probe now FAILS CLOSED,
+    # never advisory - "never guess a contract we cannot see" applies at run
+    # time exactly as it does at config time (`CompanyService.
+    # doc_feed_gate_error`). Probed through the SAME `sink` (and so the SAME
+    # `sink_transport`) the push itself will use - there is no second,
+    # un-injectable sink instance for a test's stubbed CRM to accidentally
+    # bypass; a test that wants to simulate a genuine low/old contract still
+    # reaches this exact call by routing `/api/v1/external/contract`
+    # through its own `sink_transport` (or by monkeypatching
+    # `SorentoSink.fetch_contract_detail` at the class level, unaffected
+    # either way).
     try:
-        contract = probe_sink.fetch_contract_detail()
-    except Exception:  # noqa: BLE001 - advisory only
+        contract = sink.fetch_contract_detail()
+    except Exception:  # noqa: BLE001 - the probe itself, unprovable = refused
         contract = None
-    if contract is not None:
-        supported = (
-            contract.version >= DOC_FEED_CONTRACT_VERSION
-            and feed_row.feed in contract.entities
+    if contract is None:
+        raise RunRefusal(
+            "CONTRACT_GATE",
+            "The consumer's contract could not be confirmed (unreachable or "
+            "malformed response).",
         )
-        if not supported:
-            raise RunRefusal(
-                "CONTRACT_GATE",
-                f"The consumer's contract ({contract.version}) does not yet "
-                f"support '{feed_row.feed}'.",
-            )
+    supported = (
+        contract.version >= DOC_FEED_CONTRACT_VERSION
+        and feed_row.feed in contract.entities
+    )
+    if not supported:
+        raise RunRefusal(
+            "CONTRACT_GATE",
+            f"The consumer's contract ({contract.version}) does not yet "
+            f"support '{feed_row.feed}'.",
+        )
 
     sizing = connection_sizing(conn.config_json or {})
+    # B1 (review round 1) - the connection's OWN `baseUrl` already ends in
+    # the book (plan 08 D2, e.g. `https://hapi.sorento.cc.cd/api/db1`); the
+    # vendor client must be built from the FULL base URL, exactly like
+    # `HttpApiSource.__init__` (`http_source/source.py:302-318`) - dropping
+    # the path down to scheme+host (the former `_host_root`) sent every GET
+    # to the bare host and 404d on every real vendor read.
     vendor_client = HttpApiClient(
-        _host_root(str((conn.config_json or {}).get("baseUrl") or "")),
+        str((conn.config_json or {}).get("baseUrl") or ""),
         transport=vendor_transport, timeout_seconds=sizing.request_timeout_seconds,
     )
     return _Resolved(
@@ -190,22 +233,6 @@ def _resolve(
 
 
 _BOOK_RE = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
-
-
-def _host_root(base_url: str) -> str:
-    """The vendor doors (plan section 1) are quoted bare (``/deliveryorder
-    byLastModified``, ...) and the S0 fixture suite pins every one of them
-    against the scheme+host only, dropping any path segment the connection's
-    own ``baseUrl`` carries (the book segment, e.g. ``/api/db1``) - the
-    per-book selection travels some other way (the connection ITSELF is
-    book-scoped; the path segment is used only to DERIVE and DISPLAY
-    ``book``, never to build a request path). SSRF re-validation
-    (``assert_autocount_base_url_deliverable``) still runs against this
-    same host on every request, unaffected by dropping the path."""
-    parsed = urlsplit(base_url or "")
-    if not parsed.scheme or not parsed.netloc:
-        return base_url or ""
-    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def derive_book(base_url: str) -> Optional[str]:
@@ -226,17 +253,31 @@ def _new_summary() -> Dict[str, Any]:
     }
 
 
-def _new_run(db, feed_row: AcDocFeed, *, kind: str, dry_run: bool, now: datetime) -> AcDocFeedRun:
+def _new_run(
+    db, feed_row: AcDocFeed, *, kind: str, dry_run: bool, now: datetime,
+    job_id: Optional[str] = None,
+) -> AcDocFeedRun:
     run = AcDocFeedRun(
         tenant_id=feed_row.tenant_id, company_id=feed_row.company_id, feed_id=feed_row.id,
-        feed=feed_row.feed, kind=kind, dry_run=dry_run, started_at=now,
+        feed=feed_row.feed, kind=kind, dry_run=dry_run, job_id=job_id, started_at=now,
     )
     db.add(run)
-    db.flush()
+    # B3 - COMMIT at creation (was only flushed): the orphan hook matches
+    # open runs by `job_id` and a `finished_at IS NULL` row it can close; a
+    # worker crash before the run's own first commit must not lose the row
+    # entirely (the FE hook then polls a run that never existed).
+    db.commit()
     return run
 
 
 def _finish_failed(db, run: AcDocFeedRun, code: str, message: str) -> AcDocFeedRun:
+    # S2 - a failed chunk/day may have left the session's transaction in a
+    # PendingRollbackError state (an ON CONFLICT race, or any other DB
+    # error raised mid-``on_chunk``) - roll it back FIRST so this run's own
+    # failure is always recordable. `run` itself is already durable (B3
+    # commits it at creation), so a rollback here only discards the
+    # UNCOMMITTED work of the failed attempt, never the run row.
+    db.rollback()
     run.outcome = RUN_FAILED
     run.error_code = code
     run.error = message[:4000]
@@ -344,10 +385,10 @@ def _apply_document_verdict(
 
 
 def run_poll(
-    db, feed_row: AcDocFeed, *, dry_run: bool, now: datetime,
+    db, feed_row: AcDocFeed, *, dry_run: bool, now: datetime, job_id: Optional[str] = None,
     vendor_transport: Any = None, sink_transport: Any = None,
 ) -> AcDocFeedRun:
-    run = _new_run(db, feed_row, kind=RUN_KIND_POLL, dry_run=dry_run, now=now)
+    run = _new_run(db, feed_row, kind=RUN_KIND_POLL, dry_run=dry_run, now=now, job_id=job_id)
     try:
         resolved = _resolve(db, feed_row, vendor_transport=vendor_transport, sink_transport=sink_transport)
     except RunRefusal as exc:
@@ -370,6 +411,7 @@ def run_poll(
         while day <= end:
             all_records.extend(resolved.vendor.day_by_last_modified(feed_row.feed, day))
             requests_count += 1
+            _heartbeat(db, job_id)  # B2 - per vendor day
             day += timedelta(days=1)
     except DocFeedVendorError as exc:
         run.requests = requests_count
@@ -412,6 +454,7 @@ def run_poll(
                 run_id=run.id, now=now, summary=summary,
             )
         db.commit()
+        _heartbeat(db, job_id)  # B2 - per committed chunk
 
     try:
         resolved.sink.write_batch(to_send, request_id=run.id, dry_run=dry_run, on_chunk=on_chunk)
@@ -443,10 +486,10 @@ def run_poll(
 
 
 def run_branch_pull(
-    db, feed_row: AcDocFeed, *, dry_run: bool, now: datetime,
+    db, feed_row: AcDocFeed, *, dry_run: bool, now: datetime, job_id: Optional[str] = None,
     vendor_transport: Any = None, sink_transport: Any = None,
 ) -> AcDocFeedRun:
-    run = _new_run(db, feed_row, kind=RUN_KIND_BRANCH, dry_run=dry_run, now=now)
+    run = _new_run(db, feed_row, kind=RUN_KIND_BRANCH, dry_run=dry_run, now=now, job_id=job_id)
     try:
         resolved = _resolve(db, feed_row, vendor_transport=vendor_transport, sink_transport=sink_transport)
     except RunRefusal as exc:
@@ -454,6 +497,7 @@ def run_branch_pull(
 
     try:
         rows = resolved.vendor.branches()
+        _heartbeat(db, job_id)  # B2 - after the (bounded, <=100-page) vendor walk
     except DocFeedVendorError as exc:
         run.requests = 1
         _record_vendor_activity(db, resolved.vendor_client, run)
@@ -485,6 +529,7 @@ def run_branch_pull(
             summary[outcome] = summary.get(outcome, 0) + 1
             if not result.delivered:
                 failed_refs.append({"sourceRef": record.source_ref, "errors": result.errors})
+        _heartbeat(db, job_id)  # B2 - per pushed chunk
 
     try:
         resolved.sink.write_batch(to_send, request_id=run.id, dry_run=dry_run, on_chunk=on_chunk)
@@ -524,10 +569,10 @@ def _parse_deletion_doc_key(ref: str) -> Optional[int]:
 
 
 def run_sweep(
-    db, feed_row: AcDocFeed, *, dry_run: bool, now: datetime,
+    db, feed_row: AcDocFeed, *, dry_run: bool, now: datetime, job_id: Optional[str] = None,
     vendor_transport: Any = None, sink_transport: Any = None,
 ) -> AcDocFeedRun:
-    run = _new_run(db, feed_row, kind=RUN_KIND_SWEEP, dry_run=dry_run, now=now)
+    run = _new_run(db, feed_row, kind=RUN_KIND_SWEEP, dry_run=dry_run, now=now, job_id=job_id)
     try:
         resolved = _resolve(db, feed_row, vendor_transport=vendor_transport, sink_transport=sink_transport)
     except RunRefusal as exc:
@@ -545,6 +590,7 @@ def run_sweep(
                 if key is not None:
                     seen.add(key)
             requests_count += 1
+            _heartbeat(db, job_id)  # B2 - per vendor day (45 GETs)
             day += timedelta(days=1)
     except DocFeedVendorError as exc:
         run.requests = requests_count
@@ -561,7 +607,9 @@ def run_sweep(
         day_from=window_from, day_to=today,
     )
     candidates = [row for row in window_rows if row.doc_key not in seen]
-    threshold = max(50, int(0.2 * len(window_rows)))
+    # N1 - the shared delete-guard constants (`http_source/source.py`), not a
+    # locally hardcoded 50 / 0.2.
+    threshold = max(DELETE_GUARD_MIN_ABSOLUTE, int(DELETE_GUARD_RATIO * len(window_rows)))
 
     run.requests = requests_count
     run.day_from = window_from
@@ -625,6 +673,7 @@ def run_sweep(
                 {"sourceRef": f"{resolved.book}:?:{key}", "errors": {"message": "no verdict"}}
             )
         db.commit()
+        _heartbeat(db, job_id)  # B2 - per committed chunk
 
     summary["failedRefs"] = failed_refs[:20]
     _record_vendor_activity(db, resolved.vendor_client, run)
@@ -646,9 +695,17 @@ def run_backfill(
     db, backfill_row: AcDocFeedBackfill, *, now: datetime,
     vendor_transport: Any = None, sink_transport: Any = None,
 ) -> AcDocFeedBackfill:
-    if backfill_row.status == DOC_FEED_BACKFILL_STOPPING:
-        backfill_row.status = DOC_FEED_BACKFILL_STOPPED
-        db.commit()
+    job_id = backfill_row.job_id
+
+    if backfill_row.status != DOC_FEED_BACKFILL_RUNNING:
+        # B2 - an operator Stop (`stopping`) or the orphan sweep itself
+        # (`stopped`, set from a DIFFERENT session before this call ever
+        # started) both mean "never touch the loop"; only `stopping` is
+        # THIS call's own job to close out to `stopped` - a row already
+        # `stopped`/`done` must never be re-promoted.
+        if backfill_row.status == DOC_FEED_BACKFILL_STOPPING:
+            backfill_row.status = DOC_FEED_BACKFILL_STOPPED
+            db.commit()
         return backfill_row
 
     feed_row = DocFeedRepository(db).get_by_id(backfill_row.tenant_id, backfill_row.feed_id)
@@ -672,7 +729,7 @@ def run_backfill(
             and branches_feed.book == backfill_row.book
         ):
             branch_run = run_branch_pull(
-                db, branches_feed, dry_run=dry_run, now=now,
+                db, branches_feed, dry_run=dry_run, now=now, job_id=job_id,
                 vendor_transport=vendor_transport, sink_transport=sink_transport,
             )
             if branch_run.outcome != RUN_SUCCESS:
@@ -693,23 +750,40 @@ def run_backfill(
         backfill_row.error = exc.message
         backfill_row.error_code = exc.code
         db.commit()
-        _new_run_for_backfill(db, backfill_row, feed_row, now, outcome=RUN_FAILED, error=exc.message, error_code=exc.code)
+        _new_run_for_backfill(
+            db, backfill_row, feed_row, now, outcome=RUN_FAILED, error=exc.message,
+            error_code=exc.code, requests=0, fetched_count=0,
+        )
         return backfill_row
 
     aggregate_summary = _new_summary()
     aggregate_summary["candidates"] = 0
     day = backfill_row.next_day
     requests_count = 0
+    fetched_count = 0
     stop_reason: Optional[Dict[str, str]] = None
 
     while day <= backfill_row.to_day:
         db.refresh(backfill_row)
-        if backfill_row.status == DOC_FEED_BACKFILL_STOPPING:
+        if backfill_row.status != DOC_FEED_BACKFILL_RUNNING:
+            break
+        # B2 - the fence: a beat sweep may have failed this SAME job (no
+        # heartbeat for 15 minutes) from a DIFFERENT session moments ago,
+        # before its own `on_job_orphaned` write is visible to this
+        # `db.refresh` above (or before it ran at all) - stop pushing
+        # regardless of what `backfill_row.status` itself currently reads.
+        if _job_is_dead(db, job_id):
+            stop_reason = {
+                "code": "JOB_ORPHANED",
+                "message": "The worker running this backfill is no longer live.",
+            }
             break
 
         try:
             rows = resolved.vendor.day_by_doc_date(feed_row.feed, day)
             requests_count += 1
+            fetched_count += len(rows)
+            _heartbeat(db, job_id)  # B2 - per vendor day
         except DocFeedVendorError as exc:
             stop_reason = {"code": exc.code, "message": str(exc)}
             break
@@ -741,6 +815,7 @@ def run_backfill(
                         run_id=backfill_row.id, now=now, summary=aggregate_summary,
                     )
                 db.commit()
+                _heartbeat(db, job_id)  # B2 - per committed chunk
 
             try:
                 resolved.sink.write_batch(
@@ -779,6 +854,9 @@ def run_backfill(
         resolved.vendor_client.close()
 
     if stop_reason is not None:
+        # S2 - discard any uncommitted work of the day this failed on before
+        # even touching `backfill_row` (mirrors `_finish_failed`).
+        db.rollback()
         backfill_row.status = DOC_FEED_BACKFILL_STOPPED
         backfill_row.error = stop_reason["message"][:4000]
         backfill_row.error_code = stop_reason["code"]
@@ -786,17 +864,22 @@ def run_backfill(
         _new_run_for_backfill(
             db, backfill_row, feed_row, now, outcome=RUN_FAILED,
             error=backfill_row.error, error_code=backfill_row.error_code,
-            summary=aggregate_summary,
+            summary=aggregate_summary, requests=requests_count, fetched_count=fetched_count,
         )
         return backfill_row
 
     db.refresh(backfill_row)
-    if backfill_row.status == DOC_FEED_BACKFILL_STOPPING:
-        backfill_row.status = DOC_FEED_BACKFILL_STOPPED
-        db.commit()
+    if backfill_row.status != DOC_FEED_BACKFILL_RUNNING:
+        # B2 - never promote an externally-set `stopping`/`stopped` row back
+        # to `done`; only THIS call's own `stopping` closes to `stopped`
+        # here (a `stopped` row the orphan sweep already wrote stays exactly
+        # that).
+        if backfill_row.status == DOC_FEED_BACKFILL_STOPPING:
+            backfill_row.status = DOC_FEED_BACKFILL_STOPPED
+            db.commit()
         _new_run_for_backfill(
             db, backfill_row, feed_row, now, outcome=RUN_SUCCESS,
-            summary=aggregate_summary,
+            summary=aggregate_summary, requests=requests_count, fetched_count=fetched_count,
         )
         return backfill_row
 
@@ -807,6 +890,7 @@ def run_backfill(
     db.commit()
     _new_run_for_backfill(
         db, backfill_row, feed_row, now, outcome=RUN_SUCCESS, summary=aggregate_summary,
+        requests=requests_count, fetched_count=fetched_count,
     )
     return backfill_row
 
@@ -827,13 +911,20 @@ def _new_run_for_backfill(
     db, backfill_row: AcDocFeedBackfill, feed_row: AcDocFeed, now: datetime,
     *, outcome: str, error: Optional[str] = None, error_code: Optional[str] = None,
     summary: Optional[Dict[str, Any]] = None,
+    requests: Optional[int] = None, fetched_count: int = 0,
 ) -> AcDocFeedRun:
-    """AC-14-70 - one run row per backfill SEGMENT (this call)."""
+    """AC-14-70 - one run row per backfill SEGMENT (this call). B3/S9 -
+    carries this segment's own request/fetch counters and its OWN
+    ``day_to`` (the last day actually completed, ``next_day - 1``; ``next_
+    day`` itself is one day PAST the last day read - a Done 3-day backfill
+    otherwise showed a 4-day range)."""
+    day_to = backfill_row.next_day - timedelta(days=1)
     run = AcDocFeedRun(
         tenant_id=backfill_row.tenant_id, company_id=backfill_row.company_id,
         feed_id=backfill_row.feed_id, feed=backfill_row.feed, kind=RUN_KIND_BACKFILL,
         dry_run=backfill_row.dry_run, job_id=backfill_row.job_id,
-        day_from=backfill_row.from_day, day_to=backfill_row.next_day,
+        day_from=backfill_row.from_day, day_to=day_to,
+        requests=requests, fetched_count=fetched_count,
         outcome=outcome, error=error, error_code=error_code,
         summary_json=summary, started_at=now, finished_at=datetime.now(timezone.utc),
     )

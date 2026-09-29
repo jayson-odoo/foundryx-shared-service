@@ -586,6 +586,18 @@ class CompanyService:
         self._doc_feed_gate_cache: Dict[
             Tuple[str, str, str], Optional[Dict[str, Any]]
         ] = {}
+        # S5 (review round 1) - the RAW probe result (``fetch_contract_
+        # detail``), memoised per (tenant, company) ALONE - never per
+        # entity/feed. ``doc_feed_gate_error`` calls ``_contract_refusal``
+        # once per feed (3x for one ``view()``); without this, each call
+        # re-hit the network even though every one of them asks the SAME
+        # consumer connection the SAME question. ``_contract_refusal``
+        # still keys its OWN (cheap, no-network) supported/refused verdict
+        # by the caller's own cache (entity-specific), just never re-probes
+        # to compute it a second time.
+        self._contract_probe_cache: Dict[
+            Tuple[str, str], Tuple[str, Optional["SorentoContractInfo"]]
+        ] = {}
         self.watermarks = WatermarkRepository(db)
 
     # ── reads ────────────────────────────────────────────────────────────────
@@ -1108,10 +1120,55 @@ class CompanyService:
         """
         if cache_key in cache:
             return cache[cache_key]
+        status_, contract = self._probe_contract(tenant_id, company)
         result: Optional[Dict[str, Any]]
-        if company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id:
+        if status_ == "config_error":
+            result = {
+                "version": None, "requiredVersion": required_version,
+                "reason": "config_error",
+            }
+        elif status_ != "ok" or contract is None:
+            # ``no_sink`` (no Sorento connection at all) or ``unreachable``/
+            # malformed - "never guess a contract we cannot see".
             result = {"version": None, "requiredVersion": required_version}
-            cache[cache_key] = result
+        else:
+            version = contract.version
+            entities = contract.entities
+            supported = (
+                version is not None
+                and version >= required_version
+                and entity_name in entities
+            )
+            result = (
+                None if supported
+                else {"version": version, "requiredVersion": required_version}
+            )
+        cache[cache_key] = result
+        return result
+
+    def _probe_contract(
+        self, tenant_id: str, company: AcCompany,
+    ) -> Tuple[str, Optional["SorentoContractInfo"]]:
+        """S5 (review round 1) - the ONE real network probe per (tenant,
+        company) per SERVICE INSTANCE, memoised SEPARATELY from
+        ``_contract_refusal``'s own per-entity verdict cache: a company's
+        doc-feed view asks this gate once per feed (3x), and every one of
+        those calls means the SAME consumer connection answering the SAME
+        ``GET /external/contract`` - without this, each feed re-hit the
+        network. Returns ``("no_sink" | "config_error" | "unreachable" |
+        "ok", contract-or-None)``. The BUILD phase (resolving the consumer
+        connection, decrypting its credentials) and the PROBE phase (the
+        actual network call) are still caught SEPARATELY (a config/
+        credentials fault is never the SAME refusal reason as an old or
+        unreachable contract - unchanged from before this cache existed).
+        """
+        cache_key = (tenant_id, company.id)
+        if cache_key in self._contract_probe_cache:
+            return self._contract_probe_cache[cache_key]
+        result: Tuple[str, Optional["SorentoContractInfo"]]
+        if company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id:
+            result = ("no_sink", None)
+            self._contract_probe_cache[cache_key] = result
             return result
         try:
             conn = self._consumer_connection(tenant_id, company.sink_connection_id)
@@ -1123,30 +1180,17 @@ class CompanyService:
                 timeout=BRAND_CONTRACT_GATE_PROBE_TIMEOUT_SECONDS,
             )
         except AutocountServiceError:
-            result = {
-                "version": None, "requiredVersion": required_version,
-                "reason": "config_error",
-            }
-            cache[cache_key] = result
+            result = ("config_error", None)
+            self._contract_probe_cache[cache_key] = result
             return result
         try:
             contract = sink.fetch_contract_detail()
         except Exception:  # noqa: BLE001 - the PROBE itself, unprovable = refused
-            result = {"version": None, "requiredVersion": required_version}
-            cache[cache_key] = result
+            result = ("unreachable", None)
+            self._contract_probe_cache[cache_key] = result
             return result
-        version = contract.version if contract else None
-        entities = contract.entities if contract else []
-        supported = (
-            version is not None
-            and version >= required_version
-            and entity_name in entities
-        )
-        result = (
-            None if supported
-            else {"version": version, "requiredVersion": required_version}
-        )
-        cache[cache_key] = result
+        result = ("ok", contract)
+        self._contract_probe_cache[cache_key] = result
         return result
 
     def stock_push_gate_error(

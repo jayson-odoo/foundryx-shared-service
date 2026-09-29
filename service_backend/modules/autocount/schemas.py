@@ -1214,6 +1214,11 @@ class DocFeedBackfillOut(ApiModel):
     toDay: date = Field(validation_alias="to_day")
     nextDay: date = Field(validation_alias="next_day")
     status: str
+    # S8 (review round 1) - Start's own answer needs the job id (matches
+    # stop/resume/discard, which never carried one to begin with either -
+    # this is the one wire field that makes ALL four backfill actions
+    # answer the SAME shape).
+    jobId: Optional[str] = Field(default=None, validation_alias="job_id")
     daysTotal: int = Field(default=0, validation_alias="days_total")
     daysDone: int = Field(default=0, validation_alias="days_done")
     branchStep: Optional[str] = Field(default=None, validation_alias="branch_step")
@@ -1286,8 +1291,12 @@ class DocFeedBackfillStartIn(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     dryRun: bool
-    fromDay: Optional[str] = None
-    toDay: Optional[str] = None
+    # S4 (review round 1) - typed `date`, not `str`: Pydantic itself 422s a
+    # malformed ISO string (`{"fromDay": "2026-13-01"}`) instead of a bare
+    # `date.fromisoformat` raising `ValueError` in the ROUTER and turning
+    # into an unhandled 500.
+    fromDay: Optional[date] = None
+    toDay: Optional[date] = None
 
 
 class DocFeedIssueOut(ApiModel):

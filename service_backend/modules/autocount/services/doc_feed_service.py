@@ -259,20 +259,35 @@ class DocFeedService:
                 "RUN_IN_FLIGHT", "A run for this feed is already in progress."
             )
 
-        job = JobService(self.db).create_and_enqueue(
+        job = JobService(self.db).create(
             type=DOC_FEED_RUN_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
             payload={"feedId": row.id, "kind": kind},
         )
-        self._run_eager_with_transport(run_doc_feed_job, job, transport=transport)
+        self._dispatch(job, run_doc_feed_job, transport=transport)
         return job.id
+
+    def _dispatch(self, job, handler, *, transport: Any) -> None:
+        """Mirrors ``PreviewJobService._run`` - EXACTLY ONE dispatch path,
+        never both. S10/regression fix (review round 1): the earlier shape
+        called ``create_and_enqueue`` (which itself calls ``enqueue`` -
+        under ``CELERY_TASK_ALWAYS_EAGER`` that runs the job SYNCHRONOUSLY
+        with ``transport=None``, the plain ``handler_def.handler(db, job)``
+        two-arg dispatch ``run_job`` uses) and THEN a redundant transport-
+        carrying attempt that could never win the claim (the job was
+        already terminal). A test's ``sink_transport``/``vendor_transport``
+        override was silently discarded; production's real dev/eager mode
+        is unaffected (there ``transport`` is always ``None``, so this
+        still takes the plain ``enqueue`` branch)."""
+        if settings.celery_task_always_eager and transport is not None:
+            self._run_eager_with_transport(handler, job, transport=transport)
+        else:
+            JobService(self.db).enqueue(job.id)
 
     def _run_eager_with_transport(self, handler, job, *, transport: Any) -> None:
         """Mirrors ``PreviewJobService._run_eager_with_transport`` - a
         TEST-ONLY seam (production never overrides ``get_http_transport``,
-        so ``transport`` is always ``None`` there and the job already ran
-        through the plain ``enqueue()`` path)."""
-        if not (settings.celery_task_always_eager and transport is not None):
-            return
+        so ``transport`` is always ``None`` there and ``_dispatch`` takes
+        the plain ``enqueue()`` branch instead)."""
         jobs = JobService(self.db)
         if not jobs.claim(job.id):
             return
@@ -312,7 +327,10 @@ class DocFeedService:
         # `model_validate` off, so the wire id is synthesised here.
         items = [
             DocFeedIssueOut(
-                id=f"{row.book}:{row.doc_key}", feed=row.feed, doc_no=row.doc_no,
+                # N4 (review round 1) - the feed is part of the id: a DO
+                # and a GRN can legitimately share a DocKey, and the
+                # UNFILTERED issues list renders every feed's rows together.
+                id=f"{row.feed}:{row.book}:{row.doc_key}", feed=row.feed, doc_no=row.doc_no,
                 doc_date=row.doc_date, kind=row.kind, errors=row.errors_json or {},
                 attempts=row.attempts or 0, last_at=row.last_at,
             )
@@ -368,13 +386,13 @@ class DocFeedService:
         self.backfills.add(backfill)
         self.db.commit()
 
-        job = JobService(self.db).create_and_enqueue(
+        job = JobService(self.db).create(
             type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
             payload={"backfillId": backfill.id},
         )
         backfill.job_id = job.id
         self.db.commit()
-        self._run_eager_with_transport(run_doc_feed_backfill_job, job, transport=transport)
+        self._dispatch(job, run_doc_feed_backfill_job, transport=transport)
         self.db.refresh(backfill)
         return backfill
 
@@ -396,21 +414,36 @@ class DocFeedService:
             self.db.commit()
         return backfill
 
-    def resume_backfill(self, tenant_id: str, company_id: str, feed: str) -> AcDocFeedBackfill:
+    def resume_backfill(
+        self, tenant_id: str, company_id: str, feed: str, *, transport: Any = None,
+    ) -> AcDocFeedBackfill:
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None:
             raise DocFeedValidationError("feed", "This feed is not configured.")
         backfill = self.backfills.latest_for_feed(tenant_id, row.id)
         if backfill is None or backfill.status != DOC_FEED_BACKFILL_STOPPED:
             raise DocFeedValidationError("feed", "There is no stopped backfill to resume.")
+        if self.backfills.job_is_live(tenant_id, backfill.job_id):
+            raise DocFeedConflictError(
+                "BACKFILL_JOB_LIVE",
+                "The previous run for this backfill is still finishing up.",
+            )
+        # N2 (review round 1) - re-check the SAME start-time rule Start
+        # applies (a live backfill needs the feed in Push): the feed may
+        # have left Push in the time this backfill sat stopped.
+        if not backfill.dry_run and row.mode != DOC_FEED_MODE_PUSH:
+            raise DocFeedValidationError(
+                "mode", "A live backfill needs this feed in Push mode first."
+            )
         backfill.status = DOC_FEED_BACKFILL_RUNNING
         self.db.commit()
-        job = JobService(self.db).create_and_enqueue(
+        job = JobService(self.db).create(
             type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=tenant_id,
             payload={"backfillId": backfill.id},
         )
         backfill.job_id = job.id
         self.db.commit()
+        self._dispatch(job, run_doc_feed_backfill_job, transport=transport)
         self.db.refresh(backfill)
         return backfill
 
