@@ -212,6 +212,20 @@ export const AC_HTTP_ONLY_ENTITY_TYPES: string[] = AC_HTTP_ENTITY_TYPES.filter(
   (entityType) => !AC_SQL_DB_ENTITY_TYPES.includes(entityType),
 );
 
+/**
+ * Mapping rows the server refuses to change (sprint-5/14 section 11, round 3):
+ * the branch identity pair is fixed to its vendor columns as plain text, since
+ * the CRM derives its verdict `source_ref` from the mapped values. PARITY:
+ * `LOCKED_MAPPING_SOURCES` in `canonical/masters.py`.
+ */
+export const AC_LOCKED_MAPPING_SOURCES: Record<string, Record<string, string>> = {
+  branch: { acc_no: 'AccNo', code: 'BranchCode' },
+};
+
+export function isLockedMappingField(entityType: string, sorentoField: string): boolean {
+  return Boolean(AC_LOCKED_MAPPING_SOURCES[entityType]?.[sorentoField]);
+}
+
 export function isHttpOnlyEntity(entityType: string): boolean {
   return AC_HTTP_ONLY_ENTITY_TYPES.includes(entityType);
 }

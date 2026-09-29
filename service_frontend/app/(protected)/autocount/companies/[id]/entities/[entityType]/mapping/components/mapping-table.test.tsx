@@ -454,3 +454,34 @@ describe('Enabled column (sprint-5/12, AC-12-25)', () => {
     expect(screen.getByText('Column not in query')).toBeInTheDocument();
   });
 });
+
+describe('MappingTable locked branch identity rows (sprint-5/14 section 11, round 3)', () => {
+  const BRANCH_SORENTO: AutocountSorentoField[] = [
+    { field: 'acc_no', required: true },
+    { field: 'code', required: true },
+    { field: 'name', required: false },
+  ];
+  const branchRows = (): MappingEditableRow[] => [
+    { sourcePath: 'AccNo', transform: 'string', formula: null, sorentoField: 'acc_no', isEnabled: true },
+    { sourcePath: 'BranchCode', transform: 'string', formula: null, sorentoField: 'code', isEnabled: true },
+    { sourcePath: 'BranchName', transform: 'string', formula: null, sorentoField: 'name', isEnabled: true },
+  ];
+
+  it('locks the AccNo and BranchCode rows (disabled pickers, no formula or remove) and leaves Name free', () => {
+    renderTable(true, { entityType: 'branch', rows: branchRows(), sorentoFields: BRANCH_SORENTO, acFields: ['AccNo', 'BranchCode', 'BranchName'] });
+    expect(screen.getAllByText('Locked')).toHaveLength(2);
+    expect(screen.getByRole('combobox', { name: 'AutoCount source for row 1' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'AutoCount source for row 2' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'AutoCount source for row 3' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Build formula for row 1' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Build formula for row 3' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove row 2' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Remove row 3' })).toBeEnabled();
+  });
+
+  it('control: another entity with a code row is never locked', () => {
+    renderTable(true, { entityType: 'brand' });
+    expect(screen.queryByText('Locked')).not.toBeInTheDocument();
+  });
+});
+
