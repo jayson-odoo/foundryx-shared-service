@@ -448,7 +448,7 @@ use-doc-feeds-list-config,use-doc-feed-runs-list-config,use-doc-feed-issues-list
 doc-feed-config-dialog,doc-feed-backfill-dialog}.tsx`, `components/platform/autocount/
 job-progress.tsx` (`unit`); tests beside each.
 
-Docs: this pair, `14-fixtures/` (+ README provenance), `14-evidence/`, the test report,
+Docs: this pair, `service_backend/tests/fixtures/s14_doc_feed/` (+ README provenance), `14-evidence/`, the test report,
 `docs/reference/` AutoCount section (feed table, cursor rule, sweep guard), backlog rows
 (section 8) appended to `documentation/backlogs/backlog.md` in S0 by the coordinator.
 
@@ -456,7 +456,7 @@ Docs: this pair, `14-fixtures/` (+ README provenance), `14-evidence/`, the test 
 
 | Slice | Scope | UAC |
 |---|---|---|
-| S0 | Docs commit (this). Fixtures `14-fixtures/`: vendor DO and GRN day arrays and a two-page `branchbypage` (live field lists from #1354, values anonymised), CRM `contract` 2.7, ingest responses covering every verdict and warning, a deletions response, 429 / 502 responses. Tester writes the red pytest files and Vitest cases | red for all `[BE]` / `[FE]` |
+| S0 | Docs commit (this). Fixtures `service_backend/tests/fixtures/s14_doc_feed/`: vendor DO and GRN day arrays and a two-page `branchbypage` (live field lists from #1354, values anonymised), CRM `contract` 2.7, ingest responses covering every verdict and warning, a deletions response, 429 / 502 responses. Tester writes the red pytest files and Vitest cases | red for all `[BE]` / `[FE]` |
 | S1 FE mock | Types, overlay mock with every state (unconfigured, gate shut, dry run with runs, push with cursor and issues, backfill running / stopped / done, no permission), hook, meta, tab, lists, dialogs, `JobProgress unit`; agent-browser 375 / 1280 against the mock | AC-14-90..95, E1 |
 | S2 BE config | Migration + models + repositories, `DocFeedService.view/update`, eligible connections, gate refactor, router, schemas, manifest | AC-14-01..06, 80..82 |
 | S3 BE poll + branches (owner S1) | Vendor, records, sink extension, `run_poll`, `run_branch_pull`, issues, ledger, cursor, jobs, beat, scheduler, orphan hook, Run now, runs / issues lists | AC-14-10..13, 20..27, 30..33, 40, 41, 56, 70..72, 83 |

@@ -10,9 +10,9 @@ Every builder is tenant-scoped and mirrors an existing precedent exactly:
 `_auth`/`_limited_user`/`_other_tenant` copy `tests/test_autocount_etl_routes.py`
 byte-for-byte in spirit; `_company` copies `tests/test_autocount_scheduler.py`.
 Fixture loading reads the JSON files committed at
-`documentation/plans/sprint-5/14-fixtures/` (see that dir's own README for
-provenance) - resolved relative to the repo root, two parents up from
-`service_backend/tests/`.
+`service_backend/tests/fixtures/s14_doc_feed/` (see that dir's own README for
+provenance), resolved next to this file so the Docker image (no repo root)
+can collect them.
 """
 from __future__ import annotations
 
@@ -39,14 +39,11 @@ SORENTO_API_KEY = "sorento-doc-feed-test-key"
 SORENTO_COMPANY_CODE = "SRT"
 BOOK = "db1"
 
-_FIXTURES_DIR = (
-    Path(__file__).resolve().parent.parent.parent
-    / "documentation" / "plans" / "sprint-5" / "14-fixtures"
-)
+_FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "s14_doc_feed"
 
 
 def load_fixture(name: str) -> Any:
-    """Parse one committed JSON fixture (documentation/plans/sprint-5/14-fixtures/<name>)."""
+    """Parse one committed JSON fixture (service_backend/tests/fixtures/s14_doc_feed/<name>)."""
     with open(_FIXTURES_DIR / name, "r", encoding="utf-8") as handle:
         return json.load(handle)
 
