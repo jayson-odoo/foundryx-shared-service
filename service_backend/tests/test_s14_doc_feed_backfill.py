@@ -24,7 +24,7 @@ import pytest
 
 from app.models.background_job import BackgroundJob
 from modules.autocount.doc_feed.runner import run_backfill
-from modules.autocount.models import AcDocFeed, AcDocFeedBackfill
+from modules.autocount.models import AcDocFeed, AcDocFeedBackfill, AcDocFeedRun
 from modules.autocount.services.doc_feed_service import DocFeedService
 
 from .s14_doc_feed_helpers import wired_company
@@ -121,6 +121,61 @@ def test_backfill_skips_the_branch_step_when_the_branches_feed_is_off(session_fa
     assert "/branchbypage" not in call_order
     db.refresh(bf)
     assert bf.branch_step == "skipped"
+
+
+def _latest_backfill_run(db, backfill: AcDocFeedBackfill) -> AcDocFeedRun:
+    return (
+        db.query(AcDocFeedRun)
+        .filter(AcDocFeedRun.feed_id == backfill.feed_id, AcDocFeedRun.kind == "backfill")
+        .order_by(AcDocFeedRun.started_at.desc())
+        .first()
+    )
+
+
+# ── S9 (review round 1) - the run row's own dayTo is the LAST day actually
+# completed, never nextDay (one day PAST it) ─────────────────────────────────
+
+
+def test_a_done_backfills_run_row_records_the_exact_day_range(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, do_feed, from_day=date(2026, 9, 27), to_day=date(2026, 9, 29))
+
+    run_backfill(
+        db, bf, now=NOW,
+        vendor_transport=_empty_vendor([]), sink_transport=_ok_sink(),
+    )
+
+    db.refresh(bf)
+    assert bf.status == "done"
+    run = _latest_backfill_run(db, bf)
+    assert run.day_from == date(2026, 9, 27)
+    # A Done 3-day (27..29) backfill's run row must read 29, never 30
+    # (`next_day`, one day PAST the last day actually read).
+    assert run.day_to == date(2026, 9, 29)
+
+
+def test_a_stopped_backfills_run_row_records_only_the_days_actually_completed(session_factory, monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, do_feed, from_day=date(2026, 9, 27), to_day=date(2026, 9, 29))
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("DocDate") == "20260928":
+            return httpx.Response(500, json={"message": "down"})
+        return httpx.Response(200, json=[])
+
+    run_backfill(db, bf, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)), sink_transport=_ok_sink())
+
+    db.refresh(bf)
+    assert bf.status == "stopped"
+    assert bf.next_day == date(2026, 9, 28)
+    run = _latest_backfill_run(db, bf)
+    # Day 27 is the ONLY day actually completed before day 28 failed.
+    assert run.day_to == date(2026, 9, 27)
 
 
 # ── resume continues at nextDay, no repeated GETs (AC-14-61) ────────────────
@@ -467,6 +522,69 @@ def test_a_429_waits_up_to_ten_times_then_stops(session_factory, monkeypatch):
     run_backfill(db, bf, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)), sink_transport=httpx.MockTransport(sink))
     db.refresh(bf)
     assert bf.status == "stopped"
+
+
+def test_a_429_after_the_first_chunk_does_not_double_count_the_already_applied_chunk(session_factory, monkeypatch):
+    """N3 (review round 1) - `write_batch` calls ``on_chunk`` (and this
+    COMMITS + counts) for every chunk that resolves BEFORE the chunk that
+    finally raises ``SorentoRateLimited``. A bare retry of the whole day's
+    ``to_send`` list used to re-verdict the already-applied chunk a second
+    time, double-counting ``aggregate_summary``. Two DocKeys, batch size 1
+    (two chunks): the first chunk (DocKey 1) always succeeds; the second
+    (DocKey 2) 429s for its first 3 posts (exhausting the sink's own
+    internal ``_max_rate_limit_waits=2`` ladder and escaping as
+    ``SorentoRateLimited``), then succeeds once the day-level retry resends
+    only what is left."""
+    from app.config import settings
+
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    monkeypatch.setattr(settings, "autocount_sink_batch_size", 1)
+    monkeypatch.setattr(settings, "autocount_sink_concurrency", 1)
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, do_feed, from_day=date(2026, 9, 29), to_day=date(2026, 9, 29))
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {"DocKey": 1, "DocNo": "DO-1", "DocDate": "2026-09-29", "LastModified": "2026-09-29T09:00:00.000", "Details": []},
+                {"DocKey": 2, "DocNo": "DO-2", "DocDate": "2026-09-29", "LastModified": "2026-09-29T09:00:00.000", "Details": []},
+            ],
+        )
+
+    key2_posts = {"count": 0}
+
+    def sink(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
+        payload = json.loads(request.content.decode("utf-8"))
+        recs = payload.get("records") or []
+        assert len(recs) == 1
+        key = recs[0].get("DocKey")
+        if key == 2:
+            key2_posts["count"] += 1
+            if key2_posts["count"] <= 3:
+                return httpx.Response(429, json={}, headers={"Retry-After": "0"})
+        return httpx.Response(
+            200,
+            json={
+                "dry_run": False, "summary": {"created": 1},
+                "records": [{"source_ref": f"db1:DO:{key}", "outcome": "created", "entity_id": "x"}],
+            },
+        )
+
+    run_backfill(
+        db, bf, now=NOW,
+        vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)),
+        sink_transport=httpx.MockTransport(sink),
+    )
+
+    db.refresh(bf)
+    assert bf.status == "done"
+    # Without the fix this reads 3 (DocKey 1's chunk re-verdicted on retry).
+    assert bf.summary_json["created"] == 2
 
 
 # ── dry run writes nothing (AC-14-64) ───────────────────────────────────────

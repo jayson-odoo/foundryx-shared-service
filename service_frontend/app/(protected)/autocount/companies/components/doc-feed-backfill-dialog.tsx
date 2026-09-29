@@ -12,17 +12,23 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { JobProgress } from '@/components/platform/autocount/job-progress';
+import { DateRangePicker, type DateRangeValue } from '@/components/platform/date-range-picker';
+import { dateKey } from '@/lib/datetime';
 import type { DocFeedBackfillStartInput, DocFeedBackfillStatus, DocFeedKey } from '@/types/autocount';
 import { docFeedLabel } from '../../components/autocount-meta';
 
 const DOC_FEED_BACKFILL_FROM = '2023-01-01';
+// N5 (review round 1) - the backfill's own "today" is MYT (D6, fixed UTC+8,
+// no DST), never the browser's local zone: before 08:00 MYT the browser's
+// UTC "today" is still MYT's PREVIOUS day, and the backend refuses a `toDay`
+// past its own MYT today (AC-14-63 range 422).
+const MYT_ZONE = 'Asia/Kuala_Lumpur';
 
-function todayKey(): string {
-  return new Date().toISOString().slice(0, 10);
+function mytTodayKey(): string {
+  return dateKey(new Date(), { timeZone: MYT_ZONE }) ?? new Date().toISOString().slice(0, 10);
 }
 
 export interface DocFeedBackfillDialogProps {
@@ -53,8 +59,11 @@ export function DocFeedBackfillDialog({
   onStop,
 }: DocFeedBackfillDialogProps) {
   const [dryRun, setDryRun] = useState(true);
-  const [fromDay, setFromDay] = useState(DOC_FEED_BACKFILL_FROM);
-  const [toDay, setToDay] = useState(todayKey);
+  const [range, setRange] = useState<DateRangeValue>(() => ({
+    preset: 'custom',
+    from: DOC_FEED_BACKFILL_FROM,
+    to: mytTodayKey(),
+  }));
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
 
@@ -63,7 +72,7 @@ export function DocFeedBackfillDialog({
   async function submitStart() {
     setStarting(true);
     try {
-      await onStart({ dryRun, fromDay, toDay });
+      await onStart({ dryRun, fromDay: range.from, toDay: range.to });
     } finally {
       setStarting(false);
     }
@@ -118,31 +127,15 @@ export function DocFeedBackfillDialog({
                   data-testid="backfill-dry-run-switch"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="doc-feed-backfill-from">From</Label>
-                  <Input
-                    id="doc-feed-backfill-from"
-                    type="date"
-                    value={fromDay}
-                    min={DOC_FEED_BACKFILL_FROM}
-                    max={toDay}
-                    onChange={(event) => setFromDay(event.target.value)}
-                    data-testid="backfill-from-day"
-                  />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="doc-feed-backfill-to">To</Label>
-                  <Input
-                    id="doc-feed-backfill-to"
-                    type="date"
-                    value={toDay}
-                    min={fromDay}
-                    max={todayKey()}
-                    onChange={(event) => setToDay(event.target.value)}
-                    data-testid="backfill-to-day"
-                  />
-                </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Date range</Label>
+                <DateRangePicker
+                  value={range}
+                  onChange={setRange}
+                  timeZone={MYT_ZONE}
+                  minDate={DOC_FEED_BACKFILL_FROM}
+                  maxDate={mytTodayKey()}
+                />
               </div>
             </div>
           )}

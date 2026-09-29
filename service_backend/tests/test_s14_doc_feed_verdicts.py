@@ -214,12 +214,41 @@ def test_retryable_is_re_sent_on_the_next_live_poll_outside_the_window(session_f
             200, json={"dry_run": False, "summary": {"total": 0}, "records": []},
         )
 
-    run_poll(
+    second_run = run_poll(
         db, feed, dry_run=False, now=NOW,
         vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor_empty)),
         sink_transport=httpx.MockTransport(sink_capture),
     )
     assert f"db1:DO:{DOC_KEY}" in sent_refs
+    # N3 (review round 1) - the re-sent issue is counted in the SECOND
+    # poll's own `summary.resent`, not folded silently into `retryable`/
+    # `created`/etc. (both calls share `now=NOW`, so `_latest_run`'s
+    # `started_at DESC` order ties - read the run object THIS call itself
+    # returned, never re-query by timestamp.)
+    assert second_run.summary_json["resent"] == 1
+
+
+def test_a_fresh_read_of_a_retryable_docKey_supersedes_the_stored_copy_and_is_not_resent(session_factory):
+    """D9 supersede half of the same rule: a DocKey that WAS read this tick
+    uses the fresh vendor copy, so it must not ALSO be double-counted as a
+    `resent` re-send of its own stored issue row."""
+    db = session_factory()
+    company, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, company, ac_conn)
+
+    run_poll(
+        db, feed, dry_run=False, now=NOW,
+        vendor_transport=_vendor_transport(_record()),
+        sink_transport=_verdict_transport("retryable", errors={"x": "y"}),
+    )
+
+    second_run = run_poll(
+        db, feed, dry_run=False, now=NOW,
+        vendor_transport=_vendor_transport(_record()),  # same DocKey, read again
+        sink_transport=_verdict_transport("created"),
+    )
+    assert second_run.summary_json["resent"] == 0
+    assert _issue_row(db, company) is None
 
 
 def test_a_later_delivered_verdict_clears_the_retryable_issue_row(session_factory):
@@ -283,6 +312,22 @@ def test_failed_creates_an_issue_row_and_is_not_re_sent(session_factory):
         sink_transport=httpx.MockTransport(sink_capture),
     )
     assert sent_refs == []
+
+
+def test_a_failed_verdict_is_carried_in_the_run_summarys_failedRefs(session_factory):
+    """N3 (review round 1) - `summary.failedRefs` (the same shape
+    `run_branch_pull`/`run_sweep` already populate) surfaces WHICH DocKeys
+    failed on a run's own summary, without opening the issues list."""
+    db = session_factory()
+    company, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, company, ac_conn)
+
+    run = run_poll(
+        db, feed, dry_run=False, now=NOW,
+        vendor_transport=_vendor_transport(_record()),
+        sink_transport=_verdict_transport("failed", errors={"DocNo": "clash"}),
+    )
+    assert run.summary_json["failedRefs"] == [{"sourceRef": f"db1:DO:{DOC_KEY}", "errors": {"DocNo": "clash"}}]
 
 
 # ── unknown/missing outcome -> retryable (AC-14-22) ─────────────────────────

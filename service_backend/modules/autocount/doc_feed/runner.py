@@ -321,6 +321,7 @@ def _record_push_activity(
 def _apply_document_verdict(
     db, feed_row: AcDocFeed, book: str, record: RawVendorRecord, result: Any,
     *, dry_run: bool, run_id: str, now: datetime, summary: Dict[str, Any],
+    failed_refs: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     raw = record.raw
     key = doc_key(raw)
@@ -356,6 +357,13 @@ def _apply_document_verdict(
             issue_repo.delete(feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key)
     elif outcome == "failed":
         summary["failed"] = summary.get("failed", 0) + 1
+        # N3 (review round 1) - a permanently-failed document push is
+        # surfaced in `summary.failedRefs` (the same shape `run_branch_pull`/
+        # `run_sweep` already use), not only the persistent issue row: an
+        # operator reading one run's summary should see WHICH DocKeys failed
+        # without opening the issues list.
+        if failed_refs is not None:
+            failed_refs.append({"sourceRef": record.source_ref, "errors": result.errors})
         if not dry_run:
             issue_repo.upsert(
                 feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key,
@@ -422,6 +430,10 @@ def run_poll(
 
     deduped = dedupe_latest(all_records)
 
+    # N3 (review round 1) - `resent` counts the retryable issue rows appended
+    # here (D9: the stored record, not a refetch) so a run's own summary
+    # says how many of this tick's pushes were a re-send, not a fresh read.
+    resent_count = 0
     if not dry_run:
         read_keys = {doc_key(r) for r in deduped if doc_key(r) is not None}
         for issue in DocFeedIssueRepository(db).list_retryable(
@@ -429,9 +441,12 @@ def run_poll(
         ):
             if issue.doc_key not in read_keys and issue.record_json:
                 deduped.append(issue.record_json)
+                resent_count += 1
 
     ordered = push_order(deduped)
     summary = _new_summary()
+    summary["resent"] = resent_count
+    failed_refs: List[Dict[str, Any]] = []
     to_send: List[RawVendorRecord] = []
     for record in ordered:
         key = doc_key(record)
@@ -451,7 +466,7 @@ def run_poll(
         for record, result in zip(chunk, results):
             _apply_document_verdict(
                 db, feed_row, resolved.book, record, result, dry_run=dry_run,
-                run_id=run.id, now=now, summary=summary,
+                run_id=run.id, now=now, summary=summary, failed_refs=failed_refs,
             )
         db.commit()
         _heartbeat(db, job_id)  # B2 - per committed chunk
@@ -460,6 +475,8 @@ def run_poll(
         resolved.sink.write_batch(to_send, request_id=run.id, dry_run=dry_run, on_chunk=on_chunk)
     except Exception as exc:  # noqa: BLE001 - a raised sink error fails the run
         chunk_error = exc
+
+    summary["failedRefs"] = failed_refs[:20]
 
     run.requests = requests_count
     run.fetched_count = len(all_records)
@@ -801,11 +818,19 @@ def run_backfill(
 
         rate_limit_waits = 0
         day_error: Optional[BaseException] = None
+        # N3 (review round 1) - `write_batch` calls `on_chunk` (and this
+        # commits + counts) for every chunk BEFORE the chunk that finally
+        # raises `SorentoRateLimited`; a bare retry of the whole `to_send`
+        # list re-verdicted (double-counted) those already-applied chunks
+        # in `aggregate_summary` on every wait. `remaining` narrows to only
+        # the records this day has NOT yet been credited for.
+        remaining = to_send
         while True:
             chunk_error: Optional[BaseException] = None
+            sent_this_attempt = 0
 
             def on_chunk(chunk, results, error):
-                nonlocal chunk_error
+                nonlocal chunk_error, sent_this_attempt
                 if error is not None:
                     chunk_error = error
                     return
@@ -816,13 +841,15 @@ def run_backfill(
                     )
                 db.commit()
                 _heartbeat(db, job_id)  # B2 - per committed chunk
+                sent_this_attempt += len(chunk)
 
             try:
                 resolved.sink.write_batch(
-                    to_send, request_id=f"{backfill_row.id}:{day.isoformat()}",
+                    remaining, request_id=f"{backfill_row.id}:{day.isoformat()}",
                     dry_run=dry_run, on_chunk=on_chunk,
                 )
             except SorentoRateLimited as exc:
+                remaining = remaining[sent_this_attempt:]
                 rate_limit_waits += 1
                 if rate_limit_waits > MAX_BACKFILL_RATE_LIMIT_WAITS:
                     day_error = exc
