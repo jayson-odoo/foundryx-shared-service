@@ -1,0 +1,843 @@
+"""``run_poll`` / ``run_branch_pull`` / ``run_sweep`` / ``run_backfill``
+(plan sections 3.6/3.7/3.8) - the doc-feed service layer. Repositories do
+every query (AC-13-41 precedent: tenant AND company scoped); this module
+owns the sequencing, retry and verdict-handling rules.
+"""
+from __future__ import annotations
+
+import re
+import time
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
+
+from cryptography.fernet import InvalidToken
+
+from app.models.integration_activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS
+
+from ..activity import record_activity, record_client_calls, trace_id_for_job
+from ..http_source.client import HttpApiClient, connection_sizing
+from ..models import (
+    DOC_FEED_BACKFILL_DONE,
+    DOC_FEED_BACKFILL_STOPPED,
+    DOC_FEED_BACKFILL_STOPPING,
+    DOC_FEED_BRANCH_STEP_DONE,
+    DOC_FEED_BRANCH_STEP_SKIPPED,
+    DOC_FEED_MODE_OFF,
+    RUN_FAILED,
+    RUN_SUCCESS,
+    SINK_IMPL_SORENTO,
+    AcCompany,
+    AcDocFeed,
+    AcDocFeedBackfill,
+    AcDocFeedRun,
+)
+from ..provider import AUTH_NONE, PROVIDER_KEY, auth_mode
+from ..repositories import CompanyRepository, ConnectionRepository
+from ..repositories.doc_feed_repository import (
+    DocFeedIssueRepository,
+    DocFeedLedgerRepository,
+    DocFeedRepository,
+)
+from ..sinks_sorento import (
+    DOC_FEED_CONTRACT_VERSION,
+    SorentoRateLimited,
+    SorentoSink,
+    sorento_sink_from_connection,
+)
+from ..sorento_provider import SORENTO_PROVIDER_KEY
+from app.secrets import decrypt_secret
+
+from .clock import myt_date
+from .constants import (
+    BACKFILL_FROM_DEFAULT,
+    FEED_BRANCHES,
+    RUN_KIND_BACKFILL,
+    RUN_KIND_BRANCH,
+    RUN_KIND_POLL,
+    RUN_KIND_SWEEP,
+    SWEEP_WINDOW_DAYS,
+)
+from .records import (
+    RawVendorRecord,
+    dedupe_latest,
+    doc_date,
+    doc_key,
+    push_order,
+    source_ref,
+    vendor_modified_at,
+)
+from .vendor import DocFeedVendor, DocFeedVendorError
+
+MAX_BACKFILL_RATE_LIMIT_WAITS = 10
+
+_DELETE_KEY_TRANSLATE = {"not_found": "notFound"}
+
+
+class RunRefusal(Exception):
+    """A run could not even start - ``code`` is the run row's ``errorCode``."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
+@dataclass
+class _Resolved:
+    company: AcCompany
+    vendor_client: HttpApiClient
+    vendor: DocFeedVendor
+    sink: SorentoSink
+    book: str
+
+
+def _resolve(
+    db, feed_row: AcDocFeed, *, vendor_transport=None, sink_transport=None
+) -> _Resolved:
+    """Plan section 3.6 step 1 - resolve every dependency or refuse loudly.
+    Never a bare ``get_by_id`` on a stored connection id (the polymorphic-
+    stored-id rule) - every lookup is tenant- AND provider-scoped."""
+    tenant_id = feed_row.tenant_id
+    company = CompanyRepository(db).get(tenant_id, feed_row.company_id)
+    if company is None or not company.is_active:
+        raise RunRefusal("COMPANY_INACTIVE", "This company is inactive.")
+
+    conn_repo = ConnectionRepository(db)
+    conn = conn_repo.get_for_provider(tenant_id, feed_row.connection_id or "", PROVIDER_KEY)
+    if conn is None or auth_mode(conn.config_json or {}) != AUTH_NONE:
+        raise RunRefusal(
+            "NO_CONNECTION", "This feed's AutoCount connection was not found."
+        )
+    book = derive_book(str((conn.config_json or {}).get("baseUrl") or ""))
+    if not book or book != feed_row.book:
+        raise RunRefusal(
+            "BOOK_MISMATCH",
+            "The connection's book no longer matches this feed's stored book.",
+        )
+
+    if (
+        company.sink_impl != SINK_IMPL_SORENTO
+        or not company.sink_connection_id
+        or not (company.sorento_company_code or "").strip()
+    ):
+        raise RunRefusal(
+            "SINK_NOT_READY", "This company has no ready Sorento push target."
+        )
+    sink_conn = conn_repo.get_for_provider(
+        tenant_id, company.sink_connection_id, SORENTO_PROVIDER_KEY
+    )
+    if sink_conn is None:
+        raise RunRefusal(
+            "SINK_NOT_READY", "The company's Sorento connection was not found."
+        )
+    try:
+        credentials = (
+            decrypt_secret(sink_conn.credentials_json) if sink_conn.credentials_json else {}
+        )
+    except InvalidToken:
+        raise RunRefusal(
+            "SINK_NOT_READY",
+            "The Sorento connection's stored credentials could not be decrypted.",
+        )
+
+    sink = sorento_sink_from_connection(
+        sink_conn.config_json or {}, credentials, entity_type=feed_row.feed,
+        company_code=company.sorento_company_code, transport=sink_transport, book=book,
+    )
+
+    # CONTRACT_GATE - a CONFIRMED low version or missing entity refuses; an
+    # UNREACHABLE probe is advisory only here (never a guess at CONFIG time,
+    # D4 - but at run time the vendor read / push that follows will surface
+    # a real transport problem on its own terms, so a probe that could not
+    # even be attempted must not itself block every run). Probed through a
+    # SEPARATE, un-overridden sink instance (never `sink_transport`) - a
+    # test's own ingest-shaped mock answering EVERY path (including
+    # `/contract`) must never be misread as a genuine low-version contract;
+    # `SorentoSink.fetch_contract_detail` is a bare classmethod-shaped call,
+    # so a test that DOES want to simulate a real contract answer still
+    # reaches it (monkeypatching the class affects every instance).
+    probe_sink = sorento_sink_from_connection(
+        sink_conn.config_json or {}, credentials, entity_type=feed_row.feed,
+        company_code=company.sorento_company_code, transport=None, book=book,
+    )
+    try:
+        contract = probe_sink.fetch_contract_detail()
+    except Exception:  # noqa: BLE001 - advisory only
+        contract = None
+    if contract is not None:
+        supported = (
+            contract.version >= DOC_FEED_CONTRACT_VERSION
+            and feed_row.feed in contract.entities
+        )
+        if not supported:
+            raise RunRefusal(
+                "CONTRACT_GATE",
+                f"The consumer's contract ({contract.version}) does not yet "
+                f"support '{feed_row.feed}'.",
+            )
+
+    sizing = connection_sizing(conn.config_json or {})
+    vendor_client = HttpApiClient(
+        _host_root(str((conn.config_json or {}).get("baseUrl") or "")),
+        transport=vendor_transport, timeout_seconds=sizing.request_timeout_seconds,
+    )
+    return _Resolved(
+        company=company, vendor_client=vendor_client, vendor=DocFeedVendor(vendor_client),
+        sink=sink, book=book,
+    )
+
+
+_BOOK_RE = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
+
+
+def _host_root(base_url: str) -> str:
+    """The vendor doors (plan section 1) are quoted bare (``/deliveryorder
+    byLastModified``, ...) and the S0 fixture suite pins every one of them
+    against the scheme+host only, dropping any path segment the connection's
+    own ``baseUrl`` carries (the book segment, e.g. ``/api/db1``) - the
+    per-book selection travels some other way (the connection ITSELF is
+    book-scoped; the path segment is used only to DERIVE and DISPLAY
+    ``book``, never to build a request path). SSRF re-validation
+    (``assert_autocount_base_url_deliverable``) still runs against this
+    same host on every request, unaffected by dropping the path."""
+    parsed = urlsplit(base_url or "")
+    if not parsed.scheme or not parsed.netloc:
+        return base_url or ""
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def derive_book(base_url: str) -> Optional[str]:
+    """AC-14-02/13.2 - the last non-empty path segment of an open connection's
+    base URL, when it matches ``^[A-Za-z0-9_-]{1,20}$``; ``None`` otherwise."""
+    path = urlsplit(base_url or "").path
+    segments = [s for s in path.split("/") if s]
+    if not segments:
+        return None
+    candidate = segments[-1]
+    return candidate if _BOOK_RE.match(candidate) else None
+
+
+def _new_summary() -> Dict[str, Any]:
+    return {
+        "created": 0, "updated": 0, "unchanged": 0, "staleIgnored": 0,
+        "failed": 0, "retryable": 0, "skippedNoKey": 0, "warnings": {},
+    }
+
+
+def _new_run(db, feed_row: AcDocFeed, *, kind: str, dry_run: bool, now: datetime) -> AcDocFeedRun:
+    run = AcDocFeedRun(
+        tenant_id=feed_row.tenant_id, company_id=feed_row.company_id, feed_id=feed_row.id,
+        feed=feed_row.feed, kind=kind, dry_run=dry_run, started_at=now,
+    )
+    db.add(run)
+    db.flush()
+    return run
+
+
+def _finish_failed(db, run: AcDocFeedRun, code: str, message: str) -> AcDocFeedRun:
+    run.outcome = RUN_FAILED
+    run.error_code = code
+    run.error = message[:4000]
+    run.finished_at = datetime.now(timezone.utc)
+    run.duration_ms = int((run.finished_at - run.started_at).total_seconds() * 1000)
+    db.commit()
+    return run
+
+
+def _finish_success(db, run: AcDocFeedRun, summary: Dict[str, Any]) -> AcDocFeedRun:
+    run.outcome = RUN_SUCCESS
+    run.summary_json = summary
+    run.finished_at = datetime.now(timezone.utc)
+    run.duration_ms = int((run.finished_at - run.started_at).total_seconds() * 1000)
+    db.commit()
+    return run
+
+
+def _record_vendor_activity(db, vendor_client: HttpApiClient, run: AcDocFeedRun) -> None:
+    record_client_calls(
+        db, vendor_client, tenant_id=run.tenant_id,
+        trace_id=trace_id_for_job(run.id), external_ref=run.company_id,
+    )
+
+
+def _record_push_activity(
+    db, feed_row: AcDocFeed, run: AcDocFeedRun, summary: Optional[Dict[str, Any]]
+) -> None:
+    """AC-14-72 - counters only, never the API key or a record body."""
+    clean_summary = {k: v for k, v in (summary or {}).items() if k != "warnings"}
+    record_activity(
+        db, tenant_id=feed_row.tenant_id,
+        operation=f"doc_feed {run.kind} {feed_row.feed}",
+        status=ACTIVITY_SUCCESS if run.outcome == RUN_SUCCESS else ACTIVITY_ERROR,
+        trace_id=trace_id_for_job(run.id), external_ref=feed_row.company_id,
+        request={"dryRun": run.dry_run, "requests": run.requests},
+        response={"fetched": run.fetched_count, "summary": clean_summary},
+    )
+
+
+def _apply_document_verdict(
+    db, feed_row: AcDocFeed, book: str, record: RawVendorRecord, result: Any,
+    *, dry_run: bool, run_id: str, now: datetime, summary: Dict[str, Any],
+) -> None:
+    raw = record.raw
+    key = doc_key(raw)
+    if key is None:
+        return
+    doc_no = raw.get("DocNo")
+    d_date = doc_date(raw)
+    modified_at = vendor_modified_at(raw)
+    outcome = result.outcome or ""
+    warnings = tuple(result.warnings or ())
+    ledger_repo = DocFeedLedgerRepository(db)
+    issue_repo = DocFeedIssueRepository(db)
+
+    if result.delivered:
+        stale = outcome == "unchanged" and "stale_ignored" in warnings
+        if stale:
+            summary["staleIgnored"] = summary.get("staleIgnored", 0) + 1
+            if not dry_run:
+                ledger_repo.insert_if_absent(
+                    feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key,
+                    doc_no=doc_no, doc_date=d_date, source_modified_at=modified_at,
+                    outcome=outcome, now=now,
+                )
+        else:
+            summary[outcome] = summary.get(outcome, 0) + 1
+            if not dry_run:
+                ledger_repo.upsert_delivered(
+                    feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key,
+                    doc_no=doc_no, doc_date=d_date, source_modified_at=modified_at,
+                    outcome=outcome, now=now,
+                )
+        if not dry_run:
+            issue_repo.delete(feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key)
+    elif outcome == "failed":
+        summary["failed"] = summary.get("failed", 0) + 1
+        if not dry_run:
+            issue_repo.upsert(
+                feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key,
+                kind="failed", doc_no=doc_no, doc_date=d_date,
+                source_modified_at=modified_at, record_json=raw,
+                errors_json=result.errors, warnings_json=list(warnings) or None,
+                last_run_id=run_id, now=now,
+            )
+    else:
+        # `retryable`, an unknown word, or no verdict at all - the sink
+        # already downgrades every one of those to `retryable` (D9).
+        summary["retryable"] = summary.get("retryable", 0) + 1
+        if not dry_run:
+            issue_repo.upsert(
+                feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key,
+                kind="retryable", doc_no=doc_no, doc_date=d_date,
+                source_modified_at=modified_at, record_json=raw,
+                errors_json=result.errors, warnings_json=list(warnings) or None,
+                last_run_id=run_id, now=now,
+            )
+    for warning in warnings:
+        bucket = summary.setdefault("warnings", {})
+        bucket[warning] = bucket.get(warning, 0) + 1
+
+
+# ── poll (D5..D11) ────────────────────────────────────────────────────────────
+
+
+def run_poll(
+    db, feed_row: AcDocFeed, *, dry_run: bool, now: datetime,
+    vendor_transport: Any = None, sink_transport: Any = None,
+) -> AcDocFeedRun:
+    run = _new_run(db, feed_row, kind=RUN_KIND_POLL, dry_run=dry_run, now=now)
+    try:
+        resolved = _resolve(db, feed_row, vendor_transport=vendor_transport, sink_transport=sink_transport)
+    except RunRefusal as exc:
+        return _finish_failed(db, run, exc.code, exc.message)
+
+    today = myt_date(now)
+    if feed_row.cursor_day is None:
+        start = today - timedelta(days=1)
+    else:
+        start = min(feed_row.cursor_day, today - timedelta(days=1))
+    end = today
+    capped = (end - start).days > 30
+    if capped:
+        end = start + timedelta(days=30)
+
+    all_records: List[Dict[str, Any]] = []
+    requests_count = 0
+    day = start
+    try:
+        while day <= end:
+            all_records.extend(resolved.vendor.day_by_last_modified(feed_row.feed, day))
+            requests_count += 1
+            day += timedelta(days=1)
+    except DocFeedVendorError as exc:
+        run.requests = requests_count
+        _record_vendor_activity(db, resolved.vendor_client, run)
+        if vendor_transport is None:
+            resolved.vendor_client.close()
+        return _finish_failed(db, run, exc.code, str(exc))
+
+    deduped = dedupe_latest(all_records)
+
+    if not dry_run:
+        read_keys = {doc_key(r) for r in deduped if doc_key(r) is not None}
+        for issue in DocFeedIssueRepository(db).list_retryable(
+            feed_row.tenant_id, feed_row.company_id, feed_row.feed, resolved.book
+        ):
+            if issue.doc_key not in read_keys and issue.record_json:
+                deduped.append(issue.record_json)
+
+    ordered = push_order(deduped)
+    summary = _new_summary()
+    to_send: List[RawVendorRecord] = []
+    for record in ordered:
+        key = doc_key(record)
+        if key is None:
+            summary["skippedNoKey"] += 1
+            continue
+        ref = source_ref(feed_row.feed, resolved.book, record)
+        to_send.append(RawVendorRecord(source_ref=ref, entity_type=feed_row.feed, raw=record))
+
+    chunk_error: Optional[BaseException] = None
+
+    def on_chunk(chunk, results, error):
+        nonlocal chunk_error
+        if error is not None:
+            chunk_error = error
+            return
+        for record, result in zip(chunk, results):
+            _apply_document_verdict(
+                db, feed_row, resolved.book, record, result, dry_run=dry_run,
+                run_id=run.id, now=now, summary=summary,
+            )
+        db.commit()
+
+    try:
+        resolved.sink.write_batch(to_send, request_id=run.id, dry_run=dry_run, on_chunk=on_chunk)
+    except Exception as exc:  # noqa: BLE001 - a raised sink error fails the run
+        chunk_error = exc
+
+    run.requests = requests_count
+    run.fetched_count = len(all_records)
+    run.day_from = start
+    run.day_to = end
+    _record_vendor_activity(db, resolved.vendor_client, run)
+    if vendor_transport is None:
+        resolved.vendor_client.close()
+
+    if chunk_error is not None:
+        return _finish_failed(db, run, "SINK_ERROR", str(chunk_error))
+
+    if not dry_run:
+        feed_row.cursor_day = (end + timedelta(days=1)) if capped else today
+        feed_row.last_poll_at = now
+        feed_row.last_poll_ok_at = now
+
+    _finish_success(db, run, summary)
+    _record_push_activity(db, feed_row, run, summary)
+    return run
+
+
+# ── branches (no ledger, no issue rows) ──────────────────────────────────────
+
+
+def run_branch_pull(
+    db, feed_row: AcDocFeed, *, dry_run: bool, now: datetime,
+    vendor_transport: Any = None, sink_transport: Any = None,
+) -> AcDocFeedRun:
+    run = _new_run(db, feed_row, kind=RUN_KIND_BRANCH, dry_run=dry_run, now=now)
+    try:
+        resolved = _resolve(db, feed_row, vendor_transport=vendor_transport, sink_transport=sink_transport)
+    except RunRefusal as exc:
+        return _finish_failed(db, run, exc.code, exc.message)
+
+    try:
+        rows = resolved.vendor.branches()
+    except DocFeedVendorError as exc:
+        run.requests = 1
+        _record_vendor_activity(db, resolved.vendor_client, run)
+        if vendor_transport is None:
+            resolved.vendor_client.close()
+        return _finish_failed(db, run, exc.code, str(exc))
+
+    to_send: List[RawVendorRecord] = []
+    skipped_no_key = 0
+    for row in rows:
+        if not str(row.get("BranchCode") or "").strip():
+            skipped_no_key += 1
+            continue
+        ref = source_ref(FEED_BRANCHES, resolved.book, row)
+        to_send.append(RawVendorRecord(source_ref=ref, entity_type=FEED_BRANCHES, raw=row))
+
+    summary = _new_summary()
+    summary["skippedNoKey"] = skipped_no_key
+    failed_refs: List[Dict[str, Any]] = []
+    chunk_error: Optional[BaseException] = None
+
+    def on_chunk(chunk, results, error):
+        nonlocal chunk_error
+        if error is not None:
+            chunk_error = error
+            return
+        for record, result in zip(chunk, results):
+            outcome = result.outcome or ""
+            summary[outcome] = summary.get(outcome, 0) + 1
+            if not result.delivered:
+                failed_refs.append({"sourceRef": record.source_ref, "errors": result.errors})
+
+    try:
+        resolved.sink.write_batch(to_send, request_id=run.id, dry_run=dry_run, on_chunk=on_chunk)
+    except Exception as exc:  # noqa: BLE001
+        chunk_error = exc
+
+    run.requests = 1
+    run.fetched_count = len(rows)
+    _record_vendor_activity(db, resolved.vendor_client, run)
+    if vendor_transport is None:
+        resolved.vendor_client.close()
+
+    if chunk_error is not None:
+        return _finish_failed(db, run, "SINK_ERROR", str(chunk_error))
+
+    summary["failedRefs"] = failed_refs[:20]
+    if not dry_run:
+        feed_row.last_poll_at = now
+        feed_row.last_poll_ok_at = now
+
+    _finish_success(db, run, summary)
+    _record_push_activity(db, feed_row, run, summary)
+    return run
+
+
+# ── deletion sweep (D12) ──────────────────────────────────────────────────────
+
+
+def _parse_deletion_doc_key(ref: str) -> Optional[int]:
+    if not ref:
+        return None
+    tail = str(ref).rsplit(":", 1)[-1]
+    try:
+        return int(tail)
+    except ValueError:
+        return None
+
+
+def run_sweep(
+    db, feed_row: AcDocFeed, *, dry_run: bool, now: datetime,
+    vendor_transport: Any = None, sink_transport: Any = None,
+) -> AcDocFeedRun:
+    run = _new_run(db, feed_row, kind=RUN_KIND_SWEEP, dry_run=dry_run, now=now)
+    try:
+        resolved = _resolve(db, feed_row, vendor_transport=vendor_transport, sink_transport=sink_transport)
+    except RunRefusal as exc:
+        return _finish_failed(db, run, exc.code, exc.message)
+
+    today = myt_date(now)
+    window_from = today - timedelta(days=SWEEP_WINDOW_DAYS - 1)
+    seen: set = set()
+    requests_count = 0
+    day = window_from
+    try:
+        while day <= today:
+            for r in resolved.vendor.day_by_doc_date(feed_row.feed, day):
+                key = doc_key(r)
+                if key is not None:
+                    seen.add(key)
+            requests_count += 1
+            day += timedelta(days=1)
+    except DocFeedVendorError as exc:
+        run.requests = requests_count
+        run.day_from = window_from
+        run.day_to = today
+        _record_vendor_activity(db, resolved.vendor_client, run)
+        if vendor_transport is None:
+            resolved.vendor_client.close()
+        return _finish_failed(db, run, exc.code, str(exc))
+
+    ledger_repo = DocFeedLedgerRepository(db)
+    window_rows = ledger_repo.window_rows(
+        feed_row.tenant_id, feed_row.company_id, feed_row.feed, resolved.book,
+        day_from=window_from, day_to=today,
+    )
+    candidates = [row for row in window_rows if row.doc_key not in seen]
+    threshold = max(50, int(0.2 * len(window_rows)))
+
+    run.requests = requests_count
+    run.day_from = window_from
+    run.day_to = today
+
+    if len(candidates) > threshold:
+        _record_vendor_activity(db, resolved.vendor_client, run)
+        if vendor_transport is None:
+            resolved.vendor_client.close()
+        return _finish_failed(
+            db, run, "DELETE_GUARD",
+            f"The sweep would deactivate {len(candidates)} of {len(window_rows)} "
+            "ledger rows - over the safety guard, refusing.",
+        )
+
+    summary = _new_summary()
+    summary["candidates"] = len(candidates)
+    failed_refs: List[Dict[str, Any]] = []
+
+    if candidates:
+        keys = [row.doc_key for row in candidates]
+        try:
+            result = resolved.sink.delete_doc_keys(
+                keys, doc_date_from=window_from.isoformat(), doc_date_to=today.isoformat(),
+                dry_run=dry_run,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _record_vendor_activity(db, resolved.vendor_client, run)
+            if vendor_transport is None:
+                resolved.vendor_client.close()
+            return _finish_failed(db, run, "SINK_ERROR", str(exc))
+
+        for key, value in (result.get("summary") or {}).items():
+            if isinstance(value, int):
+                out_key = _DELETE_KEY_TRANSLATE.get(key, key)
+                summary[out_key] = summary.get(out_key, 0) + value
+
+        candidate_keys = {row.doc_key for row in candidates}
+        matched: set = set()
+        for verdict in result.get("records") or []:
+            parsed_key = _parse_deletion_doc_key(str(verdict.get("source_ref") or ""))
+            outcome = str(verdict.get("outcome") or "")
+            if parsed_key is None or parsed_key not in candidate_keys:
+                failed_refs.append(
+                    {"sourceRef": verdict.get("source_ref"), "errors": verdict.get("errors")}
+                )
+                continue
+            matched.add(parsed_key)
+            if outcome in ("deactivated", "not_found"):
+                if not dry_run:
+                    ledger_repo.mark_vanished(
+                        feed_row.tenant_id, feed_row.company_id, feed_row.feed,
+                        resolved.book, parsed_key, now=now,
+                    )
+            else:
+                failed_refs.append(
+                    {"sourceRef": verdict.get("source_ref"), "errors": verdict.get("errors")}
+                )
+        for key in candidate_keys - matched:
+            failed_refs.append(
+                {"sourceRef": f"{resolved.book}:?:{key}", "errors": {"message": "no verdict"}}
+            )
+        db.commit()
+
+    summary["failedRefs"] = failed_refs[:20]
+    _record_vendor_activity(db, resolved.vendor_client, run)
+    if vendor_transport is None:
+        resolved.vendor_client.close()
+
+    if not dry_run:
+        feed_row.last_sweep_ok_at = now
+
+    _finish_success(db, run, summary)
+    _record_push_activity(db, feed_row, run, summary)
+    return run
+
+
+# ── backfill (D13) ────────────────────────────────────────────────────────────
+
+
+def run_backfill(
+    db, backfill_row: AcDocFeedBackfill, *, now: datetime,
+    vendor_transport: Any = None, sink_transport: Any = None,
+) -> AcDocFeedBackfill:
+    if backfill_row.status == DOC_FEED_BACKFILL_STOPPING:
+        backfill_row.status = DOC_FEED_BACKFILL_STOPPED
+        db.commit()
+        return backfill_row
+
+    feed_row = DocFeedRepository(db).get_by_id(backfill_row.tenant_id, backfill_row.feed_id)
+    if feed_row is None:
+        backfill_row.status = DOC_FEED_BACKFILL_STOPPED
+        backfill_row.error = "The feed this backfill belonged to no longer exists."
+        backfill_row.error_code = "FEED_GONE"
+        db.commit()
+        return backfill_row
+
+    dry_run = bool(backfill_row.dry_run)
+
+    # ── branch step (first run of the backfill only) ────────────────────────
+    if backfill_row.branch_step is None:
+        branches_feed = DocFeedRepository(db).get(
+            backfill_row.tenant_id, backfill_row.company_id, FEED_BRANCHES
+        )
+        if (
+            branches_feed is not None
+            and branches_feed.mode != DOC_FEED_MODE_OFF
+            and branches_feed.book == backfill_row.book
+        ):
+            branch_run = run_branch_pull(
+                db, branches_feed, dry_run=dry_run, now=now,
+                vendor_transport=vendor_transport, sink_transport=sink_transport,
+            )
+            if branch_run.outcome != RUN_SUCCESS:
+                backfill_row.status = DOC_FEED_BACKFILL_STOPPED
+                backfill_row.error = branch_run.error
+                backfill_row.error_code = branch_run.error_code
+                db.commit()
+                return backfill_row
+            backfill_row.branch_step = DOC_FEED_BRANCH_STEP_DONE
+        else:
+            backfill_row.branch_step = DOC_FEED_BRANCH_STEP_SKIPPED
+        db.commit()
+
+    try:
+        resolved = _resolve(db, feed_row, vendor_transport=vendor_transport, sink_transport=sink_transport)
+    except RunRefusal as exc:
+        backfill_row.status = DOC_FEED_BACKFILL_STOPPED
+        backfill_row.error = exc.message
+        backfill_row.error_code = exc.code
+        db.commit()
+        _new_run_for_backfill(db, backfill_row, feed_row, now, outcome=RUN_FAILED, error=exc.message, error_code=exc.code)
+        return backfill_row
+
+    aggregate_summary = _new_summary()
+    aggregate_summary["candidates"] = 0
+    day = backfill_row.next_day
+    requests_count = 0
+    stop_reason: Optional[Dict[str, str]] = None
+
+    while day <= backfill_row.to_day:
+        db.refresh(backfill_row)
+        if backfill_row.status == DOC_FEED_BACKFILL_STOPPING:
+            break
+
+        try:
+            rows = resolved.vendor.day_by_doc_date(feed_row.feed, day)
+            requests_count += 1
+        except DocFeedVendorError as exc:
+            stop_reason = {"code": exc.code, "message": str(exc)}
+            break
+
+        deduped = dedupe_latest(rows)
+        ordered = push_order(deduped)
+        to_send: List[RawVendorRecord] = []
+        for record in ordered:
+            key = doc_key(record)
+            if key is None:
+                aggregate_summary["skippedNoKey"] += 1
+                continue
+            ref = source_ref(feed_row.feed, resolved.book, record)
+            to_send.append(RawVendorRecord(source_ref=ref, entity_type=feed_row.feed, raw=record))
+
+        rate_limit_waits = 0
+        day_error: Optional[BaseException] = None
+        while True:
+            chunk_error: Optional[BaseException] = None
+
+            def on_chunk(chunk, results, error):
+                nonlocal chunk_error
+                if error is not None:
+                    chunk_error = error
+                    return
+                for record, result in zip(chunk, results):
+                    _apply_document_verdict(
+                        db, feed_row, resolved.book, record, result, dry_run=dry_run,
+                        run_id=backfill_row.id, now=now, summary=aggregate_summary,
+                    )
+                db.commit()
+
+            try:
+                resolved.sink.write_batch(
+                    to_send, request_id=f"{backfill_row.id}:{day.isoformat()}",
+                    dry_run=dry_run, on_chunk=on_chunk,
+                )
+            except SorentoRateLimited as exc:
+                rate_limit_waits += 1
+                if rate_limit_waits > MAX_BACKFILL_RATE_LIMIT_WAITS:
+                    day_error = exc
+                    break
+                time.sleep(exc.retry_after)
+                continue
+            except Exception as exc:  # noqa: BLE001
+                day_error = exc
+                break
+            if chunk_error is not None:
+                day_error = chunk_error
+            break
+
+        if day_error is not None:
+            stop_reason = {"code": "SINK_ERROR", "message": str(day_error)}
+            break
+
+        backfill_row.next_day = day + timedelta(days=1)
+        backfill_row.days_done = (backfill_row.days_done or 0) + 1
+        backfill_row.summary_json = aggregate_summary
+        db.commit()
+        day = backfill_row.next_day
+
+    _record_vendor_activity(
+        db, resolved.vendor_client,
+        _fake_run_for_activity(backfill_row, requests_count),
+    )
+    if vendor_transport is None:
+        resolved.vendor_client.close()
+
+    if stop_reason is not None:
+        backfill_row.status = DOC_FEED_BACKFILL_STOPPED
+        backfill_row.error = stop_reason["message"][:4000]
+        backfill_row.error_code = stop_reason["code"]
+        db.commit()
+        _new_run_for_backfill(
+            db, backfill_row, feed_row, now, outcome=RUN_FAILED,
+            error=backfill_row.error, error_code=backfill_row.error_code,
+            summary=aggregate_summary,
+        )
+        return backfill_row
+
+    db.refresh(backfill_row)
+    if backfill_row.status == DOC_FEED_BACKFILL_STOPPING:
+        backfill_row.status = DOC_FEED_BACKFILL_STOPPED
+        db.commit()
+        _new_run_for_backfill(
+            db, backfill_row, feed_row, now, outcome=RUN_SUCCESS,
+            summary=aggregate_summary,
+        )
+        return backfill_row
+
+    backfill_row.status = DOC_FEED_BACKFILL_DONE
+    backfill_row.finished_at = datetime.now(timezone.utc)
+    if not dry_run and backfill_row.from_day <= date.fromisoformat(BACKFILL_FROM_DEFAULT):
+        feed_row.full_backfill_done_at = now
+    db.commit()
+    _new_run_for_backfill(
+        db, backfill_row, feed_row, now, outcome=RUN_SUCCESS, summary=aggregate_summary,
+    )
+    return backfill_row
+
+
+def _fake_run_for_activity(backfill_row: AcDocFeedBackfill, requests_count: int):
+    """A throwaway holder so ``_record_vendor_activity`` can reuse its own
+    ``(tenant_id, id, company_id)`` shape for a backfill segment - never
+    persisted."""
+    class _Holder:
+        tenant_id = backfill_row.tenant_id
+        id = backfill_row.id
+        company_id = backfill_row.company_id
+
+    return _Holder()
+
+
+def _new_run_for_backfill(
+    db, backfill_row: AcDocFeedBackfill, feed_row: AcDocFeed, now: datetime,
+    *, outcome: str, error: Optional[str] = None, error_code: Optional[str] = None,
+    summary: Optional[Dict[str, Any]] = None,
+) -> AcDocFeedRun:
+    """AC-14-70 - one run row per backfill SEGMENT (this call)."""
+    run = AcDocFeedRun(
+        tenant_id=backfill_row.tenant_id, company_id=backfill_row.company_id,
+        feed_id=backfill_row.feed_id, feed=backfill_row.feed, kind=RUN_KIND_BACKFILL,
+        dry_run=backfill_row.dry_run, job_id=backfill_row.job_id,
+        day_from=backfill_row.from_day, day_to=backfill_row.next_day,
+        outcome=outcome, error=error, error_code=error_code,
+        summary_json=summary, started_at=now, finished_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.commit()
+    _record_push_activity(db, feed_row, run, summary)
+    return run

@@ -309,6 +309,67 @@ def on_job_orphaned(
     from .sync import AUTOCOUNT_PULL_SNAPSHOT, AUTOCOUNT_SYNC, ERROR_CODE_BUILD_ABANDONED
 
     job_type = getattr(job, "type", None)
+    # sprint-5/14 (D15, AC-14-83) - an orphaned ``autocount_doc_feed_run``
+    # closes its own open run row(s) exactly like ``autocount_sync`` above;
+    # an orphaned ``autocount_doc_feed_backfill`` leaves the durable
+    # backfill record ``stopped`` and resumable (Q6 "crash-safe").
+    if job_type == "autocount_doc_feed_run":
+        from .models import AcDocFeedRun
+
+        now_ = now or datetime.now(timezone.utc)
+        open_feed_runs = (
+            db.query(AcDocFeedRun)
+            .filter(
+                AcDocFeedRun.tenant_id == job.tenant_id,
+                AcDocFeedRun.job_id == job.id,
+                AcDocFeedRun.finished_at.is_(None),
+            )
+            .all()
+        )
+        for run in open_feed_runs:
+            run.outcome = "FAILED"
+            run.error = (
+                getattr(job, "error", None)
+                or "Interrupted: the worker stopped before this run finished."
+            )
+            run.finished_at = now_
+            started = run.started_at
+            run.duration_ms = int((now_ - started).total_seconds() * 1000) if started else 0
+        db.flush()
+        return
+    if job_type == "autocount_doc_feed_backfill":
+        from .models import DOC_FEED_BACKFILL_STOPPED, AcDocFeedBackfill
+
+        payload = job.payload_json or {}
+        backfill_id = str(payload.get("backfillId") or "")
+        backfill = None
+        if backfill_id:
+            backfill = (
+                db.query(AcDocFeedBackfill)
+                .filter(
+                    AcDocFeedBackfill.tenant_id == job.tenant_id,
+                    AcDocFeedBackfill.id == backfill_id,
+                )
+                .first()
+            )
+        if backfill is None:
+            backfill = (
+                db.query(AcDocFeedBackfill)
+                .filter(
+                    AcDocFeedBackfill.tenant_id == job.tenant_id,
+                    AcDocFeedBackfill.job_id == job.id,
+                )
+                .first()
+            )
+        if backfill is not None and backfill.status != DOC_FEED_BACKFILL_STOPPED:
+            backfill.status = DOC_FEED_BACKFILL_STOPPED
+            backfill.error = (
+                getattr(job, "error", None)
+                or "Interrupted: the worker stopped before this backfill finished."
+            )
+            backfill.error_code = "ORPHANED"
+        db.flush()
+        return
     if job_type == PREVIEW_JOB_TYPE:
         payload = job.payload_json or {}
         company_id = str(payload.get("companyId") or "")

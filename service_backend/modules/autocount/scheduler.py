@@ -75,6 +75,35 @@ def _undispatched_after() -> timedelta:
     return timedelta(minutes=settings.background_job_undispatched_after_minutes)
 
 
+def active_tenant_service_join(query, tenant_id_column):
+    """sprint-5/14 (D14) - the SAME canonical tenant-lifecycle + module-active
+    predicate ``sweep_etl_tasks`` established (S3 review BLOCKER 3),
+    extracted so ``doc_feed.scheduler.sweep_doc_feeds`` can share it
+    byte-for-byte rather than cloning the four-way join a second time.
+    ``sweep_etl_tasks``'s own behaviour is unchanged - it now calls this
+    helper instead of inlining the same joins."""
+    return (
+        query
+        .join(Tenant, Tenant.id == tenant_id_column)
+        .join(Status, Status.id == Tenant.status_id)
+        .join(
+            TenantModule,
+            and_(
+                TenantModule.tenant_id == tenant_id_column,
+                TenantModule.status == MODULE_STATUS_ACTIVE,
+            ),
+        )
+        .join(
+            Module,
+            and_(
+                Module.id == TenantModule.module_id,
+                Module.name == AUTOCOUNT_MODULE_NAME,
+            ),
+        )
+        .filter(Status.blocks_access.is_(False), Status.is_archived.is_(False))
+    )
+
+
 def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str, int]:
     """The beat tick body. Returns ``{fired, skipped, failed}`` - a plain dict
     so the Celery task can hand it straight back as the task result."""
@@ -89,23 +118,7 @@ def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str,
     # plus the module-active check (mirrors ``active_modules``), done ONE
     # indexed join here rather than N+1 per-row checks in ``_sweep_one``.
     due = (
-        db.query(AcEntityConfig)
-        .join(Tenant, Tenant.id == AcEntityConfig.tenant_id)
-        .join(Status, Status.id == Tenant.status_id)
-        .join(
-            TenantModule,
-            and_(
-                TenantModule.tenant_id == AcEntityConfig.tenant_id,
-                TenantModule.status == MODULE_STATUS_ACTIVE,
-            ),
-        )
-        .join(
-            Module,
-            and_(
-                Module.id == TenantModule.module_id,
-                Module.name == AUTOCOUNT_MODULE_NAME,
-            ),
-        )
+        active_tenant_service_join(db.query(AcEntityConfig), AcEntityConfig.tenant_id)
         .filter(
             AcEntityConfig.etl_status == ETL_STATUS_ACTIVE,
             AcEntityConfig.source_impl.in_(
@@ -115,8 +128,6 @@ def sweep_etl_tasks(db: Session, *, now: Optional[datetime] = None) -> Dict[str,
             # sweep at all: it is extracted on a consumer/operator request,
             # never on a schedule.
             AcEntityConfig.delivery_mode == DELIVERY_MODE_PUSH,
-            Status.blocks_access.is_(False),
-            Status.is_archived.is_(False),
             or_(
                 and_(
                     AcEntityConfig.next_incremental_at.isnot(None),

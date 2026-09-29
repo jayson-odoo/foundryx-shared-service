@@ -3207,3 +3207,12 @@ register_autocount_sync_handler()
 from .preview_job import register_preview_job_handler  # noqa: E402
 
 register_preview_job_handler()
+
+
+# ── doc feed jobs (sprint-5/14 S3, D15) ──────────────────────────────────────
+# Same footgun, same fix: registered from HERE so the existing worker import
+# of ``modules.autocount.sync`` covers ``autocount_doc_feed_run`` and
+# ``autocount_doc_feed_backfill`` too.
+from .doc_feed.jobs import register_doc_feed_job_handlers  # noqa: E402
+
+register_doc_feed_job_handlers()

@@ -65,6 +65,11 @@ from .canonical.masters import (
     ENTITY_UNIT_OF_MEASURE,
     ENTITY_WAREHOUSE,
 )
+from .models import (
+    DOC_FEED_BRANCHES,
+    DOC_FEED_DELIVERY_ORDERS,
+    DOC_FEED_GOODS_RECEIVE_NOTES,
+)
 from .sinks import WriteResult
 
 logger = logging.getLogger("foundryx.autocount")
@@ -117,12 +122,25 @@ _ENTITY_PATH: Dict[str, str] = {
     # contract, since a pre-2.5 consumer has no ``/ingest/stock_balances``
     # route yet.
     ENTITY_STOCK_BALANCE: "stock_balances",
+    # sprint-5/14 (D3, D20, AC-14-80) - the three doc-feed door keys ARE the
+    # canonical entity types AND the ingest path segments; they cannot
+    # collide with the legacy ``goods_received_note`` canonical (a DIFFERENT
+    # key, no path at all - it keeps routing to the logging sink).
+    DOC_FEED_DELIVERY_ORDERS: DOC_FEED_DELIVERY_ORDERS,
+    DOC_FEED_GOODS_RECEIVE_NOTES: DOC_FEED_GOODS_RECEIVE_NOTES,
+    DOC_FEED_BRANCHES: DOC_FEED_BRANCHES,
 }
 
 # Outcomes Sorento may report per record. `created`/`updated` = delivered;
 # `failed` = bad data (quarantine, do not retry); `retryable` = a referenced
 # master isn't synced yet and NOTHING was written.
-_OUTCOME_DELIVERED = {"created", "updated"}
+#
+# sprint-5/14 (D3) - `unchanged` joins the delivered set: contract 2.6/2.7's
+# doc-feed verdict reports a record the CRM already holds identically as
+# `unchanged`, and today's fall-through ("unrecognised outcome" -> retryable)
+# would be wrong for EVERY entity, not only the doc feeds - so this is a
+# global sink change, pinned by a master-entity control test too.
+_OUTCOME_DELIVERED = {"created", "updated", "unchanged"}
 
 # TRANSIENT gateway faults only (fix/push-marks-per-chunk, prod finding
 # 2026-09-07: Sorento's own nginx answers a bare 502 on roughly 1 in 25
@@ -157,6 +175,10 @@ _DEPENDENT_ENTITIES = {
     # yet (as a product) is the SAME expected, self-resolving retryable
     # every document's master reference already gets.
     ENTITY_STOCK_BALANCE,
+    # sprint-5/14 - an unresolved ItemCode / Location on a DO or GRN line is
+    # expected and self-resolving, exactly like a document's other master
+    # references.
+    DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_NOTES,
 }
 
 
@@ -181,6 +203,11 @@ PRODUCT_CODE_WINS_CONTRACT_VERSION = 2.4
 # gate, the membership table below and whatever reports it to the operator.
 STOCK_BALANCES_CONTRACT_VERSION = 2.5
 
+# sprint-5/14 (D4) - the doc-feed contract every DO/GRN/branch feed's mode
+# gate and every run's ``CONTRACT_GATE`` refusal need: >= 2.7 AND the door's
+# own name advertised in ``GET /external/contract``'s ``entities``.
+DOC_FEED_CONTRACT_VERSION = 2.7
+
 # plan 13 (AC-13-02) - every entity whose ``_ENTITY_PATH`` membership alone
 # is NOT proof Sorento accepts it yet: it also needs the consumer's LIVE
 # advertised contract to be at least this version AND to list this entity
@@ -191,6 +218,13 @@ STOCK_BALANCES_CONTRACT_VERSION = 2.5
 CONTRACT_GATED_ENTITIES: Dict[str, Tuple[float, str]] = {
     ENTITY_BRAND: (BRAND_REQUIRED_CONTRACT_VERSION, "brands"),
     ENTITY_STOCK_BALANCE: (STOCK_BALANCES_CONTRACT_VERSION, "stock_balances"),
+    # sprint-5/14 (contract 2.7) - the three doc-feed door keys ARE the
+    # canonical entity types (D3): no mapping layer, the feed key posts
+    # straight through as both the ingest path segment and the gated entity
+    # name.
+    DOC_FEED_DELIVERY_ORDERS: (DOC_FEED_CONTRACT_VERSION, DOC_FEED_DELIVERY_ORDERS),
+    DOC_FEED_GOODS_RECEIVE_NOTES: (DOC_FEED_CONTRACT_VERSION, DOC_FEED_GOODS_RECEIVE_NOTES),
+    DOC_FEED_BRANCHES: (DOC_FEED_CONTRACT_VERSION, DOC_FEED_BRANCHES),
 }
 
 
@@ -521,10 +555,17 @@ class SorentoSink:
         # operator) that flips `settings.autocount_sink_concurrency` after
         # construction is honoured on an unset connection.
         concurrency_config: Optional[str] = None,
+        # sprint-5/14 (D3) - the doc-feed's own ``book`` (the vendor path
+        # segment, e.g. ``db1``), sent right after ``companyCode`` on every
+        # ingest/deletions call the feed sink makes. ``None`` (every
+        # pre-plan-14 caller) keeps posting the exact same two-key body it
+        # always has - `_body` below omits the key entirely when unset.
+        book: Optional[str] = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self.contract_version = contract_version
+        self.book = (book or "").strip() or None
         self.batch_size = max(1, min(int(batch_size), SORENTO_MAX_BATCH))
         # The Sorento company this sink delivers INTO (Appendix A6). Sent as the
         # top-level ``companyCode`` on every call; a blank one is deliberately
@@ -619,6 +660,8 @@ class SorentoSink:
         body: Dict[str, Any] = {}
         if self.company_code:
             body["companyCode"] = self.company_code
+        if self.book:
+            body["book"] = self.book
         body.update(payload)
         return body
 
@@ -915,6 +958,59 @@ class SorentoSink:
                 partial[key] = partial.get(key, 0) + value
         return partial, (body.get("records") or []), None
 
+    # ── doc-feed deletions (sprint-5/14, D3, contract 13.10) ─────────────────
+
+    def delete_doc_keys(
+        self,
+        doc_keys: Sequence[int],
+        *,
+        doc_date_from: str,
+        doc_date_to: str,
+        dry_run: bool = False,
+        on_chunk: Optional[Callable[[List[int]], None]] = None,
+    ) -> Dict[str, Any]:
+        """``POST /api/v1/external/ingest/{entity}/deletions`` with the
+        doc-feed's OWN body shape (13.10) - ``{doc_date_from, doc_date_to,
+        doc_keys}``, never ``source_refs`` (that is ``delete_batch`` above,
+        the master/document ETL shape). Chunked at ``batch_size`` (<= 1000,
+        the ruling); each chunk's ``summary`` is merged VERBATIM from the
+        CRM's own answer (it already counts a malformed or duplicate key as
+        `failed` on its own side, so this never re-derives a count).
+
+        Per-key verdict matching (C1, AC-14-42) is the CALLER's job (the
+        sweep runner): a verdict echoes ONLY ``source_ref`` =
+        ``{book}:DO:{DocKey}`` / ``{book}:GRN:{DocKey}`` - no ``doc_key``
+        field - so the runner parses the integer after the last ``:``.
+        """
+        keys = [int(k) for k in doc_keys]
+        summary: Dict[str, int] = {
+            "total": 0, "deleted": 0, "deactivated": 0, "not_found": 0, "failed": 0,
+        }
+        records: List[Dict[str, Any]] = []
+        chunks = [
+            keys[start : start + self.batch_size]
+            for start in range(0, len(keys), self.batch_size)
+        ]
+        for chunk in chunks:
+            body, error = self._post_with_retry(
+                f"ingest/{self._path_segment}/deletions",
+                {
+                    "doc_date_from": doc_date_from,
+                    "doc_date_to": doc_date_to,
+                    "doc_keys": chunk,
+                },
+                dry_run=dry_run,
+            )
+            if error is not None:
+                raise error
+            for key, value in (body.get("summary") or {}).items():
+                if isinstance(value, int):
+                    summary[key] = summary.get(key, 0) + value
+            records.extend(body.get("records") or [])
+            if on_chunk is not None:
+                on_chunk(chunk)
+        return {"dry_run": dry_run, "summary": summary, "records": records}
+
     # ── contract (addendum section 11/12, AC-02-14) ──────────────────────────
 
     def fetch_contract_detail(self) -> Optional["SorentoContractInfo"]:
@@ -1116,6 +1212,13 @@ class SorentoSink:
                 None,
             ]
         ] = None,
+        # sprint-5/14 (D3) - passes through to `_post_with_retry`'s own
+        # `dry_run` kwarg (every pre-plan-14 caller hard-coded `False`, so
+        # this default keeps them byte-identical). A doc-feed dry run posts
+        # `?dry_run=true` on every ingest chunk and never advances any local
+        # state - the CALLER (the runner) is what actually withholds the
+        # ledger/issue writes; this flag only controls the wire query param.
+        dry_run: bool = False,
     ) -> List[WriteResult]:
         """Deliver a batch and return one ``WriteResult`` per input record that
         a chunk actually resolved, in order. Chunks at the vendor batch ceiling.
@@ -1168,7 +1271,7 @@ class SorentoSink:
                 body, error = self._post_with_retry(
                     f"ingest/{self._path_segment}",
                     {"records": self._to_records(chunk)},
-                    dry_run=False,
+                    dry_run=dry_run,
                 )
                 if error is not None:
                     if on_chunk is not None:
@@ -1185,7 +1288,7 @@ class SorentoSink:
                         self._post_with_retry,
                         f"ingest/{self._path_segment}",
                         {"records": self._to_records(chunk)},
-                        dry_run=False,
+                        dry_run=dry_run,
                     )
                     for chunk in chunks
                 ]
@@ -1251,6 +1354,10 @@ class SorentoSink:
                     dependency = "its category or unit of measure"
                 elif self.entity_type == ENTITY_STOCK_BALANCE:
                     dependency = "its product"
+                elif self.entity_type in (
+                    DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_NOTES,
+                ):
+                    dependency = "its product or warehouse"
                 else:
                     dependency = "a referenced master (customer/supplier/product/warehouse/agent)"
                 return WriteResult(
@@ -1261,6 +1368,7 @@ class SorentoSink:
                         "not synced yet. It resolves automatically once that "
                         "dependency lands."
                     ),
+                    errors=verdict.get("errors") or None,
                 )
             # Must not happen for masters with no dependency reference
             # (AC-14-24). Loud, not re-queued.
@@ -1272,6 +1380,7 @@ class SorentoSink:
                     "unsynced. This should be unreachable for this entity; "
                     "investigate rather than retry."
                 ),
+                errors=verdict.get("errors") or None,
             )
         if outcome == "failed":
             errors = verdict.get("errors") or {}
@@ -1279,6 +1388,7 @@ class SorentoSink:
                 ok=False, sink=self.name, external_id=None, delivered=False,
                 outcome="failed",
                 message=f"Sorento rejected '{ref}': {json.dumps(errors) if errors else outcome}",
+                errors=errors or None,
             )
         #     !!  QUARANTINE ONLY ON THE EXPLICIT "failed" WORD.  !!
         # A BLANK outcome or a word outside our known vocabulary (S2 review
@@ -1450,6 +1560,10 @@ def sorento_sink_from_connection(
     company_code: Optional[str] = None,
     transport: Optional[httpx.BaseTransport] = None,
     timeout: Optional[float] = None,
+    # sprint-5/14 (D3) - the doc-feed's own book (a plain passthrough kwarg;
+    # every pre-plan-14 caller omits it, and `SorentoSink.__init__`'s own
+    # `None` default keeps the body byte-identical for them).
+    book: Optional[str] = None,
 ) -> SorentoSink:
     """Build a sink from a ``consumer`` connection's config + DECRYPTED creds.
 
@@ -1503,4 +1617,5 @@ def sorento_sink_from_connection(
         # (raw string or `None`); validity is checked at resolve time, not
         # here.
         concurrency_config=config.get(SINK_CONCURRENCY_KEY),
+        book=book,
     )

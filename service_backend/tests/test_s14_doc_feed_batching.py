@@ -65,14 +65,33 @@ def _capturing_transport(chunk_sizes: List[int]) -> httpx.MockTransport:
 
 
 def _order_capturing_transport(bodies: List[Dict[str, Any]]) -> httpx.MockTransport:
+    """Coder note (deviation from the S0 red test, minimal + intent-preserving):
+    the ORIGINAL helper assumed every POST it captures carries a ``records``
+    key, but `test_deletions_body_order_is_companyCode_book_doc_date_from_
+    doc_date_to_doc_keys` below posts a `doc_keys` (deletions) body through
+    this SAME helper, which the original body then KeyErrored on
+    (`payload["records"][0]`) before the body-order assertion it exists to
+    make ever ran. Widened to answer whichever shape the body actually
+    carries - `records` (ingest) or `doc_keys` (deletions) - so both
+    call sites the file uses this helper for get a well-formed 200 and the
+    real assertion (body key ORDER) is what fails or passes, never a
+    KeyError in the test's own transport."""
     def handler(request: httpx.Request) -> httpx.Response:
         text = request.content.decode("utf-8")
         payload = json.loads(text)
         bodies.append(payload)
+        if "records" in payload:
+            first = payload["records"][0]
+            return httpx.Response(
+                200,
+                json={"dry_run": False, "summary": {"total": 1, "created": 1},
+                      "records": [{"source_ref": first.get("source_ref") or f"db1:DO:{first.get('DocKey')}", "outcome": "created", "entity_id": "x"}]},
+            )
+        keys = payload.get("doc_keys") or []
         return httpx.Response(
             200,
-            json={"dry_run": False, "summary": {"total": 1, "created": 1},
-                  "records": [{"source_ref": payload["records"][0].get("source_ref") or f"db1:DO:{payload['records'][0].get('DocKey')}", "outcome": "created", "entity_id": "x"}]},
+            json={"dry_run": False, "summary": {"total": len(keys), "deactivated": len(keys)},
+                  "records": [{"source_ref": f"db1:DO:{k}", "outcome": "deactivated", "entity_id": "x"} for k in keys]},
         )
 
     return httpx.MockTransport(handler)
