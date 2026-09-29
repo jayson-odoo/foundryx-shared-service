@@ -427,3 +427,51 @@ def test_stock_push_gate_error_is_unchanged_by_the_contract_refusal_refactor(ses
     result = CompanyService(db).stock_push_gate_error(DEFAULT_TENANT_ID, co)
     assert result is not None
     assert result["requiredVersion"] == 2.5
+
+
+# ═══ review round 2 (N4) ═══════════════════════════════════════════════════
+
+
+def test_n4_an_explicit_null_connection_clears_the_stored_connection(client, session_factory):
+    db = session_factory()
+    co = company(db)
+    conn = autocount_connection(db, base_url="https://hapi.sorento.cc.cd/api/db1", auth="none")
+    db.commit()
+    headers = auth_headers(client)
+    url = f"/autocount/doc-feeds/{co.id}/delivery_orders"
+
+    assert client.put(url, json={"connectionId": conn.id, "mode": "off"}, headers=headers).status_code == 200
+    cleared = client.put(url, json={"connectionId": None, "mode": "off"}, headers=headers)
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["connectionId"] is None
+    assert cleared.json()["book"] is None
+
+    view = client.get(f"/autocount/doc-feeds/{co.id}", headers=headers).json()
+    item = next(f for f in view["feeds"] if f["feed"] == "delivery_orders")
+    assert item["connectionId"] is None  # survives a reload
+
+
+def test_n4_an_omitted_connection_key_keeps_the_stored_connection(client, session_factory):
+    db = session_factory()
+    co = company(db)
+    conn = autocount_connection(db, base_url="https://hapi.sorento.cc.cd/api/db1", auth="none")
+    db.commit()
+    headers = auth_headers(client)
+    url = f"/autocount/doc-feeds/{co.id}/delivery_orders"
+
+    client.put(url, json={"connectionId": conn.id, "mode": "off"}, headers=headers)
+    kept = client.put(url, json={"mode": "off"}, headers=headers)
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["connectionId"] == conn.id
+
+
+def test_n4_clearing_the_connection_while_arming_a_mode_422s(client, session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    headers = auth_headers(client)
+    url = f"/autocount/doc-feeds/{co.id}/delivery_orders"
+
+    client.put(url, json={"connectionId": ac_conn.id, "mode": "off"}, headers=headers)
+    response = client.put(url, json={"connectionId": None, "mode": "push"}, headers=headers)
+    assert response.status_code == 422, response.text
+    assert "connectionId" in response.json()["detail"]["fieldErrors"]

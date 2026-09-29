@@ -292,3 +292,65 @@ def test_orphan_hook_stops_an_interrupted_backfill(session_factory):
 
     db.refresh(backfill)
     assert backfill.status == "stopped"
+
+
+# ═══ review round 2 (RS3) ═══════════════════════════════════════════════════
+
+
+def test_rs3_orphan_hook_never_flips_a_done_backfill_to_stopped(session_factory):
+    """The worker crashed after `run_backfill` committed DONE but before the
+    job row finished: the sweep must leave the finished backfill alone."""
+    from modules.autocount.bootstrap import on_job_orphaned
+    from modules.autocount.models import AcDocFeedBackfill
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    job = BackgroundJob(
+        tenant_id=co.tenant_id, type="autocount_doc_feed_backfill", status="running",
+        payload_json={"backfillId": "placeholder"},
+    )
+    db.add(job)
+    db.flush()
+    backfill = AcDocFeedBackfill(
+        tenant_id=co.tenant_id, company_id=co.id, feed_id=feed.id, feed="delivery_orders",
+        book="db1", dry_run=False, from_day=date(2026, 9, 1), to_day=date(2026, 9, 3),
+        next_day=date(2026, 9, 4), status="done", job_id=job.id, started_at=NOW,
+    )
+    db.add(backfill)
+    db.commit()
+    job.payload_json = {"backfillId": backfill.id}
+    db.commit()
+
+    on_job_orphaned(db, job, now=NOW + timedelta(minutes=5))
+    db.commit()
+
+    db.refresh(backfill)
+    assert backfill.status == "done"
+    assert backfill.error_code is None
+
+
+def test_rs3_orphan_hook_closes_open_run_rows_of_a_backfill_job(session_factory):
+    """`run_branch_pull` opens a run row under the backfill's own job_id;
+    when that job is orphaned the row must not stay Running forever."""
+    from modules.autocount.bootstrap import on_job_orphaned
+    from modules.autocount.doc_feed.constants import RUN_KIND_BRANCH
+    from modules.autocount.doc_feed.runner import _new_run
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn, feed_key="branches")
+    job = BackgroundJob(
+        tenant_id=co.tenant_id, type="autocount_doc_feed_backfill", status="running",
+        payload_json={"backfillId": "none"},
+    )
+    db.add(job)
+    db.commit()
+    run = _new_run(db, feed, kind=RUN_KIND_BRANCH, dry_run=False, now=NOW, job_id=job.id)
+
+    on_job_orphaned(db, job, now=NOW + timedelta(minutes=5))
+    db.commit()
+
+    db.refresh(run)
+    assert run.outcome == "FAILED"
+    assert run.finished_at is not None

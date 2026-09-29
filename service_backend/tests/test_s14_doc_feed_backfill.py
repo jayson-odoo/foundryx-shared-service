@@ -614,3 +614,410 @@ def test_dry_run_backfill_writes_no_ledger_or_cursor_state(session_factory):
     assert db.query(AcDocFeedLedger).filter(AcDocFeedLedger.company_id == co.id, AcDocFeedLedger.doc_key == 99).first() is None
     db.refresh(bf)
     assert bf.status == "done"
+
+
+# ═══ review round 2 ═════════════════════════════════════════════════════════
+
+
+def _do_rec(key: int, day: str = "2026-09-29") -> Dict:
+    return {
+        "DocKey": key, "DocNo": f"DO-{key}", "DocDate": day,
+        "LastModified": f"{day}T09:00:00.000", "Details": [],
+    }
+
+
+def _created(key: int) -> Dict:
+    return {
+        "dry_run": False, "summary": {"created": 1},
+        "records": [{"source_ref": f"db1:DO:{key}", "outcome": "created", "entity_id": "x"}],
+    }
+
+
+def test_b2_a_failed_chunk_is_never_skipped_when_a_later_chunk_429s(session_factory, monkeypatch):
+    """Reviewer's repro: batch size 1, DocKey 1 -> 502s (retries exhausted,
+    the chunk is NOT credited), DocKey 2 -> created, DocKey 3 -> 429 x3 then
+    200. The old positional slice dropped DocKey 1 and re-sent the already-
+    credited DocKey 2 (created counted 3, day marked done). Credit by
+    identity: DocKey 1 is re-sent, still fails, and the day ends as an error."""
+    from app.config import settings
+    from modules.autocount.models import AcDocFeedLedger
+
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    monkeypatch.setattr(settings, "autocount_sink_batch_size", 1)
+    monkeypatch.setattr(settings, "autocount_sink_concurrency", 1)
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, do_feed, from_day=date(2026, 9, 29), to_day=date(2026, 9, 29))
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[_do_rec(1), _do_rec(2), _do_rec(3)])
+
+    posts: Dict[int, int] = {1: 0, 2: 0, 3: 0}
+
+    def sink(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
+        key = json.loads(request.content.decode("utf-8"))["records"][0]["DocKey"]
+        posts[key] += 1
+        if key == 1:
+            return httpx.Response(502, json={"message": "bad gateway"})
+        if key == 3 and posts[3] <= 3:
+            return httpx.Response(429, json={}, headers={"Retry-After": "0"})
+        return httpx.Response(200, json=_created(key))
+
+    run_backfill(
+        db, bf, now=NOW,
+        vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)),
+        sink_transport=httpx.MockTransport(sink),
+    )
+
+    db.refresh(bf)
+    assert bf.status == "stopped"
+    assert bf.error_code == "SINK_ERROR"
+    assert bf.next_day == date(2026, 9, 29)  # the day is NOT marked complete
+    run = _latest_backfill_run(db, bf)
+    assert run.outcome == "FAILED"
+    assert run.summary_json["created"] == 2  # keys 2 and 3, each exactly once
+    assert posts[2] == 1  # the credited chunk is never re-sent
+    ledger_keys = {
+        r.doc_key for r in db.query(AcDocFeedLedger).filter(AcDocFeedLedger.company_id == co.id).all()
+    }
+    assert ledger_keys == {2, 3}  # DocKey 1 is not marked delivered
+
+
+def test_b2_a_failed_chunk_that_succeeds_on_the_429_retry_completes_the_day(session_factory, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    monkeypatch.setattr(settings, "autocount_sink_batch_size", 1)
+    monkeypatch.setattr(settings, "autocount_sink_concurrency", 1)
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, do_feed, from_day=date(2026, 9, 29), to_day=date(2026, 9, 29))
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[_do_rec(1), _do_rec(2), _do_rec(3)])
+
+    posts: Dict[int, int] = {1: 0, 2: 0, 3: 0}
+
+    def sink(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
+        key = json.loads(request.content.decode("utf-8"))["records"][0]["DocKey"]
+        posts[key] += 1
+        if key == 1 and posts[1] <= 3:  # the first attempt's retries all fail
+            return httpx.Response(502, json={})
+        if key == 3 and posts[3] <= 3:
+            return httpx.Response(429, json={}, headers={"Retry-After": "0"})
+        return httpx.Response(200, json=_created(key))
+
+    run_backfill(
+        db, bf, now=NOW,
+        vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)),
+        sink_transport=httpx.MockTransport(sink),
+    )
+    db.refresh(bf)
+    assert bf.status == "done"
+    assert bf.summary_json["created"] == 3
+
+
+def test_b3_start_route_maps_open_backfill_to_409(client, session_factory):
+    from .s14_doc_feed_helpers import auth_headers
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    _backfill(db, do_feed, from_day=date(2026, 9, 1), to_day=date(2026, 9, 10), status="running")
+    response = client.post(
+        f"/autocount/doc-feeds/{co.id}/delivery_orders/backfill",
+        json={"dryRun": True}, headers=auth_headers(client),
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "BACKFILL_OPEN"
+
+
+# ── SS1 - a sink failure never leaks the CRM body, URL or API key ───────────
+
+
+def test_ss1_backfill_error_never_carries_the_crm_body_url_or_key(session_factory):
+    from .s14_doc_feed_helpers import SORENTO_API_KEY
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, do_feed, from_day=date(2026, 9, 29), to_day=date(2026, 9, 29))
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[_do_rec(1)])
+
+    def sink(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
+        return httpx.Response(
+            400,
+            text=f"denied key {SORENTO_API_KEY} at http://crm.example.test/api/v1/external/ingest/x " + "z" * 800,
+        )
+
+    run_backfill(
+        db, bf, now=NOW,
+        vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)),
+        sink_transport=httpx.MockTransport(sink),
+    )
+    db.refresh(bf)
+    assert bf.status == "stopped"
+    for text in (bf.error, _latest_backfill_run(db, bf).error):
+        assert SORENTO_API_KEY not in text
+        assert "http://" not in text
+        assert len(text) < 400
+
+
+# ── SS2 - a fromDay below the floor is a 422, not 740k vendor GETs ──────────
+
+
+def test_ss2_from_day_below_the_floor_422s(client, session_factory):
+    from .s14_doc_feed_helpers import auth_headers
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    _feed(db, co, ac_conn)
+    response = client.post(
+        f"/autocount/doc-feeds/{co.id}/delivery_orders/backfill",
+        json={"dryRun": True, "fromDay": "0001-01-01"}, headers=auth_headers(client),
+    )
+    assert response.status_code == 422, response.text
+    assert "fromDay" in response.json()["detail"]["fieldErrors"]
+    assert db.query(AcDocFeedBackfill).count() == 0
+
+
+# ── SS3 - the loop re-reads feed mode / tenant / module every day ───────────
+
+
+def _flip_from_other_session(session_factory, feed_id: str, mode: str) -> None:
+    other = session_factory()
+    row = other.query(AcDocFeed).filter(AcDocFeed.id == feed_id).one()
+    row.mode = mode
+    other.commit()
+    other.close()
+
+
+def test_ss3_a_feed_switched_off_mid_backfill_stops_it(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, do_feed, from_day=date(2026, 9, 27), to_day=date(2026, 9, 29))
+    seen: List[str] = []
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        day = request.url.params.get("DocDate")
+        seen.append(day)
+        if day == "20260928":
+            _flip_from_other_session(session_factory, do_feed.id, "off")
+        return httpx.Response(200, json=[])
+
+    run_backfill(
+        db, bf, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)),
+        sink_transport=_ok_sink(),
+    )
+    db.refresh(bf)
+    assert bf.status == "stopped"
+    assert bf.error_code == "FEED_OFF"
+    assert "20260929" not in seen
+
+
+def test_ss3_a_live_backfill_stops_when_the_feed_leaves_push(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, do_feed, from_day=date(2026, 9, 27), to_day=date(2026, 9, 29), dry_run=False)
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("DocDate") == "20260927":
+            _flip_from_other_session(session_factory, do_feed.id, "dry_run")
+        return httpx.Response(200, json=[])
+
+    run_backfill(
+        db, bf, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)),
+        sink_transport=_ok_sink(),
+    )
+    db.refresh(bf)
+    assert bf.status == "stopped"
+    assert bf.error_code == "FEED_NOT_PUSH"
+
+
+def test_ss3_a_deactivated_module_stops_the_backfill(session_factory):
+    from app.models.module import MODULE_STATUS_INACTIVE, Module, TenantModule
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, do_feed, from_day=date(2026, 9, 27), to_day=date(2026, 9, 29))
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("DocDate") == "20260927":
+            other = session_factory()
+            tm = (
+                other.query(TenantModule)
+                .join(Module, Module.id == TenantModule.module_id)
+                .filter(TenantModule.tenant_id == co.tenant_id, Module.name == "autocount")
+                .one()
+            )
+            tm.status = MODULE_STATUS_INACTIVE
+            other.commit()
+            other.close()
+        return httpx.Response(200, json=[])
+
+    run_backfill(
+        db, bf, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)),
+        sink_transport=_ok_sink(),
+    )
+    db.refresh(bf)
+    assert bf.status == "stopped"
+    assert bf.error_code == "TENANT_INACTIVE"
+
+
+def test_ss3_start_is_refused_on_an_off_feed_even_for_a_dry_run(client, session_factory):
+    from .s14_doc_feed_helpers import auth_headers
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    _feed(db, co, ac_conn, mode="off")
+    response = client.post(
+        f"/autocount/doc-feeds/{co.id}/delivery_orders/backfill",
+        json={"dryRun": True}, headers=auth_headers(client),
+    )
+    assert response.status_code == 422, response.text
+    assert "mode" in response.json()["detail"]["fieldErrors"]
+
+
+# ── RS4 - the 429 waits heartbeat (a wait can last minutes) ─────────────────
+
+
+def test_rs4_every_429_wait_heartbeats_the_job(session_factory, monkeypatch):
+    import modules.autocount.doc_feed.runner as runner_mod
+
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    beats: List[str] = []
+    monkeypatch.setattr(runner_mod, "_heartbeat", lambda db, job_id: beats.append(job_id))
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    bf = _backfill(db, do_feed, from_day=date(2026, 9, 29), to_day=date(2026, 9, 29))
+    bf.job_id = "job-heartbeat"
+    db.commit()
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[_do_rec(1)])
+
+    def sink(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
+        return httpx.Response(429, json={}, headers={"Retry-After": "1"})
+
+    run_backfill(
+        db, bf, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)),
+        sink_transport=httpx.MockTransport(sink),
+    )
+    # 1 vendor day + one beat per wait (10 waits) - never just the day beat.
+    assert len(beats) >= 1 + runner_mod.MAX_BACKFILL_RATE_LIMIT_WAITS
+
+
+# ── N2 - a resumed segment's run row starts at the segment's own first day ──
+
+
+def test_n2_a_resumed_segments_run_row_starts_at_the_segments_first_day(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    bf = _backfill(
+        db, do_feed, from_day=date(2026, 9, 23), to_day=date(2026, 9, 29),
+        next_day=date(2026, 9, 27), status="running",
+    )
+    run_backfill(db, bf, now=NOW, vendor_transport=_empty_vendor([]), sink_transport=_ok_sink())
+    run = _latest_backfill_run(db, bf)
+    assert run.day_from == date(2026, 9, 27)
+    assert run.day_to == date(2026, 9, 29)
+
+
+def test_n2_a_zero_day_segment_has_no_day_to_before_its_day_from(session_factory, monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    bf = _backfill(
+        db, do_feed, from_day=date(2026, 9, 23), to_day=date(2026, 9, 29),
+        next_day=date(2026, 9, 27), status="running",
+    )
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"message": "down"})
+
+    run_backfill(db, bf, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)), sink_transport=_ok_sink())
+    run = _latest_backfill_run(db, bf)
+    assert run.day_from == date(2026, 9, 27)
+    assert run.day_to is None
+
+
+# ── N5 - two concurrent Starts: the loser is a 409, never a 500 ─────────────
+
+
+def test_n5_a_lost_start_race_is_a_backfill_open_conflict(session_factory, monkeypatch):
+    from sqlalchemy.exc import IntegrityError
+
+    from modules.autocount.repositories.doc_feed_repository import DocFeedBackfillRepository
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    _feed(db, co, ac_conn)
+
+    real_commit = db.commit
+    real_add = DocFeedBackfillRepository.add
+    state = {"armed": False, "raised": False}
+
+    def add_and_arm(self, row):
+        state["armed"] = True
+        return real_add(self, row)
+
+    def flaky_commit():
+        # Fail exactly the commit that persists the new backfill row.
+        if state["armed"] and not state["raised"]:
+            state["raised"] = True
+            raise IntegrityError("insert", {}, Exception("uq_ac_doc_feed_backfill_one_open"))
+        return real_commit()
+
+    monkeypatch.setattr(DocFeedBackfillRepository, "add", add_and_arm)
+    monkeypatch.setattr(db, "commit", flaky_commit)
+    with pytest.raises(Exception) as exc_info:
+        DocFeedService(db).start_backfill(
+            co.tenant_id, co.id, "delivery_orders", dry_run=True,
+            from_day=date(2026, 9, 1), to_day=date(2026, 9, 2), actor_user_id=ACTOR_USER_ID,
+        )
+    assert "BACKFILL_OPEN" in str(exc_info.value)
+    monkeypatch.setattr(db, "commit", real_commit)
+    assert db.query(AcDocFeedBackfill).count() == 0
+
+
+# ── N6 - Resume carries the actor onto the new job ──────────────────────────
+
+
+def test_n6_resume_stamps_the_actor_on_the_new_job(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    bf = _backfill(
+        db, do_feed, from_day=date(2026, 9, 27), to_day=date(2026, 9, 29),
+        status="stopped", dry_run=True,
+    )
+    def combined(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "crm.example.test":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
+        return httpx.Response(200, json=[])
+
+    DocFeedService(db).resume_backfill(
+        co.tenant_id, co.id, "delivery_orders", actor_user_id=ACTOR_USER_ID,
+        transport=httpx.MockTransport(combined),
+    )
+    db.refresh(bf)
+    job = db.query(BackgroundJob).filter(BackgroundJob.id == bf.job_id).one()
+    assert job.actor_user_id == ACTOR_USER_ID
