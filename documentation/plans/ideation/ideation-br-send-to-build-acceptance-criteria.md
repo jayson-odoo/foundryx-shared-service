@@ -50,12 +50,16 @@ keyed to these ids. Status keys below are the SEEDED platform keys; the UI never
   `"Set the build repository on the product Sorento CRM"`, `"Connect GitHub in Settings > Integrations"`.
 
 ### AC-STB-07 [FE] Header button states (mockup section 1)
-- **Given** the BR page, **then** a "Send to build" outline button sits in the record-actions row left
-  of Edit for a user holding `ideation.business_requirements.send_to_build` (hidden otherwise).
-- **When** `canSend` is false and no issue exists, **then** the button is disabled and ONE muted reason
-  line renders under the actions row with `blockers[0]` (a product blocker links to the product).
-- **When** an issue exists, **then** the button is replaced by a link pill "<repo short name> #<n>"
-  (opens the issue in a new tab) plus the line "Sent <date time in the user's tz> by <name>".
+- **Given** the BR page, **then** "Send to build" is THE primary call-to-action in the record-actions
+  row, rendered as a split button (primary main segment + attached chevron segment); the chevron opens a
+  menu whose first item is Edit (owner ruling 30 Sep). A user without
+  `ideation.business_requirements.send_to_build` sees the plain Edit primary as today.
+- **When** `canSend` is false and no issue exists, **then** the main segment is disabled, the chevron
+  segment stays enabled (Edit reachable), and ONE muted reason line renders under the actions row with
+  `blockers[0]` (a product blocker links to the product).
+- **When** an issue exists, **then** the main segment is the issue-link chip "<repo short name> #<n>"
+  (opens the issue in a new tab) with the same chevron menu, plus the line
+  "Sent <date time in the user's tz> by <name>". A gear menu keeps the status moves and Delete.
 
 ### AC-STB-08 [FE] Confirm dialog (mockup section 2)
 - **When** the enabled button is clicked, **then** a confirm dialog shows the repository, the linked
