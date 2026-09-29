@@ -9,7 +9,7 @@ Tags: `[BE]` backend pytest, `[FE]` Vitest/RTL, `[E2E]` recorded agent-browser r
 from the sidebar, 375px AND 1280px, evidence under `14-evidence/<slice>/`), `[T]` structural /
 parity / migration test.
 
-Glossary. **Feed** = one of `delivery_orders`, `goods_receive_notes`, `branches` for one AutoCount
+Glossary. **Feed** = one of `delivery_orders`, `goods_receive_notes` (branches: a regular entity since 29 Sep, section E) for one AutoCount
 company. **Book** = the last path segment of the feed's open REST connection base URL (`db1`).
 **MYT** = Malaysia time, UTC+8, no daylight saving. **Live** = mode `push`; **dry run** = mode
 `dry_run` (every CRM call carries `?dry_run=true`). **Ledger** = what we pushed and the CRM
@@ -117,19 +117,16 @@ retried; batches <= 1000; dry run never advances cursors or ledgers.
   that minute (no lost tick); a feed that is `off`, of an inactive company, of a tenant whose
   AutoCount service is inactive, or of a suspended tenant is never swept.
 
-## E. Branches
+## E. Branches (rewritten 29 Sep 2026, plan section 11: a regular entity, never a feed)
 
-- **AC-14-40** `[BE]` The branch pull walks every page, then posts every branch record verbatim to
-  `/ingest/branches` in batches <= 1000; verdicts are counted; failed branches appear in the run
-  summary (no issue row); the next daily pull re-sends everything.
-- **AC-14-41** `[BE]` A branch verdict is matched on `{book}:BR:{AccNo or ''}:{BranchCode}`
-  (`db1:BR::HQ` with no `AccNo`); a DO or GRN verdict on `{book}:DO:{DocKey}` /
-  `{book}:GRN:{DocKey}`. A branch record with a blank `BranchCode` and a document with no integer
-  DocKey are not sent and are counted as `skippedNoKey`.
-- **AC-14-42** `[BE]` A `/deletions` verdict is matched to the DocKey sent by the integer after the
-  last `:` of its `source_ref` (the CRM echoes no `doc_key` field); a verdict whose `source_ref`
-  does not parse, or a key with no verdict, is counted as `failed` in `failedRefs` and touches no
-  ledger row.
+- **AC-14-40** `[BE]` `branch` is an HTTP-only, push-only master entity registered like `brand`: it is in `MASTER_ENTITIES`, `ETL_ENTITY_TYPES`, `CANONICAL_MODELS`, `SORENTO_FIELDS`, the mapping profile registry and `HTTP_PRESETS` (path `/branchbypage`, key fields `AccNo` + `BranchCode`, preset rows `AccNo -> acc_no` required, `BranchCode -> code` required, `BranchName -> name`); it is not in the SQL entity set nor pull-capable; the entity parity tests pin all of it.
+- **AC-14-41** `[BE]` A `branch` task on an `autocount_http` company walks `/branchbypage` page by page (`page`, `pageSize` from the connection sizing) through the standard paged envelope, and its first save seeds the preset mapping; "Reset to preset" returns the same rows.
+- **AC-14-42** `[BE]` A branch record's `source_ref` is `{book}:BR:{AccNo}:{BranchCode}` with `book` = the last path segment of the task's HTTP connection base URL (`db1`); the ETL matches the CRM's verdicts on it, exactly the string the CRM derives (D25, decided 29 Sep).
+- **AC-14-43** `[BE]` The ingest body to `/ingest/branches` carries top-level `companyCode` and `book`, and each record is the raw vendor row with the mapped `AccNo`, `BranchCode`, `BranchName` written over it and no canonical keys; batches stay <= 1000; `created` / `updated` / `unchanged` count as delivered and `failed` surfaces per record with the CRM's errors.
+- **AC-14-44** `[BE]` The branch entity is contract-gated at 2.7 + `branches` advertised: below that the task's `contractGate` names the consumer version and the push falls back to the logging sink; `sorento_supports_entity("branch", 2.6, [...])` is false and `("branch", 2.7, ["branches"])` is true.
+- **AC-14-45** `[BE]` A branch missing from a full extract is never staged or posted as a delete (no CRM door): the run summary counts it as `vanished`, the delete guard does not trip, and `delete_batch` is never called for `branch`.
+- **AC-14-46** `[BE]` Nothing branch-shaped remains on the doc feed: `GET /autocount/doc-feeds/{company}` answers two feeds; `PUT .../branches` is a 404; a backfill has no branch step and no `branchStep` field; the beat claims no branch job; run kinds are `poll`, `sweep`, `backfill`.
+- **AC-14-47** `[FE]` On an `http` company, Entities > Add entity offers Branch; the task editor prefills path `/branchbypage` and key fields `AccNo`, `BranchCode`; the entity row shows sync mode, delivery, health and runs like Product; the Document feeds tab lists Delivery orders and Goods receive notes only; 375px and 1280px.
 
 ## F. Deletion sweep
 
@@ -156,8 +153,7 @@ retried; batches <= 1000; dry run never advances cursors or ledgers.
 ## G. Backfill
 
 - **AC-14-60** `[BE]` Given a live DO feed, When a backfill starts with no range, Then it first
-  runs a branch pull (when the company's branch feed is not `off` and is on the same book; else it
-  records `branchStep: "skipped"`), then GETs bydocdate once per day from 2023-01-01 to today
+  GETs bydocdate once per day from 2023-01-01 to today
   (MYT, fixed at start), pushing each non-empty day before reading the next.
 - **AC-14-61** `[BE]` Progress is durable per day (`nextDay`, `daysDone`, `daysTotal`, counters).
   Stop is cooperative at the next day boundary (status `stopped`); Resume continues at `nextDay`;

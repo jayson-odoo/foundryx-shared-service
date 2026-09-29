@@ -615,3 +615,47 @@ Cross-repo facts, answered from the CRM code (`autocount_doc_ingest_service.py`,
 - **C2 (answered)** A branch `source_ref` is `{book}:BR:{AccNo or ''}:{BranchCode}`, so
   `db1:BR::HQ` when there is no `AccNo`; a record with no `BranchCode` answers `failed` with
   `source_ref: null`.
+
+## 11. Addendum (29 Sep 2026, owner hand test on #97): Branches become a regular entity (D23-D28)
+
+Owner ruling, verbatim: "i get the documents like GRN and DO cannot, but branches should be ok
+right, it is a master data though with pagination, it is just like product". So DO and GRN stay
+on the doc-feed engine and its tab (sections 2 to 3.9 unchanged for them); **branches leave the
+doc feed entirely** and become the HTTP master entity `branch`, wired like `brand` (plan 08) with a
+paged endpoint like `product`. The CRM branches door of contract 2.7 (13.11) stays the sink target.
+Every "branch pull", "branch step" and `branches` feed key in sections 1 to 10 is historical from
+here on; this section governs.
+
+Live vendor facts (read-only `GET /api/db1/branchbypage?page=1&pageSize=1000`, 29 Sep): the
+standard paged envelope (`TotalCount`, `Page`, `PageSize`, `TotalPages`, `Data`); 1000 rows on
+page 1; no blank `AccNo` or `BranchCode`; `(AccNo, BranchCode)` unique while `BranchCode` alone
+repeats 764 times; a row is an address record (`Address1..4`, `PostCode`, `Phone1/2`, `Fax1/2`,
+`Contact`, `EmailAddress`, `Mobile`, `AreaCode`, `SalesAgent`, `PurchaseAgent`, `IsActive`,
+`TaxEntityID`).
+
+| # | Decision | Why |
+|---|---|---|
+| D23 | `ENTITY_BRANCH = "branch"` registered exactly where `brand` is: `canonical/masters.py` (`MASTER_ENTITIES`), `etl_service.ETL_ENTITY_TYPES`, `sync_service.CANONICAL_MODELS`, `mapping_catalog.SORENTO_FIELDS`, `mapping.BRANCH_PROFILE` (+ registry), `presets.HTTP_PRESETS` (path `/branchbypage`, `key_fields=("AccNo", "BranchCode")`, rows `AccNo -> acc_no` required, `BranchCode -> code` required, `BranchName -> name`), FE `AC_HTTP_ENTITY_TYPES` + `lib/autocount-etl.ts HTTP_PRESETS.branch`; HTTP-only (not in the SQL set), push-only (not in `PULL_CAPABLE_ENTITY_TYPES`); reaches a company only through Add entity, like brand (no seed, no sweep) | "Just like product": one registry, one preset resolver (seed and Reset), paging, sync modes, first-run window, Runs, health all come from the framework |
+| D24 | `CanonicalBranch(CanonicalMaster)`: `acc_no` (100, required), `code` (100, required, = BranchCode), `name` (255, = BranchName), `source_record` (the raw vendor row). `sink_payload()` = the raw vendor row with the mapped `AccNo` / `BranchCode` / `BranchName` written over it; no canonical keys in the record | Contract 13.11 "each record a branchbypage row as returned"; the CRM stores `source_record` and reads only those three keys; tenant mapping edits still apply |
+| D25 | Identity / `source_ref` of a branch row = the CRM's own shape `{book}:BR:{AccNo}:{BranchCode}`, `book` derived from the task's HTTP connection base URL (`doc_feed.runner.derive_book`, the last path segment) and passed into the HTTP source's identity context; `identity_path` = `AccNo|BranchCode`, `display_path` = `BranchCode`. Decided 29 Sep (crew, technical): this row; the alternative (the CRM echoing a sent `source_ref`, a 13.11 change on sorento #1356) was rejected so #1356 and the contract stay untouched | The ETL matches verdicts by the `source_ref` string it sent (`sinks_sorento.py:1193-1199`); the CRM derives its own for branches and ignores any sent one (`autocount_doc_ingest_service.py:1186-1188`) |
+| D26 | Sink: `_ENTITY_PATH[branch] = "branches"`, `CONTRACT_GATED_ENTITIES[branch] = (2.7, "branches")`, one row in `_CONTRACT_GATE_REQUIRED_VERSIONS` (generic `contractGate` banner, never a brand-style method); `sink_for_company` passes `book` (derived from the company's HTTP source connection) so the ETL body carries the top-level `book` the CRM requires on 2.7 doors (`ingest.py:886`; other doors ignore it); `unchanged` already counts as delivered (D3) | Same door, same gate, same envelope as the doc feed used |
+| D27 | `NO_DELETION_ENTITY_TYPES = {branch}`: the full-extract diff stages no delete for a vanished branch (`http_source/source.py` delete step) and the run summary counts them as `vanished`; the delete guard does not apply; `sync_service` never calls `delete_batch` for such an entity | The CRM has no branches deletions door (`ingest.py _no_branch_door`) and branch rows are referenced by DOs |
+| D28 | Removed from the doc feed: `DOC_FEED_BRANCHES`, `vendor.branches`, `run_branch_pull`, `RUN_KIND_BRANCH`, the daily branch schedule, the backfill's branch step and its `branch_step` column (edited out of the unmerged `0023`; a dev DB that already ran it keeps a stray nullable column, harmless), `branchStep` on the wire, the FE `DocFeedKey` third value, the third feeds row, the branch fixtures move to `tests/fixtures/autocount_http/`; the engineering doc, UAC section E, the hand test and the crew DDL follow | One engine per concern; no dead switch left on screen |
+
+Files (in addition to section 5): `canonical/masters.py`, `mapping.py`, `mapping_catalog.py`,
+`presets.py`, `services/etl_service.py`, `services/sync_service.py`, `services/company_service.py`
+(`sink_for_company` book, contract gate table), `sinks_sorento.py`, `http_source/source.py`
+(identity context + no-deletion step), `doc_feed/*` (removals), `models.py`, `schemas.py`,
+`alembic/versions/0023_autocount_doc_feed.py`, `bootstrap.py`, `scheduler.py`; FE
+`autocount-meta.ts`, `lib/autocount-etl.ts`, `types/autocount.ts`, `services/autocount-service.mock.ts`,
+the doc-feeds tab and dialogs, `activate-tab.tsx` (generic gate banner only).
+
+Tests (tester first): `tests/test_autocount_branch.py` mirroring `test_autocount_brand.py`
+(registration, field limits, preset path and rows, `sorento_supports_entity` at 2.6 vs 2.7,
+`sink_for_company` gate, accepted/required mapping fields, `replace_mapping`), plus: `source_ref`
+shape per D25, `sink_payload` per D24, top-level `book` on the ETL ingest body, a vanished branch
+stages no delete and is counted, parity tests updated (`test_autocount_entity_parity.py`,
+`test_s13_stock_push_contract_gate.py`), doc-feed tests updated (a `branches` feed key 404s /
+422s, no branch step in a backfill, no branch job in the beat, run kinds without `branch`). FE:
+`autocount-meta.test.ts` parity, Add entity offers Branch on an `http` company, `HTTP_PRESETS.branch`
+prefill, doc-feeds tab shows two rows, mock `/branchbypage` paged fixture.
