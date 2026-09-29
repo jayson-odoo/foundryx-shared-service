@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -13,6 +14,10 @@ import type { IdeaAttachment } from '@/types/ideation';
 export interface IdeaAttachmentPreviewDialogProps {
   attachment: IdeaAttachment | null;
   onClose: () => void;
+  /** Fetch an UPLOADED attachment's bytes through the api-client (its serve
+   * route is auth-gated, so a bare `src` would 401). Unused for a URL-backed
+   * WhatsApp capture. */
+  fetchContent?: (attachment: IdeaAttachment) => Promise<Blob>;
 }
 
 const isPdf = (name: string, url: string) =>
@@ -23,13 +28,39 @@ const isPdf = (name: string, url: string) =>
  * preview UX (Dialog + header with download), but keyed off the attachment's
  * already-durable ``url`` (sorento snapshotted the Respond CDN bytes to R2), so
  * there is no per-id signed-url fetch. Image/video/audio render inline; a PDF
- * iframes; anything else falls back to an open/download link.
+ * iframes; anything else falls back to an open/download link. An uploaded
+ * attachment (`contentPath`) is fetched as a blob and shown via an object URL,
+ * revoked on close.
  */
 export function IdeaAttachmentPreviewDialog({
   attachment,
   onClose,
+  fetchContent,
 }: IdeaAttachmentPreviewDialogProps) {
-  const a = attachment;
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const contentPath = attachment?.contentPath;
+
+  useEffect(() => {
+    if (!attachment || !contentPath || !fetchContent) return;
+    let active = true;
+    let created: string | null = null;
+    fetchContent(attachment)
+      .then((blob) => {
+        if (!active) return;
+        created = URL.createObjectURL(blob);
+        setBlobUrl(created);
+      })
+      .catch(() => active && setBlobUrl(null));
+    return () => {
+      active = false;
+      if (created) URL.revokeObjectURL(created);
+      setBlobUrl(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attachment?.id, contentPath]);
+
+  // Uploaded -> the blob object URL (null until fetched); captured -> its durable url.
+  const a = attachment ? { ...attachment, url: contentPath ? (blobUrl ?? '') : attachment.url } : null;
   const pdf = a ? isPdf(a.name, a.url) : false;
 
   return (
@@ -39,7 +70,7 @@ export function IdeaAttachmentPreviewDialog({
           <DialogTitle className="truncate">{a?.name}</DialogTitle>
           {a?.url && (
             <Button variant="outline" size="sm" asChild>
-              <a href={a.url} target="_blank" rel="noopener noreferrer" download>
+              <a href={a.url} target="_blank" rel="noopener noreferrer" download={a.name}>
                 <Download className="size-3.5" /> Download
               </a>
             </Button>

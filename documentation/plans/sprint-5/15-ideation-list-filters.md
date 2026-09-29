@@ -56,3 +56,9 @@ UAC: `15-ideation-list-filters-acceptance-criteria.md` (AC-15-01..26). Lane IDEA
 - No hardcoded status key anywhere (labels from the engine on each idea).
 - Product column choice: operator page keeps Product (multi-product page), embed drops it.
 - Frontend checks (vitest/eslint/build) run in a scratch worktree, never in the lane worktree while a hand-test copy is up.
+
+## 6. Shipped notes (coder)
+- Backend: `IdeaAttachment.storage_key/mime/size_bytes` + migration `0013_ideation_attachment_upload`; `storage_locations` block in the ideation manifest, registered in `register_engine_entities`; `app/uploads.py:detect_attachment_mime` (shared sniff, superset of `detect_upload_mime` with audio/video containers); `services/attachments.py`; routes `POST|GET /ideation/ideas/{id}/attachments[...]` and `/embed/ideas/{id}/attachments[...]`; `POST /embed/ideas/promote` (403 via the standard `ApiError` envelope).
+- Product column choice: the operator page keeps Product (all products); the embed drops it (already product-scoped).
+- The Submitted cell and the detail Captured row format through `useDatetime()` (user timezone).
+- The crew SQL mirror of 0013 lives at `crew/state/migrations/IDEATION-LIST.sql`.

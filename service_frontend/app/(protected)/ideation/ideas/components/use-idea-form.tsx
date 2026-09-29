@@ -18,6 +18,7 @@ import {
 import { toast } from '@/lib/toast';
 import type { ResourceFormConfig } from '@/components/platform/resource-form';
 import type { ResourceAction } from '@/components/platform/resource-list';
+import { StatusBadge } from '@/components/platform/status-badge';
 import { useCan } from '@/hooks/use-can';
 import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import type { Idea, Product } from '@/types/ideation';
@@ -25,6 +26,7 @@ import type { ListQuery } from '@/types/resource';
 import { promoteIdeasToBr } from '../promote-to-br';
 import { selectIdeaRows } from '../select-idea-rows';
 import { DetailsTab, AttachmentsTab } from './idea-form-fields';
+import { statusRegistryFor } from './status-registry';
 import { IdeaBrsTab } from './idea-brs-tab';
 import { IdeaMergedTab } from './idea-merged-tab';
 import { ideaFormPath, buildIdeaFormQuery } from './paths';
@@ -60,7 +62,8 @@ export interface UseIdeaFormResult {
 /** Loads the idea + products, wires RHF, and assembles the form config. */
 export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean): UseIdeaFormResult {
   const router = useRouter();
-  const { service: ideationService, paths, mode } = useIdeationRuntime();
+  const runtime = useIdeationRuntime();
+  const { service: ideationService, paths, mode } = runtime;
   const { can } = useCan();
   const creating = !ideaId;
   // The Business Requirements tab only makes sense on the OPERATOR surface (the
@@ -192,16 +195,18 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
             id: 'promote-br',
             label: 'Promote to BR',
             icon: Rocket,
-            // The destination is a new draft BR - gated by the BR write perm
-            // (hidden in embed, which has no operator user / BR surface).
-            permission: 'ideation.business_requirements.manage',
+            // The destination is a new draft BR - gated by the BR write perm on
+            // the operator surface. The embed has no session to gate against:
+            // shown ungated, the backend 403 surfaces as a toast.
+            ...(mode === 'operator' ? { permission: 'ideation.business_requirements.manage' } : {}),
             surfaces: { row: false, form: true, bulk: false },
             // Foolproof-UI: an archived idea can't be promoted.
             isVisible: (rows) => rows.every((r) => !r.statusIsArchived),
             run: async (rows) => {
               // Single current idea → the backend derives the title + pre-fills
-              // problem_statement (AC-BI-32b); lands on the new BR's Grill tab.
-              await promoteIdeasToBr(rows, router);
+              // problem_statement (AC-BI-32b); the operator lands on the new
+              // BR's Grill tab, the embed toasts and stays.
+              await promoteIdeasToBr(rows, router, { runtime });
             },
           },
           {
@@ -315,6 +320,25 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
 
     const mergedCount = idea?.mergedCount ?? 0;
 
+    // Upload on drop, then reload the idea so the list shows the new rows.
+    // Offered only where it can work: the service supports it, the idea exists
+    // and (operator) the user can triage. The embed token is its own boundary.
+    const canUpload =
+      Boolean(ideationService.uploadAttachment) &&
+      !creating &&
+      !idea?.mergedIntoId &&
+      (mode === 'embed' || can('ideation.triage.manage'));
+    const onUpload = async (files: File[]) => {
+      if (!ideationService.uploadAttachment || !ideaId) return;
+      try {
+        for (const file of files) await ideationService.uploadAttachment(ideaId, file);
+        setIdea(await ideationService.getIdea(ideaId));
+        toast.success(files.length > 1 ? 'Files uploaded.' : 'File uploaded.');
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : 'Could not upload the file.');
+      }
+    };
+
     return {
       breadcrumb:
         mode === 'embed'
@@ -334,7 +358,7 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       subtitle: creating
         ? 'Capture a new idea'
         : idea
-          ? `${idea.productName} · ${idea.submitterName}${idea.submitterTier ? ` · ${idea.submitterTier}` : ''}`
+          ? <StatusBadge status={idea.status} registry={statusRegistryFor(idea)} />
           : undefined,
       avatar: (
         <span className="flex size-11 items-center justify-center rounded-full bg-primary/10">
@@ -361,7 +385,17 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
           id: 'attachments',
           label: 'Attachments',
           icon: FileText,
-          render: () => <AttachmentsTab attachments={idea?.attachments ?? []} />,
+          render: () => (
+            <AttachmentsTab
+              attachments={idea?.attachments ?? []}
+              onUpload={canUpload ? onUpload : undefined}
+              fetchContent={
+                ideationService.fetchAttachment
+                  ? (a) => ideationService.fetchAttachment!(a.contentPath ?? '')
+                  : undefined
+              }
+            />
+          ),
         },
         // Business Requirements this idea feeds (reverse lineage, AC-BI-29c) -
         // operator surface only, and only once the idea exists (not on create).
@@ -422,6 +456,8 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
     router,
     paths,
     mode,
+    runtime,
+    can,
     ideationService,
     showBrsTab,
     mergedReloadToken,

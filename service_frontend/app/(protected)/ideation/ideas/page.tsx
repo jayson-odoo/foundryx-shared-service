@@ -13,7 +13,7 @@ import { IdeasView } from './ideas-view';
 export default function IdeasPage() {
   return (
     <Container width="fluid">
-      <PageHeader description="The raw idea repository - drag the grip to reprioritise (top = highest)." />
+      <PageHeader />
       <IdeasView />
     </Container>
   );

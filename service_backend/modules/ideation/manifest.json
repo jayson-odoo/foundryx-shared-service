@@ -53,5 +53,8 @@
       "prefix": "/ideation/embed-connections"
     }
   ],
-  "permissions_csv": "permissions/permissions.csv"
+  "permissions_csv": "permissions/permissions.csv",
+  "storage_locations": [
+    {"model": "IdeaAttachment", "column": "storage_key", "tenantColumn": "tenant_id"}
+  ]
 }

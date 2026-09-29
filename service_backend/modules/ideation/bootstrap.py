@@ -48,10 +48,14 @@ def register_engine_entities() -> None:
     status ROWS + transition graph are seeded as platform defaults in ``install``
     (they need a db session); this only registers the code-side entity.
 
-    Still placeholders for later slices: the ``ideation`` IntakeDefinition and the
-    idea-attachment storage-locations declaration."""
+    The idea-attachment upload key (``idea_attachments.storage_key``) is declared
+    in ``manifest.json`` ``storage_locations`` and registered below, so it rides
+    the generic storage A->B migration (plan sprint-5/15)."""
     from app.catalog.kinds import ProductKind, register_product_kind
     from app.status_engine.registry import StatusEntity, register_status_entity
+
+    from app.module_loader import discover_manifests
+    from app.storage_migration.core_locations import register_module_declared_locations
 
     from .adapters import registered_adapter_kinds
     from .services.statuses import (
@@ -62,6 +66,11 @@ def register_engine_entities() -> None:
         idea_count_records,
         idea_migrate_records,
     )
+
+    for manifest in discover_manifests():
+        if manifest["module_name"] == MODULE_NAME:
+            register_module_declared_locations(manifest)
+            break
 
     # Software is the ideation-owned kind - visible only while ideation is active.
     register_product_kind(ProductKind("software", "Software", MODULE_NAME, 3))

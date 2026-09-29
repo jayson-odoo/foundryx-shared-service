@@ -7,7 +7,7 @@
  *
  * Enforced layering: UI → hooks → this service → lib/api-client → FastAPI.
  */
-import type { Board, Idea, IdeaClusterSuggestions, Product } from '@/types/ideation';
+import type { Board, Idea, IdeaAttachment, IdeaClusterSuggestions, Product } from '@/types/ideation';
 import { realIdeationService } from './ideation-service.real';
 
 /** Manual capture payload (the WhatsApp path fills the same fields via the tool). */
@@ -71,6 +71,16 @@ export interface IdeaService {
   /** The triage board - statuses grouped into columns with their cards
    * (AC-94-54/58), never a hardcoded FE column list. */
   getBoard?(opts?: { includeTest?: boolean; productId?: string }): Promise<Board>;
+  /** Upload one file onto an idea (multipart) - plan sprint-5/15. */
+  uploadAttachment?(id: string, file: File): Promise<IdeaAttachment>;
+  /** Fetch an uploaded attachment's bytes (auth-gated route) as a Blob. */
+  fetchAttachment?(contentPath: string): Promise<Blob>;
+  /** Promote ideas to a draft Business Requirement from a surface with no BR
+   * service of its own (the embed). The operator uses `businessRequirementService`. */
+  promoteToBr?(
+    ideaIds: string[],
+    title?: string,
+  ): Promise<{ id: string; title: string; brNumber?: string | null }>;
 }
 
 /** The merge/unmerge/board surface every concrete `IdeaService` always

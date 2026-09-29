@@ -116,3 +116,33 @@ def detect_document_mime(content: bytes) -> Optional[str]:
     except (UnicodeDecodeError, AttributeError):
         return None
     return "text/plain"
+
+
+def detect_attachment_mime(content: bytes, filename: Optional[str] = None) -> Optional[str]:
+    """Sniff an ideation attachment upload by magic bytes (plan sprint-5/15).
+    Superset of :func:`detect_upload_mime` that also accepts the audio/video
+    containers (ogg, amr, mp3, aac, webm, mp4/m4a/3gp). Executables and any
+    script-bearing markup (anything starting with ``<``) are rejected regardless
+    of the declared type. Returns the sniffed mime or None (= reject)."""
+    if not content:
+        return None
+    if content[:4] == b"OggS":
+        return "audio/ogg"
+    if content[:5] == b"#!AMR":
+        return "audio/amr"
+    if content[:3] == b"ID3" or content[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return "audio/mpeg"
+    if content[:2] in (b"\xff\xf1", b"\xff\xf9"):
+        return "audio/aac"
+    if content[:4] == b"\x1aE\xdf\xa3":
+        return "video/webm"
+    if content[4:8] == b"ftyp":
+        brand = content[8:12]
+        if brand[:3] == b"3gp":
+            return "video/3gpp"
+        if brand[:3] in (b"M4A", b"M4B"):
+            return "audio/mp4"
+        return "video/mp4"
+    if content.lstrip()[:1] == b"<":
+        return None
+    return detect_upload_mime(content, filename)

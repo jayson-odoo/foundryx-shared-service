@@ -8,6 +8,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { IdeationRuntimeProvider } from '@/hooks/use-ideation-runtime';
 import { IdeasView } from './ideas-view';
 
+vi.mock('@/hooks/use-datetime', () => ({
+  useDatetime: () => ({
+    formatDate: (v: string) => v.slice(0, 10),
+    formatDateTime: (v: string) => v.slice(0, 10),
+    formatTime: (v: string) => v.slice(11, 16),
+  }),
+}));
+
 vi.mock('@/hooks/use-ideas', () => ({
   useIdeas: () => ({
     ideas: [],
@@ -31,7 +39,9 @@ vi.mock('@/components/platform/resource-list', () => ({
   ResourceList: () => null,
 }));
 vi.mock('./cluster-suggestions', () => ({
-  IdeaClusterSuggestions: () => null,
+  // A visible marker (not null) so plan 15 AC-15-10 can prove the list no
+  // longer MOUNTS the strip at all.
+  IdeaClusterSuggestions: () => <div data-testid="cluster-strip">Suggest clusters</div>,
 }));
 
 describe('IdeasView - "Show test ideas" toggle (issue #1179)', () => {
@@ -70,5 +80,13 @@ describe('IdeasView - "Show test ideas" toggle (issue #1179)', () => {
     );
     expect(screen.queryByTestId('ideas-include-test')).not.toBeInTheDocument();
     expect(screen.queryByText('Show test ideas')).not.toBeInTheDocument();
+  });
+});
+
+describe('IdeasView - no cluster suggestions on the list (AC-15-10)', () => {
+  it('does not mount the cluster suggestions strip or a "Suggest clusters" button', () => {
+    render(<IdeasView />);
+    expect(screen.queryByTestId('cluster-strip')).not.toBeInTheDocument();
+    expect(screen.queryByText('Suggest clusters')).not.toBeInTheDocument();
   });
 });

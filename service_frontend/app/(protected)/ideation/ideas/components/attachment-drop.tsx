@@ -27,17 +27,22 @@ function kindOf(mime: string): IdeaAttachmentKind {
 /**
  * Multi-file attachment drop area (voice note / image / video / file). Reuses
  * the system `useFileUpload` hook + the repo's canonical drop-area markup
- * (files-upload.tsx). Lifts a normalized attachment list to the parent form.
+ * (files-upload.tsx). Lifts a normalized attachment list to the parent form
+ * (`onChange`, the capture dialog) OR hands the raw `File`s over immediately and
+ * clears the pending list (`onFiles`, the detail Attachments tab uploads on drop).
  */
 export function AttachmentDrop({
   onChange,
+  onFiles,
 }: {
-  onChange: (attachments: DroppedAttachment[]) => void;
+  onChange?: (attachments: DroppedAttachment[]) => void;
+  onFiles?: (files: File[]) => void;
 }) {
   const [
     { files, isDragging, errors },
     {
       removeFile,
+      clearFiles,
       handleDragEnter,
       handleDragLeave,
       handleDragOver,
@@ -53,7 +58,13 @@ export function AttachmentDrop({
   });
 
   useEffect(() => {
-    onChange(
+    if (!onFiles || files.length === 0) return;
+    onFiles(files.map((f: FileWithPreview) => f.file).filter((f): f is File => f instanceof File));
+    clearFiles();
+  }, [files, onFiles, clearFiles]);
+
+  useEffect(() => {
+    onChange?.(
       files.map((f: FileWithPreview) => ({
         kind: kindOf(f.file.type ?? ''),
         name: f.file.name,

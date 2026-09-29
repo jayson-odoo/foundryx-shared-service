@@ -18,6 +18,14 @@ import type { Idea, Product } from '@/types/ideation';
 import { DetailsTab } from './idea-form-fields';
 import type { IdeaFormValues } from './idea-schema';
 
+vi.mock('@/hooks/use-datetime', () => ({
+  useDatetime: () => ({
+    formatDate: (v: string) => v.slice(0, 10),
+    formatDateTime: (v: string) => v.slice(0, 10),
+    formatTime: (v: string) => v.slice(11, 16),
+  }),
+}));
+
 const anIdea = (over: Partial<Idea> = {}): Idea => ({
   id: 'idea-1',
   productId: 'prod-1',

@@ -813,7 +813,10 @@ def test_migration_0012_head_and_revision_length():
             down_revisions.add(mod2.down_revision)
     true_heads = all_revisions - down_revisions
     assert len(true_heads) == 1, f"expected a single ideation migration head, found {true_heads}"
-    assert module.revision in true_heads
+    # 0013 (attachment upload) is now the head by design; 0012 stays in the chain.
+    assert true_heads == {"0013_ideation_attachment_upload"}
+    assert len(next(iter(true_heads))) <= 32
+    assert module.revision in all_revisions
 
 
 # ── AC-94-19 ───────────────────────────────────────────────────────────────

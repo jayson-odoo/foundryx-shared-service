@@ -10,6 +10,8 @@
  * - vote          → POST /ideation/ideas/{id}/vote    {dir}
  * - reorderPriority → PUT /ideation/ideas/reorder     {orderedIds}
  * - remove        → DELETE /ideation/ideas/{id}       (204)
+- uploadAttachment → POST /ideation/ideas/{id}/attachments   (multipart `file`)
+- fetchAttachment  → GET  <IdeaAttachment.contentPath>       (blob)
  *
  * Contract deltas vs the Phase-1 mock (documented, FE adjusted to the real BE -
  * we do NOT fork logic):
@@ -30,10 +32,11 @@
  * - Attachments on create are NOT persisted yet (idea_attachments writer is a
  *   later slice); the field is accepted by the FE input but dropped here.
  */
-import { apiFetch } from '@/lib/api-client';
+import { apiFetch, apiFetchBlob } from '@/lib/api-client';
 import type {
   Board,
   Idea,
+  IdeaAttachment,
   IdeaClusterSuggestions,
   Product,
 } from '@/types/ideation';
@@ -167,6 +170,18 @@ export const realIdeationService: IdeaService & IdeaExtendedOps = {
 
   listMerged(id: string): Promise<Idea[]> {
     return apiFetch<Idea[]>(`${idea(id)}/merged`);
+  },
+
+  // Attachment upload + serve (plan sprint-5/15). `apiFetch` skips the JSON
+  // content-type for a FormData body so the browser sets the multipart boundary.
+  uploadAttachment(id: string, file: File): Promise<IdeaAttachment> {
+    const body = new FormData();
+    body.append('file', file);
+    return apiFetch<IdeaAttachment>(`${idea(id)}/attachments`, { method: 'POST', body });
+  },
+
+  fetchAttachment(contentPath: string): Promise<Blob> {
+    return apiFetchBlob(contentPath);
   },
 
   getBoard(opts?: { includeTest?: boolean; productId?: string }): Promise<Board> {

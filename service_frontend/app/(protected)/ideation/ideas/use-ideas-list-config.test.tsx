@@ -5,6 +5,14 @@ import { IdeationRuntimeProvider } from '@/hooks/use-ideation-runtime';
 import { ideationEmbedService } from '@/services/ideation-embed-service';
 import { useIdeasListConfig } from './use-ideas-list-config';
 
+vi.mock('@/hooks/use-datetime', () => ({
+  useDatetime: () => ({
+    formatDate: (v: string) => v.slice(0, 10),
+    formatDateTime: (v: string) => v.slice(0, 10),
+    formatTime: (v: string) => v.slice(11, 16),
+  }),
+}));
+
 const anIdea = (over: Partial<Idea> = {}): Idea => ({
   id: 'idea-1',
   productId: 'prod-1',
@@ -310,5 +318,101 @@ describe('useIdeasListConfig - archived view (AC-94-60, red first)', () => {
       statusView: 'trashed',
     } as never);
     expect(data.map((r) => r.id)).toContain('a');
+  });
+});
+
+// ── Plan 15 (AC-15-04..08, 11) - filters / sort / columns / vote order ─────────
+
+describe('useIdeasListConfig - plan 15 list shape', () => {
+  it('has no manual reorder (AC-15-07)', () => {
+    expect(config([anIdea()]).rowReorder).toBeUndefined();
+  });
+
+  it('defaults to Votes desc (AC-15-08)', () => {
+    expect(config([anIdea()]).defaultSort).toEqual({ id: 'votes', desc: true });
+  });
+
+  it('offers a Status enum built from the loaded ideas labels, and a Submitter enum (AC-15-01/02)', () => {
+    const cfg = config([
+      anIdea({ id: 'a', status: 'captured', statusLabel: 'New', submitterName: 'Jayson' }),
+      anIdea({ id: 'b', status: 'discussed', statusLabel: 'Discussed', submitterName: 'Alice' }),
+      anIdea({ id: 'c', status: 'discussed', statusLabel: 'Discussed', submitterName: 'Jayson' }),
+    ]);
+    const status = cfg.filterFields.find((f) => f.field === 'status')!;
+    expect(status.type).toBe('enum');
+    expect(status.options).toEqual(
+      expect.arrayContaining([
+        { label: 'New', value: 'captured' },
+        { label: 'Discussed', value: 'discussed' },
+      ]),
+    );
+    expect(status.options).toHaveLength(2);
+    const submitter = cfg.filterFields.find((f) => f.field === 'submitter')!;
+    expect(submitter.type).toBe('enum');
+    expect((submitter.options ?? []).map((o) => o.value).sort()).toEqual(['Alice', 'Jayson']);
+  });
+
+  it('has a Submitted column and every data column is sortable with a headerTitle (AC-15-03/04/05)', () => {
+    const cfg = config([anIdea()]);
+    const ids = cfg.columns.map((c) => c.id);
+    expect(ids).toContain('submitted');
+    const dataCols = cfg.columns.filter((c) => !['select', 'actions'].includes(String(c.id)));
+    expect(dataCols.length).toBeGreaterThanOrEqual(6);
+    for (const c of dataCols) {
+      expect(c.enableSorting, `${c.id} sortable`).not.toBe(false);
+      expect(c.meta?.headerTitle, `${c.id} headerTitle`).toBeTruthy();
+    }
+  });
+
+  it('the Submitted cell formats createdAt, not the raw ISO string (AC-15-03)', () => {
+    const cfg = config([anIdea()]);
+    const column = cfg.columns.find((c) => c.id === 'submitted')!;
+    const cell = column.cell as (ctx: unknown) => React.ReactNode;
+    const { container } = render(<>{cell({ row: { original: anIdea() } })}</>);
+    expect(container.textContent).toMatch(/2026/);
+    expect(container.textContent).not.toContain('2026-07-18T00:00:00Z');
+  });
+
+  it('operator has a Product column, embed does not (AC-15-06)', () => {
+    expect(config([anIdea()]).columns.map((c) => c.id)).toContain('product');
+    expect(embedConfig([anIdea()]).columns.map((c) => c.id)).not.toContain('product');
+  });
+
+  it('the CSV header row includes Submitted (AC-15-11)', async () => {
+    const cfg = config([anIdea()]);
+    const csv = await cfg.exporter!({ page: 0, pageSize: 10, search: '', statusView: 'active' } as never, []);
+    expect(csv.split('\n')[0]).toContain('Submitted');
+  });
+
+  it('the fetcher applies the default net-vote order and the filter (AC-15-08/01)', async () => {
+    const ideas = [
+      anIdea({ id: 'net1', upvotes: 5, downvotes: 4 }),
+      anIdea({ id: 'net2', upvotes: 2, downvotes: 0, status: 'discussed' }),
+    ];
+    const cfg = config(ideas);
+    const base = { page: 0, pageSize: 10, search: '', statusView: 'active' } as never;
+    const { data } = await cfg.fetcher(base);
+    expect(data.map((r) => r.id)).toEqual(['net2', 'net1']);
+    const filtered = await cfg.fetcher({
+      page: 0,
+      pageSize: 10,
+      search: '',
+      statusView: 'active',
+      filter: {
+        kind: 'group',
+        combinator: 'and',
+        rules: [{ kind: 'condition', field: 'status', operator: 'in', value: ['discussed'] }],
+      },
+    } as never);
+    expect(filtered.data.map((r) => r.id)).toEqual(['net2']);
+  });
+});
+
+describe('useIdeasListConfig - embed promote (AC-15-24)', () => {
+  it('shows the embed Promote action ungated (no permission key); operator stays gated', () => {
+    const embedPromote = embedConfig([anIdea()]).actions.find((a) => a.id === 'promote-br')!;
+    expect(embedPromote.permission).toBeUndefined();
+    const opPromote = config([anIdea()]).actions.find((a) => a.id === 'promote-br')!;
+    expect(opPromote.permission).toBe('ideation.business_requirements.manage');
   });
 });

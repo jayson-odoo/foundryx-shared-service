@@ -71,8 +71,11 @@ def _submitter_name(contact: Optional[Contact]) -> str:
 
 
 class IdeaReadService:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, content_prefix: str = "/ideation/ideas"):
         self.db = db
+        # Route prefix an uploaded attachment's ``contentPath`` is built from
+        # (the embed routes pass ``/embed/ideas``).
+        self.content_prefix = content_prefix
 
     def _serialize(
         self,
@@ -166,6 +169,12 @@ class IdeaReadService:
                     kind=r.kind,
                     name=(r.filename or "").strip() or r.kind,
                     url=r.url or "",
+                    sizeBytes=r.size_bytes,
+                    contentPath=(
+                        f"{self.content_prefix}/{r.idea_id}/attachments/{r.id}/content"
+                        if r.storage_key
+                        else None
+                    ),
                 )
             )
         return out
@@ -563,6 +572,19 @@ class IdeaReadService:
         return self.serialize_one(
             idea, voter_id, tenant_id=tenant_id, product_id=product_id, actor=actor
         )
+
+    def single_product_id(self, tenant_id: str, idea_ids: List[str]) -> str:
+        """The product of the first of ``idea_ids`` (tenant-scoped) - the BR create
+        rejects a mixed-product link set (422) itself. 422 when none resolve."""
+        row = (
+            self.db.query(Idea.product_id)
+            .filter(Idea.tenant_id == tenant_id, Idea.id.in_(idea_ids or [""]))
+            .order_by(Idea.created_at.asc(), Idea.id.asc())
+            .first()
+        )
+        if row is None:
+            raise HTTPException(422, "Select at least one idea to promote.")
+        return row.product_id
 
     def merged_children(
         self,
