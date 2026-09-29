@@ -1304,19 +1304,28 @@ class DocFeedIssueOut(ApiModel):
 
     id: str
     feed: str
+    book: str
+    docKey: int = Field(validation_alias="doc_key")
     docNo: Optional[str] = Field(default=None, validation_alias="doc_no")
     docDate: Optional[date] = Field(default=None, validation_alias="doc_date")
+    sourceModifiedAt: Optional[datetime] = Field(default=None, validation_alias="source_modified_at")
     kind: str
     errors: Dict[str, Any] = Field(default_factory=dict, validation_alias="errors_json")
+    warnings: Optional[List[str]] = Field(default=None, validation_alias="warnings_json")
     attempts: int = 0
+    firstAt: Optional[datetime] = Field(default=None, validation_alias="first_at")
     lastAt: Optional[datetime] = Field(default=None, validation_alias="last_at")
 
 
+# B1 (round 2) - the HOUSE list envelope (`ListResult` on the frontend,
+# `CompanyListResponse` here): `{data, total, page}`.
 class DocFeedRunListOut(BaseModel):
-    items: List[DocFeedRunOut]
+    data: List[DocFeedRunOut]
     total: int
+    page: int = 0
 
 
 class DocFeedIssueListOut(BaseModel):
-    items: List[DocFeedIssueOut]
+    data: List[DocFeedIssueOut]
     total: int
+    page: int = 0

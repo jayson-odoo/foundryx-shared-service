@@ -52,6 +52,7 @@ class DocFeedVendor:
 
     def __init__(self, client: HttpApiClient) -> None:
         self._client = client
+        self.pages_read = 0  # N3 - vendor pages the LAST `branches()` walk read
 
     # ── document doors (plain arrays, V2) ────────────────────────────────────
 
@@ -80,7 +81,9 @@ class DocFeedVendor:
     def branches(self) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         page = 1
+        self.pages_read = 0
         while page <= MAX_BRANCH_PAGES:
+            self.pages_read += 1
             response = self._fetch_with_retry(
                 BRANCH_BY_PAGE_PATH, {"page": page, "pageSize": 1000}
             )

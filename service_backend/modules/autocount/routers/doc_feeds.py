@@ -83,6 +83,10 @@ def put_doc_feed(
         return DocFeedService(db).update(
             current_user.tenant_id, company_id, feed,
             connection_id=body.connectionId, mode=body.mode,
+            # N4 - an explicit JSON `null` (key present) clears the connection.
+            clear_connection=(
+                "connectionId" in body.model_fields_set and body.connectionId is None
+            ),
         )
     except CompanyNotFound:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
@@ -119,13 +123,13 @@ def get_doc_feed_runs(
     company_id: str,
     feed: Optional[str] = Query(default=None),
     page: int = Query(default=0, ge=0),
-    pageSize: int = Query(default=25, ge=1, le=200),
+    page_size: int = Query(default=25, ge=1, le=200),
     current_user: User = Depends(require_permission("autocount.sync.read")),
     db: Session = Depends(get_db),
 ):
     try:
         return DocFeedService(db).list_runs(
-            current_user.tenant_id, company_id, feed=feed, page=page, page_size=pageSize,
+            current_user.tenant_id, company_id, feed=feed, page=page, page_size=page_size,
         )
     except CompanyNotFound:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
@@ -138,14 +142,14 @@ def get_doc_feed_issues(
     kind: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None),
     page: int = Query(default=0, ge=0),
-    pageSize: int = Query(default=25, ge=1, le=200),
+    page_size: int = Query(default=25, ge=1, le=200),
     current_user: User = Depends(require_permission("autocount.sync.read")),
     db: Session = Depends(get_db),
 ):
     try:
         return DocFeedService(db).list_issues(
             current_user.tenant_id, company_id, feed=feed, kind=kind, search=search,
-            page=page, page_size=pageSize,
+            page=page, page_size=page_size,
         )
     except CompanyNotFound:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
@@ -206,16 +210,20 @@ def post_doc_feed_backfill_resume(
     feed: str,
     current_user: User = Depends(require_permission("autocount.sync.run")),
     db: Session = Depends(get_db),
+    actor_user_id: Optional[str] = Depends(get_actor_user_id),
     transport=Depends(get_http_transport),
 ):
     try:
         return DocFeedService(db).resume_backfill(
-            current_user.tenant_id, company_id, feed, transport=transport,
+            current_user.tenant_id, company_id, feed,
+            actor_user_id=actor_user_id, transport=transport,
         )
     except CompanyNotFound:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
     except DocFeedValidationError as exc:
         return _field_error(exc.field, exc.message)
+    except DocFeedConflictError as exc:
+        _conflict(exc)
 
 
 @router.post("/{company_id}/{feed}/backfill/discard", response_model=DocFeedBackfillOut)

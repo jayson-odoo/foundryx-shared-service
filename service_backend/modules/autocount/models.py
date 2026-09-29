@@ -785,19 +785,27 @@ class AcDocFeed(AutocountBase):
         UniqueConstraint("tenant_id", "company_id", "feed", name="uq_ac_doc_feed"),
         Index("ix_ac_doc_feed_scope", "tenant_id", "company_id"),
         Index("ix_ac_doc_feed_next_sweep_at", "next_sweep_at"),
+        # N8 - the migration's own index names (0023), declared explicitly
+        # instead of `index=True` (which auto-names `ix_app_autocount_..._id`
+        # and left a create_all-first host with duplicates once the
+        # migration's differently-named ones were added).
+        Index("ix_ac_doc_feed_tenant", "tenant_id"),
+        Index("ix_ac_doc_feed_company", "company_id"),
+        Index("ix_ac_doc_feed_connection", "connection_id"),
+        Index("ix_ac_doc_feed_next_poll_at", "next_poll_at"),
     )
 
     id = Column(String, primary_key=True, default=_uuid)
-    tenant_id = Column(String, nullable=False, index=True)
-    company_id = Column(String, nullable=False, index=True)
+    tenant_id = Column(String, nullable=False)
+    company_id = Column(String, nullable=False)
     feed = Column(String, nullable=False)  # delivery_orders | goods_receive_notes | branches
 
-    connection_id = Column(String, nullable=True, index=True)  # core connections.id
+    connection_id = Column(String, nullable=True)  # core connections.id
     book = Column(String(20), nullable=True)
     mode = Column(String, nullable=False, default=DOC_FEED_MODE_OFF, server_default="off")
 
     cursor_day = Column(Date, nullable=True)
-    next_poll_at = Column(UTCDateTime(), nullable=True, index=True)
+    next_poll_at = Column(UTCDateTime(), nullable=True)
     next_sweep_at = Column(UTCDateTime(), nullable=True)
     last_poll_at = Column(UTCDateTime(), nullable=True)
     last_poll_ok_at = Column(UTCDateTime(), nullable=True)
@@ -876,16 +884,19 @@ class AcDocFeedRun(AutocountBase):
     __table_args__ = (
         Index("ix_ac_doc_feed_run_scope", "tenant_id", "company_id", "feed_id"),
         Index("ix_ac_doc_feed_run_job", "tenant_id", "job_id"),
+        Index("ix_ac_doc_feed_run_tenant", "tenant_id"),
+        Index("ix_ac_doc_feed_run_company", "company_id"),
+        Index("ix_ac_doc_feed_run_feed_id", "feed_id"),
     )
 
     id = Column(String, primary_key=True, default=_uuid)
-    tenant_id = Column(String, nullable=False, index=True)
-    company_id = Column(String, nullable=False, index=True)
-    feed_id = Column(String, nullable=False, index=True)
+    tenant_id = Column(String, nullable=False)
+    company_id = Column(String, nullable=False)
+    feed_id = Column(String, nullable=False)
     feed = Column(String, nullable=False)
     kind = Column(String, nullable=False)  # poll | sweep | branch | backfill
     dry_run = Column(Boolean, nullable=False, default=False)
-    job_id = Column(String, nullable=True, index=True)
+    job_id = Column(String, nullable=True)
 
     day_from = Column(Date, nullable=True)
     day_to = Column(Date, nullable=True)
@@ -908,6 +919,9 @@ class AcDocFeedBackfill(AutocountBase):
     __tablename__ = "ac_doc_feed_backfill"
     __table_args__ = (
         Index("ix_ac_doc_feed_backfill_scope", "tenant_id", "company_id", "feed_id"),
+        Index("ix_ac_doc_feed_backfill_tenant", "tenant_id"),
+        Index("ix_ac_doc_feed_backfill_company", "company_id"),
+        Index("ix_ac_doc_feed_backfill_feed_id", "feed_id"),
         Index(
             "uq_ac_doc_feed_backfill_one_open",
             "tenant_id", "feed_id",
@@ -918,9 +932,9 @@ class AcDocFeedBackfill(AutocountBase):
     )
 
     id = Column(String, primary_key=True, default=_uuid)
-    tenant_id = Column(String, nullable=False, index=True)
-    company_id = Column(String, nullable=False, index=True)
-    feed_id = Column(String, nullable=False, index=True)
+    tenant_id = Column(String, nullable=False)
+    company_id = Column(String, nullable=False)
+    feed_id = Column(String, nullable=False)
     feed = Column(String, nullable=False)
     book = Column(String(20), nullable=True)
     dry_run = Column(Boolean, nullable=False, default=False)

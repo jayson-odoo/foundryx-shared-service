@@ -7,6 +7,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -170,7 +171,7 @@ class DocFeedService:
 
     def update(
         self, tenant_id: str, company_id: str, feed: str,
-        *, connection_id: Optional[str], mode: str,
+        *, connection_id: Optional[str], mode: str, clear_connection: bool = False,
     ) -> DocFeedItemOut:
         company = self._company(tenant_id, company_id)
         if feed not in ALL_FEEDS:
@@ -191,6 +192,11 @@ class DocFeedService:
                     "connection with a usable book.",
                 )
             resolved_conn = candidate
+        elif clear_connection:
+            # N4 - an EXPLICIT `connectionId: null` clears the stored
+            # connection; a feed with no connection can only be Off.
+            if mode != DOC_FEED_MODE_OFF:
+                raise DocFeedValidationError("connectionId", "Choose a connection first.")
         elif mode != DOC_FEED_MODE_OFF and not row.connection_id:
             raise DocFeedValidationError("connectionId", "Choose a connection first.")
 
@@ -202,6 +208,9 @@ class DocFeedService:
         if resolved_conn is not None:
             row.connection_id = resolved_conn.id
             row.book = derive_book(str((resolved_conn.config_json or {}).get("baseUrl") or ""))
+        elif clear_connection:
+            row.connection_id = None
+            row.book = None
 
         was_armed = row.mode not in (DOC_FEED_MODE_OFF, None)
         row.mode = mode
@@ -310,7 +319,9 @@ class DocFeedService:
     ) -> DocFeedRunListOut:
         self._company(tenant_id, company_id)
         rows, total = self.runs.list(tenant_id, company_id, feed=feed, page=page, page_size=page_size)
-        return DocFeedRunListOut(items=[DocFeedRunOut.model_validate(r) for r in rows], total=total)
+        return DocFeedRunListOut(
+            data=[DocFeedRunOut.model_validate(r) for r in rows], total=total, page=page,
+        )
 
     def list_issues(
         self, tenant_id: str, company_id: str,
@@ -330,13 +341,16 @@ class DocFeedService:
                 # N4 (review round 1) - the feed is part of the id: a DO
                 # and a GRN can legitimately share a DocKey, and the
                 # UNFILTERED issues list renders every feed's rows together.
-                id=f"{row.feed}:{row.book}:{row.doc_key}", feed=row.feed, doc_no=row.doc_no,
-                doc_date=row.doc_date, kind=row.kind, errors=row.errors_json or {},
-                attempts=row.attempts or 0, last_at=row.last_at,
+                id=f"{row.feed}:{row.book}:{row.doc_key}", feed=row.feed, book=row.book,
+                doc_key=row.doc_key, doc_no=row.doc_no, doc_date=row.doc_date,
+                source_modified_at=row.source_modified_at, kind=row.kind,
+                errors=row.errors_json or {},
+                warnings=list(row.warnings_json) if isinstance(row.warnings_json, list) else None,
+                attempts=row.attempts or 0, first_at=row.first_at, last_at=row.last_at,
             )
             for row in rows
         ]
-        return DocFeedIssueListOut(items=items, total=total)
+        return DocFeedIssueListOut(data=items, total=total, page=page)
 
     # ── backfill (AC-14-60..65) ───────────────────────────────────────────────
 
@@ -351,6 +365,8 @@ class DocFeedService:
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None:
             raise DocFeedValidationError("feed", "Configure this feed first.")
+        if row.mode == DOC_FEED_MODE_OFF:
+            raise DocFeedValidationError("mode", "This feed is off.")
         if not dry_run and row.mode != DOC_FEED_MODE_PUSH:
             raise DocFeedValidationError(
                 "mode", "A live backfill needs this feed in Push mode first."
@@ -365,6 +381,12 @@ class DocFeedService:
         today = myt_date(now)
         default_from = date.fromisoformat(BACKFILL_FROM_DEFAULT)
         from_day_value = from_day or default_from
+        if from_day_value < default_from:
+            # SS2 - an unbounded fromDay (0001-01-01) would queue ~740k
+            # sequential vendor GETs.
+            raise DocFeedValidationError(
+                "fromDay", f"fromDay must be on or after {default_from.isoformat()}."
+            )
         to_day_value = to_day or today
         if from_day_value > to_day_value or to_day_value > today:
             raise DocFeedValidationError(
@@ -384,7 +406,16 @@ class DocFeedService:
             started_by=actor_user_id, started_at=now,
         )
         self.backfills.add(backfill)
-        self.db.commit()
+        try:
+            self.db.commit()
+        except IntegrityError:
+            # N5 - two concurrent Starts both passed `open_for_feed`; the
+            # partial unique index (one open backfill per feed) refuses the
+            # loser.
+            self.db.rollback()
+            raise DocFeedConflictError(
+                "BACKFILL_OPEN", "A backfill is already open for this feed."
+            )
 
         job = JobService(self.db).create(
             type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
@@ -397,6 +428,7 @@ class DocFeedService:
         return backfill
 
     def _open_backfill_or_404(self, tenant_id: str, company_id: str, feed: str) -> AcDocFeedBackfill:
+        self._company(tenant_id, company_id)
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None:
             raise DocFeedValidationError("feed", "This feed is not configured.")
@@ -415,8 +447,10 @@ class DocFeedService:
         return backfill
 
     def resume_backfill(
-        self, tenant_id: str, company_id: str, feed: str, *, transport: Any = None,
+        self, tenant_id: str, company_id: str, feed: str,
+        *, actor_user_id: Optional[str] = None, transport: Any = None,
     ) -> AcDocFeedBackfill:
+        self._company(tenant_id, company_id)
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None:
             raise DocFeedValidationError("feed", "This feed is not configured.")
@@ -438,7 +472,7 @@ class DocFeedService:
         backfill.status = DOC_FEED_BACKFILL_RUNNING
         self.db.commit()
         job = JobService(self.db).create(
-            type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=tenant_id,
+            type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
             payload={"backfillId": backfill.id},
         )
         backfill.job_id = job.id
@@ -448,6 +482,7 @@ class DocFeedService:
         return backfill
 
     def discard_backfill(self, tenant_id: str, company_id: str, feed: str) -> AcDocFeedBackfill:
+        self._company(tenant_id, company_id)
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None:
             raise DocFeedValidationError("feed", "This feed is not configured.")

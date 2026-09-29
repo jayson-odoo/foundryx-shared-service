@@ -313,9 +313,18 @@ def on_job_orphaned(
     # closes its own open run row(s) exactly like ``autocount_sync`` above;
     # an orphaned ``autocount_doc_feed_backfill`` leaves the durable
     # backfill record ``stopped`` and resumable (Q6 "crash-safe").
-    if job_type == "autocount_doc_feed_run":
-        from .models import AcDocFeedRun
+    if job_type in ("autocount_doc_feed_run", "autocount_doc_feed_backfill"):
+        from .models import (
+            DOC_FEED_BACKFILL_RUNNING,
+            DOC_FEED_BACKFILL_STOPPED,
+            DOC_FEED_BACKFILL_STOPPING,
+            AcDocFeedBackfill,
+            AcDocFeedRun,
+        )
 
+        # RS3 - BOTH job types close their open run rows (a backfill job also
+        # opens `run_branch_pull` rows under its own job_id, which otherwise
+        # stay Running forever).
         now_ = now or datetime.now(timezone.utc)
         open_feed_runs = (
             db.query(AcDocFeedRun)
@@ -335,11 +344,10 @@ def on_job_orphaned(
             run.finished_at = now_
             started = run.started_at
             run.duration_ms = int((now_ - started).total_seconds() * 1000) if started else 0
-        db.flush()
-        return
-    if job_type == "autocount_doc_feed_backfill":
-        from .models import DOC_FEED_BACKFILL_STOPPED, AcDocFeedBackfill
-
+        if job_type == "autocount_doc_feed_run":
+            db.flush()
+            return
+        # autocount_doc_feed_backfill (its runs are closed above).
         payload = job.payload_json or {}
         backfill_id = str(payload.get("backfillId") or "")
         backfill = None
@@ -361,7 +369,12 @@ def on_job_orphaned(
                 )
                 .first()
             )
-        if backfill is not None and backfill.status != DOC_FEED_BACKFILL_STOPPED:
+        # RS3 - only an in-flight backfill flips; a `done` one (the worker
+        # crashed after committing DONE, before the job row finished) and an
+        # already-`stopped` one stay exactly as they are.
+        if backfill is not None and backfill.status in (
+            DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING,
+        ):
             backfill.status = DOC_FEED_BACKFILL_STOPPED
             backfill.error = (
                 getattr(job, "error", None)

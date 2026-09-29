@@ -5,6 +5,7 @@ owns the sequencing, retry and verdict-handling rules.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -30,6 +31,7 @@ from ..models import (
     DOC_FEED_BRANCH_STEP_DONE,
     DOC_FEED_BRANCH_STEP_SKIPPED,
     DOC_FEED_MODE_OFF,
+    DOC_FEED_MODE_PUSH,
     RUN_FAILED,
     RUN_SUCCESS,
     SINK_IMPL_SORENTO,
@@ -40,6 +42,7 @@ from ..models import (
 )
 from ..provider import AUTH_NONE, PROVIDER_KEY, auth_mode
 from ..repositories import CompanyRepository, ConnectionRepository
+from ..scheduler import active_tenant_service_join
 from ..repositories.doc_feed_repository import (
     DocFeedIssueRepository,
     DocFeedLedgerRepository,
@@ -47,6 +50,7 @@ from ..repositories.doc_feed_repository import (
 )
 from ..sinks_sorento import (
     DOC_FEED_CONTRACT_VERSION,
+    describe_consumer_failure,
     SorentoRateLimited,
     SorentoSink,
     sorento_sink_from_connection,
@@ -77,9 +81,20 @@ from .vendor import DocFeedVendor, DocFeedVendorError
 
 MAX_BACKFILL_RATE_LIMIT_WAITS = 10
 
+# N7 - the largest vendor document a issue row will store for re-send.
+MAX_STORED_RECORD_BYTES = 64 * 1024
+
 _DELETE_KEY_TRANSLATE = {"not_found": "notFound"}
 
 logger = logging.getLogger("foundryx.autocount")
+
+
+def _sink_failure_text(exc: BaseException, sink: Any) -> str:
+    """SS1 - the operator-facing account of a sink failure, never ``str(exc)``
+    (a ``SorentoSinkError`` carries the raw CRM body and the URL):
+    ``describe_consumer_failure`` strips URLs, redacts the API key and caps
+    the length."""
+    return describe_consumer_failure(exc, sink=sink)[0]
 
 
 def _heartbeat(db, job_id: Optional[str]) -> None:
@@ -318,6 +333,13 @@ def _record_push_activity(
     )
 
 
+def _record_too_large(raw: Any) -> bool:
+    try:
+        return len(json.dumps(raw, default=str)) > MAX_STORED_RECORD_BYTES
+    except (TypeError, ValueError):
+        return True
+
+
 def _apply_document_verdict(
     db, feed_row: AcDocFeed, book: str, record: RawVendorRecord, result: Any,
     *, dry_run: bool, run_id: str, now: datetime, summary: Dict[str, Any],
@@ -355,21 +377,30 @@ def _apply_document_verdict(
                 )
         if not dry_run:
             issue_repo.delete(feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key)
-    elif outcome == "failed":
+    elif outcome == "failed" or _record_too_large(raw):
+        # N7 - an over-cap document can never be stored for a D9 re-send, so
+        # it is a permanent failure with a named error (never a retryable
+        # row whose record is missing).
         summary["failed"] = summary.get("failed", 0) + 1
         # N3 (review round 1) - a permanently-failed document push is
         # surfaced in `summary.failedRefs` (the same shape `run_branch_pull`/
         # `run_sweep` already use), not only the persistent issue row: an
         # operator reading one run's summary should see WHICH DocKeys failed
         # without opening the issues list.
+        too_large = _record_too_large(raw)
+        errors_out = dict(result.errors or {})
+        if too_large:
+            errors_out["record"] = (
+                f"Too large to store for re-send (over {MAX_STORED_RECORD_BYTES // 1024} KB)."
+            )
         if failed_refs is not None:
-            failed_refs.append({"sourceRef": record.source_ref, "errors": result.errors})
+            failed_refs.append({"sourceRef": record.source_ref, "errors": errors_out})
         if not dry_run:
             issue_repo.upsert(
                 feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key,
                 kind="failed", doc_no=doc_no, doc_date=d_date,
-                source_modified_at=modified_at, record_json=raw,
-                errors_json=result.errors, warnings_json=list(warnings) or None,
+                source_modified_at=modified_at, record_json=None if too_large else raw,
+                errors_json=errors_out, warnings_json=list(warnings) or None,
                 last_run_id=run_id, now=now,
             )
     else:
@@ -487,7 +518,7 @@ def run_poll(
         resolved.vendor_client.close()
 
     if chunk_error is not None:
-        return _finish_failed(db, run, "SINK_ERROR", str(chunk_error))
+        return _finish_failed(db, run, "SINK_ERROR", _sink_failure_text(chunk_error, resolved.sink))
 
     if not dry_run:
         feed_row.cursor_day = (end + timedelta(days=1)) if capped else today
@@ -516,7 +547,7 @@ def run_branch_pull(
         rows = resolved.vendor.branches()
         _heartbeat(db, job_id)  # B2 - after the (bounded, <=100-page) vendor walk
     except DocFeedVendorError as exc:
-        run.requests = 1
+        run.requests = max(resolved.vendor.pages_read, 1)
         _record_vendor_activity(db, resolved.vendor_client, run)
         if vendor_transport is None:
             resolved.vendor_client.close()
@@ -542,7 +573,11 @@ def run_branch_pull(
             chunk_error = error
             return
         for record, result in zip(chunk, results):
+            # N3 - a blank / unknown-word outcome is the retryable bucket
+            # (same as the poll), never `summary[""]`.
             outcome = result.outcome or ""
+            if not result.delivered and outcome not in ("failed", "retryable"):
+                outcome = "retryable"
             summary[outcome] = summary.get(outcome, 0) + 1
             if not result.delivered:
                 failed_refs.append({"sourceRef": record.source_ref, "errors": result.errors})
@@ -553,14 +588,14 @@ def run_branch_pull(
     except Exception as exc:  # noqa: BLE001
         chunk_error = exc
 
-    run.requests = 1
+    run.requests = max(resolved.vendor.pages_read, 1)
     run.fetched_count = len(rows)
     _record_vendor_activity(db, resolved.vendor_client, run)
     if vendor_transport is None:
         resolved.vendor_client.close()
 
     if chunk_error is not None:
-        return _finish_failed(db, run, "SINK_ERROR", str(chunk_error))
+        return _finish_failed(db, run, "SINK_ERROR", _sink_failure_text(chunk_error, resolved.sink))
 
     summary["failedRefs"] = failed_refs[:20]
     if not dry_run:
@@ -657,7 +692,7 @@ def run_sweep(
             _record_vendor_activity(db, resolved.vendor_client, run)
             if vendor_transport is None:
                 resolved.vendor_client.close()
-            return _finish_failed(db, run, "SINK_ERROR", str(exc))
+            return _finish_failed(db, run, "SINK_ERROR", _sink_failure_text(exc, resolved.sink))
 
         for key, value in (result.get("summary") or {}).items():
             if isinstance(value, int):
@@ -776,6 +811,7 @@ def run_backfill(
     aggregate_summary = _new_summary()
     aggregate_summary["candidates"] = 0
     day = backfill_row.next_day
+    segment_start = backfill_row.next_day  # N2 - this segment's own first day
     requests_count = 0
     fetched_count = 0
     stop_reason: Optional[Dict[str, str]] = None
@@ -783,6 +819,13 @@ def run_backfill(
     while day <= backfill_row.to_day:
         db.refresh(backfill_row)
         if backfill_row.status != DOC_FEED_BACKFILL_RUNNING:
+            break
+        # SS3 - re-read the feed / tenant / module on EVERY day: a
+        # suspended tenant or deactivated module 403s every route (nobody
+        # can press Stop) and an operator can flip the feed off mid-run.
+        halt = _backfill_halt_reason(db, feed_row, dry_run=dry_run)
+        if halt is not None:
+            stop_reason = halt
             break
         # B2 - the fence: a beat sweep may have failed this SAME job (no
         # heartbeat for 15 minutes) from a DIFFERENT session moments ago,
@@ -825,14 +868,21 @@ def run_backfill(
         # in `aggregate_summary` on every wait. `remaining` narrows to only
         # the records this day has NOT yet been credited for.
         remaining = to_send
+        # B2 (round 2) - credit by IDENTITY (`source_ref`), never by position:
+        # `write_batch` keeps going after a chunk whose retries ran out, so
+        # a positional slice dropped the failed chunk and re-sent a credited
+        # one. `failed_refs` = refs of chunks that errored and are not (yet)
+        # credited; the day ends as an error while any remain.
+        credited: set = set()
+        failed_chunk_refs: set = set()
+        last_chunk_error: Optional[BaseException] = None
         while True:
-            chunk_error: Optional[BaseException] = None
-            sent_this_attempt = 0
 
             def on_chunk(chunk, results, error):
-                nonlocal chunk_error, sent_this_attempt
+                nonlocal last_chunk_error
                 if error is not None:
-                    chunk_error = error
+                    last_chunk_error = error
+                    failed_chunk_refs.update(r.source_ref for r in chunk)
                     return
                 for record, result in zip(chunk, results):
                     _apply_document_verdict(
@@ -841,7 +891,7 @@ def run_backfill(
                     )
                 db.commit()
                 _heartbeat(db, job_id)  # B2 - per committed chunk
-                sent_this_attempt += len(chunk)
+                credited.update(r.source_ref for r in chunk)
 
             try:
                 resolved.sink.write_batch(
@@ -849,9 +899,15 @@ def run_backfill(
                     dry_run=dry_run, on_chunk=on_chunk,
                 )
             except SorentoRateLimited as exc:
-                remaining = remaining[sent_this_attempt:]
+                remaining = [r for r in remaining if r.source_ref not in credited]
                 rate_limit_waits += 1
                 if rate_limit_waits > MAX_BACKFILL_RATE_LIMIT_WAITS:
+                    day_error = exc
+                    break
+                # RS4 - a wait can last minutes: keep the job's heartbeat
+                # fresh and honour the orphan fence before every sleep.
+                _heartbeat(db, job_id)
+                if _job_is_dead(db, job_id):
                     day_error = exc
                     break
                 time.sleep(exc.retry_after)
@@ -859,12 +915,15 @@ def run_backfill(
             except Exception as exc:  # noqa: BLE001
                 day_error = exc
                 break
-            if chunk_error is not None:
-                day_error = chunk_error
+            # A chunk that errored is retried only by a later 429 attempt
+            # (it stays in `remaining`); on a normal finish any ref that is
+            # still uncredited means the day is NOT complete.
+            if failed_chunk_refs - credited:
+                day_error = last_chunk_error
             break
 
         if day_error is not None:
-            stop_reason = {"code": "SINK_ERROR", "message": str(day_error)}
+            stop_reason = {"code": "SINK_ERROR", "message": _sink_failure_text(day_error, resolved.sink)}
             break
 
         backfill_row.next_day = day + timedelta(days=1)
@@ -892,6 +951,7 @@ def run_backfill(
             db, backfill_row, feed_row, now, outcome=RUN_FAILED,
             error=backfill_row.error, error_code=backfill_row.error_code,
             summary=aggregate_summary, requests=requests_count, fetched_count=fetched_count,
+            segment_start=segment_start,
         )
         return backfill_row
 
@@ -907,6 +967,7 @@ def run_backfill(
         _new_run_for_backfill(
             db, backfill_row, feed_row, now, outcome=RUN_SUCCESS,
             summary=aggregate_summary, requests=requests_count, fetched_count=fetched_count,
+            segment_start=segment_start,
         )
         return backfill_row
 
@@ -917,9 +978,34 @@ def run_backfill(
     db.commit()
     _new_run_for_backfill(
         db, backfill_row, feed_row, now, outcome=RUN_SUCCESS, summary=aggregate_summary,
-        requests=requests_count, fetched_count=fetched_count,
+        requests=requests_count, fetched_count=fetched_count, segment_start=segment_start,
     )
     return backfill_row
+
+
+def _backfill_halt_reason(db, feed_row: AcDocFeed, *, dry_run: bool) -> Optional[Dict[str, str]]:
+    """SS3 - the per-day guard: ``None`` to carry on, else the named stop
+    reason. Re-reads the feed row (mode may have flipped), the company, and
+    the SAME tenant-lifecycle + module-active predicate the beat uses."""
+    fresh = DocFeedRepository(db).get_by_id(feed_row.tenant_id, feed_row.id)
+    if fresh is None:
+        return {"code": "FEED_GONE", "message": "The feed this backfill belonged to no longer exists."}
+    db.refresh(fresh)
+    if fresh.mode == DOC_FEED_MODE_OFF:
+        return {"code": "FEED_OFF", "message": "This feed was switched off."}
+    if not dry_run and fresh.mode != DOC_FEED_MODE_PUSH:
+        return {"code": "FEED_NOT_PUSH", "message": "This feed is no longer in Push mode."}
+    active = (
+        active_tenant_service_join(db.query(AcDocFeed.id), AcDocFeed.tenant_id)
+        .filter(AcDocFeed.id == fresh.id)
+        .first()
+    )
+    if active is None:
+        return {
+            "code": "TENANT_INACTIVE",
+            "message": "This workspace or the AutoCount service is no longer active.",
+        }
+    return None
 
 
 def _fake_run_for_activity(backfill_row: AcDocFeedBackfill, requests_count: int):
@@ -939,18 +1025,25 @@ def _new_run_for_backfill(
     *, outcome: str, error: Optional[str] = None, error_code: Optional[str] = None,
     summary: Optional[Dict[str, Any]] = None,
     requests: Optional[int] = None, fetched_count: int = 0,
+    segment_start: Optional[date] = None,
 ) -> AcDocFeedRun:
     """AC-14-70 - one run row per backfill SEGMENT (this call). B3/S9 -
     carries this segment's own request/fetch counters and its OWN
     ``day_to`` (the last day actually completed, ``next_day - 1``; ``next_
     day`` itself is one day PAST the last day read - a Done 3-day backfill
     otherwise showed a 4-day range)."""
-    day_to = backfill_row.next_day - timedelta(days=1)
+    # N2 - `day_from` is THIS segment's first day (a resumed segment never
+    # claims the days an earlier one did); a segment that completed no day
+    # has no `day_to` at all (never a range that ends before it starts).
+    day_from = segment_start or backfill_row.from_day
+    day_to: Optional[date] = backfill_row.next_day - timedelta(days=1)
+    if day_to < day_from:
+        day_to = None
     run = AcDocFeedRun(
         tenant_id=backfill_row.tenant_id, company_id=backfill_row.company_id,
         feed_id=backfill_row.feed_id, feed=backfill_row.feed, kind=RUN_KIND_BACKFILL,
         dry_run=backfill_row.dry_run, job_id=backfill_row.job_id,
-        day_from=backfill_row.from_day, day_to=day_to,
+        day_from=day_from, day_to=day_to,
         requests=requests, fetched_count=fetched_count,
         outcome=outcome, error=error, error_code=error_code,
         summary_json=summary, started_at=now, finished_at=datetime.now(timezone.utc),
