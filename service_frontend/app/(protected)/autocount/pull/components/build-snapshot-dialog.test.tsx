@@ -116,11 +116,13 @@ describe('BuildSnapshotDialog (AC-10-37/50, review round 1 item 2; S6 phase 2 sw
     fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'c1' } });
     await waitFor(() => expect(getCompany).toHaveBeenCalledWith('c1'));
 
-    const entityOptions = screen.getByLabelText('Entity').querySelectorAll('option');
-    const labels = Array.from(entityOptions).map((o) => o.textContent);
-    expect(labels).toContain('Product');
-    expect(labels).toContain('Stock balance');
-    expect(labels).not.toContain('Supplier');
+    await waitFor(() => {
+      const entityOptions = screen.getByLabelText('Entity').querySelectorAll('option');
+      const labels = Array.from(entityOptions).map((o) => o.textContent);
+      expect(labels).toContain('Product');
+      expect(labels).toContain('Stock balance');
+      expect(labels).not.toContain('Supplier');
+    });
   });
 
   it('a pull-capable entity that has flipped back to push+active is NOT offered (S6 phase 2 swap - pull-only, never the PHASE 1 loosened filter)', async () => {
@@ -136,10 +138,12 @@ describe('BuildSnapshotDialog (AC-10-37/50, review round 1 item 2; S6 phase 2 sw
     fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'c1' } });
     await waitFor(() => expect(getCompany).toHaveBeenCalledWith('c1'));
 
-    const entityOptions = screen.getByLabelText('Entity').querySelectorAll('option');
-    const labels = Array.from(entityOptions).map((o) => o.textContent);
-    expect(labels).toContain('Stock balance');
-    expect(labels).not.toContain('Product');
+    await waitFor(() => {
+      const entityOptions = screen.getByLabelText('Entity').querySelectorAll('option');
+      const labels = Array.from(entityOptions).map((o) => o.textContent);
+      expect(labels).toContain('Stock balance');
+      expect(labels).not.toContain('Product');
+    });
   });
 
   it('a pull-mode entity that is not yet active is NOT offered either', async () => {
@@ -152,9 +156,11 @@ describe('BuildSnapshotDialog (AC-10-37/50, review round 1 item 2; S6 phase 2 sw
     fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'c1' } });
     await waitFor(() => expect(getCompany).toHaveBeenCalledWith('c1'));
 
-    const entityOptions = screen.getByLabelText('Entity').querySelectorAll('option');
-    const labels = Array.from(entityOptions).map((o) => o.textContent);
-    expect(labels).not.toContain('Product');
+    await waitFor(() => {
+      const entityOptions = screen.getByLabelText('Entity').querySelectorAll('option');
+      const labels = Array.from(entityOptions).map((o) => o.textContent);
+      expect(labels).not.toContain('Product');
+    });
   });
 
   it('picking a different company clears the previous entity pick', async () => {
@@ -165,6 +171,7 @@ describe('BuildSnapshotDialog (AC-10-37/50, review round 1 item 2; S6 phase 2 sw
     render(<BuildSnapshotDialog open companies={COMPANIES} onOpenChange={vi.fn()} onBuilt={vi.fn()} />);
     fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'c1' } });
     await waitFor(() => expect(getCompany).toHaveBeenCalledWith('c1'));
+    await screen.findByRole('option', { name: 'Product' });
     fireEvent.change(screen.getByLabelText('Entity'), { target: { value: 'product' } });
     expect(screen.getByLabelText('Entity')).toHaveValue('product');
 
@@ -193,6 +200,7 @@ describe('BuildSnapshotDialog (AC-10-37/50, review round 1 item 2; S6 phase 2 sw
     render(<BuildSnapshotDialog open companies={COMPANIES} onOpenChange={vi.fn()} onBuilt={vi.fn()} />);
     fireEvent.change(screen.getByLabelText('Company'), { target: { value: 'c1' } });
     await waitFor(() => expect(getCompany).toHaveBeenCalled());
+    await screen.findByRole('option', { name: 'Product' });
     fireEvent.change(screen.getByLabelText('Entity'), { target: { value: 'product' } });
     fireEvent.click(screen.getByRole('button', { name: 'Build' }));
 
