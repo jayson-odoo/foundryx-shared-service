@@ -426,7 +426,12 @@ def backfill_etl_defaults(bind: Any, *, schema: Optional[str] = AUTOCOUNT_SCHEMA
 #
 #     !!  ORM-LEVEL, NOT RAW SQL (unlike the backfills above).  !!
 # Unlike its siblings this one BUILDS ROWS (`AcFieldMapping`), not a column
-# UPDATE - the natural unit is an ORM insert. A live-Postgres Alembic
+# UPDATE - the natural unit is an ORM insert. The CONFIG read/write is
+# COLUMN-ONLY (id/source_config/line_result_columns): migrations 0010-0012 call
+# this at a stamp that predates `delivery_mode` (0020) / `preview_job_id`
+# (0022), so a whole-model query would raise UndefinedColumn. The
+# `AcFieldMapping` insert stays safe because every `ac_field_mapping` column
+# already existed at 0005. A live-Postgres Alembic
 # migration wraps this the SAME two-connection way every other backfill in
 # this file does (a `Session(bind=op.get_bind())` reading/writing on a
 # connection Alembic's own transaction will commit) - the module docstring's
@@ -447,8 +452,15 @@ def backfill_document_line_mapping_pickers(
     rows created (0 when the full set already exists)."""
     if not is_document_entity(entity_type):
         return 0
+    # Column-only select, NOT the whole model: migrations 0010/0011/0012 run this at a
+    # stamp that predates delivery_mode (0020) / preview_job_id (0022), so a whole-model
+    # SELECT raises UndefinedColumn there. Column-only is safe at every stamp.
     config = (
-        db.query(AcEntityConfig)
+        db.query(
+            AcEntityConfig.id,
+            AcEntityConfig.source_config,
+            AcEntityConfig.line_result_columns,
+        )
         .filter(
             AcEntityConfig.tenant_id == tenant_id,
             AcEntityConfig.company_id == company_id,
@@ -521,17 +533,20 @@ def backfill_document_line_mapping_pickers(
     # too, independent of whether rows were just created) - a JSON column
     # needs a FRESH dict reassigned, never an in-place mutation of the
     # existing one, or SQLAlchemy misses the change (the house gotcha).
-    _strip_picker_keys_and_flush(db, config, source_config)
+    _strip_picker_keys_and_flush(db, config.id, source_config)
     return created
 
 
-def _strip_picker_keys_and_flush(db: Any, config: Any, source_config: Dict[str, Any]) -> None:
+def _strip_picker_keys_and_flush(db: Any, config_id: Any, source_config: Dict[str, Any]) -> None:
     stripped = {
         k: v for k, v in source_config.items()
         if k not in ("lineKeyColumn", "lineProductColumn", "lineWarehouseColumn")
     }
     if stripped != source_config:
-        config.source_config = stripped
+        # Column-only UPDATE of source_config alone (never loads the whole row).
+        db.query(AcEntityConfig).filter(AcEntityConfig.id == config_id).update(
+            {AcEntityConfig.source_config: stripped}, synchronize_session="evaluate"
+        )
 
     db.flush()
 
@@ -552,8 +567,11 @@ def disable_line_rows_missing_from_preview(
     """
     if not is_document_entity(entity_type):
         return 0
+    # Column-only select, NOT the whole model: migrations 0010/0011/0012 run this at a
+    # stamp that predates delivery_mode (0020) / preview_job_id (0022), so a whole-model
+    # SELECT raises UndefinedColumn there. Column-only is safe at every stamp.
     config = (
-        db.query(AcEntityConfig)
+        db.query(AcEntityConfig.id, AcEntityConfig.line_result_columns)
         .filter(
             AcEntityConfig.tenant_id == tenant_id,
             AcEntityConfig.company_id == company_id,

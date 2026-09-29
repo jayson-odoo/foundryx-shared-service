@@ -19,16 +19,17 @@ idempotency contract. A never-configured / non-document entity is a no-op.
     !!  ORM-LEVEL BACKFILL, DELIBERATELY NOT sa.table.  !!
 Unlike a bare column UPDATE (which always queries a frozen snapshot per the
 BL-SS-082 lesson), this backfill BUILDS ROWS and is naturally an ORM insert.
-That is safe here specifically because every column the ORM touches already
-exists BY CONSTRUCTION at this point in the migration: ``ac_field_mapping.scope``
-has existed since 0002 (long before this revision), and ``line_result_columns``
-is added by THIS SAME migration, above, before the backfill runs - so there is
-no revision gap where the live model outruns the schema (the exact failure
-BL-SS-082 describes). The backfill only ``flush()``es (never `commit()`s) on a
-``Session(bind=op.get_bind())`` sharing Alembic's own transaction/connection,
-so Alembic's transaction still owns the single commit at the end - the
-storage-migration lesson (a migration must never commit Alembic's own
-connection) is honoured.
+The CONFIG read is column-only
+(``id``/``source_config``/``line_result_columns``; never the whole model, which
+would SELECT ``delivery_mode`` (0020) / ``preview_job_id`` (0022) that do not
+exist yet at this stamp), and the ``AcFieldMapping`` ORM insert stays safe
+because every ``ac_field_mapping`` column already existed at 0005
+(``scope`` since 0002) and ``line_result_columns`` is added by THIS SAME
+migration, above, before the backfill runs. The backfill only ``flush()``es
+(never `commit()`s) on a ``Session(bind=op.get_bind())`` sharing Alembic's own
+transaction/connection, so Alembic's transaction still owns the single commit
+at the end - the storage-migration lesson (a migration must never commit
+Alembic's own connection) is honoured.
 
 Revision ID: 0010_autocount_doc_lines   (24 chars <= 32)
 Revises: 0009_autocount_s5_review
