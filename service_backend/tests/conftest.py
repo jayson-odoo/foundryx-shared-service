@@ -483,7 +483,7 @@ def _stub_dns_in_autocount_http_tests(request, monkeypatch):
 # and the fired job's real `HttpApiClient` made a real, ~multi-minute call
 # to `hapi.sorento.cc.cd`, hanging the run. Same class of incident this
 # fixture's own docstring already names for `s10_`/`s11_`.
-_LIVE_NETWORK_BLOCK_FILE_RE = re.compile(r"^test_(autocount|s10_|s11_|s13_)")
+_LIVE_NETWORK_BLOCK_FILE_RE = re.compile(r"^test_(autocount|s10_|s11_|s13_|s14_)")
 
 
 class LiveNetworkAttempted(RuntimeError):

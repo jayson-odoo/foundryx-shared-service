@@ -1,0 +1,21 @@
+{
+  "dry_run": false,
+  "summary": {"total": 3, "created": 2, "updated": 1, "failed": 0, "retryable": 0, "unchanged": 0},
+  "records": [
+    {
+      "source_ref": "db1:BR:300-R009:HQ",
+      "outcome": "created",
+      "entity_id": "00000000-0000-0000-0000-000000000021"
+    },
+    {
+      "source_ref": "db1:BR:300-R014:PJ",
+      "outcome": "created",
+      "entity_id": "00000000-0000-0000-0000-000000000022"
+    },
+    {
+      "source_ref": "db1:BR::HQ",
+      "outcome": "updated",
+      "entity_id": "00000000-0000-0000-0000-000000000023"
+    }
+  ]
+}

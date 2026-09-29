@@ -57,6 +57,11 @@ class WriteResult:
     # verbatim, never interpreted here - an unknown code is informational,
     # never a downgrade. Empty for every sink/verdict that carries none.
     warnings: Tuple[str, ...] = field(default_factory=tuple)
+    # sprint-5/14 (D3) - the consumer's own per-record error map, carried
+    # through on a ``failed``/``retryable`` verdict (the doc-feed issue row
+    # keeps THIS, never a re-derived message) - ``None`` for every sink/
+    # verdict that reports no structured errors.
+    errors: Optional[Dict[str, Any]] = None
 
 
 class EntitySink(Protocol):

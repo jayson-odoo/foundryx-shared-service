@@ -32,7 +32,9 @@ from .canonical.documents import (
     ENTITY_SHIPPING_ORDER,
 )
 from .canonical.masters import (
+    LOCKED_MAPPING_SOURCES,
     ENTITY_BRAND,
+    ENTITY_BRANCH,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
@@ -603,6 +605,11 @@ def plan_rows(
     planned: List[PlannedRow] = []
     for order, spec in enumerate(fields, start=sort_start):
         column_known = available_columns is None or spec.source_path in known
+        if spec.canonical_field in LOCKED_MAPPING_SOURCES.get(entity_type, {}):
+            # A locked identity row (branch AccNo/BranchCode) is ALWAYS seeded
+            # enabled: the mapping save refuses to disable it, so a disabled
+            # seed would 422 every plain Save with no way out.
+            column_known = True
         reason: Optional[str] = None
         if not spec.enabled:
             reason = DISABLED_REASON_WITHHELD
@@ -919,6 +926,24 @@ BRAND_HTTP_PRESET = HttpPreset(
     ),
 )
 
+# sprint-5/14 section 11 (D23) - the paged `branchbypage` address records, a
+# regular master like product. The vendor row is unique on (AccNo, BranchCode)
+# (BranchCode alone repeats), so both key the row; the raw row travels to the
+# CRM (`CanonicalBranch.sink_payload`), these three are only what mapping
+# reads and lets a tenant override.
+BRANCH_HTTP_PRESET = HttpPreset(
+    label="Branches (open REST API)",
+    path="/branchbypage",
+    key_fields=("AccNo", "BranchCode"),
+    watermark_field=None,
+    distinct_of=None,
+    rows=(
+        PresetField("AccNo", "acc_no", "string", required=True),
+        PresetField("BranchCode", "code", "string", required=True),
+        PresetField("BranchName", "name", "string"),
+    ),
+)
+
 UNIT_OF_MEASURE_HTTP_PRESET = HttpPreset(
     label="Item UOM (open REST API, distinct)",
     path="/itembypage",
@@ -1016,6 +1041,7 @@ HTTP_PRESETS: Dict[str, HttpPreset] = {
     ENTITY_BRAND: BRAND_HTTP_PRESET,
     ENTITY_UNIT_OF_MEASURE: UNIT_OF_MEASURE_HTTP_PRESET,
     ENTITY_STOCK_BALANCE: STOCK_BALANCE_HTTP_PRESET,
+    ENTITY_BRANCH: BRANCH_HTTP_PRESET,
 }
 
 # Parity-pinned (AC-08-17): backend keys == frontend `AC_HTTP_ENTITY_TYPES`.

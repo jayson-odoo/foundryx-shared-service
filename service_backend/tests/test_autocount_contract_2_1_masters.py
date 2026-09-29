@@ -47,6 +47,18 @@ MASTER_MODELS: Dict[str, Type[CanonicalMaster]] = {
 }
 
 
+# sprint-5/14 section 11 (D24): `branch` sends the RAW vendor row (its
+# `sink_payload` writes three mapped keys over `source_record`), so the
+# "allow-listed SINK_FIELDS, None omitted" shape checks below do not describe
+# it (and its `acc_no`/`code` are required, so the generic two-field
+# constructor cannot build it). Its wire shape is pinned in
+# tests/test_autocount_branch.py instead.
+_RAW_ROW_SINK_ENTITIES = {"branch"}
+SINK_FIELD_MODELS: Dict[str, Type[CanonicalMaster]] = {
+    entity: model for entity, model in MASTER_MODELS.items() if entity not in _RAW_ROW_SINK_ENTITIES
+}
+
+
 def _unwrap_optional(annotation: Any) -> Any:
     args = [a for a in typing.get_args(annotation) if a is not type(None)]
     return args[0] if args else annotation
@@ -95,9 +107,9 @@ def test_customer_sink_payload_has_no_credit_limit_key_even_when_set():
 # ── (2) None-valued keys are omitted; falsy non-None values are kept ───────
 
 
-@pytest.mark.parametrize("entity_type", sorted(MASTER_MODELS), ids=sorted(MASTER_MODELS))
+@pytest.mark.parametrize("entity_type", sorted(SINK_FIELD_MODELS), ids=sorted(SINK_FIELD_MODELS))
 def test_master_sink_payload_omits_none_valued_keys(entity_type):
-    model = MASTER_MODELS[entity_type]
+    model = SINK_FIELD_MODELS[entity_type]
     # Only the required provenance ref plus the two Sorento-required fields;
     # every other SINK_FIELD is left at its None default.
     record = model(source_ref="AED_VSOFT:1", code="C1", name="Name")
@@ -115,9 +127,9 @@ def test_master_sink_payload_omits_none_valued_keys(entity_type):
             assert key in payload
 
 
-@pytest.mark.parametrize("entity_type", sorted(MASTER_MODELS), ids=sorted(MASTER_MODELS))
+@pytest.mark.parametrize("entity_type", sorted(SINK_FIELD_MODELS), ids=sorted(SINK_FIELD_MODELS))
 def test_master_sink_payload_keeps_falsy_non_none_values(entity_type):
-    model = MASTER_MODELS[entity_type]
+    model = SINK_FIELD_MODELS[entity_type]
     values = {field: _falsy_value_for(model, field) for field in model.SINK_FIELDS}
     values["source_ref"] = "AED_VSOFT:1"
     record = model(**values)
@@ -138,9 +150,9 @@ def test_master_sink_payload_keeps_falsy_non_none_values(entity_type):
         )
 
 
-@pytest.mark.parametrize("entity_type", sorted(MASTER_MODELS), ids=sorted(MASTER_MODELS))
+@pytest.mark.parametrize("entity_type", sorted(SINK_FIELD_MODELS), ids=sorted(SINK_FIELD_MODELS))
 def test_master_sink_payload_keeps_every_populated_sink_field(entity_type):
-    model = MASTER_MODELS[entity_type]
+    model = SINK_FIELD_MODELS[entity_type]
     populated = {field: _falsy_value_for(model, field) for field in model.SINK_FIELDS}
     populated["source_ref"] = "AED_VSOFT:1"
     for field in model.SINK_FIELDS:

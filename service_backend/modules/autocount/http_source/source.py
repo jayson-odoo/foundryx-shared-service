@@ -37,6 +37,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 
+from ..canonical.masters import ENTITY_BRANCH, NO_DELETION_ENTITY_TYPES
 from ..client import parse_last_modified
 from ..mapping import IdentityError, flat_source_ref
 from ..models import RUN_MODE_MANUAL, RUN_MODE_RECONCILE, SOURCE_IMPL_AUTOCOUNT_HTTP
@@ -53,6 +54,7 @@ from ..sources import (
 )
 from ..sql_source.hashing import compared_columns_for, row_hash
 from ..sql_source.source import CURSOR_COLUMN, CURSOR_MARK, MAX_EXTRACT_ROWS
+from .book import derive_book
 from .client import (
     MIN_PAGE_SIZE,
     HttpApiClient,
@@ -316,6 +318,14 @@ class HttpApiSource:
         self._client = HttpApiClient(
             base_url, transport=transport, timeout_seconds=sizing.request_timeout_seconds
         )
+        # sprint-5/14 section 11 (D25) - the identity qualifier: the company's
+        # database name for every entity but `branch`, which is qualified by
+        # this task connection's BOOK (`{book}:BR:{AccNo}:{BranchCode}`).
+        self._identity_scope = (
+            (derive_book(base_url) or "")
+            if self.entity_type == ENTITY_BRANCH
+            else (getattr(ctx.company, "database_name", "") or "")
+        )
 
     # ── identity ───────────────────────────────────────────────────────────
 
@@ -323,7 +333,7 @@ class HttpApiSource:
         try:
             return flat_source_ref(
                 raw,
-                database_name=getattr(self._ctx.company, "database_name", ""),
+                database_name=self._identity_scope,
                 key_columns=self.key_fields,
                 entity_type=self.entity_type,
             )
@@ -1152,6 +1162,7 @@ class HttpApiSource:
                 changed_refs.add(ref)
 
         delete_refs: List[str] = []
+        vanished_count = 0
         if full_extract and known:
             #     !!  A ZERO-ROW FULL EXTRACT IS NEVER A GENUINE TOTAL WIPE.  !!
             # Same fail-safe rule as the SQL source: raised BEFORE any hash
@@ -1165,6 +1176,15 @@ class HttpApiSource:
                     code="delete_guard",
                 )
             delete_refs = sorted(ref for ref in known if ref not in current_refs)
+            if self.entity_type in NO_DELETION_ENTITY_TYPES:
+                # sprint-5/14 section 11 (D27) - a vanished row is COUNTED,
+                # never staged or pushed as a delete (the CRM has no deletions
+                # door for it), so the delete guard has nothing to guard.
+                # `vanished` means "known but absent from this full extract":
+                # it is recounted on every full run (the CRM keeps the row and
+                # nothing is stamped), never a running total of new losses.
+                vanished_count = len(delete_refs)
+                delete_refs = []
             threshold = max(DELETE_GUARD_RATIO * len(known), DELETE_GUARD_MIN_ABSOLUTE)
             if len(delete_refs) > threshold:
                 raise HttpSourceError(
@@ -1211,6 +1231,7 @@ class HttpApiSource:
             added_count=added,
             updated_count=updated,
             delete_refs=delete_refs,
+            vanished_count=vanished_count,
             current_refs=sorted(current_refs),
             cursor=(
                 {CURSOR_COLUMN: self.watermark_field, CURSOR_MARK: max_mark}

@@ -34,6 +34,9 @@ export interface JobProgressProps {
   /** The Cancel button's accessible name - defaults to a generic one so
    * every call site is labelled without repeating itself. */
   cancelLabel?: string;
+  /** The counter's unit noun (sprint-5/14 D17): `'pages'` (default, every
+   * existing call site unchanged) or `'days'` (the backfill dialog). */
+  unit?: 'pages' | 'days';
 }
 
 /**
@@ -49,12 +52,24 @@ export function JobProgress({
   pagesTotal,
   onCancel,
   cancelLabel = 'Cancel preview',
+  unit = 'pages',
 }: JobProgressProps) {
   if (status !== 'queued' && status !== 'running' && status !== 'cancelling') return null;
 
-  const label = status === 'cancelling' ? 'Cancelling…' : stage ? stageLabel(stage) : 'Queued…';
   const showPages =
     status !== 'cancelling' && pagesDone !== null && pagesTotal !== null;
+  // sprint-5/14 D17 - a caller with no per-stage vocabulary (the backfill
+  // dialog: one long day-loop, never "Reading source"/"Combining"/...) but a
+  // KNOWN count reads "Running…", never "Queued…" - that word is reserved
+  // for "nothing is known yet" (both counts null too).
+  const label = status === 'cancelling'
+    ? 'Cancelling…'
+    : stage
+      ? stageLabel(stage)
+      : showPages
+        ? 'Running…'
+        : 'Queued…';
+  const unitNoun = unit === 'days' ? 'day' : 'page';
 
   return (
     <div
@@ -64,7 +79,7 @@ export function JobProgress({
       <LoaderCircleIcon className="size-4 animate-spin" aria-hidden />
       <span data-testid="job-progress-label">
         {label}
-        {showPages && ` · page ${pagesDone} of ${pagesTotal}`}
+        {showPages && ` · ${unitNoun} ${pagesDone} of ${pagesTotal}`}
       </span>
       {onCancel && status !== 'cancelling' && (
         <Button

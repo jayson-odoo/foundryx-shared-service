@@ -107,8 +107,11 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     render(<AddEntityControl entities={[]} sourceKind="db" onAdd={vi.fn()} />);
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(12);
+    // sprint-5/14 section 11 (AC-14-47): Branch is HTTP-only as well, so a DB
+    // company is offered it beside Stock balance (thirteen total).
+    expect(names).toHaveLength(13);
     expect(names).toContain('Stock balance');
+    expect(names).toContain('Branch');
   });
 
   it('a DB company\'s list drops the entities already configured', () => {
@@ -121,7 +124,7 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     );
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(10);
+    expect(names).toHaveLength(11);
     expect(names).not.toContain('Customer');
     expect(names).not.toContain('Sales order');
     expect(names).toContain('Supplier');
@@ -139,7 +142,7 @@ describe('AddEntityControl - company kind (plan sprint-5/01, AC-01-17)', () => {
     );
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(11);
+    expect(names).toHaveLength(12);
     expect(names).not.toContain('Stock balance');
   });
 });
@@ -152,10 +155,10 @@ describe('AddEntityControl - open (http) company kind (sprint-5/08, AC-08-18)', 
     expect(names).toEqual(
       expect.arrayContaining([
         'Product', 'Customer', 'Warehouse', 'Product category', 'Brand', 'Unit of measure',
-        'Stock balance',
+        'Stock balance', 'Branch',
       ]),
     );
-    expect(names).toHaveLength(7);
+    expect(names).toHaveLength(8);
   });
 
   it("an open company's list drops entities already configured", () => {
@@ -168,7 +171,7 @@ describe('AddEntityControl - open (http) company kind (sprint-5/08, AC-08-18)', 
     );
     fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
     const names = screen.getAllByRole('option').map((o) => o.textContent);
-    expect(names).toHaveLength(6);
+    expect(names).toHaveLength(7);
     expect(names).not.toContain('Product');
   });
 
@@ -179,5 +182,37 @@ describe('AddEntityControl - open (http) company kind (sprint-5/08, AC-08-18)', 
     fireEvent.click(await screen.findByRole('option', { name: 'Stock balance' }));
     fireEvent.click(screen.getByTestId('add-entity-configure'));
     expect(onAdd).toHaveBeenCalledWith('stock_balance');
+  });
+});
+
+describe('AddEntityControl - Branch on an http company (sprint-5/14 section 11, AC-14-47)', () => {
+  it('offers Branch, and picking it calls onAdd with the entity type', async () => {
+    const onAdd = vi.fn();
+    render(<AddEntityControl entities={[]} sourceKind="http" onAdd={onAdd} />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
+    expect(await screen.findByRole('option', { name: 'Branch' })).toBeInTheDocument();
+    // Brand stays a distinct option (control: the new label is not a rename).
+    expect(screen.getByRole('option', { name: 'Brand' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('option', { name: 'Branch' }));
+    fireEvent.click(screen.getByTestId('add-entity-configure'));
+    expect(onAdd).toHaveBeenCalledWith('branch');
+  });
+
+  it('an api company never offers Branch', () => {
+    render(<AddEntityControl entities={[]} sourceKind="api" onAdd={vi.fn()} />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
+    expect(screen.queryByRole('option', { name: 'Branch' })).not.toBeInTheDocument();
+  });
+
+  it('once Branch is configured it drops out of the picker', () => {
+    render(
+      <AddEntityControl
+        entities={[entity({ entityType: 'branch', sourceImpl: 'autocount_http' })]}
+        sourceKind="http"
+        onAdd={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('combobox', { name: 'Add entity' }));
+    expect(screen.queryByRole('option', { name: 'Branch' })).not.toBeInTheDocument();
   });
 });

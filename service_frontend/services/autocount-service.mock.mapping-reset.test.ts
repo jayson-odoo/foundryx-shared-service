@@ -192,3 +192,18 @@ describe('mockAutocountService.resetMappingToPreset (Vitest double)', () => {
     );
   });
 });
+
+describe('MAPPING_RESET_PRESETS.branch (sprint-5/14 section 11, AC-14-41/47)', () => {
+  it('a branch dry run resolves a preview (the preset exists), never the "No preset" 422', async () => {
+    const result = await service.resetMappingToPreset('company-http', 'branch', { dryRun: true });
+    expect(isMappingResetPreview(result)).toBe(true);
+  });
+
+  it('apply returns the three branch preset rows with hasPreset carried', async () => {
+    const result = await service.resetMappingToPreset('company-http', 'branch', { dryRun: false });
+    expect(isMappingResetPreview(result)).toBe(false);
+    const view = result as AutocountMappingView;
+    expect(view.hasPreset).toBe(true);
+    expect(view.rows.map((r) => r.canonicalField)).toEqual(['acc_no', 'code', 'name']);
+  });
+});

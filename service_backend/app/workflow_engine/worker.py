@@ -130,6 +130,11 @@ celery_app.conf.beat_schedule = {
     "autocount-prune-pull-snapshots": {
         "task": "autocount.prune_pull_snapshots", "schedule": 3600.0,
     },
+    # AutoCount document feed sweep (sprint-5/14 D14) - polls due DO/GRN
+    # feeds hourly and sweeps deletions daily; enqueues the
+    # SAME `autocount_doc_feed_run` job Run now/Run sweep now use. Same 60s
+    # tick as the ETL sweep above; does no extraction itself.
+    "autocount-doc-feed-sweep": {"task": "autocount.doc_feed_sweep", "schedule": 60.0},
     # Deferred actions (sprint-4/23, T5, AC-DLA-41) - commits every pending
     # row whose grace window has closed. Under eager dev (no beat process)
     # the frontend's lapse-time `GET current` performs the lazy commit
@@ -355,6 +360,24 @@ def autocount_etl_sweep_task() -> dict:
         return sweep_etl_tasks(db)
     except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
         logger.exception("autocount ETL sweep tick failed")
+        db.rollback()
+        return {"fired": 0, "skipped": 0, "failed": 0}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="autocount.doc_feed_sweep")
+def autocount_doc_feed_sweep_task() -> dict:
+    """The doc-feed beat sweep (sprint-5/14 D14, AC-14-33). Failure-isolated
+    like every other tick on this beat - a bad sweep never kills the loop."""
+    from app.database import SessionLocal
+    from modules.autocount.doc_feed.scheduler import sweep_doc_feeds
+
+    db = SessionLocal()
+    try:
+        return sweep_doc_feeds(db)
+    except Exception:  # noqa: BLE001 - a bad tick never kills the beat loop
+        logger.exception("autocount doc-feed sweep tick failed")
         db.rollback()
         return {"fired": 0, "skipped": 0, "failed": 0}
     finally:

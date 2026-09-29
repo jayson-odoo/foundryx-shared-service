@@ -21,8 +21,10 @@ half-implements it.
 import uuid
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
+    Date,
     Index,
     Integer,
     String,
@@ -740,3 +742,211 @@ class AcPullSnapshotRow(AutocountBase):
     # delivers (AC-10-23's content-hash formula depends on this being the
     # EXACT stored dict, never a re-projection).
     payload_json = Column(_JSON, nullable=False)
+
+
+# ── document feed (sprint-5/14, D2/D16) ───────────────────────────────────────
+# ``off / dry_run / push`` per (company, feed) - the shared-service side of
+# the DO/GRN HTTP source. A dedicated small package beside the ETL
+# task framework (D1): this feed is unmapped (Q1), day-windowed rather than a
+# whole-population diff, and its deletion sweep is a bounded 45-day window.
+
+DOC_FEED_MODE_OFF = "off"
+DOC_FEED_MODE_DRY_RUN = "dry_run"
+DOC_FEED_MODE_PUSH = "push"
+DOC_FEED_MODES = (DOC_FEED_MODE_OFF, DOC_FEED_MODE_DRY_RUN, DOC_FEED_MODE_PUSH)
+
+DOC_FEED_DELIVERY_ORDERS = "delivery_orders"
+DOC_FEED_GOODS_RECEIVE_NOTES = "goods_receive_notes"
+DOC_FEED_KEYS = (DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_NOTES)
+DOC_FEED_DOCUMENT_KEYS = (DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_NOTES)
+
+DOC_FEED_ISSUE_RETRYABLE = "retryable"
+DOC_FEED_ISSUE_FAILED = "failed"
+
+DOC_FEED_BACKFILL_RUNNING = "running"
+DOC_FEED_BACKFILL_STOPPING = "stopping"
+DOC_FEED_BACKFILL_STOPPED = "stopped"
+DOC_FEED_BACKFILL_DONE = "done"
+DOC_FEED_BACKFILL_OPEN_STATUSES = (
+    DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING, DOC_FEED_BACKFILL_STOPPED,
+)
+
+
+class AcDocFeed(AutocountBase):
+    """One row per (tenant, company, feed) - the feed's own connection,
+    derived book, mode and schedule columns."""
+
+    __tablename__ = "ac_doc_feed"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "company_id", "feed", name="uq_ac_doc_feed"),
+        Index("ix_ac_doc_feed_scope", "tenant_id", "company_id"),
+        Index("ix_ac_doc_feed_next_sweep_at", "next_sweep_at"),
+        # N8 - the migration's own index names (0023), declared explicitly
+        # instead of `index=True` (which auto-names `ix_app_autocount_..._id`
+        # and left a create_all-first host with duplicates once the
+        # migration's differently-named ones were added).
+        Index("ix_ac_doc_feed_tenant", "tenant_id"),
+        Index("ix_ac_doc_feed_company", "company_id"),
+        Index("ix_ac_doc_feed_connection", "connection_id"),
+        Index("ix_ac_doc_feed_next_poll_at", "next_poll_at"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False)
+    company_id = Column(String, nullable=False)
+    feed = Column(String, nullable=False)  # delivery_orders | goods_receive_notes
+
+    connection_id = Column(String, nullable=True)  # core connections.id
+    book = Column(String(20), nullable=True)
+    mode = Column(String, nullable=False, default=DOC_FEED_MODE_OFF, server_default="off")
+
+    cursor_day = Column(Date, nullable=True)
+    next_poll_at = Column(UTCDateTime(), nullable=True)
+    next_sweep_at = Column(UTCDateTime(), nullable=True)
+    last_poll_at = Column(UTCDateTime(), nullable=True)
+    last_poll_ok_at = Column(UTCDateTime(), nullable=True)
+    last_sweep_ok_at = Column(UTCDateTime(), nullable=True)
+    full_backfill_done_at = Column(UTCDateTime(), nullable=True)
+
+    last_error = Column(Text, nullable=True)
+    last_error_code = Column(String, nullable=True)
+
+    created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())
+
+
+class AcDocFeedLedger(AutocountBase):
+    """What the CRM holds from us, per (feed, book, DocKey) - the sweep
+    compares this against a fresh 45-day vendor read (D11, D12)."""
+
+    __tablename__ = "ac_doc_feed_ledger"
+    __table_args__ = (
+        Index(
+            "ix_ac_doc_feed_ledger_window", "tenant_id", "company_id", "feed", "book",
+            "doc_date",
+        ),
+    )
+
+    tenant_id = Column(String, primary_key=True)
+    company_id = Column(String, primary_key=True)
+    feed = Column(String, primary_key=True)
+    book = Column(String(20), primary_key=True)
+    doc_key = Column(BigInteger, primary_key=True)
+
+    doc_no = Column(String, nullable=True)
+    doc_date = Column(Date, nullable=True)
+    source_modified_at = Column(UTCDateTime(), nullable=True)
+    last_outcome = Column(String, nullable=True)
+    pushed_at = Column(UTCDateTime(), nullable=True)
+    vanished_at = Column(UTCDateTime(), nullable=True)
+
+
+class AcDocFeedIssue(AutocountBase):
+    """A document the CRM did not take - ``retryable`` (re-sent every live
+    poll) or ``failed`` (never auto-retried, D9)."""
+
+    __tablename__ = "ac_doc_feed_issue"
+    __table_args__ = (
+        Index(
+            "ix_ac_doc_feed_issue_scope", "tenant_id", "company_id", "feed", "kind",
+        ),
+    )
+
+    tenant_id = Column(String, primary_key=True)
+    company_id = Column(String, primary_key=True)
+    feed = Column(String, primary_key=True)
+    book = Column(String(20), primary_key=True)
+    doc_key = Column(BigInteger, primary_key=True)
+
+    kind = Column(String, nullable=False)  # retryable | failed
+    doc_no = Column(String, nullable=True)
+    doc_date = Column(Date, nullable=True)
+    source_modified_at = Column(UTCDateTime(), nullable=True)
+    record_json = Column(_JSON, nullable=True)
+    errors_json = Column(_JSON, nullable=True)
+    warnings_json = Column(_JSON, nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    first_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    last_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    last_run_id = Column(String, nullable=True)
+
+
+class AcDocFeedRun(AutocountBase):
+    """One row per doc-feed job - poll, sweep or backfill segment
+    (D16 - deliberately NOT ``ac_sync_run``, whose rows link the ETL
+    staged-review surface and carry staging counters this feed has none of)."""
+
+    __tablename__ = "ac_doc_feed_run"
+    __table_args__ = (
+        Index("ix_ac_doc_feed_run_scope", "tenant_id", "company_id", "feed_id"),
+        Index("ix_ac_doc_feed_run_job", "tenant_id", "job_id"),
+        Index("ix_ac_doc_feed_run_tenant", "tenant_id"),
+        Index("ix_ac_doc_feed_run_company", "company_id"),
+        Index("ix_ac_doc_feed_run_feed_id", "feed_id"),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False)
+    company_id = Column(String, nullable=False)
+    feed_id = Column(String, nullable=False)
+    feed = Column(String, nullable=False)
+    kind = Column(String, nullable=False)  # poll | sweep | backfill
+    dry_run = Column(Boolean, nullable=False, default=False)
+    job_id = Column(String, nullable=True)
+
+    day_from = Column(Date, nullable=True)
+    day_to = Column(Date, nullable=True)
+    requests = Column(Integer, nullable=True)
+    fetched_count = Column(Integer, nullable=False, default=0)
+    summary_json = Column(_JSON, nullable=True)
+    outcome = Column(String, nullable=True)  # SUCCESS | FAILED | ABORTED
+    error = Column(Text, nullable=True)
+    error_code = Column(String, nullable=True)
+
+    started_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    finished_at = Column(UTCDateTime(), nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+
+
+class AcDocFeedBackfill(AutocountBase):
+    """The durable backfill progress record (D13, Q6) - day by day,
+    resumable, one open backfill per feed."""
+
+    __tablename__ = "ac_doc_feed_backfill"
+    __table_args__ = (
+        Index("ix_ac_doc_feed_backfill_scope", "tenant_id", "company_id", "feed_id"),
+        Index("ix_ac_doc_feed_backfill_tenant", "tenant_id"),
+        Index("ix_ac_doc_feed_backfill_company", "company_id"),
+        Index("ix_ac_doc_feed_backfill_feed_id", "feed_id"),
+        Index(
+            "uq_ac_doc_feed_backfill_one_open",
+            "tenant_id", "feed_id",
+            unique=True,
+            postgresql_where=Column("status") != DOC_FEED_BACKFILL_DONE,
+            sqlite_where=Column("status") != DOC_FEED_BACKFILL_DONE,
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=_uuid)
+    tenant_id = Column(String, nullable=False)
+    company_id = Column(String, nullable=False)
+    feed_id = Column(String, nullable=False)
+    feed = Column(String, nullable=False)
+    book = Column(String(20), nullable=True)
+    dry_run = Column(Boolean, nullable=False, default=False)
+
+    from_day = Column(Date, nullable=False)
+    to_day = Column(Date, nullable=False)
+    next_day = Column(Date, nullable=False)
+    status = Column(String, nullable=False, default=DOC_FEED_BACKFILL_RUNNING)
+    job_id = Column(String, nullable=True)
+    days_total = Column(Integer, nullable=False, default=0)
+    days_done = Column(Integer, nullable=False, default=0)
+    summary_json = Column(_JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    error_code = Column(String, nullable=True)
+    started_by = Column(String, nullable=True)
+
+    started_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
+    finished_at = Column(UTCDateTime(), nullable=True)
+    updated_at = Column(UTCDateTime(), server_default=func.now(), onupdate=func.now())

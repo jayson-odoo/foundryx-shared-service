@@ -16,7 +16,7 @@
  * whichever control set it.
  */
 import { useRef, useState } from 'react';
-import type { DateRange } from 'react-day-picker';
+import type { DateRange, Matcher } from 'react-day-picker';
 import { CalendarIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Calendar } from '@/components/ui/calendar';
@@ -42,6 +42,12 @@ export interface DateRangePickerProps {
    *  timezone (`useDatetime().timeZone`), never the browser's. */
   timeZone: string;
   className?: string;
+  /** Inclusive calendar bounds (`YYYY-MM-DD`) - a day outside is disabled in
+   *  the popover (sprint-5/14, N5: a backfill's range never reaches before
+   *  its own floor or past "today"). `undefined` = unbounded (every
+   *  existing caller). */
+  minDate?: string;
+  maxDate?: string;
 }
 
 const PRESET_OPTIONS: { label: string; value: DateRangePreset }[] = [
@@ -132,7 +138,7 @@ function displayLabel(from: string, to: string): string {
   return from === to ? fromLabel : `${fromLabel} - ${toLabel}`;
 }
 
-export function DateRangePicker({ value, onChange, timeZone, className }: DateRangePickerProps) {
+export function DateRangePicker({ value, onChange, timeZone, className, minDate, maxDate }: DateRangePickerProps) {
   const [open, setOpen] = useState(false);
   // Our own two-click anchor, rather than trusting react-day-picker's
   // built-in range-merge heuristic (which can hand back a COMPLETE-looking
@@ -157,6 +163,11 @@ export function DateRangePicker({ value, onChange, timeZone, className }: DateRa
   const calendarValue: DateRange | undefined = value.from
     ? { from: parseKey(value.from), to: value.to ? parseKey(value.to) : undefined }
     : undefined;
+
+  const disabledMatchers: Matcher[] = [];
+  if (minDate) disabledMatchers.push({ before: parseKey(minDate) });
+  if (maxDate) disabledMatchers.push({ after: parseKey(maxDate) });
+  const disabledMatcher = disabledMatchers.length ? disabledMatchers : undefined;
 
   return (
     <div className={cn('flex flex-col gap-2 sm:flex-row sm:items-center', className)}>
@@ -195,6 +206,7 @@ export function DateRangePicker({ value, onChange, timeZone, className }: DateRa
             // close, so this recomputes fresh on every open).
             defaultMonth={value.from ? parseKey(value.from) : undefined}
             selected={calendarValue}
+            disabled={disabledMatcher}
             onSelect={(_range, selectedDay) => {
               if (!selectedDay) return;
               const anchor = anchorRef.current;

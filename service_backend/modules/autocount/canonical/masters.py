@@ -62,6 +62,10 @@ ENTITY_PRODUCT = "product"
 # sprint-5/08 (AC-08-31) - the open REST API's ItemBrand lookup. Lives here
 # for the same no-import-cycle reason as its five siblings above.
 ENTITY_BRAND = "brand"
+# sprint-5/14 section 11 (D23) - the open REST API's `branchbypage` address
+# records, a regular HTTP master entity (formerly a doc feed). Lives here for
+# the same no-import-cycle reason as its siblings above.
+ENTITY_BRANCH = "branch"
 # Sales agent DID start as a plain flat DB-extract entity with no canonical
 # dataclass (S2/S3); S4 gives it one (``CanonicalSalesAgent`` below) now that
 # it actually pushes to Sorento (Appendix A6 §6/A8).
@@ -254,6 +258,47 @@ class CanonicalBrand(CanonicalMaster):
         "description",
         "is_active",
     )
+
+
+class CanonicalBranch(CanonicalMaster):
+    """AutoCount ``branchbypage`` row -> Sorento ``branches`` (sprint-5/14
+    section 11, D24; CRM contract 2.7 section 13.11).
+
+    The CRM door takes **each record as the raw ``branchbypage`` row** and
+    reads only ``AccNo``, ``BranchCode`` and ``BranchName`` from it (it stores
+    the whole row as its own ``source_record``). So this model carries the raw
+    row (``source_record``, set by the mapping engine, never a mapping target)
+    and ``sink_payload`` writes the three mapped values over a copy of it: no
+    canonical keys (``source_ref``, ``code``, ...) ever reach the wire, and a
+    tenant's mapping edits still apply.
+
+    ``acc_no`` and ``code`` are required (the pair is the row's identity; a
+    blank on either is a field error at mapping time, never a CRM 422).
+    """
+
+    entity_type: str = ENTITY_BRANCH
+
+    acc_no: str = Field(..., min_length=1, max_length=100)
+    code: str = Field(..., min_length=1, max_length=100)
+    source_record: Dict[str, Any] = Field(default_factory=dict)
+
+    # The MAPPABLE fields (the catalog's accepted set derives from this).
+    # ``source_ref`` is minted and ``source_record`` is filled by the engine,
+    # so neither is a mapping target.
+    SINK_FIELDS: ClassVar[Tuple[str, ...]] = (
+        "source_ref",
+        "acc_no",
+        "code",
+        "name",
+    )
+
+    def sink_payload(self) -> Dict[str, Any]:
+        payload = dict(self.source_record or {})
+        payload["AccNo"] = self.acc_no
+        payload["BranchCode"] = self.code
+        if self.name is not None:
+            payload["BranchName"] = self.name
+        return payload
 
 
 class CanonicalUnitOfMeasure(CanonicalMaster):
@@ -456,4 +501,18 @@ MASTER_ENTITIES: List[str] = [
     ENTITY_PRODUCT,
     ENTITY_SALES_AGENT,
     ENTITY_BRAND,
+    ENTITY_BRANCH,
 ]
+
+# sprint-5/14 section 11 (D27) - masters whose full-extract reconcile never
+# stages or pushes a delete (the CRM has no deletions door for them, and other
+# documents reference their rows): a vanished row is only COUNTED.
+NO_DELETION_ENTITY_TYPES = frozenset({ENTITY_BRANCH})
+
+# sprint-5/14 section 11 (round 3, S1) - the branch identity pair is LOCKED to
+# its vendor columns: the CRM derives its verdict `source_ref` from the BODY's
+# `AccNo` / `BranchCode` (the MAPPED values), while the ETL mints the ref it
+# matches verdicts by from the RAW row. A tenant repointing or formula-ing
+# either row would break every verdict match forever, so the mapping save
+# refuses it. {canonical field: the only source column it may read}.
+LOCKED_MAPPING_SOURCES = {ENTITY_BRANCH: {"acc_no": "AccNo", "code": "BranchCode"}}

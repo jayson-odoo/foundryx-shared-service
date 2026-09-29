@@ -29,6 +29,7 @@ import {
   activatePrerequisites,
   anchorErrorTitle,
   brandContractBanner,
+  branchContractBanner,
   loggingSinkWarning,
   previewFailedBlocksActivation,
   productDependencyWarning,
@@ -112,6 +113,7 @@ export function ActivateTab({
   // perfectly safe - it just resolves on a later run instead of the next one.
   const dependencyWarning = productDependencyWarning(task.entityType, entities);
   const brandBanner = brandContractBanner(task);
+  const branchBanner = branchContractBanner(task);
   const sinkWarning = loggingSinkWarning(company);
   const status = task.etlStatus;
   const busy = lifecycle.busy !== null || preview.state.status === 'loading';
@@ -305,6 +307,15 @@ export function ActivateTab({
             <TriangleAlert />
           </AlertIcon>
           <AlertTitle>{brandBanner}</AlertTitle>
+        </Alert>
+      )}
+
+      {branchBanner && (
+        <Alert variant="warning" appearance="light" data-testid="activate-branch-contract-gate">
+          <AlertIcon>
+            <TriangleAlert />
+          </AlertIcon>
+          <AlertTitle>{branchBanner}</AlertTitle>
         </Alert>
       )}
 

@@ -8,6 +8,7 @@ import {
   activatePrerequisites,
   anchorErrorTitle,
   brandContractBanner,
+  branchContractBanner,
   derivePrefix,
   formatDurationMs,
   httpPreviewAsSqlPreview,
@@ -512,6 +513,22 @@ describe('brandContractBanner (sprint-5/08, AC-08-33/AC-08-20 S5)', () => {
   });
 });
 
+describe('branchContractBanner (sprint-5/14 section 11, AC-14-44)', () => {
+  it('names the real advertised version from the generic contractGate for a branch task', () => {
+    expect(
+      branchContractBanner({ contractGate: { entity: 'branch', version: 2.6, requiredVersion: 2.7 } }),
+    ).toBe('Consumer contract 2.6 - branches land when 2.7 is deployed');
+  });
+
+  it('is null when the gate is absent, cleared, or names another entity', () => {
+    expect(branchContractBanner({})).toBeNull();
+    expect(branchContractBanner({ contractGate: null })).toBeNull();
+    expect(
+      branchContractBanner({ contractGate: { entity: 'product', version: 2.3, requiredVersion: 2.4 } }),
+    ).toBeNull();
+  });
+});
+
 describe('pushGateWarning (sprint-5/13, AC-13-40)', () => {
   it('names the real advertised version and the required one for a contract-shut gate', () => {
     expect(pushGateWarning({ version: 2.4, requiredVersion: 2.5 })).toBe(
@@ -640,16 +657,19 @@ describe('REF_PREFIX_RE (AC-08-07)', () => {
 });
 
 describe('HTTP_PRESETS (AC-08-16)', () => {
-  it('has exactly the six confirmed masters plus stock_balance, each with a leading-slash path', () => {
-    expect(Object.keys(HTTP_PRESETS)).toEqual([
-      'product',
-      'customer',
-      'warehouse',
-      'product_category',
-      'brand',
-      'unit_of_measure',
-      'stock_balance',
-    ]);
+  it('has exactly the six confirmed masters plus stock_balance plus branch, each with a leading-slash path', () => {
+    expect(Object.keys(HTTP_PRESETS).sort()).toEqual(
+      [
+        'product',
+        'customer',
+        'warehouse',
+        'product_category',
+        'brand',
+        'unit_of_measure',
+        'stock_balance',
+        'branch',
+      ].sort(),
+    );
     for (const preset of Object.values(HTTP_PRESETS)) {
       expect(preset.path.startsWith('/')).toBe(true);
     }
@@ -661,6 +681,19 @@ describe('HTTP_PRESETS (AC-08-16)', () => {
       expect(preset.keyFields.length).toBeGreaterThan(0);
     }
     expect(HTTP_PRESETS.stock_balance.keyFields).toEqual([]);
+  });
+
+  it('branch pre-fills /branchbypage keyed on AccNo + BranchCode with no watermark (sprint-5/14 AC-14-47)', () => {
+    const preset = HTTP_PRESETS.branch;
+    expect(preset.path).toBe('/branchbypage');
+    expect(preset.keyFields).toEqual(['AccNo', 'BranchCode']);
+    expect(preset.watermarkField).toBeNull();
+    expect(preset.distinctOf).toBeNull();
+    expect(preset.mapping.map((m) => [m.sourcePath, m.canonicalField, !!m.required])).toEqual([
+      ['AccNo', 'acc_no', true],
+      ['BranchCode', 'code', true],
+      ['BranchName', 'name', false],
+    ]);
   });
 
   it('stock_balance pre-fills two ordered lookups and a combine step (AC-10-40/41)', () => {

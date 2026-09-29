@@ -42,6 +42,7 @@ from .canonical.grn import (
 )
 from .canonical.masters import (
     ENTITY_BRAND,
+    ENTITY_BRANCH,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
@@ -53,6 +54,7 @@ from .canonical.masters import (
     VENDOR_AUTOKEY_PATH,
     VENDOR_LAST_MODIFIED_PATH,
     CanonicalBrand,
+    CanonicalBranch,
     CanonicalCustomer,
     CanonicalProduct,
     CanonicalProductCategory,
@@ -693,6 +695,9 @@ def company_qualified_identity(raw: Dict[str, Any], database_name: str) -> str:
 
 # The one entity whose ``source_ref`` is deliberately NOT company-qualified.
 UNQUALIFIED_REF_ENTITIES = {ENTITY_SALES_AGENT}
+# sprint-5/14 section 11 (D25) - the segment the CRM puts between the book and
+# the branch key (`db1:BR:300-A056:KUANTAN`).
+BRANCH_REF_MARKER = "BR"
 SALES_AGENT_REF_PREFIX = "agent"
 # Separator between the parts of a COMPOSITE key. Not ``:`` - that already
 # separates the company qualifier from the key, and reusing it would make
@@ -744,6 +749,20 @@ def flat_source_ref(
     if entity_type in UNQUALIFIED_REF_ENTITIES:
         key = KEY_PART_SEPARATOR.join(p.upper() for p in parts)
         return f"{SALES_AGENT_REF_PREFIX}:{key}"
+
+    if entity_type == ENTITY_BRANCH:
+        # sprint-5/14 section 11 (D25) - the CRM's OWN derivation for a branch
+        # verdict: `{book}:BR:{AccNo}:{BranchCode}`, verbatim (never upper-
+        # cased, never `|`-joined). Here `database_name` carries the BOOK (the
+        # identity scope, see `http_source.book.identity_scope`), not the
+        # AutoCount database name.
+        book = (database_name or "").strip()
+        if not book:
+            raise IdentityError(
+                "the connection's book is unknown (its base URL must end in a "
+                "book such as /api/db1), so the branch cannot be correlated"
+            )
+        return f"{book}:{BRANCH_REF_MARKER}:{':'.join(parts)}"
 
     company = (database_name or "").strip()
     if not company:
@@ -989,9 +1008,16 @@ class EntityProfile:
     # those keys - a renamed drop rule 422s at save time instead of silently
     # changing what the consumer reads.
     pull_metadata_map: Optional[Dict[str, Any]] = None
+    # sprint-5/14 section 11 (D24) - the canonical field that carries the RAW
+    # vendor row (branch: `source_record`), set by the engine after mapping.
+    # `None` (every other entity) copies nothing.
+    raw_record_field: Optional[str] = None
 
     def record_fields(self) -> set:
-        return set(self.record_model.model_fields) - {"lines", "extras"}
+        hidden = {"lines", "extras"}
+        if self.raw_record_field:
+            hidden.add(self.raw_record_field)
+        return set(self.record_model.model_fields) - hidden
 
     def line_fields(self) -> set:
         if self.line_model is None:
@@ -1085,6 +1111,22 @@ BRAND_PROFILE = EntityProfile(
     identity_path="Code",
 )
 
+# sprint-5/14 section 11 (D23-D25) - the open REST API's `branchbypage` rows.
+# Runs FLAT like brand; `flat_source_ref` mints the CRM's own
+# `{book}:BR:{AccNo}:{BranchCode}` (the engine's `database_name` is the BOOK for
+# this entity). The raw vendor row rides in `source_record` (D24).
+BRANCH_PROFILE = EntityProfile(
+    entity_type=ENTITY_BRANCH,
+    record_model=CanonicalBranch,
+    identity=lambda raw, scope: flat_source_ref(
+        raw, database_name=scope, key_columns=("AccNo", "BranchCode"),
+        entity_type=ENTITY_BRANCH,
+    ),
+    display_path="BranchCode",
+    identity_path="AccNo, BranchCode",
+    raw_record_field="source_record",
+)
+
 # sprint-5/10 S5b (AC-10-39/80/81) - a combine-carrying task runs through
 # ``flat_profile`` exactly like the masters fan-out above: identity and the
 # display path below are placeholders whose real values (the combine step's
@@ -1163,6 +1205,7 @@ ENTITY_PROFILES: Dict[str, EntityProfile] = {
     PRODUCT_PROFILE.entity_type: PRODUCT_PROFILE,
     SALES_AGENT_PROFILE.entity_type: SALES_AGENT_PROFILE,
     BRAND_PROFILE.entity_type: BRAND_PROFILE,
+    BRANCH_PROFILE.entity_type: BRANCH_PROFILE,
     STOCK_BALANCE_PROFILE.entity_type: STOCK_BALANCE_PROFILE,
     SALES_ORDER_PROFILE.entity_type: SALES_ORDER_PROFILE,
     PURCHASE_ORDER_PROFILE.entity_type: PURCHASE_ORDER_PROFILE,
@@ -1203,6 +1246,7 @@ def flat_profile(entity_type: str, key_columns: Sequence[str]) -> EntityProfile:
         identity_path=", ".join(columns) or base.identity_path,
         line_ref_prefix=base.line_ref_prefix,
         line_fulfilled_field=base.line_fulfilled_field,
+        raw_record_field=base.raw_record_field,
     )
 
 
@@ -1266,7 +1310,13 @@ class MappingEngine:
 
     def _ref_transform(self, ref_entity_type: str) -> Callable[[Any], Any]:
         """Bind ``mint_master_ref`` to THIS engine's ``database_name`` - the
-        thing a module-level pure transform cannot do (plan 22 S5)."""
+        thing a module-level pure transform cannot do (plan 22 S5).
+
+        NOTE (plan 14 section 11, N4): for a ``branch`` task ``database_name``
+        is the BOOK (the identity scope), not a database name. That is safe
+        because no ``ref_*`` transform can ever be saved on a branch row (the
+        mapping save refuses a ref transform on any non-ref target, and branch
+        has none); a hand-written row would only fail the save gate."""
 
         def transform(value: Any) -> Optional[str]:
             return mint_master_ref(
@@ -1477,6 +1527,8 @@ class MappingEngine:
         header["source_ref"] = source_ref
         header["entity_type"] = self.entity_type
         header["extras"] = header_extras
+        if self.profile.raw_record_field:
+            header[self.profile.raw_record_field] = dict(raw)
         if self.profile.line_model is not None:
             header["lines"] = lines
         try:

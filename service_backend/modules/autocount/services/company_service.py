@@ -35,6 +35,8 @@ from ..activity import (
     record_client_calls,
 )
 from ..client import AutoCountClient, AutoCountError
+from ..canonical.masters import LOCKED_MAPPING_SOURCES
+from ..http_source.book import derive_book, identity_scope
 from ..http_source.lookups import effective_result_columns
 from ..mapping import (
     DEFAULT_MAPPINGS,
@@ -109,6 +111,7 @@ from ..sinks import EntitySink, UnknownSinkImpl, sink_for
 from ..sinks_sorento import (
     BRAND_REQUIRED_CONTRACT_VERSION,
     CONTRACT_GATED_ENTITIES,
+    DOC_FEED_CONTRACT_VERSION,
     PRODUCT_CODE_WINS_CONTRACT_VERSION,
     STOCK_BALANCES_CONTRACT_VERSION,
     sorento_sink_from_connection,
@@ -142,6 +145,7 @@ logger = logging.getLogger("foundryx.autocount")
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE  # noqa: E402
 from ..canonical.masters import (  # noqa: E402
     ENTITY_BRAND,
+    ENTITY_BRANCH,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_SUPPLIER,
@@ -579,6 +583,24 @@ class CompanyService:
         self._stock_push_gate_cache: Dict[
             Tuple[str, str], Optional[Dict[str, Any]]
         ] = {}
+        # sprint-5/14 (D4) - ``doc_feed_gate_error``'s own cache, additionally
+        # keyed on ``feed`` (a company's view reads the gate for all three
+        # feeds in one request).
+        self._doc_feed_gate_cache: Dict[
+            Tuple[str, str, str], Optional[Dict[str, Any]]
+        ] = {}
+        # S5 (review round 1) - the RAW probe result (``fetch_contract_
+        # detail``), memoised per (tenant, company) ALONE - never per
+        # entity/feed. ``doc_feed_gate_error`` calls ``_contract_refusal``
+        # once per feed (3x for one ``view()``); without this, each call
+        # re-hit the network even though every one of them asks the SAME
+        # consumer connection the SAME question. ``_contract_refusal``
+        # still keys its OWN (cheap, no-network) supported/refused verdict
+        # by the caller's own cache (entity-specific), just never re-probes
+        # to compute it a second time.
+        self._contract_probe_cache: Dict[
+            Tuple[str, str], Tuple[str, Optional["SorentoContractInfo"]]
+        ] = {}
         self.watermarks = WatermarkRepository(db)
 
     # ── reads ────────────────────────────────────────────────────────────────
@@ -885,6 +907,12 @@ class CompanyService:
                 # Sorento company. A blank one is passed through so SORENTO
                 # answers the authoritative COMPANY_ANCHOR_REQUIRED.
                 company_code=company.sorento_company_code,
+                # sprint-5/14 section 11 (D26) - a branch ingest body carries
+                # the top-level `book` the CRM requires on its 2.7 doors,
+                # derived from the company's own HTTP source connection. Every
+                # other entity's call (and body) stays byte-identical: the
+                # kwarg is only passed for a branch.
+                **self._book_kwargs(tenant_id, company, entity_type),
             )
             if gated:
                 contract = sink.fetch_contract_detail()
@@ -906,6 +934,42 @@ class CompanyService:
             f"Company '{company.database_name}' is configured with an unknown "
             f"push sink '{impl}'."
         )
+
+    def _book_kwargs(
+        self, tenant_id: str, company: AcCompany, entity_type: str
+    ) -> Dict[str, Any]:
+        """``{"book": <book>}`` for the ``branch`` entity, ``{}`` for every
+        other entity (their sink construction and bodies are unchanged).
+
+        The book is derived from the SAME place the branch ``source_ref`` gets
+        it (``identity_scope``: the TASK's own HTTP connection), so the body's
+        `book` and the refs the verdicts are matched by can never disagree -
+        including a DB company whose Branch task reads an HTTP connection, and
+        an http company whose branch task points at another book. Only a task
+        that has no connection yet (never saved) falls back to the company's
+        own open connection. FAIL CLOSED: no derivable book raises a named
+        error instead of posting a body the CRM 422s for the whole batch."""
+        if entity_type != ENTITY_BRANCH:
+            return {}
+        config = self.configs.get(tenant_id, company.id, ENTITY_BRANCH)
+        source_config = config.source_config if config is not None else None
+        book = identity_scope(self.db, tenant_id, company, ENTITY_BRANCH, source_config)
+        task_has_connection = bool(
+            str((source_config or {}).get("connectionId") or "").strip()
+        )
+        if not book and not task_has_connection:
+            conn = self.connections.get_for_provider(
+                tenant_id, company.connection_id or "", PROVIDER_KEY
+            )
+            if conn is not None:
+                book = derive_book(str((conn.config_json or {}).get("baseUrl") or "")) or ""
+        if not book:
+            raise AutocountServiceError(
+                "The Branch task's AutoCount connection has no book (its base URL "
+                "must end in a book such as /api/db1), so branches cannot be "
+                "delivered to Sorento."
+            )
+        return {"book": book}
 
     def brand_contract_gate(
         self, tenant_id: str, company: AcCompany
@@ -973,6 +1037,8 @@ class CompanyService:
     _CONTRACT_GATE_REQUIRED_VERSIONS: Dict[str, float] = {
         ENTITY_BRAND: BRAND_REQUIRED_CONTRACT_VERSION,
         ENTITY_PRODUCT: PRODUCT_CODE_WINS_CONTRACT_VERSION,
+        # sprint-5/14 section 11 (D26) - branch rides the 2.7 door.
+        ENTITY_BRANCH: DOC_FEED_CONTRACT_VERSION,
     }
 
     def contract_gate(
@@ -1059,51 +1125,97 @@ class CompanyService:
         version = contract.version if contract else None
         return version is not None and version >= PRODUCT_CODE_WINS_CONTRACT_VERSION
 
-    def stock_push_gate_error(
-        self, tenant_id: str, company: AcCompany
+    def _contract_refusal(
+        self,
+        tenant_id: str,
+        company: AcCompany,
+        *,
+        required_version: float,
+        entity_name: str,
+        cache: Dict[Tuple[str, ...], Optional[Dict[str, Any]]],
+        cache_key: Tuple[str, ...],
     ) -> Optional[Dict[str, Any]]:
-        """sprint-5/10 S5b (AC-10-15) - whether ``stock_balance``'s
-        ``delivery_mode`` may switch to ``push``. UNLIKE ``contract_gate``
-        above (a BANNER: an unreachable consumer answers "nothing to warn
-        about" for any non-product entity), this is a REFUSAL gate: stock
-        has no `_ENTITY_PATH` entry at all yet (AC-10-39), so there is no
-        safe "allow and let it fail at push time" fallback the way that
-        gate's banner-only branches have - "never guess a contract we
-        cannot see" means an ABSENT Sorento connection or an
-        unreachable/malformed probe REFUSES, exactly like a too-low
-        version. ``None`` = push is allowed; otherwise
-        ``{"version": <float|None>, "requiredVersion":
-        STOCK_BALANCES_CONTRACT_VERSION, "reason"?: "config_error"}``.
+        """sprint-5/14 (D4) - the refusal gate ``stock_push_gate_error``
+        (sprint-5/10 S5b, AC-10-15) already established, generalised so
+        ``doc_feed_gate_error`` below can share it byte-for-byte rather than
+        cloning the three-way probe/config-fault/version-or-membership
+        branch a second time. UNLIKE ``contract_gate`` above (a BANNER: an
+        unreachable consumer answers "nothing to warn about" for a
+        non-product entity), this is a REFUSAL: an ABSENT Sorento
+        connection, a config/credentials fault, or an unreachable/malformed
+        probe all refuse, exactly like a too-low version or a missing
+        entity name - "never guess a contract we cannot see". ``None`` =
+        allowed; otherwise ``{"version": <float|None>, "requiredVersion":
+        required_version, "reason"?: "config_error"}``.
 
         The probe sink is constructed with ``entity_type=ENTITY_PRODUCT``
         (any ``_ENTITY_PATH`` member does) purely because
         ``fetch_contract_detail`` reads ``GET /external/contract``
-        unconditionally, never the entity's own ingest path -
-        ``stock_balance`` genuinely has no path to build a sink against
-        directly (``SorentoSink.__init__``'s own guard would raise).
+        unconditionally, never the entity's own ingest path.
 
-        Memoised per SERVICE INSTANCE (N4, review round 5) - the SAME
-        mechanism ``contract_gate`` uses above, keyed on
-        ``(tenant_id, company.id)`` - a request that reads this gate more
-        than once (e.g. `activate_task` re-checking what `set_delivery_mode`
-        already checked once this request) never re-probes the network
-        twice. The BUILD phase (resolving the consumer connection,
+        Memoised in the CALLER's own cache dict, keyed on
+        ``(tenant_id, company.id)`` per SERVICE INSTANCE (N4, review round
+        5) - a request that reads a gate more than once never re-probes the
+        network twice. The BUILD phase (resolving the consumer connection,
         decrypting its credentials) and the PROBE phase (the actual network
         call) are caught SEPARATELY: a config/credentials fault
-        (``AutocountServiceError`` - a decrypt failure, a missing consumer
-        connection) is never the SAME refusal as an old or unreachable
-        contract - conflating the two would tell an operator with a
-        perfectly fine, merely-outdated Sorento contract to go fix their
-        connection instead, so the config-fault branch carries
+        (``AutocountServiceError``) is never the SAME refusal as an old or
+        unreachable contract - conflating the two would tell an operator
+        with a perfectly fine, merely-outdated Sorento contract to go fix
+        their connection instead, so the config-fault branch carries
         ``"reason": "config_error"`` for the caller's message to key off.
         """
-        cache_key = (tenant_id, company.id)
-        if cache_key in self._stock_push_gate_cache:
-            return self._stock_push_gate_cache[cache_key]
+        if cache_key in cache:
+            return cache[cache_key]
+        status_, contract = self._probe_contract(tenant_id, company)
         result: Optional[Dict[str, Any]]
+        if status_ == "config_error":
+            result = {
+                "version": None, "requiredVersion": required_version,
+                "reason": "config_error",
+            }
+        elif status_ != "ok" or contract is None:
+            # ``no_sink`` (no Sorento connection at all) or ``unreachable``/
+            # malformed - "never guess a contract we cannot see".
+            result = {"version": None, "requiredVersion": required_version}
+        else:
+            version = contract.version
+            entities = contract.entities
+            supported = (
+                version is not None
+                and version >= required_version
+                and entity_name in entities
+            )
+            result = (
+                None if supported
+                else {"version": version, "requiredVersion": required_version}
+            )
+        cache[cache_key] = result
+        return result
+
+    def _probe_contract(
+        self, tenant_id: str, company: AcCompany,
+    ) -> Tuple[str, Optional["SorentoContractInfo"]]:
+        """S5 (review round 1) - the ONE real network probe per (tenant,
+        company) per SERVICE INSTANCE, memoised SEPARATELY from
+        ``_contract_refusal``'s own per-entity verdict cache: a company's
+        doc-feed view asks this gate once per feed (3x), and every one of
+        those calls means the SAME consumer connection answering the SAME
+        ``GET /external/contract`` - without this, each feed re-hit the
+        network. Returns ``("no_sink" | "config_error" | "unreachable" |
+        "ok", contract-or-None)``. The BUILD phase (resolving the consumer
+        connection, decrypting its credentials) and the PROBE phase (the
+        actual network call) are still caught SEPARATELY (a config/
+        credentials fault is never the SAME refusal reason as an old or
+        unreachable contract - unchanged from before this cache existed).
+        """
+        cache_key = (tenant_id, company.id)
+        if cache_key in self._contract_probe_cache:
+            return self._contract_probe_cache[cache_key]
+        result: Tuple[str, Optional["SorentoContractInfo"]]
         if company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id:
-            result = {"version": None, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
-            self._stock_push_gate_cache[cache_key] = result
+            result = ("no_sink", None)
+            self._contract_probe_cache[cache_key] = result
             return result
         try:
             conn = self._consumer_connection(tenant_id, company.sink_connection_id)
@@ -1115,33 +1227,61 @@ class CompanyService:
                 timeout=BRAND_CONTRACT_GATE_PROBE_TIMEOUT_SECONDS,
             )
         except AutocountServiceError:
-            result = {
-                "version": None,
-                "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION,
-                "reason": "config_error",
-            }
-            self._stock_push_gate_cache[cache_key] = result
+            result = ("config_error", None)
+            self._contract_probe_cache[cache_key] = result
             return result
         try:
             contract = sink.fetch_contract_detail()
         except Exception:  # noqa: BLE001 - the PROBE itself, unprovable = refused
-            result = {"version": None, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
-            self._stock_push_gate_cache[cache_key] = result
+            result = ("unreachable", None)
+            self._contract_probe_cache[cache_key] = result
             return result
-        version = contract.version if contract else None
-        entities = contract.entities if contract else []
-        supported = (
-            version is not None
-            and version >= STOCK_BALANCES_CONTRACT_VERSION
-            and "stock_balances" in entities
-        )
-        result = (
-            None
-            if supported
-            else {"version": version, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
-        )
-        self._stock_push_gate_cache[cache_key] = result
+        result = ("ok", contract)
+        self._contract_probe_cache[cache_key] = result
         return result
+
+    def stock_push_gate_error(
+        self, tenant_id: str, company: AcCompany
+    ) -> Optional[Dict[str, Any]]:
+        """sprint-5/10 S5b (AC-10-15) - whether ``stock_balance``'s
+        ``delivery_mode`` may switch to ``push``. Behaviour byte-identical
+        to before the sprint-5/14 ``_contract_refusal`` extraction (D4) -
+        this test suite's own regression control pins it."""
+        return self._contract_refusal(
+            tenant_id, company,
+            required_version=STOCK_BALANCES_CONTRACT_VERSION,
+            entity_name="stock_balances",
+            cache=self._stock_push_gate_cache,
+            cache_key=(tenant_id, company.id),
+        )
+
+    def doc_feed_gate_error(
+        self, tenant_id: str, company: AcCompany, feed: str
+    ) -> Optional[Dict[str, Any]]:
+        """sprint-5/14 (D4) - whether a doc feed's mode may switch to
+        ``dry_run``/``push``: contract >= 2.7 AND the feed's own door name
+        (the feed key itself) advertised in ``GET /external/contract``'s
+        ``entities``. A blank ``sorento_company_code`` is its OWN
+        config-fault branch here (unlike the stock gate, which has no
+        anchor-code concept to check) - without it every single push call
+        would answer ``COMPANY_ANCHOR_REQUIRED``, so accepting the save
+        would store a configuration guaranteed to fail at run time
+        (foolproof-UI: never let the UI reach a certain runtime error).
+        """
+        if company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id:
+            return {"version": None, "requiredVersion": DOC_FEED_CONTRACT_VERSION}
+        if not (company.sorento_company_code or "").strip():
+            return {
+                "version": None, "requiredVersion": DOC_FEED_CONTRACT_VERSION,
+                "reason": "config_error",
+            }
+        return self._contract_refusal(
+            tenant_id, company,
+            required_version=DOC_FEED_CONTRACT_VERSION,
+            entity_name=feed,
+            cache=self._doc_feed_gate_cache,
+            cache_key=(tenant_id, company.id, feed),
+        )
 
     def set_sink_target(
         self,
@@ -2135,6 +2275,17 @@ class CompanyService:
                     f"'{row.transform}' is not a known transform."
                 )
             target = row.sorento_field
+            locked_source = LOCKED_MAPPING_SOURCES.get(entity_type, {}).get(target)
+            if locked_source is not None and (
+                source_path != locked_source
+                or row.transform != "string"
+                or (row.formula or "").strip()
+                or not row.is_enabled
+            ):
+                raise AutocountServiceError(
+                    f"The Sorento field '{target}' is fixed to the AutoCount field "
+                    f"'{locked_source}' as plain text and cannot be changed."
+                )
             if target not in accepted:
                 raise AutocountServiceError(
                     f"'{target}' is not a Sorento field accepted for "
@@ -2501,7 +2652,9 @@ class CompanyService:
         engine = MappingEngine(
             rows,
             entity_type=entity_type,
-            database_name=company.database_name,
+            database_name=identity_scope(
+                self.db, tenant_id, company, entity_type, config.source_config
+            ),
         )
         mock_record = dict(record)
         if lines is not None and engine.detail_key is not None:

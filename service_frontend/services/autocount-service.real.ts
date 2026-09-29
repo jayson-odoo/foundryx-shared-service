@@ -41,10 +41,20 @@ import type {
   AutocountSyncJob,
   AutocountSyncJobBatch,
   AutocountSyncRun,
+  DocFeedBackfill,
+  DocFeedIssue,
+  DocFeedItem,
+  DocFeedRun,
+  DocFeedsView,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
 import type { AutocountStagedQuery } from '@/types/autocount';
-import type { AutocountListQuery, AutocountService } from './autocount-service';
+import type {
+  AutocountListQuery,
+  AutocountService,
+  DocFeedIssuesQuery,
+  DocFeedRunsQuery,
+} from './autocount-service';
 
 function pageParams(query: AutocountListQuery = {}): URLSearchParams {
   const p = new URLSearchParams();
@@ -513,6 +523,70 @@ export const realAutocountService: AutocountService = {
     return apiFetch<AutocountPreviewJob>(`/autocount/previews/${jobId}/cancel`, {
       method: 'POST',
     }).then(normalizePreviewJob);
+  },
+
+  // ── document feeds (sprint-5/14, D17) - real S5 wiring ────────────────────
+  // Bound directly by `autocount-service.ts` (the S1 mock overlay is retired).
+
+  getDocFeeds(companyId) {
+    return apiFetch<DocFeedsView>(`/autocount/doc-feeds/${companyId}`);
+  },
+
+  updateDocFeed(companyId, feed, input) {
+    return apiFetch<DocFeedItem>(`/autocount/doc-feeds/${companyId}/${feed}`, {
+      method: 'PUT',
+      body: JSON.stringify(input),
+    });
+  },
+
+  runDocFeed(companyId, feed, input) {
+    return apiFetch<{ jobId: string }>(`/autocount/doc-feeds/${companyId}/${feed}/run`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  startDocFeedBackfill(companyId, feed, input) {
+    return apiFetch<DocFeedBackfill>(`/autocount/doc-feeds/${companyId}/${feed}/backfill`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    });
+  },
+
+  stopDocFeedBackfill(companyId, feed) {
+    return apiFetch<DocFeedBackfill>(`/autocount/doc-feeds/${companyId}/${feed}/backfill/stop`, {
+      method: 'POST',
+    });
+  },
+
+  resumeDocFeedBackfill(companyId, feed) {
+    return apiFetch<DocFeedBackfill>(`/autocount/doc-feeds/${companyId}/${feed}/backfill/resume`, {
+      method: 'POST',
+    });
+  },
+
+  discardDocFeedBackfill(companyId, feed) {
+    return apiFetch<DocFeedBackfill>(`/autocount/doc-feeds/${companyId}/${feed}/backfill/discard`, {
+      method: 'POST',
+    });
+  },
+
+  listDocFeedRuns(companyId, query: DocFeedRunsQuery = {}) {
+    const p = pageParams(query);
+    if (query.feed) p.set('feed', query.feed);
+    return apiFetch<ListResult<DocFeedRun>>(
+      `/autocount/doc-feeds/${companyId}/runs?${p.toString()}`,
+    );
+  },
+
+  listDocFeedIssues(companyId, query: DocFeedIssuesQuery = {}) {
+    const p = pageParams(query);
+    if (query.feed) p.set('feed', query.feed);
+    if (query.kind) p.set('kind', query.kind);
+    if (query.search) p.set('search', query.search);
+    return apiFetch<ListResult<DocFeedIssue>>(
+      `/autocount/doc-feeds/${companyId}/issues?${p.toString()}`,
+    );
   },
 };
 

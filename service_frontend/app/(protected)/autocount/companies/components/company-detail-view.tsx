@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   CircleCheck,
+  FileStack,
   History,
   Info,
   Layers,
@@ -44,6 +45,7 @@ import {
 } from '../../components/autocount-meta';
 import { AddEntityControl } from './add-entity-control';
 import { DetailRow } from './detail-row';
+import { DocFeedsTab } from './doc-feeds-tab';
 import { DocumentPrerequisiteCard } from './document-prerequisite-card';
 import { EntityLookbackDialog } from './entity-lookback-dialog';
 import { SinkTargetSection } from './sink-target-section';
@@ -408,6 +410,12 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
             </div>
           ),
         },
+        {
+          id: 'feeds',
+          label: 'Document feeds',
+          icon: FileStack,
+          render: () => <DocFeedsTab companyId={companyId} />,
+        },
       ],
       initialTabId: 'overview',
       actions: [],
@@ -425,6 +433,7 @@ export function AutocountCompanyDetailView({ companyId }: { companyId: string })
   }, [
     can,
     companyCode,
+    companyId,
     detail,
     entitiesConfig,
     formatDateTime,

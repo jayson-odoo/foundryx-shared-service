@@ -85,11 +85,31 @@ import type {
   AutocountSyncJob,
   AutocountSyncJobBatch,
   AutocountSyncRun,
+  DocFeedBackfill,
+  DocFeedBackfillStartInput,
+  DocFeedContractGate,
+  DocFeedEligibleConnection,
+  DocFeedIssue,
+  DocFeedItem,
+  DocFeedKey,
+  DocFeedLastRun,
+  DocFeedMode,
+  DocFeedRun,
+  DocFeedRunInput,
+  DocFeedRunKind,
+  DocFeedRunSummary,
+  DocFeedsView,
+  DocFeedUpdateInput,
   HttpPreview,
   HttpPreviewInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
-import type { AutocountListQuery, AutocountService } from './autocount-service';
+import type {
+  AutocountListQuery,
+  AutocountService,
+  DocFeedIssuesQuery,
+  DocFeedRunsQuery,
+} from './autocount-service';
 
 function mockCompany(overrides: Partial<AutocountCompany> = {}): AutocountCompany {
   return {
@@ -1223,6 +1243,7 @@ function mockListEtlRuns(
 //   /location         list, 2 rows - `warehouse` (small on purpose).
 //   /ItemGroup        list, 60 rows - `product_category`.
 //   /ItemBrand        list, 12 rows - `brand`.
+//   /branchbypage     paged, 4 rows (2 fixture pages) - `branch`.
 //   /itembypage + distinctOf ["BaseUOM","SalesUOM","PurchaseUOM"] - `unit_of_measure`.
 //   /bogus            422 on `path` ("Not found").
 //   any connectionId not in HTTP_API_CONNECTIONS, or a basic-auth one → 422 on `connectionId`.
@@ -1302,6 +1323,13 @@ const ITEM_BRAND_ROWS: Array<Record<string, unknown>> = ITEM_BRANDS.map((b) => (
   Description: '',
 }));
 
+const BRANCH_ROWS: Array<Record<string, unknown>> = [
+  { BranchCode: 'HQ', BranchName: 'Head Office', AccNo: '300-R009' },
+  { BranchCode: 'PJ', BranchName: 'Petaling Jaya Branch', AccNo: '300-R014' },
+  { BranchCode: 'HQ', BranchName: 'Head Office (no AccNo)', AccNo: '' },
+  { BranchCode: '', BranchName: 'No branch code', AccNo: '300-R777' },
+];
+
 /** One path's full fixture: envelope shape + the rows behind it. */
 interface HttpPathFixture {
   envelope: 'paged' | 'list';
@@ -1315,6 +1343,10 @@ const HTTP_PATH_FIXTURES: Record<string, HttpPathFixture> = {
   '/location': { envelope: 'list', rows: LOCATION_ROWS },
   '/ItemGroup': { envelope: 'list', rows: ITEM_GROUP_ROWS },
   '/ItemBrand': { envelope: 'list', rows: ITEM_BRAND_ROWS },
+  // sprint-5/14 section 11 - the paged `branchbypage` rows (the committed vendor
+  // fixtures branch-page-1.json + branch-page-2.json, walk order): one row has a
+  // blank AccNo and one a blank BranchCode, as the live endpoint's edge cases.
+  '/branchbypage': { envelope: 'paged', totalCount: 4, rows: BRANCH_ROWS },
 };
 
 /** Distinct, trimmed, non-blank, first-seen-order projection (mirrors the
@@ -2167,6 +2199,399 @@ function mockPreviewJobClaimChange(input: AutocountPreviewJobStartInput) {
   };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Document feeds (sprint-5/14, D17) - PHASE 1 MOCK for the WHOLE surface
+// (S2..S4 build the real `doc-feeds` router, plan section 3.2); this is the
+// spec `mockAutocountService` (the Vitest fixture double) follows; the real
+// `doc-feeds` router is bound in `autocount-service.ts`. State lives in module-scope maps, same as
+// every other PHASE 1 MOCK session store in this file - `resetEtlMockState`
+// clears it.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const DOC_FEED_KEYS: DocFeedKey[] = ['delivery_orders', 'goods_receive_notes'];
+
+/** D4 - the consumer contract version every doc feed gate checks against. */
+const DOC_FEED_GATE_REQUIRED_VERSION = 2.7;
+/** Plan section 0 (V9) - book `db1` = Sorento, company code `SRT`. The ONE
+ * sentinel code the mock treats as an open contract, mirroring the ETL push
+ * gate's own `STOCK_PUSH_GATE_CODE_SENTINEL` convention (a company with any
+ * other Sorento code, or no Sorento sink at all, reads as shut). */
+const DOC_FEED_GATE_OPEN_CODE = 'SRT';
+
+interface MockDocFeedState {
+  connectionId: string | null;
+  book: string | null;
+  mode: DocFeedMode;
+  cursorDay: string | null;
+  lastRun: DocFeedLastRun | null;
+  backfill: DocFeedBackfill | null;
+}
+
+function defaultDocFeedState(): MockDocFeedState {
+  return {
+    connectionId: null,
+    book: null,
+    mode: 'off',
+    cursorDay: null,
+    lastRun: null,
+    backfill: null,
+  };
+}
+
+const docFeeds = new Map<string, Record<DocFeedKey, MockDocFeedState>>();
+const docFeedRuns = new Map<string, DocFeedRun[]>();
+const docFeedIssues = new Map<string, DocFeedIssue[]>();
+const docFeedGateOverrides = new Map<string, DocFeedContractGate | null>();
+let docFeedRunSeq = 0;
+let docFeedBackfillSeq = 0;
+
+function docFeedsFor(companyId: string): Record<DocFeedKey, MockDocFeedState> {
+  let existing = docFeeds.get(companyId);
+  if (!existing) {
+    existing = {
+      delivery_orders: defaultDocFeedState(),
+      goods_receive_notes: defaultDocFeedState(),
+    };
+    docFeeds.set(companyId, existing);
+  }
+  return existing;
+}
+
+/** Test seam (mirrors `setMockPushGate`) - force a company's doc-feed
+ * contract gate open (`null`) or shut (a specific gate) with no backend;
+ * omitting the override falls back to the sentinel-code default below.
+ * Cleared by `resetEtlMockState`. */
+export function setMockDocFeedGate(companyId: string, gate: DocFeedContractGate | null): void {
+  docFeedGateOverrides.set(companyId, gate);
+}
+
+function docFeedGateFor(
+  company: Pick<AutocountCompany, 'id' | 'sinkImpl' | 'sorentoCompanyCode'>,
+): DocFeedContractGate | null {
+  if (docFeedGateOverrides.has(company.id)) return docFeedGateOverrides.get(company.id) ?? null;
+  if (company.sinkImpl !== 'sorento') {
+    return { version: null, requiredVersion: DOC_FEED_GATE_REQUIRED_VERSION, reason: 'config_error' };
+  }
+  const code = (company.sorentoCompanyCode ?? '').trim().toUpperCase();
+  if (!code) {
+    return { version: null, requiredVersion: DOC_FEED_GATE_REQUIRED_VERSION, reason: 'config_error' };
+  }
+  if (code === DOC_FEED_GATE_OPEN_CODE) return null;
+  return { version: 2.6, requiredVersion: DOC_FEED_GATE_REQUIRED_VERSION };
+}
+
+/** The last non-empty path segment of a base URL, if it reads as a book
+ * (CRM rule 13.2: `^[A-Za-z0-9_-]{1,20}$`) - else `null` (not eligible). */
+function bookFromBaseUrl(baseUrl: string): string | null {
+  try {
+    const segments = new URL(baseUrl).pathname.split('/').filter(Boolean);
+    const last = segments[segments.length - 1];
+    return last && /^[A-Za-z0-9_-]{1,20}$/.test(last) ? last : null;
+  } catch {
+    return null;
+  }
+}
+
+/** D2 - open-auth connections whose base URL derives a book, out of any
+ * list of `{name, baseUrl, auth}` connections (the pure mock's fixture
+ * `HTTP_API_CONNECTIONS`). */
+function eligibleFromApiConnections(
+  connections: Array<Pick<AutocountApiConnection, 'id' | 'name' | 'baseUrl' | 'auth'>>,
+): DocFeedEligibleConnection[] {
+  return connections
+    .filter((c) => c.auth === 'none')
+    .map((c) => ({ id: c.id, name: c.name, book: bookFromBaseUrl(c.baseUrl) }))
+    .filter((c): c is DocFeedEligibleConnection => Boolean(c.book));
+}
+
+/** The pure mock's own fixture list (`autocount-service.mock.doc-feeds.
+ * test.ts`, and the browser-evidence mock overlay before a real company
+ * exists). */
+function eligibleDocFeedConnections(): DocFeedEligibleConnection[] {
+  return eligibleFromApiConnections(HTTP_API_CONNECTIONS);
+}
+
+function todayKey(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function addDaysKey(dateKey: string, delta: number): string {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + delta);
+  return dt.toISOString().slice(0, 10);
+}
+
+function daysBetweenKeys(fromKey: string, toKey: string): number {
+  const [fy, fm, fd] = fromKey.split('-').map(Number);
+  const [ty, tm, td] = toKey.split('-').map(Number);
+  const from = Date.UTC(fy, fm - 1, fd);
+  const to = Date.UTC(ty, tm - 1, td);
+  return Math.max(1, Math.round((to - from) / 86_400_000) + 1);
+}
+
+/** Demo-only progress ticker (no real timers): each time the feed's view is
+ * read, a running backfill advances a chunk, so the poll cadence
+ * (`useAutocountDocFeeds`) shows real movement without a backend. */
+function tickMockBackfill(backfill: DocFeedBackfill): void {
+  if (backfill.status !== 'running') return;
+  const chunk = Math.max(1, Math.round(backfill.daysTotal / 6));
+  backfill.daysDone = Math.min(backfill.daysTotal, backfill.daysDone + chunk);
+  if (backfill.daysDone >= backfill.daysTotal) {
+    backfill.status = 'done';
+    backfill.nextDay = addDaysKey(backfill.toDay, 1);
+  } else {
+    backfill.nextDay = addDaysKey(backfill.fromDay, backfill.daysDone);
+  }
+}
+
+function docFeedItemFor(
+  companyId: string,
+  feed: DocFeedKey,
+  gate: DocFeedContractGate | null,
+): DocFeedItem {
+  const state = docFeedsFor(companyId)[feed];
+  if (state.backfill) tickMockBackfill(state.backfill);
+  const issues = (docFeedIssues.get(companyId) ?? []).filter((i) => i.feed === feed);
+  return {
+    feed,
+    book: state.book,
+    connectionId: state.connectionId,
+    mode: state.mode,
+    cursorDay: state.cursorDay,
+    fullBackfillDoneAt: null,
+    contractGate: gate,
+    retryableCount: issues.filter((i) => i.kind === 'retryable').length,
+    failedCount: issues.filter((i) => i.kind === 'failed').length,
+    lastRun: state.lastRun,
+    backfill: state.backfill ? { ...state.backfill } : null,
+  };
+}
+
+/** The save-time shape guard (D2): `off` clears the connection; anything
+ * else needs one of the ELIGIBLE connections (never a client-supplied id
+ * trusted blind). Takes the caller's own eligible list (the pure mock's
+ * fixture `HTTP_API_CONNECTIONS`). */
+function mutateDocFeed(
+  companyId: string,
+  feed: DocFeedKey,
+  input: DocFeedUpdateInput,
+  eligible: DocFeedEligibleConnection[],
+): void {
+  const state = docFeedsFor(companyId)[feed];
+  if (input.mode === 'off') {
+    state.mode = 'off';
+    state.connectionId = null;
+    state.book = null;
+    return;
+  }
+  if (!input.connectionId) {
+    throw new ApiError('Choose a connection.', 422, null, {
+      fieldErrors: { connectionId: 'Choose a connection.' },
+    });
+  }
+  // The eligible list wins when the id matches one; a Vitest-only sentinel
+  // id (`autocount-service.mock.doc-feeds.test.ts`'s `conn-mock-1`) still
+  // configures, with a placeholder book - the config DIALOG itself only
+  // ever offers eligible ids (foolproof-UI), so this path is test scaffolding
+  // only, never reachable from the real UI.
+  const conn = eligible.find((c) => c.id === input.connectionId);
+  state.connectionId = input.connectionId;
+  state.book = conn?.book ?? 'mock';
+  state.mode = input.mode;
+}
+
+/** One retryable + one failed issue, upserted by DocKey (D9: re-running a
+ * poll supersedes rather than duplicates) - just enough to exercise the
+ * issues list and the feed's Waiting/Failed counters with no backend. */
+function upsertMockDocFeedIssues(companyId: string, feed: DocFeedKey): void {
+  const state = docFeedsFor(companyId)[feed];
+  const issues = docFeedIssues.get(companyId) ?? [];
+  const now = new Date().toISOString();
+  const upsert = (issue: DocFeedIssue) => {
+    const idx = issues.findIndex((i) => i.feed === issue.feed && i.docKey === issue.docKey);
+    if (idx >= 0) issues[idx] = issue;
+    else issues.push(issue);
+  };
+  const book = state.book ?? 'db1';
+  const prefix = feed === 'goods_receive_notes' ? 'GRN' : 'DO';
+  upsert({
+    id: `${feed}:${book}:900001`,
+    feed,
+    book,
+    docKey: 900001,
+    kind: 'retryable',
+    docNo: `${prefix}-900001`,
+    docDate: todayKey(),
+    sourceModifiedAt: now,
+    errors: { itemCode: 'Not found in the consumer yet.' },
+    warnings: null,
+    attempts: 1,
+    firstAt: now,
+    lastAt: now,
+  });
+  upsert({
+    id: `${feed}:${book}:900002`,
+    feed,
+    book,
+    docKey: 900002,
+    kind: 'failed',
+    docNo: `${prefix}-900002`,
+    docDate: todayKey(),
+    sourceModifiedAt: now,
+    errors: { docDate: 'Outside the accepted window.' },
+    warnings: null,
+    attempts: 1,
+    firstAt: now,
+    lastAt: now,
+  });
+  docFeedIssues.set(companyId, issues);
+}
+
+async function mockRunDocFeed(
+  companyId: string,
+  feed: DocFeedKey,
+  input: DocFeedRunInput,
+): Promise<{ jobId: string }> {
+  const state = docFeedsFor(companyId)[feed];
+  if (state.mode === 'off') {
+    throw new ApiError('Turn this feed on before running it.', 422, null, {
+      fieldErrors: { mode: 'Turn this feed on before running it.' },
+    });
+  }
+  const dryRun = state.mode === 'dry_run';
+  const kind: DocFeedRunKind = input.kind;
+  const dayTo = todayKey();
+  const dayFrom =
+    kind === 'sweep' ? addDaysKey(dayTo, -44) : (state.cursorDay ?? addDaysKey(dayTo, -1));
+  const now = new Date().toISOString();
+  const summary: DocFeedRunSummary =
+    kind === 'sweep'
+      ? { candidates: 0 }
+      : { created: dryRun ? 0 : 3, updated: dryRun ? 0 : 1, unchanged: 2, retryable: 1, failed: 1 };
+  const run: DocFeedRun = {
+    id: `doc-feed-run-${++docFeedRunSeq}`,
+    feed,
+    kind,
+    dryRun,
+    dayFrom,
+    dayTo,
+    requests: kind === 'sweep' ? 45 : 2,
+    fetchedCount: 8,
+    summary,
+    outcome: 'SUCCESS',
+    error: null,
+    errorCode: null,
+    startedAt: now,
+    finishedAt: now,
+    durationMs: 420,
+  };
+  const runs = docFeedRuns.get(companyId) ?? [];
+  runs.unshift(run);
+  docFeedRuns.set(companyId, runs);
+
+  if (kind === 'poll') {
+    if (!dryRun) {
+      state.cursorDay = dayTo;
+      upsertMockDocFeedIssues(companyId, feed);
+    }
+  }
+  state.lastRun = {
+    id: run.id,
+    kind: run.kind,
+    dryRun: run.dryRun,
+    outcome: run.outcome,
+    finishedAt: run.finishedAt,
+    error: run.error,
+  };
+  return { jobId: `job-${run.id}` };
+}
+
+async function mockStartDocFeedBackfill(
+  companyId: string,
+  feed: DocFeedKey,
+  input: DocFeedBackfillStartInput,
+): Promise<DocFeedBackfill> {
+  const state = docFeedsFor(companyId)[feed];
+  if (state.mode !== 'push') {
+    throw new ApiError('Turn Push on before a live backfill.', 422, null, {
+      fieldErrors: { mode: 'Turn Push on before a live backfill.' },
+    });
+  }
+  if (state.backfill && state.backfill.status !== 'done' && state.backfill.status !== 'stopped') {
+    throw new ApiError('A backfill is already running.', 409, null, { code: 'BACKFILL_OPEN' });
+  }
+  const toDay = input.toDay ?? todayKey();
+  const fromDay = input.fromDay ?? '2023-01-01';
+  const backfill: DocFeedBackfill = {
+    id: `doc-feed-backfill-${++docFeedBackfillSeq}`,
+    status: 'running',
+    dryRun: input.dryRun,
+    fromDay,
+    toDay,
+    nextDay: fromDay,
+    daysTotal: daysBetweenKeys(fromDay, toDay),
+    daysDone: 0,
+    error: null,
+  };
+  state.backfill = backfill;
+  return { ...backfill };
+}
+
+function requireMockBackfill(companyId: string, feed: DocFeedKey): DocFeedBackfill {
+  const backfill = docFeedsFor(companyId)[feed].backfill;
+  if (!backfill) throw new ApiError('No backfill to act on.', 404, null, {});
+  return backfill;
+}
+
+async function mockStopDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
+  const backfill = requireMockBackfill(companyId, feed);
+  backfill.status = 'stopped';
+  return { ...backfill };
+}
+
+async function mockResumeDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
+  const backfill = requireMockBackfill(companyId, feed);
+  backfill.status = 'running';
+  return { ...backfill };
+}
+
+async function mockDiscardDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
+  const backfill = requireMockBackfill(companyId, feed);
+  backfill.status = 'done';
+  return { ...backfill };
+}
+
+function docFeedListPage<T>(rows: T[], query: { page?: number; pageSize?: number } = {}): ListResult<T> {
+  const page = query.page ?? 0;
+  const pageSize = query.pageSize ?? 25;
+  const start = page * pageSize;
+  return { data: rows.slice(start, start + pageSize), total: rows.length, page };
+}
+
+async function mockListDocFeedRuns(
+  companyId: string,
+  query: DocFeedRunsQuery = {},
+): Promise<ListResult<DocFeedRun>> {
+  let rows = docFeedRuns.get(companyId) ?? [];
+  if (query.feed) rows = rows.filter((r) => r.feed === query.feed);
+  return docFeedListPage(rows, query);
+}
+
+async function mockListDocFeedIssues(
+  companyId: string,
+  query: DocFeedIssuesQuery = {},
+): Promise<ListResult<DocFeedIssue>> {
+  let rows = docFeedIssues.get(companyId) ?? [];
+  if (query.feed) rows = rows.filter((r) => r.feed === query.feed);
+  if (query.kind) rows = rows.filter((r) => r.kind === query.kind);
+  if (query.search) {
+    const q = query.search.trim().toLowerCase();
+    rows = rows.filter((r) => (r.docNo ?? '').toLowerCase().includes(q));
+  }
+  return docFeedListPage(rows, query);
+}
+
 /** Test seam: forget every S2 session state (the Vitest suite isolates cases). */
 export function resetEtlMockState(): void {
   etlOverlays.clear();
@@ -2177,6 +2602,12 @@ export function resetEtlMockState(): void {
   httpPreviewColumnsByKey.clear();
   etlRuns.clear();
   etlTasks.clear();
+  docFeeds.clear();
+  docFeedRuns.clear();
+  docFeedIssues.clear();
+  docFeedGateOverrides.clear();
+  docFeedRunSeq = 0;
+  docFeedBackfillSeq = 0;
   createdCompanies.clear();
   createdOpenCompanies.clear();
   dbSeeded = false;
@@ -3171,6 +3602,69 @@ export const mockAutocountService: AutocountService & MockOnlyPreviewMethods = {
   cancelPreviewJob(jobId: string): Promise<AutocountPreviewJob> {
     return cancelPreviewJobIn(mockPreviewJobStore, jobId);
   },
+
+  // ── document feeds (sprint-5/14, D17) - PHASE 1 MOCK is the backend spec ──
+
+  async getDocFeeds(companyId: string): Promise<DocFeedsView> {
+    const company = applyCompanyOverlay(mockCompanyState(companyId));
+    const gate = docFeedGateFor(company);
+    return {
+      feeds: DOC_FEED_KEYS.map((feed) => docFeedItemFor(companyId, feed, gate)),
+      eligibleConnections: eligibleDocFeedConnections(),
+    };
+  },
+
+  async updateDocFeed(
+    companyId: string,
+    feed: DocFeedKey,
+    input: DocFeedUpdateInput,
+  ): Promise<DocFeedItem> {
+    mutateDocFeed(companyId, feed, input, eligibleDocFeedConnections());
+    const gate = docFeedGateFor(applyCompanyOverlay(mockCompanyState(companyId)));
+    return docFeedItemFor(companyId, feed, gate);
+  },
+
+  async runDocFeed(
+    companyId: string,
+    feed: DocFeedKey,
+    input: DocFeedRunInput,
+  ): Promise<{ jobId: string }> {
+    return mockRunDocFeed(companyId, feed, input);
+  },
+
+  async startDocFeedBackfill(
+    companyId: string,
+    feed: DocFeedKey,
+    input: DocFeedBackfillStartInput,
+  ): Promise<DocFeedBackfill> {
+    return mockStartDocFeedBackfill(companyId, feed, input);
+  },
+
+  async stopDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
+    return mockStopDocFeedBackfill(companyId, feed);
+  },
+
+  async resumeDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
+    return mockResumeDocFeedBackfill(companyId, feed);
+  },
+
+  async discardDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
+    return mockDiscardDocFeedBackfill(companyId, feed);
+  },
+
+  async listDocFeedRuns(
+    companyId: string,
+    query: DocFeedRunsQuery = {},
+  ): Promise<ListResult<DocFeedRun>> {
+    return mockListDocFeedRuns(companyId, query);
+  },
+
+  async listDocFeedIssues(
+    companyId: string,
+    query: DocFeedIssuesQuery = {},
+  ): Promise<ListResult<DocFeedIssue>> {
+    return mockListDocFeedIssues(companyId, query);
+  },
 };
 
 /** A realistic supplier/customer mapping view for the editor's tunable states. */
@@ -3710,6 +4204,14 @@ const MAPPING_RESET_PRESETS: Record<string, MappingResetPreset> = {
       { sourcePath: 'ItemBrand', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
       { sourcePath: 'ItemBrand', canonicalField: 'name', transform: 'string', formula: null, required: true, enabled: true },
       { sourcePath: 'Description', canonicalField: 'description', transform: 'string', formula: null, required: false, enabled: true },
+    ],
+  },
+  branch: {
+    label: 'Branches (open REST API)',
+    rows: [
+      { sourcePath: 'AccNo', canonicalField: 'acc_no', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'BranchCode', canonicalField: 'code', transform: 'string', formula: null, required: true, enabled: true },
+      { sourcePath: 'BranchName', canonicalField: 'name', transform: 'string', formula: null, required: false, enabled: true },
     ],
   },
   unit_of_measure: {

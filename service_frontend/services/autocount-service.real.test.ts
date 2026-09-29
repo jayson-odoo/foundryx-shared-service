@@ -442,3 +442,97 @@ describe('realAutocountService - human-invoked pull (AC-10-11/27..38)', () => {
     });
   });
 });
+
+describe('realAutocountService - document feeds (sprint-5/14 S3/S8, review round 1)', () => {
+  it('getDocFeeds GETs the company view', async () => {
+    apiFetchMock.mockResolvedValue({ feeds: [], eligibleConnections: [] });
+    await realAutocountService.getDocFeeds('co-1');
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/doc-feeds/co-1');
+  });
+
+  it('updateDocFeed PUTs the feed config', async () => {
+    apiFetchMock.mockResolvedValue({ feed: 'delivery_orders' });
+    await realAutocountService.updateDocFeed('co-1', 'delivery_orders', { connectionId: 'k1', mode: 'dry_run' });
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/doc-feeds/co-1/delivery_orders', {
+      method: 'PUT',
+      body: JSON.stringify({ connectionId: 'k1', mode: 'dry_run' }),
+    });
+  });
+
+  it('runDocFeed POSTs the run body', async () => {
+    apiFetchMock.mockResolvedValue({ jobId: 'j1' });
+    await realAutocountService.runDocFeed('co-1', 'goods_receive_notes', { kind: 'sweep' });
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/doc-feeds/co-1/goods_receive_notes/run', {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'sweep' }),
+    });
+  });
+
+  it.each([
+    ['stopDocFeedBackfill', 'stop'],
+    ['resumeDocFeedBackfill', 'resume'],
+    ['discardDocFeedBackfill', 'discard'],
+  ] as const)('%s POSTs /backfill/%s with no body', async (method, action) => {
+    apiFetchMock.mockResolvedValue({ id: 'bf-1' });
+    await realAutocountService[method]('co-1', 'goods_receive_notes');
+    expect(apiFetchMock).toHaveBeenCalledWith(`/autocount/doc-feeds/co-1/goods_receive_notes/backfill/${action}`, {
+      method: 'POST',
+    });
+  });
+
+  it('listDocFeedRuns sends feed + page + snake_case page_size and returns the house {data,total,page} envelope', async () => {
+    apiFetchMock.mockResolvedValue({ data: [{ id: 'r1' }], total: 1, page: 1 });
+    const result = await realAutocountService.listDocFeedRuns('co-1', { feed: 'goods_receive_notes', page: 1, pageSize: 10 });
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      '/autocount/doc-feeds/co-1/runs?page=1&page_size=10&feed=goods_receive_notes',
+    );
+    expect(result).toEqual({ data: [{ id: 'r1' }], total: 1, page: 1 });
+  });
+
+  it('listDocFeedIssues sends feed, kind, search + snake_case page_size and returns the house envelope', async () => {
+    apiFetchMock.mockResolvedValue({ data: [{ id: 'delivery_orders:db1:1' }], total: 1, page: 0 });
+    const result = await realAutocountService.listDocFeedIssues('co-1', {
+      feed: 'delivery_orders', kind: 'failed', search: 'DO-1', page: 0, pageSize: 25,
+    });
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      '/autocount/doc-feeds/co-1/issues?page=0&page_size=25&feed=delivery_orders&kind=failed&search=DO-1',
+    );
+    expect(result).toEqual({ data: [{ id: 'delivery_orders:db1:1' }], total: 1, page: 0 });
+  });
+
+  it('startDocFeedBackfill reads back the FULL DocFeedBackfill shape (S8) - the router now answers the same object stop/resume/discard already do, never a bespoke {backfillId, jobId}', async () => {
+    apiFetchMock.mockResolvedValue({
+      id: 'bf-1', status: 'running', dryRun: false, fromDay: '2023-01-01',
+      toDay: '2026-09-29', nextDay: '2023-01-01', daysTotal: 100, daysDone: 0,
+      error: null, jobId: 'job-1',
+    });
+    const backfill = await realAutocountService.startDocFeedBackfill('co-1', 'delivery_orders', {
+      dryRun: false, fromDay: '2023-01-01', toDay: '2026-09-29',
+    });
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/doc-feeds/co-1/delivery_orders/backfill', {
+      method: 'POST',
+      body: JSON.stringify({ dryRun: false, fromDay: '2023-01-01', toDay: '2026-09-29' }),
+    });
+    expect(backfill.status).toBe('running');
+    expect(backfill.id).toBe('bf-1');
+  });
+
+  it('a 422 from updateDocFeed carries detail.fieldErrors (S3) - the SAME shape readFieldErrors already reads for every other AutoCount surface', async () => {
+    const { ApiError } = await import('@/lib/api-client');
+    const { readFieldErrors } = await import('@/lib/autocount-etl');
+    apiFetchMock.mockRejectedValue(
+      new ApiError('Unprocessable', 422, null, { fieldErrors: { mode: 'Choose a connection first.' } }),
+    );
+
+    await expect(
+      realAutocountService.updateDocFeed('co-1', 'delivery_orders', { connectionId: null, mode: 'push' }),
+    ).rejects.toMatchObject({ status: 422 });
+
+    try {
+      await realAutocountService.updateDocFeed('co-1', 'delivery_orders', { connectionId: null, mode: 'push' });
+    } catch (err) {
+      const detail = (err as InstanceType<typeof ApiError>).detail;
+      expect(readFieldErrors(detail)).toEqual({ mode: 'Choose a connection first.' });
+    }
+  });
+});

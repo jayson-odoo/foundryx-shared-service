@@ -21,6 +21,7 @@ import type {
 import {
   AC_PRESET_OPTIONS,
   applyPreset,
+  isLockedMappingField,
   presetForRow,
   presetOptionsForField,
 } from '../../../../../../components/autocount-meta';
@@ -177,6 +178,10 @@ export function MappingTable({
    *  preset deliberately withholds (`uom_code`, AC-10-74 - its column IS
    *  previewed) rendered as an ordinary, fully-lit row and nothing on this
    *  surface said it would not be sent. */
+  function isLocked(row: MappingEditableRow): boolean {
+    return isLockedMappingField(entityType, row.sorentoField);
+  }
+
   function isRowDimmed(row: MappingEditableRow): boolean {
     return isRowStale(row) || !row.isEnabled;
   }
@@ -213,7 +218,7 @@ export function MappingTable({
                 }
                 searchPlaceholder={columnMode ? 'Search columns' : 'Search or type a dotted path'}
                 allowCustom={!columnMode}
-                disabled={columnMode && acFields.length === 0}
+                disabled={isLocked(row.original) || (columnMode && acFields.length === 0)}
                 ariaLabel={`${columnMode ? 'Source column' : 'AutoCount source'} for row ${index + 1}`}
               />
             ) : (
@@ -223,6 +228,11 @@ export function MappingTable({
                 will not be sent), "Column not in query" is one possible
                 CAUSE. A preset-withheld row shows only the first. */}
             <div className="flex flex-wrap items-center gap-1">
+              {isLocked(row.original) && (
+                <Badge variant="secondary" appearance="light" size="sm" className="w-fit">
+                  Locked
+                </Badge>
+              )}
               {!row.original.isEnabled && (
                 <StatusBadge status="disabled" registry={ENABLED_REGISTRY} size="sm" />
               )}
@@ -247,6 +257,7 @@ export function MappingTable({
             <div className="min-w-28 flex-1">
               <SearchSelect
                 options={presetOptionsForField(row.original.sorentoField)}
+                disabled={isLocked(row.original)}
                 value={presetForRow(row.original.transform, row.original.formula)}
                 onChange={(key) => onChangeRow(index, applyPreset(key))}
                 ariaLabel={`Transform for row ${index + 1}`}
@@ -257,7 +268,7 @@ export function MappingTable({
                 formula language produces a scalar, so the server 422s a
                 formula row targeting a list field (AC-06-11) - the picker
                 must never offer a combination the save would reject. */}
-            {!isListTransform(row.original.transform) && (
+            {!isListTransform(row.original.transform) && !isLocked(row.original) && (
               <Button
                 type="button"
                 variant="ghost"
@@ -320,7 +331,7 @@ export function MappingTable({
                 value={row.original.sorentoField}
                 onChange={(value) => onChangeRow(index, withStatusSeed(row.original, { sorentoField: value }))}
                 placeholder="Select a Sorento field"
-                disabled={sorentoFields.length === 0}
+                disabled={isLocked(row.original) || sorentoFields.length === 0}
                 ariaLabel={`Sorento field for row ${index + 1}`}
               />
             ) : (
@@ -346,6 +357,7 @@ export function MappingTable({
               <Switch
                 size="sm"
                 checked={row.original.isEnabled}
+                disabled={isLocked(row.original)}
                 onCheckedChange={(checked) => onChangeRow(row.index, { isEnabled: checked })}
                 aria-label={`Send ${sorentoFieldLabel(row.original.sorentoField)} to Sorento`}
               />
@@ -365,6 +377,7 @@ export function MappingTable({
                 size="sm"
                 mode="icon"
                 onClick={() => onRemoveRow(row.index)}
+                disabled={isLocked(row.original)}
                 aria-label={`Remove row ${row.index + 1}`}
                 className={cn(isRowDimmed(row.original) && 'opacity-60')}
               >

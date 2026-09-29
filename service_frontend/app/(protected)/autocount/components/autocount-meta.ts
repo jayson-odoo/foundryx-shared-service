@@ -10,6 +10,13 @@ import type {
   AutocountRunOutcome,
   AutocountSourceKind,
   AutocountStagedStatus,
+  DocFeedBackfillStatus,
+  DocFeedContractGate,
+  DocFeedIssueKind,
+  DocFeedKey,
+  DocFeedMode,
+  DocFeedRunKind,
+  DocFeedRunOutcome,
 } from '@/types/autocount';
 
 // ── permission keys (module CSV: modules/autocount/permissions/permissions.csv)
@@ -150,6 +157,9 @@ export const AC_HTTP_ENTITY_TYPES: string[] = [
   'brand',
   'unit_of_measure',
   'stock_balance',
+  // sprint-5/14 section 11 (D23) - the paged `branchbypage` address records, a
+  // regular HTTP master with no `sql_db` variant.
+  'branch',
 ];
 
 /**
@@ -184,8 +194,8 @@ export const AC_SQL_DB_ENTITY_TYPES: string[] = [
 ];
 
 /**
- * The open REST API entities with NO `sql_db` variant (today: just
- * `stock_balance` - sprint-5/10 S5b, AC-10-39/D4) - derived from the two
+ * The open REST API entities with NO `sql_db` variant (today:
+ * `stock_balance` - sprint-5/10 S5b, AC-10-39/D4 - and `branch`, sprint-5/14 section 11) - derived from the two
  * catalogues above, never hand-listed twice (`test_autocount_entity_parity.py`
  * already pins `AC_SQL_DB_ENTITY_TYPES` as `ETL_ENTITY_TYPES` minus GRN minus
  * `stock_balance`, so this difference IS that literal).
@@ -201,6 +211,20 @@ export const AC_SQL_DB_ENTITY_TYPES: string[] = [
 export const AC_HTTP_ONLY_ENTITY_TYPES: string[] = AC_HTTP_ENTITY_TYPES.filter(
   (entityType) => !AC_SQL_DB_ENTITY_TYPES.includes(entityType),
 );
+
+/**
+ * Mapping rows the server refuses to change (sprint-5/14 section 11, round 3):
+ * the branch identity pair is fixed to its vendor columns as plain text, since
+ * the CRM derives its verdict `source_ref` from the mapped values. PARITY:
+ * `LOCKED_MAPPING_SOURCES` in `canonical/masters.py`.
+ */
+export const AC_LOCKED_MAPPING_SOURCES: Record<string, Record<string, string>> = {
+  branch: { acc_no: 'AccNo', code: 'BranchCode' },
+};
+
+export function isLockedMappingField(entityType: string, sorentoField: string): boolean {
+  return Boolean(AC_LOCKED_MAPPING_SOURCES[entityType]?.[sorentoField]);
+}
 
 export function isHttpOnlyEntity(entityType: string): boolean {
   return AC_HTTP_ONLY_ENTITY_TYPES.includes(entityType);
@@ -481,3 +505,65 @@ export const AC_STAGED_STATUS_REGISTRY: StatusRegistry<AutocountStagedStatus> = 
   PUSHED: { label: 'Pushed', tone: 'success' },
   DISCARDED: { label: 'Discarded', tone: 'secondary' },
 };
+
+// ── document feeds (sprint-5/14, D17) - AC-14-90..95 ─────────────────────────
+
+/** The tab's fixed row order (D2 - two feeds, always, a missing row reads
+ * `off`; branches became the `branch` entity, plan 14 section 11). */
+export const AC_DOC_FEED_KEYS: DocFeedKey[] = ['delivery_orders', 'goods_receive_notes'];
+
+/** Canonical feed key -> display label - derived the SAME way `entityLabel`
+ * humanizes every other code constant (never a tenant-editable lookup). */
+export function docFeedLabel(feed: DocFeedKey | string): string {
+  return humanizeFieldKey(feed);
+}
+
+export const AC_DOC_FEED_MODE_REGISTRY: StatusRegistry<DocFeedMode> = {
+  off: { label: 'Off', tone: 'secondary' },
+  dry_run: { label: 'Dry run', tone: 'info' },
+  push: { label: 'Push', tone: 'success' },
+};
+
+/** S7 (review round 1) - the backfill column's Done/Stopped pill through
+ * the shared `StatusBadge` roster, not a hand-rolled `<Badge>`. `running`/
+ * `stopping` are listed too (the registry documents every value the wire
+ * can carry) even though the list's own cell renders those two through
+ * `JobProgress` instead. */
+export const AC_DOC_FEED_BACKFILL_STATUS_REGISTRY: StatusRegistry<DocFeedBackfillStatus> = {
+  running: { label: 'Running', tone: 'info' },
+  stopping: { label: 'Stopping', tone: 'warning' },
+  stopped: { label: 'Stopped', tone: 'warning' },
+  done: { label: 'Done', tone: 'success' },
+};
+
+/** S7 (review round 1) - the doc-feed run history's own outcome registry
+ * (a `RUNNING` sentinel for a still-open run, `outcome === null`) - kept
+ * SEPARATE from the plan-22 `AC_RUN_OUTCOME_REGISTRY` (no `SKIPPED` value
+ * here, and that registry has no room for a run still in flight). */
+export const AC_DOC_FEED_RUN_OUTCOME_REGISTRY: StatusRegistry<DocFeedRunOutcome | 'RUNNING'> = {
+  SUCCESS: { label: 'Success', tone: 'success' },
+  FAILED: { label: 'Failed', tone: 'destructive' },
+  ABORTED: { label: 'Aborted', tone: 'warning' },
+  RUNNING: { label: 'Running', tone: 'info' },
+};
+
+/** Runs list "Kind" column (poll / sweep / backfill). */
+export function docFeedRunKindLabel(kind: DocFeedRunKind | string): string {
+  return humanizeFieldKey(kind);
+}
+
+export const AC_DOC_FEED_ISSUE_KIND_REGISTRY: StatusRegistry<DocFeedIssueKind> = {
+  retryable: { label: 'Waiting', tone: 'warning' },
+  failed: { label: 'Failed', tone: 'destructive' },
+};
+
+/** The Configure dialog's shut-gate warning (AC-14-91: "names the
+ * consumer's version and 2.7") - mirrors `pushGateWarning`'s two-reason
+ * shape (`lib/autocount-etl.ts`), stated as what IS true, never a how-to. */
+export function docFeedGateWarning(gate: DocFeedContractGate): string {
+  if (gate.reason === 'config_error') {
+    return 'This company has no ready Sorento push target yet.';
+  }
+  const version = gate.version ?? 'unknown';
+  return `Consumer contract ${version} - this feed needs ${gate.requiredVersion}.`;
+}

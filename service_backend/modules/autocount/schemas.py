@@ -10,10 +10,10 @@ Nothing here echoes a credential. A company's identity is the DISCOVERED
 ``DatabaseName``/``CompanyName``; the connection's AppId, password and token
 never appear in any response (AC-13-42).
 """
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.base import ApiModel
 
@@ -1179,3 +1179,152 @@ class PullApiKeyIssuedOut(ApiModel):
 
     key: PullApiKeyOut
     plaintext: str
+
+
+# ── document feeds (sprint-5/14) ──────────────────────────────────────────────
+
+
+class DocFeedRunOut(ApiModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    feed: str
+    kind: str
+    dryRun: bool = Field(validation_alias="dry_run")
+    dayFrom: Optional[date] = Field(default=None, validation_alias="day_from")
+    dayTo: Optional[date] = Field(default=None, validation_alias="day_to")
+    requests: Optional[int] = None
+    fetchedCount: int = Field(default=0, validation_alias="fetched_count")
+    summary: Optional[Dict[str, Any]] = Field(default=None, validation_alias="summary_json")
+    outcome: Optional[str] = None
+    error: Optional[str] = None
+    errorCode: Optional[str] = Field(default=None, validation_alias="error_code")
+    startedAt: datetime = Field(validation_alias="started_at")
+    finishedAt: Optional[datetime] = Field(default=None, validation_alias="finished_at")
+    durationMs: Optional[int] = Field(default=None, validation_alias="duration_ms")
+
+
+class DocFeedBackfillOut(ApiModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    feed: str
+    dryRun: bool = Field(validation_alias="dry_run")
+    fromDay: date = Field(validation_alias="from_day")
+    toDay: date = Field(validation_alias="to_day")
+    nextDay: date = Field(validation_alias="next_day")
+    status: str
+    # S8 (review round 1) - Start's own answer needs the job id (matches
+    # stop/resume/discard, which never carried one to begin with either -
+    # this is the one wire field that makes ALL four backfill actions
+    # answer the SAME shape).
+    jobId: Optional[str] = Field(default=None, validation_alias="job_id")
+    daysTotal: int = Field(default=0, validation_alias="days_total")
+    daysDone: int = Field(default=0, validation_alias="days_done")
+    error: Optional[str] = None
+    errorCode: Optional[str] = Field(default=None, validation_alias="error_code")
+    startedAt: datetime = Field(validation_alias="started_at")
+    finishedAt: Optional[datetime] = Field(default=None, validation_alias="finished_at")
+
+
+class DocFeedContractGateOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    version: Optional[float] = None
+    requiredVersion: float
+    reason: Optional[str] = None
+
+
+class DocFeedItemOut(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    feed: str
+    mode: str
+    connectionId: Optional[str] = None
+    book: Optional[str] = None
+    cursorDay: Optional[date] = None
+    nextPollAt: Optional[datetime] = None
+    nextSweepAt: Optional[datetime] = None
+    lastPollAt: Optional[datetime] = None
+    lastPollOkAt: Optional[datetime] = None
+    lastSweepOkAt: Optional[datetime] = None
+    fullBackfillDoneAt: Optional[datetime] = None
+    contractGate: Optional[DocFeedContractGateOut] = None
+    retryableCount: int = 0
+    failedCount: int = 0
+    lastRun: Optional[DocFeedRunOut] = None
+    backfill: Optional[DocFeedBackfillOut] = None
+
+
+class EligibleConnectionOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    name: str
+    book: str
+
+
+class DocFeedsViewOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    feeds: List[DocFeedItemOut]
+    eligibleConnections: List[EligibleConnectionOut]
+
+
+class DocFeedUpdateIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    connectionId: Optional[str] = None
+    mode: str
+
+
+class DocFeedRunStartIn(BaseModel):
+    kind: str  # "poll" | "sweep"
+
+
+class DocFeedRunStartOut(BaseModel):
+    jobId: str
+
+
+class DocFeedBackfillStartIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    dryRun: bool
+    # S4 (review round 1) - typed `date`, not `str`: Pydantic itself 422s a
+    # malformed ISO string (`{"fromDay": "2026-13-01"}`) instead of a bare
+    # `date.fromisoformat` raising `ValueError` in the ROUTER and turning
+    # into an unhandled 500.
+    fromDay: Optional[date] = None
+    toDay: Optional[date] = None
+
+
+class DocFeedIssueOut(ApiModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    feed: str
+    book: str
+    docKey: int = Field(validation_alias="doc_key")
+    docNo: Optional[str] = Field(default=None, validation_alias="doc_no")
+    docDate: Optional[date] = Field(default=None, validation_alias="doc_date")
+    sourceModifiedAt: Optional[datetime] = Field(default=None, validation_alias="source_modified_at")
+    kind: str
+    errors: Dict[str, Any] = Field(default_factory=dict, validation_alias="errors_json")
+    warnings: Optional[List[str]] = Field(default=None, validation_alias="warnings_json")
+    attempts: int = 0
+    firstAt: Optional[datetime] = Field(default=None, validation_alias="first_at")
+    lastAt: Optional[datetime] = Field(default=None, validation_alias="last_at")
+
+
+# B1 (round 2) - the HOUSE list envelope (`ListResult` on the frontend,
+# `CompanyListResponse` here): `{data, total, page}`.
+class DocFeedRunListOut(BaseModel):
+    data: List[DocFeedRunOut]
+    total: int
+    page: int = 0
+
+
+class DocFeedIssueListOut(BaseModel):
+    data: List[DocFeedIssueOut]
+    total: int
+    page: int = 0

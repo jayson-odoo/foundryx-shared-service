@@ -84,8 +84,23 @@ def test_supported_entities_label_excludes_every_gated_entity():
     label = sorento_supported_entities_label()
     assert "brand" not in label
     assert "stock balance" not in label
+    # sprint-5/14 section 11 (AC-14-44) - `branch` is the third gated entity.
+    assert "branch" not in label
     # Un-gated entities stay named.
     assert "product" in label
+
+
+def test_branch_membership_is_contract_gated_like_brand_and_stock():
+    """sprint-5/14 section 11 (AC-14-44, D26) - branch is the THIRD row of the
+    same gate table (2.7 + `branches` advertised); brand and stock answer
+    exactly as before (the two tests above pin them)."""
+    from modules.autocount.canonical.masters import ENTITY_BRANCH
+    from modules.autocount.sinks_sorento import CONTRACT_GATED_ENTITIES
+
+    assert sorento_supports_entity(ENTITY_BRANCH, contract_version=2.6, contract_entities=["branches"]) is False
+    assert sorento_supports_entity(ENTITY_BRANCH, contract_version=2.7, contract_entities=["branches"]) is True
+    assert sorento_supports_entity(ENTITY_BRANCH) is False  # plain membership never opens a gated entity
+    assert CONTRACT_GATED_ENTITIES[ENTITY_BRANCH] == (2.7, "branches")
 
 
 # ── AC-13-06: sink_for_company opens/falls back on the LIVE contract ───────

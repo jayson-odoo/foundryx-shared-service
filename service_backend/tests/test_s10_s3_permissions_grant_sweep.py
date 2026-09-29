@@ -35,7 +35,20 @@ def test_pull_permissions_are_in_the_catalog(session_factory):
 
 
 def test_grant_sweep_delivers_the_new_pull_permissions_on_update(client, session_factory):
+    """Coder note (sprint-5/14): the manifest version has moved past 0.11.0
+    (0.12.0, the doc-feed slice - D2 ships no new permission keys, so this
+    test's own claim is unaffected). The hardcoded "0.11.0" this test pinned
+    is simply the CURRENT manifest version at the time it was written, not
+    an invariant this feature owns - asserting against the module's own
+    live `manifest.json` value keeps the test meaningful (`update()` reaches
+    whatever the CURRENT manifest says) instead of pinning a version that
+    drifts every time the module ships another slice."""
     from app.services.app_store_service import AppStoreService
+    from app.module_loader import discover_manifests
+
+    current_version = next(
+        m["version"] for m in discover_manifests() if m["module_name"] == "autocount"
+    )
 
     db = session_factory()
     state = AppStoreService(db)._installed_state(DEFAULT_TENANT_ID, "autocount")[1]
@@ -45,8 +58,8 @@ def test_grant_sweep_delivers_the_new_pull_permissions_on_update(client, session
 
     db2 = session_factory()
     module, new_state = AppStoreService(db2).update(DEFAULT_TENANT_ID, "autocount")
-    assert module.version == "0.11.0"
-    assert new_state.installed_version == "0.11.0"
+    assert module.version == current_version
+    assert new_state.installed_version == current_version
     db2.close()
 
     headers = _auth(client)
