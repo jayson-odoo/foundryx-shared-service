@@ -36,13 +36,14 @@ from fastapi import (
     UploadFile,
     status,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
 from app.api.v1.documents import _serve_blob
 from app.database import get_db
 from app.dependencies import effective_permission_keys
+from app.models.user import UserStatus
 from app.repositories.user_repository import UserRepository
 
 from ..models import Idea
@@ -105,7 +106,7 @@ class EmbedIdeaCreateIn(BaseModel):
 
 
 class EmbedPromoteIn(BaseModel):
-    ideaIds: List[str]
+    ideaIds: List[str] = Field(..., min_length=1, max_length=100)
     title: str = ""
 
 
@@ -338,7 +339,15 @@ def embed_promote_ideas(
         if principal.email
         else None
     )
-    if user is None or PROMOTE_PERMISSION not in effective_permission_keys(user):
+    # Same lifecycle rules as sign-in / `get_current_user`: an inactive user or a
+    # tenant that cannot sign in never promotes via a still-valid embed token.
+    if (
+        user is None
+        or user.status != UserStatus.ACTIVE.value
+        or user.tenant is None
+        or not user.tenant.signin_allowed
+        or PROMOTE_PERMISSION not in effective_permission_keys(user)
+    ):
         raise ApiError(403, "forbidden", "You do not have permission to promote ideas.")
     for idea_id in dict.fromkeys(body.ideaIds):
         _assert_in_scope(db, principal, idea_id)
@@ -374,7 +383,7 @@ async def embed_upload_attachment(
     return IdeaAttachmentService(db).upload(
         principal.tenant_id,
         idea_id,
-        file.filename or "file",
+        file.filename or "",
         content,
         content_prefix=EMBED_CONTENT_PREFIX,
     )

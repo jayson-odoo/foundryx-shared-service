@@ -126,6 +126,11 @@ def detect_attachment_mime(content: bytes, filename: Optional[str] = None) -> Op
     of the declared type. Returns the sniffed mime or None (= reject)."""
     if not content:
         return None
+    # A UTF-8 BOM in front of markup must not hide it from the `<` check below.
+    if content.startswith(b"\xef\xbb\xbf"):
+        content = content[3:]
+        if not content:
+            return None
     if content[:4] == b"OggS":
         return "audio/ogg"
     if content[:5] == b"#!AMR":

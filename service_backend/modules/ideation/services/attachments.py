@@ -5,10 +5,12 @@ An operator or embed user uploads a file onto an idea: sniffed by magic bytes
 ``ideation/ideas/<idea_id>/<attachment_id>``, recorded on ``idea_attachments``.
 Every lookup is tenant-scoped (idea AND attachment resolved WITH ``tenant_id``).
 """
+import re
 import uuid
 from typing import Tuple
 
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.services.storage import storage_for_tenant
@@ -16,6 +18,16 @@ from app.uploads import detect_attachment_mime
 
 from ..models import Idea, IdeaAttachment
 from ..schemas import IdeaAttachmentOut
+
+
+# Refuse an upload once an idea already carries this many attachments.
+MAX_ATTACHMENTS_PER_IDEA = 20
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _clean_filename(filename: str, fallback: str) -> str:
+    name = _CONTROL_CHARS.sub("", filename or "").strip()[:255].strip()
+    return name or fallback
 
 
 def _kind_for(mime: str) -> str:
@@ -46,17 +58,25 @@ class IdeaAttachmentService:
         mime = detect_attachment_mime(content, filename)
         if mime is None:
             raise HTTPException(415, "This file type is not supported.")
+        existing = (
+            self.db.query(func.count(IdeaAttachment.id))
+            .filter(IdeaAttachment.idea_id == idea_id, IdeaAttachment.tenant_id == tenant_id)
+            .scalar()
+        )
+        if (existing or 0) >= MAX_ATTACHMENTS_PER_IDEA:
+            raise HTTPException(422, "This idea has reached its attachment limit.")
         attachment_id = str(uuid.uuid4())
         storage_key = storage_for_tenant(self.db, tenant_id).save(
             f"ideation/ideas/{idea_id}/{attachment_id}", content, mime
         )
-        name = (filename or "").strip() or "file"
+        kind = _kind_for(mime)
+        name = _clean_filename(filename, kind)
         row = IdeaAttachment(
             id=attachment_id,
             tenant_id=tenant_id,
             idea_id=idea_id,
             source_msg_id=f"upload:{attachment_id}",
-            kind=_kind_for(mime),
+            kind=kind,
             url="",
             filename=name,
             storage_key=storage_key,

@@ -62,3 +62,4 @@ UAC: `15-ideation-list-filters-acceptance-criteria.md` (AC-15-01..26). Lane IDEA
 - Product column choice: the operator page keeps Product (all products); the embed drops it (already product-scoped).
 - The Submitted cell and the detail Captured row format through `useDatetime()` (user timezone).
 - The crew SQL mirror of 0013 lives at `crew/state/migrations/IDEATION-LIST.sql`.
+- Security (PR #100): embed promote also requires an active user and a sign-in-allowed tenant; embed-connection create/patch/rotate require both `ideation.triage.manage` and `ideation.business_requirements.manage`; uploads are capped at 20 per idea with cleaned filenames and BOM-safe sniffing.

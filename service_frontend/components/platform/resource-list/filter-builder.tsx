@@ -5,15 +5,9 @@ import { Plus, Trash2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { MultiSelect } from '@/components/platform/multi-select';
+import { SearchSelect } from '@/components/platform/search-select';
 import type {
   FilterFieldDef,
   FilterFieldType,
@@ -274,40 +268,24 @@ function ConditionRow({ condition, fields, fieldDef, onChange, onRemove }: Condi
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Select
+      <SearchSelect
+        ariaLabel="Filter field"
+        className="h-8 w-32"
+        options={fields.map((f) => ({ label: f.label, value: f.field }))}
         value={condition.field}
-        onValueChange={(field) => {
+        onChange={(field) => {
           const t = fieldDef(field)?.type ?? 'text';
           onChange({ ...condition, field, operator: OPERATORS[t][0].value, value: '' });
         }}
-      >
-        <SelectTrigger size="sm" className="w-32">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {fields.map((f) => (
-            <SelectItem key={f.field} value={f.field}>
-              {f.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      />
 
-      <Select
+      <SearchSelect
+        ariaLabel="Filter operator"
+        className="h-8 w-28"
+        options={ops}
         value={condition.operator}
-        onValueChange={(operator) => onChange({ ...condition, operator: operator as FilterOperator })}
-      >
-        <SelectTrigger size="sm" className="w-28">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {ops.map((o) => (
-            <SelectItem key={o.value} value={o.value}>
-              {o.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+        onChange={(operator) => onChange({ ...condition, operator: operator as FilterOperator })}
+      />
 
       <ConditionValue condition={condition} def={def} onChange={onChange} />
 
@@ -347,21 +325,13 @@ function ConditionValue({
       );
     }
     return (
-      <Select
+      <SearchSelect
+        ariaLabel="Filter value"
+        className="h-8 w-36"
+        options={def?.options ?? []}
         value={typeof condition.value === 'string' ? condition.value : ''}
-        onValueChange={(value) => onChange({ ...condition, value })}
-      >
-        <SelectTrigger size="sm" className="w-36">
-          <SelectValue placeholder="Select…" />
-        </SelectTrigger>
-        <SelectContent>
-          {(def?.options ?? []).map((opt) => (
-            <SelectItem key={opt.value} value={opt.value}>
-              {opt.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+        onChange={(value) => onChange({ ...condition, value })}
+      />
     );
   }
 

@@ -47,7 +47,13 @@ export function IdeaAttachmentPreviewDialog({
     fetchContent(attachment)
       .then((blob) => {
         if (!active) return;
-        created = URL.createObjectURL(blob);
+        // Only when the response carried no type: a PDF by name gets its mime
+        // so the browser previews it; anything else stays untyped.
+        const typed =
+          blob.type || !attachment.name.toLowerCase().endsWith('.pdf')
+            ? blob
+            : new Blob([blob], { type: 'application/pdf' });
+        created = URL.createObjectURL(typed);
         setBlobUrl(created);
       })
       .catch(() => active && setBlobUrl(null));
@@ -88,16 +94,22 @@ export function IdeaAttachmentPreviewDialog({
           ) : a.kind === 'audio' ? (
             <audio src={a.url} controls className="w-full px-6" />
           ) : pdf ? (
-            <iframe title={a.name} src={a.url} className="h-[32rem] w-full border-0" />
+            <iframe title={a.name} src={a.url} sandbox="" className="h-[32rem] w-full border-0" />
           ) : (
             <div className="flex flex-col items-center gap-3 p-6 text-center">
               <p className="text-sm text-muted-foreground">
                 This file type can&apos;t be previewed inline.
               </p>
               <Button variant="outline" size="sm" asChild>
-                <a href={a.url} target="_blank" rel="noopener noreferrer">
-                  Open in new tab
-                </a>
+                {contentPath ? (
+                  <a href={a.url} download={a.name}>
+                    Download
+                  </a>
+                ) : (
+                  <a href={a.url} target="_blank" rel="noopener noreferrer">
+                    Open in new tab
+                  </a>
+                )}
               </Button>
             </div>
           )}

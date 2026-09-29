@@ -193,7 +193,7 @@ async def upload_idea_attachment(
     if len(content) > ATTACHMENT_CAP_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File is too large.")
     return IdeaAttachmentService(db).upload(
-        current_user.tenant_id, idea_id, file.filename or "file", content
+        current_user.tenant_id, idea_id, file.filename or "", content
     )
 
 
