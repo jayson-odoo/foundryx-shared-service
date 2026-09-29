@@ -9,7 +9,7 @@
  * assertion below is expected to fail until slice S1 lands.
  */
 import { render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { useForm } from 'react-hook-form';
 import { Form } from '@/components/ui/form';
 import { IdeationRuntimeProvider } from '@/hooks/use-ideation-runtime';
@@ -17,6 +17,14 @@ import { ideationEmbedService } from '@/services/ideation-embed-service';
 import type { Idea, Product } from '@/types/ideation';
 import { DetailsTab } from './idea-form-fields';
 import type { IdeaFormValues } from './idea-schema';
+
+vi.mock('@/hooks/use-datetime', () => ({
+  useDatetime: () => ({
+    formatDate: (v: string) => v.slice(0, 10),
+    formatDateTime: (v: string) => v.slice(0, 10),
+    formatTime: (v: string) => v.slice(11, 16),
+  }),
+}));
 
 const anIdea = (over: Partial<Idea> = {}): Idea => ({
   id: 'idea-1',

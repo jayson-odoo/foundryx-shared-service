@@ -31,6 +31,9 @@ export interface IdeaAttachment {
   sizeBytes?: number;
   /** Seconds - audio/video only. */
   durationSec?: number;
+  /** Relative serve path of an UPLOADED file (fetched as a blob through the
+   * api-client); null/absent for a URL-backed WhatsApp capture. */
+  contentPath?: string | null;
 }
 
 /** One transition the caller may fire from an idea's current status (issue

@@ -267,3 +267,38 @@ def test_embed_connection_set_active_toggles_via_payload(ideation_client):
     conn = get_connection(db2, connection_id=CONNECTION_ID, tenant_id=DEFAULT_TENANT_ID)
     assert conn.is_active is False
     db2.close()
+
+
+def test_embed_connection_set_active_needs_both_keys(ideation_client):
+    from modules.ideation.services.embed import upsert_connection
+    from tests.test_ideation_br import _make_user
+
+    db = ideation_client._factory()
+    upsert_connection(
+        db,
+        connection_id=CONNECTION_ID,
+        tenant_id=DEFAULT_TENANT_ID,
+        signing_secret=SIGNING_SECRET,
+        allowed_origins=[ORIGIN],
+        is_active=True,
+    )
+    db.close()
+    _make_user(ideation_client._factory, "triage@x.com", "triage1234", ["ideation.triage.manage"])
+    _make_user(
+        ideation_client._factory,
+        "both@x.com",
+        "both12345",
+        ["ideation.triage.manage", "ideation.business_requirements.manage"],
+    )
+    body = {
+        "actionKey": "ideation_embed_connections.set_active",
+        "entityType": "ideation_embed_connection",
+        "entityId": CONNECTION_ID,
+        "payload": {"isActive": False},
+    }
+    th = _auth(ideation_client, email="triage@x.com", password="triage1234")
+    res = ideation_client.post("/api/v1/pending-actions", headers=th, json=body)
+    assert res.status_code == 403, res.text
+    bh = _auth(ideation_client, email="both@x.com", password="both12345")
+    res = ideation_client.post("/api/v1/pending-actions", headers=bh, json=body)
+    assert res.status_code == 202, res.text

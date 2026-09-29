@@ -11,7 +11,6 @@ import { useIdeationRuntime } from '@/hooks/use-ideation-runtime';
 import type { IdeaCreateInput } from '@/services/ideation-service';
 import type { Idea } from '@/types/ideation';
 import { useIdeasListConfig } from './use-ideas-list-config';
-import { IdeaClusterSuggestions } from './cluster-suggestions';
 import { IdeaCaptureDialog } from './idea-capture-dialog';
 import { MergeIdeasDialog } from './merge-ideas-dialog';
 import { promoteIdeasToBr } from './promote-to-br';
@@ -21,12 +20,13 @@ import { promoteIdeasToBr } from './promote-to-br';
  * operator page and the chrome-less host iframe (WS-C1 / AC-CAP-9/10). The
  * backend + URLs it talks to come from `useIdeationRuntime()` (operator default
  * or embed), so the component code is mode-agnostic: shared ResourceList with
- * opt-in row drag-reorder (row order = priority), per-user vote toggle, and the
+ * net-vote ordering, per-user vote toggle, and the
  * capture dialog for create.
  */
 export function IdeasView() {
   const router = useRouter();
-  const { mode } = useIdeationRuntime();
+  const runtime = useIdeationRuntime();
+  const { mode } = runtime;
   const {
     ideas,
     products,
@@ -37,7 +37,6 @@ export function IdeasView() {
     create,
     vote,
     setStatus,
-    reorderPriority,
     remove,
     merge,
     unmerge,
@@ -94,14 +93,7 @@ export function IdeasView() {
           toast.error(e instanceof Error ? e.message : 'Could not delete the idea.');
         }
       },
-      onReorder: async (orderedIds: string[]) => {
-        try {
-          await reorderPriority(orderedIds);
-        } catch (e) {
-          toast.error(e instanceof Error ? e.message : 'Could not reorder.');
-        }
-      },
-      onPromote: (selected: Idea[]) => promoteIdeasToBr(selected, router),
+      onPromote: (selected: Idea[]) => promoteIdeasToBr(selected, router, { runtime }),
       onMerge: (selected: Idea[]) => setMergeRows(selected),
       onUnmerge: async (id: string) => {
         if (!unmerge) return;
@@ -113,7 +105,7 @@ export function IdeasView() {
         }
       },
     }),
-    [vote, setStatus, remove, reorderPriority, unmerge, router],
+    [vote, setStatus, remove, unmerge, router, runtime],
   );
 
   const config = useIdeasListConfig(ideas, handlers, { includeTest });
@@ -132,9 +124,6 @@ export function IdeasView() {
 
   return (
     <Fragment>
-      <IdeaClusterSuggestions
-        onPromote={(cluster, meta) => promoteIdeasToBr(cluster, router, meta)}
-      />
       {mode === 'operator' && (
         <div className="mb-3 flex items-center justify-end gap-1.5">
           <Switch

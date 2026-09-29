@@ -24,6 +24,9 @@ class IdeaAttachmentOut(ApiModel):
     url: str = ""
     sizeBytes: Optional[int] = None
     durationSec: Optional[int] = None
+    # Relative serve path for an uploaded file (bytes in tenant storage); null
+    # for a URL-backed WhatsApp capture (plan sprint-5/15, AC-15-19).
+    contentPath: Optional[str] = None
 
 
 class TransitionOut(ApiModel):

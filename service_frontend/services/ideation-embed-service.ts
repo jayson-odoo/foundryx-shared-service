@@ -13,10 +13,11 @@
  *
  * Enforced layering: UI → hooks → this service → lib/api-client → FastAPI.
  */
-import { apiFetch } from '@/lib/api-client';
+import { apiFetch, apiFetchBlob } from '@/lib/api-client';
 import type {
   Board,
   Idea,
+  IdeaAttachment,
   IdeaClusterSuggestions,
   Product,
 } from '@/types/ideation';
@@ -184,6 +185,27 @@ export const ideationEmbedService: IdeaService &
 
   listMerged(id: string): Promise<Idea[]> {
     return apiFetch<Idea[]>(`${embedIdea(id)}/merged`);
+  },
+
+  uploadAttachment(id: string, file: File): Promise<IdeaAttachment> {
+    const body = new FormData();
+    body.append('file', file);
+    return apiFetch<IdeaAttachment>(`${embedIdea(id)}/attachments`, { method: 'POST', body });
+  },
+
+  /** An action response (vote/update) may carry the operator-prefixed path;
+   * the embed token only works on `/embed/*`, so map it. */
+  fetchAttachment(contentPath: string): Promise<Blob> {
+    return apiFetchBlob(contentPath.replace(/^\/ideation\/ideas\//, '/embed/ideas/'));
+  },
+
+  /** Promote ideas to a draft BR (AC-15-20) - the backend resolves the host user
+   * from the token email and enforces `ideation.business_requirements.manage`. */
+  promoteToBr(ideaIds: string[], title?: string) {
+    return apiFetch<{ id: string; title: string; brNumber?: string | null }>('/embed/ideas/promote', {
+      method: 'POST',
+      body: JSON.stringify({ ideaIds, ...(title ? { title } : {}) }),
+    });
   },
 
   getBoard(opts?: { includeTest?: boolean; productId?: string }): Promise<Board> {

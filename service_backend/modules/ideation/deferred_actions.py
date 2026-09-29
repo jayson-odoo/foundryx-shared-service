@@ -183,6 +183,9 @@ EMBED_CONNECTIONS_SET_ACTIVE = DeferredActionDef(
     module="ideation",
     entity_type="ideation_embed_connection",
     permission=MANAGE,
+    # Activate/deactivate is a patch of the connection: same two-key gate as the
+    # PATCH route (triage + BR-manage).
+    also_requires=(BR_MANAGE,),
     window="reversible",
     label="Change connection status",
     execute=_embed_connection_set_active,

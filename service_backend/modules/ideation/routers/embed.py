@@ -25,16 +25,32 @@ Secrets are never logged.
 """
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Header, Request, Response, status
-from pydantic import BaseModel
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api_errors import ApiError
+from app.api.v1.documents import _serve_blob
 from app.database import get_db
+from app.dependencies import effective_permission_keys
+from app.models.user import UserStatus
+from app.repositories.user_repository import UserRepository
 
 from ..models import Idea
 from ..schemas import (
     BoardOut,
+    BusinessRequirementDetailOut,
+    IdeaAttachmentOut,
     IdeaOut,
     IdeaUpdateIn,
     MergeIn,
@@ -43,6 +59,8 @@ from ..schemas import (
     VoteIn,
 )
 from ..services.actions import IdeaActionService
+from ..services.attachments import IdeaAttachmentService
+from ..services.business_requirements import BusinessRequirementService
 from ..services.embed import (
     EmbedTokenPrincipal,
     IdeationEmbedError,
@@ -53,6 +71,10 @@ from ..services.ideas import IdeaReadService
 from ..services.merge import IdeaMergeService
 
 router = APIRouter()
+
+EMBED_CONTENT_PREFIX = "/embed/ideas"
+ATTACHMENT_CAP_BYTES = 25 * 1024 * 1024
+PROMOTE_PERMISSION = "ideation.business_requirements.manage"
 
 
 class EmbedSessionBody(BaseModel):
@@ -81,6 +103,11 @@ class EmbedIdeaCreateIn(BaseModel):
     department: Optional[str] = None
     rawText: str = ""
     source: str = "embed"
+
+
+class EmbedPromoteIn(BaseModel):
+    ideaIds: List[str] = Field(..., min_length=1, max_length=100)
+    title: str = ""
 
 
 @router.post("/session")
@@ -200,7 +227,7 @@ def embed_list_ideas(
     for tenant A / product X can never read tenant B or another product
     (AC-E-8/12). ``product_id=None`` (unscoped connection) falls back to
     tenant-only (today's behaviour)."""
-    return IdeaReadService(db).list(
+    return IdeaReadService(db, EMBED_CONTENT_PREFIX).list(
         principal.tenant_id,
         search=search,
         filter=filter,
@@ -217,7 +244,7 @@ def embed_get_board(
     """Product-scoped triage board for the embed page (full operator parity,
     AC-CAP-9/11). Same board columns as the operator surface, scoped to the
     connection's tenant + product."""
-    return IdeaReadService(db).board(
+    return IdeaReadService(db, EMBED_CONTENT_PREFIX).board(
         principal.tenant_id,
         voter_id=_embed_voter_id(principal),
         product_id=principal.product_id,
@@ -293,6 +320,91 @@ def embed_create_idea(
     )
 
 
+@router.post(
+    "/ideas/promote",
+    response_model=BusinessRequirementDetailOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def embed_promote_ideas(
+    body: EmbedPromoteIn,
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+) -> BusinessRequirementDetailOut:
+    """Promote ideas to a draft Business Requirement from the iframe (AC-15-20).
+    The token's ``email`` claim resolves to a shared-service user in the token's
+    tenant, who must hold the operator's ``ideation.business_requirements.manage``
+    (no widening). Every id is scope-checked BEFORE anything is created."""
+    user = (
+        UserRepository(db).get_by_email(principal.email, principal.tenant_id)
+        if principal.email
+        else None
+    )
+    # Same lifecycle rules as sign-in / `get_current_user`: an inactive user or a
+    # tenant that cannot sign in never promotes via a still-valid embed token.
+    if (
+        user is None
+        or user.status != UserStatus.ACTIVE.value
+        or user.tenant is None
+        or not user.tenant.signin_allowed
+        or PROMOTE_PERMISSION not in effective_permission_keys(user)
+    ):
+        raise ApiError(403, "forbidden", "You do not have permission to promote ideas.")
+    for idea_id in dict.fromkeys(body.ideaIds):
+        _assert_in_scope(db, principal, idea_id)
+    product_id = principal.product_id or IdeaReadService(db).single_product_id(
+        principal.tenant_id, body.ideaIds
+    )
+    return BusinessRequirementService(db).create(
+        principal.tenant_id,
+        product_id=product_id,
+        title=body.title,
+        idea_ids=body.ideaIds,
+        actor=user,
+    )
+
+
+@router.post(
+    "/ideas/{idea_id}/attachments",
+    response_model=IdeaAttachmentOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def embed_upload_attachment(
+    idea_id: str,
+    file: UploadFile = File(...),
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+) -> IdeaAttachmentOut:
+    """Upload a file onto an idea from the iframe. Scoped to tenant+product (404
+    otherwise); the token is the boundary (no operator permission)."""
+    _assert_in_scope(db, principal, idea_id)
+    content = await file.read(ATTACHMENT_CAP_BYTES + 1)
+    if len(content) > ATTACHMENT_CAP_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File is too large.")
+    return IdeaAttachmentService(db).upload(
+        principal.tenant_id,
+        idea_id,
+        file.filename or "",
+        content,
+        content_prefix=EMBED_CONTENT_PREFIX,
+    )
+
+
+@router.get("/ideas/{idea_id}/attachments/{attachment_id}/content")
+def embed_attachment_content(
+    idea_id: str,
+    attachment_id: str,
+    principal: EmbedTokenPrincipal = Depends(require_embed_principal),
+    db: Session = Depends(get_db),
+):
+    """Serve an uploaded attachment CSP-sandboxed + nosniff. Scoped to
+    tenant+product (404 otherwise)."""
+    _assert_in_scope(db, principal, idea_id)
+    key, mime, filename = IdeaAttachmentService(db).content(
+        principal.tenant_id, idea_id, attachment_id
+    )
+    return _serve_blob(db, principal.tenant_id, key, mime, filename, "inline")
+
+
 @router.get("/ideas/{idea_id}", response_model=IdeaOut)
 def embed_get_idea(
     idea_id: str,
@@ -303,7 +415,7 @@ def embed_get_idea(
     token's tenant OR product (cross-tenant/cross-product read denied,
     AC-CAP-11)."""
     _assert_in_scope(db, principal, idea_id)
-    return IdeaReadService(db).get(
+    return IdeaReadService(db, EMBED_CONTENT_PREFIX).get(
         principal.tenant_id, idea_id, voter_id=None, product_id=principal.product_id
     )
 
@@ -341,7 +453,7 @@ def embed_list_merged_ideas(
     """The ideas merged into this one, from the iframe (AC-94-16). Scoped to
     tenant+product (404 otherwise)."""
     _assert_in_scope(db, principal, idea_id)
-    return IdeaReadService(db).merged_children(
+    return IdeaReadService(db, EMBED_CONTENT_PREFIX).merged_children(
         principal.tenant_id, idea_id, voter_id=_embed_voter_id(principal)
     )
 

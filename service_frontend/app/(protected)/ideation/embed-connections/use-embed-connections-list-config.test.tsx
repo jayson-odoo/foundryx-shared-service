@@ -1,9 +1,16 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { render, renderHook, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import type { Product } from '@/types/ideation';
 import type { EmbedConnectionItem } from '@/types/embed-connection';
 import type { ListQuery } from '@/types/resource';
 import { useEmbedConnectionsListConfig } from './use-embed-connections-list-config';
+
+const canKeys: string[] = [];
+vi.mock('@/hooks/use-can', () => ({
+  useCan: () => ({ can: (k: string) => canKeys.includes(k), ready: true, permissions: new Set(canKeys) }),
+}));
 
 const list = vi.fn();
 const setActive = vi.fn();
@@ -52,12 +59,33 @@ function config(rows: EmbedConnectionItem[]) {
 beforeEach(() => vi.clearAllMocks());
 
 describe('useEmbedConnectionsListConfig (PLAN-ideation-embed-sso §7)', () => {
-  it('exposes the create action gated by ideation.triage.manage', () => {
+  it('gates create / rotate / activate on BOTH keys (BR-manage here + triage on the page); delete stays triage-only', () => {
     const { config: c } = config([]);
     expect(c.createLabel).toBe('Add connection');
-    expect(c.createPermission).toBe('ideation.triage.manage');
+    expect(c.createPermission).toBe('ideation.business_requirements.manage');
     expect(c.actions.map((a) => a.id)).toEqual(['rotate', 'toggle-active', 'delete']);
-    expect(c.actions.every((a) => a.permission === 'ideation.triage.manage')).toBe(true);
+    const perm = (id: string) => c.actions.find((a) => a.id === id)?.permission;
+    expect(perm('rotate')).toBe('ideation.business_requirements.manage');
+    expect(perm('toggle-active')).toBe('ideation.business_requirements.manage');
+    expect(perm('delete')).toBe('ideation.triage.manage');
+  });
+
+  it('the row menu hides Rotate / Deactivate for a triage-only user and shows them with both keys', async () => {
+    const { config: c } = config([]);
+    const menu = async (keys: string[]) => {
+      canKeys.splice(0, canKeys.length, ...keys);
+      const { unmount } = render(
+        <ActionMenu actions={c.actions} rows={[conn()]} runtime={{ reload: vi.fn() }} surface="row" />,
+      );
+      await userEvent.click(screen.getByRole('button'));
+      const names = (await screen.findAllByRole('menuitem')).map((i) => i.textContent?.trim());
+      unmount();
+      return names;
+    };
+    const triageOnly = await menu(['ideation.triage.manage']);
+    expect(triageOnly).toEqual(['Delete']);
+    const both = await menu(['ideation.triage.manage', 'ideation.business_requirements.manage']);
+    expect(both).toEqual(expect.arrayContaining(['Rotate secret', 'Deactivate', 'Delete']));
   });
 
   it('fetcher returns the connection list, newest-first, and honours search', async () => {

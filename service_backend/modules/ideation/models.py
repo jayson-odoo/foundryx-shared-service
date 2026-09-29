@@ -271,6 +271,12 @@ class IdeaAttachment(IdeationBase):
     url = Column(Text, nullable=False)  # durable sorento-stored URL (R2/S3)
     filename = Column(String, nullable=True)
     caption = Column(Text, nullable=True)
+    # Operator/embed uploads (plan sprint-5/15): the bytes live in tenant storage
+    # under ``storage_key`` (registered as a manifest storage location); a
+    # WhatsApp capture leaves all three NULL and keeps its durable ``url``.
+    storage_key = Column(String, nullable=True)
+    mime = Column(String, nullable=True)
+    size_bytes = Column(Integer, nullable=True)
     created_at = Column(UTCDateTime(), server_default=func.now(), nullable=False)
 
     __table_args__ = (
