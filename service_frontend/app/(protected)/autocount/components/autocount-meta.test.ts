@@ -42,6 +42,7 @@ describe('presetOptionsForField', () => {
 // Plan sprint-5/01 (AC-01-16/17) - the DB company's entity catalogue + kind labels.
 // Plan sprint-5/08 (AC-08-10/18) - the open (http) company kind + entity set.
 import {
+  AC_DOC_FEED_KEYS,
   AC_HTTP_ENTITY_TYPES,
   AC_HTTP_ONLY_ENTITY_TYPES,
   AC_NEW_MASTER_ENTITY_TYPES,
@@ -82,42 +83,57 @@ describe('AC_SQL_DB_ENTITY_TYPES (AC-01-17)', () => {
     // this already works server-side (`_update_http_task` runs before the
     // "DB company reads only its own connection" rule), so foolproof-UI now
     // offers it. `api`/`http` are untouched.
-    expect(entitiesForSourceKind('db')).toEqual([...AC_SQL_DB_ENTITY_TYPES, 'stock_balance']);
+    // sprint-5/14 section 11 (AC-14-47): `branch` is HTTP-only too, so a db
+    // company's list is the sql_db set PLUS every HTTP-only entity.
+    expect(entitiesForSourceKind('db')).toEqual([...AC_SQL_DB_ENTITY_TYPES, ...AC_HTTP_ONLY_ENTITY_TYPES]);
+    expect(entitiesForSourceKind('db')).toEqual(expect.arrayContaining(['stock_balance', 'branch']));
     expect(entitiesForSourceKind('api')).toBe(AC_NEW_MASTER_ENTITY_TYPES);
     expect(entitiesForSourceKind('http')).toBe(AC_HTTP_ENTITY_TYPES);
   });
 });
 
 describe('AC_HTTP_ONLY_ENTITY_TYPES (fix/autocount-add-http-only-entity-on-db-company)', () => {
-  it('is exactly the HTTP entities with no sql_db variant - today just stock_balance', () => {
-    expect(AC_HTTP_ONLY_ENTITY_TYPES).toEqual(['stock_balance']);
+  it('is exactly the HTTP entities with no sql_db variant - stock_balance and branch (AC-14-47)', () => {
+    expect([...AC_HTTP_ONLY_ENTITY_TYPES].sort()).toEqual(['branch', 'stock_balance']);
   });
 
   it('every other HTTP entity is also SQL-extractable', () => {
     for (const t of AC_HTTP_ENTITY_TYPES) {
-      if (t === 'stock_balance') continue;
+      if (t === 'stock_balance' || t === 'branch') continue;
       expect(AC_SQL_DB_ENTITY_TYPES).toContain(t);
     }
   });
 
   it('isHttpOnlyEntity', () => {
     expect(isHttpOnlyEntity('stock_balance')).toBe(true);
+    expect(isHttpOnlyEntity('branch')).toBe(true);
     expect(isHttpOnlyEntity('product')).toBe(false);
     expect(isHttpOnlyEntity('goods_received_note')).toBe(false);
   });
 });
 
 describe('AC_HTTP_ENTITY_TYPES (AC-08-18)', () => {
-  it('is exactly the six confirmed open-API masters plus stock_balance (sprint-5/10, AC-10-40)', () => {
-    expect(AC_HTTP_ENTITY_TYPES).toEqual([
-      'product',
-      'customer',
-      'warehouse',
-      'product_category',
-      'brand',
-      'unit_of_measure',
-      'stock_balance',
-    ]);
+  it('is exactly the six confirmed open-API masters plus stock_balance (sprint-5/10, AC-10-40) plus branch (sprint-5/14, AC-14-47)', () => {
+    expect([...AC_HTTP_ENTITY_TYPES].sort()).toEqual(
+      [
+        'product',
+        'customer',
+        'warehouse',
+        'product_category',
+        'brand',
+        'unit_of_measure',
+        'stock_balance',
+        'branch',
+      ].sort(),
+    );
+  });
+
+  it('branch is an HTTP entity but never a sql_db one (AC-14-47)', () => {
+    expect(AC_HTTP_ENTITY_TYPES).toContain('branch');
+    expect(AC_SQL_DB_ENTITY_TYPES).not.toContain('branch');
+    expect(AC_HTTP_ONLY_ENTITY_TYPES).toContain('branch');
+    expect(entitiesForSourceKind('http')).toContain('branch');
+    expect(entitiesForSourceKind('api')).not.toContain('branch');
   });
 });
 
@@ -127,5 +143,13 @@ describe('sourceKindLabel (AC-01-16, AC-08-10)', () => {
     expect(sourceKindLabel('http')).toBe('API (no auth)');
     expect(sourceKindLabel('db')).toBe('Database');
     expect(sourceKindLabel('something_else')).toBe('Something else');
+  });
+});
+
+describe('AC_DOC_FEED_KEYS (AC-14-46/47, plan 14 section 11)', () => {
+  it('has exactly the two document feeds - branches left the doc feed and became an entity', () => {
+    expect(AC_DOC_FEED_KEYS).toEqual(['delivery_orders', 'goods_receive_notes']);
+    expect(AC_DOC_FEED_KEYS).toHaveLength(2);
+    expect(AC_DOC_FEED_KEYS).not.toContain('branches');
   });
 });

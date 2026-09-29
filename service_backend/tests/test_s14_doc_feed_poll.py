@@ -1,7 +1,10 @@
-"""sprint-5/14 S0 - poll + branch pull tests (AC-14-12, 13, 25..27, 40, 41, 72).
+"""sprint-5/14 S0 - poll tests (AC-14-12, 13, 25..27, 72).
 
-`run_poll`/`run_branch_pull` (`modules.autocount.doc_feed.runner`) do not
-exist yet - the whole module fails to import (S0 red, D21).
+Plan 14 section 11 (D28, 29 Sep 2026): branches left the doc feed and became
+the regular HTTP master entity `branch` (tests/test_autocount_branch.py). The
+branch-pull tests that lived here (AC-14-40/41 of the old section E) were
+removed with `run_branch_pull`; AC-14-46 pins the removal in
+tests/test_s14_doc_feed_branch_removed.py.
 """
 from __future__ import annotations
 
@@ -13,7 +16,7 @@ import httpx
 import pytest
 
 from app.models.integration_activity import IntegrationActivity
-from modules.autocount.doc_feed.runner import run_branch_pull, run_poll
+from modules.autocount.doc_feed.runner import run_poll
 from modules.autocount.models import AcDocFeed, AcDocFeedRun
 
 from .s14_doc_feed_helpers import load_fixture, wired_company
@@ -227,48 +230,6 @@ def test_a_contract_that_drops_below_2_7_after_mode_was_set_fails_the_run(sessio
     assert not posted
 
 
-# ── branch walk to echoed TotalPages, verdict matching (AC-14-40, 41) ───────
-
-
-def test_branch_pull_walks_every_page_and_matches_verdicts_by_source_ref(session_factory):
-    db = session_factory()
-    co, ac_conn, _crm = wired_company(db)
-    feed = _feed(db, co, ac_conn, feed_key="branches")
-    page1 = load_fixture("branch-page-1.json")
-    page2 = load_fixture("branch-page-2.json")
-    crm_response = load_fixture("crm-ingest-branches-response.json")
-
-    def vendor(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/db1/branchbypage"
-        page = request.url.params.get("page")
-        assert request.url.params.get("pageSize") == "1000"
-        return httpx.Response(200, json=page1 if page == "1" else page2)
-
-    posted_refs: List[str] = []
-
-    def sink(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/v1/external/contract":
-            return httpx.Response(200, json={"version": "2.7", "entities": ["branches"]})
-        payload = json.loads(request.content.decode("utf-8"))
-        for r in payload.get("records") or []:
-            acc = r.get("AccNo") or ""
-            posted_refs.append(f"db1:BR:{acc}:{r.get('BranchCode')}")
-        return httpx.Response(200, json=crm_response)
-
-    run_branch_pull(db, feed, dry_run=False, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)), sink_transport=httpx.MockTransport(sink))
-
-    # 3 of the 4 rows have a non-blank BranchCode (one page-2 row is blank -
-    # skippedNoKey, D19/AC-14-41) - only those are ever posted.
-    assert "db1:BR:300-R009:HQ" in posted_refs
-    assert "db1:BR:300-R014:PJ" in posted_refs
-    assert "db1:BR::HQ" in posted_refs
-    assert len(posted_refs) == 3
-
-    run = _latest_run(db, feed)
-    assert run.outcome == "SUCCESS"
-    assert run.summary_json.get("skippedNoKey", 0) >= 1
-
-
 # ── activity: counters only, key masked (AC-14-72) ──────────────────────────
 
 
@@ -332,72 +293,6 @@ def test_ss1_poll_run_error_never_carries_the_crm_body_url_or_key(session_factor
     assert SORENTO_API_KEY not in run.error
     assert "http://" not in run.error
     assert len(run.error) < 400
-
-
-def test_ss1_branch_run_error_never_carries_the_crm_body_url_or_key(session_factory):
-    from .s14_doc_feed_helpers import SORENTO_API_KEY
-
-    db = session_factory()
-    co, ac_conn, _crm = wired_company(db)
-    feed = _feed(db, co, ac_conn, feed_key="branches")
-    page1 = load_fixture("branch-page-1.json")
-
-    def sink(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/v1/external/contract":
-            return httpx.Response(200, json={"version": "2.7", "entities": ["branches"]})
-        return httpx.Response(400, text=f"denied {SORENTO_API_KEY} http://crm.example.test/x")
-
-    run_branch_pull(
-        db, feed, dry_run=False, now=NOW,
-        vendor_transport=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=page1))),
-        sink_transport=httpx.MockTransport(sink),
-    )
-    run = _latest_run(db, feed)
-    assert run.outcome == "FAILED"
-    assert SORENTO_API_KEY not in run.error and "http://" not in run.error
-
-
-def test_n3_branch_pull_counts_every_vendor_page_as_a_request(session_factory):
-    db = session_factory()
-    co, ac_conn, _crm = wired_company(db)
-    feed = _feed(db, co, ac_conn, feed_key="branches")
-    page1 = load_fixture("branch-page-1.json")
-    page2 = load_fixture("branch-page-2.json")
-    crm_response = load_fixture("crm-ingest-branches-response.json")
-
-    def vendor(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=page1 if request.url.params.get("page") == "1" else page2)
-
-    def sink(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/v1/external/contract":
-            return httpx.Response(200, json={"version": "2.7", "entities": ["branches"]})
-        return httpx.Response(200, json=crm_response)
-
-    run_branch_pull(db, feed, dry_run=False, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)), sink_transport=httpx.MockTransport(sink))
-    assert _latest_run(db, feed).requests == 2
-
-
-def test_n3_a_blank_branch_outcome_lands_in_the_retryable_bucket(session_factory):
-    db = session_factory()
-    co, ac_conn, _crm = wired_company(db)
-    feed = _feed(db, co, ac_conn, feed_key="branches")
-    page = {"TotalCount": 1, "Page": 1, "PageSize": 1000, "TotalPages": 1,
-            "Data": [{"BranchCode": "HQ", "AccNo": "300-R009", "BranchName": "HQ"}]}
-
-    def sink(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/v1/external/contract":
-            return httpx.Response(200, json={"version": "2.7", "entities": ["branches"]})
-        # No verdict at all for the record -> a blank outcome.
-        return httpx.Response(200, json={"dry_run": False, "summary": {}, "records": []})
-
-    run_branch_pull(
-        db, feed, dry_run=False, now=NOW,
-        vendor_transport=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=page))),
-        sink_transport=httpx.MockTransport(sink),
-    )
-    summary = _latest_run(db, feed).summary_json
-    assert "" not in summary
-    assert summary["retryable"] == 1
 
 
 def test_n7_an_oversize_record_is_stored_as_none_and_marked_failed_not_resendable(session_factory):

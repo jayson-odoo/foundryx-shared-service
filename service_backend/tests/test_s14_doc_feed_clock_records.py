@@ -38,13 +38,16 @@ def test_vendor_path_constants_match_the_plan_exactly():
     assert doc_feed_constants.DO_BY_DOC_DATE_PATH == "/deliveryorderbydocdate"
     assert doc_feed_constants.GRN_BY_LAST_MODIFIED_PATH == "/goodsreceivenotebyLastModified"
     assert doc_feed_constants.GRN_BY_DOC_DATE_PATH == "/goodsreceivenotebydocdate"
-    assert doc_feed_constants.BRANCH_BY_PAGE_PATH == "/branchbypage"
+    # plan 14 section 11 (D28): the branchbypage path left the doc feed (it is
+    # now `presets.HTTP_PRESETS["branch"].path`).
+    assert not hasattr(doc_feed_constants, "BRANCH_BY_PAGE_PATH")
 
 
-def test_feed_keys_are_the_three_named_by_the_plan():
+def test_feed_keys_are_the_two_left_after_branches_became_an_entity():
     assert doc_feed_constants.FEED_DELIVERY_ORDERS == "delivery_orders"
     assert doc_feed_constants.FEED_GOODS_RECEIVE_NOTES == "goods_receive_notes"
-    assert doc_feed_constants.FEED_BRANCHES == "branches"
+    assert not hasattr(doc_feed_constants, "FEED_BRANCHES")
+    assert doc_feed_constants.ALL_FEEDS == ("delivery_orders", "goods_receive_notes")
 
 
 # ── MYT clock (D6, AC-14-11/30/31) ───────────────────────────────────────────
@@ -154,16 +157,11 @@ def test_source_ref_goods_receive_note():
     assert source_ref("goods_receive_notes", "db1", {"DocKey": 77140}) == "db1:GRN:77140"
 
 
-def test_source_ref_branch_with_accno():
-    assert source_ref(
-        "branches", "db1", {"BranchCode": "HQ", "AccNo": "300-R009"}
-    ) == "db1:BR:300-R009:HQ"
-
-
-def test_source_ref_branch_with_no_accno_is_c2_empty_segment():
-    # C2 (answered): `db1:BR::HQ` when there is no `AccNo`.
-    assert source_ref("branches", "db1", {"BranchCode": "HQ", "AccNo": ""}) == "db1:BR::HQ"
-    assert source_ref("branches", "db1", {"BranchCode": "HQ"}) == "db1:BR::HQ"
+def test_source_ref_rejects_a_branches_feed_key_now():
+    """AC-14-46 - the doc feed's `source_ref` no longer knows a `branches`
+    feed (branch identity is the mapping engine's, see test_autocount_branch)."""
+    with pytest.raises(ValueError):
+        source_ref("branches", "db1", {"BranchCode": "HQ", "AccNo": "300-R009"})
 
 
 # ── doc_date parsing (D19's "sent anyway, unparseable = None") ──────────────

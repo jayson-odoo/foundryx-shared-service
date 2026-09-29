@@ -443,3 +443,55 @@ describe('previewHttp - the task echo only fires for a config that actually exis
     expect(preview.task!.resultColumns).toEqual(expect.arrayContaining(['ItemCode']));
   });
 });
+
+// ── sprint-5/14 section 11 (AC-14-47) - `branch`, a paged master like product ─
+
+describe('branch on the open API mock (sprint-5/14 section 11, AC-14-40/41/47)', () => {
+  it('/branchbypage is a paged envelope carrying the four branch fixture rows (page 1 + page 2)', async () => {
+    const preview = await service.previewHttp({ connectionId: 'conn-api-sorento', path: '/branchbypage' });
+    expect(preview.envelope).toBe('paged');
+    expect(preview.totalCount).toBe(4);
+    expect(preview.rows).toHaveLength(4);
+    expect(preview.columns.map((c) => c.name)).toEqual(
+      expect.arrayContaining(['AccNo', 'BranchCode', 'BranchName']),
+    );
+    // The committed vendor fixtures (branch-page-1.json + branch-page-2.json), in walk order.
+    expect(preview.rows.map((r) => r.BranchCode)).toEqual(['HQ', 'PJ', 'HQ', '']);
+    expect(preview.rows.map((r) => r.AccNo)).toEqual(['300-R009', '300-R014', '', '300-R777']);
+  });
+
+  it('a blank branch task on the open company has no connection pre-filled (mirrors the brand case)', async () => {
+    const task = await service.getEtlTask('company-http', 'branch');
+    expect(task.sourceConfig.connectionId).toBeNull();
+  });
+
+  it('a branch task saves an HTTP source on /branchbypage keyed AccNo + BranchCode', async () => {
+    const task = await service.getEtlTask('company-http', 'branch');
+    const saved = await service.updateEtlTask('company-http', 'branch', {
+      sourceImpl: 'autocount_http',
+      sourceConfig: {
+        ...task.sourceConfig,
+        connectionId: 'conn-api-mocha',
+        path: '/branchbypage',
+        keyFields: ['AccNo', 'BranchCode'],
+        watermarkField: null,
+        comparedFields: [],
+      },
+    });
+    expect(saved.sourceImpl).toBe('autocount_http');
+    expect(saved.sourceConfig.path).toBe('/branchbypage');
+    expect(saved.sourceConfig.keyFields).toEqual(['AccNo', 'BranchCode']);
+  });
+
+  it("branch's Mapping tab reads its HTTP preset (AccNo -> acc_no, BranchCode -> code, BranchName -> name)", async () => {
+    const view = await service.getMapping('company-http', 'branch');
+    expect(view.rows.map((r) => [r.sourcePath, r.canonicalField])).toEqual([
+      ['AccNo', 'acc_no'],
+      ['BranchCode', 'code'],
+      ['BranchName', 'name'],
+    ]);
+    expect(view.rows.filter((r) => r.isRequired).map((r) => r.canonicalField)).toEqual(['acc_no', 'code']);
+    expect(view.hasPreset).toBe(true);
+  });
+});
+

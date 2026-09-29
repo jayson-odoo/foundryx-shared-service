@@ -745,4 +745,44 @@ def test_get_mapping_presets_route_returns_http_preset_not_empty(client, headers
     assert "ItemCode" in body[0]["keyFields"]
 
 
+def test_ac_14_40_get_mapping_presets_route_lists_the_branch_preset(client, headers, db):
+    """sprint-5/14 section 11 - `branch` joins the HTTP preset list beside
+    product/customer/warehouse/product_category/brand/unit_of_measure/stock."""
+    from modules.autocount.canonical.masters import ENTITY_BRANCH
+
+    company, _conn = _open_company(db)
+    response = client.get(
+        f"/autocount/presets/{ENTITY_BRANCH}",
+        params={"companyId": company.id},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body) == 1, body
+    assert body[0]["path"] == "/branchbypage"
+    assert body[0]["keyFields"] == ["AccNo", "BranchCode"]
+
+
+def test_ac_14_40_http_impl_is_accepted_for_branch_and_seeds_its_preset(db):
+    """The entity-set gate (`test_http_impl_rejected_for_non_http_entities_422`
+    above lists what is NOT offered) now includes `branch` as offered."""
+    from modules.autocount.canonical.masters import ENTITY_BRANCH
+    from modules.autocount.models import AcFieldMapping
+
+    company, conn = _open_company(db)
+    EtlService(db).update_task(
+        DEFAULT_TENANT_ID, company.id, ENTITY_BRANCH,
+        _http_raw(
+            connectionId=conn.id, path="/branchbypage", keyFields=["AccNo", "BranchCode"],
+            watermarkField=None,
+        ),
+    )
+    seeded = db.query(AcFieldMapping).filter(
+        AcFieldMapping.company_id == company.id, AcFieldMapping.entity_type == ENTITY_BRANCH
+    ).all()
+    assert {(r.source_path, r.canonical_field) for r in seeded} == {
+        ("AccNo", "acc_no"), ("BranchCode", "code"), ("BranchName", "name"),
+    }
+
+
 # ── AC-08-17: parity extension lives in test_autocount_entity_parity.py ──────

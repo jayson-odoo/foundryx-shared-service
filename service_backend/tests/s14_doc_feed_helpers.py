@@ -1,4 +1,4 @@
-"""Shared builders for the sprint-5/14 (DO/GRN/branch HTTP source) red tests.
+"""Shared builders for the sprint-5/14 (DO/GRN HTTP source (branches became an entity, section 11)) red tests.
 
 Not itself a test file (no `test_` prefix - the autouse network-block/DNS-stub
 fixtures in `conftest.py` are scoped by FILENAME regex, and this helper is

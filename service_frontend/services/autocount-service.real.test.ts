@@ -474,17 +474,17 @@ describe('realAutocountService - document feeds (sprint-5/14 S3/S8, review round
     ['discardDocFeedBackfill', 'discard'],
   ] as const)('%s POSTs /backfill/%s with no body', async (method, action) => {
     apiFetchMock.mockResolvedValue({ id: 'bf-1' });
-    await realAutocountService[method]('co-1', 'branches');
-    expect(apiFetchMock).toHaveBeenCalledWith(`/autocount/doc-feeds/co-1/branches/backfill/${action}`, {
+    await realAutocountService[method]('co-1', 'goods_receive_notes');
+    expect(apiFetchMock).toHaveBeenCalledWith(`/autocount/doc-feeds/co-1/goods_receive_notes/backfill/${action}`, {
       method: 'POST',
     });
   });
 
   it('listDocFeedRuns sends feed + page + snake_case page_size and returns the house {data,total,page} envelope', async () => {
     apiFetchMock.mockResolvedValue({ data: [{ id: 'r1' }], total: 1, page: 1 });
-    const result = await realAutocountService.listDocFeedRuns('co-1', { feed: 'branches', page: 1, pageSize: 10 });
+    const result = await realAutocountService.listDocFeedRuns('co-1', { feed: 'goods_receive_notes', page: 1, pageSize: 10 });
     expect(apiFetchMock).toHaveBeenCalledWith(
-      '/autocount/doc-feeds/co-1/runs?page=1&page_size=10&feed=branches',
+      '/autocount/doc-feeds/co-1/runs?page=1&page_size=10&feed=goods_receive_notes',
     );
     expect(result).toEqual({ data: [{ id: 'r1' }], total: 1, page: 1 });
   });

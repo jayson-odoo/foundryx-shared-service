@@ -640,16 +640,19 @@ describe('REF_PREFIX_RE (AC-08-07)', () => {
 });
 
 describe('HTTP_PRESETS (AC-08-16)', () => {
-  it('has exactly the six confirmed masters plus stock_balance, each with a leading-slash path', () => {
-    expect(Object.keys(HTTP_PRESETS)).toEqual([
-      'product',
-      'customer',
-      'warehouse',
-      'product_category',
-      'brand',
-      'unit_of_measure',
-      'stock_balance',
-    ]);
+  it('has exactly the six confirmed masters plus stock_balance plus branch, each with a leading-slash path', () => {
+    expect(Object.keys(HTTP_PRESETS).sort()).toEqual(
+      [
+        'product',
+        'customer',
+        'warehouse',
+        'product_category',
+        'brand',
+        'unit_of_measure',
+        'stock_balance',
+        'branch',
+      ].sort(),
+    );
     for (const preset of Object.values(HTTP_PRESETS)) {
       expect(preset.path.startsWith('/')).toBe(true);
     }
@@ -661,6 +664,19 @@ describe('HTTP_PRESETS (AC-08-16)', () => {
       expect(preset.keyFields.length).toBeGreaterThan(0);
     }
     expect(HTTP_PRESETS.stock_balance.keyFields).toEqual([]);
+  });
+
+  it('branch pre-fills /branchbypage keyed on AccNo + BranchCode with no watermark (sprint-5/14 AC-14-47)', () => {
+    const preset = HTTP_PRESETS.branch;
+    expect(preset.path).toBe('/branchbypage');
+    expect(preset.keyFields).toEqual(['AccNo', 'BranchCode']);
+    expect(preset.watermarkField).toBeNull();
+    expect(preset.distinctOf).toBeNull();
+    expect(preset.mapping.map((m) => [m.sourcePath, m.canonicalField, !!m.required])).toEqual([
+      ['AccNo', 'acc_no', true],
+      ['BranchCode', 'code', true],
+      ['BranchName', 'name', false],
+    ]);
   });
 
   it('stock_balance pre-fills two ordered lookups and a combine step (AC-10-40/41)', () => {

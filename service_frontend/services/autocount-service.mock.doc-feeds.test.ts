@@ -11,12 +11,10 @@ import { describe, expect, it } from 'vitest';
 import { mockAutocountService } from './autocount-service.mock';
 
 describe('mockAutocountService doc-feed methods (sprint-5/14 D17)', () => {
-  it('getDocFeeds answers three feeds, each off, for an unconfigured company', async () => {
+  it('getDocFeeds answers two feeds, each off, for an unconfigured company (AC-14-46: branches is an entity now)', async () => {
     const view = await mockAutocountService.getDocFeeds('co-mock-1');
-    expect(view.feeds).toHaveLength(3);
-    expect(view.feeds.map((f) => f.feed).sort()).toEqual(
-      ['branches', 'delivery_orders', 'goods_receive_notes'].sort(),
-    );
+    expect(view.feeds).toHaveLength(2);
+    expect(view.feeds.map((f) => f.feed).sort()).toEqual(['delivery_orders', 'goods_receive_notes'].sort());
     expect(view.feeds.every((f) => f.mode === 'off')).toBe(true);
   });
 

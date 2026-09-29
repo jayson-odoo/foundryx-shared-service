@@ -20,7 +20,7 @@ from modules.autocount.sinks_sorento import CONTRACT_GATED_ENTITIES, _ENTITY_PAT
 from .s14_doc_feed_helpers import auth_headers, company, limited_user, other_tenant, wired_company
 
 
-DOC_FEED_KEYS = {"delivery_orders", "goods_receive_notes", "branches"}
+DOC_FEED_KEYS = {"delivery_orders", "goods_receive_notes"}  # plan 14 section 11: branches is an entity now
 
 
 def test_doc_feed_keys_are_disjoint_from_etl_entity_types():
@@ -357,3 +357,13 @@ def test_models_declare_no_auto_named_single_column_indexes():
         assert not any(n.startswith("ix_app_autocount") for n in names), names
     assert {"ix_ac_doc_feed_tenant", "ix_ac_doc_feed_company", "ix_ac_doc_feed_connection",
             "ix_ac_doc_feed_next_poll_at"} <= {ix.name for ix in AcDocFeed.__table__.indexes}
+
+
+# ── AC-14-46 / D28: the model index carries no branch step ──────────────────
+
+
+def test_ac_14_46_backfill_model_has_no_branch_step_column():
+    from modules.autocount.models import AcDocFeedBackfill
+
+    assert not hasattr(AcDocFeedBackfill, "branch_step")
+    assert "branch_step" not in AcDocFeedBackfill.__table__.columns

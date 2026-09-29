@@ -84,18 +84,26 @@ def test_a_due_sweep_is_enqueued_and_rearmed_24_hours_out(session_factory):
     assert feed.next_sweep_at >= NOW + timedelta(hours=23)
 
 
-def test_a_due_branch_pull_is_enqueued_and_rearmed_24_hours_out(session_factory):
+def test_ac_14_46_the_beat_claims_no_branch_job_only_poll_and_sweep(session_factory):
+    """Plan 14 section 11 (D28) - the daily branch schedule is gone: over a
+    due poll + a due sweep the only job kinds ever enqueued are poll/sweep."""
     db = session_factory()
     co, ac_conn, _crm = wired_company(db)
-    feed = _feed(db, co, ac_conn, feed_key="branches", next_poll_at=NOW - timedelta(minutes=1))
+    poll_feed = _feed(db, co, ac_conn, next_poll_at=NOW - timedelta(minutes=1))
+    sweep_feed = _feed(
+        db, co, ac_conn, feed_key="goods_receive_notes",
+        next_poll_at=NOW + timedelta(hours=1), next_sweep_at=NOW - timedelta(minutes=1),
+    )
 
     sweep_doc_feeds(db, now=NOW)
 
-    jobs = _jobs_for(db, feed.id)
-    assert len(jobs) == 1
-    assert jobs[0].payload_json.get("kind") == "branch"
-    db.refresh(feed)
-    assert feed.next_poll_at >= NOW + timedelta(hours=23)
+    kinds = sorted(
+        j.payload_json.get("kind")
+        for feed in (poll_feed, sweep_feed)
+        for j in _jobs_for(db, feed.id)
+    )
+    assert kinds == ["poll", "sweep"], kinds  # control: both DID fire
+    assert "branch" not in kinds
 
 
 # ── a busy feed is not claimed (no lost tick) ───────────────────────────────
@@ -331,22 +339,23 @@ def test_rs3_orphan_hook_never_flips_a_done_backfill_to_stopped(session_factory)
 
 
 def test_rs3_orphan_hook_closes_open_run_rows_of_a_backfill_job(session_factory):
-    """`run_branch_pull` opens a run row under the backfill's own job_id;
-    when that job is orphaned the row must not stay Running forever."""
+    """A backfill's own run row (kind `backfill`; the old branch step that also
+    opened rows under the backfill job is gone, plan 14 section 11); when the
+    job is orphaned the row must not stay Running forever."""
     from modules.autocount.bootstrap import on_job_orphaned
-    from modules.autocount.doc_feed.constants import RUN_KIND_BRANCH
+    from modules.autocount.doc_feed.constants import RUN_KIND_BACKFILL
     from modules.autocount.doc_feed.runner import _new_run
 
     db = session_factory()
     co, ac_conn, _crm = wired_company(db)
-    feed = _feed(db, co, ac_conn, feed_key="branches")
+    feed = _feed(db, co, ac_conn)
     job = BackgroundJob(
         tenant_id=co.tenant_id, type="autocount_doc_feed_backfill", status="running",
         payload_json={"backfillId": "none"},
     )
     db.add(job)
     db.commit()
-    run = _new_run(db, feed, kind=RUN_KIND_BRANCH, dry_run=False, now=NOW, job_id=job.id)
+    run = _new_run(db, feed, kind=RUN_KIND_BACKFILL, dry_run=False, now=NOW, job_id=job.id)
 
     on_job_orphaned(db, job, now=NOW + timedelta(minutes=5))
     db.commit()

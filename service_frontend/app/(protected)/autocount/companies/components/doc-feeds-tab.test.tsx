@@ -8,7 +8,8 @@
  */
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
+import type { DocFeedKey, DocFeedRunKind } from '@/types/autocount';
 
 // The Resource shell itself reads `next-auth/react`'s `useSession` directly
 // (column-preference persistence) - unmocked, jsdom's fetch stub throws on
@@ -65,12 +66,11 @@ function feedItem(over: Record<string, unknown> = {}) {
 }
 
 describe('DocFeedsTab (AC-14-90)', () => {
-  it('lists the three feeds with book, mode, waiting and failed counts', async () => {
+  it('lists the two feeds with book, mode, waiting and failed counts', async () => {
     getDocFeeds.mockResolvedValue({
       feeds: [
         feedItem({ feed: 'delivery_orders', mode: 'push', retryableCount: 2, failedCount: 1 }),
         feedItem({ feed: 'goods_receive_notes' }),
-        feedItem({ feed: 'branches' }),
       ],
       eligibleConnections: [],
     });
@@ -80,7 +80,34 @@ describe('DocFeedsTab (AC-14-90)', () => {
 
     expect(await screen.findByText(/delivery orders/i)).toBeInTheDocument();
     expect(await screen.findByText(/goods receive notes/i)).toBeInTheDocument();
-    expect(await screen.findByText(/branches/i)).toBeInTheDocument();
+    expect(screen.queryByText(/branches/i)).not.toBeInTheDocument();
+  });
+
+  it('AC-14-46/47 - the tab fed by the service mock shows exactly two feed rows, never a Branches row', async () => {
+    // The mock IS the Phase 1 backend spec (`getDocFeeds` answers what
+    // `GET /autocount/doc-feeds/{company}` must), so wiring it into the tab
+    // pins the whole seam: two feeds in, two rows out.
+    const { mockAutocountService } = await import('@/services/autocount-service.mock');
+    const view = await mockAutocountService.getDocFeeds('co-tab-mock');
+    getDocFeeds.mockResolvedValue(view);
+    const { DocFeedsTab } = await import('./doc-feeds-tab');
+
+    render(<DocFeedsTab companyId="co-tab-mock" />);
+
+    expect(await screen.findByText(/delivery orders/i)).toBeInTheDocument();
+    expect(await screen.findByText(/goods receive notes/i)).toBeInTheDocument();
+    expect(view.feeds).toHaveLength(2);
+    expect(screen.queryByText(/branches/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^branch$/i)).not.toBeInTheDocument();
+  });
+
+  it('AC-14-46 - the DocFeedKey type accepts only the two document feeds', () => {
+    // Compile-time pin (tsc / `next build`); the runtime pin is AC_DOC_FEED_KEYS
+    // in autocount-meta.test.ts and the mock-service test above.
+    expectTypeOf<DocFeedKey>().toEqualTypeOf<'delivery_orders' | 'goods_receive_notes'>();
+    expectTypeOf<DocFeedRunKind>().toEqualTypeOf<'poll' | 'sweep' | 'backfill'>();
+    const keys = ['delivery_orders', 'goods_receive_notes'] as const satisfies readonly DocFeedKey[];
+    expect(keys).toHaveLength(2);
   });
 
   it('offers a Run now action gated by autocount.sync.run', async () => {

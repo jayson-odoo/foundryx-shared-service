@@ -77,17 +77,14 @@ def _ok_sink() -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
-# ── branch step then day loop, in order (AC-14-60) ──────────────────────────
+# ── no branch step (AC-14-46, plan 14 section 11 / D28) ─────────────────────
+# Branches left the doc feed: a backfill is the day loop and nothing else.
+# (The old "branch step before the day loop" tests were removed with the step.)
 
 
-def test_backfill_runs_the_branch_step_before_the_day_loop(session_factory):
+def test_ac_14_46_backfill_performs_no_branch_pull_only_the_day_loop(session_factory):
     db = session_factory()
     co, ac_conn, _crm = wired_company(db)
-    branches_feed = AcDocFeed(
-        tenant_id=co.tenant_id, company_id=co.id, feed="branches",
-        connection_id=ac_conn.id, book="db1", mode="push",
-    )
-    db.add(branches_feed)
     do_feed = _feed(db, co, ac_conn)
     bf = _backfill(db, do_feed, from_day=date(2026, 9, 27), to_day=date(2026, 9, 29))
 
@@ -95,19 +92,27 @@ def test_backfill_runs_the_branch_step_before_the_day_loop(session_factory):
 
     def vendor(request: httpx.Request) -> httpx.Response:
         call_order.append(request.url.path)
-        return httpx.Response(200, json=[] if request.url.path != "/api/db1/branchbypage" else {"TotalCount": 0, "Page": 1, "PageSize": 1000, "TotalPages": 1, "Data": []})
+        return httpx.Response(200, json=[])
 
     run_backfill(db, bf, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)), sink_transport=_ok_sink())
 
-    assert "/api/db1/branchbypage" in call_order
-    assert call_order.index("/api/db1/branchbypage") < call_order.index("/api/db1/deliveryorderbydocdate")
+    # Control: the day loop really ran (a run that read nothing would pass the
+    # absence assertion below for the wrong reason).
+    assert call_order.count("/api/db1/deliveryorderbydocdate") == 3
+    assert not any("branchbypage" in path for path in call_order), call_order
     db.refresh(bf)
-    assert bf.branch_step == "done"
+    assert bf.status == "done"
 
 
-def test_backfill_skips_the_branch_step_when_the_branches_feed_is_off(session_factory):
+def test_ac_14_46_backfill_with_a_live_branches_row_left_over_still_pulls_no_branches(session_factory):
+    """A dev DB / stray `ac_doc_feed` row with feed='branches' must never make a
+    backfill read /branchbypage (the step is gone, not merely defaulted off)."""
     db = session_factory()
     co, ac_conn, _crm = wired_company(db)
+    db.add(AcDocFeed(
+        tenant_id=co.tenant_id, company_id=co.id, feed="branches",
+        connection_id=ac_conn.id, book="db1", mode="push",
+    ))
     do_feed = _feed(db, co, ac_conn)
     bf = _backfill(db, do_feed, from_day=date(2026, 9, 28), to_day=date(2026, 9, 29))
 
@@ -118,9 +123,8 @@ def test_backfill_skips_the_branch_step_when_the_branches_feed_is_off(session_fa
         return httpx.Response(200, json=[])
 
     run_backfill(db, bf, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)), sink_transport=_ok_sink())
-    assert "/branchbypage" not in call_order
-    db.refresh(bf)
-    assert bf.branch_step == "skipped"
+    assert call_order.count("/api/db1/deliveryorderbydocdate") == 2
+    assert not any("branchbypage" in path for path in call_order), call_order
 
 
 def _latest_backfill_run(db, backfill: AcDocFeedBackfill) -> AcDocFeedRun:
@@ -431,7 +435,9 @@ def test_resume_re_checks_the_feed_is_still_in_push_mode(session_factory):
     assert bf.status == "stopped"
 
 
-def test_branches_has_no_backfill(session_factory):
+def test_ac_14_46_branches_is_no_feed_so_it_has_no_backfill(session_factory):
+    """Plan 14 section 11: `branches` is not a feed at all any more (it was a
+    422 for having no backfill; now it is simply unknown)."""
     db = session_factory()
     co, ac_conn, _crm = wired_company(db)
     branches_feed = AcDocFeed(

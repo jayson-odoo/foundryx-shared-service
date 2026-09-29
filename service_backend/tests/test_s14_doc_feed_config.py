@@ -38,7 +38,7 @@ def _feed_item(body, feed="delivery_orders"):
 # ── AC-14-01 - defaults + cross-tenant 404 ──────────────────────────────────
 
 
-def test_unconfigured_company_answers_three_feeds_off_with_zero_counts(client, session_factory):
+def test_unconfigured_company_answers_two_feeds_off_with_zero_counts(client, session_factory):
     db = session_factory()
     co = company(db)
     headers = auth_headers(client)
@@ -46,7 +46,10 @@ def test_unconfigured_company_answers_three_feeds_off_with_zero_counts(client, s
     response = client.get(f"/autocount/doc-feeds/{co.id}", headers=headers)
     assert response.status_code == 200, response.text
     body = response.json()
-    for feed in ("delivery_orders", "goods_receive_notes", "branches"):
+    # AC-14-46 (plan 14 section 11, D28) - branches left the doc feed: exactly
+    # two feeds, never a third row.
+    assert [f["feed"] for f in body["feeds"]] == ["delivery_orders", "goods_receive_notes"]
+    for feed in ("delivery_orders", "goods_receive_notes"):
         item = _feed_item(body, feed)
         assert item["mode"] == "off"
         assert item.get("connectionId") in (None, "")
