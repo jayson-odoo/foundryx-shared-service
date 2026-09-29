@@ -921,29 +921,43 @@ def _branch_company_with_task(db):
 
 
 @pytest.mark.parametrize(
-    "code_row",
+    "acc_row, code_row",
     [
-        ("Address1", "string", None),  # repointed source column
-        ("BranchCode", "int", None),  # a different transform
-        ("BranchCode", "string", "upper(BranchCode)"),  # a formula
+        (("AccNo", "string", None, True), ("Address1", "string", None, True)),  # code repointed
+        (("AccNo", "string", None, True), ("BranchCode", "int", None, True)),  # code transform
+        # A formula the earlier formula guard ACCEPTS (a known function over the
+        # column) - only the lock can refuse it.
+        (("AccNo", "string", None, True), ("BranchCode", "string", "upper(BranchCode)", True)),
+        (("Address1", "string", None, True), ("BranchCode", "string", None, True)),  # acc_no repointed
+        (("AccNo", "string", None, False), ("BranchCode", "string", None, True)),  # acc_no disabled
+        (("AccNo", "string", None, True), ("BranchCode", "string", None, False)),  # code disabled
     ],
 )
-def test_s1_changing_the_code_row_is_refused(db, code_row):
+def test_s1_changing_an_identity_row_is_refused_by_the_lock(db, acc_row, code_row):
     from modules.autocount.canonical.masters import ENTITY_BRANCH
     from modules.autocount.services.company_service import AutocountServiceError, CompanyService, MappingWriteRow
 
     company = _branch_company_with_task(db)
-    source, transform, formula = code_row
     with pytest.raises(AutocountServiceError) as exc_info:
         CompanyService(db).replace_mapping(
             DEFAULT_TENANT_ID, company.id, ENTITY_BRANCH,
             [
-                MappingWriteRow("AccNo", "string", "acc_no"),
-                MappingWriteRow(source, transform, "code", formula=formula),
+                MappingWriteRow(acc_row[0], acc_row[1], "acc_no", formula=acc_row[2], is_enabled=acc_row[3]),
+                MappingWriteRow(code_row[0], code_row[1], "code", formula=code_row[2], is_enabled=code_row[3]),
                 MappingWriteRow("BranchName", "string", "name"),
             ],
         )
-    assert "BranchCode" in str(exc_info.value)
+    assert "is fixed to" in str(exc_info.value)
+
+
+def test_n6_the_locked_rows_seed_enabled_even_when_the_columns_are_not_known():
+    from modules.autocount.canonical.masters import ENTITY_BRANCH
+    from modules.autocount.presets import HTTP_PRESETS, plan_rows
+
+    planned = plan_rows(HTTP_PRESETS[ENTITY_BRANCH].rows, [], entity_type=ENTITY_BRANCH, scope="header")
+    by_field = {p.spec.canonical_field: p for p in planned}
+    assert by_field["acc_no"].is_enabled and by_field["code"].is_enabled
+    assert not by_field["name"].is_enabled  # a free row still follows its column
 
 
 def test_s1_the_name_row_stays_freely_mappable(db):
