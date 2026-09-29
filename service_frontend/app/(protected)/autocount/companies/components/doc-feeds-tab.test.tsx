@@ -102,4 +102,32 @@ describe('DocFeedsTab (AC-14-90)', () => {
     await userEvent.click(trigger);
     expect(await screen.findByRole('menuitem', { name: /run now/i })).toBeInTheDocument();
   });
+
+  it('S6 (review round 1) - hides Backfill while a stopped backfill is still open', async () => {
+    getDocFeeds.mockResolvedValue({
+      feeds: [
+        feedItem({
+          feed: 'delivery_orders', mode: 'push',
+          backfill: {
+            id: 'bf-1', status: 'stopped', dryRun: false,
+            fromDay: '2023-01-01', toDay: '2026-09-29', nextDay: '2026-01-01',
+            daysTotal: 100, daysDone: 10, error: 'boom',
+          },
+        }),
+      ],
+      eligibleConnections: [],
+    });
+    const { DocFeedsTab } = await import('./doc-feeds-tab');
+
+    render(<DocFeedsTab companyId="co-1" />);
+
+    const trigger = await screen.findByRole('button', { name: /actions/i }, { timeout: 5000 });
+    await userEvent.click(trigger);
+    // "Backfill" (start a NEW one) would always 409 (BACKFILL_OPEN) while a
+    // `stopped` backfill still exists - only valid options are ever listed
+    // (foolproof-UI). Resume/Discard cover a stopped backfill instead.
+    expect(screen.queryByRole('menuitem', { name: /^backfill$/i })).not.toBeInTheDocument();
+    expect(await screen.findByRole('menuitem', { name: /resume backfill/i })).toBeInTheDocument();
+    expect(await screen.findByRole('menuitem', { name: /discard backfill/i })).toBeInTheDocument();
+  });
 });

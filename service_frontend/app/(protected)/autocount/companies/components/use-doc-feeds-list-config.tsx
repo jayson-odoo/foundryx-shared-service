@@ -3,7 +3,6 @@
 import { useMemo } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { DataGridColumnHeader } from '@/components/ui/data-grid-column-header';
-import { Badge } from '@/components/ui/badge';
 import { ActionMenu } from '@/components/platform/resource-actions/action-menu';
 import { embeddedListConfig } from '@/components/platform/resource-list/embedded-list-config';
 import type { ResourceAction, ResourceListConfig } from '@/components/platform/resource-list';
@@ -13,8 +12,9 @@ import { useDatetime } from '@/hooks/use-datetime';
 import type { DocFeedItem, DocFeedKey, DocFeedMode, DocFeedRunOutcome } from '@/types/autocount';
 import {
   AC_COMPANIES_MANAGE,
+  AC_DOC_FEED_BACKFILL_STATUS_REGISTRY,
   AC_DOC_FEED_MODE_REGISTRY,
-  AC_RUN_OUTCOME_REGISTRY,
+  AC_DOC_FEED_RUN_OUTCOME_REGISTRY,
   AC_SYNC_RUN,
   docFeedLabel,
 } from '../../components/autocount-meta';
@@ -35,9 +35,12 @@ export interface DocFeedsListOptions {
 }
 
 function hasOpenBackfill(item: DocFeedItem): boolean {
-  return Boolean(
-    item.backfill && (item.backfill.status === 'running' || item.backfill.status === 'stopping'),
-  );
+  // S6 (review round 1) - the backend's own open statuses (`running`,
+  // `stopping`, `stopped`) all mean "there is a backfill to finish or
+  // discard first" (`DOC_FEED_BACKFILL_OPEN_STATUSES`); only `done` frees
+  // up a fresh Backfill. A `stopped` backfill previously still offered
+  // "Backfill...", which always 409d (foolproof-UI: no invalid options).
+  return Boolean(item.backfill && item.backfill.status !== 'done');
 }
 
 /**
@@ -87,7 +90,9 @@ export function useDocFeedsListConfig(options: DocFeedsListOptions): ResourceLis
       },
       {
         id: 'backfill',
-        label: (rows) => (rows[0].backfill && rows[0].backfill.status !== 'done' ? 'Backfill…' : 'Backfill'),
+        // Only ever visible when there is no backfill yet or the last one
+        // is `done` (S6) - never a reason to show the ellipsis variant.
+        label: 'Backfill',
         surfaces: { row: true },
         permission: AC_SYNC_RUN,
         isVisible: (rows) => rows[0].feed !== 'branches' && !hasOpenBackfill(rows[0]),
@@ -173,7 +178,11 @@ export function useDocFeedsListConfig(options: DocFeedsListOptions): ResourceLis
                 {lastRun.finishedAt ? formatDateTime(lastRun.finishedAt) : 'Running…'}
               </span>
               {lastRun.outcome && (
-                <StatusBadge status={lastRun.outcome as DocFeedRunOutcome} registry={AC_RUN_OUTCOME_REGISTRY} size="sm" />
+                <StatusBadge
+                  status={lastRun.outcome as DocFeedRunOutcome}
+                  registry={AC_DOC_FEED_RUN_OUTCOME_REGISTRY}
+                  size="sm"
+                />
               )}
             </div>
           );
@@ -225,9 +234,7 @@ export function useDocFeedsListConfig(options: DocFeedsListOptions): ResourceLis
             );
           }
           return (
-            <Badge variant={backfill.status === 'done' ? 'success' : 'secondary'} appearance="light" size="sm">
-              {backfill.status === 'done' ? 'Done' : 'Stopped'}
-            </Badge>
+            <StatusBadge status={backfill.status} registry={AC_DOC_FEED_BACKFILL_STATUS_REGISTRY} size="sm" />
           );
         },
         size: 220,

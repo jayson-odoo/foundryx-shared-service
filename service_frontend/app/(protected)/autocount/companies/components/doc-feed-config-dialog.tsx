@@ -79,7 +79,7 @@ export function DocFeedConfigDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Configure - {docFeedLabel(feed)}</DialogTitle>
-          <DialogDescription>Connection and mode for this document feed.</DialogDescription>
+          <DialogDescription className="sr-only">Configure {docFeedLabel(feed)}</DialogDescription>
         </DialogHeader>
         <DialogBody>
           <div className="flex flex-col gap-4">

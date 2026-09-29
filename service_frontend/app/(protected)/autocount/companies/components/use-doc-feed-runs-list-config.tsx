@@ -12,7 +12,7 @@ import { formatDurationMs } from '@/lib/autocount-etl';
 import { autocountService } from '@/services/autocount-service';
 import type { DocFeedKey, DocFeedRun, DocFeedRunOutcome } from '@/types/autocount';
 import type { FilterGroup, ListQuery } from '@/types/resource';
-import { AC_DOC_FEED_KEYS, AC_RUN_OUTCOME_REGISTRY, docFeedLabel, docFeedRunKindLabel } from '../../components/autocount-meta';
+import { AC_DOC_FEED_KEYS, AC_DOC_FEED_RUN_OUTCOME_REGISTRY, docFeedLabel, docFeedRunKindLabel } from '../../components/autocount-meta';
 import { StatusBadge } from '@/components/platform/status-badge';
 
 /** Read a single equality value out of the (whitelisted) filter for `field` -
@@ -126,18 +126,13 @@ export function useDocFeedRunsListConfig(companyId: string): ResourceListConfig<
         accessorFn: (row) => row.outcome ?? '',
         meta: { headerTitle: 'Outcome' },
         header: ({ column }) => <DataGridColumnHeader title="Outcome" column={column} />,
-        cell: ({ row }) =>
-          row.original.outcome ? (
-            <StatusBadge
-              status={row.original.outcome as DocFeedRunOutcome}
-              registry={AC_RUN_OUTCOME_REGISTRY}
-              size="sm"
-            />
-          ) : (
-            <Badge variant="info" appearance="light" size="sm">
-              Running
-            </Badge>
-          ),
+        cell: ({ row }) => (
+          <StatusBadge
+            status={(row.original.outcome ?? 'RUNNING') as DocFeedRunOutcome | 'RUNNING'}
+            registry={AC_DOC_FEED_RUN_OUTCOME_REGISTRY}
+            size="sm"
+          />
+        ),
         size: 130,
         enableSorting: false,
       },

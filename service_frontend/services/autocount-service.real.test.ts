@@ -442,3 +442,41 @@ describe('realAutocountService - human-invoked pull (AC-10-11/27..38)', () => {
     });
   });
 });
+
+describe('realAutocountService - document feeds (sprint-5/14 S3/S8, review round 1)', () => {
+  it('startDocFeedBackfill reads back the FULL DocFeedBackfill shape (S8) - the router now answers the same object stop/resume/discard already do, never a bespoke {backfillId, jobId}', async () => {
+    apiFetchMock.mockResolvedValue({
+      id: 'bf-1', status: 'running', dryRun: false, fromDay: '2023-01-01',
+      toDay: '2026-09-29', nextDay: '2023-01-01', daysTotal: 100, daysDone: 0,
+      error: null, jobId: 'job-1',
+    });
+    const backfill = await realAutocountService.startDocFeedBackfill('co-1', 'delivery_orders', {
+      dryRun: false, fromDay: '2023-01-01', toDay: '2026-09-29',
+    });
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/doc-feeds/co-1/delivery_orders/backfill', {
+      method: 'POST',
+      body: JSON.stringify({ dryRun: false, fromDay: '2023-01-01', toDay: '2026-09-29' }),
+    });
+    expect(backfill.status).toBe('running');
+    expect(backfill.id).toBe('bf-1');
+  });
+
+  it('a 422 from updateDocFeed carries detail.fieldErrors (S3) - the SAME shape readFieldErrors already reads for every other AutoCount surface', async () => {
+    const { ApiError } = await import('@/lib/api-client');
+    const { readFieldErrors } = await import('@/lib/autocount-etl');
+    apiFetchMock.mockRejectedValue(
+      new ApiError('Unprocessable', 422, null, { fieldErrors: { mode: 'Choose a connection first.' } }),
+    );
+
+    await expect(
+      realAutocountService.updateDocFeed('co-1', 'delivery_orders', { connectionId: null, mode: 'push' }),
+    ).rejects.toMatchObject({ status: 422 });
+
+    try {
+      await realAutocountService.updateDocFeed('co-1', 'delivery_orders', { connectionId: null, mode: 'push' });
+    } catch (err) {
+      const detail = (err as InstanceType<typeof ApiError>).detail;
+      expect(readFieldErrors(detail)).toEqual({ mode: 'Choose a connection first.' });
+    }
+  });
+});

@@ -83,7 +83,7 @@ export function DocFeedBackfillDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Backfill - {docFeedLabel(feed)}</DialogTitle>
-          <DialogDescription>Re-pull this feed's history, one day at a time.</DialogDescription>
+          <DialogDescription className="sr-only">Backfill {docFeedLabel(feed)}</DialogDescription>
         </DialogHeader>
         <DialogBody>
           {inFlight ? (

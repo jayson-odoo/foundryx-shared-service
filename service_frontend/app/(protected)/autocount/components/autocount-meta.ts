@@ -10,11 +10,13 @@ import type {
   AutocountRunOutcome,
   AutocountSourceKind,
   AutocountStagedStatus,
+  DocFeedBackfillStatus,
   DocFeedContractGate,
   DocFeedIssueKind,
   DocFeedKey,
   DocFeedMode,
   DocFeedRunKind,
+  DocFeedRunOutcome,
 } from '@/types/autocount';
 
 // ── permission keys (module CSV: modules/autocount/permissions/permissions.csv)
@@ -503,6 +505,29 @@ export const AC_DOC_FEED_MODE_REGISTRY: StatusRegistry<DocFeedMode> = {
   off: { label: 'Off', tone: 'secondary' },
   dry_run: { label: 'Dry run', tone: 'info' },
   push: { label: 'Push', tone: 'success' },
+};
+
+/** S7 (review round 1) - the backfill column's Done/Stopped pill through
+ * the shared `StatusBadge` roster, not a hand-rolled `<Badge>`. `running`/
+ * `stopping` are listed too (the registry documents every value the wire
+ * can carry) even though the list's own cell renders those two through
+ * `JobProgress` instead. */
+export const AC_DOC_FEED_BACKFILL_STATUS_REGISTRY: StatusRegistry<DocFeedBackfillStatus> = {
+  running: { label: 'Running', tone: 'info' },
+  stopping: { label: 'Stopping', tone: 'warning' },
+  stopped: { label: 'Stopped', tone: 'warning' },
+  done: { label: 'Done', tone: 'success' },
+};
+
+/** S7 (review round 1) - the doc-feed run history's own outcome registry
+ * (a `RUNNING` sentinel for a still-open run, `outcome === null`) - kept
+ * SEPARATE from the plan-22 `AC_RUN_OUTCOME_REGISTRY` (no `SKIPPED` value
+ * here, and that registry has no room for a run still in flight). */
+export const AC_DOC_FEED_RUN_OUTCOME_REGISTRY: StatusRegistry<DocFeedRunOutcome | 'RUNNING'> = {
+  SUCCESS: { label: 'Success', tone: 'success' },
+  FAILED: { label: 'Failed', tone: 'destructive' },
+  ABORTED: { label: 'Aborted', tone: 'warning' },
+  RUNNING: { label: 'Running', tone: 'info' },
 };
 
 /** Runs list "Kind" column (poll / sweep / branch / backfill). */
