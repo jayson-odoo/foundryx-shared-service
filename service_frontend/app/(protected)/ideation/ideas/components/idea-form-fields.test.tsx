@@ -9,7 +9,7 @@
  * assertion below is expected to fail until slice S1 lands.
  */
 import { render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { useForm } from 'react-hook-form';
 import { Form } from '@/components/ui/form';
 import { IdeationRuntimeProvider } from '@/hooks/use-ideation-runtime';

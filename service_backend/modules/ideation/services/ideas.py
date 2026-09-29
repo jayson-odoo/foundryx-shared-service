@@ -157,7 +157,10 @@ class IdeaReadService:
         idea_ids = [i.id for i in ideas]
         rows = (
             self.db.query(IdeaAttachment)
-            .filter(IdeaAttachment.idea_id.in_(idea_ids))
+            .filter(
+                IdeaAttachment.idea_id.in_(idea_ids),
+                IdeaAttachment.tenant_id.in_({i.tenant_id for i in ideas}),
+            )
             .order_by(IdeaAttachment.created_at.asc(), IdeaAttachment.id.asc())
             .all()
         )

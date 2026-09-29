@@ -165,3 +165,70 @@ def test_operator_route_unchanged(ctx):
         json={"productId": ctx["pid"], "title": "Op BR", "answers": {}},
     )
     assert res.status_code == 201, res.text
+
+
+def test_promote_blocked_user_is_403(ctx):
+    from app.models import User, UserStatus
+
+    c = ctx["c"]
+    _make_user(c._factory, EMBED_EMAIL, "pw123456", [MANAGE])
+    db = c._factory()
+    try:
+        db.query(User).filter(User.email == EMBED_EMAIL).update({"status": UserStatus.BLOCKED.value})
+        db.commit()
+    finally:
+        db.close()
+    before = _br_count(c._factory)
+    res = c.post("/embed/ideas/promote", headers=_bearer(_mint(c)), json={"ideaIds": ctx["ideas"]})
+    assert res.status_code == 403, res.text
+    assert _br_count(c._factory) == before
+
+
+def test_promote_inactive_user_is_403(ctx):
+    from app.models import User, UserStatus
+
+    c = ctx["c"]
+    _make_user(c._factory, EMBED_EMAIL, "pw123456", [MANAGE])
+    # Control: the active user may promote (proves the 403 below is the status).
+    ok = c.post("/embed/ideas/promote", headers=_bearer(_mint(c)), json={"ideaIds": ctx["ideas"][:1]})
+    assert ok.status_code == 201, ok.text
+    db = c._factory()
+    try:
+        db.query(User).filter(User.email == EMBED_EMAIL).update({"status": UserStatus.INACTIVE.value})
+        db.commit()
+    finally:
+        db.close()
+    before = _br_count(c._factory)
+    res = c.post("/embed/ideas/promote", headers=_bearer(_mint(c)), json={"ideaIds": ctx["ideas"][1:]})
+    assert res.status_code == 403, res.text
+    assert res.json()["error"]["code"] == "forbidden"
+    assert _br_count(c._factory) == before
+
+
+def test_promote_suspended_tenant_is_403(ctx):
+    from app.models import DEFAULT_TENANT_ID, Tenant
+
+    c = ctx["c"]
+    _make_user(c._factory, EMBED_EMAIL, "pw123456", [MANAGE])
+    token = _mint(c)
+    db = c._factory()
+    try:
+        tenant = db.query(Tenant).filter(Tenant.id == DEFAULT_TENANT_ID).one()
+        assert tenant.signin_allowed
+        tenant.status.blocks_access = True
+        db.commit()
+    finally:
+        db.close()
+    before = _br_count(c._factory)
+    res = c.post("/embed/ideas/promote", headers=_bearer(token), json={"ideaIds": ctx["ideas"]})
+    assert res.status_code == 403, res.text
+    assert _br_count(c._factory) == before
+
+
+def test_promote_empty_idea_list_is_422_and_creates_nothing(ctx):
+    c = ctx["c"]
+    _make_user(c._factory, EMBED_EMAIL, "pw123456", [MANAGE])
+    before = _br_count(c._factory)
+    res = c.post("/embed/ideas/promote", headers=_bearer(_mint(c)), json={"ideaIds": []})
+    assert res.status_code == 422, res.text
+    assert _br_count(c._factory) == before

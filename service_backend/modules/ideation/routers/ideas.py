@@ -189,10 +189,12 @@ async def upload_idea_attachment(
 ) -> IdeaAttachmentOut:
     """Upload a file onto an idea (sniff-first, 25 MB cap). 404 outside the
     tenant, 413 over the cap, 415 on an unverifiable type."""
+    service = IdeaAttachmentService(db)
+    service.ensure_idea(current_user.tenant_id, idea_id)
     content = await file.read(ATTACHMENT_CAP_BYTES + 1)
     if len(content) > ATTACHMENT_CAP_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File is too large.")
-    return IdeaAttachmentService(db).upload(
+    return service.upload(
         current_user.tenant_id, idea_id, file.filename or "", content
     )
 

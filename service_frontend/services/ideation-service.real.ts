@@ -10,8 +10,8 @@
  * - vote          → POST /ideation/ideas/{id}/vote    {dir}
  * - reorderPriority → PUT /ideation/ideas/reorder     {orderedIds}
  * - remove        → DELETE /ideation/ideas/{id}       (204)
-- uploadAttachment → POST /ideation/ideas/{id}/attachments   (multipart `file`)
-- fetchAttachment  → GET  <IdeaAttachment.contentPath>       (blob)
+ * - uploadAttachment → POST /ideation/ideas/{id}/attachments   (multipart `file`)
+ * - fetchAttachment  → GET  <IdeaAttachment.contentPath>       (blob)
  *
  * Contract deltas vs the Phase-1 mock (documented, FE adjusted to the real BE -
  * we do NOT fork logic):

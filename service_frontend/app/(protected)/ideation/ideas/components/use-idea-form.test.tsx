@@ -16,6 +16,7 @@ import type { Idea, IdeaClusterSuggestions, Product } from '@/types/ideation';
 import type { IdeaService } from '@/services/ideation-service';
 import { IdeationRuntimeProvider } from '@/hooks/use-ideation-runtime';
 import { useIdeaForm } from './use-idea-form';
+import { selectIdeaRows } from '../select-idea-rows';
 
 vi.mock('next/navigation', () => ({
   useRouter: vi.fn(() => ({ push: vi.fn(), prefetch: vi.fn() })),
@@ -124,6 +125,40 @@ describe('useIdeaForm - recordNav fetchAt order equals list order (AC-94-36)', (
     );
     expect(at1.recordId).toBe('b');
     expect(at1.total).toBe(3);
+  });
+
+  it('honours the list query sort + filter, not the default net-vote order (AC-15-09)', async () => {
+    const all = [
+      anIdea({ id: 'hot-late', upvotes: 9, createdAt: '2026-08-03T00:00:00Z', status: 'discussed' } as Partial<Idea>),
+      anIdea({ id: 'cold-early', upvotes: 0, createdAt: '2026-08-01T00:00:00Z', status: 'discussed' } as Partial<Idea>),
+      anIdea({ id: 'mid', upvotes: 4, createdAt: '2026-08-02T00:00:00Z', status: 'discussed' } as Partial<Idea>),
+      anIdea({ id: 'other-status', upvotes: 1, createdAt: '2026-07-01T00:00:00Z' }),
+    ];
+    const service = fakeService({
+      getIdea: vi.fn().mockResolvedValue(all[0]),
+      listIdeas: vi.fn().mockResolvedValue(all),
+    });
+    const { result } = renderHook(() => useIdeaForm('hot-late', false), { wrapper: wrapper(service) });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    const query = {
+      page: 0,
+      pageSize: 10,
+      search: '',
+      statusView: 'active',
+      sort: { id: 'submitted', desc: false },
+      filter: {
+        kind: 'group',
+        combinator: 'and',
+        rules: [{ kind: 'condition', field: 'status', operator: 'in', value: ['discussed'] }],
+      },
+    } as never;
+    const expected = selectIdeaRows(all, query);
+    expect(expected.map((r) => r.id)).toEqual(['cold-early', 'mid', 'hot-late']);
+    const nav = result.current.config!.recordNav!;
+    expect((await nav.fetchAt(query, 0)).recordId).toBe(expected[0].id);
+    expect((await nav.fetchAt(query, 1)).recordId).toBe(expected[1].id);
+    expect((await nav.fetchAt(query, 0)).total).toBe(3);
   });
 
   it('buildHref carries includeTest forward like brFormHref does', async () => {

@@ -332,10 +332,16 @@ export function useIdeaForm(ideaId: string | undefined, initialEditing: boolean)
       if (!ideationService.uploadAttachment || !ideaId) return;
       try {
         for (const file of files) await ideationService.uploadAttachment(ideaId, file);
-        setIdea(await ideationService.getIdea(ideaId));
         toast.success(files.length > 1 ? 'Files uploaded.' : 'File uploaded.');
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Could not upload the file.');
+      } finally {
+        // Reload even after a partial failure so the files that landed show up.
+        try {
+          setIdea(await ideationService.getIdea(ideaId));
+        } catch {
+          // keep the current view; the upload toast already reported the outcome
+        }
       }
     };
 

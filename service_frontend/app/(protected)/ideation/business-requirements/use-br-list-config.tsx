@@ -86,6 +86,7 @@ export function useBrListConfig(
       },
       {
         id: 'title',
+        meta: { headerTitle: 'Title' },
         header: () => 'Title',
         cell: ({ row }) => (
           <div className="flex items-start gap-1.5">
@@ -104,6 +105,7 @@ export function useBrListConfig(
       },
       {
         id: 'product',
+        meta: { headerTitle: 'Product' },
         header: () => 'Product',
         cell: ({ row }) => <Badge variant="secondary">{row.original.productName}</Badge>,
         size: 150,
@@ -111,6 +113,7 @@ export function useBrListConfig(
       },
       {
         id: 'status',
+        meta: { headerTitle: 'Status' },
         header: () => 'Status',
         cell: ({ row }) => (
           <Badge variant="outline" appearance="light">
@@ -122,6 +125,7 @@ export function useBrListConfig(
       },
       {
         id: 'ideas',
+        meta: { headerTitle: 'Ideas' },
         header: () => 'Ideas',
         cell: ({ row }) => (
           <span className="text-muted-foreground">{row.original.ideaCount}</span>

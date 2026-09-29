@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   Dialog,
   DialogContent,
@@ -38,6 +39,7 @@ export function IdeaAttachmentPreviewDialog({
   fetchContent,
 }: IdeaAttachmentPreviewDialogProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
   const contentPath = attachment?.contentPath;
 
   useEffect(() => {
@@ -56,11 +58,14 @@ export function IdeaAttachmentPreviewDialog({
         created = URL.createObjectURL(typed);
         setBlobUrl(created);
       })
-      .catch(() => active && setBlobUrl(null));
+      .catch(() => {
+        if (active) setFailed(true);
+      });
     return () => {
       active = false;
       if (created) URL.revokeObjectURL(created);
       setBlobUrl(null);
+      setFailed(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attachment?.id, contentPath]);
@@ -85,7 +90,11 @@ export function IdeaAttachmentPreviewDialog({
 
         <div className="flex min-h-[24rem] items-center justify-center overflow-hidden rounded-md border bg-muted/30">
           {!a?.url ? (
-            <p className="p-6 text-sm text-muted-foreground">Preview unavailable.</p>
+            contentPath && !failed ? (
+              <Skeleton className="h-[24rem] w-full" />
+            ) : (
+              <p className="p-6 text-sm text-muted-foreground">Preview unavailable.</p>
+            )
           ) : a.kind === 'image' ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={a.url} alt={a.name} className="max-h-[32rem] w-auto object-contain" />
@@ -94,7 +103,7 @@ export function IdeaAttachmentPreviewDialog({
           ) : a.kind === 'audio' ? (
             <audio src={a.url} controls className="w-full px-6" />
           ) : pdf ? (
-            <iframe title={a.name} src={a.url} sandbox="" className="h-[32rem] w-full border-0" />
+            <iframe title={a.name} src={a.url} className="h-[32rem] w-full border-0" />
           ) : (
             <div className="flex flex-col items-center gap-3 p-6 text-center">
               <p className="text-sm text-muted-foreground">

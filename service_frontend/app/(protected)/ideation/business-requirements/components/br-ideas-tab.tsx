@@ -80,6 +80,7 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
     const columns: ColumnDef<Idea>[] = [
       {
         id: 'problem',
+        meta: { headerTitle: 'Idea' },
         header: () => 'Idea',
         cell: ({ row }) => <ClampedText text={row.original.problem} lines={2} />,
         size: 360,
@@ -87,6 +88,7 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
       },
       {
         id: 'submitter',
+        meta: { headerTitle: 'Submitter' },
         header: () => 'Submitter',
         cell: ({ row }) => (
           <span className="text-muted-foreground">{row.original.submitterName}</span>
@@ -96,6 +98,7 @@ export function BrIdeasTab({ brId, productId, reloadToken, onChanged }: BrIdeasT
       },
       {
         id: 'product',
+        meta: { headerTitle: 'Product' },
         header: () => 'Product',
         cell: ({ row }) => <Badge variant="secondary">{row.original.productName}</Badge>,
         size: 150,

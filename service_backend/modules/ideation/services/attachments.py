@@ -39,6 +39,16 @@ class IdeaAttachmentService:
     def __init__(self, db: Session):
         self.db = db
 
+    def ensure_idea(self, tenant_id: str, idea_id: str) -> None:
+        """404 unless the idea is in the tenant (cheap check before reading a body)."""
+        idea = (
+            self.db.query(Idea.id)
+            .filter(Idea.id == idea_id, Idea.tenant_id == tenant_id)
+            .first()
+        )
+        if idea is None:
+            raise HTTPException(404, "Idea not found.")
+
     def upload(
         self,
         tenant_id: str,
@@ -48,13 +58,7 @@ class IdeaAttachmentService:
         *,
         content_prefix: str = "/ideation/ideas",
     ) -> IdeaAttachmentOut:
-        idea = (
-            self.db.query(Idea.id)
-            .filter(Idea.id == idea_id, Idea.tenant_id == tenant_id)
-            .first()
-        )
-        if idea is None:
-            raise HTTPException(404, "Idea not found.")
+        self.ensure_idea(tenant_id, idea_id)
         mime = detect_attachment_mime(content, filename)
         if mime is None:
             raise HTTPException(415, "This file type is not supported.")

@@ -63,3 +63,4 @@ UAC: `15-ideation-list-filters-acceptance-criteria.md` (AC-15-01..26). Lane IDEA
 - The Submitted cell and the detail Captured row format through `useDatetime()` (user timezone).
 - The crew SQL mirror of 0013 lives at `crew/state/migrations/IDEATION-LIST.sql`.
 - Security (PR #100): embed promote also requires an active user and a sign-in-allowed tenant; embed-connection create/patch/rotate require both `ideation.triage.manage` and `ideation.business_requirements.manage`; uploads are capped at 20 per idea with cleaned filenames and BOM-safe sniffing.
+- Embed action responses (vote/status/patch/merge/create) carry the operator `contentPath` prefix; `ideation-embed-service.fetchAttachment` rewrites `/ideation/ideas/` to `/embed/ideas/` (intentional). `_serve_blob` is imported from `app/api/v1/documents` (shared helper; promoting it to a shared module is backlog).

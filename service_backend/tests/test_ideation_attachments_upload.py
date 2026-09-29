@@ -160,8 +160,12 @@ def test_cross_tenant_attachment_id_is_404(ctx):
     from modules.ideation.models import IdeaAttachment
 
     foreign_idea = _insert_idea(ctx["c"]._factory, ctx["pid"], tenant_id="tenant-x")
+    from app.services.storage import storage_for_tenant
+
     db = ctx["c"]._factory()
     try:
+        # Real bytes for the foreign row, so a lost tenant filter surfaces as a 200.
+        real_key = storage_for_tenant(db, "tenant-x").save("ideation/ideas/x/y", PNG, "image/png")
         row = IdeaAttachment(
             tenant_id="tenant-x",
             idea_id=foreign_idea,
@@ -169,9 +173,9 @@ def test_cross_tenant_attachment_id_is_404(ctx):
             kind="image",
             url="",
             filename="f.png",
-            storage_key="ideation/ideas/x/y",
+            storage_key=real_key,
             mime="image/png",
-            size_bytes=3,
+            size_bytes=len(PNG),
         )
         db.add(row)
         db.commit()
@@ -225,3 +229,87 @@ def test_idea_attachment_storage_key_registered():
 
     register_engine_entities()
     assert ("idea_attachments", "storage_key") in registered_scalar_columns()
+
+
+def test_cross_tenant_upload_is_404_and_creates_no_row(ctx):
+    from modules.ideation.models import IdeaAttachment
+
+    foreign_idea = _insert_idea(ctx["c"]._factory, ctx["pid"], tenant_id="tenant-x")
+    # Control: an own idea accepts the upload.
+    assert _upload(ctx["c"], ctx["h"], ctx["idea_id"], PNG, name="ok.png").status_code == 201
+    res = _upload(ctx["c"], ctx["h"], foreign_idea, PNG, name="x.png")
+    assert res.status_code == 404, res.text
+    db = ctx["c"]._factory()
+    try:
+        assert db.query(IdeaAttachment).filter(IdeaAttachment.idea_id == foreign_idea).count() == 0
+    finally:
+        db.close()
+
+
+def test_heic_and_avif_are_accepted_as_images(ctx):
+    heic = b"\x00\x00\x00\x18ftypheic" + b"\x00" * 32
+    avif = b"\x00\x00\x00\x18ftypavif" + b"\x00" * 32
+    for content, name in ((heic, "p.heic"), (avif, "p.avif")):
+        res = _upload(ctx["c"], ctx["h"], ctx["idea_id"], content, name=name)
+        assert res.status_code == 201, res.text
+        assert res.json()["kind"] == "image"
+
+
+# ── hardening (security review) ──────────────────────────────────────────────
+def test_bom_prefixed_markup_is_415(ctx):
+    res = _upload(ctx["c"], ctx["h"], ctx["idea_id"], b"\xef\xbb\xbf" + HTML, name="x.txt")
+    assert res.status_code == 415, res.text
+
+
+def test_filename_is_cleaned_and_clamped(ctx):
+    name = "a\x00b\x1fc" + "x" * 400 + ".png"
+    body = _upload(ctx["c"], ctx["h"], ctx["idea_id"], PNG, name=name).json()
+    assert "\x00" not in body["name"] and "\x1f" not in body["name"]
+    assert len(body["name"]) <= 255
+    from modules.ideation.services.attachments import _clean_filename
+
+    # (the HTTP client percent-encodes control chars, so the blank case is unit level)
+    assert _clean_filename("\x00\x01", "image") == "image"
+    assert _clean_filename("", "file") == "file"
+
+
+def test_per_idea_attachment_cap(ctx, monkeypatch):
+    import modules.ideation.services.attachments as att
+
+    monkeypatch.setattr(att, "MAX_ATTACHMENTS_PER_IDEA", 2)
+    for i in range(2):
+        assert _upload(ctx["c"], ctx["h"], ctx["idea_id"], PNG, name=f"{i}.png").status_code == 201
+    res = _upload(ctx["c"], ctx["h"], ctx["idea_id"], PNG, name="3.png")
+    assert res.status_code == 422, res.text
+    other = _insert_idea(ctx["c"]._factory, ctx["pid"])
+    assert _upload(ctx["c"], ctx["h"], other, PNG, name="ok.png").status_code == 201
+
+
+def test_attachment_of_another_idea_is_404(ctx):
+    other = _insert_idea(ctx["c"]._factory, ctx["pid"])
+    aid = _upload(ctx["c"], ctx["h"], other, PNG, name="o.png").json()["id"]
+    own = ctx["c"].get(f"/ideation/ideas/{other}/attachments/{aid}/content", headers=ctx["h"])
+    assert own.status_code == 200, own.text  # control
+    res = ctx["c"].get(
+        f"/ideation/ideas/{ctx['idea_id']}/attachments/{aid}/content", headers=ctx["h"]
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_embed_attachment_of_another_idea_and_foreign_product_is_404(ideation_client):
+    c = ideation_client
+    h = _auth(c)
+    pid = _product(c, h, name="Product A")
+    other_pid = _product(c, h, name="Product B")
+    _seed_connection(c._factory, product_id=pid)
+    idea_a = _insert_idea(c._factory, pid)
+    idea_b = _insert_idea(c._factory, pid)
+    foreign = _insert_idea(c._factory, other_pid)
+    eh = _bearer(_mint(c))
+    aid = _upload(c, eh, idea_a, PNG, name="a.png", prefix="/embed").json()["id"]
+    assert c.get(f"/embed/ideas/{idea_a}/attachments/{aid}/content", headers=eh).status_code == 200
+    assert c.get(f"/embed/ideas/{idea_b}/attachments/{aid}/content", headers=eh).status_code == 404
+    # Operator uploads onto an idea outside the connection's product.
+    faid = _upload(c, h, foreign, PNG, name="f.png").json()["id"]
+    res = c.get(f"/embed/ideas/{foreign}/attachments/{faid}/content", headers=eh)
+    assert res.status_code == 404, res.text

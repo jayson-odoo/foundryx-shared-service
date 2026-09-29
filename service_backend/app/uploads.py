@@ -145,6 +145,10 @@ def detect_attachment_mime(content: bytes, filename: Optional[str] = None) -> Op
         brand = content[8:12]
         if brand[:3] == b"3gp":
             return "video/3gpp"
+        if brand in (b"heic", b"heix", b"hevc", b"mif1", b"msf1"):
+            return "image/heic"
+        if brand in (b"avif", b"avis"):
+            return "image/avif"
         if brand[:3] in (b"M4A", b"M4B"):
             return "audio/mp4"
         return "video/mp4"
