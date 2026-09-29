@@ -56,15 +56,6 @@ import type {
   DocFeedRunsQuery,
 } from './autocount-service';
 
-/** The doc-feeds router reads camelCase `pageSize` (unlike the snake_case
- * `page_size` every older AutoCount list takes). */
-function docFeedPageParams(query: AutocountListQuery = {}): URLSearchParams {
-  const p = pageParams(query);
-  p.set('pageSize', p.get('page_size') ?? '25');
-  p.delete('page_size');
-  return p;
-}
-
 function pageParams(query: AutocountListQuery = {}): URLSearchParams {
   const p = new URLSearchParams();
   p.set('page', String(query.page ?? 0));
@@ -581,7 +572,7 @@ export const realAutocountService: AutocountService = {
   },
 
   listDocFeedRuns(companyId, query: DocFeedRunsQuery = {}) {
-    const p = docFeedPageParams(query);
+    const p = pageParams(query);
     if (query.feed) p.set('feed', query.feed);
     return apiFetch<ListResult<DocFeedRun>>(
       `/autocount/doc-feeds/${companyId}/runs?${p.toString()}`,
@@ -589,7 +580,7 @@ export const realAutocountService: AutocountService = {
   },
 
   listDocFeedIssues(companyId, query: DocFeedIssuesQuery = {}) {
-    const p = docFeedPageParams(query);
+    const p = pageParams(query);
     if (query.feed) p.set('feed', query.feed);
     if (query.kind) p.set('kind', query.kind);
     if (query.search) p.set('search', query.search);

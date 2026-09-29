@@ -2348,6 +2348,7 @@ function docFeedItemFor(
     connectionId: state.connectionId,
     mode: state.mode,
     cursorDay: state.cursorDay,
+    fullBackfillDoneAt: null,
     contractGate: gate,
     retryableCount: issues.filter((i) => i.kind === 'retryable').length,
     failedCount: issues.filter((i) => i.kind === 'failed').length,
@@ -2404,6 +2405,7 @@ function upsertMockDocFeedIssues(companyId: string, feed: DocFeedKey): void {
   const book = state.book ?? 'db1';
   const prefix = feed === 'goods_receive_notes' ? 'GRN' : 'DO';
   upsert({
+    id: `${feed}:${book}:900001`,
     feed,
     book,
     docKey: 900001,
@@ -2418,6 +2420,7 @@ function upsertMockDocFeedIssues(companyId: string, feed: DocFeedKey): void {
     lastAt: now,
   });
   upsert({
+    id: `${feed}:${book}:900002`,
     feed,
     book,
     docKey: 900002,

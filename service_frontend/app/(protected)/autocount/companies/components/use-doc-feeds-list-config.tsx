@@ -103,7 +103,8 @@ export function useDocFeedsListConfig(options: DocFeedsListOptions): ResourceLis
         label: 'Stop backfill',
         surfaces: { row: true },
         permission: AC_SYNC_RUN,
-        isVisible: (rows) => hasOpenBackfill(rows[0]),
+        // A stopped backfill is already stopped - Stop would be a no-op.
+        isVisible: (rows) => rows[0].backfill?.status === 'running',
         run: (rows) => onStopBackfill(rows[0].feed),
       },
       {

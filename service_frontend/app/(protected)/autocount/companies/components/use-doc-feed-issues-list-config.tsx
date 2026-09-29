@@ -119,7 +119,7 @@ export function useDocFeedIssuesListConfig(companyId: string): ResourceListConfi
       ...embeddedListConfig<DocFeedIssue>({
         viewKey: 'autocount.doc-feed-issues.list',
         columns,
-        getRowId: (r) => `${r.feed}:${r.book}:${r.docKey}`,
+        getRowId: (r) => r.id,
         rowHref: () => '#',
         searchPlaceholder: 'Search Doc no',
         fetcher: (query: ListQuery) =>

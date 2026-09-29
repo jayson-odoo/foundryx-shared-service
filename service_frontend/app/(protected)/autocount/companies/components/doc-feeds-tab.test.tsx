@@ -54,6 +54,7 @@ function feedItem(over: Record<string, unknown> = {}) {
     mode: 'off',
     connectionId: null,
     cursorDay: null,
+    fullBackfillDoneAt: null,
     contractGate: null,
     retryableCount: 0,
     failedCount: 0,
@@ -129,5 +130,31 @@ describe('DocFeedsTab (AC-14-90)', () => {
     expect(screen.queryByRole('menuitem', { name: /^backfill$/i })).not.toBeInTheDocument();
     expect(await screen.findByRole('menuitem', { name: /resume backfill/i })).toBeInTheDocument();
     expect(await screen.findByRole('menuitem', { name: /discard backfill/i })).toBeInTheDocument();
+    // RS1 (review round 2) - Stop on an already-stopped backfill is a no-op.
+    expect(screen.queryByRole('menuitem', { name: /stop backfill/i })).not.toBeInTheDocument();
+  });
+
+  it('RS1 (review round 2) - offers Stop backfill only while the backfill is running', async () => {
+    getDocFeeds.mockResolvedValue({
+      feeds: [
+        feedItem({
+          feed: 'delivery_orders', mode: 'push',
+          backfill: {
+            id: 'bf-1', status: 'running', dryRun: false,
+            fromDay: '2023-01-01', toDay: '2026-09-29', nextDay: '2026-01-01',
+            daysTotal: 100, daysDone: 10, error: null,
+          },
+        }),
+      ],
+      eligibleConnections: [],
+    });
+    const { DocFeedsTab } = await import('./doc-feeds-tab');
+
+    render(<DocFeedsTab companyId="co-1" />);
+
+    const trigger = await screen.findByRole('button', { name: /actions/i }, { timeout: 5000 });
+    await userEvent.click(trigger);
+    expect(await screen.findByRole('menuitem', { name: /stop backfill/i })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /resume backfill/i })).not.toBeInTheDocument();
   });
 });

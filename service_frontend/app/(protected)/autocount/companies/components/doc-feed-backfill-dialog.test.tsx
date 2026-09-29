@@ -36,21 +36,21 @@ describe('DocFeedBackfillDialog (AC-14-93)', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-10T20:00:00Z'));
     const { DocFeedBackfillDialog } = await import('./doc-feed-backfill-dialog');
-    render(<DocFeedBackfillDialog feed="delivery_orders" backfill={null} onClose={vi.fn()} onStart={vi.fn()} onStop={vi.fn()} />);
+    render(<DocFeedBackfillDialog feed="delivery_orders" mode="push" fullBackfillDoneAt={null} backfill={null} onClose={vi.fn()} onStart={vi.fn()} onStop={vi.fn()} />);
 
     expect(screen.getByText('1 Jan - 11 Mar')).toBeInTheDocument();
   });
 
   it('has a Dry run switch, on by default', async () => {
     const { DocFeedBackfillDialog } = await import('./doc-feed-backfill-dialog');
-    render(<DocFeedBackfillDialog feed="delivery_orders" backfill={null} onClose={vi.fn()} onStart={vi.fn()} onStop={vi.fn()} />);
+    render(<DocFeedBackfillDialog feed="delivery_orders" mode="push" fullBackfillDoneAt={null} backfill={null} onClose={vi.fn()} onStart={vi.fn()} onStop={vi.fn()} />);
     expect(screen.getByTestId('backfill-dry-run-switch')).toBeChecked();
   });
 
   it('starts a backfill with the chosen range and dry-run flag', async () => {
     const onStart = vi.fn().mockResolvedValue(undefined);
     const { DocFeedBackfillDialog } = await import('./doc-feed-backfill-dialog');
-    render(<DocFeedBackfillDialog feed="delivery_orders" backfill={null} onClose={vi.fn()} onStart={onStart} onStop={vi.fn()} />);
+    render(<DocFeedBackfillDialog feed="delivery_orders" mode="push" fullBackfillDoneAt={null} backfill={null} onClose={vi.fn()} onStart={onStart} onStop={vi.fn()} />);
     await userEvent.click(screen.getByTestId('backfill-start'));
     expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true }));
   });
@@ -60,6 +60,8 @@ describe('DocFeedBackfillDialog (AC-14-93)', () => {
     render(
       <DocFeedBackfillDialog
         feed="delivery_orders"
+        mode="push"
+        fullBackfillDoneAt={null}
         backfill={{ status: 'running', daysDone: 4, daysTotal: 1368, dryRun: true }}
         onClose={vi.fn()}
         onStart={vi.fn()}
@@ -68,5 +70,66 @@ describe('DocFeedBackfillDialog (AC-14-93)', () => {
     );
     expect(screen.getByTestId('job-progress-label')).toHaveTextContent('day 4 of 1368');
     expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+  });
+
+  // RS2 (review round 2) - only offer what will work.
+  it('locks Dry run on (disabled, checked) when the feed is not in Push mode, and starts a dry run', async () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    const { DocFeedBackfillDialog } = await import('./doc-feed-backfill-dialog');
+    render(
+      <DocFeedBackfillDialog
+        feed="delivery_orders"
+        mode="dry_run"
+        fullBackfillDoneAt={null}
+        backfill={null}
+        onClose={vi.fn()}
+        onStart={onStart}
+        onStop={vi.fn()}
+      />,
+    );
+    const toggle = screen.getByTestId('backfill-dry-run-switch');
+    expect(toggle).toBeChecked();
+    expect(toggle).toBeDisabled();
+    await userEvent.click(screen.getByTestId('backfill-start'));
+    expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true }));
+  });
+
+  it('lets a Push-mode feed switch Dry run off', async () => {
+    const { DocFeedBackfillDialog } = await import('./doc-feed-backfill-dialog');
+    render(
+      <DocFeedBackfillDialog
+        feed="delivery_orders"
+        mode="push"
+        fullBackfillDoneAt={null}
+        backfill={null}
+        onClose={vi.fn()}
+        onStart={vi.fn()}
+        onStop={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('backfill-dry-run-switch')).toBeEnabled();
+  });
+
+  it('a live backfill after the full history completed starts the day after the floor, never at it', async () => {
+    const onStart = vi.fn().mockResolvedValue(undefined);
+    const { DocFeedBackfillDialog } = await import('./doc-feed-backfill-dialog');
+    render(
+      <DocFeedBackfillDialog
+        feed="delivery_orders"
+        mode="push"
+        fullBackfillDoneAt="2026-09-01T00:00:00Z"
+        backfill={null}
+        onClose={vi.fn()}
+        onStart={onStart}
+        onStop={vi.fn()}
+      />,
+    );
+    // Dry run (default) may still cover the full history.
+    await userEvent.click(screen.getByTestId('backfill-start'));
+    expect(onStart).toHaveBeenLastCalledWith(expect.objectContaining({ dryRun: true, fromDay: '2023-01-01' }));
+
+    await userEvent.click(screen.getByTestId('backfill-dry-run-switch'));
+    await userEvent.click(screen.getByTestId('backfill-start'));
+    expect(onStart).toHaveBeenLastCalledWith(expect.objectContaining({ dryRun: false, fromDay: '2023-01-02' }));
   });
 });

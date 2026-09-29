@@ -44,4 +44,15 @@ describe('useDocFeedIssuesListConfig (AC-14-71, 94)', () => {
     expect(config.filterFields.some((f) => f.field === 'feed')).toBe(true);
     expect(config.searchPlaceholder).toBeTruthy();
   });
+
+  it('B1 (review round 2) - a row id is the backend `id`, never book/docKey (which the wire never sent)', async () => {
+    const { useDocFeedIssuesListConfig } = await import('./use-doc-feed-issues-list-config');
+    const { result } = renderHook(() => useDocFeedIssuesListConfig('co-1'));
+    const row = {
+      id: 'delivery_orders:db1:100', feed: 'delivery_orders', book: 'db1', docKey: 100,
+      kind: 'failed', docNo: 'DO-100', docDate: '2026-09-29', sourceModifiedAt: null,
+      errors: null, warnings: null, attempts: 1, firstAt: null, lastAt: null,
+    } as const;
+    expect(result.current.getRowId(row)).toBe('delivery_orders:db1:100');
+  });
 });

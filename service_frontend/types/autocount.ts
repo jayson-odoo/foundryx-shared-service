@@ -1654,6 +1654,8 @@ export interface DocFeedItem {
   connectionId: string | null;
   mode: DocFeedMode;
   cursorDay: string | null; // YYYY-MM-DD
+  /** Set once the full-history live backfill has completed (ISO Z). */
+  fullBackfillDoneAt: string | null;
   contractGate: DocFeedContractGate | null;
   retryableCount: number;
   failedCount: number;
@@ -1725,6 +1727,8 @@ export interface DocFeedRun {
 
 /** `GET /autocount/doc-feeds/{companyId}/issues` row (`ac_doc_feed_issue`). */
 export interface DocFeedIssue {
+  /** `<feed>:<book>:<docKey>` - unique across feeds. */
+  id: string;
   feed: DocFeedKey;
   book: string;
   docKey: number;
@@ -1733,7 +1737,7 @@ export interface DocFeedIssue {
   docDate: string | null; // YYYY-MM-DD
   sourceModifiedAt: string | null; // ISO Z
   errors: Record<string, unknown> | null;
-  warnings: Record<string, unknown> | null;
+  warnings: string[] | null;
   attempts: number;
   firstAt: string | null; // ISO Z
   lastAt: string | null; // ISO Z

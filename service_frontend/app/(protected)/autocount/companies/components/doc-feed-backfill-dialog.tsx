@@ -17,10 +17,19 @@ import { Switch } from '@/components/ui/switch';
 import { JobProgress } from '@/components/platform/autocount/job-progress';
 import { DateRangePicker, type DateRangeValue } from '@/components/platform/date-range-picker';
 import { dateKey } from '@/lib/datetime';
-import type { DocFeedBackfillStartInput, DocFeedBackfillStatus, DocFeedKey } from '@/types/autocount';
+import type {
+  DocFeedBackfillStartInput,
+  DocFeedBackfillStatus,
+  DocFeedKey,
+  DocFeedMode,
+} from '@/types/autocount';
 import { docFeedLabel } from '../../components/autocount-meta';
 
 const DOC_FEED_BACKFILL_FROM = '2023-01-01';
+// Once the full-history live backfill has completed the backend 409s any live
+// range that starts on or before the floor (doc_feed_service.start_backfill),
+// so a live range then starts the day after it.
+const DOC_FEED_BACKFILL_FROM_AFTER_FULL = '2023-01-02';
 // N5 (review round 1) - the backfill's own "today" is MYT (D6, fixed UTC+8,
 // no DST), never the browser's local zone: before 08:00 MYT the browser's
 // UTC "today" is still MYT's PREVIOUS day, and the backend refuses a `toDay`
@@ -33,6 +42,10 @@ function mytTodayKey(): string {
 
 export interface DocFeedBackfillDialogProps {
   feed: DocFeedKey;
+  /** A live (non dry run) backfill needs the feed in Push mode. */
+  mode: DocFeedMode;
+  /** Set once the full-history live backfill has completed. */
+  fullBackfillDoneAt: string | null;
   /** `null` = no open/last backfill - the dialog offers to start one. */
   backfill: {
     status: DocFeedBackfillStatus;
@@ -53,12 +66,14 @@ export interface DocFeedBackfillDialogProps {
  */
 export function DocFeedBackfillDialog({
   feed,
+  mode,
+  fullBackfillDoneAt,
   backfill,
   onClose,
   onStart,
   onStop,
 }: DocFeedBackfillDialogProps) {
-  const [dryRun, setDryRun] = useState(true);
+  const [dryRunChoice, setDryRun] = useState(true);
   const [range, setRange] = useState<DateRangeValue>(() => ({
     preset: 'custom',
     from: DOC_FEED_BACKFILL_FROM,
@@ -67,12 +82,20 @@ export function DocFeedBackfillDialog({
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
 
+  // Dry run is the only option a feed that is not in Push mode can start.
+  const canGoLive = mode === 'push';
+  const dryRun = canGoLive ? dryRunChoice : true;
+  const minDate =
+    !dryRun && fullBackfillDoneAt ? DOC_FEED_BACKFILL_FROM_AFTER_FULL : DOC_FEED_BACKFILL_FROM;
+  const effectiveRange: DateRangeValue =
+    range.from < minDate ? { ...range, from: minDate } : range;
+
   const inFlight = backfill && (backfill.status === 'running' || backfill.status === 'stopping');
 
   async function submitStart() {
     setStarting(true);
     try {
-      await onStart({ dryRun, fromDay: range.from, toDay: range.to });
+      await onStart({ dryRun, fromDay: effectiveRange.from, toDay: effectiveRange.to });
     } finally {
       setStarting(false);
     }
@@ -124,16 +147,17 @@ export function DocFeedBackfillDialog({
                   id="doc-feed-backfill-dry-run"
                   checked={dryRun}
                   onCheckedChange={setDryRun}
+                  disabled={!canGoLive}
                   data-testid="backfill-dry-run-switch"
                 />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label>Date range</Label>
                 <DateRangePicker
-                  value={range}
+                  value={effectiveRange}
                   onChange={setRange}
                   timeZone={MYT_ZONE}
-                  minDate={DOC_FEED_BACKFILL_FROM}
+                  minDate={minDate}
                   maxDate={mytTodayKey()}
                 />
               </div>

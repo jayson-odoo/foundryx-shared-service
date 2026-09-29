@@ -480,22 +480,24 @@ describe('realAutocountService - document feeds (sprint-5/14 S3/S8, review round
     });
   });
 
-  it('listDocFeedRuns sends feed + page + camelCase pageSize', async () => {
-    apiFetchMock.mockResolvedValue({ items: [], total: 0 });
-    await realAutocountService.listDocFeedRuns('co-1', { feed: 'branches', page: 1, pageSize: 10 });
+  it('listDocFeedRuns sends feed + page + snake_case page_size and returns the house {data,total,page} envelope', async () => {
+    apiFetchMock.mockResolvedValue({ data: [{ id: 'r1' }], total: 1, page: 1 });
+    const result = await realAutocountService.listDocFeedRuns('co-1', { feed: 'branches', page: 1, pageSize: 10 });
     expect(apiFetchMock).toHaveBeenCalledWith(
-      '/autocount/doc-feeds/co-1/runs?page=1&pageSize=10&feed=branches',
+      '/autocount/doc-feeds/co-1/runs?page=1&page_size=10&feed=branches',
     );
+    expect(result).toEqual({ data: [{ id: 'r1' }], total: 1, page: 1 });
   });
 
-  it('listDocFeedIssues sends feed, kind, search + camelCase pageSize', async () => {
-    apiFetchMock.mockResolvedValue({ items: [], total: 0 });
-    await realAutocountService.listDocFeedIssues('co-1', {
+  it('listDocFeedIssues sends feed, kind, search + snake_case page_size and returns the house envelope', async () => {
+    apiFetchMock.mockResolvedValue({ data: [{ id: 'delivery_orders:db1:1' }], total: 1, page: 0 });
+    const result = await realAutocountService.listDocFeedIssues('co-1', {
       feed: 'delivery_orders', kind: 'failed', search: 'DO-1', page: 0, pageSize: 25,
     });
     expect(apiFetchMock).toHaveBeenCalledWith(
-      '/autocount/doc-feeds/co-1/issues?page=0&pageSize=25&feed=delivery_orders&kind=failed&search=DO-1',
+      '/autocount/doc-feeds/co-1/issues?page=0&page_size=25&feed=delivery_orders&kind=failed&search=DO-1',
     );
+    expect(result).toEqual({ data: [{ id: 'delivery_orders:db1:1' }], total: 1, page: 0 });
   });
 
   it('startDocFeedBackfill reads back the FULL DocFeedBackfill shape (S8) - the router now answers the same object stop/resume/discard already do, never a bespoke {backfillId, jobId}', async () => {
