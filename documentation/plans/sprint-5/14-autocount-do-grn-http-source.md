@@ -168,7 +168,8 @@ then `parse_page`. A document door answering a paged envelope with `TotalPages >
 1 until `Page >= TotalPages` (echoed) or empty `Data`, cap 100 pages.
 
 `doc_feed/records.py`: `doc_key(record) -> Optional[int]` (int or integer string), records without
-one are not sent (`skippedNoKey`, D19); `dedupe_latest(records)` keeps one record per DocKey, the
+one are not sent (`skippedNoKey`, D19); likewise a branch record with a blank `BranchCode` is not
+sent (the CRM would answer `failed` with `source_ref: null`, which no record could be matched to); `dedupe_latest(records)` keeps one record per DocKey, the
 greatest `LastModified` string (the vendor's one fixed ISO format sorts lexically, plan 08 D7);
 push order = `LastModified` ascending; `source_ref(feed, book, record)` exactly as 13.3 derives it;
 `doc_date(record)` parses ISO date / datetime / `yyyyMMdd` (None when unparseable - such a record
@@ -204,9 +205,15 @@ vendor_fixture[i]`.
   concurrency are all reused unchanged.
 - `delete_doc_keys(doc_keys, *, doc_date_from, doc_date_to, dry_run, on_chunk=None)` -> posts
   `ingest/{segment}/deletions` with `{doc_date_from, doc_date_to, doc_keys: chunk}` via
-  `_post_with_retry`, chunked at `batch_size`; merged `{summary, records}`. A verdict is matched to
-  its key by `record["doc_key"]` when present, else the integer after the last `:` of
-  `source_ref` (cross-repo confirmation C1, section 10).
+  `_post_with_retry`, chunked at `batch_size`; merged `{summary, records}`. Verdict matching per
+  the CRM code (C1, section 10): each record echoes ONLY `source_ref` = `{book}:DO:{DocKey}` /
+  `{book}:GRN:{DocKey}` (no `doc_key` field); the sink parses the DocKey as the integer after the
+  last `:` and matches it to the key it sent. Outcomes: `deactivated` (`entity_id`), `not_found`,
+  `failed` (`errors.doc_date`, `entity_id`). A non-integer key would answer `failed` with
+  `errors.doc_key` and `source_ref` = the raw value; we never send one (D19), so such a verdict is
+  counted as `failed` in `summary.failedRefs` and matched to no ledger row. A key with no verdict
+  reads as `failed` (`no verdict`) and is re-evaluated by the next sweep. The CRM rolls a dry run
+  back, so its verdicts are real predictions.
 - `RawVendorRecord(CanonicalRecord)` in `doc_feed/records.py`: `raw: Dict[str, Any]`,
   `entity_type = feed`, `source_ref` = 13.3's derivation, `sink_payload()` returns `raw` - so
   `_to_records` / `_chunk_results` match verdicts with no change.
@@ -270,7 +277,9 @@ authority. Cost measured: about 300 documents a day x 2 days x 24 polls = 14k re
 roughly 72 POSTs a day per feed at batch 200 - far inside the 600 req/min key limit. Skip-by-hash
 is backlogged with that trigger (BL-SS-287).
 
-Branch pull `run_branch_pull(...)`: walk all pages, `write_batch` every record, counters, failed
+Branch pull `run_branch_pull(...)`: walk all pages, `write_batch` every record with a non-blank
+`BranchCode` (matched on `{book}:BR:{AccNo or ''}:{BranchCode}`, so `db1:BR::HQ` when `AccNo` is
+absent, C2), counters, failed
 refs into `summary.failedRefs`; no ledger, no issue rows (the CRM has no branch deletions door;
 the next daily pull re-sends everything).
 
@@ -415,7 +424,7 @@ label "Document feeds", icon `FileStack`. No new route, no menu change.
 | D16 | Own run table, not `ac_sync_run` | Its rows link to the staged-review surface and carry staging counters |
 | D17 | One new company tab, three shell lists, two dialogs, `JobProgress unit` prop, mock overlay then swap | Minimum new UI; resource shell; frontend-first |
 | D18 | Records re-sent as parsed JSON; numbers stay JSON numbers of equal value | Q1 unmapped; fixture-pinned equality |
-| D19 | A record with no integer DocKey is not sent (`skippedNoKey`) | No verdict or ledger key could be matched |
+| D19 | A record with no integer DocKey, or a branch with a blank `BranchCode`, is not sent (`skippedNoKey`) | The CRM would answer `failed` with a raw or null `source_ref` that no record or ledger key could be matched to (C1, C2) |
 | D20 | Legacy `goods_received_note` untouched (no path, logging sink) | No double push; parity-pinned |
 | D21 | Tests named `test_s14_*`; `tests/conftest.py` `_LIVE_NETWORK_BLOCK_FILE_RE` gains `s14_` | The autouse no-network guard must cover the new files |
 | D22 | Batch = existing `autocount_sink_batch_size` clamped to 1000 | Ruling <= 1000; no new knob |
@@ -451,7 +460,7 @@ Docs: this pair, `14-fixtures/` (+ README provenance), `14-evidence/`, the test 
 | S1 FE mock | Types, overlay mock with every state (unconfigured, gate shut, dry run with runs, push with cursor and issues, backfill running / stopped / done, no permission), hook, meta, tab, lists, dialogs, `JobProgress unit`; agent-browser 375 / 1280 against the mock | AC-14-90..95, E1 |
 | S2 BE config | Migration + models + repositories, `DocFeedService.view/update`, eligible connections, gate refactor, router, schemas, manifest | AC-14-01..06, 80..82 |
 | S3 BE poll + branches (owner S1) | Vendor, records, sink extension, `run_poll`, `run_branch_pull`, issues, ledger, cursor, jobs, beat, scheduler, orphan hook, Run now, runs / issues lists | AC-14-10..13, 20..27, 30..33, 40, 41, 56, 70..72, 83 |
-| S4 BE sweep + backfill (owner S4) | `run_sweep`, `delete_doc_keys`, backfill service + runner + actions | AC-14-50..55, 60..65 |
+| S4 BE sweep + backfill (owner S4) | `run_sweep`, `delete_doc_keys`, backfill service + runner + actions | AC-14-42, 50..55, 60..65 |
 | S5 wire + evidence | Delete the mock overlay, prod build, agent-browser on the lane stack (live vendor `db1`, CRM copy :8107 dry run), test report keyed to UAC ids; reviewer (Opus) on S2..S4, codex second opinion on `doc_feed/` + sink diff; owner hand test (section 9) | AC-14-E2, E3 |
 
 Rules: S1 before any backend code; S2..S4 red-green (tester first); one coder at a time on the
@@ -492,7 +501,8 @@ the no-network guard after D21):
 8. `test_s14_doc_feed_sweep.py` - 45 GETs with the window dates; union rule (moved DocDate);
    one failed day -> no POST; guard at 51 of 100 vs 50 floor; `deactivated` / `not_found` set
    `vanished_at`; later push clears it; per-key `failed errors.doc_date` counted and re-evaluated;
-   dry run writes nothing (AC-14-50..55).
+   dry run writes nothing; deletions verdicts matched by the `source_ref` DocKey suffix, an
+   unparseable `source_ref` and a missing verdict counted as failed (AC-14-42, 50..55).
 9. `test_s14_doc_feed_backfill.py` (owner: backfill resume) - branch step then day loop order;
    interrupt after day 3 of 7 (orphan) -> `stopped`, Resume starts at day 4 and no day 1..3 GET is
    repeated; Stop at a day boundary; Discard; run-once 409 on full history, ranged live allowed,
@@ -526,7 +536,7 @@ timestamped names; `--session` per lane.
 
 | ID | Title | Source plan | Priority | Status |
 |---|---|---|---|---|
-| BL-SS-286 | DO / GRN pull gateway for the CRM verification screen (a shared-service snapshot by day, the products / stock pull pattern) if CRM S3 needs more than the dry-run counters (owner Q1) | [sprint-5/14](../plans/sprint-5/14-autocount-do-grn-http-source.md) | Medium | Open |
+| BL-SS-286 | DO / GRN pull gateway for the CRM verification screen (a shared-service snapshot by day, the products / stock pull pattern) if CRM S3 needs more than the dry-run counters (Q1, decided by default: Dry run mode is the verification step) | [sprint-5/14](../plans/sprint-5/14-autocount-do-grn-http-source.md) | Medium | Open |
 | BL-SS-287 | Skip re-sending a document whose raw record hash equals the last delivered one (the hourly poll re-sends yesterday + today); trigger: CRM ingest load or 429s from the feed | sprint-5/14 | Low | Open |
 | BL-SS-288 | Byte-bounded chunking for document batches (200 DOs near the 2,000-line / 1 MB record cap is a very large body); trigger: a 413 or proxy timeout on a feed POST | sprint-5/14 | Low | Open |
 | BL-SS-289 | `SorentoSink.fetch_contract_detail` parses the version as a float, so a future "2.10" reads below "2.7" and would shut every 2.x gate; compare (major, minor) integers | sprint-5/14 | Medium | Open |
@@ -586,19 +596,22 @@ Report per step: run row counters, the CRM copy row counts, and any issue rows.
 
 ## 10. Questions
 
-Owner (the only one that is genuinely yours):
+Owner, decided by default (the owner may overrule on the PR):
 
-- **Q1 - Verification before the push goes live.** Your original ask had a CRM "pull from
-  AutoCount for verification" before the automated push. Contract 13.8 says the CRM's S3 screen
-  reads the dry-run counters. This plan gives each feed a Dry run mode (hourly, same reads, the CRM
-  answers `?dry_run=true`, nothing written) plus run counters and the issue list on our side.
-  **Recommendation: Dry run is the verification step for DO / GRN; no products-style pull
-  gateway now (BL-SS-286) unless CRM S3 needs a day-by-day snapshot it can open itself.**
+- **Q1 - Verification before the push goes live. DECIDED BY DEFAULT: the per-feed Dry run mode is
+  the verification step.** The original ask had a CRM "pull from AutoCount for verification"
+  before the automated push; contract 13.8 says the CRM's S3 screen reads the dry-run counters.
+  Each feed has a Dry run mode (hourly, same reads, the CRM answers `?dry_run=true`, nothing
+  written) plus run counters and the issue list on our side. No products-style pull gateway is
+  built; if CRM S3 wants a day-by-day snapshot it can open itself, that is BL-SS-286.
 
-Cross-repo confirmations for the CRM peer (not the owner; the build tolerates both answers):
+Cross-repo facts, answered from the CRM code (`autocount_doc_ingest_service.py`, branch
+`claude/autocount-grn-do-ingest-yi1w42`); the sink is built to these, pinned by fixtures:
 
-- **C1** The `/deletions` verdict records for `doc_keys`: is the per-key echo `source_ref`
-  (`db1:DO:55120`) or a `doc_key` field? We read `doc_key` first, else the integer after the last
-  `:` of `source_ref`.
-- **C2** A branch with no `AccNo`: is its echoed `source_ref` `db1:BR::HQ` (empty middle)? We match
-  on that.
+- **C1 (answered)** A `/deletions` verdict echoes ONLY `source_ref` = `{book}:DO:{DocKey}` or
+  `{book}:GRN:{DocKey}`; there is no `doc_key` field. A non-integer key answers `failed` with
+  `errors.doc_key` and `source_ref` = the raw value. Outcomes: `not_found`; `failed` with
+  `errors.doc_date` and `entity_id`; `deactivated` with `entity_id`. A dry run rolls back.
+- **C2 (answered)** A branch `source_ref` is `{book}:BR:{AccNo or ''}:{BranchCode}`, so
+  `db1:BR::HQ` when there is no `AccNo`; a record with no `BranchCode` answers `failed` with
+  `source_ref: null`.

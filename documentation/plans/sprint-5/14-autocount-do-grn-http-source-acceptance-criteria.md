@@ -122,8 +122,14 @@ retried; batches <= 1000; dry run never advances cursors or ledgers.
 - **AC-14-40** `[BE]` The branch pull walks every page, then posts every branch record verbatim to
   `/ingest/branches` in batches <= 1000; verdicts are counted; failed branches appear in the run
   summary (no issue row); the next daily pull re-sends everything.
-- **AC-14-41** `[BE]` A branch verdict is matched on `{book}:BR:{AccNo or ''}:{BranchCode}`; a DO
-  or GRN verdict on `{book}:DO:{DocKey}` / `{book}:GRN:{DocKey}`.
+- **AC-14-41** `[BE]` A branch verdict is matched on `{book}:BR:{AccNo or ''}:{BranchCode}`
+  (`db1:BR::HQ` with no `AccNo`); a DO or GRN verdict on `{book}:DO:{DocKey}` /
+  `{book}:GRN:{DocKey}`. A branch record with a blank `BranchCode` and a document with no integer
+  DocKey are not sent and are counted as `skippedNoKey`.
+- **AC-14-42** `[BE]` A `/deletions` verdict is matched to the DocKey sent by the integer after the
+  last `:` of its `source_ref` (the CRM echoes no `doc_key` field); a verdict whose `source_ref`
+  does not parse, or a key with no verdict, is counted as `failed` in `failedRefs` and touches no
+  ledger row.
 
 ## F. Deletion sweep
 
