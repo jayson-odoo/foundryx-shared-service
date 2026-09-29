@@ -10,10 +10,10 @@ Nothing here echoes a credential. A company's identity is the DISCOVERED
 ``DatabaseName``/``CompanyName``; the connection's AppId, password and token
 never appear in any response (AC-13-42).
 """
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.base import ApiModel
 
@@ -1179,3 +1179,135 @@ class PullApiKeyIssuedOut(ApiModel):
 
     key: PullApiKeyOut
     plaintext: str
+
+
+# ── document feeds (sprint-5/14) ──────────────────────────────────────────────
+
+
+class DocFeedRunOut(ApiModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    feed: str
+    kind: str
+    dryRun: bool = Field(validation_alias="dry_run")
+    dayFrom: Optional[date] = Field(default=None, validation_alias="day_from")
+    dayTo: Optional[date] = Field(default=None, validation_alias="day_to")
+    requests: Optional[int] = None
+    fetchedCount: int = Field(default=0, validation_alias="fetched_count")
+    summary: Optional[Dict[str, Any]] = Field(default=None, validation_alias="summary_json")
+    outcome: Optional[str] = None
+    error: Optional[str] = None
+    errorCode: Optional[str] = Field(default=None, validation_alias="error_code")
+    startedAt: datetime = Field(validation_alias="started_at")
+    finishedAt: Optional[datetime] = Field(default=None, validation_alias="finished_at")
+    durationMs: Optional[int] = Field(default=None, validation_alias="duration_ms")
+
+
+class DocFeedBackfillOut(ApiModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    feed: str
+    dryRun: bool = Field(validation_alias="dry_run")
+    fromDay: date = Field(validation_alias="from_day")
+    toDay: date = Field(validation_alias="to_day")
+    nextDay: date = Field(validation_alias="next_day")
+    status: str
+    daysTotal: int = Field(default=0, validation_alias="days_total")
+    daysDone: int = Field(default=0, validation_alias="days_done")
+    branchStep: Optional[str] = Field(default=None, validation_alias="branch_step")
+    error: Optional[str] = None
+    errorCode: Optional[str] = Field(default=None, validation_alias="error_code")
+    startedAt: datetime = Field(validation_alias="started_at")
+    finishedAt: Optional[datetime] = Field(default=None, validation_alias="finished_at")
+
+
+class DocFeedContractGateOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    version: Optional[float] = None
+    requiredVersion: float
+    reason: Optional[str] = None
+
+
+class DocFeedItemOut(ApiModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    feed: str
+    mode: str
+    connectionId: Optional[str] = None
+    book: Optional[str] = None
+    cursorDay: Optional[date] = None
+    nextPollAt: Optional[datetime] = None
+    nextSweepAt: Optional[datetime] = None
+    lastPollAt: Optional[datetime] = None
+    lastPollOkAt: Optional[datetime] = None
+    lastSweepOkAt: Optional[datetime] = None
+    fullBackfillDoneAt: Optional[datetime] = None
+    contractGate: Optional[DocFeedContractGateOut] = None
+    retryableCount: int = 0
+    failedCount: int = 0
+    lastRun: Optional[DocFeedRunOut] = None
+    backfill: Optional[DocFeedBackfillOut] = None
+
+
+class EligibleConnectionOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    name: str
+    book: str
+
+
+class DocFeedsViewOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    feeds: List[DocFeedItemOut]
+    eligibleConnections: List[EligibleConnectionOut]
+
+
+class DocFeedUpdateIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    connectionId: Optional[str] = None
+    mode: str
+
+
+class DocFeedRunStartIn(BaseModel):
+    kind: str  # "poll" | "sweep"
+
+
+class DocFeedRunStartOut(BaseModel):
+    jobId: str
+
+
+class DocFeedBackfillStartIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    dryRun: bool
+    fromDay: Optional[str] = None
+    toDay: Optional[str] = None
+
+
+class DocFeedIssueOut(ApiModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str
+    feed: str
+    docNo: Optional[str] = Field(default=None, validation_alias="doc_no")
+    docDate: Optional[date] = Field(default=None, validation_alias="doc_date")
+    kind: str
+    errors: Dict[str, Any] = Field(default_factory=dict, validation_alias="errors_json")
+    attempts: int = 0
+    lastAt: Optional[datetime] = Field(default=None, validation_alias="last_at")
+
+
+class DocFeedRunListOut(BaseModel):
+    items: List[DocFeedRunOut]
+    total: int
+
+
+class DocFeedIssueListOut(BaseModel):
+    items: List[DocFeedIssueOut]
+    total: int

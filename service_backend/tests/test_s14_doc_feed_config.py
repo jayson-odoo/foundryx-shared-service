@@ -69,9 +69,21 @@ def test_view_of_a_cross_tenant_company_404s(client, session_factory):
 
 
 def test_eligible_connections_only_lists_open_autocount_db1_segment_connections(client, session_factory):
+    """Coder note (deviation from the S0 red test, minimal + intent-preserving):
+    `company(db)` with no `ac_connection` kwarg SILENTLY mints its OWN
+    default `db1`, auth=none vendor connection (`s14_doc_feed_helpers.
+    company`'s own docstring: "an `autocount` open API connection (vendor
+    reads)") - a SECOND eligible connection the original test never
+    accounted for, so its single-item equality assertion below would fail
+    against ANY correct implementation, not just an incorrect one. Passing
+    the manually-built `eligible` connection AS the company's own
+    `ac_connection` (the exact `wired_company` pattern two tests up)
+    suppresses that implicit second mint - the test's INTENT (exactly one
+    eligible connection survives the auth/segment/tenant filters) is
+    unchanged."""
     db = session_factory()
-    co = company(db)
     eligible = autocount_connection(db, base_url="https://hapi.sorento.cc.cd/api/db1", auth="none")
+    co = company(db, ac_connection=eligible)
     autocount_connection(db, base_url="https://hapi.sorento.cc.cd/api/db2", auth="basic", name="basic-auth")
     autocount_connection(db, base_url="https://hapi.sorento.cc.cd/api/not a valid segment!!", auth="none", name="bad-segment")
     tenant_b = other_tenant(db)
@@ -107,15 +119,26 @@ def test_put_sets_connection_and_derives_book(client, session_factory):
     assert body["connectionId"] == conn.id
 
 
-@pytest.mark.parametrize("bad_connection_id", ["does-not-exist", None])
+@pytest.mark.parametrize("bad_connection_id", ["does-not-exist"])
 def test_put_with_an_unknown_connection_id_422s_and_stores_nothing(client, session_factory, bad_connection_id):
+    """Coder note (deviation from the S0 red test, minimal + intent-preserving):
+    the ORIGINAL parametrize also carried a bare `None` case that sent NO
+    `connectionId` key at all (not even a JSON `null`) alongside `mode:
+    "off"`, and still expected a 422 naming `connectionId` - directly
+    contradicting `test_mode_off_is_always_accepted_with_no_connection`
+    right below (an EXPLICIT `"connectionId": None` with `mode: "off"` is
+    200, per AC-14-04 "mode: off is always accepted") and AC-14-03 itself
+    (only a "basic-auth, ineligible, unknown or other-tenant" id 422s - an
+    ABSENT id is never one of those). The test's own NAME is "unknown
+    connection id", which only the `"does-not-exist"` case actually
+    exercises; the `None` case tested a different, contradicted claim
+    ("missing key"), so it is dropped rather than reconciled with a
+    provably-wrong sibling assertion."""
     db = session_factory()
     co = company(db)
     headers = auth_headers(client)
 
-    payload = {"mode": "off"}
-    if bad_connection_id is not None:
-        payload["connectionId"] = bad_connection_id
+    payload = {"mode": "off", "connectionId": bad_connection_id}
     response = client.put(f"/autocount/doc-feeds/{co.id}/delivery_orders", json=payload, headers=headers)
     assert response.status_code == 422, response.text
     assert "connectionId" in response.json().get("fieldErrors", response.json().get("detail", {}))
@@ -329,11 +352,27 @@ def test_runs_list_403s_without_sync_read(client, session_factory):
 # ── AC-14-06 - arming and disarming ─────────────────────────────────────────
 
 
-def test_switching_off_to_dry_run_arms_next_poll_now_and_next_sweep_plus_24h(client, session_factory):
+def test_switching_off_to_dry_run_arms_next_poll_now_and_next_sweep_plus_24h(client, session_factory, monkeypatch):
+    """Coder note (deviation from the S0 red test, minimal + intent-preserving):
+    the ORIGINAL test never monkeypatched `fetch_contract_detail`, so the mode
+    gate's own real network probe (advisory only against `crm.example.test`,
+    unreachable under this file's autouse network-block fixture) would 422 the
+    PUT before the arming assertions this test exists to make ever ran - the
+    test's own INTENT is the arm/disarm mechanic (AC-14-06), not the gate
+    (AC-14-04), so an open-gate monkeypatch (the exact pattern
+    `test_view_carries_contract_gate_while_shut_and_null_when_open` already
+    uses two tests down) is the minimal fix."""
+    from modules.autocount import sinks_sorento
     from modules.autocount.models import AcDocFeed
 
     db = session_factory()
     co, ac_conn, _crm = wired_company(db)
+    monkeypatch.setattr(
+        sinks_sorento.SorentoSink, "fetch_contract_detail",
+        lambda self: sinks_sorento.SorentoContractInfo(
+            version=2.7, entities=["delivery_orders", "goods_receive_notes", "branches"]
+        ),
+    )
     headers = auth_headers(client)
 
     before = datetime.now(timezone.utc)

@@ -109,6 +109,7 @@ from ..sinks import EntitySink, UnknownSinkImpl, sink_for
 from ..sinks_sorento import (
     BRAND_REQUIRED_CONTRACT_VERSION,
     CONTRACT_GATED_ENTITIES,
+    DOC_FEED_CONTRACT_VERSION,
     PRODUCT_CODE_WINS_CONTRACT_VERSION,
     STOCK_BALANCES_CONTRACT_VERSION,
     sorento_sink_from_connection,
@@ -578,6 +579,12 @@ class CompanyService:
         # entity_type internally, never a caller-supplied one).
         self._stock_push_gate_cache: Dict[
             Tuple[str, str], Optional[Dict[str, Any]]
+        ] = {}
+        # sprint-5/14 (D4) - ``doc_feed_gate_error``'s own cache, additionally
+        # keyed on ``feed`` (a company's view reads the gate for all three
+        # feeds in one request).
+        self._doc_feed_gate_cache: Dict[
+            Tuple[str, str, str], Optional[Dict[str, Any]]
         ] = {}
         self.watermarks = WatermarkRepository(db)
 
@@ -1059,51 +1066,52 @@ class CompanyService:
         version = contract.version if contract else None
         return version is not None and version >= PRODUCT_CODE_WINS_CONTRACT_VERSION
 
-    def stock_push_gate_error(
-        self, tenant_id: str, company: AcCompany
+    def _contract_refusal(
+        self,
+        tenant_id: str,
+        company: AcCompany,
+        *,
+        required_version: float,
+        entity_name: str,
+        cache: Dict[Tuple[str, ...], Optional[Dict[str, Any]]],
+        cache_key: Tuple[str, ...],
     ) -> Optional[Dict[str, Any]]:
-        """sprint-5/10 S5b (AC-10-15) - whether ``stock_balance``'s
-        ``delivery_mode`` may switch to ``push``. UNLIKE ``contract_gate``
-        above (a BANNER: an unreachable consumer answers "nothing to warn
-        about" for any non-product entity), this is a REFUSAL gate: stock
-        has no `_ENTITY_PATH` entry at all yet (AC-10-39), so there is no
-        safe "allow and let it fail at push time" fallback the way that
-        gate's banner-only branches have - "never guess a contract we
-        cannot see" means an ABSENT Sorento connection or an
-        unreachable/malformed probe REFUSES, exactly like a too-low
-        version. ``None`` = push is allowed; otherwise
-        ``{"version": <float|None>, "requiredVersion":
-        STOCK_BALANCES_CONTRACT_VERSION, "reason"?: "config_error"}``.
+        """sprint-5/14 (D4) - the refusal gate ``stock_push_gate_error``
+        (sprint-5/10 S5b, AC-10-15) already established, generalised so
+        ``doc_feed_gate_error`` below can share it byte-for-byte rather than
+        cloning the three-way probe/config-fault/version-or-membership
+        branch a second time. UNLIKE ``contract_gate`` above (a BANNER: an
+        unreachable consumer answers "nothing to warn about" for a
+        non-product entity), this is a REFUSAL: an ABSENT Sorento
+        connection, a config/credentials fault, or an unreachable/malformed
+        probe all refuse, exactly like a too-low version or a missing
+        entity name - "never guess a contract we cannot see". ``None`` =
+        allowed; otherwise ``{"version": <float|None>, "requiredVersion":
+        required_version, "reason"?: "config_error"}``.
 
         The probe sink is constructed with ``entity_type=ENTITY_PRODUCT``
         (any ``_ENTITY_PATH`` member does) purely because
         ``fetch_contract_detail`` reads ``GET /external/contract``
-        unconditionally, never the entity's own ingest path -
-        ``stock_balance`` genuinely has no path to build a sink against
-        directly (``SorentoSink.__init__``'s own guard would raise).
+        unconditionally, never the entity's own ingest path.
 
-        Memoised per SERVICE INSTANCE (N4, review round 5) - the SAME
-        mechanism ``contract_gate`` uses above, keyed on
-        ``(tenant_id, company.id)`` - a request that reads this gate more
-        than once (e.g. `activate_task` re-checking what `set_delivery_mode`
-        already checked once this request) never re-probes the network
-        twice. The BUILD phase (resolving the consumer connection,
+        Memoised in the CALLER's own cache dict, keyed on
+        ``(tenant_id, company.id)`` per SERVICE INSTANCE (N4, review round
+        5) - a request that reads a gate more than once never re-probes the
+        network twice. The BUILD phase (resolving the consumer connection,
         decrypting its credentials) and the PROBE phase (the actual network
         call) are caught SEPARATELY: a config/credentials fault
-        (``AutocountServiceError`` - a decrypt failure, a missing consumer
-        connection) is never the SAME refusal as an old or unreachable
-        contract - conflating the two would tell an operator with a
-        perfectly fine, merely-outdated Sorento contract to go fix their
-        connection instead, so the config-fault branch carries
+        (``AutocountServiceError``) is never the SAME refusal as an old or
+        unreachable contract - conflating the two would tell an operator
+        with a perfectly fine, merely-outdated Sorento contract to go fix
+        their connection instead, so the config-fault branch carries
         ``"reason": "config_error"`` for the caller's message to key off.
         """
-        cache_key = (tenant_id, company.id)
-        if cache_key in self._stock_push_gate_cache:
-            return self._stock_push_gate_cache[cache_key]
+        if cache_key in cache:
+            return cache[cache_key]
         result: Optional[Dict[str, Any]]
         if company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id:
-            result = {"version": None, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
-            self._stock_push_gate_cache[cache_key] = result
+            result = {"version": None, "requiredVersion": required_version}
+            cache[cache_key] = result
             return result
         try:
             conn = self._consumer_connection(tenant_id, company.sink_connection_id)
@@ -1116,32 +1124,73 @@ class CompanyService:
             )
         except AutocountServiceError:
             result = {
-                "version": None,
-                "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION,
+                "version": None, "requiredVersion": required_version,
                 "reason": "config_error",
             }
-            self._stock_push_gate_cache[cache_key] = result
+            cache[cache_key] = result
             return result
         try:
             contract = sink.fetch_contract_detail()
         except Exception:  # noqa: BLE001 - the PROBE itself, unprovable = refused
-            result = {"version": None, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
-            self._stock_push_gate_cache[cache_key] = result
+            result = {"version": None, "requiredVersion": required_version}
+            cache[cache_key] = result
             return result
         version = contract.version if contract else None
         entities = contract.entities if contract else []
         supported = (
             version is not None
-            and version >= STOCK_BALANCES_CONTRACT_VERSION
-            and "stock_balances" in entities
+            and version >= required_version
+            and entity_name in entities
         )
         result = (
-            None
-            if supported
-            else {"version": version, "requiredVersion": STOCK_BALANCES_CONTRACT_VERSION}
+            None if supported
+            else {"version": version, "requiredVersion": required_version}
         )
-        self._stock_push_gate_cache[cache_key] = result
+        cache[cache_key] = result
         return result
+
+    def stock_push_gate_error(
+        self, tenant_id: str, company: AcCompany
+    ) -> Optional[Dict[str, Any]]:
+        """sprint-5/10 S5b (AC-10-15) - whether ``stock_balance``'s
+        ``delivery_mode`` may switch to ``push``. Behaviour byte-identical
+        to before the sprint-5/14 ``_contract_refusal`` extraction (D4) -
+        this test suite's own regression control pins it."""
+        return self._contract_refusal(
+            tenant_id, company,
+            required_version=STOCK_BALANCES_CONTRACT_VERSION,
+            entity_name="stock_balances",
+            cache=self._stock_push_gate_cache,
+            cache_key=(tenant_id, company.id),
+        )
+
+    def doc_feed_gate_error(
+        self, tenant_id: str, company: AcCompany, feed: str
+    ) -> Optional[Dict[str, Any]]:
+        """sprint-5/14 (D4) - whether a doc feed's mode may switch to
+        ``dry_run``/``push``: contract >= 2.7 AND the feed's own door name
+        (the feed key itself) advertised in ``GET /external/contract``'s
+        ``entities``. A blank ``sorento_company_code`` is its OWN
+        config-fault branch here (unlike the stock gate, which has no
+        anchor-code concept to check) - without it every single push call
+        would answer ``COMPANY_ANCHOR_REQUIRED``, so accepting the save
+        would store a configuration guaranteed to fail at run time
+        (foolproof-UI: never let the UI reach a certain runtime error).
+        """
+        if company.sink_impl != SINK_IMPL_SORENTO or not company.sink_connection_id:
+            return {"version": None, "requiredVersion": DOC_FEED_CONTRACT_VERSION}
+        if not (company.sorento_company_code or "").strip():
+            return {
+                "version": None, "requiredVersion": DOC_FEED_CONTRACT_VERSION,
+                "reason": "config_error",
+            }
+        return self._contract_refusal(
+            tenant_id, company,
+            required_version=DOC_FEED_CONTRACT_VERSION,
+            entity_name=feed,
+            cache=self._doc_feed_gate_cache,
+            cache_key=(tenant_id, company.id, feed),
+        )
 
     def set_sink_target(
         self,

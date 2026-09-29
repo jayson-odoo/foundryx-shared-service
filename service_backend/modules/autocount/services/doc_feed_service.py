@@ -1,0 +1,430 @@
+"""``DocFeedService`` (sprint-5/14, D2) - configuration, run dispatch and
+history for the DO/GRN/branch HTTP source.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.jobs.service import JobService
+from app.models.background_job import JOB_FAILED, JOB_TERMINAL_STATUSES
+
+from ..doc_feed.clock import myt_date
+from ..doc_feed.constants import (
+    ALL_FEEDS,
+    BACKFILL_FROM_DEFAULT,
+    DOC_FEED_BACKFILL_JOB_TYPE,
+    DOC_FEED_RUN_JOB_TYPE,
+    DOCUMENT_FEEDS,
+    FEED_BRANCHES,
+)
+from ..doc_feed.jobs import run_doc_feed_backfill_job, run_doc_feed_job
+from ..doc_feed.runner import derive_book
+from ..models import (
+    DOC_FEED_BACKFILL_RUNNING,
+    DOC_FEED_BACKFILL_STOPPED,
+    DOC_FEED_MODE_DRY_RUN,
+    DOC_FEED_MODE_OFF,
+    DOC_FEED_MODE_PUSH,
+    DOC_FEED_MODES,
+    AcCompany,
+    AcDocFeed,
+    AcDocFeedBackfill,
+)
+from ..provider import AUTH_NONE, PROVIDER_KEY, auth_mode
+from ..repositories import CompanyRepository, ConnectionRepository
+from ..repositories.doc_feed_repository import (
+    DocFeedBackfillRepository,
+    DocFeedIssueRepository,
+    DocFeedLedgerRepository,
+    DocFeedRepository,
+    DocFeedRunRepository,
+)
+from ..schemas import (
+    DocFeedBackfillOut,
+    DocFeedContractGateOut,
+    DocFeedIssueListOut,
+    DocFeedIssueOut,
+    DocFeedItemOut,
+    DocFeedRunListOut,
+    DocFeedRunOut,
+    DocFeedsViewOut,
+    EligibleConnectionOut,
+)
+from .company_service import CompanyNotFound, CompanyService
+
+logger = logging.getLogger("foundryx.autocount")
+
+
+class DocFeedError(Exception):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class DocFeedValidationError(DocFeedError):
+    """A save-time or action-time field 422 - the router renders
+    ``{fieldErrors: {field: message}}`` (plan section 3.2)."""
+
+    def __init__(self, field: str, message: str) -> None:
+        super().__init__(message)
+        self.field = field
+
+
+class DocFeedConflictError(DocFeedError):
+    """A 409 - ``code`` is one of ``RUN_IN_FLIGHT`` / ``BACKFILL_OPEN`` /
+    ``BACKFILL_ALREADY_DONE``. ``str()`` carries the code first (mirrors
+    ``SinkAnchorError``) so a caller that only inspects the exception's
+    text (the service-level tests, never the HTTP layer) can still assert
+    on it."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        # Bypasses `DocFeedError.__init__` (which would overwrite
+        # `self.message` with the combined string) - `Exception.__init__`
+        # only sets the args `str()` reads.
+        Exception.__init__(self, f"{code}: {message}")
+
+
+class DocFeedService:
+    def __init__(self, db: Session):
+        self.db = db
+        self.companies = CompanyRepository(db)
+        self.connections = ConnectionRepository(db)
+        self.company_service = CompanyService(db)
+        self.feeds = DocFeedRepository(db)
+        self.ledger = DocFeedLedgerRepository(db)
+        self.issues = DocFeedIssueRepository(db)
+        self.runs = DocFeedRunRepository(db)
+        self.backfills = DocFeedBackfillRepository(db)
+
+    # ── shared ────────────────────────────────────────────────────────────────
+
+    def _company(self, tenant_id: str, company_id: str) -> AcCompany:
+        company = self.companies.get(tenant_id, company_id)
+        if company is None:
+            raise CompanyNotFound("That AutoCount company was not found.")
+        return company
+
+    def eligible_connections(self, tenant_id: str) -> List[Tuple[Any, str]]:
+        """AC-14-02 - open (no-auth) ``autocount`` connections whose base URL
+        ends in a book-shaped segment (13.2)."""
+        out: List[Tuple[Any, str]] = []
+        for conn in self.connections.list_for_provider(tenant_id, PROVIDER_KEY):
+            if auth_mode(conn.config_json or {}) != AUTH_NONE:
+                continue
+            book = derive_book(str((conn.config_json or {}).get("baseUrl") or ""))
+            if not book:
+                continue
+            out.append((conn, book))
+        return out
+
+    # ── view ─────────────────────────────────────────────────────────────────
+
+    def view(self, tenant_id: str, company_id: str) -> DocFeedsViewOut:
+        company = self._company(tenant_id, company_id)
+        eligible = self.eligible_connections(tenant_id)
+        items = [self._item_out(tenant_id, company, feed) for feed in ALL_FEEDS]
+        return DocFeedsViewOut(
+            feeds=items,
+            eligibleConnections=[
+                EligibleConnectionOut(id=conn.id, name=conn.name, book=book)
+                for conn, book in eligible
+            ],
+        )
+
+    def _item_out(self, tenant_id: str, company: AcCompany, feed: str) -> DocFeedItemOut:
+        row = self.feeds.get(tenant_id, company.id, feed)
+        gate = self.company_service.doc_feed_gate_error(tenant_id, company, feed)
+        counts = self.issues.counts(tenant_id, company.id, feed)
+        last_run = self.runs.latest_for_feed(tenant_id, company.id, row.id) if row else None
+        backfill = (
+            self.backfills.latest_for_feed(tenant_id, row.id)
+            if row and feed in DOCUMENT_FEEDS else None
+        )
+        return DocFeedItemOut(
+            feed=feed,
+            mode=row.mode if row else DOC_FEED_MODE_OFF,
+            connectionId=row.connection_id if row else None,
+            book=row.book if row else None,
+            cursorDay=row.cursor_day if row else None,
+            nextPollAt=row.next_poll_at if row else None,
+            nextSweepAt=row.next_sweep_at if row else None,
+            lastPollAt=row.last_poll_at if row else None,
+            lastPollOkAt=row.last_poll_ok_at if row else None,
+            lastSweepOkAt=row.last_sweep_ok_at if row else None,
+            fullBackfillDoneAt=row.full_backfill_done_at if row else None,
+            contractGate=DocFeedContractGateOut(**gate) if gate else None,
+            retryableCount=counts.get("retryable", 0),
+            failedCount=counts.get("failed", 0),
+            lastRun=DocFeedRunOut.model_validate(last_run) if last_run else None,
+            backfill=DocFeedBackfillOut.model_validate(backfill) if backfill else None,
+        )
+
+    # ── configure (AC-14-03..06) ─────────────────────────────────────────────
+
+    def update(
+        self, tenant_id: str, company_id: str, feed: str,
+        *, connection_id: Optional[str], mode: str,
+    ) -> DocFeedItemOut:
+        company = self._company(tenant_id, company_id)
+        if feed not in ALL_FEEDS:
+            raise DocFeedValidationError("feed", "Unknown feed.")
+        if mode not in DOC_FEED_MODES:
+            raise DocFeedValidationError("mode", "Unknown mode.")
+
+        row = self.feeds.get_or_create(tenant_id, company_id, feed)
+
+        resolved_conn = None
+        if connection_id is not None:
+            eligible_ids = {conn.id for conn, _book in self.eligible_connections(tenant_id)}
+            candidate = self.connections.get_for_provider(tenant_id, connection_id, PROVIDER_KEY)
+            if candidate is None or candidate.id not in eligible_ids:
+                raise DocFeedValidationError(
+                    "connectionId",
+                    "That connection is not an eligible open (no-auth) AutoCount "
+                    "connection with a usable book.",
+                )
+            resolved_conn = candidate
+        elif mode != DOC_FEED_MODE_OFF and not row.connection_id:
+            raise DocFeedValidationError("connectionId", "Choose a connection first.")
+
+        if mode in (DOC_FEED_MODE_DRY_RUN, DOC_FEED_MODE_PUSH):
+            gate = self.company_service.doc_feed_gate_error(tenant_id, company, feed)
+            if gate is not None:
+                raise DocFeedValidationError("mode", self._gate_message(gate, feed))
+
+        if resolved_conn is not None:
+            row.connection_id = resolved_conn.id
+            row.book = derive_book(str((resolved_conn.config_json or {}).get("baseUrl") or ""))
+
+        was_armed = row.mode not in (DOC_FEED_MODE_OFF, None)
+        row.mode = mode
+        now = datetime.now(timezone.utc)
+        if mode == DOC_FEED_MODE_OFF:
+            row.next_poll_at = None
+            row.next_sweep_at = None
+        elif not was_armed:
+            row.next_poll_at = now
+            if feed in DOCUMENT_FEEDS:
+                row.next_sweep_at = now + timedelta(hours=24)
+
+        self.db.commit()
+        self.db.refresh(row)
+        return self._item_out(tenant_id, company, feed)
+
+    @staticmethod
+    def _gate_message(gate: Dict[str, Any], feed: str) -> str:
+        if gate.get("reason") == "config_error":
+            return (
+                "This company's Sorento push target is not fully configured "
+                "yet (a connection and a company code are both required)."
+            )
+        version = gate.get("version")
+        if version is None:
+            return (
+                f"The Sorento consumer's contract could not be confirmed to "
+                f"support '{feed}' (needs {gate.get('requiredVersion')}+)."
+            )
+        return (
+            f"The Sorento consumer's contract ({version}) does not yet support "
+            f"'{feed}' (needs {gate.get('requiredVersion')}+)."
+        )
+
+    # ── run now / sweep now (AC-14-05) ───────────────────────────────────────
+
+    def run_feed(
+        self, tenant_id: str, company_id: str, feed: str, kind: str,
+        *, actor_user_id: Optional[str] = None, transport: Any = None,
+    ) -> str:
+        self._company(tenant_id, company_id)
+        if feed not in ALL_FEEDS:
+            raise DocFeedValidationError("feed", "Unknown feed.")
+        if kind not in ("poll", "sweep"):
+            raise DocFeedValidationError("kind", "kind must be 'poll' or 'sweep'.")
+        if kind == "sweep" and feed == FEED_BRANCHES:
+            raise DocFeedValidationError("kind", "Branches has no sweep.")
+
+        row = self.feeds.get(tenant_id, company_id, feed)
+        if row is None or row.mode == DOC_FEED_MODE_OFF:
+            raise DocFeedValidationError("mode", "This feed is off.")
+
+        if self.feeds.unfinished_job(tenant_id, DOC_FEED_RUN_JOB_TYPE, row.id) is not None:
+            raise DocFeedConflictError(
+                "RUN_IN_FLIGHT", "A run for this feed is already in progress."
+            )
+
+        job = JobService(self.db).create_and_enqueue(
+            type=DOC_FEED_RUN_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
+            payload={"feedId": row.id, "kind": kind},
+        )
+        self._run_eager_with_transport(run_doc_feed_job, job, transport=transport)
+        return job.id
+
+    def _run_eager_with_transport(self, handler, job, *, transport: Any) -> None:
+        """Mirrors ``PreviewJobService._run_eager_with_transport`` - a
+        TEST-ONLY seam (production never overrides ``get_http_transport``,
+        so ``transport`` is always ``None`` there and the job already ran
+        through the plain ``enqueue()`` path)."""
+        if not (settings.celery_task_always_eager and transport is not None):
+            return
+        jobs = JobService(self.db)
+        if not jobs.claim(job.id):
+            return
+        self.db.refresh(job)
+        try:
+            handler(self.db, job, transport=transport)
+        except Exception as exc:  # noqa: BLE001 - isolated, mirrors run_job
+            logger.exception("doc-feed job %s crashed", job.id)
+            self.db.rollback()
+            fresh = jobs.repo.get_unscoped(job.id)
+            if fresh is not None and fresh.status not in JOB_TERMINAL_STATUSES:
+                jobs.finish(fresh, status=JOB_FAILED, error=f"Job crashed: {exc}")
+                self.db.commit()
+
+    # ── runs / issues (AC-14-70/71) ──────────────────────────────────────────
+
+    def list_runs(
+        self, tenant_id: str, company_id: str,
+        *, feed: Optional[str] = None, page: int = 0, page_size: int = 25,
+    ) -> DocFeedRunListOut:
+        self._company(tenant_id, company_id)
+        rows, total = self.runs.list(tenant_id, company_id, feed=feed, page=page, page_size=page_size)
+        return DocFeedRunListOut(items=[DocFeedRunOut.model_validate(r) for r in rows], total=total)
+
+    def list_issues(
+        self, tenant_id: str, company_id: str,
+        *, feed: Optional[str] = None, kind: Optional[str] = None,
+        search: Optional[str] = None, page: int = 0, page_size: int = 25,
+    ) -> DocFeedIssueListOut:
+        self._company(tenant_id, company_id)
+        rows, total = self.issues.list(
+            tenant_id, company_id, feed=feed, kind=kind, search=search,
+            page=page, page_size=page_size,
+        )
+        # `AcDocFeedIssue`'s primary key is the composite (tenant, company,
+        # feed, book, doc_key) - there is no single `id` column to
+        # `model_validate` off, so the wire id is synthesised here.
+        items = [
+            DocFeedIssueOut(
+                id=f"{row.book}:{row.doc_key}", feed=row.feed, doc_no=row.doc_no,
+                doc_date=row.doc_date, kind=row.kind, errors=row.errors_json or {},
+                attempts=row.attempts or 0, last_at=row.last_at,
+            )
+            for row in rows
+        ]
+        return DocFeedIssueListOut(items=items, total=total)
+
+    # ── backfill (AC-14-60..65) ───────────────────────────────────────────────
+
+    def start_backfill(
+        self, tenant_id: str, company_id: str, feed: str,
+        *, dry_run: bool, from_day: Optional[date] = None, to_day: Optional[date] = None,
+        actor_user_id: Optional[str] = None, transport: Any = None,
+    ) -> AcDocFeedBackfill:
+        self._company(tenant_id, company_id)
+        if feed == FEED_BRANCHES:
+            raise DocFeedValidationError("feed", "Branches has no backfill.")
+        row = self.feeds.get(tenant_id, company_id, feed)
+        if row is None:
+            raise DocFeedValidationError("feed", "Configure this feed first.")
+        if not dry_run and row.mode != DOC_FEED_MODE_PUSH:
+            raise DocFeedValidationError(
+                "mode", "A live backfill needs this feed in Push mode first."
+            )
+
+        if self.backfills.open_for_feed(tenant_id, row.id) is not None:
+            raise DocFeedConflictError(
+                "BACKFILL_OPEN", "A backfill is already open for this feed."
+            )
+
+        now = datetime.now(timezone.utc)
+        today = myt_date(now)
+        default_from = date.fromisoformat(BACKFILL_FROM_DEFAULT)
+        from_day_value = from_day or default_from
+        to_day_value = to_day or today
+        if from_day_value > to_day_value or to_day_value > today:
+            raise DocFeedValidationError(
+                "toDay", "toDay must be on or before today, and not before fromDay."
+            )
+
+        if not dry_run and from_day_value <= default_from and row.full_backfill_done_at is not None:
+            raise DocFeedConflictError(
+                "BACKFILL_ALREADY_DONE", "The full-history backfill has already completed."
+            )
+
+        backfill = AcDocFeedBackfill(
+            tenant_id=tenant_id, company_id=company_id, feed_id=row.id, feed=feed,
+            book=row.book, dry_run=dry_run, from_day=from_day_value, to_day=to_day_value,
+            next_day=from_day_value, status=DOC_FEED_BACKFILL_RUNNING,
+            days_total=(to_day_value - from_day_value).days + 1, days_done=0,
+            started_by=actor_user_id, started_at=now,
+        )
+        self.backfills.add(backfill)
+        self.db.commit()
+
+        job = JobService(self.db).create_and_enqueue(
+            type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=tenant_id, actor_user_id=actor_user_id,
+            payload={"backfillId": backfill.id},
+        )
+        backfill.job_id = job.id
+        self.db.commit()
+        self._run_eager_with_transport(run_doc_feed_backfill_job, job, transport=transport)
+        self.db.refresh(backfill)
+        return backfill
+
+    def _open_backfill_or_404(self, tenant_id: str, company_id: str, feed: str) -> AcDocFeedBackfill:
+        row = self.feeds.get(tenant_id, company_id, feed)
+        if row is None:
+            raise DocFeedValidationError("feed", "This feed is not configured.")
+        backfill = self.backfills.open_for_feed(tenant_id, row.id)
+        if backfill is None:
+            raise DocFeedValidationError("feed", "There is no open backfill for this feed.")
+        return backfill
+
+    def stop_backfill(self, tenant_id: str, company_id: str, feed: str) -> AcDocFeedBackfill:
+        backfill = self._open_backfill_or_404(tenant_id, company_id, feed)
+        if backfill.status == DOC_FEED_BACKFILL_RUNNING:
+            from ..models import DOC_FEED_BACKFILL_STOPPING
+
+            backfill.status = DOC_FEED_BACKFILL_STOPPING
+            self.db.commit()
+        return backfill
+
+    def resume_backfill(self, tenant_id: str, company_id: str, feed: str) -> AcDocFeedBackfill:
+        row = self.feeds.get(tenant_id, company_id, feed)
+        if row is None:
+            raise DocFeedValidationError("feed", "This feed is not configured.")
+        backfill = self.backfills.latest_for_feed(tenant_id, row.id)
+        if backfill is None or backfill.status != DOC_FEED_BACKFILL_STOPPED:
+            raise DocFeedValidationError("feed", "There is no stopped backfill to resume.")
+        backfill.status = DOC_FEED_BACKFILL_RUNNING
+        self.db.commit()
+        job = JobService(self.db).create_and_enqueue(
+            type=DOC_FEED_BACKFILL_JOB_TYPE, tenant_id=tenant_id,
+            payload={"backfillId": backfill.id},
+        )
+        backfill.job_id = job.id
+        self.db.commit()
+        self.db.refresh(backfill)
+        return backfill
+
+    def discard_backfill(self, tenant_id: str, company_id: str, feed: str) -> AcDocFeedBackfill:
+        row = self.feeds.get(tenant_id, company_id, feed)
+        if row is None:
+            raise DocFeedValidationError("feed", "This feed is not configured.")
+        backfill = self.backfills.latest_for_feed(tenant_id, row.id)
+        if backfill is None or backfill.status != DOC_FEED_BACKFILL_STOPPED:
+            raise DocFeedValidationError("feed", "There is no stopped backfill to discard.")
+        from ..models import DOC_FEED_BACKFILL_DONE
+
+        backfill.status = DOC_FEED_BACKFILL_DONE
+        backfill.error_code = "DISCARDED"
+        backfill.finished_at = datetime.now(timezone.utc)
+        self.db.commit()
+        return backfill
