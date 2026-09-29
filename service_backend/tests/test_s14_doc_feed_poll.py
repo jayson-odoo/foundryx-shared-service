@@ -42,6 +42,10 @@ def _latest_run(db, feed) -> AcDocFeedRun:
 
 def _ok_sink(outcome="created") -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
+        # S1 (review round 1) - the run-time contract gate probes through
+        # this SAME `sink_transport`.
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders", "goods_receive_notes", "branches"]})
         payload = json.loads(request.content.decode("utf-8"))
         recs = payload.get("records") or []
         return httpx.Response(
@@ -71,10 +75,17 @@ def test_a_paged_envelope_on_a_document_door_fails_with_vendor_paged(session_fac
         return httpx.Response(200, json=paged)
 
     posted = []
+
+    def sink(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
+        posted.append(1)
+        return httpx.Response(200, json={})
+
     run_poll(
         db, feed, dry_run=False, now=NOW,
         vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)),
-        sink_transport=httpx.MockTransport(lambda r: posted.append(1) or httpx.Response(200, json={})),
+        sink_transport=httpx.MockTransport(sink),
     )
     run = _latest_run(db, feed)
     assert run.outcome == "FAILED"
@@ -111,9 +122,13 @@ def test_a_5xx_after_the_retry_ladder_fails_with_vendor_http(session_factory, mo
     assert run.error_code == "VENDOR_HTTP"
 
 
-def test_an_ssrf_blocked_base_url_fails_with_vendor_transport(session_factory):
+def test_an_ssrf_blocked_base_url_fails_with_vendor_transport(session_factory, monkeypatch):
     from modules.autocount import http_client as http_client_module
 
+    # S11 (review round 1) - the SSRF-blocked GET is retried through the
+    # SAME transport-error ladder as any other transport failure (1s then
+    # 4s), so this test would otherwise sleep ~5s for real.
+    monkeypatch.setattr("time.sleep", lambda *_: None)
     db = session_factory()
     co, ac_conn, crm = wired_company(db)
     # Point the feed's own connection at a blocked target (a private IP
@@ -141,6 +156,8 @@ def test_a_429_with_retry_after_is_waited_out_then_succeeds(session_factory, mon
     calls = {"n": 0}
 
     def sink(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
         calls["n"] += 1
         if calls["n"] == 1:
             return httpx.Response(429, json={}, headers={"Retry-After": "2"})
@@ -165,6 +182,8 @@ def test_a_502_is_retried_per_chunk_then_succeeds(session_factory, monkeypatch):
     calls = {"n": 0}
 
     def sink(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
         calls["n"] += 1
         if calls["n"] == 1:
             return httpx.Response(502, json={"message": "bad gateway"})
@@ -220,7 +239,7 @@ def test_branch_pull_walks_every_page_and_matches_verdicts_by_source_ref(session
     crm_response = load_fixture("crm-ingest-branches-response.json")
 
     def vendor(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/branchbypage"
+        assert request.url.path == "/api/db1/branchbypage"
         page = request.url.params.get("page")
         assert request.url.params.get("pageSize") == "1000"
         return httpx.Response(200, json=page1 if page == "1" else page2)
@@ -228,6 +247,8 @@ def test_branch_pull_walks_every_page_and_matches_verdicts_by_source_ref(session
     posted_refs: List[str] = []
 
     def sink(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["branches"]})
         payload = json.loads(request.content.decode("utf-8"))
         for r in payload.get("records") or []:
             acc = r.get("AccNo") or ""

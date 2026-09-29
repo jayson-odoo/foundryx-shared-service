@@ -48,7 +48,7 @@ def _record(doc_key=DOC_KEY, last_modified="2026-09-29T09:00:00.000"):
 
 def _vendor_transport(record: Optional[Dict[str, Any]]) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/deliveryorderbyLastModified"
+        assert request.url.path == "/api/db1/deliveryorderbyLastModified"
         return httpx.Response(200, json=[record] if record else [])
 
     return httpx.Client(transport=httpx.MockTransport(handler))
@@ -56,6 +56,10 @@ def _vendor_transport(record: Optional[Dict[str, Any]]) -> httpx.MockTransport:
 
 def _verdict_transport(outcome: str, *, errors: Optional[Dict] = None, warnings: Optional[List[str]] = None) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
+        # S1 (review round 1) - the run-time contract gate now probes
+        # through this SAME `sink_transport`.
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
         payload = json.loads(request.content.decode("utf-8"))
         recs = payload.get("records") or []
         body_records = []
@@ -201,6 +205,8 @@ def test_retryable_is_re_sent_on_the_next_live_poll_outside_the_window(session_f
         return httpx.Response(200, json=[])
 
     def sink_capture(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
         payload = json.loads(request.content.decode("utf-8"))
         for r in payload.get("records") or []:
             sent_refs.append(f"db1:DO:{r.get('DocKey')}")
@@ -264,6 +270,8 @@ def test_failed_creates_an_issue_row_and_is_not_re_sent(session_factory):
         return httpx.Response(200, json=[])
 
     def sink_capture(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
         payload = json.loads(request.content.decode("utf-8"))
         for r in payload.get("records") or []:
             sent_refs.append(f"db1:DO:{r.get('DocKey')}")
@@ -301,6 +309,8 @@ def test_a_missing_verdict_is_treated_as_retryable(session_factory):
     feed = _feed(db, company, ac_conn)
 
     def sink_no_verdict(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
         return httpx.Response(200, json={"dry_run": False, "summary": {}, "records": []})
 
     run_poll(

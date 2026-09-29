@@ -22,6 +22,7 @@ from typing import Dict, List
 import httpx
 import pytest
 
+from app.models.background_job import BackgroundJob
 from modules.autocount.doc_feed.runner import run_backfill
 from modules.autocount.models import AcDocFeed, AcDocFeedBackfill
 from modules.autocount.services.doc_feed_service import DocFeedService
@@ -58,7 +59,7 @@ def _backfill(db, feed, *, from_day, to_day, next_day=None, dry_run=False, statu
 
 def _empty_vendor(seen_days: List[str]) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/deliveryorderbydocdate"
+        assert request.url.path == "/api/db1/deliveryorderbydocdate"
         seen_days.append(request.url.params.get("DocDate"))
         return httpx.Response(200, json=[])
 
@@ -66,7 +67,14 @@ def _empty_vendor(seen_days: List[str]) -> httpx.MockTransport:
 
 
 def _ok_sink() -> httpx.MockTransport:
-    return httpx.MockTransport(lambda r: httpx.Response(200, json={"dry_run": False, "summary": {}, "records": []}))
+    def handler(request: httpx.Request) -> httpx.Response:
+        # S1 (review round 1) - the run-time contract gate now probes
+        # through this SAME `sink_transport`.
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders", "branches"]})
+        return httpx.Response(200, json={"dry_run": False, "summary": {}, "records": []})
+
+    return httpx.MockTransport(handler)
 
 
 # ── branch step then day loop, in order (AC-14-60) ──────────────────────────
@@ -87,12 +95,12 @@ def test_backfill_runs_the_branch_step_before_the_day_loop(session_factory):
 
     def vendor(request: httpx.Request) -> httpx.Response:
         call_order.append(request.url.path)
-        return httpx.Response(200, json=[] if request.url.path != "/branchbypage" else {"TotalCount": 0, "Page": 1, "PageSize": 1000, "TotalPages": 1, "Data": []})
+        return httpx.Response(200, json=[] if request.url.path != "/api/db1/branchbypage" else {"TotalCount": 0, "Page": 1, "PageSize": 1000, "TotalPages": 1, "Data": []})
 
     run_backfill(db, bf, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)), sink_transport=_ok_sink())
 
-    assert "/branchbypage" in call_order
-    assert call_order.index("/branchbypage") < call_order.index("/deliveryorderbydocdate")
+    assert "/api/db1/branchbypage" in call_order
+    assert call_order.index("/api/db1/branchbypage") < call_order.index("/api/db1/deliveryorderbydocdate")
     db.refresh(bf)
     assert bf.branch_step == "done"
 
@@ -129,12 +137,31 @@ def test_resume_starts_at_next_day_and_never_repeats_an_earlier_day(session_fact
         db, do_feed, from_day=date(2026, 9, 23), to_day=date(2026, 9, 29),
         next_day=date(2026, 9, 26), status="stopped",
     )
-    DocFeedService(db).resume_backfill(co.tenant_id, co.id, "delivery_orders")
-    db.refresh(bf)
-    assert bf.status == "running"
-
     seen: List[str] = []
-    run_backfill(db, bf, now=NOW, vendor_transport=_empty_vendor(seen), sink_transport=_ok_sink())
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/db1/deliveryorderbydocdate"
+        seen.append(request.url.params.get("DocDate"))
+        return httpx.Response(200, json=[])
+
+    def crm(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
+        return httpx.Response(200, json={"dry_run": False, "summary": {}, "records": []})
+
+    def combined(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "crm.example.test":
+            return crm(request)
+        return vendor(request)
+
+    # S10/regression fix (review round 1) - `resume_backfill`'s OWN job
+    # dispatch now runs the resumed backfill INLINE, under eager test
+    # settings, exactly like a real worker picking it straight back up (the
+    # `_dispatch`/`_split_transport` seam gives this ONE raw transport
+    # double duty for both the vendor door and the CRM contract probe/push).
+    DocFeedService(db).resume_backfill(
+        co.tenant_id, co.id, "delivery_orders", transport=httpx.MockTransport(combined),
+    )
 
     assert "20260923" not in seen and "20260924" not in seen and "20260925" not in seen
     assert sorted(seen) == ["20260926", "20260927", "20260928", "20260929"]
@@ -172,6 +199,85 @@ def test_discard_closes_a_stopped_backfill(session_factory):
     db.refresh(bf)
     assert bf.status == "done"
     assert bf.error_code == "DISCARDED"
+
+
+# ── B2 (review round 1) - orphan mid-run stops the loop, never DONE ─────────
+
+
+def test_a_job_failed_out_from_under_the_loop_stops_it_and_never_reaches_done(session_factory):
+    """The beat's own orphan sweep (a DIFFERENT session) can mark this
+    backfill's `job_id` FAILED between two days of the SAME loop; the
+    per-day fence (`_job_is_dead`) must stop pushing right there, and the
+    zombie loop's own end-of-loop bookkeeping must never promote the row
+    back to `done`."""
+    from app.models.background_job import JOB_FAILED
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    job = BackgroundJob(
+        tenant_id=co.tenant_id, type="autocount_doc_feed_backfill", status="running",
+    )
+    db.add(job)
+    db.commit()
+    bf = _backfill(
+        db, do_feed, from_day=date(2026, 9, 27), to_day=date(2026, 9, 29),
+    )
+    bf.job_id = job.id
+    db.commit()
+
+    seen: List[str] = []
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        day = request.url.params.get("DocDate")
+        seen.append(day)
+        if day == "20260928":
+            # Simulate the orphan sweep closing THIS job out from under the
+            # still-running loop, from a DIFFERENT session, right before
+            # the second day is processed.
+            other = session_factory()
+            row = other.query(BackgroundJob).filter(BackgroundJob.id == job.id).one()
+            row.status = JOB_FAILED
+            other.commit()
+            other.close()
+        return httpx.Response(200, json=[])
+
+    run_backfill(
+        db, bf, now=NOW,
+        vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)),
+        sink_transport=_ok_sink(),
+    )
+
+    db.refresh(bf)
+    assert bf.status == "stopped"
+    assert bf.error_code == "JOB_ORPHANED"
+    # The day AFTER the one that tripped the fence is never read.
+    assert "20260929" not in seen
+
+
+# ── B2 (review round 1) - Resume refused while the old job is still live ───
+
+
+def test_resume_is_refused_while_the_previous_job_is_still_live(session_factory):
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    job = BackgroundJob(
+        tenant_id=co.tenant_id, type="autocount_doc_feed_backfill", status="running",
+    )
+    db.add(job)
+    db.commit()
+    bf = _backfill(
+        db, do_feed, from_day=date(2026, 9, 27), to_day=date(2026, 9, 29), status="stopped",
+    )
+    bf.job_id = job.id
+    db.commit()
+
+    with pytest.raises(Exception) as exc_info:
+        DocFeedService(db).resume_backfill(co.tenant_id, co.id, "delivery_orders")
+    assert "BACKFILL_JOB_LIVE" in str(exc_info.value)
+    db.refresh(bf)
+    assert bf.status == "stopped"
 
 
 # ── run-once guard on the full-history range (AC-14-62) ─────────────────────
@@ -249,6 +355,27 @@ def test_a_live_backfill_needs_the_feed_in_push_mode(session_factory):
         )
 
 
+def test_resume_re_checks_the_feed_is_still_in_push_mode(session_factory):
+    """N2 (review round 1) - the SAME start-time rule Start applies is
+    re-checked at Resume: the feed may have left Push while the backfill
+    sat stopped."""
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn, mode="push")
+    bf = _backfill(
+        db, do_feed, from_day=date(2026, 9, 1), to_day=date(2026, 9, 10),
+        dry_run=False, status="stopped",
+    )
+    do_feed.mode = "dry_run"
+    db.commit()
+
+    with pytest.raises(Exception) as exc_info:
+        DocFeedService(db).resume_backfill(co.tenant_id, co.id, "delivery_orders")
+    assert "mode" in str(exc_info.value) or "Push" in str(exc_info.value)
+    db.refresh(bf)
+    assert bf.status == "stopped"
+
+
 def test_branches_has_no_backfill(session_factory):
     db = session_factory()
     co, ac_conn, _crm = wired_company(db)
@@ -278,10 +405,32 @@ def test_from_day_after_to_day_422s(session_factory):
         )
 
 
+def test_a_malformed_from_day_string_422s_not_500s(client, session_factory):
+    """S4 (review round 1) - a malformed ISO date is a Pydantic-level 422
+    (`DocFeedBackfillStartIn.fromDay: Optional[date]`), never a bare
+    `date.fromisoformat` `ValueError` escaping the router as an unhandled
+    500."""
+    from .s14_doc_feed_helpers import auth_headers
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    _feed(db, co, ac_conn)
+    headers = auth_headers(client)
+
+    response = client.post(
+        f"/autocount/doc-feeds/{co.id}/delivery_orders/backfill",
+        json={"dryRun": True, "fromDay": "2026-13-01"}, headers=headers,
+    )
+    assert response.status_code == 422, response.text
+
+
 # ── a failing day stops the backfill, resumable (AC-14-65) ─────────────────
 
 
-def test_a_day_that_cannot_be_read_stops_the_backfill_at_that_day(session_factory):
+def test_a_day_that_cannot_be_read_stops_the_backfill_at_that_day(session_factory, monkeypatch):
+    # S11 (review round 1) - the 500 is retried through the transport-error
+    # ladder (1s then 4s) before that day is given up on.
+    monkeypatch.setattr("time.sleep", lambda *_: None)
     db = session_factory()
     co, ac_conn, _crm = wired_company(db)
     do_feed = _feed(db, co, ac_conn)
@@ -311,6 +460,8 @@ def test_a_429_waits_up_to_ten_times_then_stops(session_factory, monkeypatch):
         return httpx.Response(200, json=[{"DocKey": 1, "DocNo": "DO-1", "DocDate": "2026-09-29", "LastModified": "2026-09-29T09:00:00.000", "Details": []}])
 
     def sink(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
         return httpx.Response(429, json={}, headers={"Retry-After": "1"})
 
     run_backfill(db, bf, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)), sink_transport=httpx.MockTransport(sink))
@@ -335,6 +486,8 @@ def test_dry_run_backfill_writes_no_ledger_or_cursor_state(session_factory):
         return httpx.Response(200, json=[{"DocKey": 99, "DocNo": "DO-99", "DocDate": "2026-09-27", "LastModified": "2026-09-27T09:00:00.000", "Details": []}])
 
     def sink(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
         assert "dry_run=true" in str(request.url)
         return httpx.Response(200, json={"dry_run": True, "summary": {"created": 1}, "records": [{"source_ref": "db1:DO:99", "outcome": "created", "entity_id": "x"}]})
 

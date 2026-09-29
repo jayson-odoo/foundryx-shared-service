@@ -178,6 +178,31 @@ def test_a_feed_of_a_suspended_tenant_is_never_swept(session_factory):
     assert _jobs_for(db, feed.id) == []
 
 
+# ── N2 (review round 1) - a feed switched Off between claim and dispatch ───
+
+
+def test_a_run_job_for_a_feed_switched_off_before_dispatch_is_a_no_op(session_factory):
+    from modules.autocount.doc_feed.jobs import run_doc_feed_job
+    from modules.autocount.models import AcDocFeedRun
+    from app.models.background_job import JOB_DONE
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn, mode="off")
+    job = BackgroundJob(
+        tenant_id=co.tenant_id, type="autocount_doc_feed_run", status="running",
+        payload_json={"feedId": feed.id, "kind": "poll"},
+    )
+    db.add(job)
+    db.commit()
+
+    run_doc_feed_job(db, job)
+
+    db.refresh(job)
+    assert job.status == JOB_DONE
+    assert db.query(AcDocFeedRun).filter(AcDocFeedRun.feed_id == feed.id).count() == 0
+
+
 # ── job handler registration (AC-14-83) ─────────────────────────────────────
 
 
@@ -211,8 +236,13 @@ def test_both_doc_feed_job_types_are_registered_on_worker_boot():
 
 
 def test_orphan_hook_fails_an_open_feed_run_as_interrupted(session_factory):
+    """B3 (review round 1) - the run row is created through the REAL
+    production path (``runner._new_run``, which now sets ``job_id`` and
+    commits at creation) rather than a hand-built ``AcDocFeedRun`` that
+    would pass even if ``run_poll`` itself never threaded a job id at all."""
     from modules.autocount.bootstrap import on_job_orphaned
-    from modules.autocount.models import AcDocFeedRun
+    from modules.autocount.doc_feed.constants import RUN_KIND_POLL
+    from modules.autocount.doc_feed.runner import _new_run
 
     db = session_factory()
     co, ac_conn, _crm = wired_company(db)
@@ -222,13 +252,8 @@ def test_orphan_hook_fails_an_open_feed_run_as_interrupted(session_factory):
         payload_json={"feedId": feed.id, "kind": "poll"},
     )
     db.add(job)
-    db.flush()
-    run = AcDocFeedRun(
-        tenant_id=co.tenant_id, company_id=co.id, feed_id=feed.id, feed="delivery_orders",
-        kind="poll", dry_run=False, job_id=job.id, started_at=NOW,
-    )
-    db.add(run)
     db.commit()
+    run = _new_run(db, feed, kind=RUN_KIND_POLL, dry_run=False, now=NOW, job_id=job.id)
 
     on_job_orphaned(db, job, now=NOW + timedelta(minutes=5))
     db.commit()

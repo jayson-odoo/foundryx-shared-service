@@ -53,9 +53,23 @@ def _latest_run(db, feed) -> AcDocFeedRun:
     )
 
 
+def _contract_first(handler):
+    """S1 (review round 1) - the run-time contract gate now probes through
+    the SAME `sink_transport` the push itself uses; every stubbed CRM
+    handler in this file answers `/api/v1/external/contract` with a
+    passing 2.7 contract FIRST, then falls through to its own handler."""
+
+    def wrapped(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
+        return handler(request)
+
+    return wrapped
+
+
 def _vendor_by_day(seen_by_day: Dict[str, List[int]]) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/deliveryorderbydocdate"
+        assert request.url.path == "/api/db1/deliveryorderbydocdate"
         day = request.url.params.get("DocDate")
         keys = seen_by_day.get(day, [])
         return httpx.Response(
@@ -80,11 +94,11 @@ def test_sweep_gets_bydocdate_for_all_45_myt_days(session_factory):
     seen_days: Set[str] = set()
 
     def vendor(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/deliveryorderbydocdate"
+        assert request.url.path == "/api/db1/deliveryorderbydocdate"
         seen_days.add(request.url.params.get("DocDate"))
         return httpx.Response(200, json=[])
 
-    run_sweep(db, feed, dry_run=False, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)), sink_transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    run_sweep(db, feed, dry_run=False, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)), sink_transport=httpx.MockTransport(_contract_first(lambda r: httpx.Response(200, json={}))))
 
     assert len(seen_days) == 45
     assert min(seen_days) == WINDOW_FROM.strftime("%Y%m%d")
@@ -112,7 +126,7 @@ def test_a_dockey_seen_on_a_different_day_in_the_window_is_not_vanished(session_
     run_sweep(
         db, feed, dry_run=False, now=NOW,
         vendor_transport=_vendor_by_day({moved_day: [111]}),
-        sink_transport=httpx.MockTransport(sink),
+        sink_transport=httpx.MockTransport(_contract_first(sink)),
     )
     assert 111 not in posted_keys
 
@@ -120,7 +134,10 @@ def test_a_dockey_seen_on_a_different_day_in_the_window_is_not_vanished(session_
 # ── one failed day -> no POST, sweep stays due (AC-14-52) ──────────────────
 
 
-def test_one_failed_day_fails_the_sweep_and_posts_no_deletions(session_factory):
+def test_one_failed_day_fails_the_sweep_and_posts_no_deletions(session_factory, monkeypatch):
+    # S11 (review round 1) - the 500 is retried through the transport-error
+    # ladder (1s then 4s) before the day itself is given up on.
+    monkeypatch.setattr("time.sleep", lambda *_: None)
     db = session_factory()
     co, ac_conn, _crm = wired_company(db)
     feed = _feed(db, co, ac_conn)
@@ -136,7 +153,7 @@ def test_one_failed_day_fails_the_sweep_and_posts_no_deletions(session_factory):
     run_sweep(
         db, feed, dry_run=False, now=NOW,
         vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)),
-        sink_transport=httpx.MockTransport(lambda r: posted.append(1) or httpx.Response(200, json={})),
+        sink_transport=httpx.MockTransport(_contract_first(lambda r: posted.append(1) or httpx.Response(200, json={}))),
     )
     run = _latest_run(db, feed)
     assert run.outcome == "FAILED"
@@ -159,7 +176,7 @@ def test_the_delete_guard_trips_at_51_of_100_window_ledger_rows(session_factory)
     run_sweep(
         db, feed, dry_run=False, now=NOW,
         vendor_transport=_vendor_by_day({WINDOW_FROM.strftime("%Y%m%d"): seen_keys}),
-        sink_transport=httpx.MockTransport(lambda r: posted.append(1) or httpx.Response(200, json={})),
+        sink_transport=httpx.MockTransport(_contract_first(lambda r: posted.append(1) or httpx.Response(200, json={}))),
     )
     run = _latest_run(db, feed)
     assert run.outcome == "FAILED"
@@ -194,7 +211,7 @@ def test_deactivated_and_not_found_set_vanished_at(session_factory):
     run_sweep(
         db, feed, dry_run=False, now=NOW,
         vendor_transport=_vendor_by_day({}),
-        sink_transport=httpx.MockTransport(sink),
+        sink_transport=httpx.MockTransport(_contract_first(sink)),
     )
     rows = {r.doc_key: r for r in db.query(AcDocFeedLedger).filter(AcDocFeedLedger.company_id == co.id).all()}
     assert rows[333].vanished_at is not None
@@ -217,7 +234,7 @@ def test_a_per_key_failed_verdict_is_counted_and_the_ledger_row_untouched(sessio
             },
         )
 
-    run_sweep(db, feed, dry_run=False, now=NOW, vendor_transport=_vendor_by_day({}), sink_transport=httpx.MockTransport(sink))
+    run_sweep(db, feed, dry_run=False, now=NOW, vendor_transport=_vendor_by_day({}), sink_transport=httpx.MockTransport(_contract_first(sink)))
     run = _latest_run(db, feed)
     assert run.summary_json.get("failed", 0) >= 1
     row = db.query(AcDocFeedLedger).filter(AcDocFeedLedger.doc_key == 335, AcDocFeedLedger.company_id == co.id).one()
@@ -242,7 +259,7 @@ def test_dry_run_sweep_writes_no_vanished_at(session_factory):
                   "records": [{"source_ref": "db1:DO:336", "outcome": "deactivated", "entity_id": "x"}]},
         )
 
-    run_sweep(db, feed, dry_run=True, now=NOW, vendor_transport=_vendor_by_day({}), sink_transport=httpx.MockTransport(sink))
+    run_sweep(db, feed, dry_run=True, now=NOW, vendor_transport=_vendor_by_day({}), sink_transport=httpx.MockTransport(_contract_first(sink)))
     row = db.query(AcDocFeedLedger).filter(AcDocFeedLedger.doc_key == 336, AcDocFeedLedger.company_id == co.id).one()
     assert row.vanished_at is None
 

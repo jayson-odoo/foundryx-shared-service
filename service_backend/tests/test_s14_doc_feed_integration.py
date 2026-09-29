@@ -21,7 +21,7 @@ import pytest
 from modules.autocount.doc_feed.runner import run_backfill, run_poll, run_sweep
 from modules.autocount.models import AcDocFeed, AcDocFeedBackfill, AcDocFeedLedger, AcDocFeedIssue
 
-from .s14_doc_feed_helpers import auth_headers, wired_company
+from .s14_doc_feed_helpers import auth_headers, autocount_connection, company, sorento_connection, wired_company
 
 NOW = datetime(2026, 9, 29, 10, 0, 0, tzinfo=timezone.utc)
 TODAY_MYT = date(2026, 9, 29)
@@ -38,7 +38,10 @@ class _Router:
 
     def vendor_day(self, path: str):
         def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == path
+            # B1 (review round 1) - the vendor client is now built from the
+            # connection's FULL base URL (`.../api/db1`), so every door path
+            # the run actually requests carries that book prefix.
+            assert request.url.path == f"/api/db1{path}"
             day = request.url.params.get("lastModified") or request.url.params.get("DocDate")
             keys = self.ledger_keys.get(day, [])
             return httpx.Response(
@@ -57,6 +60,18 @@ class _Router:
         return handler
 
     def crm(self, request: httpx.Request) -> httpx.Response:
+        # S1 (review round 1) - the run-time contract gate now probes
+        # through the SAME injected `sink_transport` the push itself uses;
+        # every stubbed CRM in this file (and the combined route-level
+        # dispatcher below) must answer it with a passing 2.7 contract.
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(
+                200,
+                json={
+                    "version": "2.7",
+                    "entities": ["delivery_orders", "goods_receive_notes", "branches"],
+                },
+            )
         payload = json.loads(request.content.decode("utf-8"))
         if "deletions" in request.url.path:
             keys = payload.get("doc_keys") or []
@@ -82,6 +97,20 @@ class _Router:
                 ],
             },
         )
+
+    def combined(self, vendor_path: str):
+        """S10 (review round 1) - a single handler dispatching by HOST so
+        `get_http_transport`'s ONE route-level override can serve both the
+        vendor client and the CRM sink (`jobs.py`'s own `_split_transport`
+        translation makes the same raw transport do double duty)."""
+        vendor_handler = self.vendor_day(vendor_path)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "crm.example.test":
+                return self.crm(request)
+            return vendor_handler(request)
+
+        return handler
 
 
 def _feed(db, company, ac_conn) -> AcDocFeed:
@@ -113,6 +142,82 @@ def test_a_live_poll_writes_ledger_issues_and_advances_the_cursor(session_factor
     ledger = db.query(AcDocFeedLedger).filter(AcDocFeedLedger.company_id == co.id, AcDocFeedLedger.doc_key == 900901).first()
     assert ledger is not None
     assert ledger.vanished_at is None
+
+
+def test_a_db2_connection_hits_the_db2_prefixed_door_and_pushes_book_db2(session_factory):
+    """B1 (review round 1) - the vendor client is built from the
+    connection's OWN full base URL, so a SECOND book on the SAME host
+    requests a DIFFERENT path (never the bare host) and is pushed tagged
+    with ITS OWN book, never `db1`'s."""
+    db = session_factory()
+    ac_conn = autocount_connection(
+        db, base_url="https://hapi.sorento.cc.cd/api/db2", name="db2 open API",
+    )
+    crm_conn = sorento_connection(db)
+    co = company(db, sink_connection=crm_conn, ac_connection=ac_conn)
+    feed = AcDocFeed(
+        tenant_id=co.tenant_id, company_id=co.id, feed="delivery_orders",
+        connection_id=ac_conn.id, book="db2", mode="push", cursor_day=None,
+    )
+    db.add(feed)
+    db.commit()
+
+    posted_refs: List[str] = []
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/db2/deliveryorderbyLastModified"
+        day = request.url.params.get("lastModified")
+        if day != "20260929":
+            return httpx.Response(200, json=[])
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "DocKey": 900902, "DocNo": "DO-900902", "DocDate": "2026-09-29T00:00:00",
+                    "LastModified": "2026-09-29T09:00:00.000", "Details": [],
+                }
+            ],
+        )
+
+    def crm(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(
+                200,
+                json={
+                    "version": "2.7",
+                    "entities": ["delivery_orders", "goods_receive_notes", "branches"],
+                },
+            )
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload.get("book") == "db2"
+        recs = payload.get("records") or []
+        for r in recs:
+            posted_refs.append(f"db2:DO:{r.get('DocKey')}")
+        return httpx.Response(
+            200,
+            json={
+                "dry_run": False, "summary": {"created": len(recs)},
+                "records": [
+                    {"source_ref": f"db2:DO:{r.get('DocKey')}", "outcome": "created", "entity_id": "x"}
+                    for r in recs
+                ],
+            },
+        )
+
+    run_poll(
+        db, feed, dry_run=False, now=NOW,
+        vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)),
+        sink_transport=httpx.MockTransport(crm),
+    )
+
+    assert posted_refs == ["db2:DO:900902"]
+    ledger = (
+        db.query(AcDocFeedLedger)
+        .filter(AcDocFeedLedger.company_id == co.id, AcDocFeedLedger.doc_key == 900902)
+        .first()
+    )
+    assert ledger is not None
+    assert ledger.book == "db2"
 
 
 def test_a_three_day_live_backfill_writes_ledger_rows(session_factory):
@@ -203,8 +308,13 @@ def test_route_level_run_now_dispatches_through_get_http_transport(client, sessi
     db.commit()
 
     router = _Router()
-    stub_client = httpx.Client(transport=httpx.MockTransport(router.vendor_day("/deliveryorderbyLastModified")))
-    app.dependency_overrides[get_http_transport] = lambda: stub_client
+    # S10 (review round 1) - a RAW transport (never wrapped in a Client):
+    # `jobs.py`'s `_split_transport` builds the vendor `Client` itself and
+    # hands the SAME object to the CRM sink as-is, so ONE override answers
+    # both the vendor door AND the `/contract` probe the run-time gate (S1)
+    # now makes before it ever reads a day.
+    stub_transport = httpx.MockTransport(router.combined("/deliveryorderbyLastModified"))
+    app.dependency_overrides[get_http_transport] = lambda: stub_transport
     try:
         headers = auth_headers(client)
         response = client.post(
@@ -214,3 +324,16 @@ def test_route_level_run_now_dispatches_through_get_http_transport(client, sessi
         assert response.status_code == 202, response.text
     finally:
         app.dependency_overrides.pop(get_http_transport, None)
+
+    from modules.autocount.models import AcDocFeedRun
+
+    run = (
+        db.query(AcDocFeedRun)
+        .filter(AcDocFeedRun.feed_id == feed_row.id)
+        .order_by(AcDocFeedRun.started_at.desc())
+        .first()
+    )
+    assert run is not None, "the route-level dispatch never even created a run row"
+    assert run.outcome == "SUCCESS", run.error
+    assert run.job_id is not None, "B3 - every run row must carry its own job id"
+    assert run.dry_run is True

@@ -141,7 +141,7 @@ def test_put_with_an_unknown_connection_id_422s_and_stores_nothing(client, sessi
     payload = {"mode": "off", "connectionId": bad_connection_id}
     response = client.put(f"/autocount/doc-feeds/{co.id}/delivery_orders", json=payload, headers=headers)
     assert response.status_code == 422, response.text
-    assert "connectionId" in response.json().get("fieldErrors", response.json().get("detail", {}))
+    assert "connectionId" in response.json()["detail"]["fieldErrors"]
 
 
 def test_put_with_a_basic_auth_connection_422s_field_error(client, session_factory):
@@ -201,7 +201,7 @@ def test_push_mode_422s_when_the_company_has_no_sorento_sink(client, session_fac
         headers=headers,
     )
     assert response.status_code == 422, response.text
-    assert "mode" in response.json().get("fieldErrors", response.json().get("detail", {}))
+    assert "mode" in response.json()["detail"]["fieldErrors"]
 
 
 def test_push_mode_422s_when_the_sorento_company_code_is_blank(client, session_factory, monkeypatch):
@@ -238,7 +238,7 @@ def test_push_mode_422s_when_the_crm_contract_is_below_2_7(client, session_facto
     )
     assert response.status_code == 422, response.text
     body = response.json()
-    assert "mode" in body.get("fieldErrors", body.get("detail", {}))
+    assert "mode" in body["detail"]["fieldErrors"]
 
 
 def test_push_mode_422s_when_the_crm_contract_omits_the_entity_name(client, session_factory, monkeypatch):

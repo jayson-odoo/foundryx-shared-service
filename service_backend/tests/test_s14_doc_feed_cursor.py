@@ -46,7 +46,7 @@ def _empty_vendor_transport(seen_days: List[str]) -> httpx.MockTransport:
     actually read."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/deliveryorderbyLastModified"
+        assert request.url.path == "/api/db1/deliveryorderbyLastModified"
         seen_days.append(request.url.params.get("lastModified"))
         return httpx.Response(200, json=[])
 
@@ -55,7 +55,7 @@ def _empty_vendor_transport(seen_days: List[str]) -> httpx.MockTransport:
 
 def _failing_vendor_transport(*, fail_on_day: str) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/deliveryorderbyLastModified"
+        assert request.url.path == "/api/db1/deliveryorderbyLastModified"
         if request.url.params.get("lastModified") == fail_on_day:
             return httpx.Response(200, text="not json at all")
         return httpx.Response(200, json=[])
@@ -65,7 +65,7 @@ def _failing_vendor_transport(*, fail_on_day: str) -> httpx.MockTransport:
 
 def _one_record_vendor_transport(day: str) -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/deliveryorderbyLastModified"
+        assert request.url.path == "/api/db1/deliveryorderbyLastModified"
         if request.url.params.get("lastModified") == day:
             return httpx.Response(
                 200,
@@ -87,6 +87,10 @@ def _one_record_vendor_transport(day: str) -> httpx.MockTransport:
 def _ok_sink_transport(outcome: str = "created") -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.host == "crm.example.test"
+        # S1 (review round 1) - the run-time contract gate now probes
+        # through this SAME `sink_transport`.
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
         import json as _json
 
         payload = _json.loads(request.content.decode("utf-8"))
@@ -109,6 +113,8 @@ def _ok_sink_transport(outcome: str = "created") -> httpx.MockTransport:
 
 def _failing_sink_transport() -> httpx.MockTransport:
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
         return httpx.Response(500, json={"message": "boom"})
 
     return httpx.MockTransport(handler)
