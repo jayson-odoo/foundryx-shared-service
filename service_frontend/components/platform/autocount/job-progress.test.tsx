@@ -84,3 +84,19 @@ describe('JobProgress (AC-11-27/43)', () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+describe('JobProgress unit prop (sprint-5/14 D17, AC-14-93)', () => {
+  it('defaults to "pages" - every existing call site is unchanged', () => {
+    render(<JobProgress status="running" stage="source" pagesDone={3} pagesTotal={12} />);
+    expect(screen.getByTestId('job-progress-label')).toHaveTextContent('page 3 of 12');
+  });
+
+  it('renders "day N of M" when unit="days" (the backfill dialog)', () => {
+    render(
+      <JobProgress status="running" stage={null} pagesDone={4} pagesTotal={1368} unit="days" />,
+    );
+    const label = screen.getByTestId('job-progress-label');
+    expect(label).toHaveTextContent('day 4 of 1368');
+    expect(label).not.toHaveTextContent('page 4 of 1368');
+  });
+});
