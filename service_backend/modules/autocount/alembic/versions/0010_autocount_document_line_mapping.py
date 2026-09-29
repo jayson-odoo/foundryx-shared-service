@@ -25,11 +25,11 @@ would SELECT ``delivery_mode`` (0020) / ``preview_job_id`` (0022) that do not
 exist yet at this stamp), and the ``AcFieldMapping`` ORM insert stays safe
 because every ``ac_field_mapping`` column already existed at 0005
 (``scope`` since 0002) and ``line_result_columns`` is added by THIS SAME
-migration, above, before the backfill runs. The backfill only ``flush()``es (never `commit()`s) on a
-``Session(bind=op.get_bind())`` sharing Alembic's own transaction/connection,
-so Alembic's transaction still owns the single commit at the end - the
-storage-migration lesson (a migration must never commit Alembic's own
-connection) is honoured.
+migration, above, before the backfill runs. The backfill only ``flush()``es
+(never `commit()`s) on a ``Session(bind=op.get_bind())`` sharing Alembic's own
+transaction/connection, so Alembic's transaction still owns the single commit
+at the end - the storage-migration lesson (a migration must never commit
+Alembic's own connection) is honoured.
 
 Revision ID: 0010_autocount_doc_lines   (24 chars <= 32)
 Revises: 0009_autocount_s5_review

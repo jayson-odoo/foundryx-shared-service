@@ -6,7 +6,7 @@ Verified facts (the bug):
   calls ``backfill_document_line_mapping_pickers(session, tenant_id,
   company_id, entity_type)`` for every document-entity ``ac_entity_config`` row,
   on a ``Session(bind=op.get_bind())``.
-- ``modules/autocount/backfill.py:450-457`` does ``db.query(AcEntityConfig)...
+- ``backfill_document_line_mapping_pickers`` (``modules/autocount/backfill.py``) does ``db.query(AcEntityConfig)...
   one_or_none()`` on the LIVE ORM model. That model
   (``modules/autocount/models.py:239`` ``delivery_mode``, ``:298``
   ``preview_job_id``) carries columns that only arrive in LATER migrations
@@ -16,7 +16,7 @@ Verified facts (the bug):
   ac_entity_config.delivery_mode``) and the migration fails.
 - 0011 (``0011_autocount_doc_line_fixed_fields.py:64``) calls the same function;
   0012 (``0012_autocount_disable_stale_line_rows.py:62``) calls
-  ``disable_line_rows_missing_from_preview`` (``backfill.py:539-557``) with the
+  ``disable_line_rows_missing_from_preview`` (``backfill.py``) with the
   identical ``db.query(AcEntityConfig)`` pattern.
 
 Module Alembic never runs under pytest, so (per the ``backfill.py`` docstring)
@@ -37,6 +37,7 @@ from modules.autocount.backfill import (
     disable_line_rows_missing_from_preview,
 )
 from modules.autocount.mapping import DOCUMENT_LINE_FIXED_FIELDS
+from modules.autocount.models import AcFieldMapping
 
 _PICKER_KEYS = ("lineKeyColumn", "lineProductColumn", "lineWarehouseColumn")
 
@@ -247,3 +248,20 @@ def test_disable_line_rows_missing_from_preview_runs_on_a_0011_shaped_config_tab
     session.commit()
     session.close()
     assert _line_rows(engine) == rows
+
+
+def test_ac_field_mapping_model_still_matches_the_0005_column_set():
+    """Tripwire: ac_field_mapping = 0002 baseline + ``formula`` (0005)."""
+    expected = {
+        "id", "tenant_id", "company_id", "entity_type", "scope", "source_path",
+        "canonical_field", "transform", "formula", "is_required", "is_enabled",
+        "is_source_owned", "sort_order", "created_at", "updated_at",
+    }
+    actual = {c.name for c in AcFieldMapping.__table__.columns}
+    assert actual == expected, (
+        "backfill_document_line_mapping_pickers (ORM AcFieldMapping(...) insert) and "
+        "disable_line_rows_missing_from_preview (db.query(AcFieldMapping)) run under "
+        "migrations 0010/0011/0012 at a stamp where only these columns exist; a new "
+        "ac_field_mapping column means those accesses must become column-only / "
+        f"frozen sa.table first. Diff: {sorted(actual ^ expected)}"
+    )

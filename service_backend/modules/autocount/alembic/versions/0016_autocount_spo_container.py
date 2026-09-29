@@ -40,9 +40,10 @@ Sorento does not yet accept ``container_number`` on shipping_orders ingest,
 change log for the proof this was checked before shipping.
 
     !!  FROZEN ``sa.table`` BACKFILL - NEVER THE LIVE ORM MODEL.  !!
-Unlike 0010's ``backfill_document_line_mapping_pickers`` (safe there only
-because every column it touches was guaranteed to exist by migration
-order - see that migration's own docstring), this one runs from module
+Unlike 0010's ``backfill_document_line_mapping_pickers`` (whose config
+read/write is column-only - id/source_config/line_result_columns - and whose
+``AcFieldMapping`` insert relies on every ``ac_field_mapping`` column having
+existed since 0005 - see that migration's own docstring), this one runs from module
 Alembic 0016 and must survive a FUTURE migration adding columns to
 ``ac_entity_config``/``ac_company``/``ac_field_mapping`` on a fresh
 ``0001`` -> head replay. ``backfill_shipping_order_container_number``
