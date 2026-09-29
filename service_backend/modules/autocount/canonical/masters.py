@@ -508,3 +508,11 @@ MASTER_ENTITIES: List[str] = [
 # stages or pushes a delete (the CRM has no deletions door for them, and other
 # documents reference their rows): a vanished row is only COUNTED.
 NO_DELETION_ENTITY_TYPES = frozenset({ENTITY_BRANCH})
+
+# sprint-5/14 section 11 (round 3, S1) - the branch identity pair is LOCKED to
+# its vendor columns: the CRM derives its verdict `source_ref` from the BODY's
+# `AccNo` / `BranchCode` (the MAPPED values), while the ETL mints the ref it
+# matches verdicts by from the RAW row. A tenant repointing or formula-ing
+# either row would break every verdict match forever, so the mapping save
+# refuses it. {canonical field: the only source column it may read}.
+LOCKED_MAPPING_SOURCES = {ENTITY_BRANCH: {"acc_no": "AccNo", "code": "BranchCode"}}

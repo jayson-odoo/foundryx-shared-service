@@ -35,6 +35,7 @@ from ..activity import (
     record_client_calls,
 )
 from ..client import AutoCountClient, AutoCountError
+from ..canonical.masters import LOCKED_MAPPING_SOURCES
 from ..http_source.book import derive_book, identity_scope
 from ..http_source.lookups import effective_result_columns
 from ..mapping import (
@@ -937,19 +938,38 @@ class CompanyService:
     def _book_kwargs(
         self, tenant_id: str, company: AcCompany, entity_type: str
     ) -> Dict[str, Any]:
-        """``{"book": <book>}`` of the company's own open ``autocount``
-        connection for the ``branch`` entity when it resolves, else ``{}`` (so
-        every other entity's sink construction is unchanged). Tenant- AND
-        provider-scoped."""
+        """``{"book": <book>}`` for the ``branch`` entity, ``{}`` for every
+        other entity (their sink construction and bodies are unchanged).
+
+        The book is derived from the SAME place the branch ``source_ref`` gets
+        it (``identity_scope``: the TASK's own HTTP connection), so the body's
+        `book` and the refs the verdicts are matched by can never disagree -
+        including a DB company whose Branch task reads an HTTP connection, and
+        an http company whose branch task points at another book. Only a task
+        that has no connection yet (never saved) falls back to the company's
+        own open connection. FAIL CLOSED: no derivable book raises a named
+        error instead of posting a body the CRM 422s for the whole batch."""
         if entity_type != ENTITY_BRANCH:
             return {}
-        conn = self.connections.get_for_provider(
-            tenant_id, company.connection_id or "", PROVIDER_KEY
+        config = self.configs.get(tenant_id, company.id, ENTITY_BRANCH)
+        source_config = config.source_config if config is not None else None
+        book = identity_scope(self.db, tenant_id, company, ENTITY_BRANCH, source_config)
+        task_has_connection = bool(
+            str((source_config or {}).get("connectionId") or "").strip()
         )
-        if conn is None:
-            return {}
-        book = derive_book(str((conn.config_json or {}).get("baseUrl") or ""))
-        return {"book": book} if book else {}
+        if not book and not task_has_connection:
+            conn = self.connections.get_for_provider(
+                tenant_id, company.connection_id or "", PROVIDER_KEY
+            )
+            if conn is not None:
+                book = derive_book(str((conn.config_json or {}).get("baseUrl") or "")) or ""
+        if not book:
+            raise AutocountServiceError(
+                "The Branch task's AutoCount connection has no book (its base URL "
+                "must end in a book such as /api/db1), so branches cannot be "
+                "delivered to Sorento."
+            )
+        return {"book": book}
 
     def brand_contract_gate(
         self, tenant_id: str, company: AcCompany
@@ -2255,6 +2275,17 @@ class CompanyService:
                     f"'{row.transform}' is not a known transform."
                 )
             target = row.sorento_field
+            locked_source = LOCKED_MAPPING_SOURCES.get(entity_type, {}).get(target)
+            if locked_source is not None and (
+                source_path != locked_source
+                or row.transform != "string"
+                or (row.formula or "").strip()
+                or not row.is_enabled
+            ):
+                raise AutocountServiceError(
+                    f"The Sorento field '{target}' is fixed to the AutoCount field "
+                    f"'{locked_source}' as plain text and cannot be changed."
+                )
             if target not in accepted:
                 raise AutocountServiceError(
                     f"'{target}' is not a Sorento field accepted for "

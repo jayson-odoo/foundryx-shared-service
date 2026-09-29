@@ -563,6 +563,10 @@ def test_ac_14_44_supports_branch_false_below_2_7_and_true_at_2_7_with_branches(
     assert sorento_supports_entity(
         ENTITY_BRANCH, contract_version=2.6, contract_entities=["suppliers", "delivery_orders"]
     ) is False
+    # The version boundary by behaviour: 2.6 is refused even when it lists `branches`.
+    assert sorento_supports_entity(
+        ENTITY_BRANCH, contract_version=2.6, contract_entities=["branches"]
+    ) is False
     assert sorento_supports_entity(
         ENTITY_BRANCH, contract_version=2.7, contract_entities=["suppliers", "delivery_orders", "branches"]
     ) is True
@@ -832,3 +836,127 @@ def test_ac_14_41_presets_route_offers_the_branch_preset(client, db):
     assert len(body) == 1, body
     assert body[0]["path"] == "/branchbypage"
     assert body[0]["keyFields"] == ["AccNo", "BranchCode"]
+
+
+# ═══ review round 3 ═════════════════════════════════════════════════════════
+
+
+def _sql_connection(db) -> Connection:
+    conn = Connection(
+        tenant_id=DEFAULT_TENANT_ID, provider="sql_database", type="database", name="AED SQL",
+        config_json={}, credentials_json=None, is_active=True,
+    )
+    db.add(conn)
+    db.commit()
+    db.refresh(conn)
+    return conn
+
+
+def _sink_body_for(db, monkeypatch, company):
+    from modules.autocount.canonical.masters import ENTITY_BRANCH
+    from modules.autocount.services.company_service import CompanyService
+
+    _open_contract(monkeypatch)
+    calls: List[httpx.Request] = []
+    _inject_sink_transport(monkeypatch, _echo_ingest_handler(calls))
+    sink = CompanyService(db).sink_for_company(DEFAULT_TENANT_ID, company, ENTITY_BRANCH)
+    sink.write_batch([_branch()], request_id="r1")
+    return json.loads(calls[0].content.decode("utf-8"))
+
+
+def test_b1_a_db_company_with_an_http_branch_task_posts_the_task_connections_book(db, monkeypatch):
+    """Scenario A (production shape): the company's own connection is SQL (no
+    book); the Branch task reads hapi db1. The body must still carry book db1."""
+    from modules.autocount.canonical.masters import ENTITY_BRANCH
+    from modules.autocount.services.etl_service import EtlService
+
+    http = _vendor_connection(db)
+    company = _company(db, _sql_connection(db), sorento_conn=_sorento_connection(db))
+    EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_BRANCH, _branch_raw(http.id))
+    assert _sink_body_for(db, monkeypatch, company)["book"] == "db1"
+
+
+def test_b1_the_body_book_is_the_task_connections_even_when_the_company_is_on_another_book(db, monkeypatch):
+    """Scenario B: an http company on db2 whose branch task points at db1. The
+    body's book and the ref's book both come from the TASK connection."""
+    from modules.autocount.canonical.masters import ENTITY_BRANCH
+    from modules.autocount.services.etl_service import EtlService
+
+    db2 = _vendor_connection(db, base_url="https://hapi.sorento.cc.cd/api/db2")
+    task_conn = _vendor_connection(db)  # db1
+    company = _company(db, db2, sorento_conn=_sorento_connection(db))
+    EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_BRANCH, _branch_raw(task_conn.id))
+    assert _sink_body_for(db, monkeypatch, company)["book"] == "db1"
+
+
+def test_b1_no_derivable_book_fails_closed_with_a_named_error_and_posts_nothing(db, monkeypatch):
+    from modules.autocount.canonical.masters import ENTITY_BRANCH
+    from modules.autocount.services.company_service import AutocountServiceError, CompanyService
+    from modules.autocount.services.etl_service import EtlService
+
+    bookless = _vendor_connection(db, base_url="https://hapi.sorento.cc.cd")
+    company = _company(db, bookless, sorento_conn=_sorento_connection(db))
+    EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_BRANCH, _branch_raw(bookless.id))
+    _open_contract(monkeypatch)
+    calls: List[httpx.Request] = []
+    _inject_sink_transport(monkeypatch, _echo_ingest_handler(calls))
+
+    with pytest.raises(AutocountServiceError) as exc_info:
+        CompanyService(db).sink_for_company(DEFAULT_TENANT_ID, company, ENTITY_BRANCH)
+    assert "book" in str(exc_info.value)
+    assert calls == []
+
+
+# ── S1: the identity pair rows are locked to AccNo / BranchCode ─────────────
+
+
+def _branch_company_with_task(db):
+    from modules.autocount.canonical.masters import ENTITY_BRANCH
+    from modules.autocount.services.etl_service import EtlService
+
+    vendor = _vendor_connection(db)
+    company = _company(db, vendor)
+    EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_BRANCH, _branch_raw(vendor.id))
+    return company
+
+
+@pytest.mark.parametrize(
+    "code_row",
+    [
+        ("Address1", "string", None),  # repointed source column
+        ("BranchCode", "int", None),  # a different transform
+        ("BranchCode", "string", "upper(BranchCode)"),  # a formula
+    ],
+)
+def test_s1_changing_the_code_row_is_refused(db, code_row):
+    from modules.autocount.canonical.masters import ENTITY_BRANCH
+    from modules.autocount.services.company_service import AutocountServiceError, CompanyService, MappingWriteRow
+
+    company = _branch_company_with_task(db)
+    source, transform, formula = code_row
+    with pytest.raises(AutocountServiceError) as exc_info:
+        CompanyService(db).replace_mapping(
+            DEFAULT_TENANT_ID, company.id, ENTITY_BRANCH,
+            [
+                MappingWriteRow("AccNo", "string", "acc_no"),
+                MappingWriteRow(source, transform, "code", formula=formula),
+                MappingWriteRow("BranchName", "string", "name"),
+            ],
+        )
+    assert "BranchCode" in str(exc_info.value)
+
+
+def test_s1_the_name_row_stays_freely_mappable(db):
+    from modules.autocount.canonical.masters import ENTITY_BRANCH
+    from modules.autocount.services.company_service import CompanyService, MappingWriteRow
+
+    company = _branch_company_with_task(db)
+    view = CompanyService(db).replace_mapping(
+        DEFAULT_TENANT_ID, company.id, ENTITY_BRANCH,
+        [
+            MappingWriteRow("AccNo", "string", "acc_no"),
+            MappingWriteRow("BranchCode", "string", "code"),
+            MappingWriteRow("Address1", "string", "name"),
+        ],
+    )
+    assert {r.source_path for r in view.rows} >= {"Address1"}

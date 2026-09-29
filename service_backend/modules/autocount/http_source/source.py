@@ -1180,6 +1180,9 @@ class HttpApiSource:
                 # sprint-5/14 section 11 (D27) - a vanished row is COUNTED,
                 # never staged or pushed as a delete (the CRM has no deletions
                 # door for it), so the delete guard has nothing to guard.
+                # `vanished` means "known but absent from this full extract":
+                # it is recounted on every full run (the CRM keeps the row and
+                # nothing is stamped), never a running total of new losses.
                 vanished_count = len(delete_refs)
                 delete_refs = []
             threshold = max(DELETE_GUARD_RATIO * len(known), DELETE_GUARD_MIN_ABSOLUTE)

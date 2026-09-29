@@ -21,6 +21,7 @@ from ..models import DOC_FEED_MODE_OFF, AcCompany, AcDocFeed
 from ..repositories.doc_feed_repository import DocFeedRepository
 from ..scheduler import active_tenant_service_join
 from .constants import (
+    ALL_FEEDS,
     DOC_FEED_RUN_JOB_TYPE,
     RUN_KIND_POLL,
     RUN_KIND_SWEEP,
@@ -46,6 +47,8 @@ def sweep_doc_feeds(db: Session, *, now: Optional[datetime] = None) -> Dict[str,
         )
         .filter(
             AcDocFeed.mode != DOC_FEED_MODE_OFF,
+            # A dev DB that ran the OLD 0023 may hold a retired `branches` row.
+            AcDocFeed.feed.in_(ALL_FEEDS),
             AcCompany.is_active.is_(True),
             or_(
                 and_(AcDocFeed.next_poll_at.isnot(None), AcDocFeed.next_poll_at <= now),

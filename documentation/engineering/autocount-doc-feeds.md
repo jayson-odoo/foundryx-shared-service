@@ -36,7 +36,7 @@ sync modes, first-run window, Runs and health all from the ETL framework. Facts 
   company's own HTTP source connection) for a branch only, so the ingest body carries the
   top-level `book` the CRM requires; other entities' bodies are unchanged.
 - **No deletions (D27):** `NO_DELETION_ENTITY_TYPES = {branch}`. The full-extract reconcile stages
-  no delete for a vanished branch, counts it as the run summary key `vanished`, the delete guard
+  no delete for a vanished branch, counts it as the run summary key `vanished` ("known but absent from this full extract": recounted on every full run, not a running total), the delete guard
   has nothing to guard, and `sync_service` never calls `delete_batch` for it (the CRM has no
   branches deletions door and DOs reference branches).
 - **Removed from the doc feed (D28):** the branches feed key, its vendor door, the branch-pull

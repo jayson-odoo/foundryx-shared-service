@@ -1310,7 +1310,13 @@ class MappingEngine:
 
     def _ref_transform(self, ref_entity_type: str) -> Callable[[Any], Any]:
         """Bind ``mint_master_ref`` to THIS engine's ``database_name`` - the
-        thing a module-level pure transform cannot do (plan 22 S5)."""
+        thing a module-level pure transform cannot do (plan 22 S5).
+
+        NOTE (plan 14 section 11, N4): for a ``branch`` task ``database_name``
+        is the BOOK (the identity scope), not a database name. That is safe
+        because no ``ref_*`` transform can ever be saved on a branch row (the
+        mapping save refuses a ref transform on any non-ref target, and branch
+        has none); a hand-written row would only fail the save gate."""
 
         def transform(value: Any) -> Optional[str]:
             return mint_master_ref(

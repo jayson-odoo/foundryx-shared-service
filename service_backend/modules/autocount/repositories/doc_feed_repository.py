@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.models.background_job import JOB_PENDING, JOB_RUNNING, BackgroundJob
 
 from ..models import (
+    DOC_FEED_KEYS,
     AcDocFeed,
     AcDocFeedBackfill,
     AcDocFeedIssue,
@@ -64,7 +65,11 @@ class DocFeedRepository:
     def list_for_company(self, tenant_id: str, company_id: str) -> List[AcDocFeed]:
         return (
             self.db.query(AcDocFeed)
-            .filter(AcDocFeed.tenant_id == tenant_id, AcDocFeed.company_id == company_id)
+            .filter(
+                AcDocFeed.tenant_id == tenant_id, AcDocFeed.company_id == company_id,
+                # A retired `branches` row (old dev 0023) is never a feed.
+                AcDocFeed.feed.in_(DOC_FEED_KEYS),
+            )
             .all()
         )
 

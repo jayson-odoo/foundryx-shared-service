@@ -363,3 +363,18 @@ def test_rs3_orphan_hook_closes_open_run_rows_of_a_backfill_job(session_factory)
     db.refresh(run)
     assert run.outcome == "FAILED"
     assert run.finished_at is not None
+
+
+def test_n3_a_stray_retired_branches_row_is_never_claimed_by_the_beat(session_factory):
+    """A dev DB that ran the OLD 0023 may still hold a `feed='branches'` row;
+    the beat must ignore it (not claim it hourly as a poll that then fails)."""
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    stray = _feed(db, co, ac_conn, feed_key="branches", next_poll_at=NOW - timedelta(minutes=1))
+    real = _feed(db, co, ac_conn, feed_key="delivery_orders", next_poll_at=NOW - timedelta(minutes=1))
+
+    result = sweep_doc_feeds(db, now=NOW)
+
+    assert _jobs_for(db, stray.id) == []
+    assert len(_jobs_for(db, real.id)) == 1  # control: a real feed still fires
+    assert result["fired"] == 1
