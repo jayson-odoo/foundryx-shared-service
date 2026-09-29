@@ -352,6 +352,17 @@ describe('useIdeasListConfig - plan 15 list shape', () => {
     expect((submitter.options ?? []).map((o) => o.value).sort()).toEqual(['Alice', 'Jayson']);
   });
 
+  it('offers the four filter fields: Status, Submitter, Channel, Submitted', () => {
+    const cfg = config([anIdea()]);
+    expect(cfg.filterFields.map((f) => f.field)).toEqual(['status', 'submitter', 'channel', 'submitted']);
+    const channel = cfg.filterFields.find((f) => f.field === 'channel')!;
+    expect(channel.type).toBe('enum');
+    expect(channel.options).toEqual(
+      expect.arrayContaining([{ label: 'WhatsApp', value: 'whatsapp' }]),
+    );
+    expect(cfg.filterFields.find((f) => f.field === 'submitted')!.type).toBe('date');
+  });
+
   it('has a Submitted column and every data column is sortable with a headerTitle (AC-15-03/04/05)', () => {
     const cfg = config([anIdea()]);
     const ids = cfg.columns.map((c) => c.id);

@@ -332,6 +332,13 @@ export function useIdeasListConfig(
             value: name,
           })),
         },
+        {
+          field: 'channel',
+          label: 'Channel',
+          type: 'enum',
+          options: Object.entries(IDEA_SOURCE_LABEL).map(([value, label]) => ({ label, value })),
+        },
+        { field: 'submitted', label: 'Submitted', type: 'date' },
       ],
       defaultSort: { id: 'votes', desc: true },
       exportColumns: [

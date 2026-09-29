@@ -99,6 +99,34 @@ describe('selectIdeaRows - filter (AC-15-01/02)', () => {
   });
 });
 
+describe('selectIdeaRows - channel + submitted filters', () => {
+  it('channel `in` keeps only that source', () => {
+    const ideas = [
+      anIdea({ id: 'w', source: 'whatsapp' }),
+      anIdea({ id: 'm', source: 'manual' }),
+    ];
+    expect(ids(selectIdeaRows(ideas, q({ filter: group('channel', 'in', ['whatsapp']) })))).toEqual(['w']);
+  });
+
+  it('submitted `after` a date keeps only later ideas', () => {
+    const ideas = [
+      anIdea({ id: 'old', createdAt: '2026-06-01T00:00:00Z' }),
+      anIdea({ id: 'new', createdAt: '2026-08-01T00:00:00Z' }),
+    ];
+    const rows = selectIdeaRows(
+      ideas,
+      q({
+        filter: {
+          kind: 'group',
+          combinator: 'and',
+          rules: [{ kind: 'condition', field: 'submitted', operator: 'after', value: '2026-07-01' }],
+        },
+      }),
+    );
+    expect(ids(rows)).toEqual(['new']);
+  });
+});
+
 describe('selectIdeaRows - sort (AC-05)', () => {
   it('votes sorts NUMERICALLY (10 after 9, never string order)', () => {
     const ideas = [
