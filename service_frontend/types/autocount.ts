@@ -1598,9 +1598,8 @@ export interface AutocountPullApiKeyIssued {
 
 // ── document feeds (sprint-5/14, D17) - DO / GRN / branch HTTP source ────────
 //
-// `PHASE 1 MOCK` overlay serves this whole surface through S1..S4
-// (`withPhase1DocFeedMock` in `autocount-service.mock.ts`); the real backend
-// contract (plan section 3.2) is what these mirror ahead of time.
+// Mirrors the real backend contract (plan section 3.2,
+// `modules/autocount/routers/doc_feeds.py`).
 
 export type DocFeedKey = 'delivery_orders' | 'goods_receive_notes' | 'branches';
 

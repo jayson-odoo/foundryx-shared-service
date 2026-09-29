@@ -64,7 +64,6 @@ import type {
   DocFeedUpdateInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
-import { withPhase1DocFeedMock } from './autocount-service.mock';
 import { realAutocountService } from './autocount-service.real';
 
 export interface AutocountListQuery {
@@ -630,9 +629,8 @@ export interface AutocountService {
 
   // ── document feeds (sprint-5/14, D17) - AC-14-90..95 ───────────────────────
   //
-  // BACKEND CONTRACT (S2..S4 must match this EXACTLY - `autocount-service.
-  // mock.ts`'s `withPhase1DocFeedMock` overlay is the spec until then, house
-  // PHASE 1 MOCK pattern; see plan section 3.2):
+  // BACKEND CONTRACT (live: `modules/autocount/routers/doc_feeds.py`, bound
+  // by `autocount-service.real.ts`; see plan section 3.2):
   //
   //   GET  /autocount/doc-feeds/{companyId}          -> DocFeedsView
   //   PUT  /autocount/doc-feeds/{companyId}/{feed}    -> DocFeedItem / 422
@@ -668,16 +666,12 @@ export interface AutocountService {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// EVERY surface but the document-feed one is backed by FastAPI end to end.
-// sprint-5/13 S3 retired the stock push gate's own scoped overlay the same
-// way this one will retire S5: sprint-5/14 S1 opens `withPhase1DocFeedMock`
-// (the SAME `withPhase1PushGateMock`/`withPhase1MappingResetMock` pattern)
-// for the nine `getDocFeeds`/`updateDocFeed`/`runDocFeed`/
-// `start|stop|resume|discardDocFeedBackfill`/`listDocFeedRuns`/
-// `listDocFeedIssues` methods ONLY - the backend has no `doc-feeds` router
-// yet (S2..S4). Retire it the moment S5 lands the real endpoints; every
-// other method here already reaches `realAutocountService` unchanged.
-// `mockAutocountService` stays importable by the Vitest suite directly (the
-// house service-trio pattern).
+// EVERY surface is backed by FastAPI end to end. sprint-5/14 S5 retires the
+// scoped PHASE 1 MOCK overlay that stood in for
+// the nine document-feed methods through S1..S4: `getDocFeeds`/
+// `updateDocFeed`/`runDocFeed`/`start|stop|resume|discardDocFeedBackfill`/
+// `listDocFeedRuns`/`listDocFeedIssues` now post to the real
+// `/autocount/doc-feeds/*` router. `mockAutocountService` stays importable
+// by the Vitest suite directly (the house service-trio pattern).
 // ═══════════════════════════════════════════════════════════════════════════
-export const autocountService: AutocountService = withPhase1DocFeedMock(realAutocountService);
+export const autocountService: AutocountService = realAutocountService;

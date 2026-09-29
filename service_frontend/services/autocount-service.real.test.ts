@@ -444,6 +444,60 @@ describe('realAutocountService - human-invoked pull (AC-10-11/27..38)', () => {
 });
 
 describe('realAutocountService - document feeds (sprint-5/14 S3/S8, review round 1)', () => {
+  it('getDocFeeds GETs the company view', async () => {
+    apiFetchMock.mockResolvedValue({ feeds: [], eligibleConnections: [] });
+    await realAutocountService.getDocFeeds('co-1');
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/doc-feeds/co-1');
+  });
+
+  it('updateDocFeed PUTs the feed config', async () => {
+    apiFetchMock.mockResolvedValue({ feed: 'delivery_orders' });
+    await realAutocountService.updateDocFeed('co-1', 'delivery_orders', { connectionId: 'k1', mode: 'dry_run' });
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/doc-feeds/co-1/delivery_orders', {
+      method: 'PUT',
+      body: JSON.stringify({ connectionId: 'k1', mode: 'dry_run' }),
+    });
+  });
+
+  it('runDocFeed POSTs the run body', async () => {
+    apiFetchMock.mockResolvedValue({ jobId: 'j1' });
+    await realAutocountService.runDocFeed('co-1', 'goods_receive_notes', { kind: 'sweep' });
+    expect(apiFetchMock).toHaveBeenCalledWith('/autocount/doc-feeds/co-1/goods_receive_notes/run', {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'sweep' }),
+    });
+  });
+
+  it.each([
+    ['stopDocFeedBackfill', 'stop'],
+    ['resumeDocFeedBackfill', 'resume'],
+    ['discardDocFeedBackfill', 'discard'],
+  ] as const)('%s POSTs /backfill/%s with no body', async (method, action) => {
+    apiFetchMock.mockResolvedValue({ id: 'bf-1' });
+    await realAutocountService[method]('co-1', 'branches');
+    expect(apiFetchMock).toHaveBeenCalledWith(`/autocount/doc-feeds/co-1/branches/backfill/${action}`, {
+      method: 'POST',
+    });
+  });
+
+  it('listDocFeedRuns sends feed + page + camelCase pageSize', async () => {
+    apiFetchMock.mockResolvedValue({ items: [], total: 0 });
+    await realAutocountService.listDocFeedRuns('co-1', { feed: 'branches', page: 1, pageSize: 10 });
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      '/autocount/doc-feeds/co-1/runs?page=1&pageSize=10&feed=branches',
+    );
+  });
+
+  it('listDocFeedIssues sends feed, kind, search + camelCase pageSize', async () => {
+    apiFetchMock.mockResolvedValue({ items: [], total: 0 });
+    await realAutocountService.listDocFeedIssues('co-1', {
+      feed: 'delivery_orders', kind: 'failed', search: 'DO-1', page: 0, pageSize: 25,
+    });
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      '/autocount/doc-feeds/co-1/issues?page=0&pageSize=25&feed=delivery_orders&kind=failed&search=DO-1',
+    );
+  });
+
   it('startDocFeedBackfill reads back the FULL DocFeedBackfill shape (S8) - the router now answers the same object stop/resume/discard already do, never a bespoke {backfillId, jobId}', async () => {
     apiFetchMock.mockResolvedValue({
       id: 'bf-1', status: 'running', dryRun: false, fromDay: '2023-01-01',

@@ -399,7 +399,7 @@ label "Document feeds", icon `FileStack`. No new route, no menu change.
   `autocount-meta.ts` gains the feed labels and the mode / run-kind / issue-kind registries.
 - Frontend-first: S1 binds the doc-feed methods through a scoped `withPhase1DocFeedMock(...)`
   overlay tagged `PHASE 1 MOCK` in `autocount-service.ts` (the plan-13 `withPhase1PushGateMock`
-  precedent); S5 deletes the overlay (one line) so every method is real.
+  precedent); S5 retired the overlay (bound bare `realAutocountService`) so every method is real.
 - Copy: labels and values only; tenant-facing text never names the platform.
 
 ## 4. Decision log

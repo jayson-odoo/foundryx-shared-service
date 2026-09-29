@@ -2190,9 +2190,8 @@ function mockPreviewJobClaimChange(input: AutocountPreviewJobStartInput) {
 // ═══════════════════════════════════════════════════════════════════════════
 // Document feeds (sprint-5/14, D17) - PHASE 1 MOCK for the WHOLE surface
 // (S2..S4 build the real `doc-feeds` router, plan section 3.2); this is the
-// spec both `mockAutocountService` (the Vitest fixture double) and
-// `withPhase1DocFeedMock` (the overlay `autocount-service.ts` binds over the
-// otherwise-real service) share. State lives in module-scope maps, same as
+// spec `mockAutocountService` (the Vitest fixture double) follows; the real
+// `doc-feeds` router is bound in `autocount-service.ts`. State lives in module-scope maps, same as
 // every other PHASE 1 MOCK session store in this file - `resetEtlMockState`
 // clears it.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2284,8 +2283,7 @@ function bookFromBaseUrl(baseUrl: string): string | null {
 
 /** D2 - open-auth connections whose base URL derives a book, out of any
  * list of `{name, baseUrl, auth}` connections (the pure mock's fixture
- * `HTTP_API_CONNECTIONS`, or a real company's `listApiConnections()` once
- * `withPhase1DocFeedMock` is live). */
+ * `HTTP_API_CONNECTIONS`). */
 function eligibleFromApiConnections(
   connections: Array<Pick<AutocountApiConnection, 'id' | 'name' | 'baseUrl' | 'auth'>>,
 ): DocFeedEligibleConnection[] {
@@ -2361,9 +2359,7 @@ function docFeedItemFor(
 /** The save-time shape guard (D2): `off` clears the connection; anything
  * else needs one of the ELIGIBLE connections (never a client-supplied id
  * trusted blind). Takes the caller's own eligible list (the pure mock's
- * fixture `HTTP_API_CONNECTIONS`, or `withPhase1DocFeedMock`'s REAL
- * `autocount` connections) - so a real company's own connection resolves
- * its real book, never the fixture's. */
+ * fixture `HTTP_API_CONNECTIONS`). */
 function mutateDocFeed(
   companyId: string,
   feed: DocFeedKey,
@@ -2588,80 +2584,6 @@ async function mockListDocFeedIssues(
     rows = rows.filter((r) => (r.docNo ?? '').toLowerCase().includes(q));
   }
   return docFeedListPage(rows, query);
-}
-
-/**
- * sprint-5/14 S1 - the scoped PHASE 1 MOCK overlay (bound by
- * `autocount-service.ts`, the SAME `withPhase1PushGateMock`/
- * `withPhase1MappingResetMock` pattern) for the nine document-feed methods
- * ONLY: every other surface stays live against the real, already-shipped
- * backend. `getDocFeeds`/`updateDocFeed` compute the contract gate from the
- * REAL company's `sinkImpl`/`sorentoCompanyCode` (mirroring
- * `pushGateForRealCompany`) so editing the Overview tab's push target
- * visibly changes the gate; every other method (runs, issues, backfill) is
- * pure in-memory state, since the backend has no `doc-feeds` router yet
- * (S2..S4). Retire the moment S5 lands the real endpoints (one line in
- * `autocount-service.ts`).
- */
-export function withPhase1DocFeedMock(real: AutocountService): AutocountService {
-  async function gateForRealCompany(companyId: string): Promise<DocFeedContractGate | null> {
-    if (docFeedGateOverrides.has(companyId)) return docFeedGateOverrides.get(companyId) ?? null;
-    const detail = await real.getCompany(companyId);
-    return docFeedGateFor(detail.company);
-  }
-  // The REAL tenant's own `autocount` connections (Settings > Integrations),
-  // not the pure mock's fixture - so a connection an operator actually
-  // created shows up in the Configure dialog.
-  async function eligibleConnectionsFromReal(): Promise<DocFeedEligibleConnection[]> {
-    const connections = await real.listApiConnections();
-    return eligibleFromApiConnections(connections);
-  }
-  return {
-    ...real,
-    async getDocFeeds(companyId: string): Promise<DocFeedsView> {
-      const [gate, eligibleConnections] = await Promise.all([
-        gateForRealCompany(companyId),
-        eligibleConnectionsFromReal(),
-      ]);
-      return {
-        feeds: DOC_FEED_KEYS.map((feed) => docFeedItemFor(companyId, feed, gate)),
-        eligibleConnections,
-      };
-    },
-    async updateDocFeed(companyId: string, feed: DocFeedKey, input: DocFeedUpdateInput): Promise<DocFeedItem> {
-      mutateDocFeed(companyId, feed, input, await eligibleConnectionsFromReal());
-      const gate = await gateForRealCompany(companyId);
-      return docFeedItemFor(companyId, feed, gate);
-    },
-    async runDocFeed(companyId: string, feed: DocFeedKey, input: DocFeedRunInput): Promise<{ jobId: string }> {
-      return mockRunDocFeed(companyId, feed, input);
-    },
-    async startDocFeedBackfill(
-      companyId: string,
-      feed: DocFeedKey,
-      input: DocFeedBackfillStartInput,
-    ): Promise<DocFeedBackfill> {
-      return mockStartDocFeedBackfill(companyId, feed, input);
-    },
-    async stopDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
-      return mockStopDocFeedBackfill(companyId, feed);
-    },
-    async resumeDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
-      return mockResumeDocFeedBackfill(companyId, feed);
-    },
-    async discardDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill> {
-      return mockDiscardDocFeedBackfill(companyId, feed);
-    },
-    async listDocFeedRuns(companyId: string, query: DocFeedRunsQuery = {}): Promise<ListResult<DocFeedRun>> {
-      return mockListDocFeedRuns(companyId, query);
-    },
-    async listDocFeedIssues(
-      companyId: string,
-      query: DocFeedIssuesQuery = {},
-    ): Promise<ListResult<DocFeedIssue>> {
-      return mockListDocFeedIssues(companyId, query);
-    },
-  };
 }
 
 /** Test seam: forget every S2 session state (the Vitest suite isolates cases). */

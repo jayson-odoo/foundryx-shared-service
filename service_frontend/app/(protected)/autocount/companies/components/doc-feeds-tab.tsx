@@ -21,9 +21,8 @@ function errorMessage(error: unknown, fallback: string): string {
  * "Document feeds" company detail tab (sprint-5/14, D17, AC-14-90..95) - the
  * DO / GRN / branch HTTP source's whole operator surface: three feed rows,
  * their run history, their waiting/failed documents, and the Configure /
- * Backfill dialogs. Frontend-first (S1): every call below goes through
- * `autocountService`, currently the `withPhase1DocFeedMock` overlay - no
- * component code changes at S5 (the overlay's own removal).
+ * Backfill dialogs. Every call goes through `autocountService`, bound to the
+ * real `/autocount/doc-feeds/*` router.
  */
 export function DocFeedsTab({ companyId }: { companyId: string }) {
   const { view, reload } = useAutocountDocFeeds(companyId);

@@ -1,6 +1,6 @@
 /**
- * sprint-5/14 S0 - red test for the mock doc-feed methods (D17, S1's own
- * `withPhase1DocFeedMock` overlay). `mockAutocountService` exists already
+ * sprint-5/14 S0 - red test for the mock doc-feed methods (D17, the pure
+ * fixture seam). `mockAutocountService` exists already
  * (plan-13 precedent module); the new methods
  * (`getDocFeeds`/`updateDocFeed`/`runDocFeed`/`startDocFeedBackfill`/
  * `stopDocFeedBackfill`/`resumeDocFeedBackfill`/`discardDocFeedBackfill`/
@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { mockAutocountService } from './autocount-service.mock';
 
-describe('mockAutocountService doc-feed overlay (sprint-5/14 D17)', () => {
+describe('mockAutocountService doc-feed methods (sprint-5/14 D17)', () => {
   it('getDocFeeds answers three feeds, each off, for an unconfigured company', async () => {
     const view = await mockAutocountService.getDocFeeds('co-mock-1');
     expect(view.feeds).toHaveLength(3);
