@@ -356,6 +356,8 @@ def _apply_document_verdict(
     warnings = tuple(result.warnings or ())
     ledger_repo = DocFeedLedgerRepository(db)
     issue_repo = DocFeedIssueRepository(db)
+    # N-2 - the (json.dumps) size check runs once per record.
+    too_large_record = False if result.delivered else _record_too_large(raw)
 
     if result.delivered:
         stale = outcome == "unchanged" and "stale_ignored" in warnings
@@ -377,7 +379,7 @@ def _apply_document_verdict(
                 )
         if not dry_run:
             issue_repo.delete(feed_row.tenant_id, feed_row.company_id, feed_row.feed, book, key)
-    elif outcome == "failed" or _record_too_large(raw):
+    elif outcome == "failed" or too_large_record:
         # N7 - an over-cap document can never be stored for a D9 re-send, so
         # it is a permanent failure with a named error (never a retryable
         # row whose record is missing).
@@ -387,7 +389,7 @@ def _apply_document_verdict(
         # `run_sweep` already use), not only the persistent issue row: an
         # operator reading one run's summary should see WHICH DocKeys failed
         # without opening the issues list.
-        too_large = _record_too_large(raw)
+        too_large = too_large_record
         errors_out = dict(result.errors or {})
         if too_large:
             errors_out["record"] = (
@@ -874,6 +876,7 @@ def run_backfill(
         # one. `failed_refs` = refs of chunks that errored and are not (yet)
         # credited; the day ends as an error while any remain.
         credited: set = set()
+        day_orphaned = False
         failed_chunk_refs: set = set()
         last_chunk_error: Optional[BaseException] = None
         while True:
@@ -908,7 +911,7 @@ def run_backfill(
                 # fresh and honour the orphan fence before every sleep.
                 _heartbeat(db, job_id)
                 if _job_is_dead(db, job_id):
-                    day_error = exc
+                    day_orphaned = True
                     break
                 time.sleep(exc.retry_after)
                 continue
@@ -922,6 +925,12 @@ def run_backfill(
                 day_error = last_chunk_error
             break
 
+        if day_orphaned:
+            stop_reason = {
+                "code": "JOB_ORPHANED",
+                "message": "The worker running this backfill is no longer live.",
+            }
+            break
         if day_error is not None:
             stop_reason = {"code": "SINK_ERROR", "message": _sink_failure_text(day_error, resolved.sink)}
             break

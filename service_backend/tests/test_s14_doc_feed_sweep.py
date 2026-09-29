@@ -296,3 +296,32 @@ def test_deletions_response_fixture_matches_and_flags_malformed_and_missing():
     # detect by diffing the requested keys against the returned refs -
     # covered by `run_sweep`'s summary in the guard/per-key tests above.
     assert result["summary"]["failed"] == 2
+
+
+# ── SS1 (review round 2) - the sweep's sink failure never leaks body/URL/key ─
+
+
+def test_ss1_sweep_run_error_never_carries_the_crm_body_url_or_key(session_factory):
+    from .s14_doc_feed_helpers import SORENTO_API_KEY
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    feed = _feed(db, co, ac_conn)
+    _ledger(db, feed, 333, doc_date=WINDOW_FROM)
+    db.commit()
+
+    def sink(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, text=f"denied {SORENTO_API_KEY} at http://crm.example.test/api/v1/x " + "z" * 800,
+        )
+
+    run_sweep(
+        db, feed, dry_run=False, now=NOW,
+        vendor_transport=_vendor_by_day({}),
+        sink_transport=httpx.MockTransport(_contract_first(sink)),
+    )
+    run = _latest_run(db, feed)
+    assert run.outcome == "FAILED" and run.error_code == "SINK_ERROR"
+    assert SORENTO_API_KEY not in run.error
+    assert "http://" not in run.error
+    assert len(run.error) < 400

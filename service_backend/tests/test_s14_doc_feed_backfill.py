@@ -1021,3 +1021,67 @@ def test_n6_resume_stamps_the_actor_on_the_new_job(session_factory):
     db.refresh(bf)
     job = db.query(BackgroundJob).filter(BackgroundJob.id == bf.job_id).one()
     assert job.actor_user_id == ACTOR_USER_ID
+
+
+# ═══ review round 2 follow-ups ══════════════════════════════════════════════
+
+
+def test_s2_resume_is_refused_on_an_off_feed(client, session_factory):
+    from .s14_doc_feed_helpers import auth_headers
+
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn, mode="off")
+    bf = _backfill(
+        db, do_feed, from_day=date(2026, 9, 1), to_day=date(2026, 9, 10),
+        dry_run=True, status="stopped",
+    )
+    response = client.post(
+        f"/autocount/doc-feeds/{co.id}/delivery_orders/backfill/resume", headers=auth_headers(client),
+    )
+    assert response.status_code == 422, response.text
+    assert "mode" in response.json()["detail"]["fieldErrors"]
+    db.refresh(bf)
+    assert bf.status == "stopped"
+    assert db.query(AcDocFeedRun).filter(AcDocFeedRun.feed_id == do_feed.id).count() == 0
+
+
+def test_n1_the_orphan_fence_before_a_429_sleep_stops_as_job_orphaned(session_factory, monkeypatch):
+    from app.models.background_job import JOB_FAILED
+
+    slept: List[float] = []
+    monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
+    db = session_factory()
+    co, ac_conn, _crm = wired_company(db)
+    do_feed = _feed(db, co, ac_conn)
+    job = BackgroundJob(tenant_id=co.tenant_id, type="autocount_doc_feed_backfill", status="running")
+    db.add(job)
+    db.commit()
+    bf = _backfill(db, do_feed, from_day=date(2026, 9, 29), to_day=date(2026, 9, 29))
+    bf.job_id = job.id
+    db.commit()
+
+    def vendor(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[_do_rec(1)])
+
+    def sink(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/external/contract":
+            return httpx.Response(200, json={"version": "2.7", "entities": ["delivery_orders"]})
+        # The orphan sweep fails this job from a DIFFERENT session while the
+        # sink is being rate limited.
+        other = session_factory()
+        other.query(BackgroundJob).filter(BackgroundJob.id == job.id).one().status = JOB_FAILED
+        other.commit()
+        other.close()
+        return httpx.Response(429, json={}, headers={"Retry-After": "1"})
+
+    run_backfill(
+        db, bf, now=NOW, vendor_transport=httpx.Client(transport=httpx.MockTransport(vendor)),
+        sink_transport=httpx.MockTransport(sink),
+    )
+    db.refresh(bf)
+    assert bf.status == "stopped"
+    assert bf.error_code == "JOB_ORPHANED"
+    # The runner's own wait (Retry-After 1, after the sink's internal ones)
+    # never happens: the fence fires first, so no further POSTs either.
+    assert bf.error_code != "SINK_ERROR"

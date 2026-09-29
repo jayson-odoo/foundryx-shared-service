@@ -462,6 +462,8 @@ class DocFeedService:
                 "BACKFILL_JOB_LIVE",
                 "The previous run for this backfill is still finishing up.",
             )
+        if row.mode == DOC_FEED_MODE_OFF:
+            raise DocFeedValidationError("mode", "This feed is off.")
         # N2 (review round 1) - re-check the SAME start-time rule Start
         # applies (a live backfill needs the feed in Push): the feed may
         # have left Push in the time this backfill sat stopped.
