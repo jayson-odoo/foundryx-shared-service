@@ -1,4 +1,4 @@
-# AutoCount document feeds: Delivery Orders, Goods Receive Notes, Branches
+# AutoCount document feeds: Delivery Orders and Goods Receive Notes
 
 Scope: the `autocount` module's HTTP-source feeds that push vendor documents (open REST API,
 `hapi` books) to the Sorento CRM. Plan and decisions: `documentation/plans/sprint-5/14-*`
@@ -13,6 +13,38 @@ Code: `service_backend/modules/autocount/doc_feed/` (`runner.py`, `vendor.py`, `
 no new permission), models `AcDocFeed*` and module migration `0023_autocount_doc_feed`;
 `service_frontend/app/(protected)/autocount/companies/components/doc-feed*`.
 
+## 0. Branches are NOT a feed (plan 14 section 11, D23-D28)
+
+`branches` started life as a third doc feed and became the regular HTTP master entity **`branch`**
+(owner ruling after the hand test: "it is a master data though with pagination, it is just like
+product"). It is wired exactly like `brand` (plan 08) and paged like `product`: an Add-entity task
+on an open (`http`) company, `HTTP_PRESETS["branch"]` (path `/branchbypage`, key fields `AccNo` +
+`BranchCode`, mapping rows `AccNo -> acc_no` and `BranchCode -> code` required, `BranchName -> name`),
+sync modes, first-run window, Runs and health all from the ETL framework. Facts a maintainer needs:
+
+- **Wire (D24):** `CanonicalBranch.sink_payload()` is the **raw vendor row** with the mapped
+  `AccNo` / `BranchCode` / `BranchName` written over it (the CRM stores the row and reads only those
+  three); no canonical keys reach the wire. The raw row rides in `source_record`, filled by the
+  mapping engine (`EntityProfile.raw_record_field`), never a mapping target.
+- **Identity (D25):** `source_ref` = `{book}:BR:{AccNo}:{BranchCode}` verbatim, the CRM's own
+  derivation (the ETL matches verdicts by the string it sent). `book` comes from the task
+  connection's base URL (`http_source/book.py`, `derive_book` / `identity_scope`); every other
+  entity keeps `{database_name}:{key}`.
+- **Sink (D26):** `_ENTITY_PATH["branch"] = "branches"`, `CONTRACT_GATED_ENTITIES["branch"] = (2.7,
+  "branches")`, one row in `CompanyService._CONTRACT_GATE_REQUIRED_VERSIONS` (the generic
+  `contractGate` banner, never a brand-style method). `sink_for_company` passes `book` (from the
+  company's own HTTP source connection) for a branch only, so the ingest body carries the
+  top-level `book` the CRM requires; other entities' bodies are unchanged.
+- **No deletions (D27):** `NO_DELETION_ENTITY_TYPES = {branch}`. The full-extract reconcile stages
+  no delete for a vanished branch, counts it as the run summary key `vanished`, the delete guard
+  has nothing to guard, and `sync_service` never calls `delete_batch` for it (the CRM has no
+  branches deletions door and DOs reference branches).
+- **Removed from the doc feed (D28):** the branches feed key, its vendor door, the branch-pull
+  runner and run kind, the daily branch schedule, the backfill's branch step and its column
+  (edited out of the unmerged migration `0023`; a dev DB that already ran it keeps a stray
+  nullable column, harmless), the matching field on the backfill wire, and the third feeds row. A
+  `branches` feed path answers 404.
+
 ## 1. Feeds and modes
 
 One `ac_doc_feed` row per (tenant, company, feed); a never-configured feed reads `off`.
@@ -20,7 +52,6 @@ One `ac_doc_feed` row per (tenant, company, feed); a never-configured feed reads
 | Feed | Vendor doors | Kinds |
 |---|---|---|
 | `delivery_orders`, `goods_receive_notes` | `.../<doc>byLastModified` (poll), `.../<doc>bydocdate` (sweep, backfill) | poll, sweep, backfill |
-| `branches` | `.../branchbypage` (paged, `pageSize` 1000) | branch pull only (no ledger, no issues, no sweep, no backfill) |
 
 Modes: `off` | `dry_run` | `push`. A feed carries its own open (no-auth) `autocount` connection;
 the **book** is the last path segment of that connection's base URL
@@ -36,12 +67,11 @@ Per (book, entity) the cursor is the first MYT day still to re-read. A tick read
 (catch-up). The whole window is read BEFORE anything is pushed; any day failing = nothing pushed
 and nothing advanced. One copy per DocKey (greatest `LastModified`), pushed oldest first. The
 cursor advances **only on a fully successful live tick**; a dry run never advances it, never
-writes the ledger and never writes issue rows. A record with no integer DocKey (or a branch with
-a blank `BranchCode`) is `skippedNoKey`, never sent.
+writes the ledger and never writes issue rows. A record with no integer DocKey is `skippedNoKey`, never sent.
 
 ## 3. Verdicts, ledger, issues, D9 re-send
 
-Verdicts match by `source_ref` (`{book}:DO|GRN:{DocKey}`, `{book}:BR:{AccNo}:{BranchCode}`).
+Verdicts match by `source_ref` (`{book}:DO|GRN:{DocKey}`).
 `created | updated | unchanged` are delivered (**global sink change: `unchanged` counts as
 delivered for every entity**); `unchanged` + warning `stale_ignored` never overwrites the ledger.
 The ledger (what the CRM holds) is written only from delivered live verdicts. `retryable` and
@@ -62,8 +92,7 @@ candidate count over **max(50, 20% of the window's ledger rows)** refuses the sw
 
 A durable `ac_doc_feed_backfill` record: day by day, sequential, resumable, at most one OPEN
 (`running|stopping|stopped`) per feed (partial unique index; a lost Start race is a 409
-`BACKFILL_OPEN`). The first segment runs the branch pull (when the branches feed is on for the
-same book), then the day loop reads `bydocdate` per day and pushes it. Range floor `2023-01-01`
+`BACKFILL_OPEN`). The day loop reads `bydocdate` per day and pushes it. Range floor `2023-01-01`
 (a `fromDay` below it is a 422); `toDay` <= MYT today. Live needs the feed in `push`; Start is
 refused (422) on an `off` feed even for a dry run. **Run-once guard:** a live range starting on
 or before the floor 409s `BACKFILL_ALREADY_DONE` once `full_backfill_done_at` is set (a later
@@ -95,7 +124,7 @@ redacted, capped), never `str(exc)`.
 ## 7. Scheduler and jobs
 
 A 60 s beat tick claims due feeds with a guarded UPDATE (two beats never both enqueue) and
-enqueues the SAME `autocount_doc_feed_run` job "Run now" uses: poll hourly, sweep and branch
+enqueues the SAME `autocount_doc_feed_run` job "Run now" uses: poll hourly, sweep
 daily; a busy feed is skipped, not re-armed. The predicate is `active_tenant_service_join`
 (`modules/autocount/scheduler.py`). Job types `autocount_doc_feed_run` and
 `autocount_doc_feed_backfill` both heartbeat; the worker must import `modules.autocount.sync`

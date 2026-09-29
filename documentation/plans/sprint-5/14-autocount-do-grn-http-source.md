@@ -431,6 +431,8 @@ label "Document feeds", icon `FileStack`. No new route, no menu change.
 
 ## 5. Files
 
+> Section 11 (D23-D28) moved branches out of the doc feed into the `branch` HTTP master entity: read every `branches` / branch-pull / branch-step file entry below as historical, and use the file list at the end of section 11.
+
 Backend (`service_backend/modules/autocount/`): new `doc_feed/{__init__,constants,clock,vendor,
 records,runner,jobs,scheduler}.py`, `repositories/doc_feed_repository.py` (feeds, ledger, issues,
 runs, backfills; every query tenant-scoped), `services/doc_feed_service.py`, `routers/doc_feeds.py`,
@@ -453,6 +455,8 @@ Docs: this pair, `service_backend/tests/fixtures/s14_doc_feed/` (+ README proven
 (section 8) appended to `documentation/backlogs/backlog.md` in S0 by the coordinator.
 
 ## 6. Slices (one PR)
+
+> Slice scopes below that mention branches (the branch pull, the branch step, the third feeds row) are superseded by section 11 (D23-D28).
 
 | Slice | Scope | UAC |
 |---|---|---|
