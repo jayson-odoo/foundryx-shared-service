@@ -3,7 +3,7 @@
  * while a run or backfill is in flight"). `use-autocount-doc-feeds.ts` does
  * not exist yet - the dynamic import fails at runtime, the expected S0 red.
  */
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getDocFeeds = vi.fn();

@@ -3,7 +3,7 @@
  * `doc-feed-config-dialog.tsx` does not exist yet - the dynamic import
  * below fails at runtime, the expected S0 red.
  */
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -23,6 +23,10 @@ describe('DocFeedConfigDialog (AC-14-91)', () => {
         onSave={vi.fn()}
       />,
     );
+    // The connection picker is a SearchSelect (house convention, see
+    // `search-select.test.tsx`) - its options render once opened, same as
+    // every other SearchSelect in the codebase.
+    fireEvent.click(screen.getByRole('combobox'));
     expect(screen.getByText(/db1 open api/i)).toBeInTheDocument();
   });
 

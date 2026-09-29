@@ -1595,3 +1595,156 @@ export interface AutocountPullApiKeyIssued {
   key: AutocountPullApiKey;
   plaintext: string;
 }
+
+// ── document feeds (sprint-5/14, D17) - DO / GRN / branch HTTP source ────────
+//
+// `PHASE 1 MOCK` overlay serves this whole surface through S1..S4
+// (`withPhase1DocFeedMock` in `autocount-service.mock.ts`); the real backend
+// contract (plan section 3.2) is what these mirror ahead of time.
+
+export type DocFeedKey = 'delivery_orders' | 'goods_receive_notes' | 'branches';
+
+export type DocFeedMode = 'off' | 'dry_run' | 'push';
+
+export type DocFeedRunKind = 'poll' | 'sweep' | 'branch' | 'backfill';
+
+export type DocFeedRunOutcome = 'SUCCESS' | 'FAILED' | 'ABORTED';
+
+export type DocFeedIssueKind = 'retryable' | 'failed';
+
+export type DocFeedBackfillStatus = 'running' | 'stopping' | 'stopped' | 'done';
+
+/** Present only while the mode's own consumer-contract probe (D4) is shut -
+ * `null` = open, Dry run/Push may be chosen. */
+export interface DocFeedContractGate {
+  version: number | null;
+  requiredVersion: number;
+  reason?: string;
+}
+
+/** The tab's per-feed "Last run" cell - a thin projection of the feed's most
+ * recent `ac_doc_feed_run` row, never the full run record. */
+export interface DocFeedLastRun {
+  id: string;
+  kind: DocFeedRunKind;
+  dryRun: boolean;
+  outcome: DocFeedRunOutcome | null;
+  finishedAt: string | null; // ISO Z
+  error: string | null;
+}
+
+/** The feed's open backfill, or its last one once finished (D13). */
+export interface DocFeedBackfill {
+  id: string;
+  status: DocFeedBackfillStatus;
+  dryRun: boolean;
+  fromDay: string; // YYYY-MM-DD
+  toDay: string; // YYYY-MM-DD
+  nextDay: string; // YYYY-MM-DD
+  daysTotal: number;
+  daysDone: number;
+  error: string | null;
+}
+
+/** `GET /autocount/doc-feeds/{companyId}` - one row per feed. A never-
+ * configured feed still renders (`mode: 'off'`, D2's "a missing row renders
+ * as off"). */
+export interface DocFeedItem {
+  feed: DocFeedKey;
+  book: string | null;
+  connectionId: string | null;
+  mode: DocFeedMode;
+  cursorDay: string | null; // YYYY-MM-DD
+  contractGate: DocFeedContractGate | null;
+  retryableCount: number;
+  failedCount: number;
+  lastRun: DocFeedLastRun | null;
+  backfill: DocFeedBackfill | null;
+}
+
+/** An `autocount` connection eligible for a doc feed (D2): open auth, a base
+ * URL whose last path segment reads as a book. */
+export interface DocFeedEligibleConnection {
+  id: string;
+  name: string;
+  book: string;
+}
+
+export interface DocFeedsView {
+  feeds: DocFeedItem[];
+  eligibleConnections: DocFeedEligibleConnection[];
+}
+
+/** `PUT /autocount/doc-feeds/{companyId}/{feed}` body. */
+export interface DocFeedUpdateInput {
+  connectionId: string | null;
+  mode: DocFeedMode;
+}
+
+/** `POST /autocount/doc-feeds/{companyId}/{feed}/run` body - Run now / Run
+ * sweep now (branches never sweeps). */
+export interface DocFeedRunInput {
+  kind: 'poll' | 'sweep';
+}
+
+/** Summary JSON shared by runs and backfills (plan section 3.1) - every key
+ * absent reads as 0. */
+export interface DocFeedRunSummary {
+  created?: number;
+  updated?: number;
+  unchanged?: number;
+  staleIgnored?: number;
+  failed?: number;
+  retryable?: number;
+  resent?: number;
+  skippedNoKey?: number;
+  deactivated?: number;
+  notFound?: number;
+  candidates?: number;
+  warnings?: Record<string, number>;
+  failedRefs?: Array<{ docKey?: number | null; sourceRef?: string | null; errors?: Record<string, unknown> }>;
+}
+
+/** `GET /autocount/doc-feeds/{companyId}/runs` row (`ac_doc_feed_run`). */
+export interface DocFeedRun {
+  id: string;
+  feed: DocFeedKey;
+  kind: DocFeedRunKind;
+  dryRun: boolean;
+  dayFrom: string | null; // YYYY-MM-DD
+  dayTo: string | null; // YYYY-MM-DD
+  requests: number;
+  fetchedCount: number;
+  summary: DocFeedRunSummary;
+  outcome: DocFeedRunOutcome | null;
+  error: string | null;
+  errorCode: string | null;
+  startedAt: string | null; // ISO Z
+  finishedAt: string | null; // ISO Z
+  durationMs: number | null;
+}
+
+/** `GET /autocount/doc-feeds/{companyId}/issues` row (`ac_doc_feed_issue`). */
+export interface DocFeedIssue {
+  feed: DocFeedKey;
+  book: string;
+  docKey: number;
+  kind: DocFeedIssueKind;
+  docNo: string | null;
+  docDate: string | null; // YYYY-MM-DD
+  sourceModifiedAt: string | null; // ISO Z
+  errors: Record<string, unknown> | null;
+  warnings: Record<string, unknown> | null;
+  attempts: number;
+  firstAt: string | null; // ISO Z
+  lastAt: string | null; // ISO Z
+}
+
+/** `POST /autocount/doc-feeds/{companyId}/{feed}/backfill` body - defaults
+ * (2023-01-01 .. today) are resolved server-side; the dialog only sends what
+ * the operator changed. */
+export interface DocFeedBackfillStartInput {
+  dryRun: boolean;
+  fromDay?: string; // YYYY-MM-DD
+  toDay?: string; // YYYY-MM-DD
+}

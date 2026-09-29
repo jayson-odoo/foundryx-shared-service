@@ -53,13 +53,35 @@ import type {
   AutocountSyncJob,
   AutocountSyncJobBatch,
   AutocountSyncRun,
+  DocFeedBackfill,
+  DocFeedBackfillStartInput,
+  DocFeedIssue,
+  DocFeedItem,
+  DocFeedKey,
+  DocFeedRun,
+  DocFeedRunInput,
+  DocFeedsView,
+  DocFeedUpdateInput,
 } from '@/types/autocount';
 import type { ListResult } from '@/types/resource';
+import { withPhase1DocFeedMock } from './autocount-service.mock';
 import { realAutocountService } from './autocount-service.real';
 
 export interface AutocountListQuery {
   page?: number; // 0-based
   pageSize?: number;
+}
+
+/** `GET .../doc-feeds/{companyId}/runs` query (D17). */
+export interface DocFeedRunsQuery extends AutocountListQuery {
+  feed?: DocFeedKey;
+}
+
+/** `GET .../doc-feeds/{companyId}/issues` query (D17). */
+export interface DocFeedIssuesQuery extends AutocountListQuery {
+  feed?: DocFeedKey;
+  kind?: 'retryable' | 'failed';
+  search?: string;
 }
 
 export interface AutocountService {
@@ -605,17 +627,57 @@ export interface AutocountService {
   getPreviewJob(jobId: string): Promise<AutocountPreviewJob>;
   /** Cooperative cancel - a no-op 200 against a terminal job (AC-11-24). */
   cancelPreviewJob(jobId: string): Promise<AutocountPreviewJob>;
+
+  // ── document feeds (sprint-5/14, D17) - AC-14-90..95 ───────────────────────
+  //
+  // BACKEND CONTRACT (S2..S4 must match this EXACTLY - `autocount-service.
+  // mock.ts`'s `withPhase1DocFeedMock` overlay is the spec until then, house
+  // PHASE 1 MOCK pattern; see plan section 3.2):
+  //
+  //   GET  /autocount/doc-feeds/{companyId}          -> DocFeedsView
+  //   PUT  /autocount/doc-feeds/{companyId}/{feed}    -> DocFeedItem / 422
+  //   POST /autocount/doc-feeds/{companyId}/{feed}/run                 -> 202 {jobId}
+  //   POST /autocount/doc-feeds/{companyId}/{feed}/backfill            -> 202
+  //   POST /autocount/doc-feeds/{companyId}/{feed}/backfill/stop|resume|discard
+  //        -> DocFeedBackfill
+  //   GET  /autocount/doc-feeds/{companyId}/runs?feed=&page=&pageSize= -> ListResult<DocFeedRun>
+  //   GET  /autocount/doc-feeds/{companyId}/issues?feed=&kind=&search=&page=&pageSize=
+  //        -> ListResult<DocFeedIssue>
+  //   Gated `autocount.companies.read/manage`, `autocount.sync.read/run`;
+  //   tenant-scoped, cross-tenant = 404.
+
+  /** `view()` - three feeds always, a never-configured one reading `off`. */
+  getDocFeeds(companyId: string): Promise<DocFeedsView>;
+  /** Configure a feed's connection + mode (D2). */
+  updateDocFeed(companyId: string, feed: DocFeedKey, input: DocFeedUpdateInput): Promise<DocFeedItem>;
+  /** Run now / Run sweep now - never awaits the walk (eager dev runs it
+   * inline, D9). */
+  runDocFeed(companyId: string, feed: DocFeedKey, input: DocFeedRunInput): Promise<{ jobId: string }>;
+  /** Start a backfill (D13). */
+  startDocFeedBackfill(
+    companyId: string,
+    feed: DocFeedKey,
+    input: DocFeedBackfillStartInput,
+  ): Promise<DocFeedBackfill>;
+  stopDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill>;
+  resumeDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill>;
+  discardDocFeedBackfill(companyId: string, feed: DocFeedKey): Promise<DocFeedBackfill>;
+  /** Newest first (AC-14-94). */
+  listDocFeedRuns(companyId: string, query?: DocFeedRunsQuery): Promise<ListResult<DocFeedRun>>;
+  listDocFeedIssues(companyId: string, query?: DocFeedIssuesQuery): Promise<ListResult<DocFeedIssue>>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// EVERY surface is backed by FastAPI end to end. sprint-5/13 S3 retires the
-// scoped PHASE 1 MOCK overlay (`withPhase1PushGateMock`) that stood in for
-// the stock push gate through S1/S2: `getEtlTask`/`updateEtlTask`/
-// `activateEtlTask`/`pauseEtlTask`/`resumeEtlTask` now read `pushGate`
-// straight off the real backend response (`EtlService._task_view`'s
-// `push_gate`, D18's whole point - the frontend needed no further change at
-// all), and `setDeliveryMode` posts to the real endpoint, which itself
-// refuses the flip while the gate is shut. `mockAutocountService` stays
-// importable by the Vitest suite directly (the house service-trio pattern).
+// EVERY surface but the document-feed one is backed by FastAPI end to end.
+// sprint-5/13 S3 retired the stock push gate's own scoped overlay the same
+// way this one will retire S5: sprint-5/14 S1 opens `withPhase1DocFeedMock`
+// (the SAME `withPhase1PushGateMock`/`withPhase1MappingResetMock` pattern)
+// for the nine `getDocFeeds`/`updateDocFeed`/`runDocFeed`/
+// `start|stop|resume|discardDocFeedBackfill`/`listDocFeedRuns`/
+// `listDocFeedIssues` methods ONLY - the backend has no `doc-feeds` router
+// yet (S2..S4). Retire it the moment S5 lands the real endpoints; every
+// other method here already reaches `realAutocountService` unchanged.
+// `mockAutocountService` stays importable by the Vitest suite directly (the
+// house service-trio pattern).
 // ═══════════════════════════════════════════════════════════════════════════
-export const autocountService: AutocountService = realAutocountService;
+export const autocountService: AutocountService = withPhase1DocFeedMock(realAutocountService);

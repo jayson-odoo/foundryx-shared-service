@@ -10,6 +10,11 @@ import type {
   AutocountRunOutcome,
   AutocountSourceKind,
   AutocountStagedStatus,
+  DocFeedContractGate,
+  DocFeedIssueKind,
+  DocFeedKey,
+  DocFeedMode,
+  DocFeedRunKind,
 } from '@/types/autocount';
 
 // ── permission keys (module CSV: modules/autocount/permissions/permissions.csv)
@@ -481,3 +486,42 @@ export const AC_STAGED_STATUS_REGISTRY: StatusRegistry<AutocountStagedStatus> = 
   PUSHED: { label: 'Pushed', tone: 'success' },
   DISCARDED: { label: 'Discarded', tone: 'secondary' },
 };
+
+// ── document feeds (sprint-5/14, D17) - AC-14-90..95 ─────────────────────────
+
+/** The tab's fixed row order (D2 - three feeds, always, a missing row reads
+ * `off`). */
+export const AC_DOC_FEED_KEYS: DocFeedKey[] = ['delivery_orders', 'goods_receive_notes', 'branches'];
+
+/** Canonical feed key -> display label - derived the SAME way `entityLabel`
+ * humanizes every other code constant (never a tenant-editable lookup). */
+export function docFeedLabel(feed: DocFeedKey | string): string {
+  return humanizeFieldKey(feed);
+}
+
+export const AC_DOC_FEED_MODE_REGISTRY: StatusRegistry<DocFeedMode> = {
+  off: { label: 'Off', tone: 'secondary' },
+  dry_run: { label: 'Dry run', tone: 'info' },
+  push: { label: 'Push', tone: 'success' },
+};
+
+/** Runs list "Kind" column (poll / sweep / branch / backfill). */
+export function docFeedRunKindLabel(kind: DocFeedRunKind | string): string {
+  return humanizeFieldKey(kind);
+}
+
+export const AC_DOC_FEED_ISSUE_KIND_REGISTRY: StatusRegistry<DocFeedIssueKind> = {
+  retryable: { label: 'Waiting', tone: 'warning' },
+  failed: { label: 'Failed', tone: 'destructive' },
+};
+
+/** The Configure dialog's shut-gate warning (AC-14-91: "names the
+ * consumer's version and 2.7") - mirrors `pushGateWarning`'s two-reason
+ * shape (`lib/autocount-etl.ts`), stated as what IS true, never a how-to. */
+export function docFeedGateWarning(gate: DocFeedContractGate): string {
+  if (gate.reason === 'config_error') {
+    return 'This company has no ready Sorento push target yet.';
+  }
+  const version = gate.version ?? 'unknown';
+  return `Consumer contract ${version} - this feed needs ${gate.requiredVersion}.`;
+}
