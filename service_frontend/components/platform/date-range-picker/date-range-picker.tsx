@@ -16,7 +16,7 @@
  * whichever control set it.
  */
 import { useRef, useState } from 'react';
-import type { DateRange } from 'react-day-picker';
+import type { DateRange, Matcher } from 'react-day-picker';
 import { CalendarIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Calendar } from '@/components/ui/calendar';
@@ -164,13 +164,10 @@ export function DateRangePicker({ value, onChange, timeZone, className, minDate,
     ? { from: parseKey(value.from), to: value.to ? parseKey(value.to) : undefined }
     : undefined;
 
-  const disabledMatcher =
-    minDate || maxDate
-      ? {
-          ...(minDate ? { before: parseKey(minDate) } : {}),
-          ...(maxDate ? { after: parseKey(maxDate) } : {}),
-        }
-      : undefined;
+  const disabledMatchers: Matcher[] = [];
+  if (minDate) disabledMatchers.push({ before: parseKey(minDate) });
+  if (maxDate) disabledMatchers.push({ after: parseKey(maxDate) });
+  const disabledMatcher = disabledMatchers.length ? disabledMatchers : undefined;
 
   return (
     <div className={cn('flex flex-col gap-2 sm:flex-row sm:items-center', className)}>
