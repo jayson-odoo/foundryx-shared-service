@@ -477,6 +477,10 @@ describe('MappingTable locked branch identity rows (sprint-5/14 section 11, roun
     expect(screen.getByRole('button', { name: 'Build formula for row 3' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Remove row 2' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Remove row 3' })).toBeEnabled();
+    // The Sorento field picker is locked too (retargeting would unlock the row).
+    expect(screen.getByRole('combobox', { name: 'Sorento field for row 1' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Sorento field for row 2' })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Sorento field for row 3' })).toBeEnabled();
   });
 
   it('control: another entity with a code row is never locked', () => {

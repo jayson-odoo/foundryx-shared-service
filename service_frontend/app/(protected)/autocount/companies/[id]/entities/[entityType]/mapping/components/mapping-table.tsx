@@ -331,7 +331,7 @@ export function MappingTable({
                 value={row.original.sorentoField}
                 onChange={(value) => onChangeRow(index, withStatusSeed(row.original, { sorentoField: value }))}
                 placeholder="Select a Sorento field"
-                disabled={sorentoFields.length === 0}
+                disabled={isLocked(row.original) || sorentoFields.length === 0}
                 ariaLabel={`Sorento field for row ${index + 1}`}
               />
             ) : (
