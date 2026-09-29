@@ -1,5 +1,5 @@
 """Doc-feed background-job handlers (D15) - ``autocount_doc_feed_run``
-(poll / sweep / branch, payload ``{feedId, kind}``) and
+(poll / sweep, payload ``{feedId, kind}``) and
 ``autocount_doc_feed_backfill`` (payload ``{backfillId}``).
 
     !!  The Celery worker boots NO FastAPI lifespan.  !!
@@ -28,11 +28,10 @@ from ..repositories.doc_feed_repository import DocFeedBackfillRepository, DocFee
 from .constants import (
     DOC_FEED_BACKFILL_JOB_TYPE,
     DOC_FEED_RUN_JOB_TYPE,
-    RUN_KIND_BRANCH,
     RUN_KIND_POLL,
     RUN_KIND_SWEEP,
 )
-from .runner import run_backfill, run_branch_pull, run_poll, run_sweep
+from .runner import run_backfill, run_poll, run_sweep
 
 logger = logging.getLogger("foundryx.autocount")
 
@@ -59,7 +58,7 @@ def _split_transport(transport: Any):
 
 
 def run_doc_feed_job(db: Session, job: BackgroundJob, *, transport: Any = None) -> None:
-    """``autocount_doc_feed_run`` - poll / sweep / branch, one feed. Dry-run-
+    """``autocount_doc_feed_run`` - poll / sweep, one feed. Dry-run-
     ness is read from the feed's OWN mode at run start (D15) - never
     stored on the job payload, so an operator's mode change between claim
     and dispatch is honoured, not stale."""
@@ -88,11 +87,6 @@ def run_doc_feed_job(db: Session, job: BackgroundJob, *, transport: Any = None) 
             )
         elif kind == RUN_KIND_SWEEP:
             run_sweep(
-                db, feed_row, dry_run=dry_run, now=now, job_id=job.id,
-                vendor_transport=vendor_transport, sink_transport=sink_transport,
-            )
-        elif kind == RUN_KIND_BRANCH:
-            run_branch_pull(
                 db, feed_row, dry_run=dry_run, now=now, job_id=job.id,
                 vendor_transport=vendor_transport, sink_transport=sink_transport,
             )

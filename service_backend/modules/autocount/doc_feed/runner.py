@@ -1,4 +1,4 @@
-"""``run_poll`` / ``run_branch_pull`` / ``run_sweep`` / ``run_backfill``
+"""``run_poll`` / ``run_sweep`` / ``run_backfill``
 (plan sections 3.6/3.7/3.8) - the doc-feed service layer. Repositories do
 every query (AC-13-41 precedent: tenant AND company scoped); this module
 owns the sequencing, retry and verdict-handling rules.
@@ -7,12 +7,10 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlsplit
 
 from cryptography.fernet import InvalidToken
 
@@ -21,6 +19,7 @@ from app.models.background_job import JOB_FAILED
 from app.models.integration_activity import ACTIVITY_ERROR, ACTIVITY_SUCCESS
 
 from ..activity import record_activity, record_client_calls, trace_id_for_job
+from ..http_source.book import derive_book
 from ..http_source.client import HttpApiClient, connection_sizing
 from ..http_source.source import DELETE_GUARD_MIN_ABSOLUTE, DELETE_GUARD_RATIO
 from ..models import (
@@ -28,8 +27,6 @@ from ..models import (
     DOC_FEED_BACKFILL_RUNNING,
     DOC_FEED_BACKFILL_STOPPED,
     DOC_FEED_BACKFILL_STOPPING,
-    DOC_FEED_BRANCH_STEP_DONE,
-    DOC_FEED_BRANCH_STEP_SKIPPED,
     DOC_FEED_MODE_OFF,
     DOC_FEED_MODE_PUSH,
     RUN_FAILED,
@@ -61,9 +58,7 @@ from app.secrets import decrypt_secret
 from .clock import myt_date
 from .constants import (
     BACKFILL_FROM_DEFAULT,
-    FEED_BRANCHES,
     RUN_KIND_BACKFILL,
-    RUN_KIND_BRANCH,
     RUN_KIND_POLL,
     RUN_KIND_SWEEP,
     SWEEP_WINDOW_DAYS,
@@ -247,20 +242,6 @@ def _resolve(
     )
 
 
-_BOOK_RE = re.compile(r"^[A-Za-z0-9_-]{1,20}$")
-
-
-def derive_book(base_url: str) -> Optional[str]:
-    """AC-14-02/13.2 - the last non-empty path segment of an open connection's
-    base URL, when it matches ``^[A-Za-z0-9_-]{1,20}$``; ``None`` otherwise."""
-    path = urlsplit(base_url or "").path
-    segments = [s for s in path.split("/") if s]
-    if not segments:
-        return None
-    candidate = segments[-1]
-    return candidate if _BOOK_RE.match(candidate) else None
-
-
 def _new_summary() -> Dict[str, Any]:
     return {
         "created": 0, "updated": 0, "unchanged": 0, "staleIgnored": 0,
@@ -385,8 +366,7 @@ def _apply_document_verdict(
         # row whose record is missing).
         summary["failed"] = summary.get("failed", 0) + 1
         # N3 (review round 1) - a permanently-failed document push is
-        # surfaced in `summary.failedRefs` (the same shape `run_branch_pull`/
-        # `run_sweep` already use), not only the persistent issue row: an
+        # surfaced in `summary.failedRefs` (the same shape `run_sweep` already uses), not only the persistent issue row: an
         # operator reading one run's summary should see WHICH DocKeys failed
         # without opening the issues list.
         too_large = too_large_record
@@ -524,83 +504,6 @@ def run_poll(
 
     if not dry_run:
         feed_row.cursor_day = (end + timedelta(days=1)) if capped else today
-        feed_row.last_poll_at = now
-        feed_row.last_poll_ok_at = now
-
-    _finish_success(db, run, summary)
-    _record_push_activity(db, feed_row, run, summary)
-    return run
-
-
-# ── branches (no ledger, no issue rows) ──────────────────────────────────────
-
-
-def run_branch_pull(
-    db, feed_row: AcDocFeed, *, dry_run: bool, now: datetime, job_id: Optional[str] = None,
-    vendor_transport: Any = None, sink_transport: Any = None,
-) -> AcDocFeedRun:
-    run = _new_run(db, feed_row, kind=RUN_KIND_BRANCH, dry_run=dry_run, now=now, job_id=job_id)
-    try:
-        resolved = _resolve(db, feed_row, vendor_transport=vendor_transport, sink_transport=sink_transport)
-    except RunRefusal as exc:
-        return _finish_failed(db, run, exc.code, exc.message)
-
-    try:
-        rows = resolved.vendor.branches()
-        _heartbeat(db, job_id)  # B2 - after the (bounded, <=100-page) vendor walk
-    except DocFeedVendorError as exc:
-        run.requests = max(resolved.vendor.pages_read, 1)
-        _record_vendor_activity(db, resolved.vendor_client, run)
-        if vendor_transport is None:
-            resolved.vendor_client.close()
-        return _finish_failed(db, run, exc.code, str(exc))
-
-    to_send: List[RawVendorRecord] = []
-    skipped_no_key = 0
-    for row in rows:
-        if not str(row.get("BranchCode") or "").strip():
-            skipped_no_key += 1
-            continue
-        ref = source_ref(FEED_BRANCHES, resolved.book, row)
-        to_send.append(RawVendorRecord(source_ref=ref, entity_type=FEED_BRANCHES, raw=row))
-
-    summary = _new_summary()
-    summary["skippedNoKey"] = skipped_no_key
-    failed_refs: List[Dict[str, Any]] = []
-    chunk_error: Optional[BaseException] = None
-
-    def on_chunk(chunk, results, error):
-        nonlocal chunk_error
-        if error is not None:
-            chunk_error = error
-            return
-        for record, result in zip(chunk, results):
-            # N3 - a blank / unknown-word outcome is the retryable bucket
-            # (same as the poll), never `summary[""]`.
-            outcome = result.outcome or ""
-            if not result.delivered and outcome not in ("failed", "retryable"):
-                outcome = "retryable"
-            summary[outcome] = summary.get(outcome, 0) + 1
-            if not result.delivered:
-                failed_refs.append({"sourceRef": record.source_ref, "errors": result.errors})
-        _heartbeat(db, job_id)  # B2 - per pushed chunk
-
-    try:
-        resolved.sink.write_batch(to_send, request_id=run.id, dry_run=dry_run, on_chunk=on_chunk)
-    except Exception as exc:  # noqa: BLE001
-        chunk_error = exc
-
-    run.requests = max(resolved.vendor.pages_read, 1)
-    run.fetched_count = len(rows)
-    _record_vendor_activity(db, resolved.vendor_client, run)
-    if vendor_transport is None:
-        resolved.vendor_client.close()
-
-    if chunk_error is not None:
-        return _finish_failed(db, run, "SINK_ERROR", _sink_failure_text(chunk_error, resolved.sink))
-
-    summary["failedRefs"] = failed_refs[:20]
-    if not dry_run:
         feed_row.last_poll_at = now
         feed_row.last_poll_ok_at = now
 
@@ -771,31 +674,6 @@ def run_backfill(
         return backfill_row
 
     dry_run = bool(backfill_row.dry_run)
-
-    # ── branch step (first run of the backfill only) ────────────────────────
-    if backfill_row.branch_step is None:
-        branches_feed = DocFeedRepository(db).get(
-            backfill_row.tenant_id, backfill_row.company_id, FEED_BRANCHES
-        )
-        if (
-            branches_feed is not None
-            and branches_feed.mode != DOC_FEED_MODE_OFF
-            and branches_feed.book == backfill_row.book
-        ):
-            branch_run = run_branch_pull(
-                db, branches_feed, dry_run=dry_run, now=now, job_id=job_id,
-                vendor_transport=vendor_transport, sink_transport=sink_transport,
-            )
-            if branch_run.outcome != RUN_SUCCESS:
-                backfill_row.status = DOC_FEED_BACKFILL_STOPPED
-                backfill_row.error = branch_run.error
-                backfill_row.error_code = branch_run.error_code
-                db.commit()
-                return backfill_row
-            backfill_row.branch_step = DOC_FEED_BRANCH_STEP_DONE
-        else:
-            backfill_row.branch_step = DOC_FEED_BRANCH_STEP_SKIPPED
-        db.commit()
 
     try:
         resolved = _resolve(db, feed_row, vendor_transport=vendor_transport, sink_transport=sink_transport)

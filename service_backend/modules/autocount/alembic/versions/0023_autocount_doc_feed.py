@@ -6,7 +6,7 @@ is needed (DoD 2): rows are created on first configure.
 * ``ac_doc_feed`` - one row per (tenant, company, feed).
 * ``ac_doc_feed_ledger`` - what the CRM holds from us, per (feed, book, DocKey).
 * ``ac_doc_feed_issue`` - documents the CRM did not take (retryable/failed).
-* ``ac_doc_feed_run`` - one row per job (poll/sweep/branch/backfill segment).
+* ``ac_doc_feed_run`` - one row per job (poll/sweep/backfill segment).
 * ``ac_doc_feed_backfill`` - the durable backfill progress record; at most
   one OPEN (status <> 'done') row per (tenant, feed_id).
 
@@ -192,7 +192,6 @@ def upgrade() -> None:
             sa.Column("job_id", sa.String(), nullable=True),
             sa.Column("days_total", sa.Integer(), nullable=False, server_default="0"),
             sa.Column("days_done", sa.Integer(), nullable=False, server_default="0"),
-            sa.Column("branch_step", sa.String(), nullable=True),
             sa.Column("summary_json", sa.JSON(none_as_null=True), nullable=True),
             sa.Column("error", sa.Text(), nullable=True),
             sa.Column("error_code", sa.String(), nullable=True),

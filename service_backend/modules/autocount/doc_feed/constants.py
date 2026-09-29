@@ -9,17 +9,15 @@ from __future__ import annotations
 # ── feed keys (the door names, also the Sorento ingest path segments) ───────
 FEED_DELIVERY_ORDERS = "delivery_orders"
 FEED_GOODS_RECEIVE_NOTES = "goods_receive_notes"
-FEED_BRANCHES = "branches"
 
 DOCUMENT_FEEDS = (FEED_DELIVERY_ORDERS, FEED_GOODS_RECEIVE_NOTES)
-ALL_FEEDS = (FEED_DELIVERY_ORDERS, FEED_GOODS_RECEIVE_NOTES, FEED_BRANCHES)
+ALL_FEEDS = (FEED_DELIVERY_ORDERS, FEED_GOODS_RECEIVE_NOTES)
 
 # ── vendor GET paths (relative to the feed connection's own base URL) ───────
 DO_BY_LAST_MODIFIED_PATH = "/deliveryorderbyLastModified"
 DO_BY_DOC_DATE_PATH = "/deliveryorderbydocdate"
 GRN_BY_LAST_MODIFIED_PATH = "/goodsreceivenotebyLastModified"
 GRN_BY_DOC_DATE_PATH = "/goodsreceivenotebydocdate"
-BRANCH_BY_PAGE_PATH = "/branchbypage"
 
 BY_LAST_MODIFIED_PATH = {
     FEED_DELIVERY_ORDERS: DO_BY_LAST_MODIFIED_PATH,
@@ -39,9 +37,8 @@ MODES = (MODE_OFF, MODE_DRY_RUN, MODE_PUSH)
 # ── run kinds / outcomes ─────────────────────────────────────────────────────
 RUN_KIND_POLL = "poll"
 RUN_KIND_SWEEP = "sweep"
-RUN_KIND_BRANCH = "branch"
 RUN_KIND_BACKFILL = "backfill"
-RUN_KINDS = (RUN_KIND_POLL, RUN_KIND_SWEEP, RUN_KIND_BRANCH, RUN_KIND_BACKFILL)
+RUN_KINDS = (RUN_KIND_POLL, RUN_KIND_SWEEP, RUN_KIND_BACKFILL)
 
 # ── issue kinds ───────────────────────────────────────────────────────────────
 ISSUE_RETRYABLE = "retryable"
@@ -56,9 +53,6 @@ BACKFILL_STATUS_DONE = "done"
 BACKFILL_OPEN_STATUSES = (
     BACKFILL_STATUS_RUNNING, BACKFILL_STATUS_STOPPING, BACKFILL_STATUS_STOPPED,
 )
-
-BRANCH_STEP_DONE = "done"
-BRANCH_STEP_SKIPPED = "skipped"
 
 # ── deletion sweep (scout Q9, D12) ───────────────────────────────────────────
 SWEEP_WINDOW_DAYS = 45

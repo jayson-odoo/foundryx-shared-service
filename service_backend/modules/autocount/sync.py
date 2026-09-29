@@ -58,6 +58,7 @@ from .canonical.grn import (
     VENDOR_ENTITY,
 )
 from .canonical.masters import (
+    NO_DELETION_ENTITY_TYPES,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_SUPPLIER,
@@ -66,6 +67,7 @@ from .canonical.masters import (
     VENDOR_LAST_MODIFIED_PATH,
 )
 from .client import AutoCountError
+from .http_source.book import identity_scope
 from .http_source.combine import (
     CombineDropError,
     apply_pull_metadata_map,
@@ -902,7 +904,9 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         # Masters mint a COMPANY-QUALIFIED ``source_ref`` (AC-14-10). The name
         # comes from the discovered company, never from operator input - and it
         # is what stops company B's ``AutoKey=1`` overwriting company A's.
-        database_name=company.database_name,
+        database_name=identity_scope(
+            db, tenant_id, company, entity_type, config.source_config
+        ),
     )
     # plan 13 (AC-13-11, D6) review round 2 B2 fix - the changed-set an HTTP
     # source counted this run (added/hash-changed) is now a DECLARED
@@ -1125,6 +1129,10 @@ def run_autocount_sync(db: Session, job: BackgroundJob) -> None:
         # reported no changed set).
         "unchangedSkipped": unchanged_skipped,
     }
+    if entity_type in NO_DELETION_ENTITY_TYPES:
+        # sprint-5/14 section 11 (D27) - vanished rows are counted, never
+        # staged or pushed as deletes.
+        summary["vanished"] = result.vanished_count
     if push_summary is not None:
         summary.update(push_summary)
         # An auto-pushed batch was never "awaiting approval" - it is delivered.
@@ -2980,7 +2988,9 @@ def _run_pull_snapshot(db: Session, job: BackgroundJob) -> None:
             )
             or [],
         ),
-        database_name=company.database_name,
+        database_name=identity_scope(
+            db, tenant_id, company, entity_type, config.source_config
+        ),
     )
 
     delivered: List[Tuple[str, Dict[str, Any]]] = []

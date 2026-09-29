@@ -158,6 +158,10 @@ class FetchResult:
     # for every incremental fetch (a partial extract cannot prove absence) and
     # for the API path (which stores no hashes at all).
     delete_refs: List[str] = field(default_factory=list)
+    # sprint-5/14 section 11 (D27) - refs a full extract found missing for an
+    # entity in `NO_DELETION_ENTITY_TYPES`: counted (run summary `vanished`),
+    # never a delete intent. 0 for every other entity/source.
+    vanished_count: int = 0
     # Every source-ref SEEN in this extract (plan 22 S3 review BLOCKER 1). A
     # delete intent must not outlive the evidence that produced it: when a ref
     # already carrying a STAGED delete intent reappears here, the caller

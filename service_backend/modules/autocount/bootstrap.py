@@ -323,7 +323,7 @@ def on_job_orphaned(
         )
 
         # RS3 - BOTH job types close their open run rows (a backfill job also
-        # opens `run_branch_pull` rows under its own job_id, which otherwise
+        # opens run rows under its own job_id, which otherwise
         # stay Running forever).
         now_ = now or datetime.now(timezone.utc)
         open_feed_runs = (

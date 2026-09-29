@@ -1,4 +1,4 @@
-# Plan sprint-5/14 S0 - DO / GRN / branch HTTP source fixtures
+# Plan sprint-5/14 S0 - DO / GRN HTTP source fixtures
 
 Companion to `14-autocount-do-grn-http-source.md` section 1 (vendor and CRM
 surfaces, quoted exactly) and the CRM cross-repo contract section 13
@@ -46,13 +46,9 @@ address/contact data), the field NAMES and shapes are real.
   instead of the plain array V2 promises - `VENDOR_PAGED` (AC-14-12): a
   document door must never silently read only the first page.
 
-- **`branch-page-1.json`** / **`branch-page-2.json`** - `branchbypage`
-  two-page walk, `pageSize` 2 so the sample stays small, `TotalPages: 2`
-  echoed on both. Page 1: two ordinary branches (`AccNo` + `BranchCode`
-  both set). Page 2: one branch with a BLANK `AccNo` (source_ref
-  `db1:BR::HQ`, C2's "no AccNo" rule) and one with a BLANK `BranchCode`
-  (the `skippedNoKey` case, AC-14-41 - never sent, the CRM would answer
-  `failed` with `source_ref: null` for it).
+- The `branchbypage` fixtures (`branch-page-1.json`, `branch-page-2.json`) and
+  `crm-ingest-branches-response.json` moved to `../autocount_http/` when branches
+  became the regular `branch` entity (plan 14 section 11, D28).
 
 ## CRM fixtures (constructed to contract 2.7's stated shape)
 
@@ -80,9 +76,6 @@ address/contact data), the field NAMES and shapes are real.
   `purchase_order_unresolved`, `legacy_links_released` + `restored`
   (together, since a restore is itself a kind of link event), plain
   `unchanged`, one `retryable`.
-
-- **`crm-ingest-branches-response.json`** - `created` x2 (`AccNo` set),
-  `updated` for the no-`AccNo` `db1:BR::HQ` ref (C2).
 
 - **`crm-deletions-delivery-orders-response.json`** - `POST
   /ingest/delivery_orders/deletions` per C1: every record echoes ONLY

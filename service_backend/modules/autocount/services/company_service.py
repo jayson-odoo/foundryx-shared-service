@@ -35,6 +35,7 @@ from ..activity import (
     record_client_calls,
 )
 from ..client import AutoCountClient, AutoCountError
+from ..http_source.book import derive_book, identity_scope
 from ..http_source.lookups import effective_result_columns
 from ..mapping import (
     DEFAULT_MAPPINGS,
@@ -143,6 +144,7 @@ logger = logging.getLogger("foundryx.autocount")
 from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE  # noqa: E402
 from ..canonical.masters import (  # noqa: E402
     ENTITY_BRAND,
+    ENTITY_BRANCH,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_SUPPLIER,
@@ -904,6 +906,12 @@ class CompanyService:
                 # Sorento company. A blank one is passed through so SORENTO
                 # answers the authoritative COMPANY_ANCHOR_REQUIRED.
                 company_code=company.sorento_company_code,
+                # sprint-5/14 section 11 (D26) - a branch ingest body carries
+                # the top-level `book` the CRM requires on its 2.7 doors,
+                # derived from the company's own HTTP source connection. Every
+                # other entity's call (and body) stays byte-identical: the
+                # kwarg is only passed for a branch.
+                **self._book_kwargs(tenant_id, company, entity_type),
             )
             if gated:
                 contract = sink.fetch_contract_detail()
@@ -925,6 +933,23 @@ class CompanyService:
             f"Company '{company.database_name}' is configured with an unknown "
             f"push sink '{impl}'."
         )
+
+    def _book_kwargs(
+        self, tenant_id: str, company: AcCompany, entity_type: str
+    ) -> Dict[str, Any]:
+        """``{"book": <book>}`` of the company's own open ``autocount``
+        connection for the ``branch`` entity when it resolves, else ``{}`` (so
+        every other entity's sink construction is unchanged). Tenant- AND
+        provider-scoped."""
+        if entity_type != ENTITY_BRANCH:
+            return {}
+        conn = self.connections.get_for_provider(
+            tenant_id, company.connection_id or "", PROVIDER_KEY
+        )
+        if conn is None:
+            return {}
+        book = derive_book(str((conn.config_json or {}).get("baseUrl") or ""))
+        return {"book": book} if book else {}
 
     def brand_contract_gate(
         self, tenant_id: str, company: AcCompany
@@ -992,6 +1017,8 @@ class CompanyService:
     _CONTRACT_GATE_REQUIRED_VERSIONS: Dict[str, float] = {
         ENTITY_BRAND: BRAND_REQUIRED_CONTRACT_VERSION,
         ENTITY_PRODUCT: PRODUCT_CODE_WINS_CONTRACT_VERSION,
+        # sprint-5/14 section 11 (D26) - branch rides the 2.7 door.
+        ENTITY_BRANCH: DOC_FEED_CONTRACT_VERSION,
     }
 
     def contract_gate(
@@ -2594,7 +2621,9 @@ class CompanyService:
         engine = MappingEngine(
             rows,
             entity_type=entity_type,
-            database_name=company.database_name,
+            database_name=identity_scope(
+                self.db, tenant_id, company, entity_type, config.source_config
+            ),
         )
         mock_record = dict(record)
         if lines is not None and engine.detail_key is not None:

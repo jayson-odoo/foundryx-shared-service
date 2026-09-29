@@ -1,5 +1,5 @@
 """The doc-feed beat sweep (D14, AC-14-33). Poll hourly (documents), sweep
-and branch pull daily; a feed with an unfinished job is skipped, not
+daily; a feed with an unfinished job is skipped, not
 re-armed, so the NEXT beat minute picks it up (no lost tick).
 
 **No extraction happens here** - this selects, claims (a guarded UPDATE, so
@@ -22,8 +22,6 @@ from ..repositories.doc_feed_repository import DocFeedRepository
 from ..scheduler import active_tenant_service_join
 from .constants import (
     DOC_FEED_RUN_JOB_TYPE,
-    FEED_BRANCHES,
-    RUN_KIND_BRANCH,
     RUN_KIND_POLL,
     RUN_KIND_SWEEP,
 )
@@ -32,7 +30,6 @@ logger = logging.getLogger("foundryx.autocount")
 
 POLL_INTERVAL = timedelta(minutes=60)
 SWEEP_INTERVAL = timedelta(hours=24)
-BRANCH_INTERVAL = timedelta(hours=24)
 
 
 def sweep_doc_feeds(db: Session, *, now: Optional[datetime] = None) -> Dict[str, int]:
@@ -86,18 +83,7 @@ def _sweep_one_feed(db: Session, feed: AcDocFeed, *, now: datetime) -> str:
     ) is not None:
         return "skipped"
 
-    if feed.feed == FEED_BRANCHES:
-        kind = RUN_KIND_BRANCH
-        claimed = (
-            db.query(AcDocFeed)
-            .filter(
-                AcDocFeed.id == feed.id,
-                AcDocFeed.next_poll_at.isnot(None),
-                AcDocFeed.next_poll_at <= now,
-            )
-            .update({AcDocFeed.next_poll_at: now + BRANCH_INTERVAL}, synchronize_session=False)
-        )
-    elif due_poll:
+    if due_poll:
         kind = RUN_KIND_POLL
         claimed = (
             db.query(AcDocFeed)

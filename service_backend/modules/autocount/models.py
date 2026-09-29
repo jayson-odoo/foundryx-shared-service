@@ -746,7 +746,7 @@ class AcPullSnapshotRow(AutocountBase):
 
 # ── document feed (sprint-5/14, D2/D16) ───────────────────────────────────────
 # ``off / dry_run / push`` per (company, feed) - the shared-service side of
-# the DO/GRN/branch HTTP source. A dedicated small package beside the ETL
+# the DO/GRN HTTP source. A dedicated small package beside the ETL
 # task framework (D1): this feed is unmapped (Q1), day-windowed rather than a
 # whole-population diff, and its deletion sweep is a bounded 45-day window.
 
@@ -757,8 +757,7 @@ DOC_FEED_MODES = (DOC_FEED_MODE_OFF, DOC_FEED_MODE_DRY_RUN, DOC_FEED_MODE_PUSH)
 
 DOC_FEED_DELIVERY_ORDERS = "delivery_orders"
 DOC_FEED_GOODS_RECEIVE_NOTES = "goods_receive_notes"
-DOC_FEED_BRANCHES = "branches"
-DOC_FEED_KEYS = (DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_NOTES, DOC_FEED_BRANCHES)
+DOC_FEED_KEYS = (DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_NOTES)
 DOC_FEED_DOCUMENT_KEYS = (DOC_FEED_DELIVERY_ORDERS, DOC_FEED_GOODS_RECEIVE_NOTES)
 
 DOC_FEED_ISSUE_RETRYABLE = "retryable"
@@ -771,9 +770,6 @@ DOC_FEED_BACKFILL_DONE = "done"
 DOC_FEED_BACKFILL_OPEN_STATUSES = (
     DOC_FEED_BACKFILL_RUNNING, DOC_FEED_BACKFILL_STOPPING, DOC_FEED_BACKFILL_STOPPED,
 )
-
-DOC_FEED_BRANCH_STEP_DONE = "done"
-DOC_FEED_BRANCH_STEP_SKIPPED = "skipped"
 
 
 class AcDocFeed(AutocountBase):
@@ -798,7 +794,7 @@ class AcDocFeed(AutocountBase):
     id = Column(String, primary_key=True, default=_uuid)
     tenant_id = Column(String, nullable=False)
     company_id = Column(String, nullable=False)
-    feed = Column(String, nullable=False)  # delivery_orders | goods_receive_notes | branches
+    feed = Column(String, nullable=False)  # delivery_orders | goods_receive_notes
 
     connection_id = Column(String, nullable=True)  # core connections.id
     book = Column(String(20), nullable=True)
@@ -876,7 +872,7 @@ class AcDocFeedIssue(AutocountBase):
 
 
 class AcDocFeedRun(AutocountBase):
-    """One row per doc-feed job - poll, sweep, branch or backfill segment
+    """One row per doc-feed job - poll, sweep or backfill segment
     (D16 - deliberately NOT ``ac_sync_run``, whose rows link the ETL
     staged-review surface and carry staging counters this feed has none of)."""
 
@@ -894,7 +890,7 @@ class AcDocFeedRun(AutocountBase):
     company_id = Column(String, nullable=False)
     feed_id = Column(String, nullable=False)
     feed = Column(String, nullable=False)
-    kind = Column(String, nullable=False)  # poll | sweep | branch | backfill
+    kind = Column(String, nullable=False)  # poll | sweep | backfill
     dry_run = Column(Boolean, nullable=False, default=False)
     job_id = Column(String, nullable=True)
 
@@ -946,7 +942,6 @@ class AcDocFeedBackfill(AutocountBase):
     job_id = Column(String, nullable=True)
     days_total = Column(Integer, nullable=False, default=0)
     days_done = Column(Integer, nullable=False, default=0)
-    branch_step = Column(String, nullable=True)  # done | skipped | NULL
     summary_json = Column(_JSON, nullable=True)
     error = Column(Text, nullable=True)
     error_code = Column(String, nullable=True)

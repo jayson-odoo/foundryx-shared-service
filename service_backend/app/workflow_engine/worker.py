@@ -131,7 +131,7 @@ celery_app.conf.beat_schedule = {
         "task": "autocount.prune_pull_snapshots", "schedule": 3600.0,
     },
     # AutoCount document feed sweep (sprint-5/14 D14) - polls due DO/GRN
-    # feeds hourly, sweeps deletions and pulls branches daily; enqueues the
+    # feeds hourly and sweeps deletions daily; enqueues the
     # SAME `autocount_doc_feed_run` job Run now/Run sweep now use. Same 60s
     # tick as the ETL sweep above; does no extraction itself.
     "autocount-doc-feed-sweep": {"task": "autocount.doc_feed_sweep", "schedule": 60.0},

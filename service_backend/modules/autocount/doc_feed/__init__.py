@@ -1,4 +1,4 @@
-"""``doc_feed`` - the DO / GRN / branch HTTP source, cursors and CRM sink
+"""``doc_feed`` - the DO / GRN HTTP source, cursors and CRM sink
 (sprint-5/14). A small package beside the ETL task framework (plan D1):
 this feed is unmapped (Q1), day-windowed (not a whole-population diff), and
 its deletion sweep is a bounded 45-day window - three properties the

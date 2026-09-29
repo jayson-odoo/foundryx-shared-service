@@ -143,6 +143,16 @@ def wired(db):
     sorento = _sorento_connection(db)
     company = _company(db, vendor, sorento_conn=sorento)
     EtlService(db).update_task(DEFAULT_TENANT_ID, company.id, ENTITY_BRANCH, _branch_raw(vendor.id))
+    # Coder correction (round 3): the tests below read `pushed` / a vanished
+    # count off a run that DELIVERS; only an ACTIVE task auto-pushes
+    # (`sync.py` auto-push gate, "the activate-once ceremony IS the approval"),
+    # so the rig marks the saved task active the way a completed Activate would.
+    from modules.autocount.models import ETL_STATUS_ACTIVE
+    from modules.autocount.repositories import EntityConfigRepository
+
+    config = EntityConfigRepository(db).get(DEFAULT_TENANT_ID, company.id, ENTITY_BRANCH)
+    config.etl_status = ETL_STATUS_ACTIVE
+    db.commit()
     return db, company, vendor
 
 

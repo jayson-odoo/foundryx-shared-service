@@ -48,7 +48,9 @@ from ..canonical.documents import (
 )
 from ..canonical.grn import CanonicalGrn, ENTITY_GOODS_RECEIVED_NOTE
 from ..canonical.masters import (
+    NO_DELETION_ENTITY_TYPES,
     ENTITY_BRAND,
+    ENTITY_BRANCH,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
@@ -58,6 +60,7 @@ from ..canonical.masters import (
     ENTITY_UNIT_OF_MEASURE,
     ENTITY_WAREHOUSE,
     CanonicalBrand,
+    CanonicalBranch,
     CanonicalCustomer,
     CanonicalProduct,
     CanonicalProductCategory,
@@ -115,6 +118,7 @@ CANONICAL_MODELS = {
     ENTITY_PRODUCT: CanonicalProduct,
     ENTITY_SALES_AGENT: CanonicalSalesAgent,
     ENTITY_BRAND: CanonicalBrand,
+    ENTITY_BRANCH: CanonicalBranch,
     ENTITY_SALES_ORDER: CanonicalSalesOrder,
     ENTITY_PURCHASE_ORDER: CanonicalPurchaseOrder,
     ENTITY_SHIPPING_ORDER: CanonicalShippingOrder,
@@ -933,6 +937,11 @@ class SyncService:
         (fix/job-lease-orphan-sweep) AFTER its own marks are committed.
         Returns ``False`` only on a STOPPING fault, same contract as the
         upsert half."""
+        if entity_type in NO_DELETION_ENTITY_TYPES:
+            # sprint-5/14 section 11 (D27) - defensive: no delete row is ever
+            # staged for such an entity (the source only counts vanished rows),
+            # and the CRM has no deletions door for it - never call the sink.
+            return True
         # S4 (review round 2, defence in depth - mirrors the upsert half): a
         # ``dict`` keyed by ``source_ref`` would keep only the LAST row for a
         # duplicate ref. ``refs``/``chunk_refs`` repeat a duplicated ref once

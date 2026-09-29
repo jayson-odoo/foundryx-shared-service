@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from ..canonical.base import CanonicalRecord
 from .clock import MYT
-from .constants import FEED_BRANCHES, FEED_DELIVERY_ORDERS, FEED_GOODS_RECEIVE_NOTES
+from .constants import FEED_DELIVERY_ORDERS, FEED_GOODS_RECEIVE_NOTES
 
 
 def doc_key(record: Dict[str, Any]) -> Optional[int]:
@@ -64,14 +64,12 @@ def push_order(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def source_ref(feed: str, book: str, record: Dict[str, Any]) -> str:
     """The CRM's own derivation (13.3 / C2): ``{book}:DO:{DocKey}`` /
-    ``{book}:GRN:{DocKey}`` / ``{book}:BR:{AccNo or ''}:{BranchCode}``."""
+    ``{book}:GRN:{DocKey}``. Branches are the regular ``branch`` entity now
+    (plan 14 section 11), never a doc feed: an unknown feed raises."""
     if feed == FEED_DELIVERY_ORDERS:
         return f"{book}:DO:{doc_key(record)}"
     if feed == FEED_GOODS_RECEIVE_NOTES:
         return f"{book}:GRN:{doc_key(record)}"
-    if feed == FEED_BRANCHES:
-        acc_no = str(record.get("AccNo") or "")
-        return f"{book}:BR:{acc_no}:{record.get('BranchCode') or ''}"
     raise ValueError(f"Unknown doc feed '{feed}'.")
 
 

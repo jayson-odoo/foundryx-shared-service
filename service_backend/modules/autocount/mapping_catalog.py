@@ -37,6 +37,7 @@ from typing import Dict, List, Optional, Tuple
 from .canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
 from .canonical.masters import (
     ENTITY_BRAND,
+    ENTITY_BRANCH,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
@@ -46,6 +47,7 @@ from .canonical.masters import (
     ENTITY_UNIT_OF_MEASURE,
     ENTITY_WAREHOUSE,
     CanonicalBrand,
+    CanonicalBranch,
     CanonicalCustomer,
     CanonicalProduct,
     CanonicalProductCategory,
@@ -78,6 +80,10 @@ _REQUIRED_MASTER_FIELDS = frozenset({"code", "name", "is_active"})
 # docstring explains why), so it gets its own required set rather than the
 # code/name/is_active one above, which it does not declare at all.
 _REQUIRED_STOCK_FIELDS = frozenset({"item_code", "location_code", "qty"})
+
+# sprint-5/14 section 11 - `branch` is a `CanonicalMaster` but its identity pair
+# (AccNo, BranchCode) is what is required, not code/name/is_active.
+_REQUIRED_BRANCH_FIELDS = frozenset({"acc_no", "code"})
 
 # Sorento's canonical_documents.py marks `so_number`/`po_number` and `status`
 # required (plan 22 S5, Appendix A6 item 2/3) - the mapping editor's Sorento
@@ -228,6 +234,10 @@ SORENTO_FIELDS: Dict[str, Tuple[SorentoFieldDef, ...]] = {
     # admits nothing, so the Mapping tab shows "No deliverable fields mapped
     # yet." even with real rows saved.
     ENTITY_BRAND: _accepted(CanonicalBrand.SINK_FIELDS),
+    # sprint-5/14 section 11 (D24) - `acc_no` + `code` (the row's identity pair)
+    # are required; `name` is optional; `source_ref`/`source_record` are never
+    # mapping targets.
+    ENTITY_BRANCH: _accepted(CanonicalBranch.SINK_FIELDS, _REQUIRED_BRANCH_FIELDS),
     # Plan 22 S5 (AC-22-24) - HEADER fields. sprint-5/02 (AC-02-02) adds the
     # LINE catalog below (``SORENTO_LINE_FIELDS``) - a document's lines are
     # now first-class operator-editable rows, not a fixed column-name

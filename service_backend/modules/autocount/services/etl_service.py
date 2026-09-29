@@ -49,6 +49,7 @@ from ..canonical.grn import ENTITY_GOODS_RECEIVED_NOTE
 from ..formula import FormulaError, known_filter_variables, parse_formula
 from ..canonical.masters import (
     ENTITY_BRAND,
+    ENTITY_BRANCH,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
@@ -115,6 +116,7 @@ from .company_service import (
 )
 from ..presets import HTTP_PRESETS, seed_document_mapping, seed_http_preset_mapping
 from ..mapping import SCOPE_HEADER, SCOPE_LINE, TransformError
+from ..http_source.book import identity_scope
 from ..http_source.combine import (
     CombineDropError,
     CombineMeasureError,
@@ -167,6 +169,8 @@ ETL_ENTITY_TYPES = (
     # (the generic "may a task be configured for this entity at all" gate)
     # is source-impl-agnostic, and `_update_http_task` runs through it too.
     ENTITY_STOCK_BALANCE,
+    # sprint-5/14 section 11 (D23) - HTTP-only master, wired like brand.
+    ENTITY_BRANCH,
 )
 
 # sprint-5/10 (AC-10-11/15) - entities a task may be switched to ``pull``
@@ -2818,7 +2822,9 @@ class EtlService:
             rows,
             entity_type=entity_type,
             profile=profile,
-            database_name=company.database_name,
+            database_name=identity_scope(
+                self.db, tenant_id, company, entity_type, config.source_config
+            ),
         )
         # sprint-5/11 S5 (AC-11-40) - the SAME callback names the "mapping"
         # stage transition too (not page-driven, so `page`/`total` are

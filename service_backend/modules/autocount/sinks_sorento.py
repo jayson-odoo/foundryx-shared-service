@@ -56,6 +56,7 @@ from .canonical.documents import (
 )
 from .canonical.masters import (
     ENTITY_BRAND,
+    ENTITY_BRANCH,
     ENTITY_CUSTOMER,
     ENTITY_PRODUCT,
     ENTITY_PRODUCT_CATEGORY,
@@ -66,7 +67,6 @@ from .canonical.masters import (
     ENTITY_WAREHOUSE,
 )
 from .models import (
-    DOC_FEED_BRANCHES,
     DOC_FEED_DELIVERY_ORDERS,
     DOC_FEED_GOODS_RECEIVE_NOTES,
 )
@@ -122,13 +122,16 @@ _ENTITY_PATH: Dict[str, str] = {
     # contract, since a pre-2.5 consumer has no ``/ingest/stock_balances``
     # route yet.
     ENTITY_STOCK_BALANCE: "stock_balances",
-    # sprint-5/14 (D3, D20, AC-14-80) - the three doc-feed door keys ARE the
+    # sprint-5/14 (D3, D20, AC-14-80) - the two doc-feed door keys ARE the
     # canonical entity types AND the ingest path segments; they cannot
     # collide with the legacy ``goods_received_note`` canonical (a DIFFERENT
     # key, no path at all - it keeps routing to the logging sink).
     DOC_FEED_DELIVERY_ORDERS: DOC_FEED_DELIVERY_ORDERS,
     DOC_FEED_GOODS_RECEIVE_NOTES: DOC_FEED_GOODS_RECEIVE_NOTES,
-    DOC_FEED_BRANCHES: DOC_FEED_BRANCHES,
+    # sprint-5/14 section 11 (D26) - branches are the regular `branch` master
+    # entity now (NOT a doc-feed key): same door (`/ingest/branches`), same
+    # 2.7 gate, keyed by the singular entity type like every other master.
+    ENTITY_BRANCH: "branches",
 }
 
 # Outcomes Sorento may report per record. `created`/`updated` = delivered;
@@ -203,7 +206,7 @@ PRODUCT_CODE_WINS_CONTRACT_VERSION = 2.4
 # gate, the membership table below and whatever reports it to the operator.
 STOCK_BALANCES_CONTRACT_VERSION = 2.5
 
-# sprint-5/14 (D4) - the doc-feed contract every DO/GRN/branch feed's mode
+# sprint-5/14 (D4) - the doc-feed contract every DO/GRN feed's mode
 # gate and every run's ``CONTRACT_GATE`` refusal need: >= 2.7 AND the door's
 # own name advertised in ``GET /external/contract``'s ``entities``.
 DOC_FEED_CONTRACT_VERSION = 2.7
@@ -224,7 +227,9 @@ CONTRACT_GATED_ENTITIES: Dict[str, Tuple[float, str]] = {
     # name.
     DOC_FEED_DELIVERY_ORDERS: (DOC_FEED_CONTRACT_VERSION, DOC_FEED_DELIVERY_ORDERS),
     DOC_FEED_GOODS_RECEIVE_NOTES: (DOC_FEED_CONTRACT_VERSION, DOC_FEED_GOODS_RECEIVE_NOTES),
-    DOC_FEED_BRANCHES: (DOC_FEED_CONTRACT_VERSION, DOC_FEED_BRANCHES),
+    # sprint-5/14 section 11 (D26) - `branch` rides the same 2.7 door as the
+    # doc feed; the consumer must advertise `branches`.
+    ENTITY_BRANCH: (DOC_FEED_CONTRACT_VERSION, "branches"),
 }
 
 

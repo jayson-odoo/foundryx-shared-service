@@ -1221,7 +1221,6 @@ class DocFeedBackfillOut(ApiModel):
     jobId: Optional[str] = Field(default=None, validation_alias="job_id")
     daysTotal: int = Field(default=0, validation_alias="days_total")
     daysDone: int = Field(default=0, validation_alias="days_done")
-    branchStep: Optional[str] = Field(default=None, validation_alias="branch_step")
     error: Optional[str] = None
     errorCode: Optional[str] = Field(default=None, validation_alias="error_code")
     startedAt: datetime = Field(validation_alias="started_at")

@@ -1,5 +1,5 @@
 """``DocFeedService`` (sprint-5/14, D2) - configuration, run dispatch and
-history for the DO/GRN/branch HTTP source.
+history for the DO/GRN HTTP source.
 """
 from __future__ import annotations
 
@@ -21,10 +21,9 @@ from ..doc_feed.constants import (
     DOC_FEED_BACKFILL_JOB_TYPE,
     DOC_FEED_RUN_JOB_TYPE,
     DOCUMENT_FEEDS,
-    FEED_BRANCHES,
 )
 from ..doc_feed.jobs import run_doc_feed_backfill_job, run_doc_feed_job
-from ..doc_feed.runner import derive_book
+from ..http_source.book import derive_book
 from ..models import (
     DOC_FEED_BACKFILL_RUNNING,
     DOC_FEED_BACKFILL_STOPPED,
@@ -256,8 +255,6 @@ class DocFeedService:
             raise DocFeedValidationError("feed", "Unknown feed.")
         if kind not in ("poll", "sweep"):
             raise DocFeedValidationError("kind", "kind must be 'poll' or 'sweep'.")
-        if kind == "sweep" and feed == FEED_BRANCHES:
-            raise DocFeedValidationError("kind", "Branches has no sweep.")
 
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None or row.mode == DOC_FEED_MODE_OFF:
@@ -360,8 +357,8 @@ class DocFeedService:
         actor_user_id: Optional[str] = None, transport: Any = None,
     ) -> AcDocFeedBackfill:
         self._company(tenant_id, company_id)
-        if feed == FEED_BRANCHES:
-            raise DocFeedValidationError("feed", "Branches has no backfill.")
+        if feed not in ALL_FEEDS:
+            raise DocFeedValidationError("feed", "Unknown feed.")
         row = self.feeds.get(tenant_id, company_id, feed)
         if row is None:
             raise DocFeedValidationError("feed", "Configure this feed first.")

@@ -1,11 +1,11 @@
-"""``DocFeedVendor`` (D7, D8, D18, D19) - the five quoted vendor GET doors.
+"""``DocFeedVendor`` (D7, D8, D18, D19) - the four quoted vendor GET doors.
 
 Reuses ``HttpApiClient`` (SSRF re-check per request, pinned User-Agent) and
 ``envelope.parse_page``; the retry ladder mirrors
 ``http_source.source.HttpApiSource._fetch_page`` byte-for-byte (a timeout
 gets one retry after 1s; a connect error / 5xx / 524 gets up to
 ``len(TRANSPORT_RETRY_BACKOFFS_SECONDS)`` retries with a longer backoff, no
-halving - a document/branch GET is a single small page, never large enough
+halving - a document GET is a single small page, never large enough
 to need page-size halving).
 """
 from __future__ import annotations
@@ -24,11 +24,7 @@ from ..http_source.source import (
     TRANSPORT_RETRY_BACKOFFS_SECONDS,
 )
 from .clock import yyyymmdd
-from .constants import BRANCH_BY_PAGE_PATH, BY_DOC_DATE_PATH, BY_LAST_MODIFIED_PATH
-
-# The branch walk's own hard cap on pages (plan section 3.3) - a runaway
-# `TotalPages` (or a server that never lowers `Page`) can never spin forever.
-MAX_BRANCH_PAGES = 100
+from .constants import BY_DOC_DATE_PATH, BY_LAST_MODIFIED_PATH
 
 VENDOR_TRANSPORT = "VENDOR_TRANSPORT"
 VENDOR_HTTP = "VENDOR_HTTP"
@@ -52,7 +48,6 @@ class DocFeedVendor:
 
     def __init__(self, client: HttpApiClient) -> None:
         self._client = client
-        self.pages_read = 0  # N3 - vendor pages the LAST `branches()` walk read
 
     # ── document doors (plain arrays, V2) ────────────────────────────────────
 
@@ -75,27 +70,6 @@ class DocFeedVendor:
                 "doors must answer a plain array (V2).",
             )
         return parsed.rows
-
-    # ── branches (paged, pageSize max 1000) ─────────────────────────────────
-
-    def branches(self) -> List[Dict[str, Any]]:
-        rows: List[Dict[str, Any]] = []
-        page = 1
-        self.pages_read = 0
-        while page <= MAX_BRANCH_PAGES:
-            self.pages_read += 1
-            response = self._fetch_with_retry(
-                BRANCH_BY_PAGE_PATH, {"page": page, "pageSize": 1000}
-            )
-            body = self._as_json(response)
-            parsed = self._as_page(body)
-            rows.extend(parsed.rows)
-            if not parsed.rows:
-                break
-            if parsed.total_pages is None or page >= parsed.total_pages:
-                break
-            page += 1
-        return rows
 
     # ── shared retry + parse ─────────────────────────────────────────────────
 

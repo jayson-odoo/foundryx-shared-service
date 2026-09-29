@@ -16,6 +16,7 @@ from app.database import get_db
 from app.dependencies import get_actor_user_id, require_permission
 from app.models.user import User
 
+from ..doc_feed.constants import ALL_FEEDS
 from ..http_client import get_http_transport
 from ..schemas import (
     DocFeedBackfillOut,
@@ -52,6 +53,13 @@ def _field_error(field: str, message: str) -> JSONResponse:
     )
 
 
+def _require_feed(feed: str) -> None:
+    """A feed key outside the two document feeds (a retired ``branches``
+    key included, plan 14 section 11) is a path that does not exist: 404."""
+    if feed not in ALL_FEEDS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
+
+
 def _conflict(exc: DocFeedConflictError) -> None:
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
@@ -79,6 +87,7 @@ def put_doc_feed(
     current_user: User = Depends(require_permission("autocount.companies.manage")),
     db: Session = Depends(get_db),
 ):
+    _require_feed(feed)
     try:
         return DocFeedService(db).update(
             current_user.tenant_id, company_id, feed,
@@ -104,6 +113,7 @@ def post_doc_feed_run(
     actor_user_id: Optional[str] = Depends(get_actor_user_id),
     transport=Depends(get_http_transport),
 ):
+    _require_feed(feed)
     try:
         job_id = DocFeedService(db).run_feed(
             current_user.tenant_id, company_id, feed, body.kind,
@@ -168,6 +178,7 @@ def post_doc_feed_backfill(
     actor_user_id: Optional[str] = Depends(get_actor_user_id),
     transport=Depends(get_http_transport),
 ):
+    _require_feed(feed)
     try:
         backfill = DocFeedService(db).start_backfill(
             current_user.tenant_id, company_id, feed, dry_run=body.dryRun,
@@ -196,6 +207,7 @@ def post_doc_feed_backfill_stop(
     current_user: User = Depends(require_permission("autocount.sync.run")),
     db: Session = Depends(get_db),
 ):
+    _require_feed(feed)
     try:
         return DocFeedService(db).stop_backfill(current_user.tenant_id, company_id, feed)
     except CompanyNotFound:
@@ -213,6 +225,7 @@ def post_doc_feed_backfill_resume(
     actor_user_id: Optional[str] = Depends(get_actor_user_id),
     transport=Depends(get_http_transport),
 ):
+    _require_feed(feed)
     try:
         return DocFeedService(db).resume_backfill(
             current_user.tenant_id, company_id, feed,
@@ -233,6 +246,7 @@ def post_doc_feed_backfill_discard(
     current_user: User = Depends(require_permission("autocount.sync.run")),
     db: Session = Depends(get_db),
 ):
+    _require_feed(feed)
     try:
         return DocFeedService(db).discard_backfill(current_user.tenant_id, company_id, feed)
     except CompanyNotFound:
